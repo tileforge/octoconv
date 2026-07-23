@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.8
-milestone_name: AV Engine (video/ffmpeg)
-status: Awaiting next milestone
-stopped_at: Phase 37 Plan 03 Tasks 1-2 PASS (SC3 scale-from-zero + SC4 downscale-survival live-proven) - Task 3 human-verify checkpoint PENDING operator approval, AVE-05 still open
-last_updated: "2026-07-23T22:07:04.525Z"
-last_activity: 2026-07-23 — Milestone v1.8 completed and archived
+milestone: v1.9
+milestone_name: Job Progress & Control
+status: planning
+last_updated: "2026-07-23T23:20:41.907Z"
+last_activity: 2026-07-23
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 18
-  completed_plans: 18
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 ## Current Position
 
-Phase: Milestone v1.8 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-23 — Milestone v1.8 completed and archived
+Status: Defining requirements
+Last activity: 2026-07-23 — Milestone v1.9 started
 
 ## Performance Metrics
 

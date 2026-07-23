@@ -19,18 +19,30 @@ OctoConv — внутренний асинхронный сервис конве
 
 </details>
 
-## Next Milestone
+## Current Milestone: v1.9 Job Progress & Control
 
-_Not yet defined — run `/gsd:new-milestone` to scope the next version._
+**Goal:** Сделать длинные конвертации прозрачными и управляемыми — клиент видит прогресс/ETA в реальном времени, может листать свои джобы и отменять их.
 
-**Candidate backlog:**
-- **New engine classes (seeds):** SEED-005 CAD (dwg/dxf/step → pdf/svg/preview; open SDK/licensing/offline question), SEED-006 Archive/zip (unpack → convert-each → repackage; security-first), SEED-007 File-preview/thumbnail (unify per-type renderers into one `preview` class).
-- **Job UX:** SEED-008 conversion progress reporting (percent-complete, esp. video transcode via ffmpeg `-progress`).
-- **Ops / production-readiness:** AVX-02 (registry cold-pull measurement for heavy images), K8SV2-01 (k8s validation in CI, kind/k3d), K8SV2-03 (`is_operator` column vs env-allowlist).
-- **Engine extensions:** AVX-01 (video trim/crop opts), DOCV3-03 (fonts/CJK-RTL for HTML→PDF).
-- **Tech-debt tail (v1.8):** av-worker env-parser unit tests, wav-demuxer justification.
+**Target features:**
+- **Progress %** (ядро, SEED-008) — процент выполнения на `GET /v1/jobs/{id}`; ffmpeg-driven (`-progress`) для av/audio, indeterminate-фолбэк для остальных движков; троттлинг записи в Postgres
+- **ETA / осталось времени** — из progress + elapsed + ffmpeg `speed`
+- **Live-push прогресса** — `progress` webhook-событие и/или SSE/streaming-эндпоинт (не только polling)
+- **Список джоб** — `GET /v1/jobs` (свои джобы: статус/прогресс/фильтры/пагинация)
+- **Отмена джобы** — `POST /v1/jobs/{id}/cancel` (прерывание in-flight через существующий hardened process-group-kill)
 
-_SEED-001 is RESOLVED (transcription need shipped in v1.7/v1.8; analysis-product superstructure deliberately not pursued)._
+**Key context:** всё поверх существующего контура (Postgres job lifecycle, hardened `runCommand` exec с Setpgid+SIGKILL, webhook-доставка, asynq); движки офлайн; `source_duration` (уже пробируется ffprobe) — знаменатель для %. Новизна: прогресс-пайп из дочернего ffmpeg без нарушения process-group-kill контракта, SSE-транспорт, семантика отмены поверх asynq.
+
+<details>
+<summary>Next-milestone backlog (отложенные кандидаты)</summary>
+
+- **Новые классы движков:** SEED-005 CAD (открытый SDK/licensing/offline вопрос), SEED-006 Archive/zip (security-first), SEED-007 File-preview.
+- **Ops / production-readiness:** AVX-02 (registry cold-pull замер), K8SV2-01 (k8s в CI, kind/k3d), K8SV2-03 (`is_operator` колонка).
+- **Расширения движков:** AVX-01 (video trim/crop), DOCV3-03 (шрифты/CJK-RTL для HTML→PDF).
+- **Тех-долг v1.8:** av-worker env-parser тесты, wav-демуксер justification.
+
+_SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008 → в скоупе v1.9._
+
+</details>
 
 <details>
 <summary>Shipped Milestone: v1.8 AV Engine (video/ffmpeg) — SHIPPED 2026-07-23 (goal & features)</summary>
