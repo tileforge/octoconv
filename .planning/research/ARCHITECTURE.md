@@ -1,642 +1,361 @@
-# Architecture Research
+# Architecture Research — v1.9 Job Progress & Control
 
-**Domain:** Async file-conversion service — fifth engine class (av/video via ffmpeg)
-**Researched:** 2026-07-19
-**Confidence:** HIGH (codebase-derived; container-format magic-byte facts verified against current specs)
+**Domain:** Integration of progress/ETA/live-push/listing/cancellation into OctoConv's existing async conversion pipeline
+**Researched:** 2026-07-24
+**Confidence:** HIGH (derived directly from reading the current codebase — this is an integration design, not greenfield ecosystem research)
 
 ## Standard Architecture
 
-### System Overview (unchanged shape, av is a fifth vertical slice)
+### System Overview (current, with v1.9 additions marked `[NEW]`/`[MOD]`)
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│  cmd/api  (always-on)                                                      │
-│  Sniff/SniffAudio/SniffVideo(new) → EngineFor(detected,target) → route     │
+│                              cmd/api (stateless, N replicas)                │
+│  ┌────────────┐ ┌────────────┐ ┌───────────────┐ ┌──────────────────────┐  │
+│  │POST /v1/jobs│ │GET /v1/jobs│ │GET /v1/jobs/{id}│ │POST /v1/jobs/{id}/cancel│ │
+│  │ (existing) │ │/{id}[MOD]  │ │/{id}[MOD progress] │ │[NEW]                │  │
+│  └────────────┘ └────────────┘ └───────────────┘ └──────────────────────┘  │
+│  ┌────────────────────┐  ┌───────────────────────────────────────────┐    │
+│  │GET /v1/jobs [NEW]   │  │GET /v1/jobs/{id}/events (SSE) [NEW]        │    │
+│  │listing+pagination   │  │DB-poll ticker per open connection          │    │
+│  └────────────────────┘  └───────────────────────────────────────────┘    │
 ├───────────────────────────────────────────────────────────────────────────┤
-│  asynq / Redis  — one queue per engine class                               │
-│  image | document | html | audio | av(NEW) | webhook                      │
-├──────────┬──────────┬──────────┬──────────┬──────────┬────────────────────┤
-│  worker  │ document │chromium  │ audio    │ av(NEW)  │ webhook-worker×2    │
-│ (libvips)│ -worker  │ -worker  │ -worker  │ -worker  │ (+ reconciler       │
-│          │(LibreOff)│(chromium)│(ffmpeg+  │ (ffmpeg  │  sweeper, advisory  │
-│          │          │          │ whisper) │  ONLY)   │  lock elected)      │
-├──────────┴──────────┴──────────┴──────────┴──────────┴────────────────────┤
-│  Postgres (system of record: jobs, job_inputs/outputs, job_events)         │
-│  S3/MinIO (uploads/, results/)                                             │
+│                    Redis (asynq queues — unchanged — PLUS:)                │
+│         [NEW] pub/sub channel `job:cancel` (fire-and-forget, fan-out)      │
+├───────────────────────────────────────────────────────────────────────────┤
+│  engine workers (image/document/html/audio/av-worker, KEDA-scaled)          │
+│  ┌───────────────────────────────────────────────────────────────────┐    │
+│  │ Handler.process() [MOD]                                            │    │
+│  │  attemptCtx := context.WithCancel(context.WithTimeout(...))  [MOD]  │    │
+│  │  register(jobID, cancelFunc) in in-memory map            [NEW]     │    │
+│  │  if conv implements ProgressReporter [NEW optional iface]:          │    │
+│  │      conv.ConvertWithProgress(ctx, in, out, opts, onProgress)       │    │
+│  │  else: conv.Convert(ctx, in, out, opts)   (unchanged path)          │    │
+│  │  onProgress → throttle (>=1s) → repo.UpdateProgress() [NEW,         │    │
+│  │      non-locking, no job_events row]                                │    │
+│  │  subscribe once at startup to `job:cancel`; on match, call          │    │
+│  │      cancelFunc() → ctx.Done() → existing runCommand SIGKILL path   │    │
+│  └───────────────────────────────────────────────────────────────────┘    │
+├───────────────────────────────────────────────────────────────────────────┤
+│                              Postgres (system of record)                    │
+│  jobs [MOD: + progress_pct, + progress_updated_at, + eta_seconds]           │
+│  jobs.status already includes 'canceled' in the original CHECK constraint   │
+│  job_events (unchanged shape; NO row per progress tick — only real          │
+│              transitions, incl. the new active/queued→canceled transition) │
+│  webhook_deliveries (unchanged shape; FindWebhookGaps + delivery payload    │
+│              switch widened to cover status='canceled' [MOD])              │
+├───────────────────────────────────────────────────────────────────────────┤
+│  reconciler (unchanged FindStale query — 'canceled' already excluded        │
+│              because it only selects status IN ('queued','active'))        │
+│  webhook-worker (delivers `progress` event [NEW, optional] the same way     │
+│              it delivers `done`/`failed` today — reuses HMAC signing,       │
+│              retry/backoff, dead-letter machinery unchanged)                │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-The av class does **not** get a new architectural layer — it slots into the
-existing `Converter`/`Registry`/`EngineFor` abstraction exactly like
-document/html/audio did (v1.2/v1.3/v1.7). The one structural wrinkle worth
-calling out up front: **not every "video" pair routes to the new av queue.**
-Video→transcript pairs are deliberately registered under `EngineAudio` and
-processed by the *existing* audio-worker (see Key Decision A below) — the av
-queue only carries transcode/audio-extract/thumbnail.
-
 ### Component Responsibilities
 
-| Component | Responsibility | New or modified |
-|-----------|----------------|------------------|
-| `internal/convert/avsniff.go` (new) | Magic-byte detection for mp4/mov/avi (fixed 12-byte window, extends `sniff.go`'s table) + a separate bounded-peek EBML parser for mkv/webm DocType disambiguation | **New** |
-| `internal/convert/av.go` (new) | `AVConverter` — transcode, audio-extract, thumbnail. `Engine() == EngineAV`. Wraps ffmpeg only (no whisper) | **New** |
-| `internal/convert/avopts.go` (new) | `AVOpts` — closed allowlist (e.g. `timecode` for thumbnail, `video_bitrate`/`resolution_preset` for transcode), mirrors `AudioOpts`/`HTMLOpts` pattern | **New** |
-| `internal/convert/whisper.go` (existing) | `AudioConverter.Pairs()` extended with video-container sources × transcript targets; `Convert()` body **unchanged** (ffmpeg already extracts+normalizes audio from any container it can demux) | **Modified** (Pairs only) |
-| `internal/convert/convert.go` | `EngineAV = "av"` constant added to the single source-of-truth block | **Modified** (1 line) |
-| `internal/convert/converters.go` | `Default.Register(AVConverter{})` added | **Modified** (1 line) |
-| `internal/queue/queue.go` | `TypeAVConvert`/`QueueAV`, `NewAVConvertTask`, `avRetrySchedule`/`AVRetryDelay`, `AVUniqueTTL` — mirrors `Audio*` symbols exactly | **New** (mirrors existing) |
-| `internal/worker/worker.go` | `isAVTerminal` (stage-aware classifier, mirrors `isAudioTerminal`), `HandleAVConvert`, `enforceAVGuardBeforeConvert` (duration guard, reuses `convert.EnforceMaxDuration`) | **New** (mirrors existing) |
-| `internal/api/handlers.go` | `engine` switch (both the enqueue switch and the opts-dispatch switch) gets an `EngineAV` case | **Modified** (2 switch arms) |
-| `internal/reconciler/reconciler.go` | `enqueuer` interface + engine switch gets `EnqueueAVConvert`/`case convert.EngineAV` | **Modified** (2 additions) |
-| `cmd/av-worker/main.go` (new) | Entry point — mirrors `cmd/audio-worker/main.go` minus whisper-specific env (no `AV_MODEL_PATH`, no thread-count resolution) | **New** |
-| `Dockerfile.av-worker` (new) | `debian:bookworm-slim` + `ffmpeg` only — **no whisper.cpp build stage, no baked model** | **New** (much lighter than `Dockerfile.audio-worker`'s 682MB) |
-| `internal/db/migrations/*` | **None needed** — `jobs_engine_check` already allow-lists `'av'` (added speculatively alongside `'cad'`/`'archive'`/`'probe'` in the same migration family as `'audio'`, confirmed live in `0006_audio_engine.sql`) | **No change** |
+| Component | Responsibility | New/Modified |
+|-----------|-----------------|--------------|
+| `internal/jobs.Repo.UpdateProgress` | Lightweight, non-transactional `UPDATE jobs SET progress_pct=..., eta_seconds=..., progress_updated_at=now() WHERE id=$1 AND status='active'` — no `FOR UPDATE`, no `job_events` insert | **NEW** |
+| `internal/jobs.Repo.Cancel` | Guarded transition `queued/active → canceled` through the existing `transition()` helper (row lock + `job_events` insert) | **NEW** (thin wrapper, reuses existing machinery) |
+| `internal/jobs.Repo.List` | Paginated, client-scoped read query (status/engine filters, keyset pagination) | **NEW** |
+| `internal/convert.ProgressReporter` | Optional interface a `Converter` may additionally implement to report fractional progress via a callback | **NEW** |
+| `internal/convert` (exec.go) | Add a streaming-stdout variant of `runCommand` that lets a caller consume ffmpeg's `-progress pipe:1` lines while still preserving Setpgid+SIGKILL | **MOD** (additive — existing `runCommand` callers unaffected) |
+| `internal/convert.AVConverter` / `AudioConverter` | Implement `ProgressReporter` using ffmpeg `-progress pipe:1` (`out_time_us`, `speed`) against the already-probed `source_duration` | **MOD** |
+| `internal/worker.Handler.process` | Type-assert `ProgressReporter`, wire throttled `onProgress` → `repo.UpdateProgress`; wrap `attemptCtx` with `context.WithCancel`; register/unregister the cancel func in an in-memory map; subscribe to Redis `job:cancel` | **MOD** |
+| `internal/worker` shared `isTerminal` | New top-level check: `errors.Is(err, context.Canceled)` → terminal, `SkipRetry`, but do **NOT** call `MarkFailed` (status is already `canceled`, and the guarded transition's allow-list rejects it anyway as a safety net) | **MOD** |
+| `internal/api` new `handleCancelJob` | `POST /v1/jobs/{id}/cancel`: ownership check (mirrors `handleGetJob`'s 404-not-403 discipline) → `repo.Cancel` → publish job id to `job:cancel` | **NEW** |
+| `internal/api` new `handleListJobs` | `GET /v1/jobs`: client-scoped list + filters + pagination | **NEW** |
+| `internal/api` new `handleJobEvents` (SSE) | `GET /v1/jobs/{id}/events`: DB-poll ticker (1-2s) streaming `progress`/terminal events, closes on terminal status | **NEW** |
+| `internal/webhook` payload builder (`HandleWebhookDeliver`) | New `status == StatusCanceled` branch (no `download_url`); new (separate, non-terminal, best-effort) `progress` event type triggered from the worker's throttle point, reusing `Deliverer`/HMAC/retry unchanged | **MOD** |
+| `internal/reconciler` `FindWebhookGaps` | Status filter widened from `('done','failed')` to `('done','failed','canceled')` | **MOD** |
+| `internal/db/migrations` | New migration: `jobs.progress_pct smallint`, `jobs.eta_seconds int`, `jobs.progress_updated_at timestamptz` (all nullable) | **NEW** |
 
-## Key Design Decisions
-
-### Decision A — video→transcript routes to the EXISTING audio queue, not a new whisper-in-av-container or cross-queue chain
-
-**The question posed three options: whisper baked into av-worker (heavy image), cross-queue job chaining, or routing video targets to the audio queue. Recommendation: the third, with a specific mechanism.**
-
-`AudioConverter.Convert` (`internal/convert/whisper.go`) already runs a
-two-stage `ffmpeg` (normalize) → `whisper-cli` (transcribe) pipeline. Stage 1
-(`ffmpegNormalizeArgs`) is `ffmpeg -y -i file:<in> -ar 16000 -ac 1 -c:a
-pcm_s16le <norm.wav>` — **ffmpeg already demuxes the audio track out of any
-container it can decode, video or not.** Nothing in `Convert()` assumes the
-input is audio-only. This means video→transcript is not a new capability
-that needs a new pipeline — it is the *same* pipeline with a wider `Pairs()`
-set.
-
-**Recommended change:** extend `AudioConverter.Pairs()` with a
-`videoContainerFormats` × `audioTargetFormats` cross product (mp4, mov, mkv,
-webm, avi → txt/srt/vtt/json), keeping `Engine() == EngineAudio` unchanged.
-`Registry.Register` iterates `c.Pairs()` and indexes each `(From,To)` pair
-independently — nothing about the registry, `EngineFor`, or the audio
-queue/worker needs to know these new pairs exist beyond that one `Pairs()`
-extension. `EngineFor("mp4", "txt")` then returns `"audio"`, so the job is
-enqueued onto the existing `QueueAudio`, processed by the existing
-`audio-worker` container, bounded by the existing (RTF-measured)
-`AUDIO_ENGINE_TIMEOUT=742s` and `AUDIO_MAX_DURATION_SECONDS=1800s` guard
-(`enforceAudioGuardBeforeConvert` is already gated on `job.Engine ==
-convert.EngineAudio`, not on source format — it fires correctly for these
-jobs with zero code change to the guard itself).
-
-**Why not the other two options:**
-- **Whisper baked into av-worker** duplicates the ~682MB whisper.cpp+model
-  image layer into a second container, doubles the RTF-measurement/GO-NO-GO
-  burden (Phase 32's proof would need to be re-run for a second image), and
-  gives the av-worker two completely different resource profiles (fast
-  ffmpeg ops vs. whisper's CPU-bound transcription) to size `AV_WORKER_CONCURRENCY`/
-  resource limits against — the same "heterogeneous cost in one queue"
-  problem Decision C addresses, but worse because it also duplicates the
-  binary/model.
-- **Cross-queue job chaining** (av-worker extracts audio → enqueues a
-  second task on the audio queue → some mechanism marks the *original* job
-  done once the second task completes) requires a genuinely new
-  orchestration primitive this codebase has never needed: today one
-  `jobs` row maps to exactly one queue task for its entire lifecycle
-  (`Postgres-first double write`, `guarded status transitions`,
-  `asynq.Unique` keyed by `job_id` — all built around single-task-per-job).
-  Chaining would need either a sub-job/parent-job schema addition or a
-  saga-style intermediate state, new reconciler-routing logic (which queue
-  is "the" job currently on?), and a new unique-lock TTL derivation
-  spanning two engine timeouts. This is a multi-phase schema change for a
-  feature the reused-pipeline approach gets for free.
-
-**Residual work this decision still requires** (tracked as build-order
-items below, not free): (1) `ffmpegNormalizeArgs` should gain an explicit
-`-vn` flag when the source is a video container (defense-in-depth — without
-it ffmpeg still only *writes* an audio-only WAV, since the output container
-has no video stream, but explicitly declaring "no video output" makes the
-intent self-documenting and matches the `IN-01` file-protocol-prefix
-precedent of hardening argv construction even when today's caller can't yet
-trigger the gap); (2) a **new RTF measurement is still owed** for
-video-source jobs specifically, even though `Convert()` code is unchanged —
-video demuxing overhead before whisper's dominant cost is a plausible but
-unverified assumption (see Pitfalls-equivalent notes in Decision C/D); (3)
-`SniffVideo`/`avsniff.go` (Decision B) is needed regardless of which engine
-ultimately handles the job, since content detection happens before
-`EngineFor` is even called.
-
-### Decision B — container sniffing: two different techniques for two different container shapes
-
-The API's content-detection chain (`internal/api/handlers.go`) runs, in
-order: `Sniff` (fixed 12-byte table) → ZIP central-directory inspection →
-`LooksLikeHTML` → `IsOLECFB`/`ClassifyCFB` → `SniffAudio` (mp3's variable-
-length ID3v2 tag, bounded 512KiB peek) → reject. Video containers split
-across **both** existing techniques, not one:
-
-| Container | Magic shape | Fits `sniff.go`'s fixed 12-byte table? | Verified brand/signature facts |
-|-----------|-------------|------------------------------------------|-------------------------------|
-| MP4 | ISO BMFF `ftyp` box at offset 4-8, major brand at offset 8-12 | **Yes** — identical shape to the existing `matchHEIC`/`matchM4A` matchers | Major brands: `isom`, `mp41`, `mp42`, `mp4v`, `avc1`, `iso2`-`iso9`, `3gp4`/`3gp5`, etc. — **must** be a closed allowlist disjoint from `heicBrands`/`m4aBrands` (already disjoint by construction: those are `heic`/`heix`/`hevc`/`hevx`/`mif1`/`msf1` and `M4A `/`M4B `) |
-| QuickTime `.mov` | Same `ftyp` box shape, major brand `"qt  "` (two trailing spaces) | **Yes** — same 12-byte window | `qt  ` is the QuickTime-specific major brand; ISO BMFF is directly derived from QuickTime's container, so this is the standard disambiguator |
-| AVI | RIFF container, `"AVI "` fourCC at offset 8-12 | **Yes** — literally the same shape as the existing `matchWAV`/`matchWebP` matchers (`RIFF` at 0-3, fourCC at 8-11) | No new technique needed at all — copy `matchWAV`'s body with `"AVI "` |
-| Matroska (`.mkv`) | EBML header, magic `0x1A45DFA3` at offset 0, then a variable-position `DocType` element (`matroska` vs `webm`) | **No** — DocType is not at a fixed offset (preceded by variable-length `EBMLVersion`/`EBMLReadVersion`/`EBMLMaxIDLength`/`EBMLMaxSizeLength` elements) | Verified against RFC 8794 / Matroska spec: docType MUST be `"matroska"` |
-| WebM | Same EBML magic, `DocType` **SHOULD** be `"webm"` | **No** — same variable-position problem as mkv | WebM and Matroska are both EBML; the *only* reliable disambiguator is the DocType string, not the outer magic bytes |
-
-**Recommendation:** add `matchMP4`, `matchMOV`, `matchAVI` directly to
-`sniff.go`'s existing `signatures` table (zero new infrastructure, exactly
-mirrors `matchHEIC`/`matchWAV`'s existing shape). Build a **separate**
-bounded-peek matcher for mkv/webm — `matchEBML`/`SniffVideo` — following
-`matchMP3`'s established discipline exactly: peek a bounded window (mp3
-used 512KiB for ID3v2's declared-length tag; EBML's header elements are
-typically only tens of bytes, so a much smaller bound, e.g. 4KiB, is
-comfortably safe while still fail-closed), walk the EBML element IDs to
-find the DocType element (ID `0x4282`), read its declared vint length,
-extract the ASCII value, and match against `{"matroska": "mkv", "webm":
-"webm"}`. A DocType that pushes past the bounded window, or any parse
-failure, **fails closed** — `""`, not a guess — exactly mirroring
-`matchMP3`'s "never grow the buffer, never seek further, just reject"
-philosophy for its own declared-length parse. This is real, non-trivial
-parsing work (a minimal vint/EBML element reader), not just registry
-wiring — flag it in the build order as its own task, not a one-liner.
-
-**How `EngineFor` handles "same source, different target → different
-engine":** this is not a special case that needs new registry mechanism.
-`Registry.m` is keyed by the **full** `(From, To)` pair, never by `From`
-alone. `mp4→mp3` (audio-extraction, registered by `AVConverter`, `Engine()
-== "av"`) and `mp4→txt` (transcription, registered by `AudioConverter`'s
-extended `Pairs()`, `Engine() == "audio"`) are two entirely independent map
-entries. The only real risk is **accidental pair collision** — if
-`AVConverter.Pairs()` and `AudioConverter.Pairs()` ever both claim the same
-`(From, To)` tuple, `Register`'s documented "later registration wins,
-silently" semantics would make the outcome depend on `init()` ordering in
-`converters.go`. Today the target sets are disjoint by design
-(`mp3`/`wav`/`m4a`/`mp4`/`jpg`/`png`/`webp` for av vs.
-`txt`/`srt`/`vtt`/`json` for audio-via-video), but this must be enforced by
-a **unit test that enumerates both converters' `Pairs()` and asserts zero
-intersection** — there is no existing precedent for this check because no
-two converters have ever shared a source-format family before av.
-
-### Decision C — one shared `AV_ENGINE_TIMEOUT` for the whole queue, not per-pair budgets
-
-Every existing engine class uses exactly **one** timeout constant for its
-entire queue, sized to that class's worst-case operation:
-`ENGINE_TIMEOUT=120s` (image), `DOCUMENT_ENGINE_TIMEOUT=300s`,
-`HTML_ENGINE_TIMEOUT=60s`, `AUDIO_ENGINE_TIMEOUT=742s` (RTF-measured against
-whisper transcription, the dominant cost regardless of which of the 16
-`(source,target)` audio pairs is used). There is **no precedent anywhere in
-this codebase for per-pair timeouts**, and `asynq.Unique` TTL derivation
-(`ImageUniqueTTL`/`DocumentUniqueTTL`/`AudioUniqueTTL`) is built entirely
-around "one `engineTimeout` value, one `maxRetry` value, one formula" — a
-per-pair scheme would need a parallel TTL-derivation and retry-schedule
-system with no reusable shape to copy.
-
-**Recommendation:** follow the existing pattern exactly — one
-`AV_ENGINE_TIMEOUT`, RTF/wall-clock-measured against the **worst-case
-transcode** (the genuinely expensive operation; 10-100× more than
-thumbnail per the milestone brief), the same "measure, don't guess" GO/NO-GO
-discipline Phase 32 used for audio (`scripts/audio-rtf-measure.sh` →
-`scripts/av-transcode-measure.sh` analog). Thumbnail and audio-extraction
-jobs will simply finish in a small fraction of that ceiling — the shared
-ceiling costs nothing in the correctness dimension, only in "how long we
-wait before declaring a genuinely stuck process transient-then-terminal,"
-and `isAVTerminal`'s stage classification already fails a corrupted input
-fast (ffmpeg exits non-zero almost immediately on unparseable input; it
-does not wait out the timeout) — so the oversized ceiling on cheap
-operations is paid only in the rare stuck-process case, not on every job.
-
-**What genuinely differs from audio and must be built new:** unlike whisper
-(where cost is driven almost entirely by declared duration, hence
-`AUDIO_MAX_DURATION_SECONDS` alone bounds worst-case cost), transcode cost
-is driven by **duration × resolution × codec complexity**. A duration guard
-alone under-bounds a very-high-resolution short clip. This is a genuine gap
-relative to the audio precedent, not just a copy — see Decision D.
-
-**Per-pair timeouts were considered and explicitly rejected** for this
-milestone: the engineering cost (new per-task-type `asynq.MaxRetry`/timeout
-wiring, a second TTL-derivation formula, a second retry schedule, and
-`RetryDelayFunc`'s dispatch switch growing a third dimension) is
-disproportionate to the benefit (saving wall-clock on retries of jobs that
-already fail fast on bad input). If real production data later shows
-thumbnail jobs are meaningfully retry-budget-starved by a transcode-sized
-ceiling, that is a targeted future revisit, not a Phase-1 requirement.
-
-### Decision D — duration AND resolution guards for video (duration alone is insufficient)
-
-`convert.ProbeDuration`/`convert.EnforceMaxDuration`
-(`internal/convert/audioduration.go`) are **already generic** — they call
-`ffprobe -show_entries format=duration` and validate in float space
-(NaN/Inf/negative/overflow-safe, per the documented amd64/arm64 conversion
-pitfall). This is directly reusable verbatim for an `AV_MAX_DURATION_SECONDS`
-guard, gated the same way `enforceAudioGuardBeforeConvert` gates on
-`job.Engine == convert.EngineAudio` — a new `enforceAVGuardBeforeConvert`
-gated on `job.Engine == convert.EngineAV`, run **before** the expensive
-ffmpeg operation, same fail-closed ordering discipline (sniff → duration
-guard → decode/transcode).
-
-**Where this is NOT sufficient, unlike audio:** whisper's cost is duration-
-dominated regardless of the audio codec/bitrate — a duration ceiling alone
-correctly bounds worst-case whisper cost. Transcode cost is **not**
-duration-dominated alone; a short clip at very high resolution
-(e.g. 4K/8K) or an absurd declared resolution in a malformed/adversarial
-container can still be a decode-bomb even under a modest duration ceiling.
-There is **no existing zero-dependency parser** for arbitrary video
-codecs' declared resolution the way `VALID-03` built one for
-png/jpg/webp/heic/tiff pixel dimensions — building one for H.264/H.265/VP9/
-AV1 bitstreams is out of proportion to this milestone. Two honest options:
-(1) accept this as a **documented residual risk**, mirroring the
-codebase's existing discipline for LibreOffice/chromium resource-exhaustion
-risk (`DOC-V2-05`, the `file://` residual-read risk in Phase 15) — ffmpeg's
-own internal resource limits are the backstop; or (2) additionally probe
-`ffprobe -show_entries stream=width,height` (same near-instant, bounded-ctx
-call pattern as `ProbeDuration`, trivially extendable) and reject
-declared resolutions above a configured ceiling before transcode starts.
-**Recommendation: do (2)** — it is a small, mechanical extension of the
-exact function that already exists (`ProbeDuration`'s sibling), and video
-resolution bombs are a well-known, well-understood attack class (unlike
-audio, where no equivalent "bomb" concept applies) — treating it as
-optional-later residual risk when the guard is this cheap to add is not
-consistent with this codebase's established fail-closed bias (VALID-03,
-CFB classification, zip-bomb rejection all made the same call: build the
-cheap probe rather than accept the risk).
-
-**Upload-size ceiling gap (flag, not solved in this research):**
-`MAX_UPLOAD_BYTES` is currently **one global value** enforced uniformly
-across every engine class via `http.MaxBytesReader` in `handleCreateJob`,
-applied **before** `Sniff`/`EngineFor` even runs — the engine class isn't
-known yet when the byte ceiling is enforced. Video files are legitimately
-much larger than the other four classes' typical inputs at equivalent
-"content amount." Raising the global ceiling to accommodate reasonable
-video sizes weakens the DoS posture for image/document/html/audio uploads
-too; introducing a genuinely per-engine ceiling would require restructuring
-upload-size enforcement to happen **after** content detection (a nontrivial
-API-layer reordering, not a config bump) since today's `MaxBytesReader` is
-applied to the raw multipart body before any byte of it is inspected. This
-research recommends treating it as a **documented open question for
-planning**, not silently defaulting to "just raise the global limit" —
-raising it is the pragmatic MVP choice (matches the "one flag, all
-classes" precedent already in place) but should be an explicit,
-named decision in ROADMAP/PROJECT.md, not an implicit side effect of
-picking a video-friendly number.
-
-## Recommended Project Structure (new files only)
+## Recommended Project Structure (new/changed files only)
 
 ```
-internal/convert/
-├── av.go                # AVConverter: Pairs()/Convert()/Engine()==EngineAV
-├── av_test.go
-├── avopts.go             # AVOpts (timecode, resolution_preset, ...) — mirrors audioopts.go
-├── avopts_test.go
-├── avduration.go         # thin wrapper reusing ProbeDuration + a new resolution probe (Decision D)
-├── avduration_test.go
-├── avsniff.go             # matchEBML/SniffVideo (mkv/webm DocType, bounded peek) — mirrors audiosniff.go's discipline
-├── avsniff_test.go
-├── sniff.go              # MODIFIED: += matchMP4, matchMOV, matchAVI in the existing signatures table
-├── whisper.go             # MODIFIED: Pairs() += video-container × transcript-target cross product; ffmpegNormalizeArgs gains explicit -vn for video sources
-└── converters.go          # MODIFIED: += Default.Register(AVConverter{})
-
-cmd/av-worker/
-└── main.go                # mirrors cmd/audio-worker/main.go, no whisper env vars
-
-Dockerfile.av-worker         # ffmpeg only, no whisper build stage — much lighter than Dockerfile.audio-worker
-
-deploy/chart/octoconv/templates/
-├── deployment-av-worker.yaml   # mirrors deployment-audio-worker.yaml
-└── scaledobject-av.yaml        # mirrors scaledobject-audio.yaml, WR-01 triad verbatim
-
-scripts/
-├── av-transcode-measure.sh     # worst-case-transcode timeout GO/NO-GO measurement (mirrors audio-rtf-measure.sh)
-└── keda-av-loadproof.sh        # mirrors keda-audio-loadproof.sh, frozen-script discipline
+internal/
+├── convert/
+│   ├── convert.go          # [MOD] add ProgressReporter interface (optional, additive)
+│   ├── exec.go              # [MOD] add runCommandStreaming (parallel to runCommand)
+│   ├── av.go                # [MOD] AVConverter implements ProgressReporter
+│   └── whisper.go           # [MOD] AudioConverter implements ProgressReporter (ffmpeg normalize stage only — whisper-cli stage stays indeterminate)
+├── jobs/
+│   ├── repo.go               # [MOD] + UpdateProgress, + Cancel, + List
+│   └── jobs.go               # [MOD] + StatusCanceled Go-side const (DB value already existed)
+├── cancel/                   # [NEW package] tiny in-memory registry + Redis pub/sub wiring
+│   ├── registry.go           # map[uuid.UUID]context.CancelFunc, mutex-guarded
+│   └── pubsub.go             # Subscribe(ctx, redisClient, onCancel func(uuid.UUID)), Publish(ctx, redisClient, jobID)
+├── worker/
+│   └── worker.go             # [MOD] process() wiring, isTerminal context.Canceled branch
+├── api/
+│   ├── handlers.go           # [MOD] handleGetJob progress fields; [NEW] handleCancelJob, handleListJobs, handleJobEvents
+│   └── routes.go             # [MOD] register 3 new routes
+├── webhook/
+│   └── (worker.go's HandleWebhookDeliver, not a separate package file) # [MOD] canceled + progress payload branches
+├── reconciler/
+│   └── reconciler.go         # [MOD] FindWebhookGaps status list
+└── db/migrations/
+    └── 0007_job_progress.sql # [NEW]
 ```
 
 ### Structure Rationale
 
-- Every new file mirrors an existing sibling 1:1 (`av.go`↔`libreoffice.go`/
-  `chromium.go` shape; `avopts.go`↔`audioopts.go`; `avsniff.go`↔
-  `audiosniff.go`) — this is deliberate: the codebase's own convention is
-  "one file per responsibility, package name matches directory," and every
-  prior engine class (document, html, audio) was added this way with zero
-  package restructuring. There is no reason for av to deviate.
-- `whisper.go` gets a real (if small) modification rather than a new file,
-  because the video→transcript capability genuinely lives in the audio
-  engine's existing `Convert()` — creating a separate file/type for it would
-  duplicate `ffmpegNormalizeArgs`/`whisperArgs`/`model()`/
-  `validateAudioOutput` for no benefit.
+- **`internal/cancel/` as its own small package** rather than folding pub/sub logic into `internal/worker` or `internal/queue`: it has a single, narrow responsibility (map a job id to a live cancel func, and bridge that to Redis pub/sub) that both the worker binaries (5 engine classes) and the api process need to import from a neutral location — mirrors the existing `internal/metrics` pattern (a small cross-cutting package every binary imports) rather than adding a new axis of coupling between `internal/worker` and `internal/api`.
+- **`ProgressReporter` as an *additional*, optional interface**, not a change to `Converter` itself: `Converter`'s 3-method shape (`Pairs`/`Convert`/`Engine`) is depended on by `internal/api` (format-pair validation) and every existing engine (libvips, LibreOffice, Chromium, whisper's transcribe stage). Changing its signature would force every converter to grow a no-op progress callback parameter it can never call — a needless, risky, wide-blast-radius edit for a feature only two of five engine classes can currently support. This mirrors the project's own precedent (Key Decision, v1.2): "document-engine extends the existing Converter/Registry rather than introducing a Handler/Capability/Input/Output/Progress contract" — the same reasoning applies here: extend by addition, not by breaking the existing contract.
+- **Migration file numbered `0007_job_progress.sql`**, following the existing `NNNN_description.sql` convention (`0005_html_engine.sql`, `0006_audio_engine.sql`).
 
 ## Architectural Patterns
 
-### Pattern 1: Converter interface + Registry (reused unchanged)
+### Pattern 1: Non-locking, self-conditioning progress write (avoids contending on the guarded-transition lock)
 
-**What:** `Pairs()`/`Convert()`/`Engine()` — a converter self-describes its
-supported `(from,to)` pairs and its engine class; the process-wide
-`Registry` indexes every pair, and `EngineFor` is the single source of
-truth for API/reconciler routing.
+**What:** Progress is written via a plain `UPDATE ... WHERE id = $1 AND status = 'active'` with no `SELECT ... FOR UPDATE`, no transaction, and no `job_events` row — deliberately bypassing `Repo.transition()`.
 
-**When to use:** Every new engine class, without exception — this is the
-whole reason av "slots in" rather than requiring a framework change (the
-milestone's own Out-of-Scope note confirms: "Полный контракт ядра... —
-решено расширять существующий Converter/Registry вместо рефакторинга").
+**Why this is safe (and why it must NOT go through `transition()`):**
+- `transition()` exists to guard *state-machine* changes (`queued→active`, `active→done`, etc.) and pairs every change with an audit-log (`job_events`) row. Progress is **not** a state change — status stays `active` throughout — so there is nothing for the allow-list guard to validate, and appending a `job_events` row on every throttled tick (every 1-3s for a multi-minute video transcode) would make the append-only audit log balloon by orders of magnitude and pollute `RecoveryCount`'s tag-based counting logic if the detail schema were ever conflated.
+- Progress writes are inherently **high-frequency** and **best-effort** (losing one tick has zero correctness impact — the next tick a few seconds later supersedes it). Routing them through `SELECT ... FOR UPDATE` would serialize every progress tick against `MarkActive`/`MarkDone`/`MarkFailed`/the new `Cancel` for the *same row*, and — because Postgres row locks are per-row, not per-column — against each other if a retry ever produced two attempts in flight. That contention buys nothing: correctness for progress does not require it.
+- The `WHERE status = 'active'` clause makes the write **self-conditioning**: a late progress tick that arrives after `MarkDone`/`MarkFailed`/`Cancel` has already flipped the row away from `active` silently affects zero rows — no error, no stale resurrection of "50%" on a row that is actually `done`. This is the same "let the WHERE clause do the guarding" idea the codebase already uses elsewhere (e.g., `MarkActive`'s `COALESCE(started_at, now())` for idempotent re-entry), just applied to progress instead of transition validation.
+- **Recommended additional guard:** add `AND (progress_pct IS NULL OR progress_pct <= $2)` (monotonic non-regression) to protect against a stale, out-of-order write from an asynq internal retry that started a fresh attempt at 0% racing a previous attempt's in-flight higher-percentage tick. Given the existing image/document/html/audio/av engines all run at `WORKER_CONCURRENCY` per-process concurrency with `asynq.Unique` locks preventing two concurrent tasks for the same job, this race is narrow but not impossible during the brief internal-retry window; the extra clause costs nothing and closes it.
 
-**Trade-off surfaced by av specifically:** the registry has never before
-needed to arbitrate between two *different* converters both claiming
-pairs from the *same source format family*. It still works correctly
-(pair-keyed, not source-keyed), but the "later registration wins silently"
-semantics (`Register`'s doc comment) becomes a real hazard for the first
-time — mitigate with an explicit pair-disjointness test (Decision B).
+**Trade-offs:** Progress can very rarely be silently dropped (e.g., a Postgres blip mid-tick) with no retry — acceptable, since the next tick a few seconds later corrects it. This must **not** be used for anything that needs durability (that's what `job_events`/`transition()` remain for).
 
-### Pattern 2: Stage-aware terminal/transient classification (reused, extended)
+### Pattern 2: Optional-capability interface for progress reporting (`ProgressReporter`)
 
-**What:** `isAudioTerminal`'s Key Decision 1 — classify by *which stage*
-failed (ffmpeg-stage = malformed input = terminal; whisper-stage timeout =
-transient) rather than a blanket "any timeout is terminal"
-(`isDocumentTerminal`/`isHTMLTerminal`'s simpler shape) or "timeout is
-always transient" (image's shape).
+**What:**
+```go
+// ProgressUpdate is throttled by the caller (worker), not the engine — an
+// engine implementing ProgressReporter should call the callback as often as
+// its own progress source allows (e.g. ffmpeg's ~10Hz -progress cadence);
+// throttling to a Postgres-write-friendly cadence is process()'s job, not
+// the Converter's.
+type ProgressUpdate struct {
+    Pct        float64        // 0-100
+    ETA        *time.Duration // nil when not yet computable (e.g. speed unknown)
+}
 
-**When to use for av:** `isAVTerminal` should mirror `isAudioTerminal`'s
-stage-aware shape, not the simpler document/html blanket-timeout shape —
-av's ffmpeg invocations (decode/transcode/thumbnail-seek) are the *only*
-stage (no second binary like whisper-cli), so the natural mapping is:
-ffmpeg failure or timeout on a malformed/adversarial input → terminal
-(mirrors the image engine's dimension-bomb terminal philosophy the audio
-engine's own comment explicitly cross-references); a *duration/resolution*
-guard rejection (`ErrAVDurationExceeded`/`ErrAVResolutionExceeded`, mirroring
-`ErrAudioDurationExceeded`) → always terminal (rejection can never
-succeed on retry); everything else (S3/Postgres blips) → falls through to
-the shared `isTerminal`. Unlike audio (two distinct binaries, two distinct
-stage-prefixes to match on), av likely does **not** need audio's
-`minFfmpegBudget`-style "insufficient remaining budget" special case in the
-same form, since there's only one stage to protect — but the *general*
-principle (an attempt-ctx pre-exhausted by a slow S3 download must not be
-misattributed to "the engine timed out") still applies and should be
-re-derived, not assumed away.
+// ProgressReporter is an OPTIONAL capability a Converter may additionally
+// implement. Converters that cannot report progress (libvips, LibreOffice,
+// Chromium, whisper-cli's transcribe stage) simply do not implement it —
+// process() falls back to the existing conv.Convert(...) call unchanged.
+type ProgressReporter interface {
+    ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, onProgress func(ProgressUpdate)) error
+}
+```
 
-### Pattern 3: Env-only-in-main + setter injection (reused, simplified)
+**When to use:** Any converter whose underlying engine emits a native, parseable progress stream (ffmpeg's `-progress pipe:1`, verified pattern used by third-party tools such as `better-ffmpeg-progress` and documented on ffmpeg-kit's wiki — MEDIUM confidence, no single canonical ffmpeg.org page enumerates every key, but `out_time_us`/`speed`/`progress=continue|end` are consistently reported by every independent implementation surveyed). LibreOffice, Chromium (`--print-to-pdf`), and whisper-cli's transcription stage expose no equivalent machine-readable progress stream — those stay indeterminate for v1.9 (client sees status only, no `progress_pct`, matching the milestone's own stated "indeterminate-фолбэк для остальных движков").
 
-**What:** `internal/convert` never calls `os.Getenv` directly; `cmd/*/main.go`
-reads env vars once at startup and injects via a package-level setter
-(`SetAudioModelPath`, `SetAudioThreads`) before the asynq server starts
-consuming tasks (single-write-before-concurrent-reads, no mutex needed).
+**Worker integration (`process()`):**
+```go
+if pr, ok := conv.(convert.ProgressReporter); ok {
+    lastWrite := time.Now()
+    err = pr.ConvertWithProgress(attemptCtx, inPath, outPath, job.Opts, func(u convert.ProgressUpdate) {
+        if time.Since(lastWrite) < progressWriteInterval { // e.g. 2s
+            return
+        }
+        lastWrite = time.Now()
+        var eta *int
+        if u.ETA != nil {
+            s := int(u.ETA.Seconds())
+            eta = &s
+        }
+        _ = h.repo.UpdateProgress(attemptCtx, job.ID, int(u.Pct), eta) // best-effort, error discarded — same discipline as webhook enqueue failures elsewhere in this handler
+    })
+} else {
+    err = conv.Convert(attemptCtx, inPath, outPath, job.Opts)
+}
+```
 
-**When to use for av:** any AV-specific tunable that `internal/convert`
-needs at runtime (e.g. a resolution ceiling for Decision D's guard,
-transcode preset/codec defaults) must follow this exact convention. Av
-needs meaningfully **fewer** of these than audio did — no model path, no
-thread-count cgroup detection (ffmpeg's own `-threads` handling under a
-cgroup CPU quota is a separate, real question worth verifying empirically
-during the containerize phase rather than assuming ffmpeg self-limits
-correctly, but it is not a new *mechanism*, just a new value to measure).
+**Trade-offs:** Two call shapes exist on the hot path (`Convert` vs `ConvertWithProgress`) instead of one — acceptable, mirrors the existing precedent of `enforceAudioGuardBeforeConvert` already splicing engine-specific behavior into `process()` via a closure rather than forcing every engine through one rigid shape.
+
+### Pattern 3: `runCommand` streaming variant (progress source without breaking the hardened Setpgid+SIGKILL contract)
+
+**What:** `internal/convert/exec.go`'s `runCommand` currently wires `cmd.Stdout = &stdout` (a `bytes.Buffer`) and returns the fully-buffered output only after the process exits or is killed. A new `runCommandStreaming` variant keeps every existing safety property (`Setpgid: true`, ctx-driven `syscall.Kill(-pid, SIGKILL)`, stderr captured for diagnostics) but replaces the stdout wiring with an `io.Pipe` (or `cmd.StdoutPipe()`) read line-by-line by a `bufio.Scanner` in a dedicated goroutine, forwarding each parsed `key=value` line to the caller's callback as it arrives — not after the process exits.
+
+**Why not just parse the buffered output after exit:** ffmpeg's `-progress pipe:1` is specifically designed to be consumed *while the process runs* — buffering it defeats the entire purpose (the caller would only learn "0% → 100%" at the moment the process already finished, which is a strictly worse experience than the current indeterminate baseline).
+
+**Constraints preserved:**
+- The ctx-cancellation kill path (`select { case <-ctx.Done(): ...SIGKILL... }`) is unchanged — cancellation (both timeout-driven and, new in v1.9, user-cancel-driven) still kills the whole process group exactly as today.
+- stderr capture for diagnostics (`terminalVipsSignatures`-style substring classification) is unaffected — only stdout's wiring changes for engines that opt into streaming.
+
+**Trade-offs:** A second, parallel exec path in `exec.go` (`runCommand` and `runCommandStreaming`) rather than one unified function — acceptable and consistent with keeping non-progress-reporting engines' code paths completely untouched (zero regression risk to libvips/LibreOffice/Chromium/whisper's transcribe stage, which are already production-hardened and audited).
+
+### Pattern 4: Cancel signal — fast pub/sub path with a guaranteed correctness backstop
+
+**What:** Cancellation needs to reach *one specific, currently-running* worker process/goroutine out of a horizontally-scaled, KEDA-autoscaled fleet — the API process has no direct handle on which replica (or whether any replica) is running a given job.
+
+**Design (two layers, deliberately redundant):**
+
+1. **Fast path (best-effort, low-latency):** `POST /v1/jobs/{id}/cancel` first performs the guarded DB transition (`queued/active → canceled`, via `Repo.Cancel` → existing `transition()`), then publishes the job id (fire-and-forget) to a single shared Redis pub/sub channel, e.g. `job:cancel`, on the *same* Redis instance asynq already uses. Every engine worker process subscribes to this channel once at startup and keeps an in-memory `map[uuid.UUID]context.CancelFunc` populated for whatever job(s) it is currently `process()`-ing (`WORKER_CONCURRENCY`-bounded, so the map is always small). On a matching message, the worker calls the stored `CancelFunc()`, which cancels `attemptCtx` — flowing, completely unchanged, into `runCommand`'s existing `ctx.Done()` → `SIGKILL(-pid)` branch. A message for a job this particular worker replica is not running is a harmless no-op map-miss (every replica subscribes to the same channel; there is no need to route the message to "the right" replica — the map lookup does that for free).
+2. **Correctness backstop (guaranteed, not just best-effort):** the Redis publish can be silently lost (no subscriber connected at that instant, a Redis blip, a message published a heartbeat before the worker even registered the job in its map). This must never allow a canceled job to be reported back to the client as `done`. It doesn't, because of the **existing guarded-transition allow-list**: once the DB row is `canceled`, the row is no longer in `{queued, active}` — `MarkDone`'s and `MarkFailed`'s `transition()` calls (`allowedFrom = []string{StatusActive}` / `{StatusQueued, StatusActive}`) will both **reject** any attempt by a worker that never received the cancel signal and runs the job to completion. The worker's existing `asynq.SkipRetry` idiom (`"already active/done/canceled — let asynq drop it rather than loop"`, already present verbatim in every `HandleXConvert`'s `MarkActive` error path) already anticipates exactly this outcome. **No new guard code is needed for this half of the backstop — it falls out of the transition allow-list that already exists.**
+
+**Worst case if the fast path is entirely missed:** a canceled job's engine process (ffmpeg, LibreOffice, etc.) runs to completion wastefully, consuming CPU/timeout budget that would otherwise have been reclaimed instantly — but it can **never** flip the row back to `done`/`active`, never re-fires a `done` webhook, and never corrupts client-visible state. This is an accepted, bounded, and precedented shape of residual risk in this codebase (mirrors the accepted `file://` residual and the PDF/A veraPDF-cost precedent already logged in Key Decisions) — worth flagging explicitly to the roadmap as a deliberate trade-off, not an oversight.
+
+**New terminal classification:** `context.Canceled` (distinct from `context.DeadlineExceeded`, which every existing `isXTerminal` already handles or deliberately doesn't) must be added as a top-level check in the shared `isTerminal()` — classified terminal (`SkipRetry`), but the handler must **skip the `MarkFailed` call** entirely on this path (status is already `canceled`; calling `MarkFailed` would only generate a harmless-but-noisy illegal-transition error that the reconciler-style code elsewhere in this codebase already treats as an expected, non-alerting outcome — but it's cleaner to just not call it).
+
+**Trade-offs:** Introduces the first cross-worker Redis pub/sub usage in a codebase whose only prior Redis usage was asynq's own queue mechanics — a genuinely new operational primitive (subscription lifecycle per worker binary, at-least-once-is-not-guaranteed semantics). This is justified specifically because cancellation's whole value proposition is *speed* (a user pressing cancel expects the process-group kill within roughly a second, not "whenever the next poll interval fires") — a DB-poll-only fallback (each worker periodically re-checking `jobs.status` for its own in-flight job id) was considered and rejected as the *primary* mechanism because it reintroduces exactly the poll-latency trade-off pub/sub exists to avoid, though it remains available as a defense-in-depth secondary check (e.g., worker re-checks `jobs.status` every N seconds for its own in-flight job as an extra safety net independent of the pub/sub message, cheap given `WORKER_CONCURRENCY` is small).
+
+### Pattern 5: SSE endpoint stays stateless by polling Postgres, not subscribing to worker-internal state
+
+**What:** `GET /v1/jobs/{id}/events` lives in the `api` process (the only process a client talks to directly) and must remain horizontally scalable and stateless — any api replica must be able to serve any client's SSE connection, with no session affinity and no dependency on which worker replica (if any) is currently processing the job.
+
+**Recommended approach — DB polling, not a new worker→api channel:** the SSE handler runs a short ticker (1-2s) against `jobs.Get(ctx, id)` (already used by `handleGetJob`) for the SAME columns the throttled `UpdateProgress` writes populate, and emits an `event: progress` / `data: {...}` frame only when `progress_pct` or `status` actually changed since the last tick, closing the stream once `status` reaches a terminal value (`done`/`failed`/`canceled`).
+
+**Why this over a worker→api Redis pub/sub progress channel:** the project's own established architectural principle (documented in `.planning/PROJECT.md`'s Data Flow section) is that *"Redis/asynq holds only transient queue state... it is not consulted for job status"* — Postgres alone is the cross-process source of truth for job state. A worker-published `progress:{job_id}` pub/sub channel would be a second, competing source of live state that the api would need to reconcile with Postgres anyway (a client that connects to SSE a few seconds after a progress tick was published, with no message replay, would otherwise see nothing until the next tick — requiring a "poll once on connect, then subscribe" hybrid to avoid an initial blank frame). Given clients are trusted internal services (not thousands of concurrently-open public SSE connections), N api replicas each running a lightweight 1-2s poll per open connection is a negligible Postgres load and reuses 100% of the already-audited `Repo.Get` read path — zero new infrastructure, zero new consistency-reconciliation logic, and it directly satisfies the "stateless, horizontally-scalable api" constraint by construction (no per-connection worker affinity of any kind).
+
+**Trade-off flagged for the roadmap:** this gives a 1-2s progress latency ceiling on the SSE stream (in addition to the `progress` webhook event, which can be pushed the instant the throttled DB write happens — see the webhook path above, which has genuinely lower latency than SSE-via-poll since it's write-triggered, not poll-triggered). If sub-second SSE latency is later required, promoting to a Redis pub/sub-fed SSE handler is the natural follow-up — deliberately deferred, not because it's infeasible, but because polling is the simpler, already-precedented choice that satisfies the milestone's stated goal ("прозрачность и управляемость", not "sub-second telemetry").
 
 ## Data Flow
 
-### Video→transcode/extract/thumbnail (new av queue)
+### Progress write/read flow (new)
 
 ```
-POST /v1/jobs (file=video.mp4, target=mp4|mp3|jpg)
+ffmpeg (child process, -progress pipe:1)
+    ↓ (streamed, line-by-line, NOT buffered)
+runCommandStreaming (exec.go) → parses out_time_us/speed
+    ↓ (per-line callback)
+AVConverter.ConvertWithProgress's onProgress(ProgressUpdate)
+    ↓ (engine-agnostic, via ProgressReporter type-assertion)
+worker.process()'s throttled wrapper (>=1 tick per ~2s)
     ↓
-Sniff() misses (video isn't in the 12-byte table... except mp4/mov/avi ARE
-    now added there, Decision B) → detected="mp4"
-    ↓
-EngineFor("mp4","mp4"|"mp3"|"jpg") → AVConverter.Engine() → "av"
-    ↓
-Postgres-first double write: jobs row (engine="av", status=queued)
-    ↓
-EnqueueAVConvert → QueueAV (asynq.Unique keyed by job_id, AVUniqueTTL)
-    ↓
-av-worker: HandleAVConvert → MarkActive → process()
-    → enforceAVGuardBeforeConvert (duration + resolution probe, Decision D)
-    → AVConverter.Convert (single ffmpeg invocation, stage-aware terminal check)
-    → upload result → AddOutput → MarkDone
-    ↓
-webhook enqueue (if callback_url set) — unchanged, engine-agnostic
+jobs.Repo.UpdateProgress  →  UPDATE jobs SET progress_pct=..., eta_seconds=...
+                              WHERE id=$1 AND status='active'  (no lock, no job_events)
+    ↓ (Postgres is now the single source of truth for progress, same as status)
+   ┌─────────────────────────────┬───────────────────────────────────┐
+   │                             │                                     │
+GET /v1/jobs/{id} (poll)   GET /v1/jobs/{id}/events (SSE, DB-poll)   webhook `progress` event
+(reads jobs.progress_pct    (reads jobs.progress_pct on a 1-2s      (enqueued directly from the
+ directly, existing         ticker, streams on change)               throttle point above — lowest
+ Repo.Get path, extended)                                            latency of the three, reuses
+                                                                       existing HMAC/retry/dead-letter
+                                                                       webhook-delivery machinery)
 ```
 
-### Video→transcript (existing audio queue, Decision A)
+### Cancellation flow (new)
 
 ```
-POST /v1/jobs (file=video.mp4, target=txt|srt|vtt|json)
+client → POST /v1/jobs/{id}/cancel
     ↓
-Sniff() → detected="mp4" (same detection as above — content detection is
-    engine-agnostic, per-PAIR routing happens one step later)
+handleCancelJob: ownership check (mirrors handleGetJob's 404-not-403 discipline)
     ↓
-EngineFor("mp4","txt") → AudioConverter.Engine() (Pairs() extended,
-    Decision A) → "audio"
-    ↓
-Postgres-first double write: jobs row (engine="audio", status=queued)
-    ↓
-EnqueueAudioConvert → QueueAudio (existing queue, existing
-    AudioUniqueTTL/AUDIO_ENGINE_TIMEOUT=742s, UNCHANGED)
-    ↓
-audio-worker (existing container, unchanged image): HandleAudioConvert
-    → enforceAudioGuardBeforeConvert (existing AUDIO_MAX_DURATION_SECONDS
-        guard fires correctly — gated on job.Engine==EngineAudio, not on
-        source format, so zero code change needed here)
-    → AudioConverter.Convert: ffmpeg normalize (now also handles video
-        demux, -vn added) → whisper-cli transcribe (UNCHANGED)
-    → upload result → AddOutput → MarkDone
+jobs.Repo.Cancel(ctx, id)  →  transition(queued|active → canceled)   [DURABLE, guarded, job_events row written]
+    ↓ (only on transition SUCCESS)
+publish jobID → Redis `job:cancel` channel   [BEST-EFFORT, fire-and-forget]
+    ↓                                                    ↓ (if some worker IS running this job)
+API responds 200/202                          worker's in-memory map hit → cancelFunc()
+                                                          ↓
+                                               attemptCtx.Done() → runCommand's EXISTING
+                                               ctx.Done() branch → SIGKILL(-pid)  [UNCHANGED exec.go]
+                                                          ↓
+                                               process() returns wrapped context.Canceled
+                                                          ↓
+                                               isTerminal(): context.Canceled → terminal,
+                                               SkipRetry, do NOT call MarkFailed
+                                                          ↓ (independently, even if pub/sub was missed)
+                                               any later MarkDone/MarkFailed attempt is REJECTED
+                                               by transition()'s allow-list (row is no longer
+                                               queued/active) — CORRECTNESS BACKSTOP, no new code
 ```
 
 ### Key Data Flows
 
-1. **Same source, different queue depending on target** — `mp4→mp3` (av
-   queue, audio-extraction) and `mp4→txt` (audio queue, transcription) are
-   two independent `Registry` entries; there is no shared "video job" state
-   anywhere in Postgres or Redis, no cross-queue awareness, no chaining.
-   Each is a completely ordinary single-task job from the reconciler's,
-   webhook's, and metrics' point of view — they just happen to share a
-   `SourceFormat` value.
-2. **Reconciler recovery** — `reconciler.go`'s engine switch already fails
-   closed on an unrecognized `jobs.engine` value ("av"/"cad"/"archive"/
-   "probe" are explicitly named in the fail-closed comment as future
-   engines that must add their own case rather than fall through). Adding
-   `case convert.EngineAV: enqueueErr = s.enq.EnqueueAVConvert(...)` is a
-   two-line, low-risk addition to an already-designed-for-this switch.
+1. **Progress durability boundary:** progress lives ONLY in Postgres columns, never in `job_events` (too high-frequency for an append-only audit log) and never solely in Redis (Redis stays transient-queue-state-only, per the existing architectural principle).
+2. **Cancellation durability boundary:** the *decision* to cancel is durable the instant `Repo.Cancel`'s transition commits (before any signal is even published) — the pub/sub layer is purely a latency optimization for *executing* an already-durable decision, never the source of truth for whether a job is canceled.
 
 ## Scaling Considerations
 
-| Scale | Architecture Adjustments |
-|-------|--------------------------|
-| Current (internal clients, single-cluster) | One `av-worker` Deployment, KEDA scale-0→N→0 on `octoconv_queue_depth{queue="av"}`, mirrors audio's proven pattern exactly (Phase 33 evidence directly reusable as a template) |
-| If transcode volume dominates | `AV_WORKER_CONCURRENCY` and CPU/memory limits are the first knob (mirrors audio's `AUDIO_WORKER_CONCURRENCY=1` choice, driven by whisper's RSS footprint under a fixed cgroup budget — av's equivalent constraint is ffmpeg's CPU-bound transcode competing for the same 2-CPU limit; concurrency=1 is the safe starting assumption until measured otherwise) |
-| If thumbnail volume dominates and is retry-budget-starved by the shared transcode-sized `AV_ENGINE_TIMEOUT` | This is the one scenario where Decision C's "one shared timeout" tradeoff bites — revisit with real production metrics before building per-pair timeouts speculatively |
+| Concern | Current (single api, low job volume) | Growth (many concurrent SSE clients) | Growth (many workers, high cancel rate) |
+|---------|----------------------------------|--------------------------------------|------------------------------------------|
+| SSE polling load on Postgres | Negligible (one 1-2s ticker per open connection) | Bounded by client count, not job count — internal clients only, so this stays low; if it ever becomes a concern, switch the SSE source to Redis pub/sub fed by the same throttled write | N/A |
+| Progress write volume | One throttled UPDATE per job per ~2s, no lock contention | N/A | N/A |
+| `job:cancel` pub/sub fan-out | Every worker process receives every cancel message (map-miss is O(1) for non-matching jobs) | N/A | Scales fine — Redis pub/sub fan-out cost is proportional to subscriber count (bounded by worker replica count, which KEDA already caps), not job count |
+| Webhook `progress` event volume | One enqueue per throttled tick, reusing existing webhook-delivery infra (HMAC, retry, dead-letter) | N/A | If throttling is too aggressive relative to webhook queue capacity, widen the throttle interval (a config knob, not an architecture change) |
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Assuming "video" needs its own end-to-end pipeline
+### Anti-Pattern 1: Routing progress writes through `Repo.transition()`
 
-**What people do:** build a second whisper.cpp integration inside the av
-container because "video→transcript" sounds like a new capability.
+**What people might do:** Reuse the existing guarded-transition helper for progress "to stay consistent with the rest of the codebase."
+**Why it's wrong:** `transition()`'s `SELECT ... FOR UPDATE` + `job_events` insert exists to make *state-machine* changes safe and auditable. Progress isn't a state change (status stays `active`) and is far too high-frequency to log as an event — doing so would serialize every progress tick against real status transitions on the same row and bloat the append-only audit table by orders of magnitude for zero correctness benefit.
+**Do this instead:** A dedicated, non-locking, self-conditioning `UPDATE ... WHERE status='active'` (Pattern 1 above).
 
-**Why it's wrong:** it duplicates ~682MB of image weight, doubles the
-RTF-measurement/GO-NO-GO burden, and ignores that `ffmpeg -i <video>`
-already IS the audio-extraction step the existing `AudioConverter.Convert`
-performs — the "new capability" is entirely in `Pairs()`, not `Convert()`.
+### Anti-Pattern 2: Making `Converter.Convert` itself take a progress callback parameter
 
-**Do this instead:** extend `AudioConverter.Pairs()` (Decision A).
+**What people might do:** Add a `progress func(float64)` parameter directly to the existing `Convert(ctx, inPath, outPath, opts) error` method so "every converter has the same shape."
+**Why it's wrong:** Forces libvips/LibreOffice/Chromium/whisper's transcribe stage — none of which can report meaningful progress — to accept and ignore a parameter, widening a stable, audited interface for no functional gain on 3 of 5 engine classes, and every existing call site (including tests) would need updating.
+**Do this instead:** An additional, optional `ProgressReporter` interface (Pattern 2) that only the engines that can support it implement; `process()` type-asserts and falls back cleanly.
 
-### Anti-Pattern 2: Treating mkv/webm sniffing like mp4/mov/avi sniffing
+### Anti-Pattern 3: Treating a lost cancel pub/sub message as a bug to "fix" with delivery guarantees
 
-**What people do:** try to add `matchMKV`/`matchWebM` to `sniff.go`'s fixed
-12-byte-window `signatures` table, copying `matchHEIC`'s shape.
+**What people might do:** Reach for a durable queue (a new asynq task type, or Redis Streams with consumer groups) for cancel signaling "so no cancel is ever missed."
+**Why it's wrong:** Over-engineers a problem the guarded-transition allow-list already solves for free — a missed fast-path signal only wastes compute on a job whose result is discarded anyway (rejected on the eventual `MarkDone`/`MarkFailed` attempt); it can never produce an incorrect client-visible outcome. Adding delivery guarantees here spends real complexity (new task type, retry/backoff tuning, another queue to monitor) buying nothing beyond "the wasted compute window is shorter," which a periodic worker-side self-check (defense-in-depth re-poll of `jobs.status` for its own in-flight job) achieves far more simply.
+**Do this instead:** Fire-and-forget pub/sub for speed + the existing transition allow-list as the correctness backstop (Pattern 4).
 
-**Why it's wrong:** EBML's `DocType` element (the only reliable mkv/webm
-disambiguator) is not at a fixed offset — it's preceded by a variable
-number of variable-length preceding EBML elements. A fixed-offset matcher
-will silently misdetect or reject valid files depending on how many
-optional header elements a given encoder emitted.
+### Anti-Pattern 4: SSE endpoint holding per-connection worker state or requiring sticky sessions
 
-**Do this instead:** a bounded-peek, declared-length-aware parser mirroring
-`matchMP3`'s discipline (Decision B) — fail closed on anything past the
-bound, never grow/seek further.
-
-### Anti-Pattern 3: Sizing `AV_ENGINE_TIMEOUT` off the cheapest operation
-
-**What people do:** measure thumbnail extraction (fast, easy to test) and
-set `AV_ENGINE_TIMEOUT` based on that, then discover transcode jobs
-routinely time out and get misclassified.
-
-**Why it's wrong:** the milestone brief itself states transcode is 10-100×
-more expensive than thumbnail — sizing off the wrong end of that range
-means every real transcode job gets killed mid-attempt and (per
-`isAVTerminal`'s ffmpeg-timeout-is-terminal classification, mirroring
-audio's Key Decision 1) fails terminally instead of transiently, wasting
-the retry budget entirely.
-
-**Do this instead:** measure the worst-case transcode explicitly
-(`scripts/av-transcode-measure.sh`), same GO/NO-GO discipline as
-`scripts/audio-rtf-measure.sh`.
+**What people might do:** Have the SSE handler somehow "attach" to the specific worker instance processing the job (e.g., via a worker-assigned connection token) to get push-based updates without polling.
+**Why it's wrong:** Breaks the api's stateless/horizontally-scalable constraint — a client's SSE connection could land on any api replica via a load balancer, and workers are independently KEDA-scaled with no stable identity a client (or the api) can address.
+**Do this instead:** Any api replica polls the same Postgres row (Pattern 5) — trivially compatible with any load-balancing strategy, no affinity required.
 
 ## Integration Points
 
-### External Services
+### New Components (not modified — net-new)
 
-| Service | Integration Pattern | Notes |
-|---------|---------------------|-------|
-| `ffmpeg` (video decode/transcode/thumbnail/audio-extract) | Hardened `os/exec` via `runCommand` (process-group kill on timeout) — **identical** invocation discipline to the existing `ffmpegNormalizeArgs`/`ffprobeDurationArgs` | No new exec-hardening mechanism needed; `runCommand` is already engine-agnostic |
-| `ffprobe` (duration + resolution guard) | Same short-bound, separate-ctx-from-whole-attempt pattern as `audioProbeTimeout`/`ProbeDuration` | Resolution probe (Decision D) is a one-field extension of the exact same call shape |
+| Component | Purpose | Depends on |
+|-----------|---------|------------|
+| `internal/cancel` package | In-memory job→cancelFunc registry + Redis pub/sub subscribe/publish helpers | Redis (existing instance), `context` |
+| `db/migrations/0007_job_progress.sql` | Adds `jobs.progress_pct`, `jobs.eta_seconds`, `jobs.progress_updated_at` (all nullable) | none |
+| `jobs.Repo.UpdateProgress` | Non-locking progress write | new columns above |
+| `jobs.Repo.Cancel` | Guarded transition to `canceled` | existing `transition()` helper (zero new locking logic) |
+| `jobs.Repo.List` | Paginated, client-scoped job listing | existing `jobs_client_created_idx (client_id, created_at DESC)` — no new index needed |
+| `convert.ProgressReporter` | Optional capability interface | none (additive to `convert` package) |
+| `exec.runCommandStreaming` | Streaming-stdout variant of `runCommand` | `os/exec`, `syscall` (same as existing `runCommand`) |
+| `api.handleCancelJob`, `handleListJobs`, `handleJobEvents` | 3 new HTTP handlers/routes | `jobs.Repo` (Cancel/List/Get), `internal/cancel` (publish) |
+
+### Modified Components (existing — integration touches)
+
+| Component | Change | Why |
+|-----------|--------|-----|
+| `internal/worker.Handler.process` | Wrap `attemptCtx` in `context.WithCancel`; register/deregister in `internal/cancel`'s map; type-assert `ProgressReporter` | Needed for both cancel-signal delivery and progress plumbing |
+| `internal/worker` shared `isTerminal` | Add `context.Canceled` → terminal branch, skip `MarkFailed` on that path | Cancel must resolve to `SkipRetry` without clobbering the already-`canceled` row |
+| `internal/reconciler.FindWebhookGaps` | Widen `status IN (...)` to include `'canceled'` | So a canceled job's completion webhook (if any) isn't silently dropped by the gap-sweep the same way done/failed jobs already are covered |
+| `internal/worker.HandleWebhookDeliver` | New `job.Status == jobs.StatusCanceled` payload branch | Client-facing webhook contract needs a defined shape for canceled jobs (currently undefined — `done`/`failed` are the only two handled branches) |
+| `internal/api.handleGetJob` | Response gains `progress_pct` / `eta_seconds` fields (nullable — absent means indeterminate) | Core SEED-008 requirement |
+| `internal/api/routes.go` | Register the 3 new routes under existing `/v1/*` auth middleware | Consistency with every other `/v1/*` route (no new auth pattern) |
+| `convert.AVConverter`, `convert.AudioConverter` | Implement `ProgressReporter` (av: transcode/audio-extract/thumbnail all have known source durations already probed via `ProbeDuration`; audio: only the ffmpeg-normalize stage, not whisper-cli's transcribe stage) | These are the only two engine classes with a native, parseable progress stream |
 
 ### Internal Boundaries
 
 | Boundary | Communication | Notes |
 |----------|---------------|-------|
-| `internal/api` ↔ `internal/convert` (av) | `EngineFor(detected,target)` at job-creation time; opts dispatch switch gains an `EngineAV` case parallel to the existing `EngineAudio`/`EngineHTML`/default cases | No new coupling mechanism — same pattern as document/html/audio |
-| `internal/worker` ↔ `internal/convert` (av) | `Registry.Lookup` inside the engine-agnostic `process()` — `HandleAVConvert` is a thin wrapper choosing `isAVTerminal` and `queue.QueueAV` labels, structurally identical to `HandleAudioConvert` | `process()` itself needs one addition: the `enforceAVGuardBeforeConvert` gate, parallel to the existing `enforceAudioGuardBeforeConvert` call, both invoked unconditionally but internally gated on `job.Engine` |
-| `internal/reconciler` ↔ `internal/queue`/`internal/convert` (av) | `enqueuer` interface gains `EnqueueAVConvert`; engine switch gains `case convert.EngineAV` | The switch's `default` branch already documents "av/cad/archive/probe are out of scope this milestone... a future engine must add its own case" — this is that future engine arriving |
-| `av-worker` ↔ `audio-worker` (shared audio-queue routing for video→transcript) | **No direct communication** — they are only related by both consuming from the registry; `av-worker` never touches `QueueAudio` and `audio-worker` never touches `QueueAV` | This is the one relationship worth stress-testing explicitly in the build-order's integration phase: confirm a video-source, transcript-target job never lands in `av-worker`'s queue by accident (pair-disjointness test, Decision B) |
+| worker ↔ Postgres (progress) | Direct SQL, non-locking `UPDATE` | New write path, deliberately bypasses `transition()` |
+| api ↔ Postgres (progress read, list, cancel-transition) | Direct SQL via `jobs.Repo`, all existing connection pool | No new infrastructure |
+| api ↔ worker (cancel signal) | Redis pub/sub (`job:cancel`), fire-and-forget | First cross-worker pub/sub usage in the codebase; correctness does NOT depend on delivery (backstop via transition allow-list) |
+| worker ↔ Redis (progress) | **None** — progress never touches Redis; only cancel signaling does | Keeps the existing "Redis is transient queue state only" principle intact for progress, deliberately scoped the new pub/sub usage to cancel-only |
+| api ↔ client (SSE) | Long-lived HTTP response, DB-poll sourced | Stateless — no worker affinity, no session stickiness required |
+| worker ↔ webhook-worker (progress event) | Existing asynq `webhook` queue, unchanged delivery machinery | `progress` is just a new payload shape on the same delivery path as `done`/`failed`/`canceled` |
 
 ## Suggested Build Order
 
-Mirrors the audio engine's own four-phase shape (`Phase 30` standalone
-foundation → `Phase 31` async-contour wiring → `Phase 32` containerize +
-measure → `Phase 33` KEDA/helm parity), which is directly reusable as a
-template since av is architecturally the same kind of addition.
+1. **Schema migration** (`0007_job_progress.sql`: `progress_pct`, `eta_seconds`, `progress_updated_at`). Foundational — every other piece reads or writes these columns. Zero risk (additive, nullable columns).
+2. **Cancellation, end to end** (`Repo.Cancel` via existing `transition()`; `POST /v1/jobs/{id}/cancel`; `internal/cancel` package; worker's `context.WithCancel` wiring + `job:cancel` subscribe; `context.Canceled` branch in shared `isTerminal`; reconciler/webhook `canceled`-awareness). **Build this before progress** — it is self-contained, reuses the hardened `runCommand` SIGKILL path completely unchanged, has the clearest client-visible value, and its correctness backstop (the transition allow-list) is already fully present in the codebase today, so the riskiest new piece here is genuinely just the pub/sub plumbing, not a change to any converter or the exec contract.
+3. **`GET /v1/jobs` listing** (`Repo.List`, `handleListJobs`, route). Fully independent of both cancel and progress — no schema dependency, no Converter-contract change, reuses the existing `jobs_client_created_idx`. Can be built in parallel with step 2 by a different work-stream if desired, but is sequenced after schema purely for planning tidiness (both are "control-plane API surface" work).
+4. **Progress core** (`convert.ProgressReporter` interface; `exec.runCommandStreaming`; `AVConverter`/`AudioConverter` implementations parsing ffmpeg's `-progress pipe:1`; `worker.process()` throttled `UpdateProgress` wiring; `GET /v1/jobs/{id}` response gains `progress_pct`/`eta_seconds`). Sequenced after cancellation because it is the riskiest change (new exec-contract variant, new Converter capability, touches the hot conversion path of two production-hardened engine classes) — better to land the lower-risk, high-value cancel feature first and validate the `internal/cancel` package's Redis usage pattern before adding a second new capability on top of the same worker loop.
+5. **Live push** (SSE `GET /v1/jobs/{id}/events` DB-poll endpoint; webhook `progress` event type reusing the existing delivery pipeline). Built last since both are purely additive consumers of the progress data step 4 produces — there is nothing to push until `progress_pct` is actually being populated.
 
-**Phase 1 — AV foundation (standalone, NOT registered into `convert.Default`)**
-- `AVConverter` (`Pairs()`/`Convert()`/`Engine()==EngineAV`) for transcode,
-  audio-extract, thumbnail — three distinct ffmpeg argv builders, one
-  `Convert()` dispatching on target format (mirrors `whisperOutputFlag`'s
-  target-driven dispatch shape)
-- `AVOpts` closed-allowlist type (timecode for thumbnail; resolution/codec
-  preset for transcode) — mirrors `AudioOpts`/`HTMLOpts`
-- `matchMP4`/`matchMOV`/`matchAVI` added to `sniff.go`'s existing table
-- `avsniff.go`: bounded-peek EBML/DocType parser for mkv/webm (real parsing
-  work — budget it as such, not a one-line addition)
-- `AudioConverter.Pairs()` extended with video-container × transcript
-  targets; `ffmpegNormalizeArgs` gains explicit `-vn` for video sources
-- `ProbeDuration`-based `AV_MAX_DURATION_SECONDS` guard + new resolution
-  probe (Decision D) as standalone, unit-testable functions
-- Unit test: pair-disjointness between `AVConverter` and every other
-  registered converter (new test category, no prior precedent)
-- Fixture-based sniff tests against real ffmpeg-produced mp4/mov/mkv/webm/avi
-  samples (mirrors `30-01`'s audio-fixture test discipline)
-- **Registration deferred** — same scope-fence Phase 30 used for
-  `AudioConverter` (build and test in isolation before touching the live
-  registry/queue)
+## Open Questions / Roadmap Flags
 
-**Phase 2 — Async contour integration**
-- `EngineAV` constant; `Default.Register(AVConverter{})`
-- `TypeAVConvert`/`QueueAV`/`NewAVConvertTask`/`avRetrySchedule`/
-  `AVRetryDelay`/`AVUniqueTTL` in `internal/queue/queue.go` (mirrors
-  `Audio*` symbols exactly; `jobs_engine_check` needs **no migration** —
-  `'av'` is already allow-listed)
-- `isAVTerminal` (stage-aware, mirrors `isAudioTerminal`'s shape minus the
-  two-binary complexity) and `HandleAVConvert` in `internal/worker/worker.go`
-- `enforceAVGuardBeforeConvert` spliced into `process()`, gated on
-  `job.Engine == convert.EngineAV`
-- API routing: `handleCreateJob`'s enqueue switch and opts-dispatch switch
-  both gain an `EngineAV` case
-- Reconciler: `enqueuer` interface + engine switch gain the av case
-- `EnqueueAVConvert` on `queue.Client`
-- IN-02-style env-parity sweep: `AV_MAX_RETRY`/`AV_ENGINE_TIMEOUT`/
-  `AV_MAX_DURATION_SECONDS` must be added to **every**
-  `queue.NewClient()`-constructing service's env (api, worker,
-  document-worker, chromium-worker, audio-worker, av-worker,
-  webhook-worker×2 — nine services total once av joins)
-- Explicit integration test: a video-source/transcript-target job lands on
-  `QueueAudio`, not `QueueAV` (verifies Decision A end-to-end, not just at
-  the unit level)
-
-**Phase 3 — Containerize + measure**
-- `Dockerfile.av-worker` (ffmpeg + ca-certificates only, no whisper stage —
-  should land far below `audio-worker`'s 682MB)
-- `cmd/av-worker/main.go` (mirrors `cmd/audio-worker/main.go` minus
-  whisper-specific env)
-- `scripts/av-transcode-measure.sh`: GO/NO-GO measurement against the
-  worst-case supported transcode (largest resolution/duration/codec
-  combination this milestone intends to support) — mirrors
-  `scripts/audio-rtf-measure.sh`'s methodology, but measuring wall-clock
-  vs. transcode parameters rather than whisper's RTF concept specifically
-- Separately measure/verify: does video-source→transcript (routed to the
-  *existing* audio-worker, Decision A) meaningfully change whisper's
-  measured RTF assumption? If video demux overhead is non-negligible
-  relative to `AUDIO_ENGINE_TIMEOUT`'s existing margin, this surfaces here,
-  not as an afterthought
-- `docker-compose.yml`: `av-worker` service, resource limits matching the
-  measurement container, `stop_grace_period` = `AV_ENGINE_TIMEOUT` + margin
-  (mirrors `audio-worker`'s 762s pattern)
-- E2E tests (`internal/e2e`): transcode, audio-extract, thumbnail (av
-  queue) + video→transcript (audio queue, confirms Decision A live, not
-  just via unit test)
-
-**Phase 4 — KEDA/Helm parity**
-- `deployment-av-worker.yaml`/`scaledobject-av.yaml` (mirrors audio's
-  templates; WR-01 triad verbatim: `ignoreNullValues:"false"`,
-  `fallback.replicas:1`, retry-inclusive PromQL)
-- `values.yaml` `avWorker` section; `terminationGracePeriodSeconds` =
-  `AV_ENGINE_TIMEOUT` + margin
-- `QueueAV` added to the api's `NewQueueDepthCollector` call (five engine
-  queues + webhook, once av joins)
-- `scripts/keda-av-loadproof.sh` (mirrors `keda-audio-loadproof.sh`,
-  frozen-script discipline once it passes)
-- **No new KEDA proof needed for video→transcript** specifically — it
-  inherits the audio queue's already-proven scale-from-zero coverage
-  (Phase 33 evidence); only the integration test from Phase 2 needs to
-  confirm routing, not autoscaling behavior
-
-**Dependency notes:**
-- Phase 1 must fully precede Phase 2 (mirrors the audio milestone's own
-  "standalone before registered" scope fence — reduces the blast radius of
-  a half-wired engine touching the live registry).
-- The EBML sniffer (mkv/webm) is the single highest-uncertainty item in
-  Phase 1 — real parsing code, not a lookup table — and should be started
-  first within the phase so any surprises (e.g. real-world encoders
-  emitting DocType further into the stream than expected) surface early
-  rather than blocking Phase 2's integration test at the end.
-- Phase 3's transcode-timeout measurement gates Phase 4 the same way
-  audio's RTF measurement gated its own KEDA phase (`AV_ENGINE_TIMEOUT`
-  feeds `terminationGracePeriodSeconds` and the scale-down stabilization
-  window, both of which would need a second pass if the measured value
-  changes after Phase 4's templates are written).
+- **ETA formula precision:** recommend `ETA = (100 - pct) / speed_normalized_rate` derived from ffmpeg's own `speed=` field (e.g., `speed=2.5x` means 2.5s of source processed per wall-clock second) rather than a naive `elapsed * (100-pct)/pct` — the former reacts faster to speed changes mid-transcode. This needs to be pinned down in requirements/roadmap, not assumed here.
+- **`progress` webhook event opt-in:** should clients that already registered a `callback_url` automatically start receiving `progress` events, or does this need a new opt-in field (e.g., `progress_webhook: true`) to avoid silently changing existing integrations' webhook volume? Flag for requirements — this research treats it as reusing the existing delivery pipeline mechanically, but the *policy* (default-on vs. opt-in) is a product decision, not an architecture one.
+- **SSE latency ceiling (1-2s via DB poll)** — flagged above as an explicit, deliberate trade-off; revisit only if a future milestone's requirements demand sub-second push.
+- **Whisper-cli transcribe-stage progress**: whisper.cpp's CLI does not expose an equivalent `-progress pipe:1`-style machine-readable stream (not verified against the specific pinned v1.9.1 build in this research pass — flag for phase-specific research if audio progress reporting for the transcribe stage specifically becomes in-scope; the ffmpeg-normalize stage that precedes it does support it).
 
 ## Sources
 
-- Codebase: `internal/convert/convert.go`, `internal/convert/whisper.go`,
-  `internal/convert/audiosniff.go`, `internal/convert/audioduration.go`,
-  `internal/convert/audioopts.go`, `internal/convert/sniff.go`,
-  `internal/convert/converters.go`, `internal/queue/queue.go`,
-  `internal/worker/worker.go`, `internal/api/handlers.go`,
-  `internal/reconciler/reconciler.go`, `internal/db/migrations/0006_audio_engine.sql`,
-  `cmd/audio-worker/main.go`, `Dockerfile.audio-worker`, `docker-compose.yml`,
-  `deploy/chart/octoconv/templates/deployment-audio-worker.yaml`,
-  `deploy/chart/octoconv/templates/scaledobject-audio.yaml`,
-  `deploy/chart/octoconv/values.yaml`, `.planning/PROJECT.md`
-- [EBML specification (ietf-wg-cellar)](https://github.com/ietf-wg-cellar/ebml-specification/blob/master/specification.markdown) — EBML magic `0x1A45DFA3`, DocType element mechanism
-- [RFC 8794: Extensible Binary Meta Language](https://www.rfc-editor.org/rfc/rfc8794.html) — authoritative EBML structure spec
-- [Matroska Basics](https://www.matroska.org/technical/basics.html) — DocType `"matroska"` requirement
-- [The WebM Project — Container Guidelines](https://www.webmproject.org/docs/container/) — DocType `"webm"` convention
-- [ISO base media file format — Wikipedia](https://en.wikipedia.org/wiki/ISO/IEC_base_media_file_format) — `ftyp` brand mechanism, `isom`/`mp41`/`mp42` generic brands
-- [Complete List of all known MP4/QT 'ftyp' designations (ftyps.com)](https://www.ftyps.com/) — authoritative brand-code reference including `"qt  "` (QuickTime)
+- Codebase (HIGH confidence — direct reads): `internal/jobs/repo.go`, `internal/worker/worker.go`, `internal/convert/convert.go`, `internal/convert/exec.go`, `internal/convert/av.go`, `internal/convert/audioduration.go`, `internal/reconciler/reconciler.go`, `internal/webhook/{webhook,deliver}.go`, `internal/queue/queue.go`, `internal/db/migrations/{0001_init,0005_html_engine,0006_audio_engine}.sql`, `internal/api/handlers.go`, `cmd/api/main.go`, `.planning/PROJECT.md`.
+- [ffmpeg-kit Wiki: Pipe Support](https://github.com/arthenica/ffmpeg-kit/wiki/Pipe-Support) — MEDIUM confidence corroboration of `-progress pipe:1` streaming pattern.
+- [better-ffmpeg-progress (PyPI)](https://pypi.org/project/better-ffmpeg-progress/1.2.3/) — MEDIUM confidence corroboration of `out_time_us`/`speed` key names as consumed by an independent third-party implementation.
 
 ---
-*Architecture research for: OctoConv v1.8 AV Engine (video/ffmpeg)*
-*Researched: 2026-07-19*
+*Architecture research for: OctoConv v1.9 Job Progress & Control (integration milestone)*
+*Researched: 2026-07-24*
