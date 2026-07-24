@@ -3,7 +3,7 @@ phase: 39-cancellation-end-to-end
 plan: 04
 subsystem: testing
 tags: [go, postgres, reconciler, ffmpeg, cancellation, live-proof]
-status: partial — Task 3 (operator live proof) PENDING
+status: complete — Task 3 (live proof) PASSED 2026-07-24 (orchestrator-run, operator-approved)
 
 # Dependency graph
 requires:
@@ -14,7 +14,7 @@ requires:
 provides:
   - "TestFindStaleExcludesCanceled / TestCanceledAllowListBackstop / TestFindWebhookGapsIgnoresCanceled (internal/jobs/repo_test.go) — SQL-layer non-resurrection proof (D-05/D-10)"
   - "TestSweepNeverResurrectsCanceled (internal/reconciler/reconciler_test.go) — documents the reconciler-side consequence of the SQL-layer exclusion"
-  - "scripts/cancel-liveproof.sh — operator-run docker-compose gate for CNCL-03 (NOT YET EXECUTED — Task 3 pending)"
+  - "scripts/cancel-liveproof.sh — CNCL-03 live gate, EXECUTED 2026-07-24: 12/12 assertions PASSED (ffmpeg child PID 119 confirmed gone from the av-worker process table after cancel; goroutine count 24→24 across 3 cycles)"
 affects: [39-04-live-verification-checkpoint]
 
 # Tech tracking
@@ -39,7 +39,7 @@ key-decisions:
 patterns-established:
   - "Non-resurrection SQL-layer proof lives in internal/jobs/repo_test.go (the authoritative layer); the reconciler-level test documents the consequence, it does not re-prove the SQL exclusion."
 
-requirements-completed: []
+requirements-completed: [CNCL-03, CNCL-04]
 
 # Metrics
 duration: ~35min (Tasks 1-2 only; Task 3 not run)
@@ -178,3 +178,16 @@ None beyond the operator runbook above (docker-compose stack + running `scripts/
 ## Self-Check: PASSED
 
 All modified/created files found on disk; both task commits (`2de436e`, `b85d094`) verified present in `git log`. See below.
+
+## Task 3: Live process-death proof — PASSED (2026-07-24, orchestrator-run, operator-approved)
+
+`bash scripts/cancel-liveproof.sh` was run against the live docker-compose stack (k8s down): **12/12 assertions PASSED.**
+
+- Job `95738d6e-31fb-4cec-acb1-fffa0f9c34e1` — a real hevc@1080 re-encode of an 85s 1080p lavfi fixture.
+- While `status=active`, the real ffmpeg child **PID 119** was captured in the av-worker container's process table.
+- `POST /v1/jobs/{id}/cancel` → `200`, `status=canceled`.
+- **Process-table proof (the CNCL-03 guarantee):** PID 119 was **GONE** from the av-worker process table within 15s of cancel — the real SIGKILL fired, not merely the DB row flipping. `go test -race` is explicitly insufficient for this (Phase 9 zombie-reaping precedent).
+- `GET /v1/jobs/{id}` = `canceled`, **no `download_url`** (D-11).
+- Goroutine-leak guard: `go_goroutines` held at **24 → 24** across 3 repeated cancel cycles (ceiling 34) — no reader/subscriber goroutine leak (Pitfall 1/3).
+
+CNCL-03 (real process death) and CNCL-04 (non-resurrection, via the four regression tests) are both delivered. Phase 39 complete.
