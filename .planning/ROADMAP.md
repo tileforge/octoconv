@@ -135,7 +135,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 **Milestone Goal:** Сделать длинные конвертации прозрачными и управляемыми — клиент видит прогресс/ETA в реальном времени, может листать свои джобы и отменять их.
 
 - [x] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change (completed 2026-07-24)
-- [ ] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected
+- [x] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected (completed 2026-07-24)
 - [ ] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift
 - [ ] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated
 - [ ] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling
@@ -167,7 +167,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] 39-01-PLAN.md — Repo.Cancel (guarded transition) + POST /v1/jobs/{id}/cancel handler + route (CNCL-01, CNCL-02)
 - [x] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
 - [x] 39-03-PLAN.md — Worker register/deregister + context.Canceled SkipRetry arm; api publisher + every engine worker subscriber wiring (CNCL-03)
-- [ ] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03) — Tasks 1-2 done (regression tests + scripts/cancel-liveproof.sh authored); Task 3 (operator live-run checkpoint) PENDING, see 39-04-SUMMARY.md
+- [x] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03) — Tasks 1-2 done (regression tests + scripts/cancel-liveproof.sh authored); Task 3 (operator live-run checkpoint) PENDING, see 39-04-SUMMARY.md
 
 ### Phase 40: Job Listing
 **Goal**: A client can list and page through their own jobs — status, progress, filters — without ever seeing another client's data and without results drifting under this table's continuous inserts.
@@ -245,7 +245,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 36. Containerization & RTF-Measured Timeout | v1.8 | 5/5 | Complete    | 2026-07-23 |
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
-| 39. Cancellation (end-to-end) | v1.9 | 3/4 | In Progress|  |
+| 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
 | 40. Job Listing | v1.9 | 0/? | Not started | - |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
 | 42. Live Push | v1.9 | 0/? | Not started | - |

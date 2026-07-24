@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: executing
-stopped_at: 39-04 Tasks 1-2 done (2de436e, b85d094); Task 3 (live proof) PENDING operator checkpoint
-last_updated: "2026-07-24T16:27:49.706Z"
+status: ready_to_plan
+stopped_at: Phase 39 complete (4/4) — ready to discuss Phase 40
+last_updated: 2026-07-24T22:37:20.001Z
 last_activity: 2026-07-24
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 5
-  completed_plans: 4
+  completed_plans: 5
   percent: 20
 ---
 
@@ -21,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 39 — Cancellation (end-to-end)
+**Current focus:** Phase 40 — job listing
 
 ## Current Position
 
-Phase: 39 (Cancellation (end-to-end)) — EXECUTING
-Plan: 4 of 4
-Status: Tasks 1-2 of 39-04 complete (commits 2de436e, b85d094); Task 3 (checkpoint:human-verify, gate=blocking — operator-run scripts/cancel-liveproof.sh) PENDING. Plan NOT closed, Phase 39 NOT complete.
+Phase: 40
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-07-24
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 103 (all v1.0–v1.8)
+- Total plans completed: 107 (all v1.0–v1.8)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -78,7 +78,7 @@ Last activity: 2026-07-24
 | 36 | 5 | - | - |
 | 37 | 3 | - | - |
 | 38 | 1 | - | - |
-| 39 | TBD | - | - |
+| 39 | 4 | - | - |
 | 40 | TBD | - | - |
 | 41 | TBD | - | - |
 | 42 | TBD | - | - |
