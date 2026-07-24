@@ -58,28 +58,28 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 
 ## Traceability
 
-Populated during roadmap creation.
-
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PROG-01 | TBD | Pending |
-| PROG-02 | TBD | Pending |
-| PROG-03 | TBD | Pending |
-| PROG-04 | TBD | Pending |
-| PROG-05 | TBD | Pending |
-| CNCL-01 | TBD | Pending |
-| CNCL-02 | TBD | Pending |
-| CNCL-03 | TBD | Pending |
-| CNCL-04 | TBD | Pending |
-| JLIST-01 | TBD | Pending |
-| JLIST-02 | TBD | Pending |
-| PUSH-01 | TBD | Pending |
-| PUSH-02 | TBD | Pending |
+| PROG-01 | Phase 41 | Pending |
+| PROG-02 | Phase 41 | Pending |
+| PROG-03 | Phase 41 | Pending |
+| PROG-04 | Phase 41 | Pending |
+| PROG-05 | Phase 41 | Pending |
+| CNCL-01 | Phase 39 | Pending |
+| CNCL-02 | Phase 39 | Pending |
+| CNCL-03 | Phase 39 | Pending |
+| CNCL-04 | Phase 39 | Pending |
+| JLIST-01 | Phase 40 | Pending |
+| JLIST-02 | Phase 40 | Pending |
+| PUSH-01 | Phase 42 | Pending |
+| PUSH-02 | Phase 42 | Pending |
 
 **Coverage:**
 - v1 requirements: 13 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 13 ⚠️
+- Mapped to phases: 13 (roadmap created 2026-07-24, Phases 38-42)
+- Unmapped: 0 ✓
+
+**Note:** Phase 38 (Schema Foundation) carries no direct requirement mapping — it is the additive, zero-risk migration (`0007_job_progress.sql`) that Phase 40's denormalized read and Phase 41's progress/ETA writes depend on.
 
 ## Notes
 
@@ -89,4 +89,4 @@ Populated during roadmap creation.
 
 ---
 *Requirements defined: 2026-07-23*
-*Last updated: 2026-07-23 after v1.9 milestone definition*
+*Last updated: 2026-07-24 after v1.9 roadmap creation (Phases 38-42, 13/13 requirements mapped)*

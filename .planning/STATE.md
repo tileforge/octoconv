@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: planning
-last_updated: "2026-07-23T23:20:41.907Z"
-last_activity: 2026-07-23
+last_updated: "2026-07-24T09:00:00.000Z"
+last_activity: 2026-07-24
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,20 +20,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Milestone complete
+**Current focus:** v1.9 Job Progress & Control — Phase 38: Schema Foundation
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 38 (Schema Foundation) — Not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-07-23 — Milestone v1.9 started
+Status: Roadmap created (Phases 38-42), awaiting `/gsd:plan-phase 38`
+Last activity: 2026-07-24 — Roadmap created for v1.9, requirements traceability updated (13/13 mapped)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 102 (all v1.0–v1.7)
+- Total plans completed: 102 (all v1.0–v1.8)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -76,6 +76,11 @@ Last activity: 2026-07-23 — Milestone v1.9 started
 | 35 | 7 | - | - |
 | 36 | 5 | - | - |
 | 37 | 3 | - | - |
+| 38 | TBD | - | - |
+| 39 | TBD | - | - |
+| 40 | TBD | - | - |
+| 41 | TBD | - | - |
+| 42 | TBD | - | - |
 
 **Recent Trend:**
 
@@ -96,28 +101,17 @@ Last activity: 2026-07-23 — Milestone v1.9 started
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.8-specific decisions surfaced by research, to be recorded as Key Decisions before/at implementation:
+Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions surfaced by research, to be recorded as Key Decisions before/at implementation:
 
-- **Key Decision (resolved before roadmapping) — Video→transcript implementation path:** extend `AudioConverter.Pairs()` with video-container × transcript-target pairs, routing those jobs onto the existing `audio` queue/worker (`Engine()` stays `EngineAudio`); the ffmpeg audio-normalize stage already demuxes any container ffmpeg can decode, video or not. Rejected alternative: baking a second ffmpeg-extract→whisper-transcribe pipeline inside av-worker (duplicates ~400MB whisper.cpp+model image weight, doubles the RTF-measurement/GO-NO-GO burden, couples two CPU-bound classes' resource ceilings). Do NOT resolve this decision differently later — it is a hard input to Phase 35's routing and pair-disjointness test.
-- **Phase ordering — opts-allowlist before RTF measurement (Phases 34/35 before Phase 36):** a single RTF fixture does not generalize across video's codec × resolution × preset space the way it did for whisper's roughly content-invariant RTF; the `AVOpts` allowlist and the timeout measurement matrix must be designed together, sequenced, not independent tasks. Measuring first and opening opts later silently reintroduces this pitfall.
-- **Stage-aware terminal/transient classification cannot be copied from audio (Phase 35):** audio's `isAudioTerminal` treats ffmpeg-stage timeout as terminal because ffmpeg is audio's *cheap* normalize step; for video transcode, ffmpeg IS the expensive operation, so the classification must be re-derived per av feature (transcode: timeout stays transient; thumbnail/extract: closer to audio's terminal-on-timeout profile).
-- **New resource axis — disk-space/ephemeral-storage guard (Phase 36):** video decode/transcode has no prior codebase precedent for a disk-space ceiling (no earlier engine class needed one); must be sized explicitly during containerize/measure, not assumed-safe by analogy to CPU/RAM guards.
-- **FFmpeg decoder RCE surface — pin ffmpeg ≥8.1.2, not floating `apt-get install` (Phase 36):** a live June-2026 disclosure (CVE-2026-8461 "PixelSmash") achieved RCE via a 50KB crafted file against comparable services; this project has no existing dependency-advisory-tracking process — flagged as accepted-risk/tech-debt to revisit, not assumed durable after a one-time pin.
-- **Open question carried into planning — upload-size ceiling for video:** `MAX_UPLOAD_BYTES` is currently one global value enforced before content-type detection runs; video files are legitimately much larger than other engine classes' typical inputs, and raising the global ceiling weakens DoS posture for all other classes too. Must be an explicit named decision during Phase 34/36 planning, not an implicit side effect of picking a video-friendly number.
-- [Phase 36]: avDiskSafetyFactorDefault=3.0 is an explicit [ASSUMED] Claude's Discretion default, overridable via AV_DISK_SAFETY_FACTOR — No measured ffmpeg disk-usage ratio existed at Plan 01 time to derive a better default from
-- [Phase 36]: lavfi/testsrc/sine/wrapped_avframe + format/aformat/aresample/zlib/webp-muxer added to Dockerfile.av-worker's minimal ffmpeg build — beyond RESEARCH.md's flag list; required for the RTF measurement script's lavfi fixture synthesis AND for production audio-resample/png/webp-thumbnail paths, confirmed via live smoke test of the full av.go argv suite
-- [Phase 36]: audio-worker's own env block also needed the IN-02 AV_MAX_RETRY/AV_ENGINE_TIMEOUT parity pair (constructs queue.NewClient() too) -- caught by the plan's own grep-count-8 acceptance criterion before commit — IN-02 parity must hold across every queue.NewClient()-constructing process, not just the ones named in prose
-- [Phase 36]: AV_MAX_DURATION_SECONDS/AV_DISK_SAFETY_FACTOR excluded from IN-02 docker-compose parity — only av-worker's own process reads them; queue.NewClient() never touches either var, so parity does not apply
-- [Phase 36]: Worst-case RTF cell is hevc@1080 (p95=4.179133s), NOT VP9 as D-09 assumed -- HEVC dominates VP9 by 1.86x
-- [Phase 36]: Path B NO-GO lever selected: AV_MAX_DURATION_SECONDS lowered 14400s->90s, deriving AV_ENGINE_TIMEOUT=753s; Path A (VP9 tuning) rejected as ineffective
-- [Phase 36]: Passthrough residual disposition (b): resolution_height==0 re-encode bound to <=1080p source height, fail-closed reject, closing the hevc@2160p OOM-DoS vector
-- [Phase 36]: AV_WORKER_CONCURRENCY=1, memory=1g validated from measured peak-RSS/CPU-saturation data
-- [Phase 36]: Generalized enforceNoScalePassthroughBound -> enforceReencodeSourceBound: every re-encode (no-scale AND explicit resolution_height alike) bounded on BOTH source Height (>1080) and Width (>1920), closing CR-01/HI-01
-- [Phase 36]: ErrAVReencodeResolutionExceeded classified terminal in isAVTerminal (predecessor sentinel lacked this classification -- Rule 2 fix)
-- [Phase 37]: 37-01: av chart substrate cloned from audio precedent verbatim per 37-CONTEXT.md D-01..D-06 (grace 783s, non-null stabilization 900s, WR-01 triad, keda.av capacity parity); SC2 confirmed already-satisfied by Phase 35 collector, no code change
-- [Phase 37]: 37-02: two av live-proof gate scripts authored (keda-av-loadproof.sh SC3 scale-from-zero, keda-av-downscale-survival.sh SC4 downscale-survival) + values-loadproof.yaml keda.av.scaleDownStabilizationSeconds:15 override, statically verified; AVE-05 deliberately left incomplete pending Plan 03's live run
-- [Phase 37]: 37-03 retry: rebuilt octoconv-api:dev from current HEAD (stale pre-Phase-35 image was missing QueueAV in AllConvertQueues); Task 1 SC3 passed clean on first attempt, confirming this was the sole root cause of the prior BLOCKED run
-- [Phase 37]: 37-03 retry: fixed a second, independent live bug in keda-av-downscale-survival.sh (WR-05-class BUSY_POD jsonpath defect on kubectl v1.36.2, fixed via -o json | jq since this script is not one of the three frozen scripts); Task 2 SC4 then passed all 22 assertions on retry
+- **Progress writes bypass the guarded-transition lock by design (Phase 41):** `Repo.UpdateProgress` is a non-locking `UPDATE ... WHERE status='active'` with no `job_events` row — progress is high-frequency telemetry, not a state change; routing it through `transition()` would serialize it against real status changes and bloat the append-only audit log for zero benefit. Do not "simplify" this later by merging it into `transition()`.
+- **ffmpeg progress reporting is an optional `ProgressReporter` capability, not a widened `Converter` contract (Phase 41):** only `AVConverter`/`AudioConverter`'s ffmpeg-normalize stage implement it; libvips/LibreOffice/Chromium/whisper-cli's transcribe stage are untouched. `exec.runCommandWithProgress` is additive (fd-3 via `cmd.ExtraFiles`, parent write-end closed immediately after `Start()`), never a replacement for `runCommand`.
+- **Cancellation correctness lives entirely in Postgres, not asynq (Phase 39):** `Inspector.CancelProcessing` is a best-effort speed optimization only; the guarded `{queued,active}→canceled` transition allow-list is the authoritative backstop against the confirmed, unfixed asynq#987 retry-on-cancel race in the pinned v0.26.0. Do not rely on the handler's own `context.Canceled` check to stop retries.
+- **`internal/cancel` package (Phase 39) is new shared infrastructure:** in-memory `map[uuid.UUID]context.CancelFunc` registry + Redis pub/sub (`job:cancel`), imported by both `api` and every worker binary — purely a low-latency signal delivery mechanism, never the source of truth for whether a job is actually canceled.
+- **`GET /v1/jobs` pagination must be keyset, not offset (Phase 40):** offset pagination drifts under this table's continuous-insert load; keyset on `(created_at, id)` is a hard requirement, not a style preference.
+- **ffmpeg `out_time_ms` is microseconds, not milliseconds (Phase 41):** a well-known unfixed ffmpeg naming wart — must be verified against a real fixture captured from the pinned n8.1.2 binary before trusting the parser, not assumed from docs.
+- **Progress-pipe-to-exec wiring is its own live-gated verification track, separate from parsing logic (Phase 41, PROG-05):** a careless pipe-reader goroutine can leak forever if the parent's write-end fd copy isn't explicitly closed after `cmd.Start()`. Requires a live SIGKILL-mid-stream test asserting zero orphaned processes AND zero leaked goroutines — `go test -race` is insufficient (mirrors the Phase 9 zombie-reaping precedent).
+- **Webhook `progress` event is opt-in and best-effort single-attempt, never the durable retry/dead-letter contract (Phase 42, PUSH-02):** a stale progress delivery isn't worth chasing and would compete for retry budget with the terminal `done`/`failed` event.
+- **Zero new Go dependencies for v1.9:** SSE via stdlib `http.Flusher`; ffmpeg progress parsing via stdlib `os.Pipe`+`bufio.Scanner`; cancellation via already-pinned `asynq` v0.26.0 (`Inspector.CancelProcessing`/`TaskID`); pagination via plain parameterized `pgx` SQL.
 
 ### Quick Tasks Completed
 
@@ -129,30 +123,23 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.8-specific decisions 
 
 ### Pending Todos
 
-- ~~Plan Phase 34 (AV Engine Foundation)~~ — done; all 3 plans executed and code-reviewed (2026-07-20).
-
-**Hard inputs to Phase 35 planning, all originating in 34-REVIEW.md / 34-REVIEW-FIX.md:**
-
-- **Wire `SniffVideo` into the handlers chain in the SAME change that registers `AVConverter`.** WR-02 was deliberately skipped in Phase 34 as a scope fence: mp4/mov/avi went live via the `signatures` table, but `SniffVideo` (the mkv/webm EBML path) has zero production callers, so mkv/webm are currently undetectable. Registering the converter without wiring the sniffer ships a converter for formats the service cannot recognize.
-- **Map `ErrAVTimecodeOutOfRange` to 4xx, not 5xx.** Operator-accepted contract decision (2026-07-20): an explicit out-of-range thumbnail timecode is a hard client error, deliberately NOT clamped (silently retargeting a client request is the CR-01/CR-02 defect class). No API-layer mapping exists yet — without it a client typo surfaces as an internal error.
-- **`AVOpts.Timecode` is `*float64`, accepted as-is (2026-07-20).** nil = unset → default `min(1.0, dur/2)`; explicit `0` = honored as frame 0; explicit out-of-range = hard error; `NaN`/`±Inf` rejected at parse. Note the default is duration-relative, not a fixed 1.0s — two sources with the same request yield frames at different positions. Accepted knowingly; revisit only if API docs need a deterministic rule.
-- **IN-01 (Info tier, unfixed) composes cleanly with the `probeVideoStreams` refactor** — fold it into the Phase 35 plan rather than leaving it loose.
+- Plan Phase 38 (Schema Foundation): additive nullable migration `0007_job_progress.sql` (`progress_pct`, `eta_seconds`, `progress_updated_at`, `source_duration_seconds`). Zero-risk, no research needed per SUMMARY.md — cheap, mechanical opener that unblocks Phase 40 (denormalized read) and Phase 41 (progress/ETA writes).
 
 ### Blockers/Concerns
 
-currently blocking. Sequencing carried into the roadmap:
+None currently blocking. Sequencing carried into the roadmap:
 
-- Hard-ordered spine: 34 (independent, first) → 35 → 36 (RTF go/no-go gate) → 37. Phase 36's measured RTF/`AV_ENGINE_TIMEOUT` is a hard input to Phase 37's KEDA cooldown/stabilization/grace-period tuning — keep this ordering.
-- Phase 34's `AVOpts` allowlist must be closed before Phase 36 measures the RTF matrix — the opts scope determines the measurement matrix bounds (codec × resolution × preset), not the other way around.
-- Phase 35's pair-disjointness test between `AVConverter.Pairs()` and `AudioConverter.Pairs()` is a hard requirement, not optional polish — this is the first time two converters in this codebase share a source-format family, and the registry's "later registration wins silently" semantics is a genuine hazard here.
-- `-protocol_whitelist file,crypto` must land on every ffmpeg/ffprobe invocation from Phase 34's first commit (day-one exec-hardening scope, not deferred) — closes an SSRF/LFI vector (HLS/concat/subtitle references embedded in file content) that the existing `"file:"`-prefix argv hardening does not cover.
-- Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7 history).
-- `MAX_UPLOAD_BYTES` (global 100 MiB default) will likely 413 legitimate video uploads — decide a per-format/engine ceiling deliberately during Phase 34/36, do not let it fail silently (carried from research Gaps to Address).
-- Phase 37 Plan 03 Tasks 1-2 (SC3 + SC4) RESOLVED and PASSING (2026-07-23 retry): rebuilding `octoconv-api:dev` from current HEAD fixed Task 1's prior STEP 6 blocker (stale image was missing QueueAV in AllConvertQueues); Task 2 then surfaced and fixed an independent WR-05-class jsonpath bug in `scripts/keda-av-downscale-survival.sh` (not one of the three frozen scripts) before passing all 22 assertions. See 37-03-SUMMARY.md. Task 3 (human-verify checkpoint) is still PENDING operator approval — AVE-05 remains open and `phase.complete`/`roadmap.update-plan-progress` must NOT run for Phase 37 until the operator approves.
+- Hard-ordered spine: 38 (schema, independent, first) → 39 (cancellation, validates the new `internal/cancel` Redis pub/sub pattern) → 40 (job listing, parallelizable with 39 in principle, but reads Phase 38's denormalized column) → 41 (progress core, riskiest, sequenced after 39 so the Redis cancel-signal pattern is proven) → 42 (live push, pure consumer of Phase 41's data).
+- Phase 41 must be split into two verification tracks per research: (a) ffmpeg `-progress` parsing logic vs a REAL captured n8.1.2 fixture (normal / unknown-duration / non-monotonic / >100% cases), and (b) the progress-pipe-to-exec wiring as its OWN live-gated plan with a SIGKILL-mid-stream test — do not conflate the two.
+- Phase 39's cancellation races span three existing subsystems simultaneously (guarded transitions, reconciler stale-sweep, asynq retry classification) — solve with mechanisms that already exist (transition allow-list, the "already active/done/canceled" `SkipRetry` idiom), not new ad-hoc code.
+- Phase 40's `GET /v1/jobs` needs a dedicated cross-client leak test (two real API keys), not inferred from the existing single-job 404 test — offset-drift, N+1, and SQL-layer `client_id` enforcement are all named pitfalls.
+- Re-check asynq `Inspector.CancelProcessing` behavior vs the open asynq#987 issue at the version actually pinned at Phase 39 implementation time (still v0.26.0 as of roadmapping; no upgrade expected to fix it).
+- Live-verify SSE behavior against the real reverse-proxy/ingress topology in Phase 42, not just localhost — proxy buffering is a named pitfall for long-lived streaming responses.
+- Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
 
 ## Deferred Items
 
-Acknowledged at v1.7 close (2026-07-18):
+Acknowledged at v1.8 close (2026-07-23):
 
 | Category | Item | Status |
 |----------|------|--------|
@@ -161,6 +148,12 @@ Acknowledged at v1.7 close (2026-07-18):
 | tech_debt | WR-05 keda-load-proof.sh BUSY_POD jsonpath defect (kubectl v1.36.2, `deletionTimestamp==""` vs absent key) | Accepted residual (29-REVIEW), empirically confirmed live in Phase 33; forward-fix of the frozen script recommended in a future phase |
 | tech_debt | Registry cold-pull time for 682MB audio image | Unmeasurable on OrbStack shared store (Pulling→Pulled ≈0 recorded); measure in a real-registry environment before production KEDA tuning is trusted; same open question now applies to the av-worker image (AVX-02, v2 requirement) |
 | tooling_noise | audit-open flags 29-HUMAN-UAT.md (status resolved) and quick task 260712-cqg (complete, SUMMARY present) | Both artifacts closed; audit parser counts them regardless |
+| v2_scope | AVX-01: Trim/crop as validated closed-opts (start/end timecodes) | Deferred to v2 — only on confirmed demand | v1.8 requirements definition (2026-07-19) |
+| v2_scope | AVX-02: Registry cold-pull measurement for heavy images (av-worker) | Deferred to v2 — carries forward the same unmeasured-on-OrbStack gap as the audio image | v1.8 requirements definition (2026-07-19) |
+| v2_scope | PROG-V2-01: Stage-based sub-progress in the reference frontend UI | Deferred to v2 | v1.9 requirements definition (2026-07-23) |
+| v2_scope | PROG-V2-02: Coarse elapsed-vs-timeout progress heuristic for non-ffmpeg engines | Rejected for v1.9 — `null` is the honest answer; revisit only on confirmed demand | v1.9 requirements definition (2026-07-23) |
+| v2_scope | CNCL-V2-01: Batch cancel (cancel many jobs in one call) | Deferred to v2 | v1.9 requirements definition (2026-07-23) |
+| v2_scope | PUSH-V2-01: `event`-discriminated payloads for ALL webhook types | Deferred to v2 — broader webhook contract-versioning conversation, out of scope for the single new `progress` event | v1.9 requirements definition (2026-07-23) |
 
 Items acknowledged and carried forward at milestone closes (see `.planning/milestones/*-MILESTONE-AUDIT.md` for full detail):
 
@@ -186,15 +179,13 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 | ops | Branch-protection required-checks (gate/race/docker-build) — manual GitHub UI step | Open operational follow-up | v1.4 close (2026-07-13) |
 | tech_debt | presets D-04 single-active-version: application-transactional only, no DB backstop | Accepted residual | v1.4 close (2026-07-13) |
 | seed | SEED-002: Decouple webhook delivery from any specific engine worker binary | ✓ Implemented (v1.3 Phase 16, WEBH-01) | v1.2 close (2026-07-10) |
-| v2_scope | AVX-01: Trim/crop as validated closed-opts (start/end timecodes) | Deferred to v2 — only on confirmed demand | v1.8 requirements definition (2026-07-19) |
-| v2_scope | AVX-02: Registry cold-pull measurement for heavy images (av-worker) | Deferred to v2 — carries forward the same unmeasured-on-OrbStack gap as the audio image | v1.8 requirements definition (2026-07-19) |
 
 ## Session Continuity
 
-Last session: 2026-07-23T20:41:01.984Z
-Stopped at: Phase 37 Plan 03 Tasks 1-2 PASS (SC3 scale-from-zero + SC4 downscale-survival live-proven) - Task 3 human-verify checkpoint PENDING operator approval, AVE-05 still open
-Resume file: .planning/phases/37-keda-helm-chart-integration/37-03-SUMMARY.md
+Last session: 2026-07-24T09:00:00.000Z
+Stopped at: v1.9 roadmap created (Phases 38-42), requirements traceability 13/13 mapped, awaiting `/gsd:plan-phase 38`
+Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Start Phase 38 with `/gsd:plan-phase 38`
