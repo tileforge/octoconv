@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: planning
-stopped_at: Phase 39 context gathered
-last_updated: "2026-07-24T15:02:24.132Z"
+status: executing
+stopped_at: Completed 39-01-PLAN.md
+last_updated: "2026-07-24T15:47:14.630Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 5
   completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
+  total_plans: 5
+  completed_plans: 2
   percent: 20
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 39 — cancellation (end to end)
+**Current focus:** Phase 39 — Cancellation (end-to-end)
 
 ## Current Position
 
-Phase: 39
-Plan: Not started
-Status: Ready to plan
+Phase: 39 (Cancellation (end-to-end)) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-07-24
 
 ## Performance Metrics
@@ -98,6 +98,7 @@ Last activity: 2026-07-24
 | Phase 37 P02 | 30min | 2 tasks | 3 files |
 | Phase 37 P03 | 40min | 2 tasks | 6 files |
 | Phase 38 P01 | 20min | 2 tasks | 1 files |
+| Phase 39 P01 | 25min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -115,6 +116,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - **Webhook `progress` event is opt-in and best-effort single-attempt, never the durable retry/dead-letter contract (Phase 42, PUSH-02):** a stale progress delivery isn't worth chasing and would compete for retry budget with the terminal `done`/`failed` event.
 - **Zero new Go dependencies for v1.9:** SSE via stdlib `http.Flusher`; ffmpeg progress parsing via stdlib `os.Pipe`+`bufio.Scanner`; cancellation via already-pinned `asynq` v0.26.0 (`Inspector.CancelProcessing`/`TaskID`); pagination via plain parameterized `pgx` SQL.
 - [Phase 38]: 0007_job_progress.sql adds progress_pct/eta_seconds/source_duration_seconds/progress_updated_at to jobs, nullable no-default with fail-closed CHECKs — Foundational additive schema unblocking Phase 40 read (progress_pct) and Phase 41 writes; verified on fresh and populated Postgres with zero application behavior change
+- [Phase 39]: Cancel reuses transition() exactly like MarkDone/MarkFailed (no new transition machinery, D-01)
+- [Phase 39]: Terminal-race classification is by re-read + isTerminalStatus, never by string-matching the illegal-transition error text
+- [Phase 39]: CancelPublisher is wired via a post-construction setter (SetCancelPublisher), not a NewServer parameter
 
 ### Quick Tasks Completed
 
@@ -185,9 +189,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T15:02:24.117Z
-Stopped at: Phase 39 context gathered
-Resume file: .planning/phases/39-cancellation-end-to-end/39-CONTEXT.md
+Last session: 2026-07-24T15:47:14.618Z
+Stopped at: Completed 39-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

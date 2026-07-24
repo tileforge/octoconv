@@ -17,8 +17,8 @@ Requirements for milestone v1.9. Each maps to a roadmap phase.
 
 ### Cancellation (CNCL)
 
-- [ ] **CNCL-01**: `POST /v1/jobs/{id}/cancel` transitions a `queued` or `active` job to `canceled` via the guarded transition; a job owned by another client or not found returns `404` (never `403`), mirroring the existing ownership model.
-- [ ] **CNCL-02**: Cancel is idempotent — an already-terminal job (`done`/`failed`/`canceled`) returns `200` with its current status and never overwrites a terminal outcome.
+- [x] **CNCL-01**: `POST /v1/jobs/{id}/cancel` transitions a `queued` or `active` job to `canceled` via the guarded transition; a job owned by another client or not found returns `404` (never `403`), mirroring the existing ownership model.
+- [x] **CNCL-02**: Cancel is idempotent — an already-terminal job (`done`/`failed`/`canceled`) returns `200` with its current status and never overwrites a terminal outcome.
 - [ ] **CNCL-03**: Cancelling an `active` job kills the real in-flight engine process group (ffmpeg/whisper/soffice/…) via the existing hardened kill path, verified the child process is actually dead — not just that the DB row reads `canceled`.
 - [ ] **CNCL-04**: A `canceled` job is terminal and non-retryable — the reconciler stale-sweep and asynq retry never resurrect it, backstopped by the Postgres guarded-transition allow-list (not the handler's own `context.Canceled` check, which the asynq#987 race can bypass).
 
@@ -65,8 +65,8 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 | PROG-03 | Phase 41 | Pending |
 | PROG-04 | Phase 41 | Pending |
 | PROG-05 | Phase 41 | Pending |
-| CNCL-01 | Phase 39 | Pending |
-| CNCL-02 | Phase 39 | Pending |
+| CNCL-01 | Phase 39 | Complete |
+| CNCL-02 | Phase 39 | Complete |
 | CNCL-03 | Phase 39 | Pending |
 | CNCL-04 | Phase 39 | Pending |
 | JLIST-01 | Phase 40 | Pending |
