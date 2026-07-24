@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: verifying
-stopped_at: Completed 38-01-PLAN.md
-last_updated: "2026-07-24T11:58:28.685Z"
+status: ready_to_plan
+stopped_at: Phase 38 complete (1/1) — ready to discuss Phase 39
+last_updated: 2026-07-24T12:02:38.950Z
 last_activity: 2026-07-24
 progress:
   total_phases: 5
@@ -21,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 38 — Schema Foundation
+**Current focus:** Phase 39 — cancellation (end to end)
 
 ## Current Position
 
-Phase: 38 (Schema Foundation) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
+Phase: 39
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-07-24
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 102 (all v1.0–v1.8)
+- Total plans completed: 103 (all v1.0–v1.8)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -77,7 +77,7 @@ Last activity: 2026-07-24
 | 35 | 7 | - | - |
 | 36 | 5 | - | - |
 | 37 | 3 | - | - |
-| 38 | TBD | - | - |
+| 38 | 1 | - | - |
 | 39 | TBD | - | - |
 | 40 | TBD | - | - |
 | 41 | TBD | - | - |

@@ -240,7 +240,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 35. Queue, Worker & Routing Integration | v1.8 | 7/7 | Complete    | 2026-07-22 |
 | 36. Containerization & RTF-Measured Timeout | v1.8 | 5/5 | Complete    | 2026-07-23 |
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
-| 38. Schema Foundation | v1.9 | 1/1 | Complete   | 2026-07-24 |
+| 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 0/? | Not started | - |
 | 40. Job Listing | v1.9 | 0/? | Not started | - |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
