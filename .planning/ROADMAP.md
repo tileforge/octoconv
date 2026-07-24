@@ -151,7 +151,8 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   2. `jobs` gains four nullable columns — `progress_pct`, `eta_seconds`, `progress_updated_at`, `source_duration_seconds` — with no `NOT NULL`/default that could break existing inserts from any current engine worker.
   3. `GET /v1/jobs/{id}` responses for existing jobs are unchanged (new columns not yet surfaced in the API layer) — confirms zero regression to shipped behavior.
   4. `canceled` requires no migration of its own: a direct DB insert/update proves the existing `jobs.status` CHECK constraint and Go `StatusCanceled` constant (both present since `0001_init.sql`) already accept it.
-**Plans**: TBD
+**Plans**: 1 plan
+- [ ] 38-01-PLAN.md — Additive migration 0007_job_progress.sql: four nullable progress/ETA/duration/throttle columns + fail-closed CHECKs, zero behavior change
 
 ### Phase 39: Cancellation (end-to-end)
 **Goal**: A client can cancel a `queued` or `active` job and trust that the real underlying engine process is dead — not just that the database row says `canceled` — with no resurrection by the reconciler or asynq's own retry mechanics.
