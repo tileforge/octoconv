@@ -16,6 +16,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/minio/minio-go/v7"
 
+	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/metrics"
@@ -387,6 +388,21 @@ func isAVTerminal(err error) bool {
 	return isTerminal(err) // no-converter / minio.NoSuchKey / shared fallthrough
 }
 
+// isCanceled reports whether err is (or wraps) context.Canceled -- the shape
+// process()'s attemptCtx.Err() takes when cancel.Default.Cancel(job.ID) fires
+// the registered CancelFunc early, distinct from a timeoutIsTerminal-style
+// context.DeadlineExceeded (the engine timeout firing on its own). Every
+// Handle*Convert checks isCanceled BEFORE its engine-scoped terminal
+// classifier (isTerminal/isDocumentTerminal/isHTMLTerminal/isAudioTerminal/
+// isAVTerminal): a canceled job must SkipRetry WITHOUT MarkFailed (D-07) --
+// the job is already `canceled` in Postgres via the API's guarded
+// transition, and re-failing it would be wrong (MarkFailed would also be
+// rejected by the allow-list, since `canceled` is not an allowed source for
+// any Mark* transition, D-05).
+func isCanceled(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
 // Handler processes image conversion tasks end to end.
 type Handler struct {
 	repo          *jobs.Repo
@@ -458,6 +474,16 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 
 	start := time.Now()
 	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
 		if isTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
@@ -550,6 +576,16 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 
 	start := time.Now()
 	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
 		if isDocumentTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
@@ -640,6 +676,16 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 
 	start := time.Now()
 	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
 		if isHTMLTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
@@ -735,6 +781,16 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 
 	start := time.Now()
 	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
 		if isAudioTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
@@ -877,6 +933,16 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 
 	start := time.Now()
 	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
 		if isAVTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
@@ -1049,8 +1115,19 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// reconciler's next EnqueueImageConvert create a second concurrent task
 	// for the same job (the T-03-10 double-processing race). Threading one
 	// attemptCtx through every step closes that gap (T-03-11).
-	attemptCtx, cancel := context.WithTimeout(ctx, h.engineTimout)
-	defer cancel()
+	attemptCtx, cancelFn := context.WithTimeout(ctx, h.engineTimout)
+	defer cancelFn()
+
+	// D-04: register the per-attempt CancelFunc BEFORE any download/convert/
+	// upload work so the job:cancel Subscriber (internal/cancel) can find and
+	// invoke it for the whole attempt window, and deregister on return
+	// (whichever way process() exits) so a later attempt for a different job
+	// id is never affected by a stale entry. Calling cancelFn early cancels
+	// attemptCtx -> runCommand's existing ctx.Done() SIGKILL path fires
+	// UNCHANGED (internal/convert/exec.go) -> attemptCtx.Err() surfaces as
+	// context.Canceled, distinct from the timeout's context.DeadlineExceeded.
+	cancel.Default.Register(job.ID, cancelFn)
+	defer cancel.Default.Deregister(job.ID)
 
 	inputs, err := h.inputKey(attemptCtx, job.ID)
 	if err != nil {

@@ -87,6 +87,38 @@ func TestIsTerminalTimeoutUnchanged(t *testing.T) {
 	}
 }
 
+// TestIsCanceled pins the classifier (D-07) that keeps a job:cancel-killed
+// attempt out of both MarkFailed and asynq retry: a context.Canceled error
+// (bare or wrapped, mirroring how attemptCtx.Err() surfaces through
+// exec.go's "%s killed: %w" and process()'s "convert: %w" wrapping) must
+// classify true, while a context.DeadlineExceeded (the DISTINCT engine-
+// timeout arm, timeoutIsTerminal) and a plain engine error must classify
+// false.
+func TestIsCanceled(t *testing.T) {
+	canceledCases := []error{
+		context.Canceled,
+		fmt.Errorf("%w: killed", context.Canceled),
+		fmt.Errorf("convert: %w", fmt.Errorf("vips killed: %w", context.Canceled)),
+	}
+	for _, err := range canceledCases {
+		if !isCanceled(err) {
+			t.Fatalf("expected isCanceled(%v) = true", err)
+		}
+	}
+
+	notCanceledCases := []error{
+		context.DeadlineExceeded,
+		fmt.Errorf("convert: %w", fmt.Errorf("vips killed: %w", context.DeadlineExceeded)),
+		errors.New("convert: exit status 1: some engine failure"),
+		nil,
+	}
+	for _, err := range notCanceledCases {
+		if isCanceled(err) {
+			t.Fatalf("expected isCanceled(%v) = false", err)
+		}
+	}
+}
+
 func TestIsDocumentTerminal(t *testing.T) {
 	// A DOCUMENT_ENGINE_TIMEOUT expiry (exec.go's process-group-kill shape,
 	// preserved through libreoffice.go and process()'s %w wrapping) IS
