@@ -725,6 +725,91 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// isTerminalStatus reports whether a job status is one of the terminal
+// outcomes (done/failed/canceled) that a cancel must never re-transition
+// away from (D-02).
+func isTerminalStatus(status string) bool {
+	switch status {
+	case jobs.StatusDone, jobs.StatusFailed, jobs.StatusCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// handleCancelJob transitions a queued or active job the caller owns to
+// canceled. Ownership mirrors handleGetJob exactly: a cross-client or
+// nonexistent job is reported as 404, never 403 (T-39-01). Per D-02/D-09 the
+// response is always 200 (never 202/403/409): an already-terminal job
+// returns its current status without re-transitioning (idempotent), and a
+// terminal-race (the job reaches done/failed between the read and the
+// transition) re-reads and returns the now-current status rather than
+// surfacing the illegal-transition error as a failure. The process kill
+// itself is asynchronous/best-effort via the nil-safe cancelPublisher seam
+// (Plan 03 wires the real publisher) — the request never blocks on it.
+func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	job, err := s.repo.Get(ctx, id)
+	if errors.Is(err, jobs.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load job")
+		return
+	}
+
+	// Ownership guard: identical to handleGetJob (T-39-01) — a job belonging
+	// to a different client is reported exactly as a truly-missing job.
+	client, _ := auth.ClientFromContext(ctx)
+	if job.ClientID != client.ID {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	// Idempotent: an already-terminal job is reported as-is, never
+	// re-transitioned (D-02) — Cancel is not even called.
+	if isTerminalStatus(job.Status) {
+		writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
+		return
+	}
+
+	if err := s.repo.Cancel(ctx, id); err != nil {
+		if errors.Is(err, jobs.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "job not found")
+			return
+		}
+		// D-02 terminal-race: the job reached done/failed between the read
+		// above and the transition. Re-read and report the now-current
+		// status rather than surfacing the illegal-transition error as a
+		// failure — never a 409/500 for this race.
+		current, getErr := s.repo.Get(ctx, id)
+		if getErr == nil && isTerminalStatus(current.Status) {
+			writeJSON(w, http.StatusOK, map[string]any{"job_id": current.ID, "status": current.Status})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to cancel job")
+		return
+	}
+
+	// Best-effort publish of the cancel signal (speed layer, D-09): a
+	// worker actively running this job may wake and kill the process
+	// sooner. Fire-and-forget — its error is ignored and never blocks the
+	// response, since correctness is already committed by Cancel above.
+	if s.cancelPublisher != nil {
+		_ = s.cancelPublisher.Publish(ctx, id)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": id, "status": jobs.StatusCanceled})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

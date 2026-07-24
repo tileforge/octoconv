@@ -20,6 +20,18 @@ type Repo interface {
 	Create(ctx context.Context, p jobs.CreateParams) (uuid.UUID, error)
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	Outputs(ctx context.Context, id uuid.UUID) ([]jobs.Output, error)
+	Cancel(ctx context.Context, id uuid.UUID) error
+}
+
+// CancelPublisher is the nil-safe seam handleCancelJob best-effort publishes
+// the cancel signal through (D-09): the speed layer that wakes a worker
+// actively running the job. Plan 03 injects the real Redis pub/sub
+// publisher via Server.SetCancelPublisher; until then it stays nil and
+// handleCancelJob simply skips the publish. Never load-bearing for
+// correctness — the guarded transition (Repo.Cancel) already committed the
+// canceled status before this is ever called.
+type CancelPublisher interface {
+	Publish(ctx context.Context, jobID uuid.UUID) error
 }
 
 // PresetRepo is the narrow, interface-segregated subset of the presets
@@ -117,6 +129,20 @@ type Server struct {
 	// NewServer (an unset/empty env var yields an empty, non-nil set --
 	// fail-closed, T-26-03).
 	operators map[uuid.UUID]struct{}
+	// cancelPublisher is the nil-safe CancelPublisher seam (D-09/Plan 03):
+	// nil by default, set via SetCancelPublisher after construction so
+	// NewServer's signature stays stable for existing callers
+	// (handlers_test.go, cmd/api/main.go).
+	cancelPublisher CancelPublisher
+}
+
+// SetCancelPublisher installs the CancelPublisher a successful cancel
+// best-effort publishes to (Plan 03 wires the real Redis pub/sub
+// implementation here). Never called is equivalent to a permanently-nil
+// publisher: handleCancelJob already skips the publish entirely in that
+// case.
+func (s *Server) SetCancelPublisher(p CancelPublisher) {
+	s.cancelPublisher = p
 }
 
 // Config configures a Server.

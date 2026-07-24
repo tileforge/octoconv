@@ -37,6 +37,15 @@ type fakeRepo struct {
 	outputs   []jobs.Output
 	createdID uuid.UUID
 	createErr error
+	// cancelErr is returned by Cancel; canceled records whether Cancel was
+	// invoked at all, so tests can assert the already-terminal short-circuit
+	// (D-02) never calls Cancel.
+	cancelErr error
+	canceled  bool
+	// getJobAfterCancel, when non-nil, is returned by Get on any call AFTER
+	// Cancel has been invoked once — simulating the D-02 terminal-race
+	// (the job reached done/failed between the initial read and Cancel).
+	getJobAfterCancel *jobs.Job
 }
 
 func (f *fakeRepo) Create(_ context.Context, p jobs.CreateParams) (uuid.UUID, error) {
@@ -50,10 +59,17 @@ func (f *fakeRepo) Create(_ context.Context, p jobs.CreateParams) (uuid.UUID, er
 	return f.createdID, nil
 }
 func (f *fakeRepo) Get(_ context.Context, _ uuid.UUID) (*jobs.Job, error) {
+	if f.canceled && f.getJobAfterCancel != nil {
+		return f.getJobAfterCancel, nil
+	}
 	return f.getJob, f.getErr
 }
 func (f *fakeRepo) Outputs(_ context.Context, _ uuid.UUID) ([]jobs.Output, error) {
 	return f.outputs, nil
+}
+func (f *fakeRepo) Cancel(_ context.Context, _ uuid.UUID) error {
+	f.canceled = true
+	return f.cancelErr
 }
 
 type fakeStorage struct {
@@ -1241,6 +1257,234 @@ func TestGetJob_CrossClient_NotFound(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp["error"] != "job not found" {
 		t.Fatalf(`error = %q, want "job not found" (identical to true-not-found)`, resp["error"])
+	}
+}
+
+// --- cancel tests (CNCL-01/CNCL-02, D-02/D-09, T-39-01/T-39-02) ---
+
+// assertNeverForbiddenOrConflict is a shared guard for every cancel test:
+// the handler must never return 403 or 409 (D-02/D-09) — cross-client is
+// 404-not-403, and any race/idempotency case is 200, never a conflict.
+func assertNeverForbiddenOrConflict(t *testing.T, code int) {
+	t.Helper()
+	if code == http.StatusForbidden || code == http.StatusConflict {
+		t.Fatalf("status = %d, must never be 403 or 409", code)
+	}
+}
+
+func TestCancelJob_QueuedOK(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["status"] != jobs.StatusCanceled {
+		t.Fatalf("status field = %v, want %q", resp["status"], jobs.StatusCanceled)
+	}
+	if !repo.canceled {
+		t.Error("expected Repo.Cancel to be called for a queued job")
+	}
+}
+
+func TestCancelJob_ActiveOK(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["status"] != jobs.StatusCanceled {
+		t.Fatalf("status field = %v, want %q", resp["status"], jobs.StatusCanceled)
+	}
+	if !repo.canceled {
+		t.Error("expected Repo.Cancel to be called for an active job")
+	}
+}
+
+// TestCancelJob_CrossClient_NotFound verifies T-39-01: canceling a job owned
+// by another client returns 404 with the identical message as true-not-found
+// — never 403.
+func TestCancelJob_CrossClient_NotFound(t *testing.T) {
+	id := uuid.New()
+	otherClientID := uuid.New()
+	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: otherClientID, Status: jobs.StatusQueued}}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["error"] != "job not found" {
+		t.Fatalf(`error = %q, want "job not found" (identical to true-not-found)`, resp["error"])
+	}
+	if repo.canceled {
+		t.Error("expected Repo.Cancel to NOT be called for a cross-client job")
+	}
+}
+
+func TestCancelJob_UnknownID_NotFound(t *testing.T) {
+	repo := &fakeRepo{getErr: jobs.ErrNotFound}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+uuid.New().String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestCancelJob_InvalidID_BadRequest(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/not-a-uuid/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
+// TestCancelJob_AlreadyTerminal_Idempotent verifies D-02: an already-done
+// job returns 200 with its ORIGINAL status and Repo.Cancel is NEVER called
+// (no re-transition attempted).
+func TestCancelJob_AlreadyTerminal_Idempotent(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["status"] != jobs.StatusDone {
+		t.Fatalf("status field = %v, want %q (original status, unchanged)", resp["status"], jobs.StatusDone)
+	}
+	if repo.canceled {
+		t.Error("expected Repo.Cancel to NOT be called for an already-terminal job")
+	}
+}
+
+// TestCancelJob_TerminalRace verifies D-02: when Cancel returns an illegal-
+// transition-style error because the job reached done between the read and
+// the transition, the handler re-reads and returns 200 with the now-current
+// status — never a 409/500.
+func TestCancelJob_TerminalRace(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{
+		getJob:            &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive},
+		cancelErr:         errors.New("illegal transition active -> canceled for job " + id.String()),
+		getJobAfterCancel: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+	}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp["status"] != jobs.StatusDone {
+		t.Fatalf("status field = %v, want %q (the now-current status)", resp["status"], jobs.StatusDone)
+	}
+	if !repo.canceled {
+		t.Error("expected Repo.Cancel to have been called")
+	}
+}
+
+// TestCancelJob_NoAuthHeader_Unauthorized mirrors
+// TestCreateJob_NoAuthHeader_Unauthorized: the cancel route requires auth
+// like every other /v1 route.
+func TestCancelJob_NoAuthHeader_Unauthorized(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs/"+uuid.New().String()+"/cancel", nil)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	assertNeverForbiddenOrConflict(t, rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if repo.canceled {
+		t.Error("must not cancel when unauthenticated")
+	}
+}
+
+// fakeCancelPublisher records Publish calls for TestCancelJob_PublishesOnSuccess.
+type fakeCancelPublisher struct {
+	published uuid.UUID
+	err       error
+}
+
+func (f *fakeCancelPublisher) Publish(_ context.Context, jobID uuid.UUID) error {
+	f.published = jobID
+	return f.err
+}
+
+// TestCancelJob_PublishesOnSuccess verifies the nil-safe CancelPublisher
+// seam: when set via SetCancelPublisher, a successful cancel best-effort
+// publishes the job id (D-09, Plan 03's speed-layer seam).
+func TestCancelJob_PublishesOnSuccess(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	pub := &fakeCancelPublisher{}
+	srv.SetCancelPublisher(pub)
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if pub.published != id {
+		t.Fatalf("published = %s, want %s", pub.published, id)
 	}
 }
 
