@@ -668,6 +668,44 @@ func TestSweepWebhookGapFindErrorBestEffort(t *testing.T) {
 	}
 }
 
+// TestSweepNeverResurrectsCanceled is a documentation-level regression for
+// the D-10 non-resurrection guarantee (CNCL-04): the AUTHORITATIVE proof that
+// a canceled job is excluded lives at the SQL layer in
+// internal/jobs/repo_test.go's TestFindStaleExcludesCanceled (FindStale's
+// WHERE clause structurally cannot match status='canceled'). This test
+// documents the reconciler-side consequence: because FindStale/
+// FindWebhookGaps never yield a canceled job, fakeStore.stale/webhookGaps
+// being empty (as they always are for an all-canceled backlog) means sweep()
+// issues zero Enqueue*/RequeueStale/webhook-gap-recovery calls — the
+// reconciler has no code path that could resurrect a canceled job even if one
+// were (incorrectly) handed to it.
+func TestSweepNeverResurrectsCanceled(t *testing.T) {
+	// stale and webhookGaps are deliberately empty: FindStale's SQL WHERE
+	// clause (status IN ('queued','active')) and FindWebhookGaps' WHERE
+	// clause (status IN ('done','failed')) both structurally exclude
+	// 'canceled', so a real Repo backed by Postgres would never populate
+	// these slices with a canceled job's id in the first place.
+	store := &fakeStore{recoveryCount: map[uuid.UUID]int{}}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	s.sweep(context.Background())
+
+	if len(enq.imageCalls) != 0 || len(enq.documentCalls) != 0 || len(enq.htmlCalls) != 0 || len(enq.avCalls) != 0 {
+		t.Fatalf("no engine enqueue should occur for an empty (all-canceled) stale set: image=%d document=%d html=%d av=%d",
+			len(enq.imageCalls), len(enq.documentCalls), len(enq.htmlCalls), len(enq.avCalls))
+	}
+	if store.requeueStaleCalls != 0 {
+		t.Fatalf("RequeueStale should not be called for an empty stale set, got %d calls", store.requeueStaleCalls)
+	}
+	if len(enq.webhookCalls) != 0 {
+		t.Fatalf("EnqueueWebhookDeliver should not be called for an empty webhook-gap set, got %d calls", len(enq.webhookCalls))
+	}
+	if len(store.webhookGapRecoveredCalls) != 0 {
+		t.Fatalf("RecordWebhookGapRecovered should not be called for an empty webhook-gap set, got %d calls", len(store.webhookGapRecoveredCalls))
+	}
+}
+
 func TestRunStopsOnContextCancel(t *testing.T) {
 	store := &fakeStore{recoveryCount: map[uuid.UUID]int{}}
 	enq := &fakeEnqueuer{}

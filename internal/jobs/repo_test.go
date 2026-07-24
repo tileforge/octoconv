@@ -848,3 +848,187 @@ func TestFindWebhookGaps(t *testing.T) {
 		t.Fatalf("detail action = %q, want %q", action, detailActionWebhookGapRecovered)
 	}
 }
+
+// TestFindStaleExcludesCanceled pins the D-10 non-resurrection guarantee at
+// the SQL layer: FindStale's WHERE clause only ever matches
+// status IN ('queued','active'), so a canceled job — even one backdated well
+// past both staleness cutoffs — must never be returned for reconciler
+// recovery. A same-run positive control (a genuinely stale queued job) proves
+// the exclusion is real, not an artifact of an empty result set.
+func TestFindStaleExcludesCanceled(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	// Positive control: a genuinely stale queued job that SHOULD be returned.
+	staleQueued, err := r.Create(ctx, CreateParams{
+		ClientID:  clientID,
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/fsc1/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create staleQueued: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET created_at = now() - interval '1 hour' WHERE id = $1`, staleQueued); err != nil {
+		t.Fatalf("backdate staleQueued created_at: %v", err)
+	}
+
+	// The job under test: activate then cancel it (active->canceled is an
+	// allowed transition per D-01), then backdate BOTH created_at and
+	// started_at well past both cutoffs so the only thing keeping it out of
+	// FindStale's result is the status='canceled' exclusion, not a fresh
+	// timestamp.
+	canceled, err := r.Create(ctx, CreateParams{
+		ClientID:  clientID,
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/fsc2/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create canceled: %v", err)
+	}
+	if err := r.MarkActive(ctx, canceled); err != nil {
+		t.Fatalf("MarkActive canceled: %v", err)
+	}
+	if err := r.Cancel(ctx, canceled); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx,
+		`UPDATE jobs SET created_at = now() - interval '1 hour', started_at = now() - interval '1 hour' WHERE id = $1`,
+		canceled,
+	); err != nil {
+		t.Fatalf("backdate canceled created_at/started_at: %v", err)
+	}
+
+	stale, err := r.FindStale(ctx, 90*time.Second, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("FindStale: %v", err)
+	}
+	got := map[uuid.UUID]string{}
+	for _, j := range stale {
+		got[j.ID] = j.Status
+	}
+	if got[staleQueued] != StatusQueued {
+		t.Fatalf("expected staleQueued (positive control) in stale results as %q, got %+v", StatusQueued, stale)
+	}
+	if _, ok := got[canceled]; ok {
+		t.Fatalf("D-10 violation: a canceled job (backdated past both cutoffs) was returned by FindStale: %+v", stale)
+	}
+}
+
+// TestCanceledAllowListBackstop pins D-05: the guarded-transition allow-list
+// is the AUTHORITATIVE non-resurrection mechanism, independent of any
+// context.Canceled classification in the worker (which the asynq#987 race can
+// bypass). After Cancel, MarkActive/MarkDone/MarkFailed must all reject the
+// job (canceled is not in any of their allowedFrom lists), and the job's
+// status/finished_at must be left untouched by the rejected attempts.
+func TestCanceledAllowListBackstop(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	assertBackstop := func(t *testing.T, id uuid.UUID) {
+		t.Helper()
+		before, err := r.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get before Mark* attempts: %v", err)
+		}
+		if before.Status != StatusCanceled {
+			t.Fatalf("precondition: job status = %q, want %q", before.Status, StatusCanceled)
+		}
+
+		if err := r.MarkActive(ctx, id); err == nil {
+			t.Fatalf("MarkActive on a canceled job must error, got nil")
+		}
+		if err := r.MarkDone(ctx, id); err == nil {
+			t.Fatalf("MarkDone on a canceled job must error, got nil")
+		}
+		if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil); err == nil {
+			t.Fatalf("MarkFailed on a canceled job must error, got nil")
+		}
+
+		after, err := r.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get after rejected Mark* attempts: %v", err)
+		}
+		if after.Status != StatusCanceled {
+			t.Fatalf("D-05 violation: job status resurrected to %q after Cancel", after.Status)
+		}
+		if before.FinishedAt == nil || after.FinishedAt == nil {
+			t.Fatalf("finished_at must be set on a canceled job: before=%v after=%v", before.FinishedAt, after.FinishedAt)
+		}
+		if !before.FinishedAt.Equal(*after.FinishedAt) {
+			t.Fatalf("finished_at changed by a rejected Mark* attempt: before=%v after=%v", *before.FinishedAt, *after.FinishedAt)
+		}
+	}
+
+	t.Run("from queued", func(t *testing.T) {
+		id, err := r.Create(ctx, CreateParams{
+			ClientID:  clientID,
+			Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+			Input: Input{ObjectKey: "uploads/cab1/0-in.png", Filename: "in.png", Format: "png"},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := r.Cancel(ctx, id); err != nil {
+			t.Fatalf("Cancel (from queued): %v", err)
+		}
+		assertBackstop(t, id)
+	})
+
+	t.Run("from active", func(t *testing.T) {
+		id, err := r.Create(ctx, CreateParams{
+			ClientID:  clientID,
+			Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+			Input: Input{ObjectKey: "uploads/cab2/0-in.png", Filename: "in.png", Format: "png"},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive: %v", err)
+		}
+		if err := r.Cancel(ctx, id); err != nil {
+			t.Fatalf("Cancel (from active): %v", err)
+		}
+		assertBackstop(t, id)
+	})
+}
+
+// TestFindWebhookGapsIgnoresCanceled pins the D-10 webhook-gap-sweep half of
+// the non-resurrection guarantee: a canceled job with a callback_url and zero
+// webhook_deliveries rows must never be treated as a delivery gap, since
+// FindWebhookGaps' WHERE clause only matches status IN ('done','failed').
+func TestFindWebhookGapsIgnoresCanceled(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID: clientID, Operation: "convert", Engine: "image",
+		SourceFormat: "png", TargetFormat: "webp", CallbackURL: "https://example.com/cb",
+		Input: Input{ObjectKey: "uploads/wgc1/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, id); err != nil {
+		t.Fatalf("backdate finished_at: %v", err)
+	}
+
+	gaps, err := r.FindWebhookGaps(ctx, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("FindWebhookGaps: %v", err)
+	}
+	for _, g := range gaps {
+		if g.ID == id {
+			t.Fatalf("D-10 violation: a canceled job with a callback_url was returned as a webhook gap: %+v", gaps)
+		}
+	}
+}
