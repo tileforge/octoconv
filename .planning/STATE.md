@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 39-01-PLAN.md
-last_updated: "2026-07-24T15:54:35.215Z"
+stopped_at: Completed 39-03-PLAN.md
+last_updated: "2026-07-24T16:04:35.252Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 5
-  completed_plans: 3
+  completed_plans: 4
   percent: 20
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 39 (Cancellation (end-to-end)) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-07-24
 
@@ -100,6 +100,7 @@ Last activity: 2026-07-24
 | Phase 38 P01 | 20min | 2 tasks | 1 files |
 | Phase 39 P01 | 25min | 2 tasks | 6 files |
 | Phase 39 P02 | 20min | 2 tasks | 3 files |
+| Phase 39 P03 | 15min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -122,6 +123,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 39]: CancelPublisher is wired via a post-construction setter (SetCancelPublisher), not a NewServer parameter
 - [Phase 39]: Reused existing go-redis client (already direct dep via asynq) for job:cancel pub/sub — zero new Go dependency
 - [Phase 39]: Registry.Cancel releases the mutex before invoking the stored CancelFunc to avoid any reentrancy deadlock risk
+- [Phase 39]: isCanceled checked as first branch in every Handle*Convert (D-07), independent of engine-scoped terminal classifiers
 
 ### Quick Tasks Completed
 
@@ -192,8 +194,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T15:52:35.789Z
-Stopped at: Completed 39-01-PLAN.md
+Last session: 2026-07-24T16:04:35.238Z
+Stopped at: Completed 39-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
