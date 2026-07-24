@@ -20,6 +20,7 @@ import (
 
 	"github.com/apaderin/octoconv/internal/api"
 	"github.com/apaderin/octoconv/internal/auth"
+	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -143,6 +144,14 @@ func main() {
 		ClientRateLimitRPM:           int(envInt64("RATE_LIMIT_CLIENT_RPM", 120)),
 		OperatorClientIDs:            operatorIDs,
 	})
+
+	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher
+	// seam (Plan 01) was nil-safe until now. Reuses the SAME rdb already
+	// constructed above for the /healthz pinger (same REDIS_ADDR the queue
+	// uses), so no second Redis connection is opened; the existing
+	// `defer rdb.Close()` above is still correct since publishing only
+	// happens while the API is serving requests, before shutdown begins.
+	srv.SetCancelPublisher(cancel.NewPublisher(rdb))
 
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {
