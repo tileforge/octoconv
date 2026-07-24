@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: "Roadmap created (Phases 38-42), awaiting `/gsd:plan-phase 38`"
-stopped_at: Phase 38 context gathered
-last_updated: "2026-07-24T09:41:08.801Z"
-last_activity: 2026-07-24 — Roadmap created for v1.9, requirements traceability updated (13/13 mapped)
+status: verifying
+stopped_at: Completed 38-01-PLAN.md
+last_updated: "2026-07-24T11:58:28.685Z"
+last_activity: 2026-07-24
 progress:
   total_phases: 5
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
+  percent: 20
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.9 Job Progress & Control — Phase 38: Schema Foundation
+**Current focus:** Phase 38 — Schema Foundation
 
 ## Current Position
 
-Phase: 38 (Schema Foundation) — Not started
-Plan: —
-Status: Roadmap created (Phases 38-42), awaiting `/gsd:plan-phase 38`
-Last activity: 2026-07-24 — Roadmap created for v1.9, requirements traceability updated (13/13 mapped)
+Phase: 38 (Schema Foundation) — EXECUTING
+Plan: 1 of 1
+Status: Phase complete — ready for verification
+Last activity: 2026-07-24
 
 ## Performance Metrics
 
@@ -97,6 +97,7 @@ Last activity: 2026-07-24 — Roadmap created for v1.9, requirements traceabilit
 | Phase 37 P01 | 25min | 3 tasks | 4 files |
 | Phase 37 P02 | 30min | 2 tasks | 3 files |
 | Phase 37 P03 | 40min | 2 tasks | 6 files |
+| Phase 38 P01 | 20min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -113,6 +114,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - **Progress-pipe-to-exec wiring is its own live-gated verification track, separate from parsing logic (Phase 41, PROG-05):** a careless pipe-reader goroutine can leak forever if the parent's write-end fd copy isn't explicitly closed after `cmd.Start()`. Requires a live SIGKILL-mid-stream test asserting zero orphaned processes AND zero leaked goroutines — `go test -race` is insufficient (mirrors the Phase 9 zombie-reaping precedent).
 - **Webhook `progress` event is opt-in and best-effort single-attempt, never the durable retry/dead-letter contract (Phase 42, PUSH-02):** a stale progress delivery isn't worth chasing and would compete for retry budget with the terminal `done`/`failed` event.
 - **Zero new Go dependencies for v1.9:** SSE via stdlib `http.Flusher`; ffmpeg progress parsing via stdlib `os.Pipe`+`bufio.Scanner`; cancellation via already-pinned `asynq` v0.26.0 (`Inspector.CancelProcessing`/`TaskID`); pagination via plain parameterized `pgx` SQL.
+- [Phase 38]: 0007_job_progress.sql adds progress_pct/eta_seconds/source_duration_seconds/progress_updated_at to jobs, nullable no-default with fail-closed CHECKs — Foundational additive schema unblocking Phase 40 read (progress_pct) and Phase 41 writes; verified on fresh and populated Postgres with zero application behavior change
 
 ### Quick Tasks Completed
 
@@ -183,9 +185,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T09:41:08.787Z
-Stopped at: Phase 38 context gathered
-Resume file: .planning/phases/38-schema-foundation/38-CONTEXT.md
+Last session: 2026-07-24T11:58:28.674Z
+Stopped at: Completed 38-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

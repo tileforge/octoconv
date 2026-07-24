@@ -134,7 +134,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 
 **Milestone Goal:** Сделать длинные конвертации прозрачными и управляемыми — клиент видит прогресс/ETA в реальном времени, может листать свои джобы и отменять их.
 
-- [ ] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change
+- [x] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change (completed 2026-07-24)
 - [ ] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected
 - [ ] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift
 - [ ] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated
@@ -152,7 +152,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   3. `GET /v1/jobs/{id}` responses for existing jobs are unchanged (new columns not yet surfaced in the API layer) — confirms zero regression to shipped behavior.
   4. `canceled` requires no migration of its own: a direct DB insert/update proves the existing `jobs.status` CHECK constraint and Go `StatusCanceled` constant (both present since `0001_init.sql`) already accept it.
 **Plans**: 1 plan
-- [ ] 38-01-PLAN.md — Additive migration 0007_job_progress.sql: four nullable progress/ETA/duration/throttle columns + fail-closed CHECKs, zero behavior change
+- [x] 38-01-PLAN.md — Additive migration 0007_job_progress.sql: four nullable progress/ETA/duration/throttle columns + fail-closed CHECKs, zero behavior change
 
 ### Phase 39: Cancellation (end-to-end)
 **Goal**: A client can cancel a `queued` or `active` job and trust that the real underlying engine process is dead — not just that the database row says `canceled` — with no resurrection by the reconciler or asynq's own retry mechanics.
@@ -240,7 +240,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 35. Queue, Worker & Routing Integration | v1.8 | 7/7 | Complete    | 2026-07-22 |
 | 36. Containerization & RTF-Measured Timeout | v1.8 | 5/5 | Complete    | 2026-07-23 |
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
-| 38. Schema Foundation | v1.9 | 0/? | Not started | - |
+| 38. Schema Foundation | v1.9 | 1/1 | Complete   | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 0/? | Not started | - |
 | 40. Job Listing | v1.9 | 0/? | Not started | - |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
