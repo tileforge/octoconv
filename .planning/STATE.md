@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 39-03-PLAN.md
-last_updated: "2026-07-24T16:04:35.252Z"
+stopped_at: 39-04 Tasks 1-2 done (2de436e, b85d094); Task 3 (live proof) PENDING operator checkpoint
+last_updated: "2026-07-24T16:27:49.706Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 5
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 Phase: 39 (Cancellation (end-to-end)) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Tasks 1-2 of 39-04 complete (commits 2de436e, b85d094); Task 3 (checkpoint:human-verify, gate=blocking — operator-run scripts/cancel-liveproof.sh) PENDING. Plan NOT closed, Phase 39 NOT complete.
 Last activity: 2026-07-24
 
 ## Performance Metrics
@@ -139,7 +139,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 
 ### Blockers/Concerns
 
-None currently blocking. Sequencing carried into the roadmap:
+None currently blocking the overall roadmap. Sequencing carried into the roadmap:
 
 - Hard-ordered spine: 38 (schema, independent, first) → 39 (cancellation, validates the new `internal/cancel` Redis pub/sub pattern) → 40 (job listing, parallelizable with 39 in principle, but reads Phase 38's denormalized column) → 41 (progress core, riskiest, sequenced after 39 so the Redis cancel-signal pattern is proven) → 42 (live push, pure consumer of Phase 41's data).
 - Phase 41 must be split into two verification tracks per research: (a) ffmpeg `-progress` parsing logic vs a REAL captured n8.1.2 fixture (normal / unknown-duration / non-monotonic / >100% cases), and (b) the progress-pipe-to-exec wiring as its OWN live-gated plan with a SIGKILL-mid-stream test — do not conflate the two.
@@ -148,6 +148,7 @@ None currently blocking. Sequencing carried into the roadmap:
 - Re-check asynq `Inspector.CancelProcessing` behavior vs the open asynq#987 issue at the version actually pinned at Phase 39 implementation time (still v0.26.0 as of roadmapping; no upgrade expected to fix it).
 - Live-verify SSE behavior against the real reverse-proxy/ingress topology in Phase 42, not just localhost — proxy buffering is a named pitfall for long-lived streaming responses.
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
+- Phase 39 Plan 04 Task 3 (checkpoint:human-verify, gate=blocking): scripts/cancel-liveproof.sh authored and its PID-capture logic live-verified in isolation, but the script has NOT been run end-to-end against a live docker-compose stack. CNCL-03 stays Pending until an operator runs it and confirms the PASS summary (see 39-04-SUMMARY.md Operator Runbook).
 
 ## Deferred Items
 
@@ -194,9 +195,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T16:04:35.238Z
-Stopped at: Completed 39-03-PLAN.md
-Resume file: None
+Last session: 2026-07-24T16:27:45.678Z
+Stopped at: 39-04 Tasks 1-2 done (2de436e, b85d094); Task 3 (live proof) PENDING operator checkpoint
+Resume file: .planning/phases/39-cancellation-end-to-end/39-04-SUMMARY.md
 
 ## Operator Next Steps
 

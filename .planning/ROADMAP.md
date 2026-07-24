@@ -167,7 +167,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] 39-01-PLAN.md — Repo.Cancel (guarded transition) + POST /v1/jobs/{id}/cancel handler + route (CNCL-01, CNCL-02)
 - [x] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
 - [x] 39-03-PLAN.md — Worker register/deregister + context.Canceled SkipRetry arm; api publisher + every engine worker subscriber wiring (CNCL-03)
-- [ ] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03)
+- [ ] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03) — Tasks 1-2 done (regression tests + scripts/cancel-liveproof.sh authored); Task 3 (operator live-run checkpoint) PENDING, see 39-04-SUMMARY.md
 
 ### Phase 40: Job Listing
 **Goal**: A client can list and page through their own jobs — status, progress, filters — without ever seeing another client's data and without results drifting under this table's continuous inserts.
