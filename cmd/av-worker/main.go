@@ -17,7 +17,9 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
+	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -45,6 +47,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("redis: %v", err)
 	}
+
+	// D-04 (Plan 03): run the job:cancel Subscriber against the SAME
+	// process-wide cancel.Default registry process()'s cancel.Default.
+	// Register/Deregister calls populate (internal/worker/worker.go) -- a
+	// received cancel cancels the exact in-flight attempt this worker is
+	// running for that job id (no-op otherwise, D-04). Bound to the process
+	// signal ctx so Run returns promptly on shutdown (T-39-09). Matters most
+	// here: av transcodes are the longest-running in-flight engine process.
+	cancelRDB := redis.NewClient(&redis.Options{Addr: redisOpt.Addr})
+	defer cancelRDB.Close()
+	go cancel.NewSubscriber(cancelRDB, cancel.Default).Run(ctx)
 
 	qc, err := queue.NewClient()
 	if err != nil {
