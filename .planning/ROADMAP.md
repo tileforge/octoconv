@@ -163,7 +163,11 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   2. Calling cancel again on an already-terminal job (`done`/`failed`/`canceled`) returns 200 with the job's current status and never overwrites a terminal outcome.
   3. Cancelling an `active` job actually kills the real in-flight engine process group (ffmpeg/whisper-cli/soffice/…) via the existing hardened `runCommand` SIGKILL path — verified by a live process-table check that the child is genuinely dead, not just that the DB row reads `canceled`.
   4. A `canceled` job is never resurrected: a dedicated regression test proves the reconciler's stale-sweep excludes `canceled` jobs, and `errors.Is`/`SkipRetry` classification stops asynq from retrying a canceled task — with the Postgres guarded-transition allow-list as the authoritative backstop, independent of the handler's own `context.Canceled` check (which the confirmed asynq#987 race can bypass).
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 39-01-PLAN.md — Repo.Cancel (guarded transition) + POST /v1/jobs/{id}/cancel handler + route (CNCL-01, CNCL-02)
+- [ ] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
+- [ ] 39-03-PLAN.md — Worker register/deregister + context.Canceled SkipRetry arm; api publisher + every engine worker subscriber wiring (CNCL-03)
+- [ ] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03)
 
 ### Phase 40: Job Listing
 **Goal**: A client can list and page through their own jobs — status, progress, filters — without ever seeing another client's data and without results drifting under this table's continuous inserts.
