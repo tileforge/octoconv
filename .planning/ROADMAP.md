@@ -165,7 +165,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   4. A `canceled` job is never resurrected: a dedicated regression test proves the reconciler's stale-sweep excludes `canceled` jobs, and `errors.Is`/`SkipRetry` classification stops asynq from retrying a canceled task — with the Postgres guarded-transition allow-list as the authoritative backstop, independent of the handler's own `context.Canceled` check (which the confirmed asynq#987 race can bypass).
 **Plans**: 4 plans
 - [x] 39-01-PLAN.md — Repo.Cancel (guarded transition) + POST /v1/jobs/{id}/cancel handler + route (CNCL-01, CNCL-02)
-- [ ] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
+- [x] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
 - [ ] 39-03-PLAN.md — Worker register/deregister + context.Canceled SkipRetry arm; api publisher + every engine worker subscriber wiring (CNCL-03)
 - [ ] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03)
 
@@ -245,7 +245,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 36. Containerization & RTF-Measured Timeout | v1.8 | 5/5 | Complete    | 2026-07-23 |
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
-| 39. Cancellation (end-to-end) | v1.9 | 1/4 | In Progress|  |
+| 39. Cancellation (end-to-end) | v1.9 | 2/4 | In Progress|  |
 | 40. Job Listing | v1.9 | 0/? | Not started | - |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
 | 42. Live Push | v1.9 | 0/? | Not started | - |

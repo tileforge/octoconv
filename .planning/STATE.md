@@ -4,13 +4,13 @@ milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
 stopped_at: Completed 39-01-PLAN.md
-last_updated: "2026-07-24T15:47:14.630Z"
+last_updated: "2026-07-24T15:54:35.215Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 5
   completed_phases: 1
   total_plans: 5
-  completed_plans: 2
+  completed_plans: 3
   percent: 20
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 39 (Cancellation (end-to-end)) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-24
 
@@ -99,6 +99,7 @@ Last activity: 2026-07-24
 | Phase 37 P03 | 40min | 2 tasks | 6 files |
 | Phase 38 P01 | 20min | 2 tasks | 1 files |
 | Phase 39 P01 | 25min | 2 tasks | 6 files |
+| Phase 39 P02 | 20min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 39]: Cancel reuses transition() exactly like MarkDone/MarkFailed (no new transition machinery, D-01)
 - [Phase 39]: Terminal-race classification is by re-read + isTerminalStatus, never by string-matching the illegal-transition error text
 - [Phase 39]: CancelPublisher is wired via a post-construction setter (SetCancelPublisher), not a NewServer parameter
+- [Phase 39]: Reused existing go-redis client (already direct dep via asynq) for job:cancel pub/sub — zero new Go dependency
+- [Phase 39]: Registry.Cancel releases the mutex before invoking the stored CancelFunc to avoid any reentrancy deadlock risk
 
 ### Quick Tasks Completed
 
@@ -189,7 +192,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T15:47:14.618Z
+Last session: 2026-07-24T15:52:35.789Z
 Stopped at: Completed 39-01-PLAN.md
 Resume file: None
 
