@@ -1,10 +1,14 @@
 package cancel
 
 import (
+	"context"
+	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // TestRegistryCancelInvokesRegisteredFunc asserts that Register(id, fn)
@@ -90,5 +94,60 @@ func TestDefaultIsUsableRegistry(t *testing.T) {
 
 	if calls != 1 {
 		t.Errorf("calls = %d, want 1", calls)
+	}
+}
+
+// TestPublishSubscribeRoundTrip is an integration test that publishes a job
+// id over a real Redis job:cancel channel and asserts a Subscriber running
+// against a shared Registry cancels the matching entry, then asserts Run
+// returns promptly once its ctx is canceled (no leaked goroutine, T-39-04).
+// Requires a live Redis (REDIS_ADDR); skipped otherwise, mirroring
+// internal/queue/queue_test.go's REDIS_ADDR skip.
+func TestPublishSubscribeRoundTrip(t *testing.T) {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		t.Skip("REDIS_ADDR not set; skipping integration test")
+	}
+
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	defer rdb.Close()
+
+	reg := NewRegistry()
+	id := uuid.New()
+	canceled := make(chan struct{})
+	reg.Register(id, func() { close(canceled) })
+	defer reg.Deregister(id)
+
+	sub := NewSubscriber(rdb, reg)
+	subCtx, subCancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		sub.Run(subCtx)
+		close(done)
+	}()
+
+	// Give the subscription time to establish before publishing -- a
+	// publish before Subscribe's SUBSCRIBE reaches Redis would be missed
+	// (fire-and-forget pub/sub has no backlog), same caveat this package's
+	// doc comment documents for the real system.
+	time.Sleep(200 * time.Millisecond)
+
+	pub := NewPublisher(rdb)
+	if err := pub.Publish(context.Background(), id); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	select {
+	case <-canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("CancelFunc was not invoked within timeout after Publish")
+	}
+
+	subCancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Subscriber.Run did not return within timeout after ctx cancellation")
 	}
 }
