@@ -117,6 +117,126 @@ func TestJobLifecycle(t *testing.T) {
 	}
 }
 
+func TestCancelQueued(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/cq/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusCanceled {
+		t.Fatalf("status = %q, want canceled", got.Status)
+	}
+	if got.FinishedAt == nil {
+		t.Fatalf("expected finished_at to be set: %+v", got)
+	}
+
+	var fromStatus, toStatus string
+	if err := r.pool.QueryRow(ctx,
+		`SELECT from_status, to_status FROM job_events WHERE job_id = $1 AND to_status = 'canceled' ORDER BY id DESC LIMIT 1`, id,
+	).Scan(&fromStatus, &toStatus); err != nil {
+		t.Fatalf("query job_events: %v", err)
+	}
+	if fromStatus != StatusQueued || toStatus != StatusCanceled {
+		t.Fatalf("from_status/to_status = %q/%q, want %q/%q", fromStatus, toStatus, StatusQueued, StatusCanceled)
+	}
+}
+
+func TestCancelActive(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/ca/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusCanceled {
+		t.Fatalf("status = %q, want canceled", got.Status)
+	}
+	if got.FinishedAt == nil {
+		t.Fatalf("expected finished_at to be set: %+v", got)
+	}
+
+	var fromStatus, toStatus string
+	if err := r.pool.QueryRow(ctx,
+		`SELECT from_status, to_status FROM job_events WHERE job_id = $1 AND to_status = 'canceled' ORDER BY id DESC LIMIT 1`, id,
+	).Scan(&fromStatus, &toStatus); err != nil {
+		t.Fatalf("query job_events: %v", err)
+	}
+	if fromStatus != StatusActive || toStatus != StatusCanceled {
+		t.Fatalf("from_status/to_status = %q/%q, want %q/%q", fromStatus, toStatus, StatusActive, StatusCanceled)
+	}
+}
+
+func TestCancelDoneRejected(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/cd/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.MarkDone(ctx, id); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+
+	if err := r.Cancel(ctx, id); err == nil {
+		t.Fatalf("expected illegal-transition error canceling a done job, got nil")
+	}
+
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusDone {
+		t.Fatalf("status = %q, want done (unchanged by rejected cancel)", got.Status)
+	}
+}
+
+func TestCancelNotFound(t *testing.T) {
+	r := newTestRepo(t)
+	if err := r.Cancel(context.Background(), uuid.New()); err != ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestMarkFailed(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()

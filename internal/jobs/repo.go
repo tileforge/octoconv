@@ -183,6 +183,22 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 	})
 }
 
+// Cancel transitions a queued or active job to canceled and stamps
+// finished_at, reusing the SAME guarded transition() helper as
+// MarkDone/MarkFailed — no new transition machinery (D-01). The allow-list
+// ({queued,active}) is the correctness backstop: it also makes Cancel
+// idempotent at the DB layer, since a job already done/failed/canceled is
+// simply outside allowedFrom and the illegal-transition error surfaces
+// instead of silently overwriting a terminal outcome. detail is nil (no
+// webhook is fired on cancel, D-08; no structured detail is needed).
+func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
+	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id)
+		return err
+	})
+}
+
 // RequeueStale requeues a job stranded in queued (lost enqueue) or active
 // (crashed worker / exhausted asynq retry budget) back to queued, via the
 // same guarded, row-locked transition every other status change goes through
