@@ -38,6 +38,16 @@ type Job struct {
 	CreatedAt    time.Time
 	StartedAt    *time.Time
 	FinishedAt   *time.Time
+	// ProgressPct / EtaSeconds / SourceDurationSeconds are the Phase 41
+	// denormalized progress columns (0007_job_progress.sql), written by the
+	// non-locking Repo.UpdateProgress/Repo.SetSourceDuration paths (D-03b) --
+	// deliberately outside the guarded transition() lifecycle. All three stay
+	// nil for every engine with no machine-readable progress signal
+	// (image/document/html, the whisper transcribe stage), and for an av job
+	// before its first tick lands (PROG-01/02/04).
+	ProgressPct           *int
+	EtaSeconds            *int
+	SourceDurationSeconds *float64
 }
 
 // Input is a row of the job_inputs table.

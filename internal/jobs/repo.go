@@ -343,10 +343,12 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	var optsJSON []byte
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
-		       callback_url, options, error_code, error_message, created_at, started_at, finished_at
+		       callback_url, options, error_code, error_message, created_at, started_at, finished_at,
+		       progress_pct, eta_seconds, source_duration_seconds
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
-		&cb, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt)
+		&cb, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
+		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -368,6 +370,47 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 		return nil, fmt.Errorf("unmarshal job options: %w", err)
 	}
 	return &j, nil
+}
+
+// UpdateProgress records one progress tick for an in-flight job via a
+// single, plain, non-locking UPDATE — deliberately OUTSIDE the guarded
+// transition() path (D-03b): progress is denormalized telemetry, not an
+// audited lifecycle change, so this never locks the row (no SELECT ...
+// FOR UPDATE) and never appends an event to the audit log. The WHERE clause
+// self-conditions on two invariants: only a currently-active job accepts a
+// write (a late/out-of-order tick for a job that has already finished, was
+// canceled, or was never activated is silently dropped), and the write is
+// monotonic (a pct lower than what is already stored is rejected, guarding
+// against a stale/retried tick resurrecting a lower value, T-41-09). Zero
+// rows affected is NOT an error — it is the expected, self-conditioned
+// no-op outcome for both cases above.
+func (r *Repo) UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE jobs SET progress_pct = $2, eta_seconds = $3, progress_updated_at = now()
+		WHERE id = $1 AND status = $4 AND (progress_pct IS NULL OR progress_pct <= $2)`,
+		id, pct, eta, StatusActive,
+	)
+	if err != nil {
+		return fmt.Errorf("update progress for job %s: %w", id, err)
+	}
+	return nil
+}
+
+// SetSourceDuration persists the ffprobe-derived source duration once per
+// job — the percent denominator for av/audio ffmpeg jobs (D-05). Write-once
+// idempotent via the source_duration_seconds IS NULL guard; like
+// UpdateProgress this is a plain, non-locking UPDATE outside the guarded
+// transition path (no row lock, no audit-log append).
+func (r *Repo) SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE jobs SET source_duration_seconds = $2
+		WHERE id = $1 AND status = $3 AND source_duration_seconds IS NULL`,
+		id, seconds, StatusActive,
+	)
+	if err != nil {
+		return fmt.Errorf("set source duration for job %s: %w", id, err)
+	}
+	return nil
 }
 
 // Inputs lists a job's inputs ordered by ordinal.
