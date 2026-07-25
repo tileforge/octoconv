@@ -424,6 +424,74 @@ func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 	return out, rows.Err()
 }
 
+// List returns one keyset-paginated page of clientID's jobs, newest-first
+// (created_at DESC, id DESC — D-09), optionally narrowed by f. client_id is
+// ALWAYS in the SQL WHERE (never a Go-side filter) — the load-bearing
+// cross-client-isolation guarantee (JLIST-01, T-40-01). Every filter/cursor
+// value is a bound $N parameter, never string-interpolated (T-40-02). This
+// is exactly one r.pool.Query call: the selected columns are everything a
+// listing item needs, so there is no per-row Outputs/Inputs/PresignGet
+// N+1 (D-07). It reuses jobs_client_created_idx; no new migration/index.
+//
+// limit+1 rows are fetched as a probe for whether a further page exists: if
+// more than limit rows come back, the extra row is dropped and the next
+// Cursor is built from the LAST RETURNED row; otherwise the next cursor is
+// nil (no further page).
+func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, cursor *Cursor, limit int) ([]JobSummary, *Cursor, error) {
+	query := `
+		SELECT id, status, engine, source_format, target_format, progress_pct,
+		       created_at, started_at, finished_at, error_code
+		FROM jobs WHERE client_id = $1`
+	args := []any{clientID}
+
+	if f.Status != "" {
+		args = append(args, f.Status)
+		query += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	if f.Engine != "" {
+		args = append(args, f.Engine)
+		query += fmt.Sprintf(" AND engine = $%d", len(args))
+	}
+	if cursor != nil {
+		args = append(args, cursor.CreatedAt, cursor.ID)
+		query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)-1, len(args))
+	}
+
+	args = append(args, limit+1)
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query job listing: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JobSummary
+	for rows.Next() {
+		var j JobSummary
+		var src, tgt, code *string
+		if err := rows.Scan(&j.ID, &j.Status, &j.Engine, &src, &tgt, &j.ProgressPct,
+			&j.CreatedAt, &j.StartedAt, &j.FinishedAt, &code); err != nil {
+			return nil, nil, fmt.Errorf("scan job summary: %w", err)
+		}
+		j.SourceFormat = deref(src)
+		j.TargetFormat = deref(tgt)
+		j.ErrorCode = deref(code)
+		out = append(out, j)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("query job listing: %w", err)
+	}
+
+	var next *Cursor
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		next = &Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	return out, next, nil
+}
+
 // transition performs a guarded status change plus an append to job_events in a
 // single transaction. It errors if the job is not in one of the allowed source
 // statuses (concurrency/idempotency guard). detail, when non-nil, is marshaled
