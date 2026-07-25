@@ -9,10 +9,10 @@ Requirements for milestone v1.9. Each maps to a roadmap phase.
 
 ### Progress & ETA (PROG)
 
-- [ ] **PROG-01**: `GET /v1/jobs/{id}` returns a `progress_pct` (0–100 int) for an in-flight av/audio job, driven by ffmpeg `-progress`; it is `null` (indeterminate) for engines with no machine-readable signal (image/document/html and the whisper transcribe stage) — progress is never fabricated.
-- [ ] **PROG-02**: The source media duration (already probed transiently by ffprobe for av/audio) is persisted on the job row as the percent denominator; non-ffmpeg jobs leave it null.
-- [ ] **PROG-03**: Progress is written through a non-locking update path that never contends on the guarded status-transition lock and never appends to the `job_events` audit log; writes are throttled by BOTH a time interval AND a ≥1% delta, and the terminal 100% write always lands.
-- [ ] **PROG-04**: `GET /v1/jobs/{id}` returns an `eta_seconds` (time remaining) derived from ffmpeg's `speed=` field with a warm-up/smoothing window; `null` when not derivable.
+- [x] **PROG-01**: `GET /v1/jobs/{id}` returns a `progress_pct` (0–100 int) for an in-flight av/audio job, driven by ffmpeg `-progress`; it is `null` (indeterminate) for engines with no machine-readable signal (image/document/html and the whisper transcribe stage) — progress is never fabricated.
+- [x] **PROG-02**: The source media duration (already probed transiently by ffprobe for av/audio) is persisted on the job row as the percent denominator; non-ffmpeg jobs leave it null.
+- [x] **PROG-03**: Progress is written through a non-locking update path that never contends on the guarded status-transition lock and never appends to the `job_events` audit log; writes are throttled by BOTH a time interval AND a ≥1% delta, and the terminal 100% write always lands.
+- [x] **PROG-04**: `GET /v1/jobs/{id}` returns an `eta_seconds` (time remaining) derived from ffmpeg's `speed=` field with a warm-up/smoothing window; `null` when not derivable.
 - [ ] **PROG-05**: The ffmpeg progress pipe preserves the hardened process-group-kill contract — a job that times out or is canceled mid-stream leaves zero orphaned engine processes AND zero leaked reader goroutines (live-verified, not just `go test -race`).
 
 ### Cancellation (CNCL)
@@ -60,10 +60,10 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PROG-01 | Phase 41 | Pending |
-| PROG-02 | Phase 41 | Pending |
-| PROG-03 | Phase 41 | Pending |
-| PROG-04 | Phase 41 | Pending |
+| PROG-01 | Phase 41 | Complete |
+| PROG-02 | Phase 41 | Complete |
+| PROG-03 | Phase 41 | Complete |
+| PROG-04 | Phase 41 | Complete |
 | PROG-05 | Phase 41 | Pending |
 | CNCL-01 | Phase 39 | Complete |
 | CNCL-02 | Phase 39 | Complete |

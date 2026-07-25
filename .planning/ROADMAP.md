@@ -195,7 +195,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 **Plans**: 4 plans
 - [x] 41-01-PLAN.md — Progress -progress block parser + percent/EMA-ETA math + seam contracts (TDD, fixture-tested)
 - [x] 41-02-PLAN.md — runCommandStreaming fd-3 leak-safe exec + AVConverter.ConvertWithProgress ramp (exec.go unchanged)
-- [ ] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
+- [x] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
 - [ ] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct)
 
 ### Phase 42: Live Push
@@ -253,7 +253,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
 | 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
-| 41. Progress Core | v1.9 | 2/4 | In Progress|  |
+| 41. Progress Core | v1.9 | 3/4 | In Progress|  |
 | 42. Live Push | v1.9 | 0/? | Not started | - |
 
 ---
