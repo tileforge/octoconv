@@ -29,7 +29,7 @@ Requirements for milestone v1.9. Each maps to a roadmap phase.
 
 ### Live Push (PUSH)
 
-- [ ] **PUSH-01**: `GET /v1/jobs/{id}/events` streams live progress via SSE with the same ApiKey auth + 404-ownership check as every other route; it is DB-poll sourced so any api replica can serve it (stateless), sends heartbeat comments to survive proxy idle-timeouts, and closes cleanly on terminal state or client disconnect without leaking goroutines.
+- [x] **PUSH-01**: `GET /v1/jobs/{id}/events` streams live progress via SSE with the same ApiKey auth + 404-ownership check as every other route; it is DB-poll sourced so any api replica can serve it (stateless), sends heartbeat comments to survive proxy idle-timeouts, and closes cleanly on terminal state or client disconnect without leaking goroutines. ✓ Live-verified 2026-07-25: scripts/sse-liveproof.sh 15/15 PASS on docker-compose — 33 event:progress frames across 33 distinct wall-clock timestamps (real incremental flush), 4 heartbeats, clean 0s terminal close, cross-client 404. Unit leak-safety by construction (no goroutine spawned in the handler).
 - [x] **PUSH-02**: An opt-in `progress` webhook event (new `event` discriminator field; enabled by a per-job flag alongside `callback_url`) delivers throttled progress on a best-effort single-attempt path — explicitly NOT the terminal event's bounded-retry/dead-letter contract, so stale progress never competes for the `done`/`failed` delivery budget.
 
 ## v2 Requirements
@@ -71,7 +71,7 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 | CNCL-04 | Phase 39 | Complete |
 | JLIST-01 | Phase 40 | Complete |
 | JLIST-02 | Phase 40 | Complete |
-| PUSH-01 | Phase 42 | Pending |
+| PUSH-01 | Phase 42 | Complete |
 | PUSH-02 | Phase 42 | Complete |
 
 **Coverage:**

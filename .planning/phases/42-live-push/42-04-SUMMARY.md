@@ -50,9 +50,17 @@ completed: 2026-07-25 (Task 1 only -- plan NOT closed)
 
 **Authored scripts/sse-liveproof.sh -- a docker-compose-live operator gate that submits a forced hevc@1080 ffmpeg re-encode, opens GET /v1/jobs/{id}/events over a real socket, and hard-gates on Content-Type: text/event-stream, >=2 event: progress frames at distinct wall-clock timestamps before the stream's one terminal frame, >=1 `: keepalive` heartbeat, a clean close shortly after the terminal frame, and a cross-client 404. Task 2 (the live operator run) has NOT been executed -- PUSH-01 stays Pending until an operator runs the script against a live docker-compose stack and confirms the PASS summary.**
 
-## Live Gate Result (Task 2) -- PENDING, OPERATOR-RUN
+## Live Gate Result (Task 2) -- PASS (operator-run 2026-07-25)
 
-**PUSH-01's live streaming gate has NOT been run yet.** Per the plan's frontmatter (`autonomous: false`) and this execution's explicit scope, Task 2 is a `checkpoint:human-verify` gate (`gate="blocking"`) owned by the orchestrator/operator, not this executor. `scripts/sse-liveproof.sh` is authored, `bash -n`/`shellcheck` clean, and executable -- but it has not been run against a live docker-compose stack.
+**PUSH-01's live streaming gate PASSED 15/15 on the live docker-compose stack.** A forced hevc@1080 re-encode streamed for 64s over a real socket: **33 `event: progress` frames across 33 DISTINCT wall-clock timestamps** before the one terminal frame `{"status":"done"}` — the decisive proof of real incremental flush (not one buffered write at close) that `httptest.ResponseRecorder` structurally cannot make. Plus **4 `: keepalive` heartbeats**, a **clean 0s close** after the terminal frame, and a **second client's ApiKey → 404** on the same job's `/events` (T-42-11 cross-client ownership). Terminal frame is status-only (no `download_url`, D-02).
+
+Two failures surfaced during the run — BOTH in the harness/environment, NOT the product (proven correct by a manual reproduction: `GET /events` returns 200 and streams `event: progress` frames for an owned job; 404 only cross-client):
+- First run: a transient 404 while the `api` container was mid-recreate during an image rebuild — resolved once the api deploy settled.
+- `head -n -1` (all-but-last-line) is a GNU coreutils-ism BSD/macOS `head` rejects (`illegal line count -- -1`); replaced with the portable `sed '$d'` (commit `c9f155b`), same harness-portability class as Phase 41's cancel/av-progress liveproof fixes.
+
+PUSH-01 is CLOSED in REQUIREMENTS.md. (Original authoring note preserved below for history.)
+
+### (historical) Task 2 was PENDING at authoring time
 
 ### Operator Runbook (to close PUSH-01)
 
