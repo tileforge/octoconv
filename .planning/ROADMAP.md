@@ -138,7 +138,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected (completed 2026-07-24)
 - [x] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift (completed 2026-07-25)
 - [x] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated (completed 2026-07-25)
-- [ ] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling
+- [x] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling (completed 2026-07-25)
 
 ## Phase Details
 
@@ -211,7 +211,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] 42-01-PLAN.md — Schema + opt-in foundation: 0008 migration + progress_webhook threaded through jobs/repo + parsed at job create (PUSH-02)
 - [x] 42-02-PLAN.md — SSE endpoint: DB-poll, emit-on-change GET /v1/jobs/{id}/events + route + env knobs + httptest leak/framing tests (PUSH-01)
 - [x] 42-03-PLAN.md — Progress-webhook delivery: event discriminator on both bodies + detached best-effort inline fire + av-worker deliverer/secret wiring (PUSH-02)
-- [ ] 42-04-PLAN.md — SSE live-proof: operator gate streaming a real av job through the full stack (PUSH-01, checkpoint)
+- [x] 42-04-PLAN.md — SSE live-proof: operator gate streaming a real av job through the full stack (PUSH-01, checkpoint)
 
 ## Progress
 
@@ -258,7 +258,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
 | 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
-| 42. Live Push | v1.9 | 3/4 | In Progress|  |
+| 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
 
 ---
 

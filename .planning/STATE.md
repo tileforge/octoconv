@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 42-03-PLAN.md
-last_updated: "2026-07-25T17:45:51.820Z"
+stopped_at: Completed 42-04-PLAN.md Task 1 (scripts/sse-liveproof.sh authored); Task 2 operator live-run checkpoint pending
+last_updated: "2026-07-25T17:59:04.246Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 15
-  completed_plans: 14
-  percent: 80
+  completed_plans: 15
+  percent: 100
 ---
 
 # Project State
@@ -144,6 +144,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 42]: PROGRESS_WEBHOOK_TIMEOUT default 1500ms, shorter than PROGRESS_MIN_INTERVAL_SECONDS's 2s, so at most one detached progress-webhook fire is in flight per job
 - [Phase 42]: Terminal 100% progress write stays a direct repo call bypassing the sink and fires no progress webhook (A2) -- the terminal completed webhook already covers job completion
 - [Phase 42]: cmd/av-worker reuses the existing WEBHOOK_SIGNING_SECRET verbatim (no new secret/rotation) and fails open (progress webhooks silently disabled) when unset
+- [Phase 42]: sse-liveproof.sh (42-04) classifies SSE frames by JSON body shape, not event name -- emitTerminal reuses the literal 'event: progress' name for its one terminal frame, so terminal-vs-progress classification checks for the absence of the progress_pct key, not a distinct event name
+- [Phase 42]: sse-liveproof.sh's heartbeat proof relies on sizing the forced re-encode's declared source duration (worst-cell hevc@1080 p95_RTF=4.179133s) so real transcode time comfortably exceeds several SSE_HEARTBEAT_INTERVAL (15s default) ticks, rather than requiring a docker-compose.yml env override outside this task's scope
 
 ### Quick Tasks Completed
 
@@ -170,6 +172,7 @@ None currently blocking the overall roadmap. Sequencing carried into the roadmap
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
 - Phase 39 Plan 04 Task 3 (checkpoint:human-verify, gate=blocking): scripts/cancel-liveproof.sh authored and its PID-capture logic live-verified in isolation, but the script has NOT been run end-to-end against a live docker-compose stack. CNCL-03 stays Pending until an operator runs it and confirms the PASS summary (see 39-04-SUMMARY.md Operator Runbook).
 - Phase 41 Plan 04 Task 2 (checkpoint:human-verify, gate=blocking): scripts/av-progress-liveproof.sh authored, `bash -n`/shellcheck clean, executable — but NOT yet run end-to-end against a live docker-compose stack. PROG-05 stays Pending until an operator runs it and confirms the PASS summary (see 41-04-SUMMARY.md Operator Runbook).
+- Phase 42 Plan 04 Task 2 (checkpoint:human-verify, gate=blocking): scripts/sse-liveproof.sh authored, bash -n/shellcheck clean, executable -- but NOT yet run end-to-end against a live docker-compose stack. PUSH-01 stays Pending until an operator runs it and confirms the PASS summary (see 42-04-SUMMARY.md Operator Runbook).
 
 ## Deferred Items
 
@@ -216,8 +219,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T17:43:26.452Z
-Stopped at: Completed 42-03-PLAN.md
+Last session: 2026-07-25T17:59:04.238Z
+Stopped at: Completed 42-04-PLAN.md Task 1 (scripts/sse-liveproof.sh authored); Task 2 operator live-run checkpoint pending
 Resume file: None
 
 ## Operator Next Steps
