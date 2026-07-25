@@ -208,7 +208,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   3. A job created with the opt-in progress-webhook flag (alongside `callback_url`) receives throttled progress webhook events carrying a new `event` discriminator field.
   4. A failed progress-webhook delivery is dropped as best-effort/single-attempt and never enters the bounded-retry/dead-letter queue reserved for the terminal `done`/`failed` event.
 **Plans**: 4 plans (2 waves)
-- [ ] 42-01-PLAN.md — Schema + opt-in foundation: 0008 migration + progress_webhook threaded through jobs/repo + parsed at job create (PUSH-02)
+- [x] 42-01-PLAN.md — Schema + opt-in foundation: 0008 migration + progress_webhook threaded through jobs/repo + parsed at job create (PUSH-02)
 - [ ] 42-02-PLAN.md — SSE endpoint: DB-poll, emit-on-change GET /v1/jobs/{id}/events + route + env knobs + httptest leak/framing tests (PUSH-01)
 - [ ] 42-03-PLAN.md — Progress-webhook delivery: event discriminator on both bodies + detached best-effort inline fire + av-worker deliverer/secret wiring (PUSH-02)
 - [ ] 42-04-PLAN.md — SSE live-proof: operator gate streaming a real av job through the full stack (PUSH-01, checkpoint)
