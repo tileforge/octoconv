@@ -10,7 +10,14 @@ OctoConv — внутренний асинхронный сервис конве
 
 ## Current State
 
-**v1.8 AV Engine (video/ffmpeg) — SHIPPED 2026-07-23.** Пятый engine-класс — обработка видео через ffmpeg в отдельном `av-worker` — в полном контуре: fail-closed magic-bytes валидация видео-контейнеров (mp4/mov/avi ftyp/RIFF + EBML mkv/webm) → standalone `AVConverter` (транскод / audio-extract / thumbnail, codec-allowlist stream-copy fast-path, каждый ffmpeg/ffprobe с `-protocol_whitelist file,crypto`) → async-пайплайн (очередь `av`, `cmd/av-worker`, stage-aware `isAVTerminal`, `AVUniqueTTL`) → контейнер с ffmpeg **n8.1.2 из исходников** и **RTF-замеренным** `AV_ENGINE_TIMEOUT=753s` (Path B lever от worst-case hevc@1080=4.179s p95; fail-closed re-encode source-bound ≤1920×1080 закрывает OOM-DoS, CR-01/HI-01) → KEDA scale-from-zero + N→N-1 downscale-survival **live-proven** (grace 783s honored, exit 0). Шестой conversion chain видео→транскрипт едет через существующий audio-воркер (не дублирует whisper.cpp). 18 планов; требования AVC-01..05 / AVO-01..03 / AVE-01..05 / AVT-01 validated.
+**v1.9 Job Progress & Control — SHIPPED 2026-07-25.** Длинные конвертации стали прозрачными и управляемыми, всё поверх существующего контура (Postgres lifecycle, hardened `runCommand`, webhook, asynq): аддитивная схема прогресса (`0007`/`0008`, zero behavior change) → **отмена end-to-end** (`POST /v1/jobs/{id}/cancel`, guarded `{queued,active}→canceled`, custom Redis pub/sub `job:cancel` + in-memory CancelFunc-registry, реальная смерть ffmpeg-процесса live-proven 12/12, non-resurrection) → **листинг** (`GET /v1/jobs`, client-scoped keyset-пагинация, opaque cursor, two-key leak-тест) → **progress core** (ffmpeg `-progress` через named-FIFO поверх разрешённого `file:`-протокола — не `pipe:`, `runCommandStreaming` leak-safe, exec.go byte-for-byte неизменен; non-locking throttled write, EMA-ETA; SIGKILL-mid-stream live-proven 40/40 — ноль orphaned + ноль leaked goroutines + frozen pct) → **live-push** (SSE `GET /v1/jobs/{id}/events` DB-poll leak-safe-by-construction, live-proven 15/15; opt-in HMAC progress-webhook из detached-горутины, никогда не в terminal retry/dead-letter бюджете). 15 планов, 13/13 требований (PROG/CNCL/JLIST/PUSH), 3 live-гейта.
+
+<details>
+<summary>v1.8 AV Engine (video/ffmpeg) — SHIPPED 2026-07-23</summary>
+
+Пятый engine-класс — обработка видео через ffmpeg в отдельном `av-worker` — в полном контуре: fail-closed magic-bytes валидация → standalone `AVConverter` (транскод / audio-extract / thumbnail, stream-copy fast-path) → async-пайплайн (очередь `av`, stage-aware `isAVTerminal`) → контейнер с ffmpeg **n8.1.2 из исходников** и **RTF-замеренным** `AV_ENGINE_TIMEOUT=753s` → KEDA scale-from-zero + downscale-survival live-proven. Требования AVC/AVO/AVE/AVT validated.
+
+</details>
 
 <details>
 <summary>v1.7 Audio Engine & Hardening — SHIPPED 2026-07-18</summary>
@@ -19,18 +26,9 @@ OctoConv — внутренний асинхронный сервис конве
 
 </details>
 
-## Current Milestone: v1.9 Job Progress & Control
+## Next Milestone: TBD
 
-**Goal:** Сделать длинные конвертации прозрачными и управляемыми — клиент видит прогресс/ETA в реальном времени, может листать свои джобы и отменять их.
-
-**Target features:**
-- **Progress %** (ядро, SEED-008) — процент выполнения на `GET /v1/jobs/{id}`; ffmpeg-driven (`-progress`) для av/audio, indeterminate-фолбэк для остальных движков; троттлинг записи в Postgres
-- **ETA / осталось времени** — из progress + elapsed + ffmpeg `speed`
-- **Live-push прогресса** — `progress` webhook-событие и/или SSE/streaming-эндпоинт (не только polling)
-- **Список джоб** — `GET /v1/jobs` (свои джобы: статус/прогресс/фильтры/пагинация)
-- **Отмена джобы** — `POST /v1/jobs/{id}/cancel` (прерывание in-flight через существующий hardened process-group-kill)
-
-**Key context:** всё поверх существующего контура (Postgres job lifecycle, hardened `runCommand` exec с Setpgid+SIGKILL, webhook-доставка, asynq); движки офлайн; `source_duration` (уже пробируется ffprobe) — знаменатель для %. Новизна: прогресс-пайп из дочернего ffmpeg без нарушения process-group-kill контракта, SSE-транспорт, семантика отмены поверх asynq.
+v1.9 отгружен. Следующая веха ещё не выбрана — кандидаты в backlog ниже; запуск через `/gsd:new-milestone` (questioning → research → requirements → roadmap). Наиболее «созревшие» seed-темы: новый класс движка (OCR — поднят в обсуждении Phase 41, ещё не оформлен seed-ом; либо SEED-005 CAD / SEED-006 Archive / SEED-007 File-preview) по проверенному engine-class паттерну.
 
 <details>
 <summary>Next-milestone backlog (отложенные кандидаты)</summary>
@@ -94,6 +92,7 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Validated
 
+- ✓ **Job Progress & Control (PROG-01..05, CNCL-01..04, JLIST-01/02, PUSH-01/02) — v1.9** — прогресс/ETA в реальном времени, листинг и отмена джоб поверх существующего контура: аддитивная схема (`0007`/`0008`), отмена end-to-end с реальной смертью ffmpeg (custom Redis pub/sub `job:cancel`, live-proven 12/12, non-resurrection), client-scoped keyset-листинг (two-key leak-тест), ffmpeg `-progress` через named-FIFO/`file:` (exec.go byte-for-byte неизменен, non-locking throttled write, EMA-ETA, SIGKILL-mid-stream live-proven 40/40 ноль orphaned + ноль leaked goroutines), SSE-стрим (DB-poll leak-safe-by-construction, live-proven 15/15) + opt-in HMAC progress-webhook (detached, никогда не в terminal retry-бюджете). 13/13 требований, 3 live-гейта, integration coherent.
 - ✓ **AV / video engine class (AVC-01..05, AVO-01..03, AVE-01..05, AVT-01) — v1.8** — пятый engine-класс: fail-closed video magic-bytes sniffers, standalone `AVConverter` (transcode/audio-extract/thumbnail, stream-copy fast-path, `-protocol_whitelist file,crypto`), `av` очередь + `cmd/av-worker` + stage-aware retry, ffmpeg n8.1.2-from-source container, RTF-measured `AV_ENGINE_TIMEOUT=753s` + fail-closed re-encode source-bound (OOM-DoS closed), KEDA scale-from-zero + downscale-survival live-proven, видео→транскрипт через audio-воркер (6-я conversion chain)
 
 <!-- Существующий код, вертикальный срез image/libvips на ветке feat/scaffold-and-infra. -->
@@ -154,13 +153,9 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Active
 
-<!-- Milestone v1.8 AV Engine (video/ffmpeg) — defined 2026-07-19. -->
+<!-- Next milestone not yet defined. Run /gsd:new-milestone to populate. -->
 
-- [ ] Клиент может транскодировать видео (mov/avi/mkv/webm → mp4 и др.) через тот же async-пайплайн, с RTF-измеренным таймаутом
-- [ ] Клиент может извлечь аудиодорожку из видео (mp3/wav/m4a)
-- [ ] Клиент может получить превью-кадр из видео (jpg/png/webp, таймкод через opts)
-- [ ] Клиент может получить транскрипт видео (txt/srt/vtt/json) одним job'ом
-- [ ] av-класс встроен в полный контур: fail-closed валидация, stage-aware retry, отдельный воркер/контейнер, compose + chart + KEDA
+_Нет активной вехи — v1.9 отгружен 2026-07-25. Следующая веха выбирается через `/gsd:new-milestone`; кандидаты — в next-milestone backlog выше (OCR / SEED-005 CAD / SEED-006 Archive / SEED-007 File-preview)._
 
 ### Out of Scope
 
@@ -249,4 +244,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-23 after v1.8 AV Engine (video/ffmpeg) milestone*
+*Last updated: 2026-07-25 after v1.9 Job Progress & Control milestone*

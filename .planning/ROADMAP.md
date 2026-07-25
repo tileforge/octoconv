@@ -11,7 +11,7 @@
 - ✅ **v1.6 Kubernetes & KEDA** — Phases 24-28 (shipped 2026-07-17) — see `.planning/milestones/v1.6-ROADMAP.md`
 - ✅ **v1.7 Audio Engine & Hardening** — Phases 29-33 (shipped 2026-07-18) — see `.planning/milestones/v1.7-ROADMAP.md`
 - ✅ **v1.8 AV Engine (video/ffmpeg)** — Phases 34-37 (shipped 2026-07-23) — see `.planning/milestones/v1.8-ROADMAP.md`
-- 🚧 **v1.9 Job Progress & Control** — Phases 38-42 (in progress, started 2026-07-24)
+- ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 
 ## Phases
 
@@ -130,88 +130,20 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 
 </details>
 
-### 🚧 v1.9 Job Progress & Control (In Progress)
+<details>
+<summary>✅ v1.9 Job Progress & Control (Phases 38-42) — SHIPPED 2026-07-25</summary>
 
 **Milestone Goal:** Сделать длинные конвертации прозрачными и управляемыми — клиент видит прогресс/ETA в реальном времени, может листать свои джобы и отменять их.
 
-- [x] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change (completed 2026-07-24)
-- [x] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected (completed 2026-07-24)
-- [x] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift (completed 2026-07-25)
-- [x] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated (completed 2026-07-25)
-- [x] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling (completed 2026-07-25)
+- [x] Phase 38: Schema Foundation (1/1 plans) — completed 2026-07-24
+- [x] Phase 39: Cancellation (end-to-end) (4/4 plans) — completed 2026-07-24
+- [x] Phase 40: Job Listing (2/2 plans) — completed 2026-07-25
+- [x] Phase 41: Progress Core (4/4 plans) — completed 2026-07-25
+- [x] Phase 42: Live Push (4/4 plans) — completed 2026-07-25
 
-## Phase Details
+Full details: `.planning/milestones/v1.9-ROADMAP.md`
 
-### Phase 38: Schema Foundation
-**Goal**: Job rows can store progress/ETA state (percent, ETA, last-progress-write timestamp, source duration) so every later v1.9 phase has a stable, additive schema to build on — with zero behavior change for existing clients.
-**Depends on**: Nothing (first phase of v1.9; continues from Phase 37, v1.8)
-**Requirements**: None directly (foundational; unblocks PROG-01..05 in Phase 41 and the denormalized read in JLIST-02, Phase 40)
-**Success Criteria** (what must be TRUE):
-  1. Migration `0007_job_progress.sql` applies cleanly via `cmd/migrate` against both a fresh database and the existing populated `jobs` table.
-  2. `jobs` gains four nullable columns — `progress_pct`, `eta_seconds`, `progress_updated_at`, `source_duration_seconds` — with no `NOT NULL`/default that could break existing inserts from any current engine worker.
-  3. `GET /v1/jobs/{id}` responses for existing jobs are unchanged (new columns not yet surfaced in the API layer) — confirms zero regression to shipped behavior.
-  4. `canceled` requires no migration of its own: a direct DB insert/update proves the existing `jobs.status` CHECK constraint and Go `StatusCanceled` constant (both present since `0001_init.sql`) already accept it.
-**Plans**: 1 plan
-- [x] 38-01-PLAN.md — Additive migration 0007_job_progress.sql: four nullable progress/ETA/duration/throttle columns + fail-closed CHECKs, zero behavior change
-
-### Phase 39: Cancellation (end-to-end)
-**Goal**: A client can cancel a `queued` or `active` job and trust that the real underlying engine process is dead — not just that the database row says `canceled` — with no resurrection by the reconciler or asynq's own retry mechanics.
-**Depends on**: Phase 38 (schema; `canceled` itself needs no new columns, but sequenced per the research-recommended build order to validate the new Redis pub/sub pattern before Phase 41 reuses it)
-**Requirements**: CNCL-01, CNCL-02, CNCL-03, CNCL-04
-**Success Criteria** (what must be TRUE):
-  1. `POST /v1/jobs/{id}/cancel` transitions a `queued` or `active` job owned by the caller to `canceled` and returns 200; a job owned by another client or not found returns 404 (never 403) — mirroring the existing ownership model.
-  2. Calling cancel again on an already-terminal job (`done`/`failed`/`canceled`) returns 200 with the job's current status and never overwrites a terminal outcome.
-  3. Cancelling an `active` job actually kills the real in-flight engine process group (ffmpeg/whisper-cli/soffice/…) via the existing hardened `runCommand` SIGKILL path — verified by a live process-table check that the child is genuinely dead, not just that the DB row reads `canceled`.
-  4. A `canceled` job is never resurrected: a dedicated regression test proves the reconciler's stale-sweep excludes `canceled` jobs, and `errors.Is`/`SkipRetry` classification stops asynq from retrying a canceled task — with the Postgres guarded-transition allow-list as the authoritative backstop, independent of the handler's own `context.Canceled` check (which the confirmed asynq#987 race can bypass).
-**Plans**: 4 plans
-- [x] 39-01-PLAN.md — Repo.Cancel (guarded transition) + POST /v1/jobs/{id}/cancel handler + route (CNCL-01, CNCL-02)
-- [x] 39-02-PLAN.md — internal/cancel package: in-memory cancel-func registry + job:cancel Redis pub/sub, zero new deps (CNCL-03)
-- [x] 39-03-PLAN.md — Worker register/deregister + context.Canceled SkipRetry arm; api publisher + every engine worker subscriber wiring (CNCL-03)
-- [x] 39-04-PLAN.md — Non-resurrection regression (FindStale/allow-list/webhook-gap) + live ffmpeg process-death proof (CNCL-04, CNCL-03) — Tasks 1-2 done (regression tests + scripts/cancel-liveproof.sh authored); Task 3 (operator live-run checkpoint) PENDING, see 39-04-SUMMARY.md
-
-### Phase 40: Job Listing
-**Goal**: A client can list and page through their own jobs — status, progress, filters — without ever seeing another client's data and without results drifting under this table's continuous inserts.
-**Depends on**: Phase 38 (reads the denormalized `progress_pct` column added there)
-**Requirements**: JLIST-01, JLIST-02
-**Success Criteria** (what must be TRUE):
-  1. `GET /v1/jobs` returns only jobs belonging to the authenticated caller, enforced at the SQL layer (`WHERE client_id = $1`, never Go-side filtering) — a live two-API-key test proves zero cross-client leakage.
-  2. Optional `status` and `engine` query filters narrow the result set correctly and can be combined.
-  3. Pagination is keyset-based (stable cursor on `created_at, id`) and remains correct even while new jobs are inserted concurrently during a live paging test; the server enforces a max page size regardless of client-requested size.
-  4. Each returned job includes `status` and `progress_pct` read directly from the `jobs` row (no N+1 query per listed job).
-**Plans**: 2 plans
-- [x] 40-01-PLAN.md — internal/jobs: JobSummary + opaque cursor codec + client-scoped keyset Repo.List (+ two-client leak & keyset-stability DB tests)
-- [x] 40-02-PLAN.md — internal/api: GET /v1/jobs handler (fail-closed filters, page-size clamp, envelope) + env wiring
-
-### Phase 41: Progress Core
-**Goal**: A client polling `GET /v1/jobs/{id}` for an in-flight av/audio job sees an honest, real-time `progress_pct` and `eta_seconds` — genuinely `null` (never fabricated) for engines with no machine-readable signal — and the ffmpeg progress pipe never regresses the hardened process-group-kill contract.
-**Depends on**: Phase 38 (schema), Phase 39 (validates the `internal/cancel` Redis pub/sub pattern this phase's cancel-mid-progress path reuses)
-**Requirements**: PROG-01, PROG-02, PROG-03, PROG-04, PROG-05
-**Success Criteria** (what must be TRUE):
-  1. `GET /v1/jobs/{id}` on an in-flight av/audio job returns a monotonically increasing `progress_pct` (0-100) driven by ffmpeg `-progress` output, verified against a real captured fixture from the pinned n8.1.2 binary (`out_time_ms` correctly interpreted as microseconds, not milliseconds); image/document/html jobs and the whisper transcribe stage report `null`.
-  2. `source_duration_seconds` is persisted on the job row from the existing ffprobe probe as the percent denominator for av/audio jobs, and stays `null` for non-ffmpeg engines.
-  3. A live multi-job test confirms progress writes never contend with the guarded status-transition lock and never append to `job_events`; writes are throttled by BOTH a time interval AND a ≥1% delta, and the terminal 100% write always lands even under throttling.
-  4. `eta_seconds` reflects ffmpeg's `speed=` field through a warm-up/smoothing window, returning `null` before it is derivable.
-  5. A live SIGKILL-mid-stream test (timeout or cancel) on a job using the progress pipe leaves zero orphaned engine processes AND zero leaked reader goroutines — verified by live process-table/goroutine inspection, not just `go test -race`.
-**Plans**: 4 plans
-- [x] 41-01-PLAN.md — Progress -progress block parser + percent/EMA-ETA math + seam contracts (TDD, fixture-tested)
-- [x] 41-02-PLAN.md — runCommandStreaming fd-3 leak-safe exec + AVConverter.ConvertWithProgress ramp (exec.go unchanged)
-- [x] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
-- [x] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct) — operator live-run PASS 2026-07-25 (40/40, scripts/av-progress-liveproof.sh)
-
-### Phase 42: Live Push
-**Goal**: A client can watch a job's progress in real time — via SSE or an opt-in webhook event — without polling, and without a stale progress delivery ever competing with the terminal event's durable-retry budget.
-**Depends on**: Phase 41 (pure consumer of progress/ETA data)
-**Requirements**: PUSH-01, PUSH-02
-**Success Criteria** (what must be TRUE):
-  1. `GET /v1/jobs/{id}/events` streams live progress via SSE under the same ApiKey auth + 404-ownership check as every other route; a cross-client request gets 404.
-  2. The SSE stream is DB-poll sourced (so any `api` replica can serve it, keeping the API stateless), sends heartbeat comments to survive proxy idle-timeouts, and closes cleanly with no leaked goroutines on terminal job state or client disconnect.
-  3. A job created with the opt-in progress-webhook flag (alongside `callback_url`) receives throttled progress webhook events carrying a new `event` discriminator field.
-  4. A failed progress-webhook delivery is dropped as best-effort/single-attempt and never enters the bounded-retry/dead-letter queue reserved for the terminal `done`/`failed` event.
-**Plans**: 4 plans (2 waves)
-- [x] 42-01-PLAN.md — Schema + opt-in foundation: 0008 migration + progress_webhook threaded through jobs/repo + parsed at job create (PUSH-02)
-- [x] 42-02-PLAN.md — SSE endpoint: DB-poll, emit-on-change GET /v1/jobs/{id}/events + route + env knobs + httptest leak/framing tests (PUSH-01)
-- [x] 42-03-PLAN.md — Progress-webhook delivery: event discriminator on both bodies + detached best-effort inline fire + av-worker deliverer/secret wiring (PUSH-02)
-- [x] 42-04-PLAN.md — SSE live-proof: operator gate streaming a real av job through the full stack (PUSH-01, checkpoint)
+</details>
 
 ## Progress
 
@@ -262,4 +194,4 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 
 ---
 
-*v1.8 shipped 2026-07-23. v1.9 (Job Progress & Control) roadmapped 2026-07-24, Phases 38-42. Next: `/gsd:plan-phase 38`.*
+*v1.9 (Job Progress & Control) shipped 2026-07-25, Phases 38-42 — 13/13 requirements, 3 live gates. Next: `/gsd:new-milestone`.*

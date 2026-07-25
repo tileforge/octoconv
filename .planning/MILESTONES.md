@@ -1,5 +1,29 @@
 # Milestones
 
+## v1.9 Job Progress & Control (Shipped: 2026-07-25)
+
+**Phases completed:** 5 phases, 15 plans, 29 tasks
+
+**Key accomplishments:**
+
+- Additive `0007_job_progress.sql` migration adds four nullable jobs columns (progress_pct, eta_seconds, source_duration_seconds, progress_updated_at) with fail-closed CHECK constraints — verified on both fresh and populated Postgres with zero application behavior change
+- DB-authoritative `POST /v1/jobs/{id}/cancel` backed by a guarded `{queued,active}->canceled` Postgres transition, with 404-not-403 ownership and always-200 idempotent/race-safe responses.
+- New `internal/cancel` package: a mutex-guarded in-memory cancel-func registry plus a Redis pub/sub `job:cancel` Publisher/Subscriber, reusing the existing go-redis client with zero new dependencies.
+- Wires the internal/cancel registry and Redis pub/sub (built in isolation by Plan 02) into the live worker/API processes: process() registers a per-attempt CancelFunc before every Convert call, all five engine handlers SkipRetry (never MarkFailed) on a context.Canceled kill, cmd/api publishes job:cancel, and every engine worker subscribes -- activating the low-latency in-flight kill mechanism end to end.
+- Non-resurrection pinned by four explicit regression tests (FindStale-excludes-canceled, allow-list backstop, FindWebhookGaps-ignores-canceled, reconciler no-enqueue), plus an authored (not-yet-run) scripts/cancel-liveproof.sh that will prove CNCL-03's real ffmpeg-child death via the process table — Task 3 is an operator checkpoint, still PENDING.
+- Client-scoped keyset-paginated `Repo.List` for job listing: one bound-parameter SQL query per page, an opaque base64 cursor codec, and a `JobSummary` row type — with a dedicated two-client leak test proving cross-client isolation at the SQL layer.
+- `GET /v1/jobs` — an auth-scoped, fail-closed-validated, keyset-paginated listing endpoint that exposes Plan 01's `Repo.List` read layer with the exact `{jobs, next_cursor}` envelope (no `download_url`/`opts`, `error_code` only on failed).
+- 1. [Rule 3 - Blocking issue] Docker image's ffmpeg has no `pipe` protocol; fixture captured via `-progress <file>` instead
+- `runCommandStreaming` streams ffmpeg's `-progress` feed over a named FIFO on the allowed `file:` protocol (not the unavailable `pipe:` scheme), with a leak-safe reader proven at zero goroutines on both SIGKILL and a never-opened FIFO; `AVConverter.ConvertWithProgress` wires it into the transcode path only, ramping 0->100 monotonically while audio-extract/thumbnail/stream-copy stay null.
+- A non-locking, monotonic `Repo.UpdateProgress`/`SetSourceDuration` write path that never contends the guarded status-transition lock or `job_events`, driven by a worker-side dual-gate throttle (>=2s AND >=1%) with a terminal-100 bypass and freeze-on-abort, surfaced null-aware on `GET /v1/jobs/{id}` — closing PROG-01 through PROG-04 end-to-end.
+- Authored scripts/av-progress-liveproof.sh — a docker-compose-live operator gate that forces a real hevc@1080 ffmpeg re-encode ramp, kills it mid-stream, and hard-gates on zero orphaned processes, zero goroutine growth across 5 repeated cycles, and a frozen (non-null, non-100) progress_pct. Task 2 (the live run) was executed on the live docker-compose stack on 2026-07-25: 40/40 assertions PASS — ffmpeg PIDs (533/673/812/951/1090) confirmed gone from the av-worker process table across all 5 cycles, go_goroutines 22→25 (delta 3 ≤ 5 tolerance) proving zero reader-goroutine leak, a mid-flight cancel froze progress_pct at 1 (not null, not 100), and a completed transcode independently landed progress_pct=100. PROG-05 CLOSED.
+- Added the `progress_webhook` per-job opt-in flag end-to-end: additive migration `0008_progress_webhook.sql` (boolean NOT NULL DEFAULT false), threaded through `jobs.CreateParams`/`jobs.Job`/`Repo.Create`/`Repo.Get`, and parsed at job create as a top-level form flag (NOT in opts) with an opt-in-without-callback = silent no-op stance. PUSH-02's delivery (42-03) builds on this; foundation only, no webhook fired yet.
+- Added `GET /v1/jobs/{id}/events`: a DB-poll-sourced, single-goroutine SSE handler that mirrors `handleGetJob`'s auth + 404-ownership guard exactly, emits a named `progress` event only on change, heartbeats every 15s, and closes cleanly on terminal status, client disconnect, or a 30m safety cap -- zero goroutine leak by construction (no `go func()` anywhere in the handler).
+- Adds an opt-in, HMAC-signed `progress` webhook event fired from a detached, single-attempt, own-timeout goroutine inside the Phase 41 progressSink — reusing the existing PROG-03 throttle decision and structurally incapable of touching the terminal `done`/`failed` bounded-retry/dead-letter queue — plus the additive `event` discriminator on both webhook bodies and cmd/av-worker's real `webhook.Deliverer` wiring.
+- Authored scripts/sse-liveproof.sh -- a docker-compose-live operator gate that submits a forced hevc@1080 ffmpeg re-encode, opens GET /v1/jobs/{id}/events over a real socket, and hard-gates on Content-Type: text/event-stream, >=2 event: progress frames at distinct wall-clock timestamps before the stream's one terminal frame, >=1 `: keepalive` heartbeat, a clean close shortly after the terminal frame, and a cross-client 404. Task 2 (the live operator run) has NOT been executed -- PUSH-01 stays Pending until an operator runs the script against a live docker-compose stack and confirms the PASS summary.
+
+---
+
 ## v1.8 AV Engine (video/ffmpeg) (Shipped: 2026-07-23)
 
 **Phases completed:** 4 phases, 18 plans, 42 tasks

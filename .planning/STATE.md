@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: executing
+status: Awaiting next milestone
 stopped_at: Completed 42-04-PLAN.md Task 1 (scripts/sse-liveproof.sh authored); Task 2 operator live-run checkpoint pending
-last_updated: "2026-07-25T17:59:04.246Z"
-last_activity: 2026-07-25
+last_updated: "2026-07-25T18:24:31.341Z"
+last_activity: 2026-07-25 — Milestone v1.9 completed and archived
 progress:
   total_phases: 5
   completed_phases: 5
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 ## Current Position
 
-Phase: 42 (Live Push) — EXECUTING
-Plan: 3 of 4
-Status: Ready to execute
-Last activity: 2026-07-25
+Phase: Milestone v1.9 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-25 — Milestone v1.9 completed and archived
 
 ## Performance Metrics
 
@@ -225,4 +225,4 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Start Phase 38 with `/gsd:plan-phase 38`
+- Start the next milestone with /gsd-new-milestone
