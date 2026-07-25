@@ -178,7 +178,9 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   2. Optional `status` and `engine` query filters narrow the result set correctly and can be combined.
   3. Pagination is keyset-based (stable cursor on `created_at, id`) and remains correct even while new jobs are inserted concurrently during a live paging test; the server enforces a max page size regardless of client-requested size.
   4. Each returned job includes `status` and `progress_pct` read directly from the `jobs` row (no N+1 query per listed job).
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 40-01-PLAN.md — internal/jobs: JobSummary + opaque cursor codec + client-scoped keyset Repo.List (+ two-client leak & keyset-stability DB tests)
+- [ ] 40-02-PLAN.md — internal/api: GET /v1/jobs handler (fail-closed filters, page-size clamp, envelope) + env wiring
 
 ### Phase 41: Progress Core
 **Goal**: A client polling `GET /v1/jobs/{id}` for an in-flight av/audio job sees an honest, real-time `progress_pct` and `eta_seconds` — genuinely `null` (never fabricated) for engines with no machine-readable signal — and the ffmpeg progress pipe never regresses the hardened process-group-kill contract.
