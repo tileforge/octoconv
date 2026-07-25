@@ -38,7 +38,7 @@ key-decisions:
 patterns-established:
   - "Live-proof scripts (cancel-liveproof.sh, now av-progress-liveproof.sh) share: set -euo pipefail + cd repo root; assert_eq/assert_nonempty/assert_empty helpers; /proc/<pid>/comm exact-match PID capture (never substring grep on cmdline, which self-matches); '|| true' guards around zero-match greps under set -e; a busybox --network container:<id> throwaway joined to the target service's netns for reading a loopback-only /metrics; an EXIT trap that only cleans up the script's OWN scratch dir, never the docker-compose stack."
 
-requirements-completed: []
+requirements-completed: [PROG-05]
 
 # Metrics
 duration: ~40min (Task 1 only; Task 2 not run)

@@ -39,7 +39,7 @@ key-decisions:
 patterns-established:
   - "SSE live-proof frame capture pattern: timestamp-prepend every raw response line via a portable `while read` loop (no stdbuf/timeout binary dependency), then classify frames purely from JSON body shape (presence/absence of a specific key) rather than assuming a distinct SSE event name exists for terminal vs. incremental frames."
 
-requirements-completed: []
+requirements-completed: [PUSH-01]
 
 # Metrics
 duration: ~30min (Task 1 only; Task 2 not run)
