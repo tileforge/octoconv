@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: planning
-stopped_at: Phase 40 context gathered
-last_updated: "2026-07-25T00:23:31.900Z"
-last_activity: 2026-07-24
+status: executing
+stopped_at: Completed 40-01-PLAN.md
+last_updated: "2026-07-25T03:19:20.399Z"
+last_activity: 2026-07-25
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_plans: 7
+  completed_plans: 6
   percent: 40
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 40 — job listing
+**Current focus:** Phase 40 — Job Listing
 
 ## Current Position
 
-Phase: 40
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-24
+Phase: 40 (Job Listing) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-07-25
 
 ## Performance Metrics
 
@@ -101,6 +101,7 @@ Last activity: 2026-07-24
 | Phase 39 P01 | 25min | 2 tasks | 6 files |
 | Phase 39 P02 | 20min | 2 tasks | 3 files |
 | Phase 39 P03 | 15min | 3 tasks | 8 files |
+| Phase 40 P01 | 20min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -124,6 +125,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 39]: Reused existing go-redis client (already direct dep via asynq) for job:cancel pub/sub — zero new Go dependency
 - [Phase 39]: Registry.Cancel releases the mutex before invoking the stored CancelFunc to avoid any reentrancy deadlock risk
 - [Phase 39]: isCanceled checked as first branch in every Handle*Convert (D-07), independent of engine-scoped terminal classifiers
+- [Phase 40]: Repo.List: client_id=$1 unconditional in SQL WHERE; opaque base64(RFC3339Nano|uuid) cursor; jobs_client_created_idx reused, no new index
 
 ### Quick Tasks Completed
 
@@ -195,9 +197,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T00:23:31.888Z
-Stopped at: Phase 40 context gathered
-Resume file: .planning/phases/40-job-listing/40-CONTEXT.md
+Last session: 2026-07-25T03:19:20.386Z
+Stopped at: Completed 40-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

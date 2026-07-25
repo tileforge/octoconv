@@ -179,7 +179,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   3. Pagination is keyset-based (stable cursor on `created_at, id`) and remains correct even while new jobs are inserted concurrently during a live paging test; the server enforces a max page size regardless of client-requested size.
   4. Each returned job includes `status` and `progress_pct` read directly from the `jobs` row (no N+1 query per listed job).
 **Plans**: 2 plans
-- [ ] 40-01-PLAN.md — internal/jobs: JobSummary + opaque cursor codec + client-scoped keyset Repo.List (+ two-client leak & keyset-stability DB tests)
+- [x] 40-01-PLAN.md — internal/jobs: JobSummary + opaque cursor codec + client-scoped keyset Repo.List (+ two-client leak & keyset-stability DB tests)
 - [ ] 40-02-PLAN.md — internal/api: GET /v1/jobs handler (fail-closed filters, page-size clamp, envelope) + env wiring
 
 ### Phase 41: Progress Core
@@ -248,7 +248,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
-| 40. Job Listing | v1.9 | 0/? | Not started | - |
+| 40. Job Listing | v1.9 | 1/2 | In Progress|  |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
 | 42. Live Push | v1.9 | 0/? | Not started | - |
 
