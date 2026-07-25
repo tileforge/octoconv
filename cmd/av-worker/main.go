@@ -25,6 +25,7 @@ import (
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
 	"github.com/apaderin/octoconv/internal/storage"
+	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
@@ -124,6 +125,25 @@ func main() {
 	// for image/document/html/audio jobs (D-01).
 	h.SetProgressThrottle(progressMinInterval, progressMinDeltaPct)
 	log.Printf("📈 PROGRESS_MIN_INTERVAL_SECONDS=%v PROGRESS_MIN_DELTA_PCT=%d", progressMinInterval, progressMinDeltaPct)
+
+	// D-04 (Plan 03/PUSH-02): wire a real webhook.Deliverer for the inline
+	// best-effort progress-webhook fire -- gated on WEBHOOK_SIGNING_SECRET
+	// being set (fail-open, not fail-closed: an unset secret silently
+	// disables progress webhooks rather than aborting startup, since
+	// av-worker must remain runnable for deployments that never use
+	// progress_webhook=true). PROGRESS_WEBHOOK_TIMEOUT is deliberately
+	// SHORTER than PROGRESS_MIN_INTERVAL_SECONDS's 2s default (plan-checker
+	// W1) so at most one detached fire is ever in flight per job. MUST
+	// complete before srv.Start(mux) below -- the same happens-before
+	// boundary every other process-wide config write in this file uses.
+	webhookSigningSecret := []byte(os.Getenv("WEBHOOK_SIGNING_SECRET"))
+	progressWebhookTimeout := envDuration("PROGRESS_WEBHOOK_TIMEOUT", 1500*time.Millisecond)
+	if len(webhookSigningSecret) > 0 {
+		h.SetProgressWebhook(webhook.NewDeliverer(), webhookSigningSecret, progressWebhookTimeout)
+		log.Printf("🔔 progress webhooks enabled (PROGRESS_WEBHOOK_TIMEOUT=%v)", progressWebhookTimeout)
+	} else {
+		log.Printf("🔕 progress webhooks disabled (WEBHOOK_SIGNING_SECRET unset)")
+	}
 
 	// D-04/D-05: the stale-job sweep loop runs solely in cmd/webhook-worker
 	// (under a Postgres advisory lock) — no sweeper of any kind is
