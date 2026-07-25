@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 41-01-PLAN.md
-last_updated: "2026-07-25T05:00:11.324Z"
+stopped_at: Completed 41-02-PLAN.md
+last_updated: "2026-07-25T05:35:01.922Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 11
-  completed_plans: 8
+  completed_plans: 9
   percent: 60
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 41 (Progress Core) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-25
 
@@ -104,6 +104,7 @@ Last activity: 2026-07-25
 | Phase 40 P01 | 20min | 2 tasks | 5 files |
 | Phase 40 P02 | 25min | 2 tasks | 6 files |
 | Phase 41 P01 | 20min | 2 tasks | 3 files |
+| Phase 41 P02 | 55min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -131,6 +132,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 40]: handleListJobs scopes exclusively to auth.ClientFromContext's client.ID -- never a client-supplied id -- passed as the sole clientID to Repo.List
 - [Phase 41]: Plan 01: -progress fixture captured via -progress <file> (not pipe:N) -- the pinned av-worker docker image's ffmpeg has no pipe protocol registered ('Protocol not found'); block content is transport-agnostic, but Plan 02's streaming exec must pick a different transport than pipe:3
 - [Phase 41]: Plan 01: progressEMAAlpha=0.3 / progressWarmupSamples=3 shipped as plain package constants, not env vars (Open Question 2 resolved) -- only Plan 03's throttle gates get env-tunable ceremony
+- [Phase 41]: Progress FIFO transport uses a named FIFO + file: protocol (not fd-3/pipe:3) per 41-02-PLAN.md transport_correction
+- [Phase 41]: FIFO reader retries on both EOF and EAGAIN (not just EOF), gated by an explicit stop channel -- fixed a real hang discovered during TDD
 
 ### Quick Tasks Completed
 
@@ -202,8 +205,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T05:00:11.312Z
-Stopped at: Completed 41-01-PLAN.md
+Last session: 2026-07-25T05:35:01.906Z
+Stopped at: Completed 41-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
