@@ -29,6 +29,12 @@ type Job struct {
 	SourceFormat string
 	TargetFormat string
 	CallbackURL  string
+	// ProgressWebhook is the per-job opt-in flag (0008_progress_webhook.sql,
+	// PUSH-02/D-03) gating the worker's best-effort inline progress-webhook
+	// fire; deliberately a dedicated NOT NULL boolean column, never stored in
+	// Opts/options jsonb, so it is never reachable through the opts
+	// validation pipeline.
+	ProgressWebhook bool
 	// Opts carries the server-normalized, already-validated conversion options
 	// serialized to/from the jobs.options jsonb column (never raw client JSON,
 	// per D-08).
@@ -49,6 +55,7 @@ type Job struct {
 	EtaSeconds            *int
 	SourceDurationSeconds *float64
 }
+
 
 // Input is a row of the job_inputs table.
 type Input struct {

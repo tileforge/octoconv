@@ -70,6 +70,10 @@ type CreateParams struct {
 	SourceFormat string
 	TargetFormat string
 	CallbackURL  string
+	// ProgressWebhook is the per-job opt-in flag (0008_progress_webhook.sql,
+	// PUSH-02/D-03) gating the worker's best-effort inline progress-webhook
+	// fire. Zero value (false) for every existing caller shape.
+	ProgressWebhook bool
 	// Opts carries the server-normalized, already-validated conversion options
 	// serialized to/from the jobs.options jsonb column (never raw client JSON,
 	// per D-08).
@@ -116,9 +120,9 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, options)
-			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10)`,
-			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, optsJSON,
+			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options)
+			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11)`,
+			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON,
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}
@@ -343,11 +347,11 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	var optsJSON []byte
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
-		       callback_url, options, error_code, error_message, created_at, started_at, finished_at,
+		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
 		       progress_pct, eta_seconds, source_duration_seconds
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
-		&cb, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
+		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
 		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
