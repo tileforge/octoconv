@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: verifying
-stopped_at: Completed 40-02-PLAN.md
-last_updated: "2026-07-25T03:29:10.498Z"
+stopped_at: Phase 41 context gathered
+last_updated: "2026-07-25T04:17:19.349Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
@@ -199,9 +199,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T03:28:59.474Z
-Stopped at: Completed 40-02-PLAN.md
-Resume file: None
+Last session: 2026-07-25T04:17:19.311Z
+Stopped at: Phase 41 context gathered
+Resume file: .planning/phases/41-progress-core/41-CONTEXT.md
 
 ## Operator Next Steps
 
