@@ -1030,6 +1030,27 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 // dead-letter on final-attempt exhaustion (D-10). Delivery failures are
 // returned unwrapped so asynq applies its own retry/backoff (D-05); only
 // unparseable payloads and jobs with no callback_url are terminal.
+// buildTerminalWebhookBody constructs the base terminal-webhook JSON body
+// carried by EVERY delivery of the durable done/failed event — the SOLE
+// terminal-body construction site (HandleWebhookDeliver below adds
+// download_url/error_code/error_message on top of it for the done/failed
+// branches respectively). The additive "event":"completed" discriminator
+// (D-03) lets a client on a shared callback_url tell this event apart from
+// the new opt-in `progress` event (progressSink.fireDetached); the
+// signature (SignPayload, computed after json.Marshal) covers it since it
+// is set on the map BEFORE marshaling, same as job_id/status. Factored out
+// as a small pure function (mirrors avFailureCode's precedent) so the
+// discriminator is unit-testable without a live Postgres/S3/webhook
+// Handler.
+func buildTerminalWebhookBody(job *jobs.Job) map[string]any {
+	body := map[string]any{
+		"job_id": job.ID,
+		"status": job.Status,
+	}
+	body["event"] = "completed"
+	return body
+}
+
 func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error {
 	payload, err := queue.ParseWebhookPayload(t.Payload())
 	if err != nil {
@@ -1048,10 +1069,7 @@ func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error
 		return fmt.Errorf("%w: no callback_url", asynq.SkipRetry)
 	}
 
-	body := map[string]any{
-		"job_id": job.ID,
-		"status": job.Status,
-	}
+	body := buildTerminalWebhookBody(job)
 	if job.Status == jobs.StatusDone {
 		outs, err := h.repo.Outputs(ctx, job.ID)
 		if err != nil {
