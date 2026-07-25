@@ -995,6 +995,197 @@ func TestCanceledAllowListBackstop(t *testing.T) {
 	})
 }
 
+// countJobEvents is a shared test helper for pinning D-03b: UpdateProgress
+// and SetSourceDuration must NEVER append to job_events (contrast every
+// transition()-backed writer, which always does).
+func countJobEvents(t *testing.T, r *Repo, jobID uuid.UUID) int {
+	t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM job_events WHERE job_id = $1`, jobID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count job_events: %v", err)
+	}
+	return n
+}
+
+func intPtr(n int) *int { return &n }
+
+// TestUpdateProgress pins D-03b (non-locking, no job_events), the
+// active-only self-conditioning guard, and the monotonic guard (T-41-09).
+func TestUpdateProgress(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "av", SourceFormat: "mov", TargetFormat: "mp4",
+		Input: Input{ObjectKey: "uploads/prog1/0-in.mov", Filename: "in.mov", Format: "mov"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+
+	eventsBefore := countJobEvents(t, r, id)
+
+	if err := r.UpdateProgress(ctx, id, 40, nil); err != nil {
+		t.Fatalf("UpdateProgress(40): %v", err)
+	}
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct == nil || *got.ProgressPct != 40 {
+		t.Fatalf("ProgressPct = %v, want 40", got.ProgressPct)
+	}
+	if got.EtaSeconds != nil {
+		t.Fatalf("EtaSeconds = %v, want nil", got.EtaSeconds)
+	}
+
+	if err := r.UpdateProgress(ctx, id, 60, intPtr(30)); err != nil {
+		t.Fatalf("UpdateProgress(60, eta=30): %v", err)
+	}
+	got, err = r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct == nil || *got.ProgressPct != 60 {
+		t.Fatalf("ProgressPct = %v, want 60", got.ProgressPct)
+	}
+	if got.EtaSeconds == nil || *got.EtaSeconds != 30 {
+		t.Fatalf("EtaSeconds = %v, want 30", got.EtaSeconds)
+	}
+
+	// Monotonic guard: a lower pct than what is stored must NOT regress it.
+	if err := r.UpdateProgress(ctx, id, 40, nil); err != nil {
+		t.Fatalf("UpdateProgress(40, regression attempt): %v", err)
+	}
+	got, err = r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct == nil || *got.ProgressPct != 60 {
+		t.Fatalf("ProgressPct = %v after regression attempt, want unchanged 60", got.ProgressPct)
+	}
+
+	// Terminal write: 100 always lands (D-03a is the throttle-bypass at the
+	// worker layer; at the repo layer, 100 simply satisfies the monotonic
+	// guard like any other forward tick).
+	if err := r.UpdateProgress(ctx, id, 100, nil); err != nil {
+		t.Fatalf("UpdateProgress(100): %v", err)
+	}
+	got, err = r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct == nil || *got.ProgressPct != 100 {
+		t.Fatalf("ProgressPct = %v, want 100", got.ProgressPct)
+	}
+
+	// D-03b: none of the above writes appended a job_events row.
+	if eventsAfter := countJobEvents(t, r, id); eventsAfter != eventsBefore {
+		t.Fatalf("job_events count changed from %d to %d — UpdateProgress must never append events (D-03b)", eventsBefore, eventsAfter)
+	}
+}
+
+// TestUpdateProgressInactiveJobIsNoop pins the active-only self-conditioning
+// guard: a job that is not (or no longer) active silently drops the write —
+// zero rows affected, no error.
+func TestUpdateProgressInactiveJobIsNoop(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "av", SourceFormat: "mov", TargetFormat: "mp4",
+		Input: Input{ObjectKey: "uploads/prog2/0-in.mov", Filename: "in.mov", Format: "mov"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Job is still queued (never activated) — UpdateProgress must be a no-op.
+	if err := r.UpdateProgress(ctx, id, 50, nil); err != nil {
+		t.Fatalf("UpdateProgress on a queued (non-active) job: %v", err)
+	}
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct != nil {
+		t.Fatalf("ProgressPct = %v, want nil (write must be dropped for a non-active job)", got.ProgressPct)
+	}
+
+	// Now finish the job and confirm a post-terminal write is also dropped.
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.MarkDone(ctx, id); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+	if err := r.UpdateProgress(ctx, id, 50, nil); err != nil {
+		t.Fatalf("UpdateProgress on a done job: %v", err)
+	}
+	got, err = r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ProgressPct != nil {
+		t.Fatalf("ProgressPct = %v, want nil (write must be dropped for a terminal job)", got.ProgressPct)
+	}
+}
+
+// TestSetSourceDuration pins D-05 (write-once persistence of the ffprobe
+// duration) and D-03b (non-locking, no job_events).
+func TestSetSourceDuration(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "av", SourceFormat: "mov", TargetFormat: "mp4",
+		Input: Input{ObjectKey: "uploads/prog3/0-in.mov", Filename: "in.mov", Format: "mov"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+
+	eventsBefore := countJobEvents(t, r, id)
+
+	if err := r.SetSourceDuration(ctx, id, 120.5); err != nil {
+		t.Fatalf("SetSourceDuration: %v", err)
+	}
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SourceDurationSeconds == nil || *got.SourceDurationSeconds != 120.5 {
+		t.Fatalf("SourceDurationSeconds = %v, want 120.5", got.SourceDurationSeconds)
+	}
+
+	// Write-once: a second call must not overwrite the already-persisted value.
+	if err := r.SetSourceDuration(ctx, id, 999); err != nil {
+		t.Fatalf("SetSourceDuration (second call): %v", err)
+	}
+	got, err = r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SourceDurationSeconds == nil || *got.SourceDurationSeconds != 120.5 {
+		t.Fatalf("SourceDurationSeconds = %v after second call, want unchanged 120.5", got.SourceDurationSeconds)
+	}
+
+	if eventsAfter := countJobEvents(t, r, id); eventsAfter != eventsBefore {
+		t.Fatalf("job_events count changed from %d to %d — SetSourceDuration must never append events (D-03b)", eventsBefore, eventsAfter)
+	}
+}
+
 // TestFindWebhookGapsIgnoresCanceled pins the D-10 webhook-gap-sweep half of
 // the non-resurrection guarantee: a canceled job with a callback_url and zero
 // webhook_deliveries rows must never be treated as a delivery gap, since
