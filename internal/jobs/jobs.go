@@ -59,3 +59,28 @@ type Output struct {
 	SizeBytes   int64
 	ContentType string
 }
+
+// JobSummary is the per-row listing shape returned by Repo.List, selected
+// directly from the jobs row (D-07, no N+1: no per-row Outputs/Inputs/
+// PresignGet calls). ProgressPct stays nil until Phase 41 populates it
+// (0007_job_progress.sql). ErrorCode is empty unless Status is StatusFailed.
+type JobSummary struct {
+	ID           uuid.UUID
+	Status       string
+	Engine       string
+	SourceFormat string
+	TargetFormat string
+	ProgressPct  *int
+	CreatedAt    time.Time
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
+	ErrorCode    string
+}
+
+// ListFilter narrows Repo.List's result set. Each field is empty-means-unset;
+// validating field values against the known status/engine sets is the
+// handler's responsibility (Plan 02) — this type only carries them through.
+type ListFilter struct {
+	Status string
+	Engine string
+}
