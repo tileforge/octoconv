@@ -421,6 +421,27 @@ type Handler struct {
 	// convert.EngineAudio, so image/document/html/webhook workers never read
 	// this field. The real value is wired by the audio worker cmd (Plan 04).
 	audioMaxDuration time.Duration
+	// progressMinInterval / progressMinDeltaPct are the PROG-03 dual-gate
+	// throttle config (D-03), installed via SetProgressThrottle after
+	// construction. progressMinInterval <= 0 (the zero value every worker cmd
+	// but av-worker leaves it at) disables progress reporting entirely:
+	// process() only takes the convert.ProgressConverter seam when this is
+	// > 0, so image/document/html/audio jobs are byte-unaffected even when
+	// their converter happened to implement the optional interface.
+	progressMinInterval time.Duration
+	progressMinDeltaPct int
+}
+
+// SetProgressThrottle installs the PROG-03 dual-gate progress-write throttle
+// (mirrors Phase 39's SetCancelPublisher post-construction-setter precedent
+// — NewHandler's already-long signature is not widened for a knob only
+// av-worker uses). Never calling this (every non-av worker cmd) leaves
+// progressMinInterval at its zero value, which process()'s type-assert seam
+// treats as "progress reporting disabled" — the plain conv.Convert path
+// runs unchanged.
+func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int) {
+	h.progressMinInterval = minInterval
+	h.progressMinDeltaPct = minDeltaPct
 }
 
 // NewHandler builds a worker handler.
@@ -1103,6 +1124,96 @@ func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, 
 	return convertFn()
 }
 
+// progressRepo is the narrow subset of *jobs.Repo the progress sink writes
+// through — interface-segregated (mirrors internal/api/api.go's Repo/
+// Storage/Enqueuer pattern) so the throttle/terminal-bypass/freeze-on-abort
+// logic below is unit-testable with a spy, without a live Postgres-backed
+// *jobs.Repo. *jobs.Repo satisfies this structurally; no wiring is needed at
+// the call site beyond passing h.repo.
+type progressRepo interface {
+	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
+	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
+}
+
+// progressSink implements convert.ProgressSink for the worker: it applies
+// the PROG-03 dual-gate throttle (D-03) to every Update — a write lands only
+// when BOTH at least minInterval has elapsed since the last write AND the
+// value moved by at least minDeltaPct — and persists through the
+// non-locking progressRepo. SourceDuration persists the probed duration once
+// (D-05). Every write is best-effort: a progress/telemetry write must never
+// fail the conversion, so the error progressRepo returns is deliberately
+// ignored (mirrors the best-effort webhook-enqueue discipline used
+// elsewhere in this file); library code never logs (CLAUDE.md). Zero value
+// is unusable (minInterval/minDeltaPct must be set) — callers always
+// construct this via runConvertWithOptionalProgress, never directly.
+type progressSink struct {
+	ctx         context.Context
+	repo        progressRepo
+	jobID       uuid.UUID
+	minInterval time.Duration
+	minDeltaPct int
+
+	hasLast   bool
+	lastWrite time.Time
+	lastPct   int
+}
+
+// SourceDuration reports the probed source duration once, best-effort.
+func (s *progressSink) SourceDuration(seconds float64) {
+	_ = s.repo.SetSourceDuration(s.ctx, s.jobID, seconds)
+}
+
+// Update applies the dual-gate throttle and, if it passes, persists the
+// tick best-effort.
+func (s *progressSink) Update(u convert.ProgressUpdate) {
+	now := time.Now()
+	if s.hasLast {
+		if now.Sub(s.lastWrite) < s.minInterval {
+			return
+		}
+		if u.Pct-s.lastPct < s.minDeltaPct {
+			return
+		}
+	}
+	_ = s.repo.UpdateProgress(s.ctx, s.jobID, u.Pct, u.ETA)
+	s.hasLast = true
+	s.lastWrite = now
+	s.lastPct = u.Pct
+}
+
+// runConvertWithOptionalProgress is the D-01 seam: it type-asserts conv for
+// the optional convert.ProgressConverter capability and, ONLY when both that
+// capability is present AND progress throttling is configured
+// (minInterval > 0, i.e. SetProgressThrottle was called — currently
+// av-worker only), drives a throttled progressSink through
+// ConvertWithProgress. Otherwise it calls the plain conv.Convert path,
+// byte-unchanged for every other engine (D-01) even if that converter
+// happens to also implement ProgressConverter. On a SUCCESSFUL
+// ConvertWithProgress return, the terminal 100% write BYPASSES the throttle
+// entirely and always lands (D-03a) — issued directly against repo, not
+// through the sink's gated Update. On an ERROR return, nothing further is
+// written: the last throttled value stays frozen (D-06) — this is simply
+// the terminal-100 call on the line below never executing on that branch,
+// not separate "reset" logic. Factored out of process() as a package-level
+// function (mirrors enforceAudioGuardBeforeConvert) so this whole contract
+// is unit-testable with a fake ProgressConverter and a spy progressRepo,
+// without a live Postgres/S3/live-ffmpeg Handler.
+func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, minInterval time.Duration, minDeltaPct int) error {
+	pconv, ok := conv.(convert.ProgressConverter)
+	if !ok || minInterval <= 0 {
+		return conv.Convert(ctx, inPath, outPath, opts)
+	}
+
+	sink := &progressSink{ctx: ctx, repo: repo, jobID: jobID, minInterval: minInterval, minDeltaPct: minDeltaPct}
+	if err := pconv.ConvertWithProgress(ctx, inPath, outPath, opts, sink); err != nil {
+		return err
+	}
+	// D-03a: terminal 100% write bypasses the throttle entirely, always
+	// lands on a successful convert.
+	_ = repo.UpdateProgress(ctx, jobID, 100, nil)
+	return nil
+}
+
 func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// The ENTIRE attempt (input lookup, download, convert, upload, record) is
 	// bounded by a single whole-attempt deadline, not just conv.Convert(): the
@@ -1162,7 +1273,7 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// function so the ordering is unit-testable without a live Postgres/S3
 	// Handler.
 	if err := enforceAudioGuardBeforeConvert(attemptCtx, job.Engine, inPath, h.audioMaxDuration, func() error {
-		if err := conv.Convert(attemptCtx, inPath, outPath, job.Opts); err != nil {
+		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil

@@ -93,6 +93,15 @@ func main() {
 	log.Printf("🧵 AV_MAX_DURATION_SECONDS=%v AV_DISK_SAFETY_FACTOR=%.2f threads=%d (source=%s)",
 		maxDuration, diskSafetyFactor, threads, threadSource)
 
+	// PROG-03 (Phase 41 Plan 03): the dual-gate progress-write throttle
+	// (D-03) -- env-tunable, mirrors the RTF/timeout env-knob discipline.
+	// Read here (not in internal/worker) and wired via the SAME
+	// post-construction-setter convention as AV_DISK_SAFETY_FACTOR above;
+	// MUST complete before srv.Start(mux) below, the same happens-before
+	// boundary every other process-wide config write in this file uses.
+	progressMinInterval := envDurationSeconds("PROGRESS_MIN_INTERVAL_SECONDS", 2*time.Second)
+	progressMinDeltaPct := envInt("PROGRESS_MIN_DELTA_PCT", 1)
+
 	h := worker.NewHandler(
 		repo,
 		store,
@@ -105,6 +114,16 @@ func main() {
 		0,   // presignTTL — webhook-only; HandleAVConvert never reads it
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd (worker.go:350-355); AV's duration/resolution guard is self-contained inside AVConverter.Convert, not spliced through this parameter
 	)
+
+	// PROG-03: install the throttle BEFORE srv.Start(mux) below -- the point
+	// asynq's worker goroutines begin concurrently reading it (same
+	// happens-before boundary as convert.Default.Register/SetAVDiskSafetyFactor
+	// above). av-worker is the ONLY worker cmd that calls this: every other
+	// worker cmd's Handler keeps progressMinInterval at its zero value, so
+	// process()'s type-assert seam always takes the plain conv.Convert path
+	// for image/document/html/audio jobs (D-01).
+	h.SetProgressThrottle(progressMinInterval, progressMinDeltaPct)
+	log.Printf("📈 PROGRESS_MIN_INTERVAL_SECONDS=%v PROGRESS_MIN_DELTA_PCT=%d", progressMinInterval, progressMinDeltaPct)
 
 	// D-04/D-05: the stale-job sweep loop runs solely in cmd/webhook-worker
 	// (under a Postgres advisory lock) — no sweeper of any kind is
