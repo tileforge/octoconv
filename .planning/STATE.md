@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: ready_to_plan
-stopped_at: Phase 39 complete (4/4) — ready to discuss Phase 40
-last_updated: 2026-07-24T22:37:20.001Z
+status: planning
+stopped_at: Phase 40 context gathered
+last_updated: "2026-07-25T00:23:31.900Z"
 last_activity: 2026-07-24
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
   completed_plans: 5
-  percent: 20
+  percent: 40
 ---
 
 # Project State
@@ -195,9 +195,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-24T16:27:45.678Z
-Stopped at: 39-04 Tasks 1-2 done (2de436e, b85d094); Task 3 (live proof) PENDING operator checkpoint
-Resume file: .planning/phases/39-cancellation-end-to-end/39-04-SUMMARY.md
+Last session: 2026-07-25T00:23:31.888Z
+Stopped at: Phase 40 context gathered
+Resume file: .planning/phases/40-job-listing/40-CONTEXT.md
 
 ## Operator Next Steps
 
