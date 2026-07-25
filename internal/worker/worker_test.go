@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 
 	"github.com/apaderin/octoconv/internal/convert"
@@ -609,5 +610,161 @@ func TestAVFailureCode(t *testing.T) {
 		if message == "" {
 			t.Errorf("%s: avFailureCode(%v) message is empty, want a fixed client-facing message", tc.name, tc.err)
 		}
+	}
+}
+
+// --- Progress throttle / terminal-bypass / freeze-on-abort (PROG-03, D-01/D-03/D-03a/D-06) ---
+
+// spyProgressCall records one UpdateProgress invocation for assertion.
+type spyProgressCall struct {
+	pct int
+	eta *int
+}
+
+// spyProgressRepo is a fake progressRepo recording every call, so the
+// throttle/bypass/freeze contract is testable without a live Postgres
+// *jobs.Repo.
+type spyProgressRepo struct {
+	updates   []spyProgressCall
+	durations []float64
+}
+
+func (s *spyProgressRepo) UpdateProgress(_ context.Context, _ uuid.UUID, pct int, eta *int) error {
+	s.updates = append(s.updates, spyProgressCall{pct: pct, eta: eta})
+	return nil
+}
+
+func (s *spyProgressRepo) SetSourceDuration(_ context.Context, _ uuid.UUID, seconds float64) error {
+	s.durations = append(s.durations, seconds)
+	return nil
+}
+
+// fakeProgressConverter implements BOTH convert.Converter and
+// convert.ProgressConverter so runConvertWithOptionalProgress's type-assert
+// branch is exercisable without a live ffmpeg binary. ConvertWithProgress
+// replays the configured updates through sink then returns err (nil for a
+// success run, non-nil to simulate a mid-stream failure).
+type fakeProgressConverter struct {
+	updates     []convert.ProgressUpdate
+	sourceSecs  float64
+	err         error
+	plainCalled bool
+}
+
+func (f *fakeProgressConverter) Pairs() []convert.Pair {
+	return []convert.Pair{{From: "mov", To: "mp4"}}
+}
+func (f *fakeProgressConverter) Engine() string { return convert.EngineAV }
+func (f *fakeProgressConverter) Convert(_ context.Context, _, _ string, _ map[string]any) error {
+	f.plainCalled = true
+	return nil
+}
+func (f *fakeProgressConverter) ConvertWithProgress(_ context.Context, _, _ string, _ map[string]any, sink convert.ProgressSink) error {
+	sink.SourceDuration(f.sourceSecs)
+	for _, u := range f.updates {
+		sink.Update(u)
+	}
+	return f.err
+}
+
+// fakeNonProgressConverter implements ONLY convert.Converter — proves the
+// non-progress engines' plain conv.Convert path is untouched (byte-for-byte
+// the same call) even when throttling IS configured on the Handler; the
+// type-assert for convert.ProgressConverter simply fails for them (D-01).
+type fakeNonProgressConverter struct {
+	plainCalled bool
+}
+
+func (f *fakeNonProgressConverter) Pairs() []convert.Pair {
+	return []convert.Pair{{From: "png", To: "webp"}}
+}
+func (f *fakeNonProgressConverter) Engine() string { return convert.EngineImage }
+func (f *fakeNonProgressConverter) Convert(_ context.Context, _, _ string, _ map[string]any) error {
+	f.plainCalled = true
+	return nil
+}
+
+func TestProgressThrottle(t *testing.T) {
+	jobID := uuid.New()
+
+	t.Run("rapid ticks within the window produce exactly one throttled write", func(t *testing.T) {
+		repo := &spyProgressRepo{}
+		conv := &fakeProgressConverter{
+			sourceSecs: 120,
+			updates: []convert.ProgressUpdate{
+				{Pct: 10}, {Pct: 11}, {Pct: 12}, {Pct: 100},
+			},
+		}
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1); err != nil {
+			t.Fatalf("runConvertWithOptionalProgress: %v", err)
+		}
+		if conv.plainCalled {
+			t.Fatal("plain Convert was called; ConvertWithProgress should have been used")
+		}
+		if len(repo.durations) != 1 || repo.durations[0] != 120 {
+			t.Fatalf("SourceDuration calls = %v, want exactly one call with 120", repo.durations)
+		}
+		// Ticks 11/12/100 all arrive within the same instant (no simulated
+		// clock advance), so both the 2s-interval AND the 1%-delta gates
+		// suppress all three after the first tick lands — until the
+		// unconditional terminal-100 bypass write below.
+		if len(repo.updates) != 2 {
+			t.Fatalf("UpdateProgress calls = %+v, want exactly 2 (first throttled tick + terminal 100 bypass)", repo.updates)
+		}
+		if repo.updates[0].pct != 10 {
+			t.Fatalf("first write pct = %d, want 10", repo.updates[0].pct)
+		}
+		if repo.updates[len(repo.updates)-1].pct != 100 {
+			t.Fatalf("last write pct = %d, want 100 (terminal bypass)", repo.updates[len(repo.updates)-1].pct)
+		}
+	})
+
+	t.Run("non-progress converter falls back to plain Convert unchanged", func(t *testing.T) {
+		repo := &spyProgressRepo{}
+		conv := &fakeNonProgressConverter{}
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1); err != nil {
+			t.Fatalf("runConvertWithOptionalProgress: %v", err)
+		}
+		if !conv.plainCalled {
+			t.Fatal("plain Convert was NOT called for a non-ProgressConverter engine")
+		}
+		if len(repo.updates) != 0 || len(repo.durations) != 0 {
+			t.Fatalf("no progress writes expected for a non-progress converter, got updates=%v durations=%v", repo.updates, repo.durations)
+		}
+	})
+
+	t.Run("progress converter with throttling disabled (minInterval<=0) uses plain Convert", func(t *testing.T) {
+		repo := &spyProgressRepo{}
+		conv := &fakeProgressConverter{sourceSecs: 60, updates: []convert.ProgressUpdate{{Pct: 50}}}
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 0, 0); err != nil {
+			t.Fatalf("runConvertWithOptionalProgress: %v", err)
+		}
+		if !conv.plainCalled {
+			t.Fatal("plain Convert was NOT called when progress throttling is disabled (minInterval<=0)")
+		}
+		if len(repo.updates) != 0 || len(repo.durations) != 0 {
+			t.Fatalf("no progress writes expected when throttling is disabled, got updates=%v durations=%v", repo.updates, repo.durations)
+		}
+	})
+}
+
+// TestProgressFreezeOnAbort pins D-06: on an error return from
+// ConvertWithProgress mid-stream, the last throttled value stays frozen — no
+// further UpdateProgress call of ANY kind (no terminal-100, no null-reset)
+// happens after the error. This is proved with a spy repo at the unit level,
+// not only asserted by construction.
+func TestProgressFreezeOnAbort(t *testing.T) {
+	repo := &spyProgressRepo{}
+	conv := &fakeProgressConverter{
+		sourceSecs: 90,
+		updates:    []convert.ProgressUpdate{{Pct: 30}},
+		err:        errors.New("simulated mid-stream ffmpeg failure"),
+	}
+	err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), 2*time.Second, 1)
+	if err == nil {
+		t.Fatal("runConvertWithOptionalProgress = nil error, want the simulated failure propagated")
+	}
+	if len(repo.updates) != 1 || repo.updates[0].pct != 30 {
+		t.Fatalf("UpdateProgress calls = %+v, want exactly one (the throttled 30%% tick, no write after error — D-06 freeze)", repo.updates)
 	}
 }
