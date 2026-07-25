@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: verifying
-stopped_at: Phase 41 context gathered
-last_updated: "2026-07-25T04:17:19.349Z"
+status: executing
+stopped_at: Completed 41-01-PLAN.md
+last_updated: "2026-07-25T05:00:11.324Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 7
-  completed_plans: 7
+  total_plans: 11
+  completed_plans: 8
   percent: 60
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 40 — Job Listing
+**Current focus:** Phase 41 — Progress Core
 
 ## Current Position
 
-Phase: 40 (Job Listing) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
+Phase: 41 (Progress Core) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-07-25
 
 ## Performance Metrics
@@ -103,6 +103,7 @@ Last activity: 2026-07-25
 | Phase 39 P03 | 15min | 3 tasks | 8 files |
 | Phase 40 P01 | 20min | 2 tasks | 5 files |
 | Phase 40 P02 | 25min | 2 tasks | 6 files |
+| Phase 41 P01 | 20min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 39]: isCanceled checked as first branch in every Handle*Convert (D-07), independent of engine-scoped terminal classifiers
 - [Phase 40]: Repo.List: client_id=$1 unconditional in SQL WHERE; opaque base64(RFC3339Nano|uuid) cursor; jobs_client_created_idx reused, no new index
 - [Phase 40]: handleListJobs scopes exclusively to auth.ClientFromContext's client.ID -- never a client-supplied id -- passed as the sole clientID to Repo.List
+- [Phase 41]: Plan 01: -progress fixture captured via -progress <file> (not pipe:N) -- the pinned av-worker docker image's ffmpeg has no pipe protocol registered ('Protocol not found'); block content is transport-agnostic, but Plan 02's streaming exec must pick a different transport than pipe:3
+- [Phase 41]: Plan 01: progressEMAAlpha=0.3 / progressWarmupSamples=3 shipped as plain package constants, not env vars (Open Question 2 resolved) -- only Plan 03's throttle gates get env-tunable ceremony
 
 ### Quick Tasks Completed
 
@@ -199,9 +202,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T04:17:19.311Z
-Stopped at: Phase 41 context gathered
-Resume file: .planning/phases/41-progress-core/41-CONTEXT.md
+Last session: 2026-07-25T05:00:11.312Z
+Stopped at: Completed 41-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
