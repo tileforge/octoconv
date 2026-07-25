@@ -144,6 +144,16 @@ type Server struct {
 	// rejected above it — that's the DoS guard, T-40-06).
 	jobsListDefaultPageSize int
 	jobsListMaxPageSize     int
+	// ssePollInterval / sseHeartbeatInterval / sseMaxStreamDuration are the
+	// PUSH-01 (Phase 42) GET /v1/jobs/{id}/events tunables: how often
+	// handleJobEvents re-reads the job row, how often it sends a `:
+	// keepalive` comment to survive proxy idle-timeouts, and the safety cap
+	// that closes a stream whose job never reaches a terminal status
+	// (D-01/D-02). Never zero after NewServer -- zero-value-triggers-default
+	// mirrors PresignTTL's own treatment above.
+	ssePollInterval      time.Duration
+	sseHeartbeatInterval time.Duration
+	sseMaxStreamDuration time.Duration
 }
 
 // SetCancelPublisher installs the CancelPublisher a successful cancel
@@ -180,6 +190,12 @@ type Config struct {
 	// change.
 	JobsListDefaultPageSize int
 	JobsListMaxPageSize     int
+	// SSEPollInterval / SSEHeartbeatInterval / SSEMaxStreamDuration are the
+	// PUSH-01 GET /v1/jobs/{id}/events tunables (D-01/D-02). Zero triggers
+	// NewServer's 1s / 15s / 30m defaults.
+	SSEPollInterval      time.Duration
+	SSEHeartbeatInterval time.Duration
+	SSEMaxStreamDuration time.Duration
 }
 
 // NewServer builds an API server. resolver authenticates every /v1 request
@@ -226,6 +242,15 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.JobsListMaxPageSize == 0 {
 		cfg.JobsListMaxPageSize = 100 // D-06 clamp ceiling
 	}
+	if cfg.SSEPollInterval == 0 {
+		cfg.SSEPollInterval = 1 * time.Second // D-01 default poll cadence
+	}
+	if cfg.SSEHeartbeatInterval == 0 {
+		cfg.SSEHeartbeatInterval = 15 * time.Second // D-01 default heartbeat cadence
+	}
+	if cfg.SSEMaxStreamDuration == 0 {
+		cfg.SSEMaxStreamDuration = 30 * time.Minute // D-02 default safety cap
+	}
 	operators := cfg.OperatorClientIDs
 	if operators == nil {
 		operators = map[uuid.UUID]struct{}{}
@@ -248,5 +273,8 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		operators:                    operators,
 		jobsListDefaultPageSize:      cfg.JobsListDefaultPageSize,
 		jobsListMaxPageSize:          cfg.JobsListMaxPageSize,
+		ssePollInterval:              cfg.SSEPollInterval,
+		sseHeartbeatInterval:         cfg.SSEHeartbeatInterval,
+		sseMaxStreamDuration:         cfg.SSEMaxStreamDuration,
 	}
 }
