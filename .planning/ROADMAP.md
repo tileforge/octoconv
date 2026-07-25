@@ -137,7 +137,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change (completed 2026-07-24)
 - [x] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected (completed 2026-07-24)
 - [x] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift (completed 2026-07-25)
-- [ ] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated
+- [x] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated (completed 2026-07-25)
 - [ ] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling
 
 ## Phase Details
