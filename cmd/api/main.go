@@ -145,6 +145,12 @@ func main() {
 		OperatorClientIDs:            operatorIDs,
 		JobsListDefaultPageSize:      int(envInt64("JOBS_LIST_DEFAULT_PAGE_SIZE", 20)),
 		JobsListMaxPageSize:          int(envInt64("JOBS_LIST_MAX_PAGE_SIZE", 100)),
+		// PUSH-01 (Phase 42): GET /v1/jobs/{id}/events SSE tunables (D-01/
+		// D-02). Defaults (1s/15s/30m) applied by api.NewServer itself when
+		// these are zero -- envDuration here only overrides them.
+		SSEPollInterval:      envDuration("SSE_POLL_INTERVAL", 1*time.Second),
+		SSEHeartbeatInterval: envDuration("SSE_HEARTBEAT_INTERVAL", 15*time.Second),
+		SSEMaxStreamDuration: envDuration("SSE_MAX_STREAM_DURATION", 30*time.Minute),
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher

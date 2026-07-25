@@ -39,6 +39,13 @@ func (s *Server) Routes() chi.Router {
 		r.Post("/jobs", s.handleCreateJob)
 		r.Get("/jobs", s.handleListJobs)
 		r.Get("/jobs/{id}", s.handleGetJob)
+		// GET /jobs/{id}/events (PUSH-01, Phase 42): SSE progress stream.
+		// Registered here so it inherits the EXACT SAME ByIP -> auth ->
+		// PerClient middleware chain as every other /v1 route (T-42-05) --
+		// chi v5.3.0's middleware.Logger/Recoverer preserve http.Flusher
+		// through their wrap, so streaming works unmodified inside this
+		// stack (42-RESEARCH.md Pitfall 3).
+		r.Get("/jobs/{id}/events", s.handleJobEvents)
 		r.Post("/jobs/{id}/cancel", s.handleCancelJob)
 		r.Get("/formats", s.handleListFormats)
 		r.Route("/presets", func(r chi.Router) {
