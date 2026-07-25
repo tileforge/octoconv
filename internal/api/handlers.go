@@ -697,6 +697,15 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	if len(job.Opts) > 0 {
 		resp["opts"] = job.Opts
 	}
+	// PROG-01/PROG-04 (Phase 41 Plan 03): surfaced null-aware, regardless of
+	// status — a done job reads 100, a canceled/failed-mid-stream job reads
+	// its frozen last value (D-06), and any non-av engine (or an av job
+	// before its first tick) reads null. json.Marshal renders a nil *int as
+	// JSON null and a non-nil one as the plain integer, so a polling client
+	// sees a stable "indeterminate vs a real number" contract without any
+	// fabricated value ever being invented here.
+	resp["progress_pct"] = job.ProgressPct
+	resp["eta_seconds"] = job.EtaSeconds
 
 	switch job.Status {
 	case jobs.StatusDone:
