@@ -196,7 +196,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] 41-01-PLAN.md — Progress -progress block parser + percent/EMA-ETA math + seam contracts (TDD, fixture-tested)
 - [x] 41-02-PLAN.md — runCommandStreaming fd-3 leak-safe exec + AVConverter.ConvertWithProgress ramp (exec.go unchanged)
 - [x] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
-- [ ] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct)
+- [ ] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct) — Task 1 done (scripts/av-progress-liveproof.sh authored, static-checked); Task 2 (operator live-run checkpoint) PENDING, see 41-04-SUMMARY.md
 
 ### Phase 42: Live Push
 **Goal**: A client can watch a job's progress in real time — via SSE or an opt-in webhook event — without polling, and without a stale progress delivery ever competing with the terminal event's durable-retry budget.

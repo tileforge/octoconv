@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 41-03-PLAN.md
-last_updated: "2026-07-25T05:52:54.697Z"
+stopped_at: 41-04 Task 1 done (772d65e); Task 2 (live proof) PENDING operator checkpoint
+last_updated: "2026-07-25T05:59:54Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 Phase: 41 (Progress Core) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Task 1 of 41-04 complete (commit 772d65e — scripts/av-progress-liveproof.sh authored, static-checked); Task 2 (checkpoint:human-verify, gate=blocking — operator-run scripts/av-progress-liveproof.sh) PENDING. Plan NOT closed, Phase 41 NOT complete.
 Last activity: 2026-07-25
 
 ## Performance Metrics
@@ -163,6 +163,7 @@ None currently blocking the overall roadmap. Sequencing carried into the roadmap
 - Live-verify SSE behavior against the real reverse-proxy/ingress topology in Phase 42, not just localhost — proxy buffering is a named pitfall for long-lived streaming responses.
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
 - Phase 39 Plan 04 Task 3 (checkpoint:human-verify, gate=blocking): scripts/cancel-liveproof.sh authored and its PID-capture logic live-verified in isolation, but the script has NOT been run end-to-end against a live docker-compose stack. CNCL-03 stays Pending until an operator runs it and confirms the PASS summary (see 39-04-SUMMARY.md Operator Runbook).
+- Phase 41 Plan 04 Task 2 (checkpoint:human-verify, gate=blocking): scripts/av-progress-liveproof.sh authored, `bash -n`/shellcheck clean, executable — but NOT yet run end-to-end against a live docker-compose stack. PROG-05 stays Pending until an operator runs it and confirms the PASS summary (see 41-04-SUMMARY.md Operator Runbook).
 
 ## Deferred Items
 
@@ -209,9 +210,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T05:52:54.686Z
-Stopped at: Completed 41-03-PLAN.md
-Resume file: None
+Last session: 2026-07-25T05:59:54Z
+Stopped at: 41-04 Task 1 done (772d65e); Task 2 (live proof) PENDING operator checkpoint
+Resume file: .planning/phases/41-progress-core/41-04-SUMMARY.md
 
 ## Operator Next Steps
 
