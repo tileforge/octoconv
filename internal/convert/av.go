@@ -513,27 +513,29 @@ func validateAVOutput(path, target string) error {
 	return nil
 }
 
-// Convert dispatches on the target format (transcode/audio-extract/
-// thumbnail), runs the duration+resolution guard stage BEFORE any ffmpeg
-// decode/encode (AVE-02/T-34-12), then invokes exactly one of the three
-// ffmpeg pipelines. Mirrors AudioConverter.Convert's shape (whisper.go):
-// AVOptsFromMap -> fail-fast target dispatch -> guard stage -> subprocess
-// stage(s), each wrapped with a distinguishable "av: <stage>:" error prefix.
-func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	o, err := AVOptsFromMap(opts)
+// avPrepareConversion runs the preamble Convert and ConvertWithProgress
+// (PROG-01) BOTH need -- AVOptsFromMap, the fail-fast target-format check,
+// the duration/resolution/disk guard stage, and avProbeSource -- factored
+// into ONE function so the two entry points can never drift into making a
+// DIFFERENT decision on the same bytes (mirrors avSourceProbe's own
+// "probed EXACTLY ONCE" discipline, now shared rather than duplicated).
+// Every error is already wrapped with the "av:" prefix, so callers return
+// it unwrapped.
+func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath string, opts map[string]any) (targetFormat string, o AVOpts, src avSourceProbe, err error) {
+	o, err = AVOptsFromMap(opts)
 	if err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
 	}
 
 	// Fail fast on an unsupported target BEFORE the guard stage/any
 	// subprocess runs -- mirrors AudioConverter.Convert's shape
 	// (whisper.go): a caller bug (unrecognized/missing outPath extension)
 	// must not burn an ffprobe+ffmpeg round trip before failing.
-	targetFormat := NormalizeFormat(filepath.Ext(outPath))
+	targetFormat = NormalizeFormat(filepath.Ext(outPath))
 	switch targetFormat {
 	case "mp4", "webm", "mp3", "wav", "m4a", "jpg", "png", "webp":
 	default:
-		return fmt.Errorf("av: unsupported target format %q", targetFormat)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: unsupported target format %q", targetFormat)
 	}
 
 	// Guard stage (AVE-02/T-34-12): duration + resolution ceilings enforced
@@ -552,15 +554,15 @@ func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts m
 		maxHeight = avMaxSourceResolutionHeight
 	}
 
-	src, err := avProbeSource(ctx, inPath)
+	src, err = avProbeSource(ctx, inPath)
 	if err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
 	}
 	if err := enforceMaxDurationOf(src.duration, maxDuration); err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
 	}
 	if err := enforceMaxResolutionOf(src.videoStreams, maxHeight); err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
 	}
 
 	// Disk-space guard (D-06/T-36-01): fail-closed BEFORE the expensive
@@ -573,10 +575,26 @@ func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts m
 	// exist on disk.
 	fi, err := os.Stat(inPath)
 	if err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
 	}
 	if err := EnforceMinFreeDisk(filepath.Dir(inPath), fi.Size(), effectiveAVDiskSafetyFactor()); err != nil {
-		return fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+	}
+
+	return targetFormat, o, src, nil
+}
+
+// Convert dispatches on the target format (transcode/audio-extract/
+// thumbnail), runs the duration+resolution guard stage BEFORE any ffmpeg
+// decode/encode (AVE-02/T-34-12) via avPrepareConversion, then invokes
+// exactly one of the three ffmpeg pipelines. Mirrors AudioConverter.Convert's
+// shape (whisper.go): AVOptsFromMap -> fail-fast target dispatch -> guard
+// stage -> subprocess stage(s), each wrapped with a distinguishable
+// "av: <stage>:" error prefix.
+func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	targetFormat, o, src, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
+	if err != nil {
+		return err
 	}
 
 	switch targetFormat {
@@ -585,6 +603,46 @@ func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts m
 	case "mp3", "wav", "m4a":
 		return c.convertAudioExtract(ctx, inPath, outPath, targetFormat, src)
 	default:
+		return c.convertThumbnail(ctx, inPath, outPath, targetFormat, o, src)
+	}
+}
+
+// var _ ProgressConverter ensures AVConverter's concrete value type
+// satisfies the optional progress seam (D-01, Plan 01) at compile time --
+// converters.go registers a concrete AVConverter{} value (never a pointer),
+// so this assertion pins that ConvertWithProgress's receiver stays a value
+// receiver, matching every other AVConverter method.
+var _ ProgressConverter = AVConverter{}
+
+// ConvertWithProgress implements ProgressConverter (D-01/PROG-01/PROG-02):
+// it reuses Convert's EXACT preamble via avPrepareConversion, so both entry
+// points make the provably same accept/reject decision on the same bytes,
+// then reports source_duration_seconds ONCE, early, from the ALREADY-probed
+// src.duration (D-05 -- no new ffprobe) before dispatching. Only the
+// transcode target's full re-encode branch reports a real ramp (D-02);
+// audio-extract, thumbnail, and a stream-copy-eligible transcode all stay
+// null (zero Update calls) exactly like Convert's behavior for those paths
+// -- this function never writes a terminal 100% itself (D-06: that is the
+// worker's throttle-bypass write, Plan 03), so a mid-stream error simply
+// leaves the sink's last-reported value in place.
+func (c AVConverter) ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, sink ProgressSink) error {
+	targetFormat, o, src, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
+	if err != nil {
+		return err
+	}
+
+	sink.SourceDuration(src.duration.Seconds())
+
+	switch targetFormat {
+	case "mp4", "webm":
+		return c.convertTranscodeWithProgress(ctx, inPath, outPath, targetFormat, o, src, sink)
+	case "mp3", "wav", "m4a":
+		// Null until terminal (D-02): audio-extract is cheap enough that a
+		// ramp gains nothing, so this stays on the plain runCommand path
+		// with zero sink.Update calls, identically to Convert.
+		return c.convertAudioExtract(ctx, inPath, outPath, targetFormat, src)
+	default:
+		// Null until terminal (D-02): same rationale as audio-extract.
 		return c.convertThumbnail(ctx, inPath, outPath, targetFormat, o, src)
 	}
 }
@@ -638,37 +696,49 @@ func avProbeSource(ctx context.Context, inPath string) (avSourceProbe, error) {
 	}, nil
 }
 
+// avBuildReencodeArgs enforces the source-resolution bound (disposition (b),
+// Phase 36 Plan 04, generalized to every re-encode path + both axes by Plan
+// 05's CR-01/HI-01 gap-closure) and builds the full re-encode ffmpeg argv
+// for the transcode target (mp4/webm). ANY re-encode -- no-scale
+// passthrough OR an explicit resolution_height resize -- must not proceed
+// against a source taller than avMaxReencodeSourceHeight or wider than
+// avMaxReencodeSourceWidth -- checked HERE, before either argv builder runs
+// (fail-closed before the expensive ffmpeg invocation, same discipline as
+// Convert's duration/resolution guard stage). Unconditional on
+// o.ResolutionHeight (CR-01): the decode cost this guard exists to bound is
+// driven by the SOURCE resolution regardless of what output resolution was
+// requested. Factored out as the ONE re-encode-argv-building path shared by
+// convertTranscode and convertTranscodeWithProgress (PROG-01) so a future
+// argv edit can never silently diverge between the plain and
+// progress-reporting code paths.
+func avBuildReencodeArgs(target, inPath, outPath string, o AVOpts, src avSourceProbe) ([]string, error) {
+	if err := enforceReencodeSourceBound(src.primary.Width, src.primary.Height); err != nil {
+		return nil, fmt.Errorf("av: %w", err)
+	}
+	switch target {
+	case "mp4":
+		return transcodeToMP4Args(inPath, outPath, o.Codec, o.ResolutionHeight, src.primary.Index, avThreadCount()), nil
+	case "webm":
+		return transcodeToWebMArgs(inPath, outPath, o.ResolutionHeight, src.primary.Index, avThreadCount()), nil
+	default:
+		return nil, fmt.Errorf("av: unsupported transcode target %q", target)
+	}
+}
+
 // convertTranscode implements AVC-01/AVC-02/AVC-05: probe the source's
 // declared video+audio codec, gate a "-c copy" remux on avStreamCopyLegal
 // (never on ffmpeg's own muxer acceptance), else full re-encode via
-// transcodeToMP4Args (HEVC-aware) or transcodeToWebMArgs.
+// avBuildReencodeArgs (transcodeToMP4Args, HEVC-aware, or
+// transcodeToWebMArgs).
 func (c AVConverter) convertTranscode(ctx context.Context, inPath, outPath, target string, o AVOpts, src avSourceProbe) error {
 	var args []string
 	if avStreamCopyEligible(target, o, src) {
 		args = streamCopyArgs(inPath, outPath, target, src.primary.Index)
 	} else {
-		// Source-resolution bound (disposition (b), Phase 36 Plan 04,
-		// generalized to every re-encode path + both axes by Plan 05's
-		// CR-01/HI-01 gap-closure): ANY re-encode -- no-scale passthrough OR
-		// an explicit resolution_height resize -- must not proceed against a
-		// source taller than avMaxReencodeSourceHeight or wider than
-		// avMaxReencodeSourceWidth -- checked HERE, in the re-encode branch
-		// only, BEFORE either argv builder runs (fail-closed before the
-		// expensive ffmpeg invocation, same discipline as Convert's
-		// duration/resolution guard stage). Unconditional on o.ResolutionHeight
-		// (CR-01): the decode cost this guard exists to bound is driven by the
-		// SOURCE resolution regardless of what output resolution was
-		// requested.
-		if err := enforceReencodeSourceBound(src.primary.Width, src.primary.Height); err != nil {
-			return fmt.Errorf("av: %w", err)
-		}
-		switch target {
-		case "mp4":
-			args = transcodeToMP4Args(inPath, outPath, o.Codec, o.ResolutionHeight, src.primary.Index, avThreadCount())
-		case "webm":
-			args = transcodeToWebMArgs(inPath, outPath, o.ResolutionHeight, src.primary.Index, avThreadCount())
-		default:
-			return fmt.Errorf("av: unsupported transcode target %q", target)
+		var err error
+		args, err = avBuildReencodeArgs(target, inPath, outPath, o, src)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -676,6 +746,56 @@ func (c AVConverter) convertTranscode(ctx context.Context, inPath, outPath, targ
 		return fmt.Errorf("%w: %w", ErrAVTranscodeFailed, err)
 	}
 	return validateAVOutput(outPath, target)
+}
+
+// convertTranscodeWithProgress mirrors convertTranscode (AVC-01/AVC-02/
+// AVC-05) exactly, EXCEPT the full re-encode branch is routed through
+// runCommandStreaming (Task 1) instead of plain runCommand, so the client
+// sees a real, monotonic 0->100 ramp (D-02). The stream-copy remux fast
+// path -- no decode/encode at all -- delegates straight back to
+// convertTranscode and therefore emits ZERO sink.Update calls, identically
+// to Convert's behavior for that same request shape (D-02).
+func (c AVConverter) convertTranscodeWithProgress(ctx context.Context, inPath, outPath, target string, o AVOpts, src avSourceProbe, sink ProgressSink) error {
+	if avStreamCopyEligible(target, o, src) {
+		return c.convertTranscode(ctx, inPath, outPath, target, o, src)
+	}
+
+	args, err := avBuildReencodeArgs(target, inPath, outPath, o, src)
+	if err != nil {
+		return err
+	}
+
+	onLine := newTranscodeProgressReporter(src.duration.Seconds(), sink)
+	if _, err := runCommandStreaming(ctx, onLine, "ffmpeg", args...); err != nil {
+		return fmt.Errorf("%w: %w", ErrAVTranscodeFailed, err)
+	}
+	return validateAVOutput(outPath, target)
+}
+
+// newTranscodeProgressReporter returns the onLine callback runCommandStreaming
+// invokes per raw -progress line. It accumulates lines into completed ticks
+// (progressBlockParser, Plan 01), composes each into a ProgressUpdate
+// (buildProgressUpdate, folding speed= into a shared etaEstimator across the
+// whole transcode), and forwards it to sink -- clamped so Pct never regresses
+// (D-02a: progress_pct is monotonic within a job). This function reports NO
+// terminal 100% itself (D-06): the worker's throttle-bypass write owns that,
+// so a mid-stream error simply leaves sink's last-reported value in place.
+func newTranscodeProgressReporter(sourceDurationSeconds float64, sink ProgressSink) func(string) {
+	parser := newProgressBlockParser()
+	est := &etaEstimator{}
+	lastPct := 0
+	return func(line string) {
+		tick, complete := parser.feedLine(line)
+		if !complete {
+			return
+		}
+		update := buildProgressUpdate(tick, sourceDurationSeconds, est)
+		if update.Pct < lastPct {
+			update.Pct = lastPct
+		}
+		lastPct = update.Pct
+		sink.Update(update)
+	}
 }
 
 // avStreamCopyEligible decides whether the AVC-05 remux fast path can be
