@@ -37,6 +37,7 @@ func (s *Server) Routes() chi.Router {
 		r.Use(auth.Middleware(s.resolver))
 		r.Use(ratelimit.PerClient(s.clientRateRPM))
 		r.Post("/jobs", s.handleCreateJob)
+		r.Get("/jobs", s.handleListJobs)
 		r.Get("/jobs/{id}", s.handleGetJob)
 		r.Post("/jobs/{id}/cancel", s.handleCancelJob)
 		r.Get("/formats", s.handleListFormats)

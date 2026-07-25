@@ -2881,3 +2881,194 @@ func TestCreateJob_EngineAbsentFromSizeMapNotRejected(t *testing.T) {
 		t.Error("must upload when the detected engine has no configured size ceiling")
 	}
 }
+
+// --- GET /v1/jobs (handleListJobs) ---
+
+func TestListJobs_Envelope(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &fakeRepo{listResult: []jobs.JobSummary{
+		{
+			ID: uuid.New(), Status: jobs.StatusFailed, Engine: convert.EngineImage,
+			SourceFormat: "png", TargetFormat: "webp", CreatedAt: now, ErrorCode: "engine_error",
+		},
+		{
+			ID: uuid.New(), Status: jobs.StatusDone, Engine: convert.EngineImage,
+			SourceFormat: "png", TargetFormat: "webp", CreatedAt: now,
+		},
+	}}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Jobs       []map[string]any `json:"jobs"`
+		NextCursor *string          `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.Jobs) != 2 {
+		t.Fatalf("len(jobs) = %d, want 2", len(resp.Jobs))
+	}
+	if resp.NextCursor != nil {
+		t.Fatalf("next_cursor = %v, want nil", resp.NextCursor)
+	}
+
+	failed, done := resp.Jobs[0], resp.Jobs[1]
+	for _, key := range []string{"job_id", "status", "engine", "source_format", "target_format", "progress_pct", "created_at", "started_at", "finished_at"} {
+		if _, ok := failed[key]; !ok {
+			t.Errorf("failed item missing key %q", key)
+		}
+	}
+	if failed["error_code"] != "engine_error" {
+		t.Errorf("failed item error_code = %v, want engine_error", failed["error_code"])
+	}
+	if _, ok := done["error_code"]; ok {
+		t.Error("done item must NOT carry error_code")
+	}
+	for _, item := range resp.Jobs {
+		if _, ok := item["download_url"]; ok {
+			t.Error("list item must NOT carry download_url")
+		}
+		if _, ok := item["opts"]; ok {
+			t.Error("list item must NOT carry opts")
+		}
+	}
+}
+
+func TestListJobs_ScopedToCaller(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, resolver := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.listClientID != resolver.client.ID {
+		t.Fatalf("Repo.List clientID = %v, want caller's own client.ID %v", repo.listClientID, resolver.client.ID)
+	}
+}
+
+func TestListJobs_UnknownStatus(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs?status=bogus", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListJobs_UnknownEngine(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs?engine=bogus", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListJobs_LimitClampedToMax(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs?limit=500", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.listLimit != 100 {
+		t.Fatalf("listLimit = %d, want 100 (clamped to MAX)", repo.listLimit)
+	}
+}
+
+func TestListJobs_LimitDefault(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.listLimit != 20 {
+		t.Fatalf("listLimit = %d, want 20 (default)", repo.listLimit)
+	}
+}
+
+func TestListJobs_MalformedCursor(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs?cursor=not-valid-base64!!", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestListJobs_NextCursor(t *testing.T) {
+	next := jobs.Cursor{CreatedAt: time.Now().UTC(), ID: uuid.New()}
+	repo := &fakeRepo{
+		listResult: []jobs.JobSummary{{ID: uuid.New(), Status: jobs.StatusQueued, Engine: convert.EngineImage, SourceFormat: "png", TargetFormat: "webp", CreatedAt: time.Now().UTC()}},
+		listNext:   &next,
+	}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		NextCursor *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.NextCursor == nil || *resp.NextCursor == "" {
+		t.Fatal("next_cursor = nil/empty, want a non-empty opaque token")
+	}
+	if _, err := jobs.DecodeCursor(*resp.NextCursor); err != nil {
+		t.Fatalf("next_cursor did not decode: %v", err)
+	}
+}
+
+func TestListJobs_EmptyResult(t *testing.T) {
+	repo := &fakeRepo{}
+	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"jobs":[],"next_cursor":null}` {
+		t.Fatalf("body = %q, want {\"jobs\":[],\"next_cursor\":null}", got)
+	}
+}
