@@ -430,6 +430,31 @@ type Handler struct {
 	// their converter happened to implement the optional interface.
 	progressMinInterval time.Duration
 	progressMinDeltaPct int
+	// progressWebhookDelivr / progressWebhookSecret / progressWebhookTimeout
+	// are the D-04 opt-in inline progress-webhook delivery config, installed
+	// via SetProgressWebhook after construction (mirrors SetProgressThrottle's
+	// post-construction-setter precedent). progressWebhookDelivr nil (every
+	// worker cmd but av-worker, and av-worker itself when
+	// WEBHOOK_SIGNING_SECRET is unset) disables progress-webhook delivery
+	// entirely — progressSink.Update's own webhookDelivr != nil gate skips
+	// the fire, so this is inert rather than a startup failure.
+	progressWebhookDelivr  progressWebhookDeliverer
+	progressWebhookSecret  []byte
+	progressWebhookTimeout time.Duration
+}
+
+// SetProgressWebhook installs the D-04 opt-in inline progress-webhook
+// delivery config (mirrors SetProgressThrottle's post-construction-setter
+// precedent — NewHandler's already-long signature is not widened for a knob
+// only av-worker uses). Never calling this (every non-av worker cmd, and
+// av-worker itself when WEBHOOK_SIGNING_SECRET is unset) leaves
+// progressWebhookDelivr nil, which progressSink.Update's own gate treats as
+// "progress webhooks disabled" — the throttled DB write still lands
+// unchanged.
+func (h *Handler) SetProgressWebhook(d progressWebhookDeliverer, secret []byte, timeout time.Duration) {
+	h.progressWebhookDelivr = d
+	h.progressWebhookSecret = secret
+	h.progressWebhookTimeout = timeout
 }
 
 // SetProgressThrottle installs the PROG-03 dual-gate progress-write throttle
@@ -1135,6 +1160,16 @@ type progressRepo interface {
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
 }
 
+// progressWebhookDeliverer is the narrow subset of *webhook.Deliverer the
+// progress sink fires through — interface-segregated (mirrors progressRepo's
+// own interface-segregation, internal/api/api.go's Repo/Storage/Enqueuer
+// pattern) so the D-04 detached best-effort fire is spy-testable without a
+// live HTTP deliverer. *webhook.Deliverer satisfies this structurally; no
+// wiring is needed at the call site beyond passing a *webhook.Deliverer.
+type progressWebhookDeliverer interface {
+	Deliver(ctx context.Context, url string, body []byte, timestamp int64, signature string) (int, error)
+}
+
 // progressSink implements convert.ProgressSink for the worker: it applies
 // the PROG-03 dual-gate throttle (D-03) to every Update — a write lands only
 // when BOTH at least minInterval has elapsed since the last write AND the
@@ -1146,6 +1181,14 @@ type progressRepo interface {
 // elsewhere in this file); library code never logs (CLAUDE.md). Zero value
 // is unusable (minInterval/minDeltaPct must be set) — callers always
 // construct this via runConvertWithOptionalProgress, never directly.
+//
+// webhookEnabled/callbackURL/webhookSecret/webhookDelivr/webhookTimeout are
+// the D-04 opt-in inline progress-webhook fire config: all zero/nil for
+// every non-opted-in job (job.ProgressWebhook false) and for every
+// non-av-worker cmd (webhookDelivr stays nil — only cmd/av-worker calls
+// Handler.SetProgressWebhook) — fireDetached's own gate makes a missing
+// deliverer/unset callback byte-identical to "opted out," no separate code
+// path.
 type progressSink struct {
 	ctx         context.Context
 	repo        progressRepo
@@ -1156,6 +1199,12 @@ type progressSink struct {
 	hasLast   bool
 	lastWrite time.Time
 	lastPct   int
+
+	webhookEnabled bool
+	callbackURL    string
+	webhookSecret  []byte
+	webhookDelivr  progressWebhookDeliverer
+	webhookTimeout time.Duration
 }
 
 // SourceDuration reports the probed source duration once, best-effort.
@@ -1164,7 +1213,9 @@ func (s *progressSink) SourceDuration(seconds float64) {
 }
 
 // Update applies the dual-gate throttle and, if it passes, persists the
-// tick best-effort.
+// tick best-effort, then (D-04) fires a best-effort progress webhook from
+// the SAME throttle decision — one PROG-03 decision drives both the DB
+// write and the webhook fire.
 func (s *progressSink) Update(u convert.ProgressUpdate) {
 	now := time.Now()
 	if s.hasLast {
@@ -1179,6 +1230,45 @@ func (s *progressSink) Update(u convert.ProgressUpdate) {
 	s.hasLast = true
 	s.lastWrite = now
 	s.lastPct = u.Pct
+
+	if s.webhookEnabled && s.callbackURL != "" && s.webhookDelivr != nil {
+		s.fireDetached(u)
+	}
+}
+
+// fireDetached fires one best-effort, single-attempt, HMAC-signed progress
+// webhook POST from a SHORT-LIVED DETACHED goroutine bound to its OWN
+// context.WithTimeout(context.Background(), s.webhookTimeout) — NOT s.ctx
+// (the whole-attempt ctx the ffmpeg -progress reader goroutine itself runs
+// under) — so a slow/adversarial callback_url endpoint can NEVER stall the
+// reader (Pitfall 5, T-42-07). Single attempt, error discarded
+// (drop-on-failure, D-04): a progress-webhook write must never fail or
+// block the conversion, mirroring the best-effort DB-write discipline this
+// method already applies above. This function structurally NEVER
+// references h.enqueuer, h.webhookRepo, or queue.NewWebhookDeliverTask —
+// there is no enqueue call anywhere in it, which is what makes the
+// separation from the terminal retry/dead-letter budget (T-42-08) a
+// construction guarantee, not a runtime check.
+func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
+	body, err := json.Marshal(map[string]any{
+		"job_id":       s.jobID,
+		"event":        "progress",
+		"progress_pct": u.Pct,
+		"eta_seconds":  u.ETA,
+	})
+	if err != nil {
+		// Best-effort: a marshal failure for this fixed, non-adversarial
+		// shape should never happen; silently drop the fire rather than
+		// fail the conversion. Library code never logs (CLAUDE.md).
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), s.webhookTimeout)
+		defer cancel()
+		ts := time.Now().Unix()
+		sig := webhook.SignPayload(s.webhookSecret, ts, body)
+		_, _ = s.webhookDelivr.Deliver(ctx, s.callbackURL, body, ts, sig)
+	}()
 }
 
 // runConvertWithOptionalProgress is the D-01 seam: it type-asserts conv for
@@ -1191,25 +1281,38 @@ func (s *progressSink) Update(u convert.ProgressUpdate) {
 // happens to also implement ProgressConverter. On a SUCCESSFUL
 // ConvertWithProgress return, the terminal 100% write BYPASSES the throttle
 // entirely and always lands (D-03a) — issued directly against repo, not
-// through the sink's gated Update. On an ERROR return, nothing further is
-// written: the last throttled value stays frozen (D-06) — this is simply
-// the terminal-100 call on the line below never executing on that branch,
-// not separate "reset" logic. Factored out of process() as a package-level
+// through the sink's gated Update, and fires NO progress webhook (A2: the
+// terminal `completed` webhook, HandleWebhookDeliver, already covers
+// completion — a duplicate progress=100 fire here would be redundant with
+// that durable event). On an ERROR return, nothing further is written: the
+// last throttled value stays frozen (D-06) — this is simply the
+// terminal-100 call on the line below never executing on that branch, not
+// separate "reset" logic. Factored out of process() as a package-level
 // function (mirrors enforceAudioGuardBeforeConvert) so this whole contract
 // is unit-testable with a fake ProgressConverter and a spy progressRepo,
 // without a live Postgres/S3/live-ffmpeg Handler.
-func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, minInterval time.Duration, minDeltaPct int) error {
+//
+// webhookEnabled/callbackURL/webhookDelivr/webhookSecret/webhookTimeout are
+// the D-04 opt-in inline progress-webhook config, threaded straight onto
+// the constructed progressSink; every non-opted-in job and every
+// non-av-worker cmd passes webhookEnabled=false / webhookDelivr=nil, which
+// keeps the DB-write path byte-identical to before this plan.
+func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) error {
 	pconv, ok := conv.(convert.ProgressConverter)
 	if !ok || minInterval <= 0 {
 		return conv.Convert(ctx, inPath, outPath, opts)
 	}
 
-	sink := &progressSink{ctx: ctx, repo: repo, jobID: jobID, minInterval: minInterval, minDeltaPct: minDeltaPct}
+	sink := &progressSink{
+		ctx: ctx, repo: repo, jobID: jobID, minInterval: minInterval, minDeltaPct: minDeltaPct,
+		webhookEnabled: webhookEnabled, callbackURL: callbackURL, webhookDelivr: webhookDelivr,
+		webhookSecret: webhookSecret, webhookTimeout: webhookTimeout,
+	}
 	if err := pconv.ConvertWithProgress(ctx, inPath, outPath, opts, sink); err != nil {
 		return err
 	}
-	// D-03a: terminal 100% write bypasses the throttle entirely, always
-	// lands on a successful convert.
+	// D-03a/A2: terminal 100% write bypasses the throttle entirely, always
+	// lands on a successful convert, and fires no progress webhook.
 	_ = repo.UpdateProgress(ctx, jobID, 100, nil)
 	return nil
 }
@@ -1273,7 +1376,7 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// function so the ordering is unit-testable without a live Postgres/S3
 	// Handler.
 	if err := enforceAudioGuardBeforeConvert(attemptCtx, job.Engine, inPath, h.audioMaxDuration, func() error {
-		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct); err != nil {
+		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil
