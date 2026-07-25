@@ -481,6 +481,49 @@ func TestPresetProvenanceNullForNonPreset(t *testing.T) {
 	}
 }
 
+// TestCreateProgressWebhookRoundTrip covers PUSH-02/D-03: the progress_webhook
+// opt-in flag (0008_progress_webhook.sql) round-trips through Create/Get
+// independently of the options jsonb column, and every pre-existing call
+// shape that omits it still defaults to false.
+func TestCreateProgressWebhookRoundTrip(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	idTrue, err := r.Create(ctx, CreateParams{
+		ClientID: createTestClient(t, r), Operation: "convert", Engine: "av",
+		SourceFormat: "mp4", TargetFormat: "webm",
+		CallbackURL:     "https://example.com/hook",
+		ProgressWebhook: true,
+		Input:           Input{ObjectKey: "uploads/pw1/0-in.mp4", Filename: "in.mp4", Format: "mp4"},
+	})
+	if err != nil {
+		t.Fatalf("Create (true): %v", err)
+	}
+	gotTrue, err := r.Get(ctx, idTrue)
+	if err != nil {
+		t.Fatalf("Get (true): %v", err)
+	}
+	if !gotTrue.ProgressWebhook {
+		t.Fatalf("ProgressWebhook = false, want true")
+	}
+
+	idFalse, err := r.Create(ctx, CreateParams{
+		ClientID: createTestClient(t, r), Operation: "convert", Engine: "av",
+		SourceFormat: "mp4", TargetFormat: "webm",
+		Input: Input{ObjectKey: "uploads/pw2/0-in.mp4", Filename: "in.mp4", Format: "mp4"},
+	})
+	if err != nil {
+		t.Fatalf("Create (default/omitted): %v", err)
+	}
+	gotFalse, err := r.Get(ctx, idFalse)
+	if err != nil {
+		t.Fatalf("Get (default/omitted): %v", err)
+	}
+	if gotFalse.ProgressWebhook {
+		t.Fatalf("ProgressWebhook = true, want false (zero value / DEFAULT false)")
+	}
+}
+
 func TestGetNotFound(t *testing.T) {
 	r := newTestRepo(t)
 	if _, err := r.Get(context.Background(), uuid.New()); err != ErrNotFound {
