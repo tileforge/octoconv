@@ -3,6 +3,7 @@ package jobs
 import (
 	"encoding/base64"
 	"fmt"
+	"hash/crc32"
 	"strings"
 	"time"
 
@@ -18,23 +19,32 @@ type Cursor struct {
 	ID        uuid.UUID
 }
 
-// cursorSep separates the two fields in the cursor's decoded payload.
-// CreatedAt is formatted as RFC3339Nano, which never contains "|", so a
-// simple split is unambiguous.
+// cursorSep separates the fields in the cursor's decoded payload.
+// CreatedAt is formatted as RFC3339Nano and the checksum is lowercase hex —
+// neither ever contains "|", so a bounded split is unambiguous.
 const cursorSep = "|"
 
 // EncodeCursor produces the opaque, base64-encoded pagination token for c.
 // The encoding is an implementation detail (D-03, "Claude's Discretion"): the
-// only external contract is that DecodeCursor(EncodeCursor(c)) == c.
+// external contract is that DecodeCursor(EncodeCursor(c)) == c, and that any
+// corrupted/tampered token is rejected. A CRC32 checksum prefixes the payload
+// so a single flipped character is detected deterministically rather than
+// silently decoding to a different-but-valid (created_at, id). This is a
+// corruption guard, not an authentication boundary — the real ownership
+// backstop is the unconditional client_id scope in Repo.List's WHERE, so a
+// keyed MAC (and its secret management) would be disproportionate here.
 func EncodeCursor(c Cursor) string {
 	payload := c.CreatedAt.Format(time.RFC3339Nano) + cursorSep + c.ID.String()
-	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+	sum := crc32.ChecksumIEEE([]byte(payload))
+	full := fmt.Sprintf("%08x", sum) + cursorSep + payload
+	return base64.RawURLEncoding.EncodeToString([]byte(full))
 }
 
 // DecodeCursor parses an opaque cursor token produced by EncodeCursor. Any
-// structural problem — empty input, invalid base64, missing separator, an
-// unparseable timestamp, or an invalid uuid — returns a wrapped error rather
-// than panicking or silently returning a wrong Cursor (T-40-02).
+// structural problem — empty input, invalid base64, missing separator, a
+// checksum mismatch (corruption/tampering), an unparseable timestamp, or an
+// invalid uuid — returns a wrapped error rather than panicking or silently
+// returning a wrong Cursor (T-40-02).
 func DecodeCursor(s string) (Cursor, error) {
 	if s == "" {
 		return Cursor{}, fmt.Errorf("decode cursor: empty cursor")
@@ -45,7 +55,19 @@ func DecodeCursor(s string) (Cursor, error) {
 		return Cursor{}, fmt.Errorf("decode cursor: %w", err)
 	}
 
-	parts := strings.SplitN(string(raw), cursorSep, 2)
+	// Split off the checksum prefix first, then validate it against the
+	// remaining payload before trusting any field.
+	sumAndPayload := strings.SplitN(string(raw), cursorSep, 2)
+	if len(sumAndPayload) != 2 {
+		return Cursor{}, fmt.Errorf("decode cursor: malformed payload (missing checksum)")
+	}
+	payload := sumAndPayload[1]
+	want := fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(payload)))
+	if sumAndPayload[0] != want {
+		return Cursor{}, fmt.Errorf("decode cursor: checksum mismatch (corrupted or tampered cursor)")
+	}
+
+	parts := strings.SplitN(payload, cursorSep, 2)
 	if len(parts) != 2 {
 		return Cursor{}, fmt.Errorf("decode cursor: malformed payload (missing separator)")
 	}
