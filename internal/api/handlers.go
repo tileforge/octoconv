@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	formFieldFile        = "file"
-	formFieldTarget      = "target"
-	formFieldCallbackURL = "callback_url"
-	formFieldOpts        = "opts"
-	formFieldPreset      = "preset"
-	operationConv        = "convert"
+	formFieldFile            = "file"
+	formFieldTarget          = "target"
+	formFieldCallbackURL     = "callback_url"
+	formFieldProgressWebhook = "progress_webhook"
+	formFieldOpts            = "opts"
+	formFieldPreset          = "preset"
+	operationConv            = "convert"
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
@@ -413,6 +414,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// progress_webhook is a top-level opt-in delivery flag (D-03/PUSH-02),
+	// NOT part of opts (delivery config is orthogonal to conversion
+	// params). It gates delivery to the SAME already-SSRF-validated
+	// callback_url above -- no second validateCallbackURL call site (T-42-01).
+	// Opting in with no delivery target is a silent no-op, not an error: the
+	// worker simply has nothing to POST to (Assumption A4).
+	progressWebhook := r.FormValue(formFieldProgressWebhook) == "true"
+	if progressWebhook && callbackURL == "" {
+		progressWebhook = false
+	}
+
 	// opts is optional (D-02); an empty value or the literal "{}" means "no
 	// opts" (D-09) and normalizedOpts stays nil, skipping validation
 	// entirely. Otherwise: size cap, then engine-keyed syntax parse
@@ -597,16 +609,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
-		ID:            jobID,
-		ClientID:      client.ID,
-		Operation:     operationConv,
-		Engine:        engine,
-		SourceFormat:  detected,
-		TargetFormat:  target,
-		CallbackURL:   callbackURL,
-		Opts:          normalizedOpts,
-		PresetName:    presetNameProv,
-		PresetVersion: presetVerProv,
+		ID:              jobID,
+		ClientID:        client.ID,
+		Operation:       operationConv,
+		Engine:          engine,
+		SourceFormat:    detected,
+		TargetFormat:    target,
+		CallbackURL:     callbackURL,
+		ProgressWebhook: progressWebhook,
+		Opts:            normalizedOpts,
+		PresetName:      presetNameProv,
+		PresetVersion:   presetVerProv,
 		Input: jobs.Input{
 			Ordinal:     0,
 			ObjectKey:   key,

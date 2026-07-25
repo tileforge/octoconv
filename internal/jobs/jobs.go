@@ -56,7 +56,6 @@ type Job struct {
 	SourceDurationSeconds *float64
 }
 
-
 // Input is a row of the job_inputs table.
 type Input struct {
 	Ordinal     int
