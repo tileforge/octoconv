@@ -24,7 +24,7 @@ Requirements for milestone v1.9. Each maps to a roadmap phase.
 
 ### Job Listing (JLIST)
 
-- [ ] **JLIST-01**: `GET /v1/jobs` returns only the caller's own jobs (SQL-layer `WHERE client_id = $1`, never Go-side filtering), with optional `status` and `engine` filters.
+- [x] **JLIST-01**: `GET /v1/jobs` returns only the caller's own jobs (SQL-layer `WHERE client_id = $1`, never Go-side filtering), with optional `status` and `engine` filters.
 - [x] **JLIST-02**: Listing uses keyset pagination (stable under this table's continuous inserts) with a server-enforced max page size; each returned job includes its `status` and `progress_pct` from the denormalized columns (no N+1).
 
 ### Live Push (PUSH)
@@ -69,7 +69,7 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 | CNCL-02 | Phase 39 | Complete |
 | CNCL-03 | Phase 39 | Complete |
 | CNCL-04 | Phase 39 | Complete |
-| JLIST-01 | Phase 40 | Pending |
+| JLIST-01 | Phase 40 | Complete |
 | JLIST-02 | Phase 40 | Complete |
 | PUSH-01 | Phase 42 | Pending |
 | PUSH-02 | Phase 42 | Pending |

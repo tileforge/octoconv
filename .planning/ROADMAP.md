@@ -136,7 +136,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 
 - [x] **Phase 38: Schema Foundation** - Job rows gain the nullable progress/ETA columns every later phase depends on, with zero behavior change (completed 2026-07-24)
 - [x] **Phase 39: Cancellation (end-to-end)** - Client can cancel a queued/active job and trust the real in-flight engine process is dead — never resurrected (completed 2026-07-24)
-- [ ] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift
+- [x] **Phase 40: Job Listing** - Client can list and page through their own jobs with no cross-client leakage and no pagination drift (completed 2026-07-25)
 - [ ] **Phase 41: Progress Core** - Client sees an honest, real-time `progress_pct`/`eta_seconds` for in-flight av/audio jobs — never fabricated
 - [ ] **Phase 42: Live Push** - Client can watch progress via SSE or an opt-in webhook event instead of polling
 
@@ -180,7 +180,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   4. Each returned job includes `status` and `progress_pct` read directly from the `jobs` row (no N+1 query per listed job).
 **Plans**: 2 plans
 - [x] 40-01-PLAN.md — internal/jobs: JobSummary + opaque cursor codec + client-scoped keyset Repo.List (+ two-client leak & keyset-stability DB tests)
-- [ ] 40-02-PLAN.md — internal/api: GET /v1/jobs handler (fail-closed filters, page-size clamp, envelope) + env wiring
+- [x] 40-02-PLAN.md — internal/api: GET /v1/jobs handler (fail-closed filters, page-size clamp, envelope) + env wiring
 
 ### Phase 41: Progress Core
 **Goal**: A client polling `GET /v1/jobs/{id}` for an in-flight av/audio job sees an honest, real-time `progress_pct` and `eta_seconds` — genuinely `null` (never fabricated) for engines with no machine-readable signal — and the ffmpeg progress pipe never regresses the hardened process-group-kill contract.
@@ -248,7 +248,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 37. KEDA/Helm Chart Integration | v1.8 | 3/3 | Complete    | 2026-07-23 |
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
-| 40. Job Listing | v1.9 | 1/2 | In Progress|  |
+| 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
 | 41. Progress Core | v1.9 | 0/? | Not started | - |
 | 42. Live Push | v1.9 | 0/? | Not started | - |
 

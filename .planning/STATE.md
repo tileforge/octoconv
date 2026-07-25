@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: executing
-stopped_at: Completed 40-01-PLAN.md
-last_updated: "2026-07-25T03:19:20.399Z"
+status: verifying
+stopped_at: Completed 40-02-PLAN.md
+last_updated: "2026-07-25T03:29:10.498Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 7
-  completed_plans: 6
-  percent: 40
+  completed_plans: 7
+  percent: 60
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 Phase: 40 (Job Listing) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-25
 
 ## Performance Metrics
@@ -102,6 +102,7 @@ Last activity: 2026-07-25
 | Phase 39 P02 | 20min | 2 tasks | 3 files |
 | Phase 39 P03 | 15min | 3 tasks | 8 files |
 | Phase 40 P01 | 20min | 2 tasks | 5 files |
+| Phase 40 P02 | 25min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -126,6 +127,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 39]: Registry.Cancel releases the mutex before invoking the stored CancelFunc to avoid any reentrancy deadlock risk
 - [Phase 39]: isCanceled checked as first branch in every Handle*Convert (D-07), independent of engine-scoped terminal classifiers
 - [Phase 40]: Repo.List: client_id=$1 unconditional in SQL WHERE; opaque base64(RFC3339Nano|uuid) cursor; jobs_client_created_idx reused, no new index
+- [Phase 40]: handleListJobs scopes exclusively to auth.ClientFromContext's client.ID -- never a client-supplied id -- passed as the sole clientID to Repo.List
 
 ### Quick Tasks Completed
 
@@ -197,8 +199,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T03:19:20.386Z
-Stopped at: Completed 40-01-PLAN.md
+Last session: 2026-07-25T03:28:59.474Z
+Stopped at: Completed 40-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
