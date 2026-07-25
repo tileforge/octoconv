@@ -46,6 +46,17 @@ type fakeRepo struct {
 	// Cancel has been invoked once — simulating the D-02 terminal-race
 	// (the job reached done/failed between the initial read and Cancel).
 	getJobAfterCancel *jobs.Job
+	// listResult/listNext/listErr configure List's return; the list* capture
+	// fields record the args handleListJobs actually passed, so tests can
+	// assert the caller's client.ID is the sole scope (T-40-04) and the
+	// clamped limit reached the repo.
+	listResult   []jobs.JobSummary
+	listNext     *jobs.Cursor
+	listErr      error
+	listClientID uuid.UUID
+	listFilter   jobs.ListFilter
+	listCursor   *jobs.Cursor
+	listLimit    int
 }
 
 func (f *fakeRepo) Create(_ context.Context, p jobs.CreateParams) (uuid.UUID, error) {
@@ -70,6 +81,13 @@ func (f *fakeRepo) Outputs(_ context.Context, _ uuid.UUID) ([]jobs.Output, error
 func (f *fakeRepo) Cancel(_ context.Context, _ uuid.UUID) error {
 	f.canceled = true
 	return f.cancelErr
+}
+func (f *fakeRepo) List(_ context.Context, clientID uuid.UUID, filter jobs.ListFilter, cursor *jobs.Cursor, limit int) ([]jobs.JobSummary, *jobs.Cursor, error) {
+	f.listClientID = clientID
+	f.listFilter = filter
+	f.listCursor = cursor
+	f.listLimit = limit
+	return f.listResult, f.listNext, f.listErr
 }
 
 type fakeStorage struct {

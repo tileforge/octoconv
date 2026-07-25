@@ -143,6 +143,8 @@ func main() {
 		IPRateLimitRPM:               int(envInt64("RATE_LIMIT_IP_RPM", 60)),
 		ClientRateLimitRPM:           int(envInt64("RATE_LIMIT_CLIENT_RPM", 120)),
 		OperatorClientIDs:            operatorIDs,
+		JobsListDefaultPageSize:      int(envInt64("JOBS_LIST_DEFAULT_PAGE_SIZE", 20)),
+		JobsListMaxPageSize:          int(envInt64("JOBS_LIST_MAX_PAGE_SIZE", 100)),
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher

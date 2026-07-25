@@ -21,6 +21,10 @@ type Repo interface {
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	Outputs(ctx context.Context, id uuid.UUID) ([]jobs.Output, error)
 	Cancel(ctx context.Context, id uuid.UUID) error
+	// List is the client-scoped, keyset-paginated listing read (JLIST-01/02,
+	// Plan 01). clientID is ALWAYS the caller's own auth.ClientFromContext
+	// id — handleListJobs never passes a client-supplied id (D-08).
+	List(ctx context.Context, clientID uuid.UUID, f jobs.ListFilter, cursor *jobs.Cursor, limit int) ([]jobs.JobSummary, *jobs.Cursor, error)
 }
 
 // CancelPublisher is the nil-safe seam handleCancelJob best-effort publishes
@@ -134,6 +138,12 @@ type Server struct {
 	// NewServer's signature stays stable for existing callers
 	// (handlers_test.go, cmd/api/main.go).
 	cancelPublisher CancelPublisher
+	// jobsListDefaultPageSize / jobsListMaxPageSize are the D-06 page-size
+	// knobs for GET /v1/jobs: the default page size used when ?limit is
+	// absent/unparseable, and the hard ceiling ?limit clamps to (never
+	// rejected above it — that's the DoS guard, T-40-06).
+	jobsListDefaultPageSize int
+	jobsListMaxPageSize     int
 }
 
 // SetCancelPublisher installs the CancelPublisher a successful cancel
@@ -164,6 +174,12 @@ type Config struct {
 	// including an otherwise-valid resolved client, is denied the
 	// /v1/system/presets subtree.
 	OperatorClientIDs map[uuid.UUID]struct{}
+	// JobsListDefaultPageSize / JobsListMaxPageSize are the D-06 GET
+	// /v1/jobs page-size knobs. Zero triggers NewServer's 20/100 defaults --
+	// measure-don't-assume starting points, tunable via env without a code
+	// change.
+	JobsListDefaultPageSize int
+	JobsListMaxPageSize     int
 }
 
 // NewServer builds an API server. resolver authenticates every /v1 request
@@ -204,6 +220,12 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.ClientRateLimitRPM == 0 {
 		cfg.ClientRateLimitRPM = 120 // per-client, conservative for internal batch + interactive usage
 	}
+	if cfg.JobsListDefaultPageSize == 0 {
+		cfg.JobsListDefaultPageSize = 20 // D-06 default page size
+	}
+	if cfg.JobsListMaxPageSize == 0 {
+		cfg.JobsListMaxPageSize = 100 // D-06 clamp ceiling
+	}
 	operators := cfg.OperatorClientIDs
 	if operators == nil {
 		operators = map[uuid.UUID]struct{}{}
@@ -224,5 +246,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		ipRateRPM:                    cfg.IPRateLimitRPM,
 		clientRateRPM:                cfg.ClientRateLimitRPM,
 		operators:                    operators,
+		jobsListDefaultPageSize:      cfg.JobsListDefaultPageSize,
+		jobsListMaxPageSize:          cfg.JobsListMaxPageSize,
 	}
 }
