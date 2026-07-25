@@ -538,6 +538,16 @@ services:
       AUDIO_MAX_RETRY: "3"
       AUDIO_ENGINE_TIMEOUT: "742s"
       METRICS_ADDR: "127.0.0.1:9090"
+      # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
+      # webhooks (internal/worker fireDetached). MUST match webhook-worker-1/-2's
+      # WEBHOOK_SIGNING_SECRET exactly so a client verifies BOTH the throttled
+      # progress events AND the terminal done/failed event with the same key.
+      # Unset => cmd/av-worker fail-opens and progress webhooks are silently
+      # disabled ("🔕 progress webhooks disabled"), so this line is what makes
+      # progress_webhook=true actually deliverable in the compose deployment.
+      # PROGRESS_WEBHOOK_TIMEOUT left at the code default (1500ms, < the 2s
+      # PROGRESS_MIN_INTERVAL_SECONDS so at most one detached fire is in flight).
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
     deploy:
       resources:
         limits:
