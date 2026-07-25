@@ -503,9 +503,12 @@ This is the exact test shape the planner should require for PROG-05's live gate 
 
 **None of the core mechanics (fd-3 wiring, out_time_ms units, progress=end terminator, N/A handling, SIGKILL-drain safety) are assumptions — all were live-verified in this session against a real ffmpeg 8.1.2 binary.**
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Is the exact `n8.1.2` av-worker Docker image's `-progress` output byte-identical to this session's Homebrew capture?**
+> All three resolved during planning (Phase 41 plans, 2026-07-25):
+> **OQ1** → Plan 41-01 Task 1 operationalizes docker-image-first fixture capture (Homebrew fallback) as the committed golden fixture. **OQ2** → EMA alpha/warm-up hardcoded as package constants; only the two throttle gates carry env knobs (`PROGRESS_MIN_INTERVAL_SECONDS`/`PROGRESS_MIN_DELTA_PCT`) per the load-test mandate. **OQ3** → naming settled as `ProgressConverter`/`ConvertWithProgress` (D-01 seam) — Claude's Discretion, no drift.
+
+1. **Is the exact `n8.1.2` av-worker Docker image's `-progress` output byte-identical to this session's Homebrew capture?** — RESOLVED (OQ1 above)
    - What we know: Both report `ffmpeg version 8.1.2`/`n8.1.2`; the `-progress` machine-readable output format is generic encoder-loop infrastructure, not gated by any of the narrow `--enable-*` flags the project's from-source build restricts.
    - What's unclear: Whether any obscure ffmpeg build-flag combination could alter field presence/ordering (unlikely, unverified against the literal container binary).
    - Recommendation: The planner's Wave 0 should include capturing ONE real fixture from `docker run octoconv-av-worker:dev ffmpeg -progress pipe:3 ...` (the actual pinned build already present locally per `docker images`) as the committed golden fixture for parser unit tests, superseding this session's Homebrew capture as the canonical source.
