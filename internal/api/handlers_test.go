@@ -1245,6 +1245,93 @@ func TestGetJob_DonePresigned(t *testing.T) {
 	}
 }
 
+// TestGetJob_ProgressSurfaced pins PROG-01/PROG-04: an active av job with a
+// non-nil ProgressPct/EtaSeconds surfaces the real integers.
+func TestGetJob_ProgressSurfaced(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	pct, eta := 42, 17
+	repo := &fakeRepo{getJob: &jobs.Job{
+		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive,
+		Engine: convert.EngineAV, ProgressPct: &pct, EtaSeconds: &eta,
+	}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if got, ok := resp["progress_pct"].(float64); !ok || int(got) != 42 {
+		t.Fatalf("progress_pct = %v, want 42", resp["progress_pct"])
+	}
+	if got, ok := resp["eta_seconds"].(float64); !ok || int(got) != 17 {
+		t.Fatalf("eta_seconds = %v, want 17", resp["eta_seconds"])
+	}
+}
+
+// TestGetJob_ProgressNullForNonProgressEngine pins the "never fabricated"
+// domain boundary: a job with nil ProgressPct/EtaSeconds (every non-av
+// engine, or an av job before its first tick) surfaces a real JSON null for
+// both fields — never a fabricated 0 or absent key.
+func TestGetJob_ProgressNullForNonProgressEngine(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{getJob: &jobs.Job{
+		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive, Engine: convert.EngineImage,
+	}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	pctVal, pctPresent := resp["progress_pct"]
+	if !pctPresent || pctVal != nil {
+		t.Fatalf("progress_pct = %v (present=%v), want present and null", pctVal, pctPresent)
+	}
+	etaVal, etaPresent := resp["eta_seconds"]
+	if !etaPresent || etaVal != nil {
+		t.Fatalf("eta_seconds = %v (present=%v), want present and null", etaVal, etaPresent)
+	}
+}
+
+// TestGetJob_ProgressFrozenOnCancel pins D-06: a canceled-mid-stream job
+// surfaces its frozen last progress value — not null, not 100.
+func TestGetJob_ProgressFrozenOnCancel(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	pct := 63
+	repo := &fakeRepo{getJob: &jobs.Job{
+		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusCanceled,
+		Engine: convert.EngineAV, ProgressPct: &pct,
+	}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	got, ok := resp["progress_pct"].(float64)
+	if !ok || int(got) != 63 {
+		t.Fatalf("progress_pct = %v, want frozen 63 (not null, not 100)", resp["progress_pct"])
+	}
+}
+
 func TestGetJob_NotFound(t *testing.T) {
 	repo := &fakeRepo{getErr: jobs.ErrNotFound}
 	srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
