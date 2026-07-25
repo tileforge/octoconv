@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
 status: executing
-stopped_at: Completed 42-02-PLAN.md
-last_updated: "2026-07-25T17:27:17.901Z"
+stopped_at: Completed 42-03-PLAN.md
+last_updated: "2026-07-25T17:45:51.820Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 15
-  completed_plans: 13
+  completed_plans: 14
   percent: 80
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 42 (Live Push) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-25
 
@@ -107,6 +107,7 @@ Last activity: 2026-07-25
 | Phase 41 P02 | 55min | 2 tasks | 4 files |
 | Phase 41 P03 | 15min | 3 tasks | 9 files |
 | Phase 42 P02 | 45min | 2 tasks | 6 files |
+| Phase 42 P03 | 40min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -140,6 +141,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 41]: Terminal 100% write bypasses the throttle from the seam function strictly before MarkDone (D-03a); freeze-on-abort (D-06) is simply that call never executing on the error branch, proven with a spy-repo unit test
 - [Phase 41]: progressSink depends on a narrow progressRepo interface (not concrete *jobs.Repo) so throttle/bypass/freeze logic is unit-testable with a spy, without a live Postgres pool
 - [Phase 42]: PUSH-01 SSE: single-request-goroutine poll loop (no go func() in handleJobEvents) makes zero-goroutine-leak-on-disconnect/terminal/cap true by construction; http.NewResponseController(w).Flush() survives chi's middleware.Logger wrap
+- [Phase 42]: PROGRESS_WEBHOOK_TIMEOUT default 1500ms, shorter than PROGRESS_MIN_INTERVAL_SECONDS's 2s, so at most one detached progress-webhook fire is in flight per job
+- [Phase 42]: Terminal 100% progress write stays a direct repo call bypassing the sink and fires no progress webhook (A2) -- the terminal completed webhook already covers job completion
+- [Phase 42]: cmd/av-worker reuses the existing WEBHOOK_SIGNING_SECRET verbatim (no new secret/rotation) and fails open (progress webhooks silently disabled) when unset
 
 ### Quick Tasks Completed
 
@@ -212,8 +216,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T17:27:17.888Z
-Stopped at: Completed 42-02-PLAN.md
+Last session: 2026-07-25T17:43:26.452Z
+Stopped at: Completed 42-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
