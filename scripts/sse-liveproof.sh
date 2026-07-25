@@ -440,7 +440,10 @@ PASS_COUNT=$((PASS_COUNT + 1))
 echo "PASS: terminal frame reports a legal terminal status ($TERMINAL_STATUS)" >&2
 
 PRE_TERMINAL_FILE="$WORKDIR/pre-terminal-lines.txt"
-head -n -1 "$DATA_LINES_FILE" >"$PRE_TERMINAL_FILE"
+# All lines except the last (the terminal frame). `head -n -1` is a GNU
+# coreutils-ism that BSD/macOS `head` rejects ("illegal line count -- -1");
+# `sed '$d'` (delete last line) is portable on both.
+sed '$d' "$DATA_LINES_FILE" >"$PRE_TERMINAL_FILE"
 PRE_TERMINAL_COUNT=$(wc -l <"$PRE_TERMINAL_FILE" | tr -d ' ')
 assert_ge "$PRE_TERMINAL_COUNT" 2 "event: progress frames observed BEFORE the terminal frame (initial connect emit + >=1 real incremental tick)"
 
