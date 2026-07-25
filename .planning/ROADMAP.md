@@ -192,7 +192,11 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
   3. A live multi-job test confirms progress writes never contend with the guarded status-transition lock and never append to `job_events`; writes are throttled by BOTH a time interval AND a ≥1% delta, and the terminal 100% write always lands even under throttling.
   4. `eta_seconds` reflects ffmpeg's `speed=` field through a warm-up/smoothing window, returning `null` before it is derivable.
   5. A live SIGKILL-mid-stream test (timeout or cancel) on a job using the progress pipe leaves zero orphaned engine processes AND zero leaked reader goroutines — verified by live process-table/goroutine inspection, not just `go test -race`.
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 41-01-PLAN.md — Progress -progress block parser + percent/EMA-ETA math + seam contracts (TDD, fixture-tested)
+- [ ] 41-02-PLAN.md — runCommandStreaming fd-3 leak-safe exec + AVConverter.ConvertWithProgress ramp (exec.go unchanged)
+- [ ] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
+- [ ] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct)
 
 ### Phase 42: Live Push
 **Goal**: A client can watch a job's progress in real time — via SSE or an opt-in webhook event — without polling, and without a stale progress delivery ever competing with the terminal event's durable-retry budget.
