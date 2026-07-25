@@ -671,9 +671,12 @@ func TestProgressSinkUpdateNonBlockingOnSlowWebhook(t *testing.T) {
 
 **None of the core mechanics (SSE headers/framing, `http.ResponseController` behavior through chi's wrap chain, the existing HMAC/deliver reuse, the exact migration-gap finding, the synchronous-blocking risk in Pitfall 5) are assumptions — all were verified by reading this repository's actual code or Go's documented stdlib behavior in this session.**
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Should the terminal 100% progress write also fire a best-effort progress webhook?**
+> All three resolved during planning (Phase 42 plans, 2026-07-25):
+> **OQ1** (terminal-100 webhook) → RESOLVED: accept option (a) — no progress webhook from the terminal bypass; the `completed` webhook conveys completion (42-03 Task 1 codes this with a comment). **OQ2** (SSE/webhook env defaults) → RESOLVED: adopted the recommended names/defaults — `SSE_POLL_INTERVAL`/`SSE_HEARTBEAT_INTERVAL`/`SSE_MAX_STREAM_DURATION` (42-02), `PROGRESS_WEBHOOK_TIMEOUT`=1500ms (42-03, tightened below 2s per plan-checker W1). **OQ3** (SSRF flag reuse) → RESOLVED: `progress_webhook` is a boolean gating delivery to the already-validated `callback_url` — no second SSRF path (42-03 threat model T-42-10).
+
+1. **Should the terminal 100% progress write also fire a best-effort progress webhook?** — RESOLVED (OQ1 above)
    - What we know: `runConvertWithOptionalProgress`'s terminal bypass calls `repo.UpdateProgress` directly, not through `progressSink.Update` — so as designed, it structurally CANNOT also fire a webhook without an explicit additional call site.
    - What's unclear: CONTEXT.md is silent on whether a client should ever see an explicit `progress:100` webhook, or whether the terminal `completed` webhook alone is sufficient.
    - Recommendation: Treat as NOT required (Assumption A2) — document the choice in the plan so a future bug report ("no progress:100 webhook") is recognized as by-design, not a regression.
