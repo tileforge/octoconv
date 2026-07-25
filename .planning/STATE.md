@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.9
 milestone_name: Job Progress & Control
-status: verifying
-stopped_at: Phase 42 context gathered
-last_updated: "2026-07-25T08:29:06.689Z"
+status: executing
+stopped_at: Completed 42-02-PLAN.md
+last_updated: "2026-07-25T17:27:17.901Z"
 last_activity: 2026-07-25
 progress:
   total_phases: 5
   completed_phases: 4
-  total_plans: 11
-  completed_plans: 11
+  total_plans: 15
+  completed_plans: 13
   percent: 80
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 41 — Progress Core
+**Current focus:** Phase 42 — Live Push
 
 ## Current Position
 
-Phase: 41 (Progress Core) — EXECUTING
-Plan: 4 of 4
-Status: Task 1 of 41-04 complete (commit 772d65e — scripts/av-progress-liveproof.sh authored, static-checked); Task 2 (checkpoint:human-verify, gate=blocking — operator-run scripts/av-progress-liveproof.sh) PENDING. Plan NOT closed, Phase 41 NOT complete.
+Phase: 42 (Live Push) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
 Last activity: 2026-07-25
 
 ## Performance Metrics
@@ -106,6 +106,7 @@ Last activity: 2026-07-25
 | Phase 41 P01 | 20min | 2 tasks | 3 files |
 | Phase 41 P02 | 55min | 2 tasks | 4 files |
 | Phase 41 P03 | 15min | 3 tasks | 9 files |
+| Phase 42 P02 | 45min | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -138,6 +139,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 - [Phase 41]: Progress writes bypass transition() entirely (D-03b): non-locking, monotonic UPDATE with self-conditioning WHERE status='active' guard, never SELECT...FOR UPDATE, never job_events
 - [Phase 41]: Terminal 100% write bypasses the throttle from the seam function strictly before MarkDone (D-03a); freeze-on-abort (D-06) is simply that call never executing on the error branch, proven with a spy-repo unit test
 - [Phase 41]: progressSink depends on a narrow progressRepo interface (not concrete *jobs.Repo) so throttle/bypass/freeze logic is unit-testable with a spy, without a live Postgres pool
+- [Phase 42]: PUSH-01 SSE: single-request-goroutine poll loop (no go func() in handleJobEvents) makes zero-goroutine-leak-on-disconnect/terminal/cap true by construction; http.NewResponseController(w).Flush() survives chi's middleware.Logger wrap
 
 ### Quick Tasks Completed
 
@@ -210,9 +212,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T08:29:06.676Z
-Stopped at: Phase 42 context gathered
-Resume file: .planning/phases/42-live-push/42-CONTEXT.md
+Last session: 2026-07-25T17:27:17.888Z
+Stopped at: Completed 42-02-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
