@@ -13,7 +13,7 @@ Requirements for milestone v1.9. Each maps to a roadmap phase.
 - [x] **PROG-02**: The source media duration (already probed transiently by ffprobe for av/audio) is persisted on the job row as the percent denominator; non-ffmpeg jobs leave it null.
 - [x] **PROG-03**: Progress is written through a non-locking update path that never contends on the guarded status-transition lock and never appends to the `job_events` audit log; writes are throttled by BOTH a time interval AND a ≥1% delta, and the terminal 100% write always lands.
 - [x] **PROG-04**: `GET /v1/jobs/{id}` returns an `eta_seconds` (time remaining) derived from ffmpeg's `speed=` field with a warm-up/smoothing window; `null` when not derivable.
-- [ ] **PROG-05**: The ffmpeg progress pipe preserves the hardened process-group-kill contract — a job that times out or is canceled mid-stream leaves zero orphaned engine processes AND zero leaked reader goroutines (live-verified, not just `go test -race`).
+- [x] **PROG-05**: The ffmpeg progress pipe preserves the hardened process-group-kill contract — a job that times out or is canceled mid-stream leaves zero orphaned engine processes AND zero leaked reader goroutines (live-verified, not just `go test -race`). ✓ Live-verified 2026-07-25: scripts/av-progress-liveproof.sh 40/40 PASS on docker-compose — 5 ramp+kill cycles, ffmpeg PIDs gone from process table, go_goroutines 22→25 (delta 3 ≤ 5), progress_pct frozen on cancel.
 
 ### Cancellation (CNCL)
 
@@ -64,7 +64,7 @@ Explicitly excluded for v1.9, documented to prevent scope creep.
 | PROG-02 | Phase 41 | Complete |
 | PROG-03 | Phase 41 | Complete |
 | PROG-04 | Phase 41 | Complete |
-| PROG-05 | Phase 41 | Pending |
+| PROG-05 | Phase 41 | Complete |
 | CNCL-01 | Phase 39 | Complete |
 | CNCL-02 | Phase 39 | Complete |
 | CNCL-03 | Phase 39 | Complete |

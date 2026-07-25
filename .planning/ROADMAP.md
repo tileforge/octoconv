@@ -196,7 +196,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 - [x] 41-01-PLAN.md — Progress -progress block parser + percent/EMA-ETA math + seam contracts (TDD, fixture-tested)
 - [x] 41-02-PLAN.md — runCommandStreaming fd-3 leak-safe exec + AVConverter.ConvertWithProgress ramp (exec.go unchanged)
 - [x] 41-03-PLAN.md — Non-locking UpdateProgress + throttle sink + terminal-100/freeze + null-aware GET surfacing + env knobs
-- [ ] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct) — Task 1 done (scripts/av-progress-liveproof.sh authored, static-checked); Task 2 (operator live-run checkpoint) PENDING, see 41-04-SUMMARY.md
+- [x] 41-04-PLAN.md — Live SIGKILL-mid-stream operator gate (zero orphaned procs + zero leaked goroutines + frozen pct) — operator live-run PASS 2026-07-25 (40/40, scripts/av-progress-liveproof.sh)
 
 ### Phase 42: Live Push
 **Goal**: A client can watch a job's progress in real time — via SSE or an opt-in webhook event — without polling, and without a stale progress delivery ever competing with the terminal event's durable-retry budget.
@@ -253,7 +253,7 @@ Full details: `.planning/milestones/v1.8-ROADMAP.md`
 | 38. Schema Foundation | v1.9 | 1/1 | Complete    | 2026-07-24 |
 | 39. Cancellation (end-to-end) | v1.9 | 4/4 | Complete    | 2026-07-24 |
 | 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
-| 41. Progress Core | v1.9 | 3/4 | In Progress|  |
+| 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 0/? | Not started | - |
 
 ---

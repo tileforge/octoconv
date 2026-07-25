@@ -3,7 +3,7 @@ phase: 41-progress-core
 plan: 04
 subsystem: testing
 tags: [bash, docker-compose, ffmpeg, procfs, prometheus, av, progress, live-proof]
-status: Task 1 complete — Task 2 (operator live-run) PENDING, not yet run
+status: complete — Task 1 (script authored) + Task 2 (operator live-run) PASS 2026-07-25 (40/40 assertions, PROG-05 closed)
 
 # Dependency graph
 requires:
@@ -47,7 +47,16 @@ completed: 2026-07-25 (Task 1 only — plan NOT closed)
 
 # Phase 41 Plan 04: PROG-05 Live SIGKILL-Mid-Progress Proof Script Summary
 
-**Authored scripts/av-progress-liveproof.sh — a docker-compose-live operator gate that forces a real hevc@1080 ffmpeg re-encode ramp, kills it mid-stream, and hard-gates on zero orphaned processes, zero goroutine growth across 5 repeated cycles, and a frozen (non-null, non-100) progress_pct — Task 2 (the actual live run) is a PENDING operator checkpoint, not yet executed.**
+**Authored scripts/av-progress-liveproof.sh — a docker-compose-live operator gate that forces a real hevc@1080 ffmpeg re-encode ramp, kills it mid-stream, and hard-gates on zero orphaned processes, zero goroutine growth across 5 repeated cycles, and a frozen (non-null, non-100) progress_pct. Task 2 (the live run) was executed on the live docker-compose stack on 2026-07-25: 40/40 assertions PASS — ffmpeg PIDs (533/673/812/951/1090) confirmed gone from the av-worker process table across all 5 cycles, go_goroutines 22→25 (delta 3 ≤ 5 tolerance) proving zero reader-goroutine leak, a mid-flight cancel froze progress_pct at 1 (not null, not 100), and a completed transcode independently landed progress_pct=100. PROG-05 CLOSED.**
+
+## Live Gate Result (Task 2, operator-run 2026-07-25)
+
+- **Overall:** PASS (40/40 assertions).
+- **First run** failed at STEP 4b due to a harness bug (`assert_*`/`log` wrote PASS lines to stdout; `PRIMARY_JOB_ID=$(rampThenKillOneCycle …)` captured them, corrupting the job id) — the PRODUCT was correct throughout (Postgres proved status=canceled + progress_pct frozen at 1). Fixed by routing diagnostics to stderr (commit `b0db519`, same class as Phase 39's two cancel-liveproof fixes); re-run clean.
+- **Zero orphaned processes:** captured ffmpeg PID gone from the process table within 15s of cancel, all 5 cycles.
+- **Zero leaked goroutines (the hard gate `-race` can't prove):** go_goroutines 22→25 across 5 ramp+kill cycles (delta 3 ≤ 5).
+- **D-06 freeze:** canceled job's progress_pct stayed at its last mid-stream value (1), never null-reset, never forced to 100.
+- **Terminal 100:** a completed transcode landed progress_pct=100 exactly.
 
 ## Performance
 
