@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/minio/minio-go/v7"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/webhook"
 )
 
 func TestIsTerminalStorageNoSuchKey(t *testing.T) {
@@ -695,7 +699,7 @@ func TestProgressThrottle(t *testing.T) {
 				{Pct: 10}, {Pct: 11}, {Pct: 12}, {Pct: 100},
 			},
 		}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1); err != nil {
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if conv.plainCalled {
@@ -722,7 +726,7 @@ func TestProgressThrottle(t *testing.T) {
 	t.Run("non-progress converter falls back to plain Convert unchanged", func(t *testing.T) {
 		repo := &spyProgressRepo{}
 		conv := &fakeNonProgressConverter{}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1); err != nil {
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if !conv.plainCalled {
@@ -736,7 +740,7 @@ func TestProgressThrottle(t *testing.T) {
 	t.Run("progress converter with throttling disabled (minInterval<=0) uses plain Convert", func(t *testing.T) {
 		repo := &spyProgressRepo{}
 		conv := &fakeProgressConverter{sourceSecs: 60, updates: []convert.ProgressUpdate{{Pct: 50}}}
-		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 0, 0); err != nil {
+		if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, jobID, 0, 0, false, "", nil, nil, 0); err != nil {
 			t.Fatalf("runConvertWithOptionalProgress: %v", err)
 		}
 		if !conv.plainCalled {
@@ -760,11 +764,147 @@ func TestProgressFreezeOnAbort(t *testing.T) {
 		updates:    []convert.ProgressUpdate{{Pct: 30}},
 		err:        errors.New("simulated mid-stream ffmpeg failure"),
 	}
-	err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), 2*time.Second, 1)
+	err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), 2*time.Second, 1, false, "", nil, nil, 0)
 	if err == nil {
 		t.Fatal("runConvertWithOptionalProgress = nil error, want the simulated failure propagated")
 	}
 	if len(repo.updates) != 1 || repo.updates[0].pct != 30 {
 		t.Fatalf("UpdateProgress calls = %+v, want exactly one (the throttled 30%% tick, no write after error — D-06 freeze)", repo.updates)
+	}
+}
+
+// --- Detached best-effort progress-webhook fire (D-04, PUSH-02, T-42-07/T-42-08) ---
+
+// spyProgressWebhookDeliverer is a fake progressWebhookDeliverer recording
+// every call, so the opt-in gating and fire-count contracts are testable
+// without a live HTTP round-trip.
+type spyProgressWebhookDeliverer struct {
+	calls int32
+}
+
+func (s *spyProgressWebhookDeliverer) Deliver(_ context.Context, _ string, _ []byte, _ int64, _ string) (int, error) {
+	atomic.AddInt32(&s.calls, 1)
+	return 200, nil
+}
+
+// TestProgressWebhookFire_NonBlocking pins Pitfall 5 / T-42-07: even when
+// the callback_url endpoint hangs far longer than the configured
+// webhookTimeout, progressSink.Update returns almost immediately — the
+// detached goroutine's own context.WithTimeout(context.Background(), ...)
+// bounds the HTTP attempt, and the caller (the ffmpeg -progress reader
+// goroutine, in production) never waits on it.
+func TestProgressWebhookFire_NonBlocking(t *testing.T) {
+	var reqCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reqCount, 1)
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	repo := &spyProgressRepo{}
+	sink := &progressSink{
+		ctx: context.Background(), repo: repo, jobID: uuid.New(),
+		webhookEnabled: true, callbackURL: srv.URL, webhookDelivr: webhook.NewDeliverer(),
+		webhookSecret: []byte("s3cr3t"), webhookTimeout: 200 * time.Millisecond,
+	}
+
+	start := time.Now()
+	sink.Update(convert.ProgressUpdate{Pct: 42})
+	elapsed := time.Since(start)
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("Update took %v, want <50ms (the detached fire must never block on a slow callback endpoint)", elapsed)
+	}
+
+	// Give the detached goroutine time to actually reach the endpoint (its
+	// own 200ms timeout fires well before the server's 2s sleep completes),
+	// so the request-count assertion below isn't a false negative from the
+	// goroutine simply not having started yet.
+	time.Sleep(400 * time.Millisecond)
+	if atomic.LoadInt32(&reqCount) == 0 {
+		t.Fatal("detached fire never reached the callback endpoint")
+	}
+}
+
+// TestProgressWebhookGating pins D-04's opt-in gate: the deliverer is
+// invoked ONLY when webhookEnabled && callbackURL != "" && a non-nil
+// deliverer is set. Any one of those three being absent must fire nothing.
+func TestProgressWebhookGating(t *testing.T) {
+	cases := []struct {
+		name        string
+		enabled     bool
+		callbackURL string
+		delivr      *spyProgressWebhookDeliverer
+		nilDelivr   bool
+	}{
+		{name: "opted out (webhookEnabled=false)", enabled: false, callbackURL: "http://example.invalid", delivr: &spyProgressWebhookDeliverer{}},
+		{name: "empty callback_url", enabled: true, callbackURL: "", delivr: &spyProgressWebhookDeliverer{}},
+		{name: "nil deliverer", enabled: true, callbackURL: "http://example.invalid", nilDelivr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var d progressWebhookDeliverer
+			if !tc.nilDelivr {
+				d = tc.delivr
+			}
+			sink := &progressSink{
+				ctx: context.Background(), repo: &spyProgressRepo{}, jobID: uuid.New(),
+				webhookEnabled: tc.enabled, callbackURL: tc.callbackURL, webhookDelivr: d,
+				webhookSecret: []byte("s3cr3t"), webhookTimeout: 50 * time.Millisecond,
+			}
+			sink.Update(convert.ProgressUpdate{Pct: 10})
+			time.Sleep(20 * time.Millisecond)
+			if tc.delivr != nil && atomic.LoadInt32(&tc.delivr.calls) != 0 {
+				t.Fatalf("%s: deliverer.Deliver called %d times, want 0 (not opted-in)", tc.name, tc.delivr.calls)
+			}
+		})
+	}
+}
+
+// poisonedProgressRepo implements progressRepo AND additionally exposes
+// EnqueueWebhookDeliver/RecordAttempt-shaped methods the progress path must
+// NEVER call (T-42-08/PUSH-02 separation) — proved here at the call level
+// (not just by grep), so a future refactor that widened progressRepo's
+// contract to also reach an enqueuer would be caught by a failing test.
+type poisonedProgressRepo struct {
+	spyProgressRepo
+	enqueueCalls int32
+	recordCalls  int32
+}
+
+func (p *poisonedProgressRepo) EnqueueWebhookDeliver(_ context.Context, _ uuid.UUID) error {
+	atomic.AddInt32(&p.enqueueCalls, 1)
+	return nil
+}
+
+func (p *poisonedProgressRepo) RecordAttempt(_ context.Context, _ uuid.UUID, _ string, _ int, _ *int, _ bool) (int64, error) {
+	atomic.AddInt32(&p.recordCalls, 1)
+	return 0, nil
+}
+
+// TestProgressWebhookNeverEnqueues pins D-04/T-42-08: a full opted-in
+// progress run (via runConvertWithOptionalProgress, the real production
+// call path) never calls EnqueueWebhookDeliver/RecordAttempt — the progress
+// path is structurally incapable of touching the terminal
+// bounded-retry/dead-letter budget.
+func TestProgressWebhookNeverEnqueues(t *testing.T) {
+	repo := &poisonedProgressRepo{}
+	delivr := &spyProgressWebhookDeliverer{}
+	conv := &fakeProgressConverter{
+		sourceSecs: 100,
+		updates:    []convert.ProgressUpdate{{Pct: 10}, {Pct: 50}, {Pct: 90}},
+	}
+	if err := runConvertWithOptionalProgress(context.Background(), conv, "in", "out", nil, repo, uuid.New(), 2*time.Second, 1, true, "http://example.invalid", delivr, []byte("s3cr3t"), 50*time.Millisecond); err != nil {
+		t.Fatalf("runConvertWithOptionalProgress: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadInt32(&repo.enqueueCalls) != 0 {
+		t.Fatalf("progress path called EnqueueWebhookDeliver %d times, want 0 (T-42-08 separation)", repo.enqueueCalls)
+	}
+	if atomic.LoadInt32(&repo.recordCalls) != 0 {
+		t.Fatalf("progress path called RecordAttempt %d times, want 0 (T-42-08 separation)", repo.recordCalls)
+	}
+	if atomic.LoadInt32(&delivr.calls) == 0 {
+		t.Fatal("expected the progress-webhook deliverer to have fired at least once")
 	}
 }
