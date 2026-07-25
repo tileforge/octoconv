@@ -158,7 +158,7 @@ func TestParseProgress_ContractsExistAlongsideConverter(t *testing.T) {
 type fakeProgressSink struct{}
 
 func (fakeProgressSink) SourceDuration(seconds float64) {}
-func (fakeProgressSink) Update(u ProgressUpdate)         {}
+func (fakeProgressSink) Update(u ProgressUpdate)        {}
 
 // TestComputeProgressPct_ClampsOverAndUnder proves the [0,100] clamp on
 // both ends: a raw ratio past 100% (encoder lookahead overshoot) clamps to

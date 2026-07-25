@@ -181,3 +181,107 @@ func parseProgressSpeed(raw string) (speed float64, ok bool) {
 func parseProgressFloat(raw string) (float64, error) {
 	return strconv.ParseFloat(raw, 64)
 }
+
+// computeProgressPct converts an out_time/source-duration pair into a
+// clamped [0,100] percent. ok is false when sourceDurationSeconds <= 0 --
+// no usable denominator, PROG-01's null-percent policy -- so callers never
+// divide by zero or a negative/garbage value. A raw ratio above 100%
+// (encoder lookahead/B-frame reorder can transiently overshoot the source
+// duration) clamps to exactly 100 rather than being reported as-is (D-02a).
+func computeProgressPct(outTimeSeconds, sourceDurationSeconds float64) (pct int, ok bool) {
+	if sourceDurationSeconds <= 0 {
+		return 0, false
+	}
+	raw := outTimeSeconds / sourceDurationSeconds * 100
+	if raw < 0 {
+		raw = 0
+	}
+	if raw > 100 {
+		raw = 100
+	}
+	return int(raw), true
+}
+
+// progressEMAAlpha and progressWarmupSamples are compile-time constants,
+// NOT env vars (41-RESEARCH.md Open Question 2 / 41-CONTEXT.md Claude's
+// Discretion) -- only the throttle gates (Plan 03's PROGRESS_* knobs) carry
+// env-tunable ceremony; these are shipped as reasonable, explicitly
+// [ASSUMED] starting defaults, mirroring avDiskSafetyFactorDefault's own
+// "[ASSUMED], no measured ratio existed yet" precedent (av.go:336-344) --
+// there is no measured production ETA-accuracy data to derive them from at
+// this point in the milestone.
+const (
+	// progressEMAAlpha weights each new speed= sample against the
+	// running EMA. [ASSUMED] 0.3: higher is more responsive to real
+	// speed changes, lower is smoother/less reactive to transient noise.
+	progressEMAAlpha = 0.3
+	// progressWarmupSamples is how many positive speed samples must be
+	// folded in before etaSeconds returns a value instead of nil.
+	// [ASSUMED] 3: a few seconds at ffmpeg's typical multi-Hz tick rate,
+	// enough to smooth past the first sample(s)' start-up bias
+	// (Pitfall 4, 41-RESEARCH.md).
+	progressWarmupSamples = 3
+)
+
+// etaEstimator EMA-smooths ffmpeg's speed= samples and derives a
+// remaining-seconds ETA gated behind a short warm-up window (D-04). The
+// zero value is ready to use.
+type etaEstimator struct {
+	emaSpeed float64
+	samples  int
+}
+
+// update folds a new speed sample into the EMA. Non-positive samples (an
+// unparseable/"N/A"-derived speed of 0, per parseProgressSpeed, or any
+// other non-positive value) are skipped entirely -- they must never pollute
+// the running average or reset the warm-up counter (Pitfall 4).
+func (e *etaEstimator) update(speed float64) {
+	if speed <= 0 {
+		return
+	}
+	if e.samples == 0 {
+		e.emaSpeed = speed
+	} else {
+		e.emaSpeed = progressEMAAlpha*speed + (1-progressEMAAlpha)*e.emaSpeed
+	}
+	e.samples++
+}
+
+// etaSeconds returns the estimated remaining seconds given remainingSeconds
+// of source left to encode, or nil before progressWarmupSamples positive
+// samples have been observed (D-04) -- never a value derived from the
+// noisy first sample(s).
+func (e *etaEstimator) etaSeconds(remainingSeconds float64) *int {
+	if e.samples < progressWarmupSamples || e.emaSpeed <= 0 {
+		return nil
+	}
+	eta := int(remainingSeconds / e.emaSpeed)
+	if eta < 0 {
+		eta = 0
+	}
+	return &eta
+}
+
+// buildProgressUpdate is the single composition point Plans 02/03 call: it
+// folds one parsed tick's speed into est, computes the clamped percent
+// against sourceDurationSeconds, and derives the ETA -- callers (the
+// AVConverter.ConvertWithProgress implementation, Plan 02) never need to
+// duplicate this composition logic.
+func buildProgressUpdate(tick progressTick, sourceDurationSeconds float64, est *etaEstimator) ProgressUpdate {
+	pct, ok := computeProgressPct(tick.outTimeSeconds, sourceDurationSeconds)
+
+	if tick.hasData {
+		est.update(tick.speed)
+	}
+
+	var eta *int
+	if ok {
+		remaining := sourceDurationSeconds - tick.outTimeSeconds
+		if remaining < 0 {
+			remaining = 0
+		}
+		eta = est.etaSeconds(remaining)
+	}
+
+	return ProgressUpdate{Pct: pct, ETA: eta}
+}
