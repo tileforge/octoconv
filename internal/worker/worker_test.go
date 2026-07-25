@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/minio/minio-go/v7"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/webhook"
 )
 
@@ -906,5 +908,34 @@ func TestProgressWebhookNeverEnqueues(t *testing.T) {
 	}
 	if atomic.LoadInt32(&delivr.calls) == 0 {
 		t.Fatal("expected the progress-webhook deliverer to have fired at least once")
+	}
+}
+
+// --- Terminal webhook body event discriminator (D-03) ---
+
+// TestBuildTerminalWebhookBody_EventDiscriminator pins D-03: the terminal
+// webhook body carries an additive "event":"completed" field alongside the
+// existing job_id/status, and the marshaled bytes (what SignPayload's HMAC
+// actually covers) include it.
+func TestBuildTerminalWebhookBody_EventDiscriminator(t *testing.T) {
+	job := &jobs.Job{ID: uuid.New(), Status: jobs.StatusDone}
+	body := buildTerminalWebhookBody(job)
+
+	if body["event"] != "completed" {
+		t.Fatalf("body[\"event\"] = %v, want \"completed\"", body["event"])
+	}
+	if body["job_id"] != job.ID {
+		t.Fatalf("body[\"job_id\"] = %v, want %v", body["job_id"], job.ID)
+	}
+	if body["status"] != job.Status {
+		t.Fatalf("body[\"status\"] = %v, want %v", body["status"], job.Status)
+	}
+
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"event":"completed"`) {
+		t.Fatalf("marshaled body = %s, want it to contain \"event\":\"completed\" (the bytes SignPayload's HMAC covers)", raw)
 	}
 }
