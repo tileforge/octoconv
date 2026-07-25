@@ -1,0 +1,188 @@
+# Captured 2026-07-25 from the pinned av-worker build (ffmpeg version n8.1.2,
+# `octoconv-av-worker:dev`, digest 772ab12cf0b1), via:
+#   docker run --rm -v "$PWD/cap":/cap --entrypoint ffmpeg octoconv-av-worker:dev \
+#     -y -f lavfi -i testsrc=duration=20:size=1280x720:rate=30 \
+#     -f lavfi -i sine=frequency=1000:duration=20 \
+#     -c:v libx264 -preset veryslow -crf 18 -c:a aac \
+#     -progress /cap/progress.txt -nostats -f mp4 /cap/out.mp4
+# NOTE: this build's ffmpeg is compiled with `--enable-protocol='file,crypto'`
+# only (--disable-everything base) -- the "pipe" protocol used by
+# `-progress pipe:N` in prior research sketches is NOT registered in this
+# binary ("Failed to open progress URL \"pipe:1\": Protocol not found"), so
+# this fixture was captured via `-progress <file>` (the "file" protocol,
+# which IS enabled) instead of a pipe/fd transport. The emitted block
+# CONTENT/FORMAT is identical either way -- ffmpeg's progress-print logic in
+# fftools/ffmpeg.c is transport-agnostic; only the URL scheme differs. Plan
+# 02 (streaming exec) MUST account for this: `-progress pipe:3` will not work
+# against the real pinned binary and needs a different transport (e.g. a
+# named FIFO via the "file" protocol, or rebuilding with the pipe protocol
+# enabled) -- flagged for the next plan, not resolved here (out of scope for
+# the pure parser layer this fixture feeds).
+frame=0
+fps=0.00
+stream_0_0_q=0.0
+bitrate=N/A
+total_size=48
+out_time_us=N/A
+out_time_ms=N/A
+out_time=N/A
+dup_frames=0
+drop_frames=0
+speed=N/A
+progress=continue
+frame=32
+fps=31.91
+stream_0_0_q=24.0
+bitrate=   0.4kbits/s
+total_size=48
+out_time_us=1000000
+out_time_ms=1000000
+out_time=00:00:01.000000
+dup_frames=0
+drop_frames=0
+speed=0.997x
+progress=continue
+frame=79
+fps=52.56
+stream_0_0_q=24.0
+bitrate=   0.1kbits/s
+total_size=48
+out_time_us=2566667
+out_time_ms=2566667
+out_time=00:00:02.566667
+dup_frames=0
+drop_frames=0
+speed=1.71x
+progress=continue
+frame=118
+fps=58.91
+stream_0_0_q=24.0
+bitrate=   0.1kbits/s
+total_size=48
+out_time_us=3866667
+out_time_ms=3866667
+out_time=00:00:03.866667
+dup_frames=0
+drop_frames=0
+speed=1.93x
+progress=continue
+frame=161
+fps=64.31
+stream_0_0_q=24.0
+bitrate=   0.1kbits/s
+total_size=48
+out_time_us=5300000
+out_time_ms=5300000
+out_time=00:00:05.300000
+dup_frames=0
+drop_frames=0
+speed=2.12x
+progress=continue
+frame=206
+fps=68.59
+stream_0_0_q=24.0
+bitrate=   0.1kbits/s
+total_size=48
+out_time_us=6800000
+out_time_ms=6800000
+out_time=00:00:06.800000
+dup_frames=0
+drop_frames=0
+speed=2.26x
+progress=continue
+frame=259
+fps=73.92
+stream_0_0_q=24.0
+bitrate=   0.0kbits/s
+total_size=48
+out_time_us=8566667
+out_time_ms=8566667
+out_time=00:00:08.566667
+dup_frames=0
+drop_frames=0
+speed=2.45x
+progress=continue
+frame=307
+fps=76.66
+stream_0_0_q=24.0
+bitrate=   0.0kbits/s
+total_size=48
+out_time_us=10166667
+out_time_ms=10166667
+out_time=00:00:10.166667
+dup_frames=0
+drop_frames=0
+speed=2.54x
+progress=continue
+frame=348
+fps=77.25
+stream_0_0_q=24.0
+bitrate= 181.9kbits/s
+total_size=262192
+out_time_us=11533333
+out_time_ms=11533333
+out_time=00:00:11.533333
+dup_frames=0
+drop_frames=0
+speed=2.56x
+progress=continue
+frame=394
+fps=78.72
+stream_0_0_q=24.0
+bitrate= 160.5kbits/s
+total_size=262192
+out_time_us=13066667
+out_time_ms=13066667
+out_time=00:00:13.066667
+dup_frames=0
+drop_frames=0
+speed=2.61x
+progress=continue
+frame=448
+fps=81.34
+stream_0_0_q=24.0
+bitrate= 141.1kbits/s
+total_size=262192
+out_time_us=14866667
+out_time_ms=14866667
+out_time=00:00:14.866667
+dup_frames=0
+drop_frames=0
+speed= 2.7x
+progress=continue
+frame=494
+fps=82.20
+stream_0_0_q=24.0
+bitrate= 127.9kbits/s
+total_size=262192
+out_time_us=16400000
+out_time_ms=16400000
+out_time=00:00:16.400000
+dup_frames=0
+drop_frames=0
+speed=2.73x
+progress=continue
+frame=569
+fps=87.41
+stream_0_0_q=24.0
+bitrate=N/A
+total_size=262192
+out_time_us=N/A
+out_time_ms=N/A
+out_time=N/A
+dup_frames=0
+drop_frames=0
+speed=N/A
+progress=continue
+frame=600
+fps=90.16
+stream_0_0_q=-1.0
+bitrate= 198.2kbits/s
+total_size=493881
+out_time_us=19933333
+out_time_ms=19933333
+out_time=00:00:19.933333
+dup_frames=0
+drop_frames=0
+speed=   3x
+progress=end
