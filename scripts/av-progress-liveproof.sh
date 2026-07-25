@@ -132,7 +132,7 @@ assert_eq() {
 		exit 1
 	fi
 	PASS_COUNT=$((PASS_COUNT + 1))
-	echo "PASS: $label == $actual"
+	echo "PASS: $label == $actual" >&2
 }
 
 assert_nonempty() {
@@ -142,7 +142,7 @@ assert_nonempty() {
 		exit 1
 	fi
 	PASS_COUNT=$((PASS_COUNT + 1))
-	echo "PASS: $label == $value"
+	echo "PASS: $label == $value" >&2
 }
 
 assert_empty() {
@@ -152,7 +152,7 @@ assert_empty() {
 		exit 1
 	fi
 	PASS_COUNT=$((PASS_COUNT + 1))
-	echo "PASS: $label (empty, as required)"
+	echo "PASS: $label (empty, as required)" >&2
 }
 
 # assert_le: numeric "a <= b" check (used for the goroutine-tolerance gate).
@@ -163,10 +163,10 @@ assert_le() {
 		exit 1
 	fi
 	PASS_COUNT=$((PASS_COUNT + 1))
-	echo "PASS: $label ($a <= $b)"
+	echo "PASS: $label ($a <= $b)" >&2
 }
 
-log() { echo ""; echo "--- $* ---"; }
+log() { echo "" >&2; echo "--- $* ---" >&2; }
 
 # ---------------------------------------------------------------------------
 # Teardown -- this script never brings the docker-compose stack up or down
