@@ -577,6 +577,33 @@ func multipartBodyWithOpts(t *testing.T, filename, target string, data []byte, o
 	return &b, w.FormDataContentType()
 }
 
+// multipartBodyWithCallback is multipartBody plus optional "callback_url" and
+// "progress_webhook" form fields, each written only when non-empty -- used
+// by the progress_webhook opt-in parse tests (PUSH-02/D-03).
+func multipartBodyWithCallback(t *testing.T, filename, target string, data []byte, callbackURL, progressWebhook string) (*bytes.Buffer, string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	if filename != "" {
+		fw, err := w.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fw.Write(data)
+	}
+	if target != "" {
+		_ = w.WriteField("target", target)
+	}
+	if callbackURL != "" {
+		_ = w.WriteField("callback_url", callbackURL)
+	}
+	if progressWebhook != "" {
+		_ = w.WriteField("progress_webhook", progressWebhook)
+	}
+	_ = w.Close()
+	return &b, w.FormDataContentType()
+}
+
 // multipartBodyWithPreset writes a "preset" form field instead of "target",
 // and an optional "opts" form field -- used by the D-01 mutual-exclusivity
 // tests (preset+target, preset+opts) and the preset-resolution tests.
@@ -661,6 +688,47 @@ func TestCreateJob_OK(t *testing.T) {
 // one format but carrying magic bytes of a different (also-supported) format
 // is rejected 422 with a detailed message naming both formats, before any
 // storage write or job creation.
+// TestCreateJob_ProgressWebhook covers PUSH-02/D-03: progress_webhook is
+// parsed as a top-level form flag (not opts) and silently normalized to
+// false when there is no callback_url to deliver to (Assumption A4) -- never
+// a 400.
+func TestCreateJob_ProgressWebhook(t *testing.T) {
+	cases := []struct {
+		name            string
+		callbackURL     string
+		progressWebhook string
+		want            bool
+	}{
+		{"true with callback_url", "https://8.8.8.8/hook", "true", true},
+		{"true without callback_url normalizes to false", "", "true", false},
+		{"absent defaults to false", "https://8.8.8.8/hook", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+			body, ct := multipartBodyWithCallback(t, "in.png", "webp", pngBytesFixture(), c.callbackURL, c.progressWebhook)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if repo.created == nil {
+				t.Fatal("expected job to be created")
+			}
+			if repo.created.ProgressWebhook != c.want {
+				t.Errorf("CreateParams.ProgressWebhook = %v, want %v", repo.created.ProgressWebhook, c.want)
+			}
+		})
+	}
+}
+
 func TestCreateJob_ContentMismatch(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
