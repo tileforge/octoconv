@@ -122,6 +122,16 @@ None - no external service configuration required.
 - No `OCR_ENGINE_TIMEOUT` value was finalized or committed to compose/`.env.example` in this plan (correctly deferred to Plan 03's supervised measurement).
 - OCRE-04 is NOT marked complete by this plan alone — it closes only once the measurement (Plan 03) and live E2E (Plan 04) land; this plan produces the measurable artifact + env plumbing.
 
+## Self-Check: PASSED
+
+- FOUND: Dockerfile.ocr-worker
+- FOUND: cmd/ocr-worker/main_test.go
+- FOUND: .planning/phases/45-containerization-measured-timeout-gate/45-01-SUMMARY.md
+- FOUND commit: 4ef417c (feat: Dockerfile.ocr-worker)
+- FOUND commit: c40c868 (test: RED, OCR env resolver)
+- FOUND commit: 384f344 (feat: GREEN, OCR env resolver)
+- FOUND commit: b3bd95b (docs: plan completion)
+
 ---
 *Phase: 45-containerization-measured-timeout-gate*
 *Completed: 2026-07-26*
