@@ -169,7 +169,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
   5. `OCROpts{Language}` is validated against a closed allowlist (e.g. `eng`, `rus`, combinable as `eng+rus`) via the shared strict-parse helper (mirrors `AudioOpts`) — an unlisted language code is rejected before any work begins, and an injection test proves client bytes never reach Tesseract's `-l` argv unvalidated.
 **Plans**: 4 plans (3 waves)
 Plans:
-- [ ] 43-01-PLAN.md — OCROpts closed language allowlist (eng/rus/eng+rus) strict-parse + injection defense
+- [x] 43-01-PLAN.md — OCROpts closed language allowlist (eng/rus/eng+rus) strict-parse + injection defense
 - [ ] 43-02-PLAN.md — Guard layer: PDF page-count cap + per-page page-box physical-size cap + image pixel cap + born-digital pdftotext detection (fail-closed pre-render)
 - [ ] 43-03-PLAN.md — OCRConverter core: Pairs/Engine/Convert image→txt at PSM 3/OEM 1 + hOCR/ALTO via real XML encoder
 - [ ] 43-04-PLAN.md — Streaming per-page PDF path (pdftoppm→tesseract→delete) + page-granular ConvertWithProgress
@@ -254,7 +254,7 @@ Plans:
 | 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
-| 43. OCR Engine Foundation | v1.10 | 0/TBD | Not started | - |
+| 43. OCR Engine Foundation | v1.10 | 1/4 | In Progress|  |
 | 44. Async Pipeline Wiring | v1.10 | 0/TBD | Not started | - |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 0/TBD | Not started | - |
 | 46. KEDA/Helm Chart Integration | v1.10 | 0/TBD | Not started | - |

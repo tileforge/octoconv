@@ -16,7 +16,7 @@
 
 ### OCRO — Options
 
-- [ ] **OCRO-01**: Клиент может задать язык(и)/скрипт OCR per-job через валидированный `opts` (closed allowlist, комбинируемо напр. `eng+rus`; mirror AudioOpts + injection-тест). Неизвестный язык → 422 до любой работы.
+- [x] **OCRO-01**: Клиент может задать язык(и)/скрипт OCR per-job через валидированный `opts` (closed allowlist, комбинируемо напр. `eng+rus`; mirror AudioOpts + injection-тест). Неизвестный язык → 422 до любой работы.
 
 ### OCRE — Engine safety / hardening
 
@@ -58,7 +58,7 @@
 | OCR-02 | Phase 43 | Pending |
 | OCR-03 | Phase 43 | Pending |
 | OCR-04 | Phase 43 | Pending |
-| OCRO-01 | Phase 43 | Pending |
+| OCRO-01 | Phase 43 | Complete |
 | OCRE-01 | Phase 44 | Pending |
 | OCRE-02 | Phase 43 | Pending |
 | OCRE-03 | Phase 43 | Pending |
