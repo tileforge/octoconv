@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Phase 45 context gathered
-last_updated: "2026-07-26T18:05:57.485Z"
+stopped_at: Phase 45 Plan 01 complete
+last_updated: "2026-07-26T18:50:47.326Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 12
+  completed_plans: 9
   percent: 50
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.10 OCR Engine — Phase 44: Async Pipeline Wiring
+**Current focus:** v1.10 OCR Engine — Phase 45: Containerization + Measured Timeout Gate
 
 ## Current Position
 
-Phase: 44 (Async Pipeline Wiring) — EXECUTING
-Plan: 4 of 4
-Status: Ready to execute
+Phase: 45 (Containerization + Measured Timeout Gate) — EXECUTING
+Plan: 1 of 4
+Status: Executing — plan 01 done, 3 plans remaining
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -120,6 +120,7 @@ Last activity: 2026-07-26
 | Phase 44 P02 | 4min | 2 tasks | 3 files |
 | Phase 44 P03 | 12min | 3 tasks | 5 files |
 | Phase 44 P04 | 20min | 2 tasks | 1 files |
+| Phase 45 P01 | 35min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -155,6 +156,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 44]: cmd/ocr-worker does not re-register a configured OCRConverter — the zero-value registration from converters.go's init() is used as-is this phase; OCR_MAX_PAGES/pixel-cap env wiring is Phase 45's job.
 - [Phase 44]: 44-04: 3-page multipage_image_only.pdf fixture used (not the 2-page multipage_text.pdf) so the OCR progress ramp test can require >=2 distinct pre-100 pct values, genuinely distinguishing a ramp from a single jump
 - [Phase 44]: 44-04: runConvertWithOptionalProgress test calls use minInterval=1ns (not 0) -- 0 falls back to the plain conv.Convert() path per the D-01 throttle-configured gate and would silently emit zero progress writes
+- [Phase 45]: Tesseract 5.5.3 pinned by tag + peeled commit db0ec62f81b0737fbbe184d8fea40af5738f8eef; Leptonica 1.87.0 pinned by tag + commit 13275a278eb55b5746e33f95fbf5a2c8f604b3ab (lightweight tag, hash IS the commit); both rev-parse-asserted in Dockerfile.ocr-worker
+- [Phase 45]: tessdata_fast pinned at commit 87416418657359cb625c412a48b6e1d6d41c29bd; eng.traineddata sha256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2, rus.traineddata sha256=e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
+- [Phase 45]: Leptonica 1.87.0 installs its shared library as libleptonica.so.6, not the historical liblept.so name -- discovered live via readelf -d during Dockerfile.ocr-worker's Task 1 build
 
 ### Quick Tasks Completed
 
@@ -225,9 +229,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T18:05:57.475Z
-Stopped at: Phase 45 context gathered
-Resume file: .planning/phases/45-containerization-measured-timeout-gate/45-CONTEXT.md
+Last session: 2026-07-26T18:50:47.316Z
+Stopped at: Phase 45 Plan 01 complete
+Resume file: .planning/phases/45-containerization-measured-timeout-gate/45-02-PLAN.md
 
 ## Operator Next Steps
 
