@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Phase 45 Plan 01 complete
-last_updated: "2026-07-26T18:50:47.326Z"
+stopped_at: Phase 45 Plan 02 complete
+last_updated: "2026-07-26T19:14:00.548Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 12
-  completed_plans: 9
+  completed_plans: 10
   percent: 50
 ---
 
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 45 (Containerization + Measured Timeout Gate) — EXECUTING
-Plan: 1 of 4
-Status: Executing — plan 01 done, 3 plans remaining
+Plan: 3 of 4
+Status: Ready to execute
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -121,6 +121,7 @@ Last activity: 2026-07-26
 | Phase 44 P03 | 12min | 3 tasks | 5 files |
 | Phase 44 P04 | 20min | 2 tasks | 1 files |
 | Phase 45 P01 | 35min | 2 tasks | 3 files |
+| Phase 45 P02 | 35min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -159,6 +160,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 45]: Tesseract 5.5.3 pinned by tag + peeled commit db0ec62f81b0737fbbe184d8fea40af5738f8eef; Leptonica 1.87.0 pinned by tag + commit 13275a278eb55b5746e33f95fbf5a2c8f604b3ab (lightweight tag, hash IS the commit); both rev-parse-asserted in Dockerfile.ocr-worker
 - [Phase 45]: tessdata_fast pinned at commit 87416418657359cb625c412a48b6e1d6d41c29bd; eng.traineddata sha256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2, rus.traineddata sha256=e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
 - [Phase 45]: Leptonica 1.87.0 installs its shared library as libleptonica.so.6, not the historical liblept.so name -- discovered live via readelf -d during Dockerfile.ocr-worker's Task 1 build
+- [Phase 45]: OCR_ENGINE_TIMEOUT committed as a clearly-marked PLACEHOLDER (300s) in docker-compose.yml/.env.example/queue.NewClient() default -- Plan 03 must replace it with the real p95-derived number before OCRE-04 is closed
+- [Phase 45]: scripts/ocr-timing-measure.sh reuses committed internal/convert/testdata/ocr/ unit-test fixtures (text_sample.png=clean, adversarial_text.png=noisy, multipage_image_only.pdf=dense/PDF-sourced) as its 3-doc measurement corpus rather than committing new large binaries; OCR_TIMING_*_SRC env overrides let an operator substitute a more representative corpus
 
 ### Quick Tasks Completed
 
@@ -229,9 +232,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T18:50:47.316Z
-Stopped at: Phase 45 Plan 01 complete
-Resume file: .planning/phases/45-containerization-measured-timeout-gate/45-02-PLAN.md
+Last session: 2026-07-26T19:14:00.536Z
+Stopped at: Phase 45 Plan 02 complete
+Resume file: None
 
 ## Operator Next Steps
 
