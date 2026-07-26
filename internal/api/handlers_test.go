@@ -2912,16 +2912,16 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 // --- D-07 two-tier upload ceiling tests (35-04) ---
 
 // TestNewServer_MaxEngineBytesDefaults proves NewServer's zero-value
-// Config.MaxEngineBytes defaulting yields a non-nil map covering all five
-// engines: image/document/html/audio at their pre-Phase-35 effective 100 MiB
-// ceiling, av at the raised 2 GiB allowance.
+// Config.MaxEngineBytes defaulting yields a non-nil map covering all six
+// engines: image/document/html/audio/ocr at their 100 MiB ceiling (ocr per
+// D-03, Phase 44), av at the raised 2 GiB allowance.
 func TestNewServer_MaxEngineBytesDefaults(t *testing.T) {
 	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{})
 
 	if srv.maxEngineBytes == nil {
 		t.Fatal("maxEngineBytes must be non-nil after NewServer")
 	}
-	for _, engine := range []string{convert.EngineImage, convert.EngineDocument, convert.EngineHTML, convert.EngineAudio} {
+	for _, engine := range []string{convert.EngineImage, convert.EngineDocument, convert.EngineHTML, convert.EngineAudio, convert.EngineOCR} {
 		if got := srv.maxEngineBytes[engine]; got != 100<<20 {
 			t.Errorf("maxEngineBytes[%s] = %d, want 100 MiB (100<<20)", engine, got)
 		}
@@ -3034,6 +3034,112 @@ func TestCreateJob_EngineAbsentFromSizeMapNotRejected(t *testing.T) {
 	}
 	if !store.uploaded {
 		t.Error("must upload when the detected engine has no configured size ceiling")
+	}
+}
+
+// --- OCR routing tests (Phase 44, OCRE-01/D-03) ---
+
+// pdfBytesFixture returns the minimal %PDF- magic-byte prefix convert.Sniff
+// (matchPDF, sniff.go) detects as "pdf".
+func pdfBytesFixture() []byte {
+	return []byte("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")
+}
+
+// TestCreateJob_OCRPDFDeclaredAsImageMismatchRejected proves OCRE-01's
+// fail-closed declared/detected mismatch: a %PDF- body declared with a jpg
+// extension (source=jpg) targeting an OCR output is rejected 422 via the
+// EXISTING detected!=source path (handlers.go, no new OCR-specific
+// validation branch) -- before any storage write, proven via the storage
+// spy's Upload never being invoked.
+func TestCreateJob_OCRPDFDeclaredAsImageMismatchRejected(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "in.jpg", "txt", pdfBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !strings.Contains(resp["error"], "jpg") || !strings.Contains(resp["error"], "pdf") {
+		t.Errorf("error = %q, want a message naming both declared (jpg) and detected (pdf)", resp["error"])
+	}
+	if store.uploaded {
+		t.Error("must not upload before content validation (OCRE-01 fail-closed)")
+	}
+	if repo.created != nil {
+		t.Error("must not create job for mismatched content")
+	}
+}
+
+// TestCreateJob_ImageDeclaredAsPDFMismatchRejected is the mirror case: a PNG
+// body declared with a pdf extension (source=pdf) is likewise rejected 422
+// via the same existing mismatch path, before any storage write.
+func TestCreateJob_ImageDeclaredAsPDFMismatchRejected(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "in.pdf", "txt", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if !strings.Contains(resp["error"], "pdf") || !strings.Contains(resp["error"], "png") {
+		t.Errorf("error = %q, want a message naming both declared (pdf) and detected (png)", resp["error"])
+	}
+	if store.uploaded {
+		t.Error("must not upload before content validation (OCRE-01 fail-closed)")
+	}
+	if repo.created != nil {
+		t.Error("must not create job for mismatched content")
+	}
+}
+
+// TestCreateJob_OCREngineSizeLimitRejectsOversizedUpload proves D-03: an
+// OCR-routed upload (png->txt, EngineFor disambiguates by target to "ocr"
+// now that OCRConverter is registered) whose physical size exceeds the
+// EngineOCR ceiling is rejected 413 before any storage write -- mirrors
+// TestCreateJob_EngineSizeLimitRejectsOversizedImage's scaled-down
+// MaxEngineBytes pattern.
+func TestCreateJob_OCREngineSizeLimitRejectsOversizedUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	resolver := newFakeResolver()
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+		MaxUploadBytes: 10 << 20,
+		MaxEngineBytes: map[string]int64{convert.EngineOCR: 100},
+	})
+
+	body, ct := multipartBody(t, "in.png", "txt", paddedPNGFixture(500))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploaded {
+		t.Error("must not call storage.Upload for an OCR upload exceeding its engine's size ceiling")
+	}
+	if repo.created != nil {
+		t.Error("must not create a job for an OCR upload exceeding its engine's size ceiling")
 	}
 }
 

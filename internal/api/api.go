@@ -171,10 +171,10 @@ type Config struct {
 	MaxImagePixels               uint64
 	MaxDocumentUncompressedBytes uint64
 	// MaxEngineBytes is the D-07 (Phase 35) per-engine post-detection
-	// ceiling: a nil map triggers NewServer's five-engine default
-	// (image/document/html/audio at 100 MiB, av at 2 GiB); a non-nil map is
-	// used as-is -- an engine key you omit from it is simply never gated by
-	// this check.
+	// ceiling: a nil map triggers NewServer's six-engine default
+	// (image/document/html/audio/ocr at 100 MiB, av at 2 GiB, D-03 Phase 44);
+	// a non-nil map is used as-is -- an engine key you omit from it is
+	// simply never gated by this check.
 	MaxEngineBytes     map[string]int64
 	PresignTTL         time.Duration
 	IPRateLimitRPM     int
@@ -221,13 +221,17 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.MaxEngineBytes == nil {
 		// D-07: image/document/html/audio hold their pre-Phase-35 effective
 		// 100 MiB ceiling; av alone gets the raised 2 GiB allowance video
-		// legitimately needs.
+		// legitimately needs. ocr (D-03, Phase 44) gets the same 100 MiB
+		// ceiling as image -- reasonable for images and scanned PDFs; the
+		// actual OCR work is separately bounded by the page-count/pixel caps
+		// enforced in the worker (OCRE-02, Phase 43).
 		cfg.MaxEngineBytes = map[string]int64{
 			convert.EngineImage:    100 << 20,
 			convert.EngineDocument: 100 << 20,
 			convert.EngineHTML:     100 << 20,
 			convert.EngineAudio:    100 << 20,
 			convert.EngineAV:       2 << 30,
+			convert.EngineOCR:      100 << 20,
 		}
 	}
 	if cfg.IPRateLimitRPM == 0 {
