@@ -13,10 +13,14 @@
 package convert
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -256,16 +260,45 @@ func (c OCRConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 }
 
 // ocrPageMerger assembles per-page hOCR/ALTO fragments (each the output of
-// one single-page tesseract invocation) into ONE multi-page document.
-// STUB (RED): this initial shape naively concatenates whole per-page
-// fragments -- the GREEN commit that follows replaces this body with a
-// real xml.Decoder/xml.Encoder based merge (D-05, PITFALLS.md Pitfall 5).
-// Naive concatenation is exactly the failure mode Pitfall 5 warns about:
-// two full per-page documents (each with its own XML declaration and root
-// element) glued together do not form ONE well-formed multi-page document.
+// one single-page tesseract invocation) into ONE multi-page document via
+// Go's stdlib encoding/xml -- NEVER string concatenation or a formatted-
+// string builder (43-CONTEXT.md D-05 Claude's Discretion; PITFALLS.md
+// Pitfall 5, the project's highest-risk OCR failure mode: OCR'd text is
+// untrusted content that can contain literal &/</>/" and must round-trip
+// as valid XML even after a post-processing merge step, not just in
+// tesseract's own already-correct per-page output). This is the SINGLE
+// home this plan defines for the merge contract Plan 04's streaming
+// multi-page PDF loop calls, so the two plans cannot diverge on the merge
+// contract or its escaping discipline (43-03-PLAN.md interfaces section).
+//
+// Mechanism (Claude's Discretion, D-05): stdlib encoding/xml. AddPage
+// decodes each incoming fragment with an xml.Decoder token walk, locates
+// the fragment's own page element (a `<div class="ocr_page">` for hocr, a
+// `<Page>` for alto), and captures it via DecodeElement into a generic
+// node (XMLName + attrs + already-escaped innerxml) -- never re-parsing or
+// re-escaping the page's inner content, which tesseract's own writer
+// already escaped correctly. Finalize wraps the accumulated nodes in a
+// minimal multi-page document struct and serializes it with
+// xml.MarshalIndent -- the SAME stdlib encoder, so the merge step carries
+// zero hand-rolled XML assembly anywhere in this file (a naive
+// concatenation of whole per-page documents, this type's original RED
+// stub, produces TWO XML declarations and TWO root elements instead of
+// one merged document -- PITFALLS.md Pitfall 5).
 type ocrPageMerger struct {
 	target string
-	pages  [][]byte
+	pages  []ocrXMLNode
+}
+
+// ocrXMLNode is a generic single-element XML capture: XMLName + every
+// attribute (`,any,attr`) + the element's raw already-escaped inner
+// content (`,innerxml`). Re-marshaling this struct reproduces the
+// original element's name/attrs/content byte-for-byte (modulo the
+// id/ID attribute AddPage rewrites for the merged page ordinal), without
+// ever re-parsing or re-escaping the inner OCR text.
+type ocrXMLNode struct {
+	XMLName xml.Name
+	Attrs   []xml.Attr `xml:",any,attr"`
+	Inner   string     `xml:",innerxml"`
 }
 
 // newOCRPageMerger constructs a merger for target ("hocr" or "alto") --
@@ -275,22 +308,146 @@ func newOCRPageMerger(target string) *ocrPageMerger {
 	return &ocrPageMerger{target: target}
 }
 
-// AddPage STUB (RED): appends fragment verbatim with no validation at all
-// -- deliberately wrong, replaced by the real xml.Decoder-based
-// implementation in the GREEN commit.
-func (m *ocrPageMerger) AddPage(pageNum int, fragment []byte) error {
-	m.pages = append(m.pages, fragment)
-	return nil
+// ocrPageElementMatch reports whether se is the single page-level element
+// this merger's target wraps its per-page content in.
+func ocrPageElementMatch(target string, se xml.StartElement) bool {
+	switch target {
+	case "hocr":
+		if se.Name.Local != "div" {
+			return false
+		}
+		for _, a := range se.Attr {
+			if a.Name.Local == "class" && a.Value == "ocr_page" {
+				return true
+			}
+		}
+		return false
+	case "alto":
+		return se.Name.Local == "Page"
+	default:
+		return false
+	}
 }
 
-// Finalize STUB (RED): naively concatenates the raw per-page fragment
-// bytes -- deliberately wrong (Pitfall 5), replaced by a real
-// xml.MarshalIndent-based single-document serialization in the GREEN
-// commit.
-func (m *ocrPageMerger) Finalize() ([]byte, error) {
-	var out []byte
-	for _, p := range m.pages {
-		out = append(out, p...)
+// ocrPageIDAttr reports the attribute name a merged page's renumbered id
+// is written to -- "id" for hocr's lowercase-attribute HTML convention,
+// "ID" for ALTO's uppercase-attribute XML convention (both live-verified
+// against a real tesseract 5.5.2 hocr/alto invocation).
+func ocrPageIDAttr(target string) string {
+	if target == "alto" {
+		return "ID"
 	}
-	return out, nil
+	return "id"
+}
+
+// ocrPageID formats a merged page's renumbered id/ID attribute value,
+// built without string concatenation or a formatted-string builder (a
+// plain bytes.Buffer instead) -- the merge step's discipline of never
+// hand-rolling XML/attribute content extends even to this small helper.
+func ocrPageID(pageNum int) string {
+	var b bytes.Buffer
+	b.WriteString("page_")
+	b.WriteString(strconv.Itoa(pageNum))
+	return b.String()
+}
+
+// setOCRAttr replaces attrs' entry named local (if present) with value,
+// else appends a new one -- used by AddPage to renumber a page's id/ID
+// attribute to the merged document's own page ordinal.
+func setOCRAttr(attrs []xml.Attr, local, value string) []xml.Attr {
+	for i, a := range attrs {
+		if a.Name.Local == local {
+			attrs[i].Value = value
+			return attrs
+		}
+	}
+	return append(attrs, xml.Attr{Name: xml.Name{Local: local}, Value: value})
+}
+
+// AddPage decodes fragment (one single-page tesseract hOCR/ALTO output)
+// via an xml.Decoder token walk, locates its page element, and appends it
+// to the merged document -- renumbering the page's id/ID attribute to
+// pageNum (tesseract always numbers a fresh single-page invocation
+// "page_1"/PHYSICAL_IMG_NR 0, so every fragment collides on the same id
+// unless renumbered here). Returns an error if fragment is not
+// well-formed XML or contains no page element for this merger's target --
+// fail-closed, never a silently-skipped page.
+func (m *ocrPageMerger) AddPage(pageNum int, fragment []byte) error {
+	dec := xml.NewDecoder(bytes.NewReader(fragment))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err == io.EOF {
+				return fmt.Errorf("ocr: merge: page %d: no %s page element found", pageNum, m.target)
+			}
+			return fmt.Errorf("ocr: merge: page %d: %w", pageNum, err)
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok || !ocrPageElementMatch(m.target, se) {
+			continue
+		}
+		var node ocrXMLNode
+		if err := dec.DecodeElement(&node, &se); err != nil {
+			return fmt.Errorf("ocr: merge: page %d: decode page element: %w", pageNum, err)
+		}
+		node.Attrs = setOCRAttr(node.Attrs, ocrPageIDAttr(m.target), ocrPageID(pageNum))
+		m.pages = append(m.pages, node)
+		return nil
+	}
+}
+
+// ocrHOCRXmlns and ocrALTOXmlns are the fixed XML namespace URIs Finalize
+// stamps on the merged document's root element -- the same namespaces
+// tesseract's own single-page hOCR/ALTO writer declares.
+const (
+	ocrHOCRXmlns = "http://www.w3.org/1999/xhtml"
+	ocrALTOXmlns = "http://www.loc.gov/standards/alto/ns-v3#"
+)
+
+// ocrHOCRDoc/ocrHOCRBody wrap the merged per-page div nodes in a minimal
+// XHTML document -- Finalize's hocr-target output shape.
+type ocrHOCRDoc struct {
+	XMLName xml.Name    `xml:"html"`
+	Xmlns   string      `xml:"xmlns,attr"`
+	Body    ocrHOCRBody `xml:"body"`
+}
+
+type ocrHOCRBody struct {
+	Pages []ocrXMLNode `xml:"div"`
+}
+
+// ocrALTODoc/ocrALTOLayout wrap the merged per-page Page nodes in a
+// minimal ALTO document -- Finalize's alto-target output shape.
+type ocrALTODoc struct {
+	XMLName xml.Name      `xml:"alto"`
+	Xmlns   string        `xml:"xmlns,attr"`
+	Layout  ocrALTOLayout `xml:"Layout"`
+}
+
+type ocrALTOLayout struct {
+	Pages []ocrXMLNode `xml:"Page"`
+}
+
+// Finalize serializes the accumulated pages into one multi-page document
+// via xml.MarshalIndent -- never a formatted-string builder or string
+// concatenation (PITFALLS.md Pitfall 5). Each page's already-escaped inner
+// content (captured verbatim by AddPage's `,innerxml` field) is emitted
+// byte-for-byte, so adversarial literal &/</>/" content already escaped by
+// tesseract's own writer round-trips correctly through the merge with no
+// double-escaping and no corruption.
+func (m *ocrPageMerger) Finalize() ([]byte, error) {
+	var doc any
+	switch m.target {
+	case "hocr":
+		doc = ocrHOCRDoc{Xmlns: ocrHOCRXmlns, Body: ocrHOCRBody{Pages: m.pages}}
+	case "alto":
+		doc = ocrALTODoc{Xmlns: ocrALTOXmlns, Layout: ocrALTOLayout{Pages: m.pages}}
+	default:
+		return nil, fmt.Errorf("ocr: merge: unsupported target %q", m.target)
+	}
+	out, err := xml.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("ocr: merge: marshal: %w", err)
+	}
+	return append([]byte(xml.Header), out...), nil
 }
