@@ -689,6 +689,85 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 	}
 }
 
+// TestClientOCRUniqueTTLDiffersFromAVAndAudio is the D-04/IN-02
+// fresh-derivation proof at the Client level: under default env (no
+// OCR_MAX_RETRY/OCR_ENGINE_TIMEOUT/AV_MAX_RETRY/AV_ENGINE_TIMEOUT/
+// AUDIO_MAX_RETRY/AUDIO_ENGINE_TIMEOUT overrides), the client's derived
+// ocrUniqueTTL must NOT be byte-equal to avUniqueTTL or audioUniqueTTL --
+// proving OCRUniqueTTL was computed from OCR's own budget, not copied.
+// asynq.NewClient only lazily constructs a redis.UniversalClient (no network
+// I/O at construction time -- see asynq's MakeRedisClient), so this test
+// needs no live Redis; REDIS_ADDR only has to be non-empty to satisfy
+// RedisOpt's presence check.
+func TestClientOCRUniqueTTLDiffersFromAVAndAudio(t *testing.T) {
+	t.Setenv("REDIS_ADDR", "127.0.0.1:0")
+	for _, k := range []string{
+		"OCR_MAX_RETRY", "OCR_ENGINE_TIMEOUT",
+		"AV_MAX_RETRY", "AV_ENGINE_TIMEOUT",
+		"AUDIO_MAX_RETRY", "AUDIO_ENGINE_TIMEOUT",
+	} {
+		t.Setenv(k, "")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	if cl.ocrUniqueTTL == cl.avUniqueTTL {
+		t.Errorf("ocrUniqueTTL (%v) must not equal avUniqueTTL (%v) -- fresh derivation, not a copy", cl.ocrUniqueTTL, cl.avUniqueTTL)
+	}
+	if cl.ocrUniqueTTL == cl.audioUniqueTTL {
+		t.Errorf("ocrUniqueTTL (%v) must not equal audioUniqueTTL (%v) -- fresh derivation, not a copy", cl.ocrUniqueTTL, cl.audioUniqueTTL)
+	}
+}
+
+// TestEnqueueOCRConvert enqueues an OCR task and confirms it lands in the ocr
+// queue. Requires a live Redis (REDIS_ADDR); skipped otherwise. Mirrors
+// TestEnqueueImageConvert's shape for the ocr engine class.
+func TestEnqueueOCRConvert(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set; skipping integration test")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	id := uuid.New()
+	if err := cl.EnqueueOCRConvert(context.Background(), id); err != nil {
+		t.Fatalf("EnqueueOCRConvert: %v", err)
+	}
+
+	opt, _ := RedisOpt()
+	insp := asynq.NewInspector(opt)
+	defer insp.Close()
+
+	infos, err := insp.ListPendingTasks(QueueOCR)
+	if err != nil {
+		t.Fatalf("ListPendingTasks: %v", err)
+	}
+	found := false
+	for _, ti := range infos {
+		p, err := ParseConvertPayload(ti.Payload)
+		if err == nil && p.JobID == id {
+			found = true
+			if ti.Type != TypeOCRConvert {
+				t.Errorf("enqueued type = %q, want %q", ti.Type, TypeOCRConvert)
+			}
+			// cleanup
+			_ = insp.DeleteTask(QueueOCR, ti.ID)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueOCR)
+	}
+}
+
 // TestEnqueueImageConvert enqueues a task and confirms it lands in the image
 // queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
 func TestEnqueueImageConvert(t *testing.T) {
