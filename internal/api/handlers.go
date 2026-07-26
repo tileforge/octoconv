@@ -544,6 +544,31 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
 				return
 			}
+		case convert.EngineOCR:
+			// OCR opts (closed language allowlist eng/rus, ocropts.go) are
+			// dispatched here rather than falling through to ParseDocOpts in
+			// the default branch, which would reject the `language` field as
+			// an unknown key -- mirroring the EngineAudio/EngineAV/EngineHTML
+			// branches above exactly.
+			ocrOpts, err := convert.ParseOCROpts([]byte(rawOpts))
+			if err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				return
+			}
+			if err := convert.ValidateOCRApplicability(engine, detected, target, ocrOpts); err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				return
+			}
+			// D-08: persist the normalized struct, never the raw client
+			// bytes -- round-trip through json.Marshal so only the
+			// validated enum value ever reaches storage.
+			normalizedRaw, err = json.Marshal(ocrOpts)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				return
+			}
 		default:
 			docOpts, err := convert.ParseDocOpts([]byte(rawOpts))
 			if err != nil {

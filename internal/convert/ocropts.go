@@ -80,6 +80,30 @@ func ParseOCROpts(raw []byte) (OCROpts, error) {
 	return o, nil
 }
 
+// ValidateOCRApplicability rejects opts that do not apply to the given
+// (engine, source, target) conversion. Empty opts always apply (nothing
+// was requested). A non-empty OCROpts applies only to OCR-engine
+// conversions. Deliberately its OWN function scoped to EngineOCR, not
+// merged into the shared ValidateApplicability (opts.go) -- mirrors
+// ValidateAudioApplicability's engine-scoped shape (audioopts.go).
+func ValidateOCRApplicability(engine, source, target string, o OCROpts) error {
+	if isZeroOCROpts(o) {
+		return nil
+	}
+	if engine != EngineOCR {
+		return fmt.Errorf("ocr options are only valid for ocr-engine conversions")
+	}
+	return nil
+}
+
+// isZeroOCROpts reports whether o carries no client-requested options at
+// all -- the same "empty opts always apply" shortcut ValidateApplicability
+// uses for DocOpts/HTMLOpts (opts.go, htmlopts.go), for OCROpts's single
+// field.
+func isZeroOCROpts(o OCROpts) bool {
+	return o == OCROpts{}
+}
+
 // OCROptsFromMap round-trips a persisted map[string]any (job.Opts, already
 // unmarshaled from the jobs.options jsonb column by internal/jobs) through
 // ParseOCROpts -- the same strictness (DisallowUnknownFields + closed
