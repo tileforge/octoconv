@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Phase 45 Plan 03 complete
-last_updated: "2026-07-26T20:02:56.365Z"
+stopped_at: Phase 45 complete (Plan 04 — live OCR E2E green)
+last_updated: "2026-07-26T21:30:00.000Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 12
-  completed_plans: 11
-  percent: 50
+  completed_plans: 12
+  percent: 75
 ---
 
 # Project State
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 ## Current Position
 
-Phase: 45 (Containerization + Measured Timeout Gate) — EXECUTING
-Plan: 4 of 4
-Status: Ready to execute
+Phase: 45 (Containerization + Measured Timeout Gate) — COMPLETE (4/4 plans)
+Next: Phase 46 (KEDA/Helm Chart Integration) — discuss → plan → execute
+Status: Phase 45 done; live OCR E2E green against the real ocr-worker container (SC1 + SC4)
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -123,6 +123,7 @@ Last activity: 2026-07-26
 | Phase 45 P01 | 35min | 2 tasks | 3 files |
 | Phase 45 P02 | 35min | 3 tasks | 4 files |
 | Phase 45 P03 | 15min | 2 tasks | 6 files |
+| Phase 45 P04 | ~70min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -161,6 +162,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 45]: Tesseract 5.5.3 pinned by tag + peeled commit db0ec62f81b0737fbbe184d8fea40af5738f8eef; Leptonica 1.87.0 pinned by tag + commit 13275a278eb55b5746e33f95fbf5a2c8f604b3ab (lightweight tag, hash IS the commit); both rev-parse-asserted in Dockerfile.ocr-worker
 - [Phase 45]: tessdata_fast pinned at commit 87416418657359cb625c412a48b6e1d6d41c29bd; eng.traineddata sha256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2, rus.traineddata sha256=e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
 - [Phase 45]: Leptonica 1.87.0 installs its shared library as libleptonica.so.6, not the historical liblept.so name -- discovered live via readelf -d during Dockerfile.ocr-worker's Task 1 build
+- [Phase 45 P04]: three production bugs surfaced ONLY by the live containerized E2E (invisible to unit/integration): (1) handleCreateJob's opts switch had no EngineOCR case → OCR jobs with a `language` opt hit ParseDocOpts and 422'd — fixed with an EngineOCR case + convert.ValidateOCRApplicability (a6dcbd1); (2) Dockerfile.ocr-worker dropped tesseract's configs/+tessconfigs/ (only .traineddata baked + over-strict exact-two-files assertion) → ->hocr/->alto produced no output ("Can't open hocr") while ->txt worked (built-in default) — fixed by COPYing the configs and rescoping the assertion to *.traineddata (c1c39fc); (3) the 3-page ramp fixture OCR'd faster than the 2s poll+2s throttle could sample → replaced with a 20-page image-only PDF (32ec390)
+- [Phase 45 P04]: OCR e2e fixture (internal/e2e/testdata/multipage_image_only.pdf) intentionally diverges from the 3-page unit fixture — it is a 20-page image-only PDF (normal 537x393pt page geometry via `magick ... -density 300 -duplicate 19`, ~1.5s/page) sized so the page-granular progress ramp is live-sampleable
 - [Phase 45]: OCR_ENGINE_TIMEOUT committed as a clearly-marked PLACEHOLDER (300s) in docker-compose.yml/.env.example/queue.NewClient() default -- Plan 03 must replace it with the real p95-derived number before OCRE-04 is closed
 - [Phase 45]: scripts/ocr-timing-measure.sh reuses committed internal/convert/testdata/ocr/ unit-test fixtures (text_sample.png=clean, adversarial_text.png=noisy, multipage_image_only.pdf=dense/PDF-sourced) as its 3-doc measurement corpus rather than committing new large binaries; OCR_TIMING_*_SRC env overrides let an operator substitute a more representative corpus
 - [Phase 45 Plan 03]: the committed 2 KB one-line synthetic PNG fixtures (internal/convert/testdata/ocr/*) UNDER-stated per-page cost at 0.148 s/page (would have yielded a dangerously-low 60s timeout) — operator synthesized a REPRESENTATIVE 300-DPI full-page corpus (ImageMagick/Arial, mixed EN+RU, ~10K chars/page, normal 12pt clean / 10pt dense body+margins) and re-measured against the real ocr-worker image at compose limits (arch=arm64, cpus=2.0, memory=1g, N=10, omp_thread_limit=2, ALL GREEN). Per-cell p95 sec/page: clean_eng=3.010 clean_rus=2.927 dense_eng=5.810 dense_rus=5.789 noisy_eng=3.646 noisy_rus=3.017. Worst cell = dense_eng, p95=5.81 s/page. D-03 provisional OCR_MAX_PAGES=200 breached the 900s reconciler CAP (ceil(200×5.81×2.0)=2324s) — Path-B NO-GO lever fired, lowered 200→64. OCR_ENGINE_TIMEOUT = ceil(64×5.81×2.0) = 744s, 17.3% under the 900s CAP; propagated byte-identically to all 9 queue-client services (docker-compose.yml + .env.example); ocr-worker stop_grace_period recomputed 320s→764s (744s+10s ShutdownTimeout margin+10s Docker SIGKILL margin). 744s is distinct from AV_ENGINE_TIMEOUT(753s)/AUDIO_ENGINE_TIMEOUT(742s) — never copied (PITFALLS.md Pitfall 7). An intermediate adversarial fine-print run (full A4 ~5pt) gave 17.9 s/page — reference upper bound, not used as the committed basis.

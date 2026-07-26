@@ -152,7 +152,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 
 - [x] **Phase 43: OCR Engine Foundation** - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing (completed 2026-07-26)
 - [x] **Phase 44: Async Pipeline Wiring** - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery (completed 2026-07-26)
-- [ ] **Phase 45: Containerization + Measured Timeout Gate** - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant
+- [x] **Phase 45: Containerization + Measured Timeout Gate** - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant
 - [ ] **Phase 46: KEDA/Helm Chart Integration** - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven
 
 ## Phase Details
@@ -204,7 +204,7 @@ Plans:
 - [x] 45-01-PLAN.md — Dockerfile.ocr-worker (source-built tag-pinned Tesseract 5.5.x + Leptonica, poppler-utils, SHA-pinned tessdata_fast eng+rus) + cmd/ocr-worker env resolver (OCR_MAX_PAGES/OMP_THREAD_LIMIT/concurrency)
 - [x] 45-02-PLAN.md — scripts/ocr-timing-measure.sh (supervised p95 sec/page gate) + compose ocr-worker service (placeholder timeout) + IN-02 OCR_* propagation + CI bake matrix
 - [x] 45-03-PLAN.md — supervised measurement checkpoint: derive OCR_ENGINE_TIMEOUT from measured worst-cell p95 (< 900s CAP, Path-B lever), IN-02 plug-in, record Key Decision
-- [ ] 45-04-PLAN.md — TestOCRConversionE2E live checkpoint: image->txt + multi-page PDF->hocr end-to-end + signed webhook + progress ramp (closes Phase-44 SC4)
+- [x] 45-04-PLAN.md — TestOCRConversionE2E live checkpoint: image->txt + multi-page PDF->hocr end-to-end + signed webhook + progress ramp (closes Phase-44 SC4) — GREEN against the real ocr-worker container; surfaced+fixed 3 production bugs (OCR opts dispatch, missing tesseract configs, ramp-fixture sizing)
 
 ### Phase 46: KEDA/Helm Chart Integration
 **Goal**: The OCR class autoscales in the cluster with production parity to the other five engine classes, and scale-from-zero is live-proven.
