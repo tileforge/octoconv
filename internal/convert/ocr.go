@@ -254,3 +254,43 @@ func (c OCRConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 
 	return validateOCROutput(outPath)
 }
+
+// ocrPageMerger assembles per-page hOCR/ALTO fragments (each the output of
+// one single-page tesseract invocation) into ONE multi-page document.
+// STUB (RED): this initial shape naively concatenates whole per-page
+// fragments -- the GREEN commit that follows replaces this body with a
+// real xml.Decoder/xml.Encoder based merge (D-05, PITFALLS.md Pitfall 5).
+// Naive concatenation is exactly the failure mode Pitfall 5 warns about:
+// two full per-page documents (each with its own XML declaration and root
+// element) glued together do not form ONE well-formed multi-page document.
+type ocrPageMerger struct {
+	target string
+	pages  [][]byte
+}
+
+// newOCRPageMerger constructs a merger for target ("hocr" or "alto") --
+// Plan 04's per-page PDF loop calls AddPage once per rasterized page in
+// document order, then Finalize once at the end.
+func newOCRPageMerger(target string) *ocrPageMerger {
+	return &ocrPageMerger{target: target}
+}
+
+// AddPage STUB (RED): appends fragment verbatim with no validation at all
+// -- deliberately wrong, replaced by the real xml.Decoder-based
+// implementation in the GREEN commit.
+func (m *ocrPageMerger) AddPage(pageNum int, fragment []byte) error {
+	m.pages = append(m.pages, fragment)
+	return nil
+}
+
+// Finalize STUB (RED): naively concatenates the raw per-page fragment
+// bytes -- deliberately wrong (Pitfall 5), replaced by a real
+// xml.MarshalIndent-based single-document serialization in the GREEN
+// commit.
+func (m *ocrPageMerger) Finalize() ([]byte, error) {
+	var out []byte
+	for _, p := range m.pages {
+		out = append(out, p...)
+	}
+	return out, nil
+}
