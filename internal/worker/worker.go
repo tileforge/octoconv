@@ -388,6 +388,118 @@ func isAVTerminal(err error) bool {
 	return isTerminal(err) // no-converter / minio.NoSuchKey / shared fallthrough
 }
 
+// terminalOCRSignatures are lowercased error-message prefixes that classify a
+// genuine (non-timeout) tesseract/pdftoppm/pdfinfo engine crash as
+// deterministically unrecoverable (D-04, 44-CONTEXT.md): OCR is
+// deterministic on its input, so a corrupt/adversarial file that crashes the
+// engine once will crash it again on retry. "ocr: tesseract:" wraps a
+// tesseract exec failure (internal/convert/ocr.go, ocrpdf.go); "ocr:
+// pdftoppm:" wraps a per-page rasterize failure (ocrpdf.go); "pdfinfo:" wraps
+// a pdfinfo probe failure (ocrguards.go, ocrpdf.go) -- the probe runs BEFORE
+// rasterization on the same untrusted PDF, so a probe crash is the same
+// malformed-input signal as a rasterize/OCR crash. Checked explicitly here,
+// BEFORE the shared isTerminal fallthrough, mirroring terminalAudioSignatures'
+// self-contained-list precedent (worker.go) rather than relying on an
+// accidental substring match in another engine's list.
+var terminalOCRSignatures = []string{
+	"ocr: tesseract:",
+	"ocr: pdftoppm:",
+	"pdfinfo:",
+}
+
+// isOCRTerminal is the OCR engine's engine-scoped terminal classifier — D-04
+// (44-CONTEXT.md, BINDING): a stage-aware split derived for OCR, deliberately
+// NOT a copy of isDocumentTerminal's/isHTMLTerminal's blanket
+// timeout-is-terminal shape, and NOT a copy of isAudioTerminal's/
+// isAVTerminal's non-timeout-default-to-shared-isTerminal shape either.
+// Deterministic input/client-fault guard rejections (ErrOCRBornDigital,
+// ErrOCRTooManyPages, ErrOCRPageBoxTooLarge, ErrOCRImageTooLarge, an unknown-
+// language rejection, or an unsupported-target rejection) are ALWAYS
+// terminal — a retry can never help a rejection that is deterministic on the
+// input. A wrapped context.DeadlineExceeded (an OCR_ENGINE_TIMEOUT expiry) is
+// the single divergence from isDocumentTerminal/isHTMLTerminal: it classifies
+// TRANSIENT here, mirroring isAVTerminal's transcode-timeout treatment --
+// retry may succeed when worker load drops. Every OTHER non-timeout error
+// (a genuine tesseract/pdftoppm/pdfinfo crash) is terminal via the dedicated
+// terminalOCRSignatures list above, checked BEFORE the shared isTerminal
+// fallthrough -- OCR is deterministic on its input, so a crash will recur
+// (unlike isAudioTerminal's/isAVTerminal's default-to-transient-via-
+// isTerminal treatment of an unrecognized non-timeout failure, which assumes
+// their inputs are server-produced/pre-validated by an earlier stage). Only
+// a genuinely unrecognized error (no-converter, minio.NoSuchKey, or some
+// other unrecognized shape entirely) falls through to the shared isTerminal.
+func isOCRTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, convert.ErrOCRBornDigital) ||
+		errors.Is(err, convert.ErrOCRTooManyPages) ||
+		errors.Is(err, convert.ErrOCRPageBoxTooLarge) ||
+		errors.Is(err, convert.ErrOCRImageTooLarge) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unsupported language") || strings.Contains(msg, "unsupported target format") {
+		// D-04: a rejected client-requested language (OCROptsFromMap) or an
+		// unrecognized target-format extension (ocrPrepareConversion) is a
+		// deterministic client-input fault -- retry can never help, same as
+		// the guard sentinels above.
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// D-04: the single assertion that distinguishes this classifier from
+		// isDocumentTerminal/isHTMLTerminal -- an OCR_ENGINE_TIMEOUT expiry
+		// stays TRANSIENT, mirroring isAVTerminal's transcode-timeout
+		// treatment.
+		return false
+	}
+	for _, sig := range terminalOCRSignatures {
+		if strings.Contains(msg, sig) {
+			// D-04: a genuine non-timeout tesseract/pdftoppm/pdfinfo crash is
+			// deterministic on this input -- it will recur, so it is
+			// terminal, not a broad-retry default.
+			return true
+		}
+	}
+	return isTerminal(err) // no-converter / minio.NoSuchKey / shared fallthrough
+}
+
+// ocrFailureCode maps a terminal process() error for an OCR job to the
+// distinguishable client-facing (error_code, message) pair MarkFailed
+// records — mirrors avFailureCode's precedent (worker.go): a small pure
+// function so the mapping itself is unit-testable without a live Postgres/S3
+// Handler. Order matters: the more specific sentinels are checked before the
+// generic default.
+//   - ErrOCRBornDigital -> "born_digital": the PDF already has an extractable
+//     text layer -- OCR was never needed and will never succeed as an OCR
+//     job.
+//   - ErrOCRTooManyPages -> "too_many_pages".
+//   - ErrOCRPageBoxTooLarge -> "page_too_large".
+//   - ErrOCRImageTooLarge -> "image_too_large".
+//   - an unknown-language rejection -> "unsupported_language".
+//   - an unsupported-target rejection -> "unsupported_target".
+//   - default -> "engine_error", mirroring every other engine's fallback.
+func ocrFailureCode(err error) (code, message string) {
+	switch {
+	case errors.Is(err, convert.ErrOCRBornDigital):
+		return "born_digital", "pdf already has an extractable text layer"
+	case errors.Is(err, convert.ErrOCRTooManyPages):
+		return "too_many_pages", "pdf page count exceeds the configured maximum"
+	case errors.Is(err, convert.ErrOCRPageBoxTooLarge):
+		return "page_too_large", "pdf page would rasterize beyond the configured pixel bound"
+	case errors.Is(err, convert.ErrOCRImageTooLarge):
+		return "image_too_large", "image dimensions exceed the configured maximum"
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unsupported language") {
+		return "unsupported_language", "requested ocr language is not supported"
+	}
+	if strings.Contains(msg, "unsupported target format") {
+		return "unsupported_target", "requested target format is not supported for ocr"
+	}
+	return "engine_error", "unsupported or corrupted input format"
+}
+
 // isCanceled reports whether err is (or wraps) context.Canceled -- the shape
 // process()'s attemptCtx.Err() takes when cancel.Default.Cancel(job.ID) fires
 // the registered CancelFunc early, distinct from a timeoutIsTerminal-style

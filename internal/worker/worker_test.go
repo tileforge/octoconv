@@ -619,6 +619,129 @@ func TestAVFailureCode(t *testing.T) {
 	}
 }
 
+// TestIsOCRTerminal pins D-04 (44-CONTEXT.md): every deterministic
+// input/client-fault guard rejection is terminal, an OCR_ENGINE_TIMEOUT
+// expiry is TRANSIENT (the single divergence from isDocumentTerminal/
+// isHTMLTerminal, mirroring isAVTerminal's transcode-timeout treatment), and
+// a genuine non-timeout tesseract/pdftoppm/pdfinfo crash is terminal (unlike
+// isAudioTerminal's/isAVTerminal's default-to-shared-isTerminal treatment of
+// an unrecognized non-timeout failure).
+func TestIsOCRTerminal(t *testing.T) {
+	if isOCRTerminal(nil) {
+		t.Fatal("expected isOCRTerminal(nil) = false")
+	}
+
+	// Deterministic input/client-fault guard rejections -> terminal,
+	// regardless of stage.
+	deterministicCases := []error{
+		fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital),
+		fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages),
+		fmt.Errorf("%w: declared page box 1000x1000 pts at 300 DPI rasterizes to 1e9 pixels, exceeds bound 1e8", convert.ErrOCRPageBoxTooLarge),
+		fmt.Errorf("ocr: %w", convert.ErrOCRImageTooLarge),
+		fmt.Errorf("ocr: %w", fmt.Errorf("unsupported language %q", "fra")),
+		fmt.Errorf("ocr: unsupported target format %q", "bmp"),
+	}
+	for _, err := range deterministicCases {
+		if !isOCRTerminal(err) {
+			t.Fatalf("D-04: expected isOCRTerminal(%v) = true (deterministic input/client fault)", err)
+		}
+	}
+
+	// D-04's single most important row: an OCR_ENGINE_TIMEOUT expiry (the
+	// wrapped context.DeadlineExceeded shape exec.go's process-group kill
+	// produces) is TRANSIENT -- this is the one assertion that distinguishes
+	// isOCRTerminal from isDocumentTerminal/isHTMLTerminal.
+	timeout := fmt.Errorf("convert: %w", fmt.Errorf("ocr: tesseract: %w", fmt.Errorf("tesseract killed: %w", context.DeadlineExceeded)))
+	if isOCRTerminal(timeout) {
+		t.Fatal("D-04: expected isOCRTerminal(engine timeout) = false (transient — retry may succeed when worker load drops)")
+	}
+
+	// Other non-timeout engine crashes -> terminal (D-04: OCR is
+	// deterministic on its input, so it will recur).
+	crashCases := []error{
+		fmt.Errorf("convert: %w", fmt.Errorf("ocr: tesseract: %w", errors.New("exit status 1: Error in pixReadStream: Unknown format: extension not recognized"))),
+		fmt.Errorf("convert: %w", fmt.Errorf("ocr: pdftoppm: %w", errors.New("exit status 1: Syntax Error"))),
+		fmt.Errorf("convert: %w", fmt.Errorf("ocr: %w", fmt.Errorf("pdfinfo: %w", errors.New("exit status 1: Syntax Warning")))),
+	}
+	for _, err := range crashCases {
+		if !isOCRTerminal(err) {
+			t.Fatalf("D-04: expected isOCRTerminal(%v) = true (non-timeout engine crash is deterministic, will recur)", err)
+		}
+	}
+
+	// Unrecognized S3/no-converter errors still fall through to the shared
+	// isTerminal classifier and match its verdict.
+	sharedCases := []error{
+		fmt.Errorf("no converter for %s -> %s", "gif", "txt"),
+		fmt.Errorf("download %q: %w", "uploads/x/0-in.pdf", minio.ErrorResponse{Code: minio.NoSuchKey}),
+	}
+	for _, err := range sharedCases {
+		if !isOCRTerminal(err) {
+			t.Fatalf("expected isOCRTerminal(%v) = true (shared isTerminal fallthrough)", err)
+		}
+	}
+	if isOCRTerminal(errors.New("dial tcp: connection refused")) {
+		t.Fatal("expected isOCRTerminal(transient network error) = false")
+	}
+}
+
+// TestOCRFailureCode pins HandleOCRConvert's terminal-path error_code
+// mapping (mirrors TestAVFailureCode's precedent): ocrFailureCode is the pure
+// function HandleOCRConvert delegates to, so this test exercises the mapping
+// directly without a live Postgres/S3 Handler.
+func TestOCRFailureCode(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{
+			name:     "born digital",
+			err:      fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital),
+			wantCode: "born_digital",
+		},
+		{
+			name:     "too many pages",
+			err:      fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages),
+			wantCode: "too_many_pages",
+		},
+		{
+			name:     "page box too large",
+			err:      convert.ErrOCRPageBoxTooLarge,
+			wantCode: "page_too_large",
+		},
+		{
+			name:     "image too large",
+			err:      fmt.Errorf("ocr: %w", convert.ErrOCRImageTooLarge),
+			wantCode: "image_too_large",
+		},
+		{
+			name:     "unsupported language",
+			err:      fmt.Errorf("ocr: %w", fmt.Errorf("unsupported language %q", "fra")),
+			wantCode: "unsupported_language",
+		},
+		{
+			name:     "unsupported target",
+			err:      fmt.Errorf("ocr: unsupported target format %q", "bmp"),
+			wantCode: "unsupported_target",
+		},
+		{
+			name:     "generic engine failure",
+			err:      fmt.Errorf("ocr: tesseract: %w", errors.New("exit status 1")),
+			wantCode: "engine_error",
+		},
+	}
+	for _, tc := range cases {
+		code, message := ocrFailureCode(tc.err)
+		if code != tc.wantCode {
+			t.Errorf("%s: ocrFailureCode(%v) code = %q, want %q", tc.name, tc.err, code, tc.wantCode)
+		}
+		if message == "" {
+			t.Errorf("%s: ocrFailureCode(%v) message is empty, want a fixed client-facing message", tc.name, tc.err)
+		}
+	}
+}
+
 // --- Progress throttle / terminal-bypass / freeze-on-abort (PROG-03, D-01/D-03/D-03a/D-06) ---
 
 // spyProgressCall records one UpdateProgress invocation for assertion.
