@@ -1213,6 +1213,185 @@ func assertDownloadIsNonEmptyTranscript(t *testing.T, downloadURL string) {
 	}
 }
 
+// pollUntilDoneCapturingProgress is pollUntilDone's progress-observing
+// sibling (SC4, Phase 45 Plan 04 -- closing the deferred Phase-44 SC4): it
+// polls GET /v1/jobs/{id} on the identical ~2s interval, but ALSO records
+// the maximum "progress_pct" sample observed WHILE the job is still
+// "active" (mid-flight, not yet terminal) -- proving a real page-granular
+// ramp for the multi-page PDF OCR job, not merely a terminal null->100
+// jump. Returns the terminal response body (mirroring pollUntilDone's own
+// return) plus the max mid-flight progress_pct sample observed (-1 if the
+// job never reported an active-status sample with a non-null progress_pct
+// at all).
+func pollUntilDoneCapturingProgress(t *testing.T, baseURL, apiKey, jobID string, timeout time.Duration) (map[string]any, float64) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last map[string]any
+	maxMidRamp := -1.0
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/jobs/"+jobID, nil)
+		if err != nil {
+			t.Fatalf("build GET /v1/jobs/%s request: %v", jobID, err)
+		}
+		req.Header.Set("Authorization", "ApiKey "+apiKey)
+		resp, err := e2eHTTP.Do(req)
+		if err != nil {
+			t.Fatalf("GET /v1/jobs/%s: %v", jobID, err)
+		}
+		var body map[string]any
+		decodeErr := json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /v1/jobs/%s status = %d, want 200; body=%v", jobID, resp.StatusCode, body)
+		}
+		if decodeErr != nil {
+			t.Fatalf("decode GET /v1/jobs/%s response: %v", jobID, decodeErr)
+		}
+		last = body
+
+		// progress_pct is nil-aware (internal/api/handlers.go:722): json
+		// decodes a JSON null into a nil interface{} and a JSON number into
+		// float64 -- only an active job with a non-null, strictly-between
+		// sample counts as the SC4 mid-ramp proof.
+		if status, _ := body["status"].(string); status == "active" {
+			if pct, ok := body["progress_pct"].(float64); ok && pct > 0 && pct < 100 && pct > maxMidRamp {
+				maxMidRamp = pct
+			}
+		}
+
+		switch body["status"] {
+		case "done":
+			return body, maxMidRamp
+		case "failed":
+			t.Fatalf("job %s failed: error_code=%v error_message=%v",
+				jobID, body["error_code"], body["error_message"])
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("job %s did not reach a terminal state within %v (last=%v)", jobID, timeout, last)
+	return nil, maxMidRamp
+}
+
+// assertDownloadContainsText fetches the presigned txt result (no auth
+// header -- the URL is self-authorizing) and asserts the extracted OCR text
+// contains wantSubstr -- the fixture's own live-verified OCR output token
+// (internal/convert/testdata/ocr/text_sample.png's "OctoConv" token,
+// internal/convert/ocr_test.go), NOT just a bare non-empty check (unlike
+// assertDownloadIsNonEmptyTranscript's deliberately-loose ASR assertion,
+// OCR text extraction from a fixed synthetic fixture IS deterministic, so a
+// substring assertion belongs here).
+func assertDownloadContainsText(t *testing.T, downloadURL, wantSubstr string) {
+	t.Helper()
+	resp, err := downloadClient().Get(downloadURL)
+	if err != nil {
+		t.Fatalf("GET download_url: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		t.Fatalf("GET download_url status = %d, want 200; body=%s", resp.StatusCode, b)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read download body: %v", err)
+	}
+	if !bytes.Contains(body, []byte(wantSubstr)) {
+		t.Fatalf("downloaded OCR text does not contain %q; got:\n%s", wantSubstr, body)
+	}
+}
+
+// assertDownloadIsWellFormedHOCR fetches the presigned hOCR result (no auth
+// header -- the URL is self-authorizing) and asserts it carries an
+// "ocr_page" page-element marker (ocrPageElementMatch's own merge-contract
+// marker, internal/convert/ocr.go) -- the well-formedness signal for a real
+// merged multi-page hOCR document produced by tesseract's own hOCR writer
+// plus this project's ocrPageMerger, not a bare non-empty check.
+func assertDownloadIsWellFormedHOCR(t *testing.T, downloadURL string) {
+	t.Helper()
+	resp, err := downloadClient().Get(downloadURL)
+	if err != nil {
+		t.Fatalf("GET download_url: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		t.Fatalf("GET download_url status = %d, want 200; body=%s", resp.StatusCode, b)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read download body: %v", err)
+	}
+	if !bytes.Contains(body, []byte("ocr_page")) {
+		t.Fatalf("downloaded hOCR does not contain an \"ocr_page\" page marker -- not well-formed hOCR; got:\n%s", body)
+	}
+}
+
+// ocrLanguageOpts is the opts value both TestOCRConversionE2E subtests
+// request: an explicit eng allowlisted language (ocropts.go's closed
+// ocrLanguageAllowlist), matching how the other opts-carrying tables in
+// this suite thread opts (pdfAProfileOpts, TestPDFAExportE2E) rather than
+// leaving language to the converter's own server-side default.
+const ocrLanguageOpts = `{"language":"eng"}`
+
+// TestOCRConversionE2E drives the OCR engine (tesseract) happy path through
+// the LIVE pipeline for the sixth (and final Phase 43-45) engine class,
+// mirroring TestAudioConversionE2E's/TestImageConversionE2E's shape: (A) an
+// IMAGE job (png -> txt) with a signed webhook assertion (T-45-10), and (B)
+// a MULTI-PAGE scanned/image-only PDF job (pdf -> hocr) with a mandatory
+// mid-flight progress-ramp assertion (0<progress_pct<100 observed live
+// while the job is still active) that proves the page-granular ramp over
+// the real GET /v1/jobs/{id} endpoint against a real ocr-worker container
+// -- closing the deferred Phase-44 SC4 (T-45-12).
+func TestOCRConversionE2E(t *testing.T) {
+	cfg := e2eSetup(t)
+	apiKey := provisionClient(t)
+
+	t.Run("Image_ToTxt", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("testdata", "text_sample.png"))
+		if err != nil {
+			t.Fatalf("read fixture text_sample.png: %v", err)
+		}
+
+		callbackURL, received := startWebhookReceiver(t, cfg.webhookHost)
+
+		jobID := postJob(t, cfg.baseURL, apiKey, "text_sample.png", data, "txt", callbackURL, ocrLanguageOpts)
+
+		// Generous bound: tesseract cold start (tessdata load) in a fresh
+		// container -- mirrors the audio/document engines' 5-minute
+		// cold-start allowance, not the plain image (libvips) engine's
+		// tighter 2-minute bound.
+		body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
+
+		downloadURL, _ := body["download_url"].(string)
+		if downloadURL == "" {
+			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+		}
+		assertDownloadContainsText(t, downloadURL, "OctoConv")
+
+		assertSignedWebhook(t, received, jobID)
+	})
+
+	t.Run("MultiPagePDF_ToHOCR", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("testdata", "multipage_image_only.pdf"))
+		if err != nil {
+			t.Fatalf("read fixture multipage_image_only.pdf: %v", err)
+		}
+
+		jobID := postJob(t, cfg.baseURL, apiKey, "multipage_image_only.pdf", data, "hocr", "", ocrLanguageOpts)
+
+		body, maxMidRamp := pollUntilDoneCapturingProgress(t, cfg.baseURL, apiKey, jobID, 5*time.Minute)
+		if !(maxMidRamp > 0 && maxMidRamp < 100) {
+			t.Fatalf("job %s: never observed an intermediate 0<progress_pct<100 sample while active (max mid-flight sample=%v) -- SC4 live progress-ramp not proven", jobID, maxMidRamp)
+		}
+
+		downloadURL, _ := body["download_url"].(string)
+		if downloadURL == "" {
+			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+		}
+		assertDownloadIsWellFormedHOCR(t, downloadURL)
+	})
+}
+
 // TestQueueDepthMetricRelocationE2E is the live half of D-03 (KEDA-01, Phase
 // 27 Plan 01): it proves the octoconv_queue_depth collector relocation
 // (Task 1) against a live compose stack, BEFORE any k8s work. The runtime
