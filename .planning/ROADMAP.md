@@ -184,7 +184,12 @@ Plans:
   3. Both new untrusted external processes (`pdftoppm` rasterizer and `tesseract`) run through the existing hardened `runCommand` (process-group `Setpgid` + SIGKILL-on-timeout, `nobody` posture), and a blank/text-free page completes as `done` with empty txt content rather than `failed`.
   4. A live end-to-end test shows a single image job's `progress_pct` going `null`→100 and a multi-page scanned PDF's `progress_pct` genuinely ramping page-by-page over `GET /v1/jobs/{id}` (and/or SSE), with zero changes to `internal/convert/progress.go`'s shared types.
   5. A stage-aware `isOCRTerminal` classifier and a fresh `OCRUniqueTTL` (derived from the OCR engine's own timeout/retry budget, never copied) prevent duplicate processing and correctly distinguish transient vs. terminal OCR failures.
-**Plans**: TBD
+**Plans**: 4 plans (3 waves)
+Plans:
+- [ ] 44-01-PLAN.md — Migration 0009 + matchPDF sniff + register OCRConverter + EngineFor routing + EngineOCR upload limit (OCRP-01/OCRE-01)
+- [ ] 44-02-PLAN.md — OCR queue/task + fresh-derived OCRUniqueTTL + EnqueueOCRConvert (OCRP-01)
+- [ ] 44-03-PLAN.md — HandleOCRConvert + isOCRTerminal + cmd/ocr-worker + reconciler ocr routing (OCRP-01/OCRE-05)
+- [ ] 44-04-PLAN.md — Integration proof: image null→100 + multi-page PDF page-by-page ramp + progress.go/sse.go unchanged fence (OCRP-01)
 
 ### Phase 45: Containerization + Measured Timeout Gate
 **Goal**: A running `ocr-worker` container in docker-compose passes a full live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied or guessed constant.
@@ -255,7 +260,7 @@ Plans:
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
 | 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
-| 44. Async Pipeline Wiring | v1.10 | 0/TBD | Not started | - |
+| 44. Async Pipeline Wiring | v1.10 | 0/4 | Not started | - |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 0/TBD | Not started | - |
 | 46. KEDA/Helm Chart Integration | v1.10 | 0/TBD | Not started | - |
 
