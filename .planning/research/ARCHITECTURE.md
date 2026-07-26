@@ -1,361 +1,268 @@
-# Architecture Research — v1.9 Job Progress & Control
+# Architecture Research: OCR Engine Class Integration (v1.10)
 
-**Domain:** Integration of progress/ETA/live-push/listing/cancellation into OctoConv's existing async conversion pipeline
-**Researched:** 2026-07-24
-**Confidence:** HIGH (derived directly from reading the current codebase — this is an integration design, not greenfield ecosystem research)
+**Domain:** Adding a 6th engine class (classic CPU-OCR: tesseract/PaddleOCR) to an existing
+Go async file-conversion service, reusing the v1.9 progress/SSE/webhook infrastructure.
+**Researched:** 2026-07-26
+**Confidence:** HIGH (every claim below is grounded in the actual current codebase —
+`internal/convert/`, `internal/worker/worker.go`, `internal/queue/queue.go`,
+`internal/api/handlers.go`, `internal/db/migrations/`, `deploy/chart/octoconv/` — not
+training-data guesses about OctoConv specifically). MEDIUM on the exact tesseract/PaddleOCR
+CLI invocation details and PDF-rasterize tool choice, which are implementation specifics for
+the build phase, not architecture.
 
-## Standard Architecture
-
-### System Overview (current, with v1.9 additions marked `[NEW]`/`[MOD]`)
+## System Overview
 
 ```
+POST /v1/jobs (file=scan.pdf, target=txt)
+        │
+        ▼
 ┌───────────────────────────────────────────────────────────────────────────┐
-│                              cmd/api (stateless, N replicas)                │
-│  ┌────────────┐ ┌────────────┐ ┌───────────────┐ ┌──────────────────────┐  │
-│  │POST /v1/jobs│ │GET /v1/jobs│ │GET /v1/jobs/{id}│ │POST /v1/jobs/{id}/cancel│ │
-│  │ (existing) │ │/{id}[MOD]  │ │/{id}[MOD progress] │ │[NEW]                │  │
-│  └────────────┘ └────────────┘ └───────────────┘ └──────────────────────┘  │
-│  ┌────────────────────┐  ┌───────────────────────────────────────────┐    │
-│  │GET /v1/jobs [NEW]   │  │GET /v1/jobs/{id}/events (SSE) [NEW]        │    │
-│  │listing+pagination   │  │DB-poll ticker per open connection          │    │
-│  └────────────────────┘  └───────────────────────────────────────────┘    │
-├───────────────────────────────────────────────────────────────────────────┤
-│                    Redis (asynq queues — unchanged — PLUS:)                │
-│         [NEW] pub/sub channel `job:cancel` (fire-and-forget, fan-out)      │
-├───────────────────────────────────────────────────────────────────────────┤
-│  engine workers (image/document/html/audio/av-worker, KEDA-scaled)          │
-│  ┌───────────────────────────────────────────────────────────────────┐    │
-│  │ Handler.process() [MOD]                                            │    │
-│  │  attemptCtx := context.WithCancel(context.WithTimeout(...))  [MOD]  │    │
-│  │  register(jobID, cancelFunc) in in-memory map            [NEW]     │    │
-│  │  if conv implements ProgressReporter [NEW optional iface]:          │    │
-│  │      conv.ConvertWithProgress(ctx, in, out, opts, onProgress)       │    │
-│  │  else: conv.Convert(ctx, in, out, opts)   (unchanged path)          │    │
-│  │  onProgress → throttle (>=1s) → repo.UpdateProgress() [NEW,         │    │
-│  │      non-locking, no job_events row]                                │    │
-│  │  subscribe once at startup to `job:cancel`; on match, call          │    │
-│  │      cancelFunc() → ctx.Done() → existing runCommand SIGKILL path   │    │
-│  └───────────────────────────────────────────────────────────────────┘    │
-├───────────────────────────────────────────────────────────────────────────┤
-│                              Postgres (system of record)                    │
-│  jobs [MOD: + progress_pct, + progress_updated_at, + eta_seconds]           │
-│  jobs.status already includes 'canceled' in the original CHECK constraint   │
-│  job_events (unchanged shape; NO row per progress tick — only real          │
-│              transitions, incl. the new active/queued→canceled transition) │
-│  webhook_deliveries (unchanged shape; FindWebhookGaps + delivery payload    │
-│              switch widened to cover status='canceled' [MOD])              │
-├───────────────────────────────────────────────────────────────────────────┤
-│  reconciler (unchanged FindStale query — 'canceled' already excluded        │
-│              because it only selects status IN ('queued','active'))        │
-│  webhook-worker (delivers `progress` event [NEW, optional] the same way     │
-│              it delivers `done`/`failed` today — reuses HMAC signing,       │
-│              retry/backoff, dead-letter machinery unchanged)                │
+│ internal/api  (handleCreateJob)                                          │
+│  Sniff() -- NEW: matchPDF ("%PDF-") added to sniff.go's signatures table  │
+│  EngineFor(detected="pdf", target="txt") -> engine="ocr" (NEW constant)   │
+│  ParseOCROpts/ValidateOCRApplicability (NEW, mirrors Audio/AVOpts)        │
+│  Postgres-first INSERT (jobs.engine='ocr') -> EnqueueOCRConvert (NEW)     │
+└───────────────────────────────────────────────────────────────────────────┘
+        │ asynq task {job_id} on NEW "ocr" queue
+        ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ cmd/ocr-worker (NEW binary, own container, own KEDA ScaledObject)         │
+│  worker.HandleOCRConvert (NEW, mirrors HandleAVConvert's "simple" shape)  │
+│    -> process() (UNCHANGED) -> registry.Lookup(pdf,txt) -> OCRConverter   │
+│                                                                            │
+│  OCRConverter.ConvertWithProgress (NEW, implements ProgressConverter):    │
+│   ┌─────────────────────────────────────────────────────────────────┐    │
+│   │ 1. if source==pdf: pdfinfo -> page count -> reject if >MAX_PAGES │    │
+│   │    (fail-closed BEFORE any rasterize -- mirrors dimensions.go)   │    │
+│   │ 2. for page in 1..N (STREAMING, one page in flight at a time):  │    │
+│   │      pdftoppm -f page -l page ...  -> page.png (if pdf)         │    │
+│   │      tesseract page.png ... -> page.txt / page.hocr             │    │
+│   │      append to accumulated output; os.Remove(page.png)          │    │
+│   │      sink.Update(pct=page/N*100, eta=pagesRemaining/pagesPerSec) │    │
+│   │    (single image, N==1: NO intermediate Update call -- process()│    │
+│   │    already writes the unconditional terminal 100 on success,    │    │
+│   │    giving the required null->100 for free, zero extra code)     │    │
+│   └─────────────────────────────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────────────────────────────┘
+        │ sink.Update -> progressSink (worker.go, UNCHANGED)
+        ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│ v1.9 progress infra -- ZERO changes, engine-agnostic by construction      │
+│  progressSink.Update -> repo.UpdateProgress (throttled, jobs.progress_pct)│
+│  SSE GET /v1/jobs/{id}/events  -- DB-poll, reads progress_pct verbatim    │
+│  opt-in progress webhook -- fireDetached, reads progress_pct verbatim    │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Component Responsibilities
+## Component Responsibilities (new vs modified)
 
-| Component | Responsibility | New/Modified |
-|-----------|-----------------|--------------|
-| `internal/jobs.Repo.UpdateProgress` | Lightweight, non-transactional `UPDATE jobs SET progress_pct=..., eta_seconds=..., progress_updated_at=now() WHERE id=$1 AND status='active'` — no `FOR UPDATE`, no `job_events` insert | **NEW** |
-| `internal/jobs.Repo.Cancel` | Guarded transition `queued/active → canceled` through the existing `transition()` helper (row lock + `job_events` insert) | **NEW** (thin wrapper, reuses existing machinery) |
-| `internal/jobs.Repo.List` | Paginated, client-scoped read query (status/engine filters, keyset pagination) | **NEW** |
-| `internal/convert.ProgressReporter` | Optional interface a `Converter` may additionally implement to report fractional progress via a callback | **NEW** |
-| `internal/convert` (exec.go) | Add a streaming-stdout variant of `runCommand` that lets a caller consume ffmpeg's `-progress pipe:1` lines while still preserving Setpgid+SIGKILL | **MOD** (additive — existing `runCommand` callers unaffected) |
-| `internal/convert.AVConverter` / `AudioConverter` | Implement `ProgressReporter` using ffmpeg `-progress pipe:1` (`out_time_us`, `speed`) against the already-probed `source_duration` | **MOD** |
-| `internal/worker.Handler.process` | Type-assert `ProgressReporter`, wire throttled `onProgress` → `repo.UpdateProgress`; wrap `attemptCtx` with `context.WithCancel`; register/unregister the cancel func in an in-memory map; subscribe to Redis `job:cancel` | **MOD** |
-| `internal/worker` shared `isTerminal` | New top-level check: `errors.Is(err, context.Canceled)` → terminal, `SkipRetry`, but do **NOT** call `MarkFailed` (status is already `canceled`, and the guarded transition's allow-list rejects it anyway as a safety net) | **MOD** |
-| `internal/api` new `handleCancelJob` | `POST /v1/jobs/{id}/cancel`: ownership check (mirrors `handleGetJob`'s 404-not-403 discipline) → `repo.Cancel` → publish job id to `job:cancel` | **NEW** |
-| `internal/api` new `handleListJobs` | `GET /v1/jobs`: client-scoped list + filters + pagination | **NEW** |
-| `internal/api` new `handleJobEvents` (SSE) | `GET /v1/jobs/{id}/events`: DB-poll ticker (1-2s) streaming `progress`/terminal events, closes on terminal status | **NEW** |
-| `internal/webhook` payload builder (`HandleWebhookDeliver`) | New `status == StatusCanceled` branch (no `download_url`); new (separate, non-terminal, best-effort) `progress` event type triggered from the worker's throttle point, reusing `Deliverer`/HMAC/retry unchanged | **MOD** |
-| `internal/reconciler` `FindWebhookGaps` | Status filter widened from `('done','failed')` to `('done','failed','canceled')` | **MOD** |
-| `internal/db/migrations` | New migration: `jobs.progress_pct smallint`, `jobs.eta_seconds int`, `jobs.progress_updated_at timestamptz` (all nullable) | **NEW** |
-
-## Recommended Project Structure (new/changed files only)
-
-```
-internal/
-├── convert/
-│   ├── convert.go          # [MOD] add ProgressReporter interface (optional, additive)
-│   ├── exec.go              # [MOD] add runCommandStreaming (parallel to runCommand)
-│   ├── av.go                # [MOD] AVConverter implements ProgressReporter
-│   └── whisper.go           # [MOD] AudioConverter implements ProgressReporter (ffmpeg normalize stage only — whisper-cli stage stays indeterminate)
-├── jobs/
-│   ├── repo.go               # [MOD] + UpdateProgress, + Cancel, + List
-│   └── jobs.go               # [MOD] + StatusCanceled Go-side const (DB value already existed)
-├── cancel/                   # [NEW package] tiny in-memory registry + Redis pub/sub wiring
-│   ├── registry.go           # map[uuid.UUID]context.CancelFunc, mutex-guarded
-│   └── pubsub.go             # Subscribe(ctx, redisClient, onCancel func(uuid.UUID)), Publish(ctx, redisClient, jobID)
-├── worker/
-│   └── worker.go             # [MOD] process() wiring, isTerminal context.Canceled branch
-├── api/
-│   ├── handlers.go           # [MOD] handleGetJob progress fields; [NEW] handleCancelJob, handleListJobs, handleJobEvents
-│   └── routes.go             # [MOD] register 3 new routes
-├── webhook/
-│   └── (worker.go's HandleWebhookDeliver, not a separate package file) # [MOD] canceled + progress payload branches
-├── reconciler/
-│   └── reconciler.go         # [MOD] FindWebhookGaps status list
-└── db/migrations/
-    └── 0007_job_progress.sql # [NEW]
-```
-
-### Structure Rationale
-
-- **`internal/cancel/` as its own small package** rather than folding pub/sub logic into `internal/worker` or `internal/queue`: it has a single, narrow responsibility (map a job id to a live cancel func, and bridge that to Redis pub/sub) that both the worker binaries (5 engine classes) and the api process need to import from a neutral location — mirrors the existing `internal/metrics` pattern (a small cross-cutting package every binary imports) rather than adding a new axis of coupling between `internal/worker` and `internal/api`.
-- **`ProgressReporter` as an *additional*, optional interface**, not a change to `Converter` itself: `Converter`'s 3-method shape (`Pairs`/`Convert`/`Engine`) is depended on by `internal/api` (format-pair validation) and every existing engine (libvips, LibreOffice, Chromium, whisper's transcribe stage). Changing its signature would force every converter to grow a no-op progress callback parameter it can never call — a needless, risky, wide-blast-radius edit for a feature only two of five engine classes can currently support. This mirrors the project's own precedent (Key Decision, v1.2): "document-engine extends the existing Converter/Registry rather than introducing a Handler/Capability/Input/Output/Progress contract" — the same reasoning applies here: extend by addition, not by breaking the existing contract.
-- **Migration file numbered `0007_job_progress.sql`**, following the existing `NNNN_description.sql` convention (`0005_html_engine.sql`, `0006_audio_engine.sql`).
-
-## Architectural Patterns
-
-### Pattern 1: Non-locking, self-conditioning progress write (avoids contending on the guarded-transition lock)
-
-**What:** Progress is written via a plain `UPDATE ... WHERE id = $1 AND status = 'active'` with no `SELECT ... FOR UPDATE`, no transaction, and no `job_events` row — deliberately bypassing `Repo.transition()`.
-
-**Why this is safe (and why it must NOT go through `transition()`):**
-- `transition()` exists to guard *state-machine* changes (`queued→active`, `active→done`, etc.) and pairs every change with an audit-log (`job_events`) row. Progress is **not** a state change — status stays `active` throughout — so there is nothing for the allow-list guard to validate, and appending a `job_events` row on every throttled tick (every 1-3s for a multi-minute video transcode) would make the append-only audit log balloon by orders of magnitude and pollute `RecoveryCount`'s tag-based counting logic if the detail schema were ever conflated.
-- Progress writes are inherently **high-frequency** and **best-effort** (losing one tick has zero correctness impact — the next tick a few seconds later supersedes it). Routing them through `SELECT ... FOR UPDATE` would serialize every progress tick against `MarkActive`/`MarkDone`/`MarkFailed`/the new `Cancel` for the *same row*, and — because Postgres row locks are per-row, not per-column — against each other if a retry ever produced two attempts in flight. That contention buys nothing: correctness for progress does not require it.
-- The `WHERE status = 'active'` clause makes the write **self-conditioning**: a late progress tick that arrives after `MarkDone`/`MarkFailed`/`Cancel` has already flipped the row away from `active` silently affects zero rows — no error, no stale resurrection of "50%" on a row that is actually `done`. This is the same "let the WHERE clause do the guarding" idea the codebase already uses elsewhere (e.g., `MarkActive`'s `COALESCE(started_at, now())` for idempotent re-entry), just applied to progress instead of transition validation.
-- **Recommended additional guard:** add `AND (progress_pct IS NULL OR progress_pct <= $2)` (monotonic non-regression) to protect against a stale, out-of-order write from an asynq internal retry that started a fresh attempt at 0% racing a previous attempt's in-flight higher-percentage tick. Given the existing image/document/html/audio/av engines all run at `WORKER_CONCURRENCY` per-process concurrency with `asynq.Unique` locks preventing two concurrent tasks for the same job, this race is narrow but not impossible during the brief internal-retry window; the extra clause costs nothing and closes it.
-
-**Trade-offs:** Progress can very rarely be silently dropped (e.g., a Postgres blip mid-tick) with no retry — acceptable, since the next tick a few seconds later corrects it. This must **not** be used for anything that needs durability (that's what `job_events`/`transition()` remain for).
-
-### Pattern 2: Optional-capability interface for progress reporting (`ProgressReporter`)
-
-**What:**
-```go
-// ProgressUpdate is throttled by the caller (worker), not the engine — an
-// engine implementing ProgressReporter should call the callback as often as
-// its own progress source allows (e.g. ffmpeg's ~10Hz -progress cadence);
-// throttling to a Postgres-write-friendly cadence is process()'s job, not
-// the Converter's.
-type ProgressUpdate struct {
-    Pct        float64        // 0-100
-    ETA        *time.Duration // nil when not yet computable (e.g. speed unknown)
-}
-
-// ProgressReporter is an OPTIONAL capability a Converter may additionally
-// implement. Converters that cannot report progress (libvips, LibreOffice,
-// Chromium, whisper-cli's transcribe stage) simply do not implement it —
-// process() falls back to the existing conv.Convert(...) call unchanged.
-type ProgressReporter interface {
-    ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, onProgress func(ProgressUpdate)) error
-}
-```
-
-**When to use:** Any converter whose underlying engine emits a native, parseable progress stream (ffmpeg's `-progress pipe:1`, verified pattern used by third-party tools such as `better-ffmpeg-progress` and documented on ffmpeg-kit's wiki — MEDIUM confidence, no single canonical ffmpeg.org page enumerates every key, but `out_time_us`/`speed`/`progress=continue|end` are consistently reported by every independent implementation surveyed). LibreOffice, Chromium (`--print-to-pdf`), and whisper-cli's transcription stage expose no equivalent machine-readable progress stream — those stay indeterminate for v1.9 (client sees status only, no `progress_pct`, matching the milestone's own stated "indeterminate-фолбэк для остальных движков").
-
-**Worker integration (`process()`):**
-```go
-if pr, ok := conv.(convert.ProgressReporter); ok {
-    lastWrite := time.Now()
-    err = pr.ConvertWithProgress(attemptCtx, inPath, outPath, job.Opts, func(u convert.ProgressUpdate) {
-        if time.Since(lastWrite) < progressWriteInterval { // e.g. 2s
-            return
-        }
-        lastWrite = time.Now()
-        var eta *int
-        if u.ETA != nil {
-            s := int(u.ETA.Seconds())
-            eta = &s
-        }
-        _ = h.repo.UpdateProgress(attemptCtx, job.ID, int(u.Pct), eta) // best-effort, error discarded — same discipline as webhook enqueue failures elsewhere in this handler
-    })
-} else {
-    err = conv.Convert(attemptCtx, inPath, outPath, job.Opts)
-}
-```
-
-**Trade-offs:** Two call shapes exist on the hot path (`Convert` vs `ConvertWithProgress`) instead of one — acceptable, mirrors the existing precedent of `enforceAudioGuardBeforeConvert` already splicing engine-specific behavior into `process()` via a closure rather than forcing every engine through one rigid shape.
-
-### Pattern 3: `runCommand` streaming variant (progress source without breaking the hardened Setpgid+SIGKILL contract)
-
-**What:** `internal/convert/exec.go`'s `runCommand` currently wires `cmd.Stdout = &stdout` (a `bytes.Buffer`) and returns the fully-buffered output only after the process exits or is killed. A new `runCommandStreaming` variant keeps every existing safety property (`Setpgid: true`, ctx-driven `syscall.Kill(-pid, SIGKILL)`, stderr captured for diagnostics) but replaces the stdout wiring with an `io.Pipe` (or `cmd.StdoutPipe()`) read line-by-line by a `bufio.Scanner` in a dedicated goroutine, forwarding each parsed `key=value` line to the caller's callback as it arrives — not after the process exits.
-
-**Why not just parse the buffered output after exit:** ffmpeg's `-progress pipe:1` is specifically designed to be consumed *while the process runs* — buffering it defeats the entire purpose (the caller would only learn "0% → 100%" at the moment the process already finished, which is a strictly worse experience than the current indeterminate baseline).
-
-**Constraints preserved:**
-- The ctx-cancellation kill path (`select { case <-ctx.Done(): ...SIGKILL... }`) is unchanged — cancellation (both timeout-driven and, new in v1.9, user-cancel-driven) still kills the whole process group exactly as today.
-- stderr capture for diagnostics (`terminalVipsSignatures`-style substring classification) is unaffected — only stdout's wiring changes for engines that opt into streaming.
-
-**Trade-offs:** A second, parallel exec path in `exec.go` (`runCommand` and `runCommandStreaming`) rather than one unified function — acceptable and consistent with keeping non-progress-reporting engines' code paths completely untouched (zero regression risk to libvips/LibreOffice/Chromium/whisper's transcribe stage, which are already production-hardened and audited).
-
-### Pattern 4: Cancel signal — fast pub/sub path with a guaranteed correctness backstop
-
-**What:** Cancellation needs to reach *one specific, currently-running* worker process/goroutine out of a horizontally-scaled, KEDA-autoscaled fleet — the API process has no direct handle on which replica (or whether any replica) is running a given job.
-
-**Design (two layers, deliberately redundant):**
-
-1. **Fast path (best-effort, low-latency):** `POST /v1/jobs/{id}/cancel` first performs the guarded DB transition (`queued/active → canceled`, via `Repo.Cancel` → existing `transition()`), then publishes the job id (fire-and-forget) to a single shared Redis pub/sub channel, e.g. `job:cancel`, on the *same* Redis instance asynq already uses. Every engine worker process subscribes to this channel once at startup and keeps an in-memory `map[uuid.UUID]context.CancelFunc` populated for whatever job(s) it is currently `process()`-ing (`WORKER_CONCURRENCY`-bounded, so the map is always small). On a matching message, the worker calls the stored `CancelFunc()`, which cancels `attemptCtx` — flowing, completely unchanged, into `runCommand`'s existing `ctx.Done()` → `SIGKILL(-pid)` branch. A message for a job this particular worker replica is not running is a harmless no-op map-miss (every replica subscribes to the same channel; there is no need to route the message to "the right" replica — the map lookup does that for free).
-2. **Correctness backstop (guaranteed, not just best-effort):** the Redis publish can be silently lost (no subscriber connected at that instant, a Redis blip, a message published a heartbeat before the worker even registered the job in its map). This must never allow a canceled job to be reported back to the client as `done`. It doesn't, because of the **existing guarded-transition allow-list**: once the DB row is `canceled`, the row is no longer in `{queued, active}` — `MarkDone`'s and `MarkFailed`'s `transition()` calls (`allowedFrom = []string{StatusActive}` / `{StatusQueued, StatusActive}`) will both **reject** any attempt by a worker that never received the cancel signal and runs the job to completion. The worker's existing `asynq.SkipRetry` idiom (`"already active/done/canceled — let asynq drop it rather than loop"`, already present verbatim in every `HandleXConvert`'s `MarkActive` error path) already anticipates exactly this outcome. **No new guard code is needed for this half of the backstop — it falls out of the transition allow-list that already exists.**
-
-**Worst case if the fast path is entirely missed:** a canceled job's engine process (ffmpeg, LibreOffice, etc.) runs to completion wastefully, consuming CPU/timeout budget that would otherwise have been reclaimed instantly — but it can **never** flip the row back to `done`/`active`, never re-fires a `done` webhook, and never corrupts client-visible state. This is an accepted, bounded, and precedented shape of residual risk in this codebase (mirrors the accepted `file://` residual and the PDF/A veraPDF-cost precedent already logged in Key Decisions) — worth flagging explicitly to the roadmap as a deliberate trade-off, not an oversight.
-
-**New terminal classification:** `context.Canceled` (distinct from `context.DeadlineExceeded`, which every existing `isXTerminal` already handles or deliberately doesn't) must be added as a top-level check in the shared `isTerminal()` — classified terminal (`SkipRetry`), but the handler must **skip the `MarkFailed` call** entirely on this path (status is already `canceled`; calling `MarkFailed` would only generate a harmless-but-noisy illegal-transition error that the reconciler-style code elsewhere in this codebase already treats as an expected, non-alerting outcome — but it's cleaner to just not call it).
-
-**Trade-offs:** Introduces the first cross-worker Redis pub/sub usage in a codebase whose only prior Redis usage was asynq's own queue mechanics — a genuinely new operational primitive (subscription lifecycle per worker binary, at-least-once-is-not-guaranteed semantics). This is justified specifically because cancellation's whole value proposition is *speed* (a user pressing cancel expects the process-group kill within roughly a second, not "whenever the next poll interval fires") — a DB-poll-only fallback (each worker periodically re-checking `jobs.status` for its own in-flight job id) was considered and rejected as the *primary* mechanism because it reintroduces exactly the poll-latency trade-off pub/sub exists to avoid, though it remains available as a defense-in-depth secondary check (e.g., worker re-checks `jobs.status` every N seconds for its own in-flight job as an extra safety net independent of the pub/sub message, cheap given `WORKER_CONCURRENCY` is small).
-
-### Pattern 5: SSE endpoint stays stateless by polling Postgres, not subscribing to worker-internal state
-
-**What:** `GET /v1/jobs/{id}/events` lives in the `api` process (the only process a client talks to directly) and must remain horizontally scalable and stateless — any api replica must be able to serve any client's SSE connection, with no session affinity and no dependency on which worker replica (if any) is currently processing the job.
-
-**Recommended approach — DB polling, not a new worker→api channel:** the SSE handler runs a short ticker (1-2s) against `jobs.Get(ctx, id)` (already used by `handleGetJob`) for the SAME columns the throttled `UpdateProgress` writes populate, and emits an `event: progress` / `data: {...}` frame only when `progress_pct` or `status` actually changed since the last tick, closing the stream once `status` reaches a terminal value (`done`/`failed`/`canceled`).
-
-**Why this over a worker→api Redis pub/sub progress channel:** the project's own established architectural principle (documented in `.planning/PROJECT.md`'s Data Flow section) is that *"Redis/asynq holds only transient queue state... it is not consulted for job status"* — Postgres alone is the cross-process source of truth for job state. A worker-published `progress:{job_id}` pub/sub channel would be a second, competing source of live state that the api would need to reconcile with Postgres anyway (a client that connects to SSE a few seconds after a progress tick was published, with no message replay, would otherwise see nothing until the next tick — requiring a "poll once on connect, then subscribe" hybrid to avoid an initial blank frame). Given clients are trusted internal services (not thousands of concurrently-open public SSE connections), N api replicas each running a lightweight 1-2s poll per open connection is a negligible Postgres load and reuses 100% of the already-audited `Repo.Get` read path — zero new infrastructure, zero new consistency-reconciliation logic, and it directly satisfies the "stateless, horizontally-scalable api" constraint by construction (no per-connection worker affinity of any kind).
-
-**Trade-off flagged for the roadmap:** this gives a 1-2s progress latency ceiling on the SSE stream (in addition to the `progress` webhook event, which can be pushed the instant the throttled DB write happens — see the webhook path above, which has genuinely lower latency than SSE-via-poll since it's write-triggered, not poll-triggered). If sub-second SSE latency is later required, promoting to a Redis pub/sub-fed SSE handler is the natural follow-up — deliberately deferred, not because it's infeasible, but because polling is the simpler, already-precedented choice that satisfies the milestone's stated goal ("прозрачность и управляемость", not "sub-second telemetry").
+| Component | Status | Responsibility |
+|-----------|--------|-----------------|
+| `internal/convert/ocr.go` | **NEW** | `OCRConverter` — implements `Converter` + `ProgressConverter`. Pairs = `{jpg,png,webp,tiff,pdf} × {txt,hocr}` (mirrors `AudioConverter`'s disjoint source×target cross-product, `whisper.go:183-191`). Self-contains the page-count guard (mirrors `AVConverter`'s self-contained duration/resolution guard, `av.go:516-560` — **no** splice into `worker.process()` needed, unlike audio's `enforceAudioGuardBeforeConvert`). |
+| `internal/convert/ocrpages.go` | **NEW** | Bounded PDF page-count probe (`pdfinfo` wrapper, or a zero-dependency structural parser mirroring `dimensions.go`'s fail-closed philosophy) + `MAX_OCR_PAGES` enforcement, run BEFORE any rasterize. |
+| `internal/convert/ocrprogress.go` | **NEW** | Page-granular EMA/ETA estimator (own small type, e.g. `pageEMAEstimator`, mirroring `progress.go`'s `etaEstimator` shape but keyed on seconds-per-page instead of ffmpeg `speed=`). Does **not** modify `progress.go`'s shared `ProgressUpdate`/`ProgressSink`/`ProgressConverter` interfaces — those already are engine-agnostic (SEED-009's own premise) and stay untouched. |
+| `internal/convert/ocropts.go` | **NEW** | `OCROpts{Language string}` — closed allowlist of tesseract 3-letter language codes (`eng`, `rus`, ...), strict-parsed via the shared `checkStrictObject` helper (`opts.go:68`), mirrors `AudioOpts` (`audioopts.go`) byte-for-byte in shape: `ParseOCROpts`, `OCROptsFromMap`, `ValidateOCRApplicability`. |
+| `internal/convert/sniff.go` | **MODIFIED** | Add `{"pdf", matchPDF}` to the `signatures` table (`matchPDF` checks the fixed `%PDF-` prefix at offset 0, reusing the existing `pdfMagic` bytes already declared in `libreoffice.go:172` for OUTPUT validation — same magic, new INPUT-detection use). This is a **pure addition to the existing `Sniff()` call** already at the top of `handleCreateJob` — no new branch needed in `handlers.go`'s detection chain (unlike video/audio, which needed dedicated `SniffVideo`/`SniffAudio` calls because their signatures don't fit the fixed 12-byte window). Also add `MIMEType()` cases for `"txt"` (already exists), `"hocr"` (→ `text/html; charset=utf-8`, since hOCR is a valid XHTML profile), `"alto"` (→ `application/xml`, if ALTO is built as a distinct target format). |
+| `internal/convert/converters.go` | **MODIFIED** | Register a zero-value `OCRConverter{}` placeholder in `init()` (mirrors `AVConverter{}`'s placeholder registration, `converters.go:27` — `cmd/ocr-worker` re-registers a CONFIGURED instance before serving, same last-write-wins discipline as AV's `D-09`). |
+| `internal/convert/convert.go` | **MODIFIED** | Add `EngineOCR = "ocr"` to the engine-class constant block (`convert.go:19-25`) — the single source of truth every routing switch below reads from. |
+| `internal/queue/queue.go` | **MODIFIED** | `TypeOCRConvert`, `QueueOCR = convert.EngineOCR`, `NewOCRConvertTask`, `ocrRetrySchedule`/`OCRRetryDelay`, `ocrBackoffSum`/`OCRUniqueTTL` (all mirror the Document/HTML/Audio precedent exactly — no jitter, clamp-index shape), add to `RetryDelayFunc`'s switch and `AllConvertQueues()` (the latter feeds the API's KEDA queue-depth Prometheus collector — **must** be added or the ocr queue is invisible to KEDA, `queue.go:606-608`). |
+| `internal/queue/client.go` | **MODIFIED** | `EnqueueOCRConvert` (mirrors `EnqueueAudioConvert`/`EnqueueAVConvert`, `client.go:184-197`). |
+| `internal/worker/worker.go` | **MODIFIED** | `HandleOCRConvert` (mirrors `HandleAVConvert`'s "simple" shape — no guard splice, since the page-count guard is self-contained in `OCRConverter.Convert`) + `isOCRTerminal` classifier. Everything else in this file (`process()`, `progressSink`, `runConvertWithOptionalProgress`, SSE/webhook plumbing) is **UNCHANGED** — this is the whole point of the v1.9 engine-agnostic seam. |
+| `internal/reconciler/reconciler.go` | **MODIFIED** | `EnqueueOCRConvert` added to the `Enqueuer` interface + a `case convert.EngineOCR` in the recovery-routing switch (`reconciler.go:285-295`, mirrors Audio/AV exactly). |
+| `internal/api/handlers.go` | **MODIFIED** | Two switch additions (opts-validation block ~line 469, enqueue block ~line 641): `case convert.EngineOCR` calling `ParseOCROpts`/`ValidateOCRApplicability` and `s.queue.EnqueueOCRConvert`. No change to the Sniff chain itself (see sniff.go above). |
+| `internal/db/migrations/0009_ocr_engine.sql` | **NEW** | `ALTER TABLE jobs ... CHECK (engine IN (..., 'ocr'))` — mirrors `0006_audio_engine.sql` exactly. **Note:** the current CHECK (`0006_audio_engine.sql:11`) already lists `'cad'`, `'archive'`, `'probe'` as *reserved-but-unused* placeholders from the original spec — `'ocr'` is **not** among them and must be added fresh. This is the one unavoidable schema migration for this milestone. |
+| `cmd/ocr-worker/main.go` | **NEW** | Own binary, mirrors `cmd/av-worker/main.go`'s shape: connect Postgres/Redis/S3, register a configured `OCRConverter{MaxPages: ...}`, resolve `OCR_ENGINE_TIMEOUT`/`OCR_WORKER_CONCURRENCY`/`OCR_MAX_PAGES` env, call `h.SetProgressThrottle(...)` (reusing `PROGRESS_MIN_INTERVAL_SECONDS`/`PROGRESS_MIN_DELTA_PCT` — same env names, same v1.9 infra, no new progress config), optionally `h.SetProgressWebhook(...)` if `WEBHOOK_SIGNING_SECRET` is set, register `queue.TypeOCRConvert -> h.HandleOCRConvert` on its own `asynq.ServeMux`. |
+| `Dockerfile.ocr-worker` | **NEW** | Own container (mirrors `Dockerfile.chromium-worker`'s `tini`-as-PID-1 precedent): `debian:bookworm-slim` + `tesseract-ocr` + language packs (`tesseract-ocr-rus` etc.) + `poppler-utils` (`pdftoppm`, `pdfinfo`) — all apt-installable, no compile-from-source needed (unlike av-worker's ffmpeg-from-source). |
+| `docker-compose.yml` | **MODIFIED** | New `ocr-worker` service block (mirrors `av-worker`'s block: build/dockerfile, container_name, resource limits, `OCR_*` env, `depends_on`). |
+| `.env.example` | **MODIFIED** | New `OCR_ENGINE_TIMEOUT`, `OCR_WORKER_CONCURRENCY`, `OCR_MAX_RETRY`, `OCR_MAX_PAGES` keys. |
+| `deploy/chart/octoconv/templates/deployment-ocr-worker.yaml`, `scaledobject-ocr.yaml` | **NEW** | Mirror `deployment-av-worker.yaml`/`scaledobject-av.yaml` byte-for-shape (per-class KEDA autoscaler, `terminationGracePeriodSeconds` > `ShutdownTimeout` > `OCR_ENGINE_TIMEOUT`). |
+| `deploy/chart/octoconv/values.yaml`, `configmap.yaml` | **MODIFIED** | New `ocr:` block (image repo, resources, KEDA thresholds) + `OCR_*` configmap keys. |
+| `scripts/ocr-timing-measure.sh` | **NEW** | Measured-not-assumed timeout gate (mirrors `scripts/audio-rtf-measure.sh`/`scripts/av-rtf-measure.sh`'s discipline) — but the metric is **seconds-per-page**, not a real-time-factor ratio; naming/methodology needs its own phase, not a blind RTF-script clone. |
 
 ## Data Flow
 
-### Progress write/read flow (new)
+### Request → completion (multi-page scanned PDF)
 
-```
-ffmpeg (child process, -progress pipe:1)
-    ↓ (streamed, line-by-line, NOT buffered)
-runCommandStreaming (exec.go) → parses out_time_us/speed
-    ↓ (per-line callback)
-AVConverter.ConvertWithProgress's onProgress(ProgressUpdate)
-    ↓ (engine-agnostic, via ProgressReporter type-assertion)
-worker.process()'s throttled wrapper (>=1 tick per ~2s)
-    ↓
-jobs.Repo.UpdateProgress  →  UPDATE jobs SET progress_pct=..., eta_seconds=...
-                              WHERE id=$1 AND status='active'  (no lock, no job_events)
-    ↓ (Postgres is now the single source of truth for progress, same as status)
-   ┌─────────────────────────────┬───────────────────────────────────┐
-   │                             │                                     │
-GET /v1/jobs/{id} (poll)   GET /v1/jobs/{id}/events (SSE, DB-poll)   webhook `progress` event
-(reads jobs.progress_pct    (reads jobs.progress_pct on a 1-2s      (enqueued directly from the
- directly, existing         ticker, streams on change)               throttle point above — lowest
- Repo.Get path, extended)                                            latency of the three, reuses
-                                                                       existing HMAC/retry/dead-letter
-                                                                       webhook-delivery machinery)
-```
+1. Client `POST /v1/jobs` (`file=scan.pdf`, `target=txt`, optional `opts={"language":"rus"}`).
+2. `Sniff()` matches `%PDF-` → `detected="pdf"`. `EngineFor("pdf","txt")` → `"ocr"`.
+3. `ParseOCROpts`/`ValidateOCRApplicability` gate the language allowlist (fail-closed 422 on an unlisted code) — same shape as `ValidateAudioApplicability`.
+4. Postgres-first: `jobs` row inserted (`engine='ocr'`, `status='queued'`) inside a transaction, **then** `EnqueueOCRConvert` puts `{job_id}` on the `ocr` queue.
+5. `cmd/ocr-worker` (scaled from zero by KEDA on queue depth > 0) picks up the task, `MarkActive`, `process()` downloads the input, looks up `OCRConverter` via the unchanged `registry.Lookup`.
+6. `OCRConverter.ConvertWithProgress`:
+   a. `pdfinfo` (or the bounded structural parser) reads the declared page count — **before touching pdftoppm** — and rejects (terminal) if it exceeds `OCR_MAX_PAGES`.
+   b. Loop `page = 1..N`: `pdftoppm -f page -l page -r <dpi> -png in.pdf pagebase` renders **exactly one page** to disk; `tesseract pagebase-N.png outbase txt|hocr` OCRs it; the page image is deleted immediately after OCR completes, before the next iteration starts — bounded working set of one rasterized page at a time, never N pages simultaneously (the "streaming, not all-at-once" requirement).
+   c. After each page: `sink.Update(ProgressUpdate{Pct: page*100/N, ETA: pageEMA.etaSeconds(...)})`.
+   d. Fragments are concatenated (txt) or wrapped in a single hOCR/ALTO document (structural merge, not a blind concat) into the final `outPath`.
+7. On success, `process()`'s existing unconditional `repo.UpdateProgress(ctx, jobID, 100, nil)` fires (unchanged) — this is what gives a single-image job its required `null→100` jump for free, since a 1-page job's loop body never calls `sink.Update` itself.
+8. `AddOutput(ordinal=0, ...)` — **unchanged single-output call** (see Output Handling below) — `MarkDone`.
+9. SSE subscribers and the opt-in progress webhook have been receiving `progress_pct` ticks throughout step 6c via the completely unmodified v1.9 machinery; the terminal `completed` webhook fires from the existing `HandleWebhookDeliver` path.
 
-### Cancellation flow (new)
+### Single image (no PDF stage)
 
-```
-client → POST /v1/jobs/{id}/cancel
-    ↓
-handleCancelJob: ownership check (mirrors handleGetJob's 404-not-403 discipline)
-    ↓
-jobs.Repo.Cancel(ctx, id)  →  transition(queued|active → canceled)   [DURABLE, guarded, job_events row written]
-    ↓ (only on transition SUCCESS)
-publish jobID → Redis `job:cancel` channel   [BEST-EFFORT, fire-and-forget]
-    ↓                                                    ↓ (if some worker IS running this job)
-API responds 200/202                          worker's in-memory map hit → cancelFunc()
-                                                          ↓
-                                               attemptCtx.Done() → runCommand's EXISTING
-                                               ctx.Done() branch → SIGKILL(-pid)  [UNCHANGED exec.go]
-                                                          ↓
-                                               process() returns wrapped context.Canceled
-                                                          ↓
-                                               isTerminal(): context.Canceled → terminal,
-                                               SkipRetry, do NOT call MarkFailed
-                                                          ↓ (independently, even if pub/sub was missed)
-                                               any later MarkDone/MarkFailed attempt is REJECTED
-                                               by transition()'s allow-list (row is no longer
-                                               queued/active) — CORRECTNESS BACKSTOP, no new code
-```
+Same flow, but `N=1`, no `pdfinfo`/`pdftoppm` invocation (the guard/rasterize stage is entered only `if source == "pdf"` — an image input goes straight to the tesseract step on the downloaded file itself). No `sink.Update` calls fire; the client sees `progress_pct: null` for the job's duration then `100` on completion — exactly SEED-009's specified behavior.
 
-### Key Data Flows
+## Architectural Patterns
 
-1. **Progress durability boundary:** progress lives ONLY in Postgres columns, never in `job_events` (too high-frequency for an append-only audit log) and never solely in Redis (Redis stays transient-queue-state-only, per the existing architectural principle).
-2. **Cancellation durability boundary:** the *decision* to cancel is durable the instant `Repo.Cancel`'s transition commits (before any signal is even published) — the pub/sub layer is purely a latency optimization for *executing* an already-durable decision, never the source of truth for whether a job is canceled.
+### Pattern 1: Self-contained engine guard (mirrors `AVConverter`, not `AudioConverter`)
 
-## Scaling Considerations
+**What:** The page-count ceiling is enforced entirely inside `OCRConverter.Convert`/`ConvertWithProgress`, not spliced into the shared `worker.process()` the way `enforceAudioGuardBeforeConvert` splices audio's duration guard.
+**When to use:** Whenever the guard's precondition (page count) is itself something only the engine can cheaply determine from the downloaded input, and no other engine needs to share the check.
+**Why:** `HandleAVConvert`'s doc comment is explicit that this is the simpler, preferred shape when a guard doesn't need to be shared — it keeps `HandleOCRConvert` a byte-for-byte structural clone of `HandleAVConvert` (mark active → `process()` → `isOCRTerminal` branch → done), with zero new parameters threaded through `NewHandler`/`process()`.
 
-| Concern | Current (single api, low job volume) | Growth (many concurrent SSE clients) | Growth (many workers, high cancel rate) |
-|---------|----------------------------------|--------------------------------------|------------------------------------------|
-| SSE polling load on Postgres | Negligible (one 1-2s ticker per open connection) | Bounded by client count, not job count — internal clients only, so this stays low; if it ever becomes a concern, switch the SSE source to Redis pub/sub fed by the same throttled write | N/A |
-| Progress write volume | One throttled UPDATE per job per ~2s, no lock contention | N/A | N/A |
-| `job:cancel` pub/sub fan-out | Every worker process receives every cancel message (map-miss is O(1) for non-matching jobs) | N/A | Scales fine — Redis pub/sub fan-out cost is proportional to subscriber count (bounded by worker replica count, which KEDA already caps), not job count |
-| Webhook `progress` event volume | One enqueue per throttled tick, reusing existing webhook-delivery infra (HMAC, retry, dead-letter) | N/A | If throttling is too aggressive relative to webhook queue capacity, widen the throttle interval (a config knob, not an architecture change) |
+### Pattern 2: Streaming page-by-page rasterize (bounded working set)
+
+**What:** Render exactly one PDF page to disk, OCR it, delete the rendered page, then move to the next page — never `pdftoppm in.pdf outbase` with no `-f`/`-l` bounds (which renders every page in one shot into the container's temp filesystem).
+**When to use:** Any PDF-derived multi-page pipeline where page count is attacker-influenced (a malicious/absurd multi-thousand-page PDF is exactly the "decompression bomb" class this project already treats as a first-class threat, `dimensions.go`).
+**Trade-off:** N subprocess invocations instead of 1 (mirrors `whisper.go`'s two-stage-per-attempt pattern, and `AudioConverter`'s own precedent of running a distinct `runCommand` per logical stage) — acceptable, since each invocation is cheap relative to the OCR step itself, and it is what makes the page-granular progress signal (`sink.Update` after each page) possible in the first place.
+
+### Pattern 3: Zero-touch progress-consumer reuse
+
+**What:** `progressSink`, `runConvertWithOptionalProgress`, the SSE handler, and the progress webhook are ALL already engine-agnostic (they operate purely on `ProgressUpdate{Pct, ETA}` and `jobs.progress_pct`/`eta_seconds` columns) — OCR needs to implement the `ProgressConverter` interface and call `sink.Update`, nothing more.
+**When to use:** Every future engine class that wants progress reporting should follow this exact seam (`ProgressConverter`, `NewHandler`+`SetProgressThrottle`) rather than inventing a parallel mechanism.
+**Anti-pattern avoided:** Do NOT reuse `progress.go`'s `progressBlockParser`/`buildProgressTick`/`etaEstimator` — those are ffmpeg `-progress`-stream-specific (they parse `out_time_us`/`speed=` key-value blocks). OCR has no continuous engine stream to parse; it drives `sink.Update` directly from its own page loop. A small OCR-specific EMA (own file, `ocrprogress.go`) is the correct amount of new code — not a refactor of `progress.go`'s shared interfaces.
+
+### Pattern 4: Closed-allowlist opts (mirrors `AudioOpts`)
+
+**What:** `OCROpts{Language string}` validated against a hardcoded map of accepted tesseract language codes, strict-parsed via the shared `checkStrictObject`, and passed to `tesseract`'s `-l` argv element only as a discrete slice entry (never a shell string — `runCommand` never invokes a shell, `exec.go`).
+**When to use:** Any per-job engine option that must reach a subprocess argv.
+**Why not open-ended:** Same rationale as `AudioOpts`'s doc comment — an unvalidated string reaching a future path-shaped opt (e.g. a model/traineddata selector) is a path-traversal risk; closing the allowlist now avoids that class of bug entirely.
 
 ## Anti-Patterns
 
-### Anti-Pattern 1: Routing progress writes through `Repo.transition()`
+### Anti-Pattern 1: Rasterizing all pages before OCR starts
 
-**What people might do:** Reuse the existing guarded-transition helper for progress "to stay consistent with the rest of the codebase."
-**Why it's wrong:** `transition()`'s `SELECT ... FOR UPDATE` + `job_events` insert exists to make *state-machine* changes safe and auditable. Progress isn't a state change (status stays `active`) and is far too high-frequency to log as an event — doing so would serialize every progress tick against real status transitions on the same row and bloat the append-only audit table by orders of magnitude for zero correctness benefit.
-**Do this instead:** A dedicated, non-locking, self-conditioning `UPDATE ... WHERE status='active'` (Pattern 1 above).
+**What people might do:** `pdftoppm in.pdf outbase` (no `-f`/`-l`), producing N page images up front, then loop over the files.
+**Why it's wrong:** Turns an attacker-controlled page count directly into unbounded disk/memory pressure inside the worker container — exactly the decompression-bomb class this project already treats as a first-class threat elsewhere (`dimensions.go`, `MAX_IMAGE_PIXELS`).
+**Do this instead:** Bound the page count via `pdfinfo` FIRST (reject before rendering anything), then render/OCR/delete one page at a time.
 
-### Anti-Pattern 2: Making `Converter.Convert` itself take a progress callback parameter
+### Anti-Pattern 2: Touching `progress.go`'s shared types to "generalize" them for OCR
 
-**What people might do:** Add a `progress func(float64)` parameter directly to the existing `Convert(ctx, inPath, outPath, opts) error` method so "every converter has the same shape."
-**Why it's wrong:** Forces libvips/LibreOffice/Chromium/whisper's transcribe stage — none of which can report meaningful progress — to accept and ignore a parameter, widening a stable, audited interface for no functional gain on 3 of 5 engine classes, and every existing call site (including tests) would need updating.
-**Do this instead:** An additional, optional `ProgressReporter` interface (Pattern 2) that only the engines that can support it implement; `process()` type-asserts and falls back cleanly.
+**What people might do:** Add an `OCRProgress`-flavored branch inside `progressBlockParser`/`buildProgressTick`, or change `ProgressUpdate`/`ProgressSink`'s shape to accommodate a "page" concept.
+**Why it's wrong:** Those types are already engine-agnostic (`Pct`, `ETA` — nothing ffmpeg-specific leaks through the interface boundary); the ffmpeg-specific parsing machinery in `progress.go` is a private implementation detail of `AVConverter`, not part of the public seam. Touching it risks the exact kind of drift SEED-010's dynamic-registry discussion explicitly wants to avoid at this stage.
+**Do this instead:** A small, OCR-scoped file (`ocrprogress.go`) with its own page-EMA type, calling the SAME `ProgressUpdate`/`sink.Update(...)` contract every other engine uses.
 
-### Anti-Pattern 3: Treating a lost cancel pub/sub message as a bug to "fix" with delivery guarantees
+### Anti-Pattern 3: Building the SEED-010 dynamic registry as part of this milestone
 
-**What people might do:** Reach for a durable queue (a new asynq task type, or Redis Streams with consumer groups) for cancel signaling "so no cancel is ever missed."
-**Why it's wrong:** Over-engineers a problem the guarded-transition allow-list already solves for free — a missed fast-path signal only wastes compute on a job whose result is discarded anyway (rejected on the eventual `MarkDone`/`MarkFailed` attempt); it can never produce an incorrect client-visible outcome. Adding delivery guarantees here spends real complexity (new task type, retry/backoff tuning, another queue to monitor) buying nothing beyond "the wasted compute window is shorter," which a periodic worker-side self-check (defense-in-depth re-poll of `jobs.status` for its own in-flight job) achieves far more simply.
-**Do this instead:** Fire-and-forget pub/sub for speed + the existing transition allow-list as the correctness backstop (Pattern 4).
+**What people might do:** Since OCR is "yet another engine class," use it as the excuse to finally generalize `converters.go`'s `init()` into a data-driven catalog.
+**Why it's wrong:** SEED-010 is explicitly dormant/deferred — its own trigger condition ("3+ new engine classes queued" or "adding a worker must require zero API changes") is not met by this milestone alone, and doing both at once conflates a well-understood, mechanically-repeatable pattern (5 prior engine classes shipped this exact way) with a genuinely large platform change.
+**Do this instead:** Wire OCR exactly like image/document/html/audio/av — compile-time `Registry.Register` in `converters.go`, hardcoded `EngineOCR` constant, a fresh CHECK-constraint migration. Leave SEED-010 dormant.
 
-### Anti-Pattern 4: SSE endpoint holding per-connection worker state or requiring sticky sessions
+### Anti-Pattern 4: Multi-output-per-job (txt AND hOCR from one job)
 
-**What people might do:** Have the SSE handler somehow "attach" to the specific worker instance processing the job (e.g., via a worker-assigned connection token) to get push-based updates without polling.
-**Why it's wrong:** Breaks the api's stateless/horizontally-scalable constraint — a client's SSE connection could land on any api replica via a load balancer, and workers are independently KEDA-scaled with no stable identity a client (or the api) can address.
-**Do this instead:** Any api replica polls the same Postgres row (Pattern 5) — trivially compatible with any load-balancing strategy, no affinity required.
+**What people might do:** Interpret "output txt + hOCR/ALTO" as one OCR job producing both files simultaneously, requiring `process()`'s hardcoded single `AddOutput(ordinal=0, ...)` call to become a loop over multiple ordinals.
+**Why it's wrong:** Every existing engine (including audio's 4-target `Pairs()`) is a strict one-job-one-target model; extending `process()`'s output-recording step to multi-output would be a structural change touching the shared code path for all 5 existing engines, for a capability nothing else needs yet.
+**Do this instead (recommended, see Output Handling below):** Model txt and hocr/alto as **separate target formats** in `OCRConverter.Pairs()` (`{pdf,jpg,png,...} × {txt,hocr}`), exactly like audio's `{txt,srt,vtt,json}` targets — the client picks one per job via the existing `target` field. `process()` needs zero changes. A true multi-output-per-job capability is explicitly deferred, not built here.
 
-## Integration Points
+## Output Handling
 
-### New Components (not modified — net-new)
+**Recommended:** `OCRConverter.Pairs()` advertises `{jpg, png, webp, tiff, pdf} × {txt, hocr}` (and `alto` if built as a third target), mirroring `AudioConverter.Pairs()`'s disjoint source×target cross-product exactly (`whisper.go:183-191`). A client wanting both a plain-text transcript and word-coordinate hOCR submits **two jobs** against the same input (or, later, uses presets to make that a one-line client-side convenience — no server change needed for that). `process()`'s existing single `AddOutput(ordinal=0, ObjectKey: storage.OutputKey(job.ID, 0, outName), ...)` call is reused byte-for-byte unchanged; `storage.OutputKey`'s `results/{job_id}/{ordinal}-{filename}` layout already supports the (currently unused) `ordinal` dimension for a future multi-output extension, so nothing about the storage-key scheme needs to change even if multi-output is added later.
 
-| Component | Purpose | Depends on |
-|-----------|---------|------------|
-| `internal/cancel` package | In-memory job→cancelFunc registry + Redis pub/sub subscribe/publish helpers | Redis (existing instance), `context` |
-| `db/migrations/0007_job_progress.sql` | Adds `jobs.progress_pct`, `jobs.eta_seconds`, `jobs.progress_updated_at` (all nullable) | none |
-| `jobs.Repo.UpdateProgress` | Non-locking progress write | new columns above |
-| `jobs.Repo.Cancel` | Guarded transition to `canceled` | existing `transition()` helper (zero new locking logic) |
-| `jobs.Repo.List` | Paginated, client-scoped job listing | existing `jobs_client_created_idx (client_id, created_at DESC)` — no new index needed |
-| `convert.ProgressReporter` | Optional capability interface | none (additive to `convert` package) |
-| `exec.runCommandStreaming` | Streaming-stdout variant of `runCommand` | `os/exec`, `syscall` (same as existing `runCommand`) |
-| `api.handleCancelJob`, `handleListJobs`, `handleJobEvents` | 3 new HTTP handlers/routes | `jobs.Repo` (Cancel/List/Get), `internal/cancel` (publish) |
+`MIMEType()` (`sniff.go`) needs two new cases: `"hocr" → "text/html; charset=utf-8"` (hOCR is a valid XHTML profile per the hOCR 1.2 spec) and, if ALTO is built as its own target rather than folded into hocr, `"alto" → "application/xml"`.
 
-### Modified Components (existing — integration touches)
+## Integration Points Summary
 
-| Component | Change | Why |
-|-----------|--------|-----|
-| `internal/worker.Handler.process` | Wrap `attemptCtx` in `context.WithCancel`; register/deregister in `internal/cancel`'s map; type-assert `ProgressReporter` | Needed for both cancel-signal delivery and progress plumbing |
-| `internal/worker` shared `isTerminal` | Add `context.Canceled` → terminal branch, skip `MarkFailed` on that path | Cancel must resolve to `SkipRetry` without clobbering the already-`canceled` row |
-| `internal/reconciler.FindWebhookGaps` | Widen `status IN (...)` to include `'canceled'` | So a canceled job's completion webhook (if any) isn't silently dropped by the gap-sweep the same way done/failed jobs already are covered |
-| `internal/worker.HandleWebhookDeliver` | New `job.Status == jobs.StatusCanceled` payload branch | Client-facing webhook contract needs a defined shape for canceled jobs (currently undefined — `done`/`failed` are the only two handled branches) |
-| `internal/api.handleGetJob` | Response gains `progress_pct` / `eta_seconds` fields (nullable — absent means indeterminate) | Core SEED-008 requirement |
-| `internal/api/routes.go` | Register the 3 new routes under existing `/v1/*` auth middleware | Consistency with every other `/v1/*` route (no new auth pattern) |
-| `convert.AVConverter`, `convert.AudioConverter` | Implement `ProgressReporter` (av: transcode/audio-extract/thumbnail all have known source durations already probed via `ProbeDuration`; audio: only the ffmpeg-normalize stage, not whisper-cli's transcribe stage) | These are the only two engine classes with a native, parseable progress stream |
+### External Tools
+
+| Tool | Integration Pattern | Notes |
+|------|---------------------|-------|
+| `tesseract` (CLI) | `runCommand(ctx, "tesseract", pageImg, outBase, "-l", lang, targetFlag...)` — hardened exec, process-group kill on timeout, identical to every other engine's shell-out (`exec.go`, unchanged). | Apt-installable (`tesseract-ocr` + `tesseract-ocr-<lang>` packages) on `debian:bookworm-slim`; no from-source build needed (unlike av-worker's ffmpeg). PaddleOCR, if chosen instead during the phase-level eval-gate, would need a Python runtime in the container — a materially heavier `Dockerfile.ocr-worker` than the tesseract path; this asymmetry itself is a strong argument for tesseract as the default absent a demonstrated quality gap. |
+| `pdftoppm` / `pdfinfo` (poppler-utils) | Same `runCommand` hardening; `pdfinfo` read-only probes the declared page count, `pdftoppm -f N -l N` renders exactly one page per invocation. | Apt-installable (`poppler-utils`). Verify at build time whether libvips' own PDF loader (already a dependency via `libvips-tools` in the image worker, though NOT currently in the ocr-worker's own container) could substitute for `pdftoppm` — this is a real open question for the build phase, not resolved here; poppler-utils is the safer default since it doesn't depend on unverified libvips build flags. |
 
 ### Internal Boundaries
 
 | Boundary | Communication | Notes |
 |----------|---------------|-------|
-| worker ↔ Postgres (progress) | Direct SQL, non-locking `UPDATE` | New write path, deliberately bypasses `transition()` |
-| api ↔ Postgres (progress read, list, cancel-transition) | Direct SQL via `jobs.Repo`, all existing connection pool | No new infrastructure |
-| api ↔ worker (cancel signal) | Redis pub/sub (`job:cancel`), fire-and-forget | First cross-worker pub/sub usage in the codebase; correctness does NOT depend on delivery (backstop via transition allow-list) |
-| worker ↔ Redis (progress) | **None** — progress never touches Redis; only cancel signaling does | Keeps the existing "Redis is transient queue state only" principle intact for progress, deliberately scoped the new pub/sub usage to cancel-only |
-| api ↔ client (SSE) | Long-lived HTTP response, DB-poll sourced | Stateless — no worker affinity, no session stickiness required |
-| worker ↔ webhook-worker (progress event) | Existing asynq `webhook` queue, unchanged delivery machinery | `progress` is just a new payload shape on the same delivery path as `done`/`failed`/`canceled` |
+| API ↔ `convert.Registry` | `EngineFor(detected, target)` / `Lookup` (unchanged) | OCR slots in as a 6th registered engine; no interface change. |
+| Worker ↔ `convert.ProgressConverter` | Type-assertion seam in `runConvertWithOptionalProgress` (unchanged) | OCR implements the interface; the seam itself needs zero edits. |
+| Worker ↔ Postgres progress columns | `progressRepo.UpdateProgress`/`SetSourceDuration` (unchanged) | `SetSourceDuration` is a poor semantic fit for OCR (no "duration" concept) — **do not call it**; leave `source_duration_seconds` NULL for OCR jobs, relying purely on `progress_pct`/`eta_seconds`. Confirm this is acceptable to the job-listing/SSE consumers (it already is — neither reads `source_duration_seconds` directly, GET /v1/jobs/{id} exposes only `progress_pct`/`eta_seconds`). |
+| Reconciler ↔ engine routing | `switch j.Engine` (mirrors Audio/AV) | A stuck/hung `queued`/`active` OCR job recovers through the exact same sweep, no new mechanism. |
+| KEDA ↔ queue depth | `AllConvertQueues()` (mirrors Audio/AV) | Forgetting to add `QueueOCR` here silently breaks scale-from-zero with no compile error — the existing `TestAllConvertQueuesCoversEveryEngine` completeness guard (`queue_test.go`) should be extended to cover OCR, not just left passing by accident. |
 
-## Suggested Build Order
+## Suggested Build Order (continuing from Phase 43)
 
-1. **Schema migration** (`0007_job_progress.sql`: `progress_pct`, `eta_seconds`, `progress_updated_at`). Foundational — every other piece reads or writes these columns. Zero risk (additive, nullable columns).
-2. **Cancellation, end to end** (`Repo.Cancel` via existing `transition()`; `POST /v1/jobs/{id}/cancel`; `internal/cancel` package; worker's `context.WithCancel` wiring + `job:cancel` subscribe; `context.Canceled` branch in shared `isTerminal`; reconciler/webhook `canceled`-awareness). **Build this before progress** — it is self-contained, reuses the hardened `runCommand` SIGKILL path completely unchanged, has the clearest client-visible value, and its correctness backstop (the transition allow-list) is already fully present in the codebase today, so the riskiest new piece here is genuinely just the pub/sub plumbing, not a change to any converter or the exec contract.
-3. **`GET /v1/jobs` listing** (`Repo.List`, `handleListJobs`, route). Fully independent of both cancel and progress — no schema dependency, no Converter-contract change, reuses the existing `jobs_client_created_idx`. Can be built in parallel with step 2 by a different work-stream if desired, but is sequenced after schema purely for planning tidiness (both are "control-plane API surface" work).
-4. **Progress core** (`convert.ProgressReporter` interface; `exec.runCommandStreaming`; `AVConverter`/`AudioConverter` implementations parsing ffmpeg's `-progress pipe:1`; `worker.process()` throttled `UpdateProgress` wiring; `GET /v1/jobs/{id}` response gains `progress_pct`/`eta_seconds`). Sequenced after cancellation because it is the riskiest change (new exec-contract variant, new Converter capability, touches the hot conversion path of two production-hardened engine classes) — better to land the lower-risk, high-value cancel feature first and validate the `internal/cancel` package's Redis usage pattern before adding a second new capability on top of the same worker loop.
-5. **Live push** (SSE `GET /v1/jobs/{id}/events` DB-poll endpoint; webhook `progress` event type reusing the existing delivery pipeline). Built last since both are purely additive consumers of the progress data step 4 produces — there is nothing to push until `progress_pct` is actually being populated.
+**Phase 43 — OCR engine foundation (standalone, unregistered).**
+Mirrors the Audio/AV precedent of building the converter as a fully-tested, standalone unit
+before wiring it into the async pipeline (`AudioConverter` in Phase 30, `AVConverter` in
+Phase 34). Scope: engine-choice eval-gate (tesseract vs PaddleOCR, resolved against real
+scanned-document test fixtures, not assumed); `OCRConverter` implementing `Converter` +
+`ProgressConverter`; bounded PDF page-count guard + streaming per-page rasterize
+(`pdftoppm`/`pdfinfo`); `OCROpts` closed language allowlist; PDF magic-byte sniffer addition
+to `sniff.go`; page-granular EMA/ETA estimator. NOT yet registered into `convert.Default`.
+*Addresses:* the "classic CPU-OCR" and "page-granular progress" requirements.
+*Avoids:* the rasterize-all-pages-at-once memory-bomb pitfall (built in from day one, not
+retrofitted).
 
-## Open Questions / Roadmap Flags
+**Phase 44 — Async pipeline wiring.**
+`0009_ocr_engine.sql` migration; register `OCRConverter` in `converters.go`; `ocr` queue +
+`TypeOCRConvert` + retry schedule + `OCRUniqueTTL`; `cmd/ocr-worker` binary;
+`HandleOCRConvert` + `isOCRTerminal` in `worker.go`; reconciler routing; API engine-routing
+switch (opts validation + enqueue); `queue.Client.EnqueueOCRConvert`; `MIMEType` additions.
+Live E2E: single image → `null`→100, multi-page scanned PDF → real page-granular ramp via
+SSE, both over the existing (unmodified) v1.9 machinery.
+*Addresses:* full async-contour requirement, page-granular progress reuse.
+*Avoids:* the "silently break KEDA" pitfall (add OCR to `AllConvertQueues()` in the SAME
+change that adds the queue, per the existing completeness-test discipline).
 
-- **ETA formula precision:** recommend `ETA = (100 - pct) / speed_normalized_rate` derived from ffmpeg's own `speed=` field (e.g., `speed=2.5x` means 2.5s of source processed per wall-clock second) rather than a naive `elapsed * (100-pct)/pct` — the former reacts faster to speed changes mid-transcode. This needs to be pinned down in requirements/roadmap, not assumed here.
-- **`progress` webhook event opt-in:** should clients that already registered a `callback_url` automatically start receiving `progress` events, or does this need a new opt-in field (e.g., `progress_webhook: true`) to avoid silently changing existing integrations' webhook volume? Flag for requirements — this research treats it as reusing the existing delivery pipeline mechanically, but the *policy* (default-on vs. opt-in) is a product decision, not an architecture one.
-- **SSE latency ceiling (1-2s via DB poll)** — flagged above as an explicit, deliberate trade-off; revisit only if a future milestone's requirements demand sub-second push.
-- **Whisper-cli transcribe-stage progress**: whisper.cpp's CLI does not expose an equivalent `-progress pipe:1`-style machine-readable stream (not verified against the specific pinned v1.9.1 build in this research pass — flag for phase-specific research if audio progress reporting for the transcribe stage specifically becomes in-scope; the ffmpeg-normalize stage that precedes it does support it).
+**Phase 45 — Containerization + measured timeout gate.**
+`Dockerfile.ocr-worker` (tesseract + poppler-utils + language packs, tini as PID 1);
+`scripts/ocr-timing-measure.sh` measuring real seconds-per-page across a representative
+corpus (clean scan vs dense multi-column text vs handwriting-adjacent noisy scan) to derive
+`OCR_ENGINE_TIMEOUT` and the `OCR_MAX_PAGES` ceiling as measured, not assumed values (mirrors
+the audio/AV RTF-gate discipline, adapted from a time-ratio metric to a per-unit-of-work
+metric); docker-compose wiring.
+*Addresses:* "RTF-measured timeout" requirement (page-based analog).
+*Avoids:* the "copied timeout constant" pitfall the project's own Key Decisions table
+explicitly calls out as a recurring risk for new engine classes.
+
+**Phase 46 — KEDA / Helm.**
+`deployment-ocr-worker.yaml` + `scaledobject-ocr.yaml` + `values.yaml`/`configmap.yaml`
+wiring; live scale-from-zero proof (mirrors Phase 33's audio KEDA proof: 0→1 on queue depth,
+scale back to 0 after drain).
+*Addresses:* full engine-class contour requirement (KEDA scale-from-zero).
+
+**Dependency ordering rationale:** 43 must precede 44 (nothing to register without a working
+converter); 44 must precede 45 (can't measure a real timeout without the full pipeline
+producing real job outcomes to time); 45 must precede 46 (KEDA's `scaleDownStabilizationSeconds`
+and pod `terminationGracePeriodSeconds` are derived from the measured `OCR_ENGINE_TIMEOUT`,
+same dependency chain AV's Phase 36→38 followed). This is the same 4-phase shape as v1.7
+(audio, phases 30/31/32/33) and v1.8 (av, phases 34/35/36/37-38) — the pattern is proven
+twice already; no reason to deviate structurally for OCR.
 
 ## Sources
 
-- Codebase (HIGH confidence — direct reads): `internal/jobs/repo.go`, `internal/worker/worker.go`, `internal/convert/convert.go`, `internal/convert/exec.go`, `internal/convert/av.go`, `internal/convert/audioduration.go`, `internal/reconciler/reconciler.go`, `internal/webhook/{webhook,deliver}.go`, `internal/queue/queue.go`, `internal/db/migrations/{0001_init,0005_html_engine,0006_audio_engine}.sql`, `internal/api/handlers.go`, `cmd/api/main.go`, `.planning/PROJECT.md`.
-- [ffmpeg-kit Wiki: Pipe Support](https://github.com/arthenica/ffmpeg-kit/wiki/Pipe-Support) — MEDIUM confidence corroboration of `-progress pipe:1` streaming pattern.
-- [better-ffmpeg-progress (PyPI)](https://pypi.org/project/better-ffmpeg-progress/1.2.3/) — MEDIUM confidence corroboration of `out_time_us`/`speed` key names as consumed by an independent third-party implementation.
+- `internal/convert/convert.go`, `internal/convert/progress.go`, `internal/convert/whisper.go`,
+  `internal/convert/av.go`, `internal/convert/avdiskguard.go`, `internal/convert/audioopts.go`,
+  `internal/convert/opts.go`, `internal/convert/sniff.go`, `internal/convert/avsniff.go`,
+  `internal/convert/dimensions.go`, `internal/convert/converters.go`, `internal/convert/libreoffice.go`
+  (`pdfMagic`), `internal/convert/libvips.go` — current engine/converter/sniff/progress
+  implementations (HIGH confidence, read directly).
+- `internal/worker/worker.go` — full `Handle*Convert` family, `process()`, `progressSink`,
+  `runConvertWithOptionalProgress`, terminal classifiers (HIGH confidence, read directly).
+- `internal/queue/queue.go`, `internal/queue/client.go` — per-engine queue/task/retry/TTL
+  wiring (HIGH confidence, read directly).
+- `internal/api/handlers.go` — sniff chain, `EngineFor` routing, opts-validation switch,
+  enqueue switch (HIGH confidence, read directly).
+- `internal/reconciler/reconciler.go` — recovery-routing switch (HIGH confidence).
+- `internal/storage/keys.go` — `InputKey`/`OutputKey` ordinal-aware object-key layout (HIGH
+  confidence).
+- `internal/db/migrations/0006_audio_engine.sql`, `0007_job_progress.sql` — CHECK-constraint
+  migration pattern and the already-additive progress schema (HIGH confidence).
+- `cmd/av-worker/main.go` — worker-binary wiring pattern, env-config discipline,
+  `SetProgressThrottle`/`SetProgressWebhook` post-construction setters (HIGH confidence).
+- `deploy/chart/octoconv/templates/`, `deploy/chart/octoconv/values.yaml`, `docker-compose.yml`
+  — per-engine-class container/KEDA/compose wiring precedent (HIGH confidence, listed
+  directly).
+- `.planning/seeds/SEED-009.md` (OCR seed, progress-reuse breadcrumbs), `.planning/seeds/SEED-010.md`
+  (dynamic registry — confirmed deferred, informs Anti-Pattern 3) — project-internal planning
+  documents (HIGH confidence, authoritative for this project's own decisions).
+- `.planning/PROJECT.md` — milestone goal/locked scope, Key Decisions precedent for
+  measured-not-assumed timeouts (HIGH confidence).
+- Tesseract/PaddleOCR CLI specifics (exact flags, language-pack package names, hOCR/ALTO
+  output flag support) are **not** verified against upstream docs in this research pass —
+  MEDIUM confidence, flagged for the Phase 43 eval-gate to confirm directly against the
+  chosen tool's actual CLI (training-data knowledge of tesseract's `-l`/`hocr`/`txt` config
+  files and PaddleOCR's Python API is plausible but unverified here).
 
 ---
-*Architecture research for: OctoConv v1.9 Job Progress & Control (integration milestone)*
-*Researched: 2026-07-24*
+*Architecture research for: OctoConv v1.10 OCR engine-class integration*
+*Researched: 2026-07-26*

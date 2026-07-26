@@ -1,230 +1,170 @@
 # Feature Research
 
-**Domain:** Job progress, observability, and control for an async file-conversion API (v1.9 "Job Progress & Control")
-**Researched:** 2026-07-24
-**Confidence:** MEDIUM (patterns verified against AWS MediaConvert docs, asynq's own API/wiki, ffmpeg `-progress` docs, and established REST/SSE practice; no single vendor runs an identical "presigned-download-or-webhook conversion service" so specifics are synthesized, not copy-pasted from one source)
+**Domain:** OCR / text-extraction engine class (classic CPU-OCR — tesseract/PaddleOCR) for OctoConv v1.10
+**Researched:** 2026-07-26
+**Confidence:** HIGH (mechanics of tesseract/hOCR/ALTO/PDF text-layer detection — official docs + multiple corroborating sources) / MEDIUM (accuracy-uplift numbers from preprocessing — vendor blog consensus, not a controlled study)
 
-This file scopes the five target features from `.planning/PROJECT.md` v1.9: progress %, ETA, live-push (webhook `progress` event and/or SSE), `GET /v1/jobs` listing, and `POST /v1/jobs/{id}/cancel`. It assumes the existing v1.0-v1.8 contour (Postgres-first double write, guarded status transitions with append-only `job_events`, engine-class asynq queues, hardened `runCommand` process-group kill, HMAC-signed webhook delivery with bounded retry) as fixed and asks only how the new capabilities should sit on top of it.
+**Note:** this replaces the FEATURES.md previously written for the v1.9 (Job Progress & Control) milestone research — that content is preserved in git history (`git log -p -- .planning/research/FEATURES.md`) but no longer reflects the current milestone's scope.
 
-**Note:** this replaces the FEATURES.md previously written for the v1.8 (AV engine) milestone research — that content is preserved in git history (`git log -p -- .planning/research/FEATURES.md`) but no longer reflects the current milestone's scope.
+## How Classic CPU-OCR Works (context for the table below)
+
+A classic OCR engine (tesseract, PaddleOCR CPU mode) is a **pixel-in, text-out** pipeline with no document understanding:
+
+1. **Page segmentation (PSM)** — the engine decides where blocks/lines/words are on the image. Tesseract defaults to "assume a full page of text" (PSM 3); a single cropped word/line/uniform block needs a different PSM (6/7/8) or output degrades badly. [Tesseract Command-Line docs](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)
+2. **Recognition** — per-language trained models (`tessdata`) turn glyphs into characters/words. Language is a build/runtime asset, not an algorithm choice — each language needs its own `.traineddata` file.
+3. **Output emission** — tesseract can emit `txt`, `hocr`, `alto`, `pdf` (invisible-text-over-image), `tsv` in one invocation (`tesseract image.png demo alto hocr pdf txt`), each carrying different fidelity: `txt` = words only; `hocr`/`alto`/`tsv` = word/line bounding boxes + per-word confidence. [Tesseract Command-Line Usage](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html), [tesseract.1.asc](https://github.com/tesseract-ocr/tesseract/blob/main/doc/tesseract.1.asc)
+4. **No layout/semantic reasoning** — tesseract does not know "this is a table" or "this is a heading"; it only knows glyph→word→line→block geometry. Anything resembling document *understanding* (markdown reconstruction, reading order across multi-column layouts, table structure) is a differently-shaped problem, solved today by vision-language models (VLMs), not classic OCR. This is the crux of the SEED-009 "(a) vs (b)/(c)" fork and why layout→markdown is an anti-feature here.
+5. **Preprocessing sensitivity** — classic OCR is a pattern-matcher highly sensitive to skew, low contrast, noise, and off-spec DPI. Preprocessing (deskew, binarize, DPI-normalize to ~300 DPI) is reported to lift accuracy 15–30% on marginal scans; sub-200 DPI or skewed input is a primary real-world failure mode, not an edge case. [Docparser preprocessing guide](https://docparser.com/blog/improve-ocr-accuracy/), [Markaicode production tesseract guide](https://markaicode.com/tutorial/tesseract-tutorial-production-setup-guide/)
 
 ## Feature Landscape
 
 ### Table Stakes (Users Expect These)
 
+Features an internal client integrating "yet another OctoConv engine class" will assume exist, because every other engine class already has the equivalent.
+
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| `progress_pct` field on `GET /v1/jobs/{id}` | Any async job API with jobs running longer than a few seconds (AWS MediaConvert, GitHub Actions runs, CI systems) reports *some* percent-complete once a job is `active`; a bare `queued/active/done` tri-state feels broken for a 12-minute video transcode | MEDIUM | 0-100 integer, `null` when indeterminate (see below) — never a fabricated number |
-| Indeterminate/`null` progress for engines that can't report it | libvips/LibreOffice/Chromium conversions don't expose a native progress stream; MediaConvert itself only reports percent for phases it can actually measure (probing/transcoding/uploading), not for every job type | LOW | Table stakes is *honesty*, not universal coverage — `null` is a valid, expected value, not a bug |
-| `GET /v1/jobs` listing scoped to caller's own jobs | Every multi-tenant job API (Stripe, GitHub Actions, MediaConvert `ListJobs`) needs a way to see "what did I submit" beyond single-job polling by ID, once a client has more than a handful of in-flight jobs | MEDIUM | Must reuse the existing 404-not-403 ownership discipline — hard `WHERE client_id = $1`, never a client-suppliable override |
-| Status/engine filter + pagination on the listing | Any list endpoint over an unbounded, ever-growing table needs filters and a page-size cap or it becomes a full-table-scan DoS vector the moment client job volume grows | MEDIUM | Bounded default + max page size enforced server-side regardless of client-requested `limit` |
-| `POST /v1/jobs/{id}/cancel` | Long video/audio jobs are exactly the case where "I submitted this by mistake / conditions changed" matters; MediaConvert, ComfyUI, and virtually every long-running-job API expose a cancel endpoint | MEDIUM-HIGH | The hard part isn't the endpoint, it's the state-machine race (queued/active/already-terminal) and actually killing the child process — both addressed below |
-| Idempotent cancel | Calling cancel twice, or cancelling a job that finished microseconds earlier, must not surface as a client-visible error | LOW-MEDIUM | Precedent: Omni's cancel-AI-job endpoint returns success + current state on an already-terminal job rather than erroring; ArcGIS's stricter "error if already terminal" model exists but is worse UX for exactly this race |
-| ETA field, omitted/`null` when not derivable | Once percent is known, "how much longer" is the very next question every user asks; MediaConvert's own job-progress docs pair phase percent with elapsed/remaining framing | MEDIUM | Must be an *honest* estimate or `null` — never a guess dressed up as precision (see Anti-Features) |
+| Single image → txt | Baseline "OCR" contract; every competing OCR tool does this | LOW | Straight tesseract/PaddleOCR CLI invocation via existing `runCommand` hardened-exec pattern |
+| Scanned/image-only multi-page PDF → txt (per-page, concatenated) | Locked scope; scanned PDFs are the dominant real-world OCR input (invoices, contracts, forms) | MEDIUM | Needs a `pdf→image` rasterize pre-stage (new dependency: a PDF rasterizer CLI, e.g. `pdftoppm`/`pdftocairo` from poppler-utils, or vips-based) before the per-page OCR loop |
+| Language/script selection via validated `opts` | Every text-producing engine class (audio: `AudioOpts` closed allowlist) exposes this; OCR is *more* language-sensitive than whisper because tesseract requires the matching `.traineddata` to be baked into the image | LOW–MEDIUM | Mirror the `AudioOpts` pattern exactly: closed allowlist, injection-tested. Complexity driver is deciding which languages to bake into the container (each is a multi-MB asset) |
+| hOCR output (word/line bounding boxes) | Locked scope; this is the differentiator over plain-text-only OCR tools and what makes OctoConv's OCR "structured," not just "dump some text" | LOW | Native tesseract config (`hocr`); effectively free once txt output exists — same invocation, extra output file |
+| Page-granular progress + ETA (reusing v1.9 infra) | Every long-running engine class since v1.7 (audio RTF, av ffmpeg `-progress`) reports progress; a silent multi-minute multi-page OCR job would be a regression vs. the rest of the product | MEDIUM | v1.9 progress plumbing (`Repo.UpdateProgress`, SSE, webhook) is engine-agnostic and reused as-is; the *new* work is purely the OCR-side progress **source**: pages_done/total_pages loop-driven updates, not a continuous stream (tesseract's CLI has no `-progress`-equivalent) |
+| Fail-closed magic-byte validation of OCR input | Every existing engine class validates content by magic bytes before touching S3/Postgres (image/document/audio/av all do this) | LOW–MEDIUM | Mirror existing sniffers for image formats (already exist); PDF sniffing exists too (document engine) but OCR needs an *additional* PDF-specific check — see "born-digital PDF" decision below |
+| Full engine-class control plane parity (own queue, `cmd/ocr-worker`, stage-aware retry, RTF-measured timeout, KEDA scale-from-zero) | This is the established pattern for every engine class since v1.2; deviating would be inconsistent and would surprise operators | HIGH | Mechanical but non-trivial — same shape as v1.7/v1.8, this is the bulk of the milestone's actual engineering cost, not the OCR algorithm itself |
+| Image preprocessing (deskew, binarize, DPI-normalize) before recognition | Without it, real-world scans (photocopies, faxed docs, phone photos routed through the image engine) will silently produce garbage text with no error — this is an accuracy *floor*, not a nice-to-have. Classic OCR's reputation for being "bad" is overwhelmingly a preprocessing gap, not an engine limitation | MEDIUM | Treat as table stakes, not a differentiator: an OCR engine that skips this will produce embarrassing results on exactly the inputs (scanned/photographed documents) this milestone targets. Can be delegated to the rasterize pre-stage (render PDF pages at a fixed target DPI) plus a lightweight binarize/deskew step (many implementations use OpenCV or ImageMagick; tesseract itself does *some* internal Otsu binarization but benefits measurably from a cleaner input) |
 
 ### Differentiators (Competitive Advantage)
 
+Features that go beyond "does OCR" and are where OctoConv's OCR engine can be genuinely more useful than a naive tesseract wrapper — while staying inside the classic-CPU-OCR fence.
+
 | Feature | Value Proposition | Complexity | Notes |
 |---------|-------------------|------------|-------|
-| Live progress push — webhook `progress` event | Removes polling entirely for callers already using `callback_url`; matches the "push over poll" philosophy the project already committed to for terminal results (v1.0 webhook delivery) | MEDIUM-HIGH | Needs an `event` discriminator added to the webhook envelope (today's payload has no `event` field — it's implicitly always terminal) so existing integrations aren't silently broken by an unexpected mid-job POST |
-| Live progress push — SSE stream (`GET /v1/jobs/{id}/events` or similar) | For a caller not using webhooks (no public callback endpoint, e.g. a CLI/MCP client polling interactively), SSE gives sub-second updates without hammering the REST endpoint | MEDIUM-HIGH | Internal-service clients aren't limited by the browser `EventSource` API's no-custom-headers restriction — plain `Authorization: ApiKey ...` works fine over a raw HTTP SSE connection. Flag as a gap only for the bundled reference React frontend (`frontend/`), which *would* hit that browser limitation if it consumed SSE directly |
-| Stage-based sub-progress (`downloading` / `converting` / `uploading` / `probing`) alongside the percent | MediaConvert's own model is phase + percent-within-phase, not a single flat number — useful for document/av pipelines with a fixed-cost probe stage before the variable-cost transcode | MEDIUM | Optional enrichment; percent-of-total remains the primary field, stage is a string annotation, not a replacement |
-| ffmpeg-driven speed-aware ETA (audio/av engines) | ffmpeg's own `-progress` output already emits a `speed` field (encode rate vs. realtime); combined with the already-probed `source_duration`, ETA becomes `(source_duration - out_time) / speed` instead of a naive linear elapsed/percent extrapolation | MEDIUM | Only available for audio/av; image/document/html get elapsed-based ETA at best, or `null` |
+| ALTO output (in addition to hOCR) | ALTO is the de facto standard in library/archival/GLAM digitization pipelines; some downstream consumers (search indexers, archival systems) expect ALTO specifically rather than hOCR | LOW | Same tesseract invocation family as hOCR (`tesseract img out alto`) — nearly free once the hOCR path exists; mainly a "which config files to pass" decision |
+| Per-word confidence scores surfaced in the API response (not just embedded in hOCR/ALTO XML) | Lets a calling service programmatically flag low-confidence pages/words for human review, without parsing XML client-side — a real differentiator vs. "here's a text blob" competitors | MEDIUM | Tesseract exposes per-word confidence via TSV output; requires parsing TSV (or hOCR's `x_wconf` attribute) worker-side and either aggregating (page-level mean confidence) or attaching structured word-confidence data to the job result |
+| Automatic orientation/script detection (OSD) before recognition | Real-world scans/photos are frequently rotated 90/180/270°; auto-correcting orientation before OCR meaningfully improves accuracy on the "photo of a document" input class without any client-side hinting | MEDIUM | Tesseract ships OSD as a separate mode; adds one extra pass per page (cost vs. accuracy tradeoff — relevant to the RTF timeout gate) |
+| Mixed-language per-job selection (e.g., `eng+rus` in one document) | Real internal documents are frequently bilingual (e.g., localized contracts); restricting to a single language per job would be a real limitation the audio engine doesn't have to the same degree | LOW–MEDIUM | Tesseract natively supports `-l eng+rus`-style combined language packs; the opts-validation work is deciding which *combinations* are in the closed allowlist (combinatorial growth vs. audio's flat list) |
+| Detect-and-passthrough for born-digital PDFs with an existing text layer (see decision below) | Faster and strictly more faithful than pixel-OCR-ing text that's already machine-readable; avoids introducing OCR errors into already-correct text | MEDIUM–HIGH | This is the flagged decision — see "Born-Digital PDF Text Layer" section below. Elevated to differentiator-or-anti-feature pending an explicit scope decision, not silently assumed |
 
-### Anti-Features (Commonly Requested, Often Problematic)
+### Anti-Features (Explicitly Out of Scope for This Milestone)
 
-| Feature | Why Requested | Why Problematic | Alternative |
-|---------|---------------|------------------|-------------|
-| Per-frame or sub-second progress webhook delivery | "More updates = more real-time" | ffmpeg's `-progress` pipe emits a block roughly every frame/second by default — forwarding every tick to a webhook (through the existing HMAC-sign + bounded-retry + `webhook_deliveries` row-per-attempt machinery) would multiply write/HTTP load by 100-1000x per job and defeat the whole point of the retry/dead-letter design, which is built for a handful of terminal attempts, not a firehose | Throttle: emit at most every N seconds (e.g. 5s) *and* only on a meaningful percent delta (e.g. ≥5%); for webhook delivery specifically, use a **separate, best-effort, non-retried, non-dead-lettered** dispatch path — a stale/late progress event is not worth retrying, unlike a terminal one |
-| Progress webhook events reusing the exact terminal-webhook retry/dead-letter contract | Reuse existing, already-hardened code | Retrying a `progress=42%` delivery from 3 minutes ago after the job has already moved past that point is actively misleading, and burning the same `MaxRetry=6` bounded-backoff budget on stale telemetry starves/delays the one delivery that actually matters (the terminal `done`/`failed` event) | Fire-and-forget single attempt for `progress`; only `done`/`failed`/`canceled` keep the durable retry+dead-letter contract |
-| Fabricated/simulated progress for engines that can't report it (fake linear ramp based on elapsed time) | A "spinning" percent looks more polished than `null` | Actively dishonest — a libvips image conversion that takes 200ms either finishes before anyone reads the percent, or a fake ramp lies about being "60% done" with no basis; violates the project's fail-closed / no-fabrication posture used everywhere else in the codebase (magic-bytes over extension, measured RTF over guessed timeouts) | Return `progress_pct: null` (indeterminate) for engines without a native signal; the client already handles `active` with no percent today |
-| Unauthenticated SSE endpoint (common shortcut because browsers' native `EventSource` can't send an `Authorization` header) | "Just let the browser connect directly with a token in the query string" | Query-string tokens land in access logs, proxy logs, and browser history — a real credential leak vector, and this is an *internal* service where every other `/v1/*` route already requires the API-key header; carving out one unauthenticated exception undermines the whole auth model | Require the same `Authorization: ApiKey` header as every other route for SSE too; if a browser client needs it, that's a frontend-side problem (short-lived signed stream token, or a polyfill/backend proxy that attaches the header) — not a reason to weaken the API |
-| Unbounded `GET /v1/jobs` listing (no `limit` cap, "just give me everything") | Convenience for a client that "just wants all its jobs" | A client with years of job history requesting the full unfiltered set turns a paginated list endpoint into an unbounded table scan — the same DoS shape the project already guards against elsewhere (`MAX_UPLOAD_BYTES`, `MAX_IMAGE_PIXELS`, opts-size caps) | Server-enforced max page size regardless of client-requested `limit`; cursor-based pagination so deep pages stay index-friendly instead of degrading like offset pagination does |
-| Auto-resuming or auto-retrying a canceled job | "The user might have cancelled by mistake, let them un-cancel" | `canceled` must be a true terminal state (already reserved in the `jobs.status` CHECK constraint) — an "un-cancel" path reopens exactly the kind of ambiguous state-machine edge case the guarded-transition design exists to prevent, and risks resurrecting a job whose partial output was never meant to be trusted | Terminal means terminal: a client that wants the conversion redone submits a brand-new job |
-| Silently overwriting a completed job's terminal state when a stale cancel request arrives | Simpler code: "just set status=canceled" unconditionally | If cancel races with completion (job finishes microseconds before the cancel request is processed), blindly overwriting `done`→`canceled` destroys a legitimately-produced, storable result and lies to the client about what happened | Guarded transition: cancel only succeeds as a state change from `{queued, active}`; if the current status is already terminal (`done`/`failed`/`canceled`), respond `200` with the **current** terminal status unchanged (idempotent no-op), never overwrite it |
+Features that look like natural OCR extensions but are excluded by the locked "classic CPU-OCR, offline, CPU-only" scope. Listed explicitly so they don't creep back in during requirement definition.
+
+| Feature | Why It Looks Tempting | Why It's Out of Scope Here | Alternative |
+|---------|------------------------|------------------------------|-------------|
+| Semantic/layout understanding + layout→markdown reconstruction (tables, headings, reading order across multi-column layouts) | "Just OCR it and give me clean markdown" is the single most common ask once any OCR feature ships | This is fundamentally a vision-language-model (VLM) capability, not a classic-OCR capability — tesseract/PaddleOCR CPU output is glyph/word/line geometry with zero document-structure reasoning. Bolting markdown reconstruction on top of hOCR geometry (columns, tables) is a large, failure-prone heuristic layer, effectively re-implementing part of a VLM badly | Explicitly out of scope per SEED-009 option (b)/(c); if genuinely needed later, it is a *different engine class* (GPU VLM, offline-model-permitting) discussed and rejected for this milestone, not a mode of the CPU-OCR engine |
+| Handwriting recognition (HTR) | "OCR" colloquially implies "read any text in an image, including handwriting" | Tesseract is well-documented as weak on handwriting (its LSTM models are trained overwhelmingly on printed text); shipping a "handwriting OCR" feature on tesseract would produce silently poor, unreliable output — a fail-*open* failure mode this project's philosophy (fail-closed, deterministic, no hallucination) explicitly rejects | Not addressed by this engine class at all; a future handwriting-specific engine (HTR model, GPU-class) would be a separate SEED, matching the same (a)/(b)/(c) fork as SEED-009 itself |
+| Cloud OCR/VLM API fallback for "hard" documents the CPU engine can't handle | Tempting escape hatch when a client complains about a low-quality scan | Directly violates the hard offline-engines constraint (same reason cloud OCR APIs were pre-rejected in SEED-009); also reintroduces hallucination/omission risk this project explicitly avoids everywhere else (webhooks, retries, fail-closed validation) | None within this milestone — document the limitation; a relaxed-offline-constraint cloud path is a distinct, not-yet-approved future decision |
+| Searchable-PDF overlay output (invisible OCR text layer burned back into a PDF) | Natural-sounding "give me back a searchable PDF," and tesseract can emit this format almost for free (`tesseract img out pdf`) | Locked output scope for this milestone is txt + hOCR/ALTO only — adding a third output format is scope growth beyond what was locked, and searchable-PDF reconstruction has its own correctness surface (page sizing/DPI matching, embedding fonts) not yet designed | Defer to a follow-up if a concrete client need materializes; hOCR/ALTO already carry the coordinate data needed to build this later without re-architecting |
+| Blind pixel-OCR of every PDF page regardless of whether it already has an extractable text layer | Simplest implementation — treat every input PDF as "rasterize + OCR," no branching logic | Wastes compute on already-digital documents and, more importantly, can produce OCR text that is *worse* than the existing embedded text layer (introduces character-recognition errors into content that was already 100% faithful) — see decision below | Detect and reject-or-passthrough (decision required — see next section) |
+
+## Born-Digital PDF Text Layer — Flagged Decision
+
+**The concrete question:** the locked input scope is "images + scanned/image-only PDF." A born-digital PDF (produced by Word/LaTeX/a typesetting tool, or already OCR'd previously) is not "image-only" — it already has a real, extractable text layer. What should the OCR engine do if a client submits one?
+
+**Detection is cheap and well-understood.** Standard signal: check whether the PDF's pages contain extractable text objects (not just images) — e.g. `pdftotext`/`pdffonts`-style inspection, or checking whether a page's content stream has zero/near-zero extractable characters while containing one full-page image XObject ("only_images" heuristic). This is a solved, well-documented pattern in the OCR-pipeline ecosystem — OCRmyPDF is the reference implementation of exactly this skip/force/redo logic. [OCRmyPDF](https://github.com/jbarlow83/OCRmyPDF)
+
+**Three real options, all technically feasible:**
+
+1. **Fail-closed reject (422)** — detect a meaningful existing text layer at content-validation time (mirrors the project's existing fail-closed philosophy: OLE-CFB rejection, decompression-bomb rejection) and return a clear error directing the client elsewhere (the document engine, or `pdftotext` client-side). Lowest engineering cost, most consistent with "input = image-only PDF" as literally locked, and consistent with this project's general bias toward explicit rejection over silent best-effort behavior.
+2. **Detect-and-passthrough** — if a text layer is detected, extract it directly (bypass pixel-OCR entirely) and return it as the OCR result. Strictly more faithful and faster than OCR-ing an already-digital page, but quietly expands this engine class's actual capability beyond "OCR" into "PDF text extraction," and needs its own confidence/output-format story (a directly-extracted text layer has no OCR confidence scores or hOCR word geometry — what goes in those fields?).
+3. **Blind OCR regardless (do nothing)** — simplest to implement, but as noted in the anti-features table, produces strictly worse results than option 2 and wastes a full OCR pass compared to option 1 — dominated by both other options and not recommended.
+
+**Recommendation for requirement definition:** option 1 (fail-closed reject) is the lower-risk, scope-preserving default — it matches the locked "scanned/image-only PDF" framing exactly, avoids inventing a second output contract (extracted-text vs. OCR'd-text) for what is supposed to be one engine class, and is consistent with the project's established pattern of explicit, loud rejection over silent scope-widening (OLE-CFB precedent). Option 2 is a legitimate differentiator worth a deliberate future decision, but should not be assumed as in-scope by default — it changes what "OCR job" means and needs its own opts/output-format design. This should be explicitly decided (not left implicit) during requirement definition, since a naive implementation left undecided defaults to option 3, which is the worst of the three.
 
 ## Feature Dependencies
 
 ```
-Persisted source_duration (ffprobe, per-job, stored not transient)
-    └──requires-for──> Progress % (av/audio engines only — numerator/denominator)
-                           └──enables──> ETA (elapsed + percent, or ffmpeg `speed` + remaining duration)
-                                            └──feeds──> Live push: webhook `progress` event
-                                            └──feeds──> Live push: SSE stream
-                                            └──feeds──> GET /v1/jobs listing (progress_pct column)
+Language/script opts (validated allowlist)
+    └──requires──> tessdata language assets baked into ocr-worker image
+                       └──constrains──> which languages are offerable (image size vs. language coverage tradeoff)
 
-Existing hardened runCommand (Setpgid + SIGKILL on timeout)
-    └──reused-by──> Cancellation in-flight kill (same kill path, triggered by
-                     context cancellation instead of a timeout)
+Scanned/image-only PDF input
+    └──requires──> pdf→image rasterize pre-stage
+                       └──requires──> per-page OCR loop
+                                          └──enables──> page-granular progress (pages_done/total_pages)
 
-Existing guarded-transition machinery (Repo.transition, job_events append log)
-    └──extended-by──> Cancellation state transition ({queued,active} -> canceled)
-                          └──must-not-conflict-with──> Worker's terminal MarkDone/MarkFailed
-                                                        (loses the race harmlessly: an illegal-
-                                                        transition error on an already-canceled
-                                                        row is treated as terminal/non-retryable,
-                                                        same as any other guarded-transition failure)
+hOCR/ALTO output
+    └──requires──> per-word bounding-box + confidence data from the engine (native tesseract capability, not an add-on)
 
-Existing webhook envelope (single implicit terminal payload, no `event` field)
-    └──must-add──> `event` discriminator field BEFORE `progress` events can be introduced
-                     (existing integrations assume one POST per job = "it's done")
+Per-word confidence surfaced in API response
+    └──requires──> hOCR/ALTO output (or raw TSV) as an intermediate parse target
 
-GET /v1/jobs listing ──independent-of── Progress %, ETA, Cancellation
-    (can ship standalone; progress_pct is just an extra column once it exists)
+Image preprocessing (deskew/binarize/DPI-normalize)
+    └──enhances──> single-image OCR accuracy
+    └──enhances──> scanned-PDF-page OCR accuracy (post-rasterize)
+
+Born-digital PDF detection
+    └──gates──> whether "scanned/image-only PDF" input validation is fail-closed or passthrough
+    └──conflicts with──> "blind OCR every PDF page" (mutually exclusive design choices)
+
+Layout/semantic understanding, layout→markdown ──conflicts──> classic CPU-OCR engine class
+    (different capability class entirely — VLM, not this milestone)
+
+Handwriting recognition ──conflicts──> tesseract/PaddleOCR CPU engine
+    (known weak point of the chosen engine family, not addressable within this scope)
 ```
 
 ### Dependency Notes
 
-- **Progress % requires persisted `source_duration`:** today `ProbeDuration`/ffprobe already runs transiently inside `Convert()` for audio/av (`internal/convert/audioduration.go`, `internal/convert/av.go`) but the value isn't stored on the `jobs` row. Percent-of-total for those two engine classes needs a durable `jobs.source_duration_seconds` (or equivalent) populated once probing happens, before percent can be computed against elapsed `out_time`.
-- **ETA enhances Progress %, doesn't replace it:** a client can use percent alone; ETA is strictly additional and must degrade to `null` independently of percent being present (e.g., percent known but speed not yet stabilized in the first few seconds of a transcode).
-- **Cancellation reuses, not duplicates, the process-kill contract:** the existing `runCommand` wrapper already kills the whole process group on `ctx` cancellation/timeout (`internal/convert/exec.go`). Cancellation's job is to get a cancellation signal into that same `ctx` — via asynq's `Inspector.CancelProcessing(taskID)`, which is documented as best-effort (it signals; it doesn't guarantee the task dies), so the job row's guarded transition to `canceled` is the authoritative outcome regardless of whether the kill signal actually lands before the process finishes on its own.
-- **The webhook envelope needs an `event` field before `progress` can be added:** conflicts with silent reuse. Today's webhook payload (`internal/worker/worker.go`) is `{"job_id":..., "status":...}` with no discriminator, sent exactly once per job on terminal completion. Adding a `progress` event either (a) requires every existing webhook consumer to start switching on a new `event` field it's never seen before, or (b) should be opt-in per job (e.g., only sent if the client explicitly requests progress events at job-creation time), so existing integrations see zero behavior change unless they ask for it.
-- **Job listing conflicts with nothing:** it's the one feature in this milestone with no hard dependency on the others — it can ship first or in parallel, and simply gains a `progress_pct`/`progress_stage` column once those exist.
-
-## Concrete Contracts
-
-### `GET /v1/jobs/{id}` — additions
-
-```json
-{
-  "job_id": "5b1e...",
-  "status": "active",
-  "engine": "av",
-  "progress_pct": 42,
-  "progress_stage": "converting",
-  "eta_seconds": 87,
-  "source_format": "mov",
-  "target_format": "mp4"
-}
-```
-
-- `progress_pct`: integer 0-100, or `null` when the engine can't report (image/document/html today) or the job hasn't started (`queued`).
-- `progress_stage`: optional short string (`probing`/`downloading`/`converting`/`uploading`); omit the key entirely rather than send `null` if unused.
-- `eta_seconds`: integer, or `null` when not yet derivable (job just started, no stable `speed` signal yet) or not supported for this engine. Round to a coarse unit (nearest 5-10s) — false precision ("87.342s remaining") is worse than an honest coarse estimate.
-- Terminal jobs (`done`/`failed`/`canceled`) omit `progress_stage`/`eta_seconds`; `progress_pct` may be `100` for `done`, otherwise omit or leave at last-known value.
-
-### Progress source of truth: DB field, not `job_events`
-
-`job_events` is (and should stay) an append-only audit log of discrete **state transitions** — one row per `queued→active`, `active→done`, reconciler recovery, etc. Progress is high-frequency telemetry (potentially one update per second for a 750s video job), not a state transition. Writing every tick to `job_events` would:
-- Blow up the event log's size and defeat its purpose as a readable audit trail (it becomes 99% progress noise, 1% signal)
-- Require rewriting the "one row per meaningful change" assumption baked into `RecoveryCount`'s `job_events`-scan pattern
-
-Recommendation: add `jobs.progress_pct SMALLINT NULL`, `jobs.progress_stage TEXT NULL`, and `jobs.source_duration_seconds NUMERIC NULL` columns, updated via a **plain `UPDATE`** (not the guarded-transition machinery — this is not a status change and must not lock/serialize against it), **throttled** at the write call site: only write when the percent has moved by a minimum delta (e.g. ≥1%) or a minimum interval has elapsed (e.g. every 2-5s), whichever comes first. This keeps write volume bounded to ~1 UPDATE per throttle-interval per active job, independent of how chatty the underlying ffmpeg `-progress` pipe is.
-
-### ffmpeg `-progress` — the actual signal for audio/av engines
-
-`ffmpeg -progress pipe:1` (or a file) emits newline-delimited `key=value` blocks, each terminated by `progress=continue` or `progress=end`:
-
-```
-frame=120
-fps=30.00
-bitrate=1024.5kbits/s
-total_size=524288
-out_time_us=4000000
-out_time=00:00:04.000000
-dup_frames=0
-drop_frames=0
-speed=1.2x
-progress=continue
-```
-
-Relevant fields for this milestone: `out_time_us` (position into the output so far) divided by the persisted `source_duration` gives percent; `speed` (encode rate vs. realtime) combined with remaining duration gives ETA (`(source_duration - out_time) / speed`). This requires piping/parsing this stream from the already-spawned ffmpeg child inside the worker **without disturbing the existing process-group-kill contract** — the progress reader must be a side channel (extra pipe/fd or a `-progress <path>` temp file polled by a ticker), not something that changes how the child is spawned, waited on, or killed.
-
-### Live push — webhook `progress` event
-
-- New envelope shape (breaking-compatible addition): `{"event": "progress", "job_id": ..., "status": "active", "progress_pct": 42, "eta_seconds": 87, "timestamp": "..."}`. The existing terminal payload should also gain the same `event` field (`"event": "done"` / `"event": "failed"` / `"event": "canceled"`) for consistency, once any consumer is expected to branch on it.
-- Cadence: throttled identically to the DB write (percent-delta and/or time-interval gated) — never per-tick.
-- Delivery contract: **separate from** the existing `webhook_deliveries` bounded-retry/dead-letter table. Single best-effort attempt, no retry, no dead-letter row, same HMAC signing. A dropped progress webhook is not worth chasing; the client can always fall back to polling `GET /v1/jobs/{id}`.
-- Opt-in: only sent for jobs that request it (e.g., a `progress_webhooks=true` flag alongside `callback_url` at job creation), so existing `callback_url`-only integrations never see an unexpected extra POST shape.
-
-### Live push — SSE stream
-
-- Endpoint shape: `GET /v1/jobs/{id}/events`, `Content-Type: text/event-stream`, same `Authorization: ApiKey` auth as every other route, same 404-not-403 ownership check before the stream opens.
-- Payload per event: same JSON shape as the webhook `progress` event, framed as an SSE `data:` line; a final event with `status: done|failed|canceled` (and the download URL when applicable) closes the stream server-side.
-- Cadence: identical throttle as the DB write — the API server polls the DB row on a ticker (e.g. every 1-2s) and relays a change, rather than the worker holding an HTTP connection open (workers don't currently serve HTTP; keep that boundary intact). This also naturally caps SSE update frequency to the DB write throttle.
-- Backpressure/lifetime: bound the connection (e.g., close and require reconnect after N minutes or on job completion) and cap concurrent open streams per client to prevent a client holding hundreds of long-lived connections open as a resource-exhaustion vector — mirrors the project's existing per-client rate-limiting posture.
-- Heartbeat: send periodic SSE comment lines (`:\n\n`) to keep intermediate proxies/load balancers from timing out an idle-looking-but-alive connection.
-
-### `GET /v1/jobs` listing
-
-- Fields per row: `job_id`, `status`, `engine`, `source_format`, `target_format`, `progress_pct` (nullable), `created_at`, `finished_at` (nullable). Omit `download_url`/opts/error detail from the list view — those stay on the single-job `GET /v1/jobs/{id}` to keep list rows small.
-- Filters: `?status=active` (repeatable or comma-separated for OR), `?engine=av`. Both are indexed-column filters, whitelisted (never pass raw client strings into a dynamic WHERE clause — reuses the same "closed allowlist, never client-controlled SQL shape" discipline already used for opts validation).
-- Ordering: default `created_at DESC` (most recent first); no client-specified arbitrary sort column (keeps the query plan predictable and avoids a sortable-column injection surface).
-- Pagination: cursor/keyset-based on `(created_at, id)`, not offset — offset pagination degrades under concurrent inserts (a job created between two page requests shifts every subsequent offset, and this table gets new rows constantly). Opaque cursor token, default page size (e.g. 50), server-enforced max (e.g. 200) regardless of requested `limit`.
-- Scoping: hard `WHERE client_id = $1` bound to the authenticated caller — never accept a client-suppliable `client_id` query param. Consistent with the existing `GET /v1/jobs/{id}` ownership model: a job that isn't yours simply never appears, with zero distinguishable behavior from "you have no jobs matching this filter."
-
-### `POST /v1/jobs/{id}/cancel`
-
-- Guarded transition: succeeds (`{queued, active} → canceled`) exactly like every other status change, through the same row-locking `Repo.transition` helper, with a `job_events` row appended (cancellation *is* a meaningful state transition, unlike routine progress ticks — it belongs in the audit log).
-- Idempotency: if the job is already `canceled`, respond `200` with the current status unchanged. If the job is already `done` or `failed` (raced past cancellation), respond `200` with the current (unmodified) terminal status — never overwrite a completed/failed result, never surface this race as a client-visible error.
-- Ownership: cancelling a job that doesn't belong to the caller (or doesn't exist) → `404`, identical to `GET /v1/jobs/{id}`'s existing not-found/not-yours collapse.
-- In-flight kill: for an `active` job, the API's transition to `canceled` also signals the worker to actually stop the child process — via asynq's `Inspector.CancelProcessing(taskID)` (best-effort; requires the job's asynq task ID to be resolvable from the job row) cancelling the handler's `context.Context`, which the existing hardened `runCommand` wrapper already turns into a process-group SIGKILL on cancellation (no new kill logic needed — reuse the timeout path's exact mechanism, just triggered by a different signal).
-- Race with natural completion: if the worker's `MarkDone`/`MarkFailed` call loses the race (job already flipped to `canceled` by the time it runs), the guarded-transition allow-list rejects it as an illegal transition — treated exactly like any other illegal-transition error today (terminal, non-retryable, logged, no retry loop).
-- Partial-output cleanup: a canceled job must never expose a `download_url`. The worker checks the job's status before its final S3 upload/`MarkDone` and skips the upload entirely if the job has already moved to `canceled` (defense in depth beyond the transition guard); any object that *did* get written before the check fires is cleaned up by the existing TTL-based lifecycle rule, not a bespoke delete-on-cancel path — no new storage-cleanup mechanism required.
-- Client-visible result of a canceled job: `GET /v1/jobs/{id}` returns `status: "canceled"`, no `download_url`, no `error_code`/`error_message` (those fields are reserved for engine failures, not user-initiated stops) — a distinct, honest third terminal outcome alongside `done`/`failed`.
+- **Scanned/image-only PDF requires a rasterize pre-stage:** this is a new pipeline stage not present in any existing engine class (image/document/html/audio/av all operate on their native format directly) — it's the single largest new piece of plumbing in this milestone besides the OCR call itself, and it's what makes page-granular progress possible (pages_done/total_pages only exists once rasterization produces a page count up front).
+- **hOCR/ALTO output is nearly free once txt output exists:** tesseract emits all four formats from one invocation with different config-file arguments — this is a low-complexity feature despite being locked-scope, and should not be treated as separately risky from plain-text output.
+- **Born-digital PDF detection gates the input-validation design, not the OCR algorithm:** this decision belongs at the fail-closed content-validation layer (same place as existing magic-byte sniffers), before the job even reaches the rasterize/OCR pipeline — get it wrong and every born-digital PDF either silently wastes a full OCR pass or silently gets rejected without a clear reason.
+- **Layout/markdown and handwriting both conflict with the chosen engine family**, not just "not implemented yet" — this is why they're anti-features rather than deferred differentiators: shipping them on tesseract/PaddleOCR would require either accepting poor quality or effectively building a different engine class in disguise.
 
 ## MVP Definition
 
-### Launch With (v1)
+### Launch With (v1 of this milestone)
 
-- [ ] `progress_pct` (nullable) + `eta_seconds` (nullable) on `GET /v1/jobs/{id}`, DB-field source of truth, throttled writes — the core deliverable (SEED-008); everything else in this milestone is secondary to making long-running jobs visible at all
-- [ ] Persisted `source_duration` for audio/av engines (dependency for percent/ETA on those two classes; other engines stay indeterminate)
-- [ ] `GET /v1/jobs` listing: own-jobs-only, status/engine filters, cursor pagination with a server-enforced max page size — independent value, ships regardless of progress-push complexity
-- [ ] `POST /v1/jobs/{id}/cancel`: idempotent, guarded transition to `canceled`, in-flight kill via existing `runCommand` process-group kill triggered through asynq `CancelProcessing`, no partial-output leakage
+- [ ] Single image (jpg/png/tiff/webp) → txt — core contract, locked scope
+- [ ] Scanned/image-only PDF → per-page txt (concatenated) — locked scope, needs rasterize pre-stage
+- [ ] hOCR output alongside txt — locked scope, low incremental cost once txt path exists
+- [ ] Language/script selection via validated `opts` (closed allowlist, mirrors `AudioOpts`) — locked scope
+- [ ] Page-granular progress + ETA reusing v1.9 infra — locked scope, differentiator vs. a silent long-running job
+- [ ] Deskew/binarize/DPI-normalize preprocessing before recognition — treated as table stakes here, not deferred, because without it real-world scanned input will silently produce poor results
+- [ ] Born-digital PDF detection at content-validation time, with an explicit (not implicit) decision on reject-vs-passthrough — must be decided before requirement definition locks the input-validation behavior
 
 ### Add After Validation (v1.x)
 
-- [ ] Webhook `progress` event (opt-in, throttled, best-effort non-retried delivery, new `event` discriminator) — once the polling-based percent/ETA contract is proven correct, push it to clients already using `callback_url`
-- [ ] SSE streaming endpoint — once the DB-field progress model is stable, expose it as a live stream for clients not using webhooks (CLI/MCP-style interactive polling replacement)
+- [ ] ALTO output (in addition to hOCR) — low cost, add once hOCR path is proven
+- [ ] Per-word confidence surfaced in the structured API response (beyond what's embedded in hOCR/ALTO XML)
+- [ ] Automatic orientation/script detection (OSD) pre-pass for rotated scans/photos
+- [ ] Mixed-language per-job selection (`eng+rus`-style combined packs)
 
-### Future Consideration (v2+)
+### Future Consideration (v2+, likely a different engine class entirely)
 
-- [ ] Stage-based sub-progress breakdown surfaced in a UI (the reference `frontend/`) — defer until the raw percent/stage fields are validated against real jobs
-- [ ] Batch cancel (`POST /v1/jobs/cancel` with a filter, mirroring the batch-cancel pattern some job APIs offer) — defer until single-job cancel semantics are proven correct under the race conditions above
-- [ ] `event`-discriminated webhook payloads for *all* event types (not just adding `progress`) — a broader webhook-contract-versioning conversation, bigger than this milestone
+- [ ] Layout/semantic understanding + layout→markdown — requires a VLM-class engine (SEED-009 option b/c), not this milestone's classic-CPU-OCR engine
+- [ ] Handwriting recognition — requires a different model family than tesseract/PaddleOCR
+- [ ] Searchable-PDF overlay output — a third output format beyond locked scope; revisit if a concrete client need emerges
+- [ ] Born-digital PDF detect-and-passthrough (option 2 above) as an active feature (vs. the v1 fail-closed reject) — legitimate differentiator, deliberately deferred pending its own opts/output-format design
 
 ## Feature Prioritization Matrix
 
 | Feature | User Value | Implementation Cost | Priority |
-|---------|------------|---------------------|----------|
-| Progress % (DB field, poll-only) | HIGH | MEDIUM | P1 |
-| ETA | MEDIUM | MEDIUM | P1 |
-| `GET /v1/jobs` listing | HIGH | MEDIUM | P1 |
-| `POST /v1/jobs/{id}/cancel` | HIGH | MEDIUM-HIGH | P1 |
-| Webhook `progress` event | MEDIUM | MEDIUM-HIGH | P2 |
-| SSE streaming endpoint | MEDIUM | MEDIUM-HIGH | P2 |
-| Stage-based sub-progress in UI | LOW-MEDIUM | LOW | P3 |
-| Batch cancel | LOW | MEDIUM | P3 |
-
-**Priority key:**
-- P1: Must have for this milestone (v1.9)
-- P2: Should have, add once P1 is validated against real jobs
-- P3: Nice to have, future consideration
-
-## Competitor / Precedent Feature Analysis
-
-| Feature | AWS MediaConvert | asynq (queue layer OctoConv already runs on) | Our Approach |
-|---------|-------------------|-----------------------------------------------|--------------|
-| Progress reporting | Phase + percent-within-phase via polling or EventBridge `STATUS_UPDATE` events (only emitted if a job runs >1 minute) | No native job-level percent concept — asynq tracks task state (pending/active/retry/archived), not user-defined progress | Flat 0-100 + optional `progress_stage`, `null` when the engine can't measure it — simpler than MediaConvert's per-phase breakdown, matches OctoConv's engine-class model |
-| Cancellation | Job-level cancel API on `PROGRESSING`/`SUBMITTED` jobs | `Inspector.CancelProcessing(taskID)` — best-effort signal via `ctx` cancellation, `DeleteTask` for not-yet-active tasks (errors if task is already active) | Combine both asynq primitives: `DeleteTask` for queued-not-dequeued, `CancelProcessing` for active — but the *authoritative* outcome is always the Postgres guarded transition, since asynq's own cancellation is explicitly best-effort |
-| Push vs poll | EventBridge push (opt-in) alongside polling `GetJob` | N/A (task queue has no external notification concept) | Both, mirroring MediaConvert's opt-in-push-alongside-poll model: DB-field percent for polling (table stakes), webhook/SSE push as an addition (differentiator) |
-| List/filter jobs | `ListJobs` with status filter | `ListTasks`/`Inspector` queue introspection (operator-facing, not client-facing) | `GET /v1/jobs`, client-facing, scoped to caller — closer to MediaConvert's `ListJobs` shape than to asynq's operator-facing inspector |
+|---------|------------|----------------------|----------|
+| Single image → txt | HIGH | LOW | P1 |
+| Scanned/image-only PDF → per-page txt | HIGH | MEDIUM | P1 |
+| hOCR output | HIGH | LOW | P1 |
+| Language/script opts | HIGH | LOW–MEDIUM | P1 |
+| Page-granular progress + ETA | MEDIUM | MEDIUM | P1 |
+| Preprocessing (deskew/binarize/DPI) | HIGH | MEDIUM | P1 |
+| Born-digital PDF detection + explicit reject/passthrough decision | MEDIUM | MEDIUM | P1 (the *decision* is P1; if passthrough is chosen, that specific mode can slip to P2) |
+| ALTO output | MEDIUM | LOW | P2 |
+| Per-word confidence in API response | MEDIUM | MEDIUM | P2 |
+| Orientation/script auto-detection (OSD) | MEDIUM | MEDIUM | P2 |
+| Mixed-language per-job selection | LOW–MEDIUM | LOW–MEDIUM | P3 |
+| Layout→markdown / semantic understanding | N/A (anti-feature) | HIGH | Excluded |
+| Handwriting recognition | N/A (anti-feature) | HIGH | Excluded |
+| Searchable-PDF overlay output | LOW (for this milestone) | MEDIUM | Excluded (v2+) |
 
 ## Sources
 
-- [FFmpeg `-progress` output format and key/value meaning (ffmpeg-user mailing list)](https://ffmpeg.org/pipermail/ffmpeg-user/2016-July/032897.html)
-- [ffmpeg Documentation (`-progress` option)](https://www.ffmpeg.org/ffmpeg.html)
-- [Monitoring MediaConvert job progress (AWS docs)](https://docs.aws.amazon.com/mediaconvert/latest/ug/how-mediaconvert-jobs-progress.html)
-- [Monitoring AWS Elemental MediaConvert overview](https://docs.aws.amazon.com/mediaconvert/latest/ug/monitoring-overview.html)
-- [asynq `inspector.go` — `CancelProcessing`/`DeleteTask` semantics](https://github.com/hibiken/asynq/blob/master/inspector.go)
-- [asynq Wiki: Task Timeout and Cancelation](https://github.com/hibiken/asynq/wiki/Task-Timeout-and-Cancelation)
-- [Cancel AI job (Omni Docs) — idempotent cancel-on-terminal-job precedent](https://docs.omni.co/api/ai/cancel-ai-job)
-- [Cancel a job (ArcGIS REST) — stricter error-on-terminal-job precedent](https://gis.charlottenc.gov/arcgis/help/en/rest/services-reference/enterprise/cancel-gp-job)
-- [EventSource / SSE custom-header limitation and workarounds](https://www.tutorialpedia.org/blog/http-authorization-header-in-eventsource-server-sent-events/)
-- [REST API Pagination: cursor vs. offset best practices](https://www.speakeasy.com/api-design/pagination)
-- [Broken Object Level Authorization — always scope list queries to the authenticated caller](https://how2.sh/posts/how-to-fix-broken-object-level-authorization-in-apis/)
-- Project files read directly: `.planning/PROJECT.md`, `README.md`, `internal/api/handlers.go`, `internal/jobs/jobs.go`, `internal/jobs/repo.go`, `internal/db/migrations/0001_init.sql`, `internal/convert/audioduration.go`, `internal/convert/av.go`, `internal/worker/worker.go`
+- [Tesseract Command-Line Usage (tessdoc)](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html) — HIGH confidence, official docs: output formats (txt/hocr/alto/pdf/tsv), PSM modes, per-word confidence via TSV
+- [tesseract.1.asc (GitHub, tesseract-ocr/tesseract)](https://github.com/tesseract-ocr/tesseract/blob/main/doc/tesseract.1.asc) — HIGH confidence, official man page
+- [OCRmyPDF (GitHub, jbarlow83/OCRmyPDF)](https://github.com/jbarlow83/OCRmyPDF) — MEDIUM-HIGH confidence, reference implementation of the "detect existing text layer, skip/force/redo" decision this research flags
+- [Docparser — Improve OCR Accuracy with Preprocessing Tips](https://docparser.com/blog/improve-ocr-accuracy/) — MEDIUM confidence (vendor blog, but consensus-aligned with multiple independent sources), preprocessing accuracy uplift figures
+- [Markaicode — Tesseract Production Setup Guide](https://markaicode.com/tutorial/tesseract-tutorial-production-setup-guide/) — MEDIUM confidence, production preprocessing pipeline pattern
+- Project context: `.planning/PROJECT.md` (locked scope, existing engine-class pattern), `.planning/seeds/SEED-009.md` (open questions, progress-reuse design, engine-class evaluation gate)
 
 ---
-*Feature research for: OctoConv v1.9 Job Progress & Control*
-*Researched: 2026-07-24*
+*Feature research for: OctoConv v1.10 OCR Engine (classic CPU-OCR, offline, CPU-only)*
+*Researched: 2026-07-26*
