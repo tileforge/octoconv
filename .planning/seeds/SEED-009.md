@@ -45,9 +45,27 @@ Distinct from the reserved `probe` enum value (metadata probing) and from **SEED
 3. **Input scope** — images only first, or also scanned/image-only PDFs (the latter needs a `pdf→image` rasterize pre-stage).
 4. **Output formats** — plain `txt`, hOCR/ALTO with bounding boxes, and/or a searchable-PDF overlay. Bounding-box/coordinate output strongly favors (a); layout→markdown favors (b).
 
+## Progress reporting — reuses the v1.9 infra (page-granular)
+
+OCR is a relatively long process, so online progress (like the av worker's) is wanted — and most of it comes for free. Plan for it up front rather than bolting it on.
+
+**Reused as-is (v1.9 is deliberately engine-agnostic):**
+- `Repo.UpdateProgress`/`SetSourceDuration` (non-locking, throttled, freeze-on-abort) — not ffmpeg-specific; just writes `progress_pct`/`eta_seconds`.
+- SSE `GET /v1/jobs/{id}/events` (Phase 42) + the opt-in progress webhook — both read `progress_pct` from the job row and DO NOT care what produced it. Zero changes needed to serve OCR progress.
+- The `ProgressConverter`/`ProgressSink` seam (Phase 41 D-01) — the OCR converter implements it and calls `sink.Update(...)`.
+
+**New, OCR-specific (the progress *source*):**
+- **Unit of progress = PAGES, not time.** OCR has no continuous engine stream (tesseract's CLI emits none). The worker rasterizes the input to N pages and loops page-by-page; progress = `pages_done / total_pages * 100`, driven by the worker's own loop — it does NOT reuse the ffmpeg `-progress`/FIFO parser (that's ffmpeg-only).
+- **Granularity is stepwise** (0, 1/N, 2/N, …), not the smooth 0→100 of video. Coarse for a 2–3 page doc — acceptable and honest (better than a fabricated smooth ramp; matches Phase 41's "never fabricate" rule).
+- **Single image → `null`→100** (atomic, no sub-progress). Multi-page scan/PDF → a real ramp. Progress is opt-in per engine (Phase 41 D-02).
+- **ETA** from `avg_seconds_per_page × pages_remaining` (same EMA/warm-up idea as av, denominator is sec/page instead of ffmpeg `speed=`).
+
+**Registry tie-in (SEED-010):** a capability could declare "emits progress" so the API/SSE knows to expect a ramp without a hardcode. This OCR case is exactly the "generalized progress bus" Phase 41's CONTEXT flagged as out-of-scope-at-the-time — OCR is the natural second progress source that generalizes it.
+
 ## Breadcrumbs
 
 - Engine-class pattern precedents: `internal/convert/` (converters, sniffers), `cmd/av-worker`/`cmd/audio-worker`, `internal/queue/queue.go` (per-engine queues), the KEDA/Helm chart, `scripts/*-rtf-measure.sh`.
+- Progress infra to reuse: `internal/jobs/repo.go` (`UpdateProgress`/`SetSourceDuration`), `internal/api/sse.go` (`handleJobEvents`), `internal/worker/worker.go` (`progressSink`/`fireDetached`), `internal/convert/progress.go` (`ProgressConverter`/`ProgressSink`/`etaEstimator`) — all engine-agnostic since v1.9.
 - Related seeds: SEED-005 (CAD, shares the "OSS binary vs commercial SDK" evaluation gate), SEED-006 (archive), SEED-007 (file-preview — visual, distinct from OCR's text output).
 - `AudioOpts` (`internal/convert/audioopts.go`) — the closed-allowlist opts pattern to mirror for the language option.
 
