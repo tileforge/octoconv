@@ -226,11 +226,13 @@ func (c OCRConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 
 	sourceFormat := NormalizeFormat(filepath.Ext(inPath))
 	if sourceFormat == "pdf" {
-		// Streaming per-page PDF loop (pdfinfo page-count cap -> per-page
-		// pdftoppm render -> tesseract -> delete before the next page) is
-		// Plan 04's job (43-CONTEXT.md D-01/SC2) -- this plan builds and
-		// tests the image path only.
-		return fmt.Errorf("ocr: pdf source conversion not yet implemented (see 43-04-PLAN.md)")
+		// Streaming per-page PDF loop (pdfinfo page-count cap -> born-digital
+		// check -> per-page page-box bound -> pdftoppm render -> tesseract ->
+		// delete before the next page), defined in ocrpdf.go (Plan 04,
+		// 43-CONTEXT.md D-01/SC2). onPage is nil here -- this plain Convert
+		// entry point reports no progress; ConvertWithProgress (ocrpdf.go)
+		// drives the same pipeline with a non-nil onPage callback.
+		return c.convertPDF(ctx, inPath, outPath, targetFormat, configfile, o, nil)
 	}
 
 	// Image pixel-dimension guard (OCRE-02, ocrguards.go, Plan 02) --
