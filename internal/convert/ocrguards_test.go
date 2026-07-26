@@ -211,3 +211,36 @@ func TestEnforceImagePixelBound_NonImageFormatSkipsCheck(t *testing.T) {
 		t.Fatalf("enforceImagePixelBound on non-image format: got %v, want nil (no dimension concept)", err)
 	}
 }
+
+func TestCountNonWhitespace(t *testing.T) {
+	if n := countNonWhitespace([]byte("  ab\tcd\n ef  ")); n != 6 {
+		t.Fatalf("got %d, want 6", n)
+	}
+	if n := countNonWhitespace([]byte("   \n\t  ")); n != 0 {
+		t.Fatalf("got %d, want 0 for whitespace-only input", n)
+	}
+	if n := countNonWhitespace([]byte("")); n != 0 {
+		t.Fatalf("got %d, want 0 for empty input", n)
+	}
+}
+
+func TestDetectBornDigitalPDF_RealBinary(t *testing.T) {
+	if _, err := exec.LookPath("pdftotext"); err != nil {
+		t.Skip("pdftotext not installed, skipping real-binary test")
+	}
+	ctx := context.Background()
+
+	t.Run("born-digital PDF is rejected", func(t *testing.T) {
+		err := detectBornDigitalPDF(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"))
+		if !errors.Is(err, ErrOCRBornDigital) {
+			t.Fatalf("got %v, want ErrOCRBornDigital", err)
+		}
+	})
+
+	t.Run("image-only PDF passes (no extractable text layer)", func(t *testing.T) {
+		err := detectBornDigitalPDF(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
+		if err != nil {
+			t.Fatalf("got %v, want nil for an image-only PDF", err)
+		}
+	})
+}
