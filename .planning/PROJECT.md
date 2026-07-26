@@ -26,9 +26,19 @@ OctoConv — внутренний асинхронный сервис конве
 
 </details>
 
-## Next Milestone: TBD
+## Current Milestone: v1.10 OCR Engine (text extraction)
 
-v1.9 отгружен. Следующая веха ещё не выбрана — кандидаты в backlog ниже; запуск через `/gsd:new-milestone` (questioning → research → requirements → roadmap). Наиболее «созревшие» seed-темы: новый класс движка (OCR — поднят в обсуждении Phase 41, ещё не оформлен seed-ом; либо SEED-005 CAD / SEED-006 Archive / SEED-007 File-preview) по проверенному engine-class паттерну.
+**Goal:** Клиент может извлечь машиночитаемый текст из изображений и сканированных PDF через тот же async-контур, что и остальные движки — offline, детерминированно, с онлайн-прогрессом. Шестой engine-класс.
+
+**Target features:**
+- **Классический CPU-OCR движок** (tesseract или PaddleOCR — точный выбор через eval-gate в research); CPU-воркер-паттерн, без GPU
+- **Вход: изображения + скан-PDF** — jpg/png/tiff/webp + image-only PDF → `pdf→image` растериза-престейдж → постраничный OCR
+- **Вывод: txt + hOCR/ALTO** (текст + координаты слов)
+- **Онлайн-прогресс** — page-granular поверх готовой v1.9-инфры (SSE/webhook/`progress_pct`), ETA из сек/страница; одиночная картинка → null→100
+- **Полный engine-class контур** — очередь `ocr` + `cmd/ocr-worker` + контейнер + KEDA scale-from-zero, fail-closed magic-byte валидация, stage-aware retry, RTF-измеренный таймаут
+- **Язык/скрипт** — per-job opt через валидированный `opts` (closed allowlist, как AudioOpts)
+
+**Key context:** offline-constraint (облако вне игры) · CPU-only (не GPU) · переиспользует v1.9 progress/SSE/webhook движок-агностично · реестр SEED-010 отложен (сажаем «по-старому» на compile-time схему, как image/av) · фазы продолжаются с Phase 43. Основано на SEED-009.
 
 <details>
 <summary>Next-milestone backlog (отложенные кандидаты)</summary>
@@ -153,9 +163,14 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Active
 
-<!-- Next milestone not yet defined. Run /gsd:new-milestone to populate. -->
+<!-- Milestone v1.10 OCR Engine (text extraction) — defined 2026-07-26. -->
 
-_Нет активной вехи — v1.9 отгружен 2026-07-25. Следующая веха выбирается через `/gsd:new-milestone`; кандидаты — в next-milestone backlog выше (OCR / SEED-005 CAD / SEED-006 Archive / SEED-007 File-preview)._
+- [ ] Клиент может извлечь текст из изображения (jpg/png/tiff/webp) через классический CPU-OCR (tesseract/PaddleOCR)
+- [ ] Клиент может извлечь текст из сканированного/image-only PDF (pdf→image растериза-престейдж + постраничный OCR)
+- [ ] Вывод в txt и hOCR/ALTO (текст + координаты слов)
+- [ ] Онлайн-прогресс page-granular поверх v1.9-инфры (multi-page → реальный рамп; одиночная картинка → null→100) + ETA сек/страница
+- [ ] Язык/скрипт задаётся per-job через валидированный `opts` (closed allowlist)
+- [ ] OCR встроен в полный контур: fail-closed magic-byte валидация, stage-aware retry, `cmd/ocr-worker` + контейнер, compose + chart + KEDA scale-from-zero, RTF-измеренный таймаут
 
 ### Out of Scope
 
@@ -244,4 +259,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-25 after v1.9 Job Progress & Control milestone*
+*Last updated: 2026-07-26 after starting v1.10 OCR Engine milestone*
