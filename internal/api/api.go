@@ -74,6 +74,7 @@ type Enqueuer interface {
 	EnqueueHTMLConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueAudioConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,

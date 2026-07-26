@@ -117,6 +117,7 @@ type fakeQueue struct {
 	enqueuedHTML     uuid.UUID
 	enqueuedAudio    uuid.UUID
 	enqueuedAV       uuid.UUID
+	enqueuedOCR      uuid.UUID
 }
 
 func (f *fakeQueue) EnqueueImageConvert(_ context.Context, id uuid.UUID) error {
@@ -141,6 +142,11 @@ func (f *fakeQueue) EnqueueAudioConvert(_ context.Context, id uuid.UUID) error {
 
 func (f *fakeQueue) EnqueueAVConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedAV = id
+	return nil
+}
+
+func (f *fakeQueue) EnqueueOCRConvert(_ context.Context, id uuid.UUID) error {
+	f.enqueuedOCR = id
 	return nil
 }
 
@@ -3107,6 +3113,36 @@ func TestCreateJob_ImageDeclaredAsPDFMismatchRejected(t *testing.T) {
 	}
 	if repo.created != nil {
 		t.Error("must not create job for mismatched content")
+	}
+}
+
+// TestCreateJob_OCRPDFEnqueuesToOCRQueue proves the end-to-end API happy path
+// (SC1/OCRP-01): a valid %PDF- upload targeting txt is content-validated,
+// persisted, and ENQUEUED to the ocr queue via the handleCreateJob engine
+// switch's EngineOCR case -- returning 202 with a job_id, not a 500. This is
+// the gap the phase-44 verifier caught: routing (EngineFor) resolved "ocr"
+// but the enqueue switch had no EngineOCR arm, so a valid OCR POST 500'd.
+func TestCreateJob_OCRPDFEnqueuesToOCRQueue(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBody(t, "scan.pdf", "txt", pdfBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueuedOCR == uuid.Nil {
+		t.Fatalf("EnqueueOCRConvert was never called — OCR job not routed to the ocr queue (SC1 gap)")
+	}
+	if q.enqueuedImage != uuid.Nil || q.enqueuedAV != uuid.Nil {
+		t.Errorf("OCR job wrongly enqueued to a non-ocr queue")
 	}
 }
 

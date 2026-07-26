@@ -649,6 +649,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		enqueueErr = s.queue.EnqueueAudioConvert(ctx, createdID)
 	case convert.EngineAV:
 		enqueueErr = s.queue.EnqueueAVConvert(ctx, createdID)
+	case convert.EngineOCR:
+		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
 	default:
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a
