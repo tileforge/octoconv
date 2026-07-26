@@ -131,6 +131,18 @@ ENV TESSDATA_PREFIX=/usr/local/share/tessdata
 RUN mkdir -p "${TESSDATA_PREFIX}"
 COPY --from=tess-build /tessdata/eng.traineddata "${TESSDATA_PREFIX}/eng.traineddata"
 COPY --from=tess-build /tessdata/rus.traineddata "${TESSDATA_PREFIX}/rus.traineddata"
+# tesseract's OUTPUT-FORMAT config files (configs/hocr, configs/alto,
+# configs/tsv, configs/txt, ...) + tessconfigs/ ship with the ENGINE via
+# `make install`, NOT with the language packs -- they are tiny plain-text
+# parameter files, not language data, so Pitfall 4 (language-pack bloat,
+# which is about multi-MB .traineddata files) does not apply to them.
+# Without them `tesseract <img> <out> hocr` / `... alto` fail with
+# "read_params_file: Can't open hocr" and produce NO output file -- while an
+# image->txt job still succeeds (txt is tesseract's built-in default output,
+# needing no config file), which is exactly why ->txt worked but ->hocr
+# silently produced nothing before this COPY was added.
+COPY --from=tess-build /usr/local/share/tessdata/configs "${TESSDATA_PREFIX}/configs"
+COPY --from=tess-build /usr/local/share/tessdata/tessconfigs "${TESSDATA_PREFIX}/tessconfigs"
 COPY --from=build /out/ocr-worker /usr/local/bin/ocr-worker
 # Belt-and-suspenders runtime assertions (mirrors Dockerfile.av-worker's
 # ffmpeg version grep): prove the COPYd binary in THIS stage reports the
@@ -138,8 +150,12 @@ COPY --from=build /out/ocr-worker /usr/local/bin/ocr-worker
 # stray language files ever leaked in from the build stage).
 RUN /usr/local/bin/tesseract --version | grep -q "tesseract 5\.5\.3" \
  || { echo "FATAL: runtime tesseract does not report version 5.5.3" >&2; exit 1; }
-RUN [ "$(ls "${TESSDATA_PREFIX}" | sort | tr '\n' ' ')" = "eng.traineddata rus.traineddata " ] \
- || { echo "FATAL: TESSDATA_PREFIX contains more than eng+rus traineddata" >&2; exit 1; }
+# Assert the baked LANGUAGE set is exactly eng+rus (Pitfall 4: no stray
+# language packs leaked from the build stage) -- scoped to *.traineddata so
+# the engine's own configs/ + tessconfigs/ output-format files (COPYd above,
+# required for hocr/alto/tsv output) are allowed alongside them.
+RUN [ "$(ls "${TESSDATA_PREFIX}"/*.traineddata | xargs -n1 basename | sort | tr '\n' ' ')" = "eng.traineddata rus.traineddata " ] \
+ || { echo "FATAL: TESSDATA_PREFIX contains unexpected .traineddata files" >&2; exit 1; }
 # Run unprivileged: the worker shells out to untrusted-input engines.
 USER nobody
 # The OCR engine invokes tesseract/pdftoppm/pdfinfo/pdftotext synchronously,
