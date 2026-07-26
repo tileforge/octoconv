@@ -51,6 +51,19 @@ data:
   AV_ENGINE_TIMEOUT: "753s"
   AV_MAX_RETRY: "2"
   AV_MAX_DURATION_SECONDS: "90"
+  # Compose-parity byte-for-byte (docker-compose.yml ocr-worker block,
+  # Phase 45 measured: worst-cell dense_eng p95=5.81 s/page, ceil(64 x 5.81
+  # x 2.0) = 744s, 17.3% under the 900s reconciler CAP). OCR_ENGINE_TIMEOUT/
+  # OCR_MAX_RETRY are the IN-02 parity values every queue.NewClient()-
+  # constructing service inherits identically via this shared ConfigMap --
+  # a mismatch would silently produce duplicate processing. 744s stays
+  # under the 15m/900s RECONCILER_ACTIVE_STALE_AFTER so the reconciler
+  # never double-processes an in-flight OCR job as abandoned.
+  OCR_WORKER_CONCURRENCY: "1"
+  OCR_ENGINE_TIMEOUT: "744s"
+  OCR_MAX_RETRY: "2"
+  OCR_MAX_PAGES: "64"
+  OCR_MAX_IMAGE_PIXELS: "100000000"
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"
