@@ -1229,6 +1229,39 @@ func TestSetSourceDuration(t *testing.T) {
 	}
 }
 
+// TestOCREngineRoundTrip pins 0009_ocr_engine.sql (OCRP-01): after Migrate,
+// a jobs row with engine='ocr', operation='convert' inserts without a CHECK
+// violation and reads back with engine='ocr' via Repo.Get -- the additive
+// ALTER accepts the value on a DB that already has 8 non-ocr engine classes
+// migrated in ahead of it (existing rows/constraints untouched).
+func TestOCREngineRoundTrip(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:     createTestClient(t, r),
+		Operation:    "convert",
+		Engine:       "ocr",
+		SourceFormat: "png",
+		TargetFormat: "txt",
+		Input: Input{ObjectKey: "uploads/ocr1/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create (engine=ocr): %v", err)
+	}
+
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Engine != "ocr" {
+		t.Fatalf("Engine = %q, want ocr", got.Engine)
+	}
+	if got.Status != StatusQueued || got.SourceFormat != "png" || got.TargetFormat != "txt" {
+		t.Fatalf("unexpected job after create: %+v", got)
+	}
+}
+
 // TestFindWebhookGapsIgnoresCanceled pins the D-10 webhook-gap-sweep half of
 // the non-resurrection guarantee: a canceled job with a callback_url and zero
 // webhook_deliveries rows must never be treated as a delivery gap, since
