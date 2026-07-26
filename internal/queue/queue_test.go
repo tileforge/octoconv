@@ -547,6 +547,115 @@ func TestAVUniqueTTL(t *testing.T) {
 	}
 }
 
+// TestOCRConvertTaskRoundTrip asserts NewOCRConvertTask builds a task routed
+// to TypeOCRConvert whose payload round-trips through ParseConvertPayload
+// back to the same job id -- mirrors TestAVConvertTaskRoundTrip's shape for
+// the ocr engine class.
+func TestOCRConvertTaskRoundTrip(t *testing.T) {
+	id := uuid.New()
+	task, err := NewOCRConvertTask(id, 2, OCRUniqueTTL(2, 300*time.Second))
+	if err != nil {
+		t.Fatalf("NewOCRConvertTask: %v", err)
+	}
+	if task.Type() != TypeOCRConvert {
+		t.Errorf("task type = %q, want %q", task.Type(), TypeOCRConvert)
+	}
+	p, err := ParseConvertPayload(task.Payload())
+	if err != nil {
+		t.Fatalf("ParseConvertPayload: %v", err)
+	}
+	if p.JobID != id {
+		t.Errorf("job id = %s, want %s", p.JobID, id)
+	}
+}
+
+// TestOCRRetryDelaySchedule asserts OCRRetryDelay returns the exact
+// provisional 15s/1m schedule (no jitter, mirrors AVRetryDelay's shape) and
+// clamps on both ends.
+func TestOCRRetryDelaySchedule(t *testing.T) {
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{n: -1, want: 15 * time.Second}, // clamps to first entry
+		{n: 0, want: 15 * time.Second},
+		{n: 1, want: 1 * time.Minute},
+		{n: 99, want: 1 * time.Minute}, // clamps past the end of the schedule
+	}
+	for _, tc := range cases {
+		got := OCRRetryDelay(tc.n, nil, nil)
+		if got != tc.want {
+			t.Errorf("OCRRetryDelay(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
+
+// TestRetryDelayFuncRoutesOCRConvert is the only mechanism that catches
+// Pitfall 1's silent RetryDelayFunc default fallthrough for ocr: it fails if
+// the `case TypeOCRConvert` arm is ever removed from RetryDelayFunc, since a
+// missing case would produce no compile error, only the wrong (asynq
+// default) backoff schedule silently applied in production.
+func TestRetryDelayFuncRoutesOCRConvert(t *testing.T) {
+	ocrTask := asynq.NewTask(TypeOCRConvert, nil)
+
+	if got, want := RetryDelayFunc(0, nil, ocrTask), 15*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(ocr, 0) = %v, want %v", got, want)
+	}
+	if got, want := RetryDelayFunc(1, nil, ocrTask), 1*time.Minute; got != want {
+		t.Errorf("RetryDelayFunc(ocr, 1) = %v, want %v", got, want)
+	}
+	// Index 5 clamps to the last schedule entry (1m).
+	if got, want := RetryDelayFunc(5, nil, ocrTask), 1*time.Minute; got != want {
+		t.Errorf("RetryDelayFunc(ocr, 5) = %v, want %v", got, want)
+	}
+}
+
+// TestOCRUniqueTTL asserts OCRUniqueTTL derives its result from the
+// corrected worst-case retry lifetime ((maxRetry+1) executions) exactly like
+// AVUniqueTTL, evaluates to exactly 1095s for (2, 300s) -- 3*300s + (15s+60s)
+// + 120s = 1095s -- is monotonic in both arguments, and strictly EXCEEDS the
+// zero-margin worst-case retry lifetime, demonstrating uniqueTTLSafetyMargin
+// is a load-bearing term, not accidentally zero (D-04: reuses the shared
+// margin, never a per-engine one; OCRUniqueTTL is derived FRESH from OCR's
+// own budget, never copied from AV/Audio).
+func TestOCRUniqueTTL(t *testing.T) {
+	maxRetry := 2
+	engineTimeout := 300 * time.Second // matches the provisional OCR_ENGINE_TIMEOUT default
+	backoffSum := 15*time.Second + 1*time.Minute // i=0..1, per ocrRetrySchedule
+
+	want := time.Duration(maxRetry+1)*engineTimeout + backoffSum + uniqueTTLSafetyMargin
+	got := OCRUniqueTTL(maxRetry, engineTimeout)
+	if got != want {
+		t.Errorf("OCRUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
+	}
+	if want != 1095*time.Second {
+		t.Errorf("expected worked example want = 1095s, got %v", want)
+	}
+
+	// Monotonicity: raising either argument must never shrink the TTL.
+	if OCRUniqueTTL(maxRetry+1, engineTimeout) <= OCRUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("OCRUniqueTTL must grow monotonically with maxRetry")
+	}
+	if OCRUniqueTTL(maxRetry, engineTimeout+time.Second) <= OCRUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("OCRUniqueTTL must grow monotonically with engineTimeout")
+	}
+
+	// Fresh-derivation proof (acceptance criterion, D-04/IN-02): OCRUniqueTTL
+	// scales with its own engineTimeout argument rather than being a
+	// hardcoded/copied constant.
+	if OCRUniqueTTL(2, 300*time.Second) == OCRUniqueTTL(2, 600*time.Second) {
+		t.Errorf("OCRUniqueTTL(2, 300s) must differ from OCRUniqueTTL(2, 600s) -- proves it is derived, not constant")
+	}
+
+	// Strictly exceeds the zero-margin worst-case retry lifetime -- proves
+	// uniqueTTLSafetyMargin is load-bearing rather than accidentally zero.
+	worstCaseNoMargin := time.Duration(maxRetry+1)*engineTimeout + ocrBackoffSum(maxRetry)
+	if OCRUniqueTTL(maxRetry, engineTimeout) <= worstCaseNoMargin {
+		t.Errorf("OCRUniqueTTL(%d, %v) = %v must strictly exceed the zero-margin worst-case lifetime %v",
+			maxRetry, engineTimeout, OCRUniqueTTL(maxRetry, engineTimeout), worstCaseNoMargin)
+	}
+}
+
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
@@ -559,6 +668,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 		convert.EngineHTML:     true,
 		convert.EngineAudio:    true,
 		convert.EngineAV:       true,
+		convert.EngineOCR:      true,
 	}
 
 	got := AllConvertQueues()
