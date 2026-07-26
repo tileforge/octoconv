@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Phase 43 context gathered
-last_updated: "2026-07-26T12:07:56.795Z"
+stopped_at: Completed 43-02-PLAN.md
+last_updated: "2026-07-26T12:20:01.373Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 43 (OCR Engine Foundation) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-26
 
@@ -113,6 +113,7 @@ Last activity: 2026-07-26
 | Phase 42 P02 | 45min | 2 tasks | 6 files |
 | Phase 42 P03 | 40min | 3 tasks | 4 files |
 | Phase 43 P01 | 10min | 2 tasks | 2 files |
+| Phase 43 P02 | 20min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -132,6 +133,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - **Language-pack scope stays a short SHA-pinned `tessdata_fast` allowlist matching `OCROpts`, never the full upstream tessdata/tessdata_best set (Phase 45):** bloat directly fights KEDA scale-from-zero cold-start economics (mirrors the audio-worker's baked-model image-size discipline).
 - **Zero new Go dependencies for v1.10:** Tesseract/poppler-utils are CLI subprocesses through the existing hardened `runCommand` harness — no cgo, no Python runtime, no new `go.mod` entries.
 - **Open gaps to resolve during Phase 43 planning/implementation, not left silently unresolved:** (1) the born-digital-PDF detection mechanism (which library call / threshold counts as "meaningful existing text layer" — the fail-closed-reject *decision* is settled, the *implementation* is not); (2) webp→PNG normalization need (Leptonica's webp support is inconsistent across Debian's bundled build per STACK.md); (3) exact Tesseract PSM/OEM/hOCR-ALTO config-file names — verify against the chosen tool's live 5.5.3 CLI output, not training-data assumption.
+- [Phase 43]: ocrBornDigitalCharThreshold=16 non-whitespace chars (D-03 conservative reject-on-any-substantial-text) — verified 0 chars on image-only fixture / 82 on born-digital fixture
+- [Phase 43]: OCR guard caps use zero-value-means-uncapped-this-phase convention — mirrors av.go's plain-param-this-phase pattern; OCR_MAX_PAGES/OCR_MAX_PIXELS env wiring deferred to Phase 45
 
 ### Quick Tasks Completed
 
@@ -202,8 +205,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T12:07:46.658Z
-Stopped at: Phase 43 context gathered
+Last session: 2026-07-26T12:20:01.362Z
+Stopped at: Completed 43-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
