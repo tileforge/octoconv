@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
-status: executing
+status: verifying
 stopped_at: Completed 43-02-PLAN.md
-last_updated: "2026-07-26T12:45:42.032Z"
+last_updated: "2026-07-26T13:05:04.518Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 4
-  completed_plans: 3
-  percent: 0
+  completed_plans: 4
+  percent: 25
 ---
 
 # Project State
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 Phase: 43 (OCR Engine Foundation) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -115,6 +115,7 @@ Last activity: 2026-07-26
 | Phase 43 P01 | 10min | 2 tasks | 2 files |
 | Phase 43 P02 | 20min | 3 tasks | 5 files |
 | Phase 43 P03 | 45min | 3 tasks | 5 files |
+| Phase 43 P04 | 55min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -139,6 +140,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 43]: OCRConverter (Plan 03): webp is passed straight to tesseract with no decode-to-png pre-step -- live-verified against this environment's tesseract 5.5.2 (Leptonica 1.87.0 + libwebp 1.6.0) that a real webp OCRs correctly with zero pre-processing; re-verify against the deployed container's Leptonica build in Phase 45/46
 - [Phase 43]: tesseract's own ALTO configfile writes outputbase.xml, not outputbase.alto -- OCRConverter.Convert renames the produced file to the caller's actual outPath rather than assuming the engine's naming matches the job's target-format extension
 - [Phase 43]: A raw encoding/xml Decoder token walk does NOT enforce 'exactly one root element' (a naive concat of two full XML documents still tokenizes without error) -- the ocrPageMerger round-trip test also asserts exactly one XML declaration and one root element, which is what actually distinguishes a real merge from the naive-concat failure mode (PITFALLS.md Pitfall 5)
+- [Phase ?]: ocrPrepareConversion factored so Convert/ConvertWithProgress share one accept/reject decision (mirrors av.go)
+- [Phase ?]: New per-page pdfinfo parser (parsePdfinfoPerPagePageSize) for the -f N -l N per-page Page-size line shape
+- [Phase ?]: PATH-restriction test technique proves guard-before-render ordering rather than just asserting it
 
 ### Quick Tasks Completed
 
@@ -209,7 +213,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T12:43:22.447Z
+Last session: 2026-07-26T13:03:08.941Z
 Stopped at: Completed 43-02-PLAN.md
 Resume file: None
 

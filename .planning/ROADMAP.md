@@ -150,7 +150,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 
 **Milestone Goal:** Клиент может извлечь машиночитаемый текст из изображений и сканированных PDF через тот же async-контур, что и остальные движки — offline, детерминированно, с онлайн-прогрессом. Шестой engine-класс.
 
-- [ ] **Phase 43: OCR Engine Foundation** - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing
+- [x] **Phase 43: OCR Engine Foundation** - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing (completed 2026-07-26)
 - [ ] **Phase 44: Async Pipeline Wiring** - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery
 - [ ] **Phase 45: Containerization + Measured Timeout Gate** - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant
 - [ ] **Phase 46: KEDA/Helm Chart Integration** - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven
@@ -172,7 +172,7 @@ Plans:
 - [x] 43-01-PLAN.md — OCROpts closed language allowlist (eng/rus/eng+rus) strict-parse + injection defense
 - [x] 43-02-PLAN.md — Guard layer: PDF page-count cap + per-page page-box physical-size cap + image pixel cap + born-digital pdftotext detection (fail-closed pre-render)
 - [x] 43-03-PLAN.md — OCRConverter core: Pairs/Engine/Convert image→txt at PSM 3/OEM 1 + hOCR/ALTO via real XML encoder
-- [ ] 43-04-PLAN.md — Streaming per-page PDF path (pdftoppm→tesseract→delete) + page-granular ConvertWithProgress
+- [x] 43-04-PLAN.md — Streaming per-page PDF path (pdftoppm→tesseract→delete) + page-granular ConvertWithProgress
 
 ### Phase 44: Async Pipeline Wiring
 **Goal**: OCR jobs (image/PDF → txt/hOCR) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the completely unmodified v1.9 progress/SSE/webhook machinery.
@@ -254,7 +254,7 @@ Plans:
 | 40. Job Listing | v1.9 | 2/2 | Complete   | 2026-07-25 |
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
-| 43. OCR Engine Foundation | v1.10 | 3/4 | In Progress|  |
+| 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 44. Async Pipeline Wiring | v1.10 | 0/TBD | Not started | - |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 0/TBD | Not started | - |
 | 46. KEDA/Helm Chart Integration | v1.10 | 0/TBD | Not started | - |
