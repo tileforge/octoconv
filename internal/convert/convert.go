@@ -22,6 +22,7 @@ const (
 	EngineHTML     = "html"
 	EngineAudio    = "audio"
 	EngineAV       = "av"
+	EngineOCR      = "ocr"
 )
 
 // Pair is an ordered (source, target) format pair, e.g. {"png", "webp"}.
