@@ -620,7 +620,7 @@ func TestRetryDelayFuncRoutesOCRConvert(t *testing.T) {
 // own budget, never copied from AV/Audio).
 func TestOCRUniqueTTL(t *testing.T) {
 	maxRetry := 2
-	engineTimeout := 300 * time.Second // matches the provisional OCR_ENGINE_TIMEOUT default
+	engineTimeout := 300 * time.Second           // matches the provisional OCR_ENGINE_TIMEOUT default
 	backoffSum := 15*time.Second + 1*time.Minute // i=0..1, per ocrRetrySchedule
 
 	want := time.Duration(maxRetry+1)*engineTimeout + backoffSum + uniqueTTLSafetyMargin
