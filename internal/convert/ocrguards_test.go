@@ -3,6 +3,7 @@ package convert
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -155,5 +156,58 @@ func TestOCRPDFPageSize_RealBinary(t *testing.T) {
 	}
 	if w != 300 || h != 200 {
 		t.Fatalf("got (%.0f,%.0f), want (300,200)", w, h)
+	}
+}
+
+func TestEnforceImagePixelBound_WithinBoundPasses(t *testing.T) {
+	// text_sample.png is 400x120 = 48,000 declared pixels (identify-verified
+	// at fixture-creation time).
+	path := filepath.Join("testdata", "ocr", "text_sample.png")
+	if err := enforceImagePixelBound(path, 1_000_000); err != nil {
+		t.Fatalf("enforceImagePixelBound within bound: got %v, want nil", err)
+	}
+}
+
+func TestEnforceImagePixelBound_ExceedsBoundRejects(t *testing.T) {
+	path := filepath.Join("testdata", "ocr", "text_sample.png")
+	if err := enforceImagePixelBound(path, 100); !errors.Is(err, ErrOCRImageTooLarge) {
+		t.Fatalf("enforceImagePixelBound over tiny bound: got %v, want ErrOCRImageTooLarge", err)
+	}
+}
+
+func TestEnforceImagePixelBound_UnknownDimensionsFailsClosed(t *testing.T) {
+	// A .png extension whose bytes are not a valid PNG must fail closed via
+	// ErrDimensionsUnknown -- never a silent accept.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bogus.png")
+	if err := os.WriteFile(path, []byte("not a real png"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	err := enforceImagePixelBound(path, 1_000_000)
+	if !errors.Is(err, ErrDimensionsUnknown) {
+		t.Fatalf("enforceImagePixelBound on malformed png: got %v, want wrapped ErrDimensionsUnknown", err)
+	}
+}
+
+func TestEnforceImagePixelBound_ZeroMaxPixelsUncapped(t *testing.T) {
+	// maxPixels == 0 documents "no cap this phase" -- mirrors
+	// enforceMaxPages/enforcePageBoxBound's zero-value convention.
+	path := filepath.Join("testdata", "ocr", "text_sample.png")
+	if err := enforceImagePixelBound(path, 0); err != nil {
+		t.Fatalf("enforceImagePixelBound(_,0) = %v, want nil (zero maxPixels = uncapped this phase)", err)
+	}
+}
+
+func TestEnforceImagePixelBound_NonImageFormatSkipsCheck(t *testing.T) {
+	// A format with no registered dimension parser (e.g. a document format)
+	// has no pixel-dimension concept and must not be rejected by this guard
+	// at all -- mirrors HasDimensionLimit's own document-format scope guard.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "whatever.docx")
+	if err := os.WriteFile(path, []byte("not a real docx"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := enforceImagePixelBound(path, 1); err != nil {
+		t.Fatalf("enforceImagePixelBound on non-image format: got %v, want nil (no dimension concept)", err)
 	}
 }
