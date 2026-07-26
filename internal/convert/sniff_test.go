@@ -3,6 +3,7 @@ package convert
 import (
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,80 @@ func TestSniffHEIC_ForeignBrandNotDetected(t *testing.T) {
 	}
 }
 
+// TestSniffPDF pins OCRP-01/D-01 (44-CONTEXT.md): a %PDF- prefixed stream is
+// detected as "pdf" via the closed signatures table, and false-positive
+// candidates (a jpg/png prefix) are not misdetected as pdf.
+func TestSniffPDF(t *testing.T) {
+	data := []byte("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n")
+	detected, _, err := Sniff(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Sniff error: %v", err)
+	}
+	if detected != "pdf" {
+		t.Fatalf("detected = %q, want pdf", detected)
+	}
+}
+
+// TestSniffPDF_LeadingWhitespaceTolerated proves matchPDF tolerates a small
+// number of leading whitespace bytes ahead of the %PDF- magic (some writers
+// prepend a handful of bytes before it).
+func TestSniffPDF_LeadingWhitespaceTolerated(t *testing.T) {
+	data := append([]byte("\r\n"), []byte("%PDF-1.7")...)
+	detected, _, err := Sniff(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Sniff error: %v", err)
+	}
+	if detected != "pdf" {
+		t.Fatalf("detected = %q, want pdf (leading whitespace must be tolerated)", detected)
+	}
+}
+
+// TestSniffPDF_NotMisdetectedForImagePrefixes proves the new pdf signature
+// entry does not false-positive on the existing jpg/png magic bytes.
+func TestSniffPDF_NotMisdetectedForImagePrefixes(t *testing.T) {
+	cases := map[string][]byte{
+		"jpg": jpegBytesFixtureForSniffTest(),
+		"png": {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D},
+	}
+	for name, data := range cases {
+		detected, _, err := Sniff(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: Sniff error: %v", name, err)
+		}
+		if detected == "pdf" {
+			t.Fatalf("%s: detected = pdf, want anything but pdf for a %s prefix", name, name)
+		}
+	}
+}
+
+// jpegBytesFixtureForSniffTest is a local, package-internal JPEG prefix
+// fixture (this package cannot import internal/api's own jpegBytesFixture).
+func jpegBytesFixtureForSniffTest() []byte {
+	return []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01}
+}
+
+// TestSniffPDF_PreservesFullStream mirrors TestSniffPreservesFullStream for
+// the pdf signature (D-07: Sniff never truncates the intact upload stream).
+func TestSniffPDF_PreservesFullStream(t *testing.T) {
+	data := []byte("%PDF-1.4\n" + strings.Repeat("x", 50))
+
+	detected, rest, err := Sniff(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Sniff error: %v", err)
+	}
+	if detected != "pdf" {
+		t.Fatalf("detected = %q, want pdf", detected)
+	}
+
+	got, err := io.ReadAll(rest)
+	if err != nil {
+		t.Fatalf("ReadAll(rest) error: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("rest stream = %q, want full original bytes %q", got, data)
+	}
+}
+
 func TestSniffUnrecognized(t *testing.T) {
 	detected, _, err := Sniff(bytes.NewReader([]byte("notanimage")))
 	if err != nil {
@@ -164,6 +239,8 @@ func TestMIMEType(t *testing.T) {
 		"ods":     "application/vnd.oasis.opendocument.spreadsheet",
 		"odp":     "application/vnd.oasis.opendocument.presentation",
 		"html":    "text/html",
+		"hocr":    "text/html",
+		"alto":    "application/xml",
 		"unknown": "application/octet-stream",
 	}
 	for format, want := range cases {

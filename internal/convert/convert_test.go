@@ -78,6 +78,32 @@ func TestRegistryEngineFor(t *testing.T) {
 	}
 }
 
+// TestRegistryEngineForOCRRouting pins OCRP-01/D-01 (44-CONTEXT.md): once
+// OCRConverter{} is registered (converters.go init()), EngineFor disambiguates
+// purely by TARGET with zero new routing code -- jpg->txt and pdf->txt route
+// to "ocr" while jpg->png (the pre-existing image pair) still routes to
+// "image". This is the single acceptance test proving the target-based
+// disambiguation the whole phase's routing design rests on.
+func TestRegistryEngineForOCRRouting(t *testing.T) {
+	if engine, ok := Default.EngineFor("jpg", "txt"); !ok || engine != EngineOCR {
+		t.Errorf("EngineFor(jpg, txt) = (%q, %v), want (%q, true)", engine, ok, EngineOCR)
+	}
+	if engine, ok := Default.EngineFor("pdf", "txt"); !ok || engine != EngineOCR {
+		t.Errorf("EngineFor(pdf, txt) = (%q, %v), want (%q, true)", engine, ok, EngineOCR)
+	}
+	if engine, ok := Default.EngineFor("jpg", "png"); !ok || engine != EngineImage {
+		t.Errorf("EngineFor(jpg, png) = (%q, %v), want (%q, true) -- image engine must still win its own target", engine, ok, EngineImage)
+	}
+	// hocr/alto targets also route to ocr for every advertised OCR source.
+	for _, from := range []string{"jpg", "png", "tiff", "webp", "pdf"} {
+		for _, to := range []string{"txt", "hocr", "alto"} {
+			if engine, ok := Default.EngineFor(from, to); !ok || engine != EngineOCR {
+				t.Errorf("EngineFor(%s, %s) = (%q, %v), want (%q, true)", from, to, engine, ok, EngineOCR)
+			}
+		}
+	}
+}
+
 // TestRegistryClasses verifies D-06: Classes() groups every registered pair
 // under its engine class, a known libvips pair (png->webp) surfaces under
 // "image", and repeated calls return a stable (deterministically sorted)

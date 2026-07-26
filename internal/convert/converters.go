@@ -25,4 +25,19 @@ func init() {
 	// AV_MAX_DURATION_SECONDS) before it starts consuming tasks, using this
 	// same documented last-write-wins semantics (Phase 36/D-09).
 	Default.Register(AVConverter{})
+	// Registered last (OCRP-01, Phase 44, D-01): OCRConverter's SOURCE set
+	// ({jpg,png,tiff,webp,pdf}) is disjoint from every other converter's own
+	// source set (LibvipsConverter's images convert to OTHER images, never
+	// to txt/hocr/alto; AudioConverter's/AVConverter's sources are audio/
+	// video containers, never jpg/png/tiff/webp/pdf) -- so no (from, to) Pair
+	// key registered here can collide with an existing one, even though the
+	// "txt" target string is shared with AudioConverter. The sole guard is
+	// TestOCRPairsDisjointFromOtherEngines (pairs_disjoint_test.go, mirrors
+	// the AV/Audio disjointness test above) -- there is no runtime check.
+	// This zero-value registration is a placeholder ceiling
+	// (MaxImagePixels/MaxPages, mirrors AVConverter's own zero-value
+	// contract above): a future cmd/ocr-worker/main.go (Plan 02/03) may
+	// re-register a CONFIGURED OCRConverter before it starts consuming
+	// tasks, using this same documented last-write-wins semantics.
+	Default.Register(OCRConverter{})
 }

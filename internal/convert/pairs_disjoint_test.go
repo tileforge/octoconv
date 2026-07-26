@@ -65,3 +65,58 @@ func TestAVAudioPairDisjointness(t *testing.T) {
 			len(union), want, len(avPairs), len(audioPairs))
 	}
 }
+
+// TestOCRPairsDisjointFromOtherEngines proves OCRConverter.Pairs() (ocr.go)
+// shares no (from, to) pair with LibvipsConverter, AudioConverter, or
+// AVConverter -- mirroring TestAVAudioPairDisjointness's rationale (OCRP-01,
+// Phase 44, D-01). Registry.Register is still the same bare, uncollision-
+// checked map assignment; this is the only guard against OCRConverter's
+// converters.go init() registration silently stealing or losing a pair.
+//
+// Why disjointness holds by construction: OCRConverter's SOURCE formats are
+// {jpg,png,tiff,webp,pdf} (ocr.go) with TARGET formats always {txt,hocr,
+// alto}. LibvipsConverter's pairs are image->image (never txt/hocr/alto
+// targets); AudioConverter's/AVConverter's SOURCE formats are audio/video
+// containers, never jpg/png/tiff/webp/pdf -- so even though OCRConverter and
+// AudioConverter both target "txt", no (from, to) key can collide because
+// their FROM sets never intersect.
+func TestOCRPairsDisjointFromOtherEngines(t *testing.T) {
+	norm := func(p Pair) Pair {
+		return Pair{From: NormalizeFormat(p.From), To: NormalizeFormat(p.To)}
+	}
+	normAll := func(pairs []Pair) []Pair {
+		out := make([]Pair, 0, len(pairs))
+		for _, p := range pairs {
+			out = append(out, norm(p))
+		}
+		return out
+	}
+
+	ocrPairs := normAll((OCRConverter{}).Pairs())
+	others := map[string][]Pair{
+		"LibvipsConverter": normAll((LibvipsConverter{}).Pairs()),
+		"AudioConverter":   normAll((AudioConverter{}).Pairs()),
+		"AVConverter":      normAll((AVConverter{}).Pairs()),
+	}
+
+	for name, otherPairs := range others {
+		for _, p := range ocrPairs {
+			for _, q := range otherPairs {
+				if p == q {
+					t.Fatalf("normalized pair %+v registered by both OCRConverter and %s, want disjoint", p, name)
+				}
+			}
+		}
+		union := make(map[Pair]bool, len(ocrPairs)+len(otherPairs))
+		for _, p := range ocrPairs {
+			union[p] = true
+		}
+		for _, p := range otherPairs {
+			union[p] = true
+		}
+		if want := len(ocrPairs) + len(otherPairs); len(union) != want {
+			t.Fatalf("len(union of OCRConverter.Pairs() and %s.Pairs()) = %d, want %d -- a collision was masked by set semantics",
+				name, len(union), want)
+		}
+	}
+}

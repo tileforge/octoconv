@@ -55,6 +55,7 @@ var signatures = []signature{
 	{"mp4", matchMP4},
 	{"mov", matchMOV},
 	{"avi", matchAVI},
+	{"pdf", matchPDF},
 }
 
 func matchPNG(b []byte) bool {
@@ -82,6 +83,38 @@ func matchHEIC(b []byte) bool {
 		return false
 	}
 	return heicBrands[string(b[8:12])]
+}
+
+// pdfLeadingWhitespaceTolerance caps how many leading bytes matchPDF will
+// skip before requiring the %PDF- magic (OCRP-01/D-01, 44-CONTEXT.md). The
+// PDF spec (ISO 32000) only guarantees "%PDF-" appears near the start of the
+// file -- some writers prepend a handful of whitespace/BOM-like bytes ahead
+// of it -- but this is deliberately a SMALL, fixed tolerance (not the
+// spec-permitted full 1024-byte scan window): sniffLen itself is only 12
+// bytes, and a generous skip window would risk false-positiving arbitrary
+// binary content that merely happens to contain "%PDF-" a few bytes in.
+const pdfLeadingWhitespaceTolerance = 3
+
+// matchPDF detects the PDF magic bytes "%PDF-" at offset 0, tolerating up to
+// pdfLeadingWhitespaceTolerance leading whitespace bytes (space/tab/CR/LF/
+// vtab/formfeed) ahead of it. PDF is the only genuinely new input content
+// type this phase adds -- images are already sniffed by the matchers above.
+func matchPDF(b []byte) bool {
+	sig := []byte("%PDF-")
+	i := 0
+	for i < len(b) && i < pdfLeadingWhitespaceTolerance && isPDFLeadingWhitespace(b[i]) {
+		i++
+	}
+	return len(b) >= i+len(sig) && bytes.Equal(b[i:i+len(sig)], sig)
+}
+
+func isPDFLeadingWhitespace(c byte) bool {
+	switch c {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	default:
+		return false
+	}
 }
 
 // Sniff peeks at up to sniffLen bytes of r to identify the actual content
@@ -115,9 +148,11 @@ func Sniff(r io.Reader) (detected string, rest io.Reader, err error) {
 // home for format->MIME mapping shared by internal/api (stored Content-Type,
 // D-06) and internal/worker (output Content-Type). Covers image formats
 // (libvips), document formats + their pdf conversion target (LibreOffice),
-// html + its pdf conversion target (chromium), and the audio engine's four
+// html + its pdf conversion target (chromium), the audio engine's four
 // input formats plus its four transcription output targets (whisper,
-// AUD-02) -- so every job type is served with the same Content-Type
+// AUD-02), and the OCR engine's hocr/alto extraction targets (tesseract,
+// OCRP-01 -- txt is already covered by the audio branch's shared "text/
+// plain") -- so every job type is served with the same Content-Type
 // correctness guarantee.
 func MIMEType(format string) string {
 	switch NormalizeFormat(format) {
@@ -157,6 +192,14 @@ func MIMEType(format string) string {
 		return "audio/ogg"
 	case "txt":
 		return "text/plain"
+	case "hocr":
+		// hOCR is an HTML microformat (OCRP-01/D-01, 44-CONTEXT.md) -- stored
+		// and served as text/html, not a distinct hocr-specific MIME type.
+		return "text/html"
+	case "alto":
+		// ALTO is an XML schema (OCRP-01/D-01) -- stored and served as
+		// application/xml.
+		return "application/xml"
 	case "srt":
 		return "application/x-subrip"
 	case "vtt":
