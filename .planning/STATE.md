@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: planning
-last_updated: "2026-07-26T10:50:55.620Z"
+last_updated: "2026-07-26T12:00:00.000Z"
 last_activity: 2026-07-26
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 42 — Live Push
+**Current focus:** v1.10 OCR Engine — Phase 43: OCR Engine Foundation
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 43 (OCR Engine Foundation) — Not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-07-26 — Milestone v1.10 started
+Status: Roadmap created (Phases 43-46), awaiting `/gsd:plan-phase 43`
+Last activity: 2026-07-26 — Roadmap created for v1.10, requirements traceability updated (12/12 mapped)
 
 ## Performance Metrics
 
@@ -81,6 +81,10 @@ Last activity: 2026-07-26 — Milestone v1.10 started
 | 40 | TBD | - | - |
 | 41 | TBD | - | - |
 | 42 | TBD | - | - |
+| 43 | TBD | - | - |
+| 44 | TBD | - | - |
+| 45 | TBD | - | - |
+| 46 | TBD | - | - |
 
 **Recent Trend:**
 
@@ -112,39 +116,20 @@ Last activity: 2026-07-26 — Milestone v1.10 started
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions surfaced by research, to be recorded as Key Decisions before/at implementation:
+Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions surfaced by research, to be recorded as Key Decisions before/at implementation:
 
-- **Progress writes bypass the guarded-transition lock by design (Phase 41):** `Repo.UpdateProgress` is a non-locking `UPDATE ... WHERE status='active'` with no `job_events` row — progress is high-frequency telemetry, not a state change; routing it through `transition()` would serialize it against real status changes and bloat the append-only audit log for zero benefit. Do not "simplify" this later by merging it into `transition()`.
-- **ffmpeg progress reporting is an optional `ProgressReporter` capability, not a widened `Converter` contract (Phase 41):** only `AVConverter`/`AudioConverter`'s ffmpeg-normalize stage implement it; libvips/LibreOffice/Chromium/whisper-cli's transcribe stage are untouched. `exec.runCommandWithProgress` is additive (fd-3 via `cmd.ExtraFiles`, parent write-end closed immediately after `Start()`), never a replacement for `runCommand`.
-- **Cancellation correctness lives entirely in Postgres, not asynq (Phase 39):** `Inspector.CancelProcessing` is a best-effort speed optimization only; the guarded `{queued,active}→canceled` transition allow-list is the authoritative backstop against the confirmed, unfixed asynq#987 retry-on-cancel race in the pinned v0.26.0. Do not rely on the handler's own `context.Canceled` check to stop retries.
-- **`internal/cancel` package (Phase 39) is new shared infrastructure:** in-memory `map[uuid.UUID]context.CancelFunc` registry + Redis pub/sub (`job:cancel`), imported by both `api` and every worker binary — purely a low-latency signal delivery mechanism, never the source of truth for whether a job is actually canceled.
-- **`GET /v1/jobs` pagination must be keyset, not offset (Phase 40):** offset pagination drifts under this table's continuous-insert load; keyset on `(created_at, id)` is a hard requirement, not a style preference.
-- **ffmpeg `out_time_ms` is microseconds, not milliseconds (Phase 41):** a well-known unfixed ffmpeg naming wart — must be verified against a real fixture captured from the pinned n8.1.2 binary before trusting the parser, not assumed from docs.
-- **Progress-pipe-to-exec wiring is its own live-gated verification track, separate from parsing logic (Phase 41, PROG-05):** a careless pipe-reader goroutine can leak forever if the parent's write-end fd copy isn't explicitly closed after `cmd.Start()`. Requires a live SIGKILL-mid-stream test asserting zero orphaned processes AND zero leaked goroutines — `go test -race` is insufficient (mirrors the Phase 9 zombie-reaping precedent).
-- **Webhook `progress` event is opt-in and best-effort single-attempt, never the durable retry/dead-letter contract (Phase 42, PUSH-02):** a stale progress delivery isn't worth chasing and would compete for retry budget with the terminal `done`/`failed` event.
-- **Zero new Go dependencies for v1.9:** SSE via stdlib `http.Flusher`; ffmpeg progress parsing via stdlib `os.Pipe`+`bufio.Scanner`; cancellation via already-pinned `asynq` v0.26.0 (`Inspector.CancelProcessing`/`TaskID`); pagination via plain parameterized `pgx` SQL.
-- [Phase 38]: 0007_job_progress.sql adds progress_pct/eta_seconds/source_duration_seconds/progress_updated_at to jobs, nullable no-default with fail-closed CHECKs — Foundational additive schema unblocking Phase 40 read (progress_pct) and Phase 41 writes; verified on fresh and populated Postgres with zero application behavior change
-- [Phase 39]: Cancel reuses transition() exactly like MarkDone/MarkFailed (no new transition machinery, D-01)
-- [Phase 39]: Terminal-race classification is by re-read + isTerminalStatus, never by string-matching the illegal-transition error text
-- [Phase 39]: CancelPublisher is wired via a post-construction setter (SetCancelPublisher), not a NewServer parameter
-- [Phase 39]: Reused existing go-redis client (already direct dep via asynq) for job:cancel pub/sub — zero new Go dependency
-- [Phase 39]: Registry.Cancel releases the mutex before invoking the stored CancelFunc to avoid any reentrancy deadlock risk
-- [Phase 39]: isCanceled checked as first branch in every Handle*Convert (D-07), independent of engine-scoped terminal classifiers
-- [Phase 40]: Repo.List: client_id=$1 unconditional in SQL WHERE; opaque base64(RFC3339Nano|uuid) cursor; jobs_client_created_idx reused, no new index
-- [Phase 40]: handleListJobs scopes exclusively to auth.ClientFromContext's client.ID -- never a client-supplied id -- passed as the sole clientID to Repo.List
-- [Phase 41]: Plan 01: -progress fixture captured via -progress <file> (not pipe:N) -- the pinned av-worker docker image's ffmpeg has no pipe protocol registered ('Protocol not found'); block content is transport-agnostic, but Plan 02's streaming exec must pick a different transport than pipe:3
-- [Phase 41]: Plan 01: progressEMAAlpha=0.3 / progressWarmupSamples=3 shipped as plain package constants, not env vars (Open Question 2 resolved) -- only Plan 03's throttle gates get env-tunable ceremony
-- [Phase 41]: Progress FIFO transport uses a named FIFO + file: protocol (not fd-3/pipe:3) per 41-02-PLAN.md transport_correction
-- [Phase 41]: FIFO reader retries on both EOF and EAGAIN (not just EOF), gated by an explicit stop channel -- fixed a real hang discovered during TDD
-- [Phase 41]: Progress writes bypass transition() entirely (D-03b): non-locking, monotonic UPDATE with self-conditioning WHERE status='active' guard, never SELECT...FOR UPDATE, never job_events
-- [Phase 41]: Terminal 100% write bypasses the throttle from the seam function strictly before MarkDone (D-03a); freeze-on-abort (D-06) is simply that call never executing on the error branch, proven with a spy-repo unit test
-- [Phase 41]: progressSink depends on a narrow progressRepo interface (not concrete *jobs.Repo) so throttle/bypass/freeze logic is unit-testable with a spy, without a live Postgres pool
-- [Phase 42]: PUSH-01 SSE: single-request-goroutine poll loop (no go func() in handleJobEvents) makes zero-goroutine-leak-on-disconnect/terminal/cap true by construction; http.NewResponseController(w).Flush() survives chi's middleware.Logger wrap
-- [Phase 42]: PROGRESS_WEBHOOK_TIMEOUT default 1500ms, shorter than PROGRESS_MIN_INTERVAL_SECONDS's 2s, so at most one detached progress-webhook fire is in flight per job
-- [Phase 42]: Terminal 100% progress write stays a direct repo call bypassing the sink and fires no progress webhook (A2) -- the terminal completed webhook already covers job completion
-- [Phase 42]: cmd/av-worker reuses the existing WEBHOOK_SIGNING_SECRET verbatim (no new secret/rotation) and fails open (progress webhooks silently disabled) when unset
-- [Phase 42]: sse-liveproof.sh (42-04) classifies SSE frames by JSON body shape, not event name -- emitTerminal reuses the literal 'event: progress' name for its one terminal frame, so terminal-vs-progress classification checks for the absence of the progress_pct key, not a distinct event name
-- [Phase 42]: sse-liveproof.sh's heartbeat proof relies on sizing the forced re-encode's declared source duration (worst-cell hevc@1080 p95_RTF=4.179133s) so real transcode time comfortably exceeds several SSE_HEARTBEAT_INTERVAL (15s default) ticks, rather than requiring a docker-compose.yml env override outside this task's scope
+- **Reconciled preprocessing floor (binding for Phase 43):** ship fixed ~300 DPI rasterization (computed from the PDF page box, never a source PDF's declared/odd DPI) + Tesseract's own internal Leptonica-based binarization as the day-one preprocessing floor. Deskew/denoise (`unpaper`, an explicit `pixDeskew` pass) are NOT added blindly — evidence-gated only if measured accuracy on real representative scans shows a meaningful loss. Do not silently add or silently skip this follow-up.
+- **Streaming page-by-page rasterize is architectural, not a later hardening patch (Phase 43):** `pdfinfo` reads the declared page count and rejects over `OCR_MAX_PAGES` BEFORE any `pdftoppm` invocation; the loop renders/OCRs/deletes exactly one page at a time. Never `pdftoppm in.pdf outbase` with no `-f`/`-l` bounds — that is the OCR-specific decompression-bomb class (distinct axis from `MAX_IMAGE_PIXELS`/AVE-05: page-count × per-page pixels).
+- **Empty-but-valid OCR output is a successful `done` result, never a failure (Phase 43/44):** a blank/text-free page or image produces empty txt and must complete `done`, not `failed` — mirrors the whisper hallucination-on-silence precedent of documenting an accepted OCR-quality-spectrum gap rather than silently mishandling it. Do NOT add an `if output == "" { return error }` branch anywhere in the OCR path.
+- **Born-digital PDF: fail-closed reject (option 1), not detect-and-skip (option 2) in v1 (Phase 43):** a PDF with an existing extractable text layer gets a 422, not silent re-OCR or a per-page skip-text branch. Detect-and-passthrough is explicitly OCR-V2-01, deferred behind its own opts/output-format design.
+- **hOCR/ALTO assembly must use a real XML/HTML encoder, never string concatenation (Phase 43):** OCR'd text is untrusted/unpredictable content; a round-trip test (text containing `&`/`<`/`>` producing valid parseable XML) is required before this phase can be considered done.
+- **OCR is wired as a 6th hardcoded engine class exactly like image/document/html/audio/av — SEED-010's dynamic registry stays dormant (all phases):** compile-time `Registry.Register` in `converters.go`, hardcoded `EngineOCR` constant, one CHECK-constraint migration (`0009_ocr_engine.sql`). Do not use this milestone as an excuse to generalize `converters.go`'s `init()`.
+- **`progress.go`'s shared types (`ProgressUpdate`/`ProgressSink`/`ProgressConverter`) get zero edits (Phase 43/44):** OCR's page-granular progress is driven by its own small `ocrprogress.go` page-EMA estimator calling the same `sink.Update(...)` contract every other engine uses — never a branch inside the ffmpeg-specific `progressBlockParser`/`buildProgressTick`.
+- **Both new untrusted processes (rasterizer + tesseract) go through the existing hardened `runCommand` from line one (Phase 44):** tesseract/leptonica have a documented CVE history (maintainer issue "Leptonica has no regard for security") — never a bare `exec.Command` "just a CLI wrapper" shortcut, even temporarily.
+- **`OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` must be measured by a dedicated `scripts/ocr-timing-measure.sh` (seconds-per-page, not an RTF ratio) — never copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT` (Phase 45):** the project's own Key Decisions precedent calls this exact shortcut out as a recurring risk for new engine classes; a copied placeholder must never reach shipped config.
+- **Language-pack scope stays a short SHA-pinned `tessdata_fast` allowlist matching `OCROpts`, never the full upstream tessdata/tessdata_best set (Phase 45):** bloat directly fights KEDA scale-from-zero cold-start economics (mirrors the audio-worker's baked-model image-size discipline).
+- **Zero new Go dependencies for v1.10:** Tesseract/poppler-utils are CLI subprocesses through the existing hardened `runCommand` harness — no cgo, no Python runtime, no new `go.mod` entries.
+- **Open gaps to resolve during Phase 43 planning/implementation, not left silently unresolved:** (1) the born-digital-PDF detection mechanism (which library call / threshold counts as "meaningful existing text layer" — the fail-closed-reject *decision* is settled, the *implementation* is not); (2) webp→PNG normalization need (Leptonica's webp support is inconsistent across Debian's bundled build per STACK.md); (3) exact Tesseract PSM/OEM/hOCR-ALTO config-file names — verify against the chosen tool's live 5.5.3 CLI output, not training-data assumption.
 
 ### Quick Tasks Completed
 
@@ -156,22 +141,19 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.9-specific decisions 
 
 ### Pending Todos
 
-- Plan Phase 38 (Schema Foundation): additive nullable migration `0007_job_progress.sql` (`progress_pct`, `eta_seconds`, `progress_updated_at`, `source_duration_seconds`). Zero-risk, no research needed per SUMMARY.md — cheap, mechanical opener that unblocks Phase 40 (denormalized read) and Phase 41 (progress/ETA writes).
+- Plan Phase 43 (OCR Engine Foundation): standalone `OCRConverter` (Tesseract eval-gate, page-count guard + streaming rasterize, `OCROpts` closed language allowlist, hOCR/ALTO XML encoder). Highest-research-value phase per PITFALLS.md — every architectural decision (memory-bomb guard, born-digital detect, PSM/OEM pin, XML escaping) must be baked in from line one, not retrofitted.
 
 ### Blockers/Concerns
 
 None currently blocking the overall roadmap. Sequencing carried into the roadmap:
 
-- Hard-ordered spine: 38 (schema, independent, first) → 39 (cancellation, validates the new `internal/cancel` Redis pub/sub pattern) → 40 (job listing, parallelizable with 39 in principle, but reads Phase 38's denormalized column) → 41 (progress core, riskiest, sequenced after 39 so the Redis cancel-signal pattern is proven) → 42 (live push, pure consumer of Phase 41's data).
-- Phase 41 must be split into two verification tracks per research: (a) ffmpeg `-progress` parsing logic vs a REAL captured n8.1.2 fixture (normal / unknown-duration / non-monotonic / >100% cases), and (b) the progress-pipe-to-exec wiring as its OWN live-gated plan with a SIGKILL-mid-stream test — do not conflate the two.
-- Phase 39's cancellation races span three existing subsystems simultaneously (guarded transitions, reconciler stale-sweep, asynq retry classification) — solve with mechanisms that already exist (transition allow-list, the "already active/done/canceled" `SkipRetry` idiom), not new ad-hoc code.
-- Phase 40's `GET /v1/jobs` needs a dedicated cross-client leak test (two real API keys), not inferred from the existing single-job 404 test — offset-drift, N+1, and SQL-layer `client_id` enforcement are all named pitfalls.
-- Re-check asynq `Inspector.CancelProcessing` behavior vs the open asynq#987 issue at the version actually pinned at Phase 39 implementation time (still v0.26.0 as of roadmapping; no upgrade expected to fix it).
-- Live-verify SSE behavior against the real reverse-proxy/ingress topology in Phase 42, not just localhost — proxy buffering is a named pitfall for long-lived streaming responses.
+- Hard-ordered spine: 43 (foundation, standalone/unregistered — nothing to register without a working converter) → 44 (async wiring — can't measure a real timeout without the full pipeline producing real outcomes to time) → 45 (containerization + measured timeout gate — KEDA's shutdown timing derives from the measured timeout) → 46 (KEDA/Helm, depends on Phase 45's measured numbers). Identical 4-phase shape to v1.7 (audio, 30-33) and v1.8 (av, 34-37) — proven twice already.
+- Phase 43 is the highest-risk phase: PITFALLS.md flags 5 of 9 critical pitfalls (memory bomb, silent accuracy collapse, wrong PSM/OEM, hOCR/ALTO XML escaping, born-digital PDF mishandling) as "must be architectural from line one" — all must land in this phase's converter core loop, not be spread across later phases.
+- The engine-choice eval-gate (Tesseract vs PaddleOCR) is NOT yet run — Tesseract is the converged strong default across all research tracks, but per project process it must be validated against real scanned-document fixtures during Phase 43 before being treated as final.
+- Born-digital PDF detection MECHANISM is an open gap (the fail-closed-reject DECISION is settled) — resolve the concrete implementation (pdfinfo/pdffonts-style check, threshold) during Phase 43 planning, not left implicit.
+- Phase 45's seconds-per-page measurement methodology is a new metric shape (not a straight RTF-ratio clone from audio/av) — the corpus composition (page counts, languages, quality tiers) needs its own definition during Phase 45 planning.
+- Zero new Go dependencies for this milestone — Tesseract/poppler-utils are CLI subprocesses through the existing hardened `runCommand` harness, same shape as every prior engine.
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
-- Phase 39 Plan 04 Task 3 (checkpoint:human-verify, gate=blocking): scripts/cancel-liveproof.sh authored and its PID-capture logic live-verified in isolation, but the script has NOT been run end-to-end against a live docker-compose stack. CNCL-03 stays Pending until an operator runs it and confirms the PASS summary (see 39-04-SUMMARY.md Operator Runbook).
-- Phase 41 Plan 04 Task 2 (checkpoint:human-verify, gate=blocking): scripts/av-progress-liveproof.sh authored, `bash -n`/shellcheck clean, executable — but NOT yet run end-to-end against a live docker-compose stack. PROG-05 stays Pending until an operator runs it and confirms the PASS summary (see 41-04-SUMMARY.md Operator Runbook).
-- Phase 42 Plan 04 Task 2 (checkpoint:human-verify, gate=blocking): scripts/sse-liveproof.sh authored, bash -n/shellcheck clean, executable -- but NOT yet run end-to-end against a live docker-compose stack. PUSH-01 stays Pending until an operator runs it and confirms the PASS summary (see 42-04-SUMMARY.md Operator Runbook).
 
 ## Deferred Items
 
@@ -218,10 +200,11 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-25T17:59:04.238Z
-Stopped at: Completed 42-04-PLAN.md Task 1 (scripts/sse-liveproof.sh authored); Task 2 operator live-run checkpoint pending
+Last session: 2026-07-26T12:00:00.000Z
+Stopped at: Roadmap created for v1.10 OCR Engine (Phases 43-46, 12/12 requirements mapped, no orphans). ROADMAP.md/REQUIREMENTS.md/STATE.md written.
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Review the v1.10 roadmap draft (.planning/ROADMAP.md, Phase Details section) and approve or request revisions.
+- Once approved, run `/gsd:plan-phase 43` to plan the OCR Engine Foundation phase.

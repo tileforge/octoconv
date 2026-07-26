@@ -68,9 +68,9 @@
 
 **Coverage:**
 - v1 requirements: 12 total
-- Mapped to phases: 12 (43-46, provisional — roadmapper finalizes)
+- Mapped to phases: 12 (Phases 43-46)
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-07-26*
-*Last updated: 2026-07-26 after v1.10 OCR research*
+*Last updated: 2026-07-26 after v1.10 roadmap creation — traceability finalized (Phases 43-46, 12/12 mapped, no orphans)*
