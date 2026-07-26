@@ -118,12 +118,12 @@ services:
       # IN-02 (Phase 45): same requirement, ocr engine -- ocrUniqueTTL is
       # derived from these unconditionally in every queue.NewClient()-
       # constructing process; must be byte-identical across all 9 services
-      # (45-02-SUMMARY.md). OCR_ENGINE_TIMEOUT is a PLACEHOLDER -- the real
-      # MEASURED value is derived by Plan 03's supervised
-      # scripts/ocr-timing-measure.sh run, NOT copied from AV/AUDIO
+      # (45-02-SUMMARY.md). OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md):
+      # worst cell dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s,
+      # 17.3% under the 900s reconciler CAP -- NOT copied from AV/AUDIO
       # (PITFALLS.md Pitfall 7).
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see comment above; finalized by Plan 03
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
@@ -176,10 +176,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -239,10 +240,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   webhook-worker-2:
@@ -292,10 +294,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   document-worker:
@@ -348,10 +351,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -403,10 +407,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
     # alongside the --disable-dev-shm-usage argv flag (D-09/Pitfall C) --
@@ -481,10 +486,11 @@ services:
       AV_ENGINE_TIMEOUT: "753s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -584,10 +590,11 @@ services:
       AUDIO_ENGINE_TIMEOUT: "742s"
       # IN-02 (Phase 45): same requirement, ocr engine -- must be
       # byte-identical across all 9 services (45-02-SUMMARY.md).
-      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
-      # supervised scripts/ocr-timing-measure.sh run.
+      # OCR_ENGINE_TIMEOUT measured (45-03-SUMMARY.md): worst cell
+      # dense_eng p95=5.81 s/page, ceil(64 x 5.81 x 2.0)=744s, 17.3%
+      # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
       # webhooks (internal/worker fireDetached). MUST match webhook-worker-1/-2's
@@ -627,15 +634,17 @@ services:
       dockerfile: Dockerfile.ocr-worker
     container_name: octoconv-ocr-worker
     restart: always
-    # cmd/ocr-worker sets asynq ShutdownTimeout = OCR_ENGINE_TIMEOUT (300s
-    # PLACEHOLDER below) + 10s = 310s so an in-flight tesseract/pdftoppm
-    # attempt survives SIGTERM instead of being aborted+requeued (mirrors
-    # av-worker's/audio-worker's own WR-05 margin). PLACEHOLDER -- Plan 03
-    # recomputes this to the real MEASURED OCR_ENGINE_TIMEOUT + 10s
-    # ShutdownTimeout margin + 10s Docker SIGKILL margin (mirrors av's
-    # 773s = 753s+10s+10s derivation, 36-04-SUMMARY.md), NOT copied from
-    # AV/AUDIO's own numbers.
-    stop_grace_period: 320s
+    # cmd/ocr-worker sets asynq ShutdownTimeout = OCR_ENGINE_TIMEOUT (744s,
+    # below) + 10s = 754s so an in-flight tesseract/pdftoppm attempt
+    # survives SIGTERM instead of being aborted+requeued (mirrors
+    # av-worker's/audio-worker's own WR-05 margin). MEASURED
+    # (45-03-SUMMARY.md, scripts/ocr-timing-measure.sh, arch=arm64,
+    # cpus=2.0, memory=1g, N=10): worst cell dense_eng p95=5.81 s/page;
+    # ceil(64 x 5.81 x 2.0)=744s + 10s ShutdownTimeout margin + 10s Docker
+    # SIGKILL margin = 764s (mirrors av's 773s=753s+10s+10s derivation,
+    # 36-04-SUMMARY.md). NOT copied from AV(753s)/AUDIO(742s)'s own
+    # numbers -- 744s is distinct.
+    stop_grace_period: 764s
     depends_on:
       postgres:
         condition: service_healthy
@@ -659,14 +668,14 @@ services:
       # tweak, not v1 (ocr-worker-only, NOT read by queue.NewClient(), so
       # no IN-02 parity requirement).
       OCR_WORKER_CONCURRENCY: "1"
-      # D-03 provisional ceiling (ocr-worker-only, NOT read by
-      # queue.NewClient()) -- FINALIZED by Plan 03's measurement so that
-      # OCR_MAX_PAGES x worst-cell-p95 x 2.0 < 900s (RECONCILER_ACTIVE_STALE_AFTER
-      # CAP, webhook-worker-1/-2 below). Mirrors AV_MAX_DURATION_SECONDS's/
-      # AUDIO_MAX_DURATION_SECONDS's own Path-B NO-GO lever precedent: if the
-      # derived timeout would breach the CAP at this ceiling, LOWER this
-      # value rather than raising the global CAP.
-      OCR_MAX_PAGES: "200"
+      # D-03 provisional ceiling of 200 BREACHED the 900s CAP at the
+      # measured worst-cell p95 (ceil(200 x 5.81 x 2.0)=2324s) -- Path-B
+      # NO-GO lever FIRED (45-03-SUMMARY.md, mirrors AV_MAX_DURATION_SECONDS's/
+      # AUDIO_MAX_DURATION_SECONDS's own precedent): lowered 200 -> 64 so
+      # ceil(64 x 5.81 x 2.0)=744s clears the 900s RECONCILER_ACTIVE_STALE_AFTER
+      # CAP (webhook-worker-1/-2 below) with a 17.3% margin. ocr-worker-only,
+      # NOT read by queue.NewClient().
+      OCR_MAX_PAGES: "64"
       # Decompression-bomb ceiling for OCR's own image-source guard
       # (enforceImagePixelBound, ocrguards.go) -- same 100-megapixel
       # magnitude as the api service's MAX_IMAGE_PIXELS above, made an
@@ -674,14 +683,19 @@ services:
       # code default (mirrors MAX_IMAGE_PIXELS's own compose+.env.example
       # presence). ocr-worker-only, NOT read by queue.NewClient().
       OCR_MAX_IMAGE_PIXELS: "100000000"
-      # PLACEHOLDER (D-02/OCRE-04) -- the real MEASURED value is derived by
-      # Plan 03's supervised scripts/ocr-timing-measure.sh run:
-      # OCR_ENGINE_TIMEOUT = ceil(OCR_MAX_PAGES x worst-cell-p95-sec/page x
-      # 2.0 safety), verified < 900s. NEVER copied from AV_ENGINE_TIMEOUT/
-      # AUDIO_ENGINE_TIMEOUT (PITFALLS.md Pitfall 7 -- OCR's cost model is
-      # per-page, not per-input-duration, so a neighbor's timeout is
-      # wrong-by-construction here).
-      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see comment above, finalized by Plan 03
+      # MEASURED (D-02/OCRE-04, 45-03-SUMMARY.md): scripts/ocr-timing-measure.sh
+      # run ALL GREEN on the real ocr-worker image at these exact
+      # --cpus=2.0/--memory=1g compose limits (arch=arm64, N=10,
+      # omp_thread_limit=2, representative synthesized corpus -- see
+      # SUMMARY corpus note). Worst cell = dense_eng, p95=5.81 s/page.
+      # OCR_ENGINE_TIMEOUT = ceil(OCR_MAX_PAGES x worst-cell-p95 x 2.0) =
+      # ceil(64 x 5.81 x 2.0) = 744s, 17.3% under the 900s CAP. Path-B
+      # lever fired first (OCR_MAX_PAGES 200 -> 64, see comment above).
+      # NEVER copied from AV_ENGINE_TIMEOUT(753s)/AUDIO_ENGINE_TIMEOUT(742s)
+      # (PITFALLS.md Pitfall 7 -- OCR's cost model is per-page, not
+      # per-input-duration, so a neighbor's timeout is wrong-by-construction
+      # here; 744 is distinct from both).
+      OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03-SUMMARY.md -- see comment above
       OCR_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
