@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -67,13 +68,43 @@ func main() {
 
 	repo := jobs.NewRepo(pool)
 
-	// OCRP-01/44-CONTEXT.md: unlike cmd/av-worker's re-Register of a
-	// configured, env-tunable converter before it starts consuming tasks,
-	// ocr-worker does NOT re-register OCRConverter -- converters.go's init()
-	// already registered a zero-value OCRConverter{} (uncapped
-	// MaxImagePixels/MaxPages this phase). OCR_MAX_PAGES/pixel-cap env wiring
-	// is Phase 45's job.
-	engineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second) // provisional default; Phase 45 measures and finalizes the real ceiling (mirrors AV_ENGINE_TIMEOUT's own provisional-then-measured precedent).
+	// D-01/D-03 (Phase 45, mirrors cmd/av-worker's D-09/Pitfall-4 re-Register
+	// precedent): re-register a CONFIGURED OCRConverter, overriding the
+	// zero-value registration converters.go's init() already performed --
+	// documented last-write-wins semantics (Registry.Register is a bare map
+	// assignment, converters.go). This MUST run before srv.Start(mux) below:
+	// that is the point asynq's worker goroutines begin concurrently reading
+	// the registered converter, so this single write must happen-before
+	// every concurrent read (same happens-before boundary as
+	// AV_MAX_DURATION_SECONDS/AV_DISK_SAFETY_FACTOR in cmd/av-worker/main.go).
+	//
+	// OCR_MAX_PAGES default (200) is PROVISIONAL -- Plan 03's measurement
+	// finalizes the real ceiling from a measured p95 seconds-per-page run,
+	// mirroring AV_MAX_DURATION_SECONDS's own provisional-then-measured
+	// precedent. OCR_MAX_IMAGE_PIXELS reuses MAX_IMAGE_PIXELS's own 100
+	// megapixel magnitude (cmd/api/main.go's decompression-bomb ceiling) as
+	// its Claude's-Discretion default -- the same declared-dimension guard
+	// class, just enforced by the OCR converter instead of the API layer.
+	ocrMaxPages := envInt("OCR_MAX_PAGES", 200)
+	ocrMaxPixels := uint64(envInt64("OCR_MAX_IMAGE_PIXELS", 100_000_000))
+	convert.Default.Register(buildOCRConverter(ocrMaxPages, ocrMaxPixels))
+
+	// D-03 (Phase 45): tesseract's own OpenMP thread use is pinned to the
+	// cgroup CPU quota via OMP_THREAD_LIMIT (mirrors av-worker's
+	// resolveAVThreads -> -threads cgroup discipline), so tesseract honors
+	// the container's CPU limit rather than the host core count. Must
+	// complete before srv.Start(mux) below -- the same happens-before
+	// boundary every other process-wide config write in this file uses;
+	// tesseract itself only reads OMP_THREAD_LIMIT from its own process
+	// environment at invocation time (os/exec.Command inherits the parent
+	// process env unless overridden), so this write must land before any
+	// asynq worker goroutine can shell out to tesseract.
+	ompThreads, ompSource := resolveOCRThreadLimit()
+	os.Setenv("OMP_THREAD_LIMIT", strconv.Itoa(ompThreads))
+	log.Printf("🧵 OCR_MAX_PAGES=%d OCR_MAX_IMAGE_PIXELS=%d OMP_THREAD_LIMIT=%d (source=%s)",
+		ocrMaxPages, ocrMaxPixels, ompThreads, ompSource)
+
+	engineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second) // 300s is purely a docker-compose.yml-unset fallback default -- the real, measured/finalized value arrives via Phase 45 Plan 03's supervised scripts/ocr-timing-measure.sh matrix run and is set explicitly in docker-compose.yml/.env.example (mirrors AV_ENGINE_TIMEOUT's own provisional-fallback-then-measured comment, cmd/av-worker/main.go).
 
 	// PROG-03 (mirrors cmd/av-worker/main.go): the dual-gate progress-write
 	// throttle (D-03) -- env-tunable, read here (not in internal/worker) and
@@ -125,7 +156,7 @@ func main() {
 	mux.HandleFunc(queue.TypeOCRConvert, h.HandleOCRConvert)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency:    envInt("OCR_WORKER_CONCURRENCY", 2),
+		Concurrency:    envInt("OCR_WORKER_CONCURRENCY", 1), // D-03 (Phase 45): one OCR job at a time (mirrors av/audio) -- avoids CPU oversubscription/CFS-thrashing on the cgroup-limited worker; a per-job OCR already streams pages sequentially. A concurrency > 1 is a measured-evidence future tweak, not v1.
 		Queues:         map[string]int{queue.QueueOCR: 1},
 		RetryDelayFunc: queue.RetryDelayFunc,
 		// asynq defaults ShutdownTimeout to 8s, silently capping the graceful
@@ -181,6 +212,49 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// envInt64 reads an int64 env var (OCR_MAX_IMAGE_PIXELS, cast to uint64 by
+// the caller), tolerant of a trailing inline comment via firstField (same
+// convention as envInt/envDuration) -- mirrors cmd/api/main.go's own
+// envInt64 helper (MAX_IMAGE_PIXELS), the same decompression-bomb guard
+// class enforced here by the OCR converter instead of the API layer.
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(firstField(v), 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+// buildOCRConverter constructs a CONFIGURED convert.OCRConverter from the
+// resolved OCR_MAX_PAGES/OCR_MAX_IMAGE_PIXELS values -- isolated as its own
+// pure function (rather than an inline struct literal at the call site) so
+// a unit test can assert the env values actually flow into the converter's
+// guard fields, without depending on the global convert.Default registry
+// side effect (mirrors this codebase's "argv/config builder is its own,
+// unit-testable function" convention, e.g. ocrTesseractArgs/whisperArgs).
+func buildOCRConverter(maxPages int, maxPixels uint64) convert.OCRConverter {
+	return convert.OCRConverter{
+		MaxPages:       maxPages,
+		MaxImagePixels: maxPixels,
+	}
+}
+
+// resolveOCRThreadLimit mirrors cmd/av-worker/main.go's resolveAVThreads
+// exactly (CgroupCPULimit -> runtime.NumCPU fallback), so tesseract's
+// OMP_THREAD_LIMIT (D-03) reports the SAME thread count the cgroup CPU
+// quota actually entitles this container to, not the host's full core
+// count (PITFALLS.md Pitfall 5's threading discipline, applied to OCR's
+// OpenMP-parallel LSTM engine instead of whisper.cpp's --threads flag). An
+// OCR_THREADS operator override is deliberately out of scope here, same as
+// av-worker's own resolver.
+func resolveOCRThreadLimit() (int, string) {
+	if n, ok := convert.CgroupCPULimit(); ok {
+		return n, "cgroup"
+	}
+	return runtime.NumCPU(), "NumCPU fallback"
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
