@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ErrOCRTooManyPages is returned when a PDF's pdfinfo-declared page count
@@ -179,6 +180,60 @@ func enforceImagePixelBound(inPath string, maxPixels uint64) error {
 	pixels := uint64(width) * uint64(height)
 	if maxPixels > 0 && pixels > maxPixels {
 		return fmt.Errorf("%w: declared %dx%d (%d pixels) exceeds bound %d", ErrOCRImageTooLarge, width, height, pixels, maxPixels)
+	}
+	return nil
+}
+
+// ocrBornDigitalCharThreshold is the conservative non-whitespace character
+// count above which a PDF is treated as born-digital and rejected (D-03,
+// 43-CONTEXT.md): "reject on ANY substantial extractable text", not "only
+// if every page has text". [ASSUMED] Claude's Discretion per D-03 -- a
+// small value so even a short paragraph of real body text trips the
+// reject, while tolerating the handful of stray non-whitespace bytes
+// pdftotext's own formatting can emit even on a genuinely image-only PDF
+// (a page-number stamp burned INTO the image is not extractable text and
+// produces zero pdftotext output at all -- live-verified against the
+// committed multipage_image_only.pdf fixture, which yields 0).
+const ocrBornDigitalCharThreshold = 16
+
+// ErrOCRBornDigital is returned when a PDF already has an extractable text
+// layer -- rejected fail-closed BEFORE any rasterize/OCR render (OCRE-03,
+// D-03, PITFALLS.md Pitfall 6): re-OCR-ing a born-digital PDF wastes
+// compute and can produce WORSE text than the existing layer.
+var ErrOCRBornDigital = errors.New("ocr: pdf already has an extractable text layer")
+
+// ocrTextLayerArgs builds pdftotext's argv to extract pdfPath's text layer
+// to stdout ("-" as the output path, mirroring runCommand's "some engines
+// write their machine-readable result to stdout" contract, exec.go).
+func ocrTextLayerArgs(pdfPath string) []string {
+	return []string{pdfPath, "-"}
+}
+
+// countNonWhitespace counts non-whitespace runes in b -- the pure
+// threshold input detectBornDigitalPDF and its tests both use.
+func countNonWhitespace(b []byte) int {
+	count := 0
+	for _, r := range string(b) {
+		if !unicode.IsSpace(r) {
+			count++
+		}
+	}
+	return count
+}
+
+// detectBornDigitalPDF runs pdftotext (hardened runCommand) to extract
+// pdfPath's text layer and rejects with ErrOCRBornDigital when the
+// non-whitespace character count exceeds ocrBornDigitalCharThreshold --
+// conservative per D-03: ANY substantial extractable text rejects,
+// steering the client to the document engine instead. Runs BEFORE the
+// rasterize/OCR render loop (Plan 04).
+func detectBornDigitalPDF(ctx context.Context, pdfPath string) error {
+	out, err := runCommand(ctx, "pdftotext", ocrTextLayerArgs(pdfPath)...)
+	if err != nil {
+		return fmt.Errorf("ocr: pdftotext: %w", err)
+	}
+	if countNonWhitespace(out) > ocrBornDigitalCharThreshold {
+		return ErrOCRBornDigital
 	}
 	return nil
 }
