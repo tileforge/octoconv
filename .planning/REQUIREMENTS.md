@@ -37,6 +37,7 @@
 - **OCR-V2-02**: Searchable-PDF вывод (текстовый оверлей на скан).
 - **OCR-V2-03**: Deskew/denoise preprocessing (unpaper/leptonica) — evidence-gated, если измеренная точность на реальных сканах потребует.
 - **OCR-V2-04**: Self-hosted VLM путь (Surya/GOT-OCR2/Qwen2-VL) для грязного/рукописного/layout→markdown — отдельный GPU-контур (SEED-009 путь «(b)»).
+- **OCR-V2-05**: OSD / auto-orientation (детект поворота + авто-ротация повёрнутых сканов через `--psm 0` pre-pass) — deferred из Phase 43 (D-05a), evidence-gated как deskew: не бесплатно (лишний subprocess/страница), PSM 3 = no-OSD.
 
 ## Out of Scope
 

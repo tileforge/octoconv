@@ -170,7 +170,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 **Plans**: 4 plans (3 waves)
 Plans:
 - [ ] 43-01-PLAN.md — OCROpts closed language allowlist (eng/rus/eng+rus) strict-parse + injection defense
-- [ ] 43-02-PLAN.md — Guard layer: PDF page-count cap + image pixel cap + born-digital pdftotext detection (fail-closed pre-render)
+- [ ] 43-02-PLAN.md — Guard layer: PDF page-count cap + per-page page-box physical-size cap + image pixel cap + born-digital pdftotext detection (fail-closed pre-render)
 - [ ] 43-03-PLAN.md — OCRConverter core: Pairs/Engine/Convert image→txt at PSM 3/OEM 1 + hOCR/ALTO via real XML encoder
 - [ ] 43-04-PLAN.md — Streaming per-page PDF path (pdftoppm→tesseract→delete) + page-granular ConvertWithProgress
 
