@@ -243,3 +243,73 @@ func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFor
 	}
 	return validateOCROutput(outPath)
 }
+
+// var _ ProgressConverter ensures OCRConverter's concrete value type
+// satisfies the v1.9 optional progress seam at compile time (OCR-04) --
+// mirrors AVConverter{}'s own assertion (av.go), pinning a value receiver
+// across every OCRConverter method, OCR being the SECOND ProgressConverter
+// implementor (av.go was first).
+var _ ProgressConverter = OCRConverter{}
+
+// ocrPrepareConversion runs the EXACT SAME preamble Convert (ocr.go) and
+// ConvertWithProgress both need -- OCROptsFromMap, the fail-fast
+// unsupported-target check, and the source-format/configfile resolution --
+// factored into ONE function so the two entry points can never drift into
+// making a DIFFERENT accept/reject decision on the same bytes (mirrors
+// av.go's avPrepareConversion sharing discipline). Every error is already
+// wrapped with the "ocr:" prefix, so callers return it unwrapped.
+func ocrPrepareConversion(outPath string, opts map[string]any) (o OCROpts, targetFormat, configfile string, err error) {
+	o, err = OCROptsFromMap(opts)
+	if err != nil {
+		return OCROpts{}, "", "", fmt.Errorf("ocr: %w", err)
+	}
+	targetFormat = NormalizeFormat(filepath.Ext(outPath))
+	configfile, ok := ocrConfigFileFor(targetFormat)
+	if !ok {
+		return OCROpts{}, "", "", fmt.Errorf("ocr: unsupported target format %q", targetFormat)
+	}
+	return o, targetFormat, configfile, nil
+}
+
+// ConvertWithProgress implements ProgressConverter (OCR-04): it reuses the
+// EXACT SAME preamble as Convert (ocrPrepareConversion) so both entry
+// points make the provably identical accept/reject decision on the same
+// bytes -- including the same page-count cap, born-digital, and per-page
+// page-box gates, since a PDF source is routed through the SAME convertPDF
+// pipeline Convert itself calls (ocr.go). For a PDF source, onPage is a
+// non-nil callback that folds each completed page's elapsed processing
+// time into a page-based estimator (ocrprogress.go) and forwards the
+// resulting ProgressUpdate to sink.Update -- a page-granular ramp keyed on
+// pages_done/total_pages, never on progress.go's ffmpeg-specific tick
+// parser. For a single-image source, this delegates straight to Convert
+// and therefore emits ZERO sink.Update calls -- the image path stays on
+// the plain Convert code path exactly as Convert itself runs it, and the
+// worker maps a converter that reports nothing to null->100 (OCR-04). This
+// function never writes a terminal 100% itself (mirrors av.go's own
+// ConvertWithProgress contract): a mid-stream error simply leaves sink's
+// last-reported value in place, never throttling on its own (the sink owns
+// throttling, D-03).
+func (c OCRConverter) ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, sink ProgressSink) error {
+	o, targetFormat, configfile, err := ocrPrepareConversion(outPath, opts)
+	if err != nil {
+		return err
+	}
+
+	sourceFormat := NormalizeFormat(filepath.Ext(inPath))
+	if sourceFormat != "pdf" {
+		// Zero Update calls (OCR-04): the image path is cheap and carries
+		// no natural page-granular signal, so it stays on the plain
+		// Convert path, identically to Convert's own behavior for this
+		// source.
+		return c.Convert(ctx, inPath, outPath, opts)
+	}
+
+	var progress *ocrPageProgress
+	onPage := func(page, total int, elapsed time.Duration) {
+		if progress == nil {
+			progress = newOCRPageProgress(total)
+		}
+		sink.Update(progress.recordPage(elapsed))
+	}
+	return c.convertPDF(ctx, inPath, outPath, targetFormat, configfile, o, onPage)
+}

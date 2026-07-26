@@ -206,22 +206,19 @@ func validateOCROutput(path string) error {
 // pre-processing. Re-verify against the deployed container's own
 // Leptonica build in Phase 45/46 if that assumption ever needs revisiting.
 func (c OCRConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	// Garbage opts (e.g. a corrupt jobs.options column) is a deterministic
-	// failure, mirroring AudioOptsFromMap's/AVOptsFromMap's use in the
-	// sibling converters' Convert (CLAUDE.md "Error Handling").
-	o, err := OCROptsFromMap(opts)
+	// ocrPrepareConversion (ocrpdf.go, Plan 04) is the SAME preamble
+	// ConvertWithProgress calls -- OCROptsFromMap (garbage opts, e.g. a
+	// corrupt jobs.options column, is a deterministic failure, mirroring
+	// AudioOptsFromMap's/AVOptsFromMap's use in the sibling converters'
+	// Convert, CLAUDE.md "Error Handling") plus the fail-fast unsupported-
+	// target check (a caller bug -- unrecognized/missing outPath extension
+	// -- must not burn a tesseract invocation before failing, mirrors
+	// AudioConverter.Convert's/AVConverter.Convert's shape). Sharing this
+	// ONE function means Convert and ConvertWithProgress can never drift
+	// into making a different accept/reject decision on the same bytes.
+	o, targetFormat, configfile, err := ocrPrepareConversion(outPath, opts)
 	if err != nil {
-		return fmt.Errorf("ocr: %w", err)
-	}
-
-	// Fail fast on an unsupported target BEFORE any subprocess -- mirrors
-	// AudioConverter.Convert's/AVConverter.Convert's shape (whisper.go,
-	// av.go): a caller bug (unrecognized/missing outPath extension) must
-	// not burn a tesseract invocation before failing.
-	targetFormat := NormalizeFormat(filepath.Ext(outPath))
-	configfile, ok := ocrConfigFileFor(targetFormat)
-	if !ok {
-		return fmt.Errorf("ocr: unsupported target format %q", targetFormat)
+		return err
 	}
 
 	sourceFormat := NormalizeFormat(filepath.Ext(inPath))

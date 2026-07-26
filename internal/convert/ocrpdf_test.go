@@ -295,3 +295,103 @@ func TestOCRConvertPDFHOCRMerged(t *testing.T) {
 		t.Fatalf("expected 2 merged hOCR pages, got %d in:\n%s", n, b)
 	}
 }
+
+// fakeOCRProgressSink is a recording ProgressSink used to assert
+// OCRConverter.ConvertWithProgress's page-granular-ramp-vs-null split
+// without a real worker/DB in the loop -- mirrors fakeAVProgressSink's
+// shape (av_progress_test.go), kept as its own OCR-scoped type so this
+// plan's tests carry zero coupling to av.go's progress test helpers.
+type fakeOCRProgressSink struct {
+	durationCalls int
+	updates       []ProgressUpdate
+}
+
+func (f *fakeOCRProgressSink) SourceDuration(seconds float64) { f.durationCalls++ }
+func (f *fakeOCRProgressSink) Update(u ProgressUpdate)        { f.updates = append(f.updates, u) }
+
+var _ ProgressSink = (*fakeOCRProgressSink)(nil)
+
+// TestOCRConvertWithProgress is real-binary (skip-if-absent): OCRing the
+// committed 2-page fixture via ConvertWithProgress must drive a
+// monotonically non-decreasing Pct sequence ending at exactly 100 on the
+// final page -- driven purely by the page loop's onPage callback
+// (ocrpdf.go), never by progress.go's ffmpeg-specific tick parser.
+func TestOCRConvertWithProgress(t *testing.T) {
+	requireOCRPDFBinaries(t)
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	sink := &fakeOCRProgressSink{}
+	c := OCRConverter{}
+	if err := c.ConvertWithProgress(ctx, filepath.Join("testdata", "ocr", "multipage_text.pdf"), outPath, nil, sink); err != nil {
+		t.Fatalf("ConvertWithProgress: %v", err)
+	}
+
+	if len(sink.updates) != 2 {
+		t.Fatalf("expected exactly 2 Update calls (one per fixture page), got %d: %+v", len(sink.updates), sink.updates)
+	}
+	last := -1
+	for i, u := range sink.updates {
+		if u.Pct < last {
+			t.Fatalf("update %d: Pct regressed from %d to %d", i, last, u.Pct)
+		}
+		last = u.Pct
+	}
+	if last != 100 {
+		t.Fatalf("final Update Pct = %d, want 100 (the last page)", last)
+	}
+	if sink.updates[0].ETA == nil {
+		t.Errorf("expected a derived ETA after the first completed page, got nil")
+	}
+}
+
+// TestOCRPDFPageCapWithProgress proves ConvertWithProgress rejects an
+// over-cap PDF via the SAME guard stage Convert uses -- zero sink.Update
+// calls, ErrOCRTooManyPages, identically to TestOCRPDFPageCap's assertion
+// against plain Convert (the "reuses the same guard preamble" acceptance
+// criterion, proven by identical-outcome assertions on both entry points).
+func TestOCRPDFPageCapWithProgress(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sink := &fakeOCRProgressSink{}
+	c := OCRConverter{MaxPages: 2}
+	err := c.ConvertWithProgress(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"), outPath, nil, sink)
+	if !errors.Is(err, ErrOCRTooManyPages) {
+		t.Fatalf("ConvertWithProgress on an over-cap PDF = %v, want ErrOCRTooManyPages", err)
+	}
+	if len(sink.updates) != 0 {
+		t.Fatalf("expected zero Update calls on a rejected over-cap PDF, got %d", len(sink.updates))
+	}
+}
+
+// TestOCRSingleImageNullProgress asserts a single-image job produces ZERO
+// sink.Update calls (OCR-04: null->100 is the worker's job, not the
+// converter's) -- the image path never enters the PDF page loop at all.
+func TestOCRSingleImageNullProgress(t *testing.T) {
+	requireTesseract(t)
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	sink := &fakeOCRProgressSink{}
+	c := OCRConverter{}
+	if err := c.ConvertWithProgress(ctx, filepath.Join("testdata", "ocr", "text_sample.png"), outPath, nil, sink); err != nil {
+		t.Fatalf("ConvertWithProgress: %v", err)
+	}
+	if len(sink.updates) != 0 {
+		t.Fatalf("expected zero Update calls for a single-image job, got %d: %+v", len(sink.updates), sink.updates)
+	}
+	if sink.durationCalls != 0 {
+		t.Fatalf("expected zero SourceDuration calls for a single-image job, got %d", sink.durationCalls)
+	}
+}
