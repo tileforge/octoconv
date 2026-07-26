@@ -9,9 +9,9 @@
 
 ### OCR — Core extraction
 
-- [ ] **OCR-01**: Клиент может извлечь текст из изображения (jpg/png/tiff/webp) через classic CPU-OCR и получить plain-txt результат.
+- [x] **OCR-01**: Клиент может извлечь текст из изображения (jpg/png/tiff/webp) через classic CPU-OCR и получить plain-txt результат.
 - [ ] **OCR-02**: Клиент может извлечь текст из сканированного/image-only PDF; воркер растеризует его постранично (bounded, memory-safe — `pdftoppm -f N -l N`, не all-at-once) и OCR-ит каждую страницу.
-- [ ] **OCR-03**: Клиент может получить hOCR/ALTO вывод (координаты слов/строк + confidence) наряду с txt (корректное XML-экранирование, bbox в пространстве DPI растеризации).
+- [x] **OCR-03**: Клиент может получить hOCR/ALTO вывод (координаты слов/строк + confidence) наряду с txt (корректное XML-экранирование, bbox в пространстве DPI растеризации).
 - [ ] **OCR-04**: In-flight многостраничный OCR-job отдаёт честный page-granular `progress_pct` + `eta_seconds` (через GET/SSE/webhook, переиспользуя v1.9-инфру без изменений); одиночное изображение отдаёт `null`→100.
 
 ### OCRO — Options
@@ -54,9 +54,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| OCR-01 | Phase 43 | Pending |
+| OCR-01 | Phase 43 | Complete |
 | OCR-02 | Phase 43 | Pending |
-| OCR-03 | Phase 43 | Pending |
+| OCR-03 | Phase 43 | Complete |
 | OCR-04 | Phase 43 | Pending |
 | OCRO-01 | Phase 43 | Complete |
 | OCRE-01 | Phase 44 | Pending |

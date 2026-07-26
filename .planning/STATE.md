@@ -4,13 +4,13 @@ milestone: v1.10
 milestone_name: OCR Engine
 status: executing
 stopped_at: Completed 43-02-PLAN.md
-last_updated: "2026-07-26T12:20:01.373Z"
+last_updated: "2026-07-26T12:45:42.032Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 43 (OCR Engine Foundation) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-07-26
 
@@ -114,6 +114,7 @@ Last activity: 2026-07-26
 | Phase 42 P03 | 40min | 3 tasks | 4 files |
 | Phase 43 P01 | 10min | 2 tasks | 2 files |
 | Phase 43 P02 | 20min | 3 tasks | 5 files |
+| Phase 43 P03 | 45min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -135,6 +136,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - **Open gaps to resolve during Phase 43 planning/implementation, not left silently unresolved:** (1) the born-digital-PDF detection mechanism (which library call / threshold counts as "meaningful existing text layer" — the fail-closed-reject *decision* is settled, the *implementation* is not); (2) webp→PNG normalization need (Leptonica's webp support is inconsistent across Debian's bundled build per STACK.md); (3) exact Tesseract PSM/OEM/hOCR-ALTO config-file names — verify against the chosen tool's live 5.5.3 CLI output, not training-data assumption.
 - [Phase 43]: ocrBornDigitalCharThreshold=16 non-whitespace chars (D-03 conservative reject-on-any-substantial-text) — verified 0 chars on image-only fixture / 82 on born-digital fixture
 - [Phase 43]: OCR guard caps use zero-value-means-uncapped-this-phase convention — mirrors av.go's plain-param-this-phase pattern; OCR_MAX_PAGES/OCR_MAX_PIXELS env wiring deferred to Phase 45
+- [Phase 43]: OCRConverter (Plan 03): webp is passed straight to tesseract with no decode-to-png pre-step -- live-verified against this environment's tesseract 5.5.2 (Leptonica 1.87.0 + libwebp 1.6.0) that a real webp OCRs correctly with zero pre-processing; re-verify against the deployed container's Leptonica build in Phase 45/46
+- [Phase 43]: tesseract's own ALTO configfile writes outputbase.xml, not outputbase.alto -- OCRConverter.Convert renames the produced file to the caller's actual outPath rather than assuming the engine's naming matches the job's target-format extension
+- [Phase 43]: A raw encoding/xml Decoder token walk does NOT enforce 'exactly one root element' (a naive concat of two full XML documents still tokenizes without error) -- the ocrPageMerger round-trip test also asserts exactly one XML declaration and one root element, which is what actually distinguishes a real merge from the naive-concat failure mode (PITFALLS.md Pitfall 5)
 
 ### Quick Tasks Completed
 
@@ -205,7 +209,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T12:20:01.362Z
+Last session: 2026-07-26T12:43:22.447Z
 Stopped at: Completed 43-02-PLAN.md
 Resume file: None
 
