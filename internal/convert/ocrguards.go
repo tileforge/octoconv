@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -139,4 +141,44 @@ func ocrPDFPageSize(ctx context.Context, pdfPath string) (widthPts, heightPts fl
 		return 0, 0, errors.New("ocr: pdfinfo output has no Page size line")
 	}
 	return w, h, nil
+}
+
+// ErrOCRImageTooLarge is returned when an image's declared pixel
+// dimensions exceed the configured bound -- fail-closed BEFORE decode
+// (OCRE-02), reusing dimensions.go's declared-dimension parser (the same
+// decompression-bomb precedent MAX_IMAGE_PIXELS enforces in
+// internal/api/handlers.go).
+var ErrOCRImageTooLarge = errors.New("ocr: image dimensions exceed bound")
+
+// enforceImagePixelBound opens inPath, derives its format from the file
+// extension, and -- only for formats with a registered dimension parser
+// (HasDimensionLimit) -- reads the declared width/height via Dimensions
+// (dimensions.go) WITHOUT decoding any pixel data, rejecting when the
+// declared pixel count exceeds maxPixels. maxPixels == 0 means "no cap
+// this phase" -- mirrors enforceMaxPages/enforcePageBoxBound's convention.
+// A Dimensions error (ErrDimensionsUnknown) is itself a fail-closed
+// rejection -- never a silent accept. Formats with no registered
+// dimension parser (document formats -- HasDimensionLimit false) have no
+// pixel-dimension concept and are skipped entirely, mirroring
+// HasDimensionLimit's own documented scope guard.
+func enforceImagePixelBound(inPath string, maxPixels uint64) error {
+	format := NormalizeFormat(strings.TrimPrefix(filepath.Ext(inPath), "."))
+	if !HasDimensionLimit(format) {
+		return nil
+	}
+	f, err := os.Open(inPath)
+	if err != nil {
+		return fmt.Errorf("ocr: open %q: %w", inPath, err)
+	}
+	defer f.Close()
+
+	width, height, _, err := Dimensions(format, f)
+	if err != nil {
+		return fmt.Errorf("ocr: %w", err)
+	}
+	pixels := uint64(width) * uint64(height)
+	if maxPixels > 0 && pixels > maxPixels {
+		return fmt.Errorf("%w: declared %dx%d (%d pixels) exceeds bound %d", ErrOCRImageTooLarge, width, height, pixels, maxPixels)
+	}
+	return nil
 }
