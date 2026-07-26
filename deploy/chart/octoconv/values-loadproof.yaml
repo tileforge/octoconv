@@ -30,6 +30,18 @@ keda:
     # 783s value in every overlay -- that grace is exactly the value SC4
     # validates and MUST NOT be lowered here or anywhere else.
     scaleDownStabilizationSeconds: 15
+  ocr:
+    # Fast, deterministic 2->1 downscale (Phase 46 OCRP-02, SC3+SC4, mirrors
+    # the av override above). Production keda.ocr.scaleDownStabilizationSeconds
+    # (values.yaml) is 900s (D-01: 744s worst-case job + ~21% margin), which
+    # would push both the SC3 scale-to-0 observation and the SC4 N->N-1
+    # downscale far past any reasonable gate window. 15s here makes both
+    # observable within scripts/keda-ocr-loadproof.sh /
+    # scripts/keda-ocr-downscale-survival.sh's polling windows. The
+    # ocr-worker Deployment's pod-termination grace period stays at its
+    # PRODUCTION 774s value in every overlay -- that grace is exactly the
+    # value SC4 validates and MUST NOT be lowered here or anywhere else.
+    scaleDownStabilizationSeconds: 15
 
 worker:
   resources:
