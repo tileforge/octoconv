@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -895,6 +896,54 @@ func TestProgressFreezeOnAbort(t *testing.T) {
 	}
 	if len(repo.updates) != 1 || repo.updates[0].pct != 30 {
 		t.Fatalf("UpdateProgress calls = %+v, want exactly one (the throttled 30%% tick, no write after error — D-06 freeze)", repo.updates)
+	}
+}
+
+// fakeBlankOCRConverter implements convert.Converter with a Convert that
+// writes an EMPTY output file and returns nil -- mirrors OCRConverter's own
+// OCRE-05 contract (validateOCROutput, internal/convert/ocr.go, deliberately
+// does NOT check size>0: an empty txt/hocr/alto file is a VALID, successful
+// result for an image/page with no recognizable text). This proves the seam
+// HandleOCRConvert composes (runConvertWithOptionalProgress -> process()'s
+// nil-error success path) treats a blank/text-free result as success
+// regardless of output size, so it flows to h.repo.MarkDone, never
+// MarkFailed -- process()'s h.repo/h.store are concrete types (not
+// interfaces, ARCHITECTURE.md's "Key Abstractions" note), so a full Handler
+// cannot be constructed in a pure unit test; this drives the exact seam
+// process() delegates to, the smallest testable proof of the OCRE-05
+// contract without a live Postgres/S3 Handler.
+type fakeBlankOCRConverter struct{}
+
+func (fakeBlankOCRConverter) Pairs() []convert.Pair {
+	return []convert.Pair{{From: "png", To: "txt"}}
+}
+func (fakeBlankOCRConverter) Engine() string { return convert.EngineOCR }
+func (fakeBlankOCRConverter) Convert(_ context.Context, _, outPath string, _ map[string]any) error {
+	return os.WriteFile(outPath, []byte(""), 0o644)
+}
+
+// TestOCRBlankPageConvertSucceeds_OCRE05 pins OCRE-05: a blank/text-free
+// page must complete as done with empty output, never failed. Runs the
+// fake blank converter through runConvertWithOptionalProgress -- the exact
+// seam HandleOCRConvert's process() call uses -- and asserts a nil error
+// (the branch HandleOCRConvert takes straight to h.repo.MarkDone, never
+// h.repo.MarkFailed) alongside a genuinely empty output file.
+func TestOCRBlankPageConvertSucceeds_OCRE05(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.txt")
+	repo := &spyProgressRepo{}
+
+	err := runConvertWithOptionalProgress(context.Background(), fakeBlankOCRConverter{}, "in.png", outPath, nil, repo, uuid.New(), 0, 0, false, "", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("runConvertWithOptionalProgress(blank-output OCR result) = %v, want nil (OCRE-05: blank page is a VALID success, not a failure)", err)
+	}
+
+	data, rerr := os.ReadFile(outPath)
+	if rerr != nil {
+		t.Fatalf("read output: %v", rerr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("output = %q, want empty (blank/text-free page)", data)
 	}
 }
 
