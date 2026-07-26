@@ -79,3 +79,42 @@ func ParseOCROpts(raw []byte) (OCROpts, error) {
 	}
 	return o, nil
 }
+
+// OCROptsFromMap round-trips a persisted map[string]any (job.Opts, already
+// unmarshaled from the jobs.options jsonb column by internal/jobs) through
+// ParseOCROpts -- the same strictness (DisallowUnknownFields + closed
+// allowlist) applied on the worker/converter read path as on the API write
+// path, mirroring AudioOptsFromMap/DocOptsFromMap. A nil/empty map yields a
+// zero OCROpts, no error. A corrupt persisted map (e.g. an unlisted
+// language smuggled in by a prior write path bug) is rejected here exactly
+// as it would be at parse time -- it can never smuggle an unlisted
+// language into a later argv-building step.
+func OCROptsFromMap(m map[string]any) (OCROpts, error) {
+	if len(m) == 0 {
+		return OCROpts{}, nil
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return OCROpts{}, fmt.Errorf("marshal opts: %w", err)
+	}
+	return ParseOCROpts(raw)
+}
+
+// ocrLanguageArgs builds tesseract's discrete `-l <lang>` argv fragment from
+// an already-validated OCROpts (OCRO-01). o.Language MUST already have
+// passed ParseOCROpts/OCROptsFromMap -- this function performs no
+// validation of its own, it only shapes the argv. When Language is empty
+// (no language requested), it returns an empty slice: the default language
+// to fall back to is resolved server-side by the converter itself (a later
+// plan), never left to tesseract's own implicit default in a way that
+// could silently mis-recognize a non-English document. The returned slice
+// always carries Language as ONE discrete element -- never concatenated or
+// interpolated into a single string -- so a caller appending these to an
+// exec.Command argv (runCommand, exec.go) never invokes a shell and has no
+// shell-metacharacter injection surface.
+func ocrLanguageArgs(o OCROpts) []string {
+	if o.Language == "" {
+		return nil
+	}
+	return []string{"-l", o.Language}
+}
