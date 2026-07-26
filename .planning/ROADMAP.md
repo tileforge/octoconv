@@ -200,7 +200,11 @@ Plans:
   2. `scripts/ocr-timing-measure.sh` measures real seconds-per-page (not an RTF ratio) across a representative corpus (clean scan, dense multi-column, noisy/skewed) under production-equivalent CPU/memory limits, and drives a documented go/no-go decision (mirroring the audio/AV RTF-gate precedent) that derives `OCR_ENGINE_TIMEOUT` and `OCR_MAX_PAGES`.
   3. The measured `OCR_ENGINE_TIMEOUT` stays under the global reconciler-CAP, and the derived numbers — plus their measurement conditions (arch/cpu/mem/N/p95) — are recorded as a Key Decision, never silently copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`.
   4. The `ocr-worker` image is added to the CI bake matrix with its `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES`/`OCR_WORKER_CONCURRENCY`/ShutdownTimeout env wired, and all queue-client-constructing services propagate the new env identically (IN-02 pattern).
-**Plans**: TBD
+**Plans**: 4 plans (4 waves)
+- [ ] 45-01-PLAN.md — Dockerfile.ocr-worker (source-built tag-pinned Tesseract 5.5.x + Leptonica, poppler-utils, SHA-pinned tessdata_fast eng+rus) + cmd/ocr-worker env resolver (OCR_MAX_PAGES/OMP_THREAD_LIMIT/concurrency)
+- [ ] 45-02-PLAN.md — scripts/ocr-timing-measure.sh (supervised p95 sec/page gate) + compose ocr-worker service (placeholder timeout) + IN-02 OCR_* propagation + CI bake matrix
+- [ ] 45-03-PLAN.md — supervised measurement checkpoint: derive OCR_ENGINE_TIMEOUT from measured worst-cell p95 (< 900s CAP, Path-B lever), IN-02 plug-in, record Key Decision
+- [ ] 45-04-PLAN.md — TestOCRConversionE2E live checkpoint: image->txt + multi-page PDF->hocr end-to-end + signed webhook + progress ramp (closes Phase-44 SC4)
 
 ### Phase 46: KEDA/Helm Chart Integration
 **Goal**: The OCR class autoscales in the cluster with production parity to the other five engine classes, and scale-from-zero is live-proven.
