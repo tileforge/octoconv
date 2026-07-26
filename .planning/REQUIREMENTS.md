@@ -28,7 +28,7 @@
 
 ### OCRP — Async pipeline & scale
 
-- [ ] **OCRP-01**: OCR встроен в полный async-контур end-to-end (submit → done → download): миграция `0009_ocr_engine.sql` (добавляет `ocr` в `jobs.engine` enum), очередь `ocr`, `cmd/ocr-worker`, stage-aware transient/terminal retry, API-роутинг; single job → single target формат (mirror AudioConverter). Реестр SEED-010 остаётся dormant (compile-time `Registry.Register`). _(Partial: 44-01 lands the migration + registry/routing foundation; 44-02 adds the queue/task/client wiring; 44-03 adds `HandleOCRConvert`/`isOCRTerminal`/`cmd/ocr-worker`/reconciler routing — the live end-to-end queued→active→done proof is 44-04's job.)_
+- [x] **OCRP-01**: OCR встроен в полный async-контур end-to-end (submit → done → download): миграция `0009_ocr_engine.sql` (добавляет `ocr` в `jobs.engine` enum), очередь `ocr`, `cmd/ocr-worker`, stage-aware transient/terminal retry, API-роутинг; single job → single target формат (mirror AudioConverter). Реестр SEED-010 остаётся dormant (compile-time `Registry.Register`). _(Partial: 44-01 lands the migration + registry/routing foundation; 44-02 adds the queue/task/client wiring; 44-03 adds `HandleOCRConvert`/`isOCRTerminal`/`cmd/ocr-worker`/reconciler routing — the live end-to-end queued→active→done proof is 44-04's job.)_
 - [ ] **OCRP-02**: OCR-воркер контейнеризован (`Dockerfile.ocr-worker`, Tesseract source-built + tag-pinned, `tessdata_fast` SHA-pinned, poppler-utils) и автоскейлится через KEDA scale-from-zero, с таймаутами из измеренных OCRE-04 значений; compose + Helm chart интеграция.
 
 ## v2 Requirements

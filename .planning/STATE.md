@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Completed 44-03-PLAN.md
-last_updated: "2026-07-26T15:47:01.438Z"
+stopped_at: Completed 44-04-PLAN.md (Phase 44 COMPLETE)
+last_updated: "2026-07-26T15:58:44.219Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 8
-  completed_plans: 7
-  percent: 25
+  completed_plans: 8
+  percent: 50
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 44 (Async Pipeline Wiring) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-07-26
 
@@ -119,6 +119,7 @@ Last activity: 2026-07-26
 | Phase 44 P01 | 35min | 3 tasks | 9 files |
 | Phase 44 P02 | 4min | 2 tasks | 3 files |
 | Phase 44 P03 | 12min | 3 tasks | 5 files |
+| Phase 44 P04 | 20min | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -152,6 +153,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 44]: ocrRetrySchedule set to a provisional 15s/1m (mirrors avRetrySchedule's 2-entry shape since OCR_MAX_RETRY defaults to 2 like AV_MAX_RETRY), and OCR_ENGINE_TIMEOUT default 300s (mirrors DOCUMENT_ENGINE_TIMEOUT/AV_ENGINE_TIMEOUT placeholder precedent) — both superseded by Phase 45's measured values — Tesseract/pdftoppm per-page cost is expected to be materially cheaper than av's ffmpeg transcode, so backoff is shorter than av's 30s/2m; kept as a Go-code placeholder pending real measurement, same precedent as AV_ENGINE_TIMEOUT
 - [Phase 44]: isOCRTerminal treats a non-timeout tesseract/pdftoppm/pdfinfo crash as TERMINAL via a dedicated signature list (D-04), diverging from isAudioTerminal/isAVTerminal's default-to-transient treatment of an unrecognized non-timeout error.
 - [Phase 44]: cmd/ocr-worker does not re-register a configured OCRConverter — the zero-value registration from converters.go's init() is used as-is this phase; OCR_MAX_PAGES/pixel-cap env wiring is Phase 45's job.
+- [Phase 44]: 44-04: 3-page multipage_image_only.pdf fixture used (not the 2-page multipage_text.pdf) so the OCR progress ramp test can require >=2 distinct pre-100 pct values, genuinely distinguishing a ramp from a single jump
+- [Phase 44]: 44-04: runConvertWithOptionalProgress test calls use minInterval=1ns (not 0) -- 0 falls back to the plain conv.Convert() path per the D-01 throttle-configured gate and would silently emit zero progress writes
 
 ### Quick Tasks Completed
 
@@ -222,8 +225,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T15:47:01.428Z
-Stopped at: Completed 44-03-PLAN.md
+Last session: 2026-07-26T15:58:44.209Z
+Stopped at: Completed 44-04-PLAN.md (Phase 44 COMPLETE)
 Resume file: None
 
 ## Operator Next Steps

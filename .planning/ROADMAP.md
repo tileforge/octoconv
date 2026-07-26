@@ -151,7 +151,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 **Milestone Goal:** Клиент может извлечь машиночитаемый текст из изображений и сканированных PDF через тот же async-контур, что и остальные движки — offline, детерминированно, с онлайн-прогрессом. Шестой engine-класс.
 
 - [x] **Phase 43: OCR Engine Foundation** - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing (completed 2026-07-26)
-- [ ] **Phase 44: Async Pipeline Wiring** - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery
+- [x] **Phase 44: Async Pipeline Wiring** - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery (completed 2026-07-26)
 - [ ] **Phase 45: Containerization + Measured Timeout Gate** - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant
 - [ ] **Phase 46: KEDA/Helm Chart Integration** - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven
 
@@ -189,7 +189,7 @@ Plans:
 - [x] 44-01-PLAN.md — Migration 0009 + matchPDF sniff + register OCRConverter + EngineFor routing + EngineOCR upload limit (OCRP-01/OCRE-01)
 - [x] 44-02-PLAN.md — OCR queue/task + fresh-derived OCRUniqueTTL + EnqueueOCRConvert (OCRP-01)
 - [x] 44-03-PLAN.md — HandleOCRConvert + isOCRTerminal + cmd/ocr-worker + reconciler ocr routing (OCRP-01/OCRE-05)
-- [ ] 44-04-PLAN.md — Integration proof: image null→100 + multi-page PDF page-by-page ramp + progress.go/sse.go unchanged fence (OCRP-01)
+- [x] 44-04-PLAN.md — Integration proof: image null→100 + multi-page PDF page-by-page ramp + progress.go/sse.go unchanged fence (OCRP-01)
 
 ### Phase 45: Containerization + Measured Timeout Gate
 **Goal**: A running `ocr-worker` container in docker-compose passes a full live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied or guessed constant.
@@ -260,7 +260,7 @@ Plans:
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
 | 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
-| 44. Async Pipeline Wiring | v1.10 | 3/4 | In Progress|  |
+| 44. Async Pipeline Wiring | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 0/TBD | Not started | - |
 | 46. KEDA/Helm Chart Integration | v1.10 | 0/TBD | Not started | - |
 
