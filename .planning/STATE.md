@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: in_progress
-stopped_at: Completed 46-01-PLAN.md
-last_updated: "2026-07-26T21:30:47.387Z"
+stopped_at: Completed 46-02-PLAN.md
+last_updated: "2026-07-26T21:41:10.633Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 15
-  completed_plans: 13
+  completed_plans: 14
   percent: 75
 ---
 
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 ## Current Position
 
-Phase: 46 (KEDA/Helm Chart Integration) — IN PROGRESS (1/3 plans)
-Next: 46-02 (keda-ocr-loadproof.sh + keda-ocr-downscale-survival.sh + values-loadproof.yaml)
-Status: 46-01 done — ocr-worker Deployment + worker-ocr-scaledobject ScaledObject chart templates, keda.ocr/ocrWorker values, OCR_* ConfigMap env; SC2 confirmed (helm lint/template green)
+Phase: 46 (KEDA/Helm Chart Integration) — IN PROGRESS (2/3 plans)
+Next: 46-03 (operator-gated live checkpoint: build octoconv-ocr-worker:dev, run keda-ocr-loadproof.sh + keda-ocr-downscale-survival.sh against a live OrbStack cluster)
+Status: 46-02 done — scripts/keda-ocr-loadproof.sh (SC3) + scripts/keda-ocr-downscale-survival.sh (SC4) authored + statically verified (bash -n, shellcheck -S error, dual-overlay helm template render); keda.ocr.scaleDownStabilizationSeconds:15 added to values-loadproof.yaml; no live cluster run yet
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -125,6 +125,7 @@ Last activity: 2026-07-26
 | Phase 45 P03 | 15min | 2 tasks | 6 files |
 | Phase 45 P04 | ~70min | 2 tasks | 5 files |
 | Phase 46 P01 | 20min | 2 tasks | 4 files |
+| Phase 46 P02 | 25min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -170,6 +171,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 45 Plan 03]: the committed 2 KB one-line synthetic PNG fixtures (internal/convert/testdata/ocr/*) UNDER-stated per-page cost at 0.148 s/page (would have yielded a dangerously-low 60s timeout) — operator synthesized a REPRESENTATIVE 300-DPI full-page corpus (ImageMagick/Arial, mixed EN+RU, ~10K chars/page, normal 12pt clean / 10pt dense body+margins) and re-measured against the real ocr-worker image at compose limits (arch=arm64, cpus=2.0, memory=1g, N=10, omp_thread_limit=2, ALL GREEN). Per-cell p95 sec/page: clean_eng=3.010 clean_rus=2.927 dense_eng=5.810 dense_rus=5.789 noisy_eng=3.646 noisy_rus=3.017. Worst cell = dense_eng, p95=5.81 s/page. D-03 provisional OCR_MAX_PAGES=200 breached the 900s reconciler CAP (ceil(200×5.81×2.0)=2324s) — Path-B NO-GO lever fired, lowered 200→64. OCR_ENGINE_TIMEOUT = ceil(64×5.81×2.0) = 744s, 17.3% under the 900s CAP; propagated byte-identically to all 9 queue-client services (docker-compose.yml + .env.example); ocr-worker stop_grace_period recomputed 320s→764s (744s+10s ShutdownTimeout margin+10s Docker SIGKILL margin). 744s is distinct from AV_ENGINE_TIMEOUT(753s)/AUDIO_ENGINE_TIMEOUT(742s) — never copied (PITFALLS.md Pitfall 7). An intermediate adversarial fine-print run (full A4 ~5pt) gave 17.9 s/page — reference upper bound, not used as the committed basis.
 - [Phase 46]: keda.ocr mirrors keda.av 1:1 (threshold 1, maxReplicaCount 2, cooldown 180, stabilization 900); ocrWorker.terminationGracePeriodSeconds=774 — OCR_ENGINE_TIMEOUT=744s sits between audio's 742s and av's 753s; 774=744+30 chart convention, distinct from compose's 764=744+10+10
 - [Phase 46]: minReplicaCount hardcoded 0 in scaledobject-ocr.yaml, not templatized — SEED-011 (per-engine warm floor) stays deferred/out of scope per D-04
+- [Phase 46 P02]: SC3 trigger job reuses the audio-style committed-fixture postJob shape (text_sample.png -> txt), not av's ffmpeg-lavfi in-container synthesis — ocr already ships a real, small, fast-processing fixture on disk
+- [Phase 46 P02]: SC4 LONG fixture is synthesized in-container via pdfunite (tripling the committed 20-page multipage_image_only.pdf to ~60 pages, poppler-utils already baked into octoconv-ocr-worker:dev), targeting hocr — stays under OCR_MAX_PAGES=64 while outliving the 15s-stabilized downscale window at the measured ~1.5-2s/page rate
 
 ### Quick Tasks Completed
 
@@ -240,8 +243,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T21:30:47.374Z
-Stopped at: Completed 46-01-PLAN.md
+Last session: 2026-07-26T21:41:10.633Z
+Stopped at: Completed 46-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
