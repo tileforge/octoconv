@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
 status: executing
-stopped_at: Completed 44-02-PLAN.md
-last_updated: "2026-07-26T15:31:06.628Z"
+stopped_at: Completed 44-03-PLAN.md
+last_updated: "2026-07-26T15:47:01.438Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 8
-  completed_plans: 6
-  percent: 75
+  completed_plans: 7
+  percent: 25
 ---
 
 # Project State
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 ## Current Position
 
 Phase: 44 (Async Pipeline Wiring) — EXECUTING
-Plan: 2 of 4
-Status: Plan 44-02 complete — ready for 44-03/44-04
+Plan: 3 of 4
+Status: Ready to execute
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -118,6 +118,7 @@ Last activity: 2026-07-26
 | Phase 43 P04 | 55min | 3 tasks | 6 files |
 | Phase 44 P01 | 35min | 3 tasks | 9 files |
 | Phase 44 P02 | 4min | 2 tasks | 3 files |
+| Phase 44 P03 | 12min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -149,6 +150,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 44]: handleCreateJob's enqueue-routing switch deliberately left unchanged in 44-01 — an OCR job created via the live API today 500s at enqueue until 44-02 adds EnqueueOCRConvert; expected scoped interim state
 - [Phase 44]: OCRUniqueTTL derived fresh from OCR's own OCR_MAX_RETRY/OCR_ENGINE_TIMEOUT budget (300s/2 defaults), never copied from AVUniqueTTL/AudioUniqueTTL — proven distinct under default env — D-04/IN-02 discipline: a mismatch here would silently duplicate processing since the reconciler relies on the unique lock outliving asynq's true retry lifetime
 - [Phase 44]: ocrRetrySchedule set to a provisional 15s/1m (mirrors avRetrySchedule's 2-entry shape since OCR_MAX_RETRY defaults to 2 like AV_MAX_RETRY), and OCR_ENGINE_TIMEOUT default 300s (mirrors DOCUMENT_ENGINE_TIMEOUT/AV_ENGINE_TIMEOUT placeholder precedent) — both superseded by Phase 45's measured values — Tesseract/pdftoppm per-page cost is expected to be materially cheaper than av's ffmpeg transcode, so backoff is shorter than av's 30s/2m; kept as a Go-code placeholder pending real measurement, same precedent as AV_ENGINE_TIMEOUT
+- [Phase 44]: isOCRTerminal treats a non-timeout tesseract/pdftoppm/pdfinfo crash as TERMINAL via a dedicated signature list (D-04), diverging from isAudioTerminal/isAVTerminal's default-to-transient treatment of an unrecognized non-timeout error.
+- [Phase 44]: cmd/ocr-worker does not re-register a configured OCRConverter — the zero-value registration from converters.go's init() is used as-is this phase; OCR_MAX_PAGES/pixel-cap env wiring is Phase 45's job.
 
 ### Quick Tasks Completed
 
@@ -219,8 +222,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T15:30:24.077Z
-Stopped at: Completed 44-02-PLAN.md
+Last session: 2026-07-26T15:47:01.428Z
+Stopped at: Completed 44-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
