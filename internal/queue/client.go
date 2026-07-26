@@ -72,6 +72,18 @@ type Client struct {
 	// AV_ENGINE_TIMEOUT via AVUniqueTTL. Derived fresh, never reused from
 	// another engine class's TTL.
 	avUniqueTTL time.Duration
+	// ocrMaxRetry is the per-task MaxRetry budget for OCR conversion tasks
+	// (OCR_MAX_RETRY, default 2 — mirrors avMaxRetry's bounded-retry budget
+	// since a genuine tesseract/pdftoppm failure is deterministic on the
+	// input and unlikely to be helped by more than a couple of attempts).
+	ocrMaxRetry int
+	// ocrUniqueTTL is the per-job asynq.Unique lock TTL for OCR conversion
+	// tasks, derived once at construction from ocrMaxRetry and
+	// OCR_ENGINE_TIMEOUT via OCRUniqueTTL. Derived fresh from OCR's OWN
+	// retry/timeout budget, never reused from AVUniqueTTL/AudioUniqueTTL or
+	// any other engine class's TTL (D-04/IN-02) — a mismatch here would
+	// silently duplicate processing.
+	ocrUniqueTTL time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
@@ -85,7 +97,11 @@ type Client struct {
 // AV_ENGINE_TIMEOUT (default 600s — [ASSUMED] provisional, mirroring the
 // exact precedent AUDIO_ENGINE_TIMEOUT set: a 600s Go-code placeholder later
 // replaced by a 742s production value after Phase 32's RTF measurement;
-// Phase 36 re-derives AV_ENGINE_TIMEOUT the same way from an RTF matrix).
+// Phase 36 re-derives AV_ENGINE_TIMEOUT the same way from an RTF matrix),
+// OCR_MAX_RETRY (default 2), and OCR_ENGINE_TIMEOUT (default 300s — a
+// PROVISIONAL code placeholder this phase, mirroring the AV_ENGINE_TIMEOUT
+// [ASSUMED] precedent; Phase 45 supplies the measured OCR_ENGINE_TIMEOUT and
+// supersedes this value entirely).
 //
 // COUPLING (Pitfall 4, RESEARCH.md): RECONCILER_ACTIVE_STALE_AFTER is a
 // single global threshold (default 900s) that must comfortably exceed every
@@ -112,6 +128,8 @@ func NewClient() (*Client, error) {
 	audioEngineTimeout := envDuration("AUDIO_ENGINE_TIMEOUT", 600*time.Second)
 	avMaxRetry := envInt("AV_MAX_RETRY", 2)
 	avEngineTimeout := envDuration("AV_ENGINE_TIMEOUT", 600*time.Second)
+	ocrMaxRetry := envInt("OCR_MAX_RETRY", 2)
+	ocrEngineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,
@@ -125,6 +143,8 @@ func NewClient() (*Client, error) {
 		audioUniqueTTL:    AudioUniqueTTL(audioMaxRetry, audioEngineTimeout),
 		avMaxRetry:        avMaxRetry,
 		avUniqueTTL:       AVUniqueTTL(avMaxRetry, avEngineTimeout),
+		ocrMaxRetry:       ocrMaxRetry,
+		ocrUniqueTTL:      OCRUniqueTTL(ocrMaxRetry, ocrEngineTimeout),
 	}, nil
 }
 
@@ -201,6 +221,18 @@ func (c *Client) EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error {
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue av convert %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// EnqueueOCRConvert puts an OCR conversion job onto the ocr queue.
+func (c *Client) EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error {
+	task, err := NewOCRConvertTask(jobID, c.ocrMaxRetry, c.ocrUniqueTTL)
+	if err != nil {
+		return err
+	}
+	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
+		return fmt.Errorf("enqueue ocr convert %s: %w", jobID, err)
 	}
 	return nil
 }
