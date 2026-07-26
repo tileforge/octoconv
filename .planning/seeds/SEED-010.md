@@ -3,13 +3,19 @@ id: SEED-010
 status: dormant
 planted: 2026-07-26
 planted_during: post-v1.9 (design discussion after milestone close)
-trigger_when: when the backlog holds 3+ new engine classes to add, OR when adding an engine should stop requiring an API redeploy
+trigger_when: when adding a new worker/engine should require ZERO changes to core app code (only new isolated worker code + deploy config), OR when the backlog holds 3+ new engine classes to add
 scope: Large
 ---
 
 # SEED-010: Dynamic capability registry (self-registering workers, no API redeploy)
 
-Turn the current compile-time engine wiring into a **data-driven named-capability registry**: a worker built for one named task (e.g. `tex2pdf` = LaTeX→PDF) **self-registers** into a `capabilities` table on startup; the API reads that catalog to validate + route jobs. Adding a new converter becomes "deploy a worker container" — no API rebuild/redeploy.
+Turn the current compile-time engine wiring into a **data-driven named-capability registry**: a worker built for one named task (e.g. `tex2pdf` = LaTeX→PDF) **self-registers** into a `capabilities` table on startup; the API reads that catalog to validate + route jobs. Adding a new converter becomes "build the worker + deploy it" — no API rebuild/redeploy.
+
+## PRIMARY GOAL (north-star, locked 2026-07-26)
+
+**A developer adds a new worker WITHOUT changing any core/shared app code.** The actor is a **developer at deploy time** — NOT the client. The client only *uses* a capability by name (`operation=tex2pdf`); it never defines or registers one (registration is a trusted dev/deploy path, which is what removes the main security concern).
+
+Precise success criterion (additive, not invasive): adding a worker produces **zero diffs to existing core files** — no edits to `internal/convert/converters.go` (`init()`), `internal/queue/queue.go` (engine→queue constants), the `switch engine` branches in `internal/api/handlers.go`, or the `engine` CHECK enum migration. The ONLY new artifacts are: (1) the worker's OWN isolated code (its `cmd/<x>-worker`, Dockerfile, convert logic), (2) its self-registration on startup, and (3) deploy config (compose/helm/KEDA scaler). "Don't change code" means don't touch the shared/core code — the worker itself is of course new code, just isolated new code, never a diff to existing files.
 
 ## Why This Matters
 
