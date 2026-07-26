@@ -217,7 +217,7 @@ Plans:
   4. env-parity (IN-02 pattern) is confirmed across all queue-client-constructing services for the new `OCR_*` env vars, and a long multi-page OCR job survives a genuine N→N-1 HPA downscale without a premature SIGTERM.
 **Plans**: 3 plans (3 waves)
 Plans:
-- [ ] 46-01-PLAN.md — Clone av pair: deployment-ocr-worker.yaml + scaledobject-ocr.yaml (WR-01 triad verbatim, minReplicaCount:0, maxReplicaCount:2, scaleDownStabilizationSeconds:900) + keda.ocr/ocrWorker values + OCR_* configmap env (IN-02) + confirm SC2 QueueOCR collector
+- [x] 46-01-PLAN.md — Clone av pair: deployment-ocr-worker.yaml + scaledobject-ocr.yaml (WR-01 triad verbatim, minReplicaCount:0, maxReplicaCount:2, scaleDownStabilizationSeconds:900) + keda.ocr/ocrWorker values + OCR_* configmap env (IN-02) + confirm SC2 QueueOCR collector
 - [ ] 46-02-PLAN.md — Author keda-ocr-loadproof.sh (SC3 0→1→0) + keda-ocr-downscale-survival.sh (SC4, grace 774) + values-loadproof.yaml keda.ocr scaleDownStabilizationSeconds:15
 - [ ] 46-03-PLAN.md — LIVE operator-gated proof on OrbStack k8s: SC3 scale-from-zero + SC4 downscale-survival, timestamped evidence
 
@@ -270,7 +270,7 @@ Plans:
 | 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 44. Async Pipeline Wiring | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 3/4 | In Progress|  |
-| 46. KEDA/Helm Chart Integration | v1.10 | 0/3 | Not started | - |
+| 46. KEDA/Helm Chart Integration | v1.10 | 1/3 | In Progress|  |
 
 ---
 

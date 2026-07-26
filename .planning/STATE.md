@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
-status: completed
-stopped_at: Phase 46 context gathered
-last_updated: "2026-07-26T21:01:00.684Z"
+status: in_progress
+stopped_at: Completed 46-01-PLAN.md
+last_updated: "2026-07-26T21:30:47.387Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 3
-  total_plans: 12
-  completed_plans: 12
+  total_plans: 15
+  completed_plans: 13
   percent: 75
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.10 OCR Engine — Phase 45: Containerization + Measured Timeout Gate
+**Current focus:** v1.10 OCR Engine — Phase 46: KEDA/Helm Chart Integration
 
 ## Current Position
 
-Phase: 45 (Containerization + Measured Timeout Gate) — COMPLETE (4/4 plans)
-Next: Phase 46 (KEDA/Helm Chart Integration) — discuss → plan → execute
-Status: Phase 45 done; live OCR E2E green against the real ocr-worker container (SC1 + SC4)
+Phase: 46 (KEDA/Helm Chart Integration) — IN PROGRESS (1/3 plans)
+Next: 46-02 (keda-ocr-loadproof.sh + keda-ocr-downscale-survival.sh + values-loadproof.yaml)
+Status: 46-01 done — ocr-worker Deployment + worker-ocr-scaledobject ScaledObject chart templates, keda.ocr/ocrWorker values, OCR_* ConfigMap env; SC2 confirmed (helm lint/template green)
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -124,6 +124,7 @@ Last activity: 2026-07-26
 | Phase 45 P02 | 35min | 3 tasks | 4 files |
 | Phase 45 P03 | 15min | 2 tasks | 6 files |
 | Phase 45 P04 | ~70min | 2 tasks | 5 files |
+| Phase 46 P01 | 20min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -167,6 +168,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase 45]: OCR_ENGINE_TIMEOUT committed as a clearly-marked PLACEHOLDER (300s) in docker-compose.yml/.env.example/queue.NewClient() default -- Plan 03 must replace it with the real p95-derived number before OCRE-04 is closed
 - [Phase 45]: scripts/ocr-timing-measure.sh reuses committed internal/convert/testdata/ocr/ unit-test fixtures (text_sample.png=clean, adversarial_text.png=noisy, multipage_image_only.pdf=dense/PDF-sourced) as its 3-doc measurement corpus rather than committing new large binaries; OCR_TIMING_*_SRC env overrides let an operator substitute a more representative corpus
 - [Phase 45 Plan 03]: the committed 2 KB one-line synthetic PNG fixtures (internal/convert/testdata/ocr/*) UNDER-stated per-page cost at 0.148 s/page (would have yielded a dangerously-low 60s timeout) — operator synthesized a REPRESENTATIVE 300-DPI full-page corpus (ImageMagick/Arial, mixed EN+RU, ~10K chars/page, normal 12pt clean / 10pt dense body+margins) and re-measured against the real ocr-worker image at compose limits (arch=arm64, cpus=2.0, memory=1g, N=10, omp_thread_limit=2, ALL GREEN). Per-cell p95 sec/page: clean_eng=3.010 clean_rus=2.927 dense_eng=5.810 dense_rus=5.789 noisy_eng=3.646 noisy_rus=3.017. Worst cell = dense_eng, p95=5.81 s/page. D-03 provisional OCR_MAX_PAGES=200 breached the 900s reconciler CAP (ceil(200×5.81×2.0)=2324s) — Path-B NO-GO lever fired, lowered 200→64. OCR_ENGINE_TIMEOUT = ceil(64×5.81×2.0) = 744s, 17.3% under the 900s CAP; propagated byte-identically to all 9 queue-client services (docker-compose.yml + .env.example); ocr-worker stop_grace_period recomputed 320s→764s (744s+10s ShutdownTimeout margin+10s Docker SIGKILL margin). 744s is distinct from AV_ENGINE_TIMEOUT(753s)/AUDIO_ENGINE_TIMEOUT(742s) — never copied (PITFALLS.md Pitfall 7). An intermediate adversarial fine-print run (full A4 ~5pt) gave 17.9 s/page — reference upper bound, not used as the committed basis.
+- [Phase 46]: keda.ocr mirrors keda.av 1:1 (threshold 1, maxReplicaCount 2, cooldown 180, stabilization 900); ocrWorker.terminationGracePeriodSeconds=774 — OCR_ENGINE_TIMEOUT=744s sits between audio's 742s and av's 753s; 774=744+30 chart convention, distinct from compose's 764=744+10+10
+- [Phase 46]: minReplicaCount hardcoded 0 in scaledobject-ocr.yaml, not templatized — SEED-011 (per-engine warm floor) stays deferred/out of scope per D-04
 
 ### Quick Tasks Completed
 
@@ -237,9 +240,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T21:01:00.671Z
-Stopped at: Phase 46 context gathered
-Resume file: .planning/phases/46-keda-helm-chart-integration/46-CONTEXT.md
+Last session: 2026-07-26T21:30:47.374Z
+Stopped at: Completed 46-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
