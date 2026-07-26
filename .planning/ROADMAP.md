@@ -167,7 +167,12 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
   3. The same input also produces hOCR (and ALTO, if built as a distinct target) output with word/line bounding boxes, assembled via a real XML/HTML encoder — never string concatenation — and a round-trip test proves OCR'd text containing `&`/`<`/`>` still parses as valid XML.
   4. A PDF whose declared page count (via `pdfinfo`) exceeds `OCR_MAX_PAGES` is rejected fail-closed before any page is rendered; a PDF that already has an extractable text layer (born-digital) is rejected fail-closed (422) rather than silently re-OCR'd.
   5. `OCROpts{Language}` is validated against a closed allowlist (e.g. `eng`, `rus`, combinable as `eng+rus`) via the shared strict-parse helper (mirrors `AudioOpts`) — an unlisted language code is rejected before any work begins, and an injection test proves client bytes never reach Tesseract's `-l` argv unvalidated.
-**Plans**: TBD
+**Plans**: 4 plans (3 waves)
+Plans:
+- [ ] 43-01-PLAN.md — OCROpts closed language allowlist (eng/rus/eng+rus) strict-parse + injection defense
+- [ ] 43-02-PLAN.md — Guard layer: PDF page-count cap + image pixel cap + born-digital pdftotext detection (fail-closed pre-render)
+- [ ] 43-03-PLAN.md — OCRConverter core: Pairs/Engine/Convert image→txt at PSM 3/OEM 1 + hOCR/ALTO via real XML encoder
+- [ ] 43-04-PLAN.md — Streaming per-page PDF path (pdftoppm→tesseract→delete) + page-granular ConvertWithProgress
 
 ### Phase 44: Async Pipeline Wiring
 **Goal**: OCR jobs (image/PDF → txt/hOCR) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the completely unmodified v1.9 progress/SSE/webhook machinery.
