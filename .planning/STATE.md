@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
-status: verifying
-stopped_at: Phase 44 context gathered
-last_updated: "2026-07-26T14:48:41.000Z"
+status: completed
+stopped_at: Completed 44-01-PLAN.md
+last_updated: "2026-07-26T15:18:38.716Z"
 last_activity: 2026-07-26
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 8
+  completed_plans: 5
   percent: 25
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.10 OCR Engine — Phase 43: OCR Engine Foundation
+**Current focus:** v1.10 OCR Engine — Phase 44: Async Pipeline Wiring
 
 ## Current Position
 
-Phase: 43 (OCR Engine Foundation) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
+Phase: 44 (Async Pipeline Wiring) — EXECUTING
+Plan: 1 of 4
+Status: Plan 44-01 complete — ready for wave 2 (44-02/44-03)
 Last activity: 2026-07-26
 
 ## Performance Metrics
@@ -116,6 +116,7 @@ Last activity: 2026-07-26
 | Phase 43 P02 | 20min | 3 tasks | 5 files |
 | Phase 43 P03 | 45min | 3 tasks | 5 files |
 | Phase 43 P04 | 55min | 3 tasks | 6 files |
+| Phase 44 P01 | 35min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 - [Phase ?]: ocrPrepareConversion factored so Convert/ConvertWithProgress share one accept/reject decision (mirrors av.go)
 - [Phase ?]: New per-page pdfinfo parser (parsePdfinfoPerPagePageSize) for the -f N -l N per-page Page-size line shape
 - [Phase ?]: PATH-restriction test technique proves guard-before-render ordering rather than just asserting it
+- [Phase 44]: OCR routing needs no new dispatch code — registering OCRConverter alone makes EngineFor route jpg/pdf->txt to ocr vs jpg->png to image (D-01)
+- [Phase 44]: handleCreateJob's enqueue-routing switch deliberately left unchanged in 44-01 — an OCR job created via the live API today 500s at enqueue until 44-02 adds EnqueueOCRConvert; expected scoped interim state
 
 ### Quick Tasks Completed
 
@@ -213,9 +216,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T14:48:40.990Z
-Stopped at: Phase 44 context gathered
-Resume file: .planning/phases/44-async-pipeline-wiring/44-CONTEXT.md
+Last session: 2026-07-26T15:18:34.935Z
+Stopped at: Completed 44-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

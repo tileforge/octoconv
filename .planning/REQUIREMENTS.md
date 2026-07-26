@@ -20,7 +20,7 @@
 
 ### OCRE — Engine safety / hardening
 
-- [ ] **OCRE-01**: Загрузки гейтятся fail-closed magic-byte валидацией (изображения + PDF `%PDF-`) до любого OCR; declared/detected mismatch → 422.
+- [ ] **OCRE-01**: Загрузки гейтятся fail-closed magic-byte валидацией (изображения + PDF `%PDF-`) до любого OCR; declared/detected mismatch → 422. _(Partial: 44-01 wires the API-side upload-time gate — matchPDF sniff, declared/detected mismatch 422, EngineOCR ceiling. Full closure awaits the OCR worker path in 44-02/44-03.)_
 - [ ] **OCRE-02**: Оверсайз-ввод (число страниц PDF сверх `OCR_MAX_PAGES`, либо размеры изображения сверх cap) отвергается fail-closed ДО растеризации/декода — memory-bomb гард (аналог `MAX_IMAGE_PIXELS`/AVE-05, enforced pre-render).
 - [ ] **OCRE-03**: Born-digital PDF (уже содержит текстовый слой) отвергается fail-closed (422) в v1, а не переОCR-ится вслепую (detect-and-passthrough отложен в v2).
 - [ ] **OCRE-04**: `OCR_ENGINE_TIMEOUT` (и `OCR_MAX_PAGES`) **измерены** собственным гейтом (`scripts/ocr-timing-measure.sh`, seconds-per-page), а не скопированы у соседнего движка; таймаут под глобальным reconciler-CAP.
@@ -28,7 +28,7 @@
 
 ### OCRP — Async pipeline & scale
 
-- [ ] **OCRP-01**: OCR встроен в полный async-контур end-to-end (submit → done → download): миграция `0009_ocr_engine.sql` (добавляет `ocr` в `jobs.engine` enum), очередь `ocr`, `cmd/ocr-worker`, stage-aware transient/terminal retry, API-роутинг; single job → single target формат (mirror AudioConverter). Реестр SEED-010 остаётся dormant (compile-time `Registry.Register`).
+- [ ] **OCRP-01**: OCR встроен в полный async-контур end-to-end (submit → done → download): миграция `0009_ocr_engine.sql` (добавляет `ocr` в `jobs.engine` enum), очередь `ocr`, `cmd/ocr-worker`, stage-aware transient/terminal retry, API-роутинг; single job → single target формат (mirror AudioConverter). Реестр SEED-010 остаётся dormant (compile-time `Registry.Register`). _(Partial: 44-01 lands the migration + registry/routing foundation only — queue/worker/reconciler wiring is 44-02/44-03's job.)_
 - [ ] **OCRP-02**: OCR-воркер контейнеризован (`Dockerfile.ocr-worker`, Tesseract source-built + tag-pinned, `tessdata_fast` SHA-pinned, poppler-utils) и автоскейлится через KEDA scale-from-zero, с таймаутами из измеренных OCRE-04 значений; compose + Helm chart интеграция.
 
 ## v2 Requirements
@@ -59,12 +59,12 @@
 | OCR-03 | Phase 43 | Complete |
 | OCR-04 | Phase 43 | Complete |
 | OCRO-01 | Phase 43 | Complete |
-| OCRE-01 | Phase 44 | Pending |
+| OCRE-01 | Phase 44 | Partial (44-01) |
 | OCRE-02 | Phase 43 | Pending |
 | OCRE-03 | Phase 43 | Pending |
 | OCRE-04 | Phase 45 | Pending |
 | OCRE-05 | Phase 44 | Pending |
-| OCRP-01 | Phase 44 | Pending |
+| OCRP-01 | Phase 44 | Partial (44-01) |
 | OCRP-02 | Phase 46 | Pending |
 
 **Coverage:**
