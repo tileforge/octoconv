@@ -187,7 +187,7 @@ Plans:
 **Plans**: 4 plans (3 waves)
 Plans:
 - [x] 44-01-PLAN.md — Migration 0009 + matchPDF sniff + register OCRConverter + EngineFor routing + EngineOCR upload limit (OCRP-01/OCRE-01)
-- [ ] 44-02-PLAN.md — OCR queue/task + fresh-derived OCRUniqueTTL + EnqueueOCRConvert (OCRP-01)
+- [x] 44-02-PLAN.md — OCR queue/task + fresh-derived OCRUniqueTTL + EnqueueOCRConvert (OCRP-01)
 - [ ] 44-03-PLAN.md — HandleOCRConvert + isOCRTerminal + cmd/ocr-worker + reconciler ocr routing (OCRP-01/OCRE-05)
 - [ ] 44-04-PLAN.md — Integration proof: image null→100 + multi-page PDF page-by-page ramp + progress.go/sse.go unchanged fence (OCRP-01)
 
@@ -260,7 +260,7 @@ Plans:
 | 41. Progress Core | v1.9 | 4/4 | Complete | 2026-07-25 |
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
 | 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
-| 44. Async Pipeline Wiring | v1.10 | 1/4 | In Progress|  |
+| 44. Async Pipeline Wiring | v1.10 | 2/4 | In Progress|  |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 0/TBD | Not started | - |
 | 46. KEDA/Helm Chart Integration | v1.10 | 0/TBD | Not started | - |
 
