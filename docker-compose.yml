@@ -115,6 +115,15 @@ services:
       # (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- ocrUniqueTTL is
+      # derived from these unconditionally in every queue.NewClient()-
+      # constructing process; must be byte-identical across all 9 services
+      # (45-02-SUMMARY.md). OCR_ENGINE_TIMEOUT is a PLACEHOLDER -- the real
+      # MEASURED value is derived by Plan 03's supervised
+      # scripts/ocr-timing-measure.sh run, NOT copied from AV/AUDIO
+      # (PITFALLS.md Pitfall 7).
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see comment above; finalized by Plan 03
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
@@ -165,6 +174,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -222,6 +237,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   webhook-worker-2:
@@ -269,6 +290,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   document-worker:
@@ -319,6 +346,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -368,6 +401,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
     # alongside the --disable-dev-shm-usage argv flag (D-09/Pitfall C) --
@@ -440,6 +479,12 @@ services:
       # byte-identical across all 8 services (36-03-SUMMARY.md).
       AV_MAX_RETRY: "2"
       AV_ENGINE_TIMEOUT: "753s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -537,6 +582,12 @@ services:
       HTML_ENGINE_TIMEOUT: "60s"
       AUDIO_MAX_RETRY: "3"
       AUDIO_ENGINE_TIMEOUT: "742s"
+      # IN-02 (Phase 45): same requirement, ocr engine -- must be
+      # byte-identical across all 9 services (45-02-SUMMARY.md).
+      # OCR_ENGINE_TIMEOUT is a PLACEHOLDER, finalized by Plan 03's
+      # supervised scripts/ocr-timing-measure.sh run.
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see ocr-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
       # webhooks (internal/worker fireDetached). MUST match webhook-worker-1/-2's
@@ -564,6 +615,105 @@ services:
           # Resolves Open Question 4 (audio's 1g vs chromium's 2g) with a
           # measured-not-assumed answer: 1g, matching audio-worker's own
           # baseline.
+          memory: 1g
+
+  # Tesseract/poppler are source-built (Dockerfile.ocr-worker, Phase 45
+  # Plan 01) -- no platform: pin needed, same posture as av-worker/
+  # audio-worker/chromium-worker (unlike document-worker's veraPDF-forced
+  # amd64 pin).
+  ocr-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.ocr-worker
+    container_name: octoconv-ocr-worker
+    restart: always
+    # cmd/ocr-worker sets asynq ShutdownTimeout = OCR_ENGINE_TIMEOUT (300s
+    # PLACEHOLDER below) + 10s = 310s so an in-flight tesseract/pdftoppm
+    # attempt survives SIGTERM instead of being aborted+requeued (mirrors
+    # av-worker's/audio-worker's own WR-05 margin). PLACEHOLDER -- Plan 03
+    # recomputes this to the real MEASURED OCR_ENGINE_TIMEOUT + 10s
+    # ShutdownTimeout margin + 10s Docker SIGKILL margin (mirrors av's
+    # 773s = 753s+10s+10s derivation, 36-04-SUMMARY.md), NOT copied from
+    # AV/AUDIO's own numbers.
+    stop_grace_period: 320s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://octo:octo-pass@postgres:5432/octo_db
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: octoconv
+      S3_USE_SSL: "false"
+      # D-03 (Phase 45, mirrors AV_WORKER_CONCURRENCY=1/
+      # AUDIO_WORKER_CONCURRENCY=1's own measured-not-assumed provenance):
+      # one OCR job at a time -- avoids CPU oversubscription/CFS-thrashing
+      # on this cgroup-limited worker; a per-job OCR already streams pages
+      # sequentially. A concurrency > 1 is a measured-evidence future
+      # tweak, not v1 (ocr-worker-only, NOT read by queue.NewClient(), so
+      # no IN-02 parity requirement).
+      OCR_WORKER_CONCURRENCY: "1"
+      # D-03 provisional ceiling (ocr-worker-only, NOT read by
+      # queue.NewClient()) -- FINALIZED by Plan 03's measurement so that
+      # OCR_MAX_PAGES x worst-cell-p95 x 2.0 < 900s (RECONCILER_ACTIVE_STALE_AFTER
+      # CAP, webhook-worker-1/-2 below). Mirrors AV_MAX_DURATION_SECONDS's/
+      # AUDIO_MAX_DURATION_SECONDS's own Path-B NO-GO lever precedent: if the
+      # derived timeout would breach the CAP at this ceiling, LOWER this
+      # value rather than raising the global CAP.
+      OCR_MAX_PAGES: "200"
+      # Decompression-bomb ceiling for OCR's own image-source guard
+      # (enforceImagePixelBound, ocrguards.go) -- same 100-megapixel
+      # magnitude as the api service's MAX_IMAGE_PIXELS above, made an
+      # operator-visible compose/.env.example knob rather than a silent
+      # code default (mirrors MAX_IMAGE_PIXELS's own compose+.env.example
+      # presence). ocr-worker-only, NOT read by queue.NewClient().
+      OCR_MAX_IMAGE_PIXELS: "100000000"
+      # PLACEHOLDER (D-02/OCRE-04) -- the real MEASURED value is derived by
+      # Plan 03's supervised scripts/ocr-timing-measure.sh run:
+      # OCR_ENGINE_TIMEOUT = ceil(OCR_MAX_PAGES x worst-cell-p95-sec/page x
+      # 2.0 safety), verified < 900s. NEVER copied from AV_ENGINE_TIMEOUT/
+      # AUDIO_ENGINE_TIMEOUT (PITFALLS.md Pitfall 7 -- OCR's cost model is
+      # per-page, not per-input-duration, so a neighbor's timeout is
+      # wrong-by-construction here).
+      OCR_ENGINE_TIMEOUT: "300s" # PLACEHOLDER -- see comment above, finalized by Plan 03
+      OCR_MAX_RETRY: "2"
+      # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
+      # every OTHER engine class's retry/timeout vars unconditionally, even
+      # though this process only runs the ocr engine (DEBT-05).
+      IMAGE_MAX_RETRY: "4"
+      ENGINE_TIMEOUT: "120s"
+      DOCUMENT_MAX_RETRY: "3"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      HTML_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      AUDIO_MAX_RETRY: "3"
+      AUDIO_ENGINE_TIMEOUT: "742s"
+      AV_MAX_RETRY: "2"
+      AV_ENGINE_TIMEOUT: "753s"
+      METRICS_ADDR: "127.0.0.1:9090"
+      # PUSH-02-style (mirrors av-worker/PROG-03): cmd/ocr-worker signs +
+      # fires opt-in inline progress webhooks (page-granular ramp for a
+      # multi-page scanned PDF). MUST match webhook-worker-1/-2's own
+      # WEBHOOK_SIGNING_SECRET exactly so a client verifies BOTH the
+      # throttled progress events AND the terminal done/failed event with
+      # the same key. Unset => cmd/ocr-worker fail-opens and progress
+      # webhooks are silently disabled, so this line is what makes OCR
+      # progress webhooks actually deliverable in the compose deployment.
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
+    deploy:
+      resources:
+        limits:
+          # Must match the scripts/ocr-timing-measure.sh measurement
+          # container's --cpus/--memory EXACTLY (mirrors av-worker's own
+          # fleet-baseline discipline) -- the measured p95 sec/page this
+          # phase produces is only valid at these limits.
+          cpus: "2.0"
           memory: 1g
 
   # Read-only asynq queue-inspection dashboard (OBS-03). Bound to 127.0.0.1
