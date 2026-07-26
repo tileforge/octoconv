@@ -63,6 +63,7 @@ type enqueuer interface {
 	EnqueueHTMLConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueAudioConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueAVConvert(ctx context.Context, id uuid.UUID) error
+	EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error
 }
 
 // Sweeper periodically scans for stale jobs and recovers or exhausts them.
@@ -293,6 +294,8 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			enqueueErr = s.enq.EnqueueAudioConvert(ctx, j.ID)
 		case convert.EngineAV:
 			enqueueErr = s.enq.EnqueueAVConvert(ctx, j.ID)
+		case convert.EngineOCR:
+			enqueueErr = s.enq.EnqueueOCRConvert(ctx, j.ID)
 		default:
 			// Fail closed (T-10-03): cad/archive/probe are out of scope this
 			// milestone and a corrupted/unrecognized engine value must never

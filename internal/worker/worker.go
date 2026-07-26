@@ -1136,6 +1136,113 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 	return nil
 }
 
+// HandleOCRConvert runs one OCR extraction (image or scanned/image-only PDF
+// -> txt/hOCR/ALTO): load job -> mark active -> download input -> run
+// tesseract/pdftoppm (via the engine-agnostic process(), which reuses
+// registry.Lookup -- the OCRConverter registered in convert.Default handles
+// the actual extraction, including its own page-count/page-box/born-digital/
+// image-pixel guards, ocrguards.go/ocrpdf.go) -> upload output -> record
+// output -> mark done. Mirrors HandleAVConvert's/HandleDocumentConvert's
+// SIMPLE shape (no guard splice): OCRConverter.Convert already self-contains
+// every guard, so process() needs no OCR-specific branch and this handler
+// calls it exactly as av/document do. Diverges from HandleAVConvert in two
+// ways (mirrors AVE-03's own divergence from HandleDocumentConvert): (1) the
+// terminal-classification branch calls isOCRTerminal instead of
+// isAVTerminal -- D-04's stage-aware split, NOT isAVTerminal's shape; (2) a
+// terminal failure's error_code is selected via ocrFailureCode instead of
+// avFailureCode, so a client can distinguish a born-digital/too-many-pages/
+// page-too-large/image-too-large/unsupported-language/unsupported-target
+// rejection from a generic corrupted-input failure. Both
+// metrics.RecordJobOutcome calls are tagged queue.QueueOCR.
+func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
+	payload, err := queue.ParseConvertPayload(t.Payload())
+	if err != nil {
+		// Unparseable payload: nothing we can retry into success.
+		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+	}
+	jobID := payload.JobID
+
+	job, err := h.repo.Get(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load job %s: %w", jobID, err)
+	}
+
+	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
+	// is a terminal, not transient, failure -- a corrupt column value can
+	// never fix itself on retry. This is a strictness check only; the
+	// applicability/enum business rules already ran once, at the API layer
+	// (single source of validation truth), and are deliberately not
+	// duplicated here.
+	if _, err := convert.OCROptsFromMap(job.Opts); err != nil {
+		// Mark failed BEFORE SkipRetry: without this the job would stay
+		// queued forever (no webhook, client polls a dead job) while the
+		// reconciler requeues it into the same failure until MaxRecoveries
+		// is exhausted (T-14-02b). Sanitized message only; the parse error
+		// is kept in job_events.detail for internal diagnostics.
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// Postgres-first: enqueue the webhook ONLY once the failed status is
+		// actually committed — if MarkFailed itself failed, a webhook now
+		// would report the non-terminal status "queued" (WR-04). A failed
+		// enqueue after a successful MarkFailed must not fail the job —
+		// best-effort only.
+		if ferr == nil && job.CallbackURL != "" {
+			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+		}
+		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
+	}
+
+	if err := h.repo.MarkActive(ctx, jobID); err != nil {
+		// Already active/done/canceled — let asynq drop it rather than loop.
+		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
+	}
+
+	start := time.Now()
+	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
+		if isOCRTerminal(err) {
+			// Sanitized message only in error_message (exposed via GET
+			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
+			// (which contains local temp paths) is kept in job_events.detail
+			// for internal diagnostics only.
+			code, message := ocrFailureCode(err)
+			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()})
+			metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusFailed, time.Since(start))
+			// Postgres-first: enqueue the webhook ONLY once the failed status
+			// is actually committed. If MarkFailed itself failed (Postgres
+			// blip), the job is still active — a webhook now would re-read the
+			// row and deliver the non-terminal status "active", which the
+			// contract never defines (WR-04); the reconciler will requeue the
+			// still-active job instead. A failed enqueue after a successful
+			// MarkFailed must not fail the conversion — best-effort only.
+			if ferr == nil && job.CallbackURL != "" {
+				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+			}
+			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+		}
+		// Transient: do NOT mark failed — the job stays active so asynq's own
+		// retry/backoff (OCRRetryDelay/OCR_MAX_RETRY) applies. Not a terminal
+		// outcome, so it is NOT recorded in the job-outcome metric (one asynq
+		// retry must not double-count).
+		return err
+	}
+	metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusDone, time.Since(start))
+	// Postgres-first: MarkDone already committed inside process(), so a
+	// failed enqueue must not fail the conversion — best-effort only.
+	if job.CallbackURL != "" {
+		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+	}
+	return nil
+}
+
 // HandleWebhookDeliver delivers one webhook attempt for a completed job:
 // re-read the job from Postgres, regenerate a fresh presigned download_url
 // per attempt (done only, D-09), sign, deliver, record the attempt, and

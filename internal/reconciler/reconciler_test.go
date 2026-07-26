@@ -102,6 +102,8 @@ type fakeEnqueuer struct {
 	audioCalls         []uuid.UUID
 	enqueueAVErr       error
 	avCalls            []uuid.UUID
+	enqueueOCRErr      error
+	ocrCalls           []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -144,6 +146,13 @@ func (f *fakeEnqueuer) EnqueueAVConvert(ctx context.Context, id uuid.UUID) error
 	defer f.mu.Unlock()
 	f.avCalls = append(f.avCalls, id)
 	return f.enqueueAVErr
+}
+
+func (f *fakeEnqueuer) EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ocrCalls = append(f.ocrCalls, id)
+	return f.enqueueOCRErr
 }
 
 // imageCallIDs returns a locked snapshot copy of imageCalls — used by the
@@ -199,6 +208,15 @@ func (f *fakeEnqueuer) avCallIDs() []uuid.UUID {
 	defer f.mu.Unlock()
 	out := make([]uuid.UUID, len(f.avCalls))
 	copy(out, f.avCalls)
+	return out
+}
+
+// ocrCallIDs returns a locked snapshot copy of ocrCalls.
+func (f *fakeEnqueuer) ocrCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uuid.UUID, len(f.ocrCalls))
+	copy(out, f.ocrCalls)
 	return out
 }
 
@@ -361,6 +379,48 @@ func TestSweepRoutesAVJobsToAVQueue(t *testing.T) {
 	}
 }
 
+// TestSweepRoutesOCRJobsToOCRQueue proves a stranded engine="ocr" job routes
+// to EnqueueOCRConvert and NONE of the other five Enqueue* methods
+// (OCRP-01): sweep() must recover a stranded OCR job onto the ocr queue,
+// never fail-closed-default it. Mirrors TestSweepRoutesAVJobsToAVQueue
+// exactly.
+func TestSweepRoutesOCRJobsToOCRQueue(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "ocr"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	s.sweep(context.Background())
+
+	if len(enq.ocrCalls) != 1 || enq.ocrCalls[0] != id {
+		t.Fatalf("EnqueueOCRConvert calls = %+v, want [%s]", enq.ocrCalls, id)
+	}
+	if len(enq.imageCalls) != 0 {
+		t.Fatalf("EnqueueImageConvert should not be called for an ocr job, got %d calls", len(enq.imageCalls))
+	}
+	if len(enq.documentCalls) != 0 {
+		t.Fatalf("EnqueueDocumentConvert should not be called for an ocr job, got %d calls", len(enq.documentCalls))
+	}
+	if len(enq.htmlCalls) != 0 {
+		t.Fatalf("EnqueueHTMLConvert should not be called for an ocr job, got %d calls", len(enq.htmlCalls))
+	}
+	if len(enq.audioCalls) != 0 {
+		t.Fatalf("EnqueueAudioConvert should not be called for an ocr job, got %d calls", len(enq.audioCalls))
+	}
+	if len(enq.avCalls) != 0 {
+		t.Fatalf("EnqueueAVConvert should not be called for an ocr job, got %d calls", len(enq.avCalls))
+	}
+	if store.requeueStaleCalls != 1 {
+		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	}
+	if len(store.markFailedCalls) != 0 {
+		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	}
+}
+
 // TestSweepRoutesEveryEngineConstant is the D-06 completeness guard for the
 // reconciler routing seam (35-CONTEXT.md): D-06 explicitly declined
 // refactoring the reconciler's (and the API's) routing switch into a shared
@@ -383,6 +443,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 		{convert.EngineHTML, (*fakeEnqueuer).htmlCallIDs},
 		{convert.EngineAudio, (*fakeEnqueuer).audioCallIDs},
 		{convert.EngineAV, (*fakeEnqueuer).avCallIDs},
+		{convert.EngineOCR, (*fakeEnqueuer).ocrCallIDs},
 	}
 
 	for _, want := range cases {
