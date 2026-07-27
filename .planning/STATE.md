@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.10
 milestone_name: OCR Engine
-status: in_progress
-stopped_at: Phase 46 complete (46-03 live proof PASS) — v1.10 ready for audit
-last_updated: "2026-07-26T21:41:10.633Z"
-last_activity: 2026-07-26
+status: Awaiting next milestone
+stopped_at: Completed 46-02-PLAN.md
+last_updated: "2026-07-27T08:58:19.856Z"
+last_activity: 2026-07-27 — Milestone v1.10 completed and archived
 progress:
   total_phases: 4
   completed_phases: 4
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 ## Current Position
 
-Phase: 46 (KEDA/Helm Chart Integration) — IN PROGRESS (2/3 plans)
-Next: 46-03 (operator-gated live checkpoint: build octoconv-ocr-worker:dev, run keda-ocr-loadproof.sh + keda-ocr-downscale-survival.sh against a live OrbStack cluster)
-Status: 46-02 done — scripts/keda-ocr-loadproof.sh (SC3) + scripts/keda-ocr-downscale-survival.sh (SC4) authored + statically verified (bash -n, shellcheck -S error, dual-overlay helm template render); keda.ocr.scaleDownStabilizationSeconds:15 added to values-loadproof.yaml; no live cluster run yet
-Last activity: 2026-07-26
+Phase: Milestone v1.10 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-07-27 — Milestone v1.10 completed and archived
 
 ## Performance Metrics
 
@@ -250,5 +250,15 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Review the v1.10 roadmap draft (.planning/ROADMAP.md, Phase Details section) and approve or request revisions.
-- Once approved, run `/gsd:plan-phase 43` to plan the OCR Engine Foundation phase.
+- Start the next milestone with /gsd-new-milestone
+
+## Deferred Items
+
+Items acknowledged and deferred at v1.10 milestone close on 2026-07-27:
+
+| Category | Item | Status |
+|----------|------|--------|
+| quick_task | 260712-cqg-fix-phase-16-verification-gaps-cr-01-wr- | missing/abandoned (v1.3-era, out of scope) |
+| quick_task | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | missing/abandoned (v1.5-era, out of scope) |
+| quick_task | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | missing/abandoned (out of scope) |
+| seeds | SEED-001..015 (12 dormant) | dormant by design — forward-looking parking lot |

@@ -300,6 +300,32 @@ Fifth engine class — video via ffmpeg in a dedicated `av-worker`, following th
 - Model mix: planner opus, executors/verifier/checker sonnet.
 - Notable: heavy live-cluster proofs (image builds + KEDA) dominated wall-clock; the abort-to-operator discipline prevented runaway retries.
 
+## Milestone: v1.10 — OCR Engine (text extraction)
+
+**Shipped:** 2026-07-27
+**Phases:** 4 | **Plans:** 15 | **Tasks:** 35
+
+### What Was Built
+Sixth engine class: OCR/text-extraction. Standalone OCRConverter (image/PDF → txt/hOCR/ALTO, streaming page-by-page, memory-bomb + born-digital safe); full async wiring (ocr queue, cmd/ocr-worker, reconciler); source-built Tesseract 5.5.3 + poppler container with SHA-pinned eng/rus tessdata; MEASURED OCR_ENGINE_TIMEOUT=744s (worst-cell 5.81 s/page, Path-B OCR_MAX_PAGES 200→64); KEDA scale-from-zero + downscale-survival live-proven on OrbStack k8s. Reused the v1.9 progress/SSE/webhook machinery byte-for-byte.
+
+### What Worked
+- Mechanical engine-class cloning (av/audio precedent) kept each phase tight and low-risk.
+- Live gates caught real production bugs a unit/integration pass could not: the Phase-44 enqueue-switch gap, and (in Phase 45) the missing OCR opts-dispatch case + missing tesseract output-config bake — all surfaced only by running the real container end-to-end.
+- Measure-don't-assume timeout: a representative-corpus re-measurement (after a toy-fixture first pass) prevented shipping a dangerously-low 60s timeout.
+
+### What Was Inefficient
+- Corpus representativeness took three measurement passes (toy 0.148 s/page → adversarial fine-print 17.9 → realistic 5.81) before a defensible number.
+- The live KEDA proof required enabling OrbStack k8s + reclaiming disk (an aggressive prune wiped the tesseract build cache, forcing a full source rebuild).
+
+### Patterns Established
+- OCR opts dispatched through their own EngineOCR case in handleCreateJob's opts switch (mirrors Audio/AV/HTML).
+- Engine output-format config files (tesseract configs/tessconfigs) must be baked into the runtime image alongside SHA-pinned language data.
+- Live E2E ramp fixtures must be sized so the page-granular progress ramp is sampleable past the poll+throttle cadence.
+
+### Key Lessons
+- A passed unit/integration suite is not a substitute for a live containerized E2E — three of this milestone's real bugs were invisible until the actual image ran in the actual pipeline.
+- Chart grace (774s) vs compose grace (764s) legitimately differ by convention; both must be ≥ the measured timeout, verified, not copied.
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -314,6 +340,7 @@ Fifth engine class — video via ffmpeg in a dedicated `av-worker`, following th
 | v1.5 | ~1 | 4 | First measured go/no-go gate; first new dep since v1.0; agent-resume-from-transcript recovery; masked-exit-code merge bug found and fixed |
 | v1.6 | ~1 | 5 | First infrastructure milestone; values-gated overrides; live gates with committed timestamped evidence became the proof standard |
 | v1.7 | ~1 | 5 | Fourth engine class fully autonomous session (plan→execute→review→verify→secure per phase); RTF measurement gate reused; frozen-scripts discipline; one-off live proofs institutionalized as repeatable E2E |
+| v1.10 | ~1 | 4 | Sixth engine class; seconds-per-page measurement gate (new metric shape vs. RTF ratio); three live-only bugs (enqueue-switch gap, opts-dispatch case, config bake) surfaced only by containerized E2E |
 
 ### Cumulative Quality
 
@@ -327,6 +354,7 @@ Fifth engine class — video via ffmpeg in a dedicated `av-worker`, following th
 | v1.5 | 12/12 satisfied | 0 | 3 advisory (no MCP-specific CFB live path, amd64 pin, JRE path B size), documented in v1.5-MILESTONE-AUDIT.md |
 | v1.6 | 9/9 satisfied | 0 | advisory tail (OPER-01 live-script gap, WR-01 semantics, gate-tooling warnings) — closed by v1.7 Phase 29 |
 | v1.7 | 12/12 satisfied | 0 | 4 advisory (WR-05 frozen-script jsonpath forward-fix, registry cold-pull measurement, arm64 RTF caveat, review Info nits), documented in v1.7-MILESTONE-AUDIT.md |
+| v1.10 | 12/12 satisfied | 0 | advisory tail (WR-05 frozen-script jsonpath residual carried, corpus-representativeness lesson recorded), documented in v1.10-MILESTONE-AUDIT.md |
 
 ### Top Lessons (Verified Across Milestones)
 

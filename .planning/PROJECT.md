@@ -10,6 +10,8 @@ OctoConv — внутренний асинхронный сервис конве
 
 ## Current State
 
+**v1.10 OCR Engine (text extraction) — SHIPPED 2026-07-27.** OctoConv теперь имеет ШЕСТЬ engine-классов: изображения (libvips), офисные документы (LibreOffice), HTML→PDF (chromium-headless), аудио (whisper.cpp), видео (ffmpeg) и **OCR/извлечение текста** (Tesseract). OCR-класс: standalone `OCRConverter` извлекает txt/hOCR/ALTO из изображений и сканированных/image-only PDF, постранично стримингово (memory-bomb-safe, born-digital-PDF-safe) → полный async-контур (очередь `ocr`, `cmd/ocr-worker`, stage-aware retry, reconciler) поверх неизменной v1.9 progress/SSE/webhook инфры (page-granular прогресс, null→100 для одиночной картинки) → контейнер с source-built Tesseract 5.5.3 + poppler-utils, offline, SHA-пиненный `tessdata_fast` (eng/rus) → **измеренный `OCR_ENGINE_TIMEOUT=744s`** (worst-cell p95=5.81 s/page, Path-B `OCR_MAX_PAGES` 200→64) → KEDA scale-from-zero live-proven на OrbStack k8s. 4 фазы (43-46), 15 планов, 12/12 требований.
+
 **v1.9 Job Progress & Control — SHIPPED 2026-07-25.** Длинные конвертации стали прозрачными и управляемыми, всё поверх существующего контура (Postgres lifecycle, hardened `runCommand`, webhook, asynq): аддитивная схема прогресса (`0007`/`0008`, zero behavior change) → **отмена end-to-end** (`POST /v1/jobs/{id}/cancel`, guarded `{queued,active}→canceled`, custom Redis pub/sub `job:cancel` + in-memory CancelFunc-registry, реальная смерть ffmpeg-процесса live-proven 12/12, non-resurrection) → **листинг** (`GET /v1/jobs`, client-scoped keyset-пагинация, opaque cursor, two-key leak-тест) → **progress core** (ffmpeg `-progress` через named-FIFO поверх разрешённого `file:`-протокола — не `pipe:`, `runCommandStreaming` leak-safe, exec.go byte-for-byte неизменен; non-locking throttled write, EMA-ETA; SIGKILL-mid-stream live-proven 40/40 — ноль orphaned + ноль leaked goroutines + frozen pct) → **live-push** (SSE `GET /v1/jobs/{id}/events` DB-poll leak-safe-by-construction, live-proven 15/15; opt-in HMAC progress-webhook из detached-горутины, никогда не в terminal retry/dead-letter бюджете). 15 планов, 13/13 требований (PROG/CNCL/JLIST/PUSH), 3 live-гейта.
 
 <details>
@@ -26,19 +28,22 @@ OctoConv — внутренний асинхронный сервис конве
 
 </details>
 
-## Current Milestone: v1.10 OCR Engine (text extraction)
+<details>
+<summary>Shipped Milestone: v1.10 OCR Engine (text extraction) — SHIPPED 2026-07-27 (goal & features)</summary>
 
 **Goal:** Клиент может извлечь машиночитаемый текст из изображений и сканированных PDF через тот же async-контур, что и остальные движки — offline, детерминированно, с онлайн-прогрессом. Шестой engine-класс.
 
 **Target features:**
-- **Классический CPU-OCR движок** (tesseract или PaddleOCR — точный выбор через eval-gate в research); CPU-воркер-паттерн, без GPU
+- **Классический CPU-OCR движок** (tesseract, выбран через eval-gate в research); CPU-воркер-паттерн, без GPU
 - **Вход: изображения + скан-PDF** — jpg/png/tiff/webp + image-only PDF → `pdf→image` растериза-престейдж → постраничный OCR
 - **Вывод: txt + hOCR/ALTO** (текст + координаты слов)
 - **Онлайн-прогресс** — page-granular поверх готовой v1.9-инфры (SSE/webhook/`progress_pct`), ETA из сек/страница; одиночная картинка → null→100
-- **Полный engine-class контур** — очередь `ocr` + `cmd/ocr-worker` + контейнер + KEDA scale-from-zero, fail-closed magic-byte валидация, stage-aware retry, RTF-измеренный таймаут
+- **Полный engine-class контур** — очередь `ocr` + `cmd/ocr-worker` + контейнер + KEDA scale-from-zero, fail-closed magic-byte валидация, stage-aware retry, измеренный таймаут
 - **Язык/скрипт** — per-job opt через валидированный `opts` (closed allowlist, как AudioOpts)
 
-**Key context:** offline-constraint (облако вне игры) · CPU-only (не GPU) · переиспользует v1.9 progress/SSE/webhook движок-агностично · реестр SEED-010 отложен (сажаем «по-старому» на compile-time схему, как image/av) · фазы продолжаются с Phase 43. Основано на SEED-009.
+**Key context:** offline-constraint (облако вне игры) · CPU-only (не GPU) · переиспользует v1.9 progress/SSE/webhook движок-агностично · реестр SEED-010 отложен (сажаем «по-старому» на compile-time схему, как image/av). Основано на SEED-009. 4 фазы (43-46), 15 планов, 12/12 требований, source-built Tesseract 5.5.3 + poppler, `OCR_ENGINE_TIMEOUT=744s` (измерено), KEDA scale-from-zero live-proven.
+
+</details>
 
 <details>
 <summary>Next-milestone backlog (отложенные кандидаты)</summary>
@@ -102,6 +107,7 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Validated
 
+- ✓ **OCR / text-extraction engine class (OCR-01..04, OCRO-01, OCRE-01..05, OCRP-01/02) — v1.10** — шестой engine-класс: standalone `OCRConverter` (Tesseract, PSM/OEM-пиненный) извлекает txt из изображений и потраничного скан-PDF (`pdftoppm -f N -l N` стриминг, page-count guard, born-digital-PDF fail-closed 422), hOCR/ALTO через real XML-энкодер (round-trip `&`/`<`/`>` тест); `ocr` очередь + `cmd/ocr-worker` + stage-aware `isOCRTerminal` + fresh `OCRUniqueTTL`, поверх неизменной v1.9 progress/SSE/webhook инфры (page-granular рамп, одиночная картинка null→100); source-built Tesseract 5.5.3 + poppler-utils контейнер, SHA-пиненный `tessdata_fast` (eng/rus), измеренный `OCR_ENGINE_TIMEOUT=744s` (worst-cell p95=5.81 s/page, Path-B `OCR_MAX_PAGES` 200→64); KEDA scale-from-zero + downscale-survival live-proven на OrbStack. 4 фазы, 15 планов, 12/12 требований.
 - ✓ **Job Progress & Control (PROG-01..05, CNCL-01..04, JLIST-01/02, PUSH-01/02) — v1.9** — прогресс/ETA в реальном времени, листинг и отмена джоб поверх существующего контура: аддитивная схема (`0007`/`0008`), отмена end-to-end с реальной смертью ffmpeg (custom Redis pub/sub `job:cancel`, live-proven 12/12, non-resurrection), client-scoped keyset-листинг (two-key leak-тест), ffmpeg `-progress` через named-FIFO/`file:` (exec.go byte-for-byte неизменен, non-locking throttled write, EMA-ETA, SIGKILL-mid-stream live-proven 40/40 ноль orphaned + ноль leaked goroutines), SSE-стрим (DB-poll leak-safe-by-construction, live-proven 15/15) + opt-in HMAC progress-webhook (detached, никогда не в terminal retry-бюджете). 13/13 требований, 3 live-гейта, integration coherent.
 - ✓ **AV / video engine class (AVC-01..05, AVO-01..03, AVE-01..05, AVT-01) — v1.8** — пятый engine-класс: fail-closed video magic-bytes sniffers, standalone `AVConverter` (transcode/audio-extract/thumbnail, stream-copy fast-path, `-protocol_whitelist file,crypto`), `av` очередь + `cmd/av-worker` + stage-aware retry, ffmpeg n8.1.2-from-source container, RTF-measured `AV_ENGINE_TIMEOUT=753s` + fail-closed re-encode source-bound (OOM-DoS closed), KEDA scale-from-zero + downscale-survival live-proven, видео→транскрипт через audio-воркер (6-я conversion chain)
 
@@ -163,14 +169,9 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Active
 
-<!-- Milestone v1.10 OCR Engine (text extraction) — defined 2026-07-26. -->
+<!-- v1.10 OCR Engine (text extraction) shipped 2026-07-27 — all requirements moved to Validated. Next milestone not yet started. -->
 
-- [ ] Клиент может извлечь текст из изображения (jpg/png/tiff/webp) через классический CPU-OCR (tesseract/PaddleOCR)
-- [ ] Клиент может извлечь текст из сканированного/image-only PDF (pdf→image растериза-престейдж + постраничный OCR)
-- [ ] Вывод в txt и hOCR/ALTO (текст + координаты слов)
-- [ ] Онлайн-прогресс page-granular поверх v1.9-инфры (multi-page → реальный рамп; одиночная картинка → null→100) + ETA сек/страница
-- [ ] Язык/скрипт задаётся per-job через валидированный `opts` (closed allowlist)
-- [ ] OCR встроен в полный контур: fail-closed magic-byte валидация, stage-aware retry, `cmd/ocr-worker` + контейнер, compose + chart + KEDA scale-from-zero, RTF-измеренный таймаут
+_No active requirements — awaiting next milestone (`/gsd-new-milestone`)._
 
 ### Out of Scope
 
@@ -241,6 +242,10 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 | AUDIO_ENGINE_TIMEOUT измеряется RTF-гейтом, не копируется от соседних классов | Копированная константа для самого дорогого класса — прямой путь к гонке T-03-10 или мёртвым таймаутам | ✓ Good — Phase 32: 742s из p95×2.0 формулы; NO-GO-рычаг сработал по назначению (max duration 4h→30min вместо раздувания таймаута) |
 | Замороженные gate-скрипты (keda-load-proof.sh, keda-gate.sh) byte-unchanged; новая функциональность — только новыми скриптами | Стабильность доказательной базы: прошедшие live-гейты не мутируют задним числом | ✓ Good — Phase 33: WR-05 дефект замороженного скрипта эмпирически подтверждён и честно задокументирован вместо тихого фикса; forward-fix отложен осознанно |
 | `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` измеряются seconds-per-page гейтом (`scripts/ocr-timing-measure.sh`), не копируются от AV/AUDIO | Cost-модель OCR — per-page, а не per-input-duration; копирование соседнего таймаута — прямой путь к T-03-10 гонке или мёртвому таймауту (PITFALLS.md Pitfall 7) | ✓ Good — Phase 45 Plan 03: supervised run ALL GREEN (arch=arm64, cpus=2.0, memory=1g, N=10, omp_thread_limit=2, представительный синтезированный корпус — committed unit-test fixtures 2 KB давали заниженные 0.148 s/page, опасный 60s таймаут); worst cell dense_eng p95=5.81 s/page; D-03 provisional OCR_MAX_PAGES=200 пробил 900s CAP (ceil(200×5.81×2.0)=2324s) → Path-B NO-GO рычаг сработал (200→64); OCR_ENGINE_TIMEOUT=ceil(64×5.81×2.0)=744s (17.3% запас под 900s reconciler CAP), byte-identical на всех 9 queue-client сервисах, stop_grace_period 764s; 744s ≠ AV(753s) ≠ AUDIO(742s) |
+| Language-pack scope: короткий SHA-пиненный `tessdata_fast` allowlist (eng/rus), а не полный upstream tessdata/tessdata_best | Bloat напрямую бьёт по KEDA scale-from-zero cold-start экономике; зеркалит дисциплину bake-in модели audio-воркера | ✓ Good — Phase 45: eng.traineddata/rus.traineddata SHA-256-пиненные на конкретный commit `tessdata_fast`, matching closed `OCROpts` allowlist |
+| OCR — 6-й hardcoded engine-класс (compile-time `Registry.Register`, hardcoded `EngineOCR`, миграция `0009_ocr_engine.sql`); SEED-010 (динамический реестр движков) остаётся dormant | Согласуется с паттерном image/document/html/audio/av; обобщение `converters.go`'s `init()` — не повод этого milestone | ✓ Good — Phase 43/44: OCRConverter зарегистрирован тем же путём, что и остальные пять движков, ноль изменений в форме реестра |
+| `internal/convert/progress.go`'s общие типы (`ProgressUpdate`/`ProgressSink`/`ProgressConverter`) — zero edits для OCR | Page-granular прогресс OCR должен быть собственным маленьким `ocrprogress.go` page-EMA эстиматором поверх того же `sink.Update(...)` контракта, не веткой внутри ffmpeg-специфичного `progressBlockParser` | ✓ Good — Phase 44: v1.9 progress/SSE/webhook инфра переиспользована engine-агностично, byte-unchanged fence подтверждён тестом |
+| Dockerfile.ocr-worker должен запекать tesseract `configs`/`tessconfigs` рядом с `tessdata_fast`, а не только `.traineddata`-файлы | Live E2E (45-04) вскрыл реальный продакшн-баг: без configs `->hocr`/`->alto` не производили вывод ("Can't open hocr"), тогда как `->txt` работал через built-in дефолт | ✓ Good — Phase 45 Plan 04: COPY добавлен, over-strict exact-two-files assertion пересужена до `*.traineddata` (commit c1c39fc) |
 
 ## Evolution
 
@@ -260,4 +265,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-26 after starting v1.10 OCR Engine milestone*
+*Last updated: 2026-07-27 after v1.10 milestone*

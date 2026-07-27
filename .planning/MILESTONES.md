@@ -1,5 +1,28 @@
 # Milestones
 
+## v1.10 OCR Engine (Shipped: 2026-07-27)
+
+**Phases completed:** 4 phases, 15 plans, 35 tasks
+
+**Key accomplishments:**
+
+- OCROpts with a closed `eng`/`rus`/`eng+rus` language allowlist cloned verbatim from AudioOpts, strictly parsed via the shared `checkStrictObject` helper, with an injection test proving client bytes never reach tesseract's `-l` argv unvalidated — zero OSD/orientation or PSM/OEM references anywhere in the file per the phase's deferral decisions.
+- PDF page-count cap + per-page page-box physical-size guard + image pixel cap + born-digital pdftotext detection, all fail-closed pre-render, in `internal/convert/ocrguards.go`
+- OCRConverter (Pairs/Engine/Convert) extracts text from images via tesseract at pinned PSM 3/OEM 1, emits hOCR/ALTO with word-level bounding boxes, and defines the named `ocrPageMerger` encoding/xml multi-page merge helper Plan 04 will reuse -- all validated against real tesseract 5.5.2 + poppler binaries, standalone and unregistered.
+- A scanned/image-only PDF is OCR'd exactly one page at a time (pdfinfo page-count cap + born-digital check before any render, then per-page page-box bound -> pdftoppm -> tesseract -> delete), multi-page hOCR/ALTO merges into one valid-XML document via the Plan 03 encoding/xml merger, and OCRConverter becomes the second `ProgressConverter` implementor with a page-granular percent+ETA ramp -- closing Phase 43's OCR-02 and OCR-04.
+- Migration 0009 admits engine='ocr'; OCRConverter registered into convert.Default with matchPDF sniffing and a 100 MiB EngineOCR upload ceiling — zero new routing code, target-based EngineFor disambiguation alone routes jpg/pdf->txt to ocr vs jpg->png to image.
+- Dedicated `ocr` asynq queue/task type with a fresh-derived OCRUniqueTTL (never copied from AV/Audio) and a client-level EnqueueOCRConvert, mechanically cloning the av engine-class wiring.
+- HandleOCRConvert + isOCRTerminal/ocrFailureCode + cmd/ocr-worker + reconciler ocr routing — OCR jobs now flow queued -> active -> done through a dedicated asynq worker with stage-aware retry classification.
+- Integration test proves OCR drives the unmodified v1.9 progressSink: single image jobs record null->100 (zero intermediate ticks), a 3-page scanned PDF records a genuine 33/66/100 page-by-page ramp, and `git diff --exit-code` confirms progress.go/sse.go carry zero edits across the whole phase.
+- Source-built tag-pinned Tesseract 5.5.3 + Leptonica 1.87.0 Docker image (eng+rus tessdata_fast only, SHA-256 verified) plus cmd/ocr-worker re-registering a configured OCRConverter with cgroup-derived OMP_THREAD_LIMIT and concurrency=1
+- Supervised p95-seconds-per-page measurement script cloning av-rtf-measure.sh, an ocr-worker compose service with a clearly-flagged PLACEHOLDER timeout, IN-02 OCR_ENGINE_TIMEOUT/OCR_MAX_RETRY parity across all 9 queue.NewClient() services, and an ocr-worker CI bake target -- no measured timeout number is committed.
+- OCR_ENGINE_TIMEOUT derived from a real seconds-per-page measurement (worst cell dense_eng p95=5.81 s/page) at 744s, with the Path-B NO-GO lever lowering OCR_MAX_PAGES from 200 to 64 to clear the 900s reconciler CAP — propagated byte-identically across all 9 queue-client services.
+- TestOCRConversionE2E proves image->txt + 20-page PDF->hocr end-to-end against the real ocr-worker container (presigned download + HMAC-signed webhook + live 0<progress_pct<100 ramp), closing the deferred Phase-44 SC4 — and surfaced three production bugs fixed inline.
+- Authored the SC3 scale-from-zero and SC4 downscale-survival live-proof gate scripts for the OCR engine class as structural clones of the av Phase-37 harness, plus the keda.ocr load-proof overlay knob -- statically verified, ready for Plan 03's live OrbStack run.
+- OCR class autoscaling live-proven on OrbStack k8s — scale-from-zero 0→1→0 (SC3, 11 assertions) and a 60-page OCR job surviving a genuine 2→1 downscale with graceful SIGTERM-before-completion / exit-0 / grace=774 (SC4, 22 assertions).
+
+---
+
 ## v1.9 Job Progress & Control (Shipped: 2026-07-25)
 
 **Phases completed:** 5 phases, 15 plans, 29 tasks
