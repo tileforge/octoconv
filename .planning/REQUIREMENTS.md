@@ -20,9 +20,9 @@
 
 ### OCRE — Engine safety / hardening
 
-- [ ] **OCRE-01**: Загрузки гейтятся fail-closed magic-byte валидацией (изображения + PDF `%PDF-`) до любого OCR; declared/detected mismatch → 422. _(Partial: 44-01 wires the API-side upload-time gate — matchPDF sniff, declared/detected mismatch 422, EngineOCR ceiling. Full closure awaits the OCR worker path in 44-02/44-03.)_
-- [ ] **OCRE-02**: Оверсайз-ввод (число страниц PDF сверх `OCR_MAX_PAGES`, либо размеры изображения сверх cap) отвергается fail-closed ДО растеризации/декода — memory-bomb гард (аналог `MAX_IMAGE_PIXELS`/AVE-05, enforced pre-render).
-- [ ] **OCRE-03**: Born-digital PDF (уже содержит текстовый слой) отвергается fail-closed (422) в v1, а не переОCR-ится вслепую (detect-and-passthrough отложен в v2).
+- [x] **OCRE-01**: Загрузки гейтятся fail-closed magic-byte валидацией (изображения + PDF `%PDF-`) до любого OCR; declared/detected mismatch → 422. _(Closed: 44-01 API-side magic-byte gate — matchPDF sniff, declared/detected mismatch 422, EngineOCR ceiling; Phase 44 VERIFICATION passed.)_
+- [x] **OCRE-02**: Оверсайз-ввод (число страниц PDF сверх `OCR_MAX_PAGES`, либо размеры изображения сверх cap) отвергается fail-closed ДО растеризации/декода — memory-bomb гард (аналог `MAX_IMAGE_PIXELS`/AVE-05, enforced pre-render). _(Closed: guard mechanism Phase 43 (ocrguards.go sentinels, pre-render ordering); OCR_MAX_PAGES=64 env-wiring Phase 45; live-proven Phase 46 SC4 with a 60-page fixture under the 64 cap.)_
+- [x] **OCRE-03**: Born-digital PDF (уже содержит текстовый слой) отвергается fail-closed (422) в v1, а не переОCR-ится вслепую (detect-and-passthrough отложен в v2). _(Closed: Phase 43 detectBornDigitalPDF via hardened pdftotext, distinct ErrOCRBornDigital sentinel, real-binary tests.)_
 - [x] **OCRE-04**: `OCR_ENGINE_TIMEOUT` (и `OCR_MAX_PAGES`) **измерены** собственным гейтом (`scripts/ocr-timing-measure.sh`, seconds-per-page), а не скопированы у соседнего движка; таймаут под глобальным reconciler-CAP.
 - [x] **OCRE-05**: Оба новых untrusted-процесса (растеризатор `pdftoppm` + `tesseract`) исполняются через hardened `runCommand` (Setpgid + SIGKILL-on-timeout, ресурс-лимит, `nobody`); пустой/безтекстовый ввод завершается `done` с пустым txt (не `failed`).
 
@@ -59,12 +59,12 @@
 | OCR-03 | Phase 43 | Complete |
 | OCR-04 | Phase 43 | Complete |
 | OCRO-01 | Phase 43 | Complete |
-| OCRE-01 | Phase 44 | Partial (44-01) |
-| OCRE-02 | Phase 43 | Pending |
-| OCRE-03 | Phase 43 | Pending |
+| OCRE-01 | Phase 44 | Complete |
+| OCRE-02 | Phase 43+45 | Complete |
+| OCRE-03 | Phase 43 | Complete |
 | OCRE-04 | Phase 45 | Complete |
 | OCRE-05 | Phase 44 | Complete |
-| OCRP-01 | Phase 44 | Partial (44-01, 44-02, 44-03) |
+| OCRP-01 | Phase 44 | Complete |
 | OCRP-02 | Phase 46 | Complete |
 
 **Coverage:**
