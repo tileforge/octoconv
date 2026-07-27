@@ -153,7 +153,7 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 - [x] **Phase 43: OCR Engine Foundation** - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing (completed 2026-07-26)
 - [x] **Phase 44: Async Pipeline Wiring** - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery (completed 2026-07-26)
 - [x] **Phase 45: Containerization + Measured Timeout Gate** - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant
-- [ ] **Phase 46: KEDA/Helm Chart Integration** - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven
+- [x] **Phase 46: KEDA/Helm Chart Integration** - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven
 
 ## Phase Details
 
@@ -219,7 +219,7 @@ Plans:
 Plans:
 - [x] 46-01-PLAN.md — Clone av pair: deployment-ocr-worker.yaml + scaledobject-ocr.yaml (WR-01 triad verbatim, minReplicaCount:0, maxReplicaCount:2, scaleDownStabilizationSeconds:900) + keda.ocr/ocrWorker values + OCR_* configmap env (IN-02) + confirm SC2 QueueOCR collector
 - [x] 46-02-PLAN.md — Author keda-ocr-loadproof.sh (SC3 0→1→0) + keda-ocr-downscale-survival.sh (SC4, grace 774) + values-loadproof.yaml keda.ocr scaleDownStabilizationSeconds:15
-- [ ] 46-03-PLAN.md — LIVE operator-gated proof on OrbStack k8s: SC3 scale-from-zero + SC4 downscale-survival, timestamped evidence
+- [x] 46-03-PLAN.md — LIVE operator-gated proof on OrbStack k8s: SC3 scale-from-zero (ALL 11 PASSED, 0→1→0) + SC4 downscale-survival (ALL 22 PASSED, SIGTERM-before-completion / exit-0 / grace=774), timestamped evidence committed
 
 ## Progress
 
