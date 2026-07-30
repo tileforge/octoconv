@@ -75,6 +75,7 @@ type Enqueuer interface {
 	EnqueueAudioConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -225,7 +226,13 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		// legitimately needs. ocr (D-03, Phase 44) gets the same 100 MiB
 		// ceiling as image -- reasonable for images and scanned PDFs; the
 		// actual OCR work is separately bounded by the page-count/pixel caps
-		// enforced in the worker (OCRE-02, Phase 43).
+		// enforced in the worker (OCRE-02, Phase 43). pandoc (PDCP-01, Phase
+		// 48, D-02) gets the same 100 MiB ceiling -- markup text is small, so
+		// this is a generous upload-time bound; the pandoc DoS posture is
+		// additionally bounded by enforcePandocInputSize inside the converter
+		// itself (markupsniff.go, Phase 47), enforced again at Convert-time
+		// once cmd/pandoc-worker (Phase 49) re-registers a configured
+		// PandocConverter.
 		cfg.MaxEngineBytes = map[string]int64{
 			convert.EngineImage:    100 << 20,
 			convert.EngineDocument: 100 << 20,
@@ -233,6 +240,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 			convert.EngineAudio:    100 << 20,
 			convert.EngineAV:       2 << 30,
 			convert.EngineOCR:      100 << 20,
+			convert.EnginePandoc:   100 << 20,
 		}
 	}
 	if cfg.IPRateLimitRPM == 0 {
