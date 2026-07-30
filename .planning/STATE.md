@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
 status: executing
-stopped_at: Completed 47-02-PLAN.md
-last_updated: "2026-07-30T12:44:55.327Z"
-last_activity: 2026-07-30 — Phase 47 Plan 02 executed (content-validation probes + input-size DoS guard, PDCE-01/PDCE-03 complete)
+stopped_at: Completed 47-03-PLAN.md
+last_updated: "2026-07-30T13:07:40.258Z"
+last_activity: 2026-07-30
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 0
+  completed_plans: 3
+  percent: 25
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) in progress, Plan 02/3 complete
+**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) ready to start
 
 ## Current Position
 
-Phase: 47 (Pandoc Engine Foundation) — in progress
-Plan: 02 of 3 (Markup content-validation probes + input-size DoS guard, PDCE-01/PDCE-03) — complete
-Status: Phase 47 in progress — plan 02/3 complete
-Last activity: 2026-07-30 — Phase 47 Plan 02 executed (LooksLikeLaTeX/LooksLikeText fail-closed probes + enforcePandocInputSize guard + md/rst/org/latex/epub MIME registry, PDCE-01/PDCE-03 complete)
+Phase: 47 (Pandoc Engine Foundation) — complete
+Plan: 3 of 3 (PandocConverter core: curated closed Pairs, hardened runCommand invocation, SC3 security canary, PDOC-01/PDOC-02/PDCE-02) — complete
+Status: Phase 47 complete — ready to plan Phase 48
+Last activity: 2026-07-30 — Phase 47 Plan 03 executed (standalone PandocConverter, closed Pairs allowlist, hardened argv per-source raw-passthrough table + --sandbox, real-pandoc matrix, SC3 security canary)
 
 ## Performance Metrics
 
@@ -133,6 +133,7 @@ Last activity: 2026-07-30 — Phase 47 Plan 02 executed (LooksLikeLaTeX/LooksLik
 | Phase 46 P03 | ~90min | 1 task | 5 files (evidence) |
 | Phase 47 P01 | 18min | 2 tasks | 3 files |
 | Phase 47 P02 | 12min | 2 tasks | 4 files |
+| Phase 47 P03 | 25min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -147,6 +148,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - **Zero new Go dependencies for v1.11:** pandoc is a CLI subprocess through the existing hardened `runCommand` harness — no cgo, no new `go.mod` entries.
 - [Phase 47]: PandocOpts closed 5-field allowlist (D-04): wrap enum-gated via pandocWrapAllowlist map lookup, cloning OCROpts/AudioOpts verbatim
 - [Phase 47]: LooksLikeText's md/rst/org interchangeability documented as an accepted, recorded gap (D-01/T-47-05b) — content degrades to a plaintext-only gate, declared source trusted among the text-family — md/rst/org are mutually-interchangeable plaintext with no distinctive magic; a full disambiguator would be illusory
+- [Phase 47]: PandocConverter (47-03): curated closed Pairs() across md/rst/org/latex/html/docx/epub; per-source raw-passthrough table + --sandbox hardening (--no-shell-escape rejected by pandoc); pandocFormatName translates project's 'md' alias to pandoc's own 'markdown' identifier; standalone/unregistered, no API/queue wiring
 
 ### Quick Tasks Completed
 
@@ -228,8 +230,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-30T12:44:55.316Z
-Stopped at: Completed 47-02-PLAN.md
+Last session: 2026-07-30T13:07:40.243Z
+Stopped at: Completed 47-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps

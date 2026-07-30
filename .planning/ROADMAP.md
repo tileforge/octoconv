@@ -165,7 +165,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 **Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
 
-- [ ] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + no-shell-escape + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing
+- [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + no-shell-escape + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
 - [ ] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra
 - [ ] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
 - [ ] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven
@@ -187,7 +187,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 Plans:
 - [x] 47-01-PLAN.md — PandocOpts closed allowlist + strict-parse + discrete-argv injection defense (PDCO-01)
 - [x] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
-- [ ] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
+- [x] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
 
 ### Phase 48: Async Pipeline Wiring
 **Goal**: Pandoc jobs (markup → markup) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the unmodified v1.9 progress/webhook machinery.
@@ -272,7 +272,7 @@ Plans:
 | 44. Async Pipeline Wiring | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete | 2026-07-27 |
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
-| 47. Pandoc Engine Foundation | v1.11 | 2/3 | In Progress | - |
+| 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 0/TBD | Not started | - |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 0/TBD | Not started | - |
 | 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
