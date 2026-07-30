@@ -656,6 +656,134 @@ func TestOCRUniqueTTL(t *testing.T) {
 	}
 }
 
+// TestPandocConvertTaskRoundTrip mirrors TestOCRConvertTaskRoundTrip for the
+// pandoc engine class.
+func TestPandocConvertTaskRoundTrip(t *testing.T) {
+	id := uuid.New()
+	task, err := NewPandocConvertTask(id, 2, PandocUniqueTTL(2, 90*time.Second))
+	if err != nil {
+		t.Fatalf("NewPandocConvertTask: %v", err)
+	}
+	if task.Type() != TypePandocConvert {
+		t.Errorf("task type = %q, want %q", task.Type(), TypePandocConvert)
+	}
+	p, err := ParseConvertPayload(task.Payload())
+	if err != nil {
+		t.Fatalf("ParseConvertPayload: %v", err)
+	}
+	if p.JobID != id {
+		t.Errorf("job id = %s, want %s", p.JobID, id)
+	}
+}
+
+// TestPandocRetrySchedule asserts pandocRetrySchedule has exactly 2 entries
+// (acceptance criterion) and that PandocRetryDelay returns pandoc's own 5s/
+// 20s schedule (no jitter, mirrors OCRRetryDelay's shape) and clamps on both
+// ends.
+func TestPandocRetrySchedule(t *testing.T) {
+	if len(pandocRetrySchedule) != 2 {
+		t.Fatalf("len(pandocRetrySchedule) = %d, want 2", len(pandocRetrySchedule))
+	}
+
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{n: -1, want: 5 * time.Second}, // clamps to first entry
+		{n: 0, want: 5 * time.Second},
+		{n: 1, want: 20 * time.Second},
+		{n: 99, want: 20 * time.Second}, // clamps past the end of the schedule
+	}
+	for _, tc := range cases {
+		got := PandocRetryDelay(tc.n, nil, nil)
+		if got != tc.want {
+			t.Errorf("PandocRetryDelay(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
+
+// TestRetryDelayFuncRoutesPandocConvert is the only mechanism that catches
+// Pitfall 1's silent RetryDelayFunc default fallthrough for pandoc: it fails
+// if the `case TypePandocConvert` arm is ever removed from RetryDelayFunc,
+// since a missing case would produce no compile error, only the wrong
+// (asynq default) backoff schedule silently applied in production.
+func TestRetryDelayFuncRoutesPandocConvert(t *testing.T) {
+	pandocTask := asynq.NewTask(TypePandocConvert, nil)
+
+	if got, want := RetryDelayFunc(0, nil, pandocTask), 5*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(pandoc, 0) = %v, want %v", got, want)
+	}
+	if got, want := RetryDelayFunc(1, nil, pandocTask), 20*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(pandoc, 1) = %v, want %v", got, want)
+	}
+	// Index 5 clamps to the last schedule entry (20s).
+	if got, want := RetryDelayFunc(5, nil, pandocTask), 20*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(pandoc, 5) = %v, want %v", got, want)
+	}
+}
+
+// TestPandocUniqueTTL asserts PandocUniqueTTL derives its result from the
+// corrected worst-case retry lifetime ((maxRetry+1) executions) exactly like
+// OCRUniqueTTL, is monotonic in both arguments, strictly EXCEEDS the
+// zero-margin worst-case retry lifetime (uniqueTTLSafetyMargin is
+// load-bearing), and -- the D-03 fresh-derivation proof -- scales with its
+// own engineTimeout argument (60s vs 120s) rather than being a hardcoded/
+// copied constant, and is provably distinct from OCRUniqueTTL/AVUniqueTTL/
+// AudioUniqueTTL under the SAME (maxRetry, engineTimeout) inputs (proves the
+// formula's constants -- schedule/margin -- are pandoc's own, not copied).
+func TestPandocUniqueTTL(t *testing.T) {
+	maxRetry := 2
+	engineTimeout := 90 * time.Second            // matches the provisional PANDOC_ENGINE_TIMEOUT default
+	backoffSum := 5*time.Second + 20*time.Second // i=0..1, per pandocRetrySchedule
+
+	want := time.Duration(maxRetry+1)*engineTimeout + backoffSum + uniqueTTLSafetyMargin
+	got := PandocUniqueTTL(maxRetry, engineTimeout)
+	if got != want {
+		t.Errorf("PandocUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
+	}
+
+	// Monotonicity: raising either argument must never shrink the TTL.
+	if PandocUniqueTTL(maxRetry+1, engineTimeout) <= PandocUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("PandocUniqueTTL must grow monotonically with maxRetry")
+	}
+	if PandocUniqueTTL(maxRetry, engineTimeout+time.Second) <= PandocUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("PandocUniqueTTL must grow monotonically with engineTimeout")
+	}
+
+	// Fresh-derivation proof (acceptance criterion, D-03): PandocUniqueTTL
+	// scales with its own engineTimeout argument rather than being a
+	// hardcoded/copied constant.
+	if PandocUniqueTTL(2, 60*time.Second) == PandocUniqueTTL(2, 120*time.Second) {
+		t.Errorf("PandocUniqueTTL(2, 60s) must differ from PandocUniqueTTL(2, 120s) -- proves it is derived, not constant")
+	}
+
+	// Strictly exceeds the zero-margin worst-case retry lifetime -- proves
+	// uniqueTTLSafetyMargin is load-bearing rather than accidentally zero.
+	worstCaseNoMargin := time.Duration(maxRetry+1)*engineTimeout + pandocBackoffSum(maxRetry)
+	if PandocUniqueTTL(maxRetry, engineTimeout) <= worstCaseNoMargin {
+		t.Errorf("PandocUniqueTTL(%d, %v) = %v must strictly exceed the zero-margin worst-case lifetime %v",
+			maxRetry, engineTimeout, PandocUniqueTTL(maxRetry, engineTimeout), worstCaseNoMargin)
+	}
+
+	// Not-copied proof: under the SAME (maxRetry, engineTimeout) inputs,
+	// PandocUniqueTTL must differ from OCRUniqueTTL/AVUniqueTTL/
+	// AudioUniqueTTL -- if it matched, the schedule/margin constants baked
+	// into the formula would have to be an accidental or deliberate copy of
+	// another engine's, not pandoc's own.
+	if PandocUniqueTTL(maxRetry, engineTimeout) == OCRUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("PandocUniqueTTL(%d, %v) must not equal OCRUniqueTTL(%d, %v) -- proves the schedule is pandoc's own, not OCR's",
+			maxRetry, engineTimeout, maxRetry, engineTimeout)
+	}
+	if PandocUniqueTTL(maxRetry, engineTimeout) == AVUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("PandocUniqueTTL(%d, %v) must not equal AVUniqueTTL(%d, %v) -- proves the schedule is pandoc's own, not AV's",
+			maxRetry, engineTimeout, maxRetry, engineTimeout)
+	}
+	if PandocUniqueTTL(maxRetry, engineTimeout) == AudioUniqueTTL(maxRetry, engineTimeout) {
+		t.Errorf("PandocUniqueTTL(%d, %v) must not equal AudioUniqueTTL(%d, %v) -- proves the schedule is pandoc's own, not audio's",
+			maxRetry, engineTimeout, maxRetry, engineTimeout)
+	}
+}
+
 // TestAllConvertQueuesCoversEveryEngine is the D-06 completeness guard for
 // the queue-depth collector's silent variadic-omission seam (RESEARCH.md
 // Pitfall 2): it iterates every convert.Engine* constant and asserts each
@@ -669,6 +797,7 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 		convert.EngineAudio:    true,
 		convert.EngineAV:       true,
 		convert.EngineOCR:      true,
+		convert.EnginePandoc:   true,
 	}
 
 	got := AllConvertQueues()
