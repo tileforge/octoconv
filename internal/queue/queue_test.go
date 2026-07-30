@@ -852,6 +852,42 @@ func TestClientOCRUniqueTTLDiffersFromAVAndAudio(t *testing.T) {
 	}
 }
 
+// TestClientPandocUniqueTTLDiffersFromOCRAndAV is the D-03 fresh-derivation
+// proof at the Client level, mirroring
+// TestClientOCRUniqueTTLDiffersFromAVAndAudio's shape exactly: under default
+// env (no PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT/OCR_MAX_RETRY/
+// OCR_ENGINE_TIMEOUT/AV_MAX_RETRY/AV_ENGINE_TIMEOUT overrides), the client's
+// derived pandocUniqueTTL must NOT be byte-equal to ocrUniqueTTL or
+// avUniqueTTL -- proving PandocUniqueTTL was computed from pandoc's own
+// budget, not copied from a neighboring engine class (the recurring
+// project anti-pattern this phase is flagged against). asynq.NewClient only
+// lazily constructs a redis.UniversalClient (no network I/O at construction
+// time), so this test needs no live Redis; REDIS_ADDR only has to be
+// non-empty to satisfy RedisOpt's presence check.
+func TestClientPandocUniqueTTLDiffersFromOCRAndAV(t *testing.T) {
+	t.Setenv("REDIS_ADDR", "127.0.0.1:0")
+	for _, k := range []string{
+		"PANDOC_MAX_RETRY", "PANDOC_ENGINE_TIMEOUT",
+		"OCR_MAX_RETRY", "OCR_ENGINE_TIMEOUT",
+		"AV_MAX_RETRY", "AV_ENGINE_TIMEOUT",
+	} {
+		t.Setenv(k, "")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	if cl.pandocUniqueTTL == cl.ocrUniqueTTL {
+		t.Errorf("pandocUniqueTTL (%v) must not equal ocrUniqueTTL (%v) -- fresh derivation, not a copy", cl.pandocUniqueTTL, cl.ocrUniqueTTL)
+	}
+	if cl.pandocUniqueTTL == cl.avUniqueTTL {
+		t.Errorf("pandocUniqueTTL (%v) must not equal avUniqueTTL (%v) -- fresh derivation, not a copy", cl.pandocUniqueTTL, cl.avUniqueTTL)
+	}
+}
+
 // TestEnqueueOCRConvert enqueues an OCR task and confirms it lands in the ocr
 // queue. Requires a live Redis (REDIS_ADDR); skipped otherwise. Mirrors
 // TestEnqueueImageConvert's shape for the ocr engine class.
@@ -894,6 +930,51 @@ func TestEnqueueOCRConvert(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueOCR)
+	}
+}
+
+// TestEnqueuePandocConvert enqueues a pandoc task and confirms it lands in
+// the pandoc queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
+// Mirrors TestEnqueueOCRConvert's shape for the pandoc engine class.
+func TestEnqueuePandocConvert(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set; skipping integration test")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	id := uuid.New()
+	if err := cl.EnqueuePandocConvert(context.Background(), id); err != nil {
+		t.Fatalf("EnqueuePandocConvert: %v", err)
+	}
+
+	opt, _ := RedisOpt()
+	insp := asynq.NewInspector(opt)
+	defer insp.Close()
+
+	infos, err := insp.ListPendingTasks(QueuePandoc)
+	if err != nil {
+		t.Fatalf("ListPendingTasks: %v", err)
+	}
+	found := false
+	for _, ti := range infos {
+		p, err := ParseConvertPayload(ti.Payload)
+		if err == nil && p.JobID == id {
+			found = true
+			if ti.Type != TypePandocConvert {
+				t.Errorf("enqueued type = %q, want %q", ti.Type, TypePandocConvert)
+			}
+			// cleanup
+			_ = insp.DeleteTask(QueuePandoc, ti.ID)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("enqueued task for job %s not found in queue %q", id, QueuePandoc)
 	}
 }
 
