@@ -104,6 +104,8 @@ type fakeEnqueuer struct {
 	avCalls            []uuid.UUID
 	enqueueOCRErr      error
 	ocrCalls           []uuid.UUID
+	enqueuePandocErr   error
+	pandocCalls        []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -153,6 +155,13 @@ func (f *fakeEnqueuer) EnqueueOCRConvert(ctx context.Context, id uuid.UUID) erro
 	defer f.mu.Unlock()
 	f.ocrCalls = append(f.ocrCalls, id)
 	return f.enqueueOCRErr
+}
+
+func (f *fakeEnqueuer) EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pandocCalls = append(f.pandocCalls, id)
+	return f.enqueuePandocErr
 }
 
 // imageCallIDs returns a locked snapshot copy of imageCalls — used by the
@@ -217,6 +226,15 @@ func (f *fakeEnqueuer) ocrCallIDs() []uuid.UUID {
 	defer f.mu.Unlock()
 	out := make([]uuid.UUID, len(f.ocrCalls))
 	copy(out, f.ocrCalls)
+	return out
+}
+
+// pandocCallIDs returns a locked snapshot copy of pandocCalls.
+func (f *fakeEnqueuer) pandocCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uuid.UUID, len(f.pandocCalls))
+	copy(out, f.pandocCalls)
 	return out
 }
 
@@ -421,6 +439,51 @@ func TestSweepRoutesOCRJobsToOCRQueue(t *testing.T) {
 	}
 }
 
+// TestSweepRoutesPandocJobsToPandocQueue proves a stranded engine="pandoc"
+// job routes to EnqueuePandocConvert and NONE of the other six Enqueue*
+// methods (T-48-11, PDCP-01): the reconciler must recover a stranded pandoc
+// job onto the pandoc queue, never fail-closed-default it. Mirrors
+// TestSweepRoutesOCRJobsToOCRQueue exactly.
+func TestSweepRoutesPandocJobsToPandocQueue(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "pandoc"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	s.sweep(context.Background())
+
+	if len(enq.pandocCalls) != 1 || enq.pandocCalls[0] != id {
+		t.Fatalf("EnqueuePandocConvert calls = %+v, want [%s]", enq.pandocCalls, id)
+	}
+	if len(enq.imageCalls) != 0 {
+		t.Fatalf("EnqueueImageConvert should not be called for a pandoc job, got %d calls", len(enq.imageCalls))
+	}
+	if len(enq.documentCalls) != 0 {
+		t.Fatalf("EnqueueDocumentConvert should not be called for a pandoc job, got %d calls", len(enq.documentCalls))
+	}
+	if len(enq.htmlCalls) != 0 {
+		t.Fatalf("EnqueueHTMLConvert should not be called for a pandoc job, got %d calls", len(enq.htmlCalls))
+	}
+	if len(enq.audioCalls) != 0 {
+		t.Fatalf("EnqueueAudioConvert should not be called for a pandoc job, got %d calls", len(enq.audioCalls))
+	}
+	if len(enq.avCalls) != 0 {
+		t.Fatalf("EnqueueAVConvert should not be called for a pandoc job, got %d calls", len(enq.avCalls))
+	}
+	if len(enq.ocrCalls) != 0 {
+		t.Fatalf("EnqueueOCRConvert should not be called for a pandoc job, got %d calls", len(enq.ocrCalls))
+	}
+	if store.requeueStaleCalls != 1 {
+		t.Fatalf("RequeueStale calls = %d, want 1", store.requeueStaleCalls)
+	}
+	if len(store.markFailedCalls) != 0 {
+		t.Fatalf("MarkFailed should not be called, got %d calls", len(store.markFailedCalls))
+	}
+}
+
 // TestSweepRoutesEveryEngineConstant is the D-06 completeness guard for the
 // reconciler routing seam (35-CONTEXT.md): D-06 explicitly declined
 // refactoring the reconciler's (and the API's) routing switch into a shared
@@ -444,6 +507,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 		{convert.EngineAudio, (*fakeEnqueuer).audioCallIDs},
 		{convert.EngineAV, (*fakeEnqueuer).avCallIDs},
 		{convert.EngineOCR, (*fakeEnqueuer).ocrCallIDs},
+		{convert.EnginePandoc, (*fakeEnqueuer).pandocCallIDs},
 	}
 
 	for _, want := range cases {
