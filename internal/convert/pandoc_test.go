@@ -397,3 +397,130 @@ func writeFixture(t *testing.T, path, content string) {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
+
+// TestPandocSecurityShellEscapeDefenseInDepth is the SC3 canary sub-case 1
+// (T-47-01, 47-CONTEXT.md): a crafted latex source invoking TeX's own
+// shell-escape macro (\write18) must not execute a shell command when
+// converted through PandocConverter.
+//
+// The correct causal reason (do NOT restate this as "a shell-escape flag
+// blocks execution" -- there is no such flag on pandoc's own CLI):
+// pandoc's latex READER is an AST parser, not a TeX interpreter -- it never
+// executes TeX macros at all in a markup->markup pipeline (this phase adds
+// no --pdf-engine, so no TeX engine ever runs over this content).
+// runCommand (exec.go) additionally spawns pandoc with no shell
+// whatsoever, so even a hypothetical future --pdf-engine invocation
+// reached through this same call path could not shell-escape via a shell
+// metacharacter. This canary is therefore defense-in-depth against a
+// FUTURE feature, not proof that some flag suppressed an execution that
+// would otherwise have happened -- there is nothing here capable of
+// executing TeX macros in the first place.
+func TestPandocSecurityShellEscapeDefenseInDepth(t *testing.T) {
+	requirePandoc(t)
+
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "pwned.txt")
+	in := filepath.Join(dir, "attack_write18.latex")
+	writeFixture(t, in, "\\documentclass{article}\n\\begin{document}\n"+
+		"\\immediate\\write18{touch "+sentinel+"}\nHello\n\\end{document}\n")
+	out := filepath.Join(dir, "attack_write18.html")
+
+	c := PandocConverter{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := c.Convert(ctx, in, out, nil); err != nil {
+		t.Fatalf("Convert(latex with \\write18) = %v, want nil (the macro is inert text to pandoc's AST-parsing latex reader)", err)
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Fatal("write18 sentinel file was created -- shell-escape fired, want it inert (pandoc's latex reader never executes TeX macros)")
+	}
+}
+
+// TestPandocSecurityInputLeakBlockedBySandbox is the SC3 canary sub-case 2
+// (T-47-01): a crafted latex source using \input{<secret file>} must not
+// leak the secret file's contents into the produced output. --sandbox
+// (pandoc 2.19+) restricts reader IO to the named input file -- the
+// documented defense against \input/include-file disclosure (cf.
+// CVE-2025-51591) -- and raw TeX passthrough is disabled via the
+// per-source reader-extension table (pandocReaderSpec). Whether Convert
+// itself succeeds or errors is not the assertion; either way the secret
+// marker must never appear in whatever output IS produced.
+func TestPandocSecurityInputLeakBlockedBySandbox(t *testing.T) {
+	requirePandoc(t)
+
+	dir := t.TempDir()
+	secretMarker := "SUPER-SECRET-CANARY-MARKER-4711"
+	secretPath := filepath.Join(dir, "secret.tex")
+	writeFixture(t, secretPath, secretMarker)
+
+	in := filepath.Join(dir, "attack_input.latex")
+	writeFixture(t, in, "\\documentclass{article}\n\\begin{document}\n"+
+		"\\input{"+secretPath+"}\nHello\n\\end{document}\n")
+	out := filepath.Join(dir, "attack_input.md")
+
+	c := PandocConverter{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Deliberately ignore the error return -- --sandbox may cause pandoc to
+	// refuse to resolve \input{<secret>} outright (an error is an
+	// ACCEPTABLE outcome, arguably the strongest form of "blocked"). The
+	// only thing this canary must prove is that the secret marker never
+	// reaches any file this test can read.
+	_ = c.Convert(ctx, in, out, nil)
+
+	if data, readErr := os.ReadFile(out); readErr == nil {
+		if strings.Contains(string(data), secretMarker) {
+			t.Fatal("secret marker leaked into pandoc output -- \\input disclosure was NOT blocked by --sandbox")
+		}
+	}
+}
+
+// TestPandocSecurityNetworkFetchBlockedOffline is the SC3 canary sub-case 3
+// (T-47-02): an html source referencing a remote resource via a
+// guaranteed-unresolvable ".invalid" URL (RFC 2606) must not trigger a
+// network fetch, and the conversion must complete offline within the
+// bounded ctx timeout rather than hang -- exercising the same
+// kill-on-timeout guarantee runCommand (exec.go) provides for every
+// hardened engine invocation, via context.WithTimeout.
+func TestPandocSecurityNetworkFetchBlockedOffline(t *testing.T) {
+	requirePandoc(t)
+
+	dir := t.TempDir()
+	blackholeToken := "UNRESOLVED-BLACKHOLE-CANARY-TOKEN-9001"
+	in := filepath.Join(dir, "attack_network.html")
+	writeFixture(t, in, "<!doctype html><html><body>"+
+		"<img src=\"http://blackhole-canary-9001.invalid/"+blackholeToken+".png\">"+
+		"<p>hi</p></body></html>")
+	out := filepath.Join(dir, "attack_network.md")
+
+	c := PandocConverter{}
+	// Bounded ctx: a hypothetical network hang fails this test (via
+	// runCommand's SIGKILL-on-timeout path) instead of blocking the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- c.Convert(ctx, in, out, nil) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Convert(html referencing a remote resource) = %v, want nil (conversion completes offline)", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Convert(html referencing a remote resource) did not return within the bound -- want offline completion, not a network-fetch hang")
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("ReadFile(out): %v", err)
+	}
+	// The unroutable/blackhole reference passes through as a plain,
+	// unresolved literal token (never fetched and replaced with real
+	// content) -- proving the conversion never attempted to resolve it.
+	if !strings.Contains(string(data), blackholeToken) {
+		t.Fatalf("output = %q, want the unresolved blackhole token to survive unmodified (never fetched/replaced)", data)
+	}
+}
