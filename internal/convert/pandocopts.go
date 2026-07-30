@@ -88,3 +88,58 @@ func PandocOptsFromMap(m map[string]any) (PandocOpts, error) {
 	}
 	return ParsePandocOpts(raw)
 }
+
+// ValidatePandocApplicability rejects opts that do not apply to the given
+// (engine, source, target) conversion. Empty opts always apply (nothing
+// was requested). A non-empty PandocOpts applies only to pandoc-engine
+// conversions. Deliberately its OWN function scoped to EnginePandoc, not
+// merged into the shared ValidateApplicability (opts.go) -- mirrors
+// ValidateOCRApplicability's/ValidateAudioApplicability's engine-scoped
+// shape.
+func ValidatePandocApplicability(engine, source, target string, o PandocOpts) error {
+	if isZeroPandocOpts(o) {
+		return nil
+	}
+	if engine != EnginePandoc {
+		return fmt.Errorf("pandoc options are only valid for pandoc-engine conversions")
+	}
+	return nil
+}
+
+// isZeroPandocOpts reports whether o carries no client-requested options at
+// all -- the same "empty opts always apply" shortcut ValidateApplicability
+// uses for DocOpts/HTMLOpts (opts.go, htmlopts.go), for PandocOpts's 5
+// fields.
+func isZeroPandocOpts(o PandocOpts) bool {
+	return o == PandocOpts{}
+}
+
+// pandocArgs builds pandoc's discrete argv fragment from an
+// already-validated PandocOpts (PDCO-01). o.Wrap MUST already have passed
+// ParsePandocOpts/PandocOptsFromMap -- this function performs NO
+// validation of its own, it only shapes the argv: every set bool becomes
+// its own discrete slice element, and Wrap (when non-empty) becomes a
+// single "--wrap=<value>" element whose value is the already-enum-gated
+// string. The returned slice never concatenates or interpolates raw client
+// bytes into a single string beyond this one enum-constrained form -- so a
+// caller appending these to an exec.Command argv (runCommand, exec.go)
+// never invokes a shell and has no shell-metacharacter injection surface.
+func pandocArgs(o PandocOpts) []string {
+	var args []string
+	if o.Standalone {
+		args = append(args, "--standalone")
+	}
+	if o.Toc {
+		args = append(args, "--toc")
+	}
+	if o.NumberSections {
+		args = append(args, "--number-sections")
+	}
+	if o.SectionDivs {
+		args = append(args, "--section-divs")
+	}
+	if o.Wrap != "" {
+		args = append(args, "--wrap="+o.Wrap)
+	}
+	return args
+}
