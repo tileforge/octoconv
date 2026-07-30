@@ -186,7 +186,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 Plans:
 - [x] 47-01-PLAN.md — PandocOpts closed allowlist + strict-parse + discrete-argv injection defense (PDCO-01)
-- [ ] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
+- [x] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
 - [ ] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
 
 ### Phase 48: Async Pipeline Wiring
@@ -272,7 +272,7 @@ Plans:
 | 44. Async Pipeline Wiring | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete | 2026-07-27 |
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
-| 47. Pandoc Engine Foundation | v1.11 | 1/3 | In Progress | - |
+| 47. Pandoc Engine Foundation | v1.11 | 2/3 | In Progress | - |
 | 48. Async Pipeline Wiring | v1.11 | 0/TBD | Not started | - |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 0/TBD | Not started | - |
 | 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
