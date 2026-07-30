@@ -57,7 +57,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PDCE-02 | Phase 47 | Complete |
 | PDCE-03 | Phase 47 | Complete |
 | PDCE-04 | Phase 49 | Pending |
-| PDCP-01 | Phase 48 | In Progress (Plan 01/3 done: queue plumbing) |
+| PDCP-01 | Phase 48 | In Progress (Plan 02/3 done: queue plumbing + migration/routing/API wiring) |
 | PDCP-02 | Phase 50 | Pending |
 
 **Coverage:**

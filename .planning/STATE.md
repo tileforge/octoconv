@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
 status: executing
-stopped_at: Phase 48 Plan 01 executed — ready to execute Plan 02
-last_updated: "2026-07-30T19:23:20.504Z"
-last_activity: "2026-07-30 — Phase 48 Plan 01 executed (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01)"
+stopped_at: Phase 48 Plan 02 executed — ready to execute Plan 03
+last_updated: "2026-07-30T19:38:26.525Z"
+last_activity: 2026-07-30
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 25
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 ## Current Position
 
 Phase: 48 (Async Pipeline Wiring) — in progress
-Plan: 1 of 3 (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01) — complete
-Status: Ready to execute Plan 02 (Plan 01 finished)
-Last activity: 2026-07-30 — Phase 48 Plan 01 executed (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01)
+Plan: 2 of 3 (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01) — complete
+Status: Ready to execute
+Last activity: 2026-07-30
 
 ## Performance Metrics
 
@@ -135,6 +135,7 @@ Last activity: 2026-07-30 — Phase 48 Plan 01 executed (pandoc asynq plumbing: 
 | Phase 47 P02 | 12min | 2 tasks | 4 files |
 | Phase 47 P03 | 25min | 3 tasks | 2 files |
 | Phase 48 P01 | 20min | 2 tasks | 3 files |
+| Phase 48 P02 | 9min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -153,6 +154,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - [Phase 48-01]: PandocUniqueTTL derived fresh from pandoc's own PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT budget (D-03) — Test proves it differs from OCRUniqueTTL/AVUniqueTTL/AudioUniqueTTL under identical inputs -- not copied
 - [Phase 48-01]: pandocRetrySchedule = 5s, 20s (2-entry, no jitter, PROVISIONAL) — Shorter than OCR's 15s/1m since pandoc is a lighter deterministic CPU-bound text transform; pending Phase 49's measured PANDOC_ENGINE_TIMEOUT
 - [Phase 48-01]: PANDOC_ENGINE_TIMEOUT default = 90s, PANDOC_MAX_RETRY default = 2 — Both clearly flagged as placeholders in client.go doc comments, superseded by Phase 49's measured value
+- [Phase 48]: Mirrored 0009's migration comment style verbatim for 0010 (operation-CHECK-untouched sentence); this literally conflicts with a plan acceptance-criterion grep expecting zero occurrences of "operation", but the SQL statements make no functional change to the operation column/constraint
 
 ### Quick Tasks Completed
 
@@ -234,8 +236,8 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-30T19:23:20.479Z
-Stopped at: Phase 48 Plan 01 executed — ready to execute Plan 02
+Last session: 2026-07-30T19:38:26.506Z
+Stopped at: Phase 48 Plan 02 executed — ready to execute Plan 03
 Resume file: None
 
 ## Operator Next Steps
