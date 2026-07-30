@@ -10,7 +10,7 @@ import (
 // to disambiguate the six OOXML/ODF office formats and simultaneously
 // gather the zip-bomb (D-03) and macro-part (D-05) safety signals.
 type ContainerResult struct {
-	Format            string // "docx"|"xlsx"|"pptx"|"odt"|"ods"|"odp"|"" (unrecognized)
+	Format            string // "docx"|"xlsx"|"pptx"|"odt"|"ods"|"odp"|"epub"|"" (unrecognized)
 	TotalUncompressed uint64
 	HasMacro          bool
 	DuplicateRootPart bool // fail-closed signal (RESEARCH.md Pitfall 3)
@@ -32,13 +32,18 @@ var ooxmlRootParts = map[string]string{
 	"ppt/presentation.xml": "pptx",
 }
 
-// odfMimetypes is the closed set of OASIS-mandated ODF media-type payloads
-// found in the first ZIP entry ("mimetype", stored uncompressed).
-// Source: OASIS OpenDocument v1.2 Part 3 §17.4 (mimetype file requirement).
+// odfMimetypes is the closed set of media-type payloads found in the first
+// ZIP entry ("mimetype", stored uncompressed) -- the OASIS-mandated ODF
+// trio PLUS epub, which independently designates its identity via the
+// same first-entry-stored-uncompressed convention (T-47-05c, 47-CONTEXT.md).
+// Source: OASIS OpenDocument v1.2 Part 3 §17.4 (mimetype file requirement);
+// EPUB Open Container Format 3.x §3.3 ("the first file in the archive MUST
+// be ... named mimetype", stored/uncompressed, payload "application/epub+zip").
 var odfMimetypes = map[string]string{
 	"application/vnd.oasis.opendocument.text":         "odt",
 	"application/vnd.oasis.opendocument.spreadsheet":  "ods",
 	"application/vnd.oasis.opendocument.presentation": "odp",
+	"application/epub+zip":                            "epub",
 }
 
 // ooxmlMacroParts is the closed set of literal OOXML macro-storage paths
@@ -52,8 +57,9 @@ var ooxmlMacroParts = map[string]bool{
 }
 
 // SniffContainer inspects a ZIP-shaped upload's central directory to
-// disambiguate the six supported office formats (D-01), sum declared
-// uncompressed size across every entry for the zip-bomb guard (D-02/D-03),
+// disambiguate the six supported office formats plus epub (D-01, T-47-05c),
+// sum declared uncompressed size across every entry for the zip-bomb guard
+// (D-02/D-03),
 // and detect macro-carrying parts (D-03/D-05) -- all in a single pass over
 // the archive/zip central directory (RESEARCH.md Pitfall 4: never re-parse
 // the central directory more than once per upload). r must be the original,
