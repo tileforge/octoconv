@@ -23,6 +23,7 @@ const (
 	EngineAudio    = "audio"
 	EngineAV       = "av"
 	EngineOCR      = "ocr"
+	EnginePandoc   = "pandoc"
 )
 
 // Pair is an ordered (source, target) format pair, e.g. {"png", "webp"}.
