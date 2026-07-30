@@ -1244,7 +1244,7 @@ func TestOCREngineRoundTrip(t *testing.T) {
 		Engine:       "ocr",
 		SourceFormat: "png",
 		TargetFormat: "txt",
-		Input: Input{ObjectKey: "uploads/ocr1/0-in.png", Filename: "in.png", Format: "png"},
+		Input:        Input{ObjectKey: "uploads/ocr1/0-in.png", Filename: "in.png", Format: "png"},
 	})
 	if err != nil {
 		t.Fatalf("Create (engine=ocr): %v", err)
@@ -1258,6 +1258,40 @@ func TestOCREngineRoundTrip(t *testing.T) {
 		t.Fatalf("Engine = %q, want ocr", got.Engine)
 	}
 	if got.Status != StatusQueued || got.SourceFormat != "png" || got.TargetFormat != "txt" {
+		t.Fatalf("unexpected job after create: %+v", got)
+	}
+}
+
+// TestPandocEngineRoundTrip pins 0010_pandoc_engine.sql (PDCP-01, Phase 48):
+// after Migrate, a jobs row with engine='pandoc', operation='convert' inserts
+// without a CHECK violation and reads back with engine='pandoc' via
+// Repo.Get -- the additive ALTER accepts the value on a DB that already has
+// 9 non-pandoc engine classes migrated in ahead of it (existing rows/
+// constraints untouched).
+func TestPandocEngineRoundTrip(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:     createTestClient(t, r),
+		Operation:    "convert",
+		Engine:       "pandoc",
+		SourceFormat: "md",
+		TargetFormat: "html",
+		Input:        Input{ObjectKey: "uploads/pandoc1/0-in.md", Filename: "in.md", Format: "md"},
+	})
+	if err != nil {
+		t.Fatalf("Create (engine=pandoc): %v", err)
+	}
+
+	got, err := r.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Engine != "pandoc" {
+		t.Fatalf("Engine = %q, want pandoc", got.Engine)
+	}
+	if got.Status != StatusQueued || got.SourceFormat != "md" || got.TargetFormat != "html" {
 		t.Fatalf("unexpected job after create: %+v", got)
 	}
 }

@@ -120,3 +120,64 @@ func TestOCRPairsDisjointFromOtherEngines(t *testing.T) {
 		}
 	}
 }
+
+// TestPandocPairsDisjointFromOtherEngines proves PandocConverter.Pairs()
+// (pandoc.go) shares no (from, to) pair with any other registered converter
+// -- mirroring TestOCRPairsDisjointFromOtherEngines's rationale (PDCP-01,
+// Phase 48, D-02, 48-CONTEXT.md). Registry.Register is still the same bare,
+// uncollision-checked map assignment; this is the only guard against
+// PandocConverter's converters.go init() registration silently stealing or
+// losing a pair.
+//
+// Why disjointness holds by construction: PandocConverter's curated
+// markup-family table (pandocPairTable, pandoc.go) deliberately excludes
+// every ->pdf target (LibreOfficeConverter owns docx/odt/xlsx/ods/pptx/odp
+// ->pdf, ChromiumConverter owns html->pdf) and every docx<->odt-family
+// target (LibreOfficeConverter's crossPairs own those) -- so even though
+// "md"/"html"/"docx" strings are shared ENDPOINTS with LibvipsConverter (N/A,
+// image-only), LibreOfficeConverter, ChromiumConverter, AudioConverter, and
+// AVConverter, no (from, to) KEY registered by PandocConverter can collide
+// with one already claimed by another engine.
+func TestPandocPairsDisjointFromOtherEngines(t *testing.T) {
+	norm := func(p Pair) Pair {
+		return Pair{From: NormalizeFormat(p.From), To: NormalizeFormat(p.To)}
+	}
+	normAll := func(pairs []Pair) []Pair {
+		out := make([]Pair, 0, len(pairs))
+		for _, p := range pairs {
+			out = append(out, norm(p))
+		}
+		return out
+	}
+
+	pandocPairs := normAll((PandocConverter{}).Pairs())
+	others := map[string][]Pair{
+		"LibvipsConverter":     normAll((LibvipsConverter{}).Pairs()),
+		"LibreOfficeConverter": normAll((LibreOfficeConverter{}).Pairs()),
+		"ChromiumConverter":    normAll((ChromiumConverter{}).Pairs()),
+		"AudioConverter":       normAll((AudioConverter{}).Pairs()),
+		"AVConverter":          normAll((AVConverter{}).Pairs()),
+		"OCRConverter":         normAll((OCRConverter{}).Pairs()),
+	}
+
+	for name, otherPairs := range others {
+		for _, p := range pandocPairs {
+			for _, q := range otherPairs {
+				if p == q {
+					t.Fatalf("normalized pair %+v registered by both PandocConverter and %s, want disjoint", p, name)
+				}
+			}
+		}
+		union := make(map[Pair]bool, len(pandocPairs)+len(otherPairs))
+		for _, p := range pandocPairs {
+			union[p] = true
+		}
+		for _, p := range otherPairs {
+			union[p] = true
+		}
+		if want := len(pandocPairs) + len(otherPairs); len(union) != want {
+			t.Fatalf("len(union of PandocConverter.Pairs() and %s.Pairs()) = %d, want %d -- a collision was masked by set semantics",
+				name, len(union), want)
+		}
+	}
+}
