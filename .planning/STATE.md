@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
-status: executing
-stopped_at: Phase 48 Plan 02 executed — ready to execute Plan 03
-last_updated: "2026-07-30T19:38:26.525Z"
+status: planning
+stopped_at: Phase 48 Plan 03 executed — Phase 48 (Async Pipeline Wiring) complete, PDCP-01 done
+last_updated: "2026-07-30T19:56:59.197Z"
 last_activity: 2026-07-30
 progress:
   total_phases: 4
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 25
+  completed_plans: 6
+  percent: 50
 ---
 
 # Project State
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) in progress (1/3 plans)
+**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) complete (3/3 plans, PDCP-01 done) — ready for Phase 49 (containerization + measured PANDOC_ENGINE_TIMEOUT)
 
 ## Current Position
 
-Phase: 48 (Async Pipeline Wiring) — in progress
-Plan: 2 of 3 (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01) — complete
-Status: Ready to execute
+Phase: 48 (Async Pipeline Wiring) — complete
+Plan: 3 of 3 (HandlePandocConvert + isPandocTerminal/pandocFailureCode D-01, cmd/pandoc-worker, reconciler pandoc routing, empty→done SC4, invariant fence) — complete
+Status: Ready to plan Phase 49
 Last activity: 2026-07-30
 
 ## Performance Metrics
@@ -136,6 +136,7 @@ Last activity: 2026-07-30
 | Phase 47 P03 | 25min | 3 tasks | 2 files |
 | Phase 48 P01 | 20min | 2 tasks | 3 files |
 | Phase 48 P02 | 9min | 2 tasks | 8 files |
+| Phase 48 P03 | ~30min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -155,6 +156,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - [Phase 48-01]: pandocRetrySchedule = 5s, 20s (2-entry, no jitter, PROVISIONAL) — Shorter than OCR's 15s/1m since pandoc is a lighter deterministic CPU-bound text transform; pending Phase 49's measured PANDOC_ENGINE_TIMEOUT
 - [Phase 48-01]: PANDOC_ENGINE_TIMEOUT default = 90s, PANDOC_MAX_RETRY default = 2 — Both clearly flagged as placeholders in client.go doc comments, superseded by Phase 49's measured value
 - [Phase 48]: Mirrored 0009's migration comment style verbatim for 0010 (operation-CHECK-untouched sentence); this literally conflicts with a plan acceptance-criterion grep expecting zero occurrences of "operation", but the SQL statements make no functional change to the operation column/constraint
+- [Phase 48]: isPandocTerminal mirrors isDocumentTerminal's timeout-is-terminal shape (D-01) — timeout AND any "pandoc:"-prefixed engine/parse error are terminal, the opposite of isOCRTerminal's transient-timeout treatment; genuine infra transients stay retryable
+- [Phase 48]: cmd/pandoc-worker's PANDOC_ENGINE_TIMEOUT default (90s) matches internal/queue/client.go's own default exactly to avoid drift between the two independent env reads
+- [Phase 48]: PANDOC_WORKER_CONCURRENCY defaults to 2 (not 1 like OCR/AV/audio) — pandoc is a fast, lightweight single subprocess, not a heavy per-page/per-frame engine
 
 ### Quick Tasks Completed
 
@@ -167,7 +171,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 
 ### Pending Todos
 
-- Execute Phase 47 (Pandoc Engine Foundation) Plans 02-03: 47-02 (markup content-validation probes + input-size DoS guard + epub/MIME registry, PDCE-01/PDCE-03) then 47-03 (standalone `PandocConverter` — closed markup-family `(from→to)` allowlist, `--standalone`, hardened `runCommand` with `--sandbox` + per-source raw-extension table + no network, SC3 security canary). Plan 01 (PandocOpts closed allowlist + injection defense, PDCO-01) is complete. Mirrors Audio/AV/OCR foundation-phase precedent (Phase 30/34/43) — validate standalone against the real pandoc binary before any queue/worker plumbing.
+- Plan and execute Phase 49 (Containerization + Measured Timeout Gate, PDCE-04): `Dockerfile.pandoc-worker` (pandoc pinned, NO TeX toolchain), a live compose E2E through `cmd/pandoc-worker`, and `scripts/pandoc-timing-measure.sh` deriving the real `PANDOC_ENGINE_TIMEOUT` from a measured corpus run (never copied from AUDIO/AV/OCR's own values) — mirrors the audio/AV/OCR containerization-phase precedent (Phase 31/35/45).
 
 ### Blockers/Concerns
 
@@ -236,12 +240,12 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-30T19:38:26.506Z
-Stopped at: Phase 48 Plan 02 executed — ready to execute Plan 03
+Last session: 2026-07-30T19:56:59.183Z
+Stopped at: Phase 48 Plan 03 executed — Phase 48 (Async Pipeline Wiring) complete, PDCP-01 done
 Resume file: None
 
 ## Operator Next Steps
 
-- Continue Phase 47 execution with 47-03-PLAN.md (standalone `PandocConverter` core — curated closed `Pairs()` allowlist, hardened `runCommand` invocation with `--sandbox`, `--standalone` output validation, SC3 security canary; PDOC-01, PDOC-02, PDCE-02).
+- Plan Phase 49 (Containerization + Measured Timeout Gate): `Dockerfile.pandoc-worker`, a live compose E2E, and `scripts/pandoc-timing-measure.sh`'s measured `PANDOC_ENGINE_TIMEOUT` derivation (PDCE-04).
 
 </content>

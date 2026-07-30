@@ -25,7 +25,7 @@
 
 ### PDCP — Async pipeline & scale
 
-- [ ] **PDCP-01**: Pandoc встроен в полный async-контур end-to-end (миграция добавляет `pandoc` в `jobs.engine` enum, очередь `pandoc`, `cmd/pandoc-worker`, stage-aware transient/terminal retry, reconciler-routing, API-routing); single input → single target формат, поверх неизменной v1.9 progress/webhook инфры.
+- [x] **PDCP-01**: Pandoc встроен в полный async-контур end-to-end (миграция добавляет `pandoc` в `jobs.engine` enum, очередь `pandoc`, `cmd/pandoc-worker`, stage-aware transient/terminal retry, reconciler-routing, API-routing); single input → single target формат, поверх неизменной v1.9 progress/webhook инфры.
 - [ ] **PDCP-02**: pandoc-воркер контейнеризован (`Dockerfile.pandoc-worker`, pandoc pinned, **без TeX** — лёгкий образ) и автоскейлится через KEDA scale-from-zero с измеренным таймаутом; compose + Helm chart интеграция; IN-02 env-паритет `PANDOC_*` across всех queue-client сервисов.
 
 ## v2 Requirements
@@ -57,7 +57,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PDCE-02 | Phase 47 | Complete |
 | PDCE-03 | Phase 47 | Complete |
 | PDCE-04 | Phase 49 | Pending |
-| PDCP-01 | Phase 48 | In Progress (Plan 02/3 done: queue plumbing + migration/routing/API wiring) |
+| PDCP-01 | Phase 48 | Complete |
 | PDCP-02 | Phase 50 | Pending |
 
 **Coverage:**

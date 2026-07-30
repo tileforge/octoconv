@@ -166,7 +166,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 **Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
 
 - [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + --sandbox + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
-- [ ] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra
+- [x] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra (completed 2026-07-30)
 - [ ] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
 - [ ] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven
 
@@ -202,7 +202,7 @@ Plans:
 Plans:
 - [x] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
 - [x] 48-02-PLAN.md — migration 0010 (+pandoc enum), register PandocConverter, EngineFor routing + disjointness test, API opts/enqueue/content-gate wiring + EnginePandoc upload ceiling
-- [ ] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
+- [x] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
 
 ### Phase 49: Containerization + Measured Timeout Gate
 **Goal**: A running `pandoc-worker` container in docker-compose passes a full live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied or guessed constant, in a lean TeX-free image.
@@ -277,7 +277,7 @@ Plans:
 | 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete | 2026-07-27 |
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
-| 48. Async Pipeline Wiring | v1.11 | 2/3 | In Progress|  |
+| 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 0/TBD | Not started | - |
 | 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
 
