@@ -103,6 +103,19 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 </details>
 
+## Current Milestone: v1.11 Pandoc Engine
+
+**Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), **только markup↔markup** (без →pdf), через тот же async-контур, что и остальные шесть движков.
+
+**Target features:**
+- `PandocConverter` — closed `(from→to)` allowlist по markup-семейству (md/rst/org/latex/epub/html/docx); standalone, offline, hardened.
+- Security-locked: raw HTML/TeX passthrough отключён, `--no-shell-escape`, no-network, hardened `runCommand` (Setpgid/SIGKILL, `nobody`), resource-limited; fail-closed magic-byte/content-валидация; input-size guard.
+- Полный async-контур: очередь `pandoc`, `cmd/pandoc-worker`, stage-aware transient/terminal retry, reconciler-routing, API-routing (single I/O, поверх неизменной v1.9 progress/webhook инфры).
+- Контейнер `Dockerfile.pandoc-worker` (pandoc pinned, **без TeX** — лёгкий образ) + **измеренный `PANDOC_ENGINE_TIMEOUT`** (не копируется) + IN-02 env-паритет + KEDA scale-from-zero + Helm.
+- Validated `opts` (closed allowlist: standalone/toc/wrap/… mirror OCROpts/AudioOpts).
+
+**Key context / locked решения:** PDF-вывод отложен в v2 (→pdf уже покрыт LibreOffice docx→pdf / chromium html→pdf; pandoc-PDF потянул бы TeX/HTML-движок и тяжёлый образ); pandoc владеет ТОЛЬКО markup-семейством (не дублирует существующие движки); zero новых Go-зависимостей (pandoc — CLI-subprocess через существующий harness). Клон проверенного engine-class паттерна (audio/av/ocr), research пропущен.
+
 ## Requirements
 
 ### Validated

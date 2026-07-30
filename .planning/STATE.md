@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.10
-milestone_name: OCR Engine
-status: Awaiting next milestone
-stopped_at: Completed 46-02-PLAN.md
-last_updated: "2026-07-27T08:58:19.856Z"
-last_activity: 2026-07-27 — Milestone v1.10 completed and archived
+milestone: v1.11
+milestone_name: Pandoc Engine
+status: planning
+last_updated: "2026-07-30T02:26:17.640Z"
+last_activity: 2026-07-30
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 15
-  completed_plans: 15
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -21,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.10 OCR Engine — Phase 46: KEDA/Helm Chart Integration
+**Current focus:** v1.11 Pandoc Engine — defining roadmap
 
 ## Current Position
 
-Phase: Milestone v1.10 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-07-27 — Milestone v1.10 completed and archived
+Status: Defining requirements
+Last activity: 2026-07-30 — Milestone v1.11 started
 
 ## Performance Metrics
 
