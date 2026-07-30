@@ -1229,3 +1229,53 @@ func TestPandocFailureCode(t *testing.T) {
 		}
 	}
 }
+
+// fakeBlankPandocConverter implements convert.Converter with a Convert that
+// writes an EMPTY output file and returns nil -- mirrors
+// fakeBlankOCRConverter's own OCRE-05 precedent, applied to pandoc's SC4
+// contract (pandocValidateOutput, internal/convert/pandoc.go, deliberately
+// skips its content-sniff check on a zero-size output and returns nil: an
+// empty-body markdown source producing an empty plaintext/fragment result
+// is a VALID, successful conversion, not a failure). This proves the seam
+// HandlePandocConvert composes (runConvertWithOptionalProgress ->
+// process()'s nil-error success path) treats a blank result as success
+// regardless of output size, so it flows to h.repo.MarkDone, never
+// MarkFailed -- process()'s h.repo/h.store are concrete types (not
+// interfaces, ARCHITECTURE.md's "Key Abstractions" note), so a full Handler
+// cannot be constructed in a pure unit test; this drives the exact seam
+// process() delegates to, the smallest testable proof of the SC4 contract
+// without a live Postgres/S3 Handler.
+type fakeBlankPandocConverter struct{}
+
+func (fakeBlankPandocConverter) Pairs() []convert.Pair {
+	return []convert.Pair{{From: "md", To: "html"}}
+}
+func (fakeBlankPandocConverter) Engine() string { return convert.EnginePandoc }
+func (fakeBlankPandocConverter) Convert(_ context.Context, _, outPath string, _ map[string]any) error {
+	return os.WriteFile(outPath, []byte(""), 0o644)
+}
+
+// TestPandocEmptyOutputSucceeds_SC4 pins SC4: an empty-but-valid pandoc
+// output must complete as done, never failed. Runs the fake blank converter
+// through runConvertWithOptionalProgress -- the exact seam HandlePandocConvert's
+// process() call uses -- and asserts a nil error (the branch HandlePandocConvert
+// takes straight to h.repo.MarkDone, never h.repo.MarkFailed) alongside a
+// genuinely empty output file.
+func TestPandocEmptyOutputSucceeds_SC4(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.html")
+	repo := &spyProgressRepo{}
+
+	err := runConvertWithOptionalProgress(context.Background(), fakeBlankPandocConverter{}, "in.md", outPath, nil, repo, uuid.New(), 0, 0, false, "", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("runConvertWithOptionalProgress(blank-output pandoc result) = %v, want nil (SC4: empty-but-valid output is done, not failed)", err)
+	}
+
+	data, rerr := os.ReadFile(outPath)
+	if rerr != nil {
+		t.Fatalf("read output: %v", rerr)
+	}
+	if len(data) != 0 {
+		t.Fatalf("output = %q, want empty (empty-body source producing an empty result)", data)
+	}
+}
