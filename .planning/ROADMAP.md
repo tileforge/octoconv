@@ -182,7 +182,12 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
   3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--no-shell-escape`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
   4. A closed `PandocOpts` allowlist (e.g. `standalone`/`toc`/`wrap`/`section-divs`, typed strict-parse mirroring `OCROpts`/`AudioOpts`) rejects any unlisted opt with 422 before any work begins, with an injection test proving client bytes never reach pandoc's argv unvalidated.
   5. Uploads are gated fail-closed by magic-byte/content validation across the markup family (text-based formats sniffed correctly, not only binary containers like docx/epub), and an oversize or pathological input (size cap; pandoc-specific expansion/bomb shape) is rejected before conversion runs.
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+- [ ] 47-01-PLAN.md — PandocOpts closed allowlist + strict-parse + discrete-argv injection defense (PDCO-01)
+- [ ] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
+- [ ] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
 
 ### Phase 48: Async Pipeline Wiring
 **Goal**: Pandoc jobs (markup → markup) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the unmodified v1.9 progress/webhook machinery.
