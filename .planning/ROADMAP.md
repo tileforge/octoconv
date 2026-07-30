@@ -165,7 +165,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 **Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
 
-- [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + no-shell-escape + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
+- [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + --sandbox + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
 - [ ] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra
 - [ ] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
 - [ ] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven
@@ -179,7 +179,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 **Success Criteria** (what must be TRUE):
   1. `PandocConverter` converts between any two markup formats in a closed `(from→to)` allowlist covering the markup family (md/rst/org/latex/epub/html/docx), verified by direct invocation against the real pandoc binary; an unlisted pair is rejected before any subprocess runs (mirrors existing `Pairs()` conventions).
   2. Output that requires document structure (docx/epub/html) is produced with `--standalone` — a complete, valid document rather than a bare fragment — and the result is validated by the same content-sniffer that guards uploads.
-  3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--no-shell-escape`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
+  3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--sandbox`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
   4. A closed `PandocOpts` allowlist (e.g. `standalone`/`toc`/`wrap`/`section-divs`, typed strict-parse mirroring `OCROpts`/`AudioOpts`) rejects any unlisted opt with 422 before any work begins, with an injection test proving client bytes never reach pandoc's argv unvalidated.
   5. Uploads are gated fail-closed by magic-byte/content validation across the markup family (text-based formats sniffed correctly, not only binary containers like docx/epub), and an oversize or pathological input (size cap; pandoc-specific expansion/bomb shape) is rejected before conversion runs.
 **Plans**: 3 plans
