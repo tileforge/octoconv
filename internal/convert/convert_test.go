@@ -104,6 +104,31 @@ func TestRegistryEngineForOCRRouting(t *testing.T) {
 	}
 }
 
+// TestRegistryEngineForPandocRouting pins PDCP-01/D-02 (48-CONTEXT.md): once
+// PandocConverter{} is registered (converters.go init()), EngineFor
+// disambiguates purely by TARGET with zero new routing code -- md->html,
+// docx->md, and html->md all route to "pandoc" while docx->pdf keeps routing
+// to "document" (LibreOfficeConverter) and html->pdf keeps routing to "html"
+// (ChromiumConverter). This is the acceptance test proving the target-based
+// disambiguation the whole plan's registration-only wiring rests on.
+func TestRegistryEngineForPandocRouting(t *testing.T) {
+	if engine, ok := Default.EngineFor("md", "html"); !ok || engine != EnginePandoc {
+		t.Errorf("EngineFor(md, html) = (%q, %v), want (%q, true)", engine, ok, EnginePandoc)
+	}
+	if engine, ok := Default.EngineFor("docx", "md"); !ok || engine != EnginePandoc {
+		t.Errorf("EngineFor(docx, md) = (%q, %v), want (%q, true)", engine, ok, EnginePandoc)
+	}
+	if engine, ok := Default.EngineFor("html", "md"); !ok || engine != EnginePandoc {
+		t.Errorf("EngineFor(html, md) = (%q, %v), want (%q, true)", engine, ok, EnginePandoc)
+	}
+	if engine, ok := Default.EngineFor("docx", "pdf"); !ok || engine != EngineDocument {
+		t.Errorf("EngineFor(docx, pdf) = (%q, %v), want (%q, true) -- document engine must still win its own target", engine, ok, EngineDocument)
+	}
+	if engine, ok := Default.EngineFor("html", "pdf"); !ok || engine != EngineHTML {
+		t.Errorf("EngineFor(html, pdf) = (%q, %v), want (%q, true) -- html/chromium engine must still win its own target", engine, ok, EngineHTML)
+	}
+}
+
 // TestRegistryClasses verifies D-06: Classes() groups every registered pair
 // under its engine class, a known libvips pair (png->webp) surfaces under
 // "image", and repeated calls return a stable (deterministically sorted)
