@@ -84,6 +84,20 @@ type Client struct {
 	// any other engine class's TTL (D-04/IN-02) — a mismatch here would
 	// silently duplicate processing.
 	ocrUniqueTTL time.Duration
+	// pandocMaxRetry is the per-task MaxRetry budget for pandoc conversion
+	// tasks (PANDOC_MAX_RETRY, default 2 — mirrors ocrMaxRetry's
+	// bounded-retry budget since a genuine pandoc engine/parse failure is
+	// deterministic on the input and unlikely to be helped by more than a
+	// couple of attempts, and 48-CONTEXT.md D-01 classifies timeouts and
+	// engine/parse errors as TERMINAL anyway).
+	pandocMaxRetry int
+	// pandocUniqueTTL is the per-job asynq.Unique lock TTL for pandoc
+	// conversion tasks, derived once at construction from pandocMaxRetry and
+	// PANDOC_ENGINE_TIMEOUT via PandocUniqueTTL. Derived fresh from
+	// pandoc's OWN retry/timeout budget, never reused from ocrUniqueTTL/
+	// avUniqueTTL/audioUniqueTTL or any other engine class's TTL (D-03,
+	// 48-CONTEXT.md) — a mismatch here would silently duplicate processing.
+	pandocUniqueTTL time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
@@ -101,7 +115,14 @@ type Client struct {
 // OCR_MAX_RETRY (default 2), and OCR_ENGINE_TIMEOUT (default 300s — a
 // PROVISIONAL code placeholder this phase, mirroring the AV_ENGINE_TIMEOUT
 // [ASSUMED] precedent; Phase 45 supplies the measured OCR_ENGINE_TIMEOUT and
-// supersedes this value entirely).
+// supersedes this value entirely), PANDOC_MAX_RETRY (default 2), and
+// PANDOC_ENGINE_TIMEOUT (default 90s — a CLEARLY-MARKED PLACEHOLDER this
+// phase: pandoc is a fast, deterministic, CPU-bound markup-to-markup
+// transform, so this is a small value in the ~60-120s range, mirroring the
+// OCR_ENGINE_TIMEOUT 300s-provisional-then-744s-measured precedent (Phase
+// 44 -> Phase 45); Phase 49 supplies the measured PANDOC_ENGINE_TIMEOUT from
+// a real conversion-time matrix and supersedes this value entirely — see
+// 48-CONTEXT.md D-03).
 //
 // COUPLING (Pitfall 4, RESEARCH.md): RECONCILER_ACTIVE_STALE_AFTER is a
 // single global threshold (default 900s) that must comfortably exceed every
@@ -130,6 +151,11 @@ func NewClient() (*Client, error) {
 	avEngineTimeout := envDuration("AV_ENGINE_TIMEOUT", 600*time.Second)
 	ocrMaxRetry := envInt("OCR_MAX_RETRY", 2)
 	ocrEngineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second)
+	pandocMaxRetry := envInt("PANDOC_MAX_RETRY", 2)
+	// PANDOC_ENGINE_TIMEOUT default of 90s is a PLACEHOLDER — pandoc is
+	// fast; Phase 49 supplies the measured value and supersedes this
+	// entirely (D-03, mirroring the OCR 300s->744s precedent).
+	pandocEngineTimeout := envDuration("PANDOC_ENGINE_TIMEOUT", 90*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,
@@ -145,6 +171,8 @@ func NewClient() (*Client, error) {
 		avUniqueTTL:       AVUniqueTTL(avMaxRetry, avEngineTimeout),
 		ocrMaxRetry:       ocrMaxRetry,
 		ocrUniqueTTL:      OCRUniqueTTL(ocrMaxRetry, ocrEngineTimeout),
+		pandocMaxRetry:    pandocMaxRetry,
+		pandocUniqueTTL:   PandocUniqueTTL(pandocMaxRetry, pandocEngineTimeout),
 	}, nil
 }
 
@@ -233,6 +261,19 @@ func (c *Client) EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error {
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue ocr convert %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// EnqueuePandocConvert puts a pandoc markup-to-markup conversion job onto
+// the pandoc queue.
+func (c *Client) EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error {
+	task, err := NewPandocConvertTask(jobID, c.pandocMaxRetry, c.pandocUniqueTTL)
+	if err != nil {
+		return err
+	}
+	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
+		return fmt.Errorf("enqueue pandoc convert %s: %w", jobID, err)
 	}
 	return nil
 }
