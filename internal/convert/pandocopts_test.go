@@ -1,6 +1,9 @@
 package convert
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestParsePandocOpts(t *testing.T) {
 	tests := []struct {
@@ -115,4 +118,113 @@ func TestPandocOptsFromMap(t *testing.T) {
 			t.Fatalf("expected error for unknown persisted key, got nil")
 		}
 	})
+}
+
+func TestPandocArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		opts PandocOpts
+		want []string
+	}{
+		{
+			name: "zero opts yields no args",
+			opts: PandocOpts{},
+			want: nil,
+		},
+		{
+			name: "standalone",
+			opts: PandocOpts{Standalone: true},
+			want: []string{"--standalone"},
+		},
+		{
+			name: "toc",
+			opts: PandocOpts{Toc: true},
+			want: []string{"--toc"},
+		},
+		{
+			name: "number_sections",
+			opts: PandocOpts{NumberSections: true},
+			want: []string{"--number-sections"},
+		},
+		{
+			name: "section_divs",
+			opts: PandocOpts{SectionDivs: true},
+			want: []string{"--section-divs"},
+		},
+		{
+			name: "wrap emits a single discrete --wrap=<enum> element",
+			opts: PandocOpts{Wrap: "none"},
+			want: []string{"--wrap=none"},
+		},
+		{
+			name: "every field combined, each a discrete element",
+			opts: PandocOpts{
+				Standalone:     true,
+				Toc:            true,
+				NumberSections: true,
+				Wrap:           "preserve",
+				SectionDivs:    true,
+			},
+			want: []string{"--standalone", "--toc", "--number-sections", "--section-divs", "--wrap=preserve"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pandocArgs(tc.opts)
+			if len(got) != len(tc.want) {
+				t.Fatalf("pandocArgs(%+v) = %v; want %v", tc.opts, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("pandocArgs(%+v) = %v; want %v", tc.opts, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestValidatePandocApplicability(t *testing.T) {
+	t.Run("empty opts always apply", func(t *testing.T) {
+		if err := ValidatePandocApplicability(EngineImage, "md", "html", PandocOpts{}); err != nil {
+			t.Fatalf("unexpected error for empty opts: %v", err)
+		}
+	})
+
+	t.Run("non-empty opts on the pandoc engine apply", func(t *testing.T) {
+		if err := ValidatePandocApplicability(EnginePandoc, "md", "html", PandocOpts{Standalone: true}); err != nil {
+			t.Fatalf("unexpected error for pandoc engine: %v", err)
+		}
+	})
+
+	t.Run("non-empty opts on a non-pandoc engine rejected", func(t *testing.T) {
+		if err := ValidatePandocApplicability(EngineImage, "png", "webp", PandocOpts{Standalone: true}); err == nil {
+			t.Fatalf("expected error for non-pandoc engine, got nil")
+		}
+	})
+}
+
+// TestPandocOptsInjection proves the PDCO-01 trust boundary: a hostile
+// client-crafted wrap value shaped like a shell/flag injection payload is
+// rejected at ParsePandocOpts -- BEFORE it could ever reach pandocArgs'
+// argv-shaping step. This is the injection defense: Wrap is enum-gated, so
+// no crafted string can ever flow through to pandoc's argv unvalidated.
+func TestPandocOptsInjection(t *testing.T) {
+	hostile := []string{
+		`none; rm -rf /`,
+		`none" ; touch /tmp/pwned #`,
+		`--lua-filter=/etc/passwd`,
+		`$(whoami)`,
+		"none\nrm -rf /",
+	}
+
+	for _, v := range hostile {
+		raw, err := json.Marshal(map[string]string{"wrap": v})
+		if err != nil {
+			t.Fatalf("marshal hostile payload %q: %v", v, err)
+		}
+		if _, err := ParsePandocOpts(raw); err == nil {
+			t.Fatalf("ParsePandocOpts accepted hostile wrap value %q; want rejection before pandocArgs is ever reached", v)
+		}
+	}
 }
