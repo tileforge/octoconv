@@ -500,6 +500,95 @@ func ocrFailureCode(err error) (code, message string) {
 	return "engine_error", "unsupported or corrupted input format"
 }
 
+// isPandocTerminal is the pandoc engine's engine-scoped terminal classifier
+// -- D-01 (48-CONTEXT.md, BINDING): pandoc conversion is deterministic and
+// CPU-bound with no external services/network, so BOTH a PANDOC_ENGINE_TIMEOUT
+// expiry AND a pandoc engine/parse error are classified TERMINAL. This
+// mirrors isDocumentTerminal's/isHTMLTerminal's timeout-is-terminal shape
+// (DOC-08's precedent), the OPPOSITE of isOCRTerminal's
+// transient-engine-timeout treatment -- a stuck/pathological pandoc
+// invocation is no more likely to succeed on retry than a stuck soffice or
+// chromium render.
+//
+// A PANDOC_ENGINE_TIMEOUT expiry surfaces as a wrapped context.
+// DeadlineExceeded (exec.go's process-group-kill shape, preserved through
+// pandoc.go's fmt.Errorf("pandoc: pandoc: %w", err) and process()'s
+// fmt.Errorf("convert: %w", err)) -- errors.Is(err, context.DeadlineExceeded)
+// stays true all the way up to this handler, exactly like
+// isDocumentTerminal's own documented chain.
+//
+// Every deterministic failure PandocConverter.Convert can produce --
+// unsupported-pair rejection, a corrupt persisted-opts parse failure,
+// ErrPandocInputTooLarge, the pandoc subprocess itself failing, or
+// pandocValidateOutput rejecting a bare/corrupt output -- is wrapped with a
+// "pandoc:" prefix SOMEWHERE in the chain (pandoc.go: every one of Convert's
+// error returns carries it, verified against pandoc.go's own error-wrapping
+// discipline). Checking for that substring here, explicitly and BEFORE the
+// shared isTerminal fallthrough, is what makes a bare pandoc parse/engine
+// error terminal -- isTerminal alone has no pandoc-specific signature list
+// and would otherwise return false (transient) for it, which would be wrong:
+// pandoc is deterministic on its input, so an engine/parse failure will recur
+// identically on retry. Only pandoc.Convert ever emits this prefix, so a
+// genuine infra transient (a plain S3/Postgres blip with no "pandoc:" text)
+// is NOT captured here and correctly falls through isTerminal to its
+// broad-retry default (D-01's "genuine infra transients stay retryable"
+// half).
+//
+// Engine-scoped like isDocumentTerminal/isHTMLTerminal/isOCRTerminal/
+// isAudioTerminal/isAVTerminal -- never reword another engine's signature.
+func isPandocTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// D-01: the deliberate divergence from isOCRTerminal -- a pandoc
+		// timeout means pathological/oversize input a retry cannot fix.
+		return true
+	}
+	if errors.Is(err, convert.ErrPandocInputTooLarge) {
+		// T-48-10: oversize input rejected fail-closed before the subprocess
+		// ever runs -- deterministic on the input, never fixed by retry.
+		return true
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "pandoc:") {
+		// D-01: every deterministic failure PandocConverter.Convert can
+		// produce (unsupported pair, corrupt opts, subprocess failure, bad
+		// output) carries this prefix -- terminal, not the shared isTerminal's
+		// broad-retry default.
+		return true
+	}
+	return isTerminal(err) // no-converter / minio.NoSuchKey / shared fallthrough
+}
+
+// pandocFailureCode maps a terminal process() error for a pandoc job to the
+// distinguishable client-facing (error_code, message) pair MarkFailed
+// records -- mirrors ocrFailureCode's precedent (worker.go): a small pure
+// function so the mapping itself is unit-testable without a live Postgres/S3
+// Handler. Order matters: the more specific substrings are checked before
+// the generic default.
+//   - ErrPandocInputTooLarge -> "input_too_large": the input exceeds the
+//     configured PANDOC_MAX_INPUT_BYTES cap.
+//   - an unsupported-pair rejection (pandocPairSupported's own
+//     "unsupported conversion %s -> %s" message, pandoc.go) ->
+//     "unsupported_target".
+//   - a persisted-opts parse/validation failure (PandocOptsFromMap's
+//     "unsupported wrap %q" or "parse opts:" messages, pandocopts.go) ->
+//     "invalid_options".
+//   - default -> "engine_error", mirroring every other engine's fallback.
+func pandocFailureCode(err error) (code, message string) {
+	if errors.Is(err, convert.ErrPandocInputTooLarge) {
+		return "input_too_large", "pandoc input exceeds the configured maximum size"
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unsupported conversion") {
+		return "unsupported_target", "requested conversion is not supported by the pandoc engine"
+	}
+	if strings.Contains(msg, "unsupported wrap") || strings.Contains(msg, "parse opts") {
+		return "invalid_options", "stored conversion options are invalid"
+	}
+	return "engine_error", "unsupported or corrupted input format"
+}
+
 // isCanceled reports whether err is (or wraps) context.Canceled -- the shape
 // process()'s attemptCtx.Err() takes when cancel.Default.Cancel(job.ID) fires
 // the registered CancelFunc early, distinct from a timeoutIsTerminal-style

@@ -1111,3 +1111,121 @@ func TestBuildTerminalWebhookBody_EventDiscriminator(t *testing.T) {
 		t.Fatalf("marshaled body = %s, want it to contain \"event\":\"completed\" (the bytes SignPayload's HMAC covers)", raw)
 	}
 }
+
+// TestIsPandocTerminal pins D-01 (48-CONTEXT.md): a PANDOC_ENGINE_TIMEOUT
+// expiry AND a "pandoc:"-prefixed engine/parse error are BOTH terminal --
+// mirroring isDocumentTerminal's timeout-is-terminal shape, the OPPOSITE of
+// isOCRTerminal's transient-engine-timeout treatment (the divergence is
+// asserted directly below via TestIsPandocTerminalDivergesFromOCR). Genuine
+// infra transients with no "pandoc:" text stay retryable via the shared
+// isTerminal fallthrough.
+func TestIsPandocTerminal(t *testing.T) {
+	if isPandocTerminal(nil) {
+		t.Fatal("expected isPandocTerminal(nil) = false")
+	}
+
+	// D-01: a PANDOC_ENGINE_TIMEOUT expiry (exec.go's process-group-kill
+	// shape, preserved through pandoc.go's "pandoc: pandoc: %w" wrapping and
+	// process()'s "convert: %w" wrapping) IS terminal for the pandoc engine.
+	timeoutErr := fmt.Errorf("convert: %w", fmt.Errorf("pandoc: pandoc: %w", fmt.Errorf("pandoc killed: %w", context.DeadlineExceeded)))
+	if !isPandocTerminal(timeoutErr) {
+		t.Fatal("D-01: expected isPandocTerminal(wrapped context.DeadlineExceeded) = true (mirrors isDocumentTerminal)")
+	}
+
+	// A bare pandoc engine/parse error (the "pandoc: pandoc:" prefix
+	// pandoc.go's runCommand-failure branch emits) is terminal -- isTerminal
+	// alone has no pandoc-specific signature and would return false here.
+	parseErr := fmt.Errorf("convert: %w", errors.New("pandoc: pandoc: exit status 1: [ERROR] Could not parse markdown"))
+	if !isPandocTerminal(parseErr) {
+		t.Fatal("D-01: expected isPandocTerminal(\"pandoc:\"-prefixed parse error) = true")
+	}
+
+	// ErrPandocInputTooLarge (T-48-10) is always terminal.
+	oversizeErr := fmt.Errorf("convert: %w", fmt.Errorf("pandoc: %w", convert.ErrPandocInputTooLarge))
+	if !isPandocTerminal(oversizeErr) {
+		t.Fatal("expected isPandocTerminal(ErrPandocInputTooLarge) = true")
+	}
+
+	// A generic transient error with NO "pandoc:" text and not a timeout
+	// stays TRANSIENT -- a genuine infra blip (e.g. a transient S3 download
+	// failure) must still be retried.
+	transientErr := errors.New("dial tcp: connection refused")
+	if isPandocTerminal(transientErr) {
+		t.Fatal("expected isPandocTerminal(generic transient error) = false (genuine infra transient stays retryable, D-01)")
+	}
+
+	// Shared isTerminal fallthrough still applies (minio.NoSuchKey /
+	// "no converter for").
+	sharedCases := []error{
+		fmt.Errorf("no converter for %s -> %s", "md", "pdf"),
+		fmt.Errorf("download %q: %w", "uploads/x/0-in.md", minio.ErrorResponse{Code: minio.NoSuchKey}),
+	}
+	for _, err := range sharedCases {
+		if !isPandocTerminal(err) {
+			t.Fatalf("expected isPandocTerminal(%v) = true (shared isTerminal fallthrough)", err)
+		}
+	}
+}
+
+// TestIsPandocTerminalDivergesFromOCR documents and pins the D-01/D-04
+// divergence side by side: the SAME wrapped context.DeadlineExceeded shape
+// classifies terminal for pandoc but transient for OCR -- proving pandoc
+// mirrors isDocumentTerminal, NOT isOCRTerminal, exactly as 48-CONTEXT.md's
+// D-01 requires.
+func TestIsPandocTerminalDivergesFromOCR(t *testing.T) {
+	timeoutErr := fmt.Errorf("convert: %w", fmt.Errorf("pandoc: pandoc: %w", fmt.Errorf("pandoc killed: %w", context.DeadlineExceeded)))
+	if !isPandocTerminal(timeoutErr) {
+		t.Fatal("expected isPandocTerminal(timeout) = true")
+	}
+	ocrTimeoutErr := fmt.Errorf("convert: %w", fmt.Errorf("ocr: tesseract: %w", fmt.Errorf("tesseract killed: %w", context.DeadlineExceeded)))
+	if isOCRTerminal(ocrTimeoutErr) {
+		t.Fatal("expected isOCRTerminal(timeout) = false -- pandoc and OCR must diverge on timeout classification (D-01/D-04)")
+	}
+}
+
+// TestPandocFailureCode pins HandlePandocConvert's terminal-path error_code
+// mapping (mirrors TestOCRFailureCode's precedent): pandocFailureCode is the
+// pure function HandlePandocConvert delegates to, so this test exercises the
+// mapping directly without a live Postgres/S3 Handler.
+func TestPandocFailureCode(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{
+			name:     "input too large",
+			err:      fmt.Errorf("pandoc: %w", convert.ErrPandocInputTooLarge),
+			wantCode: "input_too_large",
+		},
+		{
+			name:     "unsupported conversion",
+			err:      fmt.Errorf("pandoc: unsupported conversion %s -> %s", "epub", "latex"),
+			wantCode: "unsupported_target",
+		},
+		{
+			name:     "unsupported wrap opt",
+			err:      fmt.Errorf("pandoc: unsupported wrap %q", "bogus"),
+			wantCode: "invalid_options",
+		},
+		{
+			name:     "opts parse failure",
+			err:      fmt.Errorf("pandoc: parse opts: %w", errors.New("unexpected EOF")),
+			wantCode: "invalid_options",
+		},
+		{
+			name:     "generic engine failure",
+			err:      errors.New("pandoc: pandoc: exit status 1"),
+			wantCode: "engine_error",
+		},
+	}
+	for _, tc := range cases {
+		code, message := pandocFailureCode(tc.err)
+		if code != tc.wantCode {
+			t.Errorf("%s: pandocFailureCode(%v) code = %q, want %q", tc.name, tc.err, code, tc.wantCode)
+		}
+		if message == "" {
+			t.Errorf("%s: pandocFailureCode(%v) message is empty, want a fixed client-facing message", tc.name, tc.err)
+		}
+	}
+}
