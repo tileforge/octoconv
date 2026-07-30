@@ -198,7 +198,11 @@ Plans:
   2. The reconciler routes stranded `jobs.engine='pandoc'` jobs to the pandoc queue, and API routing dispatches single-input/single-target-format pandoc jobs without any changes to v1.9's progress/SSE/webhook infra.
   3. A stage-aware terminal/transient classifier and a fresh `PandocUniqueTTL` (derived from pandoc's own retry/timeout budget, never copied from a neighboring engine) prevent duplicate processing.
   4. Converting to an empty-but-valid output (e.g. an empty source document) completes the job as `done`, not `failed`.
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
+- [ ] 48-02-PLAN.md — migration 0010 (+pandoc enum), register PandocConverter, EngineFor routing + disjointness test, API opts/enqueue/content-gate wiring + EnginePandoc upload ceiling
+- [ ] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
 
 ### Phase 49: Containerization + Measured Timeout Gate
 **Goal**: A running `pandoc-worker` container in docker-compose passes a full live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied or guessed constant, in a lean TeX-free image.
