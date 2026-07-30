@@ -118,6 +118,7 @@ type fakeQueue struct {
 	enqueuedAudio    uuid.UUID
 	enqueuedAV       uuid.UUID
 	enqueuedOCR      uuid.UUID
+	enqueuedPandoc   uuid.UUID
 }
 
 func (f *fakeQueue) EnqueueImageConvert(_ context.Context, id uuid.UUID) error {
@@ -147,6 +148,11 @@ func (f *fakeQueue) EnqueueAVConvert(_ context.Context, id uuid.UUID) error {
 
 func (f *fakeQueue) EnqueueOCRConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedOCR = id
+	return nil
+}
+
+func (f *fakeQueue) EnqueuePandocConvert(_ context.Context, id uuid.UUID) error {
+	f.enqueuedPandoc = id
 	return nil
 }
 
@@ -3176,6 +3182,115 @@ func TestCreateJob_OCREngineSizeLimitRejectsOversizedUpload(t *testing.T) {
 	}
 	if repo.created != nil {
 		t.Error("must not create a job for an OCR upload exceeding its engine's size ceiling")
+	}
+}
+
+// --- pandoc engine tests (Plan 48-02: PDCP-01/D-02) ---
+
+// markdownFixture returns a small, genuinely-plaintext markdown document
+// (valid UTF-8, no NUL, no binary-control bytes) that convert.LooksLikeText
+// accepts -- the fail-closed content check the API's detected=="" chain
+// trusts for the md/rst/org text family (D-01, 47-CONTEXT.md).
+func markdownFixture() []byte {
+	return []byte("# Hello\n\nThis is a small markdown document.\n")
+}
+
+// latexFixture returns a small, genuinely-LaTeX document (valid UTF-8, no
+// NUL, begins with a \documentclass marker) that convert.LooksLikeLaTeX
+// accepts.
+func latexFixture() []byte {
+	return []byte("\\documentclass{article}\n\\begin{document}\nhello\n\\end{document}\n")
+}
+
+// TestCreateJob_PandocMarkdownEnqueuesToPandocQueue proves the end-to-end API
+// happy path (SC1/PDCP-01): a valid markdown upload targeting html is
+// content-validated (LooksLikeText, trust-declared among the text family),
+// persisted, and ENQUEUED to the pandoc queue via the handleCreateJob engine
+// switch's EnginePandoc case -- returning 202 with a job_id, not a 500.
+func TestCreateJob_PandocMarkdownEnqueuesToPandocQueue(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if !store.uploaded {
+		t.Error("must upload a valid markdown upload")
+	}
+	if repo.created == nil || repo.created.Engine != "pandoc" {
+		t.Fatalf("must create job with Engine=pandoc, got %+v", repo.created)
+	}
+	if q.enqueuedPandoc == uuid.Nil {
+		t.Fatalf("EnqueuePandocConvert was never called — pandoc job not routed to the pandoc queue (SC1 gap)")
+	}
+	if q.enqueuedImage != uuid.Nil || q.enqueuedDocument != uuid.Nil || q.enqueuedHTML != uuid.Nil {
+		t.Errorf("pandoc job wrongly enqueued to a non-pandoc queue")
+	}
+}
+
+// TestCreateJob_PandocInvalidOptsRejectedBeforeUpload proves the pandoc
+// opts-dispatch case runs ParsePandocOpts (closed wrap allowlist,
+// pandocopts.go) BEFORE any storage write: a latex->html upload carrying an
+// unsupported wrap value is rejected 422 with storage.Upload never called
+// (fail-closed, D-02/T-48-05).
+func TestCreateJob_PandocInvalidOptsRejectedBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBodyWithOpts(t, "in.latex", "html", latexFixture(), `{"wrap":"bogus"}`)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploaded {
+		t.Error("must not upload before pandoc opts validation (fail-closed)")
+	}
+	if repo.created != nil {
+		t.Error("must not create job for invalid pandoc opts")
+	}
+}
+
+// TestCreateJob_PandocBinaryContentDeclaredAsMarkdownRejected proves a
+// .md-named upload whose content is binary (fails LooksLikeText -- a NUL
+// byte, no recognizable markdown magic) is rejected 422 BEFORE any storage
+// write, and never silently accepted just because the extension claims md
+// (D-02/T-48-03).
+func TestCreateJob_PandocBinaryContentDeclaredAsMarkdownRejected(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	binary := append([]byte{0x00, 0x01, 0x02, 0x03}, bytes.Repeat([]byte{0xFF}, 32)...)
+	body, ct := multipartBody(t, "in.md", "html", binary)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploaded {
+		t.Error("must not upload before content validation (fail-closed)")
+	}
+	if repo.created != nil {
+		t.Error("must not create job for unrecognized content declared as markdown")
 	}
 }
 
