@@ -1,10 +1,14 @@
 package convert
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // requirePandoc skips the calling test when the pandoc binary is not on
@@ -112,11 +116,11 @@ func indexOfPandocArg(args []string, v string) int {
 // and the absolute absence of any raw-passthrough-ENABLING or
 // network-enabling token.
 func TestPandocConvertArgs(t *testing.T) {
-	t.Run("md source: raw_html-raw_tex suffix, sandbox, standalone for structural target", func(t *testing.T) {
+	t.Run("md source: raw_html-raw_tex suffix (pandoc's own markdown format name), sandbox, standalone for structural target", func(t *testing.T) {
 		args := pandocConvertArgs("md", "html", "/work/in.md", "/work/out.html", PandocOpts{})
 		idx := indexOfPandocArg(args, "-f")
-		if idx == -1 || args[idx+1] != "md-raw_html-raw_tex" {
-			t.Fatalf("args = %v, want -f md-raw_html-raw_tex", args)
+		if idx == -1 || args[idx+1] != "markdown-raw_html-raw_tex" {
+			t.Fatalf("args = %v, want -f markdown-raw_html-raw_tex (pandoc has no format literally named md)", args)
 		}
 		if indexOfPandocArg(args, "--sandbox") == -1 {
 			t.Errorf("args missing --sandbox: %v", args)
@@ -226,6 +230,31 @@ func TestPandocConvertArgs(t *testing.T) {
 	})
 }
 
+// TestPandocFormatNameTranslatesMdToMarkdown proves the project's own "md"
+// alias is translated to pandoc's real format identifier "markdown" for
+// BOTH the -f reader spec and the -t writer spec -- live-verified against
+// pandoc 3.10.1 (`--list-input-formats`/`--list-output-formats`): pandoc has
+// no format literally named "md", so passing "md" straight through to -f/-t
+// unconditionally fails every md-source and md-target conversion with
+// "Unknown input/output format 'md'" (Rule 1 bug caught by the real-pandoc
+// matrix test, fixed here).
+func TestPandocFormatNameTranslatesMdToMarkdown(t *testing.T) {
+	if got := pandocFormatName("md"); got != "markdown" {
+		t.Errorf("pandocFormatName(md) = %q, want markdown", got)
+	}
+	for _, f := range []string{"rst", "org", "latex", "html", "docx", "epub"} {
+		if got := pandocFormatName(f); got != f {
+			t.Errorf("pandocFormatName(%q) = %q, want unchanged %q", f, got, f)
+		}
+	}
+
+	args := pandocConvertArgs("html", "md", "/work/in.html", "/work/out.md", PandocOpts{})
+	tIdx := indexOfPandocArg(args, "-t")
+	if tIdx == -1 || args[tIdx+1] != "markdown" {
+		t.Fatalf("args = %v, want -t markdown (md target translated)", args)
+	}
+}
+
 // TestPandocConvertArgsIncludesPandocOptsFragment proves the already-
 // validated PandocOpts fragment (pandocArgs, pandocopts.go) is threaded
 // through into the final argv unchanged.
@@ -236,5 +265,135 @@ func TestPandocConvertArgsIncludesPandocOptsFragment(t *testing.T) {
 		if indexOfPandocArg(args, want) == -1 {
 			t.Errorf("args = %v, missing expected opts fragment element %q", args, want)
 		}
+	}
+}
+
+// TestPandocConvertOversizeInputRejectedFailClosed proves
+// enforcePandocInputSize (markupsniff.go, Plan 02) rejects an oversize
+// input BEFORE any subprocess -- no pandoc binary required for this test to
+// pass or fail meaningfully, since the guard must fire before pandoc is
+// ever invoked (PDCE-03).
+func TestPandocConvertOversizeInputRejectedFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "large.md")
+	if err := os.WriteFile(in, bytes.Repeat([]byte("a"), 4096), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	out := filepath.Join(dir, "large.html")
+
+	c := PandocConverter{MaxInputBytes: 100}
+	err := c.Convert(context.Background(), in, out, nil)
+	if err == nil {
+		t.Fatal("Convert with oversize input = nil, want a fail-closed size-cap error")
+	}
+	if _, statErr := os.Stat(out); statErr == nil {
+		t.Error("Convert with oversize input produced an output file -- want none, rejected before the subprocess ever ran")
+	}
+}
+
+// TestPandocConvertRealMatrix proves the curated Pairs() allowlist actually
+// works against the real pandoc 3.10.1 binary for the exact pairs the old
+// (rejected) blanket raw-passthrough suffix broke: rst->html, docx->md,
+// latex->md, plus md->html, md->docx, html->md, and a ->epub target
+// (PDOC-01/PDOC-02). Skips hermetically when pandoc is not on PATH.
+func TestPandocConvertRealMatrix(t *testing.T) {
+	requirePandoc(t)
+
+	dir := t.TempDir()
+	c := PandocConverter{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	mdFixture := filepath.Join(dir, "doc.md")
+	writeFixture(t, mdFixture, "# Title\n\nSome *emphasis* and a [link](https://example.com).\n")
+
+	rstFixture := filepath.Join(dir, "doc.rst")
+	writeFixture(t, rstFixture, "Title\n=====\n\nSome body text.\n")
+
+	latexFixture := filepath.Join(dir, "doc.latex")
+	writeFixture(t, latexFixture, "\\documentclass{article}\n\\begin{document}\nHello world.\n\\end{document}\n")
+
+	htmlFixture := filepath.Join(dir, "doc.html")
+	writeFixture(t, htmlFixture, "<!doctype html><html><body><p>Hello world.</p></body></html>")
+
+	var docxOut string
+
+	cases := []struct {
+		name   string
+		in     string
+		outExt string
+	}{
+		{"md->html", mdFixture, "html"},
+		{"md->docx", mdFixture, "docx"},
+		{"rst->html", rstFixture, "html"},
+		{"latex->md", latexFixture, "md"},
+		{"html->md", htmlFixture, "md"},
+		{"md->epub", mdFixture, "epub"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := filepath.Join(dir, "out-"+strings.ReplaceAll(tc.name, ">", "")+"."+tc.outExt)
+			if err := c.Convert(ctx, tc.in, out, nil); err != nil {
+				t.Fatalf("Convert(%s) error = %v", tc.name, err)
+			}
+			info, err := os.Stat(out)
+			if err != nil {
+				t.Fatalf("stat output: %v", err)
+			}
+			if info.Size() == 0 {
+				t.Fatalf("Convert(%s) produced empty output, want non-empty for a non-empty source", tc.name)
+			}
+			if tc.outExt == "docx" {
+				docxOut = out
+			}
+		})
+	}
+
+	t.Run("docx->md", func(t *testing.T) {
+		if docxOut == "" {
+			t.Skip("md->docx sub-test did not produce an output to round-trip")
+		}
+		out := filepath.Join(dir, "out-docx-md.md")
+		if err := c.Convert(ctx, docxOut, out, nil); err != nil {
+			t.Fatalf("Convert(docx->md) error = %v", err)
+		}
+		info, err := os.Stat(out)
+		if err != nil {
+			t.Fatalf("stat output: %v", err)
+		}
+		if info.Size() == 0 {
+			t.Fatalf("Convert(docx->md) produced empty output, want non-empty for a non-empty source")
+		}
+	})
+}
+
+// TestPandocConvertEmptySourceIsDone proves an empty-but-valid source
+// completes Convert as `done` (nil error), not `failed` -- D-04's
+// documented "no empty-output error branch" contract, exercised against
+// the real pandoc binary end-to-end (pandocValidateOutput's own unit-level
+// rationale is exercised here at the Convert level).
+func TestPandocConvertEmptySourceIsDone(t *testing.T) {
+	requirePandoc(t)
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "empty.html")
+	writeFixture(t, in, "")
+	out := filepath.Join(dir, "empty.md")
+
+	c := PandocConverter{}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := c.Convert(ctx, in, out, nil); err != nil {
+		t.Fatalf("Convert(empty html->md) = %v, want nil (empty-but-valid output is done)", err)
+	}
+}
+
+// writeFixture writes content to path, failing the test on any write error.
+func writeFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
 }
