@@ -50,21 +50,22 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PDOC-01 | TBD | Pending |
-| PDOC-02 | TBD | Pending |
-| PDCO-01 | TBD | Pending |
-| PDCE-01 | TBD | Pending |
-| PDCE-02 | TBD | Pending |
-| PDCE-03 | TBD | Pending |
-| PDCE-04 | TBD | Pending |
-| PDCP-01 | TBD | Pending |
-| PDCP-02 | TBD | Pending |
+| PDOC-01 | Phase 47 | Pending |
+| PDOC-02 | Phase 47 | Pending |
+| PDCO-01 | Phase 47 | Pending |
+| PDCE-01 | Phase 47 | Pending |
+| PDCE-02 | Phase 47 | Pending |
+| PDCE-03 | Phase 47 | Pending |
+| PDCE-04 | Phase 49 | Pending |
+| PDCP-01 | Phase 48 | Pending |
+| PDCP-02 | Phase 50 | Pending |
 
 **Coverage:**
 - v1 requirements: 9 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 9 ⚠️
+- Mapped to phases: 9 (roadmap complete)
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-07-30*
-*Last updated: 2026-07-30 at milestone v1.11 start*
+*Last updated: 2026-07-30 at roadmap creation (Phases 47-50 mapped)*
+</content>

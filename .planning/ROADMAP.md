@@ -13,6 +13,7 @@
 - ✅ **v1.8 AV Engine (video/ffmpeg)** — Phases 34-37 (shipped 2026-07-23) — see `.planning/milestones/v1.8-ROADMAP.md`
 - ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 - ✅ **v1.10 OCR Engine (text extraction)** — Phases 43-46 (shipped 2026-07-27) — see `.planning/milestones/v1.10-ROADMAP.md`
+- 🚧 **v1.11 Pandoc Engine** — Phases 47-50 (in progress, started 2026-07-30)
 
 ## Phases
 
@@ -151,14 +152,70 @@ Full details: `.planning/milestones/v1.9-ROADMAP.md`
 
 **Milestone Goal:** Клиент может извлечь машиночитаемый текст из изображений и сканированных PDF через тот же async-контур, что и остальные движки — offline, детерминированно, с онлайн-прогрессом. Шестой engine-класс.
 
-- [x] Phase 43: OCR Engine Foundation (4/4 plans) — completed 2026-07-26
-- [x] Phase 44: Async Pipeline Wiring (4/4 plans) — completed 2026-07-26
-- [x] Phase 45: Containerization + Measured Timeout Gate (4/4 plans) — completed 2026-07-26
-- [x] Phase 46: KEDA/Helm Chart Integration (3/3 plans) — completed 2026-07-26
+- [x] Phase 43: OCR Engine Foundation - Standalone `OCRConverter` extracts txt/hOCR from images and scanned PDFs, streaming page-by-page — memory-bomb-safe and born-digital-PDF-safe from the first line, before any queue/worker plumbing (completed 2026-07-26)
+- [x] Phase 44: Async Pipeline Wiring - OCR jobs flow end-to-end through the async pipeline (queue, `cmd/ocr-worker`, retry, reconciler, API routing) over the completely unmodified v1.9 progress/SSE/webhook machinery (completed 2026-07-26)
+- [x] Phase 45: Containerization + Measured Timeout Gate - A running `ocr-worker` container passes a live E2E, with `OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` sized from a measured seconds-per-page gate rather than a copied constant (completed 2026-07-27)
+- [x] Phase 46: KEDA/Helm Chart Integration - The OCR class autoscales in the cluster with production parity to the other five engine classes, scale-from-zero live-proven (completed 2026-07-27)
 
 Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 </details>
+
+### 🚧 v1.11 Pandoc Engine (In Progress)
+
+**Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
+
+- [ ] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + no-shell-escape + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing
+- [ ] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra
+- [ ] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
+- [ ] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven
+
+## Phase Details
+
+### Phase 47: Pandoc Engine Foundation
+**Goal**: A standalone `PandocConverter` converts between markup-family formats (md/rst/org/latex/epub/html/docx) through a closed `(from→to)` allowlist, security-hardened from the first line (no raw HTML/TeX passthrough, no shell-escape, no network), built and tested directly against the real pandoc binary — before any queue/worker plumbing.
+**Depends on**: Nothing (first phase of v1.11 — validate the novel pandoc external-process surface standalone first, mirroring Audio's Phase 30 / AV's Phase 34 / OCR's Phase 43 scope fence)
+**Requirements**: PDOC-01, PDOC-02, PDCO-01, PDCE-01, PDCE-02, PDCE-03
+**Success Criteria** (what must be TRUE):
+  1. `PandocConverter` converts between any two markup formats in a closed `(from→to)` allowlist covering the markup family (md/rst/org/latex/epub/html/docx), verified by direct invocation against the real pandoc binary; an unlisted pair is rejected before any subprocess runs (mirrors existing `Pairs()` conventions).
+  2. Output that requires document structure (docx/epub/html) is produced with `--standalone` — a complete, valid document rather than a bare fragment — and the result is validated by the same content-sniffer that guards uploads.
+  3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--no-shell-escape`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
+  4. A closed `PandocOpts` allowlist (e.g. `standalone`/`toc`/`wrap`/`section-divs`, typed strict-parse mirroring `OCROpts`/`AudioOpts`) rejects any unlisted opt with 422 before any work begins, with an injection test proving client bytes never reach pandoc's argv unvalidated.
+  5. Uploads are gated fail-closed by magic-byte/content validation across the markup family (text-based formats sniffed correctly, not only binary containers like docx/epub), and an oversize or pathological input (size cap; pandoc-specific expansion/bomb shape) is rejected before conversion runs.
+**Plans**: TBD
+
+### Phase 48: Async Pipeline Wiring
+**Goal**: Pandoc jobs (markup → markup) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the unmodified v1.9 progress/webhook machinery.
+**Depends on**: Phase 47 (needs the working converter to wire into the async lifecycle)
+**Requirements**: PDCP-01
+**Success Criteria** (what must be TRUE):
+  1. Migration adds `pandoc` to the `jobs.engine` enum; an uploaded markup document targeting a supported pair is routed to a dedicated `pandoc` asynq queue by content-detection and consumed end-to-end by `cmd/pandoc-worker` (queued → active → done).
+  2. The reconciler routes stranded `jobs.engine='pandoc'` jobs to the pandoc queue, and API routing dispatches single-input/single-target-format pandoc jobs without any changes to v1.9's progress/SSE/webhook infra.
+  3. A stage-aware terminal/transient classifier and a fresh `PandocUniqueTTL` (derived from pandoc's own retry/timeout budget, never copied from a neighboring engine) prevent duplicate processing.
+  4. Converting to an empty-but-valid output (e.g. an empty source document) completes the job as `done`, not `failed`.
+**Plans**: TBD
+
+### Phase 49: Containerization + Measured Timeout Gate
+**Goal**: A running `pandoc-worker` container in docker-compose passes a full live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied or guessed constant, in a lean TeX-free image.
+**Depends on**: Phase 48 (needs the queue/worker contract stable before containerizing; can't measure a real timeout without the full pipeline producing real job outcomes to time)
+**Requirements**: PDCE-04
+**Success Criteria** (what must be TRUE):
+  1. `Dockerfile.pandoc-worker` installs a pinned pandoc binary with **no TeX toolchain** (lean image), and a compose `pandoc-worker` service converts an uploaded markup document end-to-end (upload → poll → presigned download) through the live compose stack with a signed webhook confirmed.
+  2. `scripts/pandoc-timing-measure.sh` measures real conversion cost across a representative markup corpus (varying source formats/sizes) under production-equivalent CPU/memory limits and drives a documented go/no-go decision (mirroring the audio/AV/OCR gate precedent).
+  3. The measured `PANDOC_ENGINE_TIMEOUT` is **derived from this measurement, not copied** from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT`, stays under the global 900s reconciler CAP, and is recorded as a Key Decision with its measurement conditions (arch/cpu/mem/N/p95).
+  4. IN-02 env parity: all queue-client-constructing services propagate `PANDOC_*` env identically, and the `pandoc-worker` image is added to the CI bake matrix.
+**Plans**: TBD
+
+### Phase 50: KEDA/Helm Chart Integration
+**Goal**: The pandoc class autoscales in the cluster with production parity to the other six engine classes, and scale-from-zero is live-proven.
+**Depends on**: Phase 49 (KEDA cooldown/stabilization and grace-period tuning consume Phase 49's measured `PANDOC_ENGINE_TIMEOUT`)
+**Requirements**: PDCP-02
+**Success Criteria** (what must be TRUE):
+  1. A `pandoc-worker` Deployment plus a KEDA `ScaledObject` ship in the chart with `minReplicaCount:0`, `terminationGracePeriodSeconds`/`scaleDownStabilizationSeconds` derived from the measured `PANDOC_ENGINE_TIMEOUT`, and the WR-01 fail-safe triad (`ignoreNullValues:"false"`, fallback replicas, retry-inclusive PromQL) applied verbatim.
+  2. `QueuePandoc` is registered in the always-on api queue-depth collector so KEDA resolves the pandoc backlog at genuinely zero replicas.
+  3. Scale-from-zero is live-proven for the pandoc class, capturing timestamped evidence (0→1 on real queue depth, scale back to 0 after drain).
+  4. `PANDOC_*` env parity (IN-02 pattern) is confirmed across all queue-client-constructing services, and a pandoc job survives a genuine N→N-1 HPA downscale without a premature SIGTERM.
+**Plans**: TBD
 
 ## Progress
 
@@ -208,9 +265,14 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 | 42. Live Push | v1.9 | 4/4 | Complete   | 2026-07-25 |
 | 43. OCR Engine Foundation | v1.10 | 4/4 | Complete   | 2026-07-26 |
 | 44. Async Pipeline Wiring | v1.10 | 4/4 | Complete   | 2026-07-26 |
-| 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete   | 2026-07-26 |
-| 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete   | 2026-07-26 |
+| 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete | 2026-07-27 |
+| 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
+| 47. Pandoc Engine Foundation | v1.11 | 0/TBD | Not started | - |
+| 48. Async Pipeline Wiring | v1.11 | 0/TBD | Not started | - |
+| 49. Containerization + Measured Timeout Gate | v1.11 | 0/TBD | Not started | - |
+| 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
 
 ---
 
-*v1.9 (Job Progress & Control) shipped 2026-07-25, Phases 38-42 — 13/13 requirements, 3 live gates. v1.10 (OCR Engine) shipped 2026-07-27, Phases 43-46 — 12/12 requirements, 15 plans. Next: `/gsd-new-milestone`.*
+*v1.10 (OCR Engine) shipped 2026-07-27, Phases 43-46 — 12/12 requirements, 2 live gates. v1.11 (Pandoc Engine) roadmapped 2026-07-30, Phases 47-50 — 9/9 requirements mapped. Next: `/gsd:plan-phase 47`.*
+</content>

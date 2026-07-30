@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
 status: planning
-last_updated: "2026-07-30T02:26:17.640Z"
+last_updated: "2026-07-30T12:00:00.000Z"
 last_activity: 2026-07-30
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,23 +17,23 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-19 after v1.8 milestone start)
+See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
-**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — defining roadmap
+**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
+**Current focus:** v1.11 Pandoc Engine — roadmap created (Phases 47-50, 9/9 requirements mapped), ready for phase planning
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 47 (Pandoc Engine Foundation) — not started
 Plan: —
-Status: Defining requirements
-Last activity: 2026-07-30 — Milestone v1.11 started
+Status: Roadmap created, awaiting `/gsd:plan-phase 47`
+Last activity: 2026-07-30 — v1.11 ROADMAP.md written (Phases 47-50), REQUIREMENTS.md traceability filled (9/9 mapped)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 107 (all v1.0–v1.8)
+- Total plans completed: 107 (all v1.0–v1.10)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -78,13 +78,17 @@ Last activity: 2026-07-30 — Milestone v1.11 started
 | 37 | 3 | - | - |
 | 38 | 1 | - | - |
 | 39 | 4 | - | - |
-| 40 | TBD | - | - |
-| 41 | TBD | - | - |
-| 42 | TBD | - | - |
-| 43 | TBD | - | - |
-| 44 | TBD | - | - |
-| 45 | TBD | - | - |
-| 46 | TBD | - | - |
+| 40 | 2 | - | - |
+| 41 | 4 | - | - |
+| 42 | 4 | - | - |
+| 43 | 4 | - | - |
+| 44 | 4 | - | - |
+| 45 | 4 | - | - |
+| 46 | 3 | - | - |
+| 47 | TBD | - | - |
+| 48 | TBD | - | - |
+| 49 | TBD | - | - |
+| 50 | TBD | - | - |
 
 **Recent Trend:**
 
@@ -131,48 +135,13 @@ Last activity: 2026-07-30 — Milestone v1.11 started
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions surfaced by research, to be recorded as Key Decisions before/at implementation:
+Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions to be recorded as Key Decisions before/at implementation (mirroring the v1.7/v1.8/v1.10 engine-class precedent):
 
-- **Reconciled preprocessing floor (binding for Phase 43):** ship fixed ~300 DPI rasterization (computed from the PDF page box, never a source PDF's declared/odd DPI) + Tesseract's own internal Leptonica-based binarization as the day-one preprocessing floor. Deskew/denoise (`unpaper`, an explicit `pixDeskew` pass) are NOT added blindly — evidence-gated only if measured accuracy on real representative scans shows a meaningful loss. Do not silently add or silently skip this follow-up.
-- **Streaming page-by-page rasterize is architectural, not a later hardening patch (Phase 43):** `pdfinfo` reads the declared page count and rejects over `OCR_MAX_PAGES` BEFORE any `pdftoppm` invocation; the loop renders/OCRs/deletes exactly one page at a time. Never `pdftoppm in.pdf outbase` with no `-f`/`-l` bounds — that is the OCR-specific decompression-bomb class (distinct axis from `MAX_IMAGE_PIXELS`/AVE-05: page-count × per-page pixels).
-- **Empty-but-valid OCR output is a successful `done` result, never a failure (Phase 43/44):** a blank/text-free page or image produces empty txt and must complete `done`, not `failed` — mirrors the whisper hallucination-on-silence precedent of documenting an accepted OCR-quality-spectrum gap rather than silently mishandling it. Do NOT add an `if output == "" { return error }` branch anywhere in the OCR path.
-- **Born-digital PDF: fail-closed reject (option 1), not detect-and-skip (option 2) in v1 (Phase 43):** a PDF with an existing extractable text layer gets a 422, not silent re-OCR or a per-page skip-text branch. Detect-and-passthrough is explicitly OCR-V2-01, deferred behind its own opts/output-format design.
-- **hOCR/ALTO assembly must use a real XML/HTML encoder, never string concatenation (Phase 43):** OCR'd text is untrusted/unpredictable content; a round-trip test (text containing `&`/`<`/`>` producing valid parseable XML) is required before this phase can be considered done.
-- **OCR is wired as a 6th hardcoded engine class exactly like image/document/html/audio/av — SEED-010's dynamic registry stays dormant (all phases):** compile-time `Registry.Register` in `converters.go`, hardcoded `EngineOCR` constant, one CHECK-constraint migration (`0009_ocr_engine.sql`). Do not use this milestone as an excuse to generalize `converters.go`'s `init()`.
-- **`progress.go`'s shared types (`ProgressUpdate`/`ProgressSink`/`ProgressConverter`) get zero edits (Phase 43/44):** OCR's page-granular progress is driven by its own small `ocrprogress.go` page-EMA estimator calling the same `sink.Update(...)` contract every other engine uses — never a branch inside the ffmpeg-specific `progressBlockParser`/`buildProgressTick`.
-- **Both new untrusted processes (rasterizer + tesseract) go through the existing hardened `runCommand` from line one (Phase 44):** tesseract/leptonica have a documented CVE history (maintainer issue "Leptonica has no regard for security") — never a bare `exec.Command` "just a CLI wrapper" shortcut, even temporarily.
-- **`OCR_ENGINE_TIMEOUT`/`OCR_MAX_PAGES` must be measured by a dedicated `scripts/ocr-timing-measure.sh` (seconds-per-page, not an RTF ratio) — never copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT` (Phase 45):** the project's own Key Decisions precedent calls this exact shortcut out as a recurring risk for new engine classes; a copied placeholder must never reach shipped config.
-- **Language-pack scope stays a short SHA-pinned `tessdata_fast` allowlist matching `OCROpts`, never the full upstream tessdata/tessdata_best set (Phase 45):** bloat directly fights KEDA scale-from-zero cold-start economics (mirrors the audio-worker's baked-model image-size discipline).
-- **Zero new Go dependencies for v1.10:** Tesseract/poppler-utils are CLI subprocesses through the existing hardened `runCommand` harness — no cgo, no Python runtime, no new `go.mod` entries.
-- **Open gaps to resolve during Phase 43 planning/implementation, not left silently unresolved:** (1) the born-digital-PDF detection mechanism (which library call / threshold counts as "meaningful existing text layer" — the fail-closed-reject *decision* is settled, the *implementation* is not); (2) webp→PNG normalization need (Leptonica's webp support is inconsistent across Debian's bundled build per STACK.md); (3) exact Tesseract PSM/OEM/hOCR-ALTO config-file names — verify against the chosen tool's live 5.5.3 CLI output, not training-data assumption.
-- [Phase 43]: ocrBornDigitalCharThreshold=16 non-whitespace chars (D-03 conservative reject-on-any-substantial-text) — verified 0 chars on image-only fixture / 82 on born-digital fixture
-- [Phase 43]: OCR guard caps use zero-value-means-uncapped-this-phase convention — mirrors av.go's plain-param-this-phase pattern; OCR_MAX_PAGES/OCR_MAX_PIXELS env wiring deferred to Phase 45
-- [Phase 43]: OCRConverter (Plan 03): webp is passed straight to tesseract with no decode-to-png pre-step -- live-verified against this environment's tesseract 5.5.2 (Leptonica 1.87.0 + libwebp 1.6.0) that a real webp OCRs correctly with zero pre-processing; re-verify against the deployed container's Leptonica build in Phase 45/46
-- [Phase 43]: tesseract's own ALTO configfile writes outputbase.xml, not outputbase.alto -- OCRConverter.Convert renames the produced file to the caller's actual outPath rather than assuming the engine's naming matches the job's target-format extension
-- [Phase 43]: A raw encoding/xml Decoder token walk does NOT enforce 'exactly one root element' (a naive concat of two full XML documents still tokenizes without error) -- the ocrPageMerger round-trip test also asserts exactly one XML declaration and one root element, which is what actually distinguishes a real merge from the naive-concat failure mode (PITFALLS.md Pitfall 5)
-- [Phase ?]: ocrPrepareConversion factored so Convert/ConvertWithProgress share one accept/reject decision (mirrors av.go)
-- [Phase ?]: New per-page pdfinfo parser (parsePdfinfoPerPagePageSize) for the -f N -l N per-page Page-size line shape
-- [Phase ?]: PATH-restriction test technique proves guard-before-render ordering rather than just asserting it
-- [Phase 44]: OCR routing needs no new dispatch code — registering OCRConverter alone makes EngineFor route jpg/pdf->txt to ocr vs jpg->png to image (D-01)
-- [Phase 44]: handleCreateJob's enqueue-routing switch deliberately left unchanged in 44-01 — an OCR job created via the live API today 500s at enqueue until 44-02 adds EnqueueOCRConvert; expected scoped interim state
-- [Phase 44]: OCRUniqueTTL derived fresh from OCR's own OCR_MAX_RETRY/OCR_ENGINE_TIMEOUT budget (300s/2 defaults), never copied from AVUniqueTTL/AudioUniqueTTL — proven distinct under default env — D-04/IN-02 discipline: a mismatch here would silently duplicate processing since the reconciler relies on the unique lock outliving asynq's true retry lifetime
-- [Phase 44]: ocrRetrySchedule set to a provisional 15s/1m (mirrors avRetrySchedule's 2-entry shape since OCR_MAX_RETRY defaults to 2 like AV_MAX_RETRY), and OCR_ENGINE_TIMEOUT default 300s (mirrors DOCUMENT_ENGINE_TIMEOUT/AV_ENGINE_TIMEOUT placeholder precedent) — both superseded by Phase 45's measured values — Tesseract/pdftoppm per-page cost is expected to be materially cheaper than av's ffmpeg transcode, so backoff is shorter than av's 30s/2m; kept as a Go-code placeholder pending real measurement, same precedent as AV_ENGINE_TIMEOUT
-- [Phase 44]: isOCRTerminal treats a non-timeout tesseract/pdftoppm/pdfinfo crash as TERMINAL via a dedicated signature list (D-04), diverging from isAudioTerminal/isAVTerminal's default-to-transient treatment of an unrecognized non-timeout error.
-- [Phase 44]: cmd/ocr-worker does not re-register a configured OCRConverter — the zero-value registration from converters.go's init() is used as-is this phase; OCR_MAX_PAGES/pixel-cap env wiring is Phase 45's job.
-- [Phase 44]: 44-04: 3-page multipage_image_only.pdf fixture used (not the 2-page multipage_text.pdf) so the OCR progress ramp test can require >=2 distinct pre-100 pct values, genuinely distinguishing a ramp from a single jump
-- [Phase 44]: 44-04: runConvertWithOptionalProgress test calls use minInterval=1ns (not 0) -- 0 falls back to the plain conv.Convert() path per the D-01 throttle-configured gate and would silently emit zero progress writes
-- [Phase 45]: Tesseract 5.5.3 pinned by tag + peeled commit db0ec62f81b0737fbbe184d8fea40af5738f8eef; Leptonica 1.87.0 pinned by tag + commit 13275a278eb55b5746e33f95fbf5a2c8f604b3ab (lightweight tag, hash IS the commit); both rev-parse-asserted in Dockerfile.ocr-worker
-- [Phase 45]: tessdata_fast pinned at commit 87416418657359cb625c412a48b6e1d6d41c29bd; eng.traineddata sha256=7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2, rus.traineddata sha256=e16e5e036cce1d9ec2b00063cf8b54472625b9e14d893a169e2b0dedeb4df225
-- [Phase 45]: Leptonica 1.87.0 installs its shared library as libleptonica.so.6, not the historical liblept.so name -- discovered live via readelf -d during Dockerfile.ocr-worker's Task 1 build
-- [Phase 45 P04]: three production bugs surfaced ONLY by the live containerized E2E (invisible to unit/integration): (1) handleCreateJob's opts switch had no EngineOCR case → OCR jobs with a `language` opt hit ParseDocOpts and 422'd — fixed with an EngineOCR case + convert.ValidateOCRApplicability (a6dcbd1); (2) Dockerfile.ocr-worker dropped tesseract's configs/+tessconfigs/ (only .traineddata baked + over-strict exact-two-files assertion) → ->hocr/->alto produced no output ("Can't open hocr") while ->txt worked (built-in default) — fixed by COPYing the configs and rescoping the assertion to *.traineddata (c1c39fc); (3) the 3-page ramp fixture OCR'd faster than the 2s poll+2s throttle could sample → replaced with a 20-page image-only PDF (32ec390)
-- [Phase 45 P04]: OCR e2e fixture (internal/e2e/testdata/multipage_image_only.pdf) intentionally diverges from the 3-page unit fixture — it is a 20-page image-only PDF (normal 537x393pt page geometry via `magick ... -density 300 -duplicate 19`, ~1.5s/page) sized so the page-granular progress ramp is live-sampleable
-- [Phase 45]: OCR_ENGINE_TIMEOUT committed as a clearly-marked PLACEHOLDER (300s) in docker-compose.yml/.env.example/queue.NewClient() default -- Plan 03 must replace it with the real p95-derived number before OCRE-04 is closed
-- [Phase 45]: scripts/ocr-timing-measure.sh reuses committed internal/convert/testdata/ocr/ unit-test fixtures (text_sample.png=clean, adversarial_text.png=noisy, multipage_image_only.pdf=dense/PDF-sourced) as its 3-doc measurement corpus rather than committing new large binaries; OCR_TIMING_*_SRC env overrides let an operator substitute a more representative corpus
-- [Phase 45 Plan 03]: the committed 2 KB one-line synthetic PNG fixtures (internal/convert/testdata/ocr/*) UNDER-stated per-page cost at 0.148 s/page (would have yielded a dangerously-low 60s timeout) — operator synthesized a REPRESENTATIVE 300-DPI full-page corpus (ImageMagick/Arial, mixed EN+RU, ~10K chars/page, normal 12pt clean / 10pt dense body+margins) and re-measured against the real ocr-worker image at compose limits (arch=arm64, cpus=2.0, memory=1g, N=10, omp_thread_limit=2, ALL GREEN). Per-cell p95 sec/page: clean_eng=3.010 clean_rus=2.927 dense_eng=5.810 dense_rus=5.789 noisy_eng=3.646 noisy_rus=3.017. Worst cell = dense_eng, p95=5.81 s/page. D-03 provisional OCR_MAX_PAGES=200 breached the 900s reconciler CAP (ceil(200×5.81×2.0)=2324s) — Path-B NO-GO lever fired, lowered 200→64. OCR_ENGINE_TIMEOUT = ceil(64×5.81×2.0) = 744s, 17.3% under the 900s CAP; propagated byte-identically to all 9 queue-client services (docker-compose.yml + .env.example); ocr-worker stop_grace_period recomputed 320s→764s (744s+10s ShutdownTimeout margin+10s Docker SIGKILL margin). 744s is distinct from AV_ENGINE_TIMEOUT(753s)/AUDIO_ENGINE_TIMEOUT(742s) — never copied (PITFALLS.md Pitfall 7). An intermediate adversarial fine-print run (full A4 ~5pt) gave 17.9 s/page — reference upper bound, not used as the committed basis.
-- [Phase 46]: keda.ocr mirrors keda.av 1:1 (threshold 1, maxReplicaCount 2, cooldown 180, stabilization 900); ocrWorker.terminationGracePeriodSeconds=774 — OCR_ENGINE_TIMEOUT=744s sits between audio's 742s and av's 753s; 774=744+30 chart convention, distinct from compose's 764=744+10+10
-- [Phase 46]: minReplicaCount hardcoded 0 in scaledobject-ocr.yaml, not templatized — SEED-011 (per-engine warm floor) stays deferred/out of scope per D-04
-- [Phase 46 P02]: SC3 trigger job reuses the audio-style committed-fixture postJob shape (text_sample.png -> txt), not av's ffmpeg-lavfi in-container synthesis — ocr already ships a real, small, fast-processing fixture on disk
-- [Phase 46 P02]: SC4 LONG fixture is synthesized in-container via pdfunite (tripling the committed 20-page multipage_image_only.pdf to ~60 pages, poppler-utils already baked into octoconv-ocr-worker:dev), targeting hocr — stays under OCR_MAX_PAGES=64 while outliving the 15s-stabilized downscale window at the measured ~1.5-2s/page rate
+- **v1.11 is a structural clone of the proven 4-phase engine-class shape** (audio 29-33 → av 34-37 → ocr 43-46): 47 foundation (standalone, unregistered) → 48 async wiring → 49 containerization + measured timeout → 50 KEDA/Helm. Research skipped per PROJECT.md — pandoc is a single mature offline CLI binary, not an open engine-choice question like OCR's Tesseract-vs-PaddleOCR eval-gate.
+- **Pandoc owns ONLY the markup family — no →pdf, no docx→pdf/html→pdf duplication (locked in PROJECT.md):** →pdf output is deferred to v2 (PDOC-V2-01); docx→pdf stays LibreOffice's job, html→pdf stays chromium's job. Do not let Phase 47 quietly add a pdf target to the allowlist.
+- **Security-hardened from line one, not retrofitted (mirrors OCR's Tesseract-CVE-history precedent):** raw HTML/TeX passthrough disabled, `--no-shell-escape`, no-network, hardened `runCommand` (Setpgid/SIGKILL/`nobody`) must all land in Phase 47's converter core, not be spread across later phases.
+- **`PANDOC_ENGINE_TIMEOUT` must be measured by a dedicated `scripts/pandoc-timing-measure.sh`, never copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT` (Phase 49):** same PITFALLS.md Pitfall 7 recurrence risk flagged at every prior engine-class milestone.
+- **Zero new Go dependencies for v1.11:** pandoc is a CLI subprocess through the existing hardened `runCommand` harness — no cgo, no new `go.mod` entries.
 
 ### Quick Tasks Completed
 
@@ -185,21 +154,28 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.10-specific decisions
 
 ### Pending Todos
 
-- Plan Phase 43 (OCR Engine Foundation): standalone `OCRConverter` (Tesseract eval-gate, page-count guard + streaming rasterize, `OCROpts` closed language allowlist, hOCR/ALTO XML encoder). Highest-research-value phase per PITFALLS.md — every architectural decision (memory-bomb guard, born-digital detect, PSM/OEM pin, XML escaping) must be baked in from line one, not retrofitted.
+- Plan Phase 47 (Pandoc Engine Foundation): standalone `PandocConverter` (closed markup-family `(from→to)` allowlist, `--standalone`, hardened `runCommand` with raw-passthrough/shell-escape/network disabled from line one, `PandocOpts` closed allowlist, fail-closed magic-byte/content validation + size/bomb guard). Mirrors Audio/AV/OCR foundation-phase precedent (Phase 30/34/43) — validate standalone against the real pandoc binary before any queue/worker plumbing.
 
 ### Blockers/Concerns
 
 None currently blocking the overall roadmap. Sequencing carried into the roadmap:
 
-- Hard-ordered spine: 43 (foundation, standalone/unregistered — nothing to register without a working converter) → 44 (async wiring — can't measure a real timeout without the full pipeline producing real outcomes to time) → 45 (containerization + measured timeout gate — KEDA's shutdown timing derives from the measured timeout) → 46 (KEDA/Helm, depends on Phase 45's measured numbers). Identical 4-phase shape to v1.7 (audio, 30-33) and v1.8 (av, 34-37) — proven twice already.
-- Phase 43 is the highest-risk phase: PITFALLS.md flags 5 of 9 critical pitfalls (memory bomb, silent accuracy collapse, wrong PSM/OEM, hOCR/ALTO XML escaping, born-digital PDF mishandling) as "must be architectural from line one" — all must land in this phase's converter core loop, not be spread across later phases.
-- The engine-choice eval-gate (Tesseract vs PaddleOCR) is NOT yet run — Tesseract is the converged strong default across all research tracks, but per project process it must be validated against real scanned-document fixtures during Phase 43 before being treated as final.
-- Born-digital PDF detection MECHANISM is an open gap (the fail-closed-reject DECISION is settled) — resolve the concrete implementation (pdfinfo/pdffonts-style check, threshold) during Phase 43 planning, not left implicit.
-- Phase 45's seconds-per-page measurement methodology is a new metric shape (not a straight RTF-ratio clone from audio/av) — the corpus composition (page counts, languages, quality tiers) needs its own definition during Phase 45 planning.
-- Zero new Go dependencies for this milestone — Tesseract/poppler-utils are CLI subprocesses through the existing hardened `runCommand` harness, same shape as every prior engine.
+- Hard-ordered spine: 47 (foundation, standalone/unregistered — nothing to register without a working converter) → 48 (async wiring — can't measure a real timeout without the full pipeline producing real outcomes to time) → 49 (containerization + measured timeout gate — KEDA's shutdown timing derives from the measured timeout) → 50 (KEDA/Helm, depends on Phase 49's measured numbers). Identical 4-phase shape to v1.7 (audio, 29-33), v1.8 (av, 34-37) and v1.10 (ocr, 43-46) — proven three times already.
+- Phase 47 is the highest-risk phase: security hardening (raw HTML/TeX passthrough disabled, `--no-shell-escape`, no-network) and the closed markup-family allowlist must all land in this phase's converter core loop, not be spread across later phases.
+- Zero new Go dependencies for this milestone — pandoc is a CLI subprocess through the existing hardened `runCommand` harness, same shape as every prior engine.
+- Phase 49's timing-measurement methodology needs its own corpus definition (representative markup documents by format/size) during Phase 49 planning — not a straight clone of OCR's seconds-per-page metric shape, since pandoc's cost model is per-document, not per-page.
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
 
 ## Deferred Items
+
+Items acknowledged and deferred at v1.10 milestone close on 2026-07-27:
+
+| Category | Item | Status |
+|----------|------|--------|
+| quick_task | 260712-cqg-fix-phase-16-verification-gaps-cr-01-wr- | missing/abandoned (v1.3-era, out of scope) |
+| quick_task | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | missing/abandoned (v1.5-era, out of scope) |
+| quick_task | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | missing/abandoned (out of scope) |
+| seeds | SEED-001..015 (12 dormant) | dormant by design — forward-looking parking lot |
 
 Acknowledged at v1.8 close (2026-07-23):
 
@@ -216,6 +192,9 @@ Acknowledged at v1.8 close (2026-07-23):
 | v2_scope | PROG-V2-02: Coarse elapsed-vs-timeout progress heuristic for non-ffmpeg engines | Rejected for v1.9 — `null` is the honest answer; revisit only on confirmed demand | v1.9 requirements definition (2026-07-23) |
 | v2_scope | CNCL-V2-01: Batch cancel (cancel many jobs in one call) | Deferred to v2 | v1.9 requirements definition (2026-07-23) |
 | v2_scope | PUSH-V2-01: `event`-discriminated payloads for ALL webhook types | Deferred to v2 — broader webhook contract-versioning conversation, out of scope for the single new `progress` event | v1.9 requirements definition (2026-07-23) |
+| v2_scope | PDOC-V2-01: →pdf output via weasyprint/tectonic | Deferred to v2 — docx→pdf/html→pdf already covered by LibreOffice/chromium | v1.11 requirements definition (2026-07-30) |
+| v2_scope | PDOC-V2-02: Extended format allowlist (textile, mediawiki, asciidoc, ipynb, typst) | Deferred to v2 — on demand | v1.11 requirements definition (2026-07-30) |
+| v2_scope | PDOC-V2-03: Custom --lua-filter/templates/reference-doc | Deferred to v2 — needs its own sandbox/upload contract for untrusted code | v1.11 requirements definition (2026-07-30) |
 
 Items acknowledged and carried forward at milestone closes (see `.planning/milestones/*-MILESTONE-AUDIT.md` for full detail):
 
@@ -244,21 +223,11 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-26T21:41:10.633Z
-Stopped at: Completed 46-02-PLAN.md
+Last session: 2026-07-30T12:00:00.000Z
+Stopped at: Roadmap created for v1.11 (Phases 47-50, 9/9 requirements mapped)
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
-
-## Deferred Items
-
-Items acknowledged and deferred at v1.10 milestone close on 2026-07-27:
-
-| Category | Item | Status |
-|----------|------|--------|
-| quick_task | 260712-cqg-fix-phase-16-verification-gaps-cr-01-wr- | missing/abandoned (v1.3-era, out of scope) |
-| quick_task | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | missing/abandoned (v1.5-era, out of scope) |
-| quick_task | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | missing/abandoned (out of scope) |
-| seeds | SEED-001..015 (12 dormant) | dormant by design — forward-looking parking lot |
+- Run `/gsd:plan-phase 47` to begin Phase 47 (Pandoc Engine Foundation) planning.
+</content>
