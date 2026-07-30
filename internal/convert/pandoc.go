@@ -27,6 +27,7 @@ package convert
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -120,28 +121,50 @@ func pandocPairSupported(from, to string) bool {
 	return false
 }
 
+// pandocFormatName translates this project's own normalized format token
+// (NormalizeFormat, convert.go) into pandoc's own reader/writer format
+// identifier. Live-verified against pandoc 3.10.1's `--list-input-formats`/
+// `--list-output-formats`: pandoc has NO format literally named "md" --
+// only "markdown" (plus markdown_strict/markdown_github/etc, none of which
+// this project exposes) -- so the project's canonical "md" alias
+// (NormalizeFormat's own alias table, and this project's own file-extension
+// convention throughout jobs/storage/api) is translated here at the pandoc
+// argv boundary. Every other curated format in pandocPairTable (rst, org,
+// latex, html, docx, epub) already IS a valid pandoc format name verbatim
+// and passes through unchanged.
+func pandocFormatName(f string) string {
+	if f == "md" {
+		return "markdown"
+	}
+	return f
+}
+
 // pandocReaderSpec builds the `-f` reader-format spec for src from the
 // PER-SOURCE reader-extension table (47-CONTEXT.md "Hardening mechanism
 // (CORRECTED)", verified against pandoc 3.10.1): md/html/epub readers
 // support disabling BOTH the raw_html and raw_tex extensions
-// ("<src>-raw_html-raw_tex"); the latex reader supports disabling ONLY
-// raw_tex ("latex-raw_tex" -- it REJECTS a trailing "-raw_html" suffix,
-// since raw_html is not one of its extensions); rst/org/docx readers expose
-// NEITHER extension at all, so a blanket "-raw_html-raw_tex" suffix on any
-// of those three ERRORS with "extension not supported" -- a bare `-f <src>`
-// is used for them instead (their readers carry no raw-passthrough
-// extension to disable in the first place, so there is nothing to turn
-// off). This function NEVER turns raw_html/raw_tex ON (pandoc's own
-// leading-plus extension-enable syntax) -- only ever turns one off (leading
-// minus), or passes the bare format name through with no extension suffix.
+// ("<pandoc-format>-raw_html-raw_tex"); the latex reader supports disabling
+// ONLY raw_tex ("latex-raw_tex" -- it REJECTS a trailing "-raw_html"
+// suffix, since raw_html is not one of its extensions); rst/org/docx
+// readers expose NEITHER extension at all, so a blanket
+// "-raw_html-raw_tex" suffix on any of those three ERRORS with "extension
+// not supported" -- a bare `-f <pandoc-format>` is used for them instead
+// (their readers carry no raw-passthrough extension to disable in the
+// first place, so there is nothing to turn off). This function NEVER turns
+// raw_html/raw_tex ON (pandoc's own leading-plus extension-enable syntax)
+// -- only ever turns one off (leading minus), or passes the bare pandoc
+// format name through with no extension suffix. src is this project's own
+// normalized format token (pandocFormatName translates "md" -> "markdown"
+// before the switch below decides the extension suffix).
 func pandocReaderSpec(src string) string {
+	name := pandocFormatName(src)
 	switch src {
 	case "md", "html", "epub":
-		return src + "-raw_html-raw_tex"
+		return name + "-raw_html-raw_tex"
 	case "latex":
 		return "latex-raw_tex"
 	default: // rst, org, docx: no raw_html/raw_tex extension exists to disable
-		return src
+		return name
 	}
 }
 
@@ -178,7 +201,7 @@ func pandocArgsContains(args []string, flag string) bool {
 func pandocConvertArgs(src, tgt, inPath, outPath string, o PandocOpts) []string {
 	args := []string{
 		"-f", pandocReaderSpec(src),
-		"-t", tgt,
+		"-t", pandocFormatName(tgt),
 		"--sandbox",
 	}
 
@@ -191,19 +214,100 @@ func pandocConvertArgs(src, tgt, inPath, outPath string, o PandocOpts) []string 
 	return args
 }
 
-// Convert's Task 1 stub: the fast-reject guard ONLY -- normalize src/tgt and
-// fail BEFORE any subprocess if the pair is not in the closed curated
-// allowlist (PDOC-01). This is deliberately incomplete: opts parsing/
-// validation, the input-size DoS guard, the real runCommand("pandoc", ...)
-// dispatch, and output content validation all land in Task 2, in this same
-// method body -- Task 1 exists only to prove (and unit-test) that an
-// unlisted pair never reaches a subprocess, before any subprocess exists to
-// reach.
+// pandocValidateOutput validates a produced pandoc output against the
+// target-appropriate sniffer (PDOC-02/SC2, markupsniff.go/htmlsniff.go/
+// docsniff.go, Plan 02): html->LooksLikeHTML, latex->LooksLikeLaTeX,
+// docx/epub->SniffContainer (matching container format), md/rst/org->
+// LooksLikeText -- proving the output is a complete document (or valid
+// container), not a bare/corrupt fragment. An unrecognized tgt is itself a
+// validation failure rather than a silently-accepted output.
+//
+// An empty-but-valid output (e.g. an empty-body source producing an empty
+// plaintext/fragment result) completes as `done`, not `failed` -- there is
+// NO `if size == 0 { error }` branch here (D-04, 47-CONTEXT.md), mirroring
+// validateOCROutput's own "no size check" rationale (ocr.go). This is not
+// merely a style choice: every sniffer below (LooksLikeHTML/LooksLikeLaTeX/
+// LooksLikeText) is ITSELF fail-closed on a zero-size input
+// (readSniffPrefix, markupsniff.go) -- calling one against a genuinely
+// empty pandoc output would misclassify a correct "nothing to render"
+// result as a corrupt/bare-fragment failure. Skipping the sniffer call on
+// size==0 is therefore required, not an optimization.
+func pandocValidateOutput(tgt, outPath string) error {
+	info, err := os.Stat(outPath)
+	if err != nil {
+		return fmt.Errorf("pandoc: stat output: %w", err)
+	}
+
+	if info.Size() == 0 {
+		return nil
+	}
+
+	f, err := os.Open(outPath)
+	if err != nil {
+		return fmt.Errorf("pandoc: open output: %w", err)
+	}
+	defer f.Close()
+
+	switch tgt {
+	case "html":
+		if !LooksLikeHTML(f, info.Size()) {
+			return fmt.Errorf("pandoc: output failed html content validation")
+		}
+	case "latex":
+		if !LooksLikeLaTeX(f, info.Size()) {
+			return fmt.Errorf("pandoc: output failed latex content validation")
+		}
+	case "docx", "epub":
+		res, err := SniffContainer(f, info.Size())
+		if err != nil {
+			return fmt.Errorf("pandoc: output failed container validation: %w", err)
+		}
+		if res.Format != tgt {
+			return fmt.Errorf("pandoc: output container format %q, want %q", res.Format, tgt)
+		}
+	case "md", "rst", "org":
+		if !LooksLikeText(f, info.Size()) {
+			return fmt.Errorf("pandoc: output failed text content validation")
+		}
+	default:
+		return fmt.Errorf("pandoc: no output validator for target %q", tgt)
+	}
+	return nil
+}
+
+// Convert runs `pandoc` directly against inPath, emitting the target format
+// implied by outPath's extension. Preamble-then-work shape (mirrors
+// OCRConverter.Convert/AudioConverter.Convert, ocr.go/whisper.go): normalize
+// src/tgt, fail fast BEFORE any subprocess if the pair is not in the closed
+// allowlist (PDOC-01 -- a caller bug must not burn a pandoc invocation
+// before failing), parse/validate opts (a corrupt persisted opts value is a
+// deterministic failure, CLAUDE.md "Error Handling"), fail-closed on an
+// oversized input (enforcePandocInputSize, markupsniff.go, PDCE-03), run
+// pandoc via the existing hardened runCommand (exec.go, byte-for-byte
+// unchanged), then validate the produced output with the target-appropriate
+// sniffer (PDOC-02/SC2) so a bare-fragment or corrupt output never silently
+// passes as a complete document. An empty-but-valid output is `done`
+// (pandocValidateOutput's own doc comment).
 func (c PandocConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	src := NormalizeFormat(filepath.Ext(inPath))
 	tgt := NormalizeFormat(filepath.Ext(outPath))
 	if !pandocPairSupported(src, tgt) {
 		return fmt.Errorf("pandoc: unsupported conversion %s -> %s", src, tgt)
 	}
-	return nil
+
+	o, err := PandocOptsFromMap(opts)
+	if err != nil {
+		return fmt.Errorf("pandoc: %w", err)
+	}
+
+	if err := enforcePandocInputSize(inPath, c.MaxInputBytes); err != nil {
+		return fmt.Errorf("pandoc: %w", err)
+	}
+
+	args := pandocConvertArgs(src, tgt, inPath, outPath, o)
+	if _, err := runCommand(ctx, "pandoc", args...); err != nil {
+		return fmt.Errorf("pandoc: pandoc: %w", err)
+	}
+
+	return pandocValidateOutput(tgt, outPath)
 }
