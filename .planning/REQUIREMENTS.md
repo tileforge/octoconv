@@ -14,7 +14,7 @@
 
 ### PDCO — Options
 
-- [ ] **PDCO-01**: Клиент может задать per-job `opts` через валидированный закрытый allowlist (напр. `standalone`, `toc`, `wrap`, `section-divs`; типизированная структура, strict-parse mirror `OCROpts`/`AudioOpts`); неизвестный/незалистенный opt → 422 до любой работы; клиентские байты никогда не попадают в argv pandoc без валидации (injection-тест).
+- [x] **PDCO-01**: Клиент может задать per-job `opts` через валидированный закрытый allowlist (напр. `standalone`, `toc`, `wrap`, `section-divs`; типизированная структура, strict-parse mirror `OCROpts`/`AudioOpts`); неизвестный/незалистенный opt → 422 до любой работы; клиентские байты никогда не попадают в argv pandoc без валидации (injection-тест).
 
 ### PDCE — Engine safety / hardening
 
@@ -52,7 +52,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 |-------------|-------|--------|
 | PDOC-01 | Phase 47 | Pending |
 | PDOC-02 | Phase 47 | Pending |
-| PDCO-01 | Phase 47 | Pending |
+| PDCO-01 | Phase 47 | Complete |
 | PDCE-01 | Phase 47 | Pending |
 | PDCE-02 | Phase 47 | Pending |
 | PDCE-03 | Phase 47 | Pending |

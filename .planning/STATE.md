@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
-status: "Roadmap created, awaiting `/gsd:plan-phase 47`"
-stopped_at: Phase 47 context gathered
-last_updated: "2026-07-30T11:49:46.576Z"
-last_activity: 2026-07-30 — v1.11 ROADMAP.md written (Phases 47-50), REQUIREMENTS.md traceability filled (9/9 mapped)
+status: executing
+stopped_at: Completed 47-01-PLAN.md
+last_updated: "2026-07-30T12:28:47.268Z"
+last_activity: 2026-07-30 — Phase 47 Plan 01 executed (PandocOpts closed allowlist + injection defense, PDCO-01 complete)
 progress:
   total_phases: 4
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 3
+  completed_plans: 1
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — roadmap created (Phases 47-50, 9/9 requirements mapped), ready for phase planning
+**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) in progress, Plan 01/3 complete
 
 ## Current Position
 
-Phase: 47 (Pandoc Engine Foundation) — not started
-Plan: —
-Status: Roadmap created, awaiting `/gsd:plan-phase 47`
-Last activity: 2026-07-30 — v1.11 ROADMAP.md written (Phases 47-50), REQUIREMENTS.md traceability filled (9/9 mapped)
+Phase: 47 (Pandoc Engine Foundation) — in progress
+Plan: 01 of 3 (PandocOpts closed allowlist + injection defense) — complete
+Status: Phase 47 in progress — plan 01/3 complete
+Last activity: 2026-07-30 — Phase 47 Plan 01 executed (PandocOpts closed allowlist + injection defense, PDCO-01 complete)
 
 ## Performance Metrics
 
@@ -131,6 +131,7 @@ Last activity: 2026-07-30 — v1.11 ROADMAP.md written (Phases 47-50), REQUIREME
 | Phase 46 P01 | 20min | 2 tasks | 4 files |
 | Phase 46 P02 | 25min | 2 tasks | 3 files |
 | Phase 46 P03 | ~90min | 1 task | 5 files (evidence) |
+| Phase 47 P01 | 18min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -143,6 +144,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - **Security-hardened from line one, not retrofitted (mirrors OCR's Tesseract-CVE-history precedent):** raw HTML/TeX passthrough disabled, `--no-shell-escape`, no-network, hardened `runCommand` (Setpgid/SIGKILL/`nobody`) must all land in Phase 47's converter core, not be spread across later phases.
 - **`PANDOC_ENGINE_TIMEOUT` must be measured by a dedicated `scripts/pandoc-timing-measure.sh`, never copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT` (Phase 49):** same PITFALLS.md Pitfall 7 recurrence risk flagged at every prior engine-class milestone.
 - **Zero new Go dependencies for v1.11:** pandoc is a CLI subprocess through the existing hardened `runCommand` harness — no cgo, no new `go.mod` entries.
+- [Phase 47]: PandocOpts closed 5-field allowlist (D-04): wrap enum-gated via pandocWrapAllowlist map lookup, cloning OCROpts/AudioOpts verbatim
 
 ### Quick Tasks Completed
 
@@ -155,7 +157,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 
 ### Pending Todos
 
-- Plan Phase 47 (Pandoc Engine Foundation): standalone `PandocConverter` (closed markup-family `(from→to)` allowlist, `--standalone`, hardened `runCommand` with raw-passthrough/shell-escape/network disabled from line one, `PandocOpts` closed allowlist, fail-closed magic-byte/content validation + size/bomb guard). Mirrors Audio/AV/OCR foundation-phase precedent (Phase 30/34/43) — validate standalone against the real pandoc binary before any queue/worker plumbing.
+- Execute Phase 47 (Pandoc Engine Foundation) Plans 02-03: 47-02 (markup content-validation probes + input-size DoS guard + epub/MIME registry, PDCE-01/PDCE-03) then 47-03 (standalone `PandocConverter` — closed markup-family `(from→to)` allowlist, `--standalone`, hardened `runCommand` with `--sandbox` + per-source raw-extension table + no network, SC3 security canary). Plan 01 (PandocOpts closed allowlist + injection defense, PDCO-01) is complete. Mirrors Audio/AV/OCR foundation-phase precedent (Phase 30/34/43) — validate standalone against the real pandoc binary before any queue/worker plumbing.
 
 ### Blockers/Concerns
 
@@ -224,12 +226,12 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-30T11:49:46.563Z
-Stopped at: Phase 47 context gathered
-Resume file: .planning/phases/47-pandoc-engine-foundation/47-CONTEXT.md
+Last session: 2026-07-30T12:28:47.258Z
+Stopped at: Completed 47-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
-- Run `/gsd:plan-phase 47` to begin Phase 47 (Pandoc Engine Foundation) planning.
+- Continue Phase 47 execution with 47-02-PLAN.md (markup content-validation probes + input-size DoS guard + epub/MIME registry, PDCE-01/PDCE-03).
 
 </content>
