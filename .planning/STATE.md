@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
-status: planning
-stopped_at: Phase 48 context gathered
-last_updated: "2026-07-30T18:51:50.596Z"
-last_activity: 2026-07-30 — Phase 47 Plan 03 executed (standalone PandocConverter, closed Pairs allowlist, hardened argv per-source raw-passthrough table + --sandbox, real-pandoc matrix, SC3 security canary)
+status: executing
+stopped_at: Phase 48 Plan 01 executed — ready to execute Plan 02
+last_updated: "2026-07-30T19:23:20.504Z"
+last_activity: "2026-07-30 — Phase 48 Plan 01 executed (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01)"
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
+  total_plans: 6
+  completed_plans: 4
   percent: 25
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) ready to start
+**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) in progress (1/3 plans)
 
 ## Current Position
 
-Phase: 47 (Pandoc Engine Foundation) — complete
-Plan: 3 of 3 (PandocConverter core: curated closed Pairs, hardened runCommand invocation, SC3 security canary, PDOC-01/PDOC-02/PDCE-02) — complete
-Status: Phase 47 complete — ready to plan Phase 48
-Last activity: 2026-07-30 — Phase 47 Plan 03 executed (standalone PandocConverter, closed Pairs allowlist, hardened argv per-source raw-passthrough table + --sandbox, real-pandoc matrix, SC3 security canary)
+Phase: 48 (Async Pipeline Wiring) — in progress
+Plan: 1 of 3 (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01) — complete
+Status: Ready to execute Plan 02 (Plan 01 finished)
+Last activity: 2026-07-30 — Phase 48 Plan 01 executed (pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL, 2-entry retry schedule, EnqueuePandocConvert, PDCP-01)
 
 ## Performance Metrics
 
@@ -134,6 +134,7 @@ Last activity: 2026-07-30 — Phase 47 Plan 03 executed (standalone PandocConver
 | Phase 47 P01 | 18min | 2 tasks | 3 files |
 | Phase 47 P02 | 12min | 2 tasks | 4 files |
 | Phase 47 P03 | 25min | 3 tasks | 2 files |
+| Phase 48 P01 | 20min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -149,6 +150,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - [Phase 47]: PandocOpts closed 5-field allowlist (D-04): wrap enum-gated via pandocWrapAllowlist map lookup, cloning OCROpts/AudioOpts verbatim
 - [Phase 47]: LooksLikeText's md/rst/org interchangeability documented as an accepted, recorded gap (D-01/T-47-05b) — content degrades to a plaintext-only gate, declared source trusted among the text-family — md/rst/org are mutually-interchangeable plaintext with no distinctive magic; a full disambiguator would be illusory
 - [Phase 47]: PandocConverter (47-03): curated closed Pairs() across md/rst/org/latex/html/docx/epub; per-source raw-passthrough table + --sandbox hardening (--no-shell-escape rejected by pandoc); pandocFormatName translates project's 'md' alias to pandoc's own 'markdown' identifier; standalone/unregistered, no API/queue wiring
+- [Phase 48-01]: PandocUniqueTTL derived fresh from pandoc's own PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT budget (D-03) — Test proves it differs from OCRUniqueTTL/AVUniqueTTL/AudioUniqueTTL under identical inputs -- not copied
+- [Phase 48-01]: pandocRetrySchedule = 5s, 20s (2-entry, no jitter, PROVISIONAL) — Shorter than OCR's 15s/1m since pandoc is a lighter deterministic CPU-bound text transform; pending Phase 49's measured PANDOC_ENGINE_TIMEOUT
+- [Phase 48-01]: PANDOC_ENGINE_TIMEOUT default = 90s, PANDOC_MAX_RETRY default = 2 — Both clearly flagged as placeholders in client.go doc comments, superseded by Phase 49's measured value
 
 ### Quick Tasks Completed
 
@@ -230,9 +234,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-30T18:51:50.576Z
-Stopped at: Phase 48 context gathered
-Resume file: .planning/phases/48-async-pipeline-wiring/48-CONTEXT.md
+Last session: 2026-07-30T19:23:20.479Z
+Stopped at: Phase 48 Plan 01 executed — ready to execute Plan 02
+Resume file: None
 
 ## Operator Next Steps
 

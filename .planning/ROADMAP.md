@@ -200,7 +200,7 @@ Plans:
   4. Converting to an empty-but-valid output (e.g. an empty source document) completes the job as `done`, not `failed`.
 **Plans**: 3 plans
 Plans:
-- [ ] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
+- [x] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
 - [ ] 48-02-PLAN.md — migration 0010 (+pandoc enum), register PandocConverter, EngineFor routing + disjointness test, API opts/enqueue/content-gate wiring + EnginePandoc upload ceiling
 - [ ] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
 
@@ -277,7 +277,7 @@ Plans:
 | 45. Containerization + Measured Timeout Gate | v1.10 | 4/4 | Complete | 2026-07-27 |
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
-| 48. Async Pipeline Wiring | v1.11 | 0/TBD | Not started | - |
+| 48. Async Pipeline Wiring | v1.11 | 1/3 | In Progress|  |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 0/TBD | Not started | - |
 | 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
 
