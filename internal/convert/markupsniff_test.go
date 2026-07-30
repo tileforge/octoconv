@@ -2,6 +2,8 @@ package convert
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -186,3 +188,71 @@ func TestLooksLikeTextOversizedInputBoundedRead(t *testing.T) {
 	}
 }
 
+func TestEnforcePandocInputSize(t *testing.T) {
+	dir := t.TempDir()
+
+	small := filepath.Join(dir, "small.md")
+	if err := os.WriteFile(small, []byte("# small file\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(small): %v", err)
+	}
+
+	large := filepath.Join(dir, "large.md")
+	if err := os.WriteFile(large, bytes.Repeat([]byte("a"), 1024), 0o600); err != nil {
+		t.Fatalf("WriteFile(large): %v", err)
+	}
+
+	t.Run("under cap passes", func(t *testing.T) {
+		if err := enforcePandocInputSize(small, 4096); err != nil {
+			t.Errorf("enforcePandocInputSize(small, 4096) = %v, want nil", err)
+		}
+	})
+
+	t.Run("over cap rejected fail-closed", func(t *testing.T) {
+		err := enforcePandocInputSize(large, 512)
+		if err == nil {
+			t.Fatal("enforcePandocInputSize(large, 512) = nil, want ErrPandocInputTooLarge")
+		}
+		if !bytes.Contains([]byte(err.Error()), []byte("exceeds")) {
+			t.Errorf("enforcePandocInputSize error = %v, want an exceeds-cap message", err)
+		}
+	})
+
+	t.Run("zero cap means no cap configured", func(t *testing.T) {
+		if err := enforcePandocInputSize(large, 0); err != nil {
+			t.Errorf("enforcePandocInputSize(large, 0) = %v, want nil (no cap)", err)
+		}
+	})
+
+	t.Run("missing file rejected fail-closed", func(t *testing.T) {
+		if err := enforcePandocInputSize(filepath.Join(dir, "missing.md"), 4096); err == nil {
+			t.Error("enforcePandocInputSize(missing file) = nil, want a stat error")
+		}
+	})
+}
+
+func TestMIMETypeMarkupFormats(t *testing.T) {
+	cases := map[string]string{
+		"md":    "text/markdown",
+		"rst":   "text/x-rst",
+		"org":   "text/plain",
+		"latex": "application/x-latex",
+		"epub":  "application/epub+zip",
+	}
+	for format, want := range cases {
+		if got := MIMEType(format); got != want {
+			t.Errorf("MIMEType(%q) = %q, want %q", format, got, want)
+		}
+	}
+}
+
+func TestSniffContainerEpub(t *testing.T) {
+	data := odfZipFixture(t, "application/epub+zip")
+	r := bytes.NewReader(data)
+	res, err := SniffContainer(r, int64(len(data)))
+	if err != nil {
+		t.Fatalf("SniffContainer(epub fixture) error = %v", err)
+	}
+	if res.Format != "epub" {
+		t.Errorf("SniffContainer(epub fixture).Format = %q, want %q", res.Format, "epub")
+	}
+}

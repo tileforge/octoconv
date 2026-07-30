@@ -182,6 +182,19 @@ func MIMEType(format string) string {
 		return "application/vnd.oasis.opendocument.presentation"
 	case "html":
 		return "text/html"
+	case "md":
+		return "text/markdown"
+	case "rst":
+		return "text/x-rst"
+	case "org":
+		// org-mode has no registered IANA media type (PDCE-01, 47-CONTEXT.md)
+		// -- stored and served as text/plain, the same honest-fallback
+		// discipline this file already documents for hocr/alto above.
+		return "text/plain"
+	case "latex":
+		return "application/x-latex"
+	case "epub":
+		return "application/epub+zip"
 	case "mp3":
 		return "audio/mpeg"
 	case "wav":

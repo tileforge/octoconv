@@ -7,7 +7,10 @@ package convert
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
+	"os"
 	"unicode/utf8"
 )
 
@@ -142,4 +145,29 @@ func LooksLikeText(r io.ReaderAt, size int64) bool {
 		return false
 	}
 	return !hasDisallowedControlByte(buf)
+}
+
+// ErrPandocInputTooLarge is returned when an input file's size exceeds the
+// configured PANDOC_MAX_INPUT_BYTES cap -- fail-closed BEFORE any pandoc
+// subprocess runs (T-47-04/PDCE-03). Pandoc reads its input linearly, so
+// there is no exotic pre-parse "bomb shape" to walk the way there is for
+// zip/pdf (D-04, RESEARCH.md) -- this size cap, plus the engine timeout
+// (Phase 49) bounding output-expansion runaways, are the full defense here.
+var ErrPandocInputTooLarge = errors.New("pandoc: input size exceeds configured maximum")
+
+// enforcePandocInputSize stats inPath and rejects fail-closed when its size
+// exceeds maxBytes. maxBytes == 0 means "no cap configured this phase" --
+// mirrors enforceImagePixelBound/enforceMaxPages's zero-value convention
+// (ocrguards.go). A missing/unstattable file is itself a fail-closed error,
+// never a silent pass -- the same discipline enforceImagePixelBound applies
+// to its own os.Open failure.
+func enforcePandocInputSize(inPath string, maxBytes int64) error {
+	info, err := os.Stat(inPath)
+	if err != nil {
+		return fmt.Errorf("pandoc: stat %q: %w", inPath, err)
+	}
+	if maxBytes > 0 && info.Size() > maxBytes {
+		return fmt.Errorf("%w: %d bytes exceeds %d byte cap", ErrPandocInputTooLarge, info.Size(), maxBytes)
+	}
+	return nil
 }
