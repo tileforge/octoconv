@@ -213,7 +213,12 @@ Plans:
   2. `scripts/pandoc-timing-measure.sh` measures real conversion cost across a representative markup corpus (varying source formats/sizes) under production-equivalent CPU/memory limits and drives a documented go/no-go decision (mirroring the audio/AV/OCR gate precedent).
   3. The measured `PANDOC_ENGINE_TIMEOUT` is **derived from this measurement, not copied** from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT`, stays under the global 900s reconciler CAP, and is recorded as a Key Decision with its measurement conditions (arch/cpu/mem/N/p95).
   4. IN-02 env parity: all queue-client-constructing services propagate `PANDOC_*` env identically, and the `pandoc-worker` image is added to the CI bake matrix.
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 49-01-PLAN.md — Dockerfile.pandoc-worker: SHA-256-pinned static pandoc 3.x binary, TeX-free debian-slim, USER nobody, dual-arch
+- [ ] 49-02-PLAN.md — scripts/pandoc-timing-measure.sh (wall-sec/conversion gate) + pandoc-worker compose service (placeholder timeout) + IN-02 PANDOC_* across all 10 services + CI bake
+- [ ] 49-03-PLAN.md — SUPERVISED measurement checkpoint: derive PANDOC_ENGINE_TIMEOUT = ceil(worst-p95 x 2.0) < 900s CAP (Path-B PANDOC_MAX_INPUT_BYTES lever), plug in + record Key Decision
+- [ ] 49-04-PLAN.md — live E2E checkpoint: TestPandocConversionE2E (md->html + md->docx + signed webhook) against the real compose pandoc-worker
 
 ### Phase 50: KEDA/Helm Chart Integration
 **Goal**: The pandoc class autoscales in the cluster with production parity to the other six engine classes, and scale-from-zero is live-proven.
