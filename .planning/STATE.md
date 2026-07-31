@@ -4,13 +4,13 @@ milestone: v1.11
 milestone_name: Pandoc Engine
 status: executing
 stopped_at: Phase 49 context gathered
-last_updated: "2026-07-31T16:29:24.546Z"
+last_updated: "2026-07-31T16:43:35.407Z"
 last_activity: 2026-07-31
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 10
-  completed_plans: 7
+  completed_plans: 8
   percent: 50
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 ## Current Position
 
 Phase: 49 (Containerization + Measured Timeout Gate) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-07-31
 
@@ -138,6 +138,7 @@ Last activity: 2026-07-31
 | Phase 48 P02 | 9min | 2 tasks | 8 files |
 | Phase 48 P03 | ~30min | 3 tasks | 7 files |
 | Phase 49 P01 | 25min | 1 tasks | 1 files |
+| Phase 49 P02 | 35min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -161,6 +162,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - [Phase 48]: cmd/pandoc-worker's PANDOC_ENGINE_TIMEOUT default (90s) matches internal/queue/client.go's own default exactly to avoid drift between the two independent env reads
 - [Phase 48]: PANDOC_WORKER_CONCURRENCY defaults to 2 (not 1 like OCR/AV/audio) — pandoc is a fast, lightweight single subprocess, not a heavy per-page/per-frame engine
 - [Phase 49]: Dockerfile.pandoc-worker pins pandoc 3.10.1 official static-release binary (amd64 SHA-256 72948bf5784f560d5ad1876709daca27e0667f262da727bb33f77b58e52df2f5, arm64 SHA-256 cd3963da375793a4804c65ae538b4f7b9c23f87cac7f6c74a1cf5e2fff7e8d59), both hashes verified live by downloading+hashing, selected by TARGETARCH; TeX-free runtime (curl+ca-certificates only), USER nobody
+- [Phase 49]: PANDOC_ENGINE_TIMEOUT=90s/stop_grace_period=110s in docker-compose.yml are clearly-marked PLACEHOLDERS pending Plan 03's supervised scripts/pandoc-timing-measure.sh run; no measured value committed this plan
+- [Phase 49]: IN-02: PANDOC_ENGINE_TIMEOUT + PANDOC_MAX_RETRY set byte-identically across all 10 queue.NewClient()-constructing services (api, worker, webhook-worker-1/-2, document-worker, chromium-worker, audio-worker, av-worker, ocr-worker, pandoc-worker)
 
 ### Quick Tasks Completed
 
@@ -242,7 +245,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-31T16:29:24.532Z
+Last session: 2026-07-31T16:41:13.702Z
 Stopped at: Phase 49 context gathered
 Resume file: None
 
