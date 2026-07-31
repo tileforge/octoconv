@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
-status: planning
+status: executing
 stopped_at: Phase 49 context gathered
-last_updated: "2026-07-31T16:03:04.315Z"
-last_activity: 2026-07-30
+last_updated: "2026-07-31T16:29:24.546Z"
+last_activity: 2026-07-31
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  total_plans: 10
+  completed_plans: 7
   percent: 50
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.11 Pandoc Engine — Phase 47 (Pandoc Engine Foundation) complete (3/3 plans), Phase 48 (Async Pipeline Wiring) complete (3/3 plans, PDCP-01 done) — ready for Phase 49 (containerization + measured PANDOC_ENGINE_TIMEOUT)
+**Current focus:** Phase 49 — Containerization + Measured Timeout Gate
 
 ## Current Position
 
-Phase: 48 (Async Pipeline Wiring) — complete
-Plan: 3 of 3 (HandlePandocConvert + isPandocTerminal/pandocFailureCode D-01, cmd/pandoc-worker, reconciler pandoc routing, empty→done SC4, invariant fence) — complete
-Status: Ready to plan Phase 49
-Last activity: 2026-07-30
+Phase: 49 (Containerization + Measured Timeout Gate) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-07-31
 
 ## Performance Metrics
 
@@ -137,6 +137,7 @@ Last activity: 2026-07-30
 | Phase 48 P01 | 20min | 2 tasks | 3 files |
 | Phase 48 P02 | 9min | 2 tasks | 8 files |
 | Phase 48 P03 | ~30min | 3 tasks | 7 files |
+| Phase 49 P01 | 25min | 1 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -159,6 +160,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 - [Phase 48]: isPandocTerminal mirrors isDocumentTerminal's timeout-is-terminal shape (D-01) — timeout AND any "pandoc:"-prefixed engine/parse error are terminal, the opposite of isOCRTerminal's transient-timeout treatment; genuine infra transients stay retryable
 - [Phase 48]: cmd/pandoc-worker's PANDOC_ENGINE_TIMEOUT default (90s) matches internal/queue/client.go's own default exactly to avoid drift between the two independent env reads
 - [Phase 48]: PANDOC_WORKER_CONCURRENCY defaults to 2 (not 1 like OCR/AV/audio) — pandoc is a fast, lightweight single subprocess, not a heavy per-page/per-frame engine
+- [Phase 49]: Dockerfile.pandoc-worker pins pandoc 3.10.1 official static-release binary (amd64 SHA-256 72948bf5784f560d5ad1876709daca27e0667f262da727bb33f77b58e52df2f5, arm64 SHA-256 cd3963da375793a4804c65ae538b4f7b9c23f87cac7f6c74a1cf5e2fff7e8d59), both hashes verified live by downloading+hashing, selected by TARGETARCH; TeX-free runtime (curl+ca-certificates only), USER nobody
 
 ### Quick Tasks Completed
 
@@ -240,9 +242,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-31T16:03:04.299Z
+Last session: 2026-07-31T16:29:24.532Z
 Stopped at: Phase 49 context gathered
-Resume file: .planning/phases/49-containerization-measured-timeout-gate/49-CONTEXT.md
+Resume file: None
 
 ## Operator Next Steps
 
