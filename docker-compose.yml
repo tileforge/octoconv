@@ -124,6 +124,14 @@ services:
       # (PITFALLS.md Pitfall 7).
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
@@ -181,6 +189,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -245,6 +261,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   webhook-worker-2:
@@ -299,6 +323,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   document-worker:
@@ -356,6 +388,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -412,6 +452,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
     # alongside the --disable-dev-shm-usage argv flag (D-09/Pitfall C) --
@@ -491,6 +539,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -595,6 +651,14 @@ services:
       # under the 900s reconciler CAP -- see ocr-worker service comment.
       OCR_MAX_RETRY: "2"
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03 -- see ocr-worker service comment
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
       # webhooks (internal/worker fireDetached). MUST match webhook-worker-1/-2's
@@ -697,6 +761,14 @@ services:
       # here; 744 is distinct from both).
       OCR_ENGINE_TIMEOUT: "744s" # measured, 45-03-SUMMARY.md -- see comment above
       OCR_MAX_RETRY: "2"
+      # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
+      # is derived from these unconditionally in EVERY process; must be
+      # byte-identical across all 10 queue.NewClient()-constructing services
+      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
+      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
+      # see the pandoc-worker service comment below.
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
       # though this process only runs the ocr engine (DEBT-05).
@@ -727,6 +799,105 @@ services:
           # container's --cpus/--memory EXACTLY (mirrors av-worker's own
           # fleet-baseline discipline) -- the measured p95 sec/page this
           # phase produces is only valid at these limits.
+          cpus: "2.0"
+          memory: 1g
+
+  # pandoc is a pinned static-release binary (Dockerfile.pandoc-worker,
+  # Phase 49 Plan 01) -- no platform: pin needed, same posture as
+  # av-worker/audio-worker/chromium-worker/ocr-worker (unlike
+  # document-worker's veraPDF-forced amd64 pin). NO TeX toolchain --
+  # markup<->markup only (->pdf deferred to v2).
+  pandoc-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.pandoc-worker
+    container_name: octoconv-pandoc-worker
+    restart: always
+    # cmd/pandoc-worker sets asynq ShutdownTimeout = PANDOC_ENGINE_TIMEOUT
+    # (90s PLACEHOLDER, below) + 10s = 100s so an in-flight pandoc attempt
+    # survives SIGTERM instead of being aborted+requeued (mirrors
+    # ocr-worker's/av-worker's/audio-worker's own WR-05 margin). stop_
+    # grace_period = 100s + 10s Docker SIGKILL margin = 110s -- ALSO A
+    # PLACEHOLDER: Plan 03's supervised scripts/pandoc-timing-measure.sh run
+    # recomputes this to measured PANDOC_ENGINE_TIMEOUT + 20s, mirroring
+    # ocr-worker's 744s+20s=764s derivation (45-02-SUMMARY.md).
+    stop_grace_period: 110s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://octo:octo-pass@postgres:5432/octo_db
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: octoconv
+      S3_USE_SSL: "false"
+      # pandoc is fast/light -- a single deterministic subprocess, unlike
+      # the 1-at-a-time heavy OCR/AV/audio engines -- so 2 lets a slow
+      # conversion not fully block a second job (mirrors cmd/pandoc-worker's
+      # own PANDOC_WORKER_CONCURRENCY default rationale). pandoc-worker-only,
+      # NOT read by queue.NewClient(), so no IN-02 parity requirement.
+      PANDOC_WORKER_CONCURRENCY: "2"
+      # Input-size DoS guard (enforcePandocInputSize, markupsniff.go) AND
+      # this phase's Path-B lever: if the measured PANDOC_ENGINE_TIMEOUT
+      # derivation breaches the 900s reconciler CAP, LOWER this value first
+      # (mirrors OCR_MAX_PAGES's/AUDIO_MAX_DURATION_SECONDS's own NO-GO
+      # lever) rather than inflating the timeout or the global CAP. 50 MiB =
+      # cmd/pandoc-worker's own default (50<<20). pandoc-worker-only, NOT
+      # read by queue.NewClient().
+      PANDOC_MAX_INPUT_BYTES: "52428800"
+      # PLACEHOLDER -- pandoc is a fast, deterministic CPU-bound engine
+      # unlike OCR/AV's heavier per-page/per-frame processing, so 90s is a
+      # deliberately small provisional fallback (cmd/pandoc-worker/main.go's
+      # own doc comment). The REAL, MEASURED value is supplied by Plan 03's
+      # supervised scripts/pandoc-timing-measure.sh run (PDCE-04) -- NOT
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s) (PITFALLS.md Pitfall 7).
+      # MUST be set identically in every queue.NewClient()-constructing
+      # service (IN-02, now 10 services) -- pandocUniqueTTL is derived from
+      # it in each enqueuing process; a mismatch silently produces duplicate
+      # processing.
+      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- Plan 03 supplies the measured value
+      PANDOC_MAX_RETRY: "2"
+      # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
+      # reads every OTHER engine class's retry/timeout vars unconditionally,
+      # even though this process only runs the pandoc engine (DEBT-05).
+      IMAGE_MAX_RETRY: "4"
+      ENGINE_TIMEOUT: "120s"
+      DOCUMENT_MAX_RETRY: "3"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      HTML_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      AUDIO_MAX_RETRY: "3"
+      AUDIO_ENGINE_TIMEOUT: "742s"
+      AV_MAX_RETRY: "2"
+      AV_ENGINE_TIMEOUT: "753s"
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "744s"
+      METRICS_ADDR: "127.0.0.1:9090"
+      # PUSH-02-style (mirrors av-worker/ocr-worker): cmd/pandoc-worker
+      # signs + fires opt-in inline progress webhooks (harmless dead weight
+      # for pandoc specifically, since PandocConverter never implements
+      # convert.ProgressConverter -- kept only for wiring consistency with
+      # every other worker cmd). MUST match webhook-worker-1/-2's own
+      # WEBHOOK_SIGNING_SECRET exactly so a client verifies BOTH the
+      # throttled progress events AND the terminal done/failed event with
+      # the same key. Unset => cmd/pandoc-worker fail-opens and progress
+      # webhooks are silently disabled, so this line is what makes pandoc
+      # progress webhooks actually deliverable in the compose deployment.
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
+    deploy:
+      resources:
+        limits:
+          # Fleet baseline (mirrors ocr-worker's own discipline) -- MUST
+          # match the scripts/pandoc-timing-measure.sh measurement
+          # container's --cpus/--memory EXACTLY once Plan 03 runs it; pandoc
+          # is light, so this MAY be lowered on measured evidence, but keep
+          # the ocr-worker baseline (2.0/1g) until Plan 03 says otherwise.
           cpus: "2.0"
           memory: 1g
 
