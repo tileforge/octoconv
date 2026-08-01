@@ -227,7 +227,18 @@ log() { echo ""; echo "--- $* ---"; }
 # ---------------------------------------------------------------------------
 synthesizeLongFixture() {
 	local out_host_path="$1"
-	local md_target=3200000
+	# Seeded AGGRESSIVELY close to the 4 MiB ceiling itself (ignoring the
+	# Markdown->HTML markup-overhead inflation) so attempt 1 is expected to
+	# slightly OVERFLOW and the proportional-shrink branch below converges
+	# the render close to [3800000, 4194304] by attempt 2 -- a materially
+	# lower seed (e.g. ~3.2 MB) converges to a comfortably-under-ceiling but
+	# UNREPRESENTATIVELY SMALL render (observed: 3.67 MB -> only 15.4s, a
+	# hair over the [15,50] floor and roughly half the 49-03 measured
+	# worst-cell p95=32.318s at the true ~4 MiB cap), leaving too little
+	# margin above the metric-propagation + stabilization delay for the SC4
+	# live gate to reliably catch both victim pods still mid-conversion
+	# (Rule 1 fix, Task 2 dry-run).
+	local md_target=4000000
 	local attempt=1
 	local html_bytes=0
 
@@ -244,13 +255,27 @@ synthesizeLongFixture() {
 		' >&2
 		docker exec "$FIXTURE_CONTAINER" pandoc -f markdown-raw_html-raw_tex -t html --sandbox --standalone \
 			/tmp/work/base.md -o /tmp/work/long.html >&2
-		html_bytes=$(docker exec "$FIXTURE_CONTAINER" wc -c < /tmp/work/long.html | tr -d '[:space:]')
+		# NOTE: the `< file` redirect must be evaluated INSIDE the container
+		# (via `sh -c '...'`), not by the host's own shell -- a bare
+		# `docker exec ... wc -c < /tmp/work/long.html` redirects against a
+		# host-side path that does not exist (Rule 1 bugfix, Task 2 dry-run).
+		html_bytes=$(docker exec "$FIXTURE_CONTAINER" sh -c 'wc -c < /tmp/work/long.html' | tr -d '[:space:]')
 		echo "fixture synthesis attempt=$attempt md_target_bytes=$md_target html_bytes=$html_bytes" >&2
 		if [ "$html_bytes" -le "$PANDOC_MAX_INPUT_BYTES" ] && [ "$html_bytes" -ge "$FIXTURE_BAND_LOW" ]; then
 			break
 		fi
 		if [ "$html_bytes" -gt "$PANDOC_MAX_INPUT_BYTES" ]; then
-			md_target=$((md_target * PANDOC_MAX_INPUT_BYTES / html_bytes))
+			# Shrink toward a target 100000 bytes UNDER the ceiling, not the
+			# literal ceiling itself -- pandoc's --standalone HTML wrapper
+			# adds a roughly FIXED (not proportional) markup overhead
+			# (doctype/head/meta), so a purely proportional
+			# md_target*ceiling/html_bytes shrink asymptotically
+			# approaches the ceiling from above rather than landing under
+			# it, risking exhausting all 3 attempts on a near-miss
+			# (Rule 1 fix, Task 2 dry-run: observed 4584504 -> 4194489 ->
+			# 4194323, still 19 bytes over on attempt 3 without this
+			# margin).
+			md_target=$((md_target * (PANDOC_MAX_INPUT_BYTES - 100000) / html_bytes))
 		else
 			md_target=$((md_target * 2))
 		fi
