@@ -127,11 +127,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
@@ -192,11 +195,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -264,11 +270,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   webhook-worker-2:
@@ -326,11 +335,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
   document-worker:
@@ -391,11 +403,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -455,11 +470,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
     # alongside the --disable-dev-shm-usage argv flag (D-09/Pitfall C) --
@@ -542,11 +560,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
       resources:
@@ -654,11 +675,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
       # webhooks (internal/worker fireDetached). MUST match webhook-worker-1/-2's
@@ -764,11 +788,14 @@ services:
       # IN-02 (Phase 49): same requirement, pandoc engine -- pandocUniqueTTL
       # is derived from these unconditionally in EVERY process; must be
       # byte-identical across all 10 queue.NewClient()-constructing services
-      # (49-02-SUMMARY.md). PANDOC_ENGINE_TIMEOUT is a PLACEHOLDER pending
-      # Plan 03's supervised scripts/pandoc-timing-measure.sh measurement --
-      # see the pandoc-worker service comment below.
+      # (49-02-SUMMARY.md). MEASURED (49-03-SUMMARY.md,
+      # scripts/pandoc-timing-measure.sh, arch=arm64, cpus=2.0, memory=1g,
+      # N=10): worst cell html_large->md (reader-heavy HTML parsing)
+      # p95=32.318s; PANDOC_ENGINE_TIMEOUT=ceil(32.318 x 2.0)=65s, 92.8%
+      # under the 900s reconciler CAP -- see the pandoc-worker service
+      # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- see pandoc-worker service comment
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
       # though this process only runs the ocr engine (DEBT-05).
@@ -814,14 +841,13 @@ services:
     container_name: octoconv-pandoc-worker
     restart: always
     # cmd/pandoc-worker sets asynq ShutdownTimeout = PANDOC_ENGINE_TIMEOUT
-    # (90s PLACEHOLDER, below) + 10s = 100s so an in-flight pandoc attempt
+    # (65s, MEASURED below) + 10s = 75s so an in-flight pandoc attempt
     # survives SIGTERM instead of being aborted+requeued (mirrors
     # ocr-worker's/av-worker's/audio-worker's own WR-05 margin). stop_
-    # grace_period = 100s + 10s Docker SIGKILL margin = 110s -- ALSO A
-    # PLACEHOLDER: Plan 03's supervised scripts/pandoc-timing-measure.sh run
-    # recomputes this to measured PANDOC_ENGINE_TIMEOUT + 20s, mirroring
-    # ocr-worker's 744s+20s=764s derivation (45-02-SUMMARY.md).
-    stop_grace_period: 110s
+    # grace_period = 75s + 10s Docker SIGKILL margin = 85s -- MEASURED
+    # (49-03-SUMMARY.md, mirrors ocr-worker's 744s+20s=764s derivation,
+    # 45-02-SUMMARY.md).
+    stop_grace_period: 85s
     depends_on:
       postgres:
         condition: service_healthy
@@ -844,24 +870,37 @@ services:
       # NOT read by queue.NewClient(), so no IN-02 parity requirement.
       PANDOC_WORKER_CONCURRENCY: "2"
       # Input-size DoS guard (enforcePandocInputSize, markupsniff.go) AND
-      # this phase's Path-B lever: if the measured PANDOC_ENGINE_TIMEOUT
-      # derivation breaches the 900s reconciler CAP, LOWER this value first
-      # (mirrors OCR_MAX_PAGES's/AUDIO_MAX_DURATION_SECONDS's own NO-GO
-      # lever) rather than inflating the timeout or the global CAP. 50 MiB =
-      # cmd/pandoc-worker's own default (50<<20). pandoc-worker-only, NOT
-      # read by queue.NewClient().
-      PANDOC_MAX_INPUT_BYTES: "52428800"
-      # PLACEHOLDER -- pandoc is a fast, deterministic CPU-bound engine
-      # unlike OCR/AV's heavier per-page/per-frame processing, so 90s is a
-      # deliberately small provisional fallback (cmd/pandoc-worker/main.go's
-      # own doc comment). The REAL, MEASURED value is supplied by Plan 03's
-      # supervised scripts/pandoc-timing-measure.sh run (PDCE-04) -- NOT
-      # copied from OCR(744s)/AV(753s)/AUDIO(742s) (PITFALLS.md Pitfall 7).
-      # MUST be set identically in every queue.NewClient()-constructing
-      # service (IN-02, now 10 services) -- pandocUniqueTTL is derived from
-      # it in each enqueuing process; a mismatch silently produces duplicate
+      # this phase's Path-B lever, WHICH FIRED (49-03-SUMMARY.md): the
+      # supervised scripts/pandoc-timing-measure.sh run found the zip-out
+      # targets (docx/epub) OOM-KILL ("Killed", 0-byte output) on this
+      # service's 1g memory limit at an 8 MiB input -- cliff measured at
+      # 4 MiB=~10.2s clean -> 6.5 MiB=~40s thrash -> 8 MiB=OOM. Fired BY
+      # MEMORY, not by the 900s CAP (the CAP was never breached -- see
+      # PANDOC_ENGINE_TIMEOUT below). Lowered from the 50 MiB (50<<20)
+      # placeholder to 4 MiB for comfortable memory headroom and
+      # predictable ~10-15s zip-out conversions with no thrash; the
+      # worst-cell 32.318s p95 below was measured AT this 4 MiB cap.
+      # pandoc-worker-only, NOT read by queue.NewClient().
+      PANDOC_MAX_INPUT_BYTES: "4194304"
+      # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
+      # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank
+      # p95, wall-sec/conversion, at the 4 MiB PANDOC_MAX_INPUT_BYTES cap
+      # above). Worst cell = html_large->md (reader-heavy HTML parsing),
+      # p95=32.318s (other large cells: md->html 25.37s, md->docx 23.34s,
+      # html->docx 15.99s, latex->html 6.06s, latex->docx 3.90s; all
+      # small/medium cells < 0.4s). PANDOC_ENGINE_TIMEOUT =
+      # ceil(worst_p95 x 2.0) = ceil(32.318 x 2.0) = 65s, 92.8% under the
+      # 900s/15m reconciler CAP -- the CAP itself was never at risk here;
+      # Path-B fired for the DISTINCT memory reason above, not to clear
+      # this CAP. NO MAX_PAGES-style multiplier (unlike OCR) -- pandoc's
+      # p95 already IS the full per-conversion cost. NEVER copied from
+      # OCR(744s)/AV(753s)/AUDIO(742s) or the 90s placeholder (PITFALLS.md
+      # Pitfall 7) -- 65s is distinct from all four. MUST be set
+      # identically in every queue.NewClient()-constructing service
+      # (IN-02, 10 services) -- pandocUniqueTTL is derived from it in each
+      # enqueuing process; a mismatch silently produces duplicate
       # processing.
-      PANDOC_ENGINE_TIMEOUT: "90s" # PLACEHOLDER -- Plan 03 supplies the measured value
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03-SUMMARY.md -- see comment above
       PANDOC_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
@@ -895,9 +934,12 @@ services:
         limits:
           # Fleet baseline (mirrors ocr-worker's own discipline) -- MUST
           # match the scripts/pandoc-timing-measure.sh measurement
-          # container's --cpus/--memory EXACTLY once Plan 03 runs it; pandoc
-          # is light, so this MAY be lowered on measured evidence, but keep
-          # the ocr-worker baseline (2.0/1g) until Plan 03 says otherwise.
+          # container's --cpus/--memory EXACTLY (49-03-SUMMARY.md ran at
+          # these exact limits). Do NOT lower memory below 1g without
+          # re-measuring: the zip-out (docx/epub) OOM-KILL cliff found at
+          # this limit (8 MiB input) is what drove PANDOC_MAX_INPUT_BYTES
+          # down to 4 MiB above -- a smaller memory limit would need its
+          # own re-measured input-size cap.
           cpus: "2.0"
           memory: 1g
 
