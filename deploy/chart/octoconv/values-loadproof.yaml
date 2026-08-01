@@ -108,12 +108,13 @@ documentWorker:
 
 pandocWorker:
   extraEnv:
-    # One job per pod (Phase 50, mirrors documentWorker.extraEnv above): at
-    # the production ConfigMap value of "2" a single pandoc-worker pod can
-    # hold two in-flight jobs at once, which makes both the pod<->job
-    # mapping and the depth arithmetic ambiguous for the SC4 victim-pod
-    # selection. Forcing one job per pod makes "2 replicas, 2 active jobs,
-    # 0 pending" a deterministic state whose queue depth is exactly 2, i.e.
-    # desired = ceil(2 / threshold 2) = 1, the metric condition that
-    # triggers the genuine 2->1 downscale while both pods are mid-job.
+    # One job per pod (Phase 50, mirrors documentWorker.extraEnv above). This
+    # is now PARITY with production, not an override: the ConfigMap value was
+    # lowered 2 -> 1 on 2026-08-02 after the BLOCKER-1 memory measurement, so
+    # the gate and production run the same concurrency. Kept explicit because
+    # the SC4 depth arithmetic DEPENDS on it: one job per pod makes "2 replicas,
+    # 2 active jobs, 0 pending" a deterministic state whose queue depth is
+    # exactly 2, i.e. desired = ceil(2 / threshold 2) = 1 -- the metric
+    # condition that triggers the genuine 2->1 downscale while both pods are
+    # mid-job. If production concurrency ever changes again, this must stay 1.
     PANDOC_WORKER_CONCURRENCY: "1"

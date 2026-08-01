@@ -1007,8 +1007,16 @@ if [ -z "$POD_TERM_FINISHED" ]; then
 fi
 assert_nonempty "$POD_TERM_FINISHED" "SC4(3): pod $VICTIM_POD terminated.finishedAt captured (live or via continuous snapshot)"
 
+# Ask Postgres for the SAME ISO-8601 "...Z" shape the kubelet Killing event
+# uses, so BOTH sides of the ordering assertion below parse through the single
+# toEpoch() helper. Selecting the raw timestamptz here would render as
+# "2026-08-01 21:06:36.104457+00" and the `tr -d '[:space:]'` guard (needed to
+# strip psql's trailing newline) would eat the space INSIDE the value, leaving
+# "2026-08-0121:06:36..." -- which only BSD strptime forgives, so the GNU
+# `date -u -d` fallback could never parse it and the load-bearing
+# SIGTERM-before-completion check would hard-fail on Linux (50-REVIEW BLOCKER-2).
 JOB_FINISHED_AT=$(psql "postgres://octo:octo-pass@127.0.0.1:${DB_LOCAL_PORT}/octo_db" -tAc \
-	"SELECT finished_at FROM jobs WHERE id='${INFLIGHT_JOB_ID}';" | tr -d '[:space:]')
+	"SELECT to_char(finished_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM jobs WHERE id='${INFLIGHT_JOB_ID}';" | tr -d '[:space:]')
 assert_nonempty "$JOB_FINISHED_AT" "SC4(3): jobs.finished_at captured for in-flight job $INFLIGHT_JOB_ID"
 
 {
@@ -1029,7 +1037,7 @@ assert_nonempty "$JOB_FINISHED_AT" "SC4(3): jobs.finished_at captured for in-fli
 
 # ASSERT: SIGTERM occurred before job completion, and the container exited
 # gracefully (Completed/exit 0), NEVER exit-137/SIGKILL/OOMKilled.
-JOB_FINISHED_EPOCH=$(date -u -j -f "%Y-%m-%d %H:%M:%S" "${JOB_FINISHED_AT%%.*}" +%s 2>/dev/null || date -u -d "$JOB_FINISHED_AT" +%s 2>/dev/null || echo "0")
+JOB_FINISHED_EPOCH=$(toEpoch "$JOB_FINISHED_AT")
 if [ "${SIGTERM_EPOCH:-0}" -le 0 ] || [ "${JOB_FINISHED_EPOCH:-0}" -le 0 ]; then
 	echo "FAIL: SC4(3) -- could not parse SIGTERM_TS ($SIGTERM_TS) or JOB_FINISHED_AT ($JOB_FINISHED_AT) into comparable epochs" >&2
 	exit 1
