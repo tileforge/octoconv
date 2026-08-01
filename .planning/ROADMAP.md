@@ -258,7 +258,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 50-03-PLAN.md — SC4 downscale-survival harness (fast-engine drive shape, /proc victim-job attribution) + offline fixture/timing calibration
+- [x] 50-03-PLAN.md — SC4 downscale-survival harness (fast-engine drive shape, /proc victim-job attribution) + offline fixture/timing calibration
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -317,7 +317,7 @@ Plans:
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
-| 50. KEDA/Helm Chart Integration | v1.11 | 2/4 | In Progress|  |
+| 50. KEDA/Helm Chart Integration | v1.11 | 3/4 | In Progress|  |
 
 ---
 
