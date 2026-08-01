@@ -250,7 +250,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 50-01-PLAN.md — pandoc-worker Deployment + KEDA ScaledObject + keda.pandoc/pandocWorker values + PANDOC_* ConfigMap parity (SC1/SC2/SC4-env)
+- [x] 50-01-PLAN.md — pandoc-worker Deployment + KEDA ScaledObject + keda.pandoc/pandocWorker values + PANDOC_* ConfigMap parity (SC1/SC2/SC4-env)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -317,7 +317,7 @@ Plans:
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
-| 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
+| 50. KEDA/Helm Chart Integration | v1.11 | 1/4 | In Progress|  |
 
 ---
 
