@@ -289,12 +289,18 @@ keda:
     # (falsy-0 guard, HARD-03/D-06) in scaledobject-ocr.yaml.
     scaleDownStabilizationSeconds: 900
   pandoc:
-    # DERIVED FROM PANDOC'S OWN BUDGET (D-02), NOT copied from html even
-    # though the numbers are identical: threshold "2" = PANDOC_WORKER_CONCURRENCY
-    # (ConfigMap) -- a second replica is justified only past depth 2, one
-    # pod's full digestion capacity. pollingInterval 10 / cooldownPeriod 90:
-    # seconds-scale jobs (measured p95=32.318s) -> fast reaction, early
-    # return to 0.
+    # DERIVED FROM PANDOC'S OWN BUDGET (D-02), NOT copied from html even though
+    # the numbers are identical. NOTE the derivation CHANGED on 2026-08-02:
+    # threshold "2" was originally "= PANDOC_WORKER_CONCURRENCY", but the
+    # BLOCKER-1 memory measurement forced concurrency down to 1, so that link is
+    # gone and threshold is now re-derived on its own terms: 2 queued jobs of
+    # backlog before paying a ~10s pod cold start, deliberate hysteresis for
+    # seconds-scale work (measured p95=32.318s). It is ALSO load-bearing for the
+    # SC4 gate: desired flips 2->1 at depth<=2, i.e. while BOTH pods are still
+    # mid-conversion -- which is exactly the genuine mid-job downscale window
+    # the 50-04 live proof captured. threshold "1" would flip at depth<=1, when
+    # the victim pod is already idle. pollingInterval 10 / cooldownPeriod 90:
+    # fast reaction, early return to 0.
     threshold: "2"
     maxReplicaCount: 2
     pollingInterval: 10

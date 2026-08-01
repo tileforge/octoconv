@@ -863,12 +863,18 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
-      # pandoc is fast/light -- a single deterministic subprocess, unlike
-      # the 1-at-a-time heavy OCR/AV/audio engines -- so 2 lets a slow
-      # conversion not fully block a second job (mirrors cmd/pandoc-worker's
-      # own PANDOC_WORKER_CONCURRENCY default rationale). pandoc-worker-only,
-      # NOT read by queue.NewClient(), so no IN-02 parity requirement.
-      PANDOC_WORKER_CONCURRENCY: "2"
+      # 1, NOT 2: pandoc is CPU-fast but MEMORY-heavy. Measured in this exact
+      # image at --cpus 2 --memory 1g (50-REVIEW BLOCKER-1 probe, 2026-08-02),
+      # worst-case 3.04 MB dense-markup html->md: peak ANONYMOUS (unreclaimable)
+      # memory 909 MiB/1024 at concurrency 1, and 1022 MiB/1024 at concurrency 2
+      # -- i.e. ~300 MiB anon per MiB of input, and 2 parallel conversions leave
+      # 1 MiB of headroom BEFORE the Go worker's own RSS, which shares this
+      # cgroup. Concurrency 2 therefore OOMKills in production (the same failure
+      # 50-04's live gate hit at 4.09 MB). Memory, not CPU, is the binding
+      # constraint -- same reason OCR/AV/audio run 1-at-a-time. Throughput comes
+      # from KEDA scale-out, not in-pod parallelism.
+      # pandoc-worker-only, NOT read by queue.NewClient(), so no IN-02 parity.
+      PANDOC_WORKER_CONCURRENCY: "1"
       # Input-size DoS guard (enforcePandocInputSize, markupsniff.go) AND
       # this phase's Path-B lever, WHICH FIRED (49-03-SUMMARY.md): the
       # supervised scripts/pandoc-timing-measure.sh run found the zip-out
@@ -881,8 +887,10 @@ services:
       # SC4 evidence): a ~4.09 MB html->md conversion OOMKilled the real
       # worker container (exit 137) at the 1Gi limit -- the Go worker +
       # pandoc share the cgroup, which the pandoc-alone calibration could
-      # not see, and production PANDOC_WORKER_CONCURRENCY=2 doubles the
-      # exposure. The worst-cell 32.318s p95 below was measured at the
+      # not see. (The concurrency half of that exposure was closed separately:
+      # PANDOC_WORKER_CONCURRENCY 2 -> 1, see above -- at the 3 MiB cap a
+      # single conversion already peaks at 909 MiB anon of 1024.)
+      # The worst-cell 32.318s p95 below was measured at the
       # older 4 MiB cap (still a valid upper bound for 3 MiB inputs).
       # pandoc-worker-only, NOT read by queue.NewClient().
       PANDOC_MAX_INPUT_BYTES: "3145728"

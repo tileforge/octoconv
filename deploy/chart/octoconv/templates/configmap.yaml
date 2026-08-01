@@ -79,10 +79,14 @@ data:
   # PANDOC_MAX_INPUT_BYTES=3 MiB (Path-B, 49-03-SUMMARY.md 4 MiB -> 50-04
   # live SC4 evidence 3 MiB): the memory headroom lever at the 1Gi container
   # limit -- a ~4.09 MB html->md conversion OOMKilled the real worker
-  # container (Go worker + pandoc share the cgroup; concurrency 2 doubles
-  # exposure). Do NOT lower memory below 1Gi or raise this cap without
-  # re-measuring.
-  PANDOC_WORKER_CONCURRENCY: "2"
+  # container (Go worker + pandoc share the cgroup). Do NOT lower memory below
+  # 1Gi or raise this cap without re-measuring.
+  # PANDOC_WORKER_CONCURRENCY=1 (50-REVIEW BLOCKER-1, measured 2026-08-02 at
+  # cpus 2/memory 1g on a 3.04 MB dense html->md): peak ANON memory is
+  # 909 MiB/1024 at concurrency 1 but 1022 MiB/1024 at concurrency 2 -- 2
+  # parallel conversions OOMKill once the Go worker's own RSS is added. Memory
+  # is the binding constraint; throughput comes from KEDA scale-out instead.
+  PANDOC_WORKER_CONCURRENCY: "1"
   PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
   PANDOC_MAX_RETRY: "2"
