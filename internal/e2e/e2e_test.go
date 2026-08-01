@@ -1392,6 +1392,71 @@ func TestOCRConversionE2E(t *testing.T) {
 	})
 }
 
+// pandocHeadingText is the exact heading rendered from
+// testdata/sample.md's leading "# OctoConv Pandoc Sample" line -- the
+// expected token both pandoc subtests below assert against: the html subtest
+// checks it appears inside a real "<h1" element (proving a complete
+// standalone document was rendered, not a bare/passthrough fragment), and
+// nothing else consults it (the docx subtest only proves container shape via
+// assertDownloadIsFormat, not textual content).
+const pandocHeadingText = "OctoConv Pandoc Sample"
+
+// TestPandocConversionE2E drives the pandoc engine (PDCE-04) through the LIVE
+// pipeline for the seventh engine class, mirroring TestImageConversionE2E's/
+// TestOCRConversionE2E's single-fixture-multi-subtest shape: (A) an md->html
+// job (text-out) with a signed webhook assertion, asserting the rendered
+// output is a real standalone HTML document (an "<h1" element wrapping the
+// fixture's heading text) via assertDownloadContainsText, and (B) an
+// md->docx job (zip-out) reusing the SAME markdown fixture, asserting the
+// downloaded bytes structurally sniff as a valid docx/ooxml container via
+// assertDownloadIsFormat -- proving the heavier zip-writing output path.
+// PandocConverter does not implement ProgressConverter (cmd/pandoc-worker doc
+// comment), so unlike TestOCRConversionE2E's multi-page subtest, there is
+// deliberately no progress_pct ramp assertion here.
+func TestPandocConversionE2E(t *testing.T) {
+	cfg := e2eSetup(t)
+	apiKey := provisionClient(t)
+
+	data, err := os.ReadFile(filepath.Join("testdata", "sample.md"))
+	if err != nil {
+		t.Fatalf("read fixture sample.md: %v", err)
+	}
+
+	t.Run("MD_ToHTML", func(t *testing.T) {
+		callbackURL, received := startWebhookReceiver(t, cfg.webhookHost)
+
+		jobID := postJob(t, cfg.baseURL, apiKey, "sample.md", data, "html", callbackURL, "")
+
+		// pandoc is fast (no cold-start model/engine load unlike whisper.cpp/
+		// tesseract/LibreOffice); a comfortable bound well above the pandoc
+		// queue's expected turnaround, mirroring the image engine's tighter
+		// 2-minute bound rather than the document/audio/OCR engines' 5-minute
+		// cold-start allowance.
+		body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 2*time.Minute)
+
+		downloadURL, _ := body["download_url"].(string)
+		if downloadURL == "" {
+			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+		}
+		assertDownloadContainsText(t, downloadURL, "<h1")
+		assertDownloadContainsText(t, downloadURL, pandocHeadingText)
+
+		assertSignedWebhook(t, received, jobID)
+	})
+
+	t.Run("MD_ToDOCX", func(t *testing.T) {
+		jobID := postJob(t, cfg.baseURL, apiKey, "sample.md", data, "docx", "", "")
+
+		body := pollUntilDone(t, cfg.baseURL, apiKey, jobID, 2*time.Minute)
+
+		downloadURL, _ := body["download_url"].(string)
+		if downloadURL == "" {
+			t.Fatalf("job %s done but download_url missing/empty: %v", jobID, body)
+		}
+		assertDownloadIsFormat(t, downloadURL, "docx")
+	})
+}
+
 // TestQueueDepthMetricRelocationE2E is the live half of D-03 (KEDA-01, Phase
 // 27 Plan 01): it proves the octoconv_queue_depth collector relocation
 // (Task 1) against a live compose stack, BEFORE any k8s work. The runtime
