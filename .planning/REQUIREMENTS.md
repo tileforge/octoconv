@@ -21,7 +21,7 @@
 - [x] **PDCE-01**: Загрузки гейтятся fail-closed magic-byte/content-валидацией до запуска pandoc; declared/detected mismatch → 422 (text/markup-семейство сниффится корректно, не только бинарные форматы вроде docx/epub).
 - [x] **PDCE-02**: pandoc исполняется в песочнице — raw HTML/TeX passthrough **отключён**, `--sandbox`, **без сети**, через hardened `runCommand` (Setpgid + SIGKILL-on-timeout, resource-лимит, `USER nobody`). Клиентский ввод не может вызвать shell-escape / `\input` / сетевой fetch.
 - [x] **PDCE-03**: Оверсайз/патологический ввод (размерный cap; pandoc-specific bomb — напр. чрезмерно вложенные структуры/раздувание при конвертации) отвергается fail-closed ДО конвертации — memory/DoS-гард.
-- [ ] **PDCE-04**: `PANDOC_ENGINE_TIMEOUT` **измерен** собственным гейтом (не скопирован у соседнего движка), под глобальным reconciler-CAP; пустой-но-валидный выход завершается `done`, не `failed`. (Phase 49 Plan 01/2026-07-31: `Dockerfile.pandoc-worker` built + verified — the measurable artifact this gate needs. Timeout NOT yet measured; that is Plan 03's supervised gate.)
+- [x] **PDCE-04**: `PANDOC_ENGINE_TIMEOUT` **измерен** собственным гейтом (не скопирован у соседнего движка), под глобальным reconciler-CAP; пустой-но-валидный выход завершается `done`, не `failed`. (Phase 49 Plan 03/2026-08-01: supervised `scripts/pandoc-timing-measure.sh` run ALL GREEN, worst cell html_large→md p95=32.318s, `PANDOC_ENGINE_TIMEOUT`=ceil(32.318×2.0)=65s, 92.8% under the 900s reconciler CAP, Path-B `PANDOC_MAX_INPUT_BYTES` 50MiB→4MiB fired BY MEMORY (zip-out OOM at 8 MiB on 1g), byte-identical across all 10 queue-client services — see 49-03-SUMMARY.md. Empty-but-valid → `done` closed in Phase 48.)
 
 ### PDCP — Async pipeline & scale
 
@@ -56,7 +56,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PDCE-01 | Phase 47 | Complete |
 | PDCE-02 | Phase 47 | Complete |
 | PDCE-03 | Phase 47 | Complete |
-| PDCE-04 | Phase 49 | In Progress (Plan 01/4 done — Dockerfile built; timeout measurement is Plan 03) |
+| PDCE-04 | Phase 49 | Complete (Plan 03 — measured PANDOC_ENGINE_TIMEOUT=65s) |
 | PDCP-01 | Phase 48 | Complete |
 | PDCP-02 | Phase 50 | Pending |
 
