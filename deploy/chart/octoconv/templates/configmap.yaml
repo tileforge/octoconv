@@ -64,6 +64,25 @@ data:
   OCR_MAX_RETRY: "2"
   OCR_MAX_PAGES: "64"
   OCR_MAX_IMAGE_PIXELS: "100000000"
+  # Compose-parity byte-for-byte (docker-compose.yml pandoc-worker block,
+  # Phase 49 measured: worst cell html_large->md (reader-heavy HTML
+  # parsing) p95=32.318s, ceil(32.318 x 2.0)=65s, 92.8% under the 900s
+  # reconciler CAP). PANDOC_ENGINE_TIMEOUT/PANDOC_MAX_RETRY are the IN-02
+  # parity values every queue.NewClient()-constructing service inherits
+  # identically via this shared ConfigMap -- a mismatch would silently
+  # produce duplicate processing (pandocUniqueTTL is derived from the
+  # timeout in each enqueuing process). PANDOC_WORKER_CONCURRENCY/
+  # PANDOC_MAX_INPUT_BYTES are pandoc-worker-only (not read by
+  # queue.NewClient()) but are baked into this shared ConfigMap anyway,
+  # same posture as OCR_WORKER_CONCURRENCY/OCR_MAX_PAGES above (DEBT-05 --
+  # every process carries the full retry/timeout surface even when unused).
+  # PANDOC_MAX_INPUT_BYTES=4 MiB (Path-B, 49-03-SUMMARY.md): the memory
+  # headroom lever at the 1Gi container limit -- do NOT lower memory below
+  # 1Gi without re-measuring this value.
+  PANDOC_WORKER_CONCURRENCY: "2"
+  PANDOC_MAX_INPUT_BYTES: "4194304"
+  PANDOC_ENGINE_TIMEOUT: "65s"
+  PANDOC_MAX_RETRY: "2"
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"
