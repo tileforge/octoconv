@@ -229,7 +229,13 @@ Plans:
   2. `QueuePandoc` is registered in the always-on api queue-depth collector so KEDA resolves the pandoc backlog at genuinely zero replicas.
   3. Scale-from-zero is live-proven for the pandoc class, capturing timestamped evidence (0→1 on real queue depth, scale back to 0 after drain).
   4. `PANDOC_*` env parity (IN-02 pattern) is confirmed across all queue-client-constructing services, and a pandoc job survives a genuine N→N-1 HPA downscale without a premature SIGTERM.
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+- [ ] 50-01-PLAN.md — pandoc-worker Deployment + KEDA ScaledObject + keda.pandoc/pandocWorker values + PANDOC_* ConfigMap parity (SC1/SC2/SC4-env)
+- [ ] 50-02-PLAN.md — load-proof overlay (stabilization 0 via the falsy-0 guard, KEDA poll 3s, Prometheus scrape 5s, one job per pod) + SC3 scale-from-zero harness
+- [ ] 50-03-PLAN.md — SC4 downscale-survival harness (fast-engine drive shape, /proc victim-job attribution) + offline fixture/timing calibration
+- [ ] 50-04-PLAN.md — LIVE operator-gated proof: SC3 + SC4 in one OrbStack k8s session with timestamped evidence
 
 ## Progress
 
