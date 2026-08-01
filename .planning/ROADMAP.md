@@ -217,7 +217,7 @@ Plans:
 Plans:
 - [x] 49-01-PLAN.md — Dockerfile.pandoc-worker: SHA-256-pinned static pandoc 3.x binary, TeX-free debian-slim, USER nobody, dual-arch
 - [x] 49-02-PLAN.md — scripts/pandoc-timing-measure.sh (wall-sec/conversion gate) + pandoc-worker compose service (placeholder timeout) + IN-02 PANDOC_* across all 10 services + CI bake
-- [ ] 49-03-PLAN.md — SUPERVISED measurement checkpoint: derive PANDOC_ENGINE_TIMEOUT = ceil(worst-p95 x 2.0) < 900s CAP (Path-B PANDOC_MAX_INPUT_BYTES lever), plug in + record Key Decision
+- [x] 49-03-PLAN.md — SUPERVISED measurement checkpoint: derive PANDOC_ENGINE_TIMEOUT = ceil(worst-p95 x 2.0) < 900s CAP (Path-B PANDOC_MAX_INPUT_BYTES lever), plug in + record Key Decision
 - [ ] 49-04-PLAN.md — live E2E checkpoint: TestPandocConversionE2E (md->html + md->docx + signed webhook) against the real compose pandoc-worker
 
 ### Phase 50: KEDA/Helm Chart Integration
@@ -283,7 +283,7 @@ Plans:
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
-| 49. Containerization + Measured Timeout Gate | v1.11 | 2/4 | In Progress|  |
+| 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
 | 50. KEDA/Helm Chart Integration | v1.11 | 0/TBD | Not started | - |
 
 ---

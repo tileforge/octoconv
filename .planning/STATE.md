@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
 status: executing
-stopped_at: Phase 49 context gathered
-last_updated: "2026-07-31T16:43:35.407Z"
-last_activity: 2026-07-31
+stopped_at: Completed 49-03-PLAN.md (PANDOC_ENGINE_TIMEOUT measured, PDCE-04 closed)
+last_updated: "2026-08-01T02:47:49.648Z"
+last_activity: 2026-08-01
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 10
-  completed_plans: 8
+  completed_plans: 9
   percent: 50
 ---
 
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 ## Current Position
 
 Phase: 49 (Containerization + Measured Timeout Gate) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
-Last activity: 2026-07-31
+Last activity: 2026-08-01
 
 ## Performance Metrics
 
@@ -139,6 +139,7 @@ Last activity: 2026-07-31
 | Phase 48 P03 | ~30min | 3 tasks | 7 files |
 | Phase 49 P01 | 25min | 1 tasks | 1 files |
 | Phase 49 P02 | 35min | 3 tasks | 4 files |
+| Phase 49 P03 | 15min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -247,12 +248,12 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-07-31T16:41:13.702Z
-Stopped at: Phase 49 context gathered
+Last session: 2026-08-01T02:47:49.635Z
+Stopped at: Completed 49-03-PLAN.md (PANDOC_ENGINE_TIMEOUT measured, PDCE-04 closed)
 Resume file: None
 
 ## Operator Next Steps
 
-- Plan Phase 49 (Containerization + Measured Timeout Gate): `Dockerfile.pandoc-worker`, a live compose E2E, and `scripts/pandoc-timing-measure.sh`'s measured `PANDOC_ENGINE_TIMEOUT` derivation (PDCE-04).
+- Execute Phase 49 Plan 04 (live E2E checkpoint): `TestPandocConversionE2E` (md->html + md->docx + signed webhook) against the real compose `pandoc-worker` now running with the measured `PANDOC_ENGINE_TIMEOUT=65s`/`stop_grace_period=85s`/`PANDOC_MAX_INPUT_BYTES=4194304`.
 
 </content>
