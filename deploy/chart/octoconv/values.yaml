@@ -198,6 +198,15 @@ e2e:
 prometheus:
   enabled: false
   image: "prom/prometheus:v3.13.1"
+  # Phase 50 (PDCP-02): production default UNCHANGED at 15s. This is
+  # values-driven ONLY so values-loadproof.yaml can shorten the
+  # metric-propagation lag for a gate whose job window is seconds-scale
+  # (pandoc's SC4 downscale gate, PANDOC_ENGINE_TIMEOUT=65s) — see
+  # templates/_helpers.tpl octoconv.prometheusScrapeConfig. That same
+  # named-template's rendered content is what the Prometheus pod-template's
+  # checksum/config annotation hashes (D-02/WR-05), so changing this value
+  # correctly rolls the Prometheus pod.
+  scrapeInterval: "15s"
   resources:
     requests:
       cpu: "100m"
