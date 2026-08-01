@@ -122,6 +122,7 @@ pandocWorker:
     limits:
       # MUST match the 49-03 measurement container exactly (cpus=2.0,
       # memory=1g) -- Path-B lowered PANDOC_MAX_INPUT_BYTES to 4 MiB
+      # (49-03), then to 3 MiB (50-04 live SC4 OOM evidence)
       # specifically for 1g headroom (D-04a). Do NOT lower memory below 1Gi
       # without re-measuring.
       cpu: "2"

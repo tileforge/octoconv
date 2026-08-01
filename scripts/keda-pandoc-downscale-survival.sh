@@ -19,7 +19,7 @@
 # PANDOC_WORKER_CONCURRENCY=1 (one job per pod, values-loadproof.yaml) and
 # keda.pandoc.threshold="2" (desired replicas = ceil(queue_depth/2), where
 # depth = pending+active+retry), this script submits PANDOC_DOWNSCALE_JOBS
-# (default 4, env-overridable) IDENTICAL ~4 MiB html->md jobs in ONE batch:
+# (default 4, env-overridable) IDENTICAL ~3 MiB dense-markup html->md jobs in ONE batch:
 #   depth=4 -> desired=2 (a genuine scale-from-zero to 2 replicas)
 #   both pods pick up a job each (still depth=4: 2 active + 2 pending)
 #   as the first two jobs finish, each pod immediately dequeues its next
@@ -68,7 +68,7 @@
 #
 # --calibrate-only: runs ONLY the fixture-synthesis + a single timed
 # html->md conversion at the PRODUCTION container limits (cpus=2,
-# memory=1g), asserts the fixture lands in [3000000, 4194304] bytes and the
+# memory=1g), asserts the fixture lands in [2200000, 3145728] bytes and the
 # conversion lands in [15, 50] wall-seconds, writes a committed calibration
 # evidence file, and exits 0 -- WITHOUT touching kubectl or helm at all
 # (Task 2 of this plan runs this mode before any cluster time is spent).
@@ -137,7 +137,7 @@ API_LOCAL_PORT="18098"
 API_BASE="http://127.0.0.1:${API_LOCAL_PORT}"
 DB_LOCAL_PORT="15442"
 
-# N identical LONG (~4 MiB html->md) jobs submitted in one batch (drive
+# N identical LONG (~3 MiB dense-markup html->md) jobs submitted in one batch (drive
 # shape derivation in the header comment above) -- env-overridable for a
 # re-run with more headroom if the attribution poller ever finds the victim
 # idle at SIGTERM time.
@@ -147,8 +147,14 @@ PANDOC_DOWNSCALE_JOBS="${PANDOC_DOWNSCALE_JOBS:-4}"
 # docker-compose.yml pandoc-worker, Path-B/49-03-SUMMARY.md) -- the LONG
 # fixture must stay strictly under this, enforced worker-side by
 # enforcePandocInputSize.
-PANDOC_MAX_INPUT_BYTES=4194304
-FIXTURE_BAND_LOW=3000000
+# 50-04 Path-B: cap lowered 4 MiB -> 3 MiB after the live SC4 run OOMKilled
+# the worker container (exit 137) mid-conversion at the 1Gi limit -- the Go
+# worker + pandoc share the cgroup, which the pandoc-alone calibration could
+# not see. The gate's conversion target moved md -> docx (heavier zip-writing
+# writer) to keep the calibrated job window inside the untouchable [15, 50]s
+# band at the smaller input size.
+PANDOC_MAX_INPUT_BYTES=3145728
+FIXTURE_BAND_LOW=2200000
 
 PASS_COUNT=0
 GATE_OK=""
@@ -238,14 +244,21 @@ synthesizeLongFixture() {
 	# margin above the metric-propagation + stabilization delay for the SC4
 	# live gate to reliably catch both victim pods still mid-conversion
 	# (Rule 1 fix, Task 2 dry-run).
-	local md_target=4000000
+	local md_target=3000000
 	local attempt=1
 	local html_bytes=0
 
 	while [ "$attempt" -le 3 ]; do
 		docker exec -e MD_TARGET_BYTES="$md_target" "$FIXTURE_CONTAINER" sh -c '
 			set -e
-			para="# OctoConv Pandoc SC4 Downscale-Survival Fixture\n\nThis is a deterministic Markdown paragraph synthesized at gate-run time for scripts/keda-pandoc-downscale-survival.sh (Phase 50, PDCP-02/SC4), mirroring the corpus-generation shape in scripts/pandoc-timing-measure.sh (Phase 49) and scripts/keda-pandoc-loadproof.sh (SC3). No client data and no external content -- pure synthetic filler text used solely to drive a real html->md job through the production pipeline at a representative worst-case size.\n\n"
+			# SHORT, MARKUP-DENSE repeat block (50-04 Rule-1 fix): the pandoc
+			# markdown writer cost scales with the BLOCK+INLINE ELEMENT COUNT,
+			# not byte size -- a long sparse paragraph (12.4s at 3.05 MB) sits
+			# under the untouchable [15, 50]s band at the 3 MiB cap, while this
+			# probe-calibrated short block (heading + emphasis + code + link
+			# every ~200 bytes) measured 41.6s at 3.5 MB. Synthetic filler
+			# only: no client data, no external content, links are .invalid.
+			para="## OctoConv SC4 fixture block\n\nDense *synthetic* **filler** with \`code\` and a [link](https://example.invalid/sc4) to load the pandoc markdown writer (Phase 50 PDCP-02/SC4 gate).\n\n"
 			: > /tmp/work/base.md
 			while [ "$(wc -c < /tmp/work/base.md)" -lt "$MD_TARGET_BYTES" ]; do
 				printf "%b" "$para" >> /tmp/work/base.md
@@ -714,7 +727,7 @@ docker rm -f "$FIXTURE_CONTAINER" >/dev/null 2>&1 || true
 FIXTURE_CONTAINER=""
 
 # ---------------------------------------------------------------------------
-# STEP 8: submit PANDOC_DOWNSCALE_JOBS IDENTICAL LONG (html -> md, ~4 MiB)
+# STEP 8: submit PANDOC_DOWNSCALE_JOBS IDENTICAL LONG (html -> md, ~3 MiB dense)
 # jobs in one batch -- depth=N immediately, desired=ceil(N/2) with
 # threshold="2" (values.yaml keda.pandoc.threshold, D-02).
 # ---------------------------------------------------------------------------
@@ -1065,5 +1078,5 @@ rm -rf "$WORKDIR"
 GATE_OK="1"
 echo ""
 echo "=== ALL $PASS_COUNT ASSERTIONS PASSED ==="
-echo "SC4-pandoc (PDCP-02): ~4 MiB html->md job $INFLIGHT_JOB_ID survived a genuine KEDA/HPA 2->1 downscale via deterministic /proc-based victim attribution -- exactly one queued->active transition, graceful SIGTERM-before-completion exit (never exit-137/SIGKILL), validating terminationGracePeriodSeconds=85 live, all $PANDOC_DOWNSCALE_JOBS batch jobs completed -- PASS"
+echo "SC4-pandoc (PDCP-02): ~3 MiB dense-markup html->md job $INFLIGHT_JOB_ID survived a genuine KEDA/HPA 2->1 downscale via deterministic /proc-based victim attribution -- exactly one queued->active transition, graceful SIGTERM-before-completion exit (never exit-137/SIGKILL), validating terminationGracePeriodSeconds=85 live, all $PANDOC_DOWNSCALE_JOBS batch jobs completed -- PASS"
 echo "Evidence: $SC4_FILE, $LOG_FILE"

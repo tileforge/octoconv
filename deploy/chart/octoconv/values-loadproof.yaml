@@ -50,7 +50,8 @@ keda:
     # worst-case job with >4x margin), so unlike the siblings above this
     # override is NOT defeating a large production value. It exists because
     # pandoc's measured worst-case single job is only ~32s
-    # (html_large->md p95=32.318s at the 4 MiB PANDOC_MAX_INPUT_BYTES cap),
+    # (html_large->md p95=32.318s at the then-4 MiB PANDOC_MAX_INPUT_BYTES
+    # cap; cap lowered to 3 MiB by 50-04 Path-B, p95 remains an upper bound),
     # which is SHORTER than the sibling gates' 15s stabilization PLUS the
     # metric-propagation lag (Prometheus scrape + KEDA poll + the 15s
     # kube-controller-manager HPA sync). A literal 0 makes the HPA act on

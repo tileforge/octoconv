@@ -877,11 +877,15 @@ services:
       # 4 MiB=~10.2s clean -> 6.5 MiB=~40s thrash -> 8 MiB=OOM. Fired BY
       # MEMORY, not by the 900s CAP (the CAP was never breached -- see
       # PANDOC_ENGINE_TIMEOUT below). Lowered from the 50 MiB (50<<20)
-      # placeholder to 4 MiB for comfortable memory headroom and
-      # predictable ~10-15s zip-out conversions with no thrash; the
-      # worst-cell 32.318s p95 below was measured AT this 4 MiB cap.
+      # placeholder to 4 MiB (49-03), then to 3 MiB (50-04 Path-B, live
+      # SC4 evidence): a ~4.09 MB html->md conversion OOMKilled the real
+      # worker container (exit 137) at the 1Gi limit -- the Go worker +
+      # pandoc share the cgroup, which the pandoc-alone calibration could
+      # not see, and production PANDOC_WORKER_CONCURRENCY=2 doubles the
+      # exposure. The worst-cell 32.318s p95 below was measured at the
+      # older 4 MiB cap (still a valid upper bound for 3 MiB inputs).
       # pandoc-worker-only, NOT read by queue.NewClient().
-      PANDOC_MAX_INPUT_BYTES: "4194304"
+      PANDOC_MAX_INPUT_BYTES: "3145728"
       # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
       # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank
       # p95, wall-sec/conversion, at the 4 MiB PANDOC_MAX_INPUT_BYTES cap

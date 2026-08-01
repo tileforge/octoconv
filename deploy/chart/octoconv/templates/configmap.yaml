@@ -76,11 +76,14 @@ data:
   # queue.NewClient()) but are baked into this shared ConfigMap anyway,
   # same posture as OCR_WORKER_CONCURRENCY/OCR_MAX_PAGES above (DEBT-05 --
   # every process carries the full retry/timeout surface even when unused).
-  # PANDOC_MAX_INPUT_BYTES=4 MiB (Path-B, 49-03-SUMMARY.md): the memory
-  # headroom lever at the 1Gi container limit -- do NOT lower memory below
-  # 1Gi without re-measuring this value.
+  # PANDOC_MAX_INPUT_BYTES=3 MiB (Path-B, 49-03-SUMMARY.md 4 MiB -> 50-04
+  # live SC4 evidence 3 MiB): the memory headroom lever at the 1Gi container
+  # limit -- a ~4.09 MB html->md conversion OOMKilled the real worker
+  # container (Go worker + pandoc share the cgroup; concurrency 2 doubles
+  # exposure). Do NOT lower memory below 1Gi or raise this cap without
+  # re-measuring.
   PANDOC_WORKER_CONCURRENCY: "2"
-  PANDOC_MAX_INPUT_BYTES: "4194304"
+  PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
   PANDOC_MAX_RETRY: "2"
   VERAPDF_TIMEOUT: "60s"
