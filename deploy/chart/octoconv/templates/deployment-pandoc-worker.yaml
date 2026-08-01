@@ -1,0 +1,100 @@
+{{/*
+pandoc-worker Deployment — pandoc engine class (markup<->markup interconvert,
+no ->pdf). Like av-worker/audio-worker/ocr-worker/chromium-worker, this
+image (Dockerfile.pandoc-worker) is a pinned static-release binary built
+with no --platform pin at all — no TeX toolchain, no emulation or fixed-arch
+framing needed, which keeps the image lean.
+
+TIER LABEL: pod template carries octoconv.io/tier: app (see
+deployment-worker.yaml header for the full rationale — identical here).
+This is what the octoconv-app-metrics NetworkPolicy selects on, so
+pandoc-worker is covered automatically — no networkpolicy edit needed.
+
+GRACE DERIVATION (D-04b, distinct from the ocr/av/audio ENGINE_TIMEOUT+30s
+chart convention): 65s PANDOC_ENGINE_TIMEOUT (ConfigMap) -> 75s asynq
+ShutdownTimeout -> 85s terminationGracePeriodSeconds. Pandoc mirrors its own
+compose derivation (docker-compose.yml stop_grace_period=85s,
+49-03-SUMMARY.md) rather than the +30s convention used by
+worker/documentWorker/audioWorker/avWorker/ocrWorker.
+
+Pandoc needs NO cgroup/OMP env — it is a fast, deterministic, single
+subprocess, not a multi-threaded CPU-bound engine like tesseract/ffmpeg.
+
+startupProbe: same generous startup budget as audio-worker/av-worker/
+document-worker/chromium-worker/ocr-worker, keeping this pod out of a
+CrashLoopBackOff before the metrics listener is up, while readiness/
+liveness stay tight once startup has succeeded.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pandoc-worker
+  labels:
+    {{- include "octoconv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pandoc-worker
+spec:
+  {{- if and .Values.keda.enabled .Values.prometheus.enabled }}
+  # spec.replicas intentionally omitted when KEDA/HPA owns this Deployment
+  # (WR-02, Phase 28 D-10): rendering a fixed value here would make every
+  # `helm upgrade` reset a scaled-to-zero class back to this default,
+  # fighting the HPA. Once KEDA/HPA has taken ownership it manages
+  # spec.replicas directly via the scale subresource.
+  {{- else }}
+  replicas: {{ .Values.pandocWorker.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "octoconv.selectorLabels" (dict "component" "pandoc-worker" "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "octoconv.labels" . | nindent 8 }}
+        {{- include "octoconv.selectorLabels" (dict "component" "pandoc-worker" "root" $) | nindent 8 }}
+        octoconv.io/tier: app
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.pandocWorker.terminationGracePeriodSeconds }}
+      containers:
+        - name: pandoc-worker
+          image: "{{ .Values.pandocWorker.image.repository }}:{{ .Values.global.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.pandocWorker.extraEnv }}
+          # extraEnv (Phase 28 D-08, mirrors documentWorker.extraEnv):
+          # explicit `env:` entries always take precedence over
+          # envFrom-sourced values for the same key (k8s-documented
+          # behaviour) — this is how a load-proof overlay forces
+          # PANDOC_WORKER_CONCURRENCY=1 without editing the ConfigMap's
+          # production default ("2"). pandocWorker.extraEnv is intentionally
+          # absent from values.yaml so this block renders nothing in
+          # production.
+          env:
+            {{- range $k, $v := .Values.pandocWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            limits:
+              cpu: {{ .Values.pandocWorker.resources.limits.cpu | quote }}
+              memory: {{ .Values.pandocWorker.resources.limits.memory | quote }}
