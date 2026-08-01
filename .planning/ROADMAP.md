@@ -169,7 +169,7 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 - [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + --sandbox + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
 - [x] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra (completed 2026-07-30)
 - [x] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
-- [ ] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven
+- [x] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven (completed 2026-08-01)
 
 ## Phase Details
 
@@ -262,7 +262,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 50-04-PLAN.md — LIVE operator-gated proof: SC3 + SC4 in one OrbStack k8s session with timestamped evidence
+- [x] 50-04-PLAN.md — LIVE operator-gated proof: SC3 + SC4 in one OrbStack k8s session with timestamped evidence
 
 ## Progress
 
@@ -317,7 +317,7 @@ Plans:
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
-| 50. KEDA/Helm Chart Integration | v1.11 | 3/4 | In Progress|  |
+| 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete   | 2026-08-01 |
 
 ---
 
