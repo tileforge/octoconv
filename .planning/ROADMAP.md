@@ -18,6 +18,7 @@
 ## Phases
 
 **Phase Numbering:**
+
 - Integer phases (1, 2, 3): Planned milestone work
 - Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
 
@@ -173,68 +174,94 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 ## Phase Details
 
 ### Phase 47: Pandoc Engine Foundation
+
 **Goal**: A standalone `PandocConverter` converts between markup-family formats (md/rst/org/latex/epub/html/docx) through a closed `(from→to)` allowlist, security-hardened from the first line (no raw HTML/TeX passthrough, no shell-escape, no network), built and tested directly against the real pandoc binary — before any queue/worker plumbing.
 **Depends on**: Nothing (first phase of v1.11 — validate the novel pandoc external-process surface standalone first, mirroring Audio's Phase 30 / AV's Phase 34 / OCR's Phase 43 scope fence)
 **Requirements**: PDOC-01, PDOC-02, PDCO-01, PDCE-01, PDCE-02, PDCE-03
 **Success Criteria** (what must be TRUE):
+
   1. `PandocConverter` converts between any two markup formats in a closed `(from→to)` allowlist covering the markup family (md/rst/org/latex/epub/html/docx), verified by direct invocation against the real pandoc binary; an unlisted pair is rejected before any subprocess runs (mirrors existing `Pairs()` conventions).
   2. Output that requires document structure (docx/epub/html) is produced with `--standalone` — a complete, valid document rather than a bare fragment — and the result is validated by the same content-sniffer that guards uploads.
   3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--sandbox`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
   4. A closed `PandocOpts` allowlist (e.g. `standalone`/`toc`/`wrap`/`section-divs`, typed strict-parse mirroring `OCROpts`/`AudioOpts`) rejects any unlisted opt with 422 before any work begins, with an injection test proving client bytes never reach pandoc's argv unvalidated.
   5. Uploads are gated fail-closed by magic-byte/content validation across the markup family (text-based formats sniffed correctly, not only binary containers like docx/epub), and an oversize or pathological input (size cap; pandoc-specific expansion/bomb shape) is rejected before conversion runs.
+
 **Plans**: 3 plans
 
 Plans:
+
 - [x] 47-01-PLAN.md — PandocOpts closed allowlist + strict-parse + discrete-argv injection defense (PDCO-01)
 - [x] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
 - [x] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
 
 ### Phase 48: Async Pipeline Wiring
+
 **Goal**: Pandoc jobs (markup → markup) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the unmodified v1.9 progress/webhook machinery.
 **Depends on**: Phase 47 (needs the working converter to wire into the async lifecycle)
 **Requirements**: PDCP-01
 **Success Criteria** (what must be TRUE):
+
   1. Migration adds `pandoc` to the `jobs.engine` enum; an uploaded markup document targeting a supported pair is routed to a dedicated `pandoc` asynq queue by content-detection and consumed end-to-end by `cmd/pandoc-worker` (queued → active → done).
   2. The reconciler routes stranded `jobs.engine='pandoc'` jobs to the pandoc queue, and API routing dispatches single-input/single-target-format pandoc jobs without any changes to v1.9's progress/SSE/webhook infra.
   3. A stage-aware terminal/transient classifier and a fresh `PandocUniqueTTL` (derived from pandoc's own retry/timeout budget, never copied from a neighboring engine) prevent duplicate processing.
   4. Converting to an empty-but-valid output (e.g. an empty source document) completes the job as `done`, not `failed`.
+
 **Plans**: 3 plans
 Plans:
+
 - [x] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
 - [x] 48-02-PLAN.md — migration 0010 (+pandoc enum), register PandocConverter, EngineFor routing + disjointness test, API opts/enqueue/content-gate wiring + EnginePandoc upload ceiling
 - [x] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
 
 ### Phase 49: Containerization + Measured Timeout Gate
+
 **Goal**: A running `pandoc-worker` container in docker-compose passes a full live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied or guessed constant, in a lean TeX-free image.
 **Depends on**: Phase 48 (needs the queue/worker contract stable before containerizing; can't measure a real timeout without the full pipeline producing real job outcomes to time)
 **Requirements**: PDCE-04
 **Success Criteria** (what must be TRUE):
+
   1. `Dockerfile.pandoc-worker` installs a pinned pandoc binary with **no TeX toolchain** (lean image), and a compose `pandoc-worker` service converts an uploaded markup document end-to-end (upload → poll → presigned download) through the live compose stack with a signed webhook confirmed.
   2. `scripts/pandoc-timing-measure.sh` measures real conversion cost across a representative markup corpus (varying source formats/sizes) under production-equivalent CPU/memory limits and drives a documented go/no-go decision (mirroring the audio/AV/OCR gate precedent).
   3. The measured `PANDOC_ENGINE_TIMEOUT` is **derived from this measurement, not copied** from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT`, stays under the global 900s reconciler CAP, and is recorded as a Key Decision with its measurement conditions (arch/cpu/mem/N/p95).
   4. IN-02 env parity: all queue-client-constructing services propagate `PANDOC_*` env identically, and the `pandoc-worker` image is added to the CI bake matrix.
+
 **Plans**: 4 plans
 Plans:
+
 - [x] 49-01-PLAN.md — Dockerfile.pandoc-worker: SHA-256-pinned static pandoc 3.x binary, TeX-free debian-slim, USER nobody, dual-arch
 - [x] 49-02-PLAN.md — scripts/pandoc-timing-measure.sh (wall-sec/conversion gate) + pandoc-worker compose service (placeholder timeout) + IN-02 PANDOC_* across all 10 services + CI bake
 - [x] 49-03-PLAN.md — SUPERVISED measurement checkpoint: derive PANDOC_ENGINE_TIMEOUT = ceil(worst-p95 x 2.0) < 900s CAP (Path-B PANDOC_MAX_INPUT_BYTES lever), plug in + record Key Decision
 - [x] 49-04-PLAN.md — live E2E checkpoint: TestPandocConversionE2E (md->html + md->docx + signed webhook) against the real compose pandoc-worker — GREEN (PASS 4.13s, both output shapes + HMAC webhook)
 
 ### Phase 50: KEDA/Helm Chart Integration
+
 **Goal**: The pandoc class autoscales in the cluster with production parity to the other six engine classes, and scale-from-zero is live-proven.
 **Depends on**: Phase 49 (KEDA cooldown/stabilization and grace-period tuning consume Phase 49's measured `PANDOC_ENGINE_TIMEOUT`)
 **Requirements**: PDCP-02
 **Success Criteria** (what must be TRUE):
+
   1. A `pandoc-worker` Deployment plus a KEDA `ScaledObject` ship in the chart with `minReplicaCount:0`, `terminationGracePeriodSeconds`/`scaleDownStabilizationSeconds` derived from the measured `PANDOC_ENGINE_TIMEOUT`, and the WR-01 fail-safe triad (`ignoreNullValues:"false"`, fallback replicas, retry-inclusive PromQL) applied verbatim.
   2. `QueuePandoc` is registered in the always-on api queue-depth collector so KEDA resolves the pandoc backlog at genuinely zero replicas.
   3. Scale-from-zero is live-proven for the pandoc class, capturing timestamped evidence (0→1 on real queue depth, scale back to 0 after drain).
   4. `PANDOC_*` env parity (IN-02 pattern) is confirmed across all queue-client-constructing services, and a pandoc job survives a genuine N→N-1 HPA downscale without a premature SIGTERM.
+
 **Plans**: 4 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 50-01-PLAN.md — pandoc-worker Deployment + KEDA ScaledObject + keda.pandoc/pandocWorker values + PANDOC_* ConfigMap parity (SC1/SC2/SC4-env)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 50-02-PLAN.md — load-proof overlay (stabilization 0 via the falsy-0 guard, KEDA poll 3s, Prometheus scrape 5s, one job per pod) + SC3 scale-from-zero harness
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 50-03-PLAN.md — SC4 downscale-survival harness (fast-engine drive shape, /proc victim-job attribution) + offline fixture/timing calibration
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 50-04-PLAN.md — LIVE operator-gated proof: SC3 + SC4 in one OrbStack k8s session with timestamped evidence
 
 ## Progress
