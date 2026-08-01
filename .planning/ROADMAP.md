@@ -254,7 +254,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 50-02-PLAN.md — load-proof overlay (stabilization 0 via the falsy-0 guard, KEDA poll 3s, Prometheus scrape 5s, one job per pod) + SC3 scale-from-zero harness
+- [x] 50-02-PLAN.md — load-proof overlay (stabilization 0 via the falsy-0 guard, KEDA poll 3s, Prometheus scrape 5s, one job per pod) + SC3 scale-from-zero harness
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -317,7 +317,7 @@ Plans:
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
-| 50. KEDA/Helm Chart Integration | v1.11 | 1/4 | In Progress|  |
+| 50. KEDA/Helm Chart Integration | v1.11 | 2/4 | In Progress|  |
 
 ---
 
