@@ -62,11 +62,14 @@ spec:
           # extraEnv (Phase 28 D-08, mirrors documentWorker.extraEnv):
           # explicit `env:` entries always take precedence over
           # envFrom-sourced values for the same key (k8s-documented
-          # behaviour) — this is how a load-proof overlay forces
-          # PANDOC_WORKER_CONCURRENCY=1 without editing the ConfigMap's
-          # production default ("2"). pandocWorker.extraEnv is intentionally
-          # absent from values.yaml so this block renders nothing in
-          # production.
+          # behaviour) — this is how a load-proof overlay pins
+          # PANDOC_WORKER_CONCURRENCY without editing the ConfigMap. Since
+          # 2026-08-02 the ConfigMap default is itself "1" (the BLOCKER-1
+          # memory measurement), so the overlay's "1" is parity rather than an
+          # override — it stays explicit because the SC4 depth arithmetic
+          # depends on exactly one job per pod. pandocWorker.extraEnv is
+          # intentionally absent from values.yaml so this block renders
+          # nothing in production.
           env:
             {{- range $k, $v := .Values.pandocWorker.extraEnv }}
             - name: {{ $k }}
