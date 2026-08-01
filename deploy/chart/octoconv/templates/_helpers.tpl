@@ -63,10 +63,18 @@ same file's pod-template annotation is a self-reference that recurses
 infinitely and fails `helm template`/`helm lint`. Hashing only THIS
 named-template's rendered content avoids the recursion while still rolling
 the Prometheus pod whenever the scrape config actually changes.
+
+Phase 50 (PDCP-02, values-driven scrape_interval): defaults to the same
+production 15s via `| default "15s"` — the value is values-driven ONLY so
+values-loadproof.yaml can shorten the metric-propagation lag for the pandoc
+SC4 downscale gate, whose live job window is seconds-scale
+(PANDOC_ENGINE_TIMEOUT=65s). Because this same named-template's rendered
+content is what the checksum/config annotation above hashes, changing
+.Values.prometheus.scrapeInterval correctly rolls the Prometheus pod too.
 */}}
 {{- define "octoconv.prometheusScrapeConfig" -}}
 global:
-  scrape_interval: 15s
+  scrape_interval: {{ .Values.prometheus.scrapeInterval | default "15s" }}
 scrape_configs:
   - job_name: octoconv-api
     metrics_path: /metrics
