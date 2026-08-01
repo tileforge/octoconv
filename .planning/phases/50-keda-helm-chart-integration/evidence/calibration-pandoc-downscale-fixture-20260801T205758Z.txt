@@ -1,0 +1,14 @@
+# Phase 50 Plan 03 pandoc downscale-survival OFFLINE calibration -- run 20260801T205758Z
+# scripts/keda-pandoc-downscale-survival.sh --calibrate-only (Task 2, PDCP-02/SC4 precondition)
+host_arch=arm64
+container_cpus=2
+container_memory=1g
+fixture_bytes=3043395
+conversion_command=pandoc -f html-raw_html-raw_tex -t markdown --sandbox /tmp/work/long.html -o /tmp/work/long.md
+wall_seconds=26.953
+raw_ms=26953
+comparison_49_03_worst_cell=html_large_to_md
+comparison_49_03_p95_seconds=32.318
+band_lower_seconds=15
+band_upper_seconds=50
+pandoc_engine_timeout_seconds=65

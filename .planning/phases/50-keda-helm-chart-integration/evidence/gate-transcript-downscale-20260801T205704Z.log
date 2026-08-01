@@ -1,0 +1,11 @@
+
+--- CALIBRATE-ONLY: offline fixture synthesis + timing measurement (container-only, no kubectl/helm) ---
+PASS: octoconv-pandoc-worker:dev present locally
+fixture synthesis attempt=1 md_target_bytes=3000000 html_bytes=3732071
+fixture synthesis attempt=2 md_target_bytes=2448287 html_bytes=3046269
+PASS: calibration fixture_bytes=3046269 in [2200000, 3145728]
+conversion wall_seconds=7.791 (raw_ms=7791)
+FAIL: calibration wall_seconds=7.791 is outside the required [15, 50] band -- below 15s the SC4 window is too short for the metric-propagation budget (Prometheus 5s scrape + KEDA 3s poll + 15s HPA sync in the loadproof overlay) and the drive shape needs more jobs; above 50s the job is uncomfortably close to PANDOC_ENGINE_TIMEOUT=65s. Do NOT edit this band -- adjust the synthesized fixture size within the 3145728 ceiling and re-run.
+
+=== TEARDOWN ===
+FAIL -- offline calibration did not complete (exit=1).

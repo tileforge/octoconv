@@ -1,0 +1,12 @@
+
+--- CALIBRATE-ONLY: offline fixture synthesis + timing measurement (container-only, no kubectl/helm) ---
+PASS: octoconv-pandoc-worker:dev present locally
+fixture synthesis attempt=1 md_target_bytes=3000000 html_bytes=4517931
+fixture synthesis attempt=2 md_target_bytes=2022426 html_bytes=3043395
+PASS: calibration fixture_bytes=3043395 in [2200000, 3145728]
+conversion wall_seconds=26.953 (raw_ms=26953)
+PASS: calibration wall_seconds=26.953 in [15, 50]
+PASS: calibration evidence written -- .planning/phases/50-keda-helm-chart-integration/evidence/calibration-pandoc-downscale-fixture-20260801T205758Z.txt
+
+=== TEARDOWN ===
+PASS -- offline calibration complete. Evidence: .planning/phases/50-keda-helm-chart-integration/evidence/calibration-pandoc-downscale-fixture-20260801T205758Z.txt
