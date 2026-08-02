@@ -3,8 +3,12 @@
 package metrics
 
 import (
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -30,6 +34,16 @@ var (
 		Name: "octoconv_reconciler_actions_total",
 		Help: "Total number of reconciler actions, labeled by action (recovered/exhausted/webhook_gap_recovered/unroutable_engine).",
 	}, []string{"action"})
+
+	// clientJobOutcomes is a NEW, purpose-built CounterVec (D-07) -- client_id
+	// is deliberately NOT added to jobOutcomes or jobDuration above. jobDuration
+	// is a histogram already at ~250 series; adding client_id there would
+	// multiply it. This counter's own client_id label is itself bounded by
+	// clientLabel below, never fed a raw client id directly.
+	clientJobOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "octoconv_client_job_outcomes_total",
+		Help: "Total number of conversion jobs reaching a terminal state, labeled by client, engine and status. client_id collapses to the literal \"overflow\" once ClientLabelCeiling distinct clients have been observed.",
+	}, []string{"client_id", "engine", "status"})
 )
 
 // RecordJobOutcome increments the job-outcome counter and observes the
@@ -54,4 +68,116 @@ func RecordWebhookDelivery(success bool) {
 // "unroutable_engine").
 func RecordReconcilerAction(action string) {
 	reconcilerActions.WithLabelValues(action).Inc()
+}
+
+// overflowClientLabel is the single stable label value every client_id
+// beyond ClientLabelCeiling, or any malformed/empty/nil-UUID id, collapses
+// into (D-09). Data is not lost -- Postgres's client_usage_daily rollup
+// remains exact regardless of this metric's ceiling -- only per-client
+// resolution on this counter is.
+const overflowClientLabel = "overflow"
+
+// ClientLabelCeiling bounds the number of distinct client_id label values
+// admitted onto octoconv_client_job_outcomes_total (ACCT-04, D-08). A
+// client_id label multiplies series with the number of distinct clients;
+// left unbounded it is a self-inflicted Prometheus DoS. Resolved once at
+// package init from METRICS_CLIENT_ID_CEILING (default 200) using a small
+// package-local env-int helper -- the codebase has no shared config
+// package and duplicates such helpers per consumer (cmd/api/main.go,
+// cmd/worker/main.go), so a local one here is in-convention; reading it in
+// this package rather than in each cmd/*/main.go keeps the blast radius to
+// here (the env var is documented and propagated in Plan 04).
+var ClientLabelCeiling = envClientLabelCeiling()
+
+func envClientLabelCeiling() int {
+	const defaultCeiling = 200
+	v := os.Getenv("METRICS_CLIENT_ID_CEILING")
+	if v == "" {
+		return defaultCeiling
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return defaultCeiling
+	}
+	return n
+}
+
+// clientLabelAllocator is the first-seen-first-served, in-process admission
+// map behind clientLabel. It is a struct (rather than bare package-level
+// vars) so tests can construct isolated instances via
+// newClientLabelAllocator without perturbing or depending on the shared
+// defaultClientAllocator that production code uses -- see
+// TestClientLabelCeilingCollapsesToOverflow.
+type clientLabelAllocator struct {
+	mu       sync.Mutex
+	ceiling  int
+	admitted map[string]struct{}
+}
+
+func newClientLabelAllocator(ceiling int) *clientLabelAllocator {
+	return &clientLabelAllocator{ceiling: ceiling, admitted: make(map[string]struct{})}
+}
+
+// resolve returns clientID unchanged if it is a well-formed, non-nil UUID
+// that either has already been admitted or still fits under the ceiling;
+// otherwise it returns overflowClientLabel and, for a would-be-new id at
+// the ceiling, admits nothing (an overflowing id never consumes a slot).
+//
+// Three non-obvious properties, in the codebase's why-not-what comment
+// style:
+//
+//  1. Why the cap exists at all: an unbounded client_id label multiplies
+//     Prometheus series with the number of distinct clients ever seen --
+//     a self-inflicted DoS on the metrics backend (ACCT-04).
+//  2. Why first-seen-first-served and never evicted: it is deterministic
+//     and state-free -- no LRU bookkeeping, no clock, no extra dependency
+//     (D-10).
+//  3. The consequence an operator must not discover in production: the
+//     admitted set lives only in this process's memory and resets on
+//     restart, so which clients get individual resolution on this counter
+//     can change after a redeploy and a dashboard may attribute
+//     differently across that boundary. This is acceptable ONLY because
+//     client_usage_daily (Plan 02) is the authoritative, exact record and
+//     this counter exists for alerting/observation, not accounting (D-10).
+//     Unlike the Postgres rollup, this counter is deliberately
+//     fire-and-forget: a lost increment (e.g. a scrape between process
+//     restart and the next job) is not retried or reconciled.
+func (a *clientLabelAllocator) resolve(clientID string) string {
+	if clientID == "" {
+		return overflowClientLabel
+	}
+	id, err := uuid.Parse(clientID)
+	if err != nil || id == uuid.Nil {
+		return overflowClientLabel
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.admitted[clientID]; ok {
+		return clientID
+	}
+	if len(a.admitted) >= a.ceiling {
+		return overflowClientLabel
+	}
+	a.admitted[clientID] = struct{}{}
+	return clientID
+}
+
+// defaultClientAllocator backs every production call to clientLabel /
+// RecordClientJobOutcome.
+var defaultClientAllocator = newClientLabelAllocator(ClientLabelCeiling)
+
+// clientLabel resolves a raw client id to the label value that must be used
+// on clientJobOutcomes. Every path to that CounterVec goes through this
+// function -- never WithLabelValues with a raw id.
+func clientLabel(clientID string) string {
+	return defaultClientAllocator.resolve(clientID)
+}
+
+// RecordClientJobOutcome increments the per-client job-outcome counter for
+// the given client, engine and terminal status. clientID is resolved
+// through the bounded allocator before use, so this call can never mint an
+// unbounded number of Prometheus series (ACCT-04).
+func RecordClientJobOutcome(clientID, engine, status string) {
+	clientJobOutcomes.WithLabelValues(clientLabel(clientID), engine, status).Inc()
 }
