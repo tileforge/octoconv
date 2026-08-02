@@ -1,7 +1,9 @@
 package convert
 
 import (
+	"archive/zip"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +40,19 @@ func TestLooksLikeLaTeX(t *testing.T) {
 			name: "leading BOM before marker",
 			in:   append([]byte{0xEF, 0xBB, 0xBF}, []byte("\\documentclass{article}\n")...),
 			want: true,
+		},
+		{
+			// Verbatim head of pandoc's own `--standalone -t latex` output.
+			// This is what every `-> latex` conversion emits, so rejecting it
+			// broke five advertised pairs at output validation.
+			name: "leading % comment block, as pandoc emits",
+			in:   []byte("% Options for packages loaded elsewhere\n\\PassOptionsToPackage{unicode}{hyperref}\n\\documentclass[]{article}\n"),
+			want: true,
+		},
+		{
+			name: "comment block with nothing after it",
+			in:   []byte("% only a comment\n%% and another\n\n"),
+			want: false,
 		},
 		{
 			name: "plain prose, no backslash command",
@@ -254,5 +269,60 @@ func TestSniffContainerEpub(t *testing.T) {
 	}
 	if res.Format != "epub" {
 		t.Errorf("SniffContainer(epub fixture).Format = %q, want %q", res.Format, "epub")
+	}
+}
+
+// TestEnforcePandocInputSizeArchiveBomb proves the guard bounds the DECLARED
+// UNCOMPRESSED size of a container, not just its on-disk size. Without this,
+// a docx/epub that compresses far below PANDOC_MAX_INPUT_BYTES can still hand
+// pandoc hundreds of megabytes to parse and OOM-kill the worker (the failure
+// mode measured live in Phase 50).
+func TestEnforcePandocInputSizeArchiveBomb(t *testing.T) {
+	dir := t.TempDir()
+
+	// A docx-shaped zip whose entry is highly compressible: tiny on disk,
+	// enormous once expanded.
+	bomb := filepath.Join(dir, "bomb.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatalf("zip Create: %v", err)
+	}
+	if _, err := w.Write(bytes.Repeat([]byte("A"), 8<<20)); err != nil { // 8 MiB of one byte
+		t.Fatalf("zip Write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := os.WriteFile(bomb, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("WriteFile(bomb): %v", err)
+	}
+
+	// Precondition: the archive really is small enough to slip past a
+	// compressed-size-only check. If this ever stops holding, the test is no
+	// longer exercising the bomb path.
+	const cap1MiB = 1 << 20
+	info, err := os.Stat(bomb)
+	if err != nil {
+		t.Fatalf("Stat(bomb): %v", err)
+	}
+	if info.Size() > cap1MiB {
+		t.Fatalf("fixture not compressible enough: %d bytes on disk, want <= %d", info.Size(), cap1MiB)
+	}
+
+	err = enforcePandocInputSize(bomb, cap1MiB)
+	if !errors.Is(err, ErrPandocInputTooLarge) {
+		t.Errorf("enforcePandocInputSize(archive bomb) = %v, want ErrPandocInputTooLarge", err)
+	}
+
+	// A non-container input of the same size must still pass: the container
+	// check must not leak into the plain-text path.
+	plain := filepath.Join(dir, "plain.md")
+	if err := os.WriteFile(plain, bytes.Repeat([]byte("a"), 4096), 0o600); err != nil {
+		t.Fatalf("WriteFile(plain): %v", err)
+	}
+	if err := enforcePandocInputSize(plain, cap1MiB); err != nil {
+		t.Errorf("enforcePandocInputSize(plain markdown) = %v, want nil", err)
 	}
 }
