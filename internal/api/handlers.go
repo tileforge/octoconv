@@ -249,6 +249,35 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// because the extension claims html.
 		detected = "html"
 	}
+	if detected == "" && source == "latex" && convert.LooksLikeLaTeX(file, header.Size) {
+		// D-02 (48-CONTEXT.md), mirrors the source=="html" LooksLikeHTML
+		// branch above verbatim: latex has no magic bytes for Sniff's table
+		// to match, so content detection here is gated on the (still-
+		// untrusted) declared source already claiming "latex" PLUS a
+		// fail-closed structural content check (UTF-8, no NUL, a
+		// \documentclass/\begin{/backslash-command marker,
+		// markupsniff.go). A .tex-named file whose content fails
+		// LooksLikeLaTeX leaves detected=="" and falls through to the
+		// generic unrecognized-content 422 below (fail-closed, before any
+		// storage write) -- never silently accepted just because the
+		// extension claims latex.
+		detected = "latex"
+	}
+	if detected == "" && (source == "md" || source == "rst" || source == "org") && convert.LooksLikeText(file, header.Size) {
+		// D-02 (48-CONTEXT.md): md/rst/org are mutually-interchangeable
+		// plaintext with no format-specific magic bytes to disambiguate
+		// among themselves (LooksLikeText's own documented limitation,
+		// markupsniff.go) -- content detection here therefore trusts the
+		// client's DECLARED source among the text family once the
+		// fail-closed plaintext gate (UTF-8, no NUL, no binary-control
+		// bytes) passes, mirroring the source=="html" LooksLikeHTML branch's
+		// "declared source PLUS a fail-closed structural content check"
+		// discipline. A body whose content fails LooksLikeText (binary/NUL-
+		// contaminated) leaves detected=="" and falls through to the
+		// generic unrecognized-content 422 below -- never silently accepted
+		// just because the extension claims md/rst/org.
+		detected = source
+	}
 	if detected == "" && convert.IsOLECFB(file) {
 		// D-06 (22-cfb-classification): legacy binary Office (.doc/.xls/.ppt)
 		// and password-protected OOXML ("Agile Encryption") share the
@@ -569,6 +598,32 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
 				return
 			}
+		case convert.EnginePandoc:
+			// Pandoc opts (closed standalone/toc/number_sections/wrap/
+			// section_divs allowlist, pandocopts.go) are dispatched here
+			// rather than falling through to ParseDocOpts in the default
+			// branch, which would reject every pandoc-specific field as an
+			// unknown key -- mirroring the EngineOCR/EngineAudio/EngineAV/
+			// EngineHTML branches above exactly (D-02, 48-CONTEXT.md).
+			pandocOpts, err := convert.ParsePandocOpts([]byte(rawOpts))
+			if err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				return
+			}
+			if err := convert.ValidatePandocApplicability(engine, detected, target, pandocOpts); err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				return
+			}
+			// D-08: persist the normalized struct, never the raw client
+			// bytes -- round-trip through json.Marshal so only the
+			// validated enum value ever reaches storage.
+			normalizedRaw, err = json.Marshal(pandocOpts)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				return
+			}
 		default:
 			docOpts, err := convert.ParseDocOpts([]byte(rawOpts))
 			if err != nil {
@@ -676,6 +731,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		enqueueErr = s.queue.EnqueueAVConvert(ctx, createdID)
 	case convert.EngineOCR:
 		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
+	case convert.EnginePandoc:
+		enqueueErr = s.queue.EnqueuePandocConvert(ctx, createdID)
 	default:
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a

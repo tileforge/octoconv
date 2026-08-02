@@ -5,9 +5,10 @@
 #     -f deploy/chart/octoconv/values-local.yaml \
 #     -f deploy/chart/octoconv/values-loadproof.yaml -n octoconv
 #
-# Sets exactly three knobs needed for the live 0→N→0 load-proof gate (plans
-# 28-02/28-03) to have deterministic timing; all are dev/test-only and are
-# never applied to a production values file.
+# Sets the gate-only knobs needed for the live 0→N→0 load-proof gates
+# (plans 28-02/28-03, 46-02/46-03, 50-02/50-03/50-04) to have deterministic
+# timing; all are dev/test-only and are never applied to a production
+# values file.
 
 keda:
   document:
@@ -42,6 +43,44 @@ keda:
     # PRODUCTION 774s value in every overlay -- that grace is exactly the
     # value SC4 validates and MUST NOT be lowered here or anywhere else.
     scaleDownStabilizationSeconds: 15
+  pandoc:
+    # This is the one place pandoc genuinely diverges from ocr/av/audio: in
+    # PRODUCTION keda.pandoc.scaleDownStabilizationSeconds (values.yaml) is
+    # null (D-01 -- the k8s 300s HPA default already covers pandoc's 65s
+    # worst-case job with >4x margin), so unlike the siblings above this
+    # override is NOT defeating a large production value. It exists because
+    # pandoc's measured worst-case single job is only ~32s
+    # (html_large->md p95=32.318s at the then-4 MiB PANDOC_MAX_INPUT_BYTES
+    # cap; cap lowered to 3 MiB by 50-04 Path-B, p95 remains an upper bound),
+    # which is SHORTER than the sibling gates' 15s stabilization PLUS the
+    # metric-propagation lag (Prometheus scrape + KEDA poll + the 15s
+    # kube-controller-manager HPA sync). A literal 0 makes the HPA act on
+    # the current recommendation as soon as it syncs -- the only way a
+    # genuine 2->1 downscale can land inside a live pandoc job window.
+    # Emitting 0 (not "unset") is exactly what the falsy-0 guard in
+    # scaledobject-pandoc.yaml (HARD-03/D-06) exists to allow, so this
+    # overlay doubles as a live exercise of that guard.
+    # pollingInterval 3 (values.yaml production default is 10) shortens
+    # KEDA's own poll leg of the same lag budget.
+    # The pandoc-worker Deployment's pod-termination grace period stays at
+    # its PRODUCTION 85s value in every overlay -- that grace is exactly
+    # what SC4 validates and MUST NOT be lowered here or anywhere else --
+    # and the production cpu "2"/memory "1Gi" limits are likewise untouched
+    # (throttling CPU to stretch the job is explicitly rejected: it would
+    # risk crossing PANDOC_ENGINE_TIMEOUT=65s and turn a survival proof into
+    # a timeout failure).
+    scaleDownStabilizationSeconds: 0
+    pollingInterval: 3
+
+# Phase 50 (PDCP-02): shortens Prometheus' own scrape cadence for the same
+# SC4 metric-propagation lag budget the keda.pandoc override above targets
+# -- the gate's api /metrics series must reach Prometheus fast enough for
+# the depth drop to reach the HPA while the in-flight pandoc job (~32s) is
+# still running. Production stays 15s (values.yaml default, unchanged by
+# this overlay's presence in any other class's gate). Values-driven via
+# templates/_helpers.tpl octoconv.prometheusScrapeConfig.
+prometheus:
+  scrapeInterval: "5s"
 
 worker:
   resources:
@@ -66,3 +105,16 @@ documentWorker:
     # (long job first) deterministically maps pod1=long-job, so the
     # downscale-victim annotation targets the correct pod.
     DOCUMENT_WORKER_CONCURRENCY: "1"
+
+pandocWorker:
+  extraEnv:
+    # One job per pod (Phase 50, mirrors documentWorker.extraEnv above). This
+    # is now PARITY with production, not an override: the ConfigMap value was
+    # lowered 2 -> 1 on 2026-08-02 after the BLOCKER-1 memory measurement, so
+    # the gate and production run the same concurrency. Kept explicit because
+    # the SC4 depth arithmetic DEPENDS on it: one job per pod makes "2 replicas,
+    # 2 active jobs, 0 pending" a deterministic state whose queue depth is
+    # exactly 2, i.e. desired = ceil(2 / threshold 2) = 1 -- the metric
+    # condition that triggers the genuine 2->1 downscale while both pods are
+    # mid-job. If production concurrency ever changes again, this must stay 1.
+    PANDOC_WORKER_CONCURRENCY: "1"

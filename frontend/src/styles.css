@@ -194,6 +194,64 @@ code {
   color: #c72828;
 }
 
+.status-active {
+  background: #fff4d9;
+  color: #9a6b00;
+}
+
+.status-canceled {
+  background: #eef0f3;
+  color: #5d677c;
+}
+
+.progress {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: #eef0ff;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  background: #4650e7;
+  transition: width 240ms ease;
+}
+
+.cancel {
+  justify-self: start;
+  border: 1px solid #d8deeb;
+  border-radius: 999px;
+  background: transparent;
+  color: #5d677c;
+  cursor: pointer;
+  font-weight: 750;
+  padding: 10px 20px;
+  transition:
+    border-color 160ms ease,
+    color 160ms ease,
+    opacity 160ms ease;
+}
+
+.cancel:hover:not(:disabled) {
+  border-color: #c72828;
+  color: #c72828;
+}
+
+.cancel:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.hint {
+  margin: 6px 0 0;
+  border-radius: 12px;
+  background: #f1f4fb;
+  color: #68738a;
+  font-size: 0.85rem;
+  padding: 8px 12px;
+}
+
 .download {
   width: fit-content;
   border-radius: 999px;
@@ -223,6 +281,7 @@ code {
   }
 
   button,
+  .cancel,
   .download {
     width: 100%;
     text-align: center;

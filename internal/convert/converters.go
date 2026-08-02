@@ -40,4 +40,21 @@ func init() {
 	// re-register a CONFIGURED OCRConverter before it starts consuming
 	// tasks, using this same documented last-write-wins semantics.
 	Default.Register(OCRConverter{})
+	// Registered last (PDCP-01, Phase 48, D-02, 48-CONTEXT.md): PandocConverter's
+	// curated markup-family pairs (pandocPairTable, pandoc.go) are disjoint from
+	// every other engine's own pairs -- it deliberately excludes every ->pdf
+	// target (document owns docx->pdf, chromium owns html->pdf) and every
+	// docx->odt-family target (LibreOffice's crossPairs own those), so no
+	// (from, to) key registered here can collide with an existing one, even
+	// though "md"/"html"/"docx" strings are shared as ENDPOINTS with other
+	// converters. The sole guard is TestPandocPairsDisjointFromOtherEngines
+	// (pairs_disjoint_test.go, mirrors the OCR/AV/Audio disjointness tests
+	// above) -- there is no runtime check; Registry.Register is a bare map
+	// assignment with silent last-write-wins on a duplicate (source, target)
+	// pair. This zero-value registration is an uncapped placeholder
+	// (MaxInputBytes, mirrors OCRConverter's/AVConverter's own zero-value
+	// contract above): cmd/pandoc-worker (Phase 49) re-registers a CONFIGURED
+	// PandocConverter before it starts consuming tasks, using this same
+	// documented last-write-wins semantics.
+	Default.Register(PandocConverter{})
 }

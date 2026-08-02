@@ -500,6 +500,95 @@ func ocrFailureCode(err error) (code, message string) {
 	return "engine_error", "unsupported or corrupted input format"
 }
 
+// isPandocTerminal is the pandoc engine's engine-scoped terminal classifier
+// -- D-01 (48-CONTEXT.md, BINDING): pandoc conversion is deterministic and
+// CPU-bound with no external services/network, so BOTH a PANDOC_ENGINE_TIMEOUT
+// expiry AND a pandoc engine/parse error are classified TERMINAL. This
+// mirrors isDocumentTerminal's/isHTMLTerminal's timeout-is-terminal shape
+// (DOC-08's precedent), the OPPOSITE of isOCRTerminal's
+// transient-engine-timeout treatment -- a stuck/pathological pandoc
+// invocation is no more likely to succeed on retry than a stuck soffice or
+// chromium render.
+//
+// A PANDOC_ENGINE_TIMEOUT expiry surfaces as a wrapped context.
+// DeadlineExceeded (exec.go's process-group-kill shape, preserved through
+// pandoc.go's fmt.Errorf("pandoc: pandoc: %w", err) and process()'s
+// fmt.Errorf("convert: %w", err)) -- errors.Is(err, context.DeadlineExceeded)
+// stays true all the way up to this handler, exactly like
+// isDocumentTerminal's own documented chain.
+//
+// Every deterministic failure PandocConverter.Convert can produce --
+// unsupported-pair rejection, a corrupt persisted-opts parse failure,
+// ErrPandocInputTooLarge, the pandoc subprocess itself failing, or
+// pandocValidateOutput rejecting a bare/corrupt output -- is wrapped with a
+// "pandoc:" prefix SOMEWHERE in the chain (pandoc.go: every one of Convert's
+// error returns carries it, verified against pandoc.go's own error-wrapping
+// discipline). Checking for that substring here, explicitly and BEFORE the
+// shared isTerminal fallthrough, is what makes a bare pandoc parse/engine
+// error terminal -- isTerminal alone has no pandoc-specific signature list
+// and would otherwise return false (transient) for it, which would be wrong:
+// pandoc is deterministic on its input, so an engine/parse failure will recur
+// identically on retry. Only pandoc.Convert ever emits this prefix, so a
+// genuine infra transient (a plain S3/Postgres blip with no "pandoc:" text)
+// is NOT captured here and correctly falls through isTerminal to its
+// broad-retry default (D-01's "genuine infra transients stay retryable"
+// half).
+//
+// Engine-scoped like isDocumentTerminal/isHTMLTerminal/isOCRTerminal/
+// isAudioTerminal/isAVTerminal -- never reword another engine's signature.
+func isPandocTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// D-01: the deliberate divergence from isOCRTerminal -- a pandoc
+		// timeout means pathological/oversize input a retry cannot fix.
+		return true
+	}
+	if errors.Is(err, convert.ErrPandocInputTooLarge) {
+		// T-48-10: oversize input rejected fail-closed before the subprocess
+		// ever runs -- deterministic on the input, never fixed by retry.
+		return true
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "pandoc:") {
+		// D-01: every deterministic failure PandocConverter.Convert can
+		// produce (unsupported pair, corrupt opts, subprocess failure, bad
+		// output) carries this prefix -- terminal, not the shared isTerminal's
+		// broad-retry default.
+		return true
+	}
+	return isTerminal(err) // no-converter / minio.NoSuchKey / shared fallthrough
+}
+
+// pandocFailureCode maps a terminal process() error for a pandoc job to the
+// distinguishable client-facing (error_code, message) pair MarkFailed
+// records -- mirrors ocrFailureCode's precedent (worker.go): a small pure
+// function so the mapping itself is unit-testable without a live Postgres/S3
+// Handler. Order matters: the more specific substrings are checked before
+// the generic default.
+//   - ErrPandocInputTooLarge -> "input_too_large": the input exceeds the
+//     configured PANDOC_MAX_INPUT_BYTES cap.
+//   - an unsupported-pair rejection (pandocPairSupported's own
+//     "unsupported conversion %s -> %s" message, pandoc.go) ->
+//     "unsupported_target".
+//   - a persisted-opts parse/validation failure (PandocOptsFromMap's
+//     "unsupported wrap %q" or "parse opts:" messages, pandocopts.go) ->
+//     "invalid_options".
+//   - default -> "engine_error", mirroring every other engine's fallback.
+func pandocFailureCode(err error) (code, message string) {
+	if errors.Is(err, convert.ErrPandocInputTooLarge) {
+		return "input_too_large", "pandoc input exceeds the configured maximum size"
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "unsupported conversion") {
+		return "unsupported_target", "requested conversion is not supported by the pandoc engine"
+	}
+	if strings.Contains(msg, "unsupported wrap") || strings.Contains(msg, "parse opts") {
+		return "invalid_options", "stored conversion options are invalid"
+	}
+	return "engine_error", "unsupported or corrupted input format"
+}
+
 // isCanceled reports whether err is (or wraps) context.Canceled -- the shape
 // process()'s attemptCtx.Err() takes when cancel.Default.Cancel(job.ID) fires
 // the registered CancelFunc early, distinct from a timeoutIsTerminal-style
@@ -1235,6 +1324,117 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusDone, time.Since(start))
+	// Postgres-first: MarkDone already committed inside process(), so a
+	// failed enqueue must not fail the conversion — best-effort only.
+	if job.CallbackURL != "" {
+		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+	}
+	return nil
+}
+
+// HandlePandocConvert runs one pandoc markup-to-markup conversion: load job
+// -> mark active -> download input -> run pandoc (via the engine-agnostic
+// process(), which reuses registry.Lookup -- the PandocConverter registered
+// in convert.Default handles the actual conversion, including its own
+// unsupported-pair/opts/input-size guards and pandocValidateOutput's
+// target-appropriate content check, pandoc.go/markupsniff.go) -> upload
+// output -> record output -> mark done. Mirrors HandleOCRConvert's shape
+// (strict opts re-parse guard, D-10 defense-in-depth) with two divergences
+// (D-01, 48-CONTEXT.md): (1) the terminal-classification branch calls
+// isPandocTerminal instead of isOCRTerminal -- pandoc's timeout+engine-error
+// terminal classification mirrors isDocumentTerminal, the OPPOSITE of
+// isOCRTerminal's transient-timeout treatment; (2) a terminal failure's
+// error_code is selected via pandocFailureCode instead of ocrFailureCode.
+// Both metrics.RecordJobOutcome calls are tagged queue.QueuePandoc.
+//
+// An empty-but-valid pandoc output (e.g. an empty-body markdown source
+// producing an empty plaintext/fragment result) completes as done, never
+// failed (SC4) -- there is no `if output==""{error}` branch here:
+// pandocValidateOutput (pandoc.go) already skips its content-sniff check on
+// a zero-size output and returns nil, so process() returns nil and this
+// handler's success path (h.repo.MarkDone, already committed inside
+// process()) runs unchanged.
+func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error {
+	payload, err := queue.ParseConvertPayload(t.Payload())
+	if err != nil {
+		// Unparseable payload: nothing we can retry into success.
+		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+	}
+	jobID := payload.JobID
+
+	job, err := h.repo.Get(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load job %s: %w", jobID, err)
+	}
+
+	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
+	// is a terminal, not transient, failure -- a corrupt column value can
+	// never fix itself on retry. This is a strictness check only; the
+	// applicability/enum business rules already ran once, at the API layer
+	// (single source of validation truth), and are deliberately not
+	// duplicated here.
+	if _, err := convert.PandocOptsFromMap(job.Opts); err != nil {
+		// Mark failed BEFORE SkipRetry: without this the job would stay
+		// queued forever (no webhook, client polls a dead job) while the
+		// reconciler requeues it into the same failure until MaxRecoveries
+		// is exhausted (T-14-02b). Sanitized message only; the parse error
+		// is kept in job_events.detail for internal diagnostics.
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// Postgres-first: enqueue the webhook ONLY once the failed status is
+		// actually committed — if MarkFailed itself failed, a webhook now
+		// would report the non-terminal status "queued" (WR-04). A failed
+		// enqueue after a successful MarkFailed must not fail the job —
+		// best-effort only.
+		if ferr == nil && job.CallbackURL != "" {
+			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+		}
+		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
+	}
+
+	if err := h.repo.MarkActive(ctx, jobID); err != nil {
+		// Already active/done/canceled — let asynq drop it rather than loop.
+		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
+	}
+
+	start := time.Now()
+	if err := h.process(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
+		if isPandocTerminal(err) {
+			// Sanitized message only in error_message (exposed via GET
+			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
+			// (which contains local temp paths) is kept in job_events.detail
+			// for internal diagnostics only.
+			code, message := pandocFailureCode(err)
+			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()})
+			metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusFailed, time.Since(start))
+			// Postgres-first: enqueue the webhook ONLY once the failed status
+			// is actually committed. If MarkFailed itself failed (Postgres
+			// blip), the job is still active — a webhook now would re-read the
+			// row and deliver the non-terminal status "active", which the
+			// contract never defines (WR-04); the reconciler will requeue the
+			// still-active job instead. A failed enqueue after a successful
+			// MarkFailed must not fail the conversion — best-effort only.
+			if ferr == nil && job.CallbackURL != "" {
+				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
+			}
+			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+		}
+		// Transient: do NOT mark failed — the job stays active so asynq's own
+		// retry/backoff (PandocRetryDelay/PANDOC_MAX_RETRY, Plan 01) applies.
+		// Not a terminal outcome, so it is NOT recorded in the job-outcome
+		// metric (Pitfall 6 — one asynq retry must not double-count).
+		return err
+	}
+	metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusDone, time.Since(start))
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
