@@ -2,7 +2,9 @@
 // content-validation probes for the pandoc markup family (PDCE-01) plus the
 // input-size DoS guard pandoc's Convert calls before shelling out
 // (PDCE-03/T-47-04). It extends the existing LooksLikeHTML (htmlsniff.go)
-// and SniffContainer (docsniff.go) precedents rather than reinventing them.
+// and SniffContainer (docsniff.go) precedents rather than reinventing them
+// -- LooksLikeHTML now itself depends on this file's readSniffPrefix for its
+// prefix-reading envelope, rather than merely being its historical precedent.
 package convert
 
 import (
@@ -24,14 +26,14 @@ var (
 	latexBeginMarker         = []byte(`\begin{`)
 )
 
-// readSniffPrefix is the shared fail-closed envelope LooksLikeLaTeX and
-// LooksLikeText both build on: it bounds how much of r is read into memory
-// via ReadAt (never a full buffer for an oversized claimed size, mirroring
-// LooksLikeHTML/SniffContainer's "never buffer the whole upload" discipline),
-// then rejects (ok==false) on empty input, a NUL byte, or invalid UTF-8. r's
-// io.ReaderAt short-read contract (a partial read alongside a non-EOF error)
-// is honored the same way LooksLikeHTML honors it -- callers must never
-// panic on a short or oversized-claimed input.
+// readSniffPrefix is the shared fail-closed envelope LooksLikeHTML,
+// LooksLikeLaTeX, and LooksLikeText all build on: it bounds how much of r is
+// read into memory via ReadAt (never a full buffer for an oversized claimed
+// size, mirroring SniffContainer's "never buffer the whole upload"
+// discipline), then rejects (ok==false) on empty input, a NUL byte, or
+// invalid UTF-8. r's io.ReaderAt short-read contract (a partial read
+// alongside a non-EOF error) is honored identically for every caller --
+// none of them may panic on a short or oversized-claimed input.
 //
 // PR#2 finding-2: when size exceeds cap, the cap can fall inside a
 // multi-byte UTF-8 rune, leaving a dangling lead byte at the end of buf.

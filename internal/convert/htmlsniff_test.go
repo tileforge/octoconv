@@ -126,3 +126,67 @@ func TestLooksLikeHTMLOversizedInputBoundedRead(t *testing.T) {
 		t.Error("LooksLikeHTML on oversized-but-valid HTML = false, want true")
 	}
 }
+
+// TestLooksLikeHTMLRuneStraddlingSniffCap is the PR#2 finding-2 regression
+// guard for LooksLikeHTML: a 3-byte rune (U+2026 "…", bytes E2 80 A6) starts
+// at offset htmlSniffCap-1, so the 1 MiB sniff cap severs it after its first
+// byte and the raw prefix ends on a dangling lead byte. Before this fix
+// (LooksLikeHTML carried its own duplicated prologue instead of delegating
+// to readSniffPrefix), utf8.Valid saw that dangling byte and rejected a
+// perfectly valid, oversized HTML document. Padding length is computed from
+// htmlSniffCap arithmetic, not a magic constant, so this test stays correct
+// if the cap ever moves. Mirrors
+// TestLooksLikeTextRuneStraddlingSniffCap/TestLooksLikeLaTeXRuneStraddlingSniffCap
+// (markupsniff_test.go).
+func TestLooksLikeHTMLRuneStraddlingSniffCap(t *testing.T) {
+	prefix := "<!doctype html>\n<html><body>"
+	pad := bytes.Repeat([]byte("a"), htmlSniffCap-1-len(prefix))
+	var buf bytes.Buffer
+	buf.WriteString(prefix)
+	buf.Write(pad)
+	buf.WriteString("…")
+	buf.WriteString(" more text after the straddling rune.</body></html>")
+	data := buf.Bytes()
+	r := bytes.NewReader(data)
+	if !LooksLikeHTML(r, int64(len(data))) {
+		t.Error("LooksLikeHTML on a rune straddling the sniff cap = false, want true")
+	}
+}
+
+// TestLooksLikeHTMLInvalidUTF8AtSniffCapStillRejected is the anti-relaxation
+// guard: an impossible UTF-8 lead byte (0xFF never appears in any legal
+// UTF-8 sequence) placed exactly at the same offset the straddling-rune test
+// above uses must still fail closed. 0xFF declares no length via
+// leadByteRuneLen, so it is never trimmed, and utf8.Valid must still reject
+// it. The trim must never launder a genuinely invalid byte into a pass just
+// because it happens to sit at the cap boundary. Mirrors
+// TestLooksLikeTextInvalidUTF8AtSniffCapStillRejected (markupsniff_test.go).
+func TestLooksLikeHTMLInvalidUTF8AtSniffCapStillRejected(t *testing.T) {
+	prefix := "<!doctype html>\n<html><body>"
+	pad := bytes.Repeat([]byte("a"), htmlSniffCap-1-len(prefix))
+	var buf bytes.Buffer
+	buf.WriteString(prefix)
+	buf.Write(pad)
+	buf.WriteByte(0xFF)
+	buf.WriteString(" more text after the invalid byte.</body></html>")
+	data := buf.Bytes()
+	r := bytes.NewReader(data)
+	if LooksLikeHTML(r, int64(len(data))) {
+		t.Error("LooksLikeHTML with an impossible lead byte at the sniff cap = true, want false")
+	}
+}
+
+// TestLooksLikeHTMLIncompleteRuneAtEOFStillRejected proves the trim is
+// scoped ONLY to a prefix the cap actually severed: a SMALL HTML document
+// (well under htmlSniffCap, so nothing was truncated) whose final byte is a
+// bare dangling UTF-8 lead byte (0xE2) is genuinely invalid UTF-8 and must
+// still be rejected -- the fix must not turn into "always trim a trailing
+// lead byte". Mirrors TestLooksLikeTextIncompleteRuneAtEOFStillRejected
+// (markupsniff_test.go).
+func TestLooksLikeHTMLIncompleteRuneAtEOFStillRejected(t *testing.T) {
+	data := append([]byte("<!doctype html><html><body>ending in a dangling lead byte "), 0xE2)
+	r := bytes.NewReader(data)
+	if LooksLikeHTML(r, int64(len(data))) {
+		t.Error("LooksLikeHTML with an incomplete trailing rune at true EOF = true, want false")
+	}
+}

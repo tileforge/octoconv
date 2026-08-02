@@ -3,7 +3,6 @@ package convert
 import (
 	"bytes"
 	"io"
-	"unicode/utf8"
 )
 
 // htmlSniffCap bounds how much of an uploaded file LooksLikeHTML reads into
@@ -34,6 +33,15 @@ var (
 // NormalizeFormat's htm alias). It never panics on empty, short, or
 // oversized input.
 //
+// The bounded prefix read plus the NUL/UTF-8 fail-closed envelope come from
+// the shared readSniffPrefix (markupsniff.go) rather than a copy kept here.
+// This function used to carry its own duplicated prologue, which is exactly
+// why it missed the PR#2 finding-2 mid-rune truncation fix when that fix
+// landed in readSniffPrefix for LooksLikeLaTeX/LooksLikeText: a file whose
+// size exceeds htmlSniffCap and whose cut lands inside a multi-byte rune was
+// wrongly rejected as invalid UTF-8. Delegating means a future fix to the
+// envelope cannot skip HTML again.
+//
 // This is deliberately NOT a full HTML parser (D-07): a full DOM-tree
 // parsing dependency is rejected for the same reason SniffContainer avoids
 // full ZIP extraction (docsniff.go) -- strictness here would be illusory,
@@ -41,27 +49,8 @@ var (
 // so a full parse buys no additional safety over a bounded marker+encoding
 // check, only a new dependency.
 func LooksLikeHTML(r io.ReaderAt, size int64) bool {
-	if size <= 0 {
-		return false
-	}
-	n := size
-	if n > htmlSniffCap {
-		n = htmlSniffCap
-	}
-	buf := make([]byte, n)
-	read, err := r.ReadAt(buf, 0)
-	if err != nil && err != io.EOF {
-		return false
-	}
-	buf = buf[:read]
-	if len(buf) == 0 {
-		return false
-	}
-
-	if bytes.IndexByte(buf, 0) != -1 {
-		return false
-	}
-	if !utf8.Valid(buf) {
+	buf, ok := readSniffPrefix(r, size, htmlSniffCap)
+	if !ok {
 		return false
 	}
 
