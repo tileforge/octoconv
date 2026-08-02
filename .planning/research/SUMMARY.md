@@ -158,3 +158,49 @@ Phases with standard, well-documented patterns (skip research-phase):
 ---
 *Research completed: 2026-08-02*
 *Ready for roadmap: yes*
+
+---
+
+## Corrections after PR #3 review (2026-08-02)
+
+An external review of the milestone plan found four design defects in
+`ARCHITECTURE.md`'s proposed integration shape. **Where this section and
+`ARCHITECTURE.md` disagree, this section wins** — the phase planner should treat
+the items below as binding.
+
+1. **The admission check must be serialized per (client, engine).**
+   `ARCHITECTURE.md` describes a `SELECT count(*)` of the client's queued/active
+   jobs followed by `Repo.Create`. Reading shared Postgres rows does not make
+   check-and-insert atomic: two API replicas can both observe a count below the
+   cap and both admit, so a cap of K admits more than K. The count and the create
+   must share one transaction under a per-(client, engine) advisory lock or an
+   equivalent atomic counter. `STACK.md` did specify `pg_advisory_xact_lock`;
+   `ARCHITECTURE.md` dropped it.
+
+2. **The authoritative reservation must precede the S3 write.**
+   `ARCHITECTURE.md`'s gate ordering uploads the request body before the tier-3
+   reserve resolves, so a client that loses the reserve has already consumed S3
+   bandwidth and storage — repeatedly, at will. This contradicts QUOT-02 as
+   written ("до записи в S3"). Reserve first; release the reservation if a later
+   step fails.
+
+3. **Reservations and completed usage must be distinguishable.**
+   If admission increments the daily rollup to reserve capacity and the terminal
+   transition increments the same counters again, every completed job is counted
+   twice and clients exhaust their daily budget early. The table needs a
+   reserved-versus-consumed distinction (or an identifiable reservation that
+   completion finalizes), not one pair of counters written by both paths.
+
+4. **The usage write belongs inside the terminal-transition transaction.**
+   `ARCHITECTURE.md` proposes an adjacent `RecordUsage` call after
+   `MarkDone`/`MarkFailed`. If the worker dies in between, the job is already
+   terminal — neither an asynq retry nor the reconciler will revisit it — and the
+   usage is lost permanently. ACCT-03's exactly-once guarantee requires the rollup
+   update to be part of the same guarded transaction as the status transition.
+
+Two further findings were applied directly to the ROADMAP's Phase 51 success
+criteria and need no separate design note: cardinality must be bounded by a
+configured numeric ceiling with a stable overflow label (restricting labels to
+IDs present in `clients` is not a bound, since clients can be added
+indefinitely), and retention must be an executable mechanism proven to remove
+aged rows, not a policy described in a migration comment.
