@@ -28,7 +28,8 @@ type fakeStore struct {
 	// entries mean "succeed"); once exhausted, calls succeed.
 	requeueStaleErrs []error
 
-	markFailedCalls []uuid.UUID
+	markFailedCalls    []uuid.UUID
+	markFailedAttempts []time.Duration
 
 	webhookGaps              []jobs.WebhookGapJob
 	findWebhookGapsErr       error
@@ -56,8 +57,9 @@ func (f *fakeStore) RequeueStale(ctx context.Context, id uuid.UUID, reason strin
 	return nil
 }
 
-func (f *fakeStore) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error {
+func (f *fakeStore) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
 	f.markFailedCalls = append(f.markFailedCalls, id)
+	f.markFailedAttempts = append(f.markFailedAttempts, attempt)
 	return nil
 }
 

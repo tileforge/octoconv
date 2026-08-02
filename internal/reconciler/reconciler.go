@@ -49,7 +49,7 @@ type jobStore interface {
 	FindStale(ctx context.Context, queuedStaleAfter, activeStaleAfter time.Duration) ([]jobs.StaleJob, error)
 	RecoveryCount(ctx context.Context, id uuid.UUID) (int, error)
 	RequeueStale(ctx context.Context, id uuid.UUID, reason string) error
-	MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error
+	MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	FindWebhookGaps(ctx context.Context, activeStaleAfter time.Duration) ([]jobs.WebhookGapJob, error)
 	RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, status string) error
@@ -267,8 +267,23 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// status is already committed by MarkFailed above, so a failed
 			// enqueue must not undo it).
 			job, _ := s.store.Get(ctx, j.ID)
-			_ = s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"})
+			// attempt=0: the reconciler never ran the engine and has no
+			// attempt clock of its own -- recordUsage (D-05, internal/jobs/
+			// usage.go) derives wall_seconds from the tx-locked jobs row's
+			// started_at instead. For a job exhausted while still stranded
+			// in `queued` (never activated, started_at NULL) that correctly
+			// falls back to 0 -- it never occupied a worker at all.
+			_ = s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"}, 0)
 			metrics.RecordReconcilerAction("exhausted")
+			if job != nil {
+				// Closes T-51-10 (Repudiation): a job the reconciler
+				// terminally fails after exhausting recoveries was, before
+				// this, counted in the Postgres rollup (via MarkFailed
+				// above) but invisible per-client in Prometheus. Reuses the
+				// job != nil guard already in place for the webhook enqueue
+				// below rather than a second s.store.Get call.
+				metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, jobs.StatusFailed)
+			}
 			if job != nil && job.CallbackURL != "" {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
