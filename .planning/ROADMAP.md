@@ -201,14 +201,14 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
   3. `client_id` label cardinality is bounded by an explicit **configured numeric ceiling** with defined overflow behavior (clients beyond the ceiling collapse into a single stable `overflow` label value), not merely restricted to IDs present in `clients` — `cmd/manage-clients` can add valid clients indefinitely, so "a real client id" is not a bound. An unrecognized or malformed ID never mints a new series. *(Tightened 2026-08-02 after PR #3 review.)*
   4. Retention is **executable, not documentary**: a concrete purge / partition-drop / archival mechanism runs and is proven to actually remove rows past the window (a test that ages data and asserts it is gone), covering both the new usage table (which grows with `clients × engines × days`, not raw job volume) and the pre-existing `jobs`/`job_events` gap. A retention policy described only in a migration comment does not satisfy RETN-01. *(Tightened 2026-08-02 after PR #3 review.)*
   5. Re-running the existing KEDA scale-from-zero live gate after the new metrics/table land shows no regression — accounting is additive to the platform's operational surface, not a new blast radius for autoscaling.
-  6. Byte accounting sums over ALL of a job's inputs and outputs (`ListInputs`/`ListOutputs`, `ORDER BY ordinal`) rather than reading ordinal 0 — so a job that ever produces or consumes more than one file is counted correctly without an accounting rewrite. See the constraint note below.
+  6. Byte accounting sums over ALL of a job's inputs and outputs (`Repo.Inputs`/`Repo.Outputs`, `ORDER BY ordinal`) rather than reading ordinal 0 — so a job that ever produces or consumes more than one file is counted correctly without an accounting rewrite. See the constraint note below.
 
 **Constraint — do not hardcode one-input/one-output (added 2026-08-02, SEED-017):**
 Today every job is exactly one input, one engine invocation, one output, so
 reading `job_inputs`/`job_outputs` at ordinal 0 would work and would be the
 natural thing to write. It must not be written that way. The schema has carried
 an `ordinal` column on both tables since `0001_init.sql`, `internal/jobs/repo.go`
-already exposes `ListInputs`/`ListOutputs` ordered by it, and SEED-017 (PDF
+already exposes `Repo.Inputs`/`Repo.Outputs` ordered by it, and SEED-017 (PDF
 split/merge) is the first concrete demand for N — split alone produces N outputs
 from one input. Baking the 1:1 assumption into the accounting layer would make
 byte totals silently wrong the moment that lands, and retrofitting it is exactly

@@ -21,7 +21,9 @@ Per-client consumption becomes observable and durable: a `client_id`-labeled Pro
 
 ### What is recorded (ACCT-02)
 - **D-02:** Jobs count, bytes in, bytes out, **and wall-time**. Wall-time is load-bearing, not decorative: a 10 MB video and a 10 MB PDF consume wildly different worker capacity, and byte counts cannot show that. The milestone's motivating question is "who ate the workers", which bytes alone cannot answer.
-- **D-03:** Bytes are summed over **all** of a job's inputs and outputs via `ListInputs`/`ListOutputs`, never read at ordinal 0 — the 1:1 constraint already recorded in ROADMAP Phase 51 and ACCT-02 (SEED-017).
+- **D-03:** Bytes are summed over **all** of a job's inputs and outputs, never read at ordinal 0 — the 1:1 constraint already recorded in ROADMAP Phase 51 and ACCT-02 (SEED-017).
+  - **Correction (2026-08-02, from pattern mapping):** the methods are `Repo.Inputs`/`Repo.Outputs` (`internal/jobs/repo.go:421,448`) — an earlier draft of this file named them `ListInputs`/`ListOutputs`, which do not exist. More importantly, **both are scoped to `r.pool`, not to a `tx`**. Calling them as-is from inside `transition`'s `apply` closure would read outside the transaction, which defeats D-05's whole point. Either give them `tx`-scoped variants or inline a `SELECT sum(size_bytes)` against `tx`. This is a real design decision the plan must make explicitly, not a rename.
+- **D-03a (from pattern mapping):** `MarkDone(ctx, id)` and `MarkFailed(ctx, id, code, message, detail)` carry neither `client_id`, nor `engine`, nor duration. The rollup needs all three, so **their signatures change** — this is not a copy-paste of an existing call shape. The values already exist at the call sites in `internal/worker/worker.go` (the `job` and `start` locals); they are simply not threaded into the repo layer today.
 - **D-04:** **Failed jobs are counted**, with `status` as a column so any consumer can slice. A failed conversion burned CPU and occupied a worker slot exactly like a successful one; excluding failures would make a client with broken inputs look free and would leave a hole Phase 52's quota could not close. Storing status rather than pre-filtering keeps the choice with the reader.
 
 ### Write site and exactly-once (ACCT-03)
@@ -54,7 +56,7 @@ Per-client consumption becomes observable and durable: a `client_id`-labeled Pro
 - `.planning/research/PITFALLS.md` — cardinality multiplication, the reconciler double-count race, and the unbounded-growth pattern this phase must not repeat.
 
 ### The seams this phase touches
-- `internal/jobs/repo.go` — `Repo.transition`'s `apply func(ctx, tx) error` closure is the write site for D-05; `ListInputs`/`ListOutputs` (already `ORDER BY ordinal`) are the byte source for D-03.
+- `internal/jobs/repo.go` — `Repo.transition`'s `apply func(ctx, tx) error` closure is the write site for D-05; `Repo.Inputs`/`Repo.Outputs` (already `ORDER BY ordinal`) are the byte source for D-03.
 - `internal/metrics/metrics.go` — the `promauto.NewCounterVec` registration idiom to clone for D-07; `octoconv_job_duration_seconds` is the histogram that must NOT gain the label.
 - `internal/worker/worker.go` — the seven `metrics.RecordJobOutcome(...)` call sites, currently invoked AFTER the transition (outside the transaction). D-05 changes where accounting happens relative to these.
 - `internal/reconciler/reconciler.go` — the existing ticker, advisory lock and actions metric that D-11's purge reuses; also the source of the stale-recovery race D-06 must be tested against.
@@ -71,7 +73,7 @@ Per-client consumption becomes observable and durable: a `client_id`-labeled Pro
 
 ### Reusable Assets
 - `Repo.transition`'s `apply` closure — the transactional seam for the rollup write already exists; no new transaction plumbing needed.
-- `ListInputs`/`ListOutputs` already read `ORDER BY ordinal`, so multi-artifact byte summing needs no repository change.
+- `Repo.Inputs`/`Repo.Outputs` already read `ORDER BY ordinal`, so multi-artifact byte summing needs no repository change.
 - The reconciler's periodic sweep + advisory lock + actions metric — the purge's host.
 - `promauto.NewCounterVec` with an explicit label list — the metric idiom, cloned rather than invented.
 - `STORAGE_TTL` — the precedent for an operator-configurable retention window read from env.
