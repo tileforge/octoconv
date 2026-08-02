@@ -329,6 +329,14 @@ func TestPandocConvertRealMatrix(t *testing.T) {
 		{"latex->md", latexFixture, "md"},
 		{"html->md", htmlFixture, "md"},
 		{"md->epub", mdFixture, "epub"},
+		// -> latex was the hole this matrix had: every case above targets a
+		// format whose validator tolerates pandoc's own output, so nothing
+		// exercised the `latex` branch of validatePandocOutput. Standalone
+		// LaTeX opens with a `%` comment block, which LooksLikeLaTeX used to
+		// reject outright -- shipping five broken pairs. Both directions are
+		// covered now (md is a text source, html a structural one).
+		{"md->latex", mdFixture, "latex"},
+		{"html->latex", htmlFixture, "latex"},
 	}
 
 	for _, tc := range cases {

@@ -81,7 +81,7 @@ func LooksLikeLaTeX(r io.ReaderAt, size int64) bool {
 	}
 
 	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
-	buf = bytes.TrimLeft(buf, " \t\r\n\f\v")
+	buf = skipLaTeXLeadingComments(buf)
 	if len(buf) == 0 {
 		return false
 	}
@@ -96,6 +96,35 @@ func LooksLikeLaTeX(r io.ReaderAt, size int64) bool {
 		return true
 	}
 	return false
+}
+
+// skipLaTeXLeadingComments trims leading whitespace and whole `%` comment
+// lines from buf, leaving the first byte of real LaTeX markup at buf[0].
+//
+// Pandoc's OWN standalone LaTeX output opens with a comment block, not a
+// control sequence:
+//
+//	% Options for packages loaded elsewhere
+//	\PassOptionsToPackage{unicode}{hyperref}
+//
+// so a marker scan that only trims whitespace rejects every `-> latex`
+// conversion this package produces ("output failed latex content
+// validation"). `%` is LaTeX's comment character, so skipping those lines is
+// the same normalization a LaTeX reader performs. A file that is ONLY
+// comments still returns false: buf runs empty and the caller's len check
+// rejects it.
+func skipLaTeXLeadingComments(buf []byte) []byte {
+	for {
+		buf = bytes.TrimLeft(buf, " \t\r\n\f\v")
+		if len(buf) == 0 || buf[0] != '%' {
+			return buf
+		}
+		nl := bytes.IndexByte(buf, '\n')
+		if nl < 0 {
+			return nil // trailing comment with no newline: nothing else to scan
+		}
+		buf = buf[nl+1:]
+	}
 }
 
 // hasDisallowedControlByte reports whether buf contains a C0 control byte
@@ -149,11 +178,22 @@ func LooksLikeText(r io.ReaderAt, size int64) bool {
 
 // ErrPandocInputTooLarge is returned when an input file's size exceeds the
 // configured PANDOC_MAX_INPUT_BYTES cap -- fail-closed BEFORE any pandoc
-// subprocess runs (T-47-04/PDCE-03). Pandoc reads its input linearly, so
-// there is no exotic pre-parse "bomb shape" to walk the way there is for
-// zip/pdf (D-04, RESEARCH.md) -- this size cap, plus the engine timeout
-// (Phase 49) bounding output-expansion runaways, are the full defense here.
+// subprocess runs (T-47-04/PDCE-03). For the plain-text members of the
+// markup family pandoc reads its input linearly, so the on-disk size IS the
+// work bound. The zip-shaped members (docx/epub) are the exception, and
+// enforcePandocInputSize applies the cap to their DECLARED UNCOMPRESSED size
+// too -- see that function.
 var ErrPandocInputTooLarge = errors.New("pandoc: input size exceeds configured maximum")
+
+// pandocUncompressedFactor scales the byte cap when it is applied to a
+// container's declared uncompressed size. The compressed cap is a memory
+// proxy: the measured cost is ~300 MiB of anonymous memory per MiB of
+// *parsed* input at the 1Gi worker limit (Phase 50 BLOCKER-1 probe), and a
+// docx/epub is markup plus packaging, so its expanded payload legitimately
+// exceeds its archive size. 4x keeps ordinary office documents working while
+// still bounding the archive-bomb case far below the ~4 MB of real input
+// that OOM-killed the worker live.
+const pandocUncompressedFactor = 4
 
 // enforcePandocInputSize stats inPath and rejects fail-closed when its size
 // exceeds maxBytes. maxBytes == 0 means "no cap configured this phase" --
@@ -161,13 +201,41 @@ var ErrPandocInputTooLarge = errors.New("pandoc: input size exceeds configured m
 // (ocrguards.go). A missing/unstattable file is itself a fail-closed error,
 // never a silent pass -- the same discipline enforceImagePixelBound applies
 // to its own os.Open failure.
+//
+// For a ZIP-shaped input (docx/epub) the on-disk size is the COMPRESSED size,
+// which is not a bound on the work pandoc will do: a highly compressible
+// archive well under the cap can expand to hundreds of megabytes and OOM-kill
+// the worker before the job can be marked terminal -- after which asynq may
+// redeliver the same crashing task. So the declared uncompressed total from
+// SniffContainer's existing single-pass central-directory walk is checked
+// too, against maxBytes*pandocUncompressedFactor. A file that merely fails to
+// parse as a ZIP is NOT rejected here -- it is simply not a container, and
+// pandoc's own reader will reject it if it is malformed.
 func enforcePandocInputSize(inPath string, maxBytes int64) error {
 	info, err := os.Stat(inPath)
 	if err != nil {
 		return fmt.Errorf("pandoc: stat %q: %w", inPath, err)
 	}
-	if maxBytes > 0 && info.Size() > maxBytes {
+	if maxBytes <= 0 {
+		return nil
+	}
+	if info.Size() > maxBytes {
 		return fmt.Errorf("%w: %d bytes exceeds %d byte cap", ErrPandocInputTooLarge, info.Size(), maxBytes)
+	}
+
+	f, err := os.Open(inPath)
+	if err != nil {
+		return fmt.Errorf("pandoc: open %q: %w", inPath, err)
+	}
+	defer f.Close()
+
+	res, err := SniffContainer(f, info.Size())
+	if err != nil {
+		return nil // not a ZIP container: the compressed-size check above is the whole bound
+	}
+	if limit := maxBytes * pandocUncompressedFactor; res.TotalUncompressed > uint64(limit) {
+		return fmt.Errorf("%w: container declares %d uncompressed bytes, exceeds %d byte cap",
+			ErrPandocInputTooLarge, res.TotalUncompressed, limit)
 	}
 	return nil
 }
