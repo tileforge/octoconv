@@ -736,8 +736,16 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueImage, jobs.StatusFailed, time.Since(start))
+			// RecordClientJobOutcome is fire-and-forget, same as
+			// RecordJobOutcome above: a lost Prometheus increment is
+			// tolerable and never retried. This is NOT the same durability
+			// contract as MarkFailed's client_usage_daily rollup (D-05),
+			// which is transactional and exactly-once -- the two calls now
+			// sit on adjacent lines throughout this file but must not be
+			// read as equivalent.
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -757,6 +765,7 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueImage, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -804,7 +813,17 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		//
+		// attempt=0: this guard runs BEFORE MarkActive, so the job never
+		// left `queued` and never occupied a worker slot -- recordUsage
+		// (D-05) derives wall_seconds from jobs.started_at, which is still
+		// NULL here, and falls back to 0 (internal/jobs/usage.go), exactly
+		// mirroring the reconciler exhaustion path's own 0 (Task 2). Applied
+		// identically at every invalid_options site in this file; no
+		// RecordClientJobOutcome call is added here either, mirroring the
+		// existing absence of RecordJobOutcome at these sites -- the
+		// Postgres rollup is authoritative for this asymmetry.
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -838,8 +857,9 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueDocument, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -859,6 +879,7 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueDocument, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -904,7 +925,9 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// attempt=0: this guard runs BEFORE MarkActive (see the Document
+		// handler's invalid_options comment for the full rationale).
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -938,8 +961,9 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueHTML, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -959,6 +983,7 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueHTML, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -1009,7 +1034,9 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// attempt=0: this guard runs BEFORE MarkActive (see the Document
+		// handler's invalid_options comment for the full rationale).
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -1052,11 +1079,12 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 			// failure.
 			var ferr error
 			if errors.Is(err, convert.ErrAudioDurationExceeded) {
-				ferr = h.repo.MarkFailed(ctx, jobID, "duration_exceeded", "declared audio duration exceeds the configured maximum", map[string]any{"engine_stderr": err.Error()})
+				ferr = h.repo.MarkFailed(ctx, jobID, "duration_exceeded", "declared audio duration exceeds the configured maximum", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			} else {
-				ferr = h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()})
+				ferr = h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			}
 			metrics.RecordJobOutcome(queue.QueueAudio, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1076,6 +1104,7 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueAudio, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -1161,7 +1190,9 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// attempt=0: this guard runs BEFORE MarkActive (see the Document
+		// handler's invalid_options comment for the full rationale).
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -1196,8 +1227,9 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
 			code, message := avFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueAV, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1217,6 +1249,7 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueAV, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -1268,7 +1301,9 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// attempt=0: this guard runs BEFORE MarkActive (see the Document
+		// handler's invalid_options comment for the full rationale).
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -1303,8 +1338,9 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
 			code, message := ocrFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1324,6 +1360,7 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -1379,7 +1416,9 @@ func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error 
 		// reconciler requeues it into the same failure until MaxRecoveries
 		// is exhausted (T-14-02b). Sanitized message only; the parse error
 		// is kept in job_events.detail for internal diagnostics.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()})
+		// attempt=0: this guard runs BEFORE MarkActive (see the Document
+		// handler's invalid_options comment for the full rationale).
+		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
 		// Postgres-first: enqueue the webhook ONLY once the failed status is
 		// actually committed — if MarkFailed itself failed, a webhook now
 		// would report the non-terminal status "queued" (WR-04). A failed
@@ -1414,8 +1453,9 @@ func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error 
 			// (which contains local temp paths) is kept in job_events.detail
 			// for internal diagnostics only.
 			code, message := pandocFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()})
+			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusFailed, time.Since(start))
+			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusFailed)
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1435,6 +1475,7 @@ func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error 
 		return err
 	}
 	metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusDone, time.Since(start))
+	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusDone)
 	// Postgres-first: MarkDone already committed inside process(), so a
 	// failed enqueue must not fail the conversion — best-effort only.
 	if job.CallbackURL != "" {
@@ -1769,6 +1810,16 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	attemptCtx, cancelFn := context.WithTimeout(ctx, h.engineTimout)
 	defer cancelFn()
 
+	// attemptStart is a SEPARATE clock from each Handle*Convert caller's own
+	// `start` local: it measures only the engine attempt this transaction is
+	// accounting for (the client_usage_daily wall_seconds column threaded
+	// into MarkDone below), while the caller's `start` continues to feed
+	// metrics.RecordJobOutcome's duration histogram unchanged. Captured here
+	// (immediately after the attempt context, before cancel registration and
+	// any download/convert/upload work) so it covers the FULL attempt this
+	// call to MarkDone is committing, not just the engine invocation.
+	attemptStart := time.Now()
+
 	// D-04: register the per-attempt CancelFunc BEFORE any download/convert/
 	// upload work so the job:cancel Subscriber (internal/cancel) can find and
 	// invoke it for the whole attempt window, and deregister on return
@@ -1838,7 +1889,7 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return err
 	}
 
-	return h.repo.MarkDone(attemptCtx, job.ID)
+	return h.repo.MarkDone(attemptCtx, job.ID, time.Since(attemptStart))
 }
 
 func (h *Handler) inputKey(ctx context.Context, jobID uuid.UUID) (jobs.Input, error) {
