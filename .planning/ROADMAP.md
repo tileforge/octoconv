@@ -350,7 +350,7 @@ Plans:
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
-| 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete   | 2026-08-02 |
+| 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 0/TBD | Not started | - |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
