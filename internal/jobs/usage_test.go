@@ -2,6 +2,8 @@ package jobs
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -361,4 +363,151 @@ func TestRecordUsageAccumulatesSameBucket(t *testing.T) {
 	if bytesOut != 10 {
 		t.Fatalf("bytes_out = %d, want 10 (5+5)", bytesOut)
 	}
+}
+
+// TestRecordUsageExactlyOnceUnderConcurrentMarkDone is the load-bearing
+// concurrency proof this plan exists for: exactly-once accounting is a
+// PROPERTY OF THE GUARDED TRANSITION (transition's SELECT ... FOR UPDATE +
+// source-status allow-list), not of the rollup UPSERT, which is deliberately
+// non-idempotent. Two goroutines race to MarkDone the same active job; the
+// allow-list must let exactly one commit, and client_usage_daily must show
+// exactly one job_count / one set of byte totals — not merely "an error
+// occurred somewhere". A future refactor that moves recordUsage out of the
+// apply closure (back onto a separate, non-transactional write) breaks this
+// test, which is the point: see the inversion check recorded in the SUMMARY.
+func TestRecordUsageExactlyOnceUnderConcurrentMarkDone(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID: clientID, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/ru6/0-in.png", Filename: "in.png", Format: "png", SizeBytes: 111},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.AddOutput(ctx, id, Output{Ordinal: 0, ObjectKey: "results/ru6/0-out.webp", Filename: "out.webp", Format: "webp", SizeBytes: 22, ContentType: "image/webp"}); err != nil {
+		t.Fatalf("AddOutput: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = r.MarkDone(ctx, id, 0)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var okCount, errCount int
+	for _, err := range errs {
+		if err == nil {
+			okCount++
+			continue
+		}
+		errCount++
+		if !strings.Contains(err.Error(), "illegal transition") {
+			t.Fatalf("losing MarkDone error = %v, want it to contain %q", err, "illegal transition")
+		}
+	}
+	if okCount != 1 || errCount != 1 {
+		t.Fatalf("okCount=%d errCount=%d, want exactly one winner and one loser", okCount, errCount)
+	}
+
+	var jobCount, bytesIn, bytesOut int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT job_count, bytes_in, bytes_out FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND status = 'done'`, clientID,
+	).Scan(&jobCount, &bytesIn, &bytesOut); err != nil {
+		t.Fatalf("query client_usage_daily: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("job_count = %d, want exactly 1 (double-counting under concurrent MarkDone)", jobCount)
+	}
+	if bytesIn != 111 {
+		t.Fatalf("bytes_in = %d, want 111 (single job's total, not doubled)", bytesIn)
+	}
+	if bytesOut != 22 {
+		t.Fatalf("bytes_out = %d, want 22 (single job's total, not doubled)", bytesOut)
+	}
+}
+
+// TestRecordUsageSecondTerminalTransitionIsRejected is the sequential
+// counterpart to the concurrency proof above: a second MarkDone on an
+// already-done job, and a MarkDone followed by MarkFailed, must both be
+// rejected by the allow-list before recordUsage ever runs — neither may add
+// a client_usage_daily row.
+func TestRecordUsageSecondTerminalTransitionIsRejected(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	t.Run("MarkDone then MarkDone", func(t *testing.T) {
+		id, err := r.Create(ctx, CreateParams{
+			ClientID: clientID, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+			Input: Input{ObjectKey: "uploads/ru7a/0-in.png", Filename: "in.png", Format: "png"},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive: %v", err)
+		}
+		if err := r.MarkDone(ctx, id, 0); err != nil {
+			t.Fatalf("first MarkDone: %v", err)
+		}
+		if err := r.MarkDone(ctx, id, 0); err == nil {
+			t.Fatalf("second MarkDone on an already-done job must error, got nil")
+		}
+
+		var jobCount int64
+		if err := r.pool.QueryRow(ctx, `
+			SELECT job_count FROM client_usage_daily
+			WHERE client_id = $1 AND engine = 'image' AND status = 'done'`, clientID,
+		).Scan(&jobCount); err != nil {
+			t.Fatalf("query client_usage_daily: %v", err)
+		}
+		if jobCount != 1 {
+			t.Fatalf("job_count = %d, want 1 (rejected second MarkDone must not add a row)", jobCount)
+		}
+	})
+
+	t.Run("MarkDone then MarkFailed", func(t *testing.T) {
+		id, err := r.Create(ctx, CreateParams{
+			ClientID: clientID, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+			Input: Input{ObjectKey: "uploads/ru7b/0-in.png", Filename: "in.png", Format: "png"},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive: %v", err)
+		}
+		if err := r.MarkDone(ctx, id, 0); err != nil {
+			t.Fatalf("MarkDone: %v", err)
+		}
+		if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil, 0); err == nil {
+			t.Fatalf("MarkFailed on an already-done job must error, got nil")
+		}
+
+		var failedCount int64
+		if err := r.pool.QueryRow(ctx, `
+			SELECT count(*) FROM client_usage_daily
+			WHERE client_id = $1 AND engine = 'image' AND status = 'failed'`, clientID,
+		).Scan(&failedCount); err != nil {
+			t.Fatalf("query client_usage_daily: %v", err)
+		}
+		if failedCount != 0 {
+			t.Fatalf("failed row count = %d, want 0 (rejected MarkFailed after MarkDone must not add a row)", failedCount)
+		}
+	})
 }
