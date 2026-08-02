@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"errors"
 	"io"
+	"math"
 )
 
 // ContainerResult is the outcome of a single ZIP-central-directory pass used
@@ -75,7 +76,18 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 	nameCount := map[string]int{}
 
 	for i, f := range zr.File {
-		res.TotalUncompressed += f.UncompressedSize64
+		// Saturating add: UncompressedSize64 comes from the central
+		// directory, which is attacker-controlled and never validated
+		// against the actual payload. Two entries each declaring ~2^63 would
+		// wrap a plain += back to a small total, turning both this sum and
+		// every zip-bomb check built on it (handlers.go's
+		// maxDocumentUncompressedBytes, enforcePandocInputSize) into a
+		// bypass. Saturating at MaxUint64 fails closed instead.
+		if f.UncompressedSize64 > math.MaxUint64-res.TotalUncompressed {
+			res.TotalUncompressed = math.MaxUint64
+		} else {
+			res.TotalUncompressed += f.UncompressedSize64
+		}
 
 		if ooxmlMacroParts[f.Name] || hasBasicPrefix(f.Name) {
 			res.HasMacro = true

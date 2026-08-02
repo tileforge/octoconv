@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"unicode/utf8"
 )
@@ -233,7 +234,16 @@ func enforcePandocInputSize(inPath string, maxBytes int64) error {
 	if err != nil {
 		return nil // not a ZIP container: the compressed-size check above is the whole bound
 	}
-	if limit := maxBytes * pandocUncompressedFactor; res.TotalUncompressed > uint64(limit) {
+	// Compute the limit in uint64 with a saturating multiply: maxBytes is
+	// operator-supplied, and an absurdly large configured cap would overflow
+	// a plain int64 multiply into a NEGATIVE number, which uint64() then
+	// widens into a near-MaxUint64 limit that no archive could ever exceed --
+	// silently disabling the guard. Saturating keeps it merely permissive.
+	limit := uint64(math.MaxUint64)
+	if m := uint64(maxBytes); m <= math.MaxUint64/pandocUncompressedFactor {
+		limit = m * pandocUncompressedFactor
+	}
+	if res.TotalUncompressed > limit {
 		return fmt.Errorf("%w: container declares %d uncompressed bytes, exceeds %d byte cap",
 			ErrPandocInputTooLarge, res.TotalUncompressed, limit)
 	}

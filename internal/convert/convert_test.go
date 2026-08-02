@@ -17,6 +17,11 @@ func TestNormalizeFormat(t *testing.T) {
 		"webp":  "webp",
 		"htm":   "html",
 		".HTM":  "html",
+		// `.tex` is the conventional LaTeX extension; without this alias a
+		// real paper.tex matched no registered pair and 422'd.
+		"tex":   "latex",
+		".TeX":  "latex",
+		"latex": "latex",
 	}
 	for in, want := range cases {
 		if got := NormalizeFormat(in); got != want {
