@@ -59,17 +59,29 @@ func (r *Repo) PurgeJobs(ctx context.Context, olderThan time.Duration, batch int
 	// but it activates the moment sub-jobs exist (SEED-017 PDF split, SEED-018
 	// pipelines), and while no row has a parent the recursive join matches
 	// nothing and costs nothing.
+	// The blocked-root exclusion is applied BEFORE the LIMIT, not after. Doing
+	// it the other way round deadlocks the purge: if the oldest `batch` roots
+	// all have a live descendant, the DELETE affects zero rows, the caller's
+	// `n < batch` loop-exit fires, and the next tick re-selects the same
+	// blocked head forever -- so eligible jobs behind them are never purged at
+	// all. Filtering first means the batch is always `batch` genuinely
+	// deletable roots, and the sweep advances past protected ones.
+	//
+	// The cost of that ordering is that `eligible` spans the whole terminal
+	// population rather than one batch, which is what jobs_retention_idx
+	// (0012) exists to serve. The recursive walk stays cheap regardless: it
+	// joins on jobs_parent_idx, a partial index over `parent_id IS NOT NULL`,
+	// so while no row has a parent it matches nothing on the first iteration
+	// and terminates.
 	tag, err := r.pool.Exec(ctx, `
-		WITH RECURSIVE candidate AS (
-			SELECT id FROM jobs
+		WITH RECURSIVE eligible AS (
+			SELECT id, created_at FROM jobs
 			WHERE created_at < $1 AND status NOT IN ('queued', 'active')
-			ORDER BY created_at
-			LIMIT $2
 		),
 		descendant AS (
-			SELECT c.id AS root, j.id, j.created_at, j.status
-			FROM candidate c
-			JOIN jobs j ON j.parent_id = c.id
+			SELECT e.id AS root, j.id, j.created_at, j.status
+			FROM eligible e
+			JOIN jobs j ON j.parent_id = e.id
 			UNION ALL
 			SELECT d.root, j.id, j.created_at, j.status
 			FROM descendant d
@@ -78,11 +90,14 @@ func (r *Repo) PurgeJobs(ctx context.Context, olderThan time.Duration, batch int
 		blocked AS (
 			SELECT DISTINCT root FROM descendant
 			WHERE created_at >= $1 OR status IN ('queued', 'active')
-		)
-		DELETE FROM jobs WHERE id IN (
-			SELECT id FROM candidate
+		),
+		candidate AS (
+			SELECT id FROM eligible
 			WHERE id NOT IN (SELECT root FROM blocked)
-		)`, cutoff, batch)
+			ORDER BY created_at
+			LIMIT $2
+		)
+		DELETE FROM jobs WHERE id IN (SELECT id FROM candidate)`, cutoff, batch)
 	if err != nil {
 		return 0, fmt.Errorf("purge jobs older than %s: %w", olderThan, err)
 	}

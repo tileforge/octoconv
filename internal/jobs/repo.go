@@ -342,11 +342,32 @@ func (r *Repo) RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, stat
 	return nil
 }
 
-// AddOutput inserts a job_outputs row.
+// AddOutput upserts a job_outputs row, keyed by the logical output identity
+// (job_id, ordinal).
+//
+// This MUST stay an upsert rather than a plain INSERT. recordUsage sums
+// size_bytes over every row for the job without filtering on ordinal (so a
+// future multi-output job is not under-counted), and MarkActive permits
+// active -> active so a same-task asynq retry re-enters the handler and runs
+// the conversion again. A plain INSERT therefore left two rows for one logical
+// output whenever AddOutput committed and the following MarkDone failed
+// transiently, and the eventual terminal transition summed both -- permanently
+// overstating bytes_out in a rollup that is never revisited. See
+// 0012_output_identity_and_retention_index.sql.
+//
+// DO UPDATE rather than DO NOTHING: the retried conversion may legitimately
+// produce a different object_key or size, and the newest attempt is the one
+// whose object actually exists in storage.
 func (r *Repo) AddOutput(ctx context.Context, jobID uuid.UUID, o Output) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (job_id, ordinal) DO UPDATE SET
+			object_key   = EXCLUDED.object_key,
+			filename     = EXCLUDED.filename,
+			format       = EXCLUDED.format,
+			size_bytes   = EXCLUDED.size_bytes,
+			content_type = EXCLUDED.content_type`,
 		jobID, o.Ordinal, o.ObjectKey, o.Filename, o.Format, o.SizeBytes, o.ContentType)
 	if err != nil {
 		return fmt.Errorf("insert job_output: %w", err)

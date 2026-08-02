@@ -362,3 +362,50 @@ func TestPurgeJobsSparesParentWithLiveDescendant(t *testing.T) {
 		t.Fatalf("child must be spared while its own descendant is ineligible: %v", err)
 	}
 }
+
+// TestPurgeJobsAdvancesPastBlockedRoots pins the liveness property that the
+// subtree guard must not cost: a blocked root at the head of the creation
+// order must not stop the sweep from reaching eligible jobs behind it.
+//
+// With the guard applied AFTER the LIMIT, the batch is filled with the oldest
+// roots, the guard then removes all of them, the DELETE affects zero rows, and
+// the caller's `n < batch` loop-exit fires -- so the next tick re-selects the
+// same blocked head and the eligible job behind it is never purged, forever.
+// batch=1 makes that head-of-line block exact rather than probabilistic.
+func TestPurgeJobsAdvancesPastBlockedRoots(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	// Oldest, and permanently blocked: terminal parent with a live child.
+	blockedParentID := createAgedJob(t, r, clientID, StatusDone, 120*24*time.Hour)
+	liveChildID := createAgedJob(t, r, clientID, StatusActive, 120*24*time.Hour)
+	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET parent_id = $1 WHERE id = $2`, blockedParentID, liveChildID); err != nil {
+		t.Fatalf("link live child to blocked parent: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, blockedParentID)
+	})
+
+	// Newer than the blocked root, and fully eligible.
+	eligibleID := createAgedJob(t, r, clientID, StatusDone, 100*24*time.Hour)
+
+	// batch=1: without the fix the single slot is consumed by the blocked
+	// root and the DELETE affects nothing.
+	n, err := r.PurgeJobs(ctx, 90*24*time.Hour, 1)
+	if err != nil {
+		t.Fatalf("PurgeJobs: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("purge must advance past the blocked root and delete the eligible job behind it: rows affected = %d, want 1", n)
+	}
+	if _, err := r.Get(ctx, eligibleID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("eligible job behind a blocked root must be purged, got err=%v", err)
+	}
+	if _, err := r.Get(ctx, blockedParentID); err != nil {
+		t.Fatalf("blocked root must still be spared: %v", err)
+	}
+	if _, err := r.Get(ctx, liveChildID); err != nil {
+		t.Fatalf("live child must still survive: %v", err)
+	}
+}

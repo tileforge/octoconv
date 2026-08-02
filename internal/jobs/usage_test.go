@@ -73,6 +73,72 @@ func TestRecordUsageSumsAllOrdinals(t *testing.T) {
 	}
 }
 
+// TestRecordUsageIsNotInflatedByRetriedOutput reproduces the real retry
+// sequence that made the rollup over-count, and pins the fix.
+//
+// AddOutput commits on its own connection, outside the terminal transition. If
+// MarkDone then fails transiently, asynq retries the SAME task; MarkActive
+// permits active -> active precisely so that re-entry is legal, the conversion
+// runs again, and AddOutput is called a second time for the same logical
+// output. With AddOutput as a plain INSERT and no uniqueness on
+// (job_id, ordinal), that left two rows, and recordUsage -- which deliberately
+// sums across every ordinal so multi-output jobs are not under-counted --
+// summed both. The rollup is written inside the terminal transaction and never
+// revisited, so the overstatement was permanent.
+//
+// The assertion is on bytes_out, not on the row count, because the row count
+// is an implementation detail of the fix while the corrupted number is what
+// actually reaches an operator.
+func TestRecordUsageIsNotInflatedByRetriedOutput(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  clientID,
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{Ordinal: 0, ObjectKey: "uploads/rud/0-in.png", Filename: "in.png", Format: "png", SizeBytes: 100},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Attempt 1: activate, write the output, then have the terminal
+	// transition never happen (the transient MarkDone failure).
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive (attempt 1): %v", err)
+	}
+	out := Output{Ordinal: 0, ObjectKey: "results/rud/0-out.webp", Filename: "out.webp", Format: "webp", SizeBytes: 40, ContentType: "image/webp"}
+	if err := r.AddOutput(ctx, id, out); err != nil {
+		t.Fatalf("AddOutput (attempt 1): %v", err)
+	}
+
+	// Attempt 2: asynq redelivers the same task. active -> active is allowed
+	// by design, the conversion reruns, and the same logical output is
+	// written again.
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("MarkActive (attempt 2) must be legal — active -> active is how same-task retry re-enters: %v", err)
+	}
+	if err := r.AddOutput(ctx, id, out); err != nil {
+		t.Fatalf("AddOutput (attempt 2): %v", err)
+	}
+
+	if err := r.MarkDone(ctx, id, 0); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+
+	var bytesOut int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT bytes_out FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND status = 'done'`, clientID,
+	).Scan(&bytesOut); err != nil {
+		t.Fatalf("query client_usage_daily: %v", err)
+	}
+	if bytesOut != 40 {
+		t.Fatalf("bytes_out = %d, want exactly 40: a retried write of the SAME logical output must not be summed twice", bytesOut)
+	}
+}
+
 // TestRecordUsageFailedPathAndStatusSeparation pins D-04: done and failed
 // jobs for the same client/engine/day land in two DISTINCT rows, each with
 // job_count = 1, differing only by status.
