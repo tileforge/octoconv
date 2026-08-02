@@ -108,5 +108,20 @@ data:
   RECONCILER_ACTIVE_STALE_AFTER: "15m"
   RECONCILER_SWEEP_INTERVAL: "1m"
   RECONCILER_MAX_RECOVERIES: "3"
+  # Retention (RETN-01, Phase 51 Plan 04, D-11/D-12/D-13): batched purge on
+  # this same reconciler tick, webhook-worker-only. Go durations have no day
+  # unit -- 2160h=90d, 9600h=400d (.env.example has the full rationale).
+  # Byte-identical across .env.example/docker-compose.yml/this file and the
+  # Go envDuration/envInt fallbacks in cmd/webhook-worker/main.go.
+  JOBS_RETENTION: "2160h"
+  USAGE_RETENTION: "9600h"
+  RETENTION_BATCH_SIZE: "1000"
   STORAGE_TTL: "168h"
+  # ACCT-04, D-08: caps distinct client_id label values admitted onto
+  # octoconv_client_job_outcomes_total. Unlike the RECONCILER_*/retention
+  # keys above, this is NOT a per-process-must-match-exactly value (D-10:
+  # the admitted-label map is per-process by design) -- the compiled Go
+  # default (200) already applies everywhere this is left unset, so a
+  # single shared ConfigMap entry is sufficient.
+  METRICS_CLIENT_ID_CEILING: "200"
   OPERATOR_CLIENT_IDS: {{ .Values.api.operatorClientIds | default "" | quote }}
