@@ -5,7 +5,7 @@ milestone_name: Pandoc Engine
 status: Awaiting next milestone
 stopped_at: Milestone v1.11 shipped and archived (audit passed 9/9 requirements, 6/6 seams)
 last_updated: "2026-08-02T01:07:19.182Z"
-last_activity: 2026-08-02 — Quick task 260802-9zc: LooksLikeHTML mid-rune fix (last instance of PR#2 finding-2)
+last_activity: 2026-08-02 — Quick task 260802-asr: three frontend bugs from PR#2 review closed
 progress:
   total_phases: 4
   completed_phases: 4
@@ -178,6 +178,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 | 260728-0ay | Модернизация frontend SPA под API v1.10: динамические форматы из /v1/formats (6 движков), живой SSE-прогресс видео (fetch+ReadableStream, progress bar + ETA) с polling-фолбэком, статусы active/canceled, кнопка Cancel, hint про localhost:9100 для download. `npm run build` зелёный. | 2026-07-28 | b3351d0 | [260728-0ay-modernize-frontend-spa-to-api-v1-10-with](./quick/260728-0ay-modernize-frontend-spa-to-api-v1-10-with/) |
 | 260802-9de | Закрытие оставшихся замечаний code review PR#2: потолок pandoc-аплоада в API теперь берётся из PANDOC_MAX_INPUT_BYTES (оверсайз отклоняется на входе, а не падает асинхронно в воркере), и обрезка неполной UTF-8-руны перед валидацией sniff-префикса (файлы >1 MiB больше не отклоняются ложно) | 2026-08-02 | fbc51ea | [260802-9de-close-remaining-pr-2-review-findings-enf](./quick/260802-9de-close-remaining-pr-2-review-findings-enf/) |
 | 260802-9zc | Устранён последний экземпляр PR#2 finding-2: LooksLikeHTML держал собственную копию логики sniff-префикса и потому не получил фикс обрезки неполной UTF-8-руны — HTML-файлы >1 MiB с руной на границе кэпа отклонялись ложно. Копия заменена вызовом общего readSniffPrefix | 2026-08-02 | fff79da | [260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i](./quick/260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i/) |
+| 260802-asr | Три фронтенд-бага из ревью PR#2: терминальный SSE-кадр отбрасывал финальный GET и готовая конверсия оставалась без ссылки Download (job?.status убран из deps эффекта, запись гейтится по identity джобы); finalize получил bounded retry (3 попытки, backoff 400/1200мс, только 5xx/429/408/сеть); селектор таргетов фильтруется по формату выбранного файла с зеркалом NormalizeFormat (jpeg/tif/htm/tex) вместо глобального объединения, дававшего избегаемые 422. Добавлен vitest, 23 теста | 2026-08-02 | d41593d | [260802-asr-fix-three-frontend-bugs-found-in-pr-2-re](./quick/260802-asr-fix-three-frontend-bugs-found-in-pr-2-re/) |
 
 ### Pending Todos
 
