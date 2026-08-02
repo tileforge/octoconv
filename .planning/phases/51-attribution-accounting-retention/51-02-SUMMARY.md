@@ -109,3 +109,13 @@ None. No UI or data-consuming code was touched by this plan.
 ---
 *Phase: 51-attribution-accounting-retention*
 *Completed: 2026-08-02*
+
+## Self-Check: PASSED
+
+- FOUND: internal/jobs/usage.go
+- FOUND: internal/jobs/usage_test.go
+- FOUND: .planning/phases/51-attribution-accounting-retention/51-02-SUMMARY.md
+- FOUND commit: b464af9 (feat(51-02): write client_usage_daily rollup inside the terminal transition)
+- FOUND commit: ae9adcb (test(51-02): prove the accounting boundaries — status separation, orphaned client, wall-time, accumulation)
+- FOUND commit: f0bb0a8 (test(51-02): prove exactly-once accounting under concurrent terminal transitions)
+- FOUND commit: 18714cb (docs(51-02): complete transactional usage rollup plan)
