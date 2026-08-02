@@ -1,17 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.11
-milestone_name: Pandoc Engine
-status: Awaiting next milestone
-stopped_at: Milestone v1.11 shipped and archived (audit passed 9/9 requirements, 6/6 seams)
-last_updated: "2026-08-02T01:07:19.182Z"
-last_activity: 2026-08-02 — Quick task 260802-asr: three frontend bugs from PR#2 review closed
+milestone: v1.12
+milestone_name: Consumer Accounting & Fairness
+status: planning
+last_updated: "2026-08-02T06:26:32.654Z"
+last_activity: 2026-08-02
 progress:
-  total_phases: 4
-  completed_phases: 4
-  total_plans: 14
-  completed_plans: 14
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -25,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
 
 ## Current Position
 
-Phase: Milestone v1.11 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-08-02 — Milestone v1.11 completed and archived
+Status: Defining requirements
+Last activity: 2026-08-02 — Milestone v1.12 started
 
 ## Performance Metrics
 
