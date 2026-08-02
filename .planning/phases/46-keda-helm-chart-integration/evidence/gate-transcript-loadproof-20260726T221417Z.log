@@ -1,0 +1,140 @@
+=== Phase 46 ocr scale-from-zero live-proof gate (OCRP-02, SC3) ===
+run timestamp: 20260726T221417Z
+evidence dir: .planning/phases/46-keda-helm-chart-integration/evidence
+
+--- STEP 1: preflight ---
+PASS: kubectl reaches the OrbStack cluster (context: orbstack)
+PASS: compose stack is down (0 octoconv-* containers running)
+PASS: octoconv-ocr-worker:dev present locally
+PASS: KEDA v2.20.1 re-verified resolvable in kedacore/keda (live)
+
+--- STEP 2: helm install KEDA v2.20.1 into namespace keda ---
+NAME: keda
+LAST DEPLOYED: Mon Jul 27 01:14:18 2026
+NAMESPACE: keda
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+:::^.     .::::^:     :::::::::::::::    .:::::::::.                   .^.                  
+7???~   .^7????~.     7??????????????.   :?????????77!^.              .7?7.                 
+7???~  ^7???7~.       ~!!!!!!!!!!!!!!.   :????!!!!7????7~.           .7???7.                
+7???~^7????~.                            :????:    :~7???7.         :7?????7.               
+7???7????!.           ::::::::::::.      :????:      .7???!        :7??77???7.              
+7????????7:           7???????????~      :????:       :????:      :???7?5????7.             
+7????!~????^          !77777777777^      :????:       :????:     ^???7?#P7????7.            
+7???~  ^????~                            :????:      :7???!     ^???7J#@J7?????7.           
+7???~   :7???!.                          :????:   .:~7???!.    ~???7Y&@#7777????7.          
+7???~    .7???7:      !!!!!!!!!!!!!!!    :????7!!77????7^     ~??775@@@GJJYJ?????7.         
+7???~     .!????^     7?????????????7.   :?????????7!~:      !????G@@@@@@@@5??????7:        
+::::.       :::::     :::::::::::::::    .::::::::..        .::::JGGGB@@@&7:::::::::        
+                                                                      ?@@#~                  
+                                                                      P@B^                   
+                                                                    :&G:                    
+                                                                    !5.                     
+                                                                    .Kubernetes Event-driven Autoscaling (KEDA) - Application autoscaling made simple.
+
+Get started by deploying Scaled Objects to your cluster:
+    - Information about Scaled Objects : https://keda.sh/docs/latest/concepts/
+    - Samples: https://github.com/kedacore/samples
+
+Get information about the deployed ScaledObjects:
+  kubectl get scaledobject [--namespace <namespace>]
+
+Get details about a deployed ScaledObject:
+  kubectl describe scaledobject <scaled-object-name> [--namespace <namespace>]
+
+Get information about the deployed TriggerAuthentications:
+  kubectl get triggerauthentication [--namespace <namespace>]
+
+Get details about a deployed TriggerAuthentication:
+  kubectl describe triggerauthentication <trigger-authentication-name> [--namespace <namespace>]
+
+Get an overview of the Horizontal Pod Autoscalers (HPA) that KEDA is using behind the scenes:
+  kubectl get hpa [--all-namespaces] [--namespace <namespace>]
+
+Learn more about KEDA:
+- Documentation: https://keda.sh/
+- Support: https://keda.sh/support/
+- File an issue: https://github.com/kedacore/keda/issues/new/choose
+PASS: KEDA v2.20.1 installed/upgraded, operator Deployments Available
+
+--- STEP 3: waiting for v1beta1.external.metrics.k8s.io to become Available ---
+PASS: v1beta1.external.metrics.k8s.io Available:True
+
+--- STEP 4: helm install octoconv -f values-local.yaml ---
+NAME: octoconv
+LAST DEPLOYED: Mon Jul 27 01:14:43 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: helm install octoconv complete (async install; readiness gated below)
+
+--- waiting for always-on / min-1 Deployments to become Available ---
+deployment.apps/postgres condition met
+PASS: deployment/postgres Available
+deployment.apps/redis condition met
+PASS: deployment/redis Available
+deployment.apps/minio condition met
+PASS: deployment/minio Available
+deployment.apps/api condition met
+PASS: deployment/api Available
+deployment.apps/prometheus condition met
+PASS: deployment/prometheus Available
+deployment.apps/webhook-worker condition met
+PASS: deployment/webhook-worker Available
+
+--- STEP 4b: seed asynq queue registry (Redis), including ocr, so the absent-metric fallback resolves to a real zero ---
+PASS: redis pod discovered for queue-registry seeding == redis-6b657cd497-sss42
+PASS: asynq:queues seeded (image, document, html, audio, av, ocr, webhook) -- zero tasks created, no worker processing triggered
+
+--- STEP 5: port-forward api+postgres, mint client key ---
+waiting for port-forwarded /healthz...
+PASS: api reachable via port-forward, /healthz 200 ({"postgres":"ok","redis":"ok","s3":"ok","status":"ok"})
+PASS: minted gate client + API key == [REDACTED, 43 chars]
+
+--- STEP 6: confirm ocr-worker settles at 0 replicas before triggering ---
+waiting for ocr-worker to settle at 0 replicas (KEDA cooldownPeriod=180s + margin)...
+PASS: ocr-worker Deployment status.replicas before any job (genuine zero) == 0
+
+--- STEP 7: trigger ocr scale-from-zero with text_sample.png, capture pod event timeline ---
+PASS: ocr trigger job submitted (text_sample.png -> txt) == 4c68a9f8-3049-4228-ae58-6a9ca2e10bcd
+PASS: ocr-worker scaled 0->1 after trigger job 4c68a9f8-3049-4228-ae58-6a9ca2e10bcd
+PASS: ocr-worker pod identified for event-timeline capture == ocr-worker-668f597979-fvtkv
+pod snapshot loop started (pid=27357, own process group)
+waiting for ocr-worker pod ocr-worker-668f597979-fvtkv readiness (bounded 300s, well under OCR_ENGINE_TIMEOUT=744s + cold-start margin)...
+ocr-worker pod ocr-worker-668f597979-fvtkv ready=true after 3s
+PASS: ocr pod Scheduled event timestamp captured == null
+PASS: ocr pod Started event timestamp captured == 2026-07-26T22:19:02Z
+PASS: ocr scale-from-zero event-timeline captured -- .planning/phases/46-keda-helm-chart-integration/evidence/sc3-ocr-scale-from-zero-20260726T221417Z.txt
+
+--- STEP 8: confirm trigger job 4c68a9f8-3049-4228-ae58-6a9ca2e10bcd reaches a terminal status ---
+PASS: trigger job 4c68a9f8-3049-4228-ae58-6a9ca2e10bcd reaches done == done
+
+--- STEP 9: confirm ocr-worker drains back to 0 replicas after the trigger job completes ---
+PASS: ocr-worker full-cycled back to 0 replicas (observed: 0)
+
+=== ALL 11 ASSERTIONS PASSED ===
+SC3-ocr (OCRP-02): ocr-worker scaled 0->1 from a genuine zero on the committed text_sample.png -> txt submission, drained back to 0; event-timeline (Scheduled->Pulling->Pulled->Created->Started) captured with real timestamps -- PASS
+Evidence: .planning/phases/46-keda-helm-chart-integration/evidence/sc3-ocr-scale-from-zero-20260726T221417Z.txt, .planning/phases/46-keda-helm-chart-integration/evidence/gate-transcript-loadproof-20260726T221417Z.log
+
+=== TEARDOWN (OrbStack must never be left hot) ===
+waiting for octoconv workloads to be gone...
+octoconv namespace deployments remaining: 0
+
+PASS -- Phase 46 ocr scale-from-zero load-proof gate run complete (11 checks). Transcript: .planning/phases/46-keda-helm-chart-integration/evidence/gate-transcript-loadproof-20260726T221417Z.log
