@@ -201,6 +201,19 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
   3. `client_id` label/cardinality is bounded to the known `clients` table (an unrecognized or malformed ID never mints a new series), with the bound and its overflow behavior documented explicitly, not left to "hope clients stay few."
   4. The new usage table states its own retention/rollup design in the migration that creates it (grows with `clients × engines × days`, not with raw job volume), and the pre-existing `jobs`/`job_events` unbounded-growth gap gets an explicit, operator-visible retention policy instead of being silently repeated by the new table.
   5. Re-running the existing KEDA scale-from-zero live gate after the new metrics/table land shows no regression — accounting is additive to the platform's operational surface, not a new blast radius for autoscaling.
+  6. Byte accounting sums over ALL of a job's inputs and outputs (`ListInputs`/`ListOutputs`, `ORDER BY ordinal`) rather than reading ordinal 0 — so a job that ever produces or consumes more than one file is counted correctly without an accounting rewrite. See the constraint note below.
+
+**Constraint — do not hardcode one-input/one-output (added 2026-08-02, SEED-017):**
+Today every job is exactly one input, one engine invocation, one output, so
+reading `job_inputs`/`job_outputs` at ordinal 0 would work and would be the
+natural thing to write. It must not be written that way. The schema has carried
+an `ordinal` column on both tables since `0001_init.sql`, `internal/jobs/repo.go`
+already exposes `ListInputs`/`ListOutputs` ordered by it, and SEED-017 (PDF
+split/merge) is the first concrete demand for N — split alone produces N outputs
+from one input. Baking the 1:1 assumption into the accounting layer would make
+byte totals silently wrong the moment that lands, and retrofitting it is exactly
+the multi-site value drift that bit this project twice during v1.11. Summing over
+the lists costs nothing now.
 
 **Plans**: TBD
 
