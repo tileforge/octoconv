@@ -10,21 +10,6 @@ export type FormatsResponse = {
   engines: Record<string, { pairs: [string, string][] }>;
 };
 
-/**
- * targetFormatsOf returns the deduped, alphabetically sorted union of every
- * engine class's target formats (pair[1]), so all engine classes reported by
- * GET /v1/formats are reachable from a single select box.
- */
-export function targetFormatsOf(resp: FormatsResponse): string[] {
-  const targets = new Set<string>();
-  for (const engine of Object.values(resp.engines)) {
-    for (const pair of engine.pairs) {
-      targets.add(pair[1]);
-    }
-  }
-  return Array.from(targets).sort();
-}
-
 export type CreateJobResponse = {
   job_id: string;
   status: JobStatus;
