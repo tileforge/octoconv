@@ -82,17 +82,25 @@ func main() {
 	// ErrPandocInputTooLarge doc comment), so this cap plus the engine
 	// timeout below are the full defense-in-depth here, layered over the
 	// API's own maxEngineBytes upload-time gate (Plan 02).
+	// NOTE the 50 MiB default is an UNCONSTRAINED-HOST default, safe only where
+	// memory is plentiful. Both deployed configs (docker-compose.yml and the
+	// chart ConfigMap) override it to 3 MiB, because the measured cost is
+	// ~300 MiB of anonymous memory per MiB of input at this markup density --
+	// a 1Gi container cannot afford more (50-04 live OOMKill at 4.09 MB, then
+	// evidence/blocker1-memory-probe-20260802.txt). Do not raise the deployed
+	// value without re-running that probe.
 	pandocMaxInputBytes := envInt64("PANDOC_MAX_INPUT_BYTES", 50<<20)
 	convert.Default.Register(buildPandocConverter(pandocMaxInputBytes))
 	log.Printf("📏 PANDOC_MAX_INPUT_BYTES=%d", pandocMaxInputBytes)
 
-	// PANDOC_ENGINE_TIMEOUT default of 90s is a CLEARLY-MARKED PLACEHOLDER --
-	// pandoc is a fast, deterministic CPU-bound engine unlike OCR/AV's
-	// heavier per-page/per-frame processing, so this fallback is
+	// PANDOC_ENGINE_TIMEOUT default of 90s is the UNMEASURED FALLBACK for a
+	// host that sets no env -- pandoc is a fast, deterministic CPU-bound
+	// engine unlike OCR/AV's heavier per-page/per-frame processing, so it is
 	// deliberately smaller than OCR's own 300s provisional default. The
-	// real, measured/finalized value is superseded by Phase 49's supervised
-	// timing-measurement run (mirrors OCR_ENGINE_TIMEOUT's own
-	// provisional-fallback-then-measured comment, cmd/ocr-worker/main.go).
+	// MEASURED value has since landed and is what both deployed configs set:
+	// 65s = ceil(worst-cell p95 32.318s x 2.0), from Phase 49's supervised
+	// scripts/pandoc-timing-measure.sh run (arch=arm64, cpus=2.0, memory=1g,
+	// N=10), 92.8% under the 900s RECONCILER_ACTIVE_STALE_AFTER cap.
 	// This MUST read the SAME env var (and agree with the SAME default)
 	// internal/queue/client.go's NewClient reads for PandocUniqueTTL's
 	// derivation -- both must stay in sync so the asynq.Unique lock TTL
@@ -150,7 +158,16 @@ func main() {
 	mux.HandleFunc(queue.TypePandocConvert, h.HandlePandocConvert)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency:    envInt("PANDOC_WORKER_CONCURRENCY", 2), // pandoc is fast/light (a single deterministic subprocess) unlike the 1-at-a-time heavy OCR/AV/audio engines -- 2 lets a slow conversion not fully block a second job.
+		// 1, not 2: pandoc is CPU-fast but MEMORY-heavy, so it belongs with the
+		// 1-at-a-time OCR/AV/audio engines, not against them. Measured in the
+		// pandoc-worker image at the deployed limits (cpus 2 / memory 1g) on a
+		// worst-case 3.04 MB html->md: peak ANONYMOUS memory 909 MiB/1024 at
+		// concurrency 1 but 1022 MiB/1024 at concurrency 2 -- two parallel
+		// conversions OOMKill once this process's own RSS shares the cgroup.
+		// Throughput comes from KEDA scale-out, not in-pod parallelism.
+		// See .planning/phases/50-keda-helm-chart-integration/evidence/
+		// blocker1-memory-probe-20260802.txt.
+		Concurrency:    envInt("PANDOC_WORKER_CONCURRENCY", 1),
 		Queues:         map[string]int{queue.QueuePandoc: 1},
 		RetryDelayFunc: queue.RetryDelayFunc,
 		// asynq defaults ShutdownTimeout to 8s, silently capping the graceful
