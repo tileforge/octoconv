@@ -14,6 +14,7 @@
 - ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 - ✅ **v1.10 OCR Engine (text extraction)** — Phases 43-46 (shipped 2026-07-27) — see `.planning/milestones/v1.10-ROADMAP.md`
 - ✅ **v1.11 Pandoc Engine** — Phases 47-50 (shipped 2026-08-02) — see `.planning/milestones/v1.11-ROADMAP.md`
+- 🚧 **v1.12 Consumer Accounting & Fairness** — Phases 51-55 (in progress)
 
 ## Phases
 
@@ -167,105 +168,95 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 **Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
 
-- [x] **Phase 47: Pandoc Engine Foundation** - Standalone `PandocConverter` (closed markup-family allowlist, `--standalone`, hardened `runCommand` with raw HTML/TeX passthrough disabled + --sandbox + no-network) built and tested directly against the real pandoc binary, before any queue/worker plumbing (completed 2026-07-30)
-- [x] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra (completed 2026-07-30)
-- [x] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
-- [x] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven (completed 2026-08-01)
+- [x] Phase 47: Pandoc Engine Foundation (3/3 plans) — completed 2026-07-30
+- [x] Phase 48: Async Pipeline Wiring (3/3 plans) — completed 2026-07-30
+- [x] Phase 49: Containerization + Measured Timeout Gate (4/4 plans) — completed 2026-08-01
+- [x] Phase 50: KEDA/Helm Chart Integration (4/4 plans) — completed 2026-08-01
+
+Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 </details>
 
+### 🚧 v1.12 Consumer Accounting & Fairness (In Progress)
+
+**Milestone Goal:** превратить OctoConv из «сервиса, который умеет конвертировать» в общую платформу, которая знает своих потребителей — кто сколько потребляет, в каких границах, и как не дать одному потребителю выжрать класс движка целиком.
+
+- [ ] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt
+- [ ] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class
+- [ ] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus
+- [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
+- [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
+
 ## Phase Details
 
-### Phase 47: Pandoc Engine Foundation
+### Phase 51: Attribution, Accounting & Retention
 
-**Goal**: A standalone `PandocConverter` converts between markup-family formats (md/rst/org/latex/epub/html/docx) through a closed `(from→to)` allowlist, security-hardened from the first line (no raw HTML/TeX passthrough, no shell-escape, no network), built and tested directly against the real pandoc binary — before any queue/worker plumbing.
-**Depends on**: Nothing (first phase of v1.11 — validate the novel pandoc external-process surface standalone first, mirroring Audio's Phase 30 / AV's Phase 34 / OCR's Phase 43 scope fence)
-**Requirements**: PDOC-01, PDOC-02, PDCO-01, PDCE-01, PDCE-02, PDCE-03
+**Goal**: Every job's client and consumption (bytes, count, engine class) is tracked in Postgres and exposed in Prometheus with a purpose-built, cardinality-bounded shape — and the new accounting data does not repeat OctoConv's existing unbounded-Postgres-growth gap (`jobs`/`job_events` rows that never age out).
+**Depends on**: Nothing (first phase of v1.12 — builds directly on the stable v1.0–v1.11 platform; everything downstream in this milestone reads the data this phase produces)
+**Requirements**: ACCT-01, ACCT-02, ACCT-03, ACCT-04, RETN-01
 **Success Criteria** (what must be TRUE):
 
-  1. `PandocConverter` converts between any two markup formats in a closed `(from→to)` allowlist covering the markup family (md/rst/org/latex/epub/html/docx), verified by direct invocation against the real pandoc binary; an unlisted pair is rejected before any subprocess runs (mirrors existing `Pairs()` conventions).
-  2. Output that requires document structure (docx/epub/html) is produced with `--standalone` — a complete, valid document rather than a bare fragment — and the result is validated by the same content-sniffer that guards uploads.
-  3. Every pandoc invocation runs with raw HTML/TeX passthrough disabled, `--sandbox`, no network access, and through the existing hardened `runCommand` (Setpgid + SIGKILL-on-timeout, `USER nobody` posture) — proven by a test showing crafted input cannot trigger shell-escape, `\input`, or a network fetch.
-  4. A closed `PandocOpts` allowlist (e.g. `standalone`/`toc`/`wrap`/`section-divs`, typed strict-parse mirroring `OCROpts`/`AudioOpts`) rejects any unlisted opt with 422 before any work begins, with an injection test proving client bytes never reach pandoc's argv unvalidated.
-  5. Uploads are gated fail-closed by magic-byte/content validation across the markup family (text-based formats sniffed correctly, not only binary containers like docx/epub), and an oversize or pathological input (size cap; pandoc-specific expansion/bomb shape) is rejected before conversion runs.
+  1. A new, purpose-built Prometheus counter carries a `client_id` label on job outcomes, while `octoconv_job_duration_seconds` stays engine/status-only and `octoconv_queue_depth`'s label set remains exactly `{queue, state}` — proven by a pinning test that fails loudly on any future diff.
+  2. Every job's terminal transition (`done`/`failed`, including jobs recovered by the reconciler) increments a Postgres daily usage rollup (jobs count, bytes in/out, per client/engine/day) exactly once — proven by a soak test that deliberately forces the reconciler's documented stale-recovery race and asserts the usage total, not just the recovery count.
+  3. `client_id` label/cardinality is bounded to the known `clients` table (an unrecognized or malformed ID never mints a new series), with the bound and its overflow behavior documented explicitly, not left to "hope clients stay few."
+  4. The new usage table states its own retention/rollup design in the migration that creates it (grows with `clients × engines × days`, not with raw job volume), and the pre-existing `jobs`/`job_events` unbounded-growth gap gets an explicit, operator-visible retention policy instead of being silently repeated by the new table.
+  5. Re-running the existing KEDA scale-from-zero live gate after the new metrics/table land shows no regression — accounting is additive to the platform's operational surface, not a new blast radius for autoscaling.
 
-**Plans**: 3 plans
+**Plans**: TBD
 
-Plans:
+### Phase 52: Quota Enforcement & Intra-Class Fairness
 
-- [x] 47-01-PLAN.md — PandocOpts closed allowlist + strict-parse + discrete-argv injection defense (PDCO-01)
-- [x] 47-02-PLAN.md — Markup content-validation probes (LooksLikeLaTeX/LooksLikeText) + input-size DoS guard + epub/MIME registry (PDCE-01, PDCE-03)
-- [x] 47-03-PLAN.md — PandocConverter core: curated closed Pairs, hardened runCommand invocation, --standalone output validation, SC3 security canary (PDOC-01, PDOC-02, PDCE-02)
-
-### Phase 48: Async Pipeline Wiring
-
-**Goal**: Pandoc jobs (markup → markup) flow end-to-end through the async pipeline with correct retry/dedup semantics and engine-routing, over the unmodified v1.9 progress/webhook machinery.
-**Depends on**: Phase 47 (needs the working converter to wire into the async lifecycle)
-**Requirements**: PDCP-01
+**Goal**: An operator can cap what a client may consume (concurrent jobs, daily volume, allowed engines), enforcement is fail-closed on every job-creation path and rolled out safely to already-integrated consumers, and the same admission mechanism gives a structural guarantee that one client cannot starve others within an engine class — all without touching queue topology or the KEDA contract.
+**Depends on**: Phase 51 (tiers 2/3 of the admission gate read/write the `client_usage_daily` rollup; the concurrency cap reads `jobs.status`, already ground truth, but the byte/volume checks need Phase 51's table to exist and be populated)
+**Requirements**: QUOT-01, QUOT-02, QUOT-03, QUOT-04, FAIR-01, FAIR-02
 **Success Criteria** (what must be TRUE):
 
-  1. Migration adds `pandoc` to the `jobs.engine` enum; an uploaded markup document targeting a supported pair is routed to a dedicated `pandoc` asynq queue by content-detection and consumed end-to-end by `cmd/pandoc-worker` (queued → active → done).
-  2. The reconciler routes stranded `jobs.engine='pandoc'` jobs to the pandoc queue, and API routing dispatches single-input/single-target-format pandoc jobs without any changes to v1.9's progress/SSE/webhook infra.
-  3. A stage-aware terminal/transient classifier and a fresh `PandocUniqueTTL` (derived from pandoc's own retry/timeout budget, never copied from a neighboring engine) prevent duplicate processing.
-  4. Converting to an empty-but-valid output (e.g. an empty source document) completes the job as `done`, not `failed`.
+  1. An operator can set per-client limits (concurrent jobs per engine, daily byte/job volume, allowed engine set) where the absence of a limit is a literal `NULL` meaning unlimited — never a large sentinel number — and no existing client's behavior changes until an operator explicitly sets one.
+  2. Every job-creation entry point (`POST /v1/jobs`, `cmd/mcp-server`, `cmd/mcp-http`) enforces the identical fail-closed admission check, atomically in Postgres and correct under concurrent requests from the same client, before the S3 write and before enqueue — proven by an integration test that exercises both REST and at least one MCP path, not assumed from proxying.
+  3. A limit-exceeding request is rejected with `429` + `Retry-After` and a `quota_exceeded` error code distinguishable from the existing `rate_limited` code — never `403` — and an in-flight concurrency slot is released on every terminal state (`done`, `failed`, `reconciler_exhausted`), not only on success.
+  4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
+  5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
 
-**Plans**: 3 plans
-Plans:
+**Plans**: TBD
 
-- [x] 48-01-PLAN.md — pandoc asynq plumbing: TypePandocConvert/QueuePandoc/NewPandocConvertTask, fresh PandocUniqueTTL (own placeholder budget), 2-entry retry schedule, EnqueuePandocConvert
-- [x] 48-02-PLAN.md — migration 0010 (+pandoc enum), register PandocConverter, EngineFor routing + disjointness test, API opts/enqueue/content-gate wiring + EnginePandoc upload ceiling
-- [x] 48-03-PLAN.md — HandlePandocConvert + isPandocTerminal (timeout+engine terminal, D-01) + pandocFailureCode, cmd/pandoc-worker, reconciler pandoc route, empty→done + exec/progress/sse fence
+### Phase 53: Operator Usage Visibility
 
-### Phase 49: Containerization + Measured Timeout Gate
-
-**Goal**: A running `pandoc-worker` container in docker-compose passes a full live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied or guessed constant, in a lean TeX-free image.
-**Depends on**: Phase 48 (needs the queue/worker contract stable before containerizing; can't measure a real timeout without the full pipeline producing real job outcomes to time)
-**Requirements**: PDCE-04
+**Goal**: An operator can answer "who consumed what, by engine class, over what period" and "what are this client's limits and remaining budget" through a dedicated, already-established access-control pattern — not by hand-querying raw Prometheus or the `jobs` table.
+**Depends on**: Phase 51 (reads `client_usage_daily`; does not require Phase 52 to be complete, but is sequenced after quota work has started so a "usage vs. configured limit" view is meaningful rather than empty)
+**Requirements**: OPSV-01, OPSV-02
 **Success Criteria** (what must be TRUE):
 
-  1. `Dockerfile.pandoc-worker` installs a pinned pandoc binary with **no TeX toolchain** (lean image), and a compose `pandoc-worker` service converts an uploaded markup document end-to-end (upload → poll → presigned download) through the live compose stack with a signed webhook confirmed.
-  2. `scripts/pandoc-timing-measure.sh` measures real conversion cost across a representative markup corpus (varying source formats/sizes) under production-equivalent CPU/memory limits and drives a documented go/no-go decision (mirroring the audio/AV/OCR gate precedent).
-  3. The measured `PANDOC_ENGINE_TIMEOUT` is **derived from this measurement, not copied** from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT`, stays under the global 900s reconciler CAP, and is recorded as a Key Decision with its measurement conditions (arch/cpu/mem/N/p95).
-  4. IN-02 env parity: all queue-client-constructing services propagate `PANDOC_*` env identically, and the `pandoc-worker` image is added to the CI bake matrix.
+  1. An operator, authenticated through the existing `OPERATOR_CLIENT_IDS`-gated mechanism (the Phase 26 precedent), can retrieve per-client, per-engine usage for a given period from a dedicated endpoint, backed by the Phase 51 rollup rather than a raw `jobs` scan or Prometheus query.
+  2. Per client, the operator can see the currently configured limits and the remaining budget/quota state, so limits can be set from observed data rather than guessed.
+  3. A non-operator caller receives the identical no-leak response the project's existing operator-only routes already guarantee (byte-identical 404, not a distinguishable 403) — no new information-disclosure surface introduced by this endpoint.
 
-**Plans**: 4 plans
-Plans:
+**Plans**: TBD
 
-- [x] 49-01-PLAN.md — Dockerfile.pandoc-worker: SHA-256-pinned static pandoc 3.x binary, TeX-free debian-slim, USER nobody, dual-arch
-- [x] 49-02-PLAN.md — scripts/pandoc-timing-measure.sh (wall-sec/conversion gate) + pandoc-worker compose service (placeholder timeout) + IN-02 PANDOC_* across all 10 services + CI bake
-- [x] 49-03-PLAN.md — SUPERVISED measurement checkpoint: derive PANDOC_ENGINE_TIMEOUT = ceil(worst-p95 x 2.0) < 900s CAP (Path-B PANDOC_MAX_INPUT_BYTES lever), plug in + record Key Decision
-- [x] 49-04-PLAN.md — live E2E checkpoint: TestPandocConversionE2E (md->html + md->docx + signed webhook) against the real compose pandoc-worker — GREEN (PASS 4.13s, both output shapes + HMAC webhook)
+### Phase 54: Per-Class Capacity Floor (SEED-011)
 
-### Phase 50: KEDA/Helm Chart Integration
-
-**Goal**: The pandoc class autoscales in the cluster with production parity to the other six engine classes, and scale-from-zero is live-proven.
-**Depends on**: Phase 49 (KEDA cooldown/stabilization and grace-period tuning consume Phase 49's measured `PANDOC_ENGINE_TIMEOUT`)
-**Requirements**: PDCP-02
+**Goal**: An operator can choose a non-zero `minReplicaCount` per engine class to eliminate cold-start latency under sustained load, instead of the hardcoded zero every class ships with today.
+**Depends on**: Nothing (fully independent of Phases 51-53 — zero data or code coupling, pure Helm values/`ScaledObject` change; sequenced here as a low-risk hygiene tail so it doesn't add unrelated chart diff noise to the accounting/quota review, per research's explicit "can land at any point" finding)
+**Requirements**: CAPA-01
 **Success Criteria** (what must be TRUE):
 
-  1. A `pandoc-worker` Deployment plus a KEDA `ScaledObject` ship in the chart with `minReplicaCount:0`, `terminationGracePeriodSeconds`/`scaleDownStabilizationSeconds` derived from the measured `PANDOC_ENGINE_TIMEOUT`, and the WR-01 fail-safe triad (`ignoreNullValues:"false"`, fallback replicas, retry-inclusive PromQL) applied verbatim.
-  2. `QueuePandoc` is registered in the always-on api queue-depth collector so KEDA resolves the pandoc backlog at genuinely zero replicas.
-  3. Scale-from-zero is live-proven for the pandoc class, capturing timestamped evidence (0→1 on real queue depth, scale back to 0 after drain).
-  4. `PANDOC_*` env parity (IN-02 pattern) is confirmed across all queue-client-constructing services, and a pandoc job survives a genuine N→N-1 HPA downscale without a premature SIGTERM.
+  1. Each of the seven engine classes' `minReplicaCount` is set via a Helm values field instead of a hardcoded `0`, defaulting to today's `0` (zero behavior change for the current deployment).
+  2. Setting a non-zero `minReplicaCount` for one engine class does not alter another class's `ScaledObject`/PromQL or its scale-from-zero behavior — confirmed by a template diff touching only the intended class.
+  3. `helm lint`/`helm template` render cleanly for both the default (all-zero) values and an example non-zero override, with no live cluster required — this is chart-only, no architectural novelty (research: skip live-gate for this phase).
 
-**Plans**: 4 plans
+**Plans**: TBD
 
-Plans:
-**Wave 1**
+### Phase 55: Live Gate — Multi-Replica Quota Correctness
 
-- [x] 50-01-PLAN.md — pandoc-worker Deployment + KEDA ScaledObject + keda.pandoc/pandocWorker values + PANDOC_* ConfigMap parity (SC1/SC2/SC4-env)
+**Goal**: Prove, on a live multi-replica setup, that the quota admission counter built in Phase 52 is correct when 2+ API replicas concurrently serve the same client — the one claim in this milestone that cannot be proven statically, matching this project's own precedent (`internal/ratelimit`'s documented `api.replicas: 1`-only caveat) for exactly this class of correctness claim.
+**Depends on**: Phase 52 (needs the atomic Postgres admission mechanism built and enforcing before its multi-replica correctness can be exercised)
+**Requirements**: QUOT-05
+**Success Criteria** (what must be TRUE):
 
-**Wave 2** *(blocked on Wave 1 completion)*
+  1. With `api.replicas` set to 2 or more, N concurrent job-creation requests from one client whose concurrency cap is `K` result in at most `K` admitted jobs — observed directly on a live run, never more, regardless of which replica handled which request.
+  2. The live run's evidence (timestamps, replica identifiers, admitted/rejected counts) is captured and committed, mirroring this project's existing live-gate discipline (KEDA scale-from-zero, downscale-survival), and the phase records explicitly that the quota mechanism — unlike `internal/ratelimit` — does not carry a replicas-count caveat.
 
-- [x] 50-02-PLAN.md — load-proof overlay (stabilization 0 via the falsy-0 guard, KEDA poll 3s, Prometheus scrape 5s, one job per pod) + SC3 scale-from-zero harness
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 50-03-PLAN.md — SC4 downscale-survival harness (fast-engine drive shape, /proc victim-job attribution) + offline fixture/timing calibration
-
-**Wave 4** *(blocked on Wave 3 completion)*
-
-- [x] 50-04-PLAN.md — LIVE operator-gated proof: SC3 + SC4 in one OrbStack k8s session with timestamped evidence
+**Plans**: TBD
+**Autonomous**: false (operator-gated live proof — requires a real 2+-replica run, cannot be closed by static verification alone)
 
 ## Progress
 
@@ -321,8 +312,13 @@ Plans:
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
+| 51. Attribution, Accounting & Retention | v1.12 | 0/TBD | Not started | - |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 0/TBD | Not started | - |
+| 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
+| 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
 ---
 
-*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). Next: `/gsd:new-milestone`.*
+*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 0/15 complete. Next: `/gsd:plan-phase 51`.*
 </content>

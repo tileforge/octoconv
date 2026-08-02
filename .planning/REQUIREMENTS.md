@@ -79,26 +79,26 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ACCT-01 | TBD | Pending |
-| ACCT-02 | TBD | Pending |
-| ACCT-03 | TBD | Pending |
-| ACCT-04 | TBD | Pending |
-| QUOT-01 | TBD | Pending |
-| QUOT-02 | TBD | Pending |
-| QUOT-03 | TBD | Pending |
-| QUOT-04 | TBD | Pending |
-| QUOT-05 | TBD | Pending |
-| FAIR-01 | TBD | Pending |
-| FAIR-02 | TBD | Pending |
-| OPSV-01 | TBD | Pending |
-| OPSV-02 | TBD | Pending |
-| RETN-01 | TBD | Pending |
-| CAPA-01 | TBD | Pending |
+| ACCT-01 | Phase 51 | Pending |
+| ACCT-02 | Phase 51 | Pending |
+| ACCT-03 | Phase 51 | Pending |
+| ACCT-04 | Phase 51 | Pending |
+| QUOT-01 | Phase 52 | Pending |
+| QUOT-02 | Phase 52 | Pending |
+| QUOT-03 | Phase 52 | Pending |
+| QUOT-04 | Phase 52 | Pending |
+| QUOT-05 | Phase 55 | Pending |
+| FAIR-01 | Phase 52 | Pending |
+| FAIR-02 | Phase 52 | Pending |
+| OPSV-01 | Phase 53 | Pending |
+| OPSV-02 | Phase 53 | Pending |
+| RETN-01 | Phase 51 | Pending |
+| CAPA-01 | Phase 54 | Pending |
 
 **Coverage:**
 - v1 requirements: 15 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 15 ⚠️
+- Mapped to phases: 15 (roadmap created 2026-08-02)
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-08-02*

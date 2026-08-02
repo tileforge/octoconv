@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v1.12
 milestone_name: Consumer Accounting & Fairness
 status: planning
-last_updated: "2026-08-02T06:26:32.654Z"
+last_updated: "2026-08-02T10:00:00.000Z"
 last_activity: 2026-08-02
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,23 +17,23 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-07-30 after v1.11 milestone start)
+See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
 
-**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Milestone complete
+**Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
+**Current focus:** v1.12 Consumer Accounting & Fairness — roadmap approved (Phases 51-55), ready for phase planning
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Not started (Phase 51: Attribution, Accounting & Retention — next up)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-08-02 — Milestone v1.12 started
+Status: Roadmap created, awaiting `/gsd:plan-phase 51`
+Last activity: 2026-08-02 — v1.12 ROADMAP.md written (5 phases, 15/15 requirements mapped, coverage 100%)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 111 (all v1.0–v1.10)
+- Total plans completed: 125 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -85,10 +85,15 @@ Last activity: 2026-08-02 — Milestone v1.12 started
 | 44 | 4 | - | - |
 | 45 | 4 | - | - |
 | 46 | 3 | - | - |
-| 47 | TBD | - | - |
-| 48 | TBD | - | - |
-| 49 | TBD | - | - |
+| 47 | 3 | - | - |
+| 48 | 3 | - | - |
+| 49 | 4 | - | - |
 | 50 | 4 | - | - |
+| 51 | TBD | - | - |
+| 52 | TBD | - | - |
+| 53 | TBD | - | - |
+| 54 | TBD | - | - |
+| 55 | TBD | - | - |
 
 **Recent Trend:**
 
@@ -96,76 +101,21 @@ Last activity: 2026-08-02 — Milestone v1.12 started
 - Trend: -
 
 *Updated after each plan completion*
-| Phase 36 P01 | 15min | 3 tasks | 6 files |
-| Phase 36 P02 | 30min | 2 tasks | 2 files |
-| Phase 36 P03 | 20min | 3 tasks | 3 files |
-| Phase 36 P04 | 25min | 1 tasks | 4 files |
-| Phase 36 P05 | 20min | 2 tasks | 9 files |
-| Phase 37 P01 | 25min | 3 tasks | 4 files |
-| Phase 37 P02 | 30min | 2 tasks | 3 files |
-| Phase 37 P03 | 40min | 2 tasks | 6 files |
-| Phase 38 P01 | 20min | 2 tasks | 1 files |
-| Phase 39 P01 | 25min | 2 tasks | 6 files |
-| Phase 39 P02 | 20min | 2 tasks | 3 files |
-| Phase 39 P03 | 15min | 3 tasks | 8 files |
-| Phase 40 P01 | 20min | 2 tasks | 5 files |
-| Phase 40 P02 | 25min | 2 tasks | 6 files |
-| Phase 41 P01 | 20min | 2 tasks | 3 files |
-| Phase 41 P02 | 55min | 2 tasks | 4 files |
-| Phase 41 P03 | 15min | 3 tasks | 9 files |
-| Phase 42 P02 | 45min | 2 tasks | 6 files |
-| Phase 42 P03 | 40min | 3 tasks | 4 files |
-| Phase 43 P01 | 10min | 2 tasks | 2 files |
-| Phase 43 P02 | 20min | 3 tasks | 5 files |
-| Phase 43 P03 | 45min | 3 tasks | 5 files |
-| Phase 43 P04 | 55min | 3 tasks | 6 files |
-| Phase 44 P01 | 35min | 3 tasks | 9 files |
-| Phase 44 P02 | 4min | 2 tasks | 3 files |
-| Phase 44 P03 | 12min | 3 tasks | 5 files |
-| Phase 44 P04 | 20min | 2 tasks | 1 files |
-| Phase 45 P01 | 35min | 2 tasks | 3 files |
-| Phase 45 P02 | 35min | 3 tasks | 4 files |
-| Phase 45 P03 | 15min | 2 tasks | 6 files |
-| Phase 45 P04 | ~70min | 2 tasks | 5 files |
-| Phase 46 P01 | 20min | 2 tasks | 4 files |
-| Phase 46 P02 | 25min | 2 tasks | 3 files |
-| Phase 46 P03 | ~90min | 1 task | 5 files (evidence) |
-| Phase 47 P01 | 18min | 2 tasks | 3 files |
-| Phase 47 P02 | 12min | 2 tasks | 4 files |
-| Phase 47 P03 | 25min | 3 tasks | 2 files |
-| Phase 48 P01 | 20min | 2 tasks | 3 files |
-| Phase 48 P02 | 9min | 2 tasks | 8 files |
-| Phase 48 P03 | ~30min | 3 tasks | 7 files |
-| Phase 49 P01 | 25min | 1 tasks | 1 files |
-| Phase 49 P02 | 35min | 3 tasks | 4 files |
-| Phase 49 P03 | 15min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions to be recorded as Key Decisions before/at implementation (mirroring the v1.7/v1.8/v1.10 engine-class precedent):
+Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap decisions (recorded at roadmap creation, 2026-08-02):
 
-- **v1.11 is a structural clone of the proven 4-phase engine-class shape** (audio 29-33 → av 34-37 → ocr 43-46): 47 foundation (standalone, unregistered) → 48 async wiring → 49 containerization + measured timeout → 50 KEDA/Helm. Research skipped per PROJECT.md — pandoc is a single mature offline CLI binary, not an open engine-choice question like OCR's Tesseract-vs-PaddleOCR eval-gate.
-- **Pandoc owns ONLY the markup family — no →pdf, no docx→pdf/html→pdf duplication (locked in PROJECT.md):** →pdf output is deferred to v2 (PDOC-V2-01); docx→pdf stays LibreOffice's job, html→pdf stays chromium's job. Do not let Phase 47 quietly add a pdf target to the allowlist.
-- **Security-hardened from line one, not retrofitted (mirrors OCR's Tesseract-CVE-history precedent):** raw HTML/TeX passthrough disabled, `--no-shell-escape`, no-network, hardened `runCommand` (Setpgid/SIGKILL/`nobody`) must all land in Phase 47's converter core, not be spread across later phases.
-- **`PANDOC_ENGINE_TIMEOUT` must be measured by a dedicated `scripts/pandoc-timing-measure.sh`, never copied from `AUDIO_ENGINE_TIMEOUT`/`AV_ENGINE_TIMEOUT`/`OCR_ENGINE_TIMEOUT` (Phase 49):** same PITFALLS.md Pitfall 7 recurrence risk flagged at every prior engine-class milestone.
-- **Zero new Go dependencies for v1.11:** pandoc is a CLI subprocess through the existing hardened `runCommand` harness — no cgo, no new `go.mod` entries.
-- [Phase 47]: PandocOpts closed 5-field allowlist (D-04): wrap enum-gated via pandocWrapAllowlist map lookup, cloning OCROpts/AudioOpts verbatim
-- [Phase 47]: LooksLikeText's md/rst/org interchangeability documented as an accepted, recorded gap (D-01/T-47-05b) — content degrades to a plaintext-only gate, declared source trusted among the text-family — md/rst/org are mutually-interchangeable plaintext with no distinctive magic; a full disambiguator would be illusory
-- [Phase 47]: PandocConverter (47-03): curated closed Pairs() across md/rst/org/latex/html/docx/epub; per-source raw-passthrough table + --sandbox hardening (--no-shell-escape rejected by pandoc); pandocFormatName translates project's 'md' alias to pandoc's own 'markdown' identifier; standalone/unregistered, no API/queue wiring
-- [Phase 48-01]: PandocUniqueTTL derived fresh from pandoc's own PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT budget (D-03) — Test proves it differs from OCRUniqueTTL/AVUniqueTTL/AudioUniqueTTL under identical inputs -- not copied
-- [Phase 48-01]: pandocRetrySchedule = 5s, 20s (2-entry, no jitter, PROVISIONAL) — Shorter than OCR's 15s/1m since pandoc is a lighter deterministic CPU-bound text transform; pending Phase 49's measured PANDOC_ENGINE_TIMEOUT
-- [Phase 48-01]: PANDOC_ENGINE_TIMEOUT default = 90s, PANDOC_MAX_RETRY default = 2 — Both clearly flagged as placeholders in client.go doc comments, superseded by Phase 49's measured value
-- [Phase 48]: Mirrored 0009's migration comment style verbatim for 0010 (operation-CHECK-untouched sentence); this literally conflicts with a plan acceptance-criterion grep expecting zero occurrences of "operation", but the SQL statements make no functional change to the operation column/constraint
-- [Phase 48]: isPandocTerminal mirrors isDocumentTerminal's timeout-is-terminal shape (D-01) — timeout AND any "pandoc:"-prefixed engine/parse error are terminal, the opposite of isOCRTerminal's transient-timeout treatment; genuine infra transients stay retryable
-- [Phase 48]: cmd/pandoc-worker's PANDOC_ENGINE_TIMEOUT default (90s) matches internal/queue/client.go's own default exactly to avoid drift between the two independent env reads
-- [Phase 48]: PANDOC_WORKER_CONCURRENCY defaults to 2 (not 1 like OCR/AV/audio) — pandoc is a fast, lightweight single subprocess, not a heavy per-page/per-frame engine
-- [Phase 49]: Dockerfile.pandoc-worker pins pandoc 3.10.1 official static-release binary (amd64 SHA-256 72948bf5784f560d5ad1876709daca27e0667f262da727bb33f77b58e52df2f5, arm64 SHA-256 cd3963da375793a4804c65ae538b4f7b9c23f87cac7f6c74a1cf5e2fff7e8d59), both hashes verified live by downloading+hashing, selected by TARGETARCH; TeX-free runtime (curl+ca-certificates only), USER nobody
-- [Phase 49]: PANDOC_ENGINE_TIMEOUT=90s/stop_grace_period=110s in docker-compose.yml are clearly-marked PLACEHOLDERS pending Plan 03's supervised scripts/pandoc-timing-measure.sh run; no measured value committed this plan
-- [Phase 49]: IN-02: PANDOC_ENGINE_TIMEOUT + PANDOC_MAX_RETRY set byte-identically across all 10 queue.NewClient()-constructing services (api, worker, webhook-worker-1/-2, document-worker, chromium-worker, audio-worker, av-worker, ocr-worker, pandoc-worker)
-- [Phase 49 Plan 03]: PANDOC_ENGINE_TIMEOUT FINALIZED at 65s (supervised scripts/pandoc-timing-measure.sh run ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank p95, wall-sec/conversion): worst cell html_large→md (reader-heavy HTML parsing) p95=32.318s (other large cells: md→html 25.37s, md→docx 23.34s, html→docx 15.99s, latex→html 6.06s, latex→docx 3.90s; all small/medium cells < 0.4s). PANDOC_ENGINE_TIMEOUT=ceil(32.318×2.0)=65s, 92.8% margin under the 900s/15m reconciler CAP — byte-identical on all 10 queue-client services; stop_grace_period=85s (65+10+10). 65s ≠ OCR(744s) ≠ AV(753s) ≠ AUDIO(742s) ≠ the 90s placeholder — distinct by construction (PITFALLS.md Pitfall 7).
-- [Phase 49 Plan 03]: Path-B lever (PANDOC_MAX_INPUT_BYTES) FIRED, but BY MEMORY not by the CAP (the honest finding of this gate — the 900s CAP was never at risk): the measurement found the zip-out targets (docx/epub) OOM-KILL ("Killed", 0-byte output) on the compose 1g pandoc-worker memory limit at an 8 MiB input — cliff measured at 4 MiB=~10.2s clean → 6.5 MiB=~40s thrash → 8 MiB=OOM. Lowered PANDOC_MAX_INPUT_BYTES from the 50 MiB (50<<20) placeholder to 4 MiB (4194304, pandoc-worker-only) for comfortable memory headroom and predictable ~10-15s zip-out conversions; the worst-cell 32.318s p95 above was measured AT this 4 MiB cap.
+- **Phase numbering continues from v1.11's Phase 50 — this milestone is Phases 51-55**, not a restart at 1.
+- **Attribution before enforcement before visibility (Phase 51 → 52 → 53), mirroring the milestone's own framing** ("Атрибуция" before "Границы"): quotas can't be enforced against numbers that aren't tracked yet, and the operator endpoint has nothing to show without the rollup existing first.
+- **Quota enforcement and baseline (admission-control) fairness are ONE phase (52), not two**: FAIR-01's per-client concurrency cap is the identical mechanism QUOT-01..04 already need (Q1/Q3 = Q4 option A in ARCHITECTURE.md) — building them separately would duplicate the admission-cap machinery for no benefit. FAIR-02 (queue_depth/PromQL invariance) is the phase's own tripwire, not a separate feature.
+- **RETN-01 folded into Phase 51 (Attribution), not its own phase**: the requirement text itself frames retention as a precondition ("строить учёт поверх неограниченно растущих таблиц значит повторить уже имеющийся долг") — the new `client_usage_daily` table must state its retention/rollup design in the same migration that creates it, and the pre-existing `jobs`/`job_events` unbounded-growth gap gets an explicit policy in the same phase rather than being silently repeated a third time.
+- **QUOT-05 (multi-replica correctness) is its own live-gate phase (55), separate from the phase that builds the mechanism (52)**: the atomic Postgres admission design is a Phase 52 implementation constraint (must be correct under N replicas by construction), but QUOT-05 as a requirement is specifically the *proof* — `api.replicas: 2+`, live-observed — matching this project's own precedent for claims that can't be proven statically (KEDA scale-from-zero/downscale-survival gates) and directly answering `internal/ratelimit`'s own documented `replicas: 1`-only caveat, which the milestone explicitly must not repeat for quotas.
+- **CAPA-01 (SEED-011, minReplicaCount) is its own small phase (54), not folded into 51-53**: zero data/code coupling with the accounting/quota work (pure Helm values/`ScaledObject` change) — keeping it separate avoids unrelated chart-diff noise in the accounting/quota review and lets it ship/rollback independently; sequenced as a low-risk hygiene tail per research, not blocking or blocked by anything.
+- **Per-client sub-queue fairness (the design that renames queues and touches all 7 ScaledObject PromQL strings) is explicitly NOT in this roadmap** — deferred (FAIR-V2-01 in REQUIREMENTS.md v2), evidence-gated on Phase 53's operator visibility showing the admission-cap baseline is actually insufficient in practice. Building it speculatively would repeat the SEED-010 rejection pattern already recorded in PROJECT.md, this time risking the KEDA scale-from-zero contract instead of the compile-time engine allowlist.
+- **Coverage: 15/15 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
 
 ### Quick Tasks Completed
 
@@ -181,17 +131,18 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.11-specific decisions
 
 ### Pending Todos
 
-- Plan and execute Phase 49 (Containerization + Measured Timeout Gate, PDCE-04): `Dockerfile.pandoc-worker` (pandoc pinned, NO TeX toolchain), a live compose E2E through `cmd/pandoc-worker`, and `scripts/pandoc-timing-measure.sh` deriving the real `PANDOC_ENGINE_TIMEOUT` from a measured corpus run (never copied from AUDIO/AV/OCR's own values) — mirrors the audio/AV/OCR containerization-phase precedent (Phase 31/35/45).
+- Plan and execute Phase 51 (Attribution, Accounting & Retention: ACCT-01..04, RETN-01) — the first phase of v1.12, everything downstream reads this phase's data.
 
 ### Blockers/Concerns
 
-None currently blocking the overall roadmap. Sequencing carried into the roadmap:
+None currently blocking. Sequencing carried into the roadmap:
 
-- Hard-ordered spine: 47 (foundation, standalone/unregistered — nothing to register without a working converter) → 48 (async wiring — can't measure a real timeout without the full pipeline producing real outcomes to time) → 49 (containerization + measured timeout gate — KEDA's shutdown timing derives from the measured timeout) → 50 (KEDA/Helm, depends on Phase 49's measured numbers). Identical 4-phase shape to v1.7 (audio, 29-33), v1.8 (av, 34-37) and v1.10 (ocr, 43-46) — proven three times already.
-- Phase 47 is the highest-risk phase: security hardening (raw HTML/TeX passthrough disabled, `--no-shell-escape`, no-network) and the closed markup-family allowlist must all land in this phase's converter core loop, not be spread across later phases.
-- Zero new Go dependencies for this milestone — pandoc is a CLI subprocess through the existing hardened `runCommand` harness, same shape as every prior engine.
-- Phase 49's timing-measurement methodology needs its own corpus definition (representative markup documents by format/size) during Phase 49 planning — not a straight clone of OCR's seconds-per-page metric shape, since pandoc's cost model is per-document, not per-page.
-- Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
+- Hard-ordered spine for the accounting/quota work: 51 (attribution + retention — new rollup table + client-labeled counter, additive/zero-behavior-change) → 52 (quota enforcement + baseline fairness, same mechanism — needs Phase 51's table) → 53 (operator visibility — reads Phase 51's table, sequenced after 52 starts so "usage vs. limit" is meaningful).
+- Phase 54 (CAPA-01/SEED-011) is fully independent — chart-only, can execute at any point; placed as a hygiene tail so it doesn't add unrelated diff noise to 51-53's review.
+- Phase 55 is an operator-gated live proof (`autonomous: false`) — depends on Phase 52's atomic mechanism existing; needs a real `api.replicas: 2+` run, cannot be closed by static verification.
+- Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
+- Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
+- Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
 
 ## Deferred Items
 
@@ -200,7 +151,7 @@ Items acknowledged and deferred at v1.11 milestone close on 2026-08-02:
 | Category | Item | Status |
 |----------|------|--------|
 | quick_task | 4 pre-v1.11 quick tasks without SUMMARY (260712-cqg, 260719-2f5, 260724-26g, 260728-0ay) | missing/abandoned — all predate v1.11, carried forward from the v1.10 close below |
-| seeds | SEED-004..015 (12 dormant) | dormant by design; SEED-011 (per-engine warm floor) now spans seven ScaledObjects after the pandoc class landed |
+| seeds | SEED-004..015 (12 dormant) | dormant by design; SEED-011 now in active scope as v1.12 Phase 54 |
 | tech_debt | 12 open WARNING findings in 50-REVIEW.md — live-gate harness robustness (missing jq/psql preflights, fixed /tmp fixture names, `--calibrate-only` matched only by exact `$1`, victim/survivor can collapse to one pod, `$WORKDIR` leak on error paths, attribution poller kubectl-execs into the very cgroup whose memory it measures) | Accepted — harnesses are internal gate tooling, not shipped product. Recommended: one `/gsd:quick` hardening pass |
 | tech_debt | Stale "4 MiB" prose in ~12 comment sites after the Path-B cap change | Comments only; every actual value is 3 MiB (3145728) and verified consistent across compose, chart and Go |
 | tech_debt | WR-11: `metadata.namespace` on ScaledObject | Reproduced from all six sibling ScaledObjects — fixing it is a whole-chart change, not a pandoc one |
@@ -233,6 +184,14 @@ Acknowledged at v1.8 close (2026-07-23):
 | v2_scope | PDOC-V2-02: Extended format allowlist (textile, mediawiki, asciidoc, ipynb, typst) | Deferred to v2 — on demand | v1.11 requirements definition (2026-07-30) |
 | v2_scope | PDOC-V2-03: Custom --lua-filter/templates/reference-doc | Deferred to v2 — needs its own sandbox/upload contract for untrusted code | v1.11 requirements definition (2026-07-30) |
 
+v1.12 requirements definition (2026-08-02) deferred the following to v2, with reasons (see REQUIREMENTS.md):
+
+| Category | Item | Status |
+|----------|------|--------|
+| v2_scope | FAIR-V2-01: Sub-queue/weighted-scheduler fairness | Evidence-gated — renames queues, breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing; revisit only if Phase 53's operator visibility shows Phase 52's admission caps are insufficient |
+| v2_scope | FAIR-V2-02: Priority tiers between clients | The only real asynq path is additional named queues per engine class, doubling ScaledObject count |
+| v2_scope | ACCT-V2-01: CPU-second (machine-time) accounting beyond wall-time | Requires worker instrumentation; only justified if inter-team capacity allocation becomes a real question |
+
 Items acknowledged and carried forward at milestone closes (see `.planning/milestones/*-MILESTONE-AUDIT.md` for full detail):
 
 | Category | Item | Status | Deferred At |
@@ -260,10 +219,12 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-08-01T18:51:59.676Z
-Stopped at: Phase 50 context gathered
-Resume file: .planning/phases/50-keda-helm-chart-integration/50-CONTEXT.md
+Last session: 2026-08-02T10:00:00.000Z
+Stopped at: v1.12 ROADMAP.md created (Phases 51-55), REQUIREMENTS.md traceability filled (15/15 mapped), STATE.md reset for new milestone
+Resume file: .planning/ROADMAP.md
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Review the v1.12 roadmap (`.planning/ROADMAP.md`, Phases 51-55) and approve or request revisions.
+- Once approved, start phase planning with `/gsd:plan-phase 51`.
+</content>
