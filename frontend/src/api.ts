@@ -10,21 +10,6 @@ export type FormatsResponse = {
   engines: Record<string, { pairs: [string, string][] }>;
 };
 
-/**
- * targetFormatsOf returns the deduped, alphabetically sorted union of every
- * engine class's target formats (pair[1]), so all engine classes reported by
- * GET /v1/formats are reachable from a single select box.
- */
-export function targetFormatsOf(resp: FormatsResponse): string[] {
-  const targets = new Set<string>();
-  for (const engine of Object.values(resp.engines)) {
-    for (const pair of engine.pairs) {
-      targets.add(pair[1]);
-    }
-  }
-  return Array.from(targets).sort();
-}
-
 export type CreateJobResponse = {
   job_id: string;
   status: JobStatus;
@@ -122,6 +107,63 @@ export async function getJob(params: {
   });
 
   return parseResponse<JobStatusResponse>(response);
+}
+
+/**
+ * isRetryableError classifies whether a failed request is worth retrying.
+ * Retrying a 401/403/404/422 cannot succeed — the request is permanently
+ * rejected — so retrying it only burns the retry budget for nothing. An
+ * aborted request (the caller cancelled it) must never be retried either.
+ * A 5xx, 429 (rate limited) or 408 (request timeout), and any other
+ * unrecognised failure (notably fetch's own `TypeError` on a network blip),
+ * ARE retryable — that transient-failure case is exactly what F2 exists for.
+ */
+export function isRetryableError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.status >= 500 || error.status === 429 || error.status === 408;
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * getJobWithRetry wraps `getJob` with a bounded retry budget for the
+ * post-terminal finalize GET (F2): at most `attempts` requests total and a
+ * fixed backoff between them, so a transient blip does not permanently hide
+ * a completed job's result, while a permanent error (401/403/404/422) or an
+ * abort fails fast without wasting the budget. `fetchJob` and `sleep` are
+ * injectable seams for testing the retry semantics without a network or
+ * real timers; callers in the app never need to pass them.
+ */
+export async function getJobWithRetry(params: {
+  apiKey: string;
+  jobId: string;
+  attempts?: number;
+  delaysMs?: number[];
+  fetchJob?: (p: { apiKey: string; jobId: string }) => Promise<JobStatusResponse>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<JobStatusResponse> {
+  const attempts = params.attempts ?? 3;
+  const delaysMs = params.delaysMs ?? [400, 1200];
+  const fetchJob = params.fetchJob ?? getJob;
+  const sleep = params.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetchJob({ apiKey: params.apiKey, jobId: params.jobId });
+    } catch (err) {
+      lastError = err;
+      if (!isRetryableError(err) || attempt === attempts) {
+        throw err;
+      }
+      await sleep(delaysMs[attempt - 1] ?? delaysMs[delaysMs.length - 1] ?? 0);
+    }
+  }
+  // Unreachable: the loop always returns or throws. Satisfies the compiler.
+  throw lastError;
 }
 
 export async function cancelJob(params: {
