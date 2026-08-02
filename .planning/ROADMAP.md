@@ -215,7 +215,15 @@ byte totals silently wrong the moment that lands, and retrofitting it is exactly
 the multi-site value drift that bit this project twice during v1.11. Summing over
 the lists costs nothing now.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+- [ ] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
+- [ ] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
+- [ ] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
+- [ ] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
+- [ ] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
+**Autonomous**: false (Plan 05 is an operator-run live gate)
 
 ### Phase 52: Quota Enforcement & Intra-Class Fairness
 
