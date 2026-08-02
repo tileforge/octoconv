@@ -231,12 +231,28 @@ func envInt(key string, def int) int {
 // here enforced by enforcePandocInputSize instead of an image/OCR-specific
 // guard.
 func envInt64(key string, def int64) int64 {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.ParseInt(firstField(v), 10, 64); err == nil {
-			return n
-		}
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	return def
+	f := firstField(v)
+	n, err := strconv.ParseInt(f, 10, 64)
+	// A silent fallback here is dangerous for PANDOC_MAX_INPUT_BYTES: the
+	// default is the unconstrained-host 50 MiB, so a typo like "3MiB" would
+	// quietly restore a value that OOM-kills this worker at ~4 MB of input in
+	// its 1Gi container. A negative value is worse -- enforcePandocInputSize
+	// only applies the cap when maxBytes > 0, so "-1" disables the guard
+	// entirely. Both now warn loudly and fall back, matching
+	// envDurationSeconds's own convention in this file.
+	if err != nil {
+		log.Printf("⚠️ %s=%q is not an integer; using default %d", key, f, def)
+		return def
+	}
+	if n < 0 {
+		log.Printf("⚠️ %s=%d is negative (a negative cap would DISABLE the guard); using default %d", key, n, def)
+		return def
+	}
+	return n
 }
 
 // buildPandocConverter constructs a CONFIGURED convert.PandocConverter from
