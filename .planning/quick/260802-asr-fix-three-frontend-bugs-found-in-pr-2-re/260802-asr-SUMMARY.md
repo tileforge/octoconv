@@ -123,3 +123,14 @@ None - no external service configuration required. `npm test` and `npm run build
 ---
 *Phase: quick-260802-asr*
 *Completed: 2026-08-02*
+
+## Self-Check: PASSED
+
+- FOUND: frontend/src/formats.ts
+- FOUND: frontend/src/formats.test.ts
+- FOUND: frontend/src/api.test.ts
+- FOUND: .planning/quick/260802-asr-fix-three-frontend-bugs-found-in-pr-2-re/260802-asr-SUMMARY.md
+- FOUND commit: c918a98
+- FOUND commit: 89fbe82
+- FOUND commit: 466cbeb
+- FOUND commit: bf6ee46
