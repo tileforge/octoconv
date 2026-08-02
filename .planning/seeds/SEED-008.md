@@ -1,6 +1,7 @@
 ---
 id: SEED-008
-status: dormant
+status: implemented
+implemented_in: "v1.9 Phases 38-42 (PROG-01..05) — ffmpeg -progress via named FIFO, non-locking throttled writes, EMA-ETA, SSE stream + opt-in HMAC progress-webhook; SIGKILL-mid-stream live-proven 40/40, verified 2026-07-25"
 planted: 2026-07-23
 planted_during: "after v1.8 AV Engine close"
 trigger_when: "when improving job observability / UX for long-running conversions (esp. video transcode), or when scoping a progress/status-reporting feature"

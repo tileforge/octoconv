@@ -1,6 +1,7 @@
 ---
 id: SEED-012
-status: dormant
+status: implemented
+implemented_in: "v1.11 Phases 47-50 (PDOC-01/02, PDCO-01, PDCE-01..04, PDCP-01/02) — PandocConverter over a closed markup allowlist (no ->pdf, deliberately: LibreOffice/chromium own that), TeX-free pinned image, measured PANDOC_ENGINE_TIMEOUT=65s, KEDA scale-from-zero + downscale-survival live-proven; verified 2026-08-02"
 planted: 2026-07-26
 planted_during: post-v1.9 (worker-ideas brainstorm)
 trigger_when: scoping a milestone that adds a new engine class beyond image/document/html/audio/av/ocr

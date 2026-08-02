@@ -1,6 +1,7 @@
 ---
 id: SEED-009
-status: dormant
+status: implemented
+implemented_in: "v1.10 Phases 43-46 (OCR-01..04, OCRO-01, OCRE-01..05, OCRP-01/02) — standalone OCRConverter on Tesseract 5.5.3, page-streaming scan-PDF, txt/hOCR/ALTO, measured OCR_ENGINE_TIMEOUT=744s, KEDA scale-from-zero live-proven; verified 2026-07-27"
 planted: 2026-07-25
 planted_during: v1.9 Job Progress & Control (raised in Phase 41 discussion)
 trigger_when: scoping a milestone that adds a new engine class beyond image/document/html/audio/av
