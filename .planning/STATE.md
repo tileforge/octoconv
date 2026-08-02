@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.11
 milestone_name: Pandoc Engine
 status: Awaiting next milestone
-stopped_at: Phase 50 context gathered
+stopped_at: Milestone v1.11 shipped and archived (audit passed 9/9 requirements, 6/6 seams)
 last_updated: "2026-08-02T01:07:19.182Z"
 last_activity: 2026-08-02 — Milestone v1.11 completed and archived
 progress:
@@ -192,6 +192,16 @@ None currently blocking the overall roadmap. Sequencing carried into the roadmap
 - Operational discipline (OrbStack): pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history).
 
 ## Deferred Items
+
+Items acknowledged and deferred at v1.11 milestone close on 2026-08-02:
+
+| Category | Item | Status |
+|----------|------|--------|
+| quick_task | 4 pre-v1.11 quick tasks without SUMMARY (260712-cqg, 260719-2f5, 260724-26g, 260728-0ay) | missing/abandoned — all predate v1.11, carried forward from the v1.10 close below |
+| seeds | SEED-004..015 (12 dormant) | dormant by design; SEED-011 (per-engine warm floor) now spans seven ScaledObjects after the pandoc class landed |
+| tech_debt | 12 open WARNING findings in 50-REVIEW.md — live-gate harness robustness (missing jq/psql preflights, fixed /tmp fixture names, `--calibrate-only` matched only by exact `$1`, victim/survivor can collapse to one pod, `$WORKDIR` leak on error paths, attribution poller kubectl-execs into the very cgroup whose memory it measures) | Accepted — harnesses are internal gate tooling, not shipped product. Recommended: one `/gsd:quick` hardening pass |
+| tech_debt | Stale "4 MiB" prose in ~12 comment sites after the Path-B cap change | Comments only; every actual value is 3 MiB (3145728) and verified consistent across compose, chart and Go |
+| tech_debt | WR-11: `metadata.namespace` on ScaledObject | Reproduced from all six sibling ScaledObjects — fixing it is a whole-chart change, not a pandoc one |
 
 Items acknowledged and deferred at v1.10 milestone close on 2026-07-27:
 

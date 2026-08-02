@@ -2,6 +2,8 @@
 
 ## v1.11 Pandoc Engine (Shipped: 2026-08-02)
 
+Known deferred items at close: 5 categories (see STATE.md Deferred Items). Milestone audit: passed — 9/9 requirements, 4/4 phases, 6/6 cross-phase seams, 1/1 E2E flow (.planning/milestones/v1.11-MILESTONE-AUDIT.md).
+
 **Phases completed:** 4 phases, 14 plans, 28 tasks
 
 **Key accomplishments:**
