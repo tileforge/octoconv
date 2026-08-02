@@ -1,15 +1,17 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   ApiError,
+  FormatsResponse,
   JobStatusResponse,
   cancelJob,
   createJob,
   getJob,
+  getJobWithRetry,
   isTerminal,
   listFormats,
   subscribeJobEvents,
-  targetFormatsOf,
 } from './api';
+import { sourceFormatOfFilename, targetFormatsFor, targetFormatsOf } from './formats';
 
 const apiKeyStorageKey = 'octoconv.apiKey';
 const pollIntervalMs = 1800;
@@ -44,7 +46,7 @@ export default function App() {
   );
   const [file, setFile] = useState<File | null>(null);
   const [target, setTarget] = useState<string>('');
-  const [formats, setFormats] = useState<string[]>([]);
+  const [formatsResp, setFormatsResp] = useState<FormatsResponse | null>(null);
   const [formatsNotice, setFormatsNotice] = useState<string | null>(null);
   const [opts, setOpts] = useState('');
   const [job, setJob] = useState<JobStatusResponse | null>(null);
@@ -69,7 +71,7 @@ export default function App() {
   useEffect(() => {
     const trimmedKey = apiKey.trim();
     if (!trimmedKey) {
-      setFormats([]);
+      setFormatsResp(null);
       return undefined;
     }
 
@@ -81,10 +83,8 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        const nextFormats = targetFormatsOf(resp);
-        setFormats(nextFormats);
+        setFormatsResp(resp);
         setFormatsNotice(null);
-        setTarget((prev) => (prev && nextFormats.includes(prev) ? prev : (nextFormats[0] ?? '')));
       } catch (formatsError) {
         if (!cancelled) {
           setFormatsNotice(describeError(formatsError));
@@ -97,24 +97,61 @@ export default function App() {
     };
   }, [apiKey]);
 
-  // Live progress via SSE, falling back to polling GET /v1/jobs/{id} on stream failure.
+  // F3: targets are derived from the selected file's normalized source format
+  // once a file is chosen (targetFormatsFor), falling back to the global
+  // union (targetFormatsOf) before a file is picked. This replaces the
+  // previous alphabetical-first default, which could land on an
+  // engine-incompatible target (e.g. `alto` for a .docx upload).
+  const availableTargets = useMemo(() => {
+    if (!formatsResp) {
+      return [];
+    }
+    return file ? targetFormatsFor(formatsResp, sourceFormatOfFilename(file.name)) : targetFormatsOf(formatsResp);
+  }, [formatsResp, file]);
+
   useEffect(() => {
-    if (!job || isTerminal(job.status)) {
+    setTarget((prev) => (prev && availableTargets.includes(prev) ? prev : (availableTargets[0] ?? '')));
+  }, [availableTargets]);
+
+  const jobId = job?.job_id ?? null;
+
+  // Live progress via SSE, falling back to polling GET /v1/jobs/{id} on stream failure.
+  //
+  // F1: the job's status field MUST NOT be in this dependency array. A
+  // terminal SSE frame flips that status, which used to change these deps, run the
+  // cleanup, and set `cancelled = true` before the in-flight `finalize()` GET
+  // it just launched could resolve — throwing away the only fetch that would
+  // ever have carried `download_url` (terminal SSE frames deliberately carry
+  // none). Keying the effect on `jobId` alone means the terminal transition
+  // no longer tears the effect down out from under its own finalize call.
+  // Dropping the `isTerminal` guard on entry is safe: a job only ever enters
+  // this component as `queued`, `subscribeJobEvents` returns on the terminal
+  // frame, the server closes the stream after it, and the polling fallback
+  // clears its own interval on `isTerminal`.
+  useEffect(() => {
+    if (!jobId) {
       return undefined;
     }
 
     const trimmedKey = apiKey.trim();
-    const jobId = job.job_id;
     const controller = new AbortController();
     let cancelled = false;
+    let finalized = false;
     let pollTimer: number | undefined;
 
     async function finalize() {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
       try {
-        const finalJob = await getJob({ apiKey: trimmedKey, jobId });
-        if (!cancelled) {
-          setJob(finalJob);
-        }
+        const finalJob = await getJobWithRetry({ apiKey: trimmedKey, jobId: jobId! });
+        // Identity-gated, not `cancelled`-gated: the correctness question is
+        // "is this still the job on screen", which survives the effect
+        // cleanup that the terminal status transition itself triggers. A
+        // response for a superseded job (user started a new upload) is
+        // still dropped.
+        setJob((prev) => (prev && prev.job_id === jobId ? finalJob : prev));
       } catch (finalizeError) {
         if (!cancelled) {
           setError(describeError(finalizeError));
@@ -128,7 +165,7 @@ export default function App() {
       }
       pollTimer = window.setInterval(async () => {
         try {
-          const nextJob = await getJob({ apiKey: trimmedKey, jobId });
+          const nextJob = await getJob({ apiKey: trimmedKey, jobId: jobId! });
           if (!cancelled) {
             setJob(nextJob);
             setError(null);
@@ -153,7 +190,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setJob((prev) => (prev ? { ...prev, ...evt } : prev));
+        setJob((prev) => (prev && prev.job_id === jobId ? { ...prev, ...evt } : prev));
         if (isTerminal(evt.status)) {
           void finalize();
         }
@@ -173,7 +210,7 @@ export default function App() {
         window.clearInterval(pollTimer);
       }
     };
-  }, [apiKey, job?.job_id, job?.status]);
+  }, [apiKey, jobId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -263,8 +300,16 @@ export default function App() {
             <label className="field">
               <span>Target format</span>
               <select value={target} onChange={(event) => setTarget(event.target.value)}>
-                {formats.length === 0 && <option value="">Enter API key to load formats</option>}
-                {formats.map((format) => (
+                {availableTargets.length === 0 && (
+                  <option value="">
+                    {!formatsResp
+                      ? 'Enter API key to load formats'
+                      : file
+                        ? 'No conversions available for this file'
+                        : 'Enter API key to load formats'}
+                  </option>
+                )}
+                {availableTargets.map((format) => (
                   <option key={format} value={format}>
                     {format.toUpperCase()}
                   </option>
