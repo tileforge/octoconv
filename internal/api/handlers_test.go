@@ -2924,16 +2924,18 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 // --- D-07 two-tier upload ceiling tests (35-04) ---
 
 // TestNewServer_MaxEngineBytesDefaults proves NewServer's zero-value
-// Config.MaxEngineBytes defaulting yields a non-nil map covering all six
-// engines: image/document/html/audio/ocr at their 100 MiB ceiling (ocr per
-// D-03, Phase 44), av at the raised 2 GiB allowance.
+// Config.MaxEngineBytes defaulting yields a non-nil map covering all seven
+// engines: image/document/html/audio/ocr/pandoc at their 100 MiB ceiling (ocr
+// per D-03, Phase 44; pandoc per PR#2 finding-1 -- an unset
+// Config.MaxPandocInputBytes must never change the default), av at the
+// raised 2 GiB allowance.
 func TestNewServer_MaxEngineBytesDefaults(t *testing.T) {
 	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{})
 
 	if srv.maxEngineBytes == nil {
 		t.Fatal("maxEngineBytes must be non-nil after NewServer")
 	}
-	for _, engine := range []string{convert.EngineImage, convert.EngineDocument, convert.EngineHTML, convert.EngineAudio, convert.EngineOCR} {
+	for _, engine := range []string{convert.EngineImage, convert.EngineDocument, convert.EngineHTML, convert.EngineAudio, convert.EngineOCR, convert.EnginePandoc} {
 		if got := srv.maxEngineBytes[engine]; got != 100<<20 {
 			t.Errorf("maxEngineBytes[%s] = %d, want 100 MiB (100<<20)", engine, got)
 		}
@@ -3046,6 +3048,95 @@ func TestCreateJob_EngineAbsentFromSizeMapNotRejected(t *testing.T) {
 	}
 	if !store.uploaded {
 		t.Error("must upload when the detected engine has no configured size ceiling")
+	}
+}
+
+// TestCreateJob_PandocOversizedRejectedBeforeUpload is the PR#2 finding-1
+// regression guard: the API must honour the SAME PANDOC_MAX_INPUT_BYTES the
+// worker's enforcePandocInputSize enforces, so an upload the worker would
+// certainly reject with input_too_large is rejected 413 at the upload gate
+// instead -- no S3 write, no job row, no queue slot burned.
+func TestCreateJob_PandocOversizedRejectedBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	resolver := newFakeResolver()
+	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+		MaxUploadBytes:      10 << 20,
+		MaxPandocInputBytes: 100,
+		// MaxEngineBytes deliberately left nil: NewServer's own D-07
+		// defaulting must fold the scalar into the map.
+	})
+
+	content := append(append([]byte{}, markdownFixture()...), bytes.Repeat([]byte("a"), 200)...)
+	body, ct := multipartBody(t, "in.md", "html", content)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploaded {
+		t.Error("must not call storage.Upload for a pandoc upload exceeding PANDOC_MAX_INPUT_BYTES")
+	}
+	if repo.created != nil {
+		t.Error("must not create a job for a pandoc upload exceeding PANDOC_MAX_INPUT_BYTES")
+	}
+	if q.enqueuedPandoc != uuid.Nil {
+		t.Error("must not enqueue a pandoc upload exceeding PANDOC_MAX_INPUT_BYTES")
+	}
+}
+
+// TestCreateJob_PandocWithinConfiguredCapAccepted proves the gate is not a
+// blanket pandoc block: an upload comfortably under the configured
+// MaxPandocInputBytes still reaches 202 and the pandoc queue.
+func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	resolver := newFakeResolver()
+	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+		MaxUploadBytes:      10 << 20,
+		MaxPandocInputBytes: 10_000,
+	})
+
+	body, ct := multipartBody(t, "in.md", "html", markdownFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if q.enqueuedPandoc == uuid.Nil {
+		t.Error("must enqueue a pandoc upload within the configured MaxPandocInputBytes")
+	}
+}
+
+// TestNewServer_MaxPandocInputBytesOverridesDefault is the "single source of
+// truth preserved" assertion: setting Config.MaxPandocInputBytes overrides
+// ONLY the pandoc entry NewServer's own D-07 default map produces -- the six
+// other per-engine ceilings are untouched.
+func TestNewServer_MaxPandocInputBytesOverridesDefault(t *testing.T) {
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{
+		MaxPandocInputBytes: 3145728,
+	})
+
+	if got := srv.maxEngineBytes[convert.EnginePandoc]; got != 3145728 {
+		t.Errorf("maxEngineBytes[pandoc] = %d, want 3145728", got)
+	}
+	for _, engine := range []string{convert.EngineImage, convert.EngineDocument, convert.EngineHTML, convert.EngineAudio, convert.EngineOCR} {
+		if got := srv.maxEngineBytes[engine]; got != 100<<20 {
+			t.Errorf("maxEngineBytes[%s] = %d, want 100 MiB (100<<20)", engine, got)
+		}
+	}
+	if got := srv.maxEngineBytes[convert.EngineAV]; got != 2<<30 {
+		t.Errorf("maxEngineBytes[av] = %d, want 2 GiB (2<<30)", got)
 	}
 }
 

@@ -135,6 +135,15 @@ services:
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
+      # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
+      # (which are IN-02 queue.NewClient() parity values), this one is read
+      # by cmd/api as the pandoc per-engine UPLOAD ceiling, so the API
+      # rejects 413 exactly what the worker's enforcePandocInputSize would
+      # reject later instead of burning an S3 object and a queue slot on an
+      # upload already known to be over-cap. Must stay byte-identical to the
+      # pandoc-worker service's own PANDOC_MAX_INPUT_BYTES below or the two
+      # tiers disagree.
+      PANDOC_MAX_INPUT_BYTES: "3145728"
       STORAGE_TTL: "168h"
       METRICS_ADDR: "127.0.0.1:9090"
       # WEBHOOK_ALLOW_PRIVATE_IPS / WEBHOOK_ALLOW_INSECURE_HTTP: deliberately
@@ -892,7 +901,12 @@ services:
       # single conversion already peaks at 909 MiB anon of 1024.)
       # The worst-cell 32.318s p95 below was measured at the
       # older 4 MiB cap (still a valid upper bound for 3 MiB inputs).
-      # pandoc-worker-only, NOT read by queue.NewClient().
+      # PR#2 finding-1: now ALSO read by the api service (as the upload
+      # ceiling, see that service's PANDOC_MAX_INPUT_BYTES comment above) --
+      # still NOT read by queue.NewClient(), so still no IN-02 parity
+      # requirement in the uniqueTTL sense, but the two values must
+      # nonetheless match byte-for-byte or the API accepts uploads the
+      # worker will certainly reject.
       PANDOC_MAX_INPUT_BYTES: "3145728"
       # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
       # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank

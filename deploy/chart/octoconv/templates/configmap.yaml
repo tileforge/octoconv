@@ -71,11 +71,19 @@ data:
   # parity values every queue.NewClient()-constructing service inherits
   # identically via this shared ConfigMap -- a mismatch would silently
   # produce duplicate processing (pandocUniqueTTL is derived from the
-  # timeout in each enqueuing process). PANDOC_WORKER_CONCURRENCY/
-  # PANDOC_MAX_INPUT_BYTES are pandoc-worker-only (not read by
-  # queue.NewClient()) but are baked into this shared ConfigMap anyway,
-  # same posture as OCR_WORKER_CONCURRENCY/OCR_MAX_PAGES above (DEBT-05 --
-  # every process carries the full retry/timeout surface even when unused).
+  # timeout in each enqueuing process). PANDOC_WORKER_CONCURRENCY is
+  # pandoc-worker-only (not read by queue.NewClient()) but is baked into
+  # this shared ConfigMap anyway, same posture as OCR_WORKER_CONCURRENCY/
+  # OCR_MAX_PAGES above (DEBT-05 -- every process carries the full
+  # retry/timeout surface even when unused). PANDOC_MAX_INPUT_BYTES is NOT
+  # worker-only (PR#2 finding-1): cmd/api also reads it, as the pandoc
+  # per-engine UPLOAD ceiling (Config.MaxPandocInputBytes) -- the key needs
+  # no change here, the api Deployment already inherits the whole
+  # ConfigMap via `include "octoconv.commonEnv"` -> `envFrom:
+  # configMapRef: octoconv-config` (_helpers.tpl), verified not assumed.
+  # Still NOT read by queue.NewClient(), so still no IN-02 uniqueTTL parity
+  # requirement -- but the api and pandoc-worker readers must see the same
+  # value or the API accepts uploads the worker will certainly reject.
   # PANDOC_MAX_INPUT_BYTES=3 MiB (Path-B, 49-03-SUMMARY.md 4 MiB -> 50-04
   # live SC4 evidence 3 MiB): the memory headroom lever at the 1Gi container
   # limit -- a ~4.09 MB html->md conversion OOMKilled the real worker

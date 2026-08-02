@@ -32,6 +32,16 @@ var (
 // io.ReaderAt short-read contract (a partial read alongside a non-EOF error)
 // is honored the same way LooksLikeHTML honors it -- callers must never
 // panic on a short or oversized-claimed input.
+//
+// PR#2 finding-2: when size exceeds cap, the cap can fall inside a
+// multi-byte UTF-8 rune, leaving a dangling lead byte at the end of buf.
+// Validating THAT byte as-is makes utf8.Valid reject an otherwise-perfectly-
+// valid file merely for being larger than the cap. So the prefix is cut on
+// a rune boundary before validation -- trimPartialTrailingRune removes a
+// trailing rune the cap severed -- but ONLY when the cap actually did the
+// severing (size > cap && the read really did reach cap). A file that fits
+// entirely within cap is judged unchanged: a dangling lead byte there is
+// genuinely invalid UTF-8, not truncation, and still fails closed.
 func readSniffPrefix(r io.ReaderAt, size int64, cap int64) ([]byte, bool) {
 	if size <= 0 {
 		return nil, false
@@ -49,6 +59,15 @@ func readSniffPrefix(r io.ReaderAt, size int64, cap int64) ([]byte, bool) {
 	if len(buf) == 0 {
 		return nil, false
 	}
+	// Both halves matter: size > cap means more bytes genuinely exist beyond
+	// this prefix, and read >= cap means the read really did stop at the cap
+	// rather than at a short read from a client that overstated size.
+	if size > cap && int64(read) >= cap {
+		buf = trimPartialTrailingRune(buf)
+		if len(buf) == 0 {
+			return nil, false
+		}
+	}
 	if bytes.IndexByte(buf, 0) != -1 {
 		return nil, false
 	}
@@ -56,6 +75,64 @@ func readSniffPrefix(r io.ReaderAt, size int64, cap int64) ([]byte, bool) {
 		return nil, false
 	}
 	return buf, true
+}
+
+// trimPartialTrailingRune removes a trailing PARTIAL multi-byte UTF-8 rune
+// from buf -- one whose lead byte is present but whose full, declared-length
+// encoding does not fit within buf. It exists solely for readSniffPrefix's
+// truncated-prefix case: the byte(s) that would complete the rune may exist
+// in the real file just beyond where the cap stopped reading, so a lead
+// byte at the very end that promises more bytes than buf holds is evidence
+// of truncation, not of invalid UTF-8.
+//
+// The scan looks back at most utf8.UTFMax-1 bytes (the longest a UTF-8
+// rune's continuation-byte tail can be) for the first byte that is a rune
+// START byte per utf8.RuneStart (i.e. NOT a continuation byte). The
+// DECLARED length is derived directly from that lead byte's own bit pattern
+// via leadByteRuneLen -- deliberately NOT via utf8.DecodeRune/utf8.RuneError,
+// which would also flag a genuinely INVALID lead byte (0xFF, 0xFE: neither
+// is ever legal in UTF-8) as "incomplete" and trim it away. Those invalid
+// bytes declare no length at all (leadByteRuneLen returns 0), so this
+// function leaves them untouched and lets them fall through to the
+// utf8.Valid check in readSniffPrefix, which correctly rejects them --
+// trimming must never launder a genuinely malformed sequence into a false
+// pass.
+func trimPartialTrailingRune(buf []byte) []byte {
+	end := len(buf)
+	start := end - (utf8.UTFMax - 1)
+	if start < 0 {
+		start = 0
+	}
+	for i := end - 1; i >= start; i-- {
+		if !utf8.RuneStart(buf[i]) {
+			continue // continuation byte: keep scanning back for the lead byte
+		}
+		declared := leadByteRuneLen(buf[i])
+		if declared > 1 && declared > end-i {
+			return buf[:i] // lead byte promises more bytes than buf holds: truncated
+		}
+		return buf // complete rune, single ASCII byte, or an invalid lead byte
+	}
+	return buf
+}
+
+// leadByteRuneLen returns the UTF-8 encoding length (1-4) a lead byte
+// declares, or 0 if b can never legally start a UTF-8 sequence -- a
+// continuation byte, or one of the two bytes (0xFE, 0xFF) that never appear
+// anywhere in valid UTF-8.
+func leadByteRuneLen(b byte) int {
+	switch {
+	case b&0x80 == 0x00:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 0
+	}
 }
 
 // isASCIILetter reports whether b is an ASCII letter -- used by

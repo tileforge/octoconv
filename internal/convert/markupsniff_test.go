@@ -120,6 +120,28 @@ func TestLooksLikeLaTeXOversizedInputBoundedRead(t *testing.T) {
 	}
 }
 
+// TestLooksLikeLaTeXRuneStraddlingSniffCap is the PR#2 finding-2 regression
+// guard for LooksLikeLaTeX: a 3-byte rune (U+2026 "…", bytes E2 80 A6)
+// starts at offset htmlSniffCap-1, so the 1 MiB sniff cap severs it after
+// its first byte and the raw prefix ends on a dangling lead byte. Before
+// the fix, utf8.Valid saw that dangling byte and rejected a perfectly valid
+// LaTeX document. Padding length is computed from htmlSniffCap arithmetic,
+// not a magic constant, so this test stays correct if the cap ever moves.
+func TestLooksLikeLaTeXRuneStraddlingSniffCap(t *testing.T) {
+	prefix := "\\documentclass{article}\n"
+	pad := bytes.Repeat([]byte("a"), htmlSniffCap-1-len(prefix))
+	var buf bytes.Buffer
+	buf.WriteString(prefix)
+	buf.Write(pad)
+	buf.WriteString("…")
+	buf.WriteString(" more text after the straddling rune.\n")
+	data := buf.Bytes()
+	r := bytes.NewReader(data)
+	if !LooksLikeLaTeX(r, int64(len(data))) {
+		t.Error("LooksLikeLaTeX on a rune straddling the sniff cap = false, want true")
+	}
+}
+
 func TestLooksLikeText(t *testing.T) {
 	cases := []struct {
 		name string
@@ -200,6 +222,59 @@ func TestLooksLikeTextOversizedInputBoundedRead(t *testing.T) {
 	r := bytes.NewReader(data)
 	if !LooksLikeText(r, int64(len(data))) {
 		t.Error("LooksLikeText on oversized-but-valid text = false, want true")
+	}
+}
+
+// TestLooksLikeTextRuneStraddlingSniffCap is the PR#2 finding-2 regression
+// guard: a 3-byte rune (U+2026 "…", bytes E2 80 A6) starts at offset
+// htmlSniffCap-1, so the 1 MiB sniff cap severs it after its first byte and
+// the raw prefix ends on a dangling lead byte. Before the fix, utf8.Valid
+// saw that dangling byte and rejected a perfectly valid, oversized text
+// file. Padding length is computed from htmlSniffCap arithmetic, not a
+// magic constant, so this test stays correct if the cap ever moves.
+func TestLooksLikeTextRuneStraddlingSniffCap(t *testing.T) {
+	pad := bytes.Repeat([]byte("a"), htmlSniffCap-1)
+	var buf bytes.Buffer
+	buf.Write(pad)
+	buf.WriteString("…")
+	buf.WriteString(" more text after the straddling rune.\n")
+	data := buf.Bytes()
+	r := bytes.NewReader(data)
+	if !LooksLikeText(r, int64(len(data))) {
+		t.Error("LooksLikeText on a rune straddling the sniff cap = false, want true")
+	}
+}
+
+// TestLooksLikeTextInvalidUTF8AtSniffCapStillRejected is the anti-relaxation
+// guard: an impossible UTF-8 lead byte (0xFF never appears in any legal
+// UTF-8 sequence) placed exactly at the same offset the straddling-rune test
+// above uses must still fail closed. The trim must never launder a
+// genuinely invalid byte into a pass just because it happens to sit at the
+// cap boundary.
+func TestLooksLikeTextInvalidUTF8AtSniffCapStillRejected(t *testing.T) {
+	pad := bytes.Repeat([]byte("a"), htmlSniffCap-1)
+	var buf bytes.Buffer
+	buf.Write(pad)
+	buf.WriteByte(0xFF)
+	buf.WriteString(" more text after the invalid byte.\n")
+	data := buf.Bytes()
+	r := bytes.NewReader(data)
+	if LooksLikeText(r, int64(len(data))) {
+		t.Error("LooksLikeText with an impossible lead byte at the sniff cap = true, want false")
+	}
+}
+
+// TestLooksLikeTextIncompleteRuneAtEOFStillRejected proves the trim is
+// scoped ONLY to a prefix the cap actually severed: a SMALL file (well
+// under htmlSniffCap, so nothing was truncated) whose final byte is a bare
+// dangling UTF-8 lead byte (0xE2) is genuinely invalid UTF-8 and must still
+// be rejected -- the fix must not turn into "always trim a trailing lead
+// byte".
+func TestLooksLikeTextIncompleteRuneAtEOFStillRejected(t *testing.T) {
+	data := append([]byte("plain text ending in a dangling lead byte "), 0xE2)
+	r := bytes.NewReader(data)
+	if LooksLikeText(r, int64(len(data))) {
+		t.Error("LooksLikeText with an incomplete trailing rune at true EOF = true, want false")
 	}
 }
 
