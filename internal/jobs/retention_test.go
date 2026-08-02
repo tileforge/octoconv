@@ -318,3 +318,47 @@ func TestPurgeUsageDisabledWhenWindowZero(t *testing.T) {
 		t.Fatalf("remaining usage rows = %d, want 1 (olderThan<=0 must disable purging entirely)", remaining)
 	}
 }
+
+// TestPurgeJobsSparesParentWithLiveDescendant proves the cascade cannot remove
+// a job that does not itself satisfy the retention predicate. jobs.parent_id
+// self-references with ON DELETE CASCADE, so deleting an aged terminal parent
+// would otherwise take a live child with it — bypassing both the status
+// predicate and the batch bound, silently.
+//
+// The grandchild case is the reason the guard is recursive: the child here is
+// itself eligible (aged, terminal), so a one-level check would clear the parent
+// for deletion and the cascade would still reach the live grandchild.
+func TestPurgeJobsSparesParentWithLiveDescendant(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	parentID := createAgedJob(t, r, clientID, StatusDone, 100*24*time.Hour)
+	childID := createAgedJob(t, r, clientID, StatusDone, 100*24*time.Hour)
+	grandchildID := createAgedJob(t, r, clientID, StatusActive, 100*24*time.Hour)
+
+	// parent -> child -> grandchild, where only the grandchild is ineligible.
+	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET parent_id = $1 WHERE id = $2`, parentID, childID); err != nil {
+		t.Fatalf("link child to parent: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET parent_id = $1 WHERE id = $2`, childID, grandchildID); err != nil {
+		t.Fatalf("link grandchild to child: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, parentID)
+	})
+
+	if _, err := r.PurgeJobs(ctx, 90*24*time.Hour, 1000); err != nil {
+		t.Fatalf("PurgeJobs: %v", err)
+	}
+
+	if _, err := r.Get(ctx, grandchildID); err != nil {
+		t.Fatalf("live grandchild must survive: the cascade deleted a job that never satisfied the retention predicate: %v", err)
+	}
+	if _, err := r.Get(ctx, parentID); err != nil {
+		t.Fatalf("parent must be spared while any descendant is ineligible: %v", err)
+	}
+	if _, err := r.Get(ctx, childID); err != nil {
+		t.Fatalf("child must be spared while its own descendant is ineligible: %v", err)
+	}
+}

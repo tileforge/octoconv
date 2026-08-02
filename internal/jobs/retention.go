@@ -45,12 +45,43 @@ func (r *Repo) PurgeJobs(ctx context.Context, olderThan time.Duration, batch int
 	}
 	cutoff := time.Now().Add(-olderThan)
 
+	// The subtree guard exists because jobs.parent_id self-references with
+	// ON DELETE CASCADE. Without it, deleting an aged terminal parent silently
+	// removes its descendants too -- including a child that is still queued or
+	// active, or one created inside the retention window. That bypasses both
+	// the status predicate above and the batch bound, and the loss is silent.
+	//
+	// The check is recursive rather than one level deep: a child may itself be
+	// eligible while ITS child is live, and the cascade reaches all the way
+	// down. A candidate is deleted only when its entire subtree is eligible.
+	//
+	// This is dormant today -- nothing in the codebase populates parent_id --
+	// but it activates the moment sub-jobs exist (SEED-017 PDF split, SEED-018
+	// pipelines), and while no row has a parent the recursive join matches
+	// nothing and costs nothing.
 	tag, err := r.pool.Exec(ctx, `
-		DELETE FROM jobs WHERE id IN (
+		WITH RECURSIVE candidate AS (
 			SELECT id FROM jobs
 			WHERE created_at < $1 AND status NOT IN ('queued', 'active')
 			ORDER BY created_at
 			LIMIT $2
+		),
+		descendant AS (
+			SELECT c.id AS root, j.id, j.created_at, j.status
+			FROM candidate c
+			JOIN jobs j ON j.parent_id = c.id
+			UNION ALL
+			SELECT d.root, j.id, j.created_at, j.status
+			FROM descendant d
+			JOIN jobs j ON j.parent_id = d.id
+		),
+		blocked AS (
+			SELECT DISTINCT root FROM descendant
+			WHERE created_at >= $1 OR status IN ('queued', 'active')
+		)
+		DELETE FROM jobs WHERE id IN (
+			SELECT id FROM candidate
+			WHERE id NOT IN (SELECT root FROM blocked)
 		)`, cutoff, batch)
 	if err != nil {
 		return 0, fmt.Errorf("purge jobs older than %s: %w", olderThan, err)
