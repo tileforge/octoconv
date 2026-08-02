@@ -3,6 +3,7 @@ id: SEED-010
 status: dormant
 planted: 2026-07-26
 planted_during: post-v1.9 (design discussion after milestone close)
+revisited: 2026-08-02 (re-raised by operator during v1.12 planning; see the Revisited section)
 trigger_when: when adding a new worker/engine should require ZERO changes to core app code (only new isolated worker code + deploy config), OR when the backlog holds 3+ new engine classes to add
 scope: Large
 ---
@@ -72,3 +73,83 @@ Worker on startup: `INSERT … ON CONFLICT (capability) DO UPDATE` (self-adverti
 ## Notes
 
 Motivating example throughout: `tex2pdf` (LaTeX→PDF). This is a platform/extensibility milestone (generalizes the 5 hardcoded engines into a catalog), not a small fix — weigh against the YAGNI baseline ("one registration + a migration + a compose/helm entry" is cheap at ~1 engine/milestone). Pays off once several engines are actually queued.
+
+---
+
+## Revisited 2026-08-02 (post-v1.11, while v1.12 was being planned)
+
+The operator re-raised this independently, describing it as: a worker starts,
+announces what it is, what it can convert, its settings and possibly its own
+presets; a dispatcher records that in the database. That is this seed. The design
+above already covers the mechanism, the trust boundary, heartbeat liveness and
+fail-closed behaviour when no worker is live. What follows is only what the
+2026-08-02 discussion added.
+
+### Correction to an argument used against this seed
+
+When v1.12's direction was chosen, this seed was passed over partly on the claim
+that dynamic registration *weakens* a safety property — that pair disjointness is
+currently guaranteed at compile/test time (`TestPandocPairsDisjointFromOtherEngines`,
+guarding `Registry.Register`'s silent last-write-wins) and would become a runtime
+trust question.
+
+**That argument was wrong and should not be reused.** In the catalog design,
+`capability` is a primary key — a UNIQUE constraint in Postgres. Two workers
+cannot both own a capability; the second `INSERT ... ON CONFLICT` either updates
+its own row or is rejected. A database constraint is a *stronger* guarantee than
+a Go test that must be remembered and kept in sync, not a weaker one.
+
+The reasons this seed stayed dormant that DO hold:
+
+- It does not reduce the real cost of adding an engine. The 4-phase engine-class
+  pattern is mechanical by now (seven repetitions); the API rebuild is not the
+  expensive part.
+- It is milestone-shaped work touching five seams (listed above), so it competes
+  with milestones, not with quick tasks.
+
+### What this would genuinely fix (the strongest argument, not previously stated plainly)
+
+Today the API's view of what the platform can do is **whatever the API binary was
+compiled with**, not what is actually running. A deploy where `cmd/api` knows
+about an engine class but no worker for it is running leaves the API cheerfully
+accepting those jobs; they sit in a queue nobody consumes until the reconciler
+eventually gives up. `GET /v1/formats` advertises capability that may not exist.
+
+The catalog collapses "declared" and "available" into one answer. That is an
+operational correctness win, and it is a better justification for this work than
+"avoid an API redeploy".
+
+### On workers shipping their own presets (new question, 2026-08-02)
+
+The operator asked whether a registering worker might also supply its own presets.
+
+**Recommendation: no — or only as a proposal requiring operator approval.**
+
+`presets` is a curated surface: the table carries `scope IN ('system','user')` and
+a `client_id`, and system presets are managed through an `OPERATOR_CLIENT_IDS`-gated
+endpoint. Letting a worker inject presets on startup would route around that
+curation and make preset content a function of which image happens to be deployed —
+including on rollback, where an older image would silently reinstate older presets.
+
+If worker-supplied defaults are wanted, the safe shape is: the worker advertises
+them as *candidates* in its capability row, and an operator promotes them into
+`presets` explicitly. Capability advertisement and preset curation should stay
+separate concerns.
+
+### Interaction with work planted since
+
+- **v1.12 (Consumer Accounting & Fairness).** Quota and concurrency limits are
+  keyed per engine class. With a dynamic catalog, engine classes become data, so
+  quota configuration must tolerate a capability appearing that has no quota row
+  yet — the answer should be an explicit default, not an accidental
+  unlimited-because-missing. Worth resolving in whichever phase makes the catalog
+  authoritative.
+- **SEED-016 (client-assigned priority tiers).** Tier queues are derived from the
+  engine class; if classes are catalog-driven, tier queue names become catalog-driven
+  too, and the KEDA PromQL that selects on queue name would need to be generated
+  rather than hand-written per class.
+- **SEED-018 (job pipelines).** A pipeline step names an engine to run. If
+  capabilities are data, a pipeline definition naturally references catalog
+  capability names rather than compiled-in constants — the two designs reinforce
+  each other, and building pipelines first on compiled constants would create
+  migration work.
