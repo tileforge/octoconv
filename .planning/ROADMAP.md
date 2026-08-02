@@ -181,7 +181,7 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 **Milestone Goal:** превратить OctoConv из «сервиса, который умеет конвертировать» в общую платформу, которая знает своих потребителей — кто сколько потребляет, в каких границах, и как не дать одному потребителю выжрать класс движка целиком.
 
-- [ ] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt
+- [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
 - [ ] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class
 - [ ] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus
 - [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
@@ -220,23 +220,23 @@ the lists costs nothing now.
 Plans:
 **Wave 1**
 
-- [ ] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
+- [x] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
+- [x] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
+- [x] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
+- [x] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
+- [x] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
 
 **Autonomous**: false (Plan 05 is an operator-run live gate)
 
@@ -350,7 +350,7 @@ Plans:
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
-| 51. Attribution, Accounting & Retention | v1.12 | 0/TBD | Not started | - |
+| 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete   | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 0/TBD | Not started | - |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
