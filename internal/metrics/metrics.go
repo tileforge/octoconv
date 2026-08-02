@@ -32,7 +32,7 @@ var (
 
 	reconcilerActions = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "octoconv_reconciler_actions_total",
-		Help: "Total number of reconciler actions, labeled by action (recovered/exhausted/webhook_gap_recovered/unroutable_engine).",
+		Help: "Total number of reconciler actions, labeled by action (recovered/exhausted/webhook_gap_recovered/unroutable_engine/purged_jobs/purged_usage).",
 	}, []string{"action"})
 
 	// clientJobOutcomes is a NEW, purpose-built CounterVec (D-07) -- client_id
@@ -68,6 +68,16 @@ func RecordWebhookDelivery(success bool) {
 // "unroutable_engine").
 func RecordReconcilerAction(action string) {
 	reconcilerActions.WithLabelValues(action).Inc()
+}
+
+// RecordReconcilerPurge adds n to the reconciler-action counter for a
+// retention purge kind ("purged_jobs" or "purged_usage", RETN-01). It
+// reuses reconcilerActions rather than adding a new metric -- RETN-01 only
+// requires the purge to report what it deleted, and this vec is already the
+// reconciler's reporting surface (T-51-15: an operator must be able to see
+// whether retention is running at all).
+func RecordReconcilerPurge(kind string, n int) {
+	reconcilerActions.WithLabelValues(kind).Add(float64(n))
 }
 
 // overflowClientLabel is the single stable label value every client_id

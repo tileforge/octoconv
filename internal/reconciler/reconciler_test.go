@@ -34,6 +34,29 @@ type fakeStore struct {
 	webhookGaps              []jobs.WebhookGapJob
 	findWebhookGapsErr       error
 	webhookGapRecoveredCalls []uuid.UUID
+
+	// purgeJobsCalls/purgeUsageCalls record every (olderThan, batch) pair
+	// passed to PurgeJobs/PurgeUsage, so tests can assert on both call count
+	// (TestPurgeIsBoundedPerTick) and the arguments threaded through from
+	// Config. purgeJobsResults/purgeUsageResults are popped one (n, err) pair
+	// per call (mirroring requeueStaleErrs' style below); once exhausted,
+	// calls return (0, nil).
+	purgeJobsCalls    []purgeCall
+	purgeJobsResults  []purgeResult
+	purgeUsageCalls   []purgeCall
+	purgeUsageResults []purgeResult
+}
+
+// purgeCall records one PurgeJobs/PurgeUsage invocation's arguments.
+type purgeCall struct {
+	olderThan time.Duration
+	batch     int
+}
+
+// purgeResult is one scripted (rows, err) return value for PurgeJobs/PurgeUsage.
+type purgeResult struct {
+	n   int64
+	err error
 }
 
 func (f *fakeStore) FindStale(ctx context.Context, queuedStaleAfter, activeStaleAfter time.Duration) ([]jobs.StaleJob, error) {
@@ -80,6 +103,26 @@ func (f *fakeStore) FindWebhookGaps(ctx context.Context, activeStaleAfter time.D
 func (f *fakeStore) RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, status string) error {
 	f.webhookGapRecoveredCalls = append(f.webhookGapRecoveredCalls, id)
 	return nil
+}
+
+func (f *fakeStore) PurgeJobs(ctx context.Context, olderThan time.Duration, batch int) (int64, error) {
+	idx := len(f.purgeJobsCalls)
+	f.purgeJobsCalls = append(f.purgeJobsCalls, purgeCall{olderThan: olderThan, batch: batch})
+	if idx < len(f.purgeJobsResults) {
+		r := f.purgeJobsResults[idx]
+		return r.n, r.err
+	}
+	return 0, nil
+}
+
+func (f *fakeStore) PurgeUsage(ctx context.Context, olderThan time.Duration, batch int) (int64, error) {
+	idx := len(f.purgeUsageCalls)
+	f.purgeUsageCalls = append(f.purgeUsageCalls, purgeCall{olderThan: olderThan, batch: batch})
+	if idx < len(f.purgeUsageResults) {
+		r := f.purgeUsageResults[idx]
+		return r.n, r.err
+	}
+	return 0, nil
 }
 
 // fakeEnqueuer is an in-memory enqueuer implementation for unit tests. The

@@ -40,7 +40,29 @@ type Config struct {
 	ActiveStaleAfter time.Duration
 	SweepInterval    time.Duration
 	MaxRecoveries    int
+
+	// JobsRetention/UsageRetention/PurgeBatchSize tune the retention purge
+	// (RETN-01, D-11/D-12/D-13) that runs on the same advisory-lock-gated
+	// tick as sweep -- see purge() below. JobsRetention/UsageRetention <= 0
+	// disables the respective purge entirely (jobs.PurgeJobs/PurgeUsage's
+	// own guard, internal/jobs/retention.go); the zero value of this struct
+	// (every pre-existing Config literal in this codebase, including every
+	// test's) therefore leaves retention off, never "delete everything".
+	JobsRetention  time.Duration
+	UsageRetention time.Duration
+	// PurgeBatchSize <= 0 falls back to defaultPurgeBatchSize below.
+	PurgeBatchSize int
 }
+
+// defaultPurgeBatchSize is the fallback row-count-per-DELETE-statement bound
+// used when Config.PurgeBatchSize is unset (<=0).
+const defaultPurgeBatchSize = 1000
+
+// maxPurgeBatchesPerSweep bounds how many PurgeJobs/PurgeUsage batches a
+// single purge() call will issue for EACH kind, giving a hard per-tick
+// ceiling on purge work (T-51-13, DoS mitigation) independent of how large
+// the batch size itself is.
+const maxPurgeBatchesPerSweep = 10
 
 // jobStore is the subset of *jobs.Repo the sweeper depends on (interface
 // segregation, mirroring internal/api/api.go), so Sweeper is unit-testable
@@ -53,6 +75,8 @@ type jobStore interface {
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	FindWebhookGaps(ctx context.Context, activeStaleAfter time.Duration) ([]jobs.WebhookGapJob, error)
 	RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, status string) error
+	PurgeJobs(ctx context.Context, olderThan time.Duration, batch int) (int64, error)
+	PurgeUsage(ctx context.Context, olderThan time.Duration, batch int) (int64, error)
 }
 
 // enqueuer is the subset of *queue.Client the sweeper depends on.
@@ -92,6 +116,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.sweep(ctx)
+			s.purge(ctx)
 		}
 	}
 }
@@ -225,6 +250,16 @@ func (s *Sweeper) RunWithLock(ctx context.Context, lock AdvisoryLock) {
 				continue
 			}
 			s.sweep(ctx)
+			// purge is called here, immediately after sweep, NOT from
+			// sweep's own tail — sweep returns early on any finder error
+			// (FindStale/FindWebhookGaps), and hosting the purge at its tail
+			// would let a persistently failing stale-scan silently disable
+			// retention. This placement is still inside the TryAcquire gate
+			// above, so exactly one fleet-wide replica ever purges (T-51-14,
+			// reusing the same advisory-lock election sweep already uses) —
+			// it is only OUTSIDE sweep()'s own error-return paths, not
+			// outside the lock.
+			s.purge(ctx)
 		}
 	}
 }
@@ -429,5 +464,55 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		// RecordWebhookGapRecovered does not touch RecoveryCount/MaxRecoveries.
 		_ = s.store.RecordWebhookGapRecovered(ctx, g.ID, g.Status)
 		metrics.RecordReconcilerAction("webhook_gap_recovered")
+	}
+}
+
+// purge runs the retention purge (RETN-01, D-11/D-12/D-13): up to
+// maxPurgeBatchesPerSweep batches of jobs.PurgeJobs, then up to
+// maxPurgeBatchesPerSweep batches of jobs.PurgeUsage, stopping each loop
+// early once a batch deletes fewer rows than the batch size (nothing more to
+// do this tick). Each non-zero batch is reported through
+// metrics.RecordReconcilerPurge so an operator can see retention running
+// (T-51-15). On any error, this returns silently — the same best-effort
+// discipline as every other scan in sweep() above ("the next tick
+// retries"); a batch that partially completed before an error still counts
+// toward this tick's total.
+//
+// Called from Run/RunWithLock immediately after sweep(), never from inside
+// sweep() itself — see the call sites' comments for why.
+func (s *Sweeper) purge(ctx context.Context) {
+	batch := s.cfg.PurgeBatchSize
+	if batch <= 0 {
+		batch = defaultPurgeBatchSize
+	}
+
+	for i := 0; i < maxPurgeBatchesPerSweep; i++ {
+		n, err := s.store.PurgeJobs(ctx, s.cfg.JobsRetention, batch)
+		if err != nil {
+			// Best-effort: the next tick retries.
+			return
+		}
+		if n > 0 {
+			metrics.RecordReconcilerPurge("purged_jobs", int(n))
+		}
+		if n < int64(batch) {
+			// Fewer rows than the batch bound means nothing more is
+			// eligible right now (or the purge is disabled, in which case
+			// jobs.PurgeJobs already returned (0, nil) without a DELETE).
+			break
+		}
+	}
+
+	for i := 0; i < maxPurgeBatchesPerSweep; i++ {
+		n, err := s.store.PurgeUsage(ctx, s.cfg.UsageRetention, batch)
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			metrics.RecordReconcilerPurge("purged_usage", int(n))
+		}
+		if n < int64(batch) {
+			break
+		}
 	}
 }
