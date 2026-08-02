@@ -79,7 +79,13 @@ func TestEnforceMinFreeDisk(t *testing.T) {
 		if free == 0 {
 			t.Skip("host reports zero free bytes; cannot construct a guaranteed-insufficient case")
 		}
-		err := EnforceMinFreeDisk(dir, int64(free)+1, 1.0)
+		// Ask for a petabyte rather than free+1. `free` is sampled once at the
+		// top of this test, but the host keeps writing between that sample and
+		// this call, so free+1 can quietly become satisfiable and the guard
+		// correctly returns nil -- a flake that has nothing to do with the code
+		// under test. A demand no real filesystem can meet removes the race.
+		const unsatisfiable = int64(1) << 50 // 1 PiB
+		err := EnforceMinFreeDisk(dir, unsatisfiable, 1.0)
 		if !errors.Is(err, ErrAVInsufficientDiskSpace) {
 			t.Errorf("errors.Is(err, ErrAVInsufficientDiskSpace) = false for err=%v, want true", err)
 		}
