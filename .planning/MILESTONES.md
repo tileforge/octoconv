@@ -1,5 +1,27 @@
 # Milestones
 
+## v1.11 Pandoc Engine (Shipped: 2026-08-02)
+
+**Phases completed:** 4 phases, 14 plans, 28 tasks
+
+**Key accomplishments:**
+
+- PandocOpts closed 5-field typed allowlist with strict-parse (checkStrictObject + DisallowUnknownFields), wrap enum-gated via map lookup, and a discrete-argv `pandocArgs` builder proven by an injection test that hostile crafted wrap strings are rejected at parse time, before ever reaching pandoc's argv.
+- Fail-closed `LooksLikeLaTeX`/`LooksLikeText` content probes (UTF-8/NUL/marker discipline cloned from `LooksLikeHTML`) plus `enforcePandocInputSize`'s stat-then-reject DoS guard, and md/rst/org/latex/epub registered in the MIME/container registry — with the md/rst/org content-interchangeability limitation documented in-code as an accepted, recorded gap rather than silent behavior.
+- Standalone `PandocConverter` (unregistered) converting across a curated closed markup allowlist via hardened `pandoc` 3.10.1 invocations (`--sandbox` + per-source raw-extension table, no network), with output validated by the Phase-47 sniffers and a live SC3 security canary proving shell-escape/`\input`/network-fetch cannot fire.
+- Dedicated `pandoc` asynq queue + task type with a fresh-derived (never-copied) `PandocUniqueTTL`, a 2-entry own-schedule retry, and `EnqueuePandocConvert` -- a mechanical clone of the OCR Phase-44 queue/client machinery, standalone-compiling with zero api/worker/migration changes.
+- Registered PandocConverter into convert.Default (zero new routing code), added migration 0010 admitting engine='pandoc', and wired EnginePandoc through the API's opts-dispatch/enqueue switches plus the latex/md/rst/org content-detection chain.
+- HandlePandocConvert + isPandocTerminal (timeout+engine-error terminal, mirroring isDocumentTerminal) + cmd/pandoc-worker consuming the pandoc queue + reconciler recovery for stranded pandoc jobs — closes Phase 48 (PDCP-01).
+- A buildable, SHA-256-pinned, TeX-free `pandoc-worker` container image running pandoc 3.10.1 as USER nobody, verified live for both amd64 and arm64.
+- Authored scripts/pandoc-timing-measure.sh (p95 wall-sec/conversion gate over a 24-cell md/latex/html/docx x size x target corpus), added the pandoc-worker compose service with a placeholder 90s timeout, and propagated IN-02 PANDOC_ENGINE_TIMEOUT/PANDOC_MAX_RETRY parity across all 10 queue.NewClient()-constructing services.
+- PANDOC_ENGINE_TIMEOUT finalized at 65s from a supervised p95 wall-sec/conversion measurement (worst cell html_large->md, p95=32.318s), propagated byte-identically across all 10 queue-client services, with a Path-B PANDOC_MAX_INPUT_BYTES lever fired for a memory-OOM finding distinct from the CAP.
+- TestPandocConversionE2E proves md->html (text-out) + md->docx (zip-out) end-to-end against the real pandoc-worker container (presigned download + HMAC-signed webhook) with the measured PANDOC_ENGINE_TIMEOUT=65s — closing Phase 49's SC1.
+- pandoc-worker Deployment + KEDA ScaledObject shipped into the Helm chart with FAST-engine tuning (null stabilization) derived from the measured 65s PANDOC_ENGINE_TIMEOUT, plus IN-02 ConfigMap env parity — helm template/lint green, SC2 confirmed unmodified.
+- values-loadproof.yaml pandoc overlay exercising the falsy-0 guard (scaleDownStabilizationSeconds: 0) plus a values-driven Prometheus scrape interval, and a self-contained scripts/keda-pandoc-loadproof.sh SC3 scale-from-zero gate with run-time in-container markdown fixture synthesis (no committed testdata).
+- scripts/keda-pandoc-downscale-survival.sh (a depth-arithmetic drive shape + /proc-based attribution SC4 harness, structurally distinct from the ocr clone source by design) plus committed offline calibration evidence (fixture_bytes=4094606, wall_seconds=18.276, safely inside [15,50]) proving the SC4 job window before any cluster time is spent.
+
+---
+
 ## v1.10 OCR Engine (Shipped: 2026-07-27)
 
 **Phases completed:** 4 phases, 15 plans, 35 tasks

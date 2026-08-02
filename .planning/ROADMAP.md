@@ -13,7 +13,7 @@
 - ✅ **v1.8 AV Engine (video/ffmpeg)** — Phases 34-37 (shipped 2026-07-23) — see `.planning/milestones/v1.8-ROADMAP.md`
 - ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 - ✅ **v1.10 OCR Engine (text extraction)** — Phases 43-46 (shipped 2026-07-27) — see `.planning/milestones/v1.10-ROADMAP.md`
-- 🚧 **v1.11 Pandoc Engine** — Phases 47-50 (in progress, started 2026-07-30)
+- ✅ **v1.11 Pandoc Engine** — Phases 47-50 (shipped 2026-08-02) — see `.planning/milestones/v1.11-ROADMAP.md`
 
 ## Phases
 
@@ -162,7 +162,8 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 
 </details>
 
-### 🚧 v1.11 Pandoc Engine (In Progress)
+<details>
+<summary>✅ v1.11 Pandoc Engine (Phases 47-50) — SHIPPED 2026-08-02</summary>
 
 **Milestone Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), только markup↔markup (без →pdf), через тот же async-контур, что и остальные шесть движков.
 
@@ -170,6 +171,8 @@ Full details: `.planning/milestones/v1.10-ROADMAP.md`
 - [x] **Phase 48: Async Pipeline Wiring** - Pandoc jobs flow end-to-end through the async pipeline (queue `pandoc`, `cmd/pandoc-worker`, stage-aware retry, reconciler-routing, API-routing) over the unmodified v1.9 progress/webhook infra (completed 2026-07-30)
 - [x] **Phase 49: Containerization + Measured Timeout Gate** - A running `pandoc-worker` container (pandoc pinned, NO TeX) passes a live E2E, with `PANDOC_ENGINE_TIMEOUT` sized from a measured gate rather than a copied constant
 - [x] **Phase 50: KEDA/Helm Chart Integration** - The pandoc class autoscales in the cluster with production parity to the other six engine classes, scale-from-zero live-proven (completed 2026-08-01)
+
+</details>
 
 ## Phase Details
 
@@ -316,10 +319,10 @@ Plans:
 | 46. KEDA/Helm Chart Integration | v1.10 | 3/3 | Complete | 2026-07-27 |
 | 47. Pandoc Engine Foundation | v1.11 | 3/3 | Complete   | 2026-07-30 |
 | 48. Async Pipeline Wiring | v1.11 | 3/3 | Complete   | 2026-07-30 |
-| 49. Containerization + Measured Timeout Gate | v1.11 | 3/4 | In Progress|  |
+| 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 
 ---
 
-*v1.10 (OCR Engine) shipped 2026-07-27, Phases 43-46 — 12/12 requirements, 2 live gates. v1.11 (Pandoc Engine) roadmapped 2026-07-30, Phases 47-50 — 9/9 requirements mapped. Next: `/gsd:plan-phase 47`.*
+*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). Next: `/gsd:new-milestone`.*
 </content>

@@ -10,7 +10,16 @@ OctoConv — внутренний асинхронный сервис конве
 
 ## Current State
 
-**v1.10 OCR Engine (text extraction) — SHIPPED 2026-07-27.** OctoConv теперь имеет ШЕСТЬ engine-классов: изображения (libvips), офисные документы (LibreOffice), HTML→PDF (chromium-headless), аудио (whisper.cpp), видео (ffmpeg) и **OCR/извлечение текста** (Tesseract). OCR-класс: standalone `OCRConverter` извлекает txt/hOCR/ALTO из изображений и сканированных/image-only PDF, постранично стримингово (memory-bomb-safe, born-digital-PDF-safe) → полный async-контур (очередь `ocr`, `cmd/ocr-worker`, stage-aware retry, reconciler) поверх неизменной v1.9 progress/SSE/webhook инфры (page-granular прогресс, null→100 для одиночной картинки) → контейнер с source-built Tesseract 5.5.3 + poppler-utils, offline, SHA-пиненный `tessdata_fast` (eng/rus) → **измеренный `OCR_ENGINE_TIMEOUT=744s`** (worst-cell p95=5.81 s/page, Path-B `OCR_MAX_PAGES` 200→64) → KEDA scale-from-zero live-proven на OrbStack k8s. 4 фазы (43-46), 15 планов, 12/12 требований.
+**v1.11 Pandoc Engine — SHIPPED 2026-08-02.** OctoConv теперь имеет СЕМЬ engine-классов: изображения (libvips), офисные документы (LibreOffice), HTML→PDF (chromium-headless), аудио (whisper.cpp), видео (ffmpeg), OCR (Tesseract) и **markup-интерконверсию (pandoc)**. Pandoc-класс: standalone `PandocConverter` по закрытому `(from→to)` allowlist'у markup-семейства (md/rst/org/latex/epub/html/docx, БЕЗ →pdf — им владеют LibreOffice/chromium), security-locked с первой строки (raw HTML/TeX passthrough отключён, `--sandbox`, no-network, typed `PandocOpts` с strict-parse и discrete-argv) → полный async-контур (очередь `pandoc`, `cmd/pandoc-worker`, timeout-is-terminal retry по document-прецеденту, reconciler-routing) поверх **неизменной** v1.9 progress/SSE/webhook инфры (ноль pandoc-упоминаний в `internal/webhook`) → лёгкий TeX-free контейнер с SHA-256-пиненным статическим pandoc 3.10.1 (dual-arch) → **измеренный `PANDOC_ENGINE_TIMEOUT=65s`** (worst-cell html_large→md p95=32.318s × 2.0, 92.8% под 900s CAP) → KEDA scale-from-zero + downscale-survival live-proven на OrbStack k8s. 4 фазы (47-50), 14 планов, 9/9 требований, аудит 6/6 межфазных стыков.
+
+Две находки пришли от живых гейтов, а не от ревью кода: 4 MiB html→md **OOMKilled** воркер в 1Gi-контейнере (Path-B: `PANDOC_MAX_INPUT_BYTES` 4→3 MiB), а замер под прод-лимитами показал, что pandoc — движок **memory-bound**, а не «лёгкий»: ~300 MiB anon на каждый MiB входа, то есть `PANDOC_WORKER_CONCURRENCY=2` гарантировал OOM (2→1 в compose, чарте и Go-дефолте). Пропускная способность теперь берётся из KEDA scale-out, а не из внутриподовой параллельности.
+
+<details>
+<summary>v1.10 OCR Engine (text extraction) — SHIPPED 2026-07-27</summary>
+
+OctoConv теперь имеет ШЕСТЬ engine-классов: изображения (libvips), офисные документы (LibreOffice), HTML→PDF (chromium-headless), аудио (whisper.cpp), видео (ffmpeg) и **OCR/извлечение текста** (Tesseract). OCR-класс: standalone `OCRConverter` извлекает txt/hOCR/ALTO из изображений и сканированных/image-only PDF, постранично стримингово (memory-bomb-safe, born-digital-PDF-safe) → полный async-контур (очередь `ocr`, `cmd/ocr-worker`, stage-aware retry, reconciler) поверх неизменной v1.9 progress/SSE/webhook инфры (page-granular прогресс, null→100 для одиночной картинки) → контейнер с source-built Tesseract 5.5.3 + poppler-utils, offline, SHA-пиненный `tessdata_fast` (eng/rus) → **измеренный `OCR_ENGINE_TIMEOUT=744s`** (worst-cell p95=5.81 s/page, Path-B `OCR_MAX_PAGES` 200→64) → KEDA scale-from-zero live-proven на OrbStack k8s. 4 фазы (43-46), 15 планов, 12/12 требований.
+
+</details>
 
 **v1.9 Job Progress & Control — SHIPPED 2026-07-25.** Длинные конвертации стали прозрачными и управляемыми, всё поверх существующего контура (Postgres lifecycle, hardened `runCommand`, webhook, asynq): аддитивная схема прогресса (`0007`/`0008`, zero behavior change) → **отмена end-to-end** (`POST /v1/jobs/{id}/cancel`, guarded `{queued,active}→canceled`, custom Redis pub/sub `job:cancel` + in-memory CancelFunc-registry, реальная смерть ffmpeg-процесса live-proven 12/12, non-resurrection) → **листинг** (`GET /v1/jobs`, client-scoped keyset-пагинация, opaque cursor, two-key leak-тест) → **progress core** (ffmpeg `-progress` через named-FIFO поверх разрешённого `file:`-протокола — не `pipe:`, `runCommandStreaming` leak-safe, exec.go byte-for-byte неизменен; non-locking throttled write, EMA-ETA; SIGKILL-mid-stream live-proven 40/40 — ноль orphaned + ноль leaked goroutines + frozen pct) → **live-push** (SSE `GET /v1/jobs/{id}/events` DB-poll leak-safe-by-construction, live-proven 15/15; opt-in HMAC progress-webhook из detached-горутины, никогда не в terminal retry/dead-letter бюджете). 15 планов, 13/13 требований (PROG/CNCL/JLIST/PUSH), 3 live-гейта.
 
@@ -103,23 +112,15 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 </details>
 
-## Current Milestone: v1.11 Pandoc Engine
+## Current Milestone
 
-**Goal:** Седьмой engine-класс — pandoc markup/document interconvert (md ↔ rst ↔ org ↔ latex ↔ epub ↔ html ↔ docx), **только markup↔markup** (без →pdf), через тот же async-контур, что и остальные шесть движков.
-
-**Target features:**
-- `PandocConverter` — closed `(from→to)` allowlist по markup-семейству (md/rst/org/latex/epub/html/docx); standalone, offline, hardened.
-- Security-locked: raw HTML/TeX passthrough отключён, `--no-shell-escape`, no-network, hardened `runCommand` (Setpgid/SIGKILL, `nobody`), resource-limited; fail-closed magic-byte/content-валидация; input-size guard.
-- Полный async-контур: очередь `pandoc`, `cmd/pandoc-worker`, stage-aware transient/terminal retry, reconciler-routing, API-routing (single I/O, поверх неизменной v1.9 progress/webhook инфры).
-- Контейнер `Dockerfile.pandoc-worker` (pandoc pinned, **без TeX** — лёгкий образ) + **измеренный `PANDOC_ENGINE_TIMEOUT`** (не копируется) + IN-02 env-паритет + KEDA scale-from-zero + Helm.
-- Validated `opts` (closed allowlist: standalone/toc/wrap/… mirror OCROpts/AudioOpts).
-
-**Key context / locked решения:** PDF-вывод отложен в v2 (→pdf уже покрыт LibreOffice docx→pdf / chromium html→pdf; pandoc-PDF потянул бы TeX/HTML-движок и тяжёлый образ); pandoc владеет ТОЛЬКО markup-семейством (не дублирует существующие движки); zero новых Go-зависимостей (pandoc — CLI-subprocess через существующий harness). Клон проверенного engine-class паттерна (audio/av/ocr), research пропущен.
+_None — v1.11 shipped 2026-08-02. Next milestone not yet started (`/gsd:new-milestone`)._
 
 ## Requirements
 
 ### Validated
 
+- ✓ **Pandoc / markup interconvert engine class (PDOC-01/02, PDCO-01, PDCE-01..04, PDCP-01/02) — v1.11** — седьмой engine-класс: `PandocConverter` по закрытому markup-allowlist'у (md/rst/org/latex/epub/html/docx, →pdf сознательно исключён, поэтому пары не конфликтуют с chromium/LibreOffice — guard-тест на disjointness); hardened вызов (`--sandbox`, raw HTML/TeX passthrough off, no-network, typed `PandocOpts` со strict-parse и discrete-argv, injection-тест); очередь `pandoc` + `cmd/pandoc-worker` + timeout-is-terminal `isPandocTerminal` + fresh `PandocUniqueTTL`, поверх неизменной v1.9 инфры; TeX-free образ с SHA-256-пиненным pandoc 3.10.1 (dual-arch, USER nobody); **измеренный** `PANDOC_ENGINE_TIMEOUT=65s` (p95 32.318s × 2.0) + Path-B `PANDOC_MAX_INPUT_BYTES` 3 MiB и `PANDOC_WORKER_CONCURRENCY=1` — оба выведены из живых OOM-находок, не скопированы; IN-02 env-паритет по 10 compose-сервисам и чарту; KEDA scale-from-zero (12/12) + downscale-survival (35/35) live-proven. 4 фазы, 14 планов, 9/9 требований.
 - ✓ **OCR / text-extraction engine class (OCR-01..04, OCRO-01, OCRE-01..05, OCRP-01/02) — v1.10** — шестой engine-класс: standalone `OCRConverter` (Tesseract, PSM/OEM-пиненный) извлекает txt из изображений и потраничного скан-PDF (`pdftoppm -f N -l N` стриминг, page-count guard, born-digital-PDF fail-closed 422), hOCR/ALTO через real XML-энкодер (round-trip `&`/`<`/`>` тест); `ocr` очередь + `cmd/ocr-worker` + stage-aware `isOCRTerminal` + fresh `OCRUniqueTTL`, поверх неизменной v1.9 progress/SSE/webhook инфры (page-granular рамп, одиночная картинка null→100); source-built Tesseract 5.5.3 + poppler-utils контейнер, SHA-пиненный `tessdata_fast` (eng/rus), измеренный `OCR_ENGINE_TIMEOUT=744s` (worst-cell p95=5.81 s/page, Path-B `OCR_MAX_PAGES` 200→64); KEDA scale-from-zero + downscale-survival live-proven на OrbStack. 4 фазы, 15 планов, 12/12 требований.
 - ✓ **Job Progress & Control (PROG-01..05, CNCL-01..04, JLIST-01/02, PUSH-01/02) — v1.9** — прогресс/ETA в реальном времени, листинг и отмена джоб поверх существующего контура: аддитивная схема (`0007`/`0008`), отмена end-to-end с реальной смертью ffmpeg (custom Redis pub/sub `job:cancel`, live-proven 12/12, non-resurrection), client-scoped keyset-листинг (two-key leak-тест), ffmpeg `-progress` через named-FIFO/`file:` (exec.go byte-for-byte неизменен, non-locking throttled write, EMA-ETA, SIGKILL-mid-stream live-proven 40/40 ноль orphaned + ноль leaked goroutines), SSE-стрим (DB-poll leak-safe-by-construction, live-proven 15/15) + opt-in HMAC progress-webhook (detached, никогда не в terminal retry-бюджете). 13/13 требований, 3 live-гейта, integration coherent.
 - ✓ **AV / video engine class (AVC-01..05, AVO-01..03, AVE-01..05, AVT-01) — v1.8** — пятый engine-класс: fail-closed video magic-bytes sniffers, standalone `AVConverter` (transcode/audio-extract/thumbnail, stream-copy fast-path, `-protocol_whitelist file,crypto`), `av` очередь + `cmd/av-worker` + stage-aware retry, ffmpeg n8.1.2-from-source container, RTF-measured `AV_ENGINE_TIMEOUT=753s` + fail-closed re-encode source-bound (OOM-DoS closed), KEDA scale-from-zero + downscale-survival live-proven, видео→транскрипт через audio-воркер (6-я conversion chain)
@@ -182,7 +183,7 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Active
 
-<!-- v1.10 OCR Engine (text extraction) shipped 2026-07-27 — all requirements moved to Validated. Next milestone not yet started. -->
+<!-- v1.11 Pandoc Engine shipped 2026-08-02 — all requirements moved to Validated. Next milestone not yet started. -->
 
 _No active requirements — awaiting next milestone (`/gsd-new-milestone`)._
 
@@ -230,6 +231,10 @@ _No active requirements — awaiting next milestone (`/gsd-new-milestone`)._
 | Все пункты hardening (auth, webhooks, reconciler, magic-bytes+TTL, наблюдаемость) — в v1 этого этапа, auth первым | Все критичны для production-готовности; различается только порядок реализации по убыванию риска | ✓ Good — все 4 фазы закрыты, milestone v1.0 shipped 2026-07-08, 24/24 требования, 0 блокеров |
 | Retry-safety должен предшествовать reconciler'у внутри Phase 3 | Reconciler поверх однопопыточного воркера дублировал бы обработку задач | ✓ Good — оба закрыты в одной фазе, живой E2E подтвердил отсутствие дублей |
 | Content validation, storage TTL и observability объединены в одну закрывающую фазу | Все три независимы друг от друга и от auth/webhook/reconciler критического пути | ✓ Good — Phase 4 закрыта одним блоком, 5 планов в 3 волнах |
+| pandoc владеет ТОЛЬКО markup-семейством, →pdf исключён (v1.11) | docx→pdf уже за LibreOffice, html→pdf за chromium; pandoc-PDF потянул бы TeX и убил лёгкий образ | ✓ Good — пары disjoint by construction, `EngineFor` разводит `(html,pdf)`→chromium и `(html,md)`→pandoc без единой строки нового роутинга |
+| `PANDOC_ENGINE_TIMEOUT=65s` выведен измерением, не скопирован у соседа (v1.11) | Копирование чужого таймаута — зафиксированный антипаттерн проекта; p95 меряется на своём корпусе | ✓ Good — worst-cell html_large→md p95=32.318s × 2.0 = 65s, 92.8% под 900s CAP, Path-B рычаг наготове |
+| KEDA-профиль pandoc — «быстрый движок» (`scaleDownStabilizationSeconds: null`), а не 900s соседей (v1.11) | 65s worst-case покрыт дефолтными 300s HPA с 4× запасом; ненулевой knob был бы cargo-cult тяжёлых движков | ✓ Good — falsy-0 guard всё равно на месте, gate-оверлей переопределяет его в 0 и этим же проверяет guard вживую |
+| `PANDOC_WORKER_CONCURRENCY` 2→1 и `PANDOC_MAX_INPUT_BYTES` 4→3 MiB — по живым OOM, а не по предположению (v1.11) | Офлайн-калибровка мерила pandoc в одиночку и структурно не видела, что Go-воркер делит тот же cgroup | ✓ Good — замер дал ~300 MiB anon на MiB входа; при concurrency 2 оставалось 1 MiB до OOM. Pandoc оказался memory-bound, а не «лёгким» — пропускная способность теперь из KEDA scale-out |
 | Detected-формат (не расширение) — источник истины для pair-check в Phase 4 | Расширение может лгать; magic bytes — единственный проверяемый факт о содержимом | ✓ Good — reorder подтверждён живым 422 на несовпадении |
 | `/metrics` на отдельном localhost-only порту, а не на публичном `API_ADDR` | Операционные данные (глубина очереди, исходы задач) не должны быть доступны любому клиенту с сетевым доступом к API | ✓ Good — подтверждено: порт не публикуется на хост вообще |
 | SSRF-валидация `callback_url` блокирует весь RFC1918/loopback без исключений | Принято в Phase 2 как безопасный дефолт | ✓ Good — Phase 5 добавила узкий opt-out только для RFC1918 (`WEBHOOK_ALLOW_PRIVATE_IPS`); loopback/link-local/metadata-endpoint остаются заблокированы всегда |
@@ -279,4 +284,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-27 after v1.10 milestone*
+*Last updated: 2026-08-02 after v1.11 milestone*
