@@ -218,11 +218,26 @@ the lists costs nothing now.
 **Plans**: 5 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
 - [ ] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
+
 **Autonomous**: false (Plan 05 is an operator-run live gate)
 
 ### Phase 52: Quota Enforcement & Intra-Class Fairness
@@ -235,6 +250,7 @@ Plans:
   1. An operator can set per-client limits (concurrent jobs per engine, daily byte/job volume, allowed engine set) where the absence of a limit is a literal `NULL` meaning unlimited — never a large sentinel number — and no existing client's behavior changes until an operator explicitly sets one.
   2. Every job-creation entry point (`POST /v1/jobs`, `cmd/mcp-server`, `cmd/mcp-http`) enforces the identical fail-closed admission check before the S3 write and before enqueue — proven by an integration test that exercises both REST and at least one MCP path, not assumed from proxying. Two properties are load-bearing and must be designed in, not discovered: **(a)** the check-and-admit is serialized per (client, engine) — a bare `SELECT count(*)` followed by an insert lets two API replicas both observe "below cap" and both admit, so the count and the create must share one transaction under a per-client/per-engine advisory lock or an equivalent atomic counter; **(b)** the authoritative reservation happens **before** the upload body is written to S3, with reservation release if a later step fails — otherwise an over-quota client repeatedly burns S3 bandwidth and storage before receiving its 429. *(Added 2026-08-02 after PR #3 review.)*
   2b. Admission reservations and completed usage are **distinguishable**, so a job admitted against the daily budget and later completed is counted once, not twice. The rollup cannot be a single pair of counters that both the admission reserve and the terminal write increment. *(Added 2026-08-02 after PR #3 review.)*
+
   3. A limit-exceeding request is rejected with `429` + `Retry-After` and a `quota_exceeded` error code distinguishable from the existing `rate_limited` code — never `403` — and an in-flight concurrency slot is released on every terminal state (`done`, `failed`, `reconciler_exhausted`), not only on success.
   4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
   5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
