@@ -1053,7 +1053,7 @@ if [ "$POD_TERM_EXIT" = "137" ]; then
 	echo "FAIL: SC4(3) -- pod $VICTIM_POD terminated with exit 137 (SIGKILL) -- the downscale did NOT survive gracefully; terminationGracePeriodSeconds=85 was not enough (or was not honored)" >&2
 	exit 1
 fi
-if [ "$POD_TERM_REASON" != "Completed" ] && [ "$POD_TERM_EXIT" != "0" ]; then
+if [ "$POD_TERM_REASON" != "Completed" ] || [ "$POD_TERM_EXIT" != "0" ]; then
 	echo "FAIL: SC4(3) -- pod $VICTIM_POD did not terminate gracefully (reason=$POD_TERM_REASON exit=$POD_TERM_EXIT); expected Completed/exit 0, not exit 137/SIGKILL/OOMKilled" >&2
 	exit 1
 fi
