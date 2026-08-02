@@ -172,11 +172,33 @@ type Config struct {
 	MaxUploadBytes               int64
 	MaxImagePixels               uint64
 	MaxDocumentUncompressedBytes uint64
+	// MaxPandocInputBytes is the API-side mirror of the worker's
+	// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go) --
+	// PR#2 finding-1. Without it, NewServer's own default gives pandoc the
+	// same 100 MiB ceiling as every other text engine, while every real
+	// deployment configures the worker's cap far lower (3 MiB); an upload
+	// between the two limits was accepted 202, burned an S3 object and a
+	// queue slot, then failed asynchronously in the worker with
+	// input_too_large. Setting this field makes the API reject that same
+	// upload 413 at the upload gate instead.
+	//
+	// Precedence: this scalar is folded into NewServer's own D-07 default
+	// map ONLY when MaxEngineBytes is left nil -- it never mutates a
+	// caller-supplied MaxEngineBytes map. A caller that sets MaxEngineBytes
+	// directly still owns every key in it, this field included; the two are
+	// alternative ways to configure the same pandoc ceiling, not layered on
+	// top of each other. Zero means "not configured": NewServer's 100 MiB
+	// default stays in effect, so an absent env var is never a behaviour
+	// change.
+	MaxPandocInputBytes int64
 	// MaxEngineBytes is the D-07 (Phase 35) per-engine post-detection
-	// ceiling: a nil map triggers NewServer's six-engine default
-	// (image/document/html/audio/ocr at 100 MiB, av at 2 GiB, D-03 Phase 44);
-	// a non-nil map is used as-is -- an engine key you omit from it is
-	// simply never gated by this check.
+	// ceiling: a nil map triggers NewServer's seven-engine default
+	// (image/document/html/audio/ocr/pandoc at 100 MiB, av at 2 GiB, D-03
+	// Phase 44; pandoc's 100 MiB is itself overridden by MaxPandocInputBytes
+	// when that scalar is set, PR#2 finding-1); a non-nil map is used as-is
+	// -- an engine key you omit from it is simply never gated by this check,
+	// and MaxPandocInputBytes has no effect when this map is supplied
+	// directly.
 	MaxEngineBytes     map[string]int64
 	PresignTTL         time.Duration
 	IPRateLimitRPM     int
@@ -227,12 +249,16 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		// ceiling as image -- reasonable for images and scanned PDFs; the
 		// actual OCR work is separately bounded by the page-count/pixel caps
 		// enforced in the worker (OCRE-02, Phase 43). pandoc (PDCP-01, Phase
-		// 48, D-02) gets the same 100 MiB ceiling -- markup text is small, so
-		// this is a generous upload-time bound; the pandoc DoS posture is
-		// additionally bounded by enforcePandocInputSize inside the converter
-		// itself (markupsniff.go, Phase 47), enforced again at Convert-time
-		// once cmd/pandoc-worker (Phase 49) re-registers a configured
-		// PandocConverter.
+		// 48, D-02) gets the configured PANDOC_MAX_INPUT_BYTES when
+		// cfg.MaxPandocInputBytes is set (PR#2 finding-1), falling back to
+		// the same generous 100 MiB ceiling when it is not -- markup text is
+		// small, so 100 MiB is a generous upload-time bound absent a
+		// configured cap. Either way the pandoc DoS posture is additionally
+		// bounded by enforcePandocInputSize inside the converter itself
+		// (markupsniff.go, Phase 47), enforced again at Convert-time once
+		// cmd/pandoc-worker (Phase 49) re-registers a configured
+		// PandocConverter -- this API-side gate is defence in depth, not a
+		// replacement for it.
 		cfg.MaxEngineBytes = map[string]int64{
 			convert.EngineImage:    100 << 20,
 			convert.EngineDocument: 100 << 20,
@@ -241,6 +267,9 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 			convert.EngineAV:       2 << 30,
 			convert.EngineOCR:      100 << 20,
 			convert.EnginePandoc:   100 << 20,
+		}
+		if cfg.MaxPandocInputBytes > 0 {
+			cfg.MaxEngineBytes[convert.EnginePandoc] = cfg.MaxPandocInputBytes
 		}
 	}
 	if cfg.IPRateLimitRPM == 0 {

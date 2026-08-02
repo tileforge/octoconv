@@ -133,18 +133,30 @@ func main() {
 		// MiB to 2 GiB so video uploads are admissible -- this is a pre-
 		// parse http.MaxBytesReader bound, enforced BEFORE the engine class
 		// is known. MaxEngineBytes is left unset (nil) here deliberately:
-		// NewServer's own D-07 defaulting is the single source of truth for
-		// the per-engine ceilings that restore image/document/html/audio to
-		// their prior 100 MiB effective bound, so that map is not
-		// duplicated at this call site.
+		// NewServer's own D-07 defaulting remains the single source of
+		// truth for the per-engine ceilings that restore image/document/
+		// html/audio to their prior 100 MiB effective bound, so that map is
+		// not duplicated at this call site. MaxPandocInputBytes below is the
+		// one exception: it is a single scalar (not a map), read here and
+		// folded into NewServer's own default map -- it does not duplicate
+		// the map, it configures one entry in it.
 		MaxUploadBytes:               envInt64("MAX_UPLOAD_BYTES", 2<<30),
 		MaxImagePixels:               uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)),            // D-05: 100 megapixels default
 		MaxDocumentUncompressedBytes: uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)), // D-04: 500 MiB default
-		IPRateLimitRPM:               int(envInt64("RATE_LIMIT_IP_RPM", 60)),
-		ClientRateLimitRPM:           int(envInt64("RATE_LIMIT_CLIENT_RPM", 120)),
-		OperatorClientIDs:            operatorIDs,
-		JobsListDefaultPageSize:      int(envInt64("JOBS_LIST_DEFAULT_PAGE_SIZE", 20)),
-		JobsListMaxPageSize:          int(envInt64("JOBS_LIST_MAX_PAGE_SIZE", 100)),
+		// PR#2 finding-1: the API-side mirror of the worker's own
+		// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go).
+		// Default 0 -- not 100<<20, not the deployed 3 MiB value -- is
+		// deliberate: an absent env var must land on NewServer's own
+		// default rather than silently introduce a second hard-coded number
+		// here. When set, it must be byte-identical to pandoc-worker's own
+		// PANDOC_MAX_INPUT_BYTES so the API never accepts what the worker
+		// would certainly reject.
+		MaxPandocInputBytes:     envInt64("PANDOC_MAX_INPUT_BYTES", 0),
+		IPRateLimitRPM:          int(envInt64("RATE_LIMIT_IP_RPM", 60)),
+		ClientRateLimitRPM:      int(envInt64("RATE_LIMIT_CLIENT_RPM", 120)),
+		OperatorClientIDs:       operatorIDs,
+		JobsListDefaultPageSize: int(envInt64("JOBS_LIST_DEFAULT_PAGE_SIZE", 20)),
+		JobsListMaxPageSize:     int(envInt64("JOBS_LIST_MAX_PAGE_SIZE", 100)),
 		// PUSH-01 (Phase 42): GET /v1/jobs/{id}/events SSE tunables (D-01/
 		// D-02). Defaults (1s/15s/30m) applied by api.NewServer itself when
 		// these are zero -- envDuration here only overrides them.
