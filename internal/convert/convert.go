@@ -58,6 +58,13 @@ func NormalizeFormat(f string) string {
 		return "tiff"
 	case "htm":
 		return "html"
+	case "tex":
+		// `.tex` is THE conventional LaTeX extension; `.latex` is rare. Without
+		// this alias a normal paper.tex normalized to "tex", which matches no
+		// registered pair, so every real LaTeX upload 422'd as unsupported and
+		// handlers.go's `source == "latex"` content-detection branch was
+		// unreachable. Same alias discipline as jpeg->jpg / tif->tiff / htm->html.
+		return "latex"
 	default:
 		return f
 	}

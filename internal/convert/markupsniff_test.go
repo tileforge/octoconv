@@ -326,3 +326,50 @@ func TestEnforcePandocInputSizeArchiveBomb(t *testing.T) {
 		t.Errorf("enforcePandocInputSize(plain markdown) = %v, want nil", err)
 	}
 }
+
+// TestEnforcePandocInputSizeOverflow covers the two size-accounting overflow
+// paths: a central directory declaring entries that would wrap a plain uint64
+// sum back to a small total, and an absurd configured cap whose *4 limit would
+// overflow int64 into a negative (and thus, once widened, an unreachable)
+// bound. Both must still reject.
+func TestEnforcePandocInputSizeOverflow(t *testing.T) {
+	dir := t.TempDir()
+	bomb := filepath.Join(dir, "wrap.docx")
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range []string{"word/document.xml", "word/second.xml"} {
+		h := &zip.FileHeader{Name: name, Method: zip.Store}
+		w, err := zw.CreateRaw(h)
+		if err != nil {
+			t.Fatalf("CreateRaw(%s): %v", name, err)
+		}
+		// Declare a colossal uncompressed size while storing nothing: two of
+		// these sum past 2^64 and would wrap a naive accumulator.
+		h.UncompressedSize64 = 1 << 63
+		h.CompressedSize64 = 0
+		if _, err := w.Write(nil); err != nil {
+			t.Fatalf("Write(%s): %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := os.WriteFile(bomb, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := enforcePandocInputSize(bomb, 1<<20); !errors.Is(err, ErrPandocInputTooLarge) {
+		t.Errorf("enforcePandocInputSize(wrapping archive) = %v, want ErrPandocInputTooLarge", err)
+	}
+
+	// An absurd cap must not silently disable the container bound: the limit
+	// saturates instead of overflowing, and a normal file still passes.
+	plain := filepath.Join(dir, "plain.md")
+	if err := os.WriteFile(plain, []byte("# ok\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(plain): %v", err)
+	}
+	if err := enforcePandocInputSize(plain, 1<<62); err != nil {
+		t.Errorf("enforcePandocInputSize(plain, huge cap) = %v, want nil", err)
+	}
+}
