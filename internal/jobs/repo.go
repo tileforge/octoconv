@@ -164,12 +164,21 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
-// MarkDone transitions an active job to done and stamps finished_at.
-func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID) error {
+// MarkDone transitions an active job to done and stamps finished_at. The
+// client_usage_daily rollup write (recordUsage) runs INSIDE this same
+// transition transaction, after the status UPDATE — not as an adjacent call
+// — because a worker dying between a committed status change and a separate
+// accounting write would lose that job's usage permanently: neither an
+// asynq retry nor the reconciler revisits a terminal job (D-05). attempt is
+// the elapsed engine time for this attempt (0 if the caller has no attempt
+// clock).
+func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
 	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1`, id)
-		return err
+		if _, err := tx.Exec(ctx,
+			`UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1`, id); err != nil {
+			return err
+		}
+		return r.recordUsage(ctx, tx, id, StatusDone, attempt)
 	})
 }
 
@@ -177,13 +186,18 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID) error {
 // detail is an optional structured payload (e.g. raw engine stderr) attached
 // to the job_events row for internal diagnostics only — error_message/code
 // stay short and sanitized since they are exposed via GET /jobs/{id} and
-// webhook payloads.
-func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error {
+// webhook payloads. Like MarkDone, the client_usage_daily rollup write runs
+// INSIDE this same transition transaction (D-05) — see MarkDone's comment
+// for why. attempt is the elapsed engine time for this attempt; pass 0 when
+// the caller has no attempt clock (e.g. the reconciler's exhaustion path).
+func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
 	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
-			id, code, message)
-		return err
+			id, code, message); err != nil {
+			return err
+		}
+		return r.recordUsage(ctx, tx, id, StatusFailed, attempt)
 	})
 }
 
@@ -195,6 +209,9 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 // simply outside allowedFrom and the illegal-transition error surfaces
 // instead of silently overwriting a terminal outcome. detail is nil (no
 // webhook is fired on cancel, D-08; no structured detail is needed).
+// Deliberately does NOT call recordUsage: a cancel is user-initiated and
+// never reaches MarkDone/MarkFailed, so canceled jobs are intentionally not
+// rolled up into client_usage_daily (see 0011_client_usage_daily.sql).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
