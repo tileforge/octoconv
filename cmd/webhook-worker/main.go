@@ -95,6 +95,14 @@ func main() {
 		ActiveStaleAfter: envDuration("RECONCILER_ACTIVE_STALE_AFTER", 15*time.Minute),
 		SweepInterval:    envDuration("RECONCILER_SWEEP_INTERVAL", 1*time.Minute),
 		MaxRecoveries:    envInt("RECONCILER_MAX_RECOVERIES", 3),
+		// Retention (RETN-01, D-12): Go durations have no day unit, so
+		// D-12's "90 days"/"400 days" are expressed as 2160h/9600h below --
+		// an operator writing "90d" would silently fall back to this
+		// default, which is exactly the kind of drift this project has been
+		// bitten by before (see .env.example's comment on these same keys).
+		JobsRetention:  envDuration("JOBS_RETENTION", 2160*time.Hour),
+		UsageRetention: envDuration("USAGE_RETENTION", 9600*time.Hour),
+		PurgeBatchSize: envInt("RETENTION_BATCH_SIZE", 1000),
 	})
 
 	// D-01/D-02: the sweeper now runs fleet-wide, so it must be gated by a

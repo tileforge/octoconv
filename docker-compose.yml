@@ -256,6 +256,14 @@ services:
       RECONCILER_ACTIVE_STALE_AFTER: "15m"
       RECONCILER_SWEEP_INTERVAL: "1m"
       RECONCILER_MAX_RECOVERIES: "3"
+      # Retention (RETN-01, D-11/D-12/D-13): batched purge on this same
+      # reconciler tick. Go durations have no day unit -- 2160h=90d,
+      # 9600h=400d (.env.example has the full rationale). Byte-identical
+      # across .env.example/this file/the Helm ConfigMap and the Go
+      # envDuration/envInt fallbacks in cmd/webhook-worker/main.go.
+      JOBS_RETENTION: "2160h"
+      USAGE_RETENTION: "9600h"
+      RETENTION_BATCH_SIZE: "1000"
       # IN-02: queue.NewClient() derives audioUniqueTTL from these
       # unconditionally in EVERY process -- must be identical across all 7
       # queue.NewClient()-constructing services (RTF-measured,
@@ -321,6 +329,14 @@ services:
       RECONCILER_ACTIVE_STALE_AFTER: "15m"
       RECONCILER_SWEEP_INTERVAL: "1m"
       RECONCILER_MAX_RECOVERIES: "3"
+      # Retention (RETN-01, D-11/D-12/D-13): batched purge on this same
+      # reconciler tick. Go durations have no day unit -- 2160h=90d,
+      # 9600h=400d (.env.example has the full rationale). Byte-identical
+      # across .env.example/this file/the Helm ConfigMap and the Go
+      # envDuration/envInt fallbacks in cmd/webhook-worker/main.go.
+      JOBS_RETENTION: "2160h"
+      USAGE_RETENTION: "9600h"
+      RETENTION_BATCH_SIZE: "1000"
       # IN-02: queue.NewClient() derives audioUniqueTTL from these
       # unconditionally in EVERY process -- must be identical across all 7
       # queue.NewClient()-constructing services (RTF-measured,
