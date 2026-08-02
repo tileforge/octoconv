@@ -153,3 +153,58 @@ separate concerns.
   capability names rather than compiled-in constants — the two designs reinforce
   each other, and building pipelines first on compiled constants would create
   migration work.
+
+---
+
+## Amended 2026-08-03 (reconciling the Notion architecture review)
+
+The Notion review "OctoConv — архитектурный обзор и предложения по развитию"
+proposes an **engine catalog** (P1-1) as static data describing operations,
+formats, size limits, availability, version and cost, with `GET /v1/formats`
+built from it.
+
+**That catalog and this seed are one task approached from two ends, and must be
+designed together.** The review describes the data; this seed describes who
+writes it and how it stays true. Built separately they produce two sources of
+truth about which engine does what — one hand-maintained and one self-reported —
+and the failure mode is the same one this seed already names: the platform's
+declared capability drifts from what is actually running.
+
+Nothing above changes. The registration path stays trusted and never
+client-facing; the API routes and does not launch workers; per-engine container
+isolation stays load-bearing.
+
+### The catalog must carry MEASURED operational limits, not declared ones
+
+This is the one thing the review's framing gets wrong, and it is worth fixing
+before the schema is written. The review lists "ограничения размера" alongside
+formats and version, as though a size cap were a configuration choice. On this
+platform the load-bearing ones are not:
+
+- `PANDOC_MAX_INPUT_BYTES` is 3 MiB because a 4.09 MB input **OOMKilled** the
+  worker at a 1 GiB memory limit (Phase 50 SC4). It was 4 MiB until that run.
+- `PANDOC_WORKER_CONCURRENCY` is 1 because concurrency 2 measured **1022 MiB of
+  1024** on the real image at production limits. The value 2 had shipped in
+  compose, the chart and the Go default without ever being exercised.
+- Engine timeouts across every class are derived from a measured p95 times a
+  safety factor, never copied from a neighbouring engine — that discipline is
+  why `PANDOC_ENGINE_TIMEOUT` is 65s rather than a rounded guess.
+
+A catalog row that presents these as settings invites the next engine to inherit
+them by copy. That is precisely the failure class this project has twice caught
+only by running a live gate, never by reading code. So the catalog schema should
+distinguish a limit's provenance — measured (with what was measured, when, and
+against which image and resource limits) from merely configured — and a new
+capability should not be able to claim a measured limit it has not earned.
+
+The Path-B lever belongs in the same note: when a derived timeout or limit
+breaches a cap, the answer has consistently been to lower the input-size cap
+rather than raise the resource cap. A catalog that records only the final number
+loses that reasoning.
+
+### Related
+
+- **SEED-020** (JobRunner consolidation) is the other half of making engines
+  uniform: the catalog makes what an engine *is* into data, JobRunner makes what
+  an engine *does* into one code path. Neither depends on the other, but a
+  catalog is easier to consume from one runner than from seven copies.
