@@ -93,7 +93,7 @@ func TestJobLifecycle(t *testing.T) {
 		t.Fatalf("AddOutput: %v", err)
 	}
 
-	if err := r.MarkDone(ctx, id); err != nil {
+	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 
@@ -213,7 +213,7 @@ func TestCancelDoneRejected(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
-	if err := r.MarkDone(ctx, id); err != nil {
+	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 
@@ -253,7 +253,7 @@ func TestMarkFailed(t *testing.T) {
 		t.Fatalf("MarkActive: %v", err)
 	}
 	detail := map[string]any{"engine_stderr": "boom: /tmp/octoconv-x/in.png is not a known file format"}
-	if err := r.MarkFailed(ctx, id, "engine_error", "boom", detail); err != nil {
+	if err := r.MarkFailed(ctx, id, "engine_error", "boom", detail, 0); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 	got, err := r.Get(ctx, id)
@@ -295,7 +295,7 @@ func TestMarkFailedNilDetail(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
-	if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil); err != nil {
+	if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil, 0); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
 	}
 
@@ -580,7 +580,7 @@ func TestRequeueStale(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive before MarkDone: %v", err)
 	}
-	if err := r.MarkDone(ctx, id); err != nil {
+	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 	if err := r.RequeueStale(ctx, id, "stale_active"); err == nil {
@@ -731,7 +731,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, gapDone); err != nil {
 		t.Fatalf("MarkActive gapDone: %v", err)
 	}
-	if err := r.MarkDone(ctx, gapDone); err != nil {
+	if err := r.MarkDone(ctx, gapDone, 0); err != nil {
 		t.Fatalf("MarkDone gapDone: %v", err)
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, gapDone); err != nil {
@@ -750,7 +750,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, gapFailed); err != nil {
 		t.Fatalf("MarkActive gapFailed: %v", err)
 	}
-	if err := r.MarkFailed(ctx, gapFailed, "engine_error", "boom", nil); err != nil {
+	if err := r.MarkFailed(ctx, gapFailed, "engine_error", "boom", nil, 0); err != nil {
 		t.Fatalf("MarkFailed gapFailed: %v", err)
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, gapFailed); err != nil {
@@ -770,7 +770,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, delivered); err != nil {
 		t.Fatalf("MarkActive delivered: %v", err)
 	}
-	if err := r.MarkDone(ctx, delivered); err != nil {
+	if err := r.MarkDone(ctx, delivered, 0); err != nil {
 		t.Fatalf("MarkDone delivered: %v", err)
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, delivered); err != nil {
@@ -797,7 +797,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, deadLettered); err != nil {
 		t.Fatalf("MarkActive deadLettered: %v", err)
 	}
-	if err := r.MarkDone(ctx, deadLettered); err != nil {
+	if err := r.MarkDone(ctx, deadLettered, 0); err != nil {
 		t.Fatalf("MarkDone deadLettered: %v", err)
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, deadLettered); err != nil {
@@ -823,7 +823,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, freshDone); err != nil {
 		t.Fatalf("MarkActive freshDone: %v", err)
 	}
-	if err := r.MarkDone(ctx, freshDone); err != nil {
+	if err := r.MarkDone(ctx, freshDone, 0); err != nil {
 		t.Fatalf("MarkDone freshDone: %v", err)
 	}
 
@@ -839,7 +839,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, noCallback); err != nil {
 		t.Fatalf("MarkActive noCallback: %v", err)
 	}
-	if err := r.MarkDone(ctx, noCallback); err != nil {
+	if err := r.MarkDone(ctx, noCallback, 0); err != nil {
 		t.Fatalf("MarkDone noCallback: %v", err)
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE jobs SET finished_at = now() - interval '1 hour' WHERE id = $1`, noCallback); err != nil {
@@ -982,10 +982,10 @@ func TestCanceledAllowListBackstop(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err == nil {
 			t.Fatalf("MarkActive on a canceled job must error, got nil")
 		}
-		if err := r.MarkDone(ctx, id); err == nil {
+		if err := r.MarkDone(ctx, id, 0); err == nil {
 			t.Fatalf("MarkDone on a canceled job must error, got nil")
 		}
-		if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil); err == nil {
+		if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil, 0); err == nil {
 			t.Fatalf("MarkFailed on a canceled job must error, got nil")
 		}
 
@@ -1166,7 +1166,7 @@ func TestUpdateProgressInactiveJobIsNoop(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
-	if err := r.MarkDone(ctx, id); err != nil {
+	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
 	if err := r.UpdateProgress(ctx, id, 50, nil); err != nil {
