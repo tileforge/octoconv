@@ -308,15 +308,20 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// started_at instead. For a job exhausted while still stranded
 			// in `queued` (never activated, started_at NULL) that correctly
 			// falls back to 0 -- it never occupied a worker at all.
-			_ = s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"}, 0)
+			ferr := s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"}, 0)
 			metrics.RecordReconcilerAction("exhausted")
-			if job != nil {
+			if job != nil && ferr == nil {
 				// Closes T-51-10 (Repudiation): a job the reconciler
 				// terminally fails after exhausting recoveries was, before
 				// this, counted in the Postgres rollup (via MarkFailed
 				// above) but invisible per-client in Prometheus. Reuses the
 				// job != nil guard already in place for the webhook enqueue
 				// below rather than a second s.store.Get call.
+				//
+				// Also guarded on ferr: MarkFailed's error was previously
+				// discarded here, so a transition that never committed still
+				// produced a per-client failure. The next sweep retries the
+				// same job and would increment again.
 				metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, jobs.StatusFailed)
 			}
 			if job != nil && job.CallbackURL != "" {

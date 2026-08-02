@@ -745,7 +745,14 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 			// which is transactional and exactly-once -- the two calls now
 			// sit on adjacent lines throughout this file but must not be
 			// read as equivalent.
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -859,7 +866,14 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 			// for internal diagnostics only.
 			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueDocument, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -963,7 +977,14 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 			// for internal diagnostics only.
 			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueHTML, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1084,7 +1105,14 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 				ferr = h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			}
 			metrics.RecordJobOutcome(queue.QueueAudio, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1229,7 +1257,14 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 			code, message := avFailureCode(err)
 			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueAV, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1340,7 +1375,14 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 			code, message := ocrFailureCode(err)
 			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
@@ -1455,7 +1497,14 @@ func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error 
 			code, message := pandocFailureCode(err)
 			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
 			metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusFailed, time.Since(start))
-			metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusFailed)
+			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+			// concurrent transition won the guarded allow-list), the job is NOT
+			// failed yet. A retry or the reconciler will reach a terminal state
+			// later and increment then -- counting here too would double-count
+			// this client, or attribute an outcome that never happened.
+			if ferr == nil {
+				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusFailed)
+			}
 			// Postgres-first: enqueue the webhook ONLY once the failed status
 			// is actually committed. If MarkFailed itself failed (Postgres
 			// blip), the job is still active — a webhook now would re-read the
