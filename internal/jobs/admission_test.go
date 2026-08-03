@@ -9,7 +9,9 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -468,11 +470,36 @@ func TestPreAdmitMatchesAuthoritativeVerdict(t *testing.T) {
 // premise is gone now that in-flight work is charged at admission. With
 // max_concurrent = 3 (higher than 1) and max_daily_bytes sized to exactly
 // one job's input, exactly ONE create is admitted and the SECOND is
-// rejected with ErrDailyBytesLimit, NOT ErrConcurrencyLimit -- proving the
-// daily term, not the concurrency cap, is what stops it. A daily cap sized
-// for one job now admits one job in every configuration, whether or not a
-// concurrency cap is also set, and the K x MAX_INPUT_BYTES overshoot D-15
-// used to accept is gone.
+// rejected with ErrDailyBytesLimit -- the sole surviving assertion below
+// proves this directly: the daily term stops the 2nd create while the
+// concurrency cap (1 of 3 in flight) still has headroom, so ErrDailyBytesLimit
+// is the only sentinel that satisfies errors.Is here (ErrConcurrencyLimit
+// cannot: the same evaluate call returns exactly one verdict sentinel, first-
+// violation-wins, and concurrency is checked first -- see evaluate's doc
+// comment -- so a daily rejection here is only possible when the
+// concurrency check already passed). A daily cap sized for one job now
+// admits one job in every configuration, whether or not a concurrency cap
+// is also set, and the K x MAX_INPUT_BYTES overshoot D-15 used to accept is
+// gone.
+//
+// CodeRabbit (relayed, PR #5 review): this test used to ALSO assert
+// !errors.Is(err, ErrConcurrencyLimit) in a second branch reached only when
+// the errors.Is(err, ErrDailyBytesLimit) check above had already failed to
+// fatal -- i.e. only when err WAS ErrDailyBytesLimit, at which point
+// errors.Is(err, ErrConcurrencyLimit) can never be true (both are distinct
+// unwrapped errors.New sentinels, never wrapped together). That branch was
+// unreachable dead code and has been removed; the surviving assertion above
+// already proves what it existed for.
+//
+// The in-flight verification query below is now scoped to engine='image',
+// matching production evaluate's own engine predicate (both in-flight
+// terms filter on j.engine, admission.go). Made load-bearing, not
+// decorative, by creating a same-client DIFFERENT-engine in-flight job
+// (document, no client_limits row for this client, so it is admitted and
+// is invisible to the image engine's quota) between the two image creates:
+// without the engine predicate, the byte sum would read 1500 (1000 image +
+// 500 document) instead of exactly 1000, and the count would read 2
+// instead of exactly 1.
 func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
@@ -487,12 +514,16 @@ func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 		t.Fatalf("1st create (0+inputSize<=inputSize): %v", err)
 	}
 
+	// Cross-engine in-flight fixture (document, no limits row -> unlimited,
+	// admitted and left queued): invisible to the image engine's daily term
+	// unless the engine predicate below is real.
+	if _, err := createFixture(t, r, clientID, "document", "uploads/adm13/x-in.docx", 500); err != nil {
+		t.Fatalf("cross-engine (document) in-flight create: %v", err)
+	}
+
 	_, err := createFixture(t, r, clientID, "image", "uploads/adm13/1-in.png", inputSize)
 	if !errors.Is(err, ErrDailyBytesLimit) {
-		t.Fatalf("2nd create error = %v, want ErrDailyBytesLimit", err)
-	}
-	if errors.Is(err, ErrConcurrencyLimit) {
-		t.Fatalf("2nd create error = %v, must NOT be ErrConcurrencyLimit -- the daily term, not the concurrency cap (still at 1 of 3), must be what stops it", err)
+		t.Fatalf("2nd create error = %v, want ErrDailyBytesLimit -- the daily term, not the concurrency cap (still at 1 of 3), must be what stops it", err)
 	}
 
 	var totalBytes int64
@@ -500,13 +531,24 @@ func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 		SELECT COALESCE(sum(ji.size_bytes), 0)
 		FROM job_inputs ji
 		JOIN jobs j ON j.id = ji.job_id
-		WHERE j.client_id = $1 AND j.status IN ('queued', 'active')`,
+		WHERE j.client_id = $1 AND j.engine = 'image' AND j.status IN ('queued', 'active')`,
 		clientID,
 	).Scan(&totalBytes); err != nil {
 		t.Fatalf("sum in-flight input bytes: %v", err)
 	}
 	if totalBytes != inputSize {
-		t.Fatalf("in-flight bytes = %d, want exactly %d (one job's worth, not K x inputSize)", totalBytes, inputSize)
+		t.Fatalf("in-flight image bytes = %d, want exactly %d (one image job's worth, not K x inputSize, and not the cross-engine document job's bytes)", totalBytes, inputSize)
+	}
+
+	var imageCount int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*) FROM jobs WHERE client_id = $1 AND engine = 'image' AND status IN ('queued', 'active')`,
+		clientID,
+	).Scan(&imageCount); err != nil {
+		t.Fatalf("count in-flight image jobs: %v", err)
+	}
+	if imageCount != 1 {
+		t.Fatalf("in-flight image job count = %d, want exactly 1 (one image job admitted, the rejected transaction left nothing behind, and the document job is correctly not counted)", imageCount)
 	}
 }
 
@@ -554,6 +596,41 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 	}
 }
 
+// waitForAdvisoryLockWaiters polls conn every 10ms, up to timeout, for the
+// number of UNGRANTED advisory-lock waiters on the exact (k1, k2) two-key
+// pair, returning as soon as the count reaches min (or the last observed
+// count if the deadline elapses first). Scoped to locktype='advisory' AND
+// this exact (classid, objid) pair AND objsubid = 2 (the two-key advisory-
+// lock form pg_advisory_lock(int,int)/pg_advisory_xact_lock(int,int) both
+// use) -- NEVER a global advisory-lock count, because `go test ./...` runs
+// packages in parallel against the same database and another package's test
+// can hold unrelated advisory locks at the same time. classid/objid are
+// oid (unsigned 32-bit) columns; k1/k2 are int32, so callers must pass
+// their unsigned reinterpretation (int64(uint32(k))) -- verified live
+// against octoconv-db (a two-key pg_advisory_lock held in one psql session,
+// a second session blocked on it, pg_locks inspected: classid/objid match
+// the values passed, objsubid=2, granted=false for the blocked session).
+func waitForAdvisoryLockWaiters(t *testing.T, conn *pgxpool.Conn, k1, k2 int32, min int, timeout time.Duration) int {
+	t.Helper()
+	key1, key2 := int64(uint32(k1)), int64(uint32(k2))
+	deadline := time.Now().Add(timeout)
+	var last int
+	for {
+		if err := conn.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2
+				AND objsubid = 2 AND NOT granted`,
+			key1, key2,
+		).Scan(&last); err != nil {
+			t.Fatalf("count advisory-lock waiters: %v", err)
+		}
+		if last >= min || time.Now().After(deadline) {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestConcurrentBurstDailyJobsCapAdmitsExactlyOne is the lock-coverage pin
 // for the daily terms (Codex PR #5 review, P2b). It exists because neither
 // of this package's two other concurrency-shaped tests can catch the daily
@@ -575,20 +652,53 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 // coverage of both) are the only mechanism standing between 12 concurrent
 // creates and 12 concurrent admissions.
 //
-// Failure mode this pins: if the daily subqueries ever leave the
-// advisory-locked transaction (or the pg_advisory_xact_lock call in
-// admitLocked is removed), all 12 goroutines read an in-flight job count of
-// 0 before any insert commits, all 12 are admitted, and this test fails.
-// This was empirically confirmed while writing this test: temporarily
-// commenting out admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` call
-// made this test FAIL (admitted count > 1); restoring the call made it PASS
-// again -- see 260803-obt-SUMMARY.md for the observed failure output.
+// Mechanism (corrected from the prior channel-release version, which was
+// PROBABILISTIC, not deterministic -- measured while diagnosing this test:
+// with admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` commented out,
+// the old close(start)-only version PASSED 1 of 5 runs, because a lock-free
+// race sometimes still happens to interleave into "1 admitted" purely by
+// scheduler luck; the 4 failing runs saw okCount 3, 7, 8, 11). This version
+// instead takes a SESSION-scoped pg_advisory_lock, on a dedicated controller
+// connection acquired from r.pool, on the exact same (k1, k2) key pair
+// admitLocked's own transaction-scoped lock uses (quotaLockKeys), and
+// structurally OBSERVES the 12 goroutines blocked behind it in pg_locks
+// BEFORE ever releasing them -- the property under test is witnessed
+// directly, not inferred from timing:
+//
+//  1. waitForAdvisoryLockWaiters asserts >= 2 ungranted waiters on this
+//     exact (client, image) key pair within a 5s deadline. This is the leg
+//     that fails when the lock is removed from admitLocked: with no lock to
+//     block on, admission never reaches this checkpoint as a "waiter" at
+//     all, so the count never reaches 2 and this call fatals. (Measured
+//     10-of-10 below -- see the acceptance run this plan requires.)
+//  2. While the controller still holds the lock, `jobs` for this client must
+//     read exactly 0 rows, and still 0 after a 200ms settle. This is the
+//     leg that fails when the lock is removed: with nothing serializing the
+//     12 goroutines, some of them race straight through to a committed
+//     INSERT while the controller connection is doing nothing to stop them.
+//  3. The pre-existing okCount==1 / rejectCount==11 / jobs-count==1
+//     assertions, kept verbatim after the controller releases the lock, are
+//     the leg that fails when evaluate is moved AHEAD of the lock in
+//     admitLocked: all 12 goroutines then carry a stale pre-lock verdict
+//     past the (now purely decorative) lock, and all 12 are admitted.
 func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
 	clientID := createTestClient(t, r)
 	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
 	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(1))
+
+	k1, k2 := quotaLockKeys(clientID, "image")
+
+	controller, err := r.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire controller connection: %v", err)
+	}
+	t.Cleanup(controller.Release)
+
+	if _, err := controller.Exec(ctx, `SELECT pg_advisory_lock($1, $2)`, k1, k2); err != nil {
+		t.Fatalf("controller acquire session-scoped advisory lock: %v", err)
+	}
 
 	const n = 12
 	var wg sync.WaitGroup
@@ -603,6 +713,29 @@ func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 		}(i)
 	}
 	close(start)
+
+	if waiters := waitForAdvisoryLockWaiters(t, controller, k1, k2, 2, 5*time.Second); waiters < 2 {
+		t.Fatalf("ungranted advisory-lock waiters on (client=%s, image) = %d after 5s, want >= 2 -- no admission ever reached admitLocked's advisory lock, i.e. the daily evaluation is not lock-covered", clientID, waiters)
+	}
+
+	var count int
+	if err := controller.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs while (client, image) advisory lock is held: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("job row count while the (client, image) advisory lock is held elsewhere = %d, want 0 -- no admission may COMPLETE while this lock is held", count)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := controller.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs after 200ms settle: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("job row count after a 200ms settle, lock still held = %d, want still 0", count)
+	}
+
+	if _, err := controller.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, k1, k2); err != nil {
+		t.Fatalf("controller release session-scoped advisory lock: %v", err)
+	}
 	wg.Wait()
 
 	var okCount, rejectCount int
@@ -623,7 +756,6 @@ func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 		t.Fatalf("rejectCount = %d, want exactly 11", rejectCount)
 	}
 
-	var count int
 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
@@ -846,6 +978,22 @@ func TestAdmissionHoldsUnderRepeatableReadDefault(t *testing.T) {
 		t.Skipf("harness did not induce a repeatable read default (observed %q); skipping rather than risk a false failure", observedIso)
 	}
 
+	// This test builds its own pool and calls NewRepo directly rather than
+	// going through newTestRepo -- the only other place db.Migrate runs in
+	// this package's tests -- so it must not depend on some OTHER test in
+	// the package having already migrated the shared database first
+	// (CodeRabbit, relayed, PR #5 review; verified live: on a freshly
+	// created, unmigrated database, run alone, this failed with
+	// `admission_test.go:850: create test client: ERROR: relation "clients"
+	// does not exist (SQLSTATE 42P01)` -- a raw failure, not the clean skip
+	// this test already applies above for the isolation-level check).
+	// Placed AFTER the skip check so the skip path stays cheap, and BEFORE
+	// createTestClient, which is the first statement that needs the schema
+	// to exist.
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("db.Migrate (repeatable-read pool): %v", err)
+	}
+
 	r := NewRepo(pool)
 	clientID := createTestClient(t, r)
 	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
@@ -954,8 +1102,12 @@ func extractStatusLiterals(def string) []string {
 	return out
 }
 
-// sortedSet returns a sorted, deduplicated copy of the union of one or more
-// string slices, for order-independent comparison.
+// sortedSet returns a sorted, deduplicated copy of the UNION of one or more
+// string slices, for order-independent comparison. Because it deduplicates,
+// this is a coverage helper only -- a status present in two of the three
+// quota sets collapses to one entry here and the union looks unchanged.
+// sortedSet cannot itself witness disjointness (partition); see setIntersect
+// for that.
 func sortedSet(slices ...[]string) []string {
 	seen := make(map[string]struct{})
 	for _, sl := range slices {
@@ -998,18 +1150,73 @@ func setDiff(got, want []string) (extra, missing []string) {
 	return extra, missing
 }
 
+// setIntersect returns the sorted intersection of a and b, for the
+// disjointness check sortedSet cannot perform: sortedSet's union
+// deduplicates, so a status present in BOTH a and b still produces a
+// union with no visible sign of the collision. This is a plain O(n*m)
+// intersect over string slices sized in the single digits (the three quota
+// status sets), matching setDiff's own style.
+func setIntersect(a, b []string) []string {
+	bSet := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		bSet[s] = struct{}{}
+	}
+	var out []string
+	for _, s := range a {
+		if _, ok := bSet[s]; ok {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // TestEveryJobStatusIsClassifiedForQuotaAccounting is the live-schema
 // invariant test for the quota status partition (Codex PR #5 review, P3):
 // every value in the jobs.status CHECK domain must land in exactly one of
-// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses,
-// and quotaInFlightStatuses must never drift from
-// jobs_client_engine_inflight_idx's own partial predicate. Both reads go
-// through the live schema (pg_get_constraintdef / pg_get_indexdef), never a
-// hard-coded copy of either definition, so this test fails the moment the
-// schema and the Go declaration disagree in either direction.
+// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses --
+// both that every schema status is COVERED by the union (the pre-existing
+// checks below) AND that no status is DOUBLE-COUNTED across two of the
+// three sets (the new pairwise-disjointness check, added first): a status
+// present in two sets consumes quota in two contradictory ways, and because
+// sortedSet's union deduplicates, the union alone cannot catch that --
+// a future change that added, say, awaiting_upload to quotaLedgerStatuses
+// while leaving it in quotaUnaccountedStatuses would leave every pre-
+// existing assertion in this test green while the two sets openly
+// contradict each other about whether that status consumes quota.
+// quotaInFlightStatuses must also never drift from
+// jobs_client_engine_inflight_idx's own partial predicate. All three reads
+// go through the live schema (pg_get_constraintdef / pg_get_indexdef),
+// never a hard-coded copy of either definition, so this test fails the
+// moment the schema and the Go declaration disagree in either direction.
 func TestEveryJobStatusIsClassifiedForQuotaAccounting(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
+
+	// Disjointness FIRST, before the union/coverage checks below: a double-
+	// membership defect should be reported as exactly that -- a status
+	// consuming quota in two ways -- not as a confusing union mismatch that
+	// never actually occurs (the union stays correct even when a status is
+	// double-counted).
+	pairs := []struct {
+		name  string
+		nameA string
+		a     []string
+		nameB string
+		b     []string
+	}{
+		{"in-flight vs ledger", "quotaInFlightStatuses", quotaInFlightStatuses, "quotaLedgerStatuses", quotaLedgerStatuses},
+		{"in-flight vs unaccounted", "quotaInFlightStatuses", quotaInFlightStatuses, "quotaUnaccountedStatuses", quotaUnaccountedStatuses},
+		{"ledger vs unaccounted", "quotaLedgerStatuses", quotaLedgerStatuses, "quotaUnaccountedStatuses", quotaUnaccountedStatuses},
+	}
+	for _, p := range pairs {
+		if dup := setIntersect(p.a, p.b); len(dup) > 0 {
+			t.Fatalf(
+				"%s: status(es) %v appear in BOTH %s and %s -- a status must consume quota in exactly one way; move it out of one of these two sets",
+				p.name, dup, p.nameA, p.nameB,
+			)
+		}
+	}
 
 	var checkDef string
 	if err := r.pool.QueryRow(ctx, `
