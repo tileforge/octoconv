@@ -552,6 +552,84 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 	}
 }
 
+// TestConcurrentBurstDailyJobsCapAdmitsExactlyOne is the lock-coverage pin
+// for the daily terms (Codex PR #5 review, P2b). It exists because neither
+// of this package's two other concurrency-shaped tests can catch the daily
+// subqueries leaving admitLocked's advisory-locked transaction:
+//
+//   - TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher performs only two
+//     SEQUENTIAL creates, so it still passes even if the daily in-flight
+//     subqueries were moved out of admitLocked's tx onto r.pool -- sequential
+//     calls never race regardless of which connection/transaction runs the
+//     read.
+//   - TestConcurrentBurstAdmitsExactlyK configures only max_concurrent, so
+//     the CONCURRENCY term -- not the daily term -- is what gets serialized
+//     there; it says nothing about the daily terms' lock coverage.
+//
+// Setting max_concurrent to nil here is what makes the DAILY term the thing
+// being serialized: with no concurrency cap, admitLocked's daily subqueries
+// (both the byte and job-count sums, computed by the SAME single SQL
+// statement under the SAME advisory lock -- so this one test pins the lock
+// coverage of both) are the only mechanism standing between 12 concurrent
+// creates and 12 concurrent admissions.
+//
+// Failure mode this pins: if the daily subqueries ever leave the
+// advisory-locked transaction (or the pg_advisory_xact_lock call in
+// admitLocked is removed), all 12 goroutines read an in-flight job count of
+// 0 before any insert commits, all 12 are admitted, and this test fails.
+// This was empirically confirmed while writing this test: temporarily
+// commenting out admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` call
+// made this test FAIL (admitted count > 1); restoring the call made it PASS
+// again -- see 260803-obt-SUMMARY.md for the observed failure output.
+func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(1))
+
+	const n = 12
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = createFixture(t, r, clientID, "image", fmt.Sprintf("uploads/adm20/%d-in.png", i), 10)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var okCount, rejectCount int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			okCount++
+		case errors.Is(err, ErrDailyJobsLimit):
+			rejectCount++
+		default:
+			t.Fatalf("unexpected error from concurrent create: %v", err)
+		}
+	}
+	if okCount != 1 {
+		t.Fatalf("okCount = %d, want exactly 1", okCount)
+	}
+	if rejectCount != 11 {
+		t.Fatalf("rejectCount = %d, want exactly 11", rejectCount)
+	}
+
+	var count int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("job row count = %d, want exactly 1 (the rejected transactions must leave nothing behind)", count)
+	}
+}
+
 // TestDailyBytesLimitWithoutConcurrencyCap is TestDailyJobsLimitWithoutConcurrencyCap's
 // counterpart for the byte cap: with no concurrency cap set, the in-flight
 // byte term must reject a create as soon as the running in-flight total
