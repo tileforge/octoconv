@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -975,6 +976,22 @@ func TestAdmissionHoldsUnderRepeatableReadDefault(t *testing.T) {
 	}
 	if observedIso != "repeatable read" {
 		t.Skipf("harness did not induce a repeatable read default (observed %q); skipping rather than risk a false failure", observedIso)
+	}
+
+	// This test builds its own pool and calls NewRepo directly rather than
+	// going through newTestRepo -- the only other place db.Migrate runs in
+	// this package's tests -- so it must not depend on some OTHER test in
+	// the package having already migrated the shared database first
+	// (CodeRabbit, relayed, PR #5 review; verified live: on a freshly
+	// created, unmigrated database, run alone, this failed with
+	// `admission_test.go:850: create test client: ERROR: relation "clients"
+	// does not exist (SQLSTATE 42P01)` -- a raw failure, not the clean skip
+	// this test already applies above for the isolation-level check).
+	// Placed AFTER the skip check so the skip path stays cheap, and BEFORE
+	// createTestClient, which is the first statement that needs the schema
+	// to exist.
+	if err := db.Migrate(ctx, pool); err != nil {
+		t.Fatalf("db.Migrate (repeatable-read pool): %v", err)
 	}
 
 	r := NewRepo(pool)
