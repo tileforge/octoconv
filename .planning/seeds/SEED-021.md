@@ -104,23 +104,65 @@ The resolution is that the guard's **ordering** is what is load-bearing, not
 its current whole-document verdict. A replacement sequence that preserves the
 invariant would be:
 
-1. **Bounded pre-render classification** — `detect-pdf` runs before any
-   rasterization, in place of the `pdftotext` threshold call. It is a parse,
-   not a render, so the "nothing rasterized before the decision" property is
-   preserved.
+0. **The `pdfinfo` page-count cap runs first — before `detect-pdf`, not after.**
+   An earlier draft of this seed put classification first and said the existing
+   guards "stay, unmoved". That was wrong, and the correction matters: the
+   invariant is not only "nothing rasterized before the decision" but also
+   "nothing *unbounded* parsed before the cap". `detect-pdf` parses the whole
+   document to classify every page and emit its per-page routing verdict, so a
+   10,000-page PDF would consume that work before any cap fired. The cheap
+   `pdfinfo` count is the only guard that bounds the expensive step, so it must
+   precede it.
+1. **Bounded pre-render classification** — `detect-pdf` then runs, in place of
+   the `pdftotext` threshold call, on a document already known to be within the
+   page cap. It is a parse, not a render, so "nothing rasterized before the
+   decision" still holds.
 2. **Per-page routing from that verdict** — pages classified text-based are
    extracted; pages classified scanned enter the existing OCR loop. A document
    with zero scanned pages is still rejected by the OCR engine, but now for a
    stated reason and with `pdf2md` as the path that actually serves it.
-3. **The existing guards stay, unmoved** — the `pdfinfo` page-count cap and the
-   per-page page-box physical-size bound still run, still before their
-   respective renders. Nothing about the one-page-in-flight memory ceiling
-   changes; only the *set* of pages entering the loop does.
+3. **The per-page page-box physical-size bound stays, unmoved** — still
+   evaluated per page, still before that page's render. Nothing about the
+   one-page-in-flight memory ceiling changes; only the *set* of pages entering
+   the loop does.
 
-Whoever harvests this must confirm step 1 actually holds — that `detect-pdf`
-never rasterizes internally. If it does, the whole approach collapses back into
-the guard it was supposed to replace, and Opportunity 1 (`pdf2md`) should be
-harvested alone.
+### The merging contract, which this seed does not yet define
+
+A mixed PDF produces two streams — `pdf2md` output for text pages, OCR output
+for scanned pages — and the seed above stops before saying how they become one
+artifact. That is an open design question, not an oversight to be improvised at
+implementation time. It must specify:
+
+- **Complete, non-duplicated coverage** — every page of the source appears
+  exactly once in the output, whichever stream produced it.
+- **Source order** — pages merge in document order, not stream order (all text
+  pages then all scanned pages would be wrong).
+- **Whether `pdf2md` can operate per page at all.** Unverified. If it only
+  emits whole-document Markdown, a mixed document needs either a page-range
+  flag, an upstream split (see SEED-017), or post-hoc slicing of its output —
+  and that answer changes the shape of the whole feature.
+- **Target-format asymmetry.** `pdf2md` emits Markdown; the OCR engine emits
+  `txt`/`hocr`/`alto`. Merging Markdown with hOCR is not obviously meaningful,
+  so the supported mixed-output targets need stating rather than assuming.
+
+Precedent worth reusing: `ocrPageMerger` (`internal/convert/ocr.go:261-306`)
+already solves the structural half of this for hOCR/ALTO — it assembles
+per-page fragments into one valid XML document via `encoding/xml`, deliberately
+never by string concatenation. A mixed merger should follow that discipline.
+
+Any harvest of Opportunity 2 needs a proof test on a genuinely mixed fixture
+asserting complete, non-duplicated, source-ordered page coverage.
+
+## Assumptions a harvester must confirm
+
+- **`detect-pdf` never rasterizes internally.** If it does, the approach
+  collapses back into the guard it was meant to replace, and Opportunity 1
+  (`pdf2md`) should be harvested alone.
+- **`detect-pdf`'s own cost is bounded by page count**, so the `pdfinfo` cap in
+  step 0 is a sufficient bound on it. If its cost scales with embedded-image
+  size or some other dimension the page count does not capture, step 0 needs a
+  second bound.
+- **`pdf2md` supports per-page operation**, per the merging contract above.
 - **Young, small project.** For a pure parser with no ML, the realistic failure
   mode is misclassification rather than a crash — so keep the existing guards
   (page-count cap, page-box physical-size bound) in place rather than trusting

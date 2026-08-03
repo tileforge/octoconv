@@ -128,7 +128,7 @@ Confirmed true by reading `repo_test.go:14-29` (`newTestRepo` is the only other 
 **Fix verification -- fresh, unmigrated database, run alone:**
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
-DATABASE_URL="postgres://octo:octo-pass@localhost:5434/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
+DATABASE_URL="${DATABASE_URL%/*}/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
 ```
 Result: `--- PASS: TestAdmissionHoldsUnderRepeatableReadDefault`. (No `relation "clients" does not exist` error -- the exact failure reproduced below with the call removed.)
 
@@ -136,7 +136,7 @@ Result: `--- PASS: TestAdmissionHoldsUnderRepeatableReadDefault`. (No `relation 
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'DROP DATABASE octoconv_freshgate'
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
-DATABASE_URL="postgres://octo:octo-pass@localhost:5434/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
+DATABASE_URL="${DATABASE_URL%/*}/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
 ```
 Result: `FAIL` -- `admission_test.go:998: create test client: ERROR: relation "clients" does not exist (SQLSTATE 42P01)` -- exact reproduction of the reported failure.
 
