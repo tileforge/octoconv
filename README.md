@@ -254,6 +254,12 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
   go run ./cmd/manage-clients set-mode <client-id> <observe|enforce>
   ```
 
+  `set-limit` rejects an `<engine>` token that isn't one of the seven known engine classes
+  and prints the valid set, so a typo fails loudly instead of writing a limit that never
+  matches any job. `clear-limit` and `show-limits` deliberately do not validate the engine —
+  a row written before this check existed must still be listable and removable through the
+  CLI.
+
 - **Rollout sequence:** every client starts in `observe` — limits are evaluated and every
   would-be rejection is counted via `octoconv_quota_would_reject_total{client_id,engine,reason}`,
   but nothing is actually rejected. Watch that counter for at least one full quota window (a
@@ -270,11 +276,20 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
   `code: "quota_exceeded"` in the body — never `403` (a quota is a consumption limit, not an
   authorization boundary). This is distinct from `code: "rate_limited"`, the per-IP/per-client
   rate limiter's own 429 for the same status code.
-- **Accepted daily overshoot:** the concurrency cap is authoritative and race-proof; the daily
-  byte/job cap is checked against yesterday's-and-earlier committed usage, so it cannot see
-  jobs still in flight. A client can therefore overshoot its daily cap by up to
-  `K × <per-engine upload ceiling>` bytes, where `K` is that client's `max-concurrent` for the
-  engine — size daily caps with that bound in mind.
+- **Daily cap accounting, exact at admission:** the daily byte and job-count caps compare the
+  request against today's committed usage **plus** all of the client's currently in-flight
+  (`queued`+`active`) jobs on that engine, so the cap holds whether or not a concurrency cap
+  is also set — there is no `K × <per-engine ceiling>` tolerance to size around, because that
+  tolerance no longer exists. A canceled job is charged to the daily ledger for the input
+  bytes and job count it consumed — canceling does not refund the day's budget — because a
+  free cancel would make `create -> cancel -> create` an unbounded way around a daily cap.
+  The in-flight term is not scoped to a creation date: a job still in flight across a UTC
+  midnight is charged against each day it is in flight and again against the day it
+  terminates, which is deliberately conservative.
+- **What can still overshoot:** because the pre-upload gate is unlocked by design, a burst of
+  simultaneous requests from one client can upload before the authoritative check rejects
+  them — wasted uploads, never over-admission — and that residual is measured by the phase's
+  own burst test rather than assumed.
 
 ## Configuration
 
