@@ -171,6 +171,42 @@ structured error codes across the API.
     is nothing to double-count. `client_usage_daily` keeps its exactly-once
     write inside the terminal transition (Phase 51 D-05).
 
+  - **Amendment (2026-08-03, plan 52-06, source: `52-VERIFICATION.md` truth #5 /
+    `52-REVIEW.md` CR-01):** D-15's bound above was **false** whenever
+    `max_concurrent` is `NULL` — a configuration the schema (`client_limits`'s
+    columns are independently nullable), `internal/clients/limits.go`'s
+    cross-field validation, and `cmd/manage-clients set-limit <id> <engine> -
+    <bytes> <jobs>` all accept and none of them reject. With no concurrency cap
+    at all, nothing bounded how much admitted-but-unfinished work could pile up,
+    and the verifier reproduced this live: `max_daily_jobs = 2`,
+    `max_concurrent = nil`, 50 sequential `Repo.Create` calls, 50/50 admitted.
+    D-15's original text above is left unedited so the record shows what was
+    decided and why it changed, not a silently rewritten history.
+    - **Superseding rule:** the daily check now charges today's committed
+      `client_usage_daily` rollup **plus** currently in-flight (`queued` +
+      `active`) admitted work for the same `(client_id, engine)`, evaluated
+      under the same `pg_advisory_xact_lock`-guarded transaction `admitLocked`
+      already holds — the in-flight read is serialized against every other
+      admission attempt for that exact pair, so the SC2(a) property is not
+      weakened by the new term.
+    - **Date-agnostic in-flight rule:** the in-flight term carries no
+      `created_at`/date predicate — a job that is `queued` or `active` right
+      now consumes capacity right now, regardless of when it was created.
+      Conservative consequence: a job in flight across a UTC midnight is
+      charged against each day it is in flight and again against the day it
+      terminates (via the rollup) — a deliberately fail-closed double charge at
+      the day boundary, not a free window.
+    - **Rejected alternative:** forbidding daily-limits-without-a-concurrency-cap
+      at `SetLimit` (i.e. requiring `max_concurrent` whenever a daily limit is
+      set). Rejected because the fix above makes that configuration safe on its
+      own; forbidding it would remove operator expressiveness for no remaining
+      benefit.
+    - Residual unchanged from D-15's original text: `PreAdmit`'s unlocked
+      pre-upload gate can still let a concurrent burst upload before
+      `admitLocked` rejects it — wasted uploads, never over-admission — bounded
+      and measured by plan 52-05's
+      `TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste`.
+
 ### Claude's Discretion
 
 Column types and index choices on `client_limits`; the migration ordinal; the

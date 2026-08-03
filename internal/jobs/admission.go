@@ -183,8 +183,8 @@ func loadQuotaState(ctx context.Context, q pgxQuerier, clientID uuid.UUID, engin
 // run in this order and the first violation wins, so the reason taxonomy is
 // deterministic:
 //  1. concurrency: queued+active occupancy vs max_concurrent
-//  2. daily bytes / daily jobs: today's client_usage_daily rollup vs the
-//     daily limits
+//  2. daily bytes / daily jobs: today's client_usage_daily rollup PLUS
+//     currently in-flight (queued+active) admitted work vs the daily limits
 func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UUID, engine string, inputBytes int64) (error, error) {
 	if st.maxConcurrent != nil {
 		var count int
@@ -203,27 +203,72 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 	}
 
 	if st.maxDailyBytes != nil || st.maxDailyJobs != nil {
-		// D-15: the daily rollup this reads is written only at the terminal
-		// transition (recordUsage, usage.go), so jobs admitted but not yet
-		// finished are invisible to this check -- a burst of concurrent
-		// admissions can overshoot the daily cap before any of them
-		// completes. This overshoot is accepted, and it is bounded by the
-		// concurrency cap: at most K in-flight jobs for this client+engine
-		// (K = max_concurrent), each admitted at most the per-engine input
-		// ceiling already enforced ahead of the upload in handleCreateJob,
-		// hence at most K x MAX_INPUT_BYTES bytes of unaccounted admitted
-		// work. Full reserve/consume accounting -- a row written at
-		// admission time and released on terminal transition -- was
-		// rejected: it reintroduces a second source of truth plus
-		// reservation-leak failure modes, on a path where the damage is
-		// already computable and small. With no reservation row ever
-		// written, there is also nothing that could be double-counted when
-		// the job later completes (this is what resolves ROADMAP SC2b).
+		// D-15 (superseded 2026-08-03, see 52-CONTEXT.md's dated amendment
+		// under "Accepted imprecision (SC2b)" -- the original text there is
+		// left intact, not rewritten): this check now compares today's
+		// committed client_usage_daily rollup PLUS all currently in-flight
+		// (queued+active) admitted work for this (client, engine) against
+		// the limit, including the incoming request's own contribution.
+		//
+		// Why there is no double count: a job has exactly one status at any
+		// instant; client_usage_daily rows exist only for the terminal
+		// statuses recordUsage writes (usage.go); queued/active jobs are
+		// never in the rollup. The crossover from the in-flight term to the
+		// rollup term happens atomically inside Repo.transition's
+		// transaction (the same transaction that flips jobs.status AND
+		// calls recordUsage), so no interleaving can ever observe a job
+		// counted in both terms, or in neither.
+		//
+		// Why this is safe to compute here: admitLocked already holds
+		// pg_advisory_xact_lock on this same tx by the time evaluate runs,
+		// so the in-flight count below is serialized against every other
+		// admission attempt for this exact (client, engine) pair -- an
+		// unlocked read would reintroduce the precise race ROADMAP SC2(a)
+		// and plan 52-03 exist to close.
+		//
+		// What residual remains (ROADMAP SC2b still asks for a disclosed
+		// bound): the daily cap is now exact at the admission boundary in
+		// every operator configuration, and the only remaining slack is
+		// PreAdmit's unlocked pre-upload gate, which can let a concurrent
+		// burst upload before admitLocked rejects it -- wasted uploads,
+		// never over-admission, already bounded and measured by plan
+		// 52-05's TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste.
 		var bytesUsed, jobsUsed int64
 		if err := q.QueryRow(ctx, `
-			SELECT COALESCE(sum(bytes_in), 0), COALESCE(sum(job_count), 0)
-			FROM client_usage_daily
-			WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date`,
+			SELECT
+				COALESCE((SELECT sum(bytes_in) FROM client_usage_daily
+					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
+				+ COALESCE((SELECT sum(ji.size_bytes) FROM jobs j JOIN job_inputs ji ON ji.job_id = j.id
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0),
+				COALESCE((SELECT sum(job_count) FROM client_usage_daily
+					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
+				+ COALESCE((SELECT count(*) FROM jobs j
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0)`,
+			// The in-flight subqueries above write their two statuses as SQL
+			// literals, NOT as bound parameters: the literal form is what the
+			// planner can match against jobs_client_engine_inflight_idx's
+			// partial predicate (WHERE status IN ('queued', 'active')), and
+			// this query runs while holding the per-(client, engine)
+			// advisory lock, so a sequential scan here would hold that lock
+			// across every in-flight row in the whole table. This is
+			// intentionally NOT unified with the pre-existing concurrency
+			// count query above, which keeps binding its statuses as $3/$4
+			// (52-REVIEW.md WR-03, out of scope for this plan).
+			//
+			// Deliberately NO created_at predicate on the in-flight term:
+			// the terminal term is scoped to today's UTC date because that
+			// is the `day` value recordUsage writes, while the in-flight
+			// term is date-agnostic because a job that is queued or active
+			// right now is consuming capacity right now, regardless of when
+			// it was created. Two consequences: (a) a job in flight across a
+			// UTC midnight is charged against each day it is in flight and
+			// again against the day it terminates -- deliberately
+			// conservative and fail-closed rather than a free window at the
+			// day boundary; (b) no timestamptz-versus-date comparison is
+			// introduced, so this check never acquires a dependency on the
+			// session TimeZone setting, which a
+			// `j.created_at >= (now() AT TIME ZONE 'utc')::date` predicate
+			// would silently have.
 			clientID, engine,
 		).Scan(&bytesUsed, &jobsUsed); err != nil {
 			return nil, fmt.Errorf("read daily usage: %w", err)
@@ -317,22 +362,29 @@ func admitLocked(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine stri
 // exactly like the pre-existing preset-TOCTOU path in handleCreateJob
 // already does.
 //
+// Because PreAdmit shares evaluate with admitLocked, this pre-upload gate
+// now reaches the same daily verdict (committed rollup plus in-flight
+// admitted work) as the authoritative check -- while remaining
+// non-authoritative, because this read is unlocked.
+//
 // The concurrent burst residual, disclosed and bounded the same honest way
-// the daily overshoot above is: an unlocked read cannot serialize, so if a
-// client currently holding fewer than K in-flight jobs issues N requests
-// simultaneously, every one of them reads the same below-cap count before
-// any of them reaches Create's insert -- all N pass this pre-check, all N
-// upload, and admitLocked then rejects N minus K of them AFTER their
-// upload. Wasted uploads are therefore bounded by (N - K) x MAX_INPUT_BYTES
-// per concurrent burst, with N itself bounded by the per-client rate
-// limiter that runs upstream in the router (internal/ratelimit), never by
-// this package. This bound is materially looser than the daily-overshoot
-// bound above: K is enforced structurally by this same admission code,
-// whereas N's ceiling is internal/ratelimit's operator-configured
-// fixed-window RPM counter -- an independently-tuned knob in another
-// package, not a burst or concurrency control -- so N may exceed K by
-// orders of magnitude, and an operator tuning RPM is implicitly tuning this
-// bound too. What ROADMAP SC2b actually cares about holds regardless: the
+// the rest of this package's residuals are: an unlocked read cannot
+// serialize, so if a client currently holding fewer than K in-flight jobs
+// issues N requests simultaneously, every one of them reads the same
+// below-cap count before any of them reaches Create's insert -- all N pass
+// this pre-check, all N upload, and admitLocked then rejects N minus K of
+// them AFTER their upload. Wasted uploads are therefore bounded by
+// (N - K) x the per-engine input ceiling enforced ahead of the upload in
+// handleCreateJob, per concurrent burst, with N itself bounded by the
+// per-client rate limiter that runs upstream in the router
+// (internal/ratelimit), never by this package. K is enforced structurally
+// by this same admission code (exactly, for concurrency and daily limits
+// alike, per evaluate's comment above), whereas N's ceiling is
+// internal/ratelimit's operator-configured fixed-window RPM counter -- an
+// independently-tuned knob in another package, not a burst or concurrency
+// control -- so N may exceed K by orders of magnitude, and an operator
+// tuning RPM is implicitly tuning this bound too. What ROADMAP SC2b actually
+// cares about holds regardless: the
 // waste is a one-time transient AT the cap boundary, never per-attempt --
 // once the client sits at its cap, every subsequent request reads a count
 // >= K here and is rejected before the S3 write, so a client retrying
