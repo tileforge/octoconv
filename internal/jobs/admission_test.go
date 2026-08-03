@@ -512,6 +512,135 @@ func TestOvershootBoundedByConcurrencyCap(t *testing.T) {
 	}
 }
 
+// TestDailyJobsLimitWithoutConcurrencyCap is the verifier's own reproduction
+// (52-VERIFICATION.md truth #5 / 52-REVIEW.md CR-01), inverted into a
+// permanent regression gate: max_concurrent = nil is the exact configuration
+// `manage-clients set-limit <id> image - - 2` produces, and before this fix
+// it admitted 50 of 50 sequential creates because nothing but a finished job
+// could ever populate client_usage_daily. All three new tests in this file
+// set max_concurrent to nil -- that is the entire point, since every
+// existing daily test above either sets a concurrency cap or never exercises
+// in-flight work, so none of them could have caught this class of defect.
+func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(2))
+
+	var admitted, rejected int
+	for i := 0; i < 50; i++ {
+		_, err := createFixture(t, r, clientID, "image", fmt.Sprintf("uploads/adm14/%d-in.png", i), 10)
+		switch {
+		case err == nil:
+			admitted++
+		case errors.Is(err, ErrDailyJobsLimit):
+			rejected++
+		default:
+			t.Fatalf("create %d: unexpected error %v", i, err)
+		}
+	}
+	if admitted != 2 {
+		t.Fatalf("admitted = %d, want exactly 2", admitted)
+	}
+	if rejected != 48 {
+		t.Fatalf("rejected = %d, want exactly 48", rejected)
+	}
+
+	var count int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("job count = %d, want exactly 2 (the rejected transactions must leave nothing behind)", count)
+	}
+}
+
+// TestDailyBytesLimitWithoutConcurrencyCap is TestDailyJobsLimitWithoutConcurrencyCap's
+// counterpart for the byte cap: with no concurrency cap set, the in-flight
+// byte term must reject a create as soon as the running in-flight total
+// would exceed max_daily_bytes, and the rejection must be provably caused by
+// the in-flight term (nothing here ever reaches a terminal state, so
+// client_usage_daily stays empty for the whole test).
+func TestDailyBytesLimitWithoutConcurrencyCap(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, int64Ptr(1000), nil)
+
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm15/0-in.png", 400); err != nil {
+		t.Fatalf("1st create (0+400<=1000): %v", err)
+	}
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm15/1-in.png", 400); err != nil {
+		t.Fatalf("2nd create (400+400<=1000): %v", err)
+	}
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm15/2-in.png", 400); !errors.Is(err, ErrDailyBytesLimit) {
+		t.Fatalf("3rd create (800+400=1200>1000) error = %v, want ErrDailyBytesLimit", err)
+	}
+
+	var count int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("job count = %d, want exactly 2", count)
+	}
+}
+
+// TestInFlightAndTerminalUsageCountedExactlyOnce is the no-double-count pin
+// across a terminal transition, designed so a double count fails it: if the
+// completed job A were charged twice -- once while in-flight and again in
+// the client_usage_daily rollup -- the running total at create C below would
+// be 400, and C would already have been rejected instead of admitted at the
+// exact 300 boundary. This fails loudly on a double count rather than merely
+// not detecting one.
+func TestInFlightAndTerminalUsageCountedExactlyOnce(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, int64Ptr(300), nil)
+
+	idA, err := createFixture(t, r, clientID, "image", "uploads/adm16/a-in.png", 100)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if err := r.MarkActive(ctx, idA); err != nil {
+		t.Fatalf("MarkActive(A): %v", err)
+	}
+	if err := r.MarkDone(ctx, idA, 0); err != nil {
+		t.Fatalf("MarkDone(A): %v", err)
+	}
+
+	// B: rollup 100 (A, terminal) + in-flight 0 + own 100 = 200 <= 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm16/b-in.png", 100); err != nil {
+		t.Fatalf("create B (rollup 100 + in-flight 0 + own 100 = 200<=300): %v", err)
+	}
+	// C: rollup 100 (A) + in-flight 100 (B) + own 100 = 300 <= 300, the exact
+	// boundary. If A were double-counted, this would already read 400 and
+	// be rejected.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm16/c-in.png", 100); err != nil {
+		t.Fatalf("create C (rollup 100 + in-flight 100 + own 100 = 300<=300): %v", err)
+	}
+	// D: rollup 100 (A) + in-flight 200 (B, C) + own 100 = 400 > 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm16/d-in.png", 100); !errors.Is(err, ErrDailyBytesLimit) {
+		t.Fatalf("create D (400>300) error = %v, want ErrDailyBytesLimit", err)
+	}
+
+	var bytesIn, jobCount int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT bytes_in, job_count FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date`,
+		clientID,
+	).Scan(&bytesIn, &jobCount); err != nil {
+		t.Fatalf("read client_usage_daily row: %v", err)
+	}
+	if bytesIn != 100 || jobCount != 1 {
+		t.Fatalf("client_usage_daily row = {bytes_in: %d, job_count: %d}, want {100, 1}", bytesIn, jobCount)
+	}
+}
+
 // TestQuotaLockKeysDeterministicAndDistinct is a pure Go unit test (no
 // DATABASE_URL required): the lock-key derivation is deterministic across
 // calls, distinct for different clients and different engines, and pinned
