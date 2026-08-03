@@ -255,7 +255,7 @@ Plans:
   4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
   5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
 
-**Plans**: 5 plans
+**Plans**: 9 plans (5 shipped + 4 gap-closure, planned 2026-08-03 after verification scored 8/9)
 
 Plans:
 **Wave 1**
@@ -274,6 +274,19 @@ Plans:
 **Wave 4** *(blocked on Wave 3 completion)*
 
 - [x] 52-05-PLAN.md — REST + real MCP tool admission proof against one live API, FAIR-02 zero-diff contract gate, OpenAPI/README contract docs
+
+**Wave 5** *(gap closure — 52-VERIFICATION.md status `gaps_found`, 8/9 must-haves)*
+
+- [ ] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
+- [ ] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 52-08-PLAN.md — migration 0014 widens the usage rollup's status domain; `Cancel` records usage so `create -> cancel -> create` no longer resets the daily cap (WR-01); `Repo.Create`/`transition` pin `pgx.ReadCommitted` (WR-02)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
 
 **Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
 
