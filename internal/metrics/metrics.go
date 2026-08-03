@@ -185,9 +185,25 @@ func clientLabel(clientID string) string {
 }
 
 // RecordClientJobOutcome increments the per-client job-outcome counter for
-// the given client, engine and terminal status. clientID is resolved
-// through the bounded allocator before use, so this call can never mint an
-// unbounded number of Prometheus series (ACCT-04).
+// the given client, engine and terminal status. clientID is resolved through
+// the bounded allocator before use (ACCT-04).
+//
+// Scope of that bound, stated precisely: the allocator caps the distinct
+// client_id label values ONE PROCESS emits over ONE lifetime. It is not a
+// global bound on distinct label values in Prometheus. Each replica admits its
+// own set, and a restarted process starts from an empty map and may admit a
+// different set while previously scraped series still live out their retention
+// in the TSDB. So the count of distinct client_id values Prometheus has ever
+// seen can exceed the ceiling.
+//
+// That is accepted rather than fixed, deliberately. A stronger bound needs a
+// shared or persisted admission set, which would put coordination -- and a new
+// failure mode -- on a path that is explicitly fire-and-forget and explicitly
+// NOT the accounting record (client_usage_daily is, D-10). The ceiling exists
+// as a backstop against pathological cardinality, not as a load-bearing limit:
+// OctoConv's clients are internal company services, so the real population is
+// orders of magnitude below 200, and a deployment where it is not is a signal
+// to revisit the design rather than to raise the number.
 func RecordClientJobOutcome(clientID, engine, status string) {
 	clientJobOutcomes.WithLabelValues(clientLabel(clientID), engine, status).Inc()
 }
