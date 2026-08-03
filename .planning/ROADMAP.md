@@ -260,8 +260,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
-- [ ] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
+- [x] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
+- [x] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -371,7 +371,7 @@ Plans:
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
-| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 0/TBD | Not started | - |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 2/5 | In Progress|  |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
