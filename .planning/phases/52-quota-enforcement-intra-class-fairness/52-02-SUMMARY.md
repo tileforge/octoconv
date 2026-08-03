@@ -99,3 +99,10 @@ Plans 52-03 and 52-04 can now call `RecordQuotaWouldReject` and rely on the `{er
 ---
 *Phase: 52-quota-enforcement-intra-class-fairness*
 *Completed: 2026-08-03*
+
+## Self-Check: PASSED
+
+- FOUND: .planning/phases/52-quota-enforcement-intra-class-fairness/52-02-SUMMARY.md
+- FOUND: 4e9202b (Task 1 commit)
+- FOUND: da1dc74 (Task 2 commit)
+- FOUND: a33e108 (Task 3 commit)
