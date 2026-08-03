@@ -296,6 +296,19 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 // and abort the transaction; they are NEVER converted into an admit -- only
 // the explicit observe-mode/kill-switch branch below turns a real violation
 // into an admit, and it reports the observer first.
+//
+// Isolation dependency (52-REVIEW.md WR-02): the re-evaluate call below,
+// after pg_advisory_xact_lock, only observes the inserts committed by
+// admissions that finished while THIS transaction waited on the lock --
+// and that is true only under READ COMMITTED. Under REPEATABLE READ the
+// re-count would instead be served from the snapshot taken by the pre-lock
+// loadQuotaState above, the cap would silently over-admit, and nothing
+// would raise a serialization failure because the concurrent inserts do
+// not conflict with each other. This is why Repo.Create pins
+// pgx.TxOptions{IsoLevel: pgx.ReadCommitted} explicitly rather than
+// trusting default_transaction_isolation, and
+// TestAdmissionHoldsUnderRepeatableReadDefault proves the cap still holds
+// even when the deployment default is the level that would have broken it.
 func admitLocked(ctx context.Context, tx pgx.Tx, clientID uuid.UUID, engine string, inputBytes int64, report func(clientID uuid.UUID, engine, reason string), disabled bool) error {
 	// Pre-lock read: decides ONLY whether locking (and the authoritative
 	// re-check) is worth doing at all. A (client, engine) pair with no

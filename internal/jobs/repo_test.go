@@ -198,6 +198,72 @@ func TestCancelActive(t *testing.T) {
 	}
 }
 
+// TestCancelRecordsUsageExactlyOnce pins the WR-01 fix at the repo layer,
+// directly against the client_usage_daily rollup row rather than through
+// admission: a canceled job's input bytes and job count are charged with
+// status='canceled', bytes_out stays 0 (a canceled job has no outputs), and
+// a repeated Cancel attempt on the same job is rejected by the
+// {queued,active} illegal-transition guard AND leaves job_count unchanged --
+// the exactly-once property asserted rather than argued (usage.go's package
+// doc comment).
+func TestCancelRecordsUsageExactlyOnce(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	const inputSize int64 = 4321
+	id, err := r.Create(ctx, CreateParams{
+		ClientID: clientID, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/cru/0-in.png", Filename: "in.png", Format: "png", SizeBytes: inputSize},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	var status string
+	var jobCount, bytesIn, bytesOut int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT status, job_count, bytes_in, bytes_out FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date`,
+		clientID,
+	).Scan(&status, &jobCount, &bytesIn, &bytesOut); err != nil {
+		t.Fatalf("read client_usage_daily row after cancel: %v", err)
+	}
+	if status != StatusCanceled {
+		t.Fatalf("status = %q, want %q", status, StatusCanceled)
+	}
+	if jobCount != 1 {
+		t.Fatalf("job_count = %d, want 1", jobCount)
+	}
+	if bytesIn != inputSize {
+		t.Fatalf("bytes_in = %d, want %d", bytesIn, inputSize)
+	}
+	if bytesOut != 0 {
+		t.Fatalf("bytes_out = %d, want 0 (a canceled job has no outputs)", bytesOut)
+	}
+
+	// A second Cancel of the same (already-canceled) job must be rejected by
+	// the {queued,active} allow-list, and must NOT add a second increment.
+	if err := r.Cancel(ctx, id); err == nil {
+		t.Fatalf("expected illegal-transition error on a repeated Cancel, got nil")
+	}
+
+	if err := r.pool.QueryRow(ctx, `
+		SELECT job_count FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date AND status = 'canceled'`,
+		clientID,
+	).Scan(&jobCount); err != nil {
+		t.Fatalf("read client_usage_daily row after repeated cancel attempt: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("job_count after repeated Cancel attempt = %d, want still exactly 1", jobCount)
+	}
+}
+
 func TestCancelDoneRejected(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()

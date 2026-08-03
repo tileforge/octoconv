@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // setClientLimits writes a client_limits row directly via SQL (a full-row
@@ -632,6 +634,182 @@ func TestInFlightAndTerminalUsageCountedExactlyOnce(t *testing.T) {
 	}
 	if bytesIn != 100 || jobCount != 1 {
 		t.Fatalf("client_usage_daily row = {bytes_in: %d, job_count: %d}, want {100, 1}", bytesIn, jobCount)
+	}
+}
+
+// TestCanceledJobStillCountsAgainstDailyQuota is the WR-01 evasion path,
+// inverted into a permanent regression gate. Before Cancel charged
+// recordUsage, A's cost vanished on cancel and C was admitted -- an
+// unbounded `create -> cancel` loop never advanced the cap. max_concurrent
+// is nil so this exercises the daily path specifically (a concurrency cap
+// would free A's slot for an unrelated reason and mask the evasion).
+func TestCanceledJobStillCountsAgainstDailyQuota(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(2))
+
+	idA, err := createFixture(t, r, clientID, "image", "uploads/adm17/a-in.png", 10)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if err := r.Cancel(ctx, idA); err != nil {
+		t.Fatalf("Cancel(A): %v", err)
+	}
+
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm17/b-in.png", 10); err != nil {
+		t.Fatalf("create B (1 canceled + 1 own = 2<=2): %v", err)
+	}
+
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm17/c-in.png", 10); !errors.Is(err, ErrDailyJobsLimit) {
+		t.Fatalf("create C (1 canceled + 1 in-flight B + 1 own = 3>2) error = %v, want ErrDailyJobsLimit", err)
+	}
+
+	var jobCount int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT job_count FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date AND status = 'canceled'`,
+		clientID,
+	).Scan(&jobCount); err != nil {
+		t.Fatalf("read canceled client_usage_daily row: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("canceled row job_count = %d, want exactly 1", jobCount)
+	}
+}
+
+// TestCancelDoesNotDoubleCountAcrossInFlightAndRollup pins that a canceled
+// job's bytes are charged exactly once. If the cancel were charged twice --
+// once while in-flight and again in the rollup -- create C below would
+// already read 400 and be rejected one create early, instead of admitted
+// at the exact 300 boundary. This fails loudly on a double count rather
+// than merely not detecting one.
+func TestCancelDoesNotDoubleCountAcrossInFlightAndRollup(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, int64Ptr(300), nil)
+
+	idA, err := createFixture(t, r, clientID, "image", "uploads/adm18/a-in.png", 100)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if err := r.Cancel(ctx, idA); err != nil {
+		t.Fatalf("Cancel(A): %v", err)
+	}
+
+	// B: rollup 100 (A, canceled) + in-flight 0 + own 100 = 200 <= 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/b-in.png", 100); err != nil {
+		t.Fatalf("create B (rollup 100 + in-flight 0 + own 100 = 200<=300): %v", err)
+	}
+	// C: rollup 100 (A) + in-flight 100 (B) + own 100 = 300 <= 300, the exact
+	// boundary. If A were double-counted, this would already read 400 and
+	// be rejected.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/c-in.png", 100); err != nil {
+		t.Fatalf("create C (rollup 100 + in-flight 100 + own 100 = 300<=300): %v", err)
+	}
+	// D: rollup 100 (A) + in-flight 200 (B, C) + own 100 = 400 > 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/d-in.png", 100); !errors.Is(err, ErrDailyBytesLimit) {
+		t.Fatalf("create D (400>300) error = %v, want ErrDailyBytesLimit", err)
+	}
+}
+
+// TestAdmissionHoldsUnderRepeatableReadDefault induces the exact hostile
+// configuration 52-REVIEW.md WR-02 describes -- a second pool whose
+// server-side default_transaction_isolation is repeatable read -- and proves
+// the concurrency cap still holds. With the isolation level pinned in
+// Repo.Create/Repo.transition's pgx.BeginTxFunc calls, admission is correct
+// regardless of the connection's inherited default; before that pin, this
+// exact deployment configuration silently over-admitted, with no error and
+// no serialization failure, because the post-lock re-check would have been
+// served from the pre-lock snapshot instead of a fresh one.
+func TestAdmissionHoldsUnderRepeatableReadDefault(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set; skipping integration test")
+	}
+
+	// Set default_transaction_isolation as a startup RuntimeParam rather
+	// than via a DSN `options=-c ...` string: the options GUC splits its
+	// value on unescaped whitespace, so a two-word value like "repeatable
+	// read" requires backslash-escaping the embedded space -- fragile and
+	// easy to get silently wrong (confirmed live: an unescaped attempt was
+	// truncated to "repeatable" by the server and rejected outright).
+	// RuntimeParams is sent as its own discrete startup-packet parameter,
+	// so the two-word value round-trips with no escaping at all, and this
+	// pool otherwise still connects to the exact same DATABASE_URL target.
+	ctx := context.Background()
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.ParseConfig: %v", err)
+	}
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "repeatable read"
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pgxpool.NewWithConfig (repeatable-read default): %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("ping repeatable-read pool: %v", err)
+	}
+
+	// Assert the harness actually induced the condition; a false failure
+	// here would be worse than an honest skip, but this is the ONLY
+	// condition that triggers a skip -- any other failure below is real.
+	var observedIso string
+	if err := pool.QueryRow(ctx, `SHOW default_transaction_isolation`).Scan(&observedIso); err != nil {
+		t.Fatalf("SHOW default_transaction_isolation: %v", err)
+	}
+	if observedIso != "repeatable read" {
+		t.Skipf("harness did not induce a repeatable read default (observed %q); skipping rather than risk a false failure", observedIso)
+	}
+
+	r := NewRepo(pool)
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", intPtr(3), nil, nil)
+
+	const n = 12
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = createFixture(t, r, clientID, "image", fmt.Sprintf("uploads/adm19/%d-in.png", i), 10)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var okCount, rejectCount int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			okCount++
+		case errors.Is(err, ErrConcurrencyLimit):
+			rejectCount++
+		default:
+			t.Fatalf("unexpected error from concurrent create: %v", err)
+		}
+	}
+	if okCount != 3 {
+		t.Fatalf("okCount = %d, want exactly 3", okCount)
+	}
+	if rejectCount != 9 {
+		t.Fatalf("rejectCount = %d, want exactly 9", rejectCount)
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if count != 3 {
+		t.Fatalf("job row count = %d, want exactly 3", count)
 	}
 }
 

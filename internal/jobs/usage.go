@@ -27,11 +27,14 @@ import (
 // recordUsage upserts the daily consumption rollup for job id's client, on
 // the caller's tx — see the package doc comment above for why this MUST run
 // inside Repo.transition's apply closure and MUST NOT be called adjacent to
-// it (D-05). status is always StatusDone or StatusFailed (a Go constant from
-// the caller, never a literal derived from client input, so no injection
-// surface). attempt is the elapsed engine time for THIS attempt; pass 0 when
-// the caller has no attempt clock (e.g. the reconciler's exhaustion path),
-// and the statement falls back to deriving wall time from jobs.started_at.
+// it (D-05). status is one of the three terminal statuses StatusDone,
+// StatusFailed or StatusCanceled (migration 0014, 52-REVIEW.md WR-01) —
+// still always a Go constant from the caller, never a literal derived from
+// client input, so the no-injection argument is unchanged. attempt is the
+// elapsed engine time for THIS attempt; pass 0 when the caller has no
+// attempt clock (e.g. the reconciler's exhaustion path, or Cancel, which
+// never has one), and the statement falls back to deriving wall time from
+// jobs.started_at.
 //
 // Deliberately not swallowed: the surrounding worker/reconciler code is full
 // of best-effort, fire-and-forget calls (metrics.RecordJobOutcome and
