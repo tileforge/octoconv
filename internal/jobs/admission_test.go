@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -554,6 +555,41 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 	}
 }
 
+// waitForAdvisoryLockWaiters polls conn every 10ms, up to timeout, for the
+// number of UNGRANTED advisory-lock waiters on the exact (k1, k2) two-key
+// pair, returning as soon as the count reaches min (or the last observed
+// count if the deadline elapses first). Scoped to locktype='advisory' AND
+// this exact (classid, objid) pair AND objsubid = 2 (the two-key advisory-
+// lock form pg_advisory_lock(int,int)/pg_advisory_xact_lock(int,int) both
+// use) -- NEVER a global advisory-lock count, because `go test ./...` runs
+// packages in parallel against the same database and another package's test
+// can hold unrelated advisory locks at the same time. classid/objid are
+// oid (unsigned 32-bit) columns; k1/k2 are int32, so callers must pass
+// their unsigned reinterpretation (int64(uint32(k))) -- verified live
+// against octoconv-db (a two-key pg_advisory_lock held in one psql session,
+// a second session blocked on it, pg_locks inspected: classid/objid match
+// the values passed, objsubid=2, granted=false for the blocked session).
+func waitForAdvisoryLockWaiters(t *testing.T, conn *pgxpool.Conn, k1, k2 int32, min int, timeout time.Duration) int {
+	t.Helper()
+	key1, key2 := int64(uint32(k1)), int64(uint32(k2))
+	deadline := time.Now().Add(timeout)
+	var last int
+	for {
+		if err := conn.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND classid::bigint = $1 AND objid::bigint = $2
+				AND objsubid = 2 AND NOT granted`,
+			key1, key2,
+		).Scan(&last); err != nil {
+			t.Fatalf("count advisory-lock waiters: %v", err)
+		}
+		if last >= min || time.Now().After(deadline) {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestConcurrentBurstDailyJobsCapAdmitsExactlyOne is the lock-coverage pin
 // for the daily terms (Codex PR #5 review, P2b). It exists because neither
 // of this package's two other concurrency-shaped tests can catch the daily
@@ -575,20 +611,53 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 // coverage of both) are the only mechanism standing between 12 concurrent
 // creates and 12 concurrent admissions.
 //
-// Failure mode this pins: if the daily subqueries ever leave the
-// advisory-locked transaction (or the pg_advisory_xact_lock call in
-// admitLocked is removed), all 12 goroutines read an in-flight job count of
-// 0 before any insert commits, all 12 are admitted, and this test fails.
-// This was empirically confirmed while writing this test: temporarily
-// commenting out admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` call
-// made this test FAIL (admitted count > 1); restoring the call made it PASS
-// again -- see 260803-obt-SUMMARY.md for the observed failure output.
+// Mechanism (corrected from the prior channel-release version, which was
+// PROBABILISTIC, not deterministic -- measured while diagnosing this test:
+// with admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` commented out,
+// the old close(start)-only version PASSED 1 of 5 runs, because a lock-free
+// race sometimes still happens to interleave into "1 admitted" purely by
+// scheduler luck; the 4 failing runs saw okCount 3, 7, 8, 11). This version
+// instead takes a SESSION-scoped pg_advisory_lock, on a dedicated controller
+// connection acquired from r.pool, on the exact same (k1, k2) key pair
+// admitLocked's own transaction-scoped lock uses (quotaLockKeys), and
+// structurally OBSERVES the 12 goroutines blocked behind it in pg_locks
+// BEFORE ever releasing them -- the property under test is witnessed
+// directly, not inferred from timing:
+//
+//  1. waitForAdvisoryLockWaiters asserts >= 2 ungranted waiters on this
+//     exact (client, image) key pair within a 5s deadline. This is the leg
+//     that fails when the lock is removed from admitLocked: with no lock to
+//     block on, admission never reaches this checkpoint as a "waiter" at
+//     all, so the count never reaches 2 and this call fatals. (Measured
+//     10-of-10 below -- see the acceptance run this plan requires.)
+//  2. While the controller still holds the lock, `jobs` for this client must
+//     read exactly 0 rows, and still 0 after a 200ms settle. This is the
+//     leg that fails when the lock is removed: with nothing serializing the
+//     12 goroutines, some of them race straight through to a committed
+//     INSERT while the controller connection is doing nothing to stop them.
+//  3. The pre-existing okCount==1 / rejectCount==11 / jobs-count==1
+//     assertions, kept verbatim after the controller releases the lock, are
+//     the leg that fails when evaluate is moved AHEAD of the lock in
+//     admitLocked: all 12 goroutines then carry a stale pre-lock verdict
+//     past the (now purely decorative) lock, and all 12 are admitted.
 func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
 	clientID := createTestClient(t, r)
 	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
 	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(1))
+
+	k1, k2 := quotaLockKeys(clientID, "image")
+
+	controller, err := r.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire controller connection: %v", err)
+	}
+	t.Cleanup(controller.Release)
+
+	if _, err := controller.Exec(ctx, `SELECT pg_advisory_lock($1, $2)`, k1, k2); err != nil {
+		t.Fatalf("controller acquire session-scoped advisory lock: %v", err)
+	}
 
 	const n = 12
 	var wg sync.WaitGroup
@@ -603,6 +672,29 @@ func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 		}(i)
 	}
 	close(start)
+
+	if waiters := waitForAdvisoryLockWaiters(t, controller, k1, k2, 2, 5*time.Second); waiters < 2 {
+		t.Fatalf("ungranted advisory-lock waiters on (client=%s, image) = %d after 5s, want >= 2 -- no admission ever reached admitLocked's advisory lock, i.e. the daily evaluation is not lock-covered", clientID, waiters)
+	}
+
+	var count int
+	if err := controller.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs while (client, image) advisory lock is held: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("job row count while the (client, image) advisory lock is held elsewhere = %d, want 0 -- no admission may COMPLETE while this lock is held", count)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := controller.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs after 200ms settle: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("job row count after a 200ms settle, lock still held = %d, want still 0", count)
+	}
+
+	if _, err := controller.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, k1, k2); err != nil {
+		t.Fatalf("controller release session-scoped advisory lock: %v", err)
+	}
 	wg.Wait()
 
 	var okCount, rejectCount int
@@ -623,7 +715,6 @@ func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
 		t.Fatalf("rejectCount = %d, want exactly 11", rejectCount)
 	}
 
-	var count int
 	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
 		t.Fatalf("count jobs: %v", err)
 	}
