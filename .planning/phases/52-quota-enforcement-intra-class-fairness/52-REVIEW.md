@@ -1,472 +1,485 @@
 ---
 phase: 52-quota-enforcement-intra-class-fairness
-reviewed: 2026-08-03T03:35:51Z
+reviewed: 2026-08-03T00:00:00Z
 depth: standard
-files_reviewed: 22
+scope: gap-closure (plans 52-06..52-09), diff base 77acc12b80c25c77ecd32b156c85b8fac0035ad4
+files_reviewed: 11
 files_reviewed_list:
-  - cmd/api/main.go
-  - cmd/manage-clients/main.go
-  - deploy/chart/octoconv/templates/configmap.yaml
-  - deploy/chart/octoconv/values.yaml
-  - docs/openapi.yaml
-  - internal/api/api.go
-  - internal/api/handlers.go
-  - internal/api/handlers_test.go
-  - internal/api/sse_test.go
-  - internal/clients/limits.go
-  - internal/clients/limits_test.go
-  - internal/db/migrations/0013_client_limits.sql
   - internal/jobs/admission.go
   - internal/jobs/admission_test.go
   - internal/jobs/repo.go
-  - internal/mcpserver/client.go
-  - internal/mcpserver/client_test.go
-  - internal/mcpserver/quota_admission_test.go
-  - internal/metrics/metrics.go
-  - internal/metrics/metrics_test.go
-  - internal/ratelimit/ratelimit.go
-  - internal/ratelimit/ratelimit_test.go
+  - internal/jobs/repo_test.go
+  - internal/jobs/usage.go
+  - internal/db/migrations/0014_client_usage_canceled.sql
+  - internal/convert/convert.go
+  - internal/convert/convert_test.go
+  - cmd/manage-clients/main.go
+  - cmd/manage-clients/main_test.go
+  - README.md
 findings:
-  critical: 1
-  warning: 12
-  info: 4
-  total: 17
+  critical: 0
+  warning: 9
+  info: 0
+  total: 9
 status: issues_found
 ---
 
-# Phase 52: Code Review Report
+# Phase 52 (gap closure, plans 52-06..52-09): Code Review Report
 
-**Reviewed:** 2026-08-03T03:35:51Z
-**Depth:** standard
-**Files Reviewed:** 22
+**Reviewed:** 2026-08-03
+**Depth:** standard (with live-database verification against `octoconv-db`)
+**Files Reviewed:** 11
 **Status:** issues_found
+**Diff base:** `77acc12b80c25c77ecd32b156c85b8fac0035ad4..HEAD`
+
+> This report covers the **gap-closure** work only. The waves 1–4 review is preserved in
+> git history at commit `cf25a12`.
 
 ## Summary
 
-The concurrency half of this phase is sound. `admitLocked` really does run inside
-`Repo.Create`'s transaction, the advisory-lock key derivation is deterministic and
-structurally incapable of colliding with the reconciler's one-bigint session lock
-(PostgreSQL keys the one-arg and two-arg advisory forms in separate lock tags), the
-observe/enforce split fires the observer exactly once on every rejected-or-would-be-
-rejected path, and the kill-switch defaults fail-closed (`quotaDisabled` zero value is
-"enforce per client"). `cmd/manage-clients` has no injection surface — every value is a
-bound `$N` parameter. Quota sentinels map to 429 with `code=quota_exceeded`, never 403,
-and never echo internal error text. `go build`, `go vet`, `gofmt -l` and the non-DB test
-suites are clean.
+The four claimed fixes were verified, not taken on trust. Each was traced through the code
+and, where possible, checked against the live database.
 
-The **daily** half is not sound. The daily byte/job caps read a rollup that is only
-written at terminal transitions, so admitted-but-unfinished work is invisible to them.
-`evaluate`'s own comment claims that overshoot "is bounded by the concurrency cap" — a
-claim that is only true when `max_concurrent` is set, and `max_concurrent` is explicitly
-independently nullable (`set-limit <id> image - 1000000000 100` is a documented, supported
-configuration). In that configuration the daily caps are effectively unenforceable
-(CR-01), and they can additionally be evaded by cancelling jobs (WR-01).
+**Verified sound (adversarially, not by inspection alone):**
 
-Secondary themes: the load-bearing post-lock re-check silently depends on READ COMMITTED
-and never asserts it (WR-02); the occupancy `COUNT` parameterizes the two statuses in a
-way that can defeat the partial index this very migration adds for it (WR-03); three
-comments in the diff make claims the adjacent code contradicts (WR-04, WR-05, WR-10); and
-the operator surface has two silent-failure modes (kill-switch spelling WR-07, unvalidated
-engine name WR-08).
+- **CR-01 (in-flight charged into the daily cap).** `evaluate` runs on `tx`, after
+  `pg_advisory_xact_lock` (`admission.go:325-333`), so the new in-flight term is genuinely
+  inside the locked transaction — the ROADMAP SC2(a) race is not reintroduced.
+- **No double count.** Every path that sets a terminal `jobs.status` was enumerated
+  (`grep "UPDATE jobs"` — exactly 7 sites, all in `repo.go`). `done`/`failed`/`canceled`
+  each write `recordUsage` exactly once inside `transition`'s apply closure, guarded by the
+  `allowedFrom` allow-list; `RequeueStale` (active→queued) and `MarkActive` (active→active)
+  never write it and never leave the in-flight set. Crossover is atomic because the status
+  UPDATE and the ledger UPSERT commit in one transaction, and the admission read is a
+  **single statement** (one snapshot), so no interleaving can observe a job in both terms or
+  in neither.
+- **No under-count / evasion path.** There is exactly one `INSERT INTO jobs` in the whole
+  codebase (`repo.go:152`), reached only through `Repo.Create` → `admitLocked`; no batch,
+  preset, or MCP path bypasses admission. `PurgeJobs` explicitly refuses to delete
+  `queued`/`active` rows, so in-flight cost cannot vanish through retention.
+  `Input.SizeBytes` is `multipart.FileHeader.Size`, computed by the parser and also used as
+  the upload bound — not a client-declarable number.
+- **Index applicability.** Confirmed live with `EXPLAIN`. On a synthetic 10 000-row
+  in-flight table both new subqueries drive off `jobs_client_engine_inflight_idx`
+  (`Bitmap Index Scan` / `Index Only Scan`), with `job_inputs_job_idx` on the inner side.
+  The comment's claim is correct. (On the *current* dev database both partial indexes hold
+  zero rows and the planner picks `jobs_inflight_idx` arbitrarily; that is an empty-table
+  artifact, not a defect.)
+- **Day-boundary semantics.** Traced for a fail-open case and found none: within one UTC day
+  a job's cost can never leave both terms, because `recordUsage` stamps
+  `day = (now() AT TIME ZONE 'utc')::date` at terminal time. The cross-midnight behaviour is
+  double-charging, i.e. conservative in the safe direction.
+- **Migration 0014.** Verified live: `\d client_usage_daily` shows exactly one check
+  constraint, `client_usage_daily_status_check CHECK (status = ANY (ARRAY['done','failed','canceled']))`.
+  No backfill is correct — historical cancels have no ledger rows and inventing them would
+  meter consumption an operator never intended.
+- **`IsKnownEngine` exactness.** No trimming, no `NormalizeFormat`, case-sensitive.
+  `TestValidateEngine` pins `"Image"`, `"IMAGE"`, `" image"`, `"image "`, `""` as rejected;
+  `TestAllEnginesCoversEveryEngineClass` additionally cross-checks `Default.Classes()`.
+- **Test strength.** `TestOvershootBoundedByConcurrencyCap` (which asserted only
+  `admitted <= K` and `totalBytes <= K*inputSize`) was replaced by a **strictly stronger**
+  test asserting exactly one admission, the exact sentinel, and `totalBytes == inputSize`.
+  `TestAdmissionHoldsUnderRepeatableReadDefault` really does induce the hostile condition
+  (`RuntimeParams`, then asserts `SHOW default_transaction_isolation == "repeatable read"`
+  before proceeding), and would genuinely fail without the pin: under REPEATABLE READ the
+  snapshot is taken at `loadQuotaState`, before the lock, and the 12 non-conflicting inserts
+  would all commit.
+- `go vet ./...` clean; `go test ./internal/jobs/ ./internal/convert/ ./cmd/manage-clients/`
+  green against the live database.
 
-## Critical Issues
-
-### CR-01: Daily byte/job quotas are effectively unenforceable when no concurrency cap is set
-
-**File:** `internal/jobs/admission.go:205-240` (comment at `:206-221`), `internal/jobs/usage.go:43` (write site), `internal/db/migrations/0013_client_limits.sql:31-33`
-
-**Issue:**
-`evaluate` compares the request against `client_usage_daily`, which `recordUsage` writes
-**only** at the terminal transition (`MarkDone`/`MarkFailed`). Every job that has been
-admitted but has not yet finished contributes 0 bytes and 0 job-count to the check. The
-in-code justification for accepting this states:
-
-> This overshoot is accepted, and it is bounded by the concurrency cap: at most K
-> in-flight jobs for this client+engine (K = max_concurrent) …
-
-That bound does not exist when `max_concurrent` is NULL. The three limit columns are
-independently nullable by design (`0013_client_limits.sql:20-33`, D-02) and the CLI
-exposes exactly that shape:
-
-```
-manage-clients set-limit <id> image - 1000000000 100    # daily caps only, no K
-```
-
-With that configuration K is unbounded, so the "bound" degenerates to "however many jobs
-the client can submit before any of them completes". This is not merely a concurrency
-race — it is a sequential property too: a client with `max_daily_jobs = 100` can submit
-1000 jobs back-to-back and every one of them reads `jobsUsed = 0`, because none of the
-previous 999 has reached a terminal state yet. The advisory lock does not help: it
-serializes the reads, but each serialized read still sees the same unchanged rollup.
-
-Net effect: a supported, operator-reachable quota configuration silently enforces
-essentially nothing, while `show-limits` reports the limit as in force and the 429
-contract advertises that it is enforced. The unit test that "pins" this
-(`TestOvershootBoundedByConcurrencyCap`, `admission_test.go:456`) only exercises the case
-where `max_concurrent` **is** set, so it cannot catch this.
-
-**Fix:** count in-flight work into the daily evaluation — it is safe to do so under the
-advisory lock that is already held, and it needs no new table:
-
-```go
-// admission.go, inside evaluate, replace the daily read with one that also
-// charges admitted-but-unfinished work for today.
-if err := q.QueryRow(ctx, `
-    SELECT
-      COALESCE((SELECT sum(bytes_in)  FROM client_usage_daily
-                WHERE client_id = $1 AND engine = $2
-                  AND day = (now() AT TIME ZONE 'utc')::date), 0)
-    + COALESCE((SELECT sum(ji.size_bytes) FROM jobs j
-                JOIN job_inputs ji ON ji.job_id = j.id
-                WHERE j.client_id = $1 AND j.engine = $2
-                  AND j.status IN ('queued','active')
-                  AND j.created_at >= (now() AT TIME ZONE 'utc')::date), 0),
-      COALESCE((SELECT sum(job_count) FROM client_usage_daily
-                WHERE client_id = $1 AND engine = $2
-                  AND day = (now() AT TIME ZONE 'utc')::date), 0)
-    + COALESCE((SELECT count(*) FROM jobs j
-                WHERE j.client_id = $1 AND j.engine = $2
-                  AND j.status IN ('queued','active')
-                  AND j.created_at >= (now() AT TIME ZONE 'utc')::date), 0)`,
-    clientID, engine,
-).Scan(&bytesUsed, &jobsUsed); err != nil { ... }
-```
-
-(Note this also removes the double-count hazard only if the in-flight predicate and the
-rollup predicate stay disjoint — `queued`/`active` are never in `client_usage_daily`, so
-they are.) If that is rejected, the alternative minimum is to make the unbounded case
-impossible instead of undocumented: reject `SetLimit` when a daily limit is set with
-`MaxConcurrent == nil` (`internal/clients/limits.go:35`), and correct the comment at
-`admission.go:206-221` to state the bound only holds under a concurrency cap.
+**What is wrong.** No blocker-grade correctness or security defect was found in the changed
+lines. Nine warnings follow, in descending order of consequence. The most important are
+WR-01 (a new, unbounded-in-time availability failure mode that the README understates),
+WR-02 (a completeness argument in the code that the status enum does not actually
+guarantee), and WR-03 (a migration that can silently no-op and take `DELETE /v1/jobs/{id}`
+down with it, with zero test coverage of the resulting schema).
 
 ## Warnings
 
-### WR-01: Daily quotas can be reset to zero cost by cancelling jobs
+### WR-01: The in-flight daily charge is unbounded in time — a stranded job can lock a client out of an engine for days, with no operator remedy
 
-**File:** `internal/jobs/repo.go:226-243`, `internal/jobs/admission.go:222-239`
+**File:** `internal/jobs/admission.go:241-246`, `internal/jobs/admission.go:258-271`
+**Severity:** WARNING (highest priority of the nine)
 
-**Issue:** `Cancel` deliberately does not call `recordUsage`, so a canceled job contributes
-nothing to `client_usage_daily` — even though it already consumed the upload, an S3 object,
-a queue slot, and (if a worker picked it up before the cancel landed) real engine CPU. That
-was a defensible accounting decision in Phase 51 when the rollup was reporting-only; Phase
-52 makes the same rollup the enforcement input, which turns it into a quota-evasion path:
-`create → cancel → create → cancel …` consumes bandwidth, storage and worker time
-indefinitely against a `max_daily_bytes`/`max_daily_jobs` cap that never advances. Clients
-are internal and trusted, which is why this is a WARNING and not a BLOCKER, but the daily
-cap does not mean what the 429 contract says it means.
+**Issue.** The in-flight term deliberately carries **no `created_at` predicate**, so a job
+sitting in `queued`/`active` is charged against `max_daily_jobs`/`max_daily_bytes` on every
+UTC day it remains there, forever. Before plan 52-06 an unfinished job consumed only a
+concurrency slot — an *opt-in* limit. Now it consumes daily budget for a client that set no
+concurrency cap at all, which is precisely the configuration the CR-01 verifier used
+(`manage-clients set-limit <id> image - - 2`).
 
-**Fix:** either roll canceled jobs into `client_usage_daily` under a `'canceled'` status
-row (the table is already keyed by status, `0011_client_usage_daily.sql`) and let
-`evaluate` sum it like the others, or state explicitly in `admission.go` that a canceled
-job is free and that daily caps therefore bound only completed work.
+Reachability is not hypothetical: `handlers.go:766` documents that "the row stays in
+`queued` on any enqueue failure; a reconciler will recover it". If N jobs strand and
+`max_daily_jobs = N`, the client is admitted zero further jobs on that engine — not for
+today, but for every subsequent day — until something drives those jobs terminal. The only
+in-band escape is `DELETE /v1/jobs/{id}`, which **only the owning client can call**
+(`handlers.go:926-930` ownership guard); `cmd/manage-clients` has no cancel/unstick command,
+so an operator's only remedy is raw SQL.
 
-### WR-02: The load-bearing post-lock re-check silently depends on READ COMMITTED
+This self-heals *if and only if* `cmd/webhook-worker` is deployed and healthy — it is the
+sole host of the reconciler sweeper (`.env.example:186-192`), lock-gated to one instance
+fleet-wide. Quota **availability** now hard-depends on a separate optional binary, and
+nothing in the code, README, or `.env.example` records that new coupling.
 
-**File:** `internal/jobs/repo.go:130`, `internal/jobs/admission.go:266-278`
+The README's disclosure ("charged against each day it is in flight and again against the day
+it terminates, which is deliberately conservative") describes the arithmetic but not the
+failure mode: it reads as a one-day rounding artifact, not as "an engine can become
+unusable for a client until an out-of-band actor intervenes".
 
-**Issue:** `admitLocked` reads state, takes `pg_advisory_xact_lock`, then re-runs the
-occupancy count *on the same transaction*. That re-count only observes commits made by
-transactions that finished while this one waited on the lock **because the transaction is
-READ COMMITTED and therefore takes a fresh snapshot per statement**. `pgx.BeginFunc`
-(repo.go:130) inherits the server/DSN default isolation level; nothing in this repo pins
-it. If `default_transaction_isolation` is ever set to `repeatable read` (a one-line DSN or
-`postgresql.conf` change, e.g. `options=-c default_transaction_isolation=repeatable%20read`),
-the post-lock count is served from the snapshot taken by `loadQuotaState` *before* the
-lock, the cap is silently over-admitted, and nothing errors — no serialization failure,
-because the concurrent inserts do not conflict. The single most important property of this
-phase would fail silently on a config change made by someone who never reads this file.
-
-**Fix:** pin it explicitly rather than inherit it:
+**Fix.** Pick one:
 
 ```go
-err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted},
-    func(tx pgx.Tx) error { ... })
+// Option A -- bound the in-flight term by the reconciler's own recovery horizon, so a
+// job that outlives every recovery attempt stops charging a cap it can no longer leave.
++ COALESCE((SELECT count(*) FROM jobs j
+    WHERE j.client_id = $1 AND j.engine = $2
+      AND j.status IN ('queued', 'active')
+      AND j.created_at >= $3), 0)   -- $3: timestamptz cutoff bound from Go
 ```
 
-and add one line to `admitLocked`'s doc comment stating that the re-check requires a
-per-statement snapshot.
-
-### WR-03: The occupancy COUNT parameterizes the statuses, defeating the partial index the migration adds for it
-
-**File:** `internal/jobs/admission.go:191-195`, `internal/db/migrations/0013_client_limits.sql:69-78`
-
-**Issue:** The migration creates `jobs_client_engine_inflight_idx ON jobs (client_id, engine)
-WHERE status IN ('queued','active')` and explains that without it the query would "hold the
-lock for the duration of a scan of all in-flight rows across every client and engine". The
-query it serves binds the statuses as parameters:
-
-```sql
-SELECT count(*) FROM jobs WHERE client_id = $1 AND engine = $2 AND status IN ($3, $4)
-```
-
-PostgreSQL can only use a partial index when it can prove the query predicate implies the
-index predicate. That proof succeeds in a *custom* plan (parameters folded to constants) but
-fails in a *generic* plan, and pgx v5's default `QueryExecModeCacheStatement` prepares and
-caches this statement, so after ~5 executions the planner may switch to the generic plan
-permanently and fall back to `jobs_client_created_idx` (or a seq scan) — scanning the
-client's entire job history under the advisory lock, which is exactly the outcome the
-migration comment says must not happen. `StatusQueued`/`StatusActive` are Go constants, not
-client input, so there is no injection reason to bind them.
-
-**Fix:**
-
-```go
-if err := q.QueryRow(ctx, `
-    SELECT count(*) FROM jobs
-    WHERE client_id = $1 AND engine = $2 AND status IN ('queued', 'active')`,
-    clientID, engine,
-).Scan(&count); err != nil { ... }
-```
-
-with a comment tying the literals to the index predicate in `0013_client_limits.sql:77-78`
-(the migration already says "If the D-06 predicate ever changes, this index must change
-with it" — the literals make that couple visible).
-
-### WR-04: `admitLocked`'s comment contradicts what the code actually does with the pre-lock read
-
-**File:** `internal/jobs/admission.go:271-275`
-
-**Issue:** The comment states the pre-lock state read "is only used to decide whether locking
-was worth it, never as the basis for the actual verdict." That is false: `st` is passed
-straight into `evaluate` (`:275`) and supplies **the limit values themselves**, and `st.enforcementMode`
-(`:287`) decides enforce-vs-observe. Only the counts are re-read post-lock. The consequence
-is benign today (an operator changing a limit concurrently races), but the comment is
-actively misleading in the one function whose concurrency reasoning a future maintainer will
-trust verbatim.
-
-**Fix:** reword to what is true — "the counts are re-read post-lock; the limits and
-enforcement mode are the pre-lock values, which is acceptable because an operator limit
-change racing an in-flight admission has no correctness consequence" — or re-run
-`loadQuotaState` on `tx` after the lock if the stronger property is wanted.
-
-### WR-05: Migration's "blast radius: additive only … jobs untouched" claim is false, and the index build blocks job creation at startup
-
-**File:** `internal/db/migrations/0013_client_limits.sql:14-16` vs `:65-67` and `:77-78`
-
-**Issue:** The header states "No existing table, column, constraint or row is modified; jobs,
-job_events and client_usage_daily are untouched by this migration." Eight and sixty lines
-later the same file does `ALTER TABLE clients ADD COLUMN …` (brief ACCESS EXCLUSIVE) and
-`CREATE INDEX … ON jobs` (SHARE lock for the whole build, blocking every `INSERT INTO jobs`).
-Because `db.Migrate` runs each migration inside one transaction (`internal/db/db.go:72-86`),
-`CREATE INDEX CONCURRENTLY` is not available, and because every API replica runs `Migrate`
-at startup (`cmd/api/main.go:54`), a rollout against a large `jobs` table stalls all job
-creation for the duration of the index build. Related, pre-existing but newly exercised: two
-replicas starting simultaneously both see the migration as unapplied and both attempt it;
-the loser fails with `relation already exists` and `log.Fatalf`s into a crash-loop.
-
-**Fix:** correct the blast-radius paragraph to name both DDL statements and their lock
-levels; add an operator note (README/runbook) that this migration must be applied ahead of
-the rollout on a non-trivial `jobs` table, or split the index into a separately-applied
-`CREATE INDEX CONCURRENTLY` step outside the transactional runner.
-
-### WR-06: The non-quota `PreAdmit` failure is logged without the error
-
-**File:** `internal/api/handlers.go:436-443`
-
-**Issue:**
-
-```go
-log.Printf("quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s", client.ID, engine)
-```
-
-`err` is in scope and is discarded. The whole point of this branch is that the failure is
-tolerated silently at the request level, which makes the log line the *only* signal that the
-pre-upload gate is broken (DB down, statement error, context deadline). With no error text an
-operator sees an unattributable line and cannot distinguish "Postgres unreachable" from "the
-query is malformed". This also contradicts the project convention that errors are wrapped and
-surfaced for diagnosability (CLAUDE.md, Error Handling).
-
-**Fix:**
-
-```go
-log.Printf("quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s err=%v", client.ID, engine, err)
-```
-
-### WR-07: The kill-switch silently ignores every spelling but exact `true`
-
-**File:** `cmd/api/main.go:185-188`, `deploy/chart/octoconv/values.yaml:38-40`
-
-**Issue:** `firstField(os.Getenv("QUOTA_ENFORCEMENT_DISABLED")) == "true"` accepts only the
-exact lowercase literal. `True`, `TRUE`, `1`, `yes`, `on` all leave enforcement **on** with no
-error and no log line — the warning at `:187` only prints when the switch actually engaged, so
-absence of the warning is the only feedback, and nobody reads for an absent line. This is the
-emergency lever an operator reaches for during an incident; failing closed is correct, failing
-closed *silently on a plausible spelling* is not.
-
-**Fix:** normalize and reject unknown values loudly:
-
-```go
-switch v := strings.ToLower(strings.TrimSpace(firstField(os.Getenv("QUOTA_ENFORCEMENT_DISABLED")))); v {
-case "", "false":
-    quotaDisabled = false
-case "true":
-    quotaDisabled = true
-default:
-    log.Fatalf("QUOTA_ENFORCEMENT_DISABLED=%q: must be \"true\" or \"false\"", v)
-}
-```
-
-### WR-08: `set-limit` accepts any engine string, producing a limit that is silently never enforced
-
-**File:** `cmd/manage-clients/main.go:120`, `internal/clients/limits.go:35-49`
-
-**Issue:** `engine := os.Args[3]` is written straight through to `client_limits.engine` with no
-validation. `manage-clients set-limit <id> images 5 - -` (note the typo) succeeds, prints "set
-limit for client … engine images", and `show-limits` echoes it back — but `loadQuotaState`'s
-`LEFT JOIN … ON l.engine = $2` never matches `image`, so the client is unlimited while the
-operator believes a cap is in force. The migration deliberately (and correctly) refuses a DB
-CHECK allow-list because a stale allow-list would break `INSERT INTO jobs`; that reasoning does
-not apply to the operator CLI, which is the right place to catch a typo.
-
-**Fix:** validate in the CLI against the registry that already knows the engine classes, e.g.
-
-```go
-if !convert.Default.KnownEngine(engine) { // or: slices.Contains(convert.AllEngines(), engine)
-    log.Fatalf("unknown engine %q (known: %v)", engine, convert.AllEngines())
-}
-```
-
-At minimum, print a loud warning instead of a success line, and apply the same check in
-`clear-limit`.
-
-### WR-09: `internal/reconciler`'s advisory-lock comment is now false
-
-**File:** `internal/reconciler/reconciler.go:27-33` (made stale by `internal/jobs/admission.go:106-130`)
-
-**Issue:** The reconciler still documents "there are none today (verified: zero other
-`pg_try_advisory_lock` callers in this codebase). If a second advisory-lock use is ever added,
-it MUST use a different key." This phase adds a second advisory-lock user. The two are in fact
-safe (one-bigint vs two-int lock tags are distinct key spaces), but the invariant a future
-reader will act on is now stated in two places with only one of them correct — and the
-reconciler's version tells them to pick a different *key*, which is the wrong mental model
-(the *form* is what separates them).
-
-**Fix:** update the reconciler comment to point at `quotaLockKeys` and record the one-arg vs
-two-arg separation, mirroring the (correct) explanation in `admission.go:116-123`.
-
-### WR-10: The MCP client echoes the upstream-supplied `code` verbatim while claiming it cannot
-
-**File:** `internal/mcpserver/client.go:443-471`
-
-**Issue:** The doc comment asserts: "A malformed or missing Retry-After is simply omitted --
-never injected verbatim -- so a hostile or buggy upstream can't smuggle arbitrary text into the
-agent-visible error." `Retry-After` is indeed validated (`parseRetryAfterSeconds`), but `code`
-is taken straight from the response body and interpolated unvalidated:
-
-```go
-msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, code, retryAfter)
-```
-
-`code` is bounded only by `maxErrorBodyBytes` (4 KiB), and the resulting string is returned to
-an LLM agent as tool-error text — a prompt-injection channel the comment explicitly claims is
-closed. (The `error` field was already passed through verbatim before this change, so this is
-not a new *class* of exposure; the stated guarantee is nonetheless wrong, and `code` is a
-closed two-value enum in `docs/openapi.yaml:87-88`, so there is no reason to pass it through
-unconstrained.)
-
-**Fix:**
-
-```go
-switch code {
-case "quota_exceeded", "rate_limited": // the closed set docs/openapi.yaml defines
-default:
-    code = "" // unknown code: fall back to the message-only branch
-}
-```
-
-and correct the comment to say what is actually guaranteed.
-
-### WR-11: `TestQuotaAdmission` subtests are order-coupled through shared mutable state
-
-**File:** `internal/mcpserver/quota_admission_test.go:55-60, 103-143, 169-190`
-
-**Issue:** `sharedClientID`/`sharedRawKey` are assigned in `RESTRejectsOverCap` and consumed by
-`MCPToolRejectsOverSameCap` and `FairnessGuaranteeIsPerClientNotGlobal`. Running
-`go test -run 'TestQuotaAdmission/MCPToolRejectsOverSameCap'` sends `Authorization: ApiKey `
-(empty key) and fails with a 401-shaped error that looks nothing like the real defect;
-`FairnessGuaranteeIsPerClientNotGlobal` silently degenerates into "a fresh client can create a
-job" because no other client is holding a slot. A load-bearing proof test should not be
-un-runnable in isolation.
-
-**Fix:** provision the shared client in the harness (`newQuotaAdmissionHarness`) or in a
-`t.Run`-independent helper invoked by each subtest that needs it, and have the fairness subtest
-assert its precondition (`sharedClientID != uuid.Nil` and a queued job exists for it) rather
-than assume it.
-
-### WR-12: The advisory lock is acquired with no `lock_timeout`, so one stuck admission pins pool connections
-
-**File:** `internal/jobs/admission.go:267`, `cmd/api/main.go:201-205`
-
-**Issue:** `pg_advisory_xact_lock` blocks indefinitely, and the lock is held for the remainder
-of `Create`'s transaction (three INSERTs). Every concurrent admission for the same
-(client, engine) queues behind it, each holding a pgxpool connection and an API goroutine.
-`http.Server` here sets only `ReadHeaderTimeout` — there is no `WriteTimeout` and no
-per-request context deadline — so a single pathologically slow or hung transaction for one hot
-client can drain the shared pool and take down admissions for *all* clients. That is the exact
-opposite of the intra-class fairness this phase exists to provide.
-
-**Fix:** bound the wait, and treat the timeout as a retryable rejection:
-
-```go
-if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '2s'`); err != nil { ... }
-if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, k1, k2); err != nil {
-    return fmt.Errorf("quota admission: acquire advisory lock: %w", err)
-}
-```
-
-(and/or give `handleCreateJob` a `context.WithTimeout` around the `repo.Create` call).
-
-## Info
-
-### IN-01: `evaluate` returns `(error, error)`
-
-**File:** `internal/jobs/admission.go:188`
-
-**Issue:** `func evaluate(...) (error, error)` — first result is the quota verdict, second is a
-real failure. It is documented, but the signature is trivially mis-consumed (`if err := evaluate(...)`
-compiles and inverts the meaning), and `go vet` will not catch it.
-
-**Fix:** introduce a tiny named type (`type verdict = error` is not enough; a `struct{ Reason string; Err error }`
-or a distinct `quotaVerdict` type) or return `(verdict error, err error)` with named results so
-call sites read unambiguously.
-
-### IN-02: `metrics.QuotaWouldRejectValue` is a test-only export with production side effects
-
-**File:** `internal/metrics/metrics.go:244-262`
-
-**Issue:** Exported from a production package solely for `internal/mcpserver`'s test. It also has
-side effects: `GetMetricWithLabelValues` materializes the series if absent, and `clientLabel`
-consumes a slot from the bounded first-seen allocator — so merely *reading* a counter can
-displace a real client from per-client resolution.
-
-**Fix:** move the read seam behind an `export_test.go`-style accessor, or have it look the series
-up without allocating (`clientLabel` bypass + `prometheus.Gatherer` scan).
-
-### IN-03: `SetQuotaObserver`/`SetQuotaEnforcementDisabled` mutate fields read by request goroutines with no synchronization
-
-**File:** `internal/jobs/repo.go:56-62`, `internal/jobs/admission.go:93-104`
-
-**Issue:** Both setters write plain struct fields that `Create` reads from concurrent HTTP
-goroutines. Correct today only because both are startup-only by convention (and tests are
-sequential). Any future runtime reconfiguration — a `/admin` toggle, a config-reload signal — is
-an immediate data race with no compile-time or vet-time warning.
-
-**Fix:** store them in `atomic.Bool` / `atomic.Pointer[func...]`, or add a `// NOT SAFE after the
-repo begins serving` note next to the fields themselves (not only on the setters).
-
-### IN-04: The `observe`/`enforce` literals are duplicated across three packages
-
-**File:** `internal/jobs/admission.go:40-43`, `internal/clients/limits.go:117`, `internal/mcpserver/quota_admission_test.go:322-325`
-
-**Issue:** `internal/jobs` keeps them unexported, so `internal/clients.SetEnforcementMode` hard-codes
-`"observe"`/`"enforce"` (including in its error string) and the cross-entry-point test re-declares
-them again. Three copies of a CHECK-constrained enum drift silently if a third mode is ever added.
-
-**Fix:** export `jobs.EnforcementModeObserve` / `jobs.EnforcementModeEnforce` (or move them to a
-tiny shared package) and have `clients.SetEnforcementMode` validate against that single set.
+Note the trade-off the current comment correctly identifies: a `created_at` predicate is
+fine as long as it compares `timestamptz` to `timestamptz` — bind the cutoff from Go exactly
+as `FindStale`/`FindWebhookGaps` already do — so no session-`TimeZone` dependency is
+introduced.
+
+Option B — keep the semantics, but (i) state in the README that a stranded job charges the
+cap indefinitely and that recovery depends on `cmd/webhook-worker` running, and (ii) add an
+operator escape hatch (`manage-clients cancel-job <job-id>`) that routes through
+`Repo.Cancel`, never an ad-hoc UPDATE (the guarded-transition anti-pattern in CLAUDE.md).
 
 ---
 
-_Reviewed: 2026-08-03T03:35:51Z_
+### WR-02: The no-double-count completeness argument silently assumes `jobs.status` has exactly five values — `awaiting_upload` breaks it
+
+**File:** `internal/jobs/admission.go:213-220`, `internal/jobs/admission.go:242`, `internal/jobs/admission.go:246`
+**Severity:** WARNING
+
+**Issue.** The load-bearing comment states: *"a job has exactly one status at any instant;
+`client_usage_daily` rows exist only for the terminal statuses `recordUsage` writes;
+queued/active jobs are never in the rollup."* That is a **partition** argument, and it is
+sound only if `{queued, active} ∪ {done, failed, canceled}` covers the whole status domain.
+It does not:
+
+```sql
+-- internal/db/migrations/0001_init.sql:49-50
+status text NOT NULL DEFAULT 'queued'
+  CHECK (status IN ('awaiting_upload', 'queued', 'active', 'done', 'failed', 'canceled')),
+```
+
+`jobs.StatusAwaitingUpload` (`internal/jobs/jobs.go:14`) is in the enum, is accepted by the
+DB CHECK, and is already whitelisted as a filterable value in
+`internal/api/jobs_list_handler.go:16` — but is in neither the in-flight predicate, nor the
+`jobs_client_engine_inflight_idx` partial predicate, nor any `recordUsage` call site. Today
+nothing writes it (verified: two references in the whole tree, both declarations), so this
+is latent rather than live. The moment a presigned/two-phase upload flow lands, those jobs
+become invisible to quota accounting **and** the partial index must change in lockstep in
+three places, with nothing failing to signal it.
+
+The same silence applies to the index: `0013_client_limits.sql:76` says *"If the D-06
+predicate ever changes, this index must change with it"*, but the new query in
+`admission.go` is now a **second** consumer of that predicate and is not named there.
+
+**Fix.** Either delete the now-dead `StatusAwaitingUpload` constant and the DB CHECK arm, or
+make the assumption explicit and enforced:
+
+```go
+// admission.go, next to the in-flight subqueries:
+// The in-flight predicate must stay the exact complement of the statuses recordUsage
+// writes. jobs.status domain (0001_init.sql:50) is
+// {awaiting_upload, queued, active, done, failed, canceled}; awaiting_upload is
+// currently unreachable (no writer). If it ever becomes reachable it MUST be added
+// here AND to jobs_client_engine_inflight_idx, or such jobs consume quota invisibly.
+```
+
+and add a guard in `internal/db/migrate_test.go` asserting the `jobs` status CHECK arms equal
+`inFlightStatuses ∪ terminalStatuses`, so the two cannot drift silently.
+
+---
+
+### WR-03: Migration 0014 uses `DROP CONSTRAINT IF EXISTS` where every prior constraint-swap migration in this repo uses a bare `DROP CONSTRAINT` — and no test asserts the result
+
+**File:** `internal/db/migrations/0014_client_usage_canceled.sql:43-48`
+**Severity:** WARNING
+
+**Issue.** Every other constraint swap in this codebase drops **loudly**:
+
+```sql
+-- 0005_html_engine.sql:10, 0006:9, 0009:13, 0010:13 -- all identical shape
+ALTER TABLE jobs DROP CONSTRAINT jobs_engine_check;
+```
+
+0014 breaks that convention:
+
+```sql
+ALTER TABLE client_usage_daily DROP CONSTRAINT IF EXISTS client_usage_daily_status_check;
+ALTER TABLE client_usage_daily ADD  CONSTRAINT client_usage_daily_status_check CHECK (...);
+```
+
+If the pre-existing constraint carries any other name on some target database (a restore, a
+schema created outside this migration chain, a manual repair), the `DROP` silently does
+nothing, the `ADD` succeeds under the new name, **both constraints coexist**, and the older
+`CHECK (status IN ('done','failed'))` still rejects `'canceled'`. `db.Migrate` reports
+success and records the version. From that point every `DELETE /v1/jobs/{id}` returns
+`500 "failed to cancel job"` (`handlers.go:939-955`) for the life of that deployment, with
+the job left in `queued`/`active` and nothing pointing at the migration.
+
+Compounding it: `internal/db/migrate_test.go` asserts the `client_usage_daily` primary key,
+its columns, its `day` index, and its FK — but **nothing** about the status CHECK, and 52-08
+did not add such an assertion. The only coverage of 0014's effect is indirect, via
+`DATABASE_URL`-gated integration tests.
+
+The migration's own justification (*"the actual name was confirmed live via `\d`"*) argues
+**for** the bare `DROP`, not against it: if the name was confirmed, `IF EXISTS` buys nothing
+and costs the loud failure.
+
+**Fix.**
+
+```sql
+-- match 0005/0006/0009/0010: fail loudly if the schema is not what we verified
+ALTER TABLE client_usage_daily DROP CONSTRAINT client_usage_daily_status_check;
+ALTER TABLE client_usage_daily
+    ADD CONSTRAINT client_usage_daily_status_check
+        CHECK (status IN ('done', 'failed', 'canceled'));
+```
+
+and add to `internal/db/migrate_test.go`:
+
+```go
+// 0014: exactly ONE status CHECK may exist, and it must admit 'canceled'.
+var n int
+if err := pool.QueryRow(ctx, `
+    SELECT count(*) FROM pg_constraint
+    WHERE conrelid = 'client_usage_daily'::regclass AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%status%'`).Scan(&n); err != nil {
+    t.Fatalf("count client_usage_daily status checks: %v", err)
+}
+if n != 1 {
+    t.Fatalf("client_usage_daily status CHECK count = %d, want exactly 1", n)
+}
+```
+
+---
+
+### WR-04: Accounting can now break cancellation — the exact coupling migrations 0011 and 0013 both explicitly forbade
+
+**File:** `internal/jobs/repo.go:261-269`, `internal/db/migrations/0014_client_usage_canceled.sql:46-48`
+**Severity:** WARNING
+
+**Issue.** Two migrations in this codebase state the principle verbatim:
+
+> *"Accounting must never be able to break conversion."* — `0011_client_usage_daily.sql:59`,
+> restated and sharpened in `0013_client_limits.sql:49-50`.
+
+Both used it to justify **not** putting an `engine` allow-list CHECK on the accounting
+tables, because a stale allow-list "would abort that transaction and leave every job of the
+new engine unable to reach `done`".
+
+Plan 52-06 wires `recordUsage` into `Repo.Cancel`, making a user-facing endpoint depend on a
+successful accounting write — while `client_usage_daily.status` **retains** exactly the kind
+of closed-value CHECK the principle warns about. The argument that made an engine allow-list
+unsafe applies identically here: the `status` value is a Go constant (`StatusCanceled`), not
+client input, so the CHECK buys no injection protection the write site does not already
+have, but it can abort the transition. A future sixth terminal status, or a partially
+applied 0014 (WR-03), turns cancel into a hard 500 with the job left uncancelled.
+
+This is not merely an aesthetic asymmetry: `MarkDone`/`MarkFailed` carried the same coupling
+before, but cancel is the *only* lever a client has to release quota it is being charged for
+(see WR-01), so breaking cancel is strictly worse than breaking `done`.
+
+**Fix.** Drop the CHECK, matching the reasoning 0011/0013 already committed to for `engine`:
+
+```sql
+ALTER TABLE client_usage_daily DROP CONSTRAINT client_usage_daily_status_check;
+-- No replacement. status is always a jobs.Status* Go constant at the single write site
+-- (internal/jobs/usage.go), never client input -- the same argument this table already
+-- accepts for `engine`. A CHECK here can only abort a terminal transition it cannot
+-- protect anything from.
+```
+
+If the CHECK is kept, add a note at `usage.go`'s write site stating that any new terminal
+status requires a migration *before* the Go constant is used, plus the schema assertion from
+WR-03 so drift is caught in CI rather than in production.
+
+---
+
+### WR-05: The WR-02 isolation pin was applied only inside `internal/jobs` — the same unstated dependency remains in three other repositories
+
+**File:** `internal/jobs/repo.go:137`, `internal/jobs/repo.go:652` (fixed); `internal/presets/repo.go:148`, `internal/presets/repo.go:194`, `internal/clients/repo.go:65`, `internal/clients/repo.go:106` (not fixed)
+**Severity:** WARNING
+
+**Issue.** The fix's own reasoning — *"correctness silently depended on READ COMMITTED"* —
+is not specific to `internal/jobs`. `internal/presets/repo.go:148` runs the identical
+shape: `SELECT ... FOR UPDATE`, compute `newVersion = currentVersion + 1`, `UPDATE`,
+`INSERT`, all on a bare `pgx.BeginFunc` with no `TxOptions`, i.e. still inheriting
+`default_transaction_isolation`. Under the very configuration
+`TestAdmissionHoldsUnderRepeatableReadDefault` now deliberately induces, those transactions
+abort with a `40001` serialization failure that no caller retries — a different failure mode
+than the jobs one (loud rather than silent), but still an unhandled dependency the phase
+demonstrated a deployment can have.
+
+The resulting state is worse than either extreme: half the codebase now pins isolation
+explicitly and the other half does not, with no comment recording which half is which or
+why. A reader of `presets/repo.go` will reasonably infer the omission is deliberate.
+
+**Fix.** Pin the four remaining read-modify-write transactions the same way, or add a
+one-line comment at each stating that a `40001` there is acceptable and why:
+
+```go
+return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+```
+
+---
+
+### WR-06: `TestAdmissionHoldsUnderRepeatableReadDefault` never migrates its own pool and cannot be run in isolation
+
+**File:** `internal/jobs/admission_test.go:728-814`
+**Severity:** WARNING
+
+**Issue.** The test builds its own `*pgxpool.Pool` (line 749) and calls `NewRepo(pool)`
+directly (line 769), bypassing `newTestRepo`, which is the only place `db.Migrate` runs
+(`repo_test.go:23`). It therefore works only because an earlier test in the package already
+migrated the shared database. Running
+
+```
+go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault
+```
+
+against a fresh database fails with a raw `relation "clients" does not exist` rather than
+skipping or migrating — the opposite of the careful skip discipline the rest of the test
+takes (it explicitly prefers "an honest skip" to "a false failure" at line 766).
+
+Secondary: lines 774-813 duplicate ~40 lines of `TestConcurrentBurstAdmitsExactlyK`
+(lines 200-239) verbatim. A change to the burst assertions must now be made twice, and a
+future reader cannot tell which copy is authoritative.
+
+**Fix.**
+
+```go
+if err := db.Migrate(ctx, pool); err != nil {
+    t.Fatalf("db.Migrate (repeatable-read pool): %v", err)
+}
+```
+
+and extract the burst body into a shared helper:
+
+```go
+func assertConcurrentBurstAdmitsExactly(t *testing.T, r *Repo, clientID uuid.UUID, n, want int, keyPrefix string)
+```
+
+---
+
+### WR-07: `TestCancelRecordsUsageExactlyOnce` asserts a weaker property than its name claims, and pins an invariant the code does not guarantee
+
+**File:** `internal/jobs/repo_test.go:250-253`, `internal/jobs/repo_test.go:204`, `internal/jobs/repo_test.go:246`
+**Severity:** WARNING
+
+**Issue, part 1 — weak assertion.** The exactly-once half rests on:
+
+```go
+if err := r.Cancel(ctx, id); err == nil {
+    t.Fatalf("expected illegal-transition error on a repeated Cancel, got nil")
+}
+```
+
+Any error keeps this green. If a regression made `Cancel` fail for an unrelated reason —
+notably a broken `recordUsage` write, which is the very thing this test exists to cover
+(WR-03/WR-04) — the assertion still passes, and the following `job_count == 1` check passes
+*because* the write failed. The test is therefore satisfied by the exact defect it is meant
+to catch.
+
+**Issue, part 2 — false invariant.** Lines 204 and 246 assert and document
+*"bytes_out stays 0 (a canceled job has no outputs)"*. The code does not guarantee this:
+`Repo.AddOutput` (`repo.go:409`) commits on its own pool connection **before** `MarkDone`
+(`worker.go:1941`), and `Cancel`'s allow-list still contains `active`. A cancel landing in
+that window charges a real, non-zero `bytes_out` on a `canceled` row via `usage.go:60`. The
+test passes only because its fixture never uploads an output.
+
+**Fix.**
+
+```go
+// part 1: pin the illegal-transition error specifically, not "any error"
+err = r.Cancel(ctx, id)
+if err == nil || !strings.Contains(err.Error(), "illegal transition") {
+    t.Fatalf("repeated Cancel error = %v, want an illegal-transition error", err)
+}
+
+// part 2: soften the claim to what the code actually guarantees --
+// "bytes_out is 0 for a job canceled before any output was recorded; a cancel racing
+//  AddOutput legitimately records the bytes that were produced"
+```
+
+---
+
+### WR-08: Two assertions in the new admission tests are dead or narrower than the production query
+
+**File:** `internal/jobs/admission_test.go:492-494`, `internal/jobs/admission_test.go:497-502`
+**Severity:** WARNING
+
+**Issue.** Lines 492-494:
+
+```go
+if !errors.Is(err, ErrDailyBytesLimit) { t.Fatalf(...) }
+if errors.Is(err, ErrConcurrencyLimit) { t.Fatalf("... must NOT be ErrConcurrencyLimit ...") }
+```
+
+`ErrConcurrencyLimit` and `ErrDailyBytesLimit` are distinct `errors.New` sentinels returned
+unwrapped (`admission.go:51-55`, `:201`, `:280`), so the second branch is **unreachable** —
+passing `errors.Is` against one already excludes the other. It reads as a load-bearing guard
+and is not one, which is worse than no assertion at all.
+
+Lines 497-502: the verification query filters on `j.client_id` and `j.status` but **not on
+`j.engine`**, while the production in-flight term does filter on engine
+(`admission.go:242`). The test therefore does not verify the shape it claims to mirror; it
+agrees only because the fixture uses a single engine.
+
+**Fix.** Delete the dead branch; add `AND j.engine = 'image'` to the verification query so it
+mirrors `evaluate`'s predicate exactly.
+
+---
+
+### WR-09: README overstates the pre-upload gate and hardcodes facts that `AllEngines()` owns
+
+**File:** `README.md:241-242`, `README.md:251`, `README.md:257`
+**Severity:** WARNING
+
+**Issue.** Three drifts between prose and code:
+
+1. Lines 241-242 still read *"sit in front of `POST /v1/jobs` — **enforced fail-closed
+   before the upload touches storage**"*, which describes `PreAdmit`. `PreAdmit` is
+   explicitly non-authoritative and unlocked (`admission.go:355-360`), and the same README
+   contradicts itself 35 lines later ("because the pre-upload gate is unlocked by design").
+   The authoritative gate is `admitLocked`, which runs *after* the storage write. A reader
+   sizing a quota off line 242 will conclude uploads cannot outrun the cap.
+2. Line 257 hardcodes *"the seven known engine classes"* in prose. `convert.AllEngines()` is
+   the source of truth and `TestAllEnginesCoversEveryEngineClass` will happily be updated to
+   eight while this sentence rots.
+3. Line 251's usage sample still shows `set-limit <client-id> <engine> ...`, whereas
+   `usage()` (`cmd/manage-clients/main.go:229-232`) now renders the concrete
+   `image|document|html|audio|av|ocr|pandoc` list. The doc and the tool's own `--help` no
+   longer agree.
+
+Related and worth recording, though not a doc bug: `AllEngines()` and the DB's
+`jobs_engine_check` (`0010_pandoc_engine.sql:15`) are now **two divergent allow-lists** —
+the DB additionally permits `cad`, `archive`, `probe`. `set-limit` will refuse to write a
+limit for any of those. That is harmless today (no converter registers them, so no job can
+carry them), and `TestAllEnginesCoversEveryEngineClass` covers the dangerous direction
+(`Default.Classes() ⊆ AllEngines()`), but nothing covers the reverse drift.
+
+**Fix.**
+
+```markdown
+Per-client, per-engine limits (QUOT-01..04, FAIR-01) sit in front of `POST /v1/jobs`.
+An advisory pre-upload gate rejects a client already at its cap before the upload reaches
+storage; the authoritative, race-proof check runs inside the job-insert transaction.
+`NULL`/absent means unlimited; an explicit `max-concurrent 0` denies the engine entirely.
+```
+
+plus: replace "the seven known engine classes" with "one of the known engine classes (the
+command prints the current set on error)", and update line 251's placeholder to match
+`usage()`.
+
+---
+
+_Reviewed: 2026-08-03_
 _Reviewer: Claude (gsd-code-reviewer)_
-_Depth: standard_
+_Depth: standard (+ live `EXPLAIN` and full `go test` verification)_
