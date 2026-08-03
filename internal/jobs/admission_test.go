@@ -314,8 +314,10 @@ func TestDailyJobsLimit(t *testing.T) {
 
 // TestDailyLimitIgnoresOtherDaysAndOtherEngines pins that the daily read is
 // scoped to TODAY's UTC date and to the requested engine only -- neither
-// yesterday's rollup nor a different engine's rollup for the same client
-// contributes to today's verdict.
+// yesterday's rollup, a different engine's rollup, nor a different engine's
+// IN-FLIGHT work for the same client contributes to today's verdict. The
+// in-flight-job leg (added in plan 52-06) pins that the new in-flight term
+// is engine-scoped exactly like the pre-existing rollup term.
 func TestDailyLimitIgnoresOtherDaysAndOtherEngines(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
@@ -331,8 +333,16 @@ func TestDailyLimitIgnoresOtherDaysAndOtherEngines(t *testing.T) {
 	}
 	seedDailyUsage(t, r, clientID, "document", 5000, 5)
 
+	// An in-flight (queued, never terminated) document job sized well past
+	// the image engine's max_daily_bytes=100 -- this must NOT count toward
+	// the image engine's in-flight term, or the create below would be
+	// rejected.
+	if _, err := createFixture(t, r, clientID, "document", "uploads/adm9/0-in.docx", 5000); err != nil {
+		t.Fatalf("create in-flight document job: %v", err)
+	}
+
 	if _, err := createFixture(t, r, clientID, "image", "uploads/adm9/0-in.png", 10); err != nil {
-		t.Fatalf("create must succeed -- neither yesterday's nor a different engine's usage should count toward today's image limit, got: %v", err)
+		t.Fatalf("create must succeed -- neither yesterday's nor a different engine's rollup or in-flight usage should count toward today's image limit, got: %v", err)
 	}
 }
 
@@ -446,14 +456,20 @@ func TestPreAdmitMatchesAuthoritativeVerdict(t *testing.T) {
 	})
 }
 
-// TestOvershootBoundedByConcurrencyCap is the D-15 pin: with max_concurrent
-// = K and a daily-bytes cap sized to exactly one job's input (so the daily
-// check only ever compares against zero recorded usage -- no job here is
-// ever driven to a terminal state), admission stops at K, never more, and
-// the total bytes sitting in-flight (admitted but not yet finished, hence
-// invisible to client_usage_daily) never exceeds K x the per-engine input
-// ceiling used in this test.
-func TestOvershootBoundedByConcurrencyCap(t *testing.T) {
+// TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher supersedes the D-15
+// overshoot pin this test used to be (see the dated amendment to D-15 in
+// 52-CONTEXT.md). The old fixture was constructed so the daily check
+// could NEVER fire (max_daily_bytes sized to one job, but bytesUsed always
+// read 0 because nothing here reaches a terminal transition) -- that
+// premise is gone now that in-flight work is charged at admission. With
+// max_concurrent = 3 (higher than 1) and max_daily_bytes sized to exactly
+// one job's input, exactly ONE create is admitted and the SECOND is
+// rejected with ErrDailyBytesLimit, NOT ErrConcurrencyLimit -- proving the
+// daily term, not the concurrency cap, is what stops it. A daily cap sized
+// for one job now admits one job in every configuration, whether or not a
+// concurrency cap is also set, and the K x MAX_INPUT_BYTES overshoot D-15
+// used to accept is gone.
+func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
 	clientID := createTestClient(t, r)
@@ -461,33 +477,18 @@ func TestOvershootBoundedByConcurrencyCap(t *testing.T) {
 
 	const k = 3
 	const inputSize int64 = 1000
-	// max_daily_bytes == inputSize: since bytesUsed stays 0 for the whole
-	// test (nothing here reaches a terminal transition), the daily check
-	// evaluates 0+inputSize > inputSize on every attempt, which is always
-	// false -- the daily check never fires, and concurrency is the only
-	// thing that stops admission. That is the point: a per-request daily
-	// cap sized for "one job a day" is silently overshot to K jobs' worth
-	// of bytes because the daily rollup cannot see in-flight work (D-15).
 	setClientLimits(t, r, clientID, "image", intPtr(k), int64Ptr(inputSize), nil)
 
-	admitted := 0
-	for i := 0; i < k+2; i++ {
-		_, err := createFixture(t, r, clientID, "image", fmt.Sprintf("uploads/adm13/%d-in.png", i), inputSize)
-		if err == nil {
-			admitted++
-			continue
-		}
-		if !errors.Is(err, ErrConcurrencyLimit) {
-			t.Fatalf("create %d: unexpected error %v", i, err)
-		}
-		break
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm13/0-in.png", inputSize); err != nil {
+		t.Fatalf("1st create (0+inputSize<=inputSize): %v", err)
 	}
 
-	if admitted == 0 {
-		t.Fatalf("admitted = 0, want at least 1 (the daily-bytes cap must never block the FIRST admission in this fixture)")
+	_, err := createFixture(t, r, clientID, "image", "uploads/adm13/1-in.png", inputSize)
+	if !errors.Is(err, ErrDailyBytesLimit) {
+		t.Fatalf("2nd create error = %v, want ErrDailyBytesLimit", err)
 	}
-	if admitted > k {
-		t.Fatalf("admitted = %d, want <= %d (concurrency cap)", admitted, k)
+	if errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("2nd create error = %v, must NOT be ErrConcurrencyLimit -- the daily term, not the concurrency cap (still at 1 of 3), must be what stops it", err)
 	}
 
 	var totalBytes int64
@@ -500,15 +501,8 @@ func TestOvershootBoundedByConcurrencyCap(t *testing.T) {
 	).Scan(&totalBytes); err != nil {
 		t.Fatalf("sum in-flight input bytes: %v", err)
 	}
-
-	// Derivation (also stated in admission.go's evaluate comment): at most K
-	// in-flight jobs, each at most the per-engine input ceiling used here,
-	// so the daily-bytes check -- which only ever sees terminal usage -- can
-	// be overshot by at most K x inputSize bytes of admitted-but-unaccounted
-	// work.
-	bound := int64(k) * inputSize
-	if totalBytes > bound {
-		t.Fatalf("in-flight bytes = %d, want <= %d (K x per-engine input ceiling, D-15)", totalBytes, bound)
+	if totalBytes != inputSize {
+		t.Fatalf("in-flight bytes = %d, want exactly %d (one job's worth, not K x inputSize)", totalBytes, inputSize)
 	}
 }
 
