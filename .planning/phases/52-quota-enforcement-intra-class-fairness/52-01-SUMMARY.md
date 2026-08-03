@@ -36,7 +36,7 @@ key-decisions:
   - "max_concurrent = 0 is a distinct, legal value (explicit deny) from NULL (unlimited) — round-tripped as a non-nil pointer to 0 vs. a nil pointer at every layer"
   - "SetLimit is full-row replace semantics, not merge — a second SetLimit call with a nil field clears a previously set limit on that column"
 
-requirements-completed: [QUOT-01, QUOT-04]
+requirements-completed: [QUOT-01]
 
 # Metrics
 duration: ~50min
