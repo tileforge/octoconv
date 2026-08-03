@@ -208,3 +208,10 @@ spike answers that; committing a phase before it would be guessing.
 - `internal/convert/libreoffice.go:14` — `documentFormats`, confirming pdf is
   target-only there.
 - `Dockerfile.worker` — `CGO_ENABLED=0`, the constraint that rules out the crate.
+- `internal/convert/ocrguards_test.go:227-246` —
+  `TestDetectBornDigitalPDF_RealBinary` asserts `ErrOCRBornDigital` for
+  `testdata/ocr/born_digital.pdf` today. Opportunity 1 makes that PDF
+  *acceptable* (routed to `pdf2md`), so this test's assertion inverts under
+  the harvest. A harvester must add the accepted-text-path test alongside it
+  rather than delete the coverage — the fixture already exists and pins the
+  exact case this seed changes.

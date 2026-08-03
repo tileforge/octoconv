@@ -135,7 +135,7 @@ See `key-decisions` in the frontmatter for D-1 through D-5 (all pre-recorded in 
 
 ## Deviations from Plan
 
-None — plan executed exactly as written, including all D-1..D-5 design decisions and the deployment-risk framing. One minor in-flight correction, tracked as a Rule 1 fix:
+No substantive deviations — all D-1..D-5 design decisions and the deployment-risk framing were followed as written. One minor in-flight correction, tracked as a Rule 1 fix:
 
 **1. [Rule 1 - Bug] `ParseBool`/`Bool` signatures used named return values, which fail the plan's literal grep acceptance criteria**
 - **Found during:** Task 1, verification step
@@ -147,7 +147,7 @@ None — plan executed exactly as written, including all D-1..D-5 design decisio
 ## Issues Encountered
 
 - **Worktree base drift at start.** The worktree's `HEAD` (`d7ac603`) was an ancestor of the plan's required base commit (`2e229bd`, which itself contains the plan document on `phase-52-quota-enforcement`). Per the `<worktree_branch_check>` protocol, corrected via `git reset --hard 2e229bd` against a confirmed-clean working tree before any task work began.
-- **One accidental write outside the worktree.** An early `mkdir -p /Users/apaderin/dev/octoconv/internal/envcfg` (missing the worktree-prefixed path) created an empty directory in the shared checkout rather than the isolated worktree. Caught immediately (the subsequent `Write` call was refused by the sandbox with an explicit "edit the worktree copy" error), the stray empty directory was removed with `rmdir` (safe: empty, untracked, no git operation), and all subsequent file operations used the correct `/Users/apaderin/dev/octoconv/.claude/worktrees/agent-af31df851a3a425c4/...` prefix.
+- **One accidental write outside the worktree.** An early `mkdir -p` for the new package (missing the worktree-prefixed path) created an empty directory in the shared checkout rather than the isolated worktree. Caught immediately (the subsequent `Write` call was refused by the sandbox with an explicit "edit the worktree copy" error), the stray empty directory was removed with `rmdir` (safe: empty, untracked, no git operation), and all subsequent file operations used the correct worktree-prefixed path.
 - No other issues. Full suite (`go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./... -count=1` against live Postgres on `localhost:5434`) is green.
 
 ## User Setup Required
