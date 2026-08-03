@@ -53,6 +53,12 @@ type WebhookGapJob struct {
 // Repo is the jobs repository backed by a pgx pool.
 type Repo struct {
 	pool *pgxpool.Pool
+	// quotaObserver and quotaDisabled are the QUOT/FAIR admission-gate
+	// wiring seams (Phase 52, admission.go) -- startup-only, zero value ("no
+	// observer, enforcement governed per-client") for every existing caller
+	// of NewRepo. See SetQuotaObserver/SetQuotaEnforcementDisabled.
+	quotaObserver func(clientID uuid.UUID, engine, reason string)
+	quotaDisabled bool
 }
 
 // NewRepo wraps a pgx pool.
