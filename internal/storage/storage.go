@@ -12,6 +12,8 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/lifecycle"
+
+	"github.com/apaderin/octoconv/internal/envcfg"
 )
 
 // Client is a thin wrapper over the MinIO SDK bound to a single bucket.
@@ -27,10 +29,19 @@ func New(ctx context.Context) (*Client, error) {
 	accessKey := os.Getenv("S3_ACCESS_KEY")
 	secretKey := os.Getenv("S3_SECRET_KEY")
 	bucket := os.Getenv("S3_BUCKET")
-	useSSL := os.Getenv("S3_USE_SSL") == "true"
+	useSSL, ok := envcfg.Bool("S3_USE_SSL", false)
 
 	if endpoint == "" || accessKey == "" || secretKey == "" || bucket == "" {
 		return nil, fmt.Errorf("S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY and S3_BUCKET must be set")
+	}
+
+	// New runs once at startup and every cmd/* caller already treats its
+	// error as fatal, so returning an error here is the correct non-logging
+	// way for internal/ to surface a misconfigured flag (CLAUDE.md) -- unlike
+	// the two per-request callbackurl.go sites, which fall back silently
+	// instead.
+	if !ok {
+		return nil, fmt.Errorf("S3_USE_SSL: unrecognized value %q (expected \"true\" or \"false\")", os.Getenv("S3_USE_SSL"))
 	}
 
 	mc, err := minio.New(endpoint, &minio.Options{

@@ -391,5 +391,5 @@ Plans:
 
 ---
 
-*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 0/15 complete. Next: `/gsd:plan-phase 51`.*
+*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 11/15 complete (ACCT-01..04, RETN-01, QUOT-01..04, FAIR-01, FAIR-02, per REQUIREMENTS.md's traceability table), with QUOT-05 (Phase 55), OPSV-01/02 (Phase 53) and CAPA-01 (Phase 54) pending. Next: `/gsd:plan-phase 53`.*
 </content>

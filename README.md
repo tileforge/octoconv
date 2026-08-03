@@ -271,7 +271,9 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
 
 - **`QUOTA_ENFORCEMENT_DISABLED=true`** is the service-wide kill-switch — verdicts are still
   computed and counted, but no request is ever rejected while it is set. An **empty or absent
-  value does NOT disable enforcement**; only the literal `true` does.
+  value does NOT disable enforcement**; `true`, optionally followed by an inline `#` comment,
+  disables it; any other value is rejected as unrecognized, warned about at API startup, and
+  leaves enforcement ON.
 - **Client-visible contract:** an over-quota request gets `429` with a `Retry-After` header and
   `code: "quota_exceeded"` in the body — never `403` (a quota is a consumption limit, not an
   authorization boundary). This is distinct from `code: "rate_limited"`, the per-IP/per-client
@@ -312,7 +314,7 @@ the full, documented list. Highlights:
 | `AUDIO_ENGINE_TIMEOUT` / `AUDIO_MAX_RETRY` / `AUDIO_WORKER_CONCURRENCY` / `AUDIO_MAX_DURATION_SECONDS` / `AUDIO_MODEL_PATH` / `AUDIO_THREADS` | audio (whisper.cpp) engine timeout, retry budget, concurrency, max input duration, model path, and thread count |
 | `AV_ENGINE_TIMEOUT` / `AV_MAX_RETRY` / `AV_WORKER_CONCURRENCY` / `AV_MAX_DURATION_SECONDS` / `AV_DISK_SAFETY_FACTOR` | video (ffmpeg) engine timeout, retry budget, concurrency, max input duration, and disk-space safety multiplier |
 | `OPERATOR_CLIENT_IDS` | comma-separated client UUIDs authorized for `/v1/system/presets` (empty = no operators, fail-closed) |
-| `QUOTA_ENFORCEMENT_DISABLED` | global quota kill-switch — only the literal `true` disables enforcement; empty/absent does NOT disable it (see [Quotas and fairness](#quotas-and-fairness)) |
+| `QUOTA_ENFORCEMENT_DISABLED` | global quota kill-switch — `true` (optionally with an inline `#` comment) disables enforcement; empty/absent does NOT disable it; any other value is unrecognized and leaves enforcement ON (see [Quotas and fairness](#quotas-and-fairness)) |
 | `RATE_LIMIT_IP_RPM` / `RATE_LIMIT_CLIENT_RPM` | pre-auth and per-client rate limits |
 | `WEBHOOK_SIGNING_SECRET` | HMAC-SHA256 secret for signed webhook callbacks (required) |
 | `WEBHOOK_ALLOW_PRIVATE_IPS` | opt-in: allow `callback_url` to target RFC1918 addresses (loopback/link-local always blocked) |

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,38 @@ func TestRoundTrip(t *testing.T) {
 	if _, err := c.Download(ctx, "uploads/does-not-exist"); err == nil {
 		t.Fatal("Download of missing object: expected error, got nil")
 	}
+}
+
+// TestNewRejectsUnrecognizedUseSSL proves New surfaces an unrecognized
+// S3_USE_SSL value as an error before any network call is made -- it must
+// pass with the docker stack down, since the required-vars check and the
+// S3_USE_SSL parse both happen before minio.New.
+func TestNewRejectsUnrecognizedUseSSL(t *testing.T) {
+	t.Setenv("S3_ENDPOINT", "dummy-endpoint:9000")
+	t.Setenv("S3_ACCESS_KEY", "dummy-access-key")
+	t.Setenv("S3_SECRET_KEY", "dummy-secret-key")
+	t.Setenv("S3_BUCKET", "dummy-bucket")
+
+	t.Run("unrecognized value errors without a network call", func(t *testing.T) {
+		t.Setenv("S3_USE_SSL", "TRUE")
+		_, err := New(context.Background())
+		if err == nil {
+			t.Fatal("New: expected an error for S3_USE_SSL=\"TRUE\", got nil")
+		}
+		if !strings.Contains(err.Error(), "S3_USE_SSL") {
+			t.Errorf("New error = %q, want it to mention S3_USE_SSL", err)
+		}
+	})
+
+	t.Run("recognized value with inline comment does not error on S3_USE_SSL", func(t *testing.T) {
+		t.Setenv("S3_USE_SSL", "false # local dev")
+		_, err := New(context.Background())
+		// New may still fail later (dummy endpoint, no live MinIO) -- only
+		// assert that whatever error comes back does not mention S3_USE_SSL.
+		if err != nil && strings.Contains(err.Error(), "S3_USE_SSL") {
+			t.Errorf("New error = %q, did not want it to mention S3_USE_SSL", err)
+		}
+	})
 }
 
 // TestLifecycleConfig exercises the pure lifecycleConfig builder against the

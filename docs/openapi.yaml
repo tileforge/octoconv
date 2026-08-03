@@ -66,7 +66,10 @@ components:
   schemas:
     Error:
       type: object
-      description: Uniform error body returned by every non-2xx response.
+      description: >-
+        The error body used by every non-2xx response EXCEPT 429. 429
+        responses use the QuotaError schema below instead, which adds the
+        required machine-readable code discriminator.
       properties:
         error:
           type: string
