@@ -255,7 +255,27 @@ Plans:
   4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
   5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
 
-**Plans**: TBD
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
+- [ ] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 52-04-PLAN.md — pre-upload gate before the S3 write, 429 + `Retry-After` + `quota_exceeded` (never 403), kill-switch and metrics wiring
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 52-05-PLAN.md — REST + real MCP tool admission proof against one live API, FAIR-02 zero-diff contract gate, OpenAPI/README contract docs
+
+**Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
 
 ### Phase 53: Operator Usage Visibility
 
