@@ -72,6 +72,23 @@ components:
           type: string
       required: [error]
 
+    QuotaError:
+      type: object
+      description: >-
+        The error body used ONLY by 429 responses. Every other error body in
+        this API remains the one-property Error schema above — code is never
+        added to any non-429 response. code distinguishes the two producers
+        of a 429 in this service: the per-IP/per-client rate limiter
+        (rate_limited) and the per-client quota admission gate
+        (quota_exceeded, QUOT-01..04).
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [quota_exceeded, rate_limited]
+      required: [error, code]
+
     JobCreated:
       type: object
       description: Response body for a successfully accepted POST /v1/jobs.
@@ -240,16 +257,30 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     TooManyRequests:
-      description: Per-IP or per-client rate limit exceeded.
+      description: >-
+        One of two independent producers rejected this request, distinguished
+        by the body's code field: the per-IP/per-client rate limiter
+        (code=rate_limited, internal/ratelimit) or the per-client quota
+        admission gate (code=quota_exceeded, QUOT-01..04, internal/jobs). The
+        service never returns 403 for a quota rejection — a quota is a
+        consumption limit, not an authorization boundary.
       headers:
         Retry-After:
-          description: Seconds until the rate-limit window resets.
+          description: >-
+            Seconds until the caller may retry. For rate_limited, seconds
+            until the fixed-window rate-limit resets. For quota_exceeded, the
+            derivation depends on which limit was hit: a concurrency
+            rejection returns a short fixed hint (long enough not to invite a
+            hot retry loop, short enough not to stall a fast client); a daily
+            byte- or job-count rejection returns the exact number of seconds
+            remaining until the next UTC midnight, when that day's quota
+            window resets.
           schema:
             type: integer
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/Error"
+            $ref: "#/components/schemas/QuotaError"
     InternalError:
       description: Unexpected server-side failure (storage, database, or queue).
       content:
