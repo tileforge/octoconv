@@ -45,59 +45,57 @@ func (r *Repo) PurgeJobs(ctx context.Context, olderThan time.Duration, batch int
 	}
 	cutoff := time.Now().Add(-olderThan)
 
-	// The subtree guard exists because jobs.parent_id self-references with
-	// ON DELETE CASCADE. Without it, deleting an aged terminal parent silently
-	// removes its descendants too -- including a child that is still queued or
-	// active, or one created inside the retention window. That bypasses both
-	// the status predicate above and the batch bound, and the loss is silent.
+	// Only LEAVES are ever deleted -- an aged terminal job that no other job
+	// points at via parent_id. Everything below falls out of that one rule.
 	//
-	// The check is recursive rather than one level deep: a child may itself be
-	// eligible while ITS child is live, and the cascade reaches all the way
-	// down. A candidate is deleted only when its entire subtree is eligible.
+	// jobs.parent_id self-references with ON DELETE CASCADE, which makes
+	// deleting any non-leaf unsafe in two distinct ways:
 	//
-	// This is dormant today -- nothing in the codebase populates parent_id --
-	// but it activates the moment sub-jobs exist (SEED-017 PDF split, SEED-018
-	// pipelines), and while no row has a parent the recursive join matches
-	// nothing and costs nothing.
-	// The blocked-root exclusion is applied BEFORE the LIMIT, not after. Doing
-	// it the other way round deadlocks the purge: if the oldest `batch` roots
-	// all have a live descendant, the DELETE affects zero rows, the caller's
-	// `n < batch` loop-exit fires, and the next tick re-selects the same
-	// blocked head forever -- so eligible jobs behind them are never purged at
-	// all. Filtering first means the batch is always `batch` genuinely
-	// deletable roots, and the sweep advances past protected ones.
+	//   1. Silent over-deletion. Deleting an aged terminal parent removes its
+	//      whole subtree -- including a child still queued or active, or one
+	//      created well inside the retention window. That bypasses the status
+	//      predicate and the cutoff, and nothing reports it: a self-referential
+	//      cascade does not count toward the statement's rows-affected, so the
+	//      caller is told it deleted one row while N vanished.
+	//   2. An unbounded batch. `LIMIT` caps the ids selected into `candidate`,
+	//      not what the cascade takes with them, so a parent with more than
+	//      `batch` descendants defeats the per-tick work ceiling entirely.
 	//
-	// The cost of that ordering is that `eligible` spans the whole terminal
-	// population rather than one batch, which is what jobs_retention_idx
-	// (0012) exists to serve. The recursive walk stays cheap regardless: it
-	// joins on jobs_parent_idx, a partial index over `parent_id IS NOT NULL`,
-	// so while no row has a parent it matches nothing on the first iteration
-	// and terminates.
+	// Restricting the candidate set to leaves closes both at once, and closes
+	// them by construction rather than by a guard that has to be kept correct:
+	// a leaf has nothing beneath it, so its cascade removes nothing, so exactly
+	// the selected rows are deleted and rows-affected is honest.
+	//
+	// Live descendants stay protected without a recursive check. While any
+	// descendant survives, every ancestor still has a child and is therefore
+	// not a leaf -- protection propagates all the way up the chain for free.
+	// Fully-eligible chains drain bottom-up across successive ticks: this
+	// tick's leaves are deleted, which makes their parents leaves for the next.
+	//
+	// This also keeps the purge live. A protected parent is simply not a leaf,
+	// so it never occupies a slot in the batch; the `LIMIT` is always filled
+	// with genuinely deletable rows and the sweep never head-of-line blocks
+	// behind a subtree it must spare. (An earlier revision selected roots first
+	// and filtered them afterwards, which meant a batch of all-blocked roots
+	// deleted nothing, tripped the caller's `n < batch` loop-exit, and re-read
+	// the same blocked head every tick forever.)
+	//
+	// Dormant today -- nothing populates parent_id -- but it activates the
+	// moment sub-jobs exist (SEED-017 PDF split, SEED-018 pipelines). While no
+	// row has a parent, NOT EXISTS is satisfied by every row at negligible
+	// cost. It is served by jobs_parent_idx, a partial index over
+	// `parent_id IS NOT NULL`; the outer scan is served by jobs_retention_idx
+	// (0012), whose predicate mirrors the status filter below and must change
+	// with it.
 	tag, err := r.pool.Exec(ctx, `
-		WITH RECURSIVE eligible AS (
-			SELECT id, created_at FROM jobs
-			WHERE created_at < $1 AND status NOT IN ('queued', 'active')
-		),
-		descendant AS (
-			SELECT e.id AS root, j.id, j.created_at, j.status
-			FROM eligible e
-			JOIN jobs j ON j.parent_id = e.id
-			UNION ALL
-			SELECT d.root, j.id, j.created_at, j.status
-			FROM descendant d
-			JOIN jobs j ON j.parent_id = d.id
-		),
-		blocked AS (
-			SELECT DISTINCT root FROM descendant
-			WHERE created_at >= $1 OR status IN ('queued', 'active')
-		),
-		candidate AS (
-			SELECT id FROM eligible
-			WHERE id NOT IN (SELECT root FROM blocked)
-			ORDER BY created_at
+		DELETE FROM jobs WHERE id IN (
+			SELECT j.id FROM jobs j
+			WHERE j.created_at < $1
+			  AND j.status NOT IN ('queued', 'active')
+			  AND NOT EXISTS (SELECT 1 FROM jobs c WHERE c.parent_id = j.id)
+			ORDER BY j.created_at
 			LIMIT $2
-		)
-		DELETE FROM jobs WHERE id IN (SELECT id FROM candidate)`, cutoff, batch)
+		)`, cutoff, batch)
 	if err != nil {
 		return 0, fmt.Errorf("purge jobs older than %s: %w", olderThan, err)
 	}

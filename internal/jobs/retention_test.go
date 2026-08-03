@@ -363,6 +363,79 @@ func TestPurgeJobsSparesParentWithLiveDescendant(t *testing.T) {
 	}
 }
 
+// TestPurgeJobsBatchBoundSurvivesCascade pins that the per-tick work ceiling
+// cannot be defeated through the ON DELETE CASCADE on jobs.parent_id.
+//
+// A LIMIT bounds the ids selected for deletion, not what the cascade takes
+// with them, so deleting one parent with N eligible descendants removed N+1
+// rows from a batch of 1. Worse, a self-referential cascade does not count
+// toward the statement's rows-affected, so the caller was told it deleted one
+// row while the whole subtree vanished -- which also corrupts the `n < batch`
+// signal the sweep loop uses to decide the backlog is drained.
+//
+// Deleting only leaves makes the bound structural: a leaf cascades to nothing,
+// so rows-affected is exactly what was removed.
+func TestPurgeJobsBatchBoundSurvivesCascade(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	// One aged terminal parent with three aged terminal children — the whole
+	// subtree is eligible, so nothing here is protected by status or age.
+	parentID := createAgedJob(t, r, clientID, StatusDone, 100*24*time.Hour)
+	var childIDs []uuid.UUID
+	for i := 0; i < 3; i++ {
+		childID := createAgedJob(t, r, clientID, StatusDone, 100*24*time.Hour)
+		if _, err := r.pool.Exec(ctx, `UPDATE jobs SET parent_id = $1 WHERE id = $2`, parentID, childID); err != nil {
+			t.Fatalf("link child %d to parent: %v", i, err)
+		}
+		childIDs = append(childIDs, childID)
+	}
+	t.Cleanup(func() {
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, parentID)
+	})
+
+	// batch=2 against a 4-job subtree: selecting the parent would cascade all
+	// four away in a single statement.
+	n, err := r.PurgeJobs(ctx, 90*24*time.Hour, 2)
+	if err != nil {
+		t.Fatalf("PurgeJobs: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("rows affected = %d, want exactly 2 (the batch bound)", n)
+	}
+
+	var remaining int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM jobs WHERE id = $1 OR parent_id = $1`, parentID,
+	).Scan(&remaining); err != nil {
+		t.Fatalf("count remaining subtree rows: %v", err)
+	}
+	if remaining != 2 {
+		t.Fatalf("subtree rows remaining = %d, want 2: the cascade deleted more than the batch bound allowed", remaining)
+	}
+	if _, err := r.Get(ctx, parentID); err != nil {
+		t.Fatalf("parent must survive while it still has children — deleting it would cascade past the batch bound: %v", err)
+	}
+
+	// Drain the rest bottom-up: the last child goes, which makes the parent a
+	// leaf, and only then may the parent be deleted.
+	if _, err := r.PurgeJobs(ctx, 90*24*time.Hour, 2); err != nil {
+		t.Fatalf("PurgeJobs (second tick): %v", err)
+	}
+	for _, id := range childIDs {
+		if _, err := r.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("all children must be purged after two ticks, got err=%v", err)
+		}
+	}
+	if _, err := r.PurgeJobs(ctx, 90*24*time.Hour, 2); err != nil {
+		t.Fatalf("PurgeJobs (third tick): %v", err)
+	}
+	if _, err := r.Get(ctx, parentID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("parent must be purged once it became a leaf, got err=%v", err)
+	}
+}
+
 // TestPurgeJobsAdvancesPastBlockedRoots pins the liveness property that the
 // subtree guard must not cost: a blocked root at the head of the creation
 // order must not stop the sweep from reaching eligible jobs behind it.
