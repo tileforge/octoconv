@@ -63,6 +63,54 @@ const (
 	QuotaReasonDailyJobs   = "daily_jobs"
 )
 
+// Quota status classification (Codex PR #5 review, P3). Every value in the
+// jobs.status CHECK domain (jobs.go) must appear in EXACTLY one of these
+// three sets; TestEveryJobStatusIsClassifiedForQuotaAccounting
+// (admission_test.go) enforces that partition against the live schema, so a
+// status that is added to the schema, or moved between these sets, cannot
+// silently go unaccounted.
+//
+//   - quotaInFlightStatuses: the status set the in-flight term's SQL
+//     literals in evaluate, and jobs_client_engine_inflight_idx's partial
+//     predicate (0013_client_limits.sql), both use.
+//   - quotaLedgerStatuses: the terminal statuses recordUsage (usage.go)
+//     writes to client_usage_daily (migration 0014).
+//   - quotaUnaccountedStatuses: statuses visible to NEITHER quota term.
+//
+// awaiting_upload is declared in jobs.go and admitted by the schema, but NO
+// code path writes it -- its only other reference in the whole repo is a
+// filter allow-list in internal/api/jobs_list_handler.go. It is therefore
+// invisible to both quota terms today, with zero observable effect.
+//
+// Rejected alternative, rejected on correctness rather than cost: moving
+// awaiting_upload into the in-flight predicate (which would also require
+// changing jobs_client_engine_inflight_idx's predicate in a new migration)
+// would commit to quota semantics for a status whose meaning does not exist
+// yet. The byte term sums job_inputs.size_bytes; for a job still awaiting
+// its upload that row is either absent -- in which case moving the status
+// buys the byte term nothing -- or carries a client-declared size that has
+// not been verified against any stored object. Deciding between those
+// belongs to whichever phase actually introduces the two-phase upload flow,
+// because that phase is the one that determines whether a trusted size
+// exists at awaiting_upload time; pre-deciding it here would encode a
+// semantic no test can exercise, since the status is unreachable through
+// every repo API today.
+//
+// What the declaration buys instead: the omission stops being an accident
+// of a SQL literal and becomes a named classification, so the day a status
+// is added to the schema, or the in-flight index predicate changes, or
+// someone moves awaiting_upload out of the unaccounted set, the invariant
+// test forces the quota question to be answered rather than skipped.
+//
+// No SQL string and no query in this file changes because of this
+// declaration -- the in-flight literals stay literals for the
+// index-matching reason already documented in evaluate below.
+var (
+	quotaInFlightStatuses    = []string{StatusQueued, StatusActive}
+	quotaLedgerStatuses      = []string{StatusDone, StatusFailed, StatusCanceled}
+	quotaUnaccountedStatuses = []string{StatusAwaitingUpload}
+)
+
 // QuotaReason maps a quota sentinel to its metric/log reason label,
 // returning "" for any non-quota error. The handler and the quota observer
 // both call this, so the reason taxonomy exists in exactly one place.

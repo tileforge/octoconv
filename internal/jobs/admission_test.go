@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"sync"
 	"testing"
 
@@ -925,5 +927,135 @@ func TestQuotaLockKeysDeterministicAndDistinct(t *testing.T) {
 	c1, c2 := quotaLockKeys(clientA, "document")
 	if a1 == c1 && a2 == c2 {
 		t.Fatalf("quotaLockKeys must differ for different engines: image=(%d,%d) document=(%d,%d)", a1, a2, c1, c2)
+	}
+}
+
+// statusLiteralPattern extracts each `'<value>'::text` literal out of a
+// pg_get_constraintdef/pg_get_indexdef string -- e.g. the
+// `ARRAY['queued'::text, 'active'::text]` shape both functions return for a
+// `status = ANY (ARRAY[...])` predicate. Never compared as raw SQL strings:
+// every comparison in TestEveryJobStatusIsClassifiedForQuotaAccounting goes
+// through this extraction first, then an order-independent set comparison.
+var statusLiteralPattern = regexp.MustCompile(`'([a-z_]+)'::text`)
+
+// extractStatusLiterals returns the sorted, deduplicated set of status
+// literals found in def (a pg_get_constraintdef/pg_get_indexdef string).
+func extractStatusLiterals(def string) []string {
+	matches := statusLiteralPattern.FindAllStringSubmatch(def, -1)
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		seen[m[1]] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedSet returns a sorted, deduplicated copy of the union of one or more
+// string slices, for order-independent comparison.
+func sortedSet(slices ...[]string) []string {
+	seen := make(map[string]struct{})
+	for _, sl := range slices {
+		for _, s := range sl {
+			seen[s] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// setDiff returns (in got but not want, in want but not got) -- both
+// order-independent -- for a precise "what's missing / what's extra"
+// failure message rather than a raw slice dump.
+func setDiff(got, want []string) (extra, missing []string) {
+	gotSet := make(map[string]struct{}, len(got))
+	for _, s := range got {
+		gotSet[s] = struct{}{}
+	}
+	wantSet := make(map[string]struct{}, len(want))
+	for _, s := range want {
+		wantSet[s] = struct{}{}
+	}
+	for s := range gotSet {
+		if _, ok := wantSet[s]; !ok {
+			extra = append(extra, s)
+		}
+	}
+	for s := range wantSet {
+		if _, ok := gotSet[s]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	sort.Strings(extra)
+	sort.Strings(missing)
+	return extra, missing
+}
+
+// TestEveryJobStatusIsClassifiedForQuotaAccounting is the live-schema
+// invariant test for the quota status partition (Codex PR #5 review, P3):
+// every value in the jobs.status CHECK domain must land in exactly one of
+// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses,
+// and quotaInFlightStatuses must never drift from
+// jobs_client_engine_inflight_idx's own partial predicate. Both reads go
+// through the live schema (pg_get_constraintdef / pg_get_indexdef), never a
+// hard-coded copy of either definition, so this test fails the moment the
+// schema and the Go declaration disagree in either direction.
+func TestEveryJobStatusIsClassifiedForQuotaAccounting(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	var checkDef string
+	if err := r.pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'jobs'::regclass AND contype = 'c'
+			AND pg_get_constraintdef(oid) LIKE '%(status = ANY%'`,
+	).Scan(&checkDef); err != nil {
+		t.Fatalf("read jobs status CHECK definition: %v", err)
+	}
+	schemaStatuses := extractStatusLiterals(checkDef)
+	declaredStatuses := sortedSet(quotaInFlightStatuses, quotaLedgerStatuses, quotaUnaccountedStatuses)
+
+	if extra, missing := setDiff(schemaStatuses, declaredStatuses); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"jobs.status CHECK domain %v and the declared quota partition %v disagree (schema has but partition doesn't: %v; partition has but schema doesn't: %v) -- "+
+				"decide whether each newly added status consumes quota: move it into quotaInFlightStatuses (also requires changing "+
+				"jobs_client_engine_inflight_idx's predicate in a new migration and the in-flight SQL literals in evaluate), "+
+				"into quotaLedgerStatuses, or into quotaUnaccountedStatuses with a recorded reason",
+			schemaStatuses, declaredStatuses, extra, missing,
+		)
+	}
+
+	var indexDef string
+	if err := r.pool.QueryRow(ctx, `SELECT pg_get_indexdef('jobs_client_engine_inflight_idx'::regclass)`).Scan(&indexDef); err != nil {
+		t.Fatalf("read jobs_client_engine_inflight_idx definition: %v", err)
+	}
+	indexStatuses := extractStatusLiterals(indexDef)
+	inFlightStatuses := sortedSet(quotaInFlightStatuses)
+
+	if extra, missing := setDiff(indexStatuses, inFlightStatuses); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"jobs_client_engine_inflight_idx's WHERE predicate %v and quotaInFlightStatuses %v disagree (index has but declaration doesn't: %v; declaration has but index doesn't: %v) -- "+
+				"the index predicate and the Go declaration must never drift apart in either direction",
+			indexStatuses, inFlightStatuses, extra, missing,
+		)
+	}
+
+	unaccounted := sortedSet(quotaUnaccountedStatuses)
+	wantUnaccounted := []string{StatusAwaitingUpload}
+	if extra, missing := setDiff(unaccounted, wantUnaccounted); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"quotaUnaccountedStatuses = %v, want exactly %v (extra: %v, missing: %v) -- "+
+				"removing an entry from quotaUnaccountedStatuses is only correct together with moving that status into "+
+				"quotaInFlightStatuses or quotaLedgerStatuses; for the in-flight set that also means changing "+
+				"jobs_client_engine_inflight_idx's predicate in a new migration",
+			unaccounted, wantUnaccounted, extra, missing,
+		)
 	}
 }
