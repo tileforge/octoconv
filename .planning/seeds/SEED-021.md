@@ -87,6 +87,40 @@ License is MIT — no conflict.
   **before any render**. That ordering is Phase 43's memory-bomb safety
   criterion (43-CONTEXT.md SC2), not an implementation detail. Any swap
   preserves it or is wrong.
+
+### The unresolved tension: per-page routing vs. a whole-document reject
+
+Flagged during review of this seed and worth stating rather than leaving for
+whoever harvests it to trip over.
+
+Opportunity 2 above wants Mixed PDFs routed **per page**. But
+`detectBornDigitalPDF` rejects **the whole document** once its text threshold
+is crossed, and the constraint immediately above says that guard must keep
+running before any render. Those two cannot both hold unchanged: leave the
+guard as-is and mixed PDFs stay rejected, so per-page routing is unreachable;
+remove it and the memory-safety invariant it exists to enforce goes with it.
+
+The resolution is that the guard's **ordering** is what is load-bearing, not
+its current whole-document verdict. A replacement sequence that preserves the
+invariant would be:
+
+1. **Bounded pre-render classification** — `detect-pdf` runs before any
+   rasterization, in place of the `pdftotext` threshold call. It is a parse,
+   not a render, so the "nothing rasterized before the decision" property is
+   preserved.
+2. **Per-page routing from that verdict** — pages classified text-based are
+   extracted; pages classified scanned enter the existing OCR loop. A document
+   with zero scanned pages is still rejected by the OCR engine, but now for a
+   stated reason and with `pdf2md` as the path that actually serves it.
+3. **The existing guards stay, unmoved** — the `pdfinfo` page-count cap and the
+   per-page page-box physical-size bound still run, still before their
+   respective renders. Nothing about the one-page-in-flight memory ceiling
+   changes; only the *set* of pages entering the loop does.
+
+Whoever harvests this must confirm step 1 actually holds — that `detect-pdf`
+never rasterizes internally. If it does, the whole approach collapses back into
+the guard it was supposed to replace, and Opportunity 1 (`pdf2md`) should be
+harvested alone.
 - **Young, small project.** For a pure parser with no ML, the realistic failure
   mode is misclassification rather than a crash — so keep the existing guards
   (page-count cap, page-box physical-size bound) in place rather than trusting
