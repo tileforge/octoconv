@@ -286,7 +286,7 @@ Plans:
 
 **Wave 7** *(blocked on Wave 6 completion)*
 
-- [ ] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
+- [x] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
 
 **Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
 
@@ -384,7 +384,7 @@ Plans:
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
-| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 8/9 | In Progress|  |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
