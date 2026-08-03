@@ -60,6 +60,9 @@ func (r *sequencedFakeRepo) callCount() int {
 func (r *sequencedFakeRepo) Create(context.Context, jobs.CreateParams) (uuid.UUID, error) {
 	return uuid.Nil, errors.New("sequencedFakeRepo: Create not implemented")
 }
+func (r *sequencedFakeRepo) PreAdmit(context.Context, uuid.UUID, string, int64) error {
+	return errors.New("sequencedFakeRepo: PreAdmit not implemented")
+}
 func (r *sequencedFakeRepo) Outputs(context.Context, uuid.UUID) ([]jobs.Output, error) {
 	return nil, errors.New("sequencedFakeRepo: Outputs not implemented")
 }

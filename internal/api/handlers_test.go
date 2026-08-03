@@ -57,6 +57,15 @@ type fakeRepo struct {
 	listFilter   jobs.ListFilter
 	listCursor   *jobs.Cursor
 	listLimit    int
+	// preAdmitErr is returned by PreAdmit; preAdmitCalls counts invocations
+	// so tests can assert the pre-upload quota gate ran exactly once (52-04).
+	preAdmitErr   error
+	preAdmitCalls int
+}
+
+func (f *fakeRepo) PreAdmit(_ context.Context, _ uuid.UUID, _ string, _ int64) error {
+	f.preAdmitCalls++
+	return f.preAdmitErr
 }
 
 func (f *fakeRepo) Create(_ context.Context, p jobs.CreateParams) (uuid.UUID, error) {
