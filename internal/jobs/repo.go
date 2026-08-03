@@ -127,7 +127,14 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		pver = &p.PresetVersion
 	}
 
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	// IsoLevel is pinned to ReadCommitted rather than inherited from the pool/
+	// DSN default (52-REVIEW.md WR-02): admitLocked's post-lock re-check
+	// inside this transaction only re-observes admissions committed while it
+	// waited on the advisory lock if each statement takes a fresh snapshot,
+	// which is a property of READ COMMITTED, not of the code. See
+	// admitLocked's doc comment (admission.go) for the failure mode this
+	// pin prevents.
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		// admitLocked runs FIRST, inside this same transaction, under a
 		// per-(client, engine) advisory lock: the occupancy count and the
 		// INSERT below must not be separable, or two API replicas could
@@ -638,7 +645,11 @@ func (r *Repo) transition(
 			return fmt.Errorf("marshal transition detail: %w", err)
 		}
 	}
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	// IsoLevel is pinned to ReadCommitted for the same reason as Repo.Create
+	// (52-REVIEW.md WR-02): the SELECT ... FOR UPDATE re-read below and
+	// recordUsage's ON CONFLICT upsert (MarkDone/MarkFailed/Cancel) both
+	// assume the same per-statement snapshot.
+	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		var from string
 		if err := tx.QueryRow(ctx,
 			`SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id,
