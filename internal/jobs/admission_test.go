@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"sync"
 	"testing"
 
@@ -552,6 +554,84 @@ func TestDailyJobsLimitWithoutConcurrencyCap(t *testing.T) {
 	}
 }
 
+// TestConcurrentBurstDailyJobsCapAdmitsExactlyOne is the lock-coverage pin
+// for the daily terms (Codex PR #5 review, P2b). It exists because neither
+// of this package's two other concurrency-shaped tests can catch the daily
+// subqueries leaving admitLocked's advisory-locked transaction:
+//
+//   - TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher performs only two
+//     SEQUENTIAL creates, so it still passes even if the daily in-flight
+//     subqueries were moved out of admitLocked's tx onto r.pool -- sequential
+//     calls never race regardless of which connection/transaction runs the
+//     read.
+//   - TestConcurrentBurstAdmitsExactlyK configures only max_concurrent, so
+//     the CONCURRENCY term -- not the daily term -- is what gets serialized
+//     there; it says nothing about the daily terms' lock coverage.
+//
+// Setting max_concurrent to nil here is what makes the DAILY term the thing
+// being serialized: with no concurrency cap, admitLocked's daily subqueries
+// (both the byte and job-count sums, computed by the SAME single SQL
+// statement under the SAME advisory lock -- so this one test pins the lock
+// coverage of both) are the only mechanism standing between 12 concurrent
+// creates and 12 concurrent admissions.
+//
+// Failure mode this pins: if the daily subqueries ever leave the
+// advisory-locked transaction (or the pg_advisory_xact_lock call in
+// admitLocked is removed), all 12 goroutines read an in-flight job count of
+// 0 before any insert commits, all 12 are admitted, and this test fails.
+// This was empirically confirmed while writing this test: temporarily
+// commenting out admitLocked's `SELECT pg_advisory_xact_lock($1, $2)` call
+// made this test FAIL (admitted count > 1); restoring the call made it PASS
+// again -- see 260803-obt-SUMMARY.md for the observed failure output.
+func TestConcurrentBurstDailyJobsCapAdmitsExactlyOne(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(1))
+
+	const n = 12
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = createFixture(t, r, clientID, "image", fmt.Sprintf("uploads/adm20/%d-in.png", i), 10)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var okCount, rejectCount int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			okCount++
+		case errors.Is(err, ErrDailyJobsLimit):
+			rejectCount++
+		default:
+			t.Fatalf("unexpected error from concurrent create: %v", err)
+		}
+	}
+	if okCount != 1 {
+		t.Fatalf("okCount = %d, want exactly 1", okCount)
+	}
+	if rejectCount != 11 {
+		t.Fatalf("rejectCount = %d, want exactly 11", rejectCount)
+	}
+
+	var count int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE client_id = $1`, clientID).Scan(&count); err != nil {
+		t.Fatalf("count jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("job row count = %d, want exactly 1 (the rejected transactions must leave nothing behind)", count)
+	}
+}
+
 // TestDailyBytesLimitWithoutConcurrencyCap is TestDailyJobsLimitWithoutConcurrencyCap's
 // counterpart for the byte cap: with no concurrency cap set, the in-flight
 // byte term must reject a create as soon as the running in-flight total
@@ -847,5 +927,135 @@ func TestQuotaLockKeysDeterministicAndDistinct(t *testing.T) {
 	c1, c2 := quotaLockKeys(clientA, "document")
 	if a1 == c1 && a2 == c2 {
 		t.Fatalf("quotaLockKeys must differ for different engines: image=(%d,%d) document=(%d,%d)", a1, a2, c1, c2)
+	}
+}
+
+// statusLiteralPattern extracts each `'<value>'::text` literal out of a
+// pg_get_constraintdef/pg_get_indexdef string -- e.g. the
+// `ARRAY['queued'::text, 'active'::text]` shape both functions return for a
+// `status = ANY (ARRAY[...])` predicate. Never compared as raw SQL strings:
+// every comparison in TestEveryJobStatusIsClassifiedForQuotaAccounting goes
+// through this extraction first, then an order-independent set comparison.
+var statusLiteralPattern = regexp.MustCompile(`'([a-z_]+)'::text`)
+
+// extractStatusLiterals returns the sorted, deduplicated set of status
+// literals found in def (a pg_get_constraintdef/pg_get_indexdef string).
+func extractStatusLiterals(def string) []string {
+	matches := statusLiteralPattern.FindAllStringSubmatch(def, -1)
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		seen[m[1]] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// sortedSet returns a sorted, deduplicated copy of the union of one or more
+// string slices, for order-independent comparison.
+func sortedSet(slices ...[]string) []string {
+	seen := make(map[string]struct{})
+	for _, sl := range slices {
+		for _, s := range sl {
+			seen[s] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// setDiff returns (in got but not want, in want but not got) -- both
+// order-independent -- for a precise "what's missing / what's extra"
+// failure message rather than a raw slice dump.
+func setDiff(got, want []string) (extra, missing []string) {
+	gotSet := make(map[string]struct{}, len(got))
+	for _, s := range got {
+		gotSet[s] = struct{}{}
+	}
+	wantSet := make(map[string]struct{}, len(want))
+	for _, s := range want {
+		wantSet[s] = struct{}{}
+	}
+	for s := range gotSet {
+		if _, ok := wantSet[s]; !ok {
+			extra = append(extra, s)
+		}
+	}
+	for s := range wantSet {
+		if _, ok := gotSet[s]; !ok {
+			missing = append(missing, s)
+		}
+	}
+	sort.Strings(extra)
+	sort.Strings(missing)
+	return extra, missing
+}
+
+// TestEveryJobStatusIsClassifiedForQuotaAccounting is the live-schema
+// invariant test for the quota status partition (Codex PR #5 review, P3):
+// every value in the jobs.status CHECK domain must land in exactly one of
+// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses,
+// and quotaInFlightStatuses must never drift from
+// jobs_client_engine_inflight_idx's own partial predicate. Both reads go
+// through the live schema (pg_get_constraintdef / pg_get_indexdef), never a
+// hard-coded copy of either definition, so this test fails the moment the
+// schema and the Go declaration disagree in either direction.
+func TestEveryJobStatusIsClassifiedForQuotaAccounting(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	var checkDef string
+	if err := r.pool.QueryRow(ctx, `
+		SELECT pg_get_constraintdef(oid) FROM pg_constraint
+		WHERE conrelid = 'jobs'::regclass AND contype = 'c'
+			AND pg_get_constraintdef(oid) LIKE '%(status = ANY%'`,
+	).Scan(&checkDef); err != nil {
+		t.Fatalf("read jobs status CHECK definition: %v", err)
+	}
+	schemaStatuses := extractStatusLiterals(checkDef)
+	declaredStatuses := sortedSet(quotaInFlightStatuses, quotaLedgerStatuses, quotaUnaccountedStatuses)
+
+	if extra, missing := setDiff(schemaStatuses, declaredStatuses); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"jobs.status CHECK domain %v and the declared quota partition %v disagree (schema has but partition doesn't: %v; partition has but schema doesn't: %v) -- "+
+				"decide whether each newly added status consumes quota: move it into quotaInFlightStatuses (also requires changing "+
+				"jobs_client_engine_inflight_idx's predicate in a new migration and the in-flight SQL literals in evaluate), "+
+				"into quotaLedgerStatuses, or into quotaUnaccountedStatuses with a recorded reason",
+			schemaStatuses, declaredStatuses, extra, missing,
+		)
+	}
+
+	var indexDef string
+	if err := r.pool.QueryRow(ctx, `SELECT pg_get_indexdef('jobs_client_engine_inflight_idx'::regclass)`).Scan(&indexDef); err != nil {
+		t.Fatalf("read jobs_client_engine_inflight_idx definition: %v", err)
+	}
+	indexStatuses := extractStatusLiterals(indexDef)
+	inFlightStatuses := sortedSet(quotaInFlightStatuses)
+
+	if extra, missing := setDiff(indexStatuses, inFlightStatuses); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"jobs_client_engine_inflight_idx's WHERE predicate %v and quotaInFlightStatuses %v disagree (index has but declaration doesn't: %v; declaration has but index doesn't: %v) -- "+
+				"the index predicate and the Go declaration must never drift apart in either direction",
+			indexStatuses, inFlightStatuses, extra, missing,
+		)
+	}
+
+	unaccounted := sortedSet(quotaUnaccountedStatuses)
+	wantUnaccounted := []string{StatusAwaitingUpload}
+	if extra, missing := setDiff(unaccounted, wantUnaccounted); len(extra) > 0 || len(missing) > 0 {
+		t.Fatalf(
+			"quotaUnaccountedStatuses = %v, want exactly %v (extra: %v, missing: %v) -- "+
+				"removing an entry from quotaUnaccountedStatuses is only correct together with moving that status into "+
+				"quotaInFlightStatuses or quotaLedgerStatuses; for the in-flight set that also means changing "+
+				"jobs_client_engine_inflight_idx's predicate in a new migration",
+			unaccounted, wantUnaccounted, extra, missing,
+		)
 	}
 }
