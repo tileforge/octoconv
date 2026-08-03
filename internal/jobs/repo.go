@@ -231,14 +231,33 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 // simply outside allowedFrom and the illegal-transition error surfaces
 // instead of silently overwriting a terminal outcome. detail is nil (no
 // webhook is fired on cancel, D-08; no structured detail is needed).
-// Deliberately does NOT call recordUsage: a cancel is user-initiated and
-// never reaches MarkDone/MarkFailed, so canceled jobs are intentionally not
-// rolled up into client_usage_daily (see 0011_client_usage_daily.sql).
+//
+// A canceled job's input bytes and its job count ARE charged to the
+// client's daily ledger (52-REVIEW.md WR-01, migration 0014), superseding
+// the earlier rule that a cancel never touches the rollup: Phase 52 made
+// client_usage_daily the input to quota admission (admission.go), so
+// leaving cancels free makes `create -> cancel -> create ...` an unbounded
+// evasion path against max_daily_bytes/max_daily_jobs — and after plan
+// 52-06 it is the one hole in-flight counting cannot cover on its own, since
+// a canceled job leaves the queued/active set and, absent this write, its
+// cost would vanish entirely at the instant of cancellation. recordUsage
+// runs INSIDE this same transition transaction, after the status UPDATE —
+// exactly like MarkDone/MarkFailed — so the crossover from "in-flight" to
+// "rolled up" is atomic and the {queued,active} allow-list above (which
+// rejects a second cancel of the same job before apply ever runs) is what
+// keeps this exactly-once, for the same reason it holds for MarkDone and
+// MarkFailed. attempt is passed as 0: a job canceled while active is
+// charged the elapsed time recordUsage derives from started_at, and a job
+// canceled while still queued — which never occupied a worker — is charged
+// 0, via the same fallback CASE expression recordUsage already implements
+// for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id)
-		return err
+		if _, err := tx.Exec(ctx,
+			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
+			return err
+		}
+		return r.recordUsage(ctx, tx, id, StatusCanceled, 0)
 	})
 }
 

@@ -635,6 +635,85 @@ func TestInFlightAndTerminalUsageCountedExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestCanceledJobStillCountsAgainstDailyQuota is the WR-01 evasion path,
+// inverted into a permanent regression gate. Before Cancel charged
+// recordUsage, A's cost vanished on cancel and C was admitted -- an
+// unbounded `create -> cancel` loop never advanced the cap. max_concurrent
+// is nil so this exercises the daily path specifically (a concurrency cap
+// would free A's slot for an unrelated reason and mask the evasion).
+func TestCanceledJobStillCountsAgainstDailyQuota(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(2))
+
+	idA, err := createFixture(t, r, clientID, "image", "uploads/adm17/a-in.png", 10)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if err := r.Cancel(ctx, idA); err != nil {
+		t.Fatalf("Cancel(A): %v", err)
+	}
+
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm17/b-in.png", 10); err != nil {
+		t.Fatalf("create B (1 canceled + 1 own = 2<=2): %v", err)
+	}
+
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm17/c-in.png", 10); !errors.Is(err, ErrDailyJobsLimit) {
+		t.Fatalf("create C (1 canceled + 1 in-flight B + 1 own = 3>2) error = %v, want ErrDailyJobsLimit", err)
+	}
+
+	var jobCount int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT job_count FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date AND status = 'canceled'`,
+		clientID,
+	).Scan(&jobCount); err != nil {
+		t.Fatalf("read canceled client_usage_daily row: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("canceled row job_count = %d, want exactly 1", jobCount)
+	}
+}
+
+// TestCancelDoesNotDoubleCountAcrossInFlightAndRollup pins that a canceled
+// job's bytes are charged exactly once. If the cancel were charged twice --
+// once while in-flight and again in the rollup -- create C below would
+// already read 400 and be rejected one create early, instead of admitted
+// at the exact 300 boundary. This fails loudly on a double count rather
+// than merely not detecting one.
+func TestCancelDoesNotDoubleCountAcrossInFlightAndRollup(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, int64Ptr(300), nil)
+
+	idA, err := createFixture(t, r, clientID, "image", "uploads/adm18/a-in.png", 100)
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	if err := r.Cancel(ctx, idA); err != nil {
+		t.Fatalf("Cancel(A): %v", err)
+	}
+
+	// B: rollup 100 (A, canceled) + in-flight 0 + own 100 = 200 <= 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/b-in.png", 100); err != nil {
+		t.Fatalf("create B (rollup 100 + in-flight 0 + own 100 = 200<=300): %v", err)
+	}
+	// C: rollup 100 (A) + in-flight 100 (B) + own 100 = 300 <= 300, the exact
+	// boundary. If A were double-counted, this would already read 400 and
+	// be rejected.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/c-in.png", 100); err != nil {
+		t.Fatalf("create C (rollup 100 + in-flight 100 + own 100 = 300<=300): %v", err)
+	}
+	// D: rollup 100 (A) + in-flight 200 (B, C) + own 100 = 400 > 300.
+	if _, err := createFixture(t, r, clientID, "image", "uploads/adm18/d-in.png", 100); !errors.Is(err, ErrDailyBytesLimit) {
+		t.Fatalf("create D (400>300) error = %v, want ErrDailyBytesLimit", err)
+	}
+}
+
 // TestQuotaLockKeysDeterministicAndDistinct is a pure Go unit test (no
 // DATABASE_URL required): the lock-key derivation is deterministic across
 // calls, distinct for different clients and different engines, and pinned
