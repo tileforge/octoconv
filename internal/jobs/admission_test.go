@@ -469,11 +469,36 @@ func TestPreAdmitMatchesAuthoritativeVerdict(t *testing.T) {
 // premise is gone now that in-flight work is charged at admission. With
 // max_concurrent = 3 (higher than 1) and max_daily_bytes sized to exactly
 // one job's input, exactly ONE create is admitted and the SECOND is
-// rejected with ErrDailyBytesLimit, NOT ErrConcurrencyLimit -- proving the
-// daily term, not the concurrency cap, is what stops it. A daily cap sized
-// for one job now admits one job in every configuration, whether or not a
-// concurrency cap is also set, and the K x MAX_INPUT_BYTES overshoot D-15
-// used to accept is gone.
+// rejected with ErrDailyBytesLimit -- the sole surviving assertion below
+// proves this directly: the daily term stops the 2nd create while the
+// concurrency cap (1 of 3 in flight) still has headroom, so ErrDailyBytesLimit
+// is the only sentinel that satisfies errors.Is here (ErrConcurrencyLimit
+// cannot: the same evaluate call returns exactly one verdict sentinel, first-
+// violation-wins, and concurrency is checked first -- see evaluate's doc
+// comment -- so a daily rejection here is only possible when the
+// concurrency check already passed). A daily cap sized for one job now
+// admits one job in every configuration, whether or not a concurrency cap
+// is also set, and the K x MAX_INPUT_BYTES overshoot D-15 used to accept is
+// gone.
+//
+// CodeRabbit (relayed, PR #5 review): this test used to ALSO assert
+// !errors.Is(err, ErrConcurrencyLimit) in a second branch reached only when
+// the errors.Is(err, ErrDailyBytesLimit) check above had already failed to
+// fatal -- i.e. only when err WAS ErrDailyBytesLimit, at which point
+// errors.Is(err, ErrConcurrencyLimit) can never be true (both are distinct
+// unwrapped errors.New sentinels, never wrapped together). That branch was
+// unreachable dead code and has been removed; the surviving assertion above
+// already proves what it existed for.
+//
+// The in-flight verification query below is now scoped to engine='image',
+// matching production evaluate's own engine predicate (both in-flight
+// terms filter on j.engine, admission.go). Made load-bearing, not
+// decorative, by creating a same-client DIFFERENT-engine in-flight job
+// (document, no client_limits row for this client, so it is admitted and
+// is invisible to the image engine's quota) between the two image creates:
+// without the engine predicate, the byte sum would read 1500 (1000 image +
+// 500 document) instead of exactly 1000, and the count would read 2
+// instead of exactly 1.
 func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
@@ -488,12 +513,16 @@ func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 		t.Fatalf("1st create (0+inputSize<=inputSize): %v", err)
 	}
 
+	// Cross-engine in-flight fixture (document, no limits row -> unlimited,
+	// admitted and left queued): invisible to the image engine's daily term
+	// unless the engine predicate below is real.
+	if _, err := createFixture(t, r, clientID, "document", "uploads/adm13/x-in.docx", 500); err != nil {
+		t.Fatalf("cross-engine (document) in-flight create: %v", err)
+	}
+
 	_, err := createFixture(t, r, clientID, "image", "uploads/adm13/1-in.png", inputSize)
 	if !errors.Is(err, ErrDailyBytesLimit) {
-		t.Fatalf("2nd create error = %v, want ErrDailyBytesLimit", err)
-	}
-	if errors.Is(err, ErrConcurrencyLimit) {
-		t.Fatalf("2nd create error = %v, must NOT be ErrConcurrencyLimit -- the daily term, not the concurrency cap (still at 1 of 3), must be what stops it", err)
+		t.Fatalf("2nd create error = %v, want ErrDailyBytesLimit -- the daily term, not the concurrency cap (still at 1 of 3), must be what stops it", err)
 	}
 
 	var totalBytes int64
@@ -501,13 +530,24 @@ func TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher(t *testing.T) {
 		SELECT COALESCE(sum(ji.size_bytes), 0)
 		FROM job_inputs ji
 		JOIN jobs j ON j.id = ji.job_id
-		WHERE j.client_id = $1 AND j.status IN ('queued', 'active')`,
+		WHERE j.client_id = $1 AND j.engine = 'image' AND j.status IN ('queued', 'active')`,
 		clientID,
 	).Scan(&totalBytes); err != nil {
 		t.Fatalf("sum in-flight input bytes: %v", err)
 	}
 	if totalBytes != inputSize {
-		t.Fatalf("in-flight bytes = %d, want exactly %d (one job's worth, not K x inputSize)", totalBytes, inputSize)
+		t.Fatalf("in-flight image bytes = %d, want exactly %d (one image job's worth, not K x inputSize, and not the cross-engine document job's bytes)", totalBytes, inputSize)
+	}
+
+	var imageCount int
+	if err := r.pool.QueryRow(ctx, `
+		SELECT count(*) FROM jobs WHERE client_id = $1 AND engine = 'image' AND status IN ('queued', 'active')`,
+		clientID,
+	).Scan(&imageCount); err != nil {
+		t.Fatalf("count in-flight image jobs: %v", err)
+	}
+	if imageCount != 1 {
+		t.Fatalf("in-flight image job count = %d, want exactly 1 (one image job admitted, the rejected transaction left nothing behind, and the document job is correctly not counted)", imageCount)
 	}
 }
 
@@ -1045,8 +1085,12 @@ func extractStatusLiterals(def string) []string {
 	return out
 }
 
-// sortedSet returns a sorted, deduplicated copy of the union of one or more
-// string slices, for order-independent comparison.
+// sortedSet returns a sorted, deduplicated copy of the UNION of one or more
+// string slices, for order-independent comparison. Because it deduplicates,
+// this is a coverage helper only -- a status present in two of the three
+// quota sets collapses to one entry here and the union looks unchanged.
+// sortedSet cannot itself witness disjointness (partition); see setIntersect
+// for that.
 func sortedSet(slices ...[]string) []string {
 	seen := make(map[string]struct{})
 	for _, sl := range slices {
@@ -1089,18 +1133,73 @@ func setDiff(got, want []string) (extra, missing []string) {
 	return extra, missing
 }
 
+// setIntersect returns the sorted intersection of a and b, for the
+// disjointness check sortedSet cannot perform: sortedSet's union
+// deduplicates, so a status present in BOTH a and b still produces a
+// union with no visible sign of the collision. This is a plain O(n*m)
+// intersect over string slices sized in the single digits (the three quota
+// status sets), matching setDiff's own style.
+func setIntersect(a, b []string) []string {
+	bSet := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		bSet[s] = struct{}{}
+	}
+	var out []string
+	for _, s := range a {
+		if _, ok := bSet[s]; ok {
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // TestEveryJobStatusIsClassifiedForQuotaAccounting is the live-schema
 // invariant test for the quota status partition (Codex PR #5 review, P3):
 // every value in the jobs.status CHECK domain must land in exactly one of
-// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses,
-// and quotaInFlightStatuses must never drift from
-// jobs_client_engine_inflight_idx's own partial predicate. Both reads go
-// through the live schema (pg_get_constraintdef / pg_get_indexdef), never a
-// hard-coded copy of either definition, so this test fails the moment the
-// schema and the Go declaration disagree in either direction.
+// quotaInFlightStatuses, quotaLedgerStatuses or quotaUnaccountedStatuses --
+// both that every schema status is COVERED by the union (the pre-existing
+// checks below) AND that no status is DOUBLE-COUNTED across two of the
+// three sets (the new pairwise-disjointness check, added first): a status
+// present in two sets consumes quota in two contradictory ways, and because
+// sortedSet's union deduplicates, the union alone cannot catch that --
+// a future change that added, say, awaiting_upload to quotaLedgerStatuses
+// while leaving it in quotaUnaccountedStatuses would leave every pre-
+// existing assertion in this test green while the two sets openly
+// contradict each other about whether that status consumes quota.
+// quotaInFlightStatuses must also never drift from
+// jobs_client_engine_inflight_idx's own partial predicate. All three reads
+// go through the live schema (pg_get_constraintdef / pg_get_indexdef),
+// never a hard-coded copy of either definition, so this test fails the
+// moment the schema and the Go declaration disagree in either direction.
 func TestEveryJobStatusIsClassifiedForQuotaAccounting(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
+
+	// Disjointness FIRST, before the union/coverage checks below: a double-
+	// membership defect should be reported as exactly that -- a status
+	// consuming quota in two ways -- not as a confusing union mismatch that
+	// never actually occurs (the union stays correct even when a status is
+	// double-counted).
+	pairs := []struct {
+		name  string
+		nameA string
+		a     []string
+		nameB string
+		b     []string
+	}{
+		{"in-flight vs ledger", "quotaInFlightStatuses", quotaInFlightStatuses, "quotaLedgerStatuses", quotaLedgerStatuses},
+		{"in-flight vs unaccounted", "quotaInFlightStatuses", quotaInFlightStatuses, "quotaUnaccountedStatuses", quotaUnaccountedStatuses},
+		{"ledger vs unaccounted", "quotaLedgerStatuses", quotaLedgerStatuses, "quotaUnaccountedStatuses", quotaUnaccountedStatuses},
+	}
+	for _, p := range pairs {
+		if dup := setIntersect(p.a, p.b); len(dup) > 0 {
+			t.Fatalf(
+				"%s: status(es) %v appear in BOTH %s and %s -- a status must consume quota in exactly one way; move it out of one of these two sets",
+				p.name, dup, p.nameA, p.nameB,
+			)
+		}
+	}
 
 	var checkDef string
 	if err := r.pool.QueryRow(ctx, `
