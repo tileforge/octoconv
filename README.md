@@ -283,9 +283,12 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
   tolerance no longer exists. A canceled job is charged to the daily ledger for the input
   bytes and job count it consumed — canceling does not refund the day's budget — because a
   free cancel would make `create -> cancel -> create` an unbounded way around a daily cap.
-  The in-flight term is not scoped to a creation date: a job still in flight across a UTC
-  midnight is charged against each day it is in flight and again against the day it
-  terminates, which is deliberately conservative.
+  The in-flight term is not scoped to a creation date, so a job still in flight across a UTC
+  midnight keeps counting on the new day. Its ledger row is written for the UTC day on which
+  its terminal transaction STARTED, because PostgreSQL's `now()` is transaction-start time —
+  so a terminal transition that begins just before midnight and commits just after it books
+  the job to the previous day and stops contributing to the new day's total. This is a known,
+  accepted narrow window, not a refund path.
 - **What can still overshoot:** because the pre-upload gate is unlocked by design, a burst of
   simultaneous requests from one client can upload before the authoritative check rejects
   them — wasted uploads, never over-admission — and that residual is measured by the phase's

@@ -40,8 +40,32 @@
 -- and re-added under that same explicit name so a future migration can
 -- reference it deterministically instead of depending on the auto-naming
 -- rule again.
+--
+-- Why the DROP is bare, not `DROP CONSTRAINT IF EXISTS` (Codex PR #5 review,
+-- P1): `IF EXISTS` turns schema drift into a silent pass. If the original
+-- 0011 column CHECK ever lived under a different auto-generated name on some
+-- database, the drop above would be a no-op, the ADD CONSTRAINT below would
+-- still succeed alongside the untouched survivor, and that surviving
+-- `CHECK (status IN ('done','failed'))` would then reject every
+-- canceled-usage row -- `Repo.Cancel` would roll back on every call and the
+-- API would return 500 indefinitely, while `schema_migrations` records this
+-- migration as successfully applied. A bare `DROP CONSTRAINT`, matching the
+-- convention already used by 0005/0006/0009/0010, makes that drifted-schema
+-- case abort the migration loudly instead.
+--
+-- Why this file was corrected in place rather than superseded by a new
+-- 0015: this migration is unreleased -- PR #5 has not merged, so the local
+-- dev instance is the only database that has ever run it, and a live
+-- `pg_constraint` read there confirms exactly one status CHECK already
+-- matching this file's ADD CONSTRAINT below (editing the text is therefore a
+-- no-op against that database, not a repair of a drifted one). A 0015 could
+-- not have closed the defect anyway: on a fresh or not-yet-migrated database
+-- 0014 still runs first, and with `IF EXISTS` it would still pass silently
+-- on a drifted schema before 0015 ever ran -- only the bare DROP here makes
+-- that path loud, and a 0015 that merely re-asserted the constraint would
+-- add permanent noise to every database while closing nothing.
 ALTER TABLE client_usage_daily
-    DROP CONSTRAINT IF EXISTS client_usage_daily_status_check;
+    DROP CONSTRAINT client_usage_daily_status_check;
 
 ALTER TABLE client_usage_daily
     ADD CONSTRAINT client_usage_daily_status_check

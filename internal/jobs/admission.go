@@ -260,11 +260,39 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 			// is the `day` value recordUsage writes, while the in-flight
 			// term is date-agnostic because a job that is queued or active
 			// right now is consuming capacity right now, regardless of when
-			// it was created. Two consequences: (a) a job in flight across a
-			// UTC midnight is charged against each day it is in flight and
-			// again against the day it terminates -- deliberately
-			// conservative and fail-closed rather than a free window at the
-			// day boundary; (b) no timestamptz-versus-date comparison is
+			// it was created. Two consequences:
+			//
+			// (a) (Codex PR #5 review, P2a -- corrected; the prior text here
+			// claimed a job in flight across UTC midnight was charged against
+			// each day it is in flight AND again against the day it
+			// terminates, "deliberately conservative and fail-closed" -- that
+			// claim is false in a narrow window, and this is the verified
+			// behavior instead.) While a job is queued or active it is
+			// counted by the in-flight term above in every admission for its
+			// (client, engine) pair, on whatever UTC day that admission
+			// runs -- the in-flight term has no date predicate. When the job
+			// terminates, recordUsage (usage.go) writes its ledger row with
+			// day = (now() AT TIME ZONE 'utc')::date, and PostgreSQL's now()
+			// is transaction-START time, not wall-clock time -- the same
+			// now() this query uses for its own day filter above. Therefore
+			// the ledger row lands on the UTC date at which the terminal
+			// transition's transaction BEGAN, not the date at which it
+			// committed. In the narrow window where a terminal transaction
+			// begins before UTC midnight and commits after it -- for example
+			// while blocked on the jobs-row SELECT ... FOR UPDATE -- the row
+			// is written to the PREVIOUS day, and from the instant that
+			// transaction commits the job appears in neither the new day's
+			// in-flight term nor the new day's ledger term: its cost is
+			// absent from the new day's total. This is accepted, not fixed:
+			// clock_timestamp() would place the row on the commit-side day
+			// but would make day non-deterministic within a transaction,
+			// which is explicitly not wanted (recordUsage keeps now()); the
+			// outcome is defensible because the job is charged in full to
+			// the day its terminal transition began, and on the new day it
+			// existed only for the tail of a transaction that was already
+			// committing.
+			//
+			// (b) no timestamptz-versus-date comparison is
 			// introduced, so this check never acquires a dependency on the
 			// session TimeZone setting, which a
 			// `j.created_at >= (now() AT TIME ZONE 'utc')::date` predicate
