@@ -101,6 +101,12 @@ func clientKey(r *http.Request) (string, error) {
 // a small JSON error body matching the shape used elsewhere in the API
 // (internal/api/handlers.go's writeError), duplicated locally rather than
 // imported to keep internal/ratelimit free of an internal/api dependency.
+// code is the machine-readable discriminator QUOT-03 requires so a client
+// can tell a per-minute rate limit (retry in Retry-After seconds, the same
+// request will succeed) from a quota rejection (code=quota_exceeded, plan
+// 52-04), which may need to wait until the UTC day rolls over. D-10 scopes
+// code to these two 429s only -- the general error-code sweep is SEED-020 --
+// so a reader must not "helpfully" add code to every other error body.
 func limitHandler(window time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(window/time.Second)))
@@ -108,6 +114,6 @@ func limitHandler(window time.Duration) http.HandlerFunc {
 		w.WriteHeader(http.StatusTooManyRequests)
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
-		_ = enc.Encode(map[string]string{"error": "rate limit exceeded"})
+		_ = enc.Encode(map[string]string{"error": "rate limit exceeded", "code": "rate_limited"})
 	}
 }

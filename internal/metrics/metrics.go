@@ -44,6 +44,18 @@ var (
 		Name: "octoconv_client_job_outcomes_total",
 		Help: "Total number of conversion jobs reaching a terminal state, labeled by client, engine and status. client_id collapses to the literal \"overflow\" once ClientLabelCeiling distinct clients have been observed.",
 	}, []string{"client_id", "engine", "status"})
+
+	// quotaWouldReject is the QUOT-04 observe-mode signal: an operator watches
+	// this counter for a full quota window before flipping a client's
+	// enforcement mode on. reason is one of "concurrency", "daily_bytes", or
+	// "daily_jobs" (the taxonomy plan 52-03 defines). client_id goes through
+	// the SAME bounded allocator as octoconv_client_job_outcomes_total above
+	// (clientLabel/defaultClientAllocator) and collapses to the literal
+	// "overflow" past ClientLabelCeiling -- see RecordQuotaWouldReject.
+	quotaWouldReject = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "octoconv_quota_would_reject_total",
+		Help: "Total number of admissions that would have been rejected by a quota, labeled by client, engine and reason (concurrency/daily_bytes/daily_jobs). client_id collapses to the literal \"overflow\" once ClientLabelCeiling distinct clients have been observed, using the same bounded allocator as octoconv_client_job_outcomes_total.",
+	}, []string{"client_id", "engine", "reason"})
 )
 
 // RecordJobOutcome increments the job-outcome counter and observes the
@@ -206,4 +218,24 @@ func clientLabel(clientID string) string {
 // to revisit the design rather than to raise the number.
 func RecordClientJobOutcome(clientID, engine, status string) {
 	clientJobOutcomes.WithLabelValues(clientLabel(clientID), engine, status).Inc()
+}
+
+// RecordQuotaWouldReject increments the observe-mode quota-rejection counter
+// for the given client, engine and reason ("concurrency", "daily_bytes", or
+// "daily_jobs"). clientID is resolved through the bounded allocator before
+// use -- see RecordClientJobOutcome's doc comment above for the precise
+// scope of that bound (per-process, first-seen-first-served, not a global
+// Prometheus-wide cap).
+//
+// D-14: this is a deliberate reuse decision, not a placeholder. When real
+// enforcement goes live (plan 52-04), actual rejections increment this SAME
+// counter with the SAME three reason values -- there is no second metric,
+// mirroring how reconcilerActions already serves many action labels off one
+// CounterVec. The observe-vs-enforce distinction an operator cares about
+// ("was this a dry-run signal or an actual 429?") is read from
+// clients.enforcement_mode in Postgres, not from a metric label -- adding an
+// enforcement-mode label here would double this counter's cardinality for a
+// distinction the accounting table already answers.
+func RecordQuotaWouldReject(clientID, engine, reason string) {
+	quotaWouldReject.WithLabelValues(clientLabel(clientID), engine, reason).Inc()
 }

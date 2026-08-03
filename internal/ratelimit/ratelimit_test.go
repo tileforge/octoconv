@@ -1,10 +1,10 @@
 package ratelimit
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -54,11 +54,26 @@ func TestPerClient_OverLimitReturns429WithRetryAfter(t *testing.T) {
 	if retryAfter == "" {
 		t.Fatal("3rd request: Retry-After header is empty")
 	}
-	if _, err := strconv.Atoi(retryAfter); err != nil {
+	retryAfterInt, err := strconv.Atoi(retryAfter)
+	if err != nil {
 		t.Fatalf("Retry-After %q is not an integer seconds value: %v", retryAfter, err)
 	}
-	if !strings.Contains(rec.Body.String(), "error") {
-		t.Fatalf("429 body %q does not contain %q", rec.Body.String(), "error")
+	if retryAfterInt <= 0 {
+		t.Fatalf("Retry-After = %d, want a positive integer", retryAfterInt)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode 429 body: %v", err)
+	}
+	if body.Error != "rate limit exceeded" {
+		t.Fatalf("429 body error = %q, want %q", body.Error, "rate limit exceeded")
+	}
+	if body.Code != "rate_limited" {
+		t.Fatalf("429 body code = %q, want %q", body.Code, "rate_limited")
 	}
 }
 
