@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -338,6 +339,138 @@ func TestClient_DialRedirect(t *testing.T) {
 			t.Fatal("Download against an unresolvable host with the dial-redirect knob empty: expected an error")
 		}
 	})
+}
+
+// TestClient_QuotaExceeded429_CarriesCodeAndRetryAfter (D-12, QUOT-03) proves
+// a 429 with code=quota_exceeded and a Retry-After header survives the
+// proxy hop into the tool-visible error text, distinguishable from a
+// rate-limited 429 (see the sibling test below).
+func TestClient_QuotaExceeded429_CarriesCodeAndRetryAfter(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "quota exceeded for this engine", "code": "quota_exceeded"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.GetJob(context.Background(), "some-job-id")
+	if err == nil {
+		t.Fatal("GetJob: expected a 429 error")
+	}
+	if !strings.Contains(err.Error(), "quota_exceeded") {
+		t.Fatalf("GetJob error = %q, want it to contain %q", err.Error(), "quota_exceeded")
+	}
+	if !strings.Contains(err.Error(), "45") {
+		t.Fatalf("GetJob error = %q, want it to contain the retry_after value %q", err.Error(), "45")
+	}
+}
+
+// TestClient_RateLimited429_CarriesCode (D-12, QUOT-03) proves a
+// rate-limited 429 is distinguishable through the proxy from a quota
+// rejection -- same code path, different code value.
+func TestClient_RateLimited429_CarriesCode(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "rate limit exceeded", "code": "rate_limited"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.GetJob(context.Background(), "some-job-id")
+	if err == nil {
+		t.Fatal("GetJob: expected a 429 error")
+	}
+	if !strings.Contains(err.Error(), "rate_limited") {
+		t.Fatalf("GetJob error = %q, want it to contain %q", err.Error(), "rate_limited")
+	}
+}
+
+// TestClient_422NoCode_UnchangedErrorText (regression guard) proves a 422
+// body with no code field produces the exact same error text as before this
+// change -- extractErrorBody's fallback path is unaffected.
+func TestClient_422NoCode_UnchangedErrorText(t *testing.T) {
+	const errText = "unsupported conversion: png -> weird"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errText})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.CreateJob(context.Background(), sampleFile, "weird", "", "")
+	if err == nil {
+		t.Fatal("CreateJob: expected an error for an unsupported pair")
+	}
+	wantErr := fmt.Sprintf("create job: %s", errText)
+	if err.Error() != wantErr {
+		t.Fatalf("CreateJob error = %q, want exactly %q (no code/-suffix)", err.Error(), wantErr)
+	}
+}
+
+// TestClient_QuotaAndRateLimit429_KeyNeverLeaks (D-08/D-12) proves the API
+// key is absent from the new code/retry-bearing error branches specifically
+// -- TestClient_KeyNeverLeaks did not previously exercise these branches.
+func TestClient_QuotaAndRateLimit429_KeyNeverLeaks(t *testing.T) {
+	const key = "super-secret-leak-detector-quota-000111"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "quota exceeded for this engine", "code": "quota_exceeded"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         key,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.GetJob(context.Background(), "some-job-id")
+	if err == nil {
+		t.Fatal("GetJob: expected a 429 error")
+	}
+	if strings.Contains(err.Error(), key) {
+		t.Fatalf("quota-rejection error leaked the API key: %q", err.Error())
+	}
 }
 
 func TestListFormats(t *testing.T) {
