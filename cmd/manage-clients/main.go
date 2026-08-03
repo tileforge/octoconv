@@ -13,9 +13,11 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/google/uuid"
 )
@@ -118,6 +120,9 @@ func main() {
 			log.Fatalf("invalid client id: %v", err)
 		}
 		engine := os.Args[3]
+		if err := validateEngine(engine); err != nil {
+			log.Fatalf("invalid engine: %v", err)
+		}
 
 		maxConcurrent, err := parseOptionalInt(os.Args[4])
 		if err != nil {
@@ -144,6 +149,17 @@ func main() {
 		log.Println("set limit for client", id, "engine", engine)
 
 	case "clear-limit":
+		// Deliberately NO validateEngine call here (divergence from
+		// 52-REVIEW.md WR-08's "apply the same check in clear-limit"
+		// suggestion, made and recorded here on purpose): a client_limits
+		// row with a typo'd engine can only exist if it was written before
+		// this validation existed. Validating on the delete path would make
+		// such a row permanently unremovable through the CLI -- the operator
+		// would have to reach for raw SQL to undo an operator typo that this
+		// very check was meant to prevent recurring. show-limits below is
+		// symmetric: it must keep displaying every row exactly as stored,
+		// including a bad one, because that is how the operator finds it in
+		// the first place.
 		if len(os.Args) != 4 {
 			usage()
 		}
@@ -207,9 +223,27 @@ func main() {
 }
 
 func usage() {
-	log.Fatalf("usage: manage-clients <create <name>|add-key <client-id>|revoke <client-id> <primary|secondary>|" +
-		"set-limit <client-id> <engine> <max-concurrent|-> <max-daily-bytes|-> <max-daily-jobs|->|" +
+	// The set-limit engine placeholder is built from convert.AllEngines()
+	// so the closed set stays discoverable in --help/error output without
+	// duplicating the seven engine-class names a second time here.
+	engines := strings.Join(convert.AllEngines(), "|")
+	log.Fatal("usage: manage-clients <create <name>|add-key <client-id>|revoke <client-id> <primary|secondary>|" +
+		"set-limit <client-id> <" + engines + "> <max-concurrent|-> <max-daily-bytes|-> <max-daily-jobs|->|" +
 		"clear-limit <client-id> <engine>|show-limits <client-id>|set-mode <client-id> <observe|enforce>>")
+}
+
+// validateEngine reports an error unless engine is exactly one of
+// convert.AllEngines(). It exists as a separate, unit-testable function
+// (rather than inlined into the set-limit case) precisely so it can be
+// exercised without a database. The error names the rejected token verbatim
+// and lists the known engine classes, mirroring parseOptionalInt's
+// fmt.Errorf("%q is not ...") voice so the CLI's error style stays uniform.
+func validateEngine(engine string) error {
+	if convert.IsKnownEngine(engine) {
+		return nil
+	}
+	return fmt.Errorf("%q is not a known engine class (must be one of: %s)",
+		engine, strings.Join(convert.AllEngines(), ", "))
 }
 
 // parseOptionalInt parses a set-limit numeric argument: the literal "-"

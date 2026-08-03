@@ -169,6 +169,72 @@ func TestRegistryClasses(t *testing.T) {
 	}
 }
 
+// TestAllEnginesCoversEveryEngineClass is the completeness guard for
+// AllEngines/IsKnownEngine (52-07, mirroring
+// queue.TestAllConvertQueuesCoversEveryEngine): it asserts the seven
+// Engine* constants each appear exactly once, that there are no extras,
+// that IsKnownEngine agrees with membership, and -- the load-bearing
+// assertion -- that every key of Default.Classes() (the registry-derived
+// set of engine classes actually wired up via converters.go's init()) is
+// present in AllEngines(). Without that last check, a future engine class
+// could register a converter and start routing real jobs while staying
+// permanently un-validatable at the manage-clients CLI, silently
+// reintroducing the class of bug this plan closes.
+func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
+	want := map[string]bool{
+		EngineImage:    true,
+		EngineDocument: true,
+		EngineHTML:     true,
+		EngineAudio:    true,
+		EngineAV:       true,
+		EngineOCR:      true,
+		EnginePandoc:   true,
+	}
+
+	got := AllEngines()
+	if len(got) != 7 {
+		t.Fatalf("len(AllEngines()) = %d, want exactly 7", len(got))
+	}
+
+	seen := make(map[string]int, len(got))
+	for _, e := range got {
+		seen[e]++
+	}
+	for e := range want {
+		if seen[e] != 1 {
+			t.Errorf("AllEngines() contains engine %q %d times, want exactly 1", e, seen[e])
+		}
+	}
+	for e, count := range seen {
+		if !want[e] {
+			t.Errorf("AllEngines() contains unexpected extra entry %q (count %d)", e, count)
+		}
+	}
+
+	for _, e := range got {
+		if !IsKnownEngine(e) {
+			t.Errorf("IsKnownEngine(%q) = false, want true (member of AllEngines())", e)
+		}
+	}
+	for _, bad := range []string{"images", "Image", "", "*", "webhook"} {
+		// "webhook" specifically: queue.QueueWebhook is a real queue name but
+		// not an engine class, so it must not be accepted here.
+		if IsKnownEngine(bad) {
+			t.Errorf("IsKnownEngine(%q) = true, want false", bad)
+		}
+	}
+
+	// Registry-derived cross-check: every engine class the registry actually
+	// routes conversions to (Default.Classes(), populated by converters.go's
+	// init()) must be present in AllEngines(), or a real engine would be
+	// silently un-validatable at the CLI.
+	for class := range Default.Classes() {
+		if !want[class] {
+			t.Errorf("Default.Classes() has engine class %q which is missing from AllEngines()", class)
+		}
+	}
+}
+
 // TestRunCommandTimeout verifies the hardened exec kills a long-running child
 // when the context deadline fires, and returns the context error.
 func TestRunCommandTimeout(t *testing.T) {
