@@ -277,8 +277,8 @@ Plans:
 
 **Wave 5** *(gap closure — 52-VERIFICATION.md status `gaps_found`, 8/9 must-haves)*
 
-- [ ] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
-- [ ] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
+- [x] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
+- [x] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 
@@ -384,7 +384,7 @@ Plans:
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
-| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 5/5 | Complete   | 2026-08-03 |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 7/9 | In Progress|  |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
