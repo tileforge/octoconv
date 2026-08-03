@@ -265,7 +265,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
+- [x] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -371,7 +371,7 @@ Plans:
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
-| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 2/5 | In Progress|  |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 3/5 | In Progress|  |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
