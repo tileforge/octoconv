@@ -5,7 +5,8 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
-	"os"
+
+	"github.com/apaderin/octoconv/internal/envcfg"
 )
 
 // validateCallbackURL rejects client-supplied callback_url values that could be
@@ -26,7 +27,12 @@ func validateCallbackURL(raw string) error {
 		return errors.New("callback_url: missing host")
 	}
 
-	allowInsecureHTTP := os.Getenv("WEBHOOK_ALLOW_INSECURE_HTTP") == "true"
+	// recognized is deliberately discarded here: this runs on every request
+	// carrying a callback_url, so an unrecognized value must fall back
+	// silently to the fail-closed default (false) rather than emit anything
+	// per request -- cmd/api validates and warns about this same var once at
+	// startup instead (D-3).
+	allowInsecureHTTP, _ := envcfg.Bool("WEBHOOK_ALLOW_INSECURE_HTTP", false)
 	switch u.Scheme {
 	case "https":
 		// ok
@@ -73,9 +79,16 @@ func validateCallbackURL(raw string) error {
 // RFC1918 private space is blocked by default too, but operators whose
 // internal clients live on private addressing can opt in to allowing it via
 // WEBHOOK_ALLOW_PRIVATE_IPS=true (D-02/D-03); this narrowly relaxes only the
-// private-IP range check, nothing else.
+// private-IP range check, nothing else. The opt-in value tolerates a
+// trailing inline "# comment" (envcfg.Bool) -- it no longer silently
+// defeats the flag the way a raw `== "true"` comparison did.
 func isBlockedIP(addr netip.Addr) bool {
-	allowPrivate := os.Getenv("WEBHOOK_ALLOW_PRIVATE_IPS") == "true"
+	// recognized is deliberately discarded here: this runs per resolved IP
+	// per request, so an unrecognized value must fall back silently to the
+	// fail-closed default (false) rather than emit anything per request --
+	// cmd/api validates and warns about this same var once at startup
+	// instead (D-3).
+	allowPrivate, _ := envcfg.Bool("WEBHOOK_ALLOW_PRIVATE_IPS", false)
 	return addr.IsLoopback() ||
 		(!allowPrivate && addr.IsPrivate()) ||
 		addr.IsLinkLocalUnicast() ||
