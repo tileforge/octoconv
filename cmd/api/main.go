@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -128,7 +129,8 @@ func main() {
 		Redis:    redisPinger{client: rdb},
 		S3:       store,
 	}
-	srv := api.NewServer(jobs.NewRepo(pool), store, qc, presetRepo, presetRepo, resolver, health, api.Config{
+	jobsRepo := jobs.NewRepo(pool)
+	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, resolver, health, api.Config{
 		// D-07 (Phase 35, operator-confirmed 2026-07-21): raised from 100
 		// MiB to 2 GiB so video uploads are admissible -- this is a pre-
 		// parse http.MaxBytesReader bound, enforced BEFORE the engine class
@@ -172,6 +174,25 @@ func main() {
 	// `defer rdb.Close()` above is still correct since publishing only
 	// happens while the API is serving requests, before shutdown begins.
 	srv.SetCancelPublisher(cancel.NewPublisher(rdb))
+
+	// QUOT-04/D-13: global quota kill-switch. Deliberately an explicit-literal
+	// comparison, NOT envInt64-style empty-means-default parsing -- the trap
+	// that avoids (recorded in the PR #4 review): if an empty env value fell
+	// back to a code default of "disabled", empty would silently mean
+	// "enforcement is off", which is exactly backwards. Here empty/absent
+	// leaves enforcement governed per-client by clients.enforcement_mode; only
+	// the literal "true" forces observe-only service-wide.
+	quotaDisabled := firstField(os.Getenv("QUOTA_ENFORCEMENT_DISABLED")) == "true"
+	if quotaDisabled {
+		log.Printf("⚠️  QUOTA_ENFORCEMENT_DISABLED=true: quota enforcement is disabled service-wide; verdicts are still computed and counted, no request is rejected")
+	}
+	jobsRepo.SetQuotaEnforcementDisabled(quotaDisabled)
+	// This closure is the ONLY bridge between internal/jobs and
+	// internal/metrics -- it exists so the repository package keeps no
+	// metrics dependency of its own (internal/jobs/admission.go).
+	jobsRepo.SetQuotaObserver(func(clientID uuid.UUID, engine, reason string) {
+		metrics.RecordQuotaWouldReject(clientID.String(), engine, reason)
+	})
 
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {

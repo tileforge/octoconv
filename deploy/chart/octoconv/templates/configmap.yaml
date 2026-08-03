@@ -125,3 +125,6 @@ data:
   # single shared ConfigMap entry is sufficient.
   METRICS_CLIENT_ID_CEILING: "200"
   OPERATOR_CLIENT_IDS: {{ .Values.api.operatorClientIds | default "" | quote }}
+  # QUOT-04/D-13 (Phase 52 Plan 04): global quota kill-switch. Only the
+  # literal "true" disables enforcement service-wide; empty does NOT.
+  QUOTA_ENFORCEMENT_DISABLED: {{ .Values.api.quotaEnforcementDisabled | default "false" | quote }}

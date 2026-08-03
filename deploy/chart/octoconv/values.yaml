@@ -35,6 +35,9 @@ api:
   # /v1/system/presets; empty = no operators, fail-closed. Parsed once at
   # API startup -- changing this value requires an API restart.
   operatorClientIds: ""
+  # QUOT-04/D-13: global quota kill-switch; only "true" disables enforcement
+  # service-wide (Phase 52 Plan 04).
+  quotaEnforcementDisabled: "false"
 
 worker:
   image:

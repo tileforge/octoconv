@@ -18,6 +18,16 @@ import (
 // Repo is the subset of the jobs repository the API depends on.
 type Repo interface {
 	Create(ctx context.Context, p jobs.CreateParams) (uuid.UUID, error)
+	// PreAdmit is the pre-upload quota gate (QUOT-02, ROADMAP SC2b): a
+	// cheap, non-locking check the handler calls before s.storage.Upload so
+	// a client already at its cap does not burn S3 bandwidth/storage on
+	// every retry. It is advisory only — Create's admitLocked, running
+	// inside the same transaction as the insert, remains the authoritative
+	// check; the interface deliberately exposes both because the handler
+	// needs to reject before the S3 write AND still correctly map a
+	// post-upload rejection when PreAdmit passed but Create's authoritative
+	// re-check did not (52-04-PLAN.md Task 1).
+	PreAdmit(ctx context.Context, clientID uuid.UUID, engine string, inputBytes int64) error
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	Outputs(ctx context.Context, id uuid.UUID) ([]jobs.Output, error)
 	Cancel(ctx context.Context, id uuid.UUID) error
