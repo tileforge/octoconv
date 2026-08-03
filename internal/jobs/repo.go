@@ -53,6 +53,12 @@ type WebhookGapJob struct {
 // Repo is the jobs repository backed by a pgx pool.
 type Repo struct {
 	pool *pgxpool.Pool
+	// quotaObserver and quotaDisabled are the QUOT/FAIR admission-gate
+	// wiring seams (Phase 52, admission.go) -- startup-only, zero value ("no
+	// observer, enforcement governed per-client") for every existing caller
+	// of NewRepo. See SetQuotaObserver/SetQuotaEnforcementDisabled.
+	quotaObserver func(clientID uuid.UUID, engine, reason string)
+	quotaDisabled bool
 }
 
 // NewRepo wraps a pgx pool.
@@ -91,7 +97,10 @@ type CreateParams struct {
 // Create inserts a job (status=queued), its input row, and the initial
 // job_events transition in one transaction, returning the job id. If ID is the
 // zero value one is generated. The caller enqueues the asynq task only after
-// this succeeds (Postgres-first double write).
+// this succeeds (Postgres-first double write). Create can also return
+// ErrConcurrencyLimit, ErrDailyBytesLimit or ErrDailyJobsLimit
+// (admission.go) when the client's quota rejects this job; callers should
+// branch on these via errors.Is.
 func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	jobID := p.ID
 	if jobID == uuid.Nil {
@@ -119,6 +128,19 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	}
 
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		// admitLocked runs FIRST, inside this same transaction, under a
+		// per-(client, engine) advisory lock: the occupancy count and the
+		// INSERT below must not be separable, or two API replicas could
+		// both observe "below cap" and both admit (ROADMAP SC2a, D-07). A
+		// quota rejection here rolls back the whole transaction, so no
+		// jobs, job_inputs or job_events row is left behind -- the failure
+		// mode is a clean no-op plus (if the handler already wrote to S3
+		// past PreAdmit's advisory pre-check) an orphaned S3 object that
+		// TTL cleanup collects, matching the existing preset-TOCTOU path.
+		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, p.Input.SizeBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+			return err
+		}
+
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options)
 			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11)`,
