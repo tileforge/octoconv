@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	dto "github.com/prometheus/client_model/go"
 )
 
 var (
@@ -238,4 +239,24 @@ func RecordClientJobOutcome(clientID, engine, status string) {
 // distinction the accounting table already answers.
 func RecordQuotaWouldReject(clientID, engine, reason string) {
 	quotaWouldReject.WithLabelValues(clientLabel(clientID), engine, reason).Inc()
+}
+
+// QuotaWouldRejectValue returns the current value of the
+// octoconv_quota_would_reject_total counter for the given client/engine/reason
+// label triple, resolving clientID through the same bounded allocator
+// RecordQuotaWouldReject uses. It exists solely so integration tests outside
+// this package (internal/mcpserver's cross-entry-point admission proof, Plan
+// 52-05) can assert the QUOT-04 observe-mode counter increments without this
+// package exporting the underlying CounterVec itself -- a test-only read
+// seam, not a new production API.
+func QuotaWouldRejectValue(clientID, engine, reason string) float64 {
+	c, err := quotaWouldReject.GetMetricWithLabelValues(clientLabel(clientID), engine, reason)
+	if err != nil {
+		return 0
+	}
+	var m dto.Metric
+	if err := c.Write(&m); err != nil {
+		return 0
+	}
+	return m.GetCounter().GetValue()
 }
