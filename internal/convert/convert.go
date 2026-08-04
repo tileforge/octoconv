@@ -26,6 +26,43 @@ const (
 	EnginePandoc   = "pandoc"
 )
 
+// AllEngines returns the seven engine classes in a fixed, documented order --
+// EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
+// EnginePandoc. The order is stable because callers (cmd/manage-clients) use
+// it to render operator-facing error text; a fresh slice is constructed on
+// every call so a caller can never mutate the source of truth through the
+// returned slice. Adding an eighth engine class means adding it here as well
+// as to the const block above -- TestAllEnginesCoversEveryEngineClass fails
+// if the two ever diverge from the registry.
+func AllEngines() []string {
+	return []string{
+		EngineImage,
+		EngineDocument,
+		EngineHTML,
+		EngineAudio,
+		EngineAV,
+		EngineOCR,
+		EnginePandoc,
+	}
+}
+
+// IsKnownEngine reports whether engine is exactly one of the values returned
+// by AllEngines. The comparison is exact and case-sensitive with no
+// trimming and no normalization: engine-class strings are stored verbatim in
+// jobs.engine and client_limits.engine, and NormalizeFormat exists for file
+// formats, not engine classes -- applying it here would silently accept
+// "Image" and write a client_limits row that loadQuotaState's equality join
+// (`l.engine = $2`) can never match, which is the exact operator-typo defect
+// this function exists to reject. Do not "helpfully" add normalization here.
+func IsKnownEngine(engine string) bool {
+	for _, e := range AllEngines() {
+		if engine == e {
+			return true
+		}
+	}
+	return false
+}
+
 // Pair is an ordered (source, target) format pair, e.g. {"png", "webp"}.
 // Formats are always normalized (lowercase, canonical aliases).
 type Pair struct {

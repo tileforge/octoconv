@@ -182,7 +182,7 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 **Milestone Goal:** превратить OctoConv из «сервиса, который умеет конвертировать» в общую платформу, которая знает своих потребителей — кто сколько потребляет, в каких границах, и как не дать одному потребителю выжрать класс движка целиком.
 
 - [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
-- [ ] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class
+- [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
 - [ ] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus
 - [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
 - [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
@@ -255,7 +255,40 @@ Plans:
   4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
   5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
 
-**Plans**: TBD
+**Plans**: 9 plans (5 shipped + 4 gap-closure, planned 2026-08-03 after verification scored 8/9)
+
+Plans:
+**Wave 1**
+
+- [x] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
+- [x] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 52-04-PLAN.md — pre-upload gate before the S3 write, 429 + `Retry-After` + `quota_exceeded` (never 403), kill-switch and metrics wiring
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [x] 52-05-PLAN.md — REST + real MCP tool admission proof against one live API, FAIR-02 zero-diff contract gate, OpenAPI/README contract docs
+
+**Wave 5** *(gap closure — 52-VERIFICATION.md status `gaps_found`, 8/9 must-haves)*
+
+- [x] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
+- [x] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [x] 52-08-PLAN.md — migration 0014 widens the usage rollup's status domain; `Cancel` records usage so `create -> cancel -> create` no longer resets the daily cap (WR-01); `Repo.Create`/`transition` pin `pgx.ReadCommitted` (WR-02)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [x] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
+
+**Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
 
 ### Phase 53: Operator Usage Visibility
 
@@ -351,12 +384,12 @@ Plans:
 | 49. Containerization + Measured Timeout Gate | v1.11 | 4/4 | Complete   | 2026-08-01 |
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
-| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 0/TBD | Not started | - |
+| 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
 ---
 
-*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 0/15 complete. Next: `/gsd:plan-phase 51`.*
+*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 11/15 complete (ACCT-01..04, RETN-01, QUOT-01..04, FAIR-01, FAIR-02, per REQUIREMENTS.md's traceability table), with QUOT-05 (Phase 55), OPSV-01/02 (Phase 53) and CAPA-01 (Phase 54) pending. Next: `/gsd:plan-phase 53`.*
 </content>

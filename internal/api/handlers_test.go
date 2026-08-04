@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,15 @@ type fakeRepo struct {
 	listFilter   jobs.ListFilter
 	listCursor   *jobs.Cursor
 	listLimit    int
+	// preAdmitErr is returned by PreAdmit; preAdmitCalls counts invocations
+	// so tests can assert the pre-upload quota gate ran exactly once (52-04).
+	preAdmitErr   error
+	preAdmitCalls int
+}
+
+func (f *fakeRepo) PreAdmit(_ context.Context, _ uuid.UUID, _ string, _ int64) error {
+	f.preAdmitCalls++
+	return f.preAdmitErr
 }
 
 func (f *fakeRepo) Create(_ context.Context, p jobs.CreateParams) (uuid.UUID, error) {
@@ -98,12 +108,17 @@ type fakeStorage struct {
 	// tests can assert byte-for-byte integrity (T-31-02: the SniffAudio
 	// truncation trap must never drop the leading bytes of an audio upload).
 	uploadedBytes []byte
+	// uploadCalls counts Upload invocations so a quota test can assert "never
+	// called" with an exact integer rather than inferring it from the boolean
+	// (52-04).
+	uploadCalls int
 }
 
 func (f *fakeStorage) Upload(_ context.Context, _ string, r io.Reader, _ int64, contentType string) error {
 	b, _ := io.ReadAll(r)
 	f.uploadedBytes = b
 	f.uploaded = true
+	f.uploadCalls++
 	f.contentType = contentType
 	return nil
 }
@@ -119,40 +134,51 @@ type fakeQueue struct {
 	enqueuedAV       uuid.UUID
 	enqueuedOCR      uuid.UUID
 	enqueuedPandoc   uuid.UUID
+	// enqueueCalls counts every Enqueue* invocation across all seven engine
+	// methods, so a quota test can assert "never enqueued" with an exact
+	// integer (52-04).
+	enqueueCalls int
 }
 
 func (f *fakeQueue) EnqueueImageConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedImage = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueueDocumentConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedDocument = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueueHTMLConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedHTML = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueueAudioConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedAudio = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueueAVConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedAV = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueueOCRConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedOCR = id
+	f.enqueueCalls++
 	return nil
 }
 
 func (f *fakeQueue) EnqueuePandocConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedPandoc = id
+	f.enqueueCalls++
 	return nil
 }
 
@@ -693,6 +719,251 @@ func TestCreateJob_OK(t *testing.T) {
 	}
 	if q.enqueuedDocument != uuid.Nil {
 		t.Errorf("enqueuedDocument = %s, want uuid.Nil (image upload must never touch the document queue)", q.enqueuedDocument)
+	}
+}
+
+// TestCreateJob_QuotaConcurrency_429BeforeUpload pins the SEQUENTIAL property
+// of the pre-upload quota gate (QUOT-02, T-52-21): a client that already
+// knows it is over quota gets its 429 without an upload. It does NOT and
+// cannot speak to a simultaneous burst -- fakeRepo performs no serialization
+// of its own -- the concurrent case is
+// TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste in plan 52-05, against
+// a real repository.
+func TestCreateJob_QuotaConcurrency_429BeforeUpload(t *testing.T) {
+	repo := &fakeRepo{preAdmitErr: jobs.ErrConcurrencyLimit}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("a quota rejection must never be 403 (QUOT-03)")
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["code"] != "quota_exceeded" {
+		t.Errorf("code = %q, want quota_exceeded", resp["code"])
+	}
+	if resp["error"] == "" {
+		t.Error("expected a non-empty error message")
+	}
+	retryAfter, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil || retryAfter != quotaConcurrencyRetryAfterSeconds {
+		t.Errorf("Retry-After = %q, want %d", rec.Header().Get("Retry-After"), quotaConcurrencyRetryAfterSeconds)
+	}
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0 (must reject before the S3 write)", store.uploadCalls)
+	}
+	if q.enqueueCalls != 0 {
+		t.Errorf("enqueue called %d times, want 0", q.enqueueCalls)
+	}
+	if repo.preAdmitCalls != 1 {
+		t.Errorf("PreAdmit called %d times, want 1", repo.preAdmitCalls)
+	}
+}
+
+// TestCreateJob_QuotaDailyBytes_RetryAfterUntilMidnight proves Retry-After is
+// DERIVED, not the concurrency constant, for a daily-limit rejection (D-11).
+func TestCreateJob_QuotaDailyBytes_RetryAfterUntilMidnight(t *testing.T) {
+	repo := &fakeRepo{preAdmitErr: jobs.ErrDailyBytesLimit}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["code"] != "quota_exceeded" {
+		t.Errorf("code = %q, want quota_exceeded", resp["code"])
+	}
+	retryAfter, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After not an integer: %q", rec.Header().Get("Retry-After"))
+	}
+	if retryAfter < 1 || retryAfter > 86400 {
+		t.Errorf("Retry-After = %d, want in [1, 86400]", retryAfter)
+	}
+	if retryAfter == quotaConcurrencyRetryAfterSeconds {
+		t.Errorf("Retry-After = %d, must not equal the concurrency constant (%d) -- proves it is derived", retryAfter, quotaConcurrencyRetryAfterSeconds)
+	}
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+}
+
+// TestCreateJob_QuotaFromCreate_429AfterUpload exercises the accepted
+// post-upload race path (T-52-21): PreAdmit passed, but Create's
+// authoritative admitLocked check lost the race. The upload already
+// happened -- the object is left in place for TTL cleanup -- but the job is
+// never created and never enqueued.
+func TestCreateJob_QuotaFromCreate_429AfterUpload(t *testing.T) {
+	repo := &fakeRepo{createErr: jobs.ErrDailyJobsLimit}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if resp["code"] != "quota_exceeded" {
+		t.Errorf("code = %q, want quota_exceeded", resp["code"])
+	}
+	if store.uploadCalls != 1 {
+		t.Errorf("storage.Upload called %d times, want 1 (accepted post-upload race path)", store.uploadCalls)
+	}
+	if q.enqueueCalls != 0 {
+		t.Errorf("enqueue called %d times, want 0", q.enqueueCalls)
+	}
+}
+
+// TestCreateJob_PreAdmitInfraErrorDoesNotBlock proves a non-quota PreAdmit
+// failure neither fails open into a 500 nor rejects the client (T-52-26):
+// Create's authoritative check still runs and admits the request normally.
+func TestCreateJob_PreAdmitInfraErrorDoesNotBlock(t *testing.T) {
+	repo := &fakeRepo{preAdmitErr: errors.New("boom")}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (a non-quota PreAdmit error must not block or 500); body=%s", rec.Code, rec.Body.String())
+	}
+	if store.uploadCalls != 1 {
+		t.Errorf("storage.Upload called %d times, want 1", store.uploadCalls)
+	}
+	if q.enqueueCalls != 1 {
+		t.Errorf("enqueue called %d times, want 1", q.enqueueCalls)
+	}
+}
+
+// TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField pins D-10's "every other
+// error body left byte-for-byte unchanged": neither a pre-existing 422 nor a
+// pre-existing 413 gains a code field.
+func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
+	t.Run("422 unsupported pair", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+		body, ct := multipartBody(t, "in.png", "mp3", pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		assertNoCodeField(t, rec.Body.Bytes())
+	})
+
+	t.Run("413 engine size limit", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		resolver := newFakeResolver()
+		srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+			MaxUploadBytes: 10 << 20,
+			MaxEngineBytes: map[string]int64{convert.EngineImage: 100},
+		})
+
+		body, ct := multipartBody(t, "in.png", "webp", paddedPNGFixture(500))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+		}
+		assertNoCodeField(t, rec.Body.Bytes())
+	})
+}
+
+// assertNoCodeField decodes body and asserts it has exactly one key, error,
+// and no code key -- the D-10 shape every non-quota, non-rate-limit error
+// response must keep.
+func assertNoCodeField(t *testing.T, body []byte) {
+	t.Helper()
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Errorf("body has %d keys, want exactly 1 (error); body=%s", len(resp), body)
+	}
+	if _, ok := resp["error"]; !ok {
+		t.Errorf("body missing error key; body=%s", body)
+	}
+	if _, ok := resp["code"]; ok {
+		t.Errorf("body must not have a code key; body=%s", body)
+	}
+}
+
+// TestSecondsUntilUTCMidnight is a pure unit test over fixed time.Time
+// inputs, per D-11's Retry-After derivation for a daily quota rejection.
+func TestSecondsUntilUTCMidnight(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Time
+		want int
+	}{
+		{"one second before midnight", time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC), 1},
+		{"exactly midnight", time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC), 86400},
+		{"midday", time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC), 43200},
+		{"ten and a half seconds before midnight", time.Date(2026, 8, 3, 23, 59, 49, 500000000, time.UTC), 11},
+		{"half a second past midday", time.Date(2026, 8, 3, 12, 0, 0, 500000000, time.UTC), 43200},
+		{"one nanosecond past midnight", time.Date(2026, 8, 3, 0, 0, 0, 1, time.UTC), 86400},
+		{"tenth of a second before midnight", time.Date(2026, 8, 3, 23, 59, 59, 900000000, time.UTC), 1},
+		{"one nanosecond before midnight", time.Date(2026, 8, 3, 23, 59, 59, 999999999, time.UTC), 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := secondsUntilUTCMidnight(c.in)
+			if got != c.want {
+				t.Errorf("secondsUntilUTCMidnight(%v) = %d, want %d", c.in, got, c.want)
+			}
+		})
 	}
 }
 

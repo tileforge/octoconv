@@ -182,6 +182,83 @@ func TestQueueDepthLabelsPinned(t *testing.T) {
 	}
 }
 
+// TestRecordQuotaWouldReject clones TestRecordJobOutcome's before/after
+// idiom for the new observe-mode counter (QUOT-04).
+func TestRecordQuotaWouldReject(t *testing.T) {
+	clientID := uuid.NewString()
+	before := testutil.ToFloat64(quotaWouldReject.WithLabelValues(clientID, "image", "concurrency"))
+	RecordQuotaWouldReject(clientID, "image", "concurrency")
+	after := testutil.ToFloat64(quotaWouldReject.WithLabelValues(clientID, "image", "concurrency"))
+	if after != before+1 {
+		t.Fatalf("quota-would-reject counter: want %v, got %v", before+1, after)
+	}
+}
+
+// TestQuotaWouldRejectUsesBoundedClientLabel is the regression guard against
+// a future call site bypassing clientLabel: a malformed client id must
+// collapse to the overflow series, never create its own series.
+func TestQuotaWouldRejectUsesBoundedClientLabel(t *testing.T) {
+	const malformed = "not-a-uuid"
+	before := testutil.ToFloat64(quotaWouldReject.WithLabelValues(overflowClientLabel, "image", "daily_bytes"))
+	RecordQuotaWouldReject(malformed, "image", "daily_bytes")
+	after := testutil.ToFloat64(quotaWouldReject.WithLabelValues(overflowClientLabel, "image", "daily_bytes"))
+	if after != before+1 {
+		t.Fatalf("quota-would-reject overflow series: want %v, got %v", before+1, after)
+	}
+	strayed := testutil.ToFloat64(quotaWouldReject.WithLabelValues(malformed, "image", "daily_bytes"))
+	if strayed != 0 {
+		t.Fatalf("quota-would-reject: malformed id %q must never get its own series, got %v", malformed, strayed)
+	}
+}
+
+// TestQuotaWouldRejectReasonLabels asserts the three reason literals each
+// produce their own series and that the metric's label set is exactly
+// client_id,engine,reason (same descriptor/label-pinning technique as
+// TestQueueDepthLabelsPinned).
+func TestQuotaWouldRejectReasonLabels(t *testing.T) {
+	clientID := uuid.NewString()
+	reasons := []string{"concurrency", "daily_bytes", "daily_jobs"}
+	for _, reason := range reasons {
+		before := testutil.ToFloat64(quotaWouldReject.WithLabelValues(clientID, "document", reason))
+		RecordQuotaWouldReject(clientID, "document", reason)
+		after := testutil.ToFloat64(quotaWouldReject.WithLabelValues(clientID, "document", reason))
+		if after != before+1 {
+			t.Fatalf("quota-would-reject reason=%s: want %v, got %v", reason, before+1, after)
+		}
+	}
+
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var found bool
+	for _, mf := range mfs {
+		if mf.GetName() != "octoconv_quota_would_reject_total" {
+			continue
+		}
+		found = true
+		for _, m := range mf.GetMetric() {
+			var names []string
+			for _, l := range m.GetLabel() {
+				names = append(names, l.GetName())
+			}
+			sort.Strings(names)
+			want := []string{"client_id", "engine", "reason"}
+			if len(names) != len(want) {
+				t.Fatalf("octoconv_quota_would_reject_total labels: want %v, got %v", want, names)
+			}
+			for i := range want {
+				if names[i] != want[i] {
+					t.Fatalf("octoconv_quota_would_reject_total labels: want %v, got %v", want, names)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("octoconv_quota_would_reject_total family not found in default gatherer")
+	}
+}
+
 func TestNewQueueDepthCollectorDescribeAllFourQueues(t *testing.T) {
 	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: "127.0.0.1:0"})
 	c := NewQueueDepthCollector(inspector, "image", "document", "html", "webhook")

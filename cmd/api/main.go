@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -23,6 +24,7 @@ import (
 	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/db"
+	"github.com/apaderin/octoconv/internal/envcfg"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/metrics"
 	"github.com/apaderin/octoconv/internal/presets"
@@ -115,12 +117,48 @@ func main() {
 		log.Fatalf("OPERATOR_CLIENT_IDS: %v", err)
 	}
 
+	// D-3: QUOTA_ENFORCEMENT_DISABLED, WEBHOOK_ALLOW_PRIVATE_IPS and
+	// WEBHOOK_ALLOW_INSECURE_HTTP are read once, here, at process start, and
+	// validated together. cmd/api is the ONLY process that reads either
+	// WEBHOOK_ALLOW_* var (.env.example:38-40; cmd/webhook-worker does not),
+	// so this is their one chance to be surfaced — internal/api/callbackurl.go
+	// re-reads both per request/per resolved IP and silently falls back to
+	// the fail-closed default on an unrecognized value there instead of
+	// logging per request. QUOTA_ENFORCEMENT_DISABLED's own "this is
+	// relaxed" warning and its jobsRepo wiring stay below (QUOT-04/D-13),
+	// once jobsRepo exists; the value is captured here so it is validated
+	// alongside the other two.
+	quotaDisabled, quotaRecognized := envcfg.Bool("QUOTA_ENFORCEMENT_DISABLED", false)
+	allowPrivateIPs, allowPrivateIPsRecognized := envcfg.Bool("WEBHOOK_ALLOW_PRIVATE_IPS", false)
+	allowInsecureHTTP, allowInsecureHTTPRecognized := envcfg.Bool("WEBHOOK_ALLOW_INSECURE_HTTP", false)
+	for _, flag := range []struct {
+		key        string
+		recognized bool
+		value      bool
+	}{
+		{"QUOTA_ENFORCEMENT_DISABLED", quotaRecognized, quotaDisabled},
+		{"WEBHOOK_ALLOW_PRIVATE_IPS", allowPrivateIPsRecognized, allowPrivateIPs},
+		{"WEBHOOK_ALLOW_INSECURE_HTTP", allowInsecureHTTPRecognized, allowInsecureHTTP},
+	} {
+		if !flag.recognized {
+			log.Printf("⚠️  %s=%q is not a recognized boolean (expected \"true\" or \"false\"); using %v", flag.key, os.Getenv(flag.key), flag.value)
+		}
+	}
+
 	// D-04: surface a startup-visible warning when the webhook SSRF guard's
 	// RFC1918 private-IP block is relaxed, so a relaxed safety posture is
 	// obvious from logs without reading .env or source (loopback/link-local/
 	// unspecified remain hard-blocked regardless — see internal/api/callbackurl.go).
-	if os.Getenv("WEBHOOK_ALLOW_PRIVATE_IPS") == "true" {
+	if allowPrivateIPs {
 		log.Printf("⚠️  WEBHOOK_ALLOW_PRIVATE_IPS=true: webhook SSRF guard allows RFC1918 private-IP callback_url targets")
+	}
+	// D-4: mirrors the WEBHOOK_ALLOW_PRIVATE_IPS warning above —
+	// WEBHOOK_ALLOW_INSECURE_HTTP was simply never given the same treatment.
+	// cmd/api does not otherwise read this var; internal/api/callbackurl.go
+	// is the only consumer, so this is the only place its relaxed posture
+	// can be surfaced.
+	if allowInsecureHTTP {
+		log.Printf("⚠️  WEBHOOK_ALLOW_INSECURE_HTTP=true: webhook SSRF guard allows plain-http callback_url targets")
 	}
 
 	health := api.HealthDeps{
@@ -128,7 +166,8 @@ func main() {
 		Redis:    redisPinger{client: rdb},
 		S3:       store,
 	}
-	srv := api.NewServer(jobs.NewRepo(pool), store, qc, presetRepo, presetRepo, resolver, health, api.Config{
+	jobsRepo := jobs.NewRepo(pool)
+	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, resolver, health, api.Config{
 		// D-07 (Phase 35, operator-confirmed 2026-07-21): raised from 100
 		// MiB to 2 GiB so video uploads are admissible -- this is a pre-
 		// parse http.MaxBytesReader bound, enforced BEFORE the engine class
@@ -172,6 +211,29 @@ func main() {
 	// `defer rdb.Close()` above is still correct since publishing only
 	// happens while the API is serving requests, before shutdown begins.
 	srv.SetCancelPublisher(cancel.NewPublisher(rdb))
+
+	// QUOT-04/D-13: global quota kill-switch. quotaDisabled/quotaRecognized
+	// were already read and validated above (D-3), alongside the two
+	// WEBHOOK_ALLOW_* flags -- cmd/api is the single startup site that can
+	// surface an unrecognized value without flooding a per-request path.
+	// Deliberately NOT envInt64-style empty-means-default parsing -- the trap
+	// that avoids (recorded in the PR #4 review): if an empty env value fell
+	// back to a code default of "disabled", empty would silently mean
+	// "enforcement is off", which is exactly backwards. Empty/absent still
+	// leaves enforcement governed per-client by clients.enforcement_mode;
+	// only "true" -- optionally followed by an inline "#" comment -- forces
+	// observe-only service-wide; any other non-empty value is rejected as
+	// unrecognized (warned about above) and leaves enforcement ON.
+	if quotaDisabled {
+		log.Printf("⚠️  QUOTA_ENFORCEMENT_DISABLED=true: quota enforcement is disabled service-wide; verdicts are still computed and counted, no request is rejected")
+	}
+	jobsRepo.SetQuotaEnforcementDisabled(quotaDisabled)
+	// This closure is the ONLY bridge between internal/jobs and
+	// internal/metrics -- it exists so the repository package keeps no
+	// metrics dependency of its own (internal/jobs/admission.go).
+	jobsRepo.SetQuotaObserver(func(clientID uuid.UUID, engine, reason string) {
+		metrics.RecordQuotaWouldReject(clientID.String(), engine, reason)
+	})
 
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {

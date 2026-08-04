@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -195,6 +196,88 @@ func TestCancelActive(t *testing.T) {
 	}
 	if fromStatus != StatusActive || toStatus != StatusCanceled {
 		t.Fatalf("from_status/to_status = %q/%q, want %q/%q", fromStatus, toStatus, StatusActive, StatusCanceled)
+	}
+}
+
+// TestCancelRecordsUsageExactlyOnce pins the WR-01 fix at the repo layer,
+// directly against the client_usage_daily rollup row rather than through
+// admission: a canceled job's input bytes and job count are charged with
+// status='canceled', bytes_out stays 0 in THIS FIXTURE (it never calls
+// AddOutput -- see the bytes_out assertion below for why this is not a
+// general guarantee), and a repeated Cancel attempt on the same job is
+// rejected by the {queued,active} illegal-transition guard with the exact
+// error Repo.transition returns for a disallowed source status AND leaves
+// job_count unchanged -- the exactly-once property asserted rather than
+// argued (usage.go's package doc comment). The exact-error assertion
+// matters (CodeRabbit, relayed, PR #5 review): an err == nil-only check
+// would also be satisfied by an unrelated failure inside the transition's
+// apply closure (recordUsage), surfaced wrapped as "apply transition: ...",
+// which is exactly the WR-01/WR-07 regression class this test exists to
+// catch (proved by temporarily substituting Repo.transition's returned
+// error during the 260803-q7u mutation-proof run, see 260803-q7u-SUMMARY.md).
+func TestCancelRecordsUsageExactlyOnce(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	const inputSize int64 = 4321
+	id, err := r.Create(ctx, CreateParams{
+		ClientID: clientID, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/cru/0-in.png", Filename: "in.png", Format: "png", SizeBytes: inputSize},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	var status string
+	var jobCount, bytesIn, bytesOut int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT status, job_count, bytes_in, bytes_out FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date`,
+		clientID,
+	).Scan(&status, &jobCount, &bytesIn, &bytesOut); err != nil {
+		t.Fatalf("read client_usage_daily row after cancel: %v", err)
+	}
+	if status != StatusCanceled {
+		t.Fatalf("status = %q, want %q", status, StatusCanceled)
+	}
+	if jobCount != 1 {
+		t.Fatalf("job_count = %d, want 1", jobCount)
+	}
+	if bytesIn != inputSize {
+		t.Fatalf("bytes_in = %d, want %d", bytesIn, inputSize)
+	}
+	if bytesOut != 0 {
+		t.Fatalf("bytes_out = %d, want 0 (this fixture never calls AddOutput -- NOT a general guarantee that a canceled job has no outputs: AddOutput commits independently before MarkDone, and Cancel's allow-list still includes active, so a cancel racing AddOutput can leave a canceled row with non-zero bytes_out)", bytesOut)
+	}
+
+	// A second Cancel of the same (already-canceled) job must be rejected by
+	// the {queued,active} allow-list with EXACTLY the illegal-transition
+	// error Repo.transition returns for a disallowed source status -- not
+	// merely "any error". Repo.transition returns this plain, unwrapped
+	// string for a disallowed source status (repo.go); asserting the exact
+	// text is what makes this test catch a recordUsage failure inside the
+	// apply closure (surfaced wrapped as "apply transition: ..."), which an
+	// err == nil-only check would have silently accepted as satisfying this
+	// assertion while a duplicate usage write went unnoticed.
+	wantErr := fmt.Sprintf("illegal transition %s -> %s for job %s", StatusCanceled, StatusCanceled, id)
+	if err := r.Cancel(ctx, id); err == nil || err.Error() != wantErr {
+		t.Fatalf("repeated Cancel error = %v, want exactly %q", err, wantErr)
+	}
+
+	if err := r.pool.QueryRow(ctx, `
+		SELECT job_count FROM client_usage_daily
+		WHERE client_id = $1 AND engine = 'image' AND day = (now() AT TIME ZONE 'utc')::date AND status = 'canceled'`,
+		clientID,
+	).Scan(&jobCount); err != nil {
+		t.Fatalf("read client_usage_daily row after repeated cancel attempt: %v", err)
+	}
+	if jobCount != 1 {
+		t.Fatalf("job_count after repeated Cancel attempt = %d, want still exactly 1", jobCount)
 	}
 }
 

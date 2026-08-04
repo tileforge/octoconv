@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,17 @@ const (
 	// other branch in handleCreateJob may return a distinguishable message
 	// for a preset lookup failure.
 	errUnknownPreset = "unknown or inactive preset"
+	// quotaConcurrencyRetryAfterSeconds is the fixed Retry-After hint for a
+	// concurrency-limit 429 (QUOT-03, D-11). A concurrency slot frees only
+	// when one of this client's in-flight jobs reaches a terminal state --
+	// single-digit seconds for the image class, minutes for the av class --
+	// so a fixed hint must be long enough not to invite a hot retry loop and
+	// short enough not to stall a fast client; 30s sits an order of
+	// magnitude above the fast case and well below the slow one (measured,
+	// not copied, per this project's convention). A daily rejection does
+	// NOT use this constant -- a constant would be wrong by hours there;
+	// see secondsUntilUTCMidnight below.
+	quotaConcurrencyRetryAfterSeconds = 30
 )
 
 // handleHealth probes Postgres, Redis, and S3/MinIO reachability under a
@@ -406,6 +418,30 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// QUOT-02 (ROADMAP SC2b): the pre-upload quota gate. This is the
+	// earliest point at which both engine and header.Size are known, and it
+	// runs strictly before s.storage.Upload below -- which is what keeps a
+	// client already at its cap from repeatedly burning S3 bandwidth and
+	// storage on every retry. Limit of the guarantee: PreAdmit is unlocked
+	// (internal/jobs/admission.go), so it stops the SEQUENTIAL-retry burn
+	// but not a simultaneous burst from a client still below its cap -- that
+	// residual is bounded and documented at PreAdmit's own definition, and
+	// measured by plan 52-05's concurrent-burst subtest.
+	if err := s.repo.PreAdmit(ctx, client.ID, engine, header.Size); err != nil {
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			log.Printf("quota rejected: client_id=%s engine=%s reason=%s stage=preupload", client.ID, engine, jobs.QuotaReason(err))
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
+		// A NON-quota error from PreAdmit must NOT fail the request open and
+		// must NOT 500 the request either: log it and continue, because
+		// Create's authoritative admitLocked check still runs below and is
+		// the correctness mechanism for this request. Do not "fix" this
+		// into a 500 -- that would turn a best-effort optimization failure
+		// into an outage.
+		log.Printf("quota pre-admit check failed (continuing to authoritative check): client_id=%s engine=%s", client.ID, engine)
+	}
+
 	// VALID-03: reject a decompression-bomb-shaped upload (declared pixel
 	// dimensions exceeding the configured limit) before any storage write.
 	// convert.Dimensions re-stitches its own bounded peek onto rest, so the
@@ -710,6 +746,19 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		// Reaching this branch means the request passed PreAdmit and then
+		// lost the race at Create's advisory lock (or the daily rollup
+		// moved between PreAdmit's read and this insert). No job row was
+		// created -- the whole transaction rolled back -- and the
+		// already-uploaded object above is left in place for TTL cleanup,
+		// exactly like the preset-TOCTOU path already does. The enqueue
+		// switch below is never reached, so QUOT-02's "before enqueue"
+		// holds by construction.
+		if msg, retryAfter, ok := quotaRejection(err); ok {
+			log.Printf("quota rejected: client_id=%s engine=%s reason=%s stage=create", client.ID, engine, jobs.QuotaReason(err))
+			writeQuotaError(w, msg, retryAfter)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to create job")
 		return
 	}
@@ -923,6 +972,60 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	// Don't HTML-escape: presigned URLs contain & that would become &.
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
+}
+
+// secondsUntilUTCMidnight returns the seconds remaining until the next UTC
+// midnight after now, rounded UP to the next whole second, and clamped to a
+// minimum of 1 -- a zero Retry-After would invite an immediate retry into the
+// same rejection. Rounding up (rather than truncating) matters because a
+// floored Retry-After points at an instant strictly before the quota window
+// actually resets, so a client that obeys it lands before the reset and earns
+// a second 429 for the identical reason (D-11, Codex review on PR #5). now is
+// taken as a parameter rather than read internally via time.Now() so this
+// stays unit testable.
+func secondsUntilUTCMidnight(now time.Time) int {
+	now = now.UTC()
+	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	remaining := nextMidnight.Sub(now)
+	secs := int((remaining + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
+}
+
+// writeQuotaError writes the single 429 body shape D-10 reserves for a
+// quota rejection: a Retry-After header plus an {"error", "code"} body whose
+// fixed code literal distinguishes it from ratelimit's rate_limited 429.
+// Status is 429 unconditionally -- 403 is forbidden here
+// because a quota is a consumption limit, not an authorization boundary, and
+// conflating them would make a client treat a temporary condition as
+// permanent (QUOT-03). Do not widen writeError's signature and do not add
+// code to any other response -- D-10 scopes it to the two 429s in this
+// codebase (this one and internal/ratelimit's rate_limited); the general
+// sweep is SEED-020.
+func writeQuotaError(w http.ResponseWriter, msg string, retryAfterSeconds int) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": msg, "code": "quota_exceeded"})
+}
+
+// quotaRejection maps a jobs error to the (message, Retry-After, ok) a 429
+// quota response needs. ok is false for any non-quota error. Messages
+// describe only the caller's OWN limit -- never a count, never another
+// client's state, never the configured limit value: an operator reads
+// limits from manage-clients, a client does not need them and should not be
+// able to probe them (T-52-24).
+func quotaRejection(err error) (msg string, retryAfterSeconds int, ok bool) {
+	switch {
+	case errors.Is(err, jobs.ErrConcurrencyLimit):
+		return "too many concurrent jobs for this conversion type", quotaConcurrencyRetryAfterSeconds, true
+	case errors.Is(err, jobs.ErrDailyBytesLimit):
+		return "daily byte quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+	case errors.Is(err, jobs.ErrDailyJobsLimit):
+		return "daily job quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+	default:
+		return "", 0, false
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

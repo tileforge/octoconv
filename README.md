@@ -236,6 +236,66 @@ Optionally, skip polling and get a signed webhook push on completion by adding
   embedded macros, or a zip-bomb-shaped upload → `422`, rejected before anything touches
   storage
 
+## Quotas and fairness
+
+Per-client, per-engine limits (QUOT-01..04, FAIR-01) sit in front of `POST /v1/jobs` —
+enforced fail-closed before the upload touches storage. `NULL`/absent means unlimited; an
+explicit `max-concurrent 0` means the engine is denied to that client entirely.
+
+- **What can be capped, per client and per engine class:** concurrent (queued+active) jobs,
+  daily bytes uploaded, and daily job count.
+- **Manage limits** with `cmd/manage-clients` (`-` is the token that writes NULL/unlimited —
+  never a large sentinel number):
+
+  ```bash
+  go run ./cmd/manage-clients set-limit <client-id> <engine> <max-concurrent|-> <max-daily-bytes|-> <max-daily-jobs|->
+  go run ./cmd/manage-clients clear-limit <client-id> <engine>
+  go run ./cmd/manage-clients show-limits <client-id>
+  go run ./cmd/manage-clients set-mode <client-id> <observe|enforce>
+  ```
+
+  `set-limit` rejects an `<engine>` token that isn't one of the seven known engine classes
+  and prints the valid set, so a typo fails loudly instead of writing a limit that never
+  matches any job. `clear-limit` and `show-limits` deliberately do not validate the engine —
+  a row written before this check existed must still be listable and removable through the
+  CLI.
+
+- **Rollout sequence:** every client starts in `observe` — limits are evaluated and every
+  would-be rejection is counted via `octoconv_quota_would_reject_total{client_id,engine,reason}`,
+  but nothing is actually rejected. Watch that counter for at least one full quota window (a
+  UTC day) before flipping a client to enforcement:
+
+  ```bash
+  go run ./cmd/manage-clients set-mode <client-id> enforce
+  ```
+
+- **`QUOTA_ENFORCEMENT_DISABLED=true`** is the service-wide kill-switch — verdicts are still
+  computed and counted, but no request is ever rejected while it is set. An **empty or absent
+  value does NOT disable enforcement**; `true`, optionally followed by an inline `#` comment,
+  disables it; any other value is rejected as unrecognized, warned about at API startup, and
+  leaves enforcement ON.
+- **Client-visible contract:** an over-quota request gets `429` with a `Retry-After` header and
+  `code: "quota_exceeded"` in the body — never `403` (a quota is a consumption limit, not an
+  authorization boundary). This is distinct from `code: "rate_limited"`, the per-IP/per-client
+  rate limiter's own 429 for the same status code.
+- **Daily cap accounting, exact at admission:** the daily byte and job-count caps compare the
+  request against today's committed usage **plus** all of the client's currently in-flight
+  (`queued`+`active`) jobs on that engine, so the cap holds whether or not a concurrency cap
+  is also set — there is no `K × <per-engine ceiling>` tolerance to size around, because that
+  tolerance no longer exists. A canceled job is charged to the daily ledger for the input
+  bytes and job count it consumed — canceling does not refund the day's budget — because a
+  free cancel would make `create -> cancel -> create` an unbounded way around a daily cap.
+  The in-flight term is not scoped to a creation date, so a job still in flight across a UTC
+  midnight keeps counting on the new day. Its ledger row is written for the UTC day on which
+  its terminal transaction STARTED, because PostgreSQL's `now()` is transaction-start time —
+  so a terminal transition that begins just before midnight and commits just after it books
+  the job to the previous day and stops contributing to the new day's total. This is a known,
+  accepted narrow window, not a refund path.
+- **What can still overshoot:** because the pre-upload gate is unlocked by design, a burst of
+  simultaneous requests from one client can upload before the authoritative check rejects
+  them — wasted uploads, never over-admission — and that residual is measured by the phase's
+  own burst test rather than assumed.
+
 ## Configuration
 
 All configuration is environment-variable based — see [`.env.example`](.env.example) for
@@ -254,6 +314,7 @@ the full, documented list. Highlights:
 | `AUDIO_ENGINE_TIMEOUT` / `AUDIO_MAX_RETRY` / `AUDIO_WORKER_CONCURRENCY` / `AUDIO_MAX_DURATION_SECONDS` / `AUDIO_MODEL_PATH` / `AUDIO_THREADS` | audio (whisper.cpp) engine timeout, retry budget, concurrency, max input duration, model path, and thread count |
 | `AV_ENGINE_TIMEOUT` / `AV_MAX_RETRY` / `AV_WORKER_CONCURRENCY` / `AV_MAX_DURATION_SECONDS` / `AV_DISK_SAFETY_FACTOR` | video (ffmpeg) engine timeout, retry budget, concurrency, max input duration, and disk-space safety multiplier |
 | `OPERATOR_CLIENT_IDS` | comma-separated client UUIDs authorized for `/v1/system/presets` (empty = no operators, fail-closed) |
+| `QUOTA_ENFORCEMENT_DISABLED` | global quota kill-switch — `true` (optionally with an inline `#` comment) disables enforcement; empty/absent does NOT disable it; any other value is unrecognized and leaves enforcement ON (see [Quotas and fairness](#quotas-and-fairness)) |
 | `RATE_LIMIT_IP_RPM` / `RATE_LIMIT_CLIENT_RPM` | pre-auth and per-client rate limits |
 | `WEBHOOK_SIGNING_SECRET` | HMAC-SHA256 secret for signed webhook callbacks (required) |
 | `WEBHOOK_ALLOW_PRIVATE_IPS` | opt-in: allow `callback_url` to target RFC1918 addresses (loopback/link-local always blocked) |

@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.12
 milestone_name: Consumer Accounting & Fairness
-status: planning
-stopped_at: Phase 52 context gathered
-last_updated: "2026-08-03T00:50:30.384Z"
-last_activity: 2026-08-02
+status: "Phase 52 shipped — PR #5"
+stopped_at: Phase 52 complete and verified, shipped as PR #5
+last_updated: "2026-08-03T16:27:17.718Z"
+last_activity: 2026-08-03
 progress:
   total_phases: 5
-  completed_phases: 1
-  total_plans: 5
-  completed_plans: 5
-  percent: 20
+  completed_phases: 2
+  total_plans: 14
+  completed_plans: 14
+  percent: 40
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 52 — quota enforcement & intra class fairness
+**Current focus:** Phase 52 — quota-enforcement-intra-class-fairness
 
 ## Current Position
 
-Phase: 52
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-08-02
+Phase: 52 — COMPLETE
+Plan: 9 of 9
+Status: Phase 52 shipped — PR #5
+Last activity: 2026-08-03
 
 ## Performance Metrics
 
@@ -132,7 +132,8 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 
 ### Pending Todos
 
-- Plan and execute Phase 51 (Attribution, Accounting & Retention: ACCT-01..04, RETN-01) — the first phase of v1.12, everything downstream reads this phase's data.
+- Plan and execute Phase 53 (Operator Usage Visibility: OPSV-01/02) — reads Phase 51's rollup table, sequenced after Phase 52's quota mechanism so "usage vs. limit" is meaningful.
+- Fix Retry-After midnight race in daily quota rejection — `quotaRejection` can advertise ~86400s when the daily quota already reset; needs a sentinel-error contract change, deliberately deferred out of PR #5. See `.planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md`.
 
 ### Blockers/Concerns
 
@@ -221,12 +222,12 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-03T00:50:30.367Z
-Stopped at: Phase 52 context gathered
-Resume file: .planning/phases/52-quota-enforcement-intra-class-fairness/52-CONTEXT.md
+Stopped at: Phase 52 complete and verified, shipped as PR #5
+Resume file: .planning/phases/52-quota-enforcement-intra-class-fairness/52-01-SUMMARY.md
 
 ## Operator Next Steps
 
-- Review the v1.12 roadmap (`.planning/ROADMAP.md`, Phases 51-55) and approve or request revisions.
-- Once approved, start phase planning with `/gsd:plan-phase 51`.
+- Phase 52 is complete and verified (9/9 plans, shipped as PR #5).
+- Start phase planning with `/gsd:plan-phase 53`.
 
 </content>

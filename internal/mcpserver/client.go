@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -434,27 +435,69 @@ func sanitizeBasename(rawPath string) string {
 // apiError builds an error from a non-2xx response, surfacing the API's own
 // {"error": "..."} text verbatim (D-11 -- the API's own no-leak texts pass
 // through unchanged) while redacting the API key from the result as a
-// defense-in-depth measure (D-08).
+// defense-in-depth measure (D-08), unconditionally, on every return branch.
+//
+// D-12: without a machine-readable code and a wait hint, an MCP agent
+// receiving a 429 cannot tell "wait N seconds, then retry" (code=rate_limited)
+// from "you are not allowed at all right now" (code=quota_exceeded, plan
+// 52-04) and either retries into a wall or gives up when it didn't need to.
+// So when the body carries a code, it is appended to the message; when the
+// response also carries a Retry-After header that parses as a non-negative
+// integer, the wait hint is appended too. A malformed or missing Retry-After
+// is simply omitted -- never injected verbatim -- so a hostile or buggy
+// upstream can't smuggle arbitrary text into the agent-visible error.
 func (c *Client) apiError(action string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-	msg := extractErrorText(body)
+	msg, code := extractErrorBody(body)
 	if msg == "" {
 		msg = fmt.Sprintf("unexpected status %d", resp.StatusCode)
 	}
+
+	if code == "" {
+		// Neither: the message exactly as today.
+		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	}
+
+	retryAfter, ok := parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
+	if !ok {
+		// A code but no (usable) Retry-After header.
+		msg = fmt.Sprintf("%s (code=%s)", msg, code)
+		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	}
+
+	// Both a code and a Retry-After header.
+	msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, code, retryAfter)
 	return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
 }
 
-// extractErrorText pulls the "error" field out of a JSON body shaped like
-// {"error":"..."}, falling back to the raw (trimmed) body when it isn't
-// JSON-shaped that way.
-func extractErrorText(body []byte) string {
+// extractErrorBody pulls the "error" and "code" fields out of a JSON body
+// shaped like {"error":"...","code":"..."}, falling back to (the raw
+// trimmed body, "") when it isn't JSON-shaped that way.
+func extractErrorBody(body []byte) (msg, code string) {
 	var e struct {
 		Error string `json:"error"`
+		Code  string `json:"code"`
 	}
 	if err := json.Unmarshal(body, &e); err == nil && e.Error != "" {
-		return e.Error
+		return e.Error, e.Code
 	}
-	return strings.TrimSpace(string(body))
+	return strings.TrimSpace(string(body)), ""
+}
+
+// parseRetryAfterSeconds parses an HTTP Retry-After header value as a
+// non-negative whole-seconds integer. It deliberately does not support the
+// HTTP-date form of Retry-After -- this codebase's own 429 producers
+// (internal/ratelimit, and quota rejections in plan 52-04) only ever emit
+// the delta-seconds form.
+func parseRetryAfterSeconds(v string) (int, bool) {
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // wrapTransportErr wraps a network/transport-level error (DNS, dial, TLS,

@@ -53,6 +53,12 @@ type WebhookGapJob struct {
 // Repo is the jobs repository backed by a pgx pool.
 type Repo struct {
 	pool *pgxpool.Pool
+	// quotaObserver and quotaDisabled are the QUOT/FAIR admission-gate
+	// wiring seams (Phase 52, admission.go) -- startup-only, zero value ("no
+	// observer, enforcement governed per-client") for every existing caller
+	// of NewRepo. See SetQuotaObserver/SetQuotaEnforcementDisabled.
+	quotaObserver func(clientID uuid.UUID, engine, reason string)
+	quotaDisabled bool
 }
 
 // NewRepo wraps a pgx pool.
@@ -91,7 +97,10 @@ type CreateParams struct {
 // Create inserts a job (status=queued), its input row, and the initial
 // job_events transition in one transaction, returning the job id. If ID is the
 // zero value one is generated. The caller enqueues the asynq task only after
-// this succeeds (Postgres-first double write).
+// this succeeds (Postgres-first double write). Create can also return
+// ErrConcurrencyLimit, ErrDailyBytesLimit or ErrDailyJobsLimit
+// (admission.go) when the client's quota rejects this job; callers should
+// branch on these via errors.Is.
 func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	jobID := p.ID
 	if jobID == uuid.Nil {
@@ -118,7 +127,27 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		pver = &p.PresetVersion
 	}
 
-	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	// IsoLevel is pinned to ReadCommitted rather than inherited from the pool/
+	// DSN default (52-REVIEW.md WR-02): admitLocked's post-lock re-check
+	// inside this transaction only re-observes admissions committed while it
+	// waited on the advisory lock if each statement takes a fresh snapshot,
+	// which is a property of READ COMMITTED, not of the code. See
+	// admitLocked's doc comment (admission.go) for the failure mode this
+	// pin prevents.
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		// admitLocked runs FIRST, inside this same transaction, under a
+		// per-(client, engine) advisory lock: the occupancy count and the
+		// INSERT below must not be separable, or two API replicas could
+		// both observe "below cap" and both admit (ROADMAP SC2a, D-07). A
+		// quota rejection here rolls back the whole transaction, so no
+		// jobs, job_inputs or job_events row is left behind -- the failure
+		// mode is a clean no-op plus (if the handler already wrote to S3
+		// past PreAdmit's advisory pre-check) an orphaned S3 object that
+		// TTL cleanup collects, matching the existing preset-TOCTOU path.
+		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, p.Input.SizeBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+			return err
+		}
+
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options)
 			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11)`,
@@ -209,14 +238,33 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 // simply outside allowedFrom and the illegal-transition error surfaces
 // instead of silently overwriting a terminal outcome. detail is nil (no
 // webhook is fired on cancel, D-08; no structured detail is needed).
-// Deliberately does NOT call recordUsage: a cancel is user-initiated and
-// never reaches MarkDone/MarkFailed, so canceled jobs are intentionally not
-// rolled up into client_usage_daily (see 0011_client_usage_daily.sql).
+//
+// A canceled job's input bytes and its job count ARE charged to the
+// client's daily ledger (52-REVIEW.md WR-01, migration 0014), superseding
+// the earlier rule that a cancel never touches the rollup: Phase 52 made
+// client_usage_daily the input to quota admission (admission.go), so
+// leaving cancels free makes `create -> cancel -> create ...` an unbounded
+// evasion path against max_daily_bytes/max_daily_jobs — and after plan
+// 52-06 it is the one hole in-flight counting cannot cover on its own, since
+// a canceled job leaves the queued/active set and, absent this write, its
+// cost would vanish entirely at the instant of cancellation. recordUsage
+// runs INSIDE this same transition transaction, after the status UPDATE —
+// exactly like MarkDone/MarkFailed — so the crossover from "in-flight" to
+// "rolled up" is atomic and the {queued,active} allow-list above (which
+// rejects a second cancel of the same job before apply ever runs) is what
+// keeps this exactly-once, for the same reason it holds for MarkDone and
+// MarkFailed. attempt is passed as 0: a job canceled while active is
+// charged the elapsed time recordUsage derives from started_at, and a job
+// canceled while still queued — which never occupied a worker — is charged
+// 0, via the same fallback CASE expression recordUsage already implements
+// for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id)
-		return err
+		if _, err := tx.Exec(ctx,
+			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
+			return err
+		}
+		return r.recordUsage(ctx, tx, id, StatusCanceled, 0)
 	})
 }
 
@@ -597,7 +645,11 @@ func (r *Repo) transition(
 			return fmt.Errorf("marshal transition detail: %w", err)
 		}
 	}
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	// IsoLevel is pinned to ReadCommitted for the same reason as Repo.Create
+	// (52-REVIEW.md WR-02): the SELECT ... FOR UPDATE re-read below and
+	// recordUsage's ON CONFLICT upsert (MarkDone/MarkFailed/Cancel) both
+	// assume the same per-statement snapshot.
+	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		var from string
 		if err := tx.QueryRow(ctx,
 			`SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id,

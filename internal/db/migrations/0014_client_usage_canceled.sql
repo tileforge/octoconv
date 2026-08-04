@@ -1,0 +1,72 @@
+-- Widen client_usage_daily's status domain to admit 'canceled' (52-REVIEW.md
+-- WR-01, Phase 52 gap closure).
+--
+-- What is superseded and why: 0011_client_usage_daily.sql stated that
+-- `canceled` is deliberately not accounted here, because a cancel never
+-- reaches MarkDone/MarkFailed -- the guarded terminal-transition write site
+-- this table is filled from. That was correct while the rollup was
+-- reporting-only. Phase 52 made the same rollup the input to quota
+-- enforcement (internal/jobs/admission.go `evaluate`), which turned an
+-- unaccounted cancel into a quota-evasion path (52-REVIEW.md WR-01):
+-- `create -> cancel -> create ...` consumes upload bandwidth, an S3 object, a
+-- queue slot and possibly engine CPU against a daily cap that never advances.
+-- This migration supersedes that 0011 statement; `Repo.Cancel` now calls
+-- recordUsage with status = 'canceled' inside its guarded transition (see
+-- internal/jobs/repo.go).
+--
+-- What is NOT done: no backfill. Historical canceled jobs are not
+-- retro-inserted into this table -- the ledger becomes complete going
+-- forward only. Backfilling would require re-deriving per-day byte totals
+-- from jobs/job_inputs rows the RETN-01 purge may already have removed, and
+-- would charge clients today for consumption an operator never intended to
+-- meter.
+--
+-- Why status stays part of the primary key rather than becoming a filter:
+-- (client_id, engine, day, status) is the UPSERT conflict target recordUsage
+-- depends on, so a canceled job gets its own row, every existing consumer
+-- that slices by status keeps working, and the admission read -- which sums
+-- across statuses with no status filter -- picks the new rows up with zero
+-- query change.
+--
+-- Blast radius: one CHECK constraint on one table. No column added or
+-- dropped, no row modified, no index changed, and
+-- internal/jobs/retention.go's PurgeUsage is status-agnostic so retention is
+-- unaffected.
+--
+-- The constraint's actual name was confirmed live via `\d client_usage_daily`
+-- against the running database before writing this migration:
+-- client_usage_daily_status_check (PostgreSQL's auto-generated name for the
+-- inline column CHECK in 0011, matching the expected convention). Dropped
+-- and re-added under that same explicit name so a future migration can
+-- reference it deterministically instead of depending on the auto-naming
+-- rule again.
+--
+-- Why the DROP is bare, not `DROP CONSTRAINT IF EXISTS` (Codex PR #5 review,
+-- P1): `IF EXISTS` turns schema drift into a silent pass. If the original
+-- 0011 column CHECK ever lived under a different auto-generated name on some
+-- database, the drop above would be a no-op, the ADD CONSTRAINT below would
+-- still succeed alongside the untouched survivor, and that surviving
+-- `CHECK (status IN ('done','failed'))` would then reject every
+-- canceled-usage row -- `Repo.Cancel` would roll back on every call and the
+-- API would return 500 indefinitely, while `schema_migrations` records this
+-- migration as successfully applied. A bare `DROP CONSTRAINT`, matching the
+-- convention already used by 0005/0006/0009/0010, makes that drifted-schema
+-- case abort the migration loudly instead.
+--
+-- Why this file was corrected in place rather than superseded by a new
+-- 0015: this migration is unreleased -- PR #5 has not merged, so the local
+-- dev instance is the only database that has ever run it, and a live
+-- `pg_constraint` read there confirms exactly one status CHECK already
+-- matching this file's ADD CONSTRAINT below (editing the text is therefore a
+-- no-op against that database, not a repair of a drifted one). A 0015 could
+-- not have closed the defect anyway: on a fresh or not-yet-migrated database
+-- 0014 still runs first, and with `IF EXISTS` it would still pass silently
+-- on a drifted schema before 0015 ever ran -- only the bare DROP here makes
+-- that path loud, and a 0015 that merely re-asserted the constraint would
+-- add permanent noise to every database while closing nothing.
+ALTER TABLE client_usage_daily
+    DROP CONSTRAINT client_usage_daily_status_check;
+
+ALTER TABLE client_usage_daily
+    ADD CONSTRAINT client_usage_daily_status_check
+        CHECK (status IN ('done', 'failed', 'canceled'));
