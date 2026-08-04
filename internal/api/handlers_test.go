@@ -951,6 +951,11 @@ func TestSecondsUntilUTCMidnight(t *testing.T) {
 		{"one second before midnight", time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC), 1},
 		{"exactly midnight", time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC), 86400},
 		{"midday", time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC), 43200},
+		{"ten and a half seconds before midnight", time.Date(2026, 8, 3, 23, 59, 49, 500000000, time.UTC), 11},
+		{"half a second past midday", time.Date(2026, 8, 3, 12, 0, 0, 500000000, time.UTC), 43200},
+		{"one nanosecond past midnight", time.Date(2026, 8, 3, 0, 0, 0, 1, time.UTC), 86400},
+		{"tenth of a second before midnight", time.Date(2026, 8, 3, 23, 59, 59, 900000000, time.UTC), 1},
+		{"one nanosecond before midnight", time.Date(2026, 8, 3, 23, 59, 59, 999999999, time.UTC), 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
