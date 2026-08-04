@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.12
 milestone_name: Consumer Accounting & Fairness
-status: "Phase 52 shipped — PR #5"
-stopped_at: Phase 52 complete and verified, shipped as PR #5
-last_updated: "2026-08-03T16:27:17.718Z"
-last_activity: 2026-08-03
+status: "Phase 52 merged — PR #5 (2179b67)"
+stopped_at: "Phase 52 complete and verified, shipped as PR #5"
+last_updated: "2026-08-04T01:21:27.224Z"
+last_activity: 2026-08-04
 progress:
   total_phases: 5
   completed_phases: 2
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
 
 Phase: 52 — COMPLETE
 Plan: 9 of 9
-Status: Phase 52 shipped — PR #5
-Last activity: 2026-08-03
+Status: Phase 52 merged — PR #5 (2179b67)
+Last activity: 2026-08-04
 
 ## Performance Metrics
 
