@@ -974,15 +974,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = enc.Encode(v)
 }
 
-// secondsUntilUTCMidnight returns the whole seconds remaining until the next
-// UTC midnight after now, clamped to a minimum of 1 -- a zero Retry-After
-// would invite an immediate retry into the same rejection. now is taken as a
-// parameter rather than read internally via time.Now() so this stays unit
-// testable.
+// secondsUntilUTCMidnight returns the seconds remaining until the next UTC
+// midnight after now, rounded UP to the next whole second, and clamped to a
+// minimum of 1 -- a zero Retry-After would invite an immediate retry into the
+// same rejection. Rounding up (rather than truncating) matters because a
+// floored Retry-After points at an instant strictly before the quota window
+// actually resets, so a client that obeys it lands before the reset and earns
+// a second 429 for the identical reason (D-11, Codex review on PR #5). now is
+// taken as a parameter rather than read internally via time.Now() so this
+// stays unit testable.
 func secondsUntilUTCMidnight(now time.Time) int {
 	now = now.UTC()
 	nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
-	secs := int(nextMidnight.Sub(now) / time.Second)
+	remaining := nextMidnight.Sub(now)
+	secs := int((remaining + time.Second - 1) / time.Second)
 	if secs < 1 {
 		secs = 1
 	}
