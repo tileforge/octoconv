@@ -33,13 +33,23 @@ var ErrAVInsufficientDiskSpace = errors.New("av: insufficient free disk space")
 // terminal failure (the job fails, no corruption, no crash), so this guard
 // exists to make that outcome RARE under normal load, not to make it
 // impossible under adversarial concurrency. Defense-in-depth, not a hard
-// reservation.
+// reservation. The fail-closed decision itself lives in checkFreeAgainstNeeded,
+// separated from this filesystem read so it is directly testable without a
+// second live Statfs call racing this one.
 func EnforceMinFreeDisk(dir string, inputSizeBytes int64, safetyFactor float64) error {
 	var stat unix.Statfs_t
 	if err := unix.Statfs(dir, &stat); err != nil {
 		return fmt.Errorf("av: statfs %q: %w", dir, err)
 	}
 	free := uint64(stat.Bavail) * uint64(stat.Bsize)
+	return checkFreeAgainstNeeded(free, inputSizeBytes, safetyFactor)
+}
+
+// checkFreeAgainstNeeded holds the fail-closed free-vs-needed decision,
+// separated from the live unix.Statfs read (EnforceMinFreeDisk) so the
+// boundary condition is exercisable with a caller-owned free value instead
+// of requiring two independent Statfs calls to observe the same number.
+func checkFreeAgainstNeeded(free uint64, inputSizeBytes int64, safetyFactor float64) error {
 	needed := uint64(float64(inputSizeBytes) * safetyFactor)
 	if free < needed {
 		return fmt.Errorf("%w: free=%d needed=%d input=%d factor=%.2f",
