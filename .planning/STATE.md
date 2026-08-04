@@ -133,6 +133,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 ### Pending Todos
 
 - Plan and execute Phase 53 (Operator Usage Visibility: OPSV-01/02) — reads Phase 51's rollup table, sequenced after Phase 52's quota mechanism so "usage vs. limit" is meaningful.
+- Fix Retry-After midnight race in daily quota rejection — `quotaRejection` can advertise ~86400s when the daily quota already reset; needs a sentinel-error contract change, deliberately deferred out of PR #5. See `.planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md`.
 
 ### Blockers/Concerns
 
