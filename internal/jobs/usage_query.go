@@ -13,6 +13,9 @@
 // read-only visibility query tolerates a benign race with a concurrent
 // admission (a figure that is a few milliseconds stale), unlike the
 // admission gate itself, which must be exact under concurrent replicas.
+//
+// Callers resolving "today" for this endpoint MUST use UTCToday, not the API
+// host's wall clock — see UTCToday's doc comment for why (review WR-03).
 package jobs
 
 import (
@@ -86,6 +89,10 @@ const usageTerminalSQL = `
 // 0013_client_limits.sql). Binding them as parameters instead would silently
 // degrade the plan to a sequential scan of jobs, exactly as
 // admission.go:295-304 explains for evaluate()'s own in-flight subqueries.
+// Adding the client_id IS NOT NULL term below does not affect this partial
+// index's applicability: jobs_client_engine_inflight_idx's predicate is on
+// status only, so it stays matched regardless of what else is in the WHERE
+// clause.
 //
 // Deliberately NO created_at / day predicate here — matching
 // admission.go:306-347: a job that is queued or active right now consumes
@@ -96,6 +103,7 @@ const usageInFlightJobsSQL = `
 	SELECT client_id, engine, count(*)
 	FROM jobs
 	WHERE status IN ('queued', 'active')
+		AND client_id IS NOT NULL -- jobs.client_id is nullable with ON DELETE SET NULL (0001_init.sql:43); a deleted client's still-queued/active jobs would otherwise collapse into one NULL group that scans into uuid.Nil without error, fabricating a phantom client row carrying enforcement_mode: "" — a value docs/openapi.yaml declares as enum: [observe, enforce] and required. client_usage_daily.client_id is NOT NULL + ON DELETE CASCADE, so the terminal term (usageTerminalSQL) needs no equivalent guard.
 		AND ($1::uuid IS NULL OR client_id = $1)
 	GROUP BY client_id, engine`
 
@@ -115,6 +123,7 @@ const usageInFlightBytesSQL = `
 	SELECT j.client_id, j.engine, COALESCE(sum(ji.size_bytes), 0)
 	FROM jobs j JOIN job_inputs ji ON ji.job_id = j.id
 	WHERE j.status IN ('queued', 'active')
+		AND j.client_id IS NOT NULL -- jobs.client_id is nullable with ON DELETE SET NULL (0001_init.sql:43); a deleted client's still-queued/active jobs would otherwise collapse into one NULL group that scans into uuid.Nil without error, fabricating a phantom client row carrying enforcement_mode: "" — a value docs/openapi.yaml declares as enum: [observe, enforce] and required. client_usage_daily.client_id is NOT NULL + ON DELETE CASCADE, so the terminal term (usageTerminalSQL) needs no equivalent guard.
 		AND ($1::uuid IS NULL OR j.client_id = $1)
 	GROUP BY j.client_id, j.engine`
 
@@ -228,4 +237,28 @@ func (r *Repo) UsageSummary(ctx context.Context, clientID *uuid.UUID, dayFrom, d
 		return out[i].Engine < out[j].Engine
 	})
 	return out, nil
+}
+
+// UTCToday returns the database server's current UTC date, at UTC midnight,
+// by reading the same day expression evaluate() (admission.go) uses to
+// resolve "today" for the daily quota check. This exists so the operator
+// visibility endpoint and
+// evaluate() resolve "today" from ONE clock, the database server's, not two.
+// Deriving the day from the API host's wall clock instead lets a
+// UTC-midnight crossing or ordinary NTP skew make the endpoint query one day
+// while the admission gate enforces another, while the response still
+// claims remaining_matches_admission_gate: true (review finding WR-03, the
+// exact D-05 drift this package's own header comment claims to have
+// closed). This costs one extra round trip per operator request, deliberately
+// accepted for an operator-only, rate-limited route.
+//
+// The returned value is exactly what Postgres returns — this method does not
+// re-truncate or re-zone it in Go, because the entire point is that Go never
+// touches the value.
+func (r *Repo) UTCToday(ctx context.Context) (time.Time, error) {
+	var d time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT (now() AT TIME ZONE 'utc')::date`).Scan(&d); err != nil {
+		return time.Time{}, fmt.Errorf("read utc today: %w", err)
+	}
+	return d, nil
 }
