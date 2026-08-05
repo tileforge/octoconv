@@ -690,6 +690,219 @@ func TestSystemUsage_ClientIDNarrowingPassedToBothRepos(t *testing.T) {
 	})
 }
 
+// --- Gap closure (53-05): ROADMAP SC2 / OPSV-02 — idle unlimited clients
+// must be visible and distinguishable from a nonexistent client_id
+// (53-VERIFICATION.md Gap #1 / 53-REVIEW.md CR-01) ---
+
+// TestSystemUsage_IdleUnlimitedClientAppearsAsOneRow (ROADMAP SC2 / OPSV-02):
+// the previously-untested "zero usage AND zero limits" merge cell. A client
+// with a nil-Engine (metadata-only) LimitWithMeta row and no usage at all
+// must still emit exactly one row, not zero.
+func TestSystemUsage_IdleUnlimitedClientAppearsAsOneRow(t *testing.T) {
+	id := uuid.New()
+	usage := &fakeUsageRepo{}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: id, ClientName: "idle-co", EnforcementMode: "observe", Engine: nil},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest("client_id="+id.String()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ROADMAP SC2/OPSV-02: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) != 1 {
+		t.Fatalf("ROADMAP SC2/OPSV-02: usage rows = %d, want exactly 1 for an idle unlimited client (Gap #1 / CR-01); body=%s", len(resp.Usage), rec.Body.String())
+	}
+	row := resp.Usage[0]
+	if row.ClientID != id {
+		t.Errorf("ROADMAP SC2/OPSV-02: client_id = %s, want %s", row.ClientID, id)
+	}
+	if row.Engine != "" {
+		t.Errorf("ROADMAP SC2/OPSV-02: engine = %q, want \"\" (usageEngineNone)", row.Engine)
+	}
+	if row.ClientName != "idle-co" {
+		t.Errorf("ROADMAP SC2/OPSV-02: client_name = %q, want \"idle-co\"", row.ClientName)
+	}
+	if row.EnforcementMode != "observe" {
+		t.Errorf("ROADMAP SC2/OPSV-02: enforcement_mode = %q, want \"observe\"", row.EnforcementMode)
+	}
+	if row.Limits.MaxConcurrent != nil || row.Limits.MaxDailyBytes != nil || row.Limits.MaxDailyJobs != nil {
+		t.Errorf("ROADMAP SC2/OPSV-02: expected all-null limits, got %+v", row.Limits)
+	}
+	if row.Remaining.Concurrent != nil || row.Remaining.DailyBytes != nil || row.Remaining.DailyJobs != nil {
+		t.Errorf("ROADMAP SC2/OPSV-02: expected all-null remaining, got %+v", row.Remaining)
+	}
+	if row.UsedTerminal.JobCount != 0 || row.UsedTerminal.BytesIn != 0 || row.UsedTerminal.BytesOut != 0 {
+		t.Errorf("ROADMAP SC2/OPSV-02: expected all-zero used_terminal, got %+v", row.UsedTerminal)
+	}
+	if row.UsedInFlight.JobCount != 0 || row.UsedInFlight.BytesIn != 0 {
+		t.Errorf("ROADMAP SC2/OPSV-02: expected all-zero used_in_flight, got %+v", row.UsedInFlight)
+	}
+}
+
+// TestSystemUsage_NonexistentClientIDReturnsEmptyUsage: a client_id matching
+// no client (both fakes empty) still returns "usage":[] — proving the fix
+// did not change the nonexistent-client response shape (ROADMAP SC2/OPSV-02).
+func TestSystemUsage_NonexistentClientIDReturnsEmptyUsage(t *testing.T) {
+	usage := &fakeUsageRepo{}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest("client_id="+uuid.New().String()))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) != 0 {
+		t.Errorf("nonexistent client_id: usage rows = %d, want 0; body=%s", len(resp.Usage), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"usage":[]`) {
+		t.Errorf("nonexistent client_id: body must contain \"usage\":[], got body=%s", rec.Body.String())
+	}
+}
+
+// TestSystemUsage_IdleClientDistinguishableFromNonexistentClient
+// (ROADMAP SC2 / OPSV-02, the exact CR-01 / Gap #1 regression): a real idle
+// unlimited client and a nonexistent client_id must produce provably
+// different response bodies.
+func TestSystemUsage_IdleClientDistinguishableFromNonexistentClient(t *testing.T) {
+	id := uuid.New()
+	idleSrv := newOperatorUsageTestServer(&fakeUsageRepo{}, &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: id, ClientName: "idle-co", EnforcementMode: "observe", Engine: nil},
+	}})
+	nonexistentSrv := newOperatorUsageTestServer(&fakeUsageRepo{}, &fakeLimitsRepo{})
+
+	idleRec := httptest.NewRecorder()
+	idleSrv.Routes().ServeHTTP(idleRec, usageRequest("client_id="+id.String()))
+
+	nonexistentRec := httptest.NewRecorder()
+	nonexistentSrv.Routes().ServeHTTP(nonexistentRec, usageRequest("client_id="+id.String()))
+
+	if bytes.Equal(idleRec.Body.Bytes(), nonexistentRec.Body.Bytes()) {
+		t.Fatalf("CR-01/Gap #1 regression: idle unlimited client and nonexistent client_id must NOT produce byte-identical bodies; both = %q", idleRec.Body.String())
+	}
+
+	var idleResp, nonexistentResp systemUsageResponse
+	if err := json.Unmarshal(idleRec.Body.Bytes(), &idleResp); err != nil {
+		t.Fatalf("decode idle response: %v", err)
+	}
+	if err := json.Unmarshal(nonexistentRec.Body.Bytes(), &nonexistentResp); err != nil {
+		t.Fatalf("decode nonexistent response: %v", err)
+	}
+	if len(idleResp.Usage) != 1 {
+		t.Errorf("CR-01/Gap #1: idle client usage rows = %d, want 1", len(idleResp.Usage))
+	}
+	if len(nonexistentResp.Usage) != 0 {
+		t.Errorf("CR-01/Gap #1: nonexistent client usage rows = %d, want 0", len(nonexistentResp.Usage))
+	}
+}
+
+// TestSystemUsage_AllClientsIncludesIdleUnlimitedClients (ROADMAP SC2 /
+// OPSV-02, un-narrowed shape): the all-clients response emits at least one
+// row per client ListAllLimits returns, including idle unlimited ones, not
+// just clients with usage or a configured limit. D-02 (consumption-
+// descending sort) is preserved: the busy client sorts first.
+func TestSystemUsage_AllClientsIncludesIdleUnlimitedClients(t *testing.T) {
+	busy := uuid.New()
+	idle1 := uuid.New()
+	idle2 := uuid.New()
+
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: busy, Engine: "image", TerminalJobCount: 3, TerminalBytesIn: 3000},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: busy, ClientName: "busy-co", EnforcementMode: "enforce", Engine: nil},
+		{ClientID: idle1, ClientName: "idle-one", EnforcementMode: "observe", Engine: nil},
+		{ClientID: idle2, ClientName: "idle-two", EnforcementMode: "observe", Engine: nil},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) != 3 {
+		t.Fatalf("ROADMAP SC2/OPSV-02: usage rows = %d, want 3 (busy + 2 idle unlimited clients); body=%s", len(resp.Usage), rec.Body.String())
+	}
+	if resp.Usage[0].ClientID != busy {
+		t.Errorf("D-02: first row client_id = %s, want %s (consumption-descending)", resp.Usage[0].ClientID, busy)
+	}
+
+	seen := map[uuid.UUID]systemUsageRow{}
+	for _, row := range resp.Usage {
+		seen[row.ClientID] = row
+	}
+	for _, want := range []struct {
+		id   uuid.UUID
+		name string
+	}{{idle1, "idle-one"}, {idle2, "idle-two"}} {
+		row, ok := seen[want.id]
+		if !ok {
+			t.Fatalf("ROADMAP SC2/OPSV-02: idle client %s (%s) missing from all-clients response", want.id, want.name)
+		}
+		if row.Engine != "" {
+			t.Errorf("ROADMAP SC2/OPSV-02: idle client %s engine = %q, want \"\"", want.name, row.Engine)
+		}
+		if row.ClientName != want.name {
+			t.Errorf("ROADMAP SC2/OPSV-02: idle client %s client_name = %q, want %q", want.id, row.ClientName, want.name)
+		}
+	}
+}
+
+// TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent (ROADMAP SC3
+// regression on the fix's new data path): the merge fix must not turn the
+// endpoint into a client-existence oracle for non-operators. A non-operator
+// caller must still receive the byte-identical noSuchPreset 404 with zero
+// repo calls, even when the limits fake is populated with nil-Engine rows.
+func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
+	otherOperator := uuid.New() // deliberately NOT the resolver's fixed client id
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: uuid.New(), Engine: "image", TerminalJobCount: 1, TerminalBytesIn: 100},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: uuid.New(), ClientName: "co-a", EnforcementMode: "observe", Engine: nil},
+		{ClientID: uuid.New(), ClientName: "co-b", EnforcementMode: "observe", Engine: nil},
+	}}
+	srv, _ := newUsageTestServer(map[uuid.UUID]struct{}{otherOperator: {}}, usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("SC3 regression: merge fix must not turn this endpoint into a client-existence oracle for non-operators; status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Code == http.StatusForbidden {
+		t.Fatalf("SC3 regression: status must never be 403")
+	}
+
+	wantRec := httptest.NewRecorder()
+	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
+		t.Errorf("SC3 regression: body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
+	}
+
+	if usage.calls != 0 || limits.calls != 0 {
+		t.Errorf("SC3 regression: a non-operator must not cause any DB work even when the limits fake is populated; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
+	}
+}
+
 // TestSystemUsage_EmptyResultMarshalsAsEmptyArray: both fakes return no
 // rows; the raw body must contain "usage":[] and never "usage":null.
 func TestSystemUsage_EmptyResultMarshalsAsEmptyArray(t *testing.T) {
