@@ -104,6 +104,12 @@ func (f *fakeRepo) List(_ context.Context, clientID uuid.UUID, filter jobs.ListF
 // capture-args-and-configurable-returns shape (no mocking library). calls is
 // load-bearing for plan 53-04: its validation tests assert 422/400 responses
 // happen with calls == 0, i.e. before any DB work (D-03).
+//
+// today/todayErr/todayCalls back UTCToday (plan 53-07, WR-03). todayCalls is
+// DELIBERATELY a separate counter from calls: calls keeps meaning "UsageSummary
+// was called" for every existing assertion, and todayCalls means "UTCToday was
+// called" — mixing them would silently change what every pre-existing
+// zero-repo-call assertion actually proves.
 type fakeUsageRepo struct {
 	rows        []jobs.UsageRow
 	err         error
@@ -111,6 +117,9 @@ type fakeUsageRepo struct {
 	gotClientID *uuid.UUID
 	gotDayFrom  time.Time
 	gotDayTo    time.Time
+	today       time.Time
+	todayErr    error
+	todayCalls  int
 }
 
 func (f *fakeUsageRepo) UsageSummary(_ context.Context, clientID *uuid.UUID, dayFrom, dayTo time.Time) ([]jobs.UsageRow, error) {
@@ -119,6 +128,24 @@ func (f *fakeUsageRepo) UsageSummary(_ context.Context, clientID *uuid.UUID, day
 	f.gotDayFrom = dayFrom
 	f.gotDayTo = dayTo
 	return f.rows, f.err
+}
+
+// UTCToday returns f.today verbatim when set (frozen-clock tests); when
+// f.today is the zero value it falls back to the real UTC-midnight of
+// time.Now(), computed with the explicit time.Date(...) form rather than a
+// duration-based truncation — that truncates against the Unix epoch, not
+// calendar days, so it does not reliably land on UTC midnight for every
+// input.
+func (f *fakeUsageRepo) UTCToday(_ context.Context) (time.Time, error) {
+	f.todayCalls++
+	if f.todayErr != nil {
+		return time.Time{}, f.todayErr
+	}
+	if f.today.IsZero() {
+		n := time.Now().UTC()
+		return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC), nil
+	}
+	return f.today, nil
 }
 
 // fakeLimitsRepo backs api.LimitsRepo in tests, mirroring fakeUsageRepo's
