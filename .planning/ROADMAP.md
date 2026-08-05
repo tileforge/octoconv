@@ -319,8 +319,8 @@ Plans:
 
 **Wave 4** *(gap closure — blocked on Wave 3 completion; closes 53-VERIFICATION.md Gap #1 / SC2 / OPSV-02)*
 
-- [ ] 53-05-PLAN.md — Seed the merge key set from every client in meta so an idle unlimited client is visible and distinguishable from a nonexistent client_id, without weakening SC3's no-leak 404
-- [ ] 53-06-PLAN.md — Exclude ON DELETE SET NULL orphans from both in-flight aggregates (WR-01) and add jobs.Repo.UTCToday so the endpoint and evaluate() read one clock (WR-03)
+- [x] 53-05-PLAN.md — Seed the merge key set from every client in meta so an idle unlimited client is visible and distinguishable from a nonexistent client_id, without weakening SC3's no-leak 404
+- [x] 53-06-PLAN.md — Exclude ON DELETE SET NULL orphans from both in-flight aggregates (WR-01) and add jobs.Repo.UTCToday so the endpoint and evaluate() read one clock (WR-03)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -408,7 +408,7 @@ Plans:
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
-| 53. Operator Usage Visibility | v1.12 | 4/4 | Gaps Found | 2026-08-05 |
+| 53. Operator Usage Visibility | v1.12 | 6/7 | In Progress|  |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
