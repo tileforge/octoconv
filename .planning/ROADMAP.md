@@ -183,7 +183,7 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 - [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
 - [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
-- [ ] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (all 4 plans executed 2026-08-05; verification found 1 gap on SC2 — see 53-VERIFICATION.md; gap-closure plans 53-05..53-07 planned, run via `/gsd:execute-phase 53 --gaps-only`)
+- [x] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (all 4 plans executed 2026-08-05; verification found 1 gap on SC2 — see 53-VERIFICATION.md; gap-closure plans 53-05..53-07 planned, run via `/gsd:execute-phase 53 --gaps-only`) (completed 2026-08-05)
 - [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
 - [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
 
@@ -324,7 +324,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 53-07-PLAN.md — Enforcement-aware truth claims: remaining_matches_admission_gate honors the QUOTA_ENFORCEMENT_DISABLED kill-switch and observe mode (WR-02), day range derived from the Postgres clock (WR-03)
+- [x] 53-07-PLAN.md — Enforcement-aware truth claims: remaining_matches_admission_gate honors the QUOTA_ENFORCEMENT_DISABLED kill-switch and observe mode (WR-02), day range derived from the Postgres clock (WR-03)
 
 ### Phase 54: Per-Class Capacity Floor (SEED-011)
 
@@ -408,7 +408,7 @@ Plans:
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
-| 53. Operator Usage Visibility | v1.12 | 6/7 | In Progress|  |
+| 53. Operator Usage Visibility | v1.12 | 7/7 | Complete   | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
