@@ -64,7 +64,7 @@ func TestParseOperatorClientIDs(t *testing.T) {
 // allowlist for exercising requireOperator directly (routing is wired in
 // Task 2; this task tests the middleware in isolation).
 func newOperatorGateTestServer(operatorIDs map[uuid.UUID]struct{}) *Server {
-	return NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{
+	return NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
 		MaxUploadBytes:    1 << 20,
 		OperatorClientIDs: operatorIDs,
 	})
@@ -190,7 +190,7 @@ func TestSystemPresets_OperatorSucceedsForAllVerbs(t *testing.T) {
 	// resolver exists (D-06 action note), so the operator-success case
 	// naturally includes the resolved caller.
 	resolver := newFakeResolver()
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, resolver, healthyDeps(), Config{
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:    1 << 20,
 		OperatorClientIDs: map[uuid.UUID]struct{}{resolver.client.ID: {}},
 	})
@@ -233,7 +233,7 @@ func TestSystemPresets_NonOperatorNoLeak404(t *testing.T) {
 	otherOperator := uuid.New()
 	admin := &fakePresetAdmin{}
 	resolver := newFakeResolver()
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, resolver, healthyDeps(), Config{
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:    1 << 20,
 		OperatorClientIDs: map[uuid.UUID]struct{}{otherOperator: {}},
 	})
@@ -266,7 +266,7 @@ func TestSystemPresets_NonOperatorNoLeak404(t *testing.T) {
 func TestSystemPresets_EmptyAllowlistDeniesEveryone(t *testing.T) {
 	admin := &fakePresetAdmin{}
 	resolver := newFakeResolver()
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	for _, tc := range systemPresetCases() {
 		t.Run(tc.name, func(t *testing.T) {

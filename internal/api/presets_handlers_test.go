@@ -18,7 +18,7 @@ import (
 // tests can assert against its fixed client id (mass-assignment, D-08).
 func newPresetTestServer(admin *fakePresetAdmin) (*Server, *fakeResolver) {
 	resolver := newFakeResolver()
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), admin, &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 	return srv, resolver
 }
 
