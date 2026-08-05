@@ -109,6 +109,65 @@ func (r *Repo) ListLimits(ctx context.Context, clientID uuid.UUID) ([]Limit, err
 	return out, nil
 }
 
+// LimitWithMeta is the operator-facing read shape (OPSV-02): one
+// client_limits row joined with the owning client's identity and
+// enforcement mode.
+//
+// Engine is a *string, nil when the client has no client_limits row at all
+// — that row still carries valid ClientID, ClientName and EnforcementMode
+// and MUST NOT be discarded by the caller, because "this client has no
+// limits configured" is exactly the answer OPSV-02 asks for.
+//
+// The three limit pointers keep the same contract as Limit: nil is
+// unlimited, a non-nil pointer to 0 is an explicit deny (max_concurrent = 0
+// denies the engine entirely, per 0013's own comment).
+type LimitWithMeta struct {
+	ClientID        uuid.UUID
+	ClientName      string
+	EnforcementMode string
+	Engine          *string
+	MaxConcurrent   *int
+	MaxDailyBytes   *int64
+	MaxDailyJobs    *int64
+}
+
+// ListAllLimits is the operator-facing batch limits read (OPSV-02): every
+// client's identity, enforcement mode and configured per-engine limits, in
+// one query. clientID == nil means all clients; a non-nil clientID narrows
+// to that one client — one code path, one optional bind (D-01), never two.
+//
+// The LEFT JOIN direction is clients -> client_limits, mirroring
+// loadQuotaState (internal/jobs/admission.go), so a client with no limits
+// row at all still appears in the result rather than being silently
+// dropped.
+func (r *Repo) ListAllLimits(ctx context.Context, clientID *uuid.UUID) ([]LimitWithMeta, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT c.id, c.name, c.enforcement_mode, l.engine, l.max_concurrent, l.max_daily_bytes, l.max_daily_jobs
+		FROM clients c
+		LEFT JOIN client_limits l ON l.client_id = c.id
+		WHERE ($1::uuid IS NULL OR c.id = $1)
+		ORDER BY c.id, l.engine`,
+		clientID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all client limits: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LimitWithMeta{}
+	for rows.Next() {
+		var lm LimitWithMeta
+		if err := rows.Scan(&lm.ClientID, &lm.ClientName, &lm.EnforcementMode, &lm.Engine, &lm.MaxConcurrent, &lm.MaxDailyBytes, &lm.MaxDailyJobs); err != nil {
+			return nil, fmt.Errorf("scan client limit with meta: %w", err)
+		}
+		out = append(out, lm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list all client limits: %w", err)
+	}
+	return out, nil
+}
+
 // SetEnforcementMode flips a client's enforcement_mode. mode is validated in
 // Go BEFORE the query runs — fail-closed at the edge, with the DB CHECK
 // constraint as the backstop, not the primary validator. A clientID that
