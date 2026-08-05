@@ -215,3 +215,198 @@ func TestSetEnforcementModeUnknownClient(t *testing.T) {
 		t.Fatalf("SetEnforcementMode(random uuid) = %v, want ErrNotFound", err)
 	}
 }
+
+// filterByClient narrows an all-clients ListAllLimits result down to the
+// rows belonging to id. The shared test database carries rows from other
+// tests, so every all-clients assertion in this file filters down to its
+// own fixture client(s) first rather than asserting on len(got) directly.
+func filterByClient(rows []clients.LimitWithMeta, id uuid.UUID) []clients.LimitWithMeta {
+	var out []clients.LimitWithMeta
+	for _, row := range rows {
+		if row.ClientID == id {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func TestListAllLimitsIncludesClientWithNoLimitsRow(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	id := newLimitsTestClient(t, r)
+
+	all, err := r.ListAllLimits(ctx, &id)
+	if err != nil {
+		t.Fatalf("ListAllLimits: %v", err)
+	}
+	got := filterByClient(all, id)
+	if len(got) != 1 {
+		t.Fatalf("ListAllLimits(narrowed to client with no limits row) returned %d rows, want 1 -- dropping this row would make the operator endpoint silently omit unlimited clients, which is precisely the state OPSV-02 asks about", len(got))
+	}
+	if got[0].Engine != nil {
+		t.Fatalf("Engine = %v, want nil for a client with no client_limits row", *got[0].Engine)
+	}
+	if got[0].ClientName == "" {
+		t.Fatal("ClientName is empty, want the name set at Create")
+	}
+	if got[0].EnforcementMode != "observe" {
+		t.Fatalf("EnforcementMode = %q, want %q (the 0013 column default)", got[0].EnforcementMode, "observe")
+	}
+}
+
+func TestListAllLimitsReturnsOneRowPerEngine(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	id := newLimitsTestClient(t, r)
+
+	if err := r.SetLimit(ctx, id, clients.Limit{Engine: "image", MaxConcurrent: intPtr(3)}); err != nil {
+		t.Fatalf("SetLimit(image): %v", err)
+	}
+	if err := r.SetLimit(ctx, id, clients.Limit{Engine: "document", MaxDailyJobs: int64Ptr(10)}); err != nil {
+		t.Fatalf("SetLimit(document): %v", err)
+	}
+
+	all, err := r.ListAllLimits(ctx, &id)
+	if err != nil {
+		t.Fatalf("ListAllLimits: %v", err)
+	}
+	got := filterByClient(all, id)
+	if len(got) != 2 {
+		t.Fatalf("ListAllLimits returned %d rows for client with 2 engines configured, want 2", len(got))
+	}
+	for _, row := range got {
+		if row.Engine == nil {
+			t.Fatal("Engine = nil, want non-nil for a configured (client, engine) row")
+		}
+	}
+	// ORDER BY l.engine: "document" < "image" lexically.
+	if *got[0].Engine != "document" || *got[1].Engine != "image" {
+		t.Fatalf("ListAllLimits engines = [%s, %s], want [document, image]", *got[0].Engine, *got[1].Engine)
+	}
+}
+
+func TestListAllLimitsPreservesNullVersusExplicitZero(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	id := newLimitsTestClient(t, r)
+
+	if err := r.SetLimit(ctx, id, clients.Limit{
+		Engine:        "image",
+		MaxConcurrent: intPtr(0),
+		MaxDailyBytes: nil,
+		MaxDailyJobs:  int64Ptr(5),
+	}); err != nil {
+		t.Fatalf("SetLimit: %v", err)
+	}
+
+	all, err := r.ListAllLimits(ctx, &id)
+	if err != nil {
+		t.Fatalf("ListAllLimits: %v", err)
+	}
+	got := filterByClient(all, id)
+	if len(got) != 1 {
+		t.Fatalf("ListAllLimits returned %d rows, want 1", len(got))
+	}
+	row := got[0]
+	if row.MaxConcurrent == nil {
+		t.Fatal("MaxConcurrent = nil, want a non-nil pointer to 0 -- collapsing nil and 0 turns \"unlimited\" into \"denied\" (RESEARCH Pitfall 5)")
+	}
+	if *row.MaxConcurrent != 0 {
+		t.Fatalf("MaxConcurrent = %d, want 0", *row.MaxConcurrent)
+	}
+	if row.MaxDailyBytes != nil {
+		t.Fatalf("MaxDailyBytes = %v, want nil (unset)", *row.MaxDailyBytes)
+	}
+	if row.MaxDailyJobs == nil || *row.MaxDailyJobs != 5 {
+		t.Fatalf("MaxDailyJobs = %v, want pointer to 5", row.MaxDailyJobs)
+	}
+}
+
+func TestListAllLimitsCarriesEnforcementMode(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	id := newLimitsTestClient(t, r)
+
+	if err := r.SetLimit(ctx, id, clients.Limit{Engine: "image", MaxConcurrent: intPtr(3)}); err != nil {
+		t.Fatalf("SetLimit: %v", err)
+	}
+	if err := r.SetEnforcementMode(ctx, id, "enforce"); err != nil {
+		t.Fatalf("SetEnforcementMode: %v", err)
+	}
+
+	all, err := r.ListAllLimits(ctx, &id)
+	if err != nil {
+		t.Fatalf("ListAllLimits: %v", err)
+	}
+	got := filterByClient(all, id)
+	if len(got) == 0 {
+		t.Fatal("ListAllLimits returned no rows for client")
+	}
+	for _, row := range got {
+		if row.EnforcementMode != "enforce" {
+			t.Fatalf("EnforcementMode = %q, want %q", row.EnforcementMode, "enforce")
+		}
+	}
+}
+
+func TestListAllLimitsNarrowingMatchesUnnarrowed(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	idA := newLimitsTestClient(t, r)
+	idB := newLimitsTestClient(t, r)
+
+	if err := r.SetLimit(ctx, idA, clients.Limit{Engine: "image", MaxConcurrent: intPtr(7)}); err != nil {
+		t.Fatalf("SetLimit(A): %v", err)
+	}
+	if err := r.SetLimit(ctx, idB, clients.Limit{Engine: "document", MaxDailyJobs: int64Ptr(20)}); err != nil {
+		t.Fatalf("SetLimit(B): %v", err)
+	}
+
+	narrowed, err := r.ListAllLimits(ctx, &idA)
+	if err != nil {
+		t.Fatalf("ListAllLimits(narrowed): %v", err)
+	}
+	for _, row := range narrowed {
+		if row.ClientID != idA {
+			t.Fatalf("narrowed ListAllLimits(&idA) returned row for ClientID %s, want only %s", row.ClientID, idA)
+		}
+	}
+
+	unnarrowed, err := r.ListAllLimits(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListAllLimits(nil): %v", err)
+	}
+	gotA := filterByClient(unnarrowed, idA)
+	gotB := filterByClient(unnarrowed, idB)
+	if len(gotA) == 0 {
+		t.Fatal("unnarrowed ListAllLimits(nil) is missing rows for client A")
+	}
+	if len(gotB) == 0 {
+		t.Fatal("unnarrowed ListAllLimits(nil) is missing rows for client B")
+	}
+
+	// A's rows must be field-for-field identical (pointer VALUES, not
+	// identity) between the narrowed and unnarrowed calls -- this pins
+	// D-01's "same query, one optional bind" contract.
+	if len(narrowed) != len(gotA) {
+		t.Fatalf("narrowed call returned %d rows for A, unnarrowed call returned %d rows for A -- want identical counts", len(narrowed), len(gotA))
+	}
+	for i := range narrowed {
+		n, u := narrowed[i], gotA[i]
+		if n.ClientID != u.ClientID || n.ClientName != u.ClientName || n.EnforcementMode != u.EnforcementMode {
+			t.Fatalf("row %d differs between narrowed and unnarrowed: %+v vs %+v", i, n, u)
+		}
+		if (n.Engine == nil) != (u.Engine == nil) || (n.Engine != nil && *n.Engine != *u.Engine) {
+			t.Fatalf("row %d Engine differs between narrowed and unnarrowed: %v vs %v", i, n.Engine, u.Engine)
+		}
+		if (n.MaxConcurrent == nil) != (u.MaxConcurrent == nil) || (n.MaxConcurrent != nil && *n.MaxConcurrent != *u.MaxConcurrent) {
+			t.Fatalf("row %d MaxConcurrent differs between narrowed and unnarrowed: %v vs %v", i, n.MaxConcurrent, u.MaxConcurrent)
+		}
+		if (n.MaxDailyBytes == nil) != (u.MaxDailyBytes == nil) || (n.MaxDailyBytes != nil && *n.MaxDailyBytes != *u.MaxDailyBytes) {
+			t.Fatalf("row %d MaxDailyBytes differs between narrowed and unnarrowed: %v vs %v", i, n.MaxDailyBytes, u.MaxDailyBytes)
+		}
+		if (n.MaxDailyJobs == nil) != (u.MaxDailyJobs == nil) || (n.MaxDailyJobs != nil && *n.MaxDailyJobs != *u.MaxDailyJobs) {
+			t.Fatalf("row %d MaxDailyJobs differs between narrowed and unnarrowed: %v vs %v", i, n.MaxDailyJobs, u.MaxDailyJobs)
+		}
+	}
+}
