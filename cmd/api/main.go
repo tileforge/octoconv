@@ -167,7 +167,12 @@ func main() {
 		S3:       store,
 	}
 	jobsRepo := jobs.NewRepo(pool)
-	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, resolver, health, api.Config{
+	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
+	// as the UsageRepo -- because the two interfaces are narrow views of the
+	// same concrete *jobs.Repo, exactly as presetRepo already appears twice
+	// for PresetRepo/PresetAdmin. clientRepo was already constructed above
+	// for the auth resolver and now doubles as the LimitsRepo (OPSV-01/02).
+	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, jobsRepo, clientRepo, resolver, health, api.Config{
 		// D-07 (Phase 35, operator-confirmed 2026-07-21): raised from 100
 		// MiB to 2 GiB so video uploads are admissible -- this is a pre-
 		// parse http.MaxBytesReader bound, enforced BEFORE the engine class
@@ -202,6 +207,11 @@ func main() {
 		SSEPollInterval:      envDuration("SSE_POLL_INTERVAL", 1*time.Second),
 		SSEHeartbeatInterval: envDuration("SSE_HEARTBEAT_INTERVAL", 15*time.Second),
 		SSEMaxStreamDuration: envDuration("SSE_MAX_STREAM_DURATION", 30*time.Minute),
+		// Plan 53-07: the SAME quotaDisabled value handed to
+		// jobsRepo.SetQuotaEnforcementDisabled below -- the two must never
+		// diverge, or GET /v1/system/usage would report an enforcement
+		// posture the admission gate does not actually have.
+		QuotaEnforcementDisabled: quotaDisabled,
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher

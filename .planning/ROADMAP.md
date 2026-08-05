@@ -183,7 +183,7 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 - [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
 - [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
-- [ ] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus
+- [x] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (7/7 plans; initial verification 9/10 `gaps_found` on SC2, closed by 53-05..53-07, re-verified 10/10 `passed`) (completed 2026-08-05)
 - [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
 - [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
 
@@ -301,7 +301,30 @@ Plans:
   2. Per client, the operator can see the currently configured limits and the remaining budget/quota state, so limits can be set from observed data rather than guessed.
   3. A non-operator caller receives the identical no-leak response the project's existing operator-only routes already guarantee (byte-identical 404, not a distinguishable 403) — no new information-disclosure surface introduced by this endpoint.
 
-**Plans**: TBD
+**Plans**: 7 plans (4 original + 3 gap closure)
+
+Plans:
+**Wave 1**
+
+- [x] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
+- [x] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 53-03-PLAN.md — api.UsageRepo/LimitsRepo interfaces, widened NewServer, and all three call sites updated with hand-written fakes
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 53-04-PLAN.md — GET /v1/system/usage behind requireOperator: combined usage+limits+remaining response, byte-identical no-leak 404, D-09 caveat fields, OpenAPI spec
+
+**Wave 4** *(gap closure — blocked on Wave 3 completion; closes 53-VERIFICATION.md Gap #1 / SC2 / OPSV-02)*
+
+- [x] 53-05-PLAN.md — Seed the merge key set from every client in meta so an idle unlimited client is visible and distinguishable from a nonexistent client_id, without weakening SC3's no-leak 404
+- [x] 53-06-PLAN.md — Exclude ON DELETE SET NULL orphans from both in-flight aggregates (WR-01) and add jobs.Repo.UTCToday so the endpoint and evaluate() read one clock (WR-03)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [x] 53-07-PLAN.md — Enforcement-aware truth claims: remaining_matches_admission_gate honors the QUOTA_ENFORCEMENT_DISABLED kill-switch and observe mode (WR-02), day range derived from the Postgres clock (WR-03)
 
 ### Phase 54: Per-Class Capacity Floor (SEED-011)
 
@@ -385,7 +408,7 @@ Plans:
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
-| 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
+| 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 

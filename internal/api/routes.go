@@ -68,6 +68,16 @@ func (s *Server) Routes() chi.Router {
 			r.Put("/{name}", s.handleUpdateSystemPreset)
 			r.Delete("/{name}", s.handleDeactivateSystemPreset)
 		})
+		// /v1/system/usage (OPSV-01/OPSV-02, Plan 53-04): a sibling of the
+		// /system/presets block above, registered INSIDE a requireOperator
+		// sub-router -- never as a bare top-level /v1 route. It reuses the
+		// same middleware and therefore the same no-leak 404 as
+		// /system/presets, and is a distinct literal path segment with no
+		// chi routing conflict.
+		r.Route("/system/usage", func(r chi.Router) {
+			r.Use(s.requireOperator)
+			r.Get("/", s.handleSystemUsage)
+		})
 	})
 	return r
 }

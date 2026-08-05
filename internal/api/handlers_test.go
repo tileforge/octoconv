@@ -100,6 +100,69 @@ func (f *fakeRepo) List(_ context.Context, clientID uuid.UUID, filter jobs.ListF
 	return f.listResult, f.listNext, f.listErr
 }
 
+// fakeUsageRepo backs api.UsageRepo in tests, copying fakeRepo's
+// capture-args-and-configurable-returns shape (no mocking library). calls is
+// load-bearing for plan 53-04: its validation tests assert 422/400 responses
+// happen with calls == 0, i.e. before any DB work (D-03).
+//
+// today/todayErr/todayCalls back UTCToday (plan 53-07, WR-03). todayCalls is
+// DELIBERATELY a separate counter from calls: calls keeps meaning "UsageSummary
+// was called" for every existing assertion, and todayCalls means "UTCToday was
+// called" — mixing them would silently change what every pre-existing
+// zero-repo-call assertion actually proves.
+type fakeUsageRepo struct {
+	rows        []jobs.UsageRow
+	err         error
+	calls       int
+	gotClientID *uuid.UUID
+	gotDayFrom  time.Time
+	gotDayTo    time.Time
+	today       time.Time
+	todayErr    error
+	todayCalls  int
+}
+
+func (f *fakeUsageRepo) UsageSummary(_ context.Context, clientID *uuid.UUID, dayFrom, dayTo time.Time) ([]jobs.UsageRow, error) {
+	f.calls++
+	f.gotClientID = clientID
+	f.gotDayFrom = dayFrom
+	f.gotDayTo = dayTo
+	return f.rows, f.err
+}
+
+// UTCToday returns f.today verbatim when set (frozen-clock tests); when
+// f.today is the zero value it falls back to the real UTC-midnight of
+// time.Now(), computed with the explicit time.Date(...) form rather than a
+// duration-based truncation — that truncates against the Unix epoch, not
+// calendar days, so it does not reliably land on UTC midnight for every
+// input.
+func (f *fakeUsageRepo) UTCToday(_ context.Context) (time.Time, error) {
+	f.todayCalls++
+	if f.todayErr != nil {
+		return time.Time{}, f.todayErr
+	}
+	if f.today.IsZero() {
+		n := time.Now().UTC()
+		return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC), nil
+	}
+	return f.today, nil
+}
+
+// fakeLimitsRepo backs api.LimitsRepo in tests, mirroring fakeUsageRepo's
+// shape.
+type fakeLimitsRepo struct {
+	rows        []clients.LimitWithMeta
+	err         error
+	calls       int
+	gotClientID *uuid.UUID
+}
+
+func (f *fakeLimitsRepo) ListAllLimits(_ context.Context, clientID *uuid.UUID) ([]clients.LimitWithMeta, error) {
+	f.calls++
+	f.gotClientID = clientID
+	return f.rows, f.err
+}
+
 type fakeStorage struct {
 	uploaded    bool
 	contentType string
@@ -675,7 +738,7 @@ func multipartBodyWithPreset(t *testing.T, filename, preset, target string, data
 // so existing non-preset tests are unaffected (D-09/Task 3).
 func newTestServer(repo Repo, store Storage, q Enqueuer) (*Server, *fakeResolver) {
 	resolver := newFakeResolver()
-	return NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20}), resolver
+	return NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20}), resolver
 }
 
 // authed sets the Authorization header requests need to pass auth.Middleware.
@@ -901,7 +964,7 @@ func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
 		repo := &fakeRepo{}
 		store := &fakeStorage{}
 		resolver := newFakeResolver()
-		srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+		srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 			MaxUploadBytes: 10 << 20,
 			MaxEngineBytes: map[string]int64{convert.EngineImage: 100},
 		})
@@ -1220,7 +1283,7 @@ func TestCreateJob_DimensionLimitExceeded(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, MaxImagePixels: 1_000_000})
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, MaxImagePixels: 1_000_000})
 
 	body, ct := multipartBody(t, "in.png", "webp", oversizedPNGFixture())
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1364,7 +1427,7 @@ func TestCreateJob_DocumentSkipsDimensionCheck(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, MaxImagePixels: 1})
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, MaxImagePixels: 1})
 
 	body, ct := multipartBody(t, "in.docx", "pdf", docxFixture(t))
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -1386,7 +1449,7 @@ func TestCreateJob_ZipBombRejected(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:               1 << 20,
 		MaxDocumentUncompressedBytes: 1 << 20, // 1 MiB test limit
 	})
@@ -1543,7 +1606,7 @@ func TestHealthz_Degraded(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resolver := newFakeResolver()
-			srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, tc.health, Config{MaxUploadBytes: 1 << 20})
+			srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, tc.health, Config{MaxUploadBytes: 1 << 20})
 
 			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 			rec := httptest.NewRecorder()
@@ -1580,7 +1643,7 @@ func TestGetJob_DonePresigned(t *testing.T) {
 		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp"}},
 	}
 	store := &fakeStorage{presigned: "https://example/download"}
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -1606,7 +1669,7 @@ func TestGetJob_ProgressSurfaced(t *testing.T) {
 		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive,
 		Engine: convert.EngineAV, ProgressPct: &pct, EtaSeconds: &eta,
 	}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -1635,7 +1698,7 @@ func TestGetJob_ProgressNullForNonProgressEngine(t *testing.T) {
 	repo := &fakeRepo{getJob: &jobs.Job{
 		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive, Engine: convert.EngineImage,
 	}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -1666,7 +1729,7 @@ func TestGetJob_ProgressFrozenOnCancel(t *testing.T) {
 		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusCanceled,
 		Engine: convert.EngineAV, ProgressPct: &pct,
 	}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -1732,7 +1795,7 @@ func TestCancelJob_QueuedOK(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
 	rec := httptest.NewRecorder()
@@ -1756,7 +1819,7 @@ func TestCancelJob_ActiveOK(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
 	rec := httptest.NewRecorder()
@@ -1838,7 +1901,7 @@ func TestCancelJob_AlreadyTerminal_Idempotent(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
 	rec := httptest.NewRecorder()
@@ -1870,7 +1933,7 @@ func TestCancelJob_TerminalRace(t *testing.T) {
 		cancelErr:         errors.New("illegal transition active -> canceled for job " + id.String()),
 		getJobAfterCancel: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
 	}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
 	rec := httptest.NewRecorder()
@@ -1928,7 +1991,7 @@ func TestCancelJob_PublishesOnSuccess(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 	pub := &fakeCancelPublisher{}
 	srv.SetCancelPublisher(pub)
 
@@ -2175,7 +2238,7 @@ func TestGetJob_OptsEcho(t *testing.T) {
 		Status:   jobs.StatusQueued,
 		Opts:     map[string]any{"pdf_profile": "pdf/a-2b"},
 	}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -2198,7 +2261,7 @@ func TestGetJob_NoOptsOmitted(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -2218,7 +2281,7 @@ func TestGetJob_SameClient_OK(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued}}
-	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
 	rec := httptest.NewRecorder()
@@ -2457,7 +2520,7 @@ func TestCreateJob_PresetResolvedImage(t *testing.T) {
 	presetRepo := &fakePresetRepo{resolve: &presets.Preset{
 		ID: uuid.New(), Name: "thumb", Version: 2, TargetFormat: "webp",
 	}}
-	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "", pngBytesFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2491,7 +2554,7 @@ func TestCreateJob_PresetAndTargetMutuallyExclusive(t *testing.T) {
 	store := &fakeStorage{}
 	presetRepo := &fakePresetRepo{resolve: &presets.Preset{ID: uuid.New(), Name: "thumb", Version: 1, TargetFormat: "webp"}}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "webp", pngBytesFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2526,7 +2589,7 @@ func TestCreateJob_PresetAndOptsMutuallyExclusive(t *testing.T) {
 	store := &fakeStorage{}
 	presetRepo := &fakePresetRepo{resolve: &presets.Preset{ID: uuid.New(), Name: "thumb", Version: 1, TargetFormat: "webp"}}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "", pngBytesFixture(), `{"pdf_profile":"pdf/a-2b"}`)
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2564,7 +2627,7 @@ func TestCreateJob_UnknownPreset422NoLeak(t *testing.T) {
 		repo := &fakeRepo{}
 		store := &fakeStorage{}
 		resolver := newFakeResolver()
-		srv := NewServer(repo, store, &fakeQueue{}, tc.presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+		srv := NewServer(repo, store, &fakeQueue{}, tc.presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 		body, ct := multipartBodyWithPreset(t, "in.png", "ghost", "", pngBytesFixture(), "")
 		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2602,7 +2665,7 @@ func TestCreateJob_PresetOptsRevalidated(t *testing.T) {
 		Options: map[string]any{"EncryptFile": true}, // unknown key, since-invalidated
 	}}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.docx", "stale", "", docxFixture(t), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2638,7 +2701,7 @@ func TestCreateJob_PresetDeactivatedDuringCreate(t *testing.T) {
 		recheckErr: presets.ErrNotFound,
 	}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, &fakeQueue{}, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.png", "thumb", "", pngBytesFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -2677,7 +2740,7 @@ func TestCreateJob_PresetHTMLOptsResolved(t *testing.T) {
 		Options: map[string]any{"page_size": "a4"},
 	}}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+	srv := NewServer(repo, store, q, presetRepo, defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
 	body, ct := multipartBodyWithPreset(t, "in.html", "a4pdf", "", htmlFixture(), "")
 	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
@@ -3201,7 +3264,7 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 // Config.MaxPandocInputBytes must never change the default), av at the
 // raised 2 GiB allowance.
 func TestNewServer_MaxEngineBytesDefaults(t *testing.T) {
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{})
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{})
 
 	if srv.maxEngineBytes == nil {
 		t.Fatal("maxEngineBytes must be non-nil after NewServer")
@@ -3227,7 +3290,7 @@ func TestCreateJob_EngineSizeLimitRejectsOversizedImage(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes: 10 << 20,
 		MaxEngineBytes: map[string]int64{convert.EngineImage: 100},
 	})
@@ -3263,7 +3326,7 @@ func TestCreateJob_EngineSizeLimitAcceptsLargeAVUpload(t *testing.T) {
 	store := &fakeStorage{}
 	queue := &fakeQueue{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, queue, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, queue, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes: 10 << 20,
 		MaxEngineBytes: map[string]int64{convert.EngineImage: 1, convert.EngineAV: 5 << 20},
 	})
@@ -3301,7 +3364,7 @@ func TestCreateJob_EngineAbsentFromSizeMapNotRejected(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes: 10 << 20,
 		// EngineImage is deliberately absent -- it must not be gated.
 		MaxEngineBytes: map[string]int64{convert.EngineDocument: 1},
@@ -3332,7 +3395,7 @@ func TestCreateJob_PandocOversizedRejectedBeforeUpload(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:      10 << 20,
 		MaxPandocInputBytes: 100,
 		// MaxEngineBytes deliberately left nil: NewServer's own D-07
@@ -3369,7 +3432,7 @@ func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
 	store := &fakeStorage{}
 	q := &fakeQueue{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes:      10 << 20,
 		MaxPandocInputBytes: 10_000,
 	})
@@ -3394,7 +3457,7 @@ func TestCreateJob_PandocWithinConfiguredCapAccepted(t *testing.T) {
 // ONLY the pandoc entry NewServer's own D-07 default map produces -- the six
 // other per-engine ceilings are untouched.
 func TestNewServer_MaxPandocInputBytesOverridesDefault(t *testing.T) {
-	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), Config{
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
 		MaxPandocInputBytes: 3145728,
 	})
 
@@ -3524,7 +3587,7 @@ func TestCreateJob_OCREngineSizeLimitRejectsOversizedUpload(t *testing.T) {
 	repo := &fakeRepo{}
 	store := &fakeStorage{}
 	resolver := newFakeResolver()
-	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), resolver, healthyDeps(), Config{
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
 		MaxUploadBytes: 10 << 20,
 		MaxEngineBytes: map[string]int64{convert.EngineOCR: 100},
 	})
