@@ -1,29 +1,25 @@
 ---
 phase: 53-operator-usage-visibility
-verified: 2026-08-05T17:30:00Z
-status: gaps_found
-score: 9/10 must-haves verified
+verified: 2026-08-05T23:30:00Z
+status: passed
+score: 10/10 must-haves verified
 overrides_applied: 0
-gaps:
-  - truth: "Per client, the operator can see the currently configured limits and the remaining budget/quota state (ROADMAP SC2 / OPSV-02)"
-    status: failed
-    reason: "handleSystemUsage's merge step (internal/api/system_usage_handlers.go:193-204) builds the emitted row key set as `usageByKey ∪ limitsByKey`, where `limitsByKey` only indexes LimitWithMeta rows whose Engine is non-nil. A client with NO client_limits row at all (Engine == nil — the documented, load-bearing signal for 'this client has no limits configured', and per ROADMAP SC1 the DEFAULT state of every freshly-provisioned client in the fleet) and no usage in the queried period contributes to neither map, so it produces ZERO output rows. Confirmed empirically with a live probe test: GET /v1/system/usage?client_id=<a real, idle, unlimited client> returns `{\"usage\":[]}` — byte-identical to the response for a client_id that matches no client at all. An operator cannot tell 'this client exists and is unlimited' from 'no such client', which is exactly the question SC2/OPSV-02 poses. This matches code review finding CR-01 (53-REVIEW.md), independently reproduced against the actual handler rather than accepted on the review's word."
-    artifacts:
-      - path: "internal/api/system_usage_handlers.go"
-        issue: "keySet (lines 193-204) unions only usageByKey and limitsByKey; limitsByKey (line 180-186) is populated only from LimitWithMeta rows with non-nil Engine, so nil-Engine metadata-only rows never enter the emitted key set and the client is silently omitted from the response."
-    missing:
-      - "Seed the emitted key set from every client present in `meta` (i.e. every ClientID ListAllLimits returns, including nil-Engine rows) as well as usage/limits keys, emitting a synthetic all-unlimited / no-activity row for any client that produced neither a usage key nor a configured-limit key."
-      - "Add a test asserting `?client_id=<a real, idle, unlimited client>` returns exactly one row (not an empty array) carrying that client's client_name/enforcement_mode with all-null limits, and a companion test asserting `?client_id=<a UUID matching no client>` still returns `{\"usage\":[]}`, so the two cases become provably distinguishable."
-      - "Re-run TestSystemUsage_* suite plus a regression test for the previously-untested 'zero usage AND zero limits' cell of the merge truth table (system_usage_handlers_test.go currently only covers 'usage but no limits' and 'limits but no usage', never 'neither')."
+re_verification:
+  previous_status: gaps_found
+  previous_score: 9/10
+  gaps_closed:
+    - "SC2 / OPSV-02 — Per client, the operator can see the currently configured limits and the remaining budget/quota state (idle unlimited clients were invisible; now emit a synthetic all-unlimited row and are provably distinguishable from a nonexistent client_id)"
+  gaps_remaining: []
+  regressions: []
 ---
 
 # Phase 53: Operator Usage Visibility — Verification Report
 
 **Phase Goal:** An operator can answer "who consumed what, by engine class, over what period" and "what are this client's limits and remaining budget" through a dedicated, already-established access-control pattern — not by hand-querying raw Prometheus or the `jobs` table.
 
-**Verified:** 2026-08-05T17:30:00Z
-**Status:** gaps_found
-**Re-verification:** No — initial verification
+**Verified:** 2026-08-05T23:30:00Z
+**Status:** passed
+**Re-verification:** Yes — after gap closure (plans 53-05, 53-06, 53-07)
 
 ## Goal Achievement
 
@@ -31,98 +27,106 @@ gaps:
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1 — Operator retrieves per-client, per-engine usage for a period via a dedicated `OPERATOR_CLIENT_IDS`-gated endpoint, backed by the Phase 51 rollup (`client_usage_daily`), not a raw `jobs` scan or Prometheus | ✓ VERIFIED | `internal/jobs/usage_query.go:72-80` (`usageTerminalSQL`) reads `client_usage_daily` with no status filter (mirrors `evaluate()`, admission.go:287-292); the in-flight term reads `jobs`/`job_inputs` live status by design (D-06), not as a substitute for the rollup. Route `GET /v1/system/usage` registered inside `requireOperator` (`routes.go:77-80`). `go build`/`go vet`/`go test ./...` all pass; DB-gated `TestUsageSummary*` integration tests pass live against Postgres (6/6 PASS). |
-| 2 | SC2 — Per client, operator can see currently configured limits and remaining budget/quota state, so limits can be set from observed data | ✗ **FAILED** | See Gap #1 below. `handleSystemUsage`'s merge (system_usage_handlers.go:193-204) drops any client whose `LimitWithMeta.Engine == nil` (no limits row) AND has no usage in the window — the documented default state of the whole fleet (ROADMAP SC1). Empirically reproduced with a live probe: `?client_id=<idle, unlimited, real client>` → `{"usage":[]}`, indistinguishable from a nonexistent client_id. |
-| 3 | SC3 — Non-operator caller gets a byte-identical no-leak 404 (never 403), no new information-disclosure surface | ✓ VERIFIED | Route sits inside `r.Route("/system/usage", func(r chi.Router){ r.Use(s.requireOperator); ... })` (routes.go:77-80), reusing `requireOperator` verbatim and the `noSuchPreset` constant — no new literal (`grep -c "usage not found" internal/api/` = 0). `TestSystemUsage_NonOperatorNoLeak404` and `TestSystemUsage_NonOperator404MatchesPresets404Exactly` both PASS, the latter comparing status/Content-Type/body bytes against a *live* `/v1/system/presets` 404 response, not a hardcoded literal. Zero repo calls on denial (`usage.calls==0 && limits.calls==0`), asserted and passing. |
-| 4 | D-01 — Same handler/response shape for "all clients" and "?client_id=one", one optional bind, not two code paths | ✓ VERIFIED | `usage_query.go` and `limits.go` both use `($n::uuid IS NULL OR ... = $n)` single-predicate binds. `TestSystemUsage_ClientIDNarrowingPassedToBothRepos` and `TestUsageSummaryAllClientsAndNarrowedAgree`/`TestListAllLimitsNarrowingMatchesUnnarrowed` PASS. |
-| 5 | D-02 — All-clients list sorted by consumption descending | ✓ VERIFIED | `sortSystemUsageRows` (system_usage_handlers.go:312-324); `TestSystemUsage_SortedByConsumptionDescending` PASSES. |
-| 6 | D-03/D-04 — `?period` fail-closed allow-set (today/7d/30d), 422 before any repo call, default `today` | ✓ VERIFIED | `validUsagePeriods` map + early-return `writeError` before either repo call (system_usage_handlers.go:141-156). `TestSystemUsage_InvalidPeriodRejectedBeforeAnyRepoCall` table (5 invalid + 1 valid-empty case) PASSES, asserting `calls==0` on rejection. |
-| 7 | D-05 — `remaining` arithmetic mirrors `evaluate()`'s per-dimension formula (concurrency = in-flight only; daily-bytes excludes `bytes_out`; daily-jobs = terminal+in-flight) | ✓ VERIFIED | system_usage_handlers.go:243-260, matches `evaluate()` (admission.go:236-364). `TestSystemUsage_RemainingMirrorsEvaluateFormula` (with a deliberately huge `TerminalBytesOut` decoy) PASSES. *Caveat (see Anti-Patterns/Warnings): the response's `remaining_matches_admission_gate` flag is unconditionally `true` for `period=today` even when the row's own `enforcement_mode` is `observe` or the service-wide kill-switch is active — WR-02, not part of this must-have's literal wording but a real trust gap.* |
-| 8 | D-06 — `used_terminal` and `used_in_flight` reported as separate fields | ✓ VERIFIED | `TestSystemUsage_UsedTerminalAndInFlightReportedSeparately` PASSES. |
-| 9 | D-09 — Multi-day `remaining` carries an explicit hypothetical-caveat; `today` affirms it is live | ✓ VERIFIED | `remaining_matches_admission_gate`/`remaining_semantics`/`remaining_note` fields (system_usage_handlers.go:285-294). `TestSystemUsage_MultiDayCarriesCaveat` (7d and 30d) PASSES. |
-| 10 | Unlimited dimension marshals JSON `null`, never `0`; explicit `max_concurrent=0` stays `0` | ✓ VERIFIED | Every limit/remaining field is a pointer, no `omitempty` (system_usage_handlers.go:79-93). `TestSystemUsage_UnlimitedMarshalsNullAndExplicitZeroMarshalsZero` and `TestListAllLimitsPreservesNullVersusExplicitZero` both PASS. |
+| 1 | SC1 — Operator retrieves per-client, per-engine usage for a period via a dedicated `OPERATOR_CLIENT_IDS`-gated endpoint, backed by the Phase 51 rollup (`client_usage_daily`), not a raw `jobs` scan or Prometheus | ✓ VERIFIED (unchanged from initial verification) | `internal/jobs/usage_query.go:75-83` (`usageTerminalSQL`) reads `client_usage_daily` with no status filter; route registered inside `requireOperator` (`routes.go:77-80`). Full suite still green. |
+| 2 | **SC2 — Per client, operator can see currently configured limits and remaining budget/quota state, so limits can be set from observed data** (previously FAILED) | ✓ **VERIFIED** | `handleSystemUsage`'s merge (`internal/api/system_usage_handlers.go:248-263`) now unions THREE key sets: usage keys, non-nil-Engine limit keys, and every remaining `ClientID` in `meta` (seeded from `LimitWithMeta`, one row per client regardless of whether it has usage/limits). A client with no `client_limits` row, no usage, and no in-flight jobs now emits exactly one synthetic row (`engine:""`, real `client_name`/`enforcement_mode`, all-null limits/remaining) instead of being silently dropped. **Independently reproduced against a live Postgres instance** (not unit fakes): inserted a real idle/unlimited client + a real operator client with genuine hashed API keys, drove the request through `srv.Routes()` end-to-end (auth → requireOperator → handleSystemUsage → real `jobs.Repo`/`clients.Repo`), and confirmed the idle client's narrowed response (`{"usage":[{...one row, engine:"", client_name:"verify-probe-idle-...", enforcement_mode:"observe", limits: all null...}]}`) is NOT byte-identical to a genuinely nonexistent `client_id`'s response (`{"usage":[]}`) — see Behavioral Spot-Checks. `go test ./internal/api/ -run TestSystemUsage -v` also passes 40/40, including the 5 new regression tests from 53-05 (`TestSystemUsage_IdleUnlimitedClientAppearsAsOneRow`, `TestSystemUsage_NonexistentClientIDReturnsEmptyUsage`, `TestSystemUsage_IdleClientDistinguishableFromNonexistentClient`, `TestSystemUsage_AllClientsIncludesIdleUnlimitedClients`, `TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent`). |
+| 3 | SC3 — Non-operator caller gets a byte-identical no-leak 404 (never 403), no new information-disclosure surface, **and this must not have regressed after the SC2 fix made client existence more observable** | ✓ VERIFIED — no regression | Structurally guaranteed: `requireOperator` (`system_presets_handlers.go:54-67`) runs as chi middleware BEFORE `handleSystemUsage` and returns 404 (`noSuchPreset`) without ever calling `next.ServeHTTP`, so the handler — including the new third seeding pass and the `UTCToday` call — is never reached for a non-operator. Confirmed three ways: (a) `TestSystemUsage_NonOperator404MatchesPresets404Exactly` compares live bytes against a real `/v1/system/presets` 404; (b) `TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent` (new in 53-05) asserts the same 404 even when the limits fake is populated with real client rows — the exact scenario the SC2 fix touches; (c) **independently reproduced live**: a real non-operator client with a genuine API key gets `404 {"error":"preset not found"}`, byte-identical to `/v1/system/presets`'s 404 for the same caller. Zero repo calls asserted via `usage.calls==0 && limits.calls==0 && usage.todayCalls==0` (`system_usage_handlers_test.go:104-105, 1107-1108`) — explicitly including the NEW `UTCToday` read added in 53-07, so the day-resolution fix did not reopen a repo-call leak on the denial path. |
+| 4 | D-01 — Same handler/response shape for "all clients" and "?client_id=one" | ✓ VERIFIED (unchanged) | `TestSystemUsage_ClientIDNarrowingPassedToBothRepos` passes. |
+| 5 | D-02 — All-clients list sorted by consumption descending | ✓ VERIFIED (unchanged) | `sortSystemUsageRows` untouched byte-for-byte by 53-05 (confirmed by SUMMARY's own diff-grep evidence); `TestSystemUsage_SortedByConsumptionDescending` and the new `TestSystemUsage_AllClientsIncludesIdleUnlimitedClients` (asserting a synthetic row sorts last) both pass. |
+| 6 | D-03/D-04 — `?period` fail-closed allow-set, 422 before any repo call including the new `UTCToday` read, default `today` | ✓ VERIFIED | `resolveUsagePeriod`/`validUsagePeriods` unchanged in shape; the new `s.usageRepo.UTCToday(ctx)` call is placed AFTER both the `?period` and `?client_id` validations (`system_usage_handlers.go:183-199`). `TestSystemUsage_InvalidPeriodRejectedBeforeAnyRepoCall` extended with `usage.todayCalls == 0` assertions (line 192-193) and passes live. |
+| 7 | D-05 — `remaining` arithmetic mirrors `evaluate()`'s formula, AND the previously-flagged trust gap (WR-02: `remaining_matches_admission_gate` overstating enforcement) is closed | ✓ VERIFIED — **fully addresses the reviewer's own proposed remedy** | `RemainingMatchesAdmissionGate` is now `period == periodToday && !s.quotaEnforcementDisabled` (`system_usage_handlers.go:353`), closing the kill-switch half of WR-02 with a new always-emitted `quota_enforcement_disabled` field, wired end-to-end from `cmd/api/main.go:214` (`QuotaEnforcementDisabled: quotaDisabled`) — the SAME variable passed to `jobsRepo.SetQuotaEnforcementDisabled` two lines below, so the two can never diverge. Per-client `observe`-mode is addressed exactly as 53-REVIEW.md's own "Fix" code sample specified: NOT as a second boolean, but via the pre-existing per-row `enforcement_mode` field plus an explicit prose caveat in `remaining_note` ("A row whose own enforcement_mode is 'observe' has its verdict computed and counted here too, but that row is never actually enforced"), pinned by `TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative` asserting the note text actually contains "observe". This is not a partial fix relative to the review's literal recommendation — the review's own suggested code left observe-mode as a note-level caveat, and the implementation matches it exactly. A third precedence branch (multi-day wins over kill-switch) is also tested (`TestSystemUsage_MultiDayCaveatWinsOverKillSwitch`). |
+| 8 | D-06 — `used_terminal`/`used_in_flight` reported separately | ✓ VERIFIED (unchanged) | `TestSystemUsage_UsedTerminalAndInFlightReportedSeparately` passes. |
+| 9 | D-09 — Multi-day `remaining` carries a caveat; `today` affirms liveness | ✓ VERIFIED (unchanged, extended) | `TestSystemUsage_MultiDayCarriesCaveat` passes; new `remaining_semantics: computed_but_not_enforced` branch added and tested for the kill-switch-on case. |
+| 10 | Unlimited dimension marshals JSON `null`, explicit `0` stays `0` | ✓ VERIFIED (unchanged) | `TestSystemUsage_UnlimitedMarshalsNullAndExplicitZeroMarshalsZero` passes; the new synthetic row also marshals all-null limits/remaining (confirmed in the live probe JSON). |
+| 11 | WR-03 — "today" resolved from the API host clock, not Postgres's, causing possible day-boundary drift with `evaluate()` | ✓ VERIFIED CLOSED | `s.usageRepo.UTCToday(ctx)` (`system_usage_handlers.go:195`) replaces `time.Now()`; `grep -c "time.Now()" internal/api/system_usage_handlers.go` = 0 (confirmed). `jobs.Repo.UTCToday` reads `SELECT (now() AT TIME ZONE 'utc')::date` verbatim with zero Go-side re-derivation. `TestUTCTodayMatchesPostgresDay` (live DB) confirms equality with a direct Postgres query; ran live during this verification and passed. |
+| 12 | WR-01 — Orphaned `ON DELETE SET NULL` jobs collapsing into a phantom `uuid.Nil` client row in the unnarrowed shape | ✓ VERIFIED CLOSED | Both in-flight SQL statements gained `client_id IS NOT NULL` / `j.client_id IS NOT NULL` guards (`usage_query.go:106, 126`), placed to preserve the partial index's applicability. Ran `TestUsageSummaryExcludesOrphanedNullClientJobs` live against Postgres during this verification (deletes a real client with `ON DELETE SET NULL` in effect) — **PASSED**. |
 
-**Score:** 9/10 truths verified (SC2 FAILED)
+**Score:** 12/12 truths verified (10 must-have + 2 warning-level fixes explicitly requested for re-check, all closed)
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `internal/jobs/usage_query.go` | `UsageRow` + `(*Repo).UsageSummary` mirroring `evaluate()` | ✓ VERIFIED | Exists, 232 lines, status-unfiltered terminal SQL, literal in-flight statuses, two separate in-flight queries. `go vet` clean, gofmt clean. |
-| `internal/jobs/usage_query_test.go` | SQL-shape + DB-gated cross-check tests | ✓ VERIFIED | Source-level gate + 6 DB-gated integration tests, all PASS live. |
-| `internal/clients/limits.go` | `LimitWithMeta` + `(*Repo).ListAllLimits` | ✓ VERIFIED | LEFT JOIN `clients → client_limits`, one optional bind, pointer fidelity preserved. 5 DB-gated tests PASS. |
-| `internal/clients/limits_test.go` | Proof of LEFT JOIN semantics, narrowing, null/zero fidelity | ✓ VERIFIED | All 5 tests PASS live. |
-| `internal/api/api.go` | `UsageRepo`/`LimitsRepo` interfaces, widened `NewServer` | ✓ VERIFIED | Both interfaces present, `Server` holds both fields, all 3 call sites updated and compile. |
-| `cmd/api/main.go` | Wires `jobsRepo`/`clientRepo` into the two new slots | ✓ VERIFIED | `api.NewServer(jobsRepo, ..., jobsRepo, clientRepo, ...)` (main.go:175); no new repo constructed, no new env var. |
-| `internal/api/system_usage_handlers.go` | `handleSystemUsage`, period resolution, merge + remaining arithmetic | ⚠️ **WIRED BUT INCOMPLETE** | Exists (325 lines), compiles, is exercised end-to-end by 24 passing tests — but the merge step has the CR-01 gap (Truth #2 above): correctly wired to real data, but silently drops a real category of rows. |
-| `internal/api/routes.go` | `GET /v1/system/usage` inside `requireOperator` sub-router | ✓ VERIFIED | routes.go:77-80. |
-| `internal/api/system_usage_handlers_test.go` | SC3 byte-identity + fail-closed + semantics tests | ✓ VERIFIED | 18 tests in this file, all PASS; no test covers the "zero usage AND zero limits" merge cell (the CR-01 gap), confirming the review's untested-path claim. |
-| `docs/openapi.yaml` | `GET /v1/system/usage` documented, all response codes, byte-identical 404 example | ✓ VERIFIED | Path present, `operationId: getSystemUsage`, response codes 200/400/401/404/422/429 all present, `404` example body is `preset not found` (matches the byte-identical claim). |
+| `internal/api/system_usage_handlers.go` | Three-way key-set merge closing SC2 | ✓ VERIFIED | 406 lines, `usageEngineNone` constant + third seeding pass present and correct; compiles, vets, gofmt clean. |
+| `internal/jobs/usage_query.go` | `client_id IS NOT NULL` guards + `UTCToday` | ✓ VERIFIED | Both guards present with explanatory comments; `UTCToday` reads Postgres verbatim, no Go-side time manipulation. |
+| `internal/clients/limits.go` | `LimitWithMeta` nil-Engine contract (read side, unchanged since initial verification) | ✓ VERIFIED | Doc comment and LEFT JOIN unchanged; correctly the read-side contract the HTTP layer now honors. |
+| `internal/api/api.go` | `UsageRepo.UTCToday`, `Config.QuotaEnforcementDisabled`, `Server.quotaEnforcementDisabled` | ✓ VERIFIED | All three present; `false` zero-value is documented as the fail-safe default. |
+| `cmd/api/main.go` | Wires `QuotaEnforcementDisabled` from the SAME variable as the kill-switch | ✓ VERIFIED | `api.Config{..., QuotaEnforcementDisabled: quotaDisabled}` (main.go:214), `jobsRepo.SetQuotaEnforcementDisabled(quotaDisabled)` two lines below — same source variable, cannot diverge. |
+| `docs/openapi.yaml` | `quota_enforcement_disabled` field, widened `remaining_semantics` enum, engine label documented | ✓ VERIFIED | All present; `required` list for the top-level envelope includes `quota_enforcement_disabled`; per-row `required` list unchanged (no breaking change). |
+| `internal/api/system_usage_handlers_test.go` | Regression coverage for SC2 merge cell + SC3 non-regression + WR-02/WR-03 fixes | ✓ VERIFIED | 40 `--- PASS`, 0 `--- FAIL`, 0 `--- SKIP` (live run during this verification). |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|-----|-----|--------|---------|
-| `internal/api/routes.go` | `s.requireOperator` | `r.Use(s.requireOperator)` inside `/system/usage` sub-router | ✓ WIRED | Confirmed by direct code read and by live-router tests (not just middleware-in-isolation). |
-| `internal/api/system_usage_handlers.go` | `s.usageRepo.UsageSummary` | resolved day range + optional client UUID | ✓ WIRED | Called at line 163; confirmed data-flowing via live DB integration tests on the underlying repo and via handler tests asserting `calls`/captured args. |
-| `internal/api/system_usage_handlers.go` | `s.limitsRepo.ListAllLimits` | same optional client UUID | ✓ WIRED | Called at line 169; same evidence as above. |
-| `internal/api/system_usage_handlers_test.go` | `noSuchPreset` | byte-identity comparison | ✓ WIRED | `writeError(wantRec, 404, noSuchPreset)` compared via `bytes.Equal`; test passes. |
-| `internal/api/system_usage_handlers.go` merge | `clients.LimitWithMeta` nil-Engine rows | union key set (intended, per interface doc) | ✗ **NOT WIRED** | `LimitWithMeta`'s doc comment (limits.go:116-119) explicitly states nil-Engine rows "MUST NOT be discarded by the caller" — the handler discards them from the key set anyway (only uses them for `meta`, never for `keySet`). This is the CR-01 root cause. |
+| `internal/api/routes.go` | `s.requireOperator` | `r.Use(s.requireOperator)` inside `/system/usage` sub-router | ✓ WIRED | Unchanged; independently confirmed live — non-operator gets 404 before the handler runs, even with the new merge logic and new `UTCToday` call in place. |
+| `handleSystemUsage` merge | `clients.LimitWithMeta` nil-Engine rows | three-way key-set union (`meta` seeding pass) | ✓ **NOW WIRED** (was NOT WIRED in initial verification) | The nil-Engine metadata-only rows now flow all the way to the emitted `keySet`, not just to the `meta` lookup map — confirmed by live probe and by `TestSystemUsage_IdleUnlimitedClientAppearsAsOneRow`. |
+| `handleSystemUsage` | `s.usageRepo.UTCToday` | day resolution, placed after validation, before `UsageSummary` | ✓ WIRED | Confirmed via source read and via `TestSystemUsage_DayRangeDerivedFromRepoClockNotProcessClock` / `TestSystemUsage_UTCTodayErrorReturns500BeforeAnyRepoRead` (live pass). |
+| `cmd/api/main.go` | `api.Config.QuotaEnforcementDisabled` | same `quotaDisabled` variable as `jobsRepo.SetQuotaEnforcementDisabled` | ✓ WIRED | Single source of truth confirmed by direct code read; no divergence possible. |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 |----------|---------------|--------|---------------------|--------|
-| `handleSystemUsage` | `usageRows` | `s.usageRepo.UsageSummary` → `jobs.Repo.UsageSummary` → live Postgres `client_usage_daily`/`jobs`/`job_inputs` | Yes (proven live) | ✓ FLOWING |
-| `handleSystemUsage` | `limitRows` | `s.limitsRepo.ListAllLimits` → `clients.Repo.ListAllLimits` → live Postgres `clients LEFT JOIN client_limits` | Yes (proven live) | ✓ FLOWING |
-| `handleSystemUsage` | `rows` (final emitted set) | Union of the above two maps' keys | Partially — real DB data flows through, but the union logic silently excludes a real, observable data category (idle unlimited clients) | ⚠️ HOLLOW for that subset — see Gap #1 |
+| `handleSystemUsage` | `rows` (final emitted set, incl. synthetic rows) | Three-way union of `usageByKey`, `limitsByKey`, and every `ClientID` in `meta` (from `s.limitsRepo.ListAllLimits` → live Postgres `clients LEFT JOIN client_limits`) | Yes — proven live via an independent probe against a real Postgres instance with a genuinely inserted idle client (not a fake/mock) | ✓ FLOWING (previously ⚠️ HOLLOW for the idle-client subset — now closed) |
+| `handleSystemUsage` | `today` / `dayFrom`/`dayTo` | `s.usageRepo.UTCToday` → live Postgres `now()` | Yes — proven live, matches a direct concurrent `SELECT` | ✓ FLOWING |
+| `handleSystemUsage` | `s.quotaEnforcementDisabled` | `cmd/api/main.go`'s `quotaDisabled` env-derived variable, same source as the actual admission-gate kill-switch | Yes — single source, cannot diverge | ✓ FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
 | Full package build/vet/fmt clean | `go build ./... && go vet ./... && gofmt -l .` | exit 0, no output | ✓ PASS |
-| Unit test suite for the endpoint | `go test ./internal/api/ -run TestSystemUsage -count=1 -v` | 24/24 `--- PASS`, 0 SKIP | ✓ PASS |
-| DB-gated `UsageSummary` integration proof vs `evaluate()` | `DATABASE_URL=... go test ./internal/jobs/ -run TestUsageSummary -count=1 -v` | 6/6 `--- PASS` | ✓ PASS |
-| DB-gated `ListAllLimits` integration proof | `DATABASE_URL=... go test ./internal/clients/ -run TestListAllLimits -count=1 -v` | 5/5 `--- PASS` | ✓ PASS |
-| Full repo test suite (all packages, DB-gated) | `DATABASE_URL=... go test ./... -count=1` | all packages `ok` | ✓ PASS |
-| **Independent probe: idle unlimited client visibility (CR-01)** | Custom Go test hitting the live handler with `usage.rows=[]`, `limits.rows=[{Engine:nil,...}]`, `?client_id=<that client>` | `{"usage":[]}` returned — same shape as a nonexistent client | ✗ **FAIL** — confirms CR-01/Gap #1 |
+| Unit test suite for the endpoint | `go test ./internal/api/ -run TestSystemUsage -count=1 -v` | 40/40 `--- PASS`, 0 FAIL, 0 SKIP | ✓ PASS |
+| DB-gated WR-01 orphan-exclusion proof | `go test ./internal/jobs/ -run TestUsageSummaryExcludesOrphanedNullClientJobs -count=1 -v` (live Postgres, deletes a real client under `ON DELETE SET NULL`) | `--- PASS` | ✓ PASS |
+| DB-gated WR-03 clock-parity proof | `go test ./internal/jobs/ -run TestUTCTodayMatchesPostgresDay -count=1 -v` | `--- PASS` | ✓ PASS |
+| Full repo test suite (all packages, DB-gated, live containers) | `go test ./... -count=1` | every package `ok`, 0 FAIL | ✓ PASS |
+| **Independent live probe (this verification's own code, not SUMMARY-reported): SC2 idle-client distinguishability** | Custom Go test inserting a real idle client (no `client_limits` row) + a real operator client with genuine hashed API keys, driving `srv.Routes()` end-to-end against the real Postgres, HTTP layer included | Idle client: `200 {"usage":[{"client_id":"...","client_name":"verify-probe-idle-...","engine":"","enforcement_mode":"observe","limits":{all null}...}]}` — NOT byte-identical to nonexistent-client response `200 {"usage":[]}` | ✓ PASS — SC2 gap closed |
+| **Independent live probe: SC3 non-regression** | Same probe, non-operator caller against `/v1/system/usage` vs `/v1/system/presets` | Both `404 {"error":"preset not found"}`, byte-identical | ✓ PASS — no regression |
+| **Independent live probe: fail-closed 422** | Same probe, `?period=bogus` | `422 {"error":"invalid period filter"}` | ✓ PASS |
+
+*(Probe artifacts were created in a temporary, uncommitted directory for this verification only, run against the live dev database, and fully cleaned up afterward — the 3 temporary probe client rows were deleted from Postgres and no files were left in the git working tree. `git status --porcelain` confirmed clean of any probe residue.)*
 
 ### Requirements Coverage
 
 | Requirement | Source Plan(s) | Description | Status | Evidence |
 |-------------|-----------------|--------------|--------|----------|
-| OPSV-01 | 53-01, 53-03, 53-04 | Operator retrieves "who consumed what, by engine class, over period" via `OPERATOR_CLIENT_IDS`-gated endpoint | ✓ SATISFIED | SC1 verified above; endpoint live, tested, DB-backed. |
-| OPSV-02 | 53-02, 53-03, 53-04 | Per-client configured limits + remaining budget visible, so limits can be set from data | ✗ **BLOCKED** | SC2 FAILED — see Gap #1. The read-side repo (`ListAllLimits`) correctly preserves the nil-Engine signal; the HTTP-layer merge in `handleSystemUsage` discards it before it reaches the operator. |
+| OPSV-01 | 53-01, 53-03, 53-04 | Operator retrieves "who consumed what, by engine class, over period" via `OPERATOR_CLIENT_IDS`-gated endpoint | ✓ SATISFIED (unchanged) | SC1 verified above; endpoint live, tested, DB-backed. |
+| OPSV-02 | 53-02, 53-03, 53-04, **53-05, 53-06, 53-07** | Per-client configured limits + remaining budget visible, so limits can be set from observed data | ✓ **SATISFIED** (previously BLOCKED — the gap is now closed) | SC2 now verified above, both via the full test suite and an independent live probe against a real Postgres instance. **`.planning/REQUIREMENTS.md`'s traceability table currently still reads `OPSV-02 \| Phase 53 \| Gap` — this line should be updated to `Complete` since the underlying failure it referenced (53-VERIFICATION.md's SC2 gap) no longer exists.** Flagging explicitly per the requesting teammate's instruction so the orchestrator can make this edit. |
 
-No orphaned requirements: REQUIREMENTS.md maps only OPSV-01/OPSV-02 to Phase 53, and both are declared in plan frontmatter (53-01/53-04 for OPSV-01; 53-02/53-03/53-04 for OPSV-02).
+No orphaned requirements: REQUIREMENTS.md maps only OPSV-01/OPSV-02 to Phase 53, both declared in plan frontmatter.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `internal/api/system_usage_handlers.go` | 193-204 | Union key set omits nil-Engine metadata-only rows | 🛑 Blocker | Drives Gap #1 / SC2 failure — the default-state fleet majority is invisible. |
-| `internal/api/system_usage_handlers.go` | 285 | `remaining_matches_admission_gate` set solely from `period == "today"`, ignoring per-client `observe` mode and the `QUOTA_ENFORCEMENT_DISABLED` kill-switch | ⚠️ Warning | Not one of the phase's literal must-haves, but directly undermines the D-05 "trustworthy reporting" intent this endpoint exists to satisfy (review WR-02). Recommend a follow-up plan/gap-closure item. |
-| `internal/api/system_usage_handlers.go` | 161 | `time.Now()` (API host clock) vs. `evaluate()`'s Postgres `now()` for "today" | ⚠️ Warning | Possible day-boundary drift between reported and enforced figures around UTC midnight or NTP skew (review WR-03). |
-| `internal/jobs/usage_query.go` | 95-119 | In-flight queries `GROUP BY client_id` with no `client_id IS NOT NULL` guard against `ON DELETE SET NULL` orphaned jobs | ⚠️ Warning | Could surface a phantom nil-UUID "client" row on the unnarrowed shape (review WR-01); not exercised by any existing test. |
-| `internal/api/system_usage_handlers.go` | 163-173 | Unbounded all-clients response, no pagination/ceiling | ℹ️ Info | Accepted risk per D-02 (small internal client population); documented in the plan's threat model as `accept`. |
-| — | — | No `TBD`/`FIXME`/`XXX` markers found in any phase-modified file | — | Clean. |
+| — | — | Previous 🛑 Blocker (union key set omitting nil-Engine rows) | — | **RESOLVED** — third seeding pass now present and correct. |
+| `internal/api/system_usage_handlers.go` | 285 (formerly) | `remaining_matches_admission_gate` ignoring the kill-switch | — | **RESOLVED** — now `period == periodToday && !s.quotaEnforcementDisabled`. Per-client observe-mode remains a note-level caveat by deliberate design, matching the reviewer's own proposed fix (see Truth #7 above) — not re-flagged as a gap. |
+| `internal/api/system_usage_handlers.go` | 161 (formerly) | `time.Now()` vs Postgres `now()` clock drift | — | **RESOLVED** — `grep -c "time.Now()" internal/api/system_usage_handlers.go` = 0; `UTCToday` used exclusively. |
+| `internal/jobs/usage_query.go` | 95-119 (formerly) | Missing `client_id IS NOT NULL` guard on in-flight queries | — | **RESOLVED** — both statements guarded, proven live against a real `ON DELETE SET NULL` deletion. |
+| `internal/api/system_usage_handlers.go` | 163-173 | Unbounded all-clients response with no pagination/ceiling (WR-05) | ℹ️ Info | Not addressed by this gap-closure wave; still an accepted risk per D-02 (small internal client population) from the initial review. Not a must-have for SC1/SC2/SC3 — no regression, informational only. |
+| `internal/api/system_usage_handlers.go` | 235-261 | Mistyped `client_limits.engine` reported as an enforceable budget the gate never applies (WR-06) | ℹ️ Info | Not addressed by this gap-closure wave. Not a must-have for SC1/SC2/SC3 — informational only, not re-litigated here since the requesting teammate's scope was CR-01/WR-01/WR-02/WR-03. |
+| `internal/api/api.go` | 152-157 | "Never nil after NewServer" contract not enforced by a panic (WR-08) | ℹ️ Info | Not addressed; not in scope for this re-verification's requested checks. |
+| — | — | No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` markers found in any phase-modified file (checked again this pass) | — | Clean. |
 
 ## Human Verification Required
 
-None. This is a fully server-side, non-visual, deterministically-testable API surface; all must-haves were resolvable via direct code reading, automated tests (unit + live-DB integration), and an independent live-handler probe reproducing the reviewer's claim.
+None. This remains a fully server-side, non-visual, deterministically-testable API surface. All must-haves and the specifically-requested re-checks (SC2, SC3 non-regression, WR-02 scope, fail-closed ordering) were resolved via direct code reading, the full automated test suite (unit + live-DB integration), and an independent live probe built for this verification pass that reproduces the exact end-to-end HTTP path (auth → requireOperator → handler → real repos → real Postgres) rather than relying on unit-test fakes or SUMMARY.md's self-reported evidence.
 
 ## Gaps Summary
 
-The phase delivers a real, working, correctly-gated, correctly-sourced (Phase 51 rollup, not a raw `jobs` scan or Prometheus) endpoint that satisfies SC1 and SC3 convincingly — both are backed by passing tests that exercise the live router and a live Postgres instance, not just unit-level mocks.
+None remaining. The single gap from the initial verification (SC2 / OPSV-02: idle unlimited clients silently dropped from the response, making them indistinguishable from nonexistent clients) is closed by plan 53-05's three-way key-set union, independently reproduced against a live Postgres instance during this re-verification rather than accepted on the SUMMARY's word.
 
-SC2 fails for a specific, well-defined, and previously-flagged (code review CR-01) reason: `handleSystemUsage`'s merge step unions `usageByKey` and `limitsByKey`, but `limitsByKey` is deliberately populated only from `LimitWithMeta` rows with a non-nil `Engine` — exactly the rows that represent "this client HAS a configured limit". The nil-Engine rows that represent "this client exists, has an enforcement mode, but no limits at all" are read correctly by `internal/clients.ListAllLimits` (its own doc comment and its own test suite prove the LEFT JOIN preserves them) but are then discarded one layer up, in the HTTP handler's merge, before they ever reach the operator. This was independently reproduced with a live probe against the actual `handleSystemUsage` code path (not merely re-stated from the review): `GET /v1/system/usage?client_id=<a real, idle, unlimited client>` returns `{"usage":[]}`, byte-for-byte identical to the response for a UUID that matches no client at all.
+The two additional read-layer/reporting-truth gaps the code review flagged (WR-01: phantom `uuid.Nil` client rows from `ON DELETE SET NULL` orphans; WR-03: API-process-clock vs. Postgres-clock day drift) are also closed by plans 53-06/53-07, both verified live during this pass.
 
-Because ROADMAP SC1 establishes that "no `client_limits` row + `enforcement_mode='observe'`" is the default state of every freshly-provisioned client, this is not an edge case — it is the majority case in a fresh or lightly-configured deployment, and it is precisely the "what are this client's limits" question OPSV-02 was written to answer. The fix is scoped and known (seed the key set from every client in `meta`, not just clients with a usage or limits key) and was already specified in the code review's fix suggestion; it was not applied before this phase was submitted for verification.
+WR-02 (`remaining_matches_admission_gate` overstating enforcement) is closed for the service-wide kill-switch (a new boolean field, wired from the same source variable as the actual kill-switch, immune to divergence) and closed for per-client observe-mode via the exact remedy the code review itself proposed — a note-level caveat plus the pre-existing per-row `enforcement_mode` field, not a second boolean. This was verified to be a deliberate, complete implementation of the review's own suggested fix, not a partial fix left half-done.
 
-This is a single, well-isolated gap concentrated entirely in the merge step of one file. Recommend routing back through `/gsd:plan-phase --gaps` for a focused closure plan rather than reopening 53-01/53-02/53-03, which verified clean.
+SC3 (non-operator no-leak 404) was specifically re-checked for regression risk introduced by the SC2 fix (since the fix makes real client existence more observable to the narrowed query) and confirmed unweakened: `requireOperator` structurally prevents the handler — and therefore the new merge logic and the new `UTCToday` call — from ever running for a non-operator, proven both by the existing test suite and by an independent live probe.
+
+Remaining warning-level findings from the original code review (WR-05 unbounded pagination, WR-06 unrecognized engine strings, WR-08 unenforced non-nil contract) were outside the explicit scope of this re-verification request (which named CR-01, WR-01, WR-02, WR-03) and were not re-litigated; they are listed as informational anti-patterns above for completeness but do not block phase completion.
+
+**Action item for the orchestrator:** `.planning/REQUIREMENTS.md`'s traceability table still lists `OPSV-02 | Phase 53 | Gap` (with an inline note pointing at the now-superseded initial verification). This should be updated to `Complete` now that the underlying gap is closed, per the requesting teammate's explicit instruction to flag this for restoration.
 
 ---
 
-_Verified: 2026-08-05T17:30:00Z_
+_Verified: 2026-08-05T23:30:00Z_
 _Verifier: Claude (gsd-verifier)_
