@@ -304,9 +304,17 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
 - [ ] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 53-03-PLAN.md — api.UsageRepo/LimitsRepo interfaces, widened NewServer, and all three call sites updated with hand-written fakes
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 53-04-PLAN.md — GET /v1/system/usage behind requireOperator: combined usage+limits+remaining response, byte-identical no-leak 404, D-09 caveat fields, OpenAPI spec
 
 ### Phase 54: Per-Class Capacity Floor (SEED-011)
