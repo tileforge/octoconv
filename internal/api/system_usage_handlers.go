@@ -190,17 +190,37 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		usageByKey[usageMergeKey{clientID: ur.ClientID, engine: ur.Engine}] = ur
 	}
 
-	// The emitted row key set is the UNION of the UsageSummary keys and the
-	// non-nil-Engine limits keys (Task 1 step 7): a client with usage but no
-	// configured limits appears with all-null limits, and a client with a
-	// configured limit but zero usage appears with zero usage and remaining
-	// equal to the full limit.
+	// The emitted row key set is a THREE-way union (ROADMAP SC2 / OPSV-02,
+	// 53-VERIFICATION.md Gap #1 / 53-REVIEW.md CR-01):
+	//   1. usageByKey — clients with usage in the period but no configured
+	//      limit appear with all-null limits.
+	//   2. limitsByKey (non-nil-Engine only) — clients with a configured
+	//      limit but zero usage appear with zero usage and remaining equal
+	//      to the full limit.
+	//   3. every remaining ClientID in meta — clients.LimitWithMeta rows
+	//      with a nil Engine are the documented signal for "this client has
+	//      no client_limits row at all" and MUST NOT be discarded by the
+	//      caller (internal/clients/limits.go:116-119). Before this third
+	//      term, such a client contributed to neither map above, so a
+	//      client with no limits row, no usage in the period and no
+	//      in-flight jobs emitted ZERO rows — making a real, idle,
+	//      unlimited client byte-identical to a client_id matching no
+	//      client at all, which is exactly the question OPSV-02 poses.
 	keySet := make(map[usageMergeKey]struct{}, len(usageByKey)+len(limitsByKey))
 	for k := range usageByKey {
 		keySet[k] = struct{}{}
 	}
 	for k := range limitsByKey {
 		keySet[k] = struct{}{}
+	}
+	clientsWithRows := make(map[uuid.UUID]struct{}, len(keySet))
+	for k := range keySet {
+		clientsWithRows[k.clientID] = struct{}{}
+	}
+	for id := range meta {
+		if _, ok := clientsWithRows[id]; !ok {
+			keySet[usageMergeKey{clientID: id, engine: usageEngineNone}] = struct{}{}
+		}
 	}
 
 	rows := make([]systemUsageRow, 0, len(keySet))
@@ -271,6 +291,10 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	// video identically. Ties break by ClientID string ascending for
 	// determinism. Within a client, engine ascending so a client's engines
 	// stay contiguous and stable.
+	// A synthetic (usageEngineNone) row contributes 0 to its client's
+	// consumption total, so such clients sort to the bottom via the
+	// existing ClientID-string tiebreak below — already a total order,
+	// already deterministic, no special-casing needed.
 	consumption := make(map[uuid.UUID]int64, len(meta))
 	for _, row := range rows {
 		consumption[row.ClientID] += row.UsedTerminal.BytesIn + row.UsedTerminal.BytesOut
@@ -303,6 +327,15 @@ type usageMergeKey struct {
 	clientID uuid.UUID
 	engine   string
 }
+
+// usageEngineNone is the engine label carried by a synthetic "exists,
+// unlimited, idle" row: a client that produced neither a usage key nor a
+// configured-limit key (ROADMAP SC2 / OPSV-02, 53-VERIFICATION.md Gap #1 /
+// 53-REVIEW.md CR-01). The empty string is deliberate, not a placeholder —
+// engine stays a required JSON string in the OpenAPI contract
+// (docs/openapi.yaml), so this must decode identically to a real engine
+// label, never as null or an omitted key.
+const usageEngineNone = ""
 
 // sortSystemUsageRows orders rows by each client's total consumption
 // descending (ties broken by ClientID string ascending for determinism),

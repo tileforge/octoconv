@@ -944,7 +944,10 @@ paths:
         remaining sums terminal bytes_in plus in-flight input bytes (never
         bytes_out), and daily-jobs remaining sums terminal job_count plus
         in-flight job count. A non-operator caller receives 404, never 403 —
-        byte-identical to /v1/system/presets's no-leak 404.
+        byte-identical to /v1/system/presets's no-leak 404. A client_id that
+        matches a real but idle, unlimited client returns exactly one row,
+        whereas a client_id matching no client returns an empty usage array
+        — the two are deliberately distinguishable for operators.
       parameters:
         - name: period
           in: query
@@ -1003,7 +1006,12 @@ paths:
                     description: Human-readable expansion of remaining_matches_admission_gate / remaining_semantics.
                   usage:
                     type: array
-                    description: Non-nil, possibly empty — an empty result marshals as [], never null.
+                    description: >-
+                      Non-nil, possibly empty — an empty result marshals as
+                      [], never null. Every client visible to the limits
+                      read appears at least once, even with zero usage and
+                      no configured limits; only a client_id matching no
+                      client yields [].
                     items:
                       type: object
                       properties:
@@ -1014,6 +1022,11 @@ paths:
                           type: string
                         engine:
                           type: string
+                          description: >-
+                            An empty string means the client had no usage
+                            and no configured limits for the resolved
+                            period — an "exists, unlimited, idle" row. A
+                            non-empty value is a real engine class.
                         enforcement_mode:
                           type: string
                           enum: [observe, enforce]
