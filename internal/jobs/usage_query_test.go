@@ -104,11 +104,51 @@ func findUsageRow(rows []UsageRow, clientID uuid.UUID, engine string) *UsageRow 
 	return nil
 }
 
-// utcToday returns today's UTC midnight, matching the day value recordUsage
-// (usage.go) and evaluate() (admission.go) both derive from
-// `(now() AT TIME ZONE 'utc')::date`.
-func utcToday() time.Time {
-	return time.Now().UTC().Truncate(24 * time.Hour)
+// utcToday returns today's UTC midnight as read from Postgres via
+// r.UTCToday — the same clock recordUsage (usage.go) and evaluate()
+// (admission.go) both stamp rows with. Deriving this from the API host's
+// wall clock (the prior implementation) let a UTC-midnight crossing between
+// a test's seed and its assertion flake the test (review WR-07); reading it
+// from the database instead ties the test's notion of "today" to the exact
+// clock the rows themselves were written against, so that crossing can no
+// longer cause a mismatch.
+func utcToday(t *testing.T, r *Repo) time.Time {
+	t.Helper()
+	today, err := r.UTCToday(context.Background())
+	if err != nil {
+		t.Fatalf("UTCToday: %v", err)
+	}
+	return today
+}
+
+// TestUTCTodayMatchesPostgresDay pins that Repo.UTCToday returns exactly
+// what a direct `SELECT (now() AT TIME ZONE 'utc')::date` returns, and that
+// the value is UTC-midnight-aligned. Plan 53-07's handler feeds this value
+// straight into resolveUsagePeriod, which assumes a normalized day boundary,
+// so both properties matter, not just equality with the direct query.
+func TestUTCTodayMatchesPostgresDay(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	got, err := r.UTCToday(ctx)
+	if err != nil {
+		t.Fatalf("UTCToday: %v", err)
+	}
+
+	var want time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT (now() AT TIME ZONE 'utc')::date`).Scan(&want); err != nil {
+		t.Fatalf("direct SELECT (now() AT TIME ZONE 'utc')::date: %v", err)
+	}
+
+	if !got.Equal(want) {
+		t.Errorf("UTCToday() = %v, want %v (direct SELECT) — both must read the identical Postgres day expression", got, want)
+	}
+	if got.Hour() != 0 || got.Minute() != 0 || got.Second() != 0 || got.Nanosecond() != 0 {
+		t.Errorf("UTCToday() = %v is not UTC-midnight-aligned — plan 53-07's handler assumes a normalized day boundary", got)
+	}
+	if got.Location() != time.UTC {
+		t.Errorf("UTCToday().Location() = %v, want time.UTC", got.Location())
+	}
 }
 
 // TestUsageSummaryMirrorsEvaluateDailyBytesBoundary pins the strongest
@@ -127,7 +167,7 @@ func TestUsageSummaryMirrorsEvaluateDailyBytesBoundary(t *testing.T) {
 		t.Fatalf("create in-flight fixture: %v", err)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 	rows, err := r.UsageSummary(ctx, &clientID, today, today)
 	if err != nil {
 		t.Fatalf("UsageSummary: %v", err)
@@ -144,6 +184,15 @@ func TestUsageSummaryMirrorsEvaluateDailyBytesBoundary(t *testing.T) {
 		t.Fatalf("create at UsageSummary's exact byte boundary (bytesUsed=%d, inputBytes=0) must be admitted by evaluate() — D-05 says UsageSummary's figure IS evaluate()'s figure, got: %v", want, err)
 	}
 
+	// Guard against a zero-byte fixture writing a negative limit: migration
+	// 0013_client_limits.sql:37 declares
+	// CHECK (max_daily_bytes IS NULL OR max_daily_bytes >= 0), so if want were
+	// ever 0 the write below would be -1 and die on a Postgres constraint
+	// violation instead of asserting anything about ErrDailyBytesLimit
+	// (CodeRabbit, PR #6).
+	if want <= 0 {
+		t.Fatalf("want = %d, must be > 0 — the seeded fixture (terminalBytesIn=%d, inFlightBytesIn=%d) produced a non-positive boundary, which would write an invalid negative max_daily_bytes below", want, row.TerminalBytesIn, row.InFlightBytesIn)
+	}
 	setClientLimits(t, r, clientID, "image", nil, int64Ptr(want-1), nil)
 	if _, err := createFixture(t, r, clientID, "image", "uploads/usq1/2-in.png", 0); !errors.Is(err, ErrDailyBytesLimit) {
 		t.Fatalf("create exceeding UsageSummary's byte figure by 1 (limit=%d, bytesUsed=%d) must be rejected with ErrDailyBytesLimit — D-05 says UsageSummary's figure IS evaluate()'s figure, error = %v", want-1, want, err)
@@ -163,7 +212,7 @@ func TestUsageSummaryMirrorsEvaluateDailyJobsBoundary(t *testing.T) {
 		t.Fatalf("create in-flight fixture: %v", err)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 	rows, err := r.UsageSummary(ctx, &clientID, today, today)
 	if err != nil {
 		t.Fatalf("UsageSummary: %v", err)
@@ -202,7 +251,7 @@ func TestUsageSummaryCountsCanceledTerminalRows(t *testing.T) {
 		t.Fatalf("seed canceled usage: %v", err)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 	rows, err := r.UsageSummary(ctx, &clientID, today, today)
 	if err != nil {
 		t.Fatalf("UsageSummary: %v", err)
@@ -235,7 +284,7 @@ func TestUsageSummaryMultiDayRangeIsInclusive(t *testing.T) {
 		t.Fatalf("seed 3-days-ago usage: %v", err)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 
 	todayOnly, err := r.UsageSummary(ctx, &clientID, today, today)
 	if err != nil {
@@ -275,7 +324,7 @@ func TestUsageSummaryAllClientsAndNarrowedAgree(t *testing.T) {
 	seedDailyUsage(t, r, clientA, "image", 100, 1)
 	seedDailyUsage(t, r, clientB, "image", 200, 2)
 
-	today := utcToday()
+	today := utcToday(t, r)
 
 	all, err := r.UsageSummary(ctx, nil, today, today)
 	if err != nil {
@@ -342,7 +391,7 @@ func TestUsageSummaryExcludesOrphanedNullClientJobs(t *testing.T) {
 		t.Fatalf("orphanCount = %d, want 1 — deleting the owning client must SET NULL jobs.client_id (0001_init.sql:43); if this fails the schema no longer nullifies on delete and this test is vacuous", orphanCount)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 	rows, err := r.UsageSummary(ctx, nil, today, today)
 	if err != nil {
 		t.Fatalf("UsageSummary(nil): %v", err)
@@ -373,7 +422,7 @@ func TestUsageSummaryMultiInputJobCountedOnce(t *testing.T) {
 		t.Fatalf("insert second job_inputs row: %v", err)
 	}
 
-	today := utcToday()
+	today := utcToday(t, r)
 	rows, err := r.UsageSummary(ctx, &clientID, today, today)
 	if err != nil {
 		t.Fatalf("UsageSummary: %v", err)

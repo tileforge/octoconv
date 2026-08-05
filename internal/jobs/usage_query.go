@@ -13,6 +13,9 @@
 // read-only visibility query tolerates a benign race with a concurrent
 // admission (a figure that is a few milliseconds stale), unlike the
 // admission gate itself, which must be exact under concurrent replicas.
+//
+// Callers resolving "today" for this endpoint MUST use UTCToday, not the API
+// host's wall clock — see UTCToday's doc comment for why (review WR-03).
 package jobs
 
 import (
@@ -234,4 +237,28 @@ func (r *Repo) UsageSummary(ctx context.Context, clientID *uuid.UUID, dayFrom, d
 		return out[i].Engine < out[j].Engine
 	})
 	return out, nil
+}
+
+// UTCToday returns the database server's current UTC date, at UTC midnight,
+// by reading the same day expression evaluate() (admission.go) uses to
+// resolve "today" for the daily quota check. This exists so the operator
+// visibility endpoint and
+// evaluate() resolve "today" from ONE clock, the database server's, not two.
+// Deriving the day from the API host's wall clock instead lets a
+// UTC-midnight crossing or ordinary NTP skew make the endpoint query one day
+// while the admission gate enforces another, while the response still
+// claims remaining_matches_admission_gate: true (review finding WR-03, the
+// exact D-05 drift this package's own header comment claims to have
+// closed). This costs one extra round trip per operator request, deliberately
+// accepted for an operator-only, rate-limited route.
+//
+// The returned value is exactly what Postgres returns — this method does not
+// re-truncate or re-zone it in Go, because the entire point is that Go never
+// touches the value.
+func (r *Repo) UTCToday(ctx context.Context) (time.Time, error) {
+	var d time.Time
+	if err := r.pool.QueryRow(ctx, `SELECT (now() AT TIME ZONE 'utc')::date`).Scan(&d); err != nil {
+		return time.Time{}, fmt.Errorf("read utc today: %w", err)
+	}
+	return d, nil
 }
