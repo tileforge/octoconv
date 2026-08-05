@@ -207,6 +207,11 @@ func main() {
 		SSEPollInterval:      envDuration("SSE_POLL_INTERVAL", 1*time.Second),
 		SSEHeartbeatInterval: envDuration("SSE_HEARTBEAT_INTERVAL", 15*time.Second),
 		SSEMaxStreamDuration: envDuration("SSE_MAX_STREAM_DURATION", 30*time.Minute),
+		// Plan 53-07: the SAME quotaDisabled value handed to
+		// jobsRepo.SetQuotaEnforcementDisabled below -- the two must never
+		// diverge, or GET /v1/system/usage would report an enforcement
+		// posture the admission gate does not actually have.
+		QuotaEnforcementDisabled: quotaDisabled,
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher

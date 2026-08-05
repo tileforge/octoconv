@@ -938,16 +938,22 @@ paths:
         rollup (terminal usage) plus live in-flight (queued/active) jobs —
         never Prometheus, never a raw jobs table scan. The response carries
         each (client, engine) row's usage alongside its configured limits and
-        remaining budget in one round trip. remaining mirrors the admission
-        gate (evaluate(), internal/jobs/admission.go) exactly when
-        period=today: concurrency remaining is in-flight only, daily-bytes
-        remaining sums terminal bytes_in plus in-flight input bytes (never
-        bytes_out), and daily-jobs remaining sums terminal job_count plus
-        in-flight job count. A non-operator caller receives 404, never 403 —
-        byte-identical to /v1/system/presets's no-leak 404. A client_id that
-        matches a real but idle, unlimited client returns exactly one row,
-        whereas a client_id matching no client returns an empty usage array
-        — the two are deliberately distinguishable for operators.
+        remaining budget in one round trip. day_from/day_to are resolved from
+        the database server's own clock, not the API host's wall clock, so
+        they always agree with the day the admission gate itself enforces.
+        remaining's arithmetic mirrors the admission gate (evaluate(),
+        internal/jobs/admission.go) exactly: concurrency remaining is
+        in-flight only, daily-bytes remaining sums terminal bytes_in plus
+        in-flight input bytes (never bytes_out), and daily-jobs remaining
+        sums terminal job_count plus in-flight job count. That arithmetic
+        matching evaluate() is a DIFFERENT claim from "the gate is actually
+        enforcing right now" — see remaining_matches_admission_gate,
+        remaining_semantics and quota_enforcement_disabled below. A
+        non-operator caller receives 404, never 403 — byte-identical to
+        /v1/system/presets's no-leak 404. A client_id that matches a real but
+        idle, unlimited client returns exactly one row, whereas a client_id
+        matching no client returns an empty usage array — the two are
+        deliberately distinguishable for operators.
       parameters:
         - name: period
           in: query
@@ -989,21 +995,45 @@ paths:
                     type: string
                     format: date
                     description: Inclusive UTC end date actually queried.
+                  quota_enforcement_disabled:
+                    type: boolean
+                    description: >-
+                      The service-wide QUOTA_ENFORCEMENT_DISABLED kill-switch
+                      state, always present regardless of period. When true,
+                      every quota verdict on every client/engine is still
+                      computed and counted but nothing is ever rejected, and
+                      remaining_matches_admission_gate is therefore false even
+                      for period=today. This is the only way an operator can
+                      observe this state — no per-row field carries it.
                   remaining_matches_admission_gate:
                     type: boolean
-                    description: true only when period=today — the ONLY case where remaining is exactly what the admission gate (evaluate()) computes right now.
+                    description: >-
+                      true only when period=today AND
+                      quota_enforcement_disabled is false — the ONLY
+                      combination where remaining is exactly what the
+                      admission gate (evaluate()) would decide right now. A
+                      per-row enforcement_mode of "observe" means that row's
+                      own verdict is computed and counted but never enforced,
+                      even when this field is true for the response as a
+                      whole — see remaining_note on each response for the
+                      per-row caveat.
                   remaining_semantics:
                     type: string
-                    enum: [live_admission_gate, hypothetical_single_day_equivalent]
+                    enum: [live_admission_gate, computed_but_not_enforced, hypothetical_single_day_equivalent]
                     description: >-
-                      "live_admission_gate" for period=today. For 7d/30d,
-                      "hypothetical_single_day_equivalent": remaining compares
-                      a multi-day sum against a DAILY cap, has no
+                      "live_admission_gate" for period=today with
+                      quota_enforcement_disabled false. "computed_but_not_enforced"
+                      for period=today when quota_enforcement_disabled is
+                      true: the arithmetic is exactly evaluate()'s, but no
+                      request is being rejected service-wide. For 7d/30d,
+                      "hypothetical_single_day_equivalent" always wins
+                      regardless of the kill-switch: remaining compares a
+                      multi-day sum against a DAILY cap, has no
                       admission-gate analogue, and will legitimately be
                       negative for healthy clients.
                   remaining_note:
                     type: string
-                    description: Human-readable expansion of remaining_matches_admission_gate / remaining_semantics.
+                    description: Human-readable expansion of remaining_matches_admission_gate / remaining_semantics / quota_enforcement_disabled.
                   usage:
                     type: array
                     description: >-
@@ -1030,6 +1060,14 @@ paths:
                         enforcement_mode:
                           type: string
                           enum: [observe, enforce]
+                          description: >-
+                            This client's configured enforcement mode for
+                            this engine. "observe" (the default for every
+                            provisioned client) means the admission gate
+                            computes and counts a verdict for this row but
+                            never rejects on it — a negative remaining on an
+                            observe-mode row does not mean requests are being
+                            rejected.
                         used_terminal:
                           type: object
                           description: Terminal (done/failed/canceled) usage over the resolved period, from client_usage_daily.
@@ -1068,7 +1106,7 @@ paths:
                               type: [integer, "null"]
                           required: [concurrent, daily_bytes, daily_jobs]
                       required: [client_id, client_name, engine, enforcement_mode, used_terminal, used_in_flight, limits, remaining]
-                required: [period, day_from, day_to, remaining_matches_admission_gate, remaining_semantics, remaining_note, usage]
+                required: [period, day_from, day_to, quota_enforcement_disabled, remaining_matches_admission_gate, remaining_semantics, remaining_note, usage]
         "400":
           description: Malformed client_id (not a valid UUID).
           content:

@@ -51,6 +51,19 @@ func newOperatorUsageTestServer(usage *fakeUsageRepo, limits *fakeLimitsRepo) *S
 	})
 }
 
+// newOperatorUsageTestServerQuotaDisabled is newOperatorUsageTestServer's
+// kill-switch-on variant (plan 53-07): identical except Config also sets
+// QuotaEnforcementDisabled: true, so tests can exercise the
+// "computed_but_not_enforced" branch of the response's truth claim.
+func newOperatorUsageTestServerQuotaDisabled(usage *fakeUsageRepo, limits *fakeLimitsRepo) *Server {
+	resolver := newFakeResolver()
+	return NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), usage, limits, resolver, healthyDeps(), Config{
+		MaxUploadBytes:           1 << 20,
+		OperatorClientIDs:        map[uuid.UUID]struct{}{resolver.client.ID: {}},
+		QuotaEnforcementDisabled: true,
+	})
+}
+
 // usageRequest builds an authenticated GET /v1/system/usage request.
 func usageRequest(rawQuery string) *http.Request {
 	target := "/v1/system/usage"
@@ -87,6 +100,9 @@ func TestSystemUsage_NonOperatorNoLeak404(t *testing.T) {
 
 	if usage.calls != 0 || limits.calls != 0 {
 		t.Errorf("ROADMAP SC3: a non-operator must not cause any DB work; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
+	}
+	if usage.todayCalls != 0 {
+		t.Errorf("ROADMAP SC3: a non-operator must not cause any DB work, including UTCToday; usage.todayCalls=%d", usage.todayCalls)
 	}
 }
 
@@ -172,6 +188,9 @@ func TestSystemUsage_InvalidPeriodRejectedBeforeAnyRepoCall(t *testing.T) {
 				}
 				if usage.calls != 0 || limits.calls != 0 {
 					t.Errorf("D-03: invalid period must cost zero repo calls; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
+				}
+				if usage.todayCalls != 0 {
+					t.Errorf("D-03: invalid period must cost zero repo calls, including UTCToday; usage.todayCalls=%d", usage.todayCalls)
 				}
 			}
 		})
@@ -271,10 +290,17 @@ func TestResolveUsagePeriod(t *testing.T) {
 }
 
 // TestSystemUsage_DefaultPeriodIsToday (D-04): no ?period defaults to
-// "today", both day bounds equal today's UTC date, and the response affirms
-// remaining is the live admission-gate figure.
+// "today", both day bounds equal the fake repo's frozen day, and the
+// response affirms remaining is the live admission-gate figure.
+//
+// This is the ONE pre-existing test this plan (53-07) edits: it previously
+// computed its expected day via time.Now().UTC().Format(...) AFTER issuing
+// the request, which raced a real UTC-midnight crossing between fixture
+// setup and assertion (WR-07 #1, an intermittent CI flake). Freezing
+// usage.today removes the process clock from this test entirely — its
+// original intent (an omitted ?period resolves to "today") is unchanged.
 func TestSystemUsage_DefaultPeriodIsToday(t *testing.T) {
-	usage := &fakeUsageRepo{}
+	usage := &fakeUsageRepo{today: time.Date(2020, 3, 1, 0, 0, 0, 0, time.UTC)}
 	limits := &fakeLimitsRepo{}
 	srv := newOperatorUsageTestServer(usage, limits)
 
@@ -291,7 +317,7 @@ func TestSystemUsage_DefaultPeriodIsToday(t *testing.T) {
 	if resp.Period != "today" {
 		t.Errorf("period = %q, want \"today\"", resp.Period)
 	}
-	wantDay := time.Now().UTC().Format("2006-01-02")
+	const wantDay = "2020-03-01"
 	if resp.DayFrom != wantDay || resp.DayTo != wantDay {
 		t.Errorf("day_from=%q day_to=%q, want both %q", resp.DayFrom, resp.DayTo, wantDay)
 	}
@@ -303,6 +329,183 @@ func TestSystemUsage_DefaultPeriodIsToday(t *testing.T) {
 	}
 	if !usage.gotDayFrom.Equal(usage.gotDayTo) {
 		t.Errorf("captured gotDayFrom=%v gotDayTo=%v, want equal for period=today", usage.gotDayFrom, usage.gotDayTo)
+	}
+}
+
+// TestSystemUsage_DayRangeDerivedFromRepoClockNotProcessClock (plan 53-07,
+// WR-03): a fake returning a fixed day far from the real one still produces
+// that exact day in the response — proving the API process's own clock is
+// never consulted. If this test ever passes with a date matching the real
+// "today", the handler has regressed to reading the process clock again.
+func TestSystemUsage_DayRangeDerivedFromRepoClockNotProcessClock(t *testing.T) {
+	usage := &fakeUsageRepo{today: time.Date(2020, 3, 1, 0, 0, 0, 0, time.UTC)}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("WR-03: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.DayFrom != "2020-03-01" {
+		t.Errorf("WR-03: day_from = %q, want \"2020-03-01\" — a value matching the real today means the handler is still reading the API process clock, not the repo's UTCToday", resp.DayFrom)
+	}
+	if resp.DayTo != "2020-03-01" {
+		t.Errorf("WR-03: day_to = %q, want \"2020-03-01\" — a value matching the real today means the handler is still reading the API process clock, not the repo's UTCToday", resp.DayTo)
+	}
+	if usage.todayCalls != 1 {
+		t.Errorf("WR-03: usage.todayCalls = %d, want 1 (UTCToday must be called exactly once)", usage.todayCalls)
+	}
+}
+
+// TestSystemUsage_SevenDayRangeAnchoredOnRepoClock: the multi-day window is
+// anchored on the same frozen repo-clock day, not the real today.
+func TestSystemUsage_SevenDayRangeAnchoredOnRepoClock(t *testing.T) {
+	usage := &fakeUsageRepo{today: time.Date(2020, 3, 1, 0, 0, 0, 0, time.UTC)}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest("period=7d"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.DayFrom != "2020-02-24" {
+		t.Errorf("day_from = %q, want \"2020-02-24\" (inclusive 7-day window ending 2020-03-01, 2020 being a leap year)", resp.DayFrom)
+	}
+	if resp.DayTo != "2020-03-01" {
+		t.Errorf("day_to = %q, want \"2020-03-01\"", resp.DayTo)
+	}
+}
+
+// TestSystemUsage_UTCTodayErrorReturns500BeforeAnyRepoRead (plan 53-07,
+// T-53-07-04/T-53-07-05): a UTCToday failure returns 500 with zero
+// UsageSummary/ListAllLimits calls (no partial DB work), and the underlying
+// error text never reaches the client.
+func TestSystemUsage_UTCTodayErrorReturns500BeforeAnyRepoRead(t *testing.T) {
+	usage := &fakeUsageRepo{todayErr: errors.New("boom")}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	if usage.calls != 0 {
+		t.Errorf("UTCToday failure must abort before UsageSummary; usage.calls=%d", usage.calls)
+	}
+	if limits.calls != 0 {
+		t.Errorf("UTCToday failure must abort before ListAllLimits; limits.calls=%d", limits.calls)
+	}
+	if strings.Contains(rec.Body.String(), "boom") {
+		t.Errorf("body leaked internal error text: %q", rec.Body.String())
+	}
+}
+
+// TestSystemUsage_KillSwitchMakesRemainingNotAuthoritative (plan 53-07,
+// WR-02): with the service-wide kill-switch on, period=today's remaining
+// figures are no longer claimed as authoritative, even though the arithmetic
+// still mirrors evaluate().
+func TestSystemUsage_KillSwitchMakesRemainingNotAuthoritative(t *testing.T) {
+	usage := &fakeUsageRepo{}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServerQuotaDisabled(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.QuotaEnforcementDisabled {
+		t.Errorf("WR-02: quota_enforcement_disabled = false, want true")
+	}
+	if resp.RemainingMatchesAdmissionGate {
+		t.Errorf("WR-02: remaining_matches_admission_gate = true, want false when the kill-switch is on")
+	}
+	if resp.RemainingSemantics != "computed_but_not_enforced" {
+		t.Errorf("WR-02: remaining_semantics = %q, want \"computed_but_not_enforced\"", resp.RemainingSemantics)
+	}
+	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "QUOTA_ENFORCEMENT_DISABLED") {
+		t.Errorf("WR-02: remaining_note = %q, want a non-empty note mentioning QUOTA_ENFORCEMENT_DISABLED", resp.RemainingNote)
+	}
+}
+
+// TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative (plan 53-07,
+// WR-02): the live case still asserts remaining is authoritative, AND the
+// note actually carries the observe-mode caveat, not just claims to.
+func TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative(t *testing.T) {
+	usage := &fakeUsageRepo{}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.QuotaEnforcementDisabled {
+		t.Errorf("WR-02: quota_enforcement_disabled = true, want false")
+	}
+	if !resp.RemainingMatchesAdmissionGate {
+		t.Errorf("WR-02: remaining_matches_admission_gate = false, want true")
+	}
+	if resp.RemainingSemantics != "live_admission_gate" {
+		t.Errorf("WR-02: remaining_semantics = %q, want \"live_admission_gate\"", resp.RemainingSemantics)
+	}
+	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "observe") {
+		t.Errorf("WR-02: remaining_note = %q, want a non-empty note mentioning the observe-mode caveat", resp.RemainingNote)
+	}
+}
+
+// TestSystemUsage_MultiDayCaveatWinsOverKillSwitch (plan 53-07,
+// <design_resolution> locked precedence): a multi-day period's
+// hypothetical-figure caveat wins over the kill-switch state, pinning the
+// precedence order so a future reorder fails loudly.
+func TestSystemUsage_MultiDayCaveatWinsOverKillSwitch(t *testing.T) {
+	usage := &fakeUsageRepo{}
+	limits := &fakeLimitsRepo{}
+	srv := newOperatorUsageTestServerQuotaDisabled(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest("period=7d"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RemainingSemantics != "hypothetical_single_day_equivalent" {
+		t.Errorf("precedence: remaining_semantics = %q, want \"hypothetical_single_day_equivalent\" (multi-day wins over the kill-switch)", resp.RemainingSemantics)
+	}
+	if resp.RemainingMatchesAdmissionGate {
+		t.Errorf("precedence: remaining_matches_admission_gate = true, want false")
+	}
+	if !resp.QuotaEnforcementDisabled {
+		t.Errorf("precedence: quota_enforcement_disabled = false, want true (still reported, independent of remaining_semantics)")
 	}
 }
 
@@ -900,6 +1103,9 @@ func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
 
 	if usage.calls != 0 || limits.calls != 0 {
 		t.Errorf("SC3 regression: a non-operator must not cause any DB work even when the limits fake is populated; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
+	}
+	if usage.todayCalls != 0 {
+		t.Errorf("SC3 regression: a non-operator must not cause any DB work, including UTCToday; usage.todayCalls=%d", usage.todayCalls)
 	}
 }
 

@@ -84,8 +84,16 @@ type PresetAdmin interface {
 // route; this interface must never be reached from a client-scoped route.
 // clientID == nil means "all clients" (D-01) — one optional bind in the
 // underlying SQL, not a second code path.
+//
+// UTCToday (plan 53-07, WR-03) MUST be the source of the day range this
+// endpoint reports: it reads the same Postgres clock evaluate()
+// (internal/jobs/admission.go) reads via `(now() AT TIME ZONE 'utc')::date`,
+// never the API host's wall clock. Resolving "today" from time.Now() in this
+// process instead would let a UTC-midnight crossing or NTP skew make this
+// endpoint report one day while the admission gate enforces another.
 type UsageRepo interface {
 	UsageSummary(ctx context.Context, clientID *uuid.UUID, dayFrom, dayTo time.Time) ([]jobs.UsageRow, error)
+	UTCToday(ctx context.Context) (time.Time, error)
 }
 
 // LimitsRepo is the narrow, interface-segregated subset backing
@@ -203,6 +211,10 @@ type Server struct {
 	ssePollInterval      time.Duration
 	sseHeartbeatInterval time.Duration
 	sseMaxStreamDuration time.Duration
+	// quotaEnforcementDisabled mirrors Config.QuotaEnforcementDisabled (plan
+	// 53-07): reporting-only state read by handleSystemUsage, never consulted
+	// by any admission decision.
+	quotaEnforcementDisabled bool
 }
 
 // SetCancelPublisher installs the CancelPublisher a successful cancel
@@ -255,6 +267,17 @@ type Config struct {
 	// including an otherwise-valid resolved client, is denied the
 	// /v1/system/presets subtree.
 	OperatorClientIDs map[uuid.UUID]struct{}
+	// QuotaEnforcementDisabled mirrors the value cmd/api/main.go passes to
+	// jobsRepo.SetQuotaEnforcementDisabled (QUOT-04/D-13) -- the service-wide
+	// kill-switch that turns every quota verdict into report-only, service-
+	// wide. This field is REPORTING-ONLY at the API layer: it never changes
+	// an admission decision (the decision lives in internal/jobs); it exists
+	// solely so GET /v1/system/usage (plan 53-07, WR-02) can stop claiming
+	// its `remaining` figures are authoritative while service-wide
+	// enforcement is off. Default false is correct and fail-safe: an
+	// unwired call site reports "enforcement live", matching the pre-
+	// existing behaviour before this field existed.
+	QuotaEnforcementDisabled bool
 	// JobsListDefaultPageSize / JobsListMaxPageSize are the D-06 GET
 	// /v1/jobs page-size knobs. Zero triggers NewServer's 20/100 defaults --
 	// measure-don't-assume starting points, tunable via env without a code
@@ -370,5 +393,6 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		ssePollInterval:              cfg.SSEPollInterval,
 		sseHeartbeatInterval:         cfg.SSEHeartbeatInterval,
 		sseMaxStreamDuration:         cfg.SSEMaxStreamDuration,
+		quotaEnforcementDisabled:     cfg.QuotaEnforcementDisabled,
 	}
 }

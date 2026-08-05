@@ -11,6 +11,20 @@
 // remaining sums terminal job_count plus in-flight job count. Any future
 // change to evaluate()'s formula MUST be mirrored here, or this endpoint
 // starts lying about what the admission gate will actually do.
+//
+// The arithmetic matching evaluate() is NOT the same claim as "the gate is
+// actually enforcing" (plan 53-07, WR-02). remaining_matches_admission_gate
+// distinguishes the two, and is true only when NONE of these three break
+// the equivalence: (1) the resolved period is not periodToday — a multi-day
+// window has no admission-gate analogue at all; (2) the service-wide
+// QUOTA_ENFORCEMENT_DISABLED kill-switch is on — every verdict is computed
+// and counted but nothing is rejected; (3) a given row's own
+// enforcement_mode is "observe" — that row's own verdict is computed and
+// counted but never enforced, even while (1) and (2) hold. Case (3) has no
+// dedicated boolean (it is per-row, and enforcement_mode already reports
+// it); it is instead named in remaining_note. quota_enforcement_disabled is
+// a separate top-level field surfacing case (2) directly, since no per-row
+// field can carry a service-wide fact.
 package api
 
 import (
@@ -24,15 +38,21 @@ import (
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
+// periodToday is the default ?period value (D-04) and the one value for
+// which remaining can possibly equal what the admission gate computes right
+// now (WR-02, IN-07b: collapses what used to be three separate bare-string
+// literals of this same period name into one named constant).
+const periodToday = "today"
+
 // validUsagePeriods is the fail-closed allow-set an incoming ?period filter
 // is validated against (D-03) — an unknown value never reaches either repo
 // call, it is rejected 422 before any DB work, mirroring
 // listJobsValidStatuses (jobs_list_handler.go). Arbitrary ?from=&to= ranges
 // are deliberately out of scope for this phase.
 var validUsagePeriods = map[string]struct{}{
-	"today": {},
-	"7d":    {},
-	"30d":   {},
+	periodToday: {},
+	"7d":        {},
+	"30d":       {},
 }
 
 // resolveUsagePeriod turns a validated period string into an inclusive UTC
@@ -50,7 +70,7 @@ func resolveUsagePeriod(period string, now time.Time) (dayFrom, dayTo time.Time)
 		return today.AddDate(0, 0, -6), today
 	case "30d":
 		return today.AddDate(0, 0, -29), today
-	default: // "today"
+	default: // periodToday
 		return today, today
 	}
 }
@@ -109,9 +129,14 @@ type systemUsageRow struct {
 // mirroring handleListJobs's {"jobs": [...]} wrapper rather than a bare
 // array.
 type systemUsageResponse struct {
-	Period                        string           `json:"period"`
-	DayFrom                       string           `json:"day_from"`
-	DayTo                         string           `json:"day_to"`
+	Period  string `json:"period"`
+	DayFrom string `json:"day_from"`
+	DayTo   string `json:"day_to"`
+	// QuotaEnforcementDisabled reports the service-wide QUOTA_ENFORCEMENT_DISABLED
+	// kill-switch (plan 53-07, WR-02) — always emitted, no omitempty, since
+	// this is the ONLY way an operator can learn this state; no per-row
+	// field can carry it.
+	QuotaEnforcementDisabled      bool             `json:"quota_enforcement_disabled"`
 	RemainingMatchesAdmissionGate bool             `json:"remaining_matches_admission_gate"`
 	RemainingSemantics            string           `json:"remaining_semantics"`
 	RemainingNote                 string           `json:"remaining_note"`
@@ -132,11 +157,11 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
 
-	// 1. Resolve ?period. Empty means "today" (D-04); anything not in the
-	// allow-set is 422 BEFORE any repo call (D-03).
+	// 1. Resolve ?period. Empty means periodToday (D-04); anything not in
+	// the allow-set is 422 BEFORE any repo call (D-03).
 	period := q.Get("period")
 	if period == "" {
-		period = "today"
+		period = periodToday
 	}
 	if _, ok := validUsagePeriods[period]; !ok {
 		writeError(w, http.StatusUnprocessableEntity, "invalid period filter")
@@ -156,9 +181,23 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Both validations above complete before either repo call, so an
-	// invalid request costs zero DB work (D-03, mirroring handleListJobs).
+	// invalid request costs zero DB work (D-03, mirroring handleListJobs) —
+	// including the UTCToday read below, which sits strictly after this
+	// point.
 
-	dayFrom, dayTo := resolveUsagePeriod(period, time.Now())
+	// 4. Resolve the current day from the SAME clock evaluate() reads
+	// (WR-03): Postgres's own now(), via s.usageRepo.UTCToday, never this
+	// API process's own wall clock. Deriving it here in the API process
+	// instead would let a UTC-midnight crossing or NTP skew make this
+	// endpoint query one day while the admission gate enforces another —
+	// while the response still claimed remaining_matches_admission_gate:
+	// true.
+	today, err := s.usageRepo.UTCToday(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve current day")
+		return
+	}
+	dayFrom, dayTo := resolveUsagePeriod(period, today)
 
 	usageRows, err := s.usageRepo.UsageSummary(ctx, clientID, dayFrom, dayTo)
 	if err != nil {
@@ -301,20 +340,29 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	sortSystemUsageRows(rows, consumption)
 
-	// 10. Build the envelope.
+	// 10. Build the envelope. Locked precedence order (53-07-PLAN.md
+	// <design_resolution>, WR-02): multi-day period wins over the
+	// kill-switch (a multi-day figure has no admission-gate analogue
+	// regardless of whether enforcement is live), then the service-wide
+	// kill-switch, then the live case.
 	resp := systemUsageResponse{
 		Period:                        period,
 		DayFrom:                       dayFrom.Format("2006-01-02"),
 		DayTo:                         dayTo.Format("2006-01-02"),
-		RemainingMatchesAdmissionGate: period == "today",
+		QuotaEnforcementDisabled:      s.quotaEnforcementDisabled,
+		RemainingMatchesAdmissionGate: period == periodToday && !s.quotaEnforcementDisabled,
 		Usage:                         rows,
 	}
-	if resp.RemainingMatchesAdmissionGate {
-		resp.RemainingSemantics = "live_admission_gate"
-		resp.RemainingNote = "period=today: remaining is exactly what the admission gate (evaluate()) computes right now."
-	} else {
+	switch {
+	case period != periodToday:
 		resp.RemainingSemantics = "hypothetical_single_day_equivalent"
 		resp.RemainingNote = "max_daily_bytes/max_daily_jobs are DAILY caps that reset at UTC midnight. For a multi-day period, remaining compares a multi-day sum against a one-day cap — it has no admission-gate analogue and will legitimately go deeply negative for healthy clients."
+	case s.quotaEnforcementDisabled:
+		resp.RemainingSemantics = "computed_but_not_enforced"
+		resp.RemainingNote = "period=today: the arithmetic is exactly what the admission gate (evaluate()) computes, but QUOTA_ENFORCEMENT_DISABLED is set service-wide right now — no request is being rejected. Verdicts are still computed and counted, never enforced, until the kill-switch is turned off."
+	default:
+		resp.RemainingSemantics = "live_admission_gate"
+		resp.RemainingNote = "period=today: remaining is exactly what the admission gate (evaluate()) computes right now. A row whose own enforcement_mode is \"observe\" has its verdict computed and counted here too, but that row is never actually enforced — a negative remaining on such a row does not mean requests are being rejected for it."
 	}
 
 	// 11. writeJSON never logs (internal/* never logs).
