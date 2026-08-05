@@ -927,3 +927,160 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+
+  /v1/system/usage:
+    get:
+      tags: [System]
+      operationId: getSystemUsage
+      summary: Per-client, per-engine usage, limits and remaining budget — operator only
+      description: >-
+        Operator-only (OPSV-01/OPSV-02). Backed by the client_usage_daily
+        rollup (terminal usage) plus live in-flight (queued/active) jobs —
+        never Prometheus, never a raw jobs table scan. The response carries
+        each (client, engine) row's usage alongside its configured limits and
+        remaining budget in one round trip. remaining mirrors the admission
+        gate (evaluate(), internal/jobs/admission.go) exactly when
+        period=today: concurrency remaining is in-flight only, daily-bytes
+        remaining sums terminal bytes_in plus in-flight input bytes (never
+        bytes_out), and daily-jobs remaining sums terminal job_count plus
+        in-flight job count. A non-operator caller receives 404, never 403 —
+        byte-identical to /v1/system/presets's no-leak 404.
+      parameters:
+        - name: period
+          in: query
+          required: false
+          description: >-
+            The usage window. Defaults to "today" when omitted or present-but-
+            empty. Only period=today's remaining figures match what the
+            admission gate computes right now (remaining_matches_admission_gate);
+            7d/30d compare a multi-day sum against a one-day cap and carry an
+            explicit non-authoritative caveat instead.
+          schema:
+            type: string
+            enum: [today, 7d, 30d]
+            default: today
+        - name: client_id
+          in: query
+          required: false
+          description: Narrow the response to one client. Omit for all clients, sorted by consumption descending.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Per-client, per-engine usage merged with limits and remaining budget for the resolved period.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    type: string
+                    enum: [today, 7d, 30d]
+                    description: The resolved period.
+                  day_from:
+                    type: string
+                    format: date
+                    description: Inclusive UTC start date actually queried.
+                  day_to:
+                    type: string
+                    format: date
+                    description: Inclusive UTC end date actually queried.
+                  remaining_matches_admission_gate:
+                    type: boolean
+                    description: true only when period=today — the ONLY case where remaining is exactly what the admission gate (evaluate()) computes right now.
+                  remaining_semantics:
+                    type: string
+                    enum: [live_admission_gate, hypothetical_single_day_equivalent]
+                    description: >-
+                      "live_admission_gate" for period=today. For 7d/30d,
+                      "hypothetical_single_day_equivalent": remaining compares
+                      a multi-day sum against a DAILY cap, has no
+                      admission-gate analogue, and will legitimately be
+                      negative for healthy clients.
+                  remaining_note:
+                    type: string
+                    description: Human-readable expansion of remaining_matches_admission_gate / remaining_semantics.
+                  usage:
+                    type: array
+                    description: Non-nil, possibly empty — an empty result marshals as [], never null.
+                    items:
+                      type: object
+                      properties:
+                        client_id:
+                          type: string
+                          format: uuid
+                        client_name:
+                          type: string
+                        engine:
+                          type: string
+                        enforcement_mode:
+                          type: string
+                          enum: [observe, enforce]
+                        used_terminal:
+                          type: object
+                          description: Terminal (done/failed/canceled) usage over the resolved period, from client_usage_daily.
+                          properties:
+                            job_count: { type: integer }
+                            bytes_in: { type: integer }
+                            bytes_out: { type: integer }
+                          required: [job_count, bytes_in, bytes_out]
+                        used_in_flight:
+                          type: object
+                          description: Live (queued/active) usage right now, date-agnostic — an in-flight job has no outputs yet.
+                          properties:
+                            job_count: { type: integer }
+                            bytes_in: { type: integer }
+                          required: [job_count, bytes_in]
+                        limits:
+                          type: object
+                          description: This client's configured per-engine limits. Every field is null when unlimited — never 0, never omitted; an explicit max_concurrent of 0 (deny-all) stays distinguishable as a non-null 0.
+                          properties:
+                            max_concurrent:
+                              type: [integer, "null"]
+                            max_daily_bytes:
+                              type: [integer, "null"]
+                            max_daily_jobs:
+                              type: [integer, "null"]
+                          required: [max_concurrent, max_daily_bytes, max_daily_jobs]
+                        remaining:
+                          type: object
+                          description: Per-dimension remaining budget, null exactly when the matching limit is null, and NOT clamped at zero — a negative value is informative, showing how far over budget a client is.
+                          properties:
+                            concurrent:
+                              type: [integer, "null"]
+                            daily_bytes:
+                              type: [integer, "null"]
+                            daily_jobs:
+                              type: [integer, "null"]
+                          required: [concurrent, daily_bytes, daily_jobs]
+                      required: [client_id, client_name, engine, enforcement_mode, used_terminal, used_in_flight, limits, remaining]
+                required: [period, day_from, day_to, remaining_matches_admission_gate, remaining_semantics, remaining_note, usage]
+        "400":
+          description: Malformed client_id (not a valid UUID).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid client_id
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Caller is not an authorized operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: preset not found
+        "422":
+          description: Invalid period filter — not one of today/7d/30d.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid period filter
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
