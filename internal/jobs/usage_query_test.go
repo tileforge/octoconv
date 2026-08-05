@@ -51,6 +51,29 @@ func TestUsageInFlightSQLUsesLiteralStatuses(t *testing.T) {
 	}
 }
 
+// TestUsageInFlightSQLExcludesNullClients pins that both in-flight
+// statements guard against jobs.client_id's ON DELETE SET NULL nullability
+// (0001_init.sql:43). Without the IS NOT NULL guard, a deleted client's
+// still-queued/active jobs collapse into one NULL group that pgx scans into
+// uuid.Nil without error, fabricating a phantom client row in the operator
+// report carrying enforcement_mode: "" — a value docs/openapi.yaml declares
+// as enum: [observe, enforce] and required (WR-01).
+func TestUsageInFlightSQLExcludesNullClients(t *testing.T) {
+	stmts := map[string]string{
+		"usageInFlightJobsSQL":  usageInFlightJobsSQL,
+		"usageInFlightBytesSQL": usageInFlightBytesSQL,
+	}
+	guards := map[string]string{
+		"usageInFlightJobsSQL":  "client_id IS NOT NULL",
+		"usageInFlightBytesSQL": "j.client_id IS NOT NULL",
+	}
+	for name, sql := range stmts {
+		if !strings.Contains(sql, guards[name]) {
+			t.Errorf("%s does not contain %q — without this guard, a job orphaned by ON DELETE SET NULL (0001_init.sql:43) collapses into a NULL group that pgx scans into uuid.Nil without error, fabricating a phantom client row in the operator report (WR-01)", name, guards[name])
+		}
+	}
+}
+
 // TestUsageInFlightJobCountDoesNotJoinInputs pins that the job-count query
 // and the byte-sum query stay two SEPARATE grouped statements. Counting over
 // a job_inputs join would multiply a job by its job_inputs row count — a job
@@ -282,6 +305,52 @@ func TestUsageSummaryAllClientsAndNarrowedAgree(t *testing.T) {
 	}
 	if *narrowedRowA != *rowA {
 		t.Errorf("client A's row differs between UsageSummary(nil) and UsageSummary(&clientA): %+v vs %+v — the two call shapes must agree field-for-field", *rowA, *narrowedRowA)
+	}
+}
+
+// TestUsageSummaryExcludesOrphanedNullClientJobs pins the WR-01 fix against
+// the real production path: a client with one in-flight job is deleted (the
+// real ON DELETE SET NULL path, 0001_init.sql:43), and UsageSummary's
+// un-narrowed shape (clientID == nil — the only shape where the bug
+// manifests, since a non-nil clientID's ($1::uuid IS NULL OR client_id = $1)
+// bind already excludes NULLs) must not attribute that orphaned job to a
+// phantom uuid.Nil client.
+func TestUsageSummaryExcludesOrphanedNullClientJobs(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	jobID, err := createFixture(t, r, clientID, "image", "uploads/orphan/0-in.png", 111)
+	if err != nil {
+		t.Fatalf("create in-flight fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := r.pool.Exec(context.Background(), `DELETE FROM jobs WHERE id = $1`, jobID); err != nil {
+			t.Errorf("cleanup orphaned job %s: %v", jobID, err)
+		}
+	})
+
+	if _, err := r.pool.Exec(ctx, `DELETE FROM clients WHERE id = $1`, clientID); err != nil {
+		t.Fatalf("delete owning client (the real ON DELETE SET NULL path): %v", err)
+	}
+
+	var orphanCount int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE id = $1 AND client_id IS NULL`, jobID).Scan(&orphanCount); err != nil {
+		t.Fatalf("sanity-check orphan state: %v", err)
+	}
+	if orphanCount != 1 {
+		t.Fatalf("orphanCount = %d, want 1 — deleting the owning client must SET NULL jobs.client_id (0001_init.sql:43); if this fails the schema no longer nullifies on delete and this test is vacuous", orphanCount)
+	}
+
+	today := utcToday()
+	rows, err := r.UsageSummary(ctx, nil, today, today)
+	if err != nil {
+		t.Fatalf("UsageSummary(nil): %v", err)
+	}
+	for _, row := range rows {
+		if row.ClientID == uuid.Nil {
+			t.Fatalf("UsageSummary(nil) returned a phantom row with ClientID == uuid.Nil (engine=%s, InFlightJobCount=%d) — an orphaned NULL-client job must be excluded, not attributed to a fabricated client identity (WR-01): %+v", row.Engine, row.InFlightJobCount, row)
+		}
 	}
 }
 

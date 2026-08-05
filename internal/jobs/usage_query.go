@@ -86,6 +86,10 @@ const usageTerminalSQL = `
 // 0013_client_limits.sql). Binding them as parameters instead would silently
 // degrade the plan to a sequential scan of jobs, exactly as
 // admission.go:295-304 explains for evaluate()'s own in-flight subqueries.
+// Adding the client_id IS NOT NULL term below does not affect this partial
+// index's applicability: jobs_client_engine_inflight_idx's predicate is on
+// status only, so it stays matched regardless of what else is in the WHERE
+// clause.
 //
 // Deliberately NO created_at / day predicate here — matching
 // admission.go:306-347: a job that is queued or active right now consumes
@@ -96,6 +100,7 @@ const usageInFlightJobsSQL = `
 	SELECT client_id, engine, count(*)
 	FROM jobs
 	WHERE status IN ('queued', 'active')
+		AND client_id IS NOT NULL -- jobs.client_id is nullable with ON DELETE SET NULL (0001_init.sql:43); a deleted client's still-queued/active jobs would otherwise collapse into one NULL group that scans into uuid.Nil without error, fabricating a phantom client row carrying enforcement_mode: "" — a value docs/openapi.yaml declares as enum: [observe, enforce] and required. client_usage_daily.client_id is NOT NULL + ON DELETE CASCADE, so the terminal term (usageTerminalSQL) needs no equivalent guard.
 		AND ($1::uuid IS NULL OR client_id = $1)
 	GROUP BY client_id, engine`
 
@@ -115,6 +120,7 @@ const usageInFlightBytesSQL = `
 	SELECT j.client_id, j.engine, COALESCE(sum(ji.size_bytes), 0)
 	FROM jobs j JOIN job_inputs ji ON ji.job_id = j.id
 	WHERE j.status IN ('queued', 'active')
+		AND j.client_id IS NOT NULL -- jobs.client_id is nullable with ON DELETE SET NULL (0001_init.sql:43); a deleted client's still-queued/active jobs would otherwise collapse into one NULL group that scans into uuid.Nil without error, fabricating a phantom client row carrying enforcement_mode: "" — a value docs/openapi.yaml declares as enum: [observe, enforce] and required. client_usage_daily.client_id is NOT NULL + ON DELETE CASCADE, so the terminal term (usageTerminalSQL) needs no equivalent guard.
 		AND ($1::uuid IS NULL OR j.client_id = $1)
 	GROUP BY j.client_id, j.engine`
 
