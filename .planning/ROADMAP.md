@@ -306,8 +306,8 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
-- [ ] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
+- [x] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
+- [x] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -399,7 +399,7 @@ Plans:
 | 50. KEDA/Helm Chart Integration | v1.11 | 4/4 | Complete    | 2026-08-01 |
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
-| 53. Operator Usage Visibility | v1.12 | 0/TBD | Not started | - |
+| 53. Operator Usage Visibility | v1.12 | 2/4 | In Progress|  |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
