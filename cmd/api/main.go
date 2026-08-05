@@ -167,7 +167,12 @@ func main() {
 		S3:       store,
 	}
 	jobsRepo := jobs.NewRepo(pool)
-	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, resolver, health, api.Config{
+	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
+	// as the UsageRepo -- because the two interfaces are narrow views of the
+	// same concrete *jobs.Repo, exactly as presetRepo already appears twice
+	// for PresetRepo/PresetAdmin. clientRepo was already constructed above
+	// for the auth resolver and now doubles as the LimitsRepo (OPSV-01/02).
+	srv := api.NewServer(jobsRepo, store, qc, presetRepo, presetRepo, jobsRepo, clientRepo, resolver, health, api.Config{
 		// D-07 (Phase 35, operator-confirmed 2026-07-21): raised from 100
 		// MiB to 2 GiB so video uploads are admissible -- this is a pre-
 		// parse http.MaxBytesReader bound, enforced BEFORE the engine class

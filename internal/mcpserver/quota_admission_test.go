@@ -371,6 +371,7 @@ func newQuotaAdmissionHarness(t *testing.T) *quotaAdmissionHarness {
 	apiSrv := api.NewServer(
 		jobsRepo, store, queue,
 		quotaAdmissionPresetRepo{}, nil,
+		jobsRepo, clientsRepo,
 		resolver, api.HealthDeps{},
 		api.Config{
 			// Raised so the coarse pre-auth/per-client rate limiter

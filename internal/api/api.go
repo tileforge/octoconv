@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/auth"
+	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
@@ -71,6 +72,36 @@ type PresetAdmin interface {
 	GetForClient(ctx context.Context, clientID *uuid.UUID, name string) (*presets.Preset, error)
 }
 
+// UsageRepo is the narrow, interface-segregated subset backing
+// `GET /v1/system/usage` (OPSV-01/OPSV-02, D-08): the per-(client, engine)
+// usage aggregate, backed by *jobs.Repo. It is NOT folded into the existing
+// Repo interface: Repo is deliberately jobs-scoped, and adding a usage-read
+// method there would force fakeRepo and every existing job-handler test to
+// grow a method they never exercise — the same argument PresetAdmin's own
+// doc comment makes above. UsageRepo performs no authorization of its own:
+// the caller is already a confirmed operator by the time a handler using it
+// runs, because requireOperator (system_presets_handlers.go) gates the
+// route; this interface must never be reached from a client-scoped route.
+// clientID == nil means "all clients" (D-01) — one optional bind in the
+// underlying SQL, not a second code path.
+type UsageRepo interface {
+	UsageSummary(ctx context.Context, clientID *uuid.UUID, dayFrom, dayTo time.Time) ([]jobs.UsageRow, error)
+}
+
+// LimitsRepo is the narrow, interface-segregated subset backing
+// `GET /v1/system/usage` (OPSV-01/OPSV-02, D-08): the batch per-client limits
+// read, backed by *clients.Repo. It is NOT folded into the existing Repo
+// interface for the same reason UsageRepo is not: Repo is jobs-scoped only,
+// and this method has no job-handler caller. LimitsRepo performs no
+// authorization of its own: the caller is already a confirmed operator by
+// the time a handler using it runs, because requireOperator
+// (system_presets_handlers.go) gates the route; this interface must never be
+// reached from a client-scoped route. clientID == nil means "all clients"
+// (D-01) — one optional bind in the underlying SQL, not a second code path.
+type LimitsRepo interface {
+	ListAllLimits(ctx context.Context, clientID *uuid.UUID) ([]clients.LimitWithMeta, error)
+}
+
 // Storage is the subset of the storage client the API depends on.
 type Storage interface {
 	Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
@@ -105,11 +136,17 @@ type HealthDeps struct {
 
 // Server holds the API dependencies and configuration.
 type Server struct {
-	repo          Repo
-	storage       Storage
-	queue         Enqueuer
-	presets       PresetRepo
-	presetAdmin   PresetAdmin
+	repo        Repo
+	storage     Storage
+	queue       Enqueuer
+	presets     PresetRepo
+	presetAdmin PresetAdmin
+	// usageRepo / limitsRepo back GET /v1/system/usage (OPSV-01/OPSV-02,
+	// Plan 04). Never nil after NewServer because they are required
+	// positional params — unlike cancelPublisher, which is a deliberately
+	// nil-safe post-construction seam.
+	usageRepo     UsageRepo
+	limitsRepo    LimitsRepo
 	resolver      auth.ClientResolver
 	health        HealthDeps
 	maxUploadByte int64
@@ -239,7 +276,10 @@ type Config struct {
 // PresetRepo used by handleCreateJob to resolve preset=<name> (D-09).
 // presetAdmin is the second, separate interface (D-08) the /v1/presets REST
 // handlers depend on — both are typically backed by the same *presets.Repo.
-func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {
+// usage and limits back GET /v1/system/usage (OPSV-01/OPSV-02, Plan 04) —
+// both are required positional params with no defaulting; a nil here is a
+// programming error at a call site, not a configurable state.
+func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {
 	if cfg.PresignTTL == 0 {
 		cfg.PresignTTL = 15 * time.Minute
 	}
@@ -313,6 +353,8 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		queue:                        queue,
 		presets:                      presets,
 		presetAdmin:                  presetAdmin,
+		usageRepo:                    usage,
+		limitsRepo:                   limits,
 		resolver:                     resolver,
 		health:                       health,
 		maxUploadByte:                cfg.MaxUploadBytes,

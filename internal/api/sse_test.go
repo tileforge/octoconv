@@ -86,7 +86,7 @@ func newSSETestServer(repo Repo) *Server {
 
 func newSSETestServerWithConfig(repo Repo, cfg Config) *Server {
 	cfg.MaxUploadBytes = 1 << 20
-	return NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), newFakeResolver(), healthyDeps(), cfg)
+	return NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), cfg)
 }
 
 // requestForSSE builds a request whose chi route context already carries the
