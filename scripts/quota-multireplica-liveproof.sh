@@ -812,3 +812,124 @@ run_round() {
 	admitted_ids=$(cat "$WORKDIR/r${round}-admitted.txt" 2>/dev/null || true)
 	drain_round "$admitted_ids"
 }
+
+# ---------------------------------------------------------------------------
+# STEP 6: the ${ROUNDS}-round burst loop. `set -euo pipefail` is in force
+# and every assertion inside run_round exits non-zero on failure, so
+# reaching the ROUNDS_PASSED increment below means the round genuinely
+# passed -- there is deliberately no separate status check here, and a
+# future editor should not add one (a redundant check could itself become
+# a place a real failure gets silently swallowed).
+# ---------------------------------------------------------------------------
+log "STEP 6: ${ROUNDS}-round burst loop (K=${QUOTA_K}, N=${BURST_N} per round)"
+
+ROUNDS_PASSED=0
+for r in $(seq 1 "$ROUNDS"); do
+	log "round ${r}/${ROUNDS}"
+	run_round "$r"
+	ROUNDS_PASSED=$((ROUNDS_PASSED + 1))
+done
+
+# ---------------------------------------------------------------------------
+# STEP 7: end-of-run global assertions -- each one re-derivable from the
+# committed TSV alone by a reviewer who never re-runs the gate.
+# ---------------------------------------------------------------------------
+log "STEP 7: end-of-run global assertions"
+
+# POD SET UNCHANGED: a pod rescheduled mid-run would break the log-based
+# attribution join silently -- every earlier per-round attribution would
+# have been drawn against a now-stale pod set without any round-level
+# assertion ever catching it.
+API_PODS_END=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=api -o jsonpath='{.items[*].metadata.name}')
+printf '%s\n' "$API_PODS_END" | tr ' ' '\n' | sort >"$WORKDIR/api-pods-end.txt"
+if ! diff -q "$WORKDIR/api-pods-start.txt" "$WORKDIR/api-pods-end.txt" >/dev/null 2>&1; then
+	echo "FAIL: api pod set changed during the run." >&2
+	echo "  start: $(tr '\n' ' ' <"$WORKDIR/api-pods-start.txt")" >&2
+	echo "  end:   $(tr '\n' ' ' <"$WORKDIR/api-pods-end.txt")" >&2
+	exit 1
+fi
+PASS_COUNT=$((PASS_COUNT + 1))
+echo "PASS: api pod set unchanged across the run ($(tr '\n' ' ' <"$WORKDIR/api-pods-end.txt"))"
+
+# ZERO RATE-LIMIT RESPONSES: redundant with the per-round hard FAIL by
+# design -- this is the assertion a reader of the committed evidence can
+# re-run against the TSV without re-running the gate at all. It is
+# expected to always find 0 rows in practice (assess_round's per-round
+# 429:rate_limited branch already exits 1 before any such row is ever
+# written), which is exactly the point: this check is here for the
+# reviewer of the committed artifact, not as a live-run trigger.
+RATE_LIMITED_ROWS=$(awk -F'\t' 'NR>1 && $7=="rate_limited"' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+assert_eq "0" "$RATE_LIMITED_ROWS" "rate_limited responses across the whole run"
+
+# AGGREGATE TOTALS.
+TOTAL_ROWS=$(awk -F'\t' 'NR>1' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+TOTAL_202=$(awk -F'\t' 'NR>1 && $6=="202"' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+TOTAL_429_QUOTA=$(awk -F'\t' 'NR>1 && $6=="429" && $7=="quota_exceeded"' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+assert_eq "$((ROUNDS * BURST_N))" "$TOTAL_ROWS" "TSV data rows (rounds * burst_n)"
+assert_eq "$((ROUNDS * QUOTA_K))" "$TOTAL_202" "TSV rows with status 202 (rounds * K)"
+assert_eq "$((ROUNDS * (BURST_N - QUOTA_K)))" "$TOTAL_429_QUOTA" "TSV rows with status 429 code quota_exceeded (rounds * (N-K))"
+echo "aggregate totals: rows=${TOTAL_ROWS} admits=${TOTAL_202} quota_rejects=${TOTAL_429_QUOTA}"
+
+# CROSS-POD COVERAGE: strictly stronger than the per-round D-05 assertion,
+# cheap once the TSV exists -- a failure here is a genuine signal that one
+# replica never participated in a cap decision at all across the ENTIRE
+# run, not just some individual round.
+POD1_202=$(awk -F'\t' -v p="$API_POD_1" 'NR>1 && $6=="202" && $8==p' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+POD1_429=$(awk -F'\t' -v p="$API_POD_1" 'NR>1 && $6=="429" && $8==p' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+POD2_202=$(awk -F'\t' -v p="$API_POD_2" 'NR>1 && $6=="202" && $8==p' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+POD2_429=$(awk -F'\t' -v p="$API_POD_2" 'NR>1 && $6=="429" && $8==p' "$EVIDENCE_TSV" | wc -l | tr -d '[:space:]')
+assert_ge "$POD1_202" "1" "pod ${API_POD_1} served at least one 202 across the run"
+assert_ge "$POD1_429" "1" "pod ${API_POD_1} served at least one 429 quota_exceeded across the run"
+assert_ge "$POD2_202" "1" "pod ${API_POD_2} served at least one 202 across the run"
+assert_ge "$POD2_429" "1" "pod ${API_POD_2} served at least one 429 quota_exceeded across the run"
+echo "cross-pod coverage: ${API_POD_1} 202=${POD1_202} 429=${POD1_429}, ${API_POD_2} 202=${POD2_202} 429=${POD2_429}"
+
+assert_eq "$ROUNDS" "$ROUNDS_PASSED" "rounds passed"
+
+# ---------------------------------------------------------------------------
+# STEP 8: evidence summary -- appended as `#`-prefixed lines so the TSV
+# stays greppable by field, and printed to stdout so it also lands in the
+# operator's own transcript.
+# ---------------------------------------------------------------------------
+log "STEP 8: evidence summary"
+
+# RUN_ID already carries a UTC start timestamp by construction (its default
+# is `date -u +%Y%m%dT%H%M%SZ`, see the config block) -- no separate "run
+# start" variable is introduced here, only the run's end.
+RUN_END_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+{
+	echo "#"
+	echo "# quota-multireplica-liveproof.sh evidence summary"
+	echo "# run_id=${RUN_ID}"
+	echo "# run_end_utc=${RUN_END_UTC}"
+	echo "# values_files=${VALUES_LOCAL},${VALUES_MULTIREPLICA}"
+	echo "# api_replicas_observed_live=$(kubectl get deployment api -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo unknown)"
+	echo "# api_pod_1=${API_POD_1}"
+	echo "# api_pod_2=${API_POD_2}"
+	echo "# client_id=${CLIENT_ID}"
+	echo "# engine=${ENGINE}"
+	echo "# quota_k=${QUOTA_K}"
+	echo "# burst_n=${BURST_N}"
+	echo "# rounds=${ROUNDS}"
+	echo "# rounds_passed=${ROUNDS_PASSED}"
+	echo "# total_rows=${TOTAL_ROWS}"
+	echo "# total_202=${TOTAL_202}"
+	echo "# total_429_quota_exceeded=${TOTAL_429_QUOTA}"
+	echo "# pod1_202=${POD1_202} pod1_429=${POD1_429} pod2_202=${POD2_202} pod2_429=${POD2_429}"
+	echo "#"
+} | tee -a "$EVIDENCE_TSV"
+
+# =============================================================================
+# ALL-PASSED summary -- set only after every assertion above has passed
+# (there is no optional/best-effort branch in this script). Teardown runs
+# unconditionally via the EXIT trap above and never deletes $EVIDENCE_DIR --
+# but it does not commit it either, so the operator must do that explicitly
+# before the trap uninstalls the release.
+# =============================================================================
+GATE_OK=1
+echo ""
+echo "=== GATE PASS: ${ROUNDS_PASSED}/${ROUNDS} rounds passed, ${PASS_COUNT} assertions passed, evidence at ${EVIDENCE_TSV_ABS} ==="
+echo "SC1 (QUOT-05): admitted count == K (${QUOTA_K}) exactly in every round; every round's cap decision crossed the ${API_POD_1}/${API_POD_2} replica boundary; aggregate cross-pod coverage confirmed both pods served both an admit and a quota_exceeded reject over the whole run."
+echo "SC2: timestamps, replica identifiers, and admitted/rejected counts committed to ${EVIDENCE_TSV_ABS}"
+echo "IMPORTANT: this evidence file must be committed (ROADMAP SC2) BEFORE the trap below uninstalls the release -- teardown never deletes \$EVIDENCE_DIR but does not commit it either. Commit it explicitly, e.g.:"
+echo "  git add -f ${EVIDENCE_TSV_ABS}"
