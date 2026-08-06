@@ -82,3 +82,53 @@ scrape_configs:
       - targets:
           - api.{{ .Values.global.namespace }}.svc.cluster.local:9090
 {{- end }}
+
+{{/*
+Per-class KEDA replica floor (SEED-011/CAPA-01, D-01/D-02/D-03). Callers
+pass a dict with `class` (the keda.<class> key, e.g. "image") and `root`
+(the root context $), e.g.:
+  {{- include "octoconv.kedaMinReplicaCount" (dict "class" "image" "root" $) }}
+Resolves the per-class config with `index .root.Values.keda .class` and
+emits the raw integer .Values.keda.<class>.minReplicaCount, with NO
+surrounding whitespace (callers place it inline after `minReplicaCount: `)
+and deliberately NO conditional wrapper (D-01): minReplicaCount is a
+required scalar on every ScaledObject whose default is the falsy 0, so
+wrapping it in an `if` would reintroduce exactly the HARD-03/D-06 falsy-0
+trap that scaleDownStabilizationSeconds needed a hasKey+ne-nil guard to
+escape (see scaledobject-av.yaml's FALSY-0 GUARD comment) -- removing the
+conditional removes the trap instead of repeating the guard.
+Fails fast via `fail` (D-02) rather than rendering an unsafe manifest: a
+negative value, or one exceeding that class's own maxReplicaCount, aborts
+`helm template`/`helm lint` naming the class and both offending values --
+SC3's verification surface is the render itself, not a live KEDA admission
+webhook that would only fire at `helm install` time.
+*/}}
+{{- define "octoconv.kedaMinReplicaCount" -}}
+{{- $cfg := index .root.Values.keda .class -}}
+{{- $min := int $cfg.minReplicaCount -}}
+{{- $max := int $cfg.maxReplicaCount -}}
+{{- if lt $min 0 -}}
+{{- fail (printf "keda.%s.minReplicaCount (%d) must not be negative" .class $min) -}}
+{{- end -}}
+{{- if gt $min $max -}}
+{{- fail (printf "keda.%s.minReplicaCount (%d) must not exceed keda.%s.maxReplicaCount (%d)" .class $min .class $max) -}}
+{{- end -}}
+{{- $min -}}
+{{- end }}
+
+{{/*
+Per-class KEDA fallback floor (SEED-011/CAPA-01, D-05). Same call
+convention as octoconv.kedaMinReplicaCount:
+  {{- include "octoconv.kedaFallbackReplicas" (dict "class" "image" "root" $) }}
+Emits max(1, minReplicaCount) so a sustained Prometheus scaler outage
+cannot silently undo an operator-configured floor -- at the shipped
+default (minReplicaCount: 0) this still emits 1, matching today's
+hardcoded fallback.replicas: 1 byte-for-byte (SC1). Deliberately computed
+via an `include` of octoconv.kedaMinReplicaCount rather than re-reading
+.Values directly: this is what makes D-02's validation fire from the
+fallback.replicas call site too, so the guard cannot be bypassed by
+reaching this path alone (T-54-02).
+*/}}
+{{- define "octoconv.kedaFallbackReplicas" -}}
+{{- max 1 (int (include "octoconv.kedaMinReplicaCount" .)) -}}
+{{- end }}

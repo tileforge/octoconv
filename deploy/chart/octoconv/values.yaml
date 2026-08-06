@@ -246,17 +246,32 @@ keda:
     maxReplicaCount: 4
     pollingInterval: 5
     cooldownPeriod: 60
+    # minReplicaCount below is explicit as zero here and on all 7 classes
+    # (SEED-011/CAPA-01, D-01) — the template renders this value directly
+    # with NO conditional wrapper (unlike the downscale-stabilization
+    # hasKey/ne-nil guard elsewhere in this file), so a bare key with no
+    # comment would look like a missing feature rather than a deliberate
+    # default. There is no per-class divergence in the VALUE (all seven are
+    # zero), only in whether an operator chooses to override it; this
+    # comment carries the rationale once, the remaining six classes below
+    # just point back to it. Operators raise a class's floor via
+    # values-capacity-floor.yaml or --set keda.<class>.minReplicaCount=N,
+    # validated by octoconv.kedaMinReplicaCount (D-02) against that class's
+    # own maxReplicaCount.
+    minReplicaCount: 0
   document:
     threshold: "1"
     maxReplicaCount: 2
     pollingInterval: 15
     cooldownPeriod: 120
     scaleDownStabilizationSeconds: null   # NEW (D-10/Pattern 1) — production default OFF (K8s 300s HPA default preserved); load-proof gate overrides via values-loadproof.yaml
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
   html:
     threshold: "2"
     maxReplicaCount: 2
     pollingInterval: 10
     cooldownPeriod: 90
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
   audio:
     threshold: "1"
     maxReplicaCount: 2
@@ -267,6 +282,7 @@ keda:
     # a load-proof-overlay knob. 900s = 742s + ~21% margin, aligned with the
     # 15m/900s reconciler cap -- a genuine downscale never races a live job.
     scaleDownStabilizationSeconds: 900
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
   av:
     threshold: "1"
     maxReplicaCount: 2
@@ -279,6 +295,7 @@ keda:
     # -- a genuine downscale never races a live job. Gated on BOTH hasKey
     # AND ne nil (falsy-0 guard, HARD-03/D-06) in scaledobject-av.yaml.
     scaleDownStabilizationSeconds: 900
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
   ocr:
     threshold: "1"
     maxReplicaCount: 2
@@ -291,6 +308,7 @@ keda:
     # downscale never races a live job. Gated on BOTH hasKey AND ne nil
     # (falsy-0 guard, HARD-03/D-06) in scaledobject-ocr.yaml.
     scaleDownStabilizationSeconds: 900
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
   pandoc:
     # DERIVED FROM PANDOC'S OWN BUDGET (D-02), NOT copied from html even though
     # the numbers are identical. NOTE the derivation CHANGED on 2026-08-02:
@@ -317,3 +335,4 @@ keda:
     # values-loadproof.yaml (D-04). Falsy-0 guard (HARD-03/D-06) still
     # applies in scaledobject-pandoc.yaml.
     scaleDownStabilizationSeconds: null
+    minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
