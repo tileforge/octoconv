@@ -39,7 +39,7 @@
 
 ### Capacity Policy
 
-- [ ] **CAPA-01**: `minReplicaCount` настраивается для каждого класса движка вместо жёстко зашитого нуля, чтобы под устойчивой нагрузкой можно было убрать холодный старт (SEED-011).
+- [x] **CAPA-01**: `minReplicaCount` настраивается для каждого класса движка вместо жёстко зашитого нуля, чтобы под устойчивой нагрузкой можно было убрать холодный старт (SEED-011).
 
 ## v2 Requirements
 
@@ -94,7 +94,7 @@
 | OPSV-01 | Phase 53 | Complete |
 | OPSV-02 | Phase 53 | Complete |
 | RETN-01 | Phase 51 | Complete |
-| CAPA-01 | Phase 54 | Pending |
+| CAPA-01 | Phase 54 | Complete |
 
 **Coverage:**
 - v1 requirements: 15 total
