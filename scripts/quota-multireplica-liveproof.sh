@@ -82,10 +82,21 @@ FIXTURE_CONTENT_TYPE="${FIXTURE_CONTENT_TYPE:-image/png}"
 QUOTA_K="${QUOTA_K:-2}"
 BURST_N="${BURST_N:-10}"
 ROUNDS="${ROUNDS:-10}"
+# BURST_SEND_SPREAD_MS (Plan 55-02 Task 1): the max allowed spread, in
+# milliseconds, between the earliest and latest send_ts in one round's
+# burst -- the "concurrency of flight" assertion (assess_round, appended
+# below) fails a round whose requests were serialized rather than genuinely
+# in flight together.
+BURST_SEND_SPREAD_MS="${BURST_SEND_SPREAD_MS:-1000}"
 DB_LOCAL_PORT="${DB_LOCAL_PORT:-15434}"
 API_KEY_SALT="${API_KEY_SALT:-dev-only-change-me-in-real-deploys}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
+# EVIDENCE_TSV (Plan 55-02 Task 1): the committed SC2 evidence artifact --
+# one row per burst request across all ROUNDS rounds, plus a trailing
+# #-commented summary block (STEP 8, appended below). Named by RUN_ID so a
+# re-run never clobbers a prior run's committed evidence.
+EVIDENCE_TSV="${EVIDENCE_DIR}/quota-multireplica-${RUN_ID}.tsv"
 
 PASS_COUNT=0
 GATE_OK=""
@@ -251,6 +262,22 @@ if [ "${COMPOSE_UP:-0}" -gt 0 ]; then
 	exit 1
 fi
 echo "PASS: compose stack is down (0 octoconv-* containers running)"
+
+# Millisecond-precision send/receive timestamps (Plan 55-02 Task 1): macOS
+# `date` has no `%3N` (that flag is GNU-date-only), so this shells out to
+# python3 (preferred) or perl's Time::HiRes (fallback). Asserted here, in
+# STEP 1, so a missing tool fails in the first ten seconds of the run
+# rather than mid-round after cluster/client setup has already happened.
+TS_TOOL=""
+if command -v python3 >/dev/null 2>&1; then
+	TS_TOOL="python3"
+elif command -v perl >/dev/null 2>&1; then
+	TS_TOOL="perl"
+else
+	echo "FAIL: neither python3 nor perl found on PATH -- one is required for millisecond-precision send/receive timestamps (macOS 'date' has no %3N)." >&2
+	exit 1
+fi
+echo "PASS: millisecond-timestamp tool available ($TS_TOOL)"
 
 # ---------------------------------------------------------------------------
 # STEP 2: Two-phase install -- Phase A forces api.replicas=1 so exactly one
@@ -532,3 +559,79 @@ drain_round() {
 	PASS_COUNT=$((PASS_COUNT + 1))
 	echo "PASS: drain_round -- all jobs [$job_ids] terminal, inflight_count($CLIENT_ID)=0"
 }
+
+# ---------------------------------------------------------------------------
+# Burst generator (Plan 55-02 Task 1). epoch_ms/fire_burst are called once
+# per round by run_round (Plan 55-02 Task 2) inside the STEP 6 main loop
+# (Plan 55-02 Task 3, appended below this block).
+# ---------------------------------------------------------------------------
+
+# epoch_ms -- millisecond-precision epoch timestamp. See STEP 1's TS_TOOL
+# preflight assertion above for why python3/perl rather than `date +%s%3N`
+# (unsupported on macOS/BSD date).
+epoch_ms() {
+	if [ "$TS_TOOL" = "python3" ]; then
+		python3 -c 'import time; print(int(time.time() * 1000))'
+	else
+		perl -MTime::HiRes -e 'printf("%d\n", Time::HiRes::time() * 1000)'
+	fi
+}
+
+# fire_burst ROUND -- FIFO-barrier burst: BURST_N requests, each from its
+# own curl PROCESS (never a reused connection), released together by a
+# single write to a per-round named pipe.
+#
+# ONE-CURL-PROCESS-PER-REQUEST IS LOAD-BEARING, NOT STYLISTIC (RESEARCH.md
+# Pitfall 2): kube-proxy makes its Service DNAT endpoint choice once per
+# NEW TCP connection. A single curl process reusing one keep-alive
+# connection across all BURST_N requests of a round would pin every
+# request in that round to whichever pod the FIRST connection landed on --
+# collapsing the cross-pod distribution the calibration step (STEP 4)
+# already proved works, even though ClusterIP reachability itself would
+# still be fine. Do NOT collapse this into one curl invocation with
+# --next/multiple -O, and do NOT switch to an HTTP client that pools
+# connections across requests without explicitly disabling keep-alive.
+fire_burst() {
+	local round="$1" i
+	local barrier="$WORKDIR/barrier-${round}"
+	mkfifo "$barrier"
+
+	for i in $(seq 1 "$BURST_N"); do
+		(
+			exec 3<"$barrier"
+			read -r -u 3 _ # blocks until the barrier below is released
+			local request_id="burst-${RUN_ID}-${round}-${i}"
+			local send_ts recv_ts http_status
+			send_ts=$(epoch_ms)
+			http_status=$(curl -s -o "$WORKDIR/r${round}-req${i}.json" -w '%{http_code}' \
+				--max-time 60 \
+				-H "Authorization: ApiKey $CLIENT_KEY" \
+				-H "X-Request-Id: burst-${RUN_ID}-${round}-${i}" \
+				-X POST "http://${CLUSTER_IP}:8090/v1/jobs" \
+				-F "target=${TARGET_FORMAT}" \
+				-F "file=@${FIXTURE};type=${FIXTURE_CONTENT_TYPE}")
+			recv_ts=$(epoch_ms)
+			printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$request_id" "$send_ts" "$recv_ts" "$http_status" \
+				>"$WORKDIR/r${round}-req${i}.rec"
+		) &
+	done
+
+	# Let every backgrounded subshell reach its blocking read before
+	# releasing the barrier -- without this, a slow-to-fork subshell could
+	# still be between `exec 3<...` and `read` when the write below lands,
+	# missing the release entirely (a race in the barrier mechanism itself,
+	# not the thing under test).
+	sleep 0.3
+	printf 'go\n' >"$barrier"
+	wait
+	rm -f "$barrier"
+}
+
+# Evidence TSV initialization -- must happen before round 1 fires. Header
+# field order is fixed and matched by STEP 7's aggregate `awk -F'\t'`
+# assertions below: round(1) index(2) request_id(3) send_ts_ms(4)
+# recv_ts_ms(5) http_status(6) body_code(7) serving_pod(8).
+mkdir -p "$EVIDENCE_DIR"
+printf 'round\tindex\trequest_id\tsend_ts_ms\trecv_ts_ms\thttp_status\tbody_code\tserving_pod\n' >"$EVIDENCE_TSV"
+EVIDENCE_TSV_ABS="$(cd "$(dirname "$EVIDENCE_TSV")" && pwd)/$(basename "$EVIDENCE_TSV")"
+echo "PASS: evidence TSV initialized at $EVIDENCE_TSV_ABS"
