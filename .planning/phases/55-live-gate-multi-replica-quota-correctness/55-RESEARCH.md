@@ -855,9 +855,24 @@ evidence.
 | A2 | `RATE_LIMIT_CLIENT_RPM`/`RATE_LIMIT_IP_RPM` defaults (120/60 rpm) are close enough to the burst's total request volume (100 over 10 rounds) that raising them for the gate run is prudent, not merely paranoid | Pattern 3 | If not raised and margins are tighter than estimated, a `rate_limited` 429 could appear mid-run and either falsely fail the gate or (if misclassified) falsely pass it — closed by the explicit zero-`rate_limited` assertion regardless of whether the limits are raised |
 | A3 | kube-proxy on OrbStack's Kubernetes runs in default iptables mode (not IPVS), giving per-new-connection random (not strictly round-robin) endpoint selection | Summary / Pattern 1 | Low risk either way — both iptables-random and IPVS-round-robin distribute across 2 endpoints for 10 independent connections; this only affects the exact probability math, not the qualitative conclusion. Not load-bearing for the plan. |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> **Both questions were closed during planning (2026-08-06) and re-confirmed independently by the
+> plan-checker.** Resolution notes are inline under each question below. Nothing in this section is
+> still open — the plans do not depend on any unanswered item here.
+>
+> Note this section does NOT cover assumption **A1** (host→ClusterIP routing distributes across ready
+> endpoints). A1 remains CITED-but-not-live-verified and is the phase's single load-bearing
+> unknown; it is handled by plan 55-01's `--calibrate-only` mode running before the full 10-round
+> budget, with the in-cluster burst generator documented as Plan B. Do not read "(RESOLVED)" here as
+> covering A1.
 
 1. **Does `manage-clients create`'s stdout literally print a line matching `^client id`?**
+   **RESOLVED — yes.** `cmd/manage-clients/main.go:67-68` prints `client id: <uuid>` and
+   `api key (save now, shown once): <key>` via `fmt.Println`, so the harness's `awk -F': '` parses
+   work as written and no DB fallback query is needed. Verified from source during planning
+   (recorded in 55-01-PLAN.md's `facts_verified_during_planning`) and re-confirmed by the
+   plan-checker.
    - What we know: `keda-gate.sh` only parses the `api key` line (`awk -F': ' '/^api key/{print $2}'`)
      and separately looks up the client id via a DB query in some other gates; the exact `create`
      output format was not fully re-read this session for the `client id:`-style label.
@@ -869,6 +884,15 @@ evidence.
      harness host mirroring `keda-gate.sh`'s own DB port-forward for exactly this purpose).
 
 2. **Exact wall-clock cost per round (worst case, for a 10-round timeout budget).**
+   **RESOLVED — the question is now moot, not merely unanswered.** Planning established that the
+   gate does not need KEDA at all: every ScaledObject (and the `worker` Deployment's KEDA-owned
+   `spec.replicas` omission) is gated on `and .Values.keda.enabled .Values.prometheus.enabled`, so
+   the gate overlay sets `keda.enabled: false`, rendering zero ScaledObjects and leaving `worker` at
+   a static `replicas: 1`. There is therefore no scale-from-zero cold start to budget for, and the
+   `--set keda.image.minReplicaCount=1` workaround suggested below is unnecessary. The plans instead
+   use generous fixed drain timeouts (`wait_terminal 180` / `cancel` + `60`). Verified against
+   `deployment-worker.yaml:23` and `scaledobject-image.yaml:15` during planning, re-confirmed by the
+   plan-checker.
    - What we know: `sample.png` is 86 bytes, vips conversions are historically sub-second in this
      codebase's other gates; KEDA's image class has `pollingInterval: 5`/`cooldownPeriod: 60` with
      `minReplicaCount: 0` by default, so only round 1 pays a cold-start tax (subsequent rounds reuse
