@@ -24,13 +24,13 @@ metadata:
 spec:
   scaleTargetRef:
     name: worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "image" "root" $) }}
   maxReplicaCount: {{ .Values.keda.image.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.image.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.image.cooldownPeriod }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "image" "root" $) }}
   triggers:
     - type: prometheus
       metadata:

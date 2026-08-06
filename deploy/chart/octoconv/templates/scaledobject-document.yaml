@@ -42,7 +42,7 @@ metadata:
 spec:
   scaleTargetRef:
     name: document-worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "document" "root" $) }}
   maxReplicaCount: {{ .Values.keda.document.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.document.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.document.cooldownPeriod }}
@@ -59,7 +59,7 @@ spec:
   {{- end }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "document" "root" $) }}
   triggers:
     - type: prometheus
       metadata:

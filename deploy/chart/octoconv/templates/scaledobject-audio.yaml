@@ -33,7 +33,7 @@ metadata:
 spec:
   scaleTargetRef:
     name: audio-worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "audio" "root" $) }}
   maxReplicaCount: {{ .Values.keda.audio.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.audio.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.audio.cooldownPeriod }}
@@ -50,7 +50,7 @@ spec:
   {{- end }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "audio" "root" $) }}
   triggers:
     - type: prometheus
       metadata:

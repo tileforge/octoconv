@@ -122,8 +122,8 @@ convention as octoconv.kedaMinReplicaCount:
   {{- include "octoconv.kedaFallbackReplicas" (dict "class" "image" "root" $) }}
 Emits max(1, minReplicaCount) so a sustained Prometheus scaler outage
 cannot silently undo an operator-configured floor -- at the shipped
-default (minReplicaCount: 0) this still emits 1, matching today's
-hardcoded fallback.replicas: 1 byte-for-byte (SC1). Deliberately computed
+default (a zero floor) this still emits 1, matching today's hardcoded
+fallback replica count byte-for-byte (SC1). Deliberately computed
 via an `include` of octoconv.kedaMinReplicaCount rather than re-reading
 .Values directly: this is what makes D-02's validation fire from the
 fallback.replicas call site too, so the guard cannot be bypassed by

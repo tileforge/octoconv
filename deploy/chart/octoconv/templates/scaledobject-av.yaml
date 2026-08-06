@@ -32,7 +32,7 @@ metadata:
 spec:
   scaleTargetRef:
     name: av-worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "av" "root" $) }}
   maxReplicaCount: {{ .Values.keda.av.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.av.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.av.cooldownPeriod }}
@@ -49,7 +49,7 @@ spec:
   {{- end }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "av" "root" $) }}
   triggers:
     - type: prometheus
       metadata:

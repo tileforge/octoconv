@@ -21,13 +21,13 @@ metadata:
 spec:
   scaleTargetRef:
     name: chromium-worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "html" "root" $) }}
   maxReplicaCount: {{ .Values.keda.html.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.html.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.html.cooldownPeriod }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "html" "root" $) }}
   triggers:
     - type: prometheus
       metadata:

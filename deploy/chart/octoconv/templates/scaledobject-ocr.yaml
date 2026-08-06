@@ -32,7 +32,7 @@ metadata:
 spec:
   scaleTargetRef:
     name: ocr-worker
-  minReplicaCount: 0
+  minReplicaCount: {{ include "octoconv.kedaMinReplicaCount" (dict "class" "ocr" "root" $) }}
   maxReplicaCount: {{ .Values.keda.ocr.maxReplicaCount }}
   pollingInterval: {{ .Values.keda.ocr.pollingInterval }}
   cooldownPeriod: {{ .Values.keda.ocr.cooldownPeriod }}
@@ -49,7 +49,7 @@ spec:
   {{- end }}
   fallback:
     failureThreshold: 3
-    replicas: 1
+    replicas: {{ include "octoconv.kedaFallbackReplicas" (dict "class" "ocr" "root" $) }}
   triggers:
     - type: prometheus
       metadata:
