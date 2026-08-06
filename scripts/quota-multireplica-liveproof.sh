@@ -668,8 +668,8 @@ assess_round() {
 			exit 1
 		}
 
-		local idx request_id send_ts recv_ts status code job_id serving_pod
-		IFS=$'\t' read -r idx request_id send_ts recv_ts status <"$rec"
+		local request_id send_ts recv_ts status code job_id serving_pod
+		IFS=$'\t' read -r _ request_id send_ts recv_ts status <"$rec"
 		code=$(grep -o '"code":"[^"]*"' "$body" 2>/dev/null | head -1 | cut -d'"' -f4 || true)
 
 		# 1. CLASSIFY -- switch on "$status:$code", never bare status: both
