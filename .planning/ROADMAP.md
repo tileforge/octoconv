@@ -340,7 +340,12 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
+**Wave 1**
+
 - [ ] 54-01-PLAN.md — Values-driven minReplicaCount + floor-derived fallback.replicas via a validating `_helpers.tpl` define, wired into all 7 ScaledObjects (SC1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 54-02-PLAN.md — `values-capacity-floor.yaml` example override + a `helm` CI job proving per-class isolation, clean render, and that the D-02 validation fires (SC2/SC3)
 
 ### Phase 55: Live Gate — Multi-Replica Quota Correctness
