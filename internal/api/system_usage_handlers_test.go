@@ -605,7 +605,12 @@ func TestSystemUsage_UsedTerminalAndInFlightReportedSeparately(t *testing.T) {
 		TerminalJobCount: 10, TerminalBytesIn: 1000, TerminalBytesOut: 9000000,
 		InFlightJobCount: 3, InFlightBytesIn: 500,
 	}}}
-	limits := &fakeLimitsRepo{}
+	// A real ListAllLimits always carries a metadata entry for any client
+	// with usage (WR-02 fix, Task 1) — an all-empty limits fake would now
+	// make this usage row's metadata lookup miss and skip the row entirely.
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: clientID, ClientName: "usage-only-co", EnforcementMode: "observe", Engine: nil},
+	}}
 	srv := newOperatorUsageTestServer(usage, limits)
 
 	rec := httptest.NewRecorder()
@@ -809,7 +814,14 @@ func TestSystemUsage_SortedByConsumptionDescending(t *testing.T) {
 		{ClientID: high, Engine: "video", TerminalBytesIn: 5000},
 		{ClientID: high, Engine: "audio", TerminalBytesIn: 5000},
 	}}
-	limits := &fakeLimitsRepo{}
+	// A real ListAllLimits always carries a metadata entry for any client
+	// with usage (WR-02 fix, Task 1) — an all-empty limits fake would now
+	// make every usage row's metadata lookup miss and skip all six rows.
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: low, ClientName: "low-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: mid, ClientName: "mid-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: high, ClientName: "high-co", EnforcementMode: "observe", Engine: nil},
+	}}
 	srv := newOperatorUsageTestServer(usage, limits)
 
 	rec := httptest.NewRecorder()
@@ -1106,6 +1118,87 @@ func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
 	}
 	if usage.todayCalls != 0 {
 		t.Errorf("SC3 regression: a non-operator must not cause any DB work, including UTCToday; usage.todayCalls=%d", usage.todayCalls)
+	}
+}
+
+// TestSystemUsage_UsageRowWithoutClientMetadataIsSkipped (53-REVIEW-GAPS.md
+// WR-02): UsageSummary and ListAllLimits run as two unsynchronized reads
+// (system_usage_handlers.go:202,208) — a client deleted between them yields
+// a usage key with no meta entry. The handler must skip that row rather
+// than emit enforcement_mode:"", which would violate the OpenAPI
+// enum:[observe, enforce]+required contract. Client A has usage AND
+// metadata; client B has usage but no metadata (simulating the
+// vanished-between-reads case) — only A's row must appear.
+func TestSystemUsage_UsageRowWithoutClientMetadataIsSkipped(t *testing.T) {
+	clientA := uuid.New()
+	clientB := uuid.New()
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: clientA, Engine: "image", TerminalJobCount: 1, TerminalBytesIn: 100},
+		{ClientID: clientB, Engine: "image", TerminalJobCount: 2, TerminalBytesIn: 200},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: clientA, ClientName: "acme", EnforcementMode: "enforce", Engine: strPtr("image")},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("WR-02: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) != 1 {
+		t.Fatalf("WR-02: usage rows = %d, want exactly 1 (B's metadata-less row must be skipped); body=%s", len(resp.Usage), rec.Body.String())
+	}
+	if resp.Usage[0].ClientID != clientA {
+		t.Errorf("WR-02: surviving row client_id = %s, want %s (A, the one with metadata)", resp.Usage[0].ClientID, clientA)
+	}
+	for _, row := range resp.Usage {
+		if row.EnforcementMode == "" {
+			t.Errorf("WR-02: no row may have an empty enforcement_mode, got row for client %s", row.ClientID)
+		}
+	}
+}
+
+// TestSystemUsage_EnforcementModeNeverOutsideEnum sweeps every row of a
+// richer fixture (idle-unlimited, limits-but-no-usage, usage-but-no-limits,
+// both) and fails if any enforcement_mode falls outside {observe, enforce}
+// — the exact enum docs/openapi.yaml declares required.
+func TestSystemUsage_EnforcementModeNeverOutsideEnum(t *testing.T) {
+	busy := uuid.New()
+	idle := uuid.New()
+	limitedOnly := uuid.New()
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: busy, Engine: "image", TerminalJobCount: 5, TerminalBytesIn: 500},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: busy, ClientName: "busy-co", EnforcementMode: "enforce", Engine: strPtr("image")},
+		{ClientID: idle, ClientName: "idle-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: limitedOnly, ClientName: "limited-co", EnforcementMode: "enforce", Engine: strPtr("document"), MaxDailyJobs: int64Ptr(10)},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) == 0 {
+		t.Fatalf("expected at least one row; body=%s", rec.Body.String())
+	}
+	for _, row := range resp.Usage {
+		if row.EnforcementMode != "observe" && row.EnforcementMode != "enforce" {
+			t.Errorf("row for client %s has enforcement_mode=%q, want one of {observe, enforce}", row.ClientID, row.EnforcementMode)
+		}
 	}
 }
 
