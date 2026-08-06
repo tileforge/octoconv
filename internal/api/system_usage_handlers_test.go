@@ -1202,6 +1202,103 @@ func TestSystemUsage_EnforcementModeNeverOutsideEnum(t *testing.T) {
 	}
 }
 
+// TestSystemUsage_EnforcedIsPerRowNotResponseLevel (53-REVIEW-GAPS.md
+// WR-01): the response-level remaining_matches_admission_gate states only
+// that the response-level preconditions hold; each row's own `enforced`
+// carries whether THAT row is actually enforced. An observe-mode row must
+// have enforced:false even while remaining_matches_admission_gate is true.
+func TestSystemUsage_EnforcedIsPerRowNotResponseLevel(t *testing.T) {
+	observeClient := uuid.New()
+	enforceClient := uuid.New()
+	newFixture := func() (*fakeUsageRepo, *fakeLimitsRepo) {
+		return &fakeUsageRepo{}, &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+			{ClientID: observeClient, ClientName: "observe-co", EnforcementMode: "observe", Engine: nil},
+			{ClientID: enforceClient, ClientName: "enforce-co", EnforcementMode: "enforce", Engine: nil},
+		}}
+	}
+
+	// rowEnforced decodes the raw JSON into a map so a field that is
+	// OMITTED (rather than present-and-false) fails the assertion — a
+	// *bool would silently default to nil/false either way.
+	rowEnforced := func(t *testing.T, body []byte, clientID uuid.UUID) any {
+		t.Helper()
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode raw response: %v", err)
+		}
+		for _, r := range raw["usage"].([]any) {
+			rowMap := r.(map[string]any)
+			if rowMap["client_id"] == clientID.String() {
+				v, present := rowMap["enforced"]
+				if !present {
+					t.Fatalf("row for client %s has no \"enforced\" key at all (must never be omitted); row=%v", clientID, rowMap)
+				}
+				return v
+			}
+		}
+		t.Fatalf("no row found for client %s; body=%s", clientID, body)
+		return nil
+	}
+
+	t.Run("default server: kill-switch off, period=today", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServer(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest(""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp systemUsageResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !resp.RemainingMatchesAdmissionGate {
+			t.Fatalf("WR-01: remaining_matches_admission_gate = false, want true")
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: observe-mode row's enforced = %v, want false even while remaining_matches_admission_gate is true", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != true {
+			t.Errorf("WR-01: enforce-mode row's enforced = %v, want true", v)
+		}
+	})
+
+	t.Run("kill-switch on: every row enforced false", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServerQuotaDisabled(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest(""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: kill-switch on, observe row enforced = %v, want false", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != false {
+			t.Errorf("WR-01: kill-switch on, enforce row enforced = %v, want false", v)
+		}
+	})
+
+	t.Run("period=7d: every row enforced false", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServer(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest("period=7d"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: period=7d, observe row enforced = %v, want false", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != false {
+			t.Errorf("WR-01: period=7d, enforce row enforced = %v, want false", v)
+		}
+	})
+}
+
 // TestSystemUsage_EmptyResultMarshalsAsEmptyArray: both fakes return no
 // rows; the raw body must contain "usage":[] and never "usage":null.
 func TestSystemUsage_EmptyResultMarshalsAsEmptyArray(t *testing.T) {
