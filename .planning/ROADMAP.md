@@ -373,7 +373,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 55-06-PLAN.md — gap closure after the FAILED live calibration (host->ClusterIP is unreachable on OrbStack, RESEARCH.md assumption A1 disproven): relocate the FIFO-barrier burst driver into a throwaway in-namespace pod per RESEARCH.md's Pattern 1 fallback, with no assertion weakened
+- [x] 55-06-PLAN.md — gap closure after the FAILED live calibration (host->ClusterIP is unreachable on OrbStack, RESEARCH.md assumption A1 disproven): relocate the FIFO-barrier burst driver into a throwaway in-namespace pod per RESEARCH.md's Pattern 1 fallback, with no assertion weakened
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -439,7 +439,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 4/5 | In Progress|  |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 5/6 | In Progress|  |
 
 ---
 
