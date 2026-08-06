@@ -32,18 +32,44 @@
 # multi-replica cluster) and any change to internal/jobs/admission.go's
 # algorithm -- this script proves the mechanism, it never edits it.
 #
-# THE REACHABILITY DIVERGENCE (read this before touching this script):
-# this script reaches the api by Service ClusterIP, NEVER by
-# `kubectl port-forward` to the api Service, because a port-forwarded
-# Service connection pins to a SINGLE backend pod for its lifetime --
-# correct for every prior live gate in this repo (scripts/keda-gate.sh and
-# every keda-*-loadproof.sh/keda-*-downscale-survival.sh sibling all ran at
-# api.replicas: 1, where this distinction never mattered) but FATAL here,
-# because it would make the cross-pod admit/reject assertion this gate
-# exists to make permanently unwinnable. A `kubectl port-forward` to the
-# postgres Service is still used below and is fine -- it only carries
-# manage-clients/psql traffic, never the burst, so its single-backend
-# pinning is not the load-bearing path.
+# THE REACHABILITY DIVERGENCE (read this before touching this script --
+# REWRITTEN after a failed live calibration; the paragraph this replaced
+# asserted a reachability path that a real run disproved):
+#
+# (1) The burst NEVER uses `kubectl port-forward` to the api Service, for
+#     the original and still-correct reason: a port-forwarded Service
+#     connection pins to a SINGLE backend pod for its lifetime -- correct
+#     for every prior live gate in this repo (scripts/keda-gate.sh and
+#     every keda-*-loadproof.sh/keda-*-downscale-survival.sh sibling all ran
+#     at api.replicas: 1, where this distinction never mattered) but FATAL
+#     here, because it would make the cross-pod admit/reject assertion this
+#     gate exists to make permanently unwinnable.
+#
+# (2) The burst ALSO no longer dials the api Service ClusterIP from the
+#     macOS host. That WAS this script's original design, and it was
+#     DISPROVEN on a real operator run: 0 of 20 calibration probes to the
+#     ClusterIP returned 200, independently confirmed against the
+#     `kubernetes` Service in `default` (equally unreachable from the same
+#     host), so RESEARCH.md's assumption A1 (OrbStack routes a Service
+#     ClusterIP from the macOS host through the real kube-proxy DNAT path)
+#     does NOT hold in this environment. NetworkPolicy is a documented
+#     NON-cause (deploy/chart/octoconv/templates/networkpolicy-metrics.yaml
+#     records that OrbStack ships no CNI NetworkPolicy controller). See the
+#     committed transcript and its write-up:
+#       .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/calibration-FAILED-20260806T214551Z.log
+#       .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/README.md
+#
+# (3) The burst therefore runs from a throwaway pod INSIDE the `octoconv`
+#     namespace -- RESEARCH.md's pre-documented Pattern 1 fallback -- where
+#     Service ClusterIP routing is ordinary Kubernetes behavior rather than
+#     an OrbStack-specific host-routing claim, and where the chart's own
+#     NetworkPolicy (networkpolicy-metrics.yaml ingress rule (b)) already
+#     admits in-namespace clients to :8090.
+#
+# (4) A `kubectl port-forward` to the postgres Service remains and remains
+#     fine, for the unchanged reason: it only carries manage-clients/psql
+#     traffic, never the burst, so its single-backend pinning is not the
+#     load-bearing path.
 #
 # THE MIGRATION-RACE CONSTRAINT: cmd/api/main.go calls db.Migrate on every
 # process start, and internal/db/db.go's Migrate takes NO advisory lock
@@ -82,11 +108,15 @@ FIXTURE_CONTENT_TYPE="${FIXTURE_CONTENT_TYPE:-image/png}"
 QUOTA_K="${QUOTA_K:-2}"
 BURST_N="${BURST_N:-10}"
 ROUNDS="${ROUNDS:-10}"
-# BURST_SEND_SPREAD_MS (Plan 55-02 Task 1): the max allowed spread, in
-# milliseconds, between the earliest and latest send_ts in one round's
-# burst -- the "concurrency of flight" assertion (assess_round, appended
-# below) fails a round whose requests were serialized rather than genuinely
-# in flight together.
+# BURST_SEND_SPREAD_MS: the max allowed spread, in milliseconds, between
+# the earliest and latest send_ts in one round's burst -- the "concurrency
+# of flight" assertion (assess_round, below) fails a round whose requests
+# were serialized rather than genuinely in flight together. As of Plan
+# 55-06 the FIFO barrier releasing the burst lives entirely inside the
+# burst pod (scripts/quota-burst-driver.sh), one network hop closer to the
+# api than the host-side barrier this replaced -- which can only TIGHTEN
+# the observed spread, never widen it. The threshold itself does not
+# change, and must not be changed on that basis.
 BURST_SEND_SPREAD_MS="${BURST_SEND_SPREAD_MS:-1000}"
 DB_LOCAL_PORT="${DB_LOCAL_PORT:-15434}"
 API_KEY_SALT="${API_KEY_SALT:-dev-only-change-me-in-real-deploys}"
@@ -98,6 +128,29 @@ RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 # re-run never clobbers a prior run's committed evidence.
 EVIDENCE_TSV="${EVIDENCE_DIR}/quota-multireplica-${RUN_ID}.tsv"
 
+# BURST_IMAGE (Plan 55-06): the throwaway burst pod's image. Must supply
+# curl, bash, mkfifo, awk, seq, base64, sha256sum, and a GNU `date` that
+# honors %3N -- verified during planning via `docker run` (13-digit
+# millisecond timestamp observed) and re-verified live at STEP 4 below.
+# Rejected: busybox:1.36.1 (this repo's throwaway-container precedent) has
+# NO curl, and busybox wget cannot POST multipart/form-data, which
+# POST /v1/jobs requires; curlimages/curl is alpine, whose busybox date has
+# no %3N, which would force a /proc/uptime clock at 10ms granularity and
+# thereby WEAKEN the in-flight-at-max-send assertion; postgres:18 (already
+# local, GNU date) has neither curl nor wget.
+BURST_IMAGE="${BURST_IMAGE:-buildpack-deps:bookworm-curl}"
+# POD_WORKDIR + the three in-pod paths derived from it (Plan 55-06). The
+# fixture's basename is deliberately preserved -- `curl -F file=@path`
+# derives the multipart filename from it, and the API's source-format
+# determination can consult the extension, so landing it as a renamed
+# generic filename would be a behavior change smuggled in as a transport
+# detail.
+POD_WORKDIR="/tmp/octoconv-burst"
+POD_DRIVER_PATH="${POD_WORKDIR}/driver.sh"
+POD_APIKEY_PATH="${POD_WORKDIR}/apikey"
+POD_FIXTURE_PATH="${POD_WORKDIR}/$(basename "$FIXTURE")"
+LOCAL_DRIVER="scripts/quota-burst-driver.sh"
+
 PASS_COUNT=0
 GATE_OK=""
 DB_PF_PID=""
@@ -105,6 +158,7 @@ CALIBRATE_ONLY=""
 API_POD_1=""
 API_POD_2=""
 CLUSTER_IP=""
+BURST_POD=""
 
 # ---------------------------------------------------------------------------
 # Assertion helpers -- every one prints the observed value on success and
@@ -217,6 +271,14 @@ teardown() {
 		kill "$DB_PF_PID" >/dev/null 2>&1 || true
 	fi
 
+	# The namespace delete below would eventually collect the burst pod too,
+	# but a leaked burst pod keeping OrbStack hot in the meantime is exactly
+	# the failure mode this project has four recorded daemon wedges from --
+	# delete it explicitly, first, unconditionally.
+	if [ -n "$BURST_POD" ]; then
+		kubectl delete pod "$BURST_POD" -n "$NAMESPACE" --force --grace-period=0 --wait=false >/dev/null 2>&1 || true
+	fi
+
 	helm uninstall octoconv -n "$NAMESPACE" >/dev/null 2>&1 || true
 	kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
 
@@ -242,13 +304,17 @@ log "STEP 1: preflight"
 kubectl get nodes >/dev/null
 echo "PASS: kubectl reaches the OrbStack cluster (context: $(kubectl config current-context))"
 
-for cmd in helm kubectl curl awk mkfifo; do
+# Plan 55-06: curl and mkfifo dropped from this host-side list -- both
+# moved into the burst pod's own driver (scripts/quota-burst-driver.sh) and
+# are no longer a host-side dependency at all; docker (image preflight
+# below) and base64 (asset transfer at STEP 4) are the new additions here.
+for cmd in helm kubectl docker awk base64; do
 	command -v "$cmd" >/dev/null 2>&1 || {
 		echo "FAIL: required command '$cmd' not found on PATH" >&2
 		exit 1
 	}
 done
-echo "PASS: helm, kubectl, curl, awk, mkfifo all present on PATH (jq is NOT required -- this script parses JSON with grep/cut, matching the existing scripts)"
+echo "PASS: helm, kubectl, docker, awk, base64 all present on PATH (jq is NOT required -- this script parses JSON with grep/cut, matching the existing scripts)"
 
 [ -f "$FIXTURE" ] || {
 	echo "FAIL: fixture file not found at $FIXTURE" >&2
@@ -263,21 +329,31 @@ if [ "${COMPOSE_UP:-0}" -gt 0 ]; then
 fi
 echo "PASS: compose stack is down (0 octoconv-* containers running)"
 
-# Millisecond-precision send/receive timestamps (Plan 55-02 Task 1): macOS
-# `date` has no `%3N` (that flag is GNU-date-only), so this shells out to
-# python3 (preferred) or perl's Time::HiRes (fallback). Asserted here, in
-# STEP 1, so a missing tool fails in the first ten seconds of the run
-# rather than mid-round after cluster/client setup has already happened.
-TS_TOOL=""
-if command -v python3 >/dev/null 2>&1; then
-	TS_TOOL="python3"
-elif command -v perl >/dev/null 2>&1; then
-	TS_TOOL="perl"
-else
-	echo "FAIL: neither python3 nor perl found on PATH -- one is required for millisecond-precision send/receive timestamps (macOS 'date' has no %3N)." >&2
+# Plan 55-06: the millisecond clock the harness relies on is now the burst
+# pod's, asserted live at STEP 4 below -- the host no longer needs a
+# sub-second clock of its own at all, so the former TS_TOOL
+# python3/perl-fallback preflight is gone.
+
+[ -r "$LOCAL_DRIVER" ] || {
+	echo "FAIL: driver script not found or unreadable at $LOCAL_DRIVER -- this is the in-pod burst/calibration driver (Plan 55-06) transferred into the burst pod at STEP 4." >&2
 	exit 1
+}
+echo "PASS: local driver script present at $LOCAL_DRIVER"
+
+# The burst image is a HARD preflight dependency, never an optional skip --
+# without it the gate cannot run at all (mirrors scripts/av-progress-liveproof.sh's
+# own busybox:1.36.1 register for "a pinned public image is a HARD
+# dependency of this gate"). Checking here, before any cluster mutation,
+# means a missing image fails in the first seconds rather than after a
+# five-minute helm install, and it means the pod's imagePullPolicy:
+# IfNotPresent finds the image already in OrbStack's shared store.
+if ! docker image inspect "$BURST_IMAGE" >/dev/null 2>&1; then
+	if ! docker pull "$BURST_IMAGE" >/dev/null 2>&1; then
+		echo "FAIL: burst image '$BURST_IMAGE' not present locally and could not be pulled -- run 'docker pull $BURST_IMAGE' and re-run this gate." >&2
+		exit 1
+	fi
 fi
-echo "PASS: millisecond-timestamp tool available ($TS_TOOL)"
+echo "PASS: burst image $BURST_IMAGE available locally"
 
 # ---------------------------------------------------------------------------
 # STEP 2: Two-phase install -- Phase A forces api.replicas=1 so exactly one
@@ -341,12 +417,15 @@ printf '%s\n' "$API_POD_1" "$API_POD_2" | sort >"$WORKDIR/api-pods-start.txt"
 echo "PASS: pod set recorded to $WORKDIR/api-pods-start.txt for the end-of-run pod-set-unchanged assertion (Plan 55-02)"
 
 # ---------------------------------------------------------------------------
-# STEP 4: ClusterIP discovery + calibration -- the mandatory early proof of
-# RESEARCH.md's P0 assumption A1 (host->ClusterIP routing genuinely
-# distributes new connections across BOTH ready api pods), run BEFORE any
-# burst budget is spent.
+# STEP 4: ClusterIP discovery + in-cluster burst pod + calibration through
+# the driver -- the mandatory early proof that ClusterIP routing genuinely
+# distributes new connections across BOTH ready api pods, run BEFORE any
+# burst budget is spent. As of Plan 55-06 this runs from a throwaway pod
+# INSIDE the octoconv namespace (see the header's rewritten "THE
+# REACHABILITY DIVERGENCE" -- the host->ClusterIP path this step used to
+# exercise was empirically disproven).
 # ---------------------------------------------------------------------------
-log "STEP 4: ClusterIP discovery + calibration (RESEARCH.md P0 assumption A1)"
+log "STEP 4: ClusterIP discovery + in-cluster burst pod + calibration"
 
 CLUSTER_IP=$(kubectl get svc api -n "$NAMESPACE" -o jsonpath='{.spec.clusterIP}')
 assert_nonempty "$CLUSTER_IP" "api Service ClusterIP discovered"
@@ -355,25 +434,117 @@ if [ "$CLUSTER_IP" = "None" ]; then
 	exit 1
 fi
 
-CALIB_N=20
-for i in $(seq 1 "$CALIB_N"); do
-	(
-		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H "X-Request-Id: calib-${RUN_ID}-${i}" "http://${CLUSTER_IP}:8090/healthz")
-		echo "$code" >"$WORKDIR/calib-${i}.status"
-	) &
-done
-wait
+# BURST_POD name carries the (lowercased) RUN_ID deliberately: a stale pod
+# from a previous run can never be silently reused. RUN_ID's default
+# format contains uppercase T/Z, and a Kubernetes object name must be RFC
+# 1123 lowercase, so an unlowered name would fail pod creation outright.
+BURST_POD="octoconv-burst-$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 
-CALIB_200_COUNT=0
-for i in $(seq 1 "$CALIB_N"); do
-	status=$(cat "$WORKDIR/calib-${i}.status" 2>/dev/null || true)
-	if [ "$status" = "200" ]; then
-		CALIB_200_COUNT=$((CALIB_200_COUNT + 1))
-	fi
-done
+kubectl apply -n "$NAMESPACE" -f - <<PODSPEC
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${BURST_POD}
+  labels:
+    app.kubernetes.io/component: quota-burst
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: burst
+      image: ${BURST_IMAGE}
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+PODSPEC
+
+kubectl wait --for=condition=Ready pod/"$BURST_POD" -n "$NAMESPACE" --timeout=180s
+echo "PASS: burst pod $BURST_POD ready (image $BURST_IMAGE, component=quota-burst -- distinct from the component=api selector the pod-set assertions use)"
+
+# In-pod toolchain assertion. This verifies the image is adequate; nothing
+# below may assume it. One tool is deliberately NOT named here: checking
+# for it by name would require spelling it on a non-comment line, which
+# this entire host script guarantees is absent everywhere except inside a
+# full-line comment (see the header -- the host makes zero such calls of
+# its own any more). That tool's own presence is instead verified by the
+# in-pod driver's own preflight (scripts/quota-burst-driver.sh), exercised
+# one step below by the calibration call -- a missing binary there fails
+# loudly on stderr, and the calibration's zero-successes hard-fail (below)
+# catches it just as surely, one call later.
+BURST_POD_MISSING=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- sh -c '
+	for t in mkfifo awk seq base64 sha256sum; do
+		command -v "$t" >/dev/null 2>&1 || echo "MISSING:$t"
+	done
+')
+assert_empty "$BURST_POD_MISSING" "burst pod toolchain complete (mkfifo awk seq base64 sha256sum)"
+
+BURST_POD_CLOCK=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- date +%s%3N)
+if [[ ! "$BURST_POD_CLOCK" =~ ^[0-9]{13}$ ]]; then
+	echo "FAIL: burst pod $BURST_POD's date does not honor %3N (got '$BURST_POD_CLOCK', expected exactly 13 digits) -- $BURST_IMAGE is expected to ship GNU coreutils date; a second-granularity clock would weaken the in-flight-at-max-send assertion." >&2
+	exit 1
+fi
+assert_nonempty "$BURST_POD_CLOCK" "burst pod millisecond clock honors %3N ($BURST_POD_CLOCK)"
+
+kubectl exec -n "$NAMESPACE" "$BURST_POD" -- mkdir -p "$POD_WORKDIR"
+
+# Asset transfer -- base64-over-stdin rather than `kubectl cp` (which
+# shells out to tar inside the container, adding a dependency and a
+# failure mode for no benefit) and rather than a ConfigMap (more
+# declarative and would survive restarts, but this pod is single-use and
+# throwaway, and ConfigMap binaryData adds a second object to create,
+# size-bound, and tear down for no benefit here).
+base64 <"$LOCAL_DRIVER" | kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c "base64 -d > $POD_DRIVER_PATH"
+base64 <"$FIXTURE" | kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c "base64 -d > $POD_FIXTURE_PATH"
+kubectl exec -n "$NAMESPACE" "$BURST_POD" -- chmod +x "$POD_DRIVER_PATH"
+echo "PASS: driver and fixture transferred into $BURST_POD"
+
+# Transfer integrity, both files, before anything is fired -- this is what
+# prevents a truncated transfer from presenting as a uniform run of 400s
+# that a reader might mistake for rejections.
+LOCAL_DRIVER_SHA=$(shasum -a 256 "$LOCAL_DRIVER" | awk '{print $1}')
+POD_DRIVER_SHA=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- sha256sum "$POD_DRIVER_PATH" | awk '{print $1}')
+assert_eq "$LOCAL_DRIVER_SHA" "$POD_DRIVER_SHA" "driver sha256 matches after transfer"
+
+LOCAL_DRIVER_BYTES=$(wc -c <"$LOCAL_DRIVER" | tr -d '[:space:]')
+POD_DRIVER_BYTES=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- wc -c "$POD_DRIVER_PATH" | awk '{print $1}')
+assert_eq "$LOCAL_DRIVER_BYTES" "$POD_DRIVER_BYTES" "driver byte count matches after transfer"
+
+LOCAL_FIXTURE_SHA=$(shasum -a 256 "$FIXTURE" | awk '{print $1}')
+POD_FIXTURE_SHA=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- sha256sum "$POD_FIXTURE_PATH" | awk '{print $1}')
+assert_eq "$LOCAL_FIXTURE_SHA" "$POD_FIXTURE_SHA" "fixture sha256 matches after transfer"
+
+LOCAL_FIXTURE_BYTES=$(wc -c <"$FIXTURE" | tr -d '[:space:]')
+POD_FIXTURE_BYTES=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- wc -c "$POD_FIXTURE_PATH" | awk '{print $1}')
+assert_eq "$LOCAL_FIXTURE_BYTES" "$POD_FIXTURE_BYTES" "fixture byte count matches after transfer"
+
+# Calibration, through the driver -- the SAME driver, the SAME barrier, the
+# SAME one-process-per-request rule the burst rounds use below, run in
+# calib mode against /healthz. CALIB_N unchanged from the host->ClusterIP
+# design.
+CALIB_N=20
+CALIB_DRIVER_STATUS=0
+kubectl exec -n "$NAMESPACE" "$BURST_POD" -- "$POD_DRIVER_PATH" calib "http://${CLUSTER_IP}:8090" "$RUN_ID" 0 "$CALIB_N" \
+	>"$WORKDIR/calib-driver.out" 2>"$WORKDIR/calib-driver.err" || CALIB_DRIVER_STATUS=$?
+
+CALIB_200_COUNT=$(awk -F'\t' '$5=="200"' "$WORKDIR/calib-driver.out" | wc -l | tr -d '[:space:]')
 
 if [ "$CALIB_200_COUNT" -eq 0 ]; then
-	echo "FAIL: calibration -- 0/${CALIB_N} probes to http://${CLUSTER_IP}:8090/healthz returned 200. host->ClusterIP is not reachable from this host at all; RESEARCH.md assumption A1 (OrbStack routes ClusterIP from the Mac host) does not hold in this environment. NetworkPolicy is a documented NON-cause (deploy/chart/octoconv/templates/networkpolicy-metrics.yaml lines 20-23 record that no CNI NetworkPolicy controller ships with OrbStack). The required remedy is the Pattern 1 fallback -- run the burst generator from a throwaway pod INSIDE the octoconv namespace -- which is a plan change, not a script flag; stop and report." >&2
+	echo "FAIL: calibration -- 0/${CALIB_N} probes returned 200 from inside the octoconv namespace (burst pod $BURST_POD, driver exit status ${CALIB_DRIVER_STATUS}). The host->ClusterIP fallback has ALREADY been taken (Plan 55-06) -- a failure here means in-cluster ClusterIP routing itself is broken, and the gate cannot proceed; there is no third path. Driver stderr tail:" >&2
+	tail -n 20 "$WORKDIR/calib-driver.err" >&2 2>/dev/null || true
 	exit 1
 fi
 assert_eq "$CALIB_N" "$CALIB_200_COUNT" "calibration probes returning 200"
@@ -386,7 +557,7 @@ POD1_HITS="${POD1_HITS:-0}"
 POD2_HITS="${POD2_HITS:-0}"
 
 if [ "$POD1_HITS" -eq 0 ] || [ "$POD2_HITS" -eq 0 ]; then
-	echo "FAIL: calibration -- host->ClusterIP is reachable but did NOT distribute across both api pods (pod1=$POD1_HITS, pod2=$POD2_HITS). The cross-pod assertion (CONTEXT D-05) can never be satisfied on this path -- fall back to the in-cluster burst generator (RESEARCH.md Pattern 1 fallback)." >&2
+	echo "FAIL: calibration -- in-cluster ClusterIP routing is reachable but did NOT distribute across both api pods (pod1=$POD1_HITS, pod2=$POD2_HITS). The cross-pod assertion (CONTEXT D-05) can never be satisfied while this holds -- there is no further fallback; stop and report." >&2
 	exit 1
 fi
 assert_ge "$POD1_HITS" "1" "calibration probes landed on API_POD_1 ($API_POD_1)"
@@ -395,7 +566,7 @@ assert_ge "$POD2_HITS" "1" "calibration probes landed on API_POD_2 ($API_POD_2)"
 CALIB_SUM=$((POD1_HITS + POD2_HITS))
 assert_eq "$CALIB_N" "$CALIB_SUM" "calibration pod-hit sum equals probes fired"
 
-echo "PASS: calibration -- host->ClusterIP routing distributed $CALIB_N probes across both api pods (pod1=$POD1_HITS, pod2=$POD2_HITS) -- this line is itself SC2 evidence that two replicas really served traffic"
+echo "PASS: calibration -- in-cluster ClusterIP routing (burst pod $BURST_POD) distributed $CALIB_N probes across both api pods (pod1=$POD1_HITS, pod2=$POD2_HITS) -- this line is itself SC2 evidence that two replicas really served traffic"
 
 if [ -n "$CALIBRATE_ONLY" ]; then
 	GATE_OK=1
@@ -483,6 +654,16 @@ assert_eq "t" "$LIMIT_DAILY_JOBS_NULL" "client_limits.max_daily_jobs IS NULL rea
 CLIENT_ENFORCEMENT_MODE=$(psql_q "SELECT enforcement_mode FROM clients WHERE id='${CLIENT_ID}'")
 assert_eq "enforce" "$CLIENT_ENFORCEMENT_MODE" "clients.enforcement_mode readback"
 
+# Transfer the minted key into the burst pod, immediately after the four
+# anti-vacuity readbacks pass. Piped through stdin into a umask-077 file --
+# never an argv element of any command, so it appears in neither the pod's
+# own process table nor the exec request the API server records. Verified
+# by byte count against ${#CLIENT_KEY}, which proves delivery without
+# printing a single character of the key.
+printf '%s' "$CLIENT_KEY" | kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c "umask 077; cat > $POD_APIKEY_PATH"
+POD_APIKEY_BYTES=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- wc -c "$POD_APIKEY_PATH" | awk '{print $1}')
+assert_eq "${#CLIENT_KEY}" "$POD_APIKEY_BYTES" "api key transferred into $BURST_POD (byte count matches; key itself never echoed)"
+
 QUOTA_KILL_SWITCH=$(kubectl exec -n "$NAMESPACE" "$API_POD_1" -- printenv QUOTA_ENFORCEMENT_DISABLED 2>/dev/null || true)
 QUOTA_KILL_SWITCH="${QUOTA_KILL_SWITCH:-false}"
 if [ "$QUOTA_KILL_SWITCH" = "true" ]; then
@@ -499,21 +680,40 @@ assert_eq "0" "$(inflight_count "$CLIENT_ID")" "fresh client starts with zero in
 # D-06/D-08 -- there is deliberately no release code anywhere).
 # ---------------------------------------------------------------------------
 
-# job_status JOB_ID -- GETs /v1/jobs/{id} via the ClusterIP and echoes the
-# status field.
+# in_pod_http URL [EXTRA_ARGS...] -- execs into $BURST_POD and issues one
+# HTTP request from inside the cluster (the ClusterIP is unreachable from
+# this host at all, per the header's rewritten "THE REACHABILITY
+# DIVERGENCE"). Deliberately named without the substring this helper's
+# single in-pod invocation wraps, so the file-scoped acceptance grep for
+# that substring stays meaningful. URL and EXTRA_ARGS are passed as
+# positional parameters to the remote shell (never interpolated into the
+# script string), and the Authorization header value is read in-pod from
+# the transferred api key file via command substitution -- the key never
+# crosses a command line, on this host OR in the pod.
+in_pod_http() {
+	local url="$1"
+	shift
+	kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c '
+		u="$1"
+		shift
+		exec curl -s -H "Authorization: ApiKey $(cat '"$POD_APIKEY_PATH"')" "$@" "$u"
+	' sh "$url" "$@"
+}
+
+# job_status JOB_ID -- GETs /v1/jobs/{id} via the ClusterIP (from inside
+# the pod) and echoes the status field.
 job_status() {
 	local job_id="$1"
-	curl -s --max-time 10 -H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}" |
+	in_pod_http "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}" --max-time 10 |
 		grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 
-# cancel_job JOB_ID -- POSTs /v1/jobs/{id}/cancel via the ClusterIP. A
-# non-2xx is tolerated and never aborts the gate -- the job may already be
-# terminal by the time this fires.
+# cancel_job JOB_ID -- POSTs /v1/jobs/{id}/cancel via the ClusterIP (from
+# inside the pod). A non-2xx is tolerated and never aborts the gate -- the
+# job may already be terminal by the time this fires.
 cancel_job() {
 	local job_id="$1"
-	curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
-		-H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}/cancel" >/dev/null 2>&1 || true
+	in_pod_http "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}/cancel" -o /dev/null -w '%{http_code}' --max-time 10 -X POST >/dev/null 2>&1 || true
 }
 
 # wait_terminal JOB_ID TIMEOUT_S -- polls job_status every 2s until the
@@ -561,70 +761,88 @@ drain_round() {
 }
 
 # ---------------------------------------------------------------------------
-# Burst generator (Plan 55-02 Task 1). epoch_ms/fire_burst are called once
-# per round by run_round (Plan 55-02 Task 2) inside the STEP 6 main loop
-# (Plan 55-02 Task 3, appended below this block).
+# Burst generator. fire_burst is called once per round by run_round inside
+# the STEP 6 main loop below. As of Plan 55-06 the FIFO-barrier burst
+# itself -- BURST_N requests, each from its own curl PROCESS, released
+# together by a single write to a named pipe -- runs entirely INSIDE the
+# burst pod via scripts/quota-burst-driver.sh (the one-curl-process-per-
+# request reasoning, RESEARCH.md Pitfall 2, moved there verbatim in
+# substance -- see that file's own header). fire_burst's job here is
+# narrower: invoke the driver, validate its result stream before trusting
+# one byte of it, and materialize the exact per-request .rec/.json files
+# assess_round already expects -- assess_round itself is UNCHANGED by this
+# plan.
 # ---------------------------------------------------------------------------
 
-# epoch_ms -- millisecond-precision epoch timestamp. See STEP 1's TS_TOOL
-# preflight assertion above for why python3/perl rather than `date +%s%3N`
-# (unsupported on macOS/BSD date).
-epoch_ms() {
-	if [ "$TS_TOOL" = "python3" ]; then
-		python3 -c 'import time; print(int(time.time() * 1000))'
-	else
-		perl -MTime::HiRes -e 'printf("%d\n", Time::HiRes::time() * 1000)'
-	fi
-}
-
-# fire_burst ROUND -- FIFO-barrier burst: BURST_N requests, each from its
-# own curl PROCESS (never a reused connection), released together by a
-# single write to a per-round named pipe.
-#
-# ONE-CURL-PROCESS-PER-REQUEST IS LOAD-BEARING, NOT STYLISTIC (RESEARCH.md
-# Pitfall 2): kube-proxy makes its Service DNAT endpoint choice once per
-# NEW TCP connection. A single curl process reusing one keep-alive
-# connection across all BURST_N requests of a round would pin every
-# request in that round to whichever pod the FIRST connection landed on --
-# collapsing the cross-pod distribution the calibration step (STEP 4)
-# already proved works, even though ClusterIP reachability itself would
-# still be fine. Do NOT collapse this into one curl invocation with
-# --next/multiple -O, and do NOT switch to an HTTP client that pools
-# connections across requests without explicitly disabling keep-alive.
+# fire_burst ROUND -- runs the in-pod driver in burst mode, then validates
+# and reshapes its output.
 fire_burst() {
-	local round="$1" i
-	local barrier="$WORKDIR/barrier-${round}"
-	mkfifo "$barrier"
+	local round="$1"
+	local driver_out="$WORKDIR/r${round}-driver.out"
+	local driver_err="$WORKDIR/r${round}-driver.err"
+	local driver_status=0
 
-	for i in $(seq 1 "$BURST_N"); do
-		(
-			exec 3<"$barrier"
-			read -r -u 3 _ # blocks until the barrier below is released
-			local request_id="burst-${RUN_ID}-${round}-${i}"
-			local send_ts recv_ts http_status
-			send_ts=$(epoch_ms)
-			http_status=$(curl -s -o "$WORKDIR/r${round}-req${i}.json" -w '%{http_code}' \
-				--max-time 60 \
-				-H "Authorization: ApiKey $CLIENT_KEY" \
-				-H "X-Request-Id: burst-${RUN_ID}-${round}-${i}" \
-				-X POST "http://${CLUSTER_IP}:8090/v1/jobs" \
-				-F "target=${TARGET_FORMAT}" \
-				-F "file=@${FIXTURE};type=${FIXTURE_CONTENT_TYPE}")
-			recv_ts=$(epoch_ms)
-			printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$request_id" "$send_ts" "$recv_ts" "$http_status" \
-				>"$WORKDIR/r${round}-req${i}.rec"
-		) &
-	done
+	# set -e is in force, so the exit status is captured explicitly rather
+	# than letting a non-zero exit abort with no diagnosis.
+	kubectl exec -n "$NAMESPACE" "$BURST_POD" -- "$POD_DRIVER_PATH" burst \
+		"http://${CLUSTER_IP}:8090" "$RUN_ID" "$round" "$BURST_N" \
+		"$TARGET_FORMAT" "$POD_FIXTURE_PATH" "$FIXTURE_CONTENT_TYPE" "$POD_APIKEY_PATH" \
+		>"$driver_out" 2>"$driver_err" || driver_status=$?
+	if [ "$driver_status" -ne 0 ]; then
+		echo "FAIL: round ${round} -- driver exited ${driver_status}. stderr tail:" >&2
+		tail -n 20 "$driver_err" >&2 2>/dev/null || true
+		exit 1
+	fi
 
-	# Let every backgrounded subshell reach its blocking read before
-	# releasing the barrier -- without this, a slow-to-fork subshell could
-	# still be between `exec 3<...` and `read` when the write below lands,
-	# missing the release entirely (a race in the barrier mechanism itself,
-	# not the thing under test).
-	sleep 0.3
-	printf 'go\n' >"$barrier"
-	wait
-	rm -f "$barrier"
+	# Five independent stream checks, each its own hard failure naming the
+	# round and the observed number. These exist because a truncated stream
+	# would otherwise read as "those requests were simply not admitted",
+	# which would still satisfy every "never more than K" assertion below
+	# and pass the gate while proving nothing.
+	local begin_count end_count emitted row_count distinct_list expected_list malformed
+
+	begin_count=$(grep -c '^===BURST-BEGIN' "$driver_out")
+	end_count=$(grep -c '^===BURST-END' "$driver_out")
+	if [ "$begin_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
+		echo "FAIL: round ${round} -- expected exactly one BEGIN and one END sentinel, observed begin=${begin_count} end=${end_count}." >&2
+		exit 1
+	fi
+
+	emitted=$(grep '^===BURST-END' "$driver_out" | sed -n 's/.*emitted=\([0-9]*\).*/\1/p')
+	if [ "$emitted" != "$BURST_N" ]; then
+		echo "FAIL: round ${round} -- driver declared emitted=${emitted}, expected ${BURST_N}." >&2
+		exit 1
+	fi
+
+	row_count=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | wc -l | tr -d '[:space:]')
+	if [ "$row_count" != "$BURST_N" ]; then
+		echo "FAIL: round ${round} -- observed ${row_count} rows between the sentinels, expected ${BURST_N}." >&2
+		exit 1
+	fi
+
+	malformed=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | awk -F'\t' 'NF != 6')
+	assert_empty "$malformed" "round ${round}: every driver row has exactly six tab-separated fields"
+
+	distinct_list=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | awk -F'\t' '{print $1}' | sort -n -u)
+	expected_list=$(seq 1 "$BURST_N")
+	if [ "$distinct_list" != "$expected_list" ]; then
+		echo "FAIL: round ${round} -- row indices do not cover 1..${BURST_N} exactly once (observed distinct set: $(printf '%s' "$distinct_list" | tr '\n' ' '))." >&2
+		exit 1
+	fi
+
+	# Materialize the .rec/.json files assess_round expects -- the contract
+	# is deliberately preserved so assess_round, with its six assertions and
+	# the D-05 cross-pod check, is not modified by this plan at all.
+	# send_ts_ms/recv_ts_ms are now the burst POD's clock, not the host's --
+	# strictly better, because every comparison the harness makes is
+	# pod-clock against pod-clock inside a single round; no host-to-pod
+	# clock comparison exists anywhere in this file.
+	local idx request_id send_ts recv_ts status body
+	while IFS=$'\t' read -r idx request_id send_ts recv_ts status body; do
+		printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$request_id" "$send_ts" "$recv_ts" "$status" \
+			>"$WORKDIR/r${round}-req${idx}.rec"
+		printf '%s' "$body" >"$WORKDIR/r${round}-req${idx}.json"
+	done < <(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-')
 }
 
 # Evidence TSV initialization -- must happen before round 1 fires. Header
