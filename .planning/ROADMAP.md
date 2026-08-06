@@ -358,8 +358,24 @@ Plans:
   1. With `api.replicas` set to 2 or more, N concurrent job-creation requests from one client whose concurrency cap is `K` result in at most `K` admitted jobs — observed directly on a live run, never more, regardless of which replica handled which request.
   2. The live run's evidence (timestamps, replica identifiers, admitted/rejected counts) is captured and committed, mirroring this project's existing live-gate discipline (KEDA scale-from-zero, downscale-survival), and the phase records explicitly that the quota mechanism — unlike `internal/ratelimit` — does not carry a replicas-count caveat.
 
-**Plans**: TBD
-**Autonomous**: false (operator-gated live proof — requires a real 2+-replica run, cannot be closed by static verification alone)
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 55-01-PLAN.md — `values-multireplica.yaml` gate overlay (api.replicas 2, RATE_LIMIT relaxed, KEDA off) + live-gate harness Part A: two-phase install, ClusterIP-direct reachability, `--calibrate-only` distribution proof, throwaway enforce-mode client, drain helpers
+- [ ] 55-03-PLAN.md — folded todo 1: daily-quota `Retry-After` derived from the Postgres evaluation instant via a typed `DailyQuotaError`, with a midnight-straddle regression test
+- [ ] 55-04-PLAN.md — folded todos 2/3: `/v1/system/usage` skips metadata-less rows instead of emitting an out-of-enum `enforcement_mode`, and gains a per-row `enforced` boolean plus OpenAPI contract
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 55-02-PLAN.md — live-gate harness Part B: FIFO-barrier burst with per-request timestamps, per-round classification by body `code`, pod attribution join, the D-05 cross-pod assertion, ten-round loop and committed evidence TSV
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 55-05-PLAN.md — operator-gated live run (calibration then 10/10 rounds at `api.replicas: 2`), committed evidence, and the SC2 "no `replicas: 1` caveat" counter-statement in `internal/jobs/admission.go`
+
+**Autonomous**: false (Plan 05 is an operator-run live gate — requires a real 2+-replica run, cannot be closed by static verification alone)
 
 ## Progress
 
@@ -419,7 +435,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/5 | Planned | - |
 
 ---
 
