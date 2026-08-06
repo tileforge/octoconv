@@ -125,16 +125,36 @@ jobs:
             echo "FAIL: overlay produced no diff at all -- a no-op overlay must not pass"
             exit 1
           fi
+          # The pattern is ANCHORED to the exact rendered indentation of the two
+          # ScaledObject fields that are legitimately allowed to change
+          # (`  minReplicaCount: N` and `    replicas: N`). An unanchored
+          # substring match on `replicas:` would also match the `replicas:`
+          # field of every Deployment in this chart (api, webhook-worker,
+          # mcp-http, asynqmon, prometheus, ...), so an overlay that rescaled
+          # the API Deployment would silently pass a check whose whole claim is
+          # isolation to ONE ScaledObject.
+          IN_SCOPE_RE='^[<>] (  minReplicaCount: |    replicas: )[0-9]+$'
           # grep -v exits 1 when nothing is left unmatched; guard the count
           # capture against that under set -e/pipefail with an explicit
           # `|| true` fallback rather than letting the pipeline abort.
-          OUT_OF_SCOPE=$(echo "$CHANGED_LINES" | { grep -vE '(minReplicaCount:|replicas:)' || true; } | wc -l | tr -d ' ')
+          OUT_OF_SCOPE=$(echo "$CHANGED_LINES" | { grep -vE "$IN_SCOPE_RE" || true; } | wc -l | tr -d ' ')
           if [ "$OUT_OF_SCOPE" -ne 0 ]; then
-            echo "FAIL: diff touched lines outside minReplicaCount:/replicas:"
-            echo "$CHANGED_LINES" | grep -vE '(minReplicaCount:|replicas:)' || true
+            echo "FAIL: diff touched lines outside the image ScaledObject's minReplicaCount:/replicas: fields"
+            echo "$CHANGED_LINES" | grep -vE "$IN_SCOPE_RE" || true
             exit 1
           fi
-          echo "OK: whole-chart diff scoped to minReplicaCount:/replicas: only"
+          # Exact count, not just "all in scope": values-capacity-floor.yaml
+          # sets exactly one key on exactly one class, which moves exactly two
+          # fields, i.e. 4 diff lines (one `<` and one `>` each). Any other
+          # number means the overlay stopped being the single-class example the
+          # SC2 isolation claim rests on.
+          CHANGED_COUNT=$(echo "$CHANGED_LINES" | wc -l | tr -d ' ')
+          if [ "$CHANGED_COUNT" -ne 4 ]; then
+            echo "FAIL: expected exactly 4 changed lines (minReplicaCount + fallback.replicas, x default/overlay), got $CHANGED_COUNT"
+            echo "$CHANGED_LINES"
+            exit 1
+          fi
+          echo "OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines"
           rm -f "$DEFAULT_RENDER" "$OVERLAY_RENDER"
 
           echo "### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero"
