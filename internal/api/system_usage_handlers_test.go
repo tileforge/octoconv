@@ -448,8 +448,11 @@ func TestSystemUsage_KillSwitchMakesRemainingNotAuthoritative(t *testing.T) {
 }
 
 // TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative (plan 53-07,
-// WR-02): the live case still asserts remaining is authoritative, AND the
-// note actually carries the observe-mode caveat, not just claims to.
+// WR-02; note text updated by plan 55-04 Task 2/WR-01): the live case still
+// asserts remaining is authoritative, AND the note points the reader at the
+// per-row enforced field rather than restating the observe-mode caveat as
+// prose (the per-row enforced boolean, added by WR-01, now carries that
+// fact directly).
 func TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative(t *testing.T) {
 	usage := &fakeUsageRepo{}
 	limits := &fakeLimitsRepo{}
@@ -474,8 +477,8 @@ func TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative(t *testing.T) {
 	if resp.RemainingSemantics != "live_admission_gate" {
 		t.Errorf("WR-02: remaining_semantics = %q, want \"live_admission_gate\"", resp.RemainingSemantics)
 	}
-	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "observe") {
-		t.Errorf("WR-02: remaining_note = %q, want a non-empty note mentioning the observe-mode caveat", resp.RemainingNote)
+	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "enforced") {
+		t.Errorf("WR-01: remaining_note = %q, want a non-empty note pointing at the per-row enforced field", resp.RemainingNote)
 	}
 }
 
