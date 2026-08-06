@@ -1009,14 +1009,15 @@ paths:
                     type: boolean
                     description: >-
                       true only when period=today AND
-                      quota_enforcement_disabled is false — the ONLY
-                      combination where remaining is exactly what the
-                      admission gate (evaluate()) would decide right now. A
-                      per-row enforcement_mode of "observe" means that row's
-                      own verdict is computed and counted but never enforced,
-                      even when this field is true for the response as a
-                      whole — see remaining_note on each response for the
-                      per-row caveat.
+                      quota_enforcement_disabled is false — these are the
+                      RESPONSE-LEVEL preconditions for remaining to be
+                      exactly what the admission gate (evaluate()) would
+                      decide right now. This field does NOT state that any
+                      given row is actually enforced: see each row's own
+                      enforced field for that — a row whose own
+                      enforcement_mode is "observe" has its verdict computed
+                      and counted but never acted on, even while this field
+                      is true for the response as a whole.
                   remaining_semantics:
                     type: string
                     enum: [live_admission_gate, computed_but_not_enforced, hypothetical_single_day_equivalent]
@@ -1068,6 +1069,16 @@ paths:
                             never rejects on it — a negative remaining on an
                             observe-mode row does not mean requests are being
                             rejected.
+                        enforced:
+                          type: boolean
+                          description: >-
+                            true only when period=today, the service-wide
+                            kill-switch (quota_enforcement_disabled) is
+                            false, AND this row's own enforcement_mode is
+                            "enforce". A row with enforced: false has its
+                            verdict computed and counted but never acted on,
+                            so a negative remaining on it does not mean
+                            requests are being rejected.
                         used_terminal:
                           type: object
                           description: Terminal (done/failed/canceled) usage over the resolved period, from client_usage_daily.
@@ -1105,7 +1116,7 @@ paths:
                             daily_jobs:
                               type: [integer, "null"]
                           required: [concurrent, daily_bytes, daily_jobs]
-                      required: [client_id, client_name, engine, enforcement_mode, used_terminal, used_in_flight, limits, remaining]
+                      required: [client_id, client_name, engine, enforcement_mode, enforced, used_terminal, used_in_flight, limits, remaining]
                 required: [period, day_from, day_to, quota_enforcement_disabled, remaining_matches_admission_gate, remaining_semantics, remaining_note, usage]
         "400":
           description: Malformed client_id (not a valid UUID).
