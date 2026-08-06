@@ -377,3 +377,158 @@ if [ -n "$CALIBRATE_ONLY" ]; then
 	echo "calibration summary: pod1=$API_POD_1 hits=$POD1_HITS, pod2=$API_POD_2 hits=$POD2_HITS, total=$CALIB_SUM/$CALIB_N"
 	exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# STEP 5: postgres port-forward, DB ground truth, throwaway client
+# provisioning. Everything below this point runs only when --calibrate-only
+# was NOT passed.
+#
+# DB GROUND TRUTH: the concurrency slot is queued+active occupancy with NO
+# release code anywhere in this codebase (Phase 52 D-06/D-08) -- a slot
+# frees only on a terminal transition. The only ground truth for "is the
+# cap actually free right now" is therefore the SAME predicate evaluate()
+# itself uses (internal/jobs/admission.go:239-242); asking the API would be
+# asking the component under test, not an independent check on it.
+# ---------------------------------------------------------------------------
+log "STEP 5: postgres port-forward, DB ground truth, throwaway client provisioning"
+
+psql_q() {
+	kubectl exec -n "$NAMESPACE" deploy/postgres -- psql -U octo -d octo_db -tAc "$1" | tr -d '[:space:]'
+}
+
+PSQL_PREFLIGHT=$(psql_q 'SELECT 1' || true)
+if [ "$PSQL_PREFLIGHT" != "1" ]; then
+	echo "FAIL: psql_q preflight -- 'SELECT 1' returned [$PSQL_PREFLIGHT], expected [1]. Retry with PGPASSWORD sourced from the release Secret: kubectl get secret octoconv-secret -n octoconv -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d" >&2
+	exit 1
+fi
+assert_eq "1" "$PSQL_PREFLIGHT" "psql_q preflight (SELECT 1 against postgres pod)"
+
+# inflight_count mirrors internal/jobs/admission.go:239-242's concurrency
+# predicate EXACTLY (status IN ('queued','active')) -- ground truth, not an
+# approximation of it.
+inflight_count() {
+	local client_id="$1"
+	psql_q "SELECT count(*) FROM jobs WHERE client_id = '${client_id}' AND engine = '${ENGINE}' AND status IN ('queued','active')"
+}
+
+# Postgres port-forward -- deliberate and safe: it carries ONLY
+# manage-clients/psql traffic, never the burst, so its single-backend
+# pinning (the same kubectl-port-forward limitation the header warns about
+# for the api Service) is irrelevant here -- postgres is a single-replica
+# Deployment anyway.
+kubectl port-forward -n "$NAMESPACE" svc/postgres "${DB_LOCAL_PORT}:5432" >"$WORKDIR/db-pf.log" 2>&1 &
+DB_PF_PID=$!
+sleep 3
+
+export DATABASE_URL="postgres://octo:octo-pass@127.0.0.1:${DB_LOCAL_PORT}/octo_db"
+export API_KEY_SALT="$API_KEY_SALT"
+
+# Mint a FRESH client per run: a previous aborted run's stuck queued/active
+# jobs belong to a DIFFERENT client_id and therefore cannot consume this
+# run's cap (Pitfall 5).
+CLIENT_OUT=$(go run ./cmd/manage-clients create "quota-multireplica-liveproof-${RUN_ID}")
+CLIENT_ID=$(printf '%s\n' "$CLIENT_OUT" | awk -F': ' '/^client id/{print $2}')
+CLIENT_KEY=$(printf '%s\n' "$CLIENT_OUT" | awk -F': ' '/^api key/{print $2}')
+if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_KEY" ]; then
+	echo "FAIL: could not parse client id / api key from manage-clients create output:" >&2
+	echo "$CLIENT_OUT" >&2
+	exit 1
+fi
+assert_nonempty "$CLIENT_ID" "minted client id"
+assert_nonempty_redacted "$CLIENT_KEY" "minted client api key"
+
+go run ./cmd/manage-clients set-limit "$CLIENT_ID" "$ENGINE" "$QUOTA_K" - -
+go run ./cmd/manage-clients set-mode "$CLIENT_ID" enforce
+echo "PASS: set-limit + set-mode invoked (max-concurrent=$QUOTA_K, unlimited daily bytes/jobs, enforcement_mode=enforce)"
+
+# ANTI-VACUITY READBACK, not a hope: without these four readbacks, an
+# observe-mode or kill-switch-disabled run would admit all N requests and
+# the gate would be measuring nothing.
+LIMIT_MAX_CONCURRENT=$(psql_q "SELECT max_concurrent FROM client_limits WHERE client_id='${CLIENT_ID}' AND engine='${ENGINE}'")
+assert_eq "$QUOTA_K" "$LIMIT_MAX_CONCURRENT" "client_limits.max_concurrent readback"
+
+LIMIT_DAILY_BYTES_NULL=$(psql_q "SELECT (max_daily_bytes IS NULL) FROM client_limits WHERE client_id='${CLIENT_ID}' AND engine='${ENGINE}'")
+assert_eq "t" "$LIMIT_DAILY_BYTES_NULL" "client_limits.max_daily_bytes IS NULL readback"
+
+LIMIT_DAILY_JOBS_NULL=$(psql_q "SELECT (max_daily_jobs IS NULL) FROM client_limits WHERE client_id='${CLIENT_ID}' AND engine='${ENGINE}'")
+assert_eq "t" "$LIMIT_DAILY_JOBS_NULL" "client_limits.max_daily_jobs IS NULL readback"
+
+CLIENT_ENFORCEMENT_MODE=$(psql_q "SELECT enforcement_mode FROM clients WHERE id='${CLIENT_ID}'")
+assert_eq "enforce" "$CLIENT_ENFORCEMENT_MODE" "clients.enforcement_mode readback"
+
+QUOTA_KILL_SWITCH=$(kubectl exec -n "$NAMESPACE" "$API_POD_1" -- printenv QUOTA_ENFORCEMENT_DISABLED 2>/dev/null || true)
+QUOTA_KILL_SWITCH="${QUOTA_KILL_SWITCH:-false}"
+if [ "$QUOTA_KILL_SWITCH" = "true" ]; then
+	echo "FAIL: QUOTA_ENFORCEMENT_DISABLED=true on $API_POD_1 -- the service-wide quota kill-switch is on. Without this readback an observe-mode or kill-switch-disabled run would admit all requests and the gate would measure nothing." >&2
+	exit 1
+fi
+assert_eq "false" "$QUOTA_KILL_SWITCH" "QUOTA_ENFORCEMENT_DISABLED kill-switch off (read from $API_POD_1)"
+
+assert_eq "0" "$(inflight_count "$CLIENT_ID")" "fresh client starts with zero in-flight jobs"
+
+# ---------------------------------------------------------------------------
+# Drain helpers -- called by Plan 55-02 between rounds. A concurrency slot
+# frees ONLY on a terminal transition (queued/active occupy it; Phase 52
+# D-06/D-08 -- there is deliberately no release code anywhere).
+# ---------------------------------------------------------------------------
+
+# job_status JOB_ID -- GETs /v1/jobs/{id} via the ClusterIP and echoes the
+# status field.
+job_status() {
+	local job_id="$1"
+	curl -s --max-time 10 -H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}" |
+		grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
+}
+
+# cancel_job JOB_ID -- POSTs /v1/jobs/{id}/cancel via the ClusterIP. A
+# non-2xx is tolerated and never aborts the gate -- the job may already be
+# terminal by the time this fires.
+cancel_job() {
+	local job_id="$1"
+	curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+		-H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}/cancel" >/dev/null 2>&1 || true
+}
+
+# wait_terminal JOB_ID TIMEOUT_S -- polls job_status every 2s until the
+# status is one of done/failed/canceled. Returns 0 on terminal, 1 on
+# timeout; prints the last observed status either way.
+wait_terminal() {
+	local job_id="$1" timeout_s="$2" waited=0 status=""
+	while [ "$waited" -lt "$timeout_s" ]; do
+		status=$(job_status "$job_id" || true)
+		if [ "$status" = "done" ] || [ "$status" = "failed" ] || [ "$status" = "canceled" ]; then
+			echo "$status"
+			return 0
+		fi
+		sleep 2
+		waited=$((waited + 2))
+	done
+	echo "$status"
+	return 1
+}
+
+# drain_round JOB_IDS -- waits every job in the given whitespace-separated
+# list to a terminal status (180s budget), cancelling and re-waiting (60s)
+# any that time out, then ASSERTS inflight_count is 0. This assertion is a
+# CORRECTNESS requirement, not hygiene: if round R+1 starts with the cap
+# still consumed, it silently admits fewer than K, which would still
+# satisfy "never more than K admitted" and pass the check VACUOUSLY (D-06's
+# own flagged pitfall).
+drain_round() {
+	local job_ids="$1" job_id status remaining
+	for job_id in $job_ids; do
+		status=$(wait_terminal "$job_id" 180) || {
+			echo "job $job_id did not reach terminal within 180s (last status: $status) -- cancelling"
+			cancel_job "$job_id"
+			status=$(wait_terminal "$job_id" 60) || true
+		}
+		echo "drain: job $job_id last status=$status"
+	done
+	remaining=$(inflight_count "$CLIENT_ID")
+	if [ "$remaining" != "0" ]; then
+		echo "FAIL: drain_round -- inflight_count after draining [$job_ids] is $remaining, expected 0. A round starting with the cap still consumed would admit fewer than K and pass the 'never more than K' check VACUOUSLY (D-06)." >&2
+		exit 1
+	fi
+	PASS_COUNT=$((PASS_COUNT + 1))
+	echo "PASS: drain_round -- all jobs [$job_ids] terminal, inflight_count($CLIENT_ID)=0"
+}
