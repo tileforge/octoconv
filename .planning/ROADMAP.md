@@ -342,7 +342,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 54-01-PLAN.md — Values-driven minReplicaCount + floor-derived fallback.replicas via a validating `_helpers.tpl` define, wired into all 7 ScaledObjects (SC1)
+- [x] 54-01-PLAN.md — Values-driven minReplicaCount + floor-derived fallback.replicas via a validating `_helpers.tpl` define, wired into all 7 ScaledObjects (SC1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -418,7 +418,7 @@ Plans:
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
-| 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
+| 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 1/2 | In Progress|  |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
 
 ---
