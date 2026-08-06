@@ -363,9 +363,9 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 55-01-PLAN.md — `values-multireplica.yaml` gate overlay (api.replicas 2, RATE_LIMIT relaxed, KEDA off) + live-gate harness Part A: two-phase install, ClusterIP-direct reachability, `--calibrate-only` distribution proof, throwaway enforce-mode client, drain helpers
-- [ ] 55-03-PLAN.md — folded todo 1: daily-quota `Retry-After` derived from the Postgres evaluation instant via a typed `DailyQuotaError`, with a midnight-straddle regression test
-- [ ] 55-04-PLAN.md — folded todos 2/3: `/v1/system/usage` skips metadata-less rows instead of emitting an out-of-enum `enforcement_mode`, and gains a per-row `enforced` boolean plus OpenAPI contract
+- [x] 55-01-PLAN.md — `values-multireplica.yaml` gate overlay (api.replicas 2, RATE_LIMIT relaxed, KEDA off) + live-gate harness Part A: two-phase install, ClusterIP-direct reachability, `--calibrate-only` distribution proof, throwaway enforce-mode client, drain helpers
+- [x] 55-03-PLAN.md — folded todo 1: daily-quota `Retry-After` derived from the Postgres evaluation instant via a typed `DailyQuotaError`, with a midnight-straddle regression test
+- [x] 55-04-PLAN.md — folded todos 2/3: `/v1/system/usage` skips metadata-less rows instead of emitting an out-of-enum `enforcement_mode`, and gains a per-row `enforced` boolean plus OpenAPI contract
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -435,7 +435,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/5 | Planned | - |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 3/5 | In Progress|  |
 
 ---
 
