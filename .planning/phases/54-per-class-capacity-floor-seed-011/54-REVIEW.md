@@ -20,7 +20,14 @@ findings:
   warning: 6
   info: 6
   total: 13
-status: issues_found
+status: fixes_applied
+fixed_at: 2026-08-06
+fixed:
+  critical: 1
+  warning: 4
+skipped:
+  warning: 2
+  info: 6
 ---
 
 # Phase 54: Code Review Report
@@ -370,6 +377,171 @@ fails loudly rather than deploying a well-known credential pair.
 
 ---
 
+## Fixes Applied
+
+**Fixed at:** 2026-08-06
+**Fixed by:** Claude (gsd-code-fixer)
+**Scope:** CR-01 + in-scope WARNINGs. WR-03/WR-04 deliberately skipped (recorded decisions,
+not oversights). All INFO findings out of scope for this pass.
+
+**Summary:** 1 critical + 4 warnings fixed across 6 atomic commits; 2 warnings + 6 info skipped.
+
+### CR-01 — D-02 validation bypassable via `int` coercion — **FIXED**
+
+**Commits:** `adecb1f` (`deploy/chart/octoconv/templates/_helpers.tpl`),
+`a918397` (`.github/workflows/ci.yml` — regression cases)
+
+**What changed:** `octoconv.kedaMinReplicaCount` now validates `kindOf` on the RAW value before
+any `int` coercion, for **both** `minReplicaCount` and `maxReplicaCount`. Accepted kinds are
+`int`/`int64`, or a `float64` that is integral (`eq $raw (floor $raw)`) — which is what
+values-file numbers arrive as, since helm parses YAML via JSON. Anything else hits a **third**
+`fail`. The two pre-existing `fail` message format strings are byte-for-byte unchanged
+(`"keda.%s.minReplicaCount (%d) must not be negative"` and
+`"keda.%s.minReplicaCount (%d) must not exceed keda.%s.maxReplicaCount (%d)"`), so the CI greps
+and 54-01-SUMMARY.md's recorded contract still hold. An absent/null `maxReplicaCount` (kind
+`invalid`) is now reported as its own misconfiguration instead of coercing to `0` and being
+mis-blamed on `minReplicaCount`.
+
+IN-01's `%v`-raw-value suggestion was deliberately **not** taken: the brief requires the two
+existing message strings unchanged, and after the kind guard `%d` prints the operator's exact
+input for every value that reaches those guards (`010`/`0x10` now fail the kind check upstream
+only if they arrive as strings — a bare `--set x=010` still parses to int64 8, which is
+unchanged pre-existing helm/Go behavior, not something this guard can see).
+
+**Verification evidence** (helm v4.2.3, all via `bash -c`, `--show-only templates/scaledobject-image.yaml`):
+
+| `--set keda.image.minReplicaCount=` | before | after |
+|---|---|---|
+| `99.9` | rc=0, `minReplicaCount: 0` | rc=1, `... must be a whole number, got "99.9" (kind string)` |
+| `-0.5` | rc=0, `minReplicaCount: 0` | rc=1, same guard |
+| `2.9` | rc=0, `minReplicaCount: 0` | rc=1, same guard |
+| `2.0` | rc=0, `minReplicaCount: 0` | rc=1, same guard |
+| `abc` | rc=0, `minReplicaCount: 0` | rc=1, same guard |
+| `true` | rc=0, `minReplicaCount: 1` | rc=1, `got true (kind bool)` |
+| `""` | rc=0, `minReplicaCount: 0` | rc=1, `got "" (kind string)` |
+| `null` | rc=0, `minReplicaCount: 0` | rc=1, `got <nil> (kind invalid)` |
+| `99` | rc=1 (exceeds guard) | rc=1, **message unchanged verbatim** |
+| `-1` (ocr) | rc=1 (negative guard) | rc=1, **message unchanged verbatim** |
+| `2` | rc=0, `2`/`2` | rc=0, `2`/`2` (unchanged) |
+| `0` | rc=0, `0`/`1` | rc=0, `0`/`1` (unchanged) |
+
+Also: `--set keda.image.maxReplicaCount=null` and `=4.5` now abort naming
+`keda.image.maxReplicaCount`. Whitespace discipline preserved — the default full-chart render is
+**byte-identical** to the pre-fix render (`diff` exits 0, zero output). Restoring the pre-fix
+`_helpers.tpl` (`adecb1f^`) into a chart copy makes the CI job fail at
+`--set keda.image.minReplicaCount=[99.9] rendered successfully`.
+
+### WR-01 — `helm lint` is non-validating for template `fail` — **FIXED**
+
+**Commits:** `adecb1f` (`_helpers.tpl` doc comment), `b64a12d` (`ci.yml` comment)
+
+The `_helpers.tpl` claim *"aborts `helm template`/`helm lint`"* was replaced with a precise
+statement: `fail` aborts `helm template` / `helm install` / `helm upgrade`; helm v4.2.3 downgrades
+it to `level=INFO msg="funcMap fail"` during `helm lint` and still exits 0, so lint is **not** part
+of this guard's verification surface. A matching comment was added above the CI job's two lint
+steps so a future editor does not delete a `helm template` step believing lint covers it.
+
+Per the brief, **no fake lint assertion was added** — the job's D-02 negative cases already rely on
+`helm template` only, and the review's suggested `grep 'funcMap fail'` post-check would assert on
+an undocumented log-line format. Verified: `helm lint` still exits 0 for both the default values and
+the capacity-floor overlay.
+
+### WR-02 — CI never asserted a rendered *value* — **FIXED**
+
+**Commit:** `3a050da` (`.github/workflows/ci.yml`)
+
+Added four exact-line assertions (`grep -qxF`) on the image `--show-only` renders already computed
+by the isolation check: default `  minReplicaCount: 0` + `    replicas: 1`; overlay
+`  minReplicaCount: 2` + `    replicas: 2`. Failure prints the actual floor/fallback lines.
+
+**Verification evidence — mutation test.** Copied the chart, changed the helper's emit from
+`{{- $min -}}` to `{{- min $min 1 -}}` (the review's own mutation: operator floor of 2 silently
+clamped to 1, D-05 fallback effect erased). Before this fix that mutation passed the whole job with
+`MUTATED-CHART CI EXIT=0`. Now:
+
+```
+MUTATED-CHART CI EXIT=1
+FAIL: overlay floor (the overlay's only key must actually reach the manifest) --
+      the rendered image ScaledObject does not contain the exact line: [  minReplicaCount: 2]
+actual floor/fallback lines were:
+17:  minReplicaCount: 1
+23:    replicas: 1
+```
+
+### WR-05 — anti-vacuity diagnostic unreachable under `set -euo pipefail` — **FIXED**
+
+**Commit:** `fc101ae` (`.github/workflows/ci.yml`)
+
+Both count captures now use `|| true`, matching the guard the author already applied to the later
+`grep -v` capture. The `FAIL: expected 7 ScaledObjects ... got default=0 overlay=0` diagnostic is
+now reachable in the zero-match case it exists for. Verified: the job still exits 0 and still
+reports `OK: 7 ScaledObjects in both renders`.
+
+### WR-06 — unanchored isolation regex permitted Deployment rescales — **FIXED**
+
+**Commit:** `f53371f` (`.github/workflows/ci.yml`)
+
+The pattern is now anchored to the exact rendered indentation of the only two fields allowed to
+change — `^[<>] (  minReplicaCount: |    replicas: )[0-9]+$` — and the changed-line count is
+asserted to be exactly `4`.
+
+**Verification evidence:** appending `api: {replicas: 3}` to `values-capacity-floor.yaml` in a chart
+copy (accepted by the old unanchored `(minReplicaCount:|replicas:)` substring match, since it also
+matches every Deployment's `replicas:` field) now fails with
+`FAIL: diff touched lines outside the image ScaledObject's minReplicaCount:/replicas: fields`.
+Unmutated chart: `OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines`.
+
+### WR-03 — SHA-pin `azure/setup-helm` — **SKIPPED (recorded decision, not an oversight)**
+
+Plan 54-02's threat model **T-54-03** explicitly considered and rejected SHA pinning: this file's
+four other third-party actions (`actions/checkout@v7`, `actions/setup-go@v6`,
+`docker/setup-buildx-action@v4`, `docker/bake-action@v7`, `actions/upload-artifact@v7`) are all
+tag-pinned, and pinning one job differently was judged inconsistent security theatre rather than a
+real improvement. The compensating controls that decision rests on are in place and unchanged:
+`permissions: contents: read` on the job, and the helm **binary** pinned via the `version: v4.2.3`
+input so render behavior cannot drift without a commit here. Reversing this is a repo-wide
+supply-chain policy change, not a phase-54 fix.
+
+### WR-04 — workflow-level `permissions:` — **SKIPPED (out of phase scope)**
+
+`gate`, `race`, `docker-build` and `e2e` all predate this phase. Adding a workflow-level
+`permissions:` key (or job-level keys on those four) would modify lines outside this phase's diff
+and break the *"the `ci.yml` change is purely additive"* invariant that plan 54-02 asserts and whose
+acceptance criterion greps for it
+(`git diff .github/workflows/ci.yml | grep -c '^-[^-]'` must be `0`). Confirmed still holding after
+all fixes: `git diff f7eaea8..HEAD -- .github/workflows/ci.yml | grep -c '^-[^-]'` → `0`.
+Worth doing as its own hardening change; it is not a phase-54 regression.
+
+### IN-01 … IN-06 — **SKIPPED (INFO severity, out of scope for this pass)**
+
+IN-01 is additionally superseded in practice: after CR-01's raw-kind guard, `%d` prints the exact
+operator input for every value that can still reach the two numeric guards. IN-06 (`values.yaml`
+MinIO credentials) is pre-existing and outside this phase's diff, as the review itself notes.
+
+### Post-fix invariant sweep (all run locally, all via `bash -c`)
+
+| # | Invariant | Result |
+|---|---|---|
+| 1 | `helm lint` exits 0, default and `-f values-capacity-floor.yaml` | PASS |
+| 2 | Exactly 7 ScaledObjects in both renders | PASS (7 / 7) |
+| 3 | Whole-chart diff non-empty; every `^[<>]` line is `minReplicaCount:`/`replicas:` | PASS (exactly 4 lines) |
+| 4 | Per-class isolation: 6 classes byte-identical, `image` differs | PASS |
+| 5 | `=99` names both keys; `ocr=-1` names its key; both messages verbatim | PASS |
+| 6 | `99.9` / `-0.5` / `2.9` / `abc` / `true` / `""` each exit non-zero | PASS (all rc=1; were rc=0) |
+| 7 | `=2` renders `2`/`2` on image, other six stay `0`/`1` | PASS |
+| 8 | `hasKey`+`ne … nil` guard intact in document/audio/av/ocr/pandoc; loadproof pandoc renders literal `stabilizationWindowSeconds: 0` | PASS (5/5 files, literal `0` rendered) |
+| 9 | `git diff` empty on `internal/convert/exec.go`, `values-local.yaml`, `values-e2e.yaml`, `values-loadproof.yaml` | PASS (0 lines, vs. working tree and vs. `f7eaea8`) |
+| 10 | `git diff f7eaea8..HEAD -- .github/workflows/ci.yml \| grep -c '^-[^-]'` is 0 | PASS (`0`) |
+| 11 | The `helm` job's entire embedded script run verbatim locally | PASS (`EXIT=0`) |
+| 12 | `go build ./...` and `go test ./...` | PASS (build OK; all packages `ok`) |
+
+Invariant 11 was executed by extracting the job's `run:` block with
+`ruby -ryaml` and running it with `bash` from the repo root (never zsh — an unquoted `$FLAGS`
+does not word-split there, which would render zero ScaledObjects and pass every check vacuously).
+
+---
+
 _Reviewed: 2026-08-06_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
+_Fixes applied: 2026-08-06 by Claude (gsd-code-fixer)_

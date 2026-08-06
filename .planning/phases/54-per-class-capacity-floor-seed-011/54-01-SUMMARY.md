@@ -174,6 +174,95 @@ None - no external service configuration required. Chart-only change; defaults u
 - FOUND commit `ddfa2ef` (Task 3)
 - FOUND commit `b87b45d` (SUMMARY.md)
 
+## Post-Review Corrections
+
+**Applied:** 2026-08-06 (code review CR-01, commit `adecb1f`). This section AMENDS the
+"Interface Contract for Plan 54-02" above — a **third** `fail` message string now exists.
+
+### Why the contract changed
+
+The contract recorded above was incomplete in a way that made the D-02 guard bypassable. The
+original body coerced before it validated:
+
+```
+{{- $min := int $cfg.minReplicaCount -}}
+```
+
+Sprig's `int` is `cast.ToInt`, which discards its parse error and returns `0`. Helm's `--set`
+strvals parser only yields a Go `int64` for a **bare base-10 integer**; `2.0`, `2.9`, `99.9`,
+`-0.5`, `abc`, `" 3"` and an empty value all arrive as a `string`, and `true`/`false` as a `bool`.
+So both recorded guards were unreachable for every one of those inputs, and the operator got a
+silent floor of `0` with `helm template` exiting `0` — no warm floor at all. The two negative CI
+cases plan 54-02 built (`99`, `-1`) use only bare integers, so they never touched the broken path.
+
+### The two existing `fail` strings are UNCHANGED
+
+Both format strings recorded above are byte-for-byte identical after the fix, and their rendered
+output for a legal bare integer is unchanged. Plan 54-02's CI greps against them still hold:
+
+1. `"keda.%s.minReplicaCount (%d) must not be negative"` — unchanged
+2. `"keda.%s.minReplicaCount (%d) must not exceed keda.%s.maxReplicaCount (%d)"` — unchanged
+
+Re-verified after the fix:
+
+```
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.minReplicaCount (99) must not exceed keda.image.maxReplicaCount (4)
+Error: execution error at (octoconv/templates/scaledobject-ocr.yaml:35:22): keda.ocr.minReplicaCount (-1) must not be negative
+```
+
+### NEW (third) `fail` message string — raw-kind guard
+
+Emitted **before** any `int` coercion, for `minReplicaCount` **and** `maxReplicaCount`. One format
+string, parameterised by class and field name:
+
+```
+"keda.%s.%s must be a whole number, got %#v (kind %s) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor"
+```
+
+Arguments: `.class`, the literal field name (`"minReplicaCount"` or `"maxReplicaCount"`), the raw
+value (`%#v`), and `kindOf` of the raw value.
+
+Accepted kinds: `int`, `int64`, or a `float64` that is integral (`eq $raw (floor $raw)`) — values
+supplied via `values.yaml` / `-f` arrive as `float64` because helm parses YAML through JSON.
+Everything else fails.
+
+Example rendered output:
+
+```
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.minReplicaCount must be a whole number, got "99.9" (kind string) -- helm's --set parser yields a string for ...
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.maxReplicaCount must be a whole number, got <nil> (kind invalid) -- helm's --set parser yields a string for ...
+```
+
+**Stable substrings CI may grep:** `keda.<class>.minReplicaCount` / `keda.<class>.maxReplicaCount`
+and `must be a whole number`. Do not grep the tail of the message — it is explanatory prose.
+
+### Behavior contract, restated in full
+
+| Input to `keda.<class>.minReplicaCount` | Result |
+|---|---|
+| bare integer `0` … `maxReplicaCount` | renders that integer; `fallback.replicas` = `max(1, n)` |
+| bare integer `< 0` | `fail` #1 (unchanged message) |
+| bare integer `> maxReplicaCount` | `fail` #2 (unchanged message) |
+| integral YAML float (`2`, `2.0` from a values file) | renders the integer |
+| non-integral number, string, bool, or null (`2.9`, `99.9`, `-0.5`, `abc`, `true`, `""`, `null`) | `fail` #3 (NEW) |
+| `maxReplicaCount` absent / null / non-integral | `fail` #3 (NEW), naming `maxReplicaCount` |
+
+`helm lint` is **not** part of this surface: helm v4.2.3 downgrades a template `fail` to
+`level=INFO msg="funcMap fail"` and exits 0. Only `helm template` / `helm install` / `helm upgrade`
+abort. (This corrected an inaccurate claim in the `_helpers.tpl` doc comment — review WR-01.)
+
+### Whitespace and render invariants preserved
+
+The default full-chart render is byte-identical before and after the fix (`diff` exits 0, zero
+output); the capacity-floor overlay diff is still exactly the same 4 lines
+(`minReplicaCount: 0→2`, `replicas: 1→2`); `helm lint` exits 0 for both the default values and the
+overlay; both defines still resolve via `index .root.Values.keda .class` and the file still
+contains exactly the two `octoconv.keda*` defines this plan specified.
+
+Plan 54-02's CI job gained matching regression cases in commit `a918397` (case C loops the eight
+coercion-bypass inputs; case D covers a null ceiling).
+
 ---
 *Phase: 54-per-class-capacity-floor-seed-011*
 *Completed: 2026-08-06*
+*Amended: 2026-08-06 (post-review CR-01/WR-01 corrections)*
