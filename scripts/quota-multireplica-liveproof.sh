@@ -635,3 +635,180 @@ mkdir -p "$EVIDENCE_DIR"
 printf 'round\tindex\trequest_id\tsend_ts_ms\trecv_ts_ms\thttp_status\tbody_code\tserving_pod\n' >"$EVIDENCE_TSV"
 EVIDENCE_TSV_ABS="$(cd "$(dirname "$EVIDENCE_TSV")" && pwd)/$(basename "$EVIDENCE_TSV")"
 echo "PASS: evidence TSV initialized at $EVIDENCE_TSV_ABS"
+
+# ---------------------------------------------------------------------------
+# Round classification + attribution + assertions (Plan 55-02 Task 2).
+# ---------------------------------------------------------------------------
+
+# assess_round ROUND -- classifies each of BURST_N requests by body code
+# (never bare status), attributes each to exactly one pod via its
+# X-Request-Id, and applies every anti-vacuity assertion before writing one
+# TSV row per request. Order matters: attribution completeness is asserted
+# BEFORE any conclusion is drawn from it (cap exactness, cross-pod split,
+# concurrency of flight all read the per-request pod attribution).
+assess_round() {
+	local round="$1" i
+	local admit_count=0 quota_reject_count=0 attributed_total=0
+	local pod1_admit=0 pod1_reject=0 pod2_admit=0 pod2_reject=0
+	local min_send="" max_send=""
+	local admitted_job_ids=""
+
+	# ATTRIBUTE, step one: dump each pod's log ONCE per round (never once
+	# per request -- that would be BURST_N kubectl calls per pod per round
+	# for no benefit, since each dump is grepped BURST_N times below
+	# instead).
+	kubectl logs "$API_POD_1" -n "$NAMESPACE" --since=10m >"$WORKDIR/r${round}-${API_POD_1}.log" 2>/dev/null || true
+	kubectl logs "$API_POD_2" -n "$NAMESPACE" --since=10m >"$WORKDIR/r${round}-${API_POD_2}.log" 2>/dev/null || true
+
+	for i in $(seq 1 "$BURST_N"); do
+		local rec="$WORKDIR/r${round}-req${i}.rec"
+		local body="$WORKDIR/r${round}-req${i}.json"
+		[ -f "$rec" ] || {
+			echo "FAIL: round ${round} req ${i} -- no .rec file; fire_burst did not complete for this request" >&2
+			exit 1
+		}
+
+		local idx request_id send_ts recv_ts status code job_id serving_pod
+		IFS=$'\t' read -r idx request_id send_ts recv_ts status <"$rec"
+		code=$(grep -o '"code":"[^"]*"' "$body" 2>/dev/null | head -1 | cut -d'"' -f4 || true)
+
+		# 1. CLASSIFY -- switch on "$status:$code", never bare status: both
+		# quota_exceeded and rate_limited return 429, and classifying on
+		# the bare status would let a rate-limit storm masquerade as proof
+		# of quota correctness. Admits classify on 202 (POST /v1/jobs's
+		# real success status, internal/api/handlers.go:805) -- NOT 201.
+		job_id=""
+		case "$status:$code" in
+		202:*)
+			admit_count=$((admit_count + 1))
+			job_id=$(grep -o '"job_id":"[^"]*"' "$body" | head -1 | cut -d'"' -f4 || true)
+			admitted_job_ids="$admitted_job_ids $job_id"
+			;;
+		429:quota_exceeded)
+			quota_reject_count=$((quota_reject_count + 1))
+			;;
+		429:rate_limited)
+			echo "FAIL: round ${round} req ${i} (id=${request_id}) -- 429 rate_limited, not quota_exceeded. RATE_LIMIT_CLIENT_RPM/RATE_LIMIT_IP_RPM were too low for this burst cadence; the gate cannot distinguish a quota rejection from a rate-limit rejection under this condition." >&2
+			exit 1
+			;;
+		*)
+			echo "FAIL: round ${round} req ${i} (id=${request_id}) -- unexpected status:code [${status}:${code}], body: $(cat "$body" 2>/dev/null)" >&2
+			exit 1
+			;;
+		esac
+
+		# 2. ATTRIBUTE, step two: exactly one pod's log must carry this
+		# request's id -- zero-in-both is an empty join (which would make
+		# every downstream conclusion vacuous), and nonzero-in-both is an
+		# ambiguous join. Both are hard FAILs, checked BEFORE any
+		# conclusion below is drawn from the attribution.
+		local pod1_hits pod2_hits
+		pod1_hits=$(grep -c "\[${request_id}\]" "$WORKDIR/r${round}-${API_POD_1}.log" 2>/dev/null || true)
+		pod2_hits=$(grep -c "\[${request_id}\]" "$WORKDIR/r${round}-${API_POD_2}.log" 2>/dev/null || true)
+		pod1_hits="${pod1_hits:-0}"
+		pod2_hits="${pod2_hits:-0}"
+		if [ "$pod1_hits" -eq 0 ] && [ "$pod2_hits" -eq 0 ]; then
+			echo "FAIL: round ${round} req ${i} (id=${request_id}) -- matched in NEITHER pod's log; the attribution join is empty, which would make every downstream conclusion vacuous." >&2
+			exit 1
+		fi
+		if [ "$pod1_hits" -ge 1 ] && [ "$pod2_hits" -ge 1 ]; then
+			echo "FAIL: round ${round} req ${i} (id=${request_id}) -- matched in BOTH pods' logs (pod1=${pod1_hits}, pod2=${pod2_hits}); the attribution join is ambiguous." >&2
+			exit 1
+		fi
+		attributed_total=$((attributed_total + 1))
+		if [ "$pod1_hits" -ge 1 ]; then
+			serving_pod="$API_POD_1"
+		else
+			serving_pod="$API_POD_2"
+		fi
+
+		# Non-fatal cross-check: the matched log line's own status token
+		# should equal the client-observed status. chi logs at request
+		# COMPLETION (a defer), so a client-side timeout can observe a
+		# different status than what the server eventually recorded --
+		# print a WARN, never fail on this alone.
+		local log_line log_status
+		log_line=$(grep "\[${request_id}\]" "$WORKDIR/r${round}-${serving_pod}.log" 2>/dev/null | head -1 || true)
+		log_status=$(printf '%s' "$log_line" | grep -o ' [0-9][0-9][0-9] ' | head -1 | tr -d ' ' || true)
+		if [ -n "$log_status" ] && [ "$log_status" != "$status" ]; then
+			echo "WARN: round ${round} req ${i} (id=${request_id}) -- client observed status ${status} but ${serving_pod}'s log line shows ${log_status} (chi logs at completion via a defer; can happen on a client-side timeout, not necessarily a bug)"
+		fi
+
+		case "${status}:${serving_pod}" in
+		"202:${API_POD_1}") pod1_admit=$((pod1_admit + 1)) ;;
+		"202:${API_POD_2}") pod2_admit=$((pod2_admit + 1)) ;;
+		"429:${API_POD_1}") pod1_reject=$((pod1_reject + 1)) ;;
+		"429:${API_POD_2}") pod2_reject=$((pod2_reject + 1)) ;;
+		esac
+
+		if [ -z "$min_send" ] || [ "$send_ts" -lt "$min_send" ]; then
+			min_send="$send_ts"
+		fi
+		if [ -z "$max_send" ] || [ "$send_ts" -gt "$max_send" ]; then
+			max_send="$send_ts"
+		fi
+
+		# 6. EMIT EVIDENCE -- one TSV row per request.
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$round" "$i" "$request_id" "$send_ts" "$recv_ts" "$status" "$code" "$serving_pod" \
+			>>"$EVIDENCE_TSV"
+	done
+
+	assert_eq "$BURST_N" "$attributed_total" "round ${round}: every request attributed to exactly one pod"
+
+	# 3. SC1 -- CAP EXACTNESS. `==`, not `<=`: a round that starts with the
+	# cap already consumed would under-admit and still satisfy a `<=` check
+	# vacuously -- this is D-06's own flagged pitfall, closed here with
+	# exact equality instead.
+	assert_eq "$QUOTA_K" "$admit_count" "round ${round}: admitted count"
+	assert_eq "$((BURST_N - QUOTA_K))" "$quota_reject_count" "round ${round}: quota_exceeded rejection count"
+
+	# 4. D-05 -- CROSS-POD DECISION. The weaker "both pods received some
+	# traffic" form is rejected on purpose: one pod could consume the
+	# entire cap before the other pod's first request arrives, and no cap
+	# DECISION would have crossed the replica boundary even though both
+	# pods technically served requests.
+	if { [ "$pod1_admit" -ge 1 ] && [ "$pod2_reject" -ge 1 ]; } || { [ "$pod2_admit" -ge 1 ] && [ "$pod1_reject" -ge 1 ]; }; then
+		PASS_COUNT=$((PASS_COUNT + 1))
+		echo "PASS: round ${round}: cross-pod cap decision -- ${API_POD_1} admit=${pod1_admit} reject=${pod1_reject}, ${API_POD_2} admit=${pod2_admit} reject=${pod2_reject}"
+	else
+		echo "FAIL: round ${round}: no admitted+rejected pair landed on DIFFERENT pods -- ${API_POD_1} admit=${pod1_admit} reject=${pod1_reject}, ${API_POD_2} admit=${pod2_admit} reject=${pod2_reject}. The cap decision never crossed the replica boundary in this round." >&2
+		exit 1
+	fi
+
+	# 5. CONCURRENCY OF FLIGHT -- without this, a fully serialized round
+	# would satisfy every other assertion while never contending the
+	# advisory lock at all.
+	assert_le "$((max_send - min_send))" "$BURST_SEND_SPREAD_MS" "round ${round}: burst send spread (ms)"
+
+	local inflight_at_max=0
+	for i in $(seq 1 "$BURST_N"); do
+		local rec2="$WORKDIR/r${round}-req${i}.rec"
+		local s2 r2
+		IFS=$'\t' read -r _ _ s2 r2 _ <"$rec2"
+		if [ "$s2" -le "$max_send" ] && [ "$max_send" -le "$r2" ]; then
+			inflight_at_max=$((inflight_at_max + 1))
+		fi
+	done
+	assert_ge "$inflight_at_max" "$(( (BURST_N + 1) / 2 ))" "round ${round}: requests provably in flight when the last request was sent"
+	echo "round ${round}: min_send=${min_send} max_send=${max_send} in_flight_at_max_send=${inflight_at_max}"
+
+	printf '%s\n' "$admitted_job_ids" >"$WORKDIR/r${round}-admitted.txt"
+}
+
+# run_round ROUND -- sequences one round end-to-end: assert the cap is free
+# -> fire the burst -> assess it -> drain it. The pre-round zero assertion
+# and the post-round drain assertion are the two halves of Pitfall 4's
+# closure (D-06): a round that starts with the cap already consumed, or
+# whose admitted jobs are not drained before the next round's barrier
+# fires, would silently admit fewer than K and still pass a naive "never
+# more than K" check.
+run_round() {
+	local round="$1"
+	assert_eq "0" "$(inflight_count "$CLIENT_ID")" "round ${round}: cap is free before the barrier fires"
+	fire_burst "$round"
+	assess_round "$round"
+	local admitted_ids
+	admitted_ids=$(cat "$WORKDIR/r${round}-admitted.txt" 2>/dev/null || true)
+	drain_round "$admitted_ids"
+}
