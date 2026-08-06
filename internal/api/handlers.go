@@ -1015,14 +1015,33 @@ func writeQuotaError(w http.ResponseWriter, msg string, retryAfterSeconds int) {
 // client's state, never the configured limit value: an operator reads
 // limits from manage-clients, a client does not need them and should not be
 // able to probe them (T-52-24).
+//
+// A daily rejection's Retry-After is computed against the instant Postgres
+// evaluated the daily window at (jobs.DailyQuotaError.EvaluatedAt), not
+// against this process's own wall clock -- this is the fix for
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+// transaction that evaluates just before UTC midnight while the response is
+// formatted just after would otherwise advertise ~86400 seconds for a quota
+// that has already reset. The time.Now() fallback below exists only for a
+// bare sentinel arriving from a path that did not go through evaluate
+// (today: none in production -- every daily verdict evaluate returns is
+// wrapped -- and only the fake repos in handlers_test.go construct one
+// directly); it is deliberately not a panic or a zero, because a missing
+// Retry-After would be a worse regression than an over-long one.
 func quotaRejection(err error) (msg string, retryAfterSeconds int, ok bool) {
+	var dqe *jobs.DailyQuotaError
+	errors.As(err, &dqe)
+	dailyNow := time.Now()
+	if dqe != nil && !dqe.EvaluatedAt.IsZero() {
+		dailyNow = dqe.EvaluatedAt
+	}
 	switch {
 	case errors.Is(err, jobs.ErrConcurrencyLimit):
 		return "too many concurrent jobs for this conversion type", quotaConcurrencyRetryAfterSeconds, true
 	case errors.Is(err, jobs.ErrDailyBytesLimit):
-		return "daily byte quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+		return "daily byte quota exceeded for this conversion type", secondsUntilUTCMidnight(dailyNow), true
 	case errors.Is(err, jobs.ErrDailyJobsLimit):
-		return "daily job quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+		return "daily job quota exceeded for this conversion type", secondsUntilUTCMidnight(dailyNow), true
 	default:
 		return "", 0, false
 	}

@@ -875,6 +875,42 @@ func TestCreateJob_QuotaDailyBytes_RetryAfterUntilMidnight(t *testing.T) {
 	}
 }
 
+// TestCreateJob_QuotaDailyBytes_RetryAfterStraddlesMidnight is the
+// end-to-end regression case
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md asked
+// for: a *jobs.DailyQuotaError whose EvaluatedAt is seconds before UTC
+// midnight must produce a small Retry-After, even though the test process's
+// own wall clock is nowhere near midnight. TestSecondsUntilUTCMidnight
+// cannot reach this case -- it only varies the input to a pure function, not
+// the DB-vs-API timing gap that caused the bug.
+func TestCreateJob_QuotaDailyBytes_RetryAfterStraddlesMidnight(t *testing.T) {
+	evaluatedAt := time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)
+	repo := &fakeRepo{preAdmitErr: &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: evaluatedAt}}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	retryAfter, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After not an integer: %q", rec.Header().Get("Retry-After"))
+	}
+	if retryAfter >= 60 {
+		t.Errorf("Retry-After = %d, want < 60 (derived from EvaluatedAt=%v, one second before UTC midnight) -- a value near 86400 means Retry-After regressed to using the process wall clock instead of the DB-evaluated instant", retryAfter, evaluatedAt)
+	}
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+}
+
 // TestCreateJob_QuotaFromCreate_429AfterUpload exercises the accepted
 // post-upload race path (T-52-21): PreAdmit passed, but Create's
 // authoritative admitLocked check lost the race. The upload already
@@ -1028,6 +1064,74 @@ func TestSecondsUntilUTCMidnight(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestQuotaRejection_RetryAfterUsesDBEvaluationInstantNotProcessClock is a
+// pure unit test on quotaRejection (no HTTP, no DB), pinning the fix for
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+// daily rejection's Retry-After must derive from a wrapped
+// *jobs.DailyQuotaError's EvaluatedAt, never from the process's own wall
+// clock at response-write time.
+func TestQuotaRejection_RetryAfterUsesDBEvaluationInstantNotProcessClock(t *testing.T) {
+	t.Run("daily bytes, EvaluatedAt one second before midnight", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 1 {
+			t.Errorf("Retry-After = %d, want exactly 1", retryAfter)
+		}
+	})
+
+	t.Run("daily jobs, EvaluatedAt one second before midnight", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyJobsLimit, EvaluatedAt: time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 1 {
+			t.Errorf("Retry-After = %d, want exactly 1", retryAfter)
+		}
+	})
+
+	t.Run("daily bytes, EvaluatedAt at midday", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 43200 {
+			t.Errorf("Retry-After = %d, want exactly 43200", retryAfter)
+		}
+	})
+
+	t.Run("bare sentinel fallback (no wrapper) still returns a valid Retry-After", func(t *testing.T) {
+		_, retryAfter, ok := quotaRejection(jobs.ErrDailyBytesLimit)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter < 1 {
+			t.Errorf("Retry-After = %d, want >= 1 -- a bare sentinel must never regress to a zero/missing header", retryAfter)
+		}
+	})
+
+	t.Run("concurrency rejection returns the fixed constant, unaffected by DailyQuotaError handling", func(t *testing.T) {
+		_, retryAfter, ok := quotaRejection(jobs.ErrConcurrencyLimit)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != quotaConcurrencyRetryAfterSeconds {
+			t.Errorf("Retry-After = %d, want %d", retryAfter, quotaConcurrencyRetryAfterSeconds)
+		}
+	})
+
+	t.Run("non-quota error returns ok=false", func(t *testing.T) {
+		_, _, ok := quotaRejection(errors.New("boom"))
+		if ok {
+			t.Error("ok = true, want false for a non-quota error")
+		}
+	})
 }
 
 // TestCreateJob_ContentMismatch verifies D-01/D-04/D-05: a filename claiming
