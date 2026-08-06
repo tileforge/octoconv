@@ -174,8 +174,19 @@ for i in $(seq 1 "$COUNT"); do
 		if [ "$MODE" = "calib" ]; then
 			body_field="-"
 		else
-			body_field="$(tr -d '\r\n' <"$body_file" 2>/dev/null || true)"
-			rm -f "$body_file"
+			# curl does not always create the -o file on an immediate
+			# connection failure (e.g. connection refused before any
+			# response data exists to write) -- found and fixed during this
+			# plan's own local verification against the real burst image.
+			# Guard with -f rather than letting a missing-file open error
+			# escape past the 2>/dev/null (a failed input redirection
+			# aborts the command before that redirection is even applied).
+			if [ -f "$body_file" ]; then
+				body_field="$(tr -d '\r\n' <"$body_file" 2>/dev/null || true)"
+				rm -f "$body_file"
+			else
+				body_field=""
+			fi
 			[ -z "$body_field" ] && body_field="-"
 		fi
 
@@ -191,8 +202,24 @@ done
 # release entirely (a race in the barrier mechanism itself, not the thing
 # under test) -- the same reasoning the host script's own retired barrier
 # documented.
+#
+# ONE LINE PER READER IS LOAD-BEARING, NOT A STYLE CHOICE (found and fixed
+# during this plan's own local verification, not carried over from the
+# host script's retired barrier -- see the SUMMARY's Deviations section):
+# a named pipe does not broadcast a single write to every blocked reader.
+# `read` consumes bytes off one shared buffer, so ONE `printf 'go\n'` wakes
+# up exactly one of the COUNT blocked subshells; the other COUNT-1 then
+# see EOF the instant the sole writer closes, which fails their own `read`
+# under this file's own `set -e` and silently drops them before they ever
+# reach curl. Writing COUNT lines -- one per reader -- through a single
+# open file descriptor (the redirection scopes the whole loop, not each
+# printf) fixes this while keeping the release effectively simultaneous:
+# confirmed 10/10 released across repeated local trials, 1/10 (or fewer)
+# with the single-line form.
 sleep 0.3
-printf 'go\n' >"$BARRIER"
+for i in $(seq 1 "$COUNT"); do
+	printf 'go\n'
+done >"$BARRIER"
 wait
 
 # ---------------------------------------------------------------------------
