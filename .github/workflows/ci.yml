@@ -100,6 +100,24 @@ jobs:
           fi
           echo "OK: image changed (expected)"
 
+          echo "### rendered VALUE assertions (SC1/D-05): every check above is a SHAPE check -- a chart that silently clamped the operator's floor of 2 down to 1 (removing the D-05 fallback effect entirely) would still pass all of them. These assert the actual rendered numbers."
+          assert_exact_line() {
+            # $1 = rendered text, $2 = exact expected line, $3 = label
+            if ! printf '%s\n' "$1" | grep -qxF "$2"; then
+              echo "FAIL: $3 -- the rendered image ScaledObject does not contain the exact line: [$2]"
+              echo "actual floor/fallback lines were:"
+              printf '%s\n' "$1" | grep -nE '^  minReplicaCount:|^    replicas:' || true
+              exit 1
+            fi
+          }
+          # $d1/$d2 are the default and overlay image renders from the isolation
+          # check directly above.
+          assert_exact_line "$d1" '  minReplicaCount: 0' "default floor (D-01: shipped default is a zero floor)"
+          assert_exact_line "$d1" '    replicas: 1'      "default fallback (D-05: max(1,0) is byte-identical to the pre-phase hardcoded 1)"
+          assert_exact_line "$d2" '  minReplicaCount: 2' "overlay floor (the overlay's only key must actually reach the manifest)"
+          assert_exact_line "$d2" '    replicas: 2'      "overlay fallback (D-05: a Prometheus outage must not undo the configured floor)"
+          echo "OK: image renders 0/1 by default and 2/2 under the capacity-floor overlay"
+
           echo "### whole-chart isolation scope (SC2): every differing line in the full-chart diff must be a minReplicaCount:/replicas: line, and the diff must be non-empty"
           DIFF_OUT=$(diff "$DEFAULT_RENDER" "$OVERLAY_RENDER" || true)
           CHANGED_LINES=$(echo "$DIFF_OUT" | grep '^[<>]' || true)
