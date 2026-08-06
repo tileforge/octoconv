@@ -68,8 +68,11 @@ spec:
         threshold: {{ .Values.keda.document.threshold | quote }}
         # Sustained absence of a PromQL result (e.g. api unreachable or
         # unscrapeable) now reads as a scaler ERROR, not queue-empty (D-01)
-        # — fallback.replicas: 1 holds one replica for this class instead
-        # of falsely scaling to zero with a live backlog behind an outage.
+        # — fallback.replicas holds max(1, keda.document.minReplicaCount)
+        # replicas for this class instead of falsely scaling to zero with a
+        # live backlog behind an outage, so an operator-configured floor is
+        # not silently undone by the very outage that makes cold-start
+        # latency hurt most (SEED-011/D-05).
         # Trade-off: a benign one-shot fallback blip is possible on fresh
         # install / a short api restart before the first enqueue — accepted,
         # fail-safe toward availability (same philosophy as webhook-worker's
