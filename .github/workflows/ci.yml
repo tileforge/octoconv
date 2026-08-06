@@ -66,8 +66,14 @@ jobs:
           helm template octoconv "$CHART" -f "$OVERLAY" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET > "$OVERLAY_RENDER"
 
           echo "### anti-vacuity gate: exactly 7 ScaledObjects must render in BOTH files, checked before any diff or isolation claim"
-          DEFAULT_COUNT=$(grep -c '^kind: ScaledObject' "$DEFAULT_RENDER")
-          OVERLAY_COUNT=$(grep -c '^kind: ScaledObject' "$OVERLAY_RENDER")
+          # `grep -c` exits 1 on zero matches, and under `set -euo pipefail` an
+          # assignment whose command substitution fails kills the script. Zero
+          # matches is EXACTLY the vacuity case this gate exists to report, so
+          # without `|| true` the diagnostic below would be unreachable in the
+          # only case it matters (same hazard the `grep -v` capture further
+          # down is already guarded against).
+          DEFAULT_COUNT=$(grep -c '^kind: ScaledObject' "$DEFAULT_RENDER" || true)
+          OVERLAY_COUNT=$(grep -c '^kind: ScaledObject' "$OVERLAY_RENDER" || true)
           if [ "$DEFAULT_COUNT" -ne 7 ] || [ "$OVERLAY_COUNT" -ne 7 ]; then
             echo "FAIL: expected 7 ScaledObjects in both renders, got default=$DEFAULT_COUNT overlay=$OVERLAY_COUNT"
             exit 1
