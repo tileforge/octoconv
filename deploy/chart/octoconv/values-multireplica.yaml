@@ -1,0 +1,64 @@
+# Multi-replica gate overlay — layered ON TOP of values-local.yaml, NEVER
+# standalone (same convention as values-e2e.yaml / values-loadproof.yaml,
+# NOT values-capacity-floor.yaml's "layer on bare defaults" register — this
+# gate needs the full local dev secrets/config stack values-local.yaml
+# supplies):
+#
+#   helm upgrade --install octoconv deploy/chart/octoconv \
+#     -f deploy/chart/octoconv/values-local.yaml \
+#     -f deploy/chart/octoconv/values-multireplica.yaml -n octoconv
+#
+# GATE-ONLY (Phase 55, QUOT-05): exists solely for
+# scripts/quota-multireplica-liveproof.sh. Never apply this file to a
+# non-local deployment. Do not add any other key here, and do not modify
+# values-local.yaml / values-e2e.yaml / values-loadproof.yaml /
+# values-capacity-floor.yaml to carry any of these three keys — each of
+# those files exists to prove something else.
+#
+# api.replicas: 2 — this is what ROADMAP Phase 55 SC1 literally names
+# ("api.replicas set to 2 or more"). IMPORTANT: templates/deployment-api.yaml's
+# own header comment says single replica keeps schema migration race-free,
+# and internal/db/db.go's Migrate takes NO advisory lock (cmd/api/main.go
+# calls db.Migrate unconditionally on every process start) — so this value
+# MUST NOT be applied on a fresh-database `helm install`. The gate script
+# installs first at `--set api.replicas=1`, waits for api Available
+# (migrations applied by the single first-generation pod), and only THEN
+# `helm upgrade`s into this file's `replicas: 2`. Any future reader reaching
+# for this overlay directly on a fresh cluster would install straight into
+# that migration race; this comment exists so they don't.
+#
+# api.extraEnv RATE_LIMIT relaxation — RATE_LIMIT_CLIENT_RPM defaults to
+# 120/min and RATE_LIMIT_IP_RPM to 60/min (templates/configmap.yaml). This
+# gate fires 10 requests x 10 rounds = 100 requests from one throwaway
+# client and one host IP; at production defaults that volume could trip
+# ratelimit.ByIP/PerClient (429 + "code":"rate_limited") and get confused
+# with the 429 + "code":"quota_exceeded" the gate exists to count
+# (internal/ratelimit/ratelimit.go:117 vs internal/api/handlers.go:1009).
+# api.extraEnv renders as explicit `env:` entries, which take precedence
+# over the envFrom ConfigMap (templates/deployment-api.yaml:37-48) — the
+# exact mechanism values-e2e.yaml already uses for its own relaxations. The
+# gate script additionally asserts zero rate_limited responses were
+# observed, so this relaxation is belt-and-braces, not the discriminator
+# the gate relies on.
+#
+# keda.enabled: false — every ScaledObject template
+# (templates/scaledobject-*.yaml) and the worker Deployment's own KEDA-owned
+# spec.replicas omission (templates/deployment-worker.yaml:23) are gated on
+# `and .Values.keda.enabled .Values.prometheus.enabled`. Setting this one
+# key false renders ZERO ScaledObjects and restores a static `worker`
+# Deployment at worker.replicas (1, values.yaml default). This gate proves
+# quota admission across API replicas; autoscaling is irrelevant to it, and
+# turning KEDA off removes the KEDA chart install, the image class's
+# scale-from-zero cold start on round 1, and any cooldown-vs-round-cadence
+# interaction from the gate's 10-round timing budget entirely. This
+# deliberately DIVERGES from values-loadproof.yaml, whose whole purpose is
+# the opposite (proving KEDA scale behavior).
+
+api:
+  replicas: 2
+  extraEnv:
+    RATE_LIMIT_IP_RPM: "6000"
+    RATE_LIMIT_CLIENT_RPM: "6000"
+
+keda:
+  enabled: false
