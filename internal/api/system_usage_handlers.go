@@ -267,13 +267,26 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		ur := usageByKey[k] // zero value if absent: all used_* fields zero
 		lm, hasLimit := limitsByKey[k]
 
-		// A usage row's client should always have a metadata entry (every
-		// client_usage_daily row's client_id has a FK to clients, ON DELETE
-		// CASCADE) — this lookup is defensive only. If it is somehow absent,
-		// still emit the row with empty name/enforcement_mode rather than
-		// dropping it, because dropping would hide real usage from the
-		// operator.
-		cm := meta[k.clientID]
+		// UsageSummary (:202) and ListAllLimits (:208) share no transaction or
+		// snapshot, so a client deleted between them yields a usage key with
+		// no metadata entry; emitting it would produce client_name: "" and
+		// enforcement_mode: "", and docs/openapi.yaml declares
+		// enforcement_mode as enum: [observe, enforce] and required — the
+		// exact output shape the client_id IS NOT NULL guards in
+		// internal/jobs/usage_query.go:106,126 were added to prevent through
+		// the other door (53-REVIEW-GAPS.md WR-02). Skipping here is correct
+		// rather than lossy: a key reaching this branch can only describe a
+		// client that no longer exists, so there is no live operator subject
+		// whose usage is being hidden. Defaulting to "observe" was
+		// considered and rejected — it would fabricate a configuration claim
+		// about a client that is gone. The meta-seeded third term of the
+		// key-set union above is by construction always present in meta, so
+		// this skip can only ever fire for a usageByKey or limitsByKey key,
+		// never for a synthetic idle-client row.
+		cm, haveMeta := meta[k.clientID]
+		if !haveMeta {
+			continue
+		}
 
 		row := systemUsageRow{
 			ClientID:        k.clientID,
