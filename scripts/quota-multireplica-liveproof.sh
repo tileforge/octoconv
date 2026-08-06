@@ -108,11 +108,15 @@ FIXTURE_CONTENT_TYPE="${FIXTURE_CONTENT_TYPE:-image/png}"
 QUOTA_K="${QUOTA_K:-2}"
 BURST_N="${BURST_N:-10}"
 ROUNDS="${ROUNDS:-10}"
-# BURST_SEND_SPREAD_MS (Plan 55-02 Task 1): the max allowed spread, in
-# milliseconds, between the earliest and latest send_ts in one round's
-# burst -- the "concurrency of flight" assertion (assess_round, appended
-# below) fails a round whose requests were serialized rather than genuinely
-# in flight together.
+# BURST_SEND_SPREAD_MS: the max allowed spread, in milliseconds, between
+# the earliest and latest send_ts in one round's burst -- the "concurrency
+# of flight" assertion (assess_round, below) fails a round whose requests
+# were serialized rather than genuinely in flight together. As of Plan
+# 55-06 the FIFO barrier releasing the burst lives entirely inside the
+# burst pod (scripts/quota-burst-driver.sh), one network hop closer to the
+# api than the host-side barrier this replaced -- which can only TIGHTEN
+# the observed spread, never widen it. The threshold itself does not
+# change, and must not be changed on that basis.
 BURST_SEND_SPREAD_MS="${BURST_SEND_SPREAD_MS:-1000}"
 DB_LOCAL_PORT="${DB_LOCAL_PORT:-15434}"
 API_KEY_SALT="${API_KEY_SALT:-dev-only-change-me-in-real-deploys}"
@@ -650,6 +654,16 @@ assert_eq "t" "$LIMIT_DAILY_JOBS_NULL" "client_limits.max_daily_jobs IS NULL rea
 CLIENT_ENFORCEMENT_MODE=$(psql_q "SELECT enforcement_mode FROM clients WHERE id='${CLIENT_ID}'")
 assert_eq "enforce" "$CLIENT_ENFORCEMENT_MODE" "clients.enforcement_mode readback"
 
+# Transfer the minted key into the burst pod, immediately after the four
+# anti-vacuity readbacks pass. Piped through stdin into a umask-077 file --
+# never an argv element of any command, so it appears in neither the pod's
+# own process table nor the exec request the API server records. Verified
+# by byte count against ${#CLIENT_KEY}, which proves delivery without
+# printing a single character of the key.
+printf '%s' "$CLIENT_KEY" | kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c "umask 077; cat > $POD_APIKEY_PATH"
+POD_APIKEY_BYTES=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- wc -c "$POD_APIKEY_PATH" | awk '{print $1}')
+assert_eq "${#CLIENT_KEY}" "$POD_APIKEY_BYTES" "api key transferred into $BURST_POD (byte count matches; key itself never echoed)"
+
 QUOTA_KILL_SWITCH=$(kubectl exec -n "$NAMESPACE" "$API_POD_1" -- printenv QUOTA_ENFORCEMENT_DISABLED 2>/dev/null || true)
 QUOTA_KILL_SWITCH="${QUOTA_KILL_SWITCH:-false}"
 if [ "$QUOTA_KILL_SWITCH" = "true" ]; then
@@ -666,21 +680,40 @@ assert_eq "0" "$(inflight_count "$CLIENT_ID")" "fresh client starts with zero in
 # D-06/D-08 -- there is deliberately no release code anywhere).
 # ---------------------------------------------------------------------------
 
-# job_status JOB_ID -- GETs /v1/jobs/{id} via the ClusterIP and echoes the
-# status field.
+# in_pod_http URL [EXTRA_ARGS...] -- execs into $BURST_POD and issues one
+# HTTP request from inside the cluster (the ClusterIP is unreachable from
+# this host at all, per the header's rewritten "THE REACHABILITY
+# DIVERGENCE"). Deliberately named without the substring this helper's
+# single in-pod invocation wraps, so the file-scoped acceptance grep for
+# that substring stays meaningful. URL and EXTRA_ARGS are passed as
+# positional parameters to the remote shell (never interpolated into the
+# script string), and the Authorization header value is read in-pod from
+# the transferred api key file via command substitution -- the key never
+# crosses a command line, on this host OR in the pod.
+in_pod_http() {
+	local url="$1"
+	shift
+	kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -c '
+		u="$1"
+		shift
+		exec curl -s -H "Authorization: ApiKey $(cat '"$POD_APIKEY_PATH"')" "$@" "$u"
+	' sh "$url" "$@"
+}
+
+# job_status JOB_ID -- GETs /v1/jobs/{id} via the ClusterIP (from inside
+# the pod) and echoes the status field.
 job_status() {
 	local job_id="$1"
-	curl -s --max-time 10 -H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}" |
+	in_pod_http "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}" --max-time 10 |
 		grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 
-# cancel_job JOB_ID -- POSTs /v1/jobs/{id}/cancel via the ClusterIP. A
-# non-2xx is tolerated and never aborts the gate -- the job may already be
-# terminal by the time this fires.
+# cancel_job JOB_ID -- POSTs /v1/jobs/{id}/cancel via the ClusterIP (from
+# inside the pod). A non-2xx is tolerated and never aborts the gate -- the
+# job may already be terminal by the time this fires.
 cancel_job() {
 	local job_id="$1"
-	curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
-		-H "Authorization: ApiKey $CLIENT_KEY" "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}/cancel" >/dev/null 2>&1 || true
+	in_pod_http "http://${CLUSTER_IP}:8090/v1/jobs/${job_id}/cancel" -o /dev/null -w '%{http_code}' --max-time 10 -X POST >/dev/null 2>&1 || true
 }
 
 # wait_terminal JOB_ID TIMEOUT_S -- polls job_status every 2s until the
@@ -728,70 +761,88 @@ drain_round() {
 }
 
 # ---------------------------------------------------------------------------
-# Burst generator (Plan 55-02 Task 1). epoch_ms/fire_burst are called once
-# per round by run_round (Plan 55-02 Task 2) inside the STEP 6 main loop
-# (Plan 55-02 Task 3, appended below this block).
+# Burst generator. fire_burst is called once per round by run_round inside
+# the STEP 6 main loop below. As of Plan 55-06 the FIFO-barrier burst
+# itself -- BURST_N requests, each from its own curl PROCESS, released
+# together by a single write to a named pipe -- runs entirely INSIDE the
+# burst pod via scripts/quota-burst-driver.sh (the one-curl-process-per-
+# request reasoning, RESEARCH.md Pitfall 2, moved there verbatim in
+# substance -- see that file's own header). fire_burst's job here is
+# narrower: invoke the driver, validate its result stream before trusting
+# one byte of it, and materialize the exact per-request .rec/.json files
+# assess_round already expects -- assess_round itself is UNCHANGED by this
+# plan.
 # ---------------------------------------------------------------------------
 
-# epoch_ms -- millisecond-precision epoch timestamp. See STEP 1's TS_TOOL
-# preflight assertion above for why python3/perl rather than `date +%s%3N`
-# (unsupported on macOS/BSD date).
-epoch_ms() {
-	if [ "$TS_TOOL" = "python3" ]; then
-		python3 -c 'import time; print(int(time.time() * 1000))'
-	else
-		perl -MTime::HiRes -e 'printf("%d\n", Time::HiRes::time() * 1000)'
-	fi
-}
-
-# fire_burst ROUND -- FIFO-barrier burst: BURST_N requests, each from its
-# own curl PROCESS (never a reused connection), released together by a
-# single write to a per-round named pipe.
-#
-# ONE-CURL-PROCESS-PER-REQUEST IS LOAD-BEARING, NOT STYLISTIC (RESEARCH.md
-# Pitfall 2): kube-proxy makes its Service DNAT endpoint choice once per
-# NEW TCP connection. A single curl process reusing one keep-alive
-# connection across all BURST_N requests of a round would pin every
-# request in that round to whichever pod the FIRST connection landed on --
-# collapsing the cross-pod distribution the calibration step (STEP 4)
-# already proved works, even though ClusterIP reachability itself would
-# still be fine. Do NOT collapse this into one curl invocation with
-# --next/multiple -O, and do NOT switch to an HTTP client that pools
-# connections across requests without explicitly disabling keep-alive.
+# fire_burst ROUND -- runs the in-pod driver in burst mode, then validates
+# and reshapes its output.
 fire_burst() {
-	local round="$1" i
-	local barrier="$WORKDIR/barrier-${round}"
-	mkfifo "$barrier"
+	local round="$1"
+	local driver_out="$WORKDIR/r${round}-driver.out"
+	local driver_err="$WORKDIR/r${round}-driver.err"
+	local driver_status=0
 
-	for i in $(seq 1 "$BURST_N"); do
-		(
-			exec 3<"$barrier"
-			read -r -u 3 _ # blocks until the barrier below is released
-			local request_id="burst-${RUN_ID}-${round}-${i}"
-			local send_ts recv_ts http_status
-			send_ts=$(epoch_ms)
-			http_status=$(curl -s -o "$WORKDIR/r${round}-req${i}.json" -w '%{http_code}' \
-				--max-time 60 \
-				-H "Authorization: ApiKey $CLIENT_KEY" \
-				-H "X-Request-Id: burst-${RUN_ID}-${round}-${i}" \
-				-X POST "http://${CLUSTER_IP}:8090/v1/jobs" \
-				-F "target=${TARGET_FORMAT}" \
-				-F "file=@${FIXTURE};type=${FIXTURE_CONTENT_TYPE}")
-			recv_ts=$(epoch_ms)
-			printf '%s\t%s\t%s\t%s\t%s\n' "$i" "$request_id" "$send_ts" "$recv_ts" "$http_status" \
-				>"$WORKDIR/r${round}-req${i}.rec"
-		) &
-	done
+	# set -e is in force, so the exit status is captured explicitly rather
+	# than letting a non-zero exit abort with no diagnosis.
+	kubectl exec -n "$NAMESPACE" "$BURST_POD" -- "$POD_DRIVER_PATH" burst \
+		"http://${CLUSTER_IP}:8090" "$RUN_ID" "$round" "$BURST_N" \
+		"$TARGET_FORMAT" "$POD_FIXTURE_PATH" "$FIXTURE_CONTENT_TYPE" "$POD_APIKEY_PATH" \
+		>"$driver_out" 2>"$driver_err" || driver_status=$?
+	if [ "$driver_status" -ne 0 ]; then
+		echo "FAIL: round ${round} -- driver exited ${driver_status}. stderr tail:" >&2
+		tail -n 20 "$driver_err" >&2 2>/dev/null || true
+		exit 1
+	fi
 
-	# Let every backgrounded subshell reach its blocking read before
-	# releasing the barrier -- without this, a slow-to-fork subshell could
-	# still be between `exec 3<...` and `read` when the write below lands,
-	# missing the release entirely (a race in the barrier mechanism itself,
-	# not the thing under test).
-	sleep 0.3
-	printf 'go\n' >"$barrier"
-	wait
-	rm -f "$barrier"
+	# Five independent stream checks, each its own hard failure naming the
+	# round and the observed number. These exist because a truncated stream
+	# would otherwise read as "those requests were simply not admitted",
+	# which would still satisfy every "never more than K" assertion below
+	# and pass the gate while proving nothing.
+	local begin_count end_count emitted row_count distinct_list expected_list malformed
+
+	begin_count=$(grep -c '^===BURST-BEGIN' "$driver_out")
+	end_count=$(grep -c '^===BURST-END' "$driver_out")
+	if [ "$begin_count" -ne 1 ] || [ "$end_count" -ne 1 ]; then
+		echo "FAIL: round ${round} -- expected exactly one BEGIN and one END sentinel, observed begin=${begin_count} end=${end_count}." >&2
+		exit 1
+	fi
+
+	emitted=$(grep '^===BURST-END' "$driver_out" | sed -n 's/.*emitted=\([0-9]*\).*/\1/p')
+	if [ "$emitted" != "$BURST_N" ]; then
+		echo "FAIL: round ${round} -- driver declared emitted=${emitted}, expected ${BURST_N}." >&2
+		exit 1
+	fi
+
+	row_count=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | wc -l | tr -d '[:space:]')
+	if [ "$row_count" != "$BURST_N" ]; then
+		echo "FAIL: round ${round} -- observed ${row_count} rows between the sentinels, expected ${BURST_N}." >&2
+		exit 1
+	fi
+
+	malformed=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | awk -F'\t' 'NF != 6')
+	assert_empty "$malformed" "round ${round}: every driver row has exactly six tab-separated fields"
+
+	distinct_list=$(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-' | awk -F'\t' '{print $1}' | sort -n -u)
+	expected_list=$(seq 1 "$BURST_N")
+	if [ "$distinct_list" != "$expected_list" ]; then
+		echo "FAIL: round ${round} -- row indices do not cover 1..${BURST_N} exactly once (observed distinct set: $(printf '%s' "$distinct_list" | tr '\n' ' '))." >&2
+		exit 1
+	fi
+
+	# Materialize the .rec/.json files assess_round expects -- the contract
+	# is deliberately preserved so assess_round, with its six assertions and
+	# the D-05 cross-pod check, is not modified by this plan at all.
+	# send_ts_ms/recv_ts_ms are now the burst POD's clock, not the host's --
+	# strictly better, because every comparison the harness makes is
+	# pod-clock against pod-clock inside a single round; no host-to-pod
+	# clock comparison exists anywhere in this file.
+	local idx request_id send_ts recv_ts status body
+	while IFS=$'\t' read -r idx request_id send_ts recv_ts status body; do
+		printf '%s\t%s\t%s\t%s\t%s\n' "$idx" "$request_id" "$send_ts" "$recv_ts" "$status" \
+			>"$WORKDIR/r${round}-req${idx}.rec"
+		printf '%s' "$body" >"$WORKDIR/r${round}-req${idx}.json"
+	done < <(sed -n '/^===BURST-BEGIN/,/^===BURST-END/p' "$driver_out" | grep -v '^===BURST-')
 }
 
 # Evidence TSV initialization -- must happen before round 1 fires. Header
