@@ -369,7 +369,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 55-02-PLAN.md — live-gate harness Part B: FIFO-barrier burst with per-request timestamps, per-round classification by body `code`, pod attribution join, the D-05 cross-pod assertion, ten-round loop and committed evidence TSV
+- [x] 55-02-PLAN.md — live-gate harness Part B: FIFO-barrier burst with per-request timestamps, per-round classification by body `code`, pod attribution join, the D-05 cross-pod assertion, ten-round loop and committed evidence TSV
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -435,7 +435,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 3/5 | In Progress|  |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 4/5 | In Progress|  |
 
 ---
 
