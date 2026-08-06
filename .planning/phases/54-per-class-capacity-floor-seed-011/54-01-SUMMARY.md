@@ -164,6 +164,16 @@ None - no external service configuration required. Chart-only change; defaults u
 - **Handoff note for 54-02:** the new CI job's `helm template`/`helm lint` invocations will need the same `secrets.*` `--set` flags (or `-f values-local.yaml`) documented in this SUMMARY's Interface Contract section, or they will fail on `templates/secret.yaml` before ever reaching a KEDA assertion.
 - No blockers. `git diff internal/convert/exec.go` remains empty; the three existing overlays (`values-local.yaml`, `values-e2e.yaml`, `values-loadproof.yaml`) were not touched, per D-04.
 
+## Self-Check: PASSED
+
+- FOUND: `deploy/chart/octoconv/templates/_helpers.tpl`
+- FOUND: `deploy/chart/octoconv/values.yaml`
+- FOUND: `.planning/phases/54-per-class-capacity-floor-seed-011/54-01-SUMMARY.md`
+- FOUND commit `b31d45c` (Task 1)
+- FOUND commit `6279568` (Task 2)
+- FOUND commit `ddfa2ef` (Task 3)
+- FOUND commit `b87b45d` (SUMMARY.md)
+
 ---
 *Phase: 54-per-class-capacity-floor-seed-011*
 *Completed: 2026-08-06*
