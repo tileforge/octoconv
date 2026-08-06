@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -48,11 +49,44 @@ const (
 // a daily rejection returns the seconds remaining until UTC midnight, a
 // concurrency rejection returns a short constant, because a slot frees
 // unpredictably.
+//
+// The two daily sentinels are now normally delivered wrapped in a
+// *DailyQuotaError (see below), never bare, so any consumer MUST keep using
+// errors.Is (or errors.As for DailyQuotaError itself) -- never ==, which
+// would stop matching the moment a verdict arrives wrapped.
 var (
 	ErrConcurrencyLimit = errors.New("concurrency limit exceeded")
 	ErrDailyBytesLimit  = errors.New("daily byte limit exceeded")
 	ErrDailyJobsLimit   = errors.New("daily job-count limit exceeded")
 )
+
+// DailyQuotaError wraps ErrDailyBytesLimit or ErrDailyJobsLimit with the
+// Postgres instant evaluate's daily branch was evaluated at (EvaluatedAt),
+// so a caller computing a daily rejection's Retry-After can derive it
+// against the SAME clock the daily-window filter used, rather than the API
+// process's own wall clock at response-write time -- the bug closed by
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md (a
+// daily rejection could otherwise advertise Retry-After: ~86400 for a quota
+// that had already reset, in the narrow window where the DB evaluation
+// happens just before UTC midnight and the response is formatted just
+// after).
+//
+// The sentinel stays the identity for errors.Is: Unwrap returns Err
+// unchanged, so QuotaReason and every existing errors.Is(err,
+// ErrDailyBytesLimit/ErrDailyJobsLimit) call site need no change at all.
+// EvaluatedAt is Postgres's now() at transaction start -- the identical
+// value recordUsage (usage.go) writes its client_usage_daily.day from -- not
+// a value re-derived on the API side.
+type DailyQuotaError struct {
+	// Err is always ErrDailyBytesLimit or ErrDailyJobsLimit.
+	Err error
+	// EvaluatedAt is the Postgres now() the daily-window filter used.
+	EvaluatedAt time.Time
+}
+
+func (e *DailyQuotaError) Error() string { return e.Err.Error() }
+
+func (e *DailyQuotaError) Unwrap() error { return e.Err }
 
 // Quota reason labels. The SAME taxonomy is reused for both the observe-mode
 // would-be-rejected signal and any live-enforcement rejection (D-14) -- one
@@ -245,6 +279,12 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 		}
 		// >= is deliberate: it is what makes an explicit max_concurrent = 0
 		// deny the engine entirely (0013_client_limits.sql).
+		//
+		// Returned bare, never wrapped in DailyQuotaError (or an analogous
+		// wrapper): its Retry-After is the fixed
+		// quotaConcurrencyRetryAfterSeconds constant, with no dependency on
+		// any evaluation clock, so wrapping it would add a field nothing
+		// reads.
 		if count >= *st.maxConcurrent {
 			return ErrConcurrencyLimit, nil
 		}
@@ -282,6 +322,7 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 		// never over-admission, already bounded and measured by plan
 		// 52-05's TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste.
 		var bytesUsed, jobsUsed int64
+		var evaluatedAt time.Time
 		if err := q.QueryRow(ctx, `
 			SELECT
 				COALESCE((SELECT sum(bytes_in) FROM client_usage_daily
@@ -291,7 +332,17 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 				COALESCE((SELECT sum(job_count) FROM client_usage_daily
 					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
 				+ COALESCE((SELECT count(*) FROM jobs j
-					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0)`,
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0),
+				-- Third column, added for DailyQuotaError.EvaluatedAt: bare
+				-- now() (transaction-start time), NOT (now() AT TIME ZONE
+				-- 'utc') as used by the day filters above. Selecting the bare
+				-- form keeps it a timestamptz, so pgx returns an unambiguous
+				-- instant; the API layer's secondsUntilUTCMidnight already
+				-- normalizes via now.UTC(), so the zone work happens exactly
+				-- once, there. Scanning a timestamp WITHOUT time zone here
+				-- instead would be a silent zone trap: it would carry no
+				-- offset and get reinterpreted at the read site.
+				now()`,
 			// The in-flight subqueries above write their two statuses as SQL
 			// literals, NOT as bound parameters: the literal form is what the
 			// planner can match against jobs_client_engine_inflight_idx's
@@ -346,17 +397,17 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 			// `j.created_at >= (now() AT TIME ZONE 'utc')::date` predicate
 			// would silently have.
 			clientID, engine,
-		).Scan(&bytesUsed, &jobsUsed); err != nil {
+		).Scan(&bytesUsed, &jobsUsed, &evaluatedAt); err != nil {
 			return nil, fmt.Errorf("read daily usage: %w", err)
 		}
 		// The incoming request's own input size, and its own +1 job,
 		// participate in the comparison -- the limit means "would exceed",
 		// not "already exceeded".
 		if st.maxDailyBytes != nil && bytesUsed+inputBytes > *st.maxDailyBytes {
-			return ErrDailyBytesLimit, nil
+			return &DailyQuotaError{Err: ErrDailyBytesLimit, EvaluatedAt: evaluatedAt}, nil
 		}
 		if st.maxDailyJobs != nil && jobsUsed+1 > *st.maxDailyJobs {
-			return ErrDailyJobsLimit, nil
+			return &DailyQuotaError{Err: ErrDailyJobsLimit, EvaluatedAt: evaluatedAt}, nil
 		}
 	}
 
