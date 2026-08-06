@@ -53,6 +53,13 @@ jobs:
           # ScaledObjects and makes every assertion in this job pass
           # vacuously. Do not "clean up" these flags.
 
+          # `helm lint` below covers chart structure/schema only. It is NOT part
+          # of the D-02 validation surface and must not be treated as such
+          # (WR-01): helm v4.2.3 downgrades a template `fail` to an INFO log
+          # (`level=INFO msg="funcMap fail"`) and still reports
+          # `0 chart(s) failed`, exit 0. All D-02 coverage in this job comes
+          # from the `helm template` steps below -- do not delete one of those
+          # on the assumption that lint still catches it.
           echo "### helm lint (default values)"
           helm lint "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET
 
