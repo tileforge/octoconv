@@ -337,7 +337,11 @@ Plans:
   2. Setting a non-zero `minReplicaCount` for one engine class does not alter another class's `ScaledObject`/PromQL or its scale-from-zero behavior — confirmed by a template diff touching only the intended class.
   3. `helm lint`/`helm template` render cleanly for both the default (all-zero) values and an example non-zero override, with no live cluster required — this is chart-only, no architectural novelty (research: skip live-gate for this phase).
 
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 54-01-PLAN.md — Values-driven minReplicaCount + floor-derived fallback.replicas via a validating `_helpers.tpl` define, wired into all 7 ScaledObjects (SC1)
+- [ ] 54-02-PLAN.md — `values-capacity-floor.yaml` example override + a `helm` CI job proving per-class isolation, clean render, and that the D-02 validation fires (SC2/SC3)
 
 ### Phase 55: Live Gate — Multi-Replica Quota Correctness
 
