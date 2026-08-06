@@ -184,6 +184,36 @@ jobs:
           echo "$OUT_B" | grep -q 'keda.ocr.minReplicaCount'
           echo "OK: negative case B failed as expected (rc=$RC_B)"
 
+          echo "### negative case C -- non-integer floors must NOT coerce silently (CR-01): sprig's int is cast.ToInt, which discards its parse error and returns 0. Cases A and B above use only BARE INTEGERS, so they never touch this path -- every input below used to render minReplicaCount: 0 and exit 0, bypassing BOTH guards and silently discarding the operator's floor."
+          for bad in '99.9' '-0.5' '2.9' '2.0' 'abc' 'true' '' 'null'; do
+            set +e
+            OUT_C=$(helm template octoconv "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET --set "keda.image.minReplicaCount=${bad}" 2>&1)
+            RC_C=$?
+            set -e
+            if [ "$RC_C" -eq 0 ]; then
+              echo "FAIL: --set keda.image.minReplicaCount=[${bad}] rendered successfully -- the raw-kind guard did not fire, so the configured floor was silently coerced"
+              echo "$OUT_C" | grep -E '^  minReplicaCount:' || true
+              exit 1
+            fi
+            echo "$OUT_C" | grep -q 'keda.image.minReplicaCount'
+            echo "$OUT_C" | grep -q 'must be a whole number'
+            echo "OK: [${bad}] rejected (rc=$RC_C)"
+          done
+
+          echo "### negative case D -- a null/absent ceiling is its own misconfiguration (CR-01): without the raw-kind check it coerced to 0 and got mis-reported as a minReplicaCount problem"
+          set +e
+          OUT_D=$(helm template octoconv "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET --set 'keda.image.maxReplicaCount=null' 2>&1)
+          RC_D=$?
+          set -e
+          echo "$OUT_D"
+          if [ "$RC_D" -eq 0 ]; then
+            echo "FAIL: expected a null keda.image.maxReplicaCount to abort the render, but helm template exited 0"
+            exit 1
+          fi
+          echo "$OUT_D" | grep -q 'keda.image.maxReplicaCount'
+          echo "$OUT_D" | grep -q 'must be a whole number'
+          echo "OK: negative case D failed as expected (rc=$RC_D)"
+
   # Tier 1: fast gate — gofmt/vet/build/test, no external services.
   # internal/e2e self-skips here (E2E_BASE_URL unset), keeping this tier
   # offline-safe (SC1).
