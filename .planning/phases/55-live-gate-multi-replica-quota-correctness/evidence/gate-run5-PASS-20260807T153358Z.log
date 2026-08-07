@@ -1,0 +1,364 @@
+=== Phase 55 (QUOT-05) quota multi-replica live gate -- run 20260807T153358Z ===
+
+--- STEP 1: preflight ---
+PASS: kubectl reaches the OrbStack cluster (context: orbstack)
+PASS: helm, kubectl, docker, awk, base64 all present on PATH (jq is NOT required -- this script parses JSON with grep/cut, matching the existing scripts)
+PASS: fixture file present at scripts/fixtures/quota-burst-heavy.png
+PASS: compose stack is down (0 octoconv-* containers running)
+PASS: local driver script present at scripts/quota-burst-driver.sh
+PASS: burst image buildpack-deps:bookworm-curl available locally
+PASS: THE INVARIANT -- BURST_SEND_SPREAD_MS (250) * SPREAD_SAFETY_FACTOR (20) = 5000 <= MIN_ENGINE_WALL_MS (5933)
+PASS: fixture byte size (259682) >= 100000 (guards against reverting to a too-small fixture that reopens the premise failure)
+PASS: newest migration is 0014_client_usage_canceled (mtime epoch 1785806474)
+PASS: image octoconv-api:dev present locally
+PASS: image octoconv-api:dev built (epoch 1786111537) after newest migration 0014_client_usage_canceled (epoch 1785806474)
+PASS: image octoconv-api:dev's api binary embeds newest migration name 0014_client_usage_canceled
+PASS: image octoconv-worker:dev present locally
+PASS: image octoconv-worker:dev built (epoch 1786111130) after newest migration 0014_client_usage_canceled (epoch 1785806474)
+PASS: image octoconv-worker:dev has vips at /usr/bin/vips
+
+--- STEP 2: two-phase install (migration-race guard) ---
+Release "octoconv" does not exist. Installing it now.
+NAME: octoconv
+LAST DEPLOYED: Fri Aug  7 18:34:05 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: Phase A helm upgrade --install (api.replicas forced to 1) complete
+deployment.apps/postgres condition met
+PASS: deployment/postgres Available (Phase A)
+deployment.apps/redis condition met
+PASS: deployment/redis Available (Phase A)
+deployment.apps/minio condition met
+PASS: deployment/minio Available (Phase A)
+deployment.apps/api condition met
+PASS: deployment/api Available (Phase A)
+deployment.apps/worker condition met
+PASS: deployment/worker Available (Phase A)
+Release "octoconv" has been upgraded. Happy Helming!
+NAME: octoconv
+LAST DEPLOYED: Fri Aug  7 18:35:02 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 2
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: Phase B helm upgrade (api.replicas from overlay = 2) complete
+deployment "api" successfully rolled out
+PASS: deployment/api rollout complete (Phase B)
+
+--- STEP 3: replica / endpoint / pod-set assertions (SC1 precondition) ---
+PASS: api Deployment spec.replicas == 2
+endpoint source used: endpoints
+PASS: api Service ready endpoint count == 2
+PASS: api pod count discovered == 2
+PASS: API_POD_1 discovered == api-6769bc54f7-frgdx
+PASS: API_POD_2 discovered == api-6769bc54f7-t8j4m
+api pods: api-6769bc54f7-frgdx api-6769bc54f7-t8j4m
+PASS: pod set recorded to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.kJTLYqqtzx/api-pods-start.txt for the end-of-run pod-set-unchanged assertion (Plan 55-02)
+
+--- STEP 4: ClusterIP discovery + in-cluster burst pod + calibration ---
+PASS: api Service ClusterIP discovered == 192.168.194.207
+pod/octoconv-burst-20260807t153358z created
+pod/octoconv-burst-20260807t153358z condition met
+PASS: burst pod octoconv-burst-20260807t153358z ready (image buildpack-deps:bookworm-curl, component=quota-burst -- distinct from the component=api selector the pod-set assertions use)
+PASS: burst pod toolchain complete (mkfifo awk seq base64 sha256sum) (empty, as required)
+PASS: burst pod millisecond clock honors %3N (1786116913552) == 1786116913552
+PASS: driver and fixture transferred into octoconv-burst-20260807t153358z
+PASS: driver sha256 matches after transfer == e90df52b59dbceecc27f004a983963b5659a880d9ba5e9c5a428e8b47c3517b6
+PASS: driver byte count matches after transfer == 15194
+PASS: fixture sha256 matches after transfer == f259c33186c8a27319ded89854c59ed93f010a78e2cc28a14fe93b592373e0a1
+PASS: fixture byte count matches after transfer == 259682
+PASS: calibration probes returning 200 == 20
+PASS: calibration probes landed on API_POD_1 (api-6769bc54f7-frgdx) (12 >= 1)
+PASS: calibration probes landed on API_POD_2 (api-6769bc54f7-t8j4m) (8 >= 1)
+PASS: calibration pod-hit sum equals probes fired == 20
+PASS: calibration -- in-cluster ClusterIP routing (burst pod octoconv-burst-20260807t153358z) distributed 20 probes across both api pods (pod1=12, pod2=8) -- this line is itself SC2 evidence that two replicas really served traffic
+
+--- STEP 5: postgres port-forward, DB ground truth, throwaway client provisioning ---
+PASS: psql_q preflight (SELECT 1 against postgres pod) == 1
+burst pod clock=1786116920846 ms, postgres clock_timestamp()=1786116921618 ms
+PASS: clock skew (ms) between burst pod and Postgres clock_timestamp() (772 <= 1000)
+PASS: minted client id == ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2
+PASS: minted client api key == [REDACTED, 43 chars]
+2026/08/07 18:35:25 set limit for client ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2 engine image
+2026/08/07 18:35:26 set enforcement mode enforce for client ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2
+PASS: set-limit + set-mode invoked (max-concurrent=2, unlimited daily bytes/jobs, enforcement_mode=enforce)
+PASS: client_limits.max_concurrent readback == 2
+PASS: client_limits.max_daily_bytes IS NULL readback == t
+PASS: client_limits.max_daily_jobs IS NULL readback == t
+PASS: clients.enforcement_mode readback == enforce
+PASS: api key transferred into octoconv-burst-20260807t153358z (byte count matches; key itself never echoed) == 43
+PASS: QUOTA_ENFORCEMENT_DISABLED kill-switch off (read from api-6769bc54f7-frgdx) == false
+PASS: fresh client starts with zero in-flight jobs == 0
+PASS: evidence TSV initialized at /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z.tsv
+PASS: timeline TSV initialized at /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- STEP 6: 10-round burst loop (K=2, N=10 per round) ---
+
+--- round 1/10 ---
+PASS: round 1: cap is free before the barrier fires == 0
+PASS: round 1: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 1: every request attributed to exactly one pod == 10
+PASS: round 1: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786116931179ms)
+PASS: round 1: admitted count == 2
+PASS: round 1: quota_exceeded rejection count == 8
+PASS: round 1: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=2, api-6769bc54f7-t8j4m admit=1 reject=6
+PASS: round 1: burst send spread (ms) (4 <= 250)
+PASS: round 1: requests provably in flight when the last request was sent (10 >= 5)
+round 1: min_send=1786116930520 max_send=1786116930524 in_flight_at_max_send=10
+drain: job 7ecbe258-f6a1-47d5-8d6a-aaf60d891cb3 last status=done
+drain: job 2aaf0bf0-c702-42f8-8d37-8e5560066b9f last status=done
+PASS: drain_round -- all jobs [ 7ecbe258-f6a1-47d5-8d6a-aaf60d891cb3 2aaf0bf0-c702-42f8-8d37-8e5560066b9f] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 1: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (10206 >= 2000)
+PASS: round 1: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (10206 >= 80)
+PASS: round 1: every admitted job's final status is exactly 'done' == done
+PASS: round 1: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 2/10 ---
+PASS: round 2: cap is free before the barrier fires == 0
+PASS: round 2: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 2: every request attributed to exactly one pod == 10
+PASS: round 2: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786116945632ms)
+PASS: round 2: admitted count == 2
+PASS: round 2: quota_exceeded rejection count == 8
+PASS: round 2: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=3, api-6769bc54f7-t8j4m admit=1 reject=5
+PASS: round 2: burst send spread (ms) (11 <= 250)
+PASS: round 2: requests provably in flight when the last request was sent (10 >= 5)
+round 2: min_send=1786116945386 max_send=1786116945397 in_flight_at_max_send=10
+drain: job 746bc0d7-8db7-436c-aca7-d43cbb7a9ff3 last status=done
+drain: job b4656ad5-ac8a-4a7f-8ae2-244c644eb26c last status=done
+PASS: drain_round -- all jobs [ 746bc0d7-8db7-436c-aca7-d43cbb7a9ff3 b4656ad5-ac8a-4a7f-8ae2-244c644eb26c] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 2: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (11001 >= 2000)
+PASS: round 2: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (11001 >= 220)
+PASS: round 2: every admitted job's final status is exactly 'done' == done
+PASS: round 2: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 3/10 ---
+PASS: round 3: cap is free before the barrier fires == 0
+PASS: round 3: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 3: every request attributed to exactly one pod == 10
+PASS: round 3: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786116960676ms)
+PASS: round 3: admitted count == 2
+PASS: round 3: quota_exceeded rejection count == 8
+PASS: round 3: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=3, api-6769bc54f7-t8j4m admit=1 reject=5
+PASS: round 3: burst send spread (ms) (1 <= 250)
+PASS: round 3: requests provably in flight when the last request was sent (10 >= 5)
+round 3: min_send=1786116960613 max_send=1786116960614 in_flight_at_max_send=10
+drain: job dc6157e0-cf3f-448f-a403-763a8a28660d last status=done
+drain: job 3acbe175-2ccf-43c2-ae9a-3d1918cc1c03 last status=done
+PASS: drain_round -- all jobs [ dc6157e0-cf3f-448f-a403-763a8a28660d 3acbe175-2ccf-43c2-ae9a-3d1918cc1c03] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 3: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (9014 >= 2000)
+PASS: round 3: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (9014 >= 20)
+PASS: round 3: every admitted job's final status is exactly 'done' == done
+PASS: round 3: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 4/10 ---
+PASS: round 4: cap is free before the barrier fires == 0
+PASS: round 4: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 4: every request attributed to exactly one pod == 10
+PASS: round 4: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786116976020ms)
+PASS: round 4: admitted count == 2
+PASS: round 4: quota_exceeded rejection count == 8
+PASS: round 4: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=5, api-6769bc54f7-t8j4m admit=1 reject=3
+PASS: round 4: burst send spread (ms) (6 <= 250)
+PASS: round 4: requests provably in flight when the last request was sent (10 >= 5)
+round 4: min_send=1786116975893 max_send=1786116975899 in_flight_at_max_send=10
+drain: job 67c01b66-7a6f-4412-8d8c-6d39c877dfee last status=done
+drain: job 3205453d-8fd5-4be2-b967-8f7ccf1bc59e last status=done
+PASS: drain_round -- all jobs [ 67c01b66-7a6f-4412-8d8c-6d39c877dfee 3205453d-8fd5-4be2-b967-8f7ccf1bc59e] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 4: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (7857 >= 2000)
+PASS: round 4: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (7857 >= 120)
+PASS: round 4: every admitted job's final status is exactly 'done' == done
+PASS: round 4: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 5/10 ---
+PASS: round 5: cap is free before the barrier fires == 0
+PASS: round 5: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 5: every request attributed to exactly one pod == 10
+PASS: round 5: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786116988871ms)
+PASS: round 5: admitted count == 2
+PASS: round 5: quota_exceeded rejection count == 8
+PASS: round 5: cross-pod cap decision -- api-6769bc54f7-frgdx admit=2 reject=5, api-6769bc54f7-t8j4m admit=0 reject=3
+PASS: round 5: burst send spread (ms) (1 <= 250)
+PASS: round 5: requests provably in flight when the last request was sent (10 >= 5)
+round 5: min_send=1786116988708 max_send=1786116988709 in_flight_at_max_send=10
+drain: job 062fc3a6-9f16-4349-b2ee-20dc66fe0a67 last status=done
+drain: job f8f4dd96-9edd-4b5b-84b4-2e2b6fff7287 last status=done
+PASS: drain_round -- all jobs [ 062fc3a6-9f16-4349-b2ee-20dc66fe0a67 f8f4dd96-9edd-4b5b-84b4-2e2b6fff7287] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 5: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (8381 >= 2000)
+PASS: round 5: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (8381 >= 20)
+PASS: round 5: every admitted job's final status is exactly 'done' == done
+PASS: round 5: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 6/10 ---
+PASS: round 6: cap is free before the barrier fires == 0
+PASS: round 6: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 6: every request attributed to exactly one pod == 10
+PASS: round 6: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786117002333ms)
+PASS: round 6: admitted count == 2
+PASS: round 6: quota_exceeded rejection count == 8
+PASS: round 6: cross-pod cap decision -- api-6769bc54f7-frgdx admit=0 reject=7, api-6769bc54f7-t8j4m admit=2 reject=1
+PASS: round 6: burst send spread (ms) (3 <= 250)
+PASS: round 6: requests provably in flight when the last request was sent (10 >= 5)
+round 6: min_send=1786117002236 max_send=1786117002239 in_flight_at_max_send=10
+drain: job 3c58f4bb-cce6-49e8-993d-0b4b22ef3c36 last status=done
+drain: job 4844aaba-e4eb-4155-acd1-3908247fd271 last status=done
+PASS: drain_round -- all jobs [ 3c58f4bb-cce6-49e8-993d-0b4b22ef3c36 4844aaba-e4eb-4155-acd1-3908247fd271] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 6: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (7695 >= 2000)
+PASS: round 6: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (7695 >= 60)
+PASS: round 6: every admitted job's final status is exactly 'done' == done
+PASS: round 6: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 7/10 ---
+PASS: round 7: cap is free before the barrier fires == 0
+PASS: round 7: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 7: every request attributed to exactly one pod == 10
+PASS: round 7: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786117015759ms)
+PASS: round 7: admitted count == 2
+PASS: round 7: quota_exceeded rejection count == 8
+PASS: round 7: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=5, api-6769bc54f7-t8j4m admit=1 reject=3
+PASS: round 7: burst send spread (ms) (3 <= 250)
+PASS: round 7: requests provably in flight when the last request was sent (10 >= 5)
+round 7: min_send=1786117015635 max_send=1786117015638 in_flight_at_max_send=10
+drain: job 8f7506d1-a716-4515-8461-2bb529c34266 last status=done
+drain: job 0ed293d6-cd2a-4227-8ea2-d020546efc42 last status=done
+PASS: drain_round -- all jobs [ 8f7506d1-a716-4515-8461-2bb529c34266 0ed293d6-cd2a-4227-8ea2-d020546efc42] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 7: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (6573 >= 2000)
+PASS: round 7: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (6573 >= 60)
+PASS: round 7: every admitted job's final status is exactly 'done' == done
+PASS: round 7: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 8/10 ---
+PASS: round 8: cap is free before the barrier fires == 0
+PASS: round 8: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 8: every request attributed to exactly one pod == 10
+PASS: round 8: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786117025139ms)
+PASS: round 8: admitted count == 2
+PASS: round 8: quota_exceeded rejection count == 8
+PASS: round 8: cross-pod cap decision -- api-6769bc54f7-frgdx admit=0 reject=7, api-6769bc54f7-t8j4m admit=2 reject=1
+PASS: round 8: burst send spread (ms) (1 <= 250)
+PASS: round 8: requests provably in flight when the last request was sent (10 >= 5)
+round 8: min_send=1786117025087 max_send=1786117025088 in_flight_at_max_send=10
+drain: job f679c0cf-7aaf-4bdb-b406-f93c7e6d06ec last status=done
+drain: job e51d09a3-5fb9-4b6c-826d-53403b0ac2b0 last status=done
+PASS: drain_round -- all jobs [ f679c0cf-7aaf-4bdb-b406-f93c7e6d06ec e51d09a3-5fb9-4b6c-826d-53403b0ac2b0] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 8: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (5983 >= 2000)
+PASS: round 8: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (5983 >= 20)
+PASS: round 8: every admitted job's final status is exactly 'done' == done
+PASS: round 8: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 9/10 ---
+PASS: round 9: cap is free before the barrier fires == 0
+PASS: round 9: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 9: every request attributed to exactly one pod == 10
+PASS: round 9: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786117033674ms)
+PASS: round 9: admitted count == 2
+PASS: round 9: quota_exceeded rejection count == 8
+PASS: round 9: cross-pod cap decision -- api-6769bc54f7-frgdx admit=2 reject=1, api-6769bc54f7-t8j4m admit=0 reject=7
+PASS: round 9: burst send spread (ms) (1 <= 250)
+PASS: round 9: requests provably in flight when the last request was sent (10 >= 5)
+round 9: min_send=1786117033508 max_send=1786117033509 in_flight_at_max_send=10
+drain: job 313868a2-f68a-4c16-8e9b-54b403b7e0b7 last status=done
+drain: job b10d89a2-1e2f-4a31-ba46-df1c5a99f07b last status=done
+PASS: drain_round -- all jobs [ 313868a2-f68a-4c16-8e9b-54b403b7e0b7 b10d89a2-1e2f-4a31-ba46-df1c5a99f07b] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 9: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (7789 >= 2000)
+PASS: round 9: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (7789 >= 20)
+PASS: round 9: every admitted job's final status is exactly 'done' == done
+PASS: round 9: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- round 10/10 ---
+PASS: round 10: cap is free before the barrier fires == 0
+PASS: round 10: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 10: every request attributed to exactly one pod == 10
+PASS: round 10: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=1786117045252ms)
+PASS: round 10: admitted count == 2
+PASS: round 10: quota_exceeded rejection count == 8
+PASS: round 10: cross-pod cap decision -- api-6769bc54f7-frgdx admit=1 reject=4, api-6769bc54f7-t8j4m admit=1 reject=4
+PASS: round 10: burst send spread (ms) (2 <= 250)
+PASS: round 10: requests provably in flight when the last request was sent (10 >= 5)
+round 10: min_send=1786117045180 max_send=1786117045182 in_flight_at_max_send=10
+drain: job 88cbac56-82d8-48cd-b943-04e86744c16d last status=done
+drain: job 739642fa-cf81-43b0-9863-e3e25165903f last status=done
+PASS: drain_round -- all jobs [ 88cbac56-82d8-48cd-b943-04e86744c16d 739642fa-cf81-43b0-9863-e3e25165903f] terminal, inflight_count(ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2)=0
+PASS: round 10: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS (7357 >= 2000)
+PASS: round 10: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread (7357 >= 40)
+PASS: round 10: every admitted job's final status is exactly 'done' == done
+PASS: round 10: timeline rows appended to .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+--- STEP 7: end-of-run global assertions ---
+PASS: api pod set unchanged across the run (api-6769bc54f7-frgdx api-6769bc54f7-t8j4m )
+PASS: rate_limited responses across the whole run == 0
+PASS: TSV data rows (rounds * burst_n) == 100
+PASS: TSV rows with status 202 (rounds * K) == 20
+PASS: TSV rows with status 429 code quota_exceeded (rounds * (N-K)) == 80
+aggregate totals: rows=100 admits=20 quota_rejects=80
+PASS: pod api-6769bc54f7-frgdx served at least one 202 across the run (10 >= 1)
+PASS: pod api-6769bc54f7-frgdx served at least one 429 quota_exceeded across the run (42 >= 1)
+PASS: pod api-6769bc54f7-t8j4m served at least one 202 across the run (10 >= 1)
+PASS: pod api-6769bc54f7-t8j4m served at least one 429 quota_exceeded across the run (38 >= 1)
+cross-pod coverage: api-6769bc54f7-frgdx 202=10 429=42, api-6769bc54f7-t8j4m 202=10 429=38
+PASS: rounds passed == 10
+
+--- STEP 8: evidence summary ---
+#
+# quota-multireplica-liveproof.sh evidence summary
+# run_id=20260807T153358Z
+# run_end_utc=2026-08-07T15:37:35Z
+# values_files=deploy/chart/octoconv/values-local.yaml,deploy/chart/octoconv/values-multireplica.yaml
+# api_replicas_observed_live=2
+# api_pod_1=api-6769bc54f7-frgdx
+# api_pod_2=api-6769bc54f7-t8j4m
+# client_id=ddd1de5a-2a05-40f5-b713-dcd9ab5ed4c2
+# engine=image
+# quota_k=2
+# burst_n=10
+# rounds=10
+# rounds_passed=10
+# total_rows=100
+# total_202=20
+# total_429_quota_exceeded=80
+# pod1_202=10 pod1_429=42 pod2_202=10 pod2_429=38
+# fixture=scripts/fixtures/quota-burst-heavy.png
+# fixture_bytes=259682
+# target_format=webp
+# burst_send_spread_ms_bound=250
+# min_engine_wall_ms=5933
+# timeline_tsv=/Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+#
+
+=== GATE PASS: 10/10 rounds passed, 167 assertions passed, evidence at /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z.tsv ===
+SC1 (QUOT-05): exactly K (2) jobs admitted in every round; every round's cap decision crossed the api-6769bc54f7-frgdx/api-6769bc54f7-t8j4m replica boundary; aggregate cross-pod coverage confirmed both pods served both an admit and a quota_exceeded reject over the whole run. The no-premature-terminal precondition for the exact-K assertion was proven from Postgres every round (Plan 55-07).
+SC2: timestamps, replica identifiers, and admitted/rejected counts committed to /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z.tsv; the per-job status timeline (created_at/first_terminal_at/status/wall_ms) committed to /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+IMPORTANT: BOTH evidence files must be committed (ROADMAP SC2) BEFORE the trap below uninstalls the release -- teardown never deletes $EVIDENCE_DIR but does not commit it either. Commit them explicitly, e.g.:
+  git add -f /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z.tsv /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T153358Z-timeline.tsv
+
+=== TEARDOWN (OrbStack must never be left hot) ===
+
+PASS -- Phase 55 (QUOT-05) quota multi-replica live gate complete (167 checks).
