@@ -1,5 +1,24 @@
 # Milestones
 
+## v1.12 Consumer Accounting & Fairness (Shipped: 2026-08-07)
+
+Known deferred items at close: 13 entries across tech_debt / accepted_risk / infra / tooling_noise / seeds (see STATE.md Deferred Items). Milestone audit: tech_debt — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers (.planning/milestones/v1.12-MILESTONE-AUDIT.md).
+
+**Phases completed:** 5 phases, 30 plans, 79 tasks
+
+**Key accomplishments:**
+
+- Every terminal job transition writes its `client_usage_daily` consumption row inside the SAME `pgx.Tx` as the guarded status change — one `INSERT...SELECT...ON CONFLICT` with correlated `sum(size_bytes)` subqueries and zero ordinal predicates, so bytes sum over ALL inputs/outputs (SEED-017-proof). Exactly-once proven `-race` against live Postgres, including a deliberate inversion run showing the test fails when the write moves out of the transaction, and a soak test that forces the reconciler's stale-recovery race for real and asserts `job_count = 1`, not merely that recovery happened.
+- A cardinality-bounded `octoconv_client_job_outcomes_total` counter with an explicit numeric ceiling and a first-seen-first-served `overflow` collapse — added as a SEPARATE counter so `octoconv_job_duration_seconds` stays engine/status-only and `octoconv_queue_depth`'s label set stays exactly `{queue, state}`, pinned by tests that fail loudly on any future diff.
+- A transaction-scoped Postgres admission gate that serializes the per-`(client, engine)` occupancy count with `INSERT INTO jobs` under a `pg_advisory_xact_lock`, enforced fail-closed on every job-creation path (REST + both MCP entry points, proven by integration test rather than assumed from proxying), rejecting with `429` + `Retry-After` + a machine-distinguishable `quota_exceeded` code, behind an observe-only default mode and a service-wide kill-switch.
+- Daily byte/job quotas charge in-flight (queued+active) admitted work under the same lock — closing the one operator-reachable configuration (`max_concurrent = nil`) where the cap previously admitted every request until a job finished — and a canceled job now charges the ledger exactly once, closing the `create → cancel → create` evasion path.
+- Executable retention, not documentary: a batched, advisory-lock-gated purge on the reconciler's existing tick deletes aged `jobs` rows (cascading to `job_events`/`job_inputs`/`job_outputs`/`webhook_deliveries`) and aged `client_usage_daily` rows on its own longer 400-day window, proven by tests that age data and assert the rows are actually gone.
+- `GET /v1/system/usage` — one operator-gated response merging per-`(client, engine)` usage from the rollup with configured limits and a `remaining` figure that mirrors `evaluate()`'s admission arithmetic field-by-field, including idle unlimited clients as synthetic rows, with a byte-identical no-leak 404 proven against a live `/v1/system/presets` request and honest truth-claims that honor both the kill-switch and per-client observe mode.
+- `minReplicaCount` templatized out of all 7 `scaledobject-*.yaml` into per-class Helm values through a validating helper that aborts the render on negative, over-max or non-integer input (the coercion bypass a code review caught after both SUMMARYs were written), defaulting to today's `0` for zero behavior change — closing SEED-011, and giving the chart its first CI coverage of any kind.
+- QUOT-05 closed by a live gate, not by assertion: 10 rounds of 10 concurrent requests at `api.replicas: 2` admitted exactly K=2 and rejected exactly 8 with `quota_exceeded` every round, 0 `rate_limited`, both pods serving both outcomes — 167 assertions, evidence TSVs committed. The gate has a real history of catching genuine failures (a disproven host→ClusterIP reachability assumption, a legitimate-slot-reuse ambiguity at round 4/10) and closing them structurally: a heavy fixture, a self-checking spread bound, and a per-round Postgres precondition proving no admitted job went terminal inside the burst — never by relaxing `==` to `<=`.
+- `internal/jobs/admission.go` now records the inverse of `internal/ratelimit`'s own caveat register: the quota mechanism carries NO `api.replicas: 1`-only caveat, structural argument first, live confirmation second, with the run's bounds (K=2, image engine, exactly 2 replicas) stated as bounds rather than implied as generality.
+---
+
 ## v1.11 Pandoc Engine (Shipped: 2026-08-02)
 
 Known deferred items at close: 5 categories (see STATE.md Deferred Items). Milestone audit: passed — 9/9 requirements, 4/4 phases, 6/6 cross-phase seams, 1/1 E2E flow (.planning/milestones/v1.11-MILESTONE-AUDIT.md).

@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.12
 milestone_name: Consumer Accounting & Fairness
-status: milestone_complete
-stopped_at: Milestone complete (Phase 55 was final phase)
-last_updated: 2026-08-07T16:04:54.379Z
-last_activity: 2026-08-07
+status: Awaiting next milestone
+stopped_at: Phase 55 complete (QUOT-05 live-gate PASS, 7/7 plan files)
+last_updated: "2026-08-07T18:13:28.359Z"
+last_activity: 2026-08-07 — Milestone v1.12 completed and archived
 progress:
   total_phases: 5
   completed_phases: 5
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
 
 ## Current Position
 
-Phase: 55
-Plan: Not started
-Status: Milestone complete
-Last activity: 2026-08-07
+Phase: Milestone v1.12 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-08-07 — Milestone v1.12 completed and archived
 
 ## Performance Metrics
 
@@ -150,6 +150,26 @@ None currently blocking. Sequencing carried into the roadmap:
 
 ## Deferred Items
 
+Items acknowledged and deferred at v1.12 milestone close on 2026-08-07. Milestone audit status
+`tech_debt` — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers
+(`.planning/milestones/v1.12-MILESTONE-AUDIT.md` has the itemized list):
+
+| Category | Item | Status |
+|----------|------|--------|
+| tech_debt | **52 WR-01** — an in-flight (`queued`/`active`) job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day; no operator remedy exists in `cmd/manage-clients` (raw SQL only), and the new coupling between quota availability and `cmd/webhook-worker`'s health is undocumented | Accepted, non-blocking — the unavoidable price of making the daily cap real; self-heals via the reconciler in a correctly operated deployment. **Highest-value follow-up in the milestone** |
+| tech_debt | 52 WR-09 — `README.md:242` claims enforcement happens "before the upload touches storage", contradicted by `README.md:294`; `README.md:257` hardcodes "the seven known engine classes" instead of deriving from `convert.AllEngines()` | Open — documentation accuracy only, shipped behavior is correct |
+| tech_debt | 52 WR-03/WR-04 — migration 0014 uses `DROP CONSTRAINT IF EXISTS` against repo convention with no exactly-once CHECK assertion; `recordUsage` can now abort `Repo.Cancel` via the status CHECK, which migrations 0011/0013 explicitly argued against for `engine` on the same table | Latent risks, verified non-defective at close |
+| tech_debt | 52 WR-05 — `internal/presets/repo.go` and `internal/clients/repo.go` still use bare `pgx.BeginFunc` without the `pgx.ReadCommitted` pin adopted in `internal/jobs` for the identical read-modify-write shape | Out of phase scope, pre-existing inconsistency |
+| accepted_risk | 52 — `admitLocked` runs after `s.storage.Upload`, so a concurrent burst wastes a bounded N−K uploads before the 429 | Disclosed and measured (`internal/jobs/admission.go:531-596`, `TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste`) — accepted deviation from ROADMAP SC2b's literal wording, not debt to close |
+| tech_debt | 53 WR-05/WR-06/WR-08 — `GET /v1/system/usage` all-clients response is unpaginated; a mistyped `client_limits.engine` is reported as an enforceable budget the gate never applies; `api.go`'s "never nil after NewServer" contract is not panic-enforced | Informational; unpaginated response accepted per D-02 (small internal client population) |
+| tech_debt | 54 IN-04/IN-06 — the new `ci.yml` `helm` job has no `timeout-minutes`; `values.yaml:189-190` hardcodes `minioadmin` defaults (pre-existing, untouched) | CI hygiene |
+| tech_debt | 54 WR-03/WR-04 — `azure/setup-helm@v4` tag-pinned not SHA-pinned; the four pre-existing CI jobs carry no workflow-level `permissions:` | Accepted overrides with recorded rationale in 54-VERIFICATION.md frontmatter (threat model T-54-03; purely-additive `ci.yml` invariant) |
+| tech_debt | 55 Gap Note A — the live-gate harness proves the cross-replica claim with aggregate per-pod admit/reject counts, where 55-05-PLAN.md's acceptance criteria asked for a transcript line naming a specific admitted and a specific rejected request-id on different pods | Unflagged deviation, not a functional gap — the underlying claim is independently verified; recorded so a future reader does not hunt for a line that isn't there |
+| tech_debt | Cross-phase — `internal/jobs/retention.go:126` `PurgeUsage` derives its cutoff from `time.Now().UTC()` rather than Postgres's `now()`, unlike `evaluate()`/`recordUsage`/`UTCToday` | Inconsequential at a 400-day window; inconsistent with the clock discipline this milestone established |
+| infra | `internal/storage` `TestRoundTrip` fails on the shared dev host — the `octoconv-minio` volume is at 100% disk (`49G used / 256M avail`) | Host housekeeping, not application code (53-06 deferred-items.md) |
+| tooling_noise | `audit-open` reports 12 quick tasks as `missing` | False positives — all 12 have both PLAN.md and SUMMARY.md; the SDK parser expects a `status:` frontmatter field these files do not carry |
+| seeds | SEED-004..007, 010, 013..021 (14 dormant) | Dormant by design — forward-looking parking lot. SEED-011 flipped to `implemented` at this close (delivered by Phase 54 / CAPA-01); SEED-017 (PDF split/merge) is the concrete future demand the ACCT-02 multi-ordinal byte accounting was built for |
+
 Items acknowledged and deferred at v1.11 milestone close on 2026-08-02:
 
 | Category | Item | Status |
@@ -229,7 +249,4 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Phase 55 is complete — QUOT-05 closed via a live 2-replica gate (10/10 rounds, 167 assertions, evidence committed) and `internal/jobs/admission.go` now records the no-caveat counter-statement. All 15/15 v1.12 requirements are Complete per REQUIREMENTS.md.
-- Milestone v1.12 (Consumer Accounting & Fairness) is ready for a milestone audit / close, mirroring the v1.11 close discipline.
-
-</content>
+- Start the next milestone with /gsd-new-milestone

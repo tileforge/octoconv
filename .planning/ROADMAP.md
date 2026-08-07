@@ -14,7 +14,7 @@
 - ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 - ✅ **v1.10 OCR Engine (text extraction)** — Phases 43-46 (shipped 2026-07-27) — see `.planning/milestones/v1.10-ROADMAP.md`
 - ✅ **v1.11 Pandoc Engine** — Phases 47-50 (shipped 2026-08-02) — see `.planning/milestones/v1.11-ROADMAP.md`
-- 🚧 **v1.12 Consumer Accounting & Fairness** — Phases 51-55 (in progress)
+- ✅ **v1.12 Consumer Accounting & Fairness** — Phases 51-55 (shipped 2026-08-07) — see `.planning/milestones/v1.12-ROADMAP.md`
 
 ## Phases
 
@@ -177,213 +177,20 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 </details>
 
-### 🚧 v1.12 Consumer Accounting & Fairness (In Progress)
+<details>
+<summary>✅ v1.12 Consumer Accounting & Fairness (Phases 51-55) — SHIPPED 2026-08-07</summary>
 
 **Milestone Goal:** превратить OctoConv из «сервиса, который умеет конвертировать» в общую платформу, которая знает своих потребителей — кто сколько потребляет, в каких границах, и как не дать одному потребителю выжрать класс движка целиком.
 
-- [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
-- [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
-- [x] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (7/7 plans; initial verification 9/10 `gaps_found` on SC2, closed by 53-05..53-07, re-verified 10/10 `passed`) (completed 2026-08-05)
-- [x] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero (completed 2026-08-06)
-- [x] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design (completed 2026-08-07)
-
-## Phase Details
-
-### Phase 51: Attribution, Accounting & Retention
-
-**Goal**: Every job's client and consumption (bytes, count, engine class) is tracked in Postgres and exposed in Prometheus with a purpose-built, cardinality-bounded shape — and the new accounting data does not repeat OctoConv's existing unbounded-Postgres-growth gap (`jobs`/`job_events` rows that never age out).
-**Depends on**: Nothing (first phase of v1.12 — builds directly on the stable v1.0–v1.11 platform; everything downstream in this milestone reads the data this phase produces)
-**Requirements**: ACCT-01, ACCT-02, ACCT-03, ACCT-04, RETN-01
-**Success Criteria** (what must be TRUE):
-
-  1. A new, purpose-built Prometheus counter carries a `client_id` label on job outcomes, while `octoconv_job_duration_seconds` stays engine/status-only and `octoconv_queue_depth`'s label set remains exactly `{queue, state}` — proven by a pinning test that fails loudly on any future diff.
-  2. Every job's terminal transition (`done`/`failed`, including jobs recovered by the reconciler) increments a Postgres daily usage rollup (jobs count, bytes in/out, per client/engine/day) exactly once, and the rollup write happens **inside the same transaction as the guarded status transition** — not as an adjacent call after it. A worker that dies between a committed `MarkDone` and a separate accounting write would leave the job terminal and the usage permanently unrecorded, since neither an asynq retry nor the reconciler revisits a terminal job. Proven by a soak test that deliberately forces the reconciler's documented stale-recovery race and asserts the usage total, not just the recovery count. *(Tightened 2026-08-02 after PR #3 review.)*
-  3. `client_id` label cardinality is bounded by an explicit **configured numeric ceiling** with defined overflow behavior (clients beyond the ceiling collapse into a single stable `overflow` label value), not merely restricted to IDs present in `clients` — `cmd/manage-clients` can add valid clients indefinitely, so "a real client id" is not a bound. An unrecognized or malformed ID never mints a new series. *(Tightened 2026-08-02 after PR #3 review.)*
-  4. Retention is **executable, not documentary**: a concrete purge / partition-drop / archival mechanism runs and is proven to actually remove rows past the window (a test that ages data and asserts it is gone), covering both the new usage table (which grows with `clients × engines × days`, not raw job volume) and the pre-existing `jobs`/`job_events` gap. A retention policy described only in a migration comment does not satisfy RETN-01. *(Tightened 2026-08-02 after PR #3 review.)*
-  5. Re-running the existing KEDA scale-from-zero live gate after the new metrics/table land shows no regression — accounting is additive to the platform's operational surface, not a new blast radius for autoscaling.
-  6. Byte accounting sums over ALL of a job's inputs and outputs (`Repo.Inputs`/`Repo.Outputs`, `ORDER BY ordinal`) rather than reading ordinal 0 — so a job that ever produces or consumes more than one file is counted correctly without an accounting rewrite. See the constraint note below.
-
-**Constraint — do not hardcode one-input/one-output (added 2026-08-02, SEED-017):**
-Today every job is exactly one input, one engine invocation, one output, so
-reading `job_inputs`/`job_outputs` at ordinal 0 would work and would be the
-natural thing to write. It must not be written that way. The schema has carried
-an `ordinal` column on both tables since `0001_init.sql`, `internal/jobs/repo.go`
-already exposes `Repo.Inputs`/`Repo.Outputs` ordered by it, and SEED-017 (PDF
-split/merge) is the first concrete demand for N — split alone produces N outputs
-from one input. Baking the 1:1 assumption into the accounting layer would make
-byte totals silently wrong the moment that lands, and retrofitting it is exactly
-the multi-site value drift that bit this project twice during v1.11. Summing over
-the lists costs nothing now.
-
-**Plans**: 5 plans
-
-Plans:
-**Wave 1**
-
-- [x] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
-- [x] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
-
-**Wave 4** *(blocked on Wave 3 completion)*
-
-- [x] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
-
-**Wave 5** *(blocked on Wave 4 completion)*
-
-- [x] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
-
-**Autonomous**: false (Plan 05 is an operator-run live gate)
-
-### Phase 52: Quota Enforcement & Intra-Class Fairness
-
-**Goal**: An operator can cap what a client may consume (concurrent jobs, daily volume, allowed engines), enforcement is fail-closed on every job-creation path and rolled out safely to already-integrated consumers, and the same admission mechanism gives a structural guarantee that one client cannot starve others within an engine class — all without touching queue topology or the KEDA contract.
-**Depends on**: Phase 51 (tiers 2/3 of the admission gate read/write the `client_usage_daily` rollup; the concurrency cap reads `jobs.status`, already ground truth, but the byte/volume checks need Phase 51's table to exist and be populated)
-**Requirements**: QUOT-01, QUOT-02, QUOT-03, QUOT-04, FAIR-01, FAIR-02
-**Success Criteria** (what must be TRUE):
-
-  1. An operator can set per-client limits (concurrent jobs per engine, daily byte/job volume, allowed engine set) where the absence of a limit is a literal `NULL` meaning unlimited — never a large sentinel number — and no existing client's behavior changes until an operator explicitly sets one.
-  2. Every job-creation entry point (`POST /v1/jobs`, `cmd/mcp-server`, `cmd/mcp-http`) enforces the identical fail-closed admission check before the S3 write and before enqueue — proven by an integration test that exercises both REST and at least one MCP path, not assumed from proxying. Two properties are load-bearing and must be designed in, not discovered: **(a)** the check-and-admit is serialized per (client, engine) — a bare `SELECT count(*)` followed by an insert lets two API replicas both observe "below cap" and both admit, so the count and the create must share one transaction under a per-client/per-engine advisory lock or an equivalent atomic counter; **(b)** the authoritative reservation happens **before** the upload body is written to S3, with reservation release if a later step fails — otherwise an over-quota client repeatedly burns S3 bandwidth and storage before receiving its 429. *(Added 2026-08-02 after PR #3 review.)*
-  2b. Admission reservations and completed usage are **distinguishable**, so a job admitted against the daily budget and later completed is counted once, not twice. The rollup cannot be a single pair of counters that both the admission reserve and the terminal write increment. *(Added 2026-08-02 after PR #3 review.)*
-
-  3. A limit-exceeding request is rejected with `429` + `Retry-After` and a `quota_exceeded` error code distinguishable from the existing `rate_limited` code — never `403` — and an in-flight concurrency slot is released on every terminal state (`done`, `failed`, `reconciler_exhausted`), not only on success.
-  4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
-  5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
-
-**Plans**: 9 plans (5 shipped + 4 gap-closure, planned 2026-08-03 after verification scored 8/9)
-
-Plans:
-**Wave 1**
-
-- [x] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
-- [x] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
-- [x] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 52-04-PLAN.md — pre-upload gate before the S3 write, 429 + `Retry-After` + `quota_exceeded` (never 403), kill-switch and metrics wiring
-
-**Wave 4** *(blocked on Wave 3 completion)*
-
-- [x] 52-05-PLAN.md — REST + real MCP tool admission proof against one live API, FAIR-02 zero-diff contract gate, OpenAPI/README contract docs
-
-**Wave 5** *(gap closure — 52-VERIFICATION.md status `gaps_found`, 8/9 must-haves)*
-
-- [x] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
-- [x] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
-
-**Wave 6** *(blocked on Wave 5 completion)*
-
-- [x] 52-08-PLAN.md — migration 0014 widens the usage rollup's status domain; `Cancel` records usage so `create -> cancel -> create` no longer resets the daily cap (WR-01); `Repo.Create`/`transition` pin `pgx.ReadCommitted` (WR-02)
-
-**Wave 7** *(blocked on Wave 6 completion)*
-
-- [x] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
-
-**Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
-
-### Phase 53: Operator Usage Visibility
-
-**Goal**: An operator can answer "who consumed what, by engine class, over what period" and "what are this client's limits and remaining budget" through a dedicated, already-established access-control pattern — not by hand-querying raw Prometheus or the `jobs` table.
-**Depends on**: Phase 51 (reads `client_usage_daily`; does not require Phase 52 to be complete, but is sequenced after quota work has started so a "usage vs. configured limit" view is meaningful rather than empty)
-**Requirements**: OPSV-01, OPSV-02
-**Success Criteria** (what must be TRUE):
-
-  1. An operator, authenticated through the existing `OPERATOR_CLIENT_IDS`-gated mechanism (the Phase 26 precedent), can retrieve per-client, per-engine usage for a given period from a dedicated endpoint, backed by the Phase 51 rollup rather than a raw `jobs` scan or Prometheus query.
-  2. Per client, the operator can see the currently configured limits and the remaining budget/quota state, so limits can be set from observed data rather than guessed.
-  3. A non-operator caller receives the identical no-leak response the project's existing operator-only routes already guarantee (byte-identical 404, not a distinguishable 403) — no new information-disclosure surface introduced by this endpoint.
-
-**Plans**: 7 plans (4 original + 3 gap closure)
-
-Plans:
-**Wave 1**
-
-- [x] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
-- [x] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
-- [x] 53-03-PLAN.md — api.UsageRepo/LimitsRepo interfaces, widened NewServer, and all three call sites updated with hand-written fakes
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 53-04-PLAN.md — GET /v1/system/usage behind requireOperator: combined usage+limits+remaining response, byte-identical no-leak 404, D-09 caveat fields, OpenAPI spec
-
-**Wave 4** *(gap closure — blocked on Wave 3 completion; closes 53-VERIFICATION.md Gap #1 / SC2 / OPSV-02)*
-
-- [x] 53-05-PLAN.md — Seed the merge key set from every client in meta so an idle unlimited client is visible and distinguishable from a nonexistent client_id, without weakening SC3's no-leak 404
-- [x] 53-06-PLAN.md — Exclude ON DELETE SET NULL orphans from both in-flight aggregates (WR-01) and add jobs.Repo.UTCToday so the endpoint and evaluate() read one clock (WR-03)
-
-**Wave 5** *(blocked on Wave 4 completion)*
-
-- [x] 53-07-PLAN.md — Enforcement-aware truth claims: remaining_matches_admission_gate honors the QUOTA_ENFORCEMENT_DISABLED kill-switch and observe mode (WR-02), day range derived from the Postgres clock (WR-03)
-
-### Phase 54: Per-Class Capacity Floor (SEED-011)
-
-**Goal**: An operator can choose a non-zero `minReplicaCount` per engine class to eliminate cold-start latency under sustained load, instead of the hardcoded zero every class ships with today.
-**Depends on**: Nothing (fully independent of Phases 51-53 — zero data or code coupling, pure Helm values/`ScaledObject` change; sequenced here as a low-risk hygiene tail so it doesn't add unrelated chart diff noise to the accounting/quota review, per research's explicit "can land at any point" finding)
-**Requirements**: CAPA-01
-**Success Criteria** (what must be TRUE):
-
-  1. Each of the seven engine classes' `minReplicaCount` is set via a Helm values field instead of a hardcoded `0`, defaulting to today's `0` (zero behavior change for the current deployment).
-  2. Setting a non-zero `minReplicaCount` for one engine class does not alter another class's `ScaledObject`/PromQL or its scale-from-zero behavior — confirmed by a template diff touching only the intended class.
-  3. `helm lint`/`helm template` render cleanly for both the default (all-zero) values and an example non-zero override, with no live cluster required — this is chart-only, no architectural novelty (research: skip live-gate for this phase).
-
-**Plans**: 2 plans
-
-Plans:
-**Wave 1**
-
-- [x] 54-01-PLAN.md — Values-driven minReplicaCount + floor-derived fallback.replicas via a validating `_helpers.tpl` define, wired into all 7 ScaledObjects (SC1)
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
-- [x] 54-02-PLAN.md — `values-capacity-floor.yaml` example override + a `helm` CI job proving per-class isolation, clean render, and that the D-02 validation fires (SC2/SC3)
-
-### Phase 55: Live Gate — Multi-Replica Quota Correctness
-
-**Goal**: Prove, on a live multi-replica setup, that the quota admission counter built in Phase 52 is correct when 2+ API replicas concurrently serve the same client — the one claim in this milestone that cannot be proven statically, matching this project's own precedent (`internal/ratelimit`'s documented `api.replicas: 1`-only caveat) for exactly this class of correctness claim.
-**Depends on**: Phase 52 (needs the atomic Postgres admission mechanism built and enforcing before its multi-replica correctness can be exercised)
-**Requirements**: QUOT-05
-**Success Criteria** (what must be TRUE):
-
-  1. With `api.replicas` set to 2 or more, N concurrent job-creation requests from one client whose concurrency cap is `K` result in at most `K` admitted jobs — observed directly on a live run, never more, regardless of which replica handled which request.
-  2. The live run's evidence (timestamps, replica identifiers, admitted/rejected counts) is captured and committed, mirroring this project's existing live-gate discipline (KEDA scale-from-zero, downscale-survival), and the phase records explicitly that the quota mechanism — unlike `internal/ratelimit` — does not carry a replicas-count caveat.
-
-**Plans**: 7 plans
-
-Plans:
-**Wave 1**
-
-- [x] 55-01-PLAN.md — `values-multireplica.yaml` gate overlay (api.replicas 2, RATE_LIMIT relaxed, KEDA off) + live-gate harness Part A: two-phase install, ClusterIP-direct reachability, `--calibrate-only` distribution proof, throwaway enforce-mode client, drain helpers
-- [x] 55-03-PLAN.md — folded todo 1: daily-quota `Retry-After` derived from the Postgres evaluation instant via a typed `DailyQuotaError`, with a midnight-straddle regression test
-- [x] 55-04-PLAN.md — folded todos 2/3: `/v1/system/usage` skips metadata-less rows instead of emitting an out-of-enum `enforcement_mode`, and gains a per-row `enforced` boolean plus OpenAPI contract
-
-**Wave 2** *(blocked on Wave 1 completion)*
-
-- [x] 55-02-PLAN.md — live-gate harness Part B: FIFO-barrier burst with per-request timestamps, per-round classification by body `code`, pod attribution join, the D-05 cross-pod assertion, ten-round loop and committed evidence TSV
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 55-06-PLAN.md — gap closure after the FAILED live calibration (host->ClusterIP is unreachable on OrbStack, RESEARCH.md assumption A1 disproven): relocate the FIFO-barrier burst driver into a throwaway in-namespace pod per RESEARCH.md's Pattern 1 fallback, with no assertion weakened
-
-**Wave 4** *(blocked on Wave 3 completion)*
-
-- [x] 55-07-PLAN.md — gap closure after the FAILED full run (round 4/10, `admitted count expected [2], got [3]`, most likely legitimate slot reuse the gate could not distinguish from a cap violation): heavy 9000x9000 burst fixture so an admitted job cannot go terminal inside a burst, `BURST_SEND_SPREAD_MS` 1000→250 behind a self-checking window/engine-time invariant, jitter-free in-pod barrier, app-image freshness preflight, and a per-round Postgres assertion that proves the exact-K premise before asserting it — no assertion weakened
-
-**Wave 5** *(blocked on Wave 4 completion)*
-
-- [x] 55-05-PLAN.md — operator-gated live run (calibration then 10/10 rounds at `api.replicas: 2`), committed evidence, and the SC2 "no `replicas: 1` caveat" counter-statement in `internal/jobs/admission.go`
-
-**Autonomous**: false (Plan 05 is an operator-run live gate — requires a real 2+-replica run, cannot be closed by static verification alone)
+- [x] Phase 51: Attribution, Accounting & Retention (5/5 plans) — completed 2026-08-02
+- [x] Phase 52: Quota Enforcement & Intra-Class Fairness (9/9 plans) — completed 2026-08-03
+- [x] Phase 53: Operator Usage Visibility (7/7 plans) — completed 2026-08-05
+- [x] Phase 54: Per-Class Capacity Floor (SEED-011) (2/2 plans) — completed 2026-08-06
+- [x] Phase 55: Live Gate — Multi-Replica Quota Correctness (7/7 plans) — completed 2026-08-07
+
+Full details: `.planning/milestones/v1.12-ROADMAP.md`
+
+</details>
 
 ## Progress
 
@@ -447,5 +254,5 @@ Plans:
 
 ---
 
-*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 11/15 complete (ACCT-01..04, RETN-01, QUOT-01..04, FAIR-01, FAIR-02, per REQUIREMENTS.md's traceability table), with QUOT-05 (Phase 55), OPSV-01/02 (Phase 53) and CAPA-01 (Phase 54) pending. Next: `/gsd:plan-phase 53`.*
+*v1.12 (Consumer Accounting & Fairness) shipped 2026-08-07, Phases 51-55 — 15/15 v1 requirements, 30 plans, milestone audit `tech_debt` (15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers, 16 non-blocking debt items recorded). One live gate: multi-replica quota correctness at `api.replicas: 2` (10/10 rounds, 167 assertions, evidence committed). Phases 52 and 53 each went through a real gaps_found → closure → re-verification cycle. Next: `/gsd:new-milestone`.*
 </content>
