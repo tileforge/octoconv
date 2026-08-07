@@ -443,7 +443,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete   | 2026-08-07 |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
 
 ---
 
