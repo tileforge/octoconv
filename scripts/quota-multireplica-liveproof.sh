@@ -90,6 +90,41 @@
 # THIS SCRIPT'S EXIT CODE IS THE GATE: any failed assertion aborts non-zero
 # with a loud FAIL line, and every check prints the value it observed, so
 # the transcript is self-documenting evidence.
+#
+# THE ROUND-4 DEFECT AND ITS CLOSURE (Plan 55-07 -- read this before
+# touching the exact-K assertion, the fixture, or BURST_SEND_SPREAD_MS):
+#
+# The 20260807T141252Z run (evidence/gate-run4-FAILED-round4-20260807T141252Z.log,
+# evidence/README.md, the committed TSV at
+# evidence/quota-multireplica-20260807T141252Z.tsv) reached round 4/10 (56
+# checks passed) and failed: `admitted count -- expected [2], got [3]`. The
+# TSV shows nine of round 4's ten requests sent within 4ms of each other
+# (yielding exactly 2 admits -- the cap held for the genuinely simultaneous
+# population) and a tenth sent 159ms later, admitted as a third. With the
+# 86-byte fixture (internal/e2e/testdata/sample.png) converting in well
+# under that window, a concurrency slot very plausibly freed LEGITIMATELY
+# between the two admission decisions -- but that was a RECONSTRUCTION,
+# not a proven fact: the run tore the namespace down on exit (correctly),
+# so no job-status timeline existed to prove index 3 reached a terminal
+# status before index 10's admission transaction ran.
+#
+# TWO DEFECTS, TWO CLOSURES:
+#   1. BURST_SEND_SPREAD_MS=1000 was far too loose (see its own comment in
+#      the config block for the closure: 250ms, fixed at the driver/CPU
+#      source, D4/D5).
+#   2. `admitted == K` asserted more than the concurrency cap promises --
+#      sound only while no admitted job can go terminal during the burst,
+#      which an 86-byte fixture on the image engine did not guarantee.
+#      Closed by making the premise TRUE (the committed heavy fixture,
+#      scripts/fixtures/quota-burst-heavy.png, Task 1) and making it
+#      CHECKED (the terminal_before discriminator in assess_round, D6,
+#      Task 3) -- run BEFORE the exact-K assertion every round, with its
+#      verdict backed by a committed per-job timeline
+#      (quota-multireplica-<RUN_ID>-timeline.tsv) that survives teardown,
+#      which the 2026-08-07 run could not produce.
+#
+# Relaxing `admitted == K` to `<=` was explicitly rejected: it reintroduces
+# the vacuity `==` was chosen to prevent (a round admitting 0 would pass).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -102,22 +137,69 @@ CHART_DIR="${CHART_DIR:-deploy/chart/octoconv}"
 VALUES_LOCAL="${VALUES_LOCAL:-deploy/chart/octoconv/values-local.yaml}"
 VALUES_MULTIREPLICA="${VALUES_MULTIREPLICA:-deploy/chart/octoconv/values-multireplica.yaml}"
 ENGINE="${ENGINE:-image}"
-TARGET_FORMAT="${TARGET_FORMAT:-jpg}"
-FIXTURE="${FIXTURE:-internal/e2e/testdata/sample.png}"
+# TARGET_FORMAT / FIXTURE (Plan 55-07): webp / the committed heavy PNG, not
+# jpg / the 86-byte sample.png -- see the BURST_SEND_SPREAD_MS comment
+# below and the file header's "GAP CLOSURE" section for why. png->jpg on
+# this fixture converts in ~600ms, too fast to establish the no-premature-
+# terminal premise the round-4 defect exposed; png->webp measures in the
+# multi-second range under the chart's own worker limits (see
+# MIN_ENGINE_WALL_MS below).
+TARGET_FORMAT="${TARGET_FORMAT:-webp}"
+FIXTURE="${FIXTURE:-scripts/fixtures/quota-burst-heavy.png}"
 FIXTURE_CONTENT_TYPE="${FIXTURE_CONTENT_TYPE:-image/png}"
 QUOTA_K="${QUOTA_K:-2}"
 BURST_N="${BURST_N:-10}"
 ROUNDS="${ROUNDS:-10}"
-# BURST_SEND_SPREAD_MS: the max allowed spread, in milliseconds, between
-# the earliest and latest send_ts in one round's burst -- the "concurrency
-# of flight" assertion (assess_round, below) fails a round whose requests
-# were serialized rather than genuinely in flight together. As of Plan
-# 55-06 the FIFO barrier releasing the burst lives entirely inside the
-# burst pod (scripts/quota-burst-driver.sh), one network hop closer to the
-# api than the host-side barrier this replaced -- which can only TIGHTEN
-# the observed spread, never widen it. The threshold itself does not
-# change, and must not be changed on that basis.
-BURST_SEND_SPREAD_MS="${BURST_SEND_SPREAD_MS:-1000}"
+# BURST_SEND_SPREAD_MS (Plan 55-07 -- REWRITTEN; the previous comment here
+# said this threshold "does not change, and must not be changed on that
+# basis", which a real run has now overtaken):
+#
+# THE INVARIANT: the burst window must be much shorter than the fastest
+# possible job. A round's `admitted == K` assertion is only sound while no
+# admitted job can reach a terminal status during the burst -- if one
+# does, a concurrency slot frees legitimately mid-round and the round can
+# admit MORE than K without the cap ever being violated. Widening this
+# window, or swapping in a faster fixture without lowering
+# MIN_ENGINE_WALL_MS to match, silently re-opens exactly that defect.
+#
+# WHAT HAPPENED: the 2026-08-07 run (gate-run4-FAILED-round4-20260807T141252Z.log)
+# failed at round 4/10. Four rounds' observed send spreads under the OLD
+# 1000ms bound: 1, 9, 92, **159** ms -- round 4's nine genuinely-simultaneous
+# requests landed within 4ms and yielded exactly 2 admits (the cap held),
+# but a tenth request 159ms later was admitted as a third, because the
+# 86-byte fixture (internal/e2e/testdata/sample.png) converts in well under
+# that window and a slot plausibly freed for real.
+#
+# THE FIX: 250ms is deliberately ABOVE the worst spread ever observed
+# (159ms) -- the straggler is fixed at its SOURCE (Plan 55-07 Task 2: the
+# burst driver's readiness handshake plus this file's own STEP 4 CPU raise
+# below), and the soundness of `== K` no longer rests on the spread bound
+# alone: STEP 5's `terminal_before` discriminator (see assess_round) now
+# PROVES the no-premature-terminal premise from Postgres every round,
+# instead of assuming it. This bound's job reverts to what it was always
+# for -- proving the requests genuinely contended -- checked against
+# MIN_ENGINE_WALL_MS by the invariant assertion in STEP 1.
+BURST_SEND_SPREAD_MS="${BURST_SEND_SPREAD_MS:-250}"
+# SPREAD_SAFETY_FACTOR: STEP 1 hard-fails unless
+# BURST_SEND_SPREAD_MS * SPREAD_SAFETY_FACTOR <= MIN_ENGINE_WALL_MS, so a
+# future editor who loosens either knob trips a named preflight failure
+# instead of silently re-opening the defect above.
+SPREAD_SAFETY_FACTOR="${SPREAD_SAFETY_FACTOR:-20}"
+# MIN_ENGINE_WALL_MS: this plan's OWN measured minimum png->webp `vips
+# copy` wall time for the committed heavy fixture, inside octoconv-worker:dev
+# at the chart's own worker limits (--cpus=2 --memory=1g) -- see the 55-07
+# SUMMARY for the three serial measurements this minimum was taken from.
+# NOT copied from any planning-time estimate.
+MIN_ENGINE_WALL_MS="${MIN_ENGINE_WALL_MS:-5933}"
+# JOB_WALL_FLOOR_MS: the post-drain floor asserted on every round's
+# admitted jobs' actual (created_at -> first terminal event) wall time --
+# independent evidence, from Postgres timestamps, that the long-job premise
+# was genuinely exercised for THIS run, not just nominally configured.
+JOB_WALL_FLOOR_MS="${JOB_WALL_FLOOR_MS:-2000}"
+# APP_IMAGE_TAG: matches the chart's global.imageTag -- the tag STEP 1's
+# new image-freshness preflight inspects for octoconv-api/octoconv-worker,
+# before any cluster mutation.
+APP_IMAGE_TAG="${APP_IMAGE_TAG:-dev}"
 DB_LOCAL_PORT="${DB_LOCAL_PORT:-15434}"
 API_KEY_SALT="${API_KEY_SALT:-dev-only-change-me-in-real-deploys}"
 EVIDENCE_DIR="${EVIDENCE_DIR:-.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence}"
@@ -125,8 +207,18 @@ RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 # EVIDENCE_TSV (Plan 55-02 Task 1): the committed SC2 evidence artifact --
 # one row per burst request across all ROUNDS rounds, plus a trailing
 # #-commented summary block (STEP 8, appended below). Named by RUN_ID so a
-# re-run never clobbers a prior run's committed evidence.
+# re-run never clobbers a prior run's committed evidence. Column schema and
+# header line are UNCHANGED by Plan 55-07 -- the timeline below is a
+# separate file precisely so this one does not have to change.
 EVIDENCE_TSV="${EVIDENCE_DIR}/quota-multireplica-${RUN_ID}.tsv"
+# EVIDENCE_TIMELINE_TSV (Plan 55-07): additive second artifact, initialized
+# in STEP 5 below -- the per-job created_at/first-terminal/status/wall_ms
+# timeline that answers, from committed evidence and after teardown, the
+# question the 2026-08-07 run's over-admitted round could not answer:
+# legitimate slot reuse, or a real cross-replica cap violation. Derived
+# from the same RUN_ID as EVIDENCE_TSV so the two artifacts can never be
+# mismatched across runs (T-55-35).
+EVIDENCE_TIMELINE_TSV="${EVIDENCE_DIR}/quota-multireplica-${RUN_ID}-timeline.tsv"
 
 # BURST_IMAGE (Plan 55-06): the throwaway burst pod's image. Must supply
 # curl, bash, mkfifo, awk, seq, base64, sha256sum, and a GNU `date` that
@@ -356,6 +448,91 @@ fi
 echo "PASS: burst image $BURST_IMAGE available locally"
 
 # ---------------------------------------------------------------------------
+# STEP 1 (Plan 55-07): THE INVARIANT -- the burst window must be much
+# shorter than the fastest possible job. Checked here, before any cluster
+# mutation, so a future editor who loosens either knob learns about it in
+# the first seconds of a run rather than after a five-minute helm install.
+# See the BURST_SEND_SPREAD_MS comment in the config block for the full
+# 2026-08-07 round-4 history this guards against.
+# ---------------------------------------------------------------------------
+if [ "$((BURST_SEND_SPREAD_MS * SPREAD_SAFETY_FACTOR))" -gt "$MIN_ENGINE_WALL_MS" ]; then
+	echo "FAIL: THE INVARIANT -- BURST_SEND_SPREAD_MS ($BURST_SEND_SPREAD_MS) * SPREAD_SAFETY_FACTOR ($SPREAD_SAFETY_FACTOR) = $((BURST_SEND_SPREAD_MS * SPREAD_SAFETY_FACTOR)) exceeds MIN_ENGINE_WALL_MS ($MIN_ENGINE_WALL_MS). The burst window must stay far below the fastest possible job, or a concurrency slot can free legitimately mid-round and the 'admitted == K' assertion stops being sound -- this is the exact 2026-08-07 round-4 defect (evidence/README.md). Loosening BURST_SEND_SPREAD_MS, raising SPREAD_SAFETY_FACTOR, or swapping in a faster fixture without lowering MIN_ENGINE_WALL_MS to match all re-open it." >&2
+	exit 1
+fi
+echo "PASS: THE INVARIANT -- BURST_SEND_SPREAD_MS ($BURST_SEND_SPREAD_MS) * SPREAD_SAFETY_FACTOR ($SPREAD_SAFETY_FACTOR) = $((BURST_SEND_SPREAD_MS * SPREAD_SAFETY_FACTOR)) <= MIN_ENGINE_WALL_MS ($MIN_ENGINE_WALL_MS)"
+
+FIXTURE_BYTES=$(wc -c <"$FIXTURE" | tr -d '[:space:]')
+if [ "$FIXTURE_BYTES" -lt 100000 ]; then
+	echo "FAIL: fixture $FIXTURE is only $FIXTURE_BYTES bytes -- below the 100000-byte floor this gate requires. A tiny fixture (the previously-used 86-byte one included) converts far faster than any burst window can bound, which is the exact premise failure Plan 55-07 closes; a small fixture silently re-opens it." >&2
+	exit 1
+fi
+echo "PASS: fixture byte size ($FIXTURE_BYTES) >= 100000 (guards against reverting to a too-small fixture that reopens the premise failure)"
+
+# ---------------------------------------------------------------------------
+# STEP 1 (Plan 55-07): APP IMAGE FRESHNESS PREFLIGHT -- the defect that
+# cost three install cycles on 2026-08-07: a MISSING image previously
+# surfaced as an unnamed 300s `kubectl wait` timeout (STEP 2 below), and a
+# STALE octoconv-api:dev built before 0013_client_limits.sql surfaced as
+# `relation "client_limits" does not exist` at check 19, five minutes into
+# the run. Checked here, before STEP 2's first cluster mutation, for both
+# images STEP 2 later waits on.
+# ---------------------------------------------------------------------------
+
+# image_build_epoch IMAGE_REF -- prints the image's build time as a Unix
+# epoch (integer seconds), or returns non-zero if the image cannot be
+# inspected. Isolated in its own function (rather than inlined) so the
+# negative test in this task's own acceptance criteria can call it
+# directly. Normalizes docker's RFC3339-with-nanoseconds `.Created` (e.g.
+# 2026-08-07T17:05:37.641828125+03:00) by stripping the sub-second
+# fraction and reformatting the numeric UTC-offset suffix (+03:00 ->
+# +0300) into the form BSD `date -j -f` accepts on this host.
+image_build_epoch() {
+	local image_ref="$1" created normalized
+	created=$(docker image inspect --format '{{.Created}}' "$image_ref" 2>/dev/null) || return 1
+	normalized=$(printf '%s' "$created" | sed -E 's/\.[0-9]+//; s/Z$/+0000/; s/([+-][0-9]{2}):([0-9]{2})$/\1\2/')
+	date -j -f '%Y-%m-%dT%H:%M:%S%z' "$normalized" +%s
+}
+
+NEWEST_MIGRATION_PATH=$(ls -t internal/db/migrations/*.sql | head -1)
+NEWEST_MIGRATION_NAME=$(basename "$NEWEST_MIGRATION_PATH" .sql)
+NEWEST_MIGRATION_EPOCH=$(stat -f %m "$NEWEST_MIGRATION_PATH")
+echo "PASS: newest migration is $NEWEST_MIGRATION_NAME (mtime epoch $NEWEST_MIGRATION_EPOCH)"
+
+for IMG_KIND in api worker; do
+	IMG_REF="octoconv-${IMG_KIND}:${APP_IMAGE_TAG}"
+
+	docker image inspect "$IMG_REF" >/dev/null 2>&1 || {
+		echo "FAIL: image '$IMG_REF' not found locally -- a missing image previously surfaced as an unnamed 300s 'kubectl wait' timeout (STEP 2). Rebuild it SEQUENTIALLY with a pinned non-latest tag: docker build -f Dockerfile.${IMG_KIND} -t ${IMG_REF} ." >&2
+		exit 1
+	}
+	echo "PASS: image $IMG_REF present locally"
+
+	IMG_BUILD_EPOCH=$(image_build_epoch "$IMG_REF")
+	if [ "$IMG_BUILD_EPOCH" -lt "$NEWEST_MIGRATION_EPOCH" ]; then
+		echo "FAIL: image '$IMG_REF' was built at epoch $IMG_BUILD_EPOCH, before the newest migration $NEWEST_MIGRATION_NAME (mtime epoch $NEWEST_MIGRATION_EPOCH). A stale octoconv-api:dev built before a schema migration surfaced as 'relation ... does not exist' five minutes into a real run on 2026-08-07. Rebuild it: docker build -f Dockerfile.${IMG_KIND} -t ${IMG_REF} ." >&2
+		exit 1
+	fi
+	echo "PASS: image $IMG_REF built (epoch $IMG_BUILD_EPOCH) after newest migration $NEWEST_MIGRATION_NAME (epoch $NEWEST_MIGRATION_EPOCH)"
+
+	if [ "$IMG_KIND" = "api" ]; then
+		API_MIGRATION_HITS=$(docker run --rm --entrypoint sh "$IMG_REF" -c "grep -c '${NEWEST_MIGRATION_NAME}' /usr/local/bin/api" 2>/dev/null || true)
+		API_MIGRATION_HITS="${API_MIGRATION_HITS:-0}"
+		if [ "$API_MIGRATION_HITS" -lt 1 ]; then
+			echo "FAIL: image '$IMG_REF's api binary does not embed the newest migration filename '$NEWEST_MIGRATION_NAME' (db.Migrate embeds every migration file via 'embed', so its NAME is literally in the binary) -- this is the semantically exact probe for the 'relation ... does not exist' failure observed on 2026-08-07. Rebuild: docker build -f Dockerfile.api -t ${IMG_REF} ." >&2
+			exit 1
+		fi
+		echo "PASS: image $IMG_REF's api binary embeds newest migration name $NEWEST_MIGRATION_NAME"
+	else
+		WORKER_VIPS=$(docker run --rm --entrypoint sh "$IMG_REF" -c 'command -v vips' 2>/dev/null || true)
+		if [ -z "$WORKER_VIPS" ]; then
+			echo "FAIL: image '$IMG_REF' has no 'vips' on PATH -- the heavy fixture's whole premise is that this binary does the work. Rebuild: docker build -f Dockerfile.worker -t ${IMG_REF} ." >&2
+			exit 1
+		fi
+		echo "PASS: image $IMG_REF has vips at $WORKER_VIPS"
+	fi
+done
+
+# ---------------------------------------------------------------------------
 # STEP 2: Two-phase install -- Phase A forces api.replicas=1 so exactly one
 # pod ever runs db.Migrate against a fresh database (the migration-race
 # constraint, see header); Phase B upgrades into the overlay's real
@@ -463,12 +640,21 @@ spec:
         allowPrivilegeEscalation: false
         capabilities:
           drop: ["ALL"]
+      # CPU raised 500m->500m(requests)/500m->"2"(limits) by Plan 55-07:
+      # ten forked subshells plus ten curl processes released by one FIFO
+      # barrier, on half a core, is the suspected root cause of the
+      # 2026-08-07 round-4 straggler (+159ms send offset -- see the
+      # BURST_SEND_SPREAD_MS comment in the config block). The burst
+      # driver (scripts/quota-burst-driver.sh) already removed every OTHER
+      # fork from the post-barrier critical path; this raise addresses the
+      # remaining CPU-contention half of that same defect. Memory is
+      # unchanged -- this pod only forks/execs curl, it never converts.
       resources:
         requests:
-          cpu: "100m"
+          cpu: "500m"
           memory: "64Mi"
         limits:
-          cpu: "500m"
+          cpu: "2"
           memory: "256Mi"
 PODSPEC
 
@@ -594,12 +780,99 @@ psql_q() {
 	kubectl exec -n "$NAMESPACE" deploy/postgres -- psql -U octo -d octo_db -tAc "$1" | tr -d '[:space:]'
 }
 
+# psql_rows SQL (Plan 55-07) -- like psql_q, but for MULTI-ROW, MULTI-COLUMN
+# results: unlike psql_q (which strips ALL whitespace, correct only for a
+# single scalar), this preserves row newlines and uses a TAB column
+# separator matching this file's TSV artifacts. Used solely by run_round's
+# timeline append below.
+psql_rows() {
+	kubectl exec -n "$NAMESPACE" deploy/postgres -- psql -U octo -d octo_db -tA -F "$(printf '\t')" -c "$1"
+}
+
 PSQL_PREFLIGHT=$(psql_q 'SELECT 1' || true)
 if [ "$PSQL_PREFLIGHT" != "1" ]; then
 	echo "FAIL: psql_q preflight -- 'SELECT 1' returned [$PSQL_PREFLIGHT], expected [1]. Retry with PGPASSWORD sourced from the release Secret: kubectl get secret octoconv-secret -n octoconv -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d" >&2
 	exit 1
 fi
 assert_eq "1" "$PSQL_PREFLIGHT" "psql_q preflight (SELECT 1 against postgres pod)"
+
+# ---------------------------------------------------------------------------
+# CLOCK SKEW (Plan 55-07, D7): terminal_before (below) compares a
+# burst-pod-clock INSTANT against Postgres timestamptz columns. Both
+# containers run on one OrbStack node and share the kernel's
+# CLOCK_REALTIME -- but that is an ASSUMPTION, so it becomes a CHECKED one
+# here: measure the skew between the burst pod's `date +%s%3N` and
+# Postgres's `clock_timestamp()` (both as epoch milliseconds), taken back
+# to back, and hard-fail above 1000ms. The per-round wall-time RATIO check
+# (run_round, below) compares two DURATIONS derived from each clock
+# separately, not one instant against the other, and is therefore
+# offset-free by construction regardless of this measurement -- this check
+# exists solely for terminal_before's instant-vs-instant comparison.
+# ---------------------------------------------------------------------------
+POD_CLOCK_MS=$(kubectl exec -n "$NAMESPACE" "$BURST_POD" -- date +%s%3N)
+DB_CLOCK_MS=$(psql_q "SELECT (extract(epoch from clock_timestamp())*1000)::bigint")
+if [ "$POD_CLOCK_MS" -ge "$DB_CLOCK_MS" ]; then
+	CLOCK_SKEW_MS=$((POD_CLOCK_MS - DB_CLOCK_MS))
+else
+	CLOCK_SKEW_MS=$((DB_CLOCK_MS - POD_CLOCK_MS))
+fi
+echo "burst pod clock=$POD_CLOCK_MS ms, postgres clock_timestamp()=$DB_CLOCK_MS ms"
+assert_le "$CLOCK_SKEW_MS" "1000" "clock skew (ms) between burst pod and Postgres clock_timestamp()"
+
+# sql_id_list JOB_IDS -- turns a whitespace-separated list of job ids into
+# a quoted, comma-separated SQL list for use inside an IN (...) clause.
+# Every SQL helper below builds on this one place. Single quotes only --
+# psql_q passes the resulting string as ONE argv element to `psql -tAc`,
+# never through a remote shell, so there is no shell-injection surface
+# here distinct from any other psql_q caller in this file.
+sql_id_list() {
+	local ids="$1" id out=""
+	for id in $ids; do
+		if [ -n "$out" ]; then
+			out="${out},"
+		fi
+		out="${out}'${id}'"
+	done
+	printf '%s' "$out"
+}
+
+# terminal_before JOB_IDS LAST_RECV_MS -- THE DISCRIMINATOR (D6, the
+# load-bearing part of this plan). Counts how many of the listed jobs
+# reached a terminal status (done/failed/canceled) at or before the
+# round's LAST response (last_recv_ms, the burst pod's millisecond clock).
+# A non-zero count means the round's admit count is explained by
+# LEGITIMATE SLOT REUSE, not a cap violation -- called BEFORE the exact-K
+# cap assertion in assess_round (see the ORDER IS THE ENTIRE POINT comment
+# there), never after.
+terminal_before() {
+	local job_ids="$1" last_recv_ms="$2" id_list
+	id_list=$(sql_id_list "$job_ids")
+	psql_q "SELECT count(*) FROM job_events WHERE job_id IN (${id_list}) AND to_status IN ('done','failed','canceled') AND created_at <= to_timestamp(${last_recv_ms}/1000.0)"
+}
+
+# min_job_wall_ms JOB_IDS -- the minimum, in integer milliseconds, of
+# (first terminal job_events.created_at) minus (jobs.created_at) across
+# the listed jobs. A LEFT JOIN plus per-job coalesce(wall_ms, -1) means a
+# job with NO terminal event yet contributes -1 to the candidate set, so
+# the overall MIN comes out -1 in that case too -- never silently excluded
+# from consideration.
+min_job_wall_ms() {
+	local job_ids="$1" id_list
+	id_list=$(sql_id_list "$job_ids")
+	psql_q "SELECT min(coalesce(wall_ms, -1)) FROM (SELECT j.id, (extract(epoch from (min(e.created_at) - j.created_at)) * 1000)::bigint AS wall_ms FROM jobs j LEFT JOIN job_events e ON e.job_id = j.id AND e.to_status IN ('done','failed','canceled') WHERE j.id IN (${id_list}) GROUP BY j.id, j.created_at) t"
+}
+
+# final_statuses JOB_IDS -- the distinct set of jobs.status across the
+# listed jobs, comma-joined and sorted. A 'failed' or 'canceled' member
+# means the long-job premise was never genuinely exercised for this round
+# (an OOM-killed or unsupported conversion is terminal too) -- the round
+# proves nothing in that case, and run_round (below) treats it as a hard
+# failure, not a soft warning.
+final_statuses() {
+	local job_ids="$1" id_list
+	id_list=$(sql_id_list "$job_ids")
+	psql_q "SELECT string_agg(DISTINCT status, ',' ORDER BY status) FROM jobs WHERE id IN (${id_list})"
+}
 
 # inflight_count mirrors internal/jobs/admission.go:239-242's concurrency
 # predicate EXACTLY (status IN ('queued','active')) -- ground truth, not an
@@ -848,11 +1121,21 @@ fire_burst() {
 # Evidence TSV initialization -- must happen before round 1 fires. Header
 # field order is fixed and matched by STEP 7's aggregate `awk -F'\t'`
 # assertions below: round(1) index(2) request_id(3) send_ts_ms(4)
-# recv_ts_ms(5) http_status(6) body_code(7) serving_pod(8).
+# recv_ts_ms(5) http_status(6) body_code(7) serving_pod(8). UNCHANGED by
+# Plan 55-07 -- byte-identical to every prior run's header.
 mkdir -p "$EVIDENCE_DIR"
 printf 'round\tindex\trequest_id\tsend_ts_ms\trecv_ts_ms\thttp_status\tbody_code\tserving_pod\n' >"$EVIDENCE_TSV"
 EVIDENCE_TSV_ABS="$(cd "$(dirname "$EVIDENCE_TSV")" && pwd)/$(basename "$EVIDENCE_TSV")"
 echo "PASS: evidence TSV initialized at $EVIDENCE_TSV_ABS"
+
+# Timeline TSV initialization (Plan 55-07) -- the ADDITIVE second artifact
+# that answers, from committed evidence after teardown, whether an
+# over-admitted round is legitimate slot reuse or a real cap violation
+# (D6). Initialized here, next to the existing TSV, before round 1 fires,
+# so the two files' lifetimes are identical.
+printf 'round\tjob_id\tcreated_at\tfirst_terminal_at\tterminal_status\twall_ms\tround_last_recv_utc\n' >"$EVIDENCE_TIMELINE_TSV"
+EVIDENCE_TIMELINE_TSV_ABS="$(cd "$(dirname "$EVIDENCE_TIMELINE_TSV")" && pwd)/$(basename "$EVIDENCE_TIMELINE_TSV")"
+echo "PASS: timeline TSV initialized at $EVIDENCE_TIMELINE_TSV_ABS"
 
 # ---------------------------------------------------------------------------
 # Round classification + attribution + assertions (Plan 55-02 Task 2).
@@ -868,7 +1151,7 @@ assess_round() {
 	local round="$1" i
 	local admit_count=0 quota_reject_count=0 attributed_total=0
 	local pod1_admit=0 pod1_reject=0 pod2_admit=0 pod2_reject=0
-	local min_send="" max_send=""
+	local min_send="" max_send="" max_recv=""
 	local admitted_job_ids=""
 
 	# ATTRIBUTE, step one: dump each pod's log ONCE per round (never once
@@ -965,6 +1248,12 @@ assess_round() {
 		if [ -z "$max_send" ] || [ "$send_ts" -gt "$max_send" ]; then
 			max_send="$send_ts"
 		fi
+		# max_recv (Plan 55-07): the round's LAST response instant, in the
+		# same burst-pod millisecond clock as send_ts/recv_ts -- passed to
+		# terminal_before below as the discriminator's cutoff.
+		if [ -z "$max_recv" ] || [ "$recv_ts" -gt "$max_recv" ]; then
+			max_recv="$recv_ts"
+		fi
 
 		# 6. EMIT EVIDENCE -- one TSV row per request.
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -973,6 +1262,38 @@ assess_round() {
 	done
 
 	assert_eq "$BURST_N" "$attributed_total" "round ${round}: every request attributed to exactly one pod"
+
+	# 2b. THE DISCRIMINATING ASSERTION (Plan 55-07, D6 -- the load-bearing
+	# part of this plan). ORDER IS THE ENTIRE POINT: this runs BEFORE the
+	# exact-K cap assertion below, never after, because a round that
+	# over-admits must be DIAGNOSED, not merely reported. Ask Postgres
+	# directly: did ANY of this round's admitted jobs reach a terminal
+	# status at or before this round's LAST response (max_recv)? If yes,
+	# the round's admit count is explained by legitimate slot reuse and the
+	# exact-K premise did NOT hold for this round -- fail here, with the
+	# per-job timeline dumped, instead of letting a misleading "expected
+	# [K], got [K+1]" further down stand as the only evidence (the exact
+	# 2026-08-07 round-4 gap: no job-status timeline existed to prove or
+	# disprove legitimate reuse). If no admitted jobs went terminal early,
+	# the premise for THIS round's exact-K assertion is proven, and a
+	# subsequent over-admission means a REAL cross-replica cap violation
+	# with nothing left to reconstruct.
+	if [ -z "$(printf '%s' "$admitted_job_ids" | tr -d '[:space:]')" ]; then
+		echo "WARN: round ${round}: no admitted jobs to run the discriminating assertion against -- the exact-K cap assertion immediately below will fail on its own if this round admitted nothing"
+	else
+		local terminal_before_count
+		terminal_before_count=$(terminal_before "$admitted_job_ids" "$max_recv")
+		if [ "$terminal_before_count" != "0" ]; then
+			echo "FAIL: round ${round}: ${terminal_before_count} of this round's admitted job(s) reached a terminal status at or before this round's last response (max_recv=${max_recv}ms) -- the concurrency slot was legitimately reused, so the exact-K premise did NOT hold for this round. Per-job timeline:" >&2
+			local tid
+			for tid in $admitted_job_ids; do
+				psql_q "SELECT '${tid}' || E'\t' || j.created_at || E'\t' || coalesce(min(e.created_at)::text, '(none)') || E'\t' || j.status FROM jobs j LEFT JOIN job_events e ON e.job_id = j.id AND e.to_status IN ('done','failed','canceled') WHERE j.id = '${tid}' GROUP BY j.id, j.created_at, j.status" >&2
+			done
+			exit 1
+		fi
+		PASS_COUNT=$((PASS_COUNT + 1))
+		echo "PASS: round ${round}: no-premature-terminal precondition for the exact-K assertion holds (0 of this round's admitted jobs went terminal at or before max_recv=${max_recv}ms)"
+	fi
 
 	# 3. SC1 -- CAP EXACTNESS. `==`, not `<=`: a round that starts with the
 	# cap already consumed would under-admit and still satisfy a `<=` check
@@ -997,7 +1318,11 @@ assess_round() {
 	# 5. CONCURRENCY OF FLIGHT -- without this, a fully serialized round
 	# would satisfy every other assertion while never contending the
 	# advisory lock at all.
-	assert_le "$((max_send - min_send))" "$BURST_SEND_SPREAD_MS" "round ${round}: burst send spread (ms)"
+	local round_spread=$((max_send - min_send))
+	assert_le "$round_spread" "$BURST_SEND_SPREAD_MS" "round ${round}: burst send spread (ms)"
+	# Persisted for run_round's post-drain wall-time RATIO assertion below
+	# (Plan 55-07) -- mirrors the existing r<round>-admitted.txt handoff.
+	printf '%s\n' "$round_spread" >"$WORKDIR/r${round}-spread.txt"
 
 	local inflight_at_max=0
 	for i in $(seq 1 "$BURST_N"); do
@@ -1012,6 +1337,9 @@ assess_round() {
 	echo "round ${round}: min_send=${min_send} max_send=${max_send} in_flight_at_max_send=${inflight_at_max}"
 
 	printf '%s\n' "$admitted_job_ids" >"$WORKDIR/r${round}-admitted.txt"
+	# Persisted for run_round's post-drain timeline append below (Plan
+	# 55-07) -- the same handoff pattern as r<round>-admitted.txt/-spread.txt.
+	printf '%s\n' "$max_recv" >"$WORKDIR/r${round}-maxrecv.txt"
 }
 
 # run_round ROUND -- sequences one round end-to-end: assert the cap is free
@@ -1029,6 +1357,50 @@ run_round() {
 	local admitted_ids
 	admitted_ids=$(cat "$WORKDIR/r${round}-admitted.txt" 2>/dev/null || true)
 	drain_round "$admitted_ids"
+
+	# ---------------------------------------------------------------------
+	# Post-drain long-job-premise verification (Plan 55-07). Runs AFTER
+	# drain_round, so every admitted job in the list is already terminal --
+	# drain_round itself hard-fails if it is not.
+	# ---------------------------------------------------------------------
+	if [ -n "$(printf '%s' "$admitted_ids" | tr -d '[:space:]')" ]; then
+		local round_spread wall_ms statuses max_recv_val round_last_recv_utc
+
+		round_spread=$(cat "$WORKDIR/r${round}-spread.txt" 2>/dev/null || echo 0)
+
+		# min_job_wall_ms >= JOB_WALL_FLOOR_MS: independent evidence, from
+		# Postgres timestamps, that the long-job premise was genuinely
+		# exercised for THIS run -- not just nominally configured.
+		wall_ms=$(min_job_wall_ms "$admitted_ids")
+		assert_ge "$wall_ms" "$JOB_WALL_FLOOR_MS" "round ${round}: minimum admitted-job wall time (ms) >= JOB_WALL_FLOOR_MS"
+		# min_job_wall_ms >= SPREAD_SAFETY_FACTOR * this round's send spread:
+		# a ratio of two DURATIONS (one derived from each clock separately),
+		# so it is offset-free across the pod/DB clocks by construction.
+		assert_ge "$wall_ms" "$((SPREAD_SAFETY_FACTOR * round_spread))" "round ${round}: minimum admitted-job wall time (ms) >= SPREAD_SAFETY_FACTOR * this round's send spread"
+
+		# final_statuses == exactly 'done': a 'failed' or 'canceled' member
+		# means the long-job premise was never exercised and the round
+		# proves nothing -- an OOM-killed or unsupported conversion is
+		# terminal too, and terminal-fast is exactly the premise break this
+		# plan closes. Hard failure, not a soft warning.
+		statuses=$(final_statuses "$admitted_ids")
+		assert_eq "done" "$statuses" "round ${round}: every admitted job's final status is exactly 'done'"
+
+		# Append this round's timeline rows -- the committed artifact that
+		# answers, after teardown, whether a future over-admit is legitimate
+		# slot reuse or a real cap violation (D6).
+		max_recv_val=$(cat "$WORKDIR/r${round}-maxrecv.txt" 2>/dev/null || echo 0)
+		round_last_recv_utc=$(psql_q "SELECT to_char(to_timestamp(${max_recv_val}/1000.0) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')")
+		local id_list_for_timeline
+		id_list_for_timeline=$(sql_id_list "$admitted_ids")
+		psql_rows "SELECT j.id, j.created_at, coalesce(min(e.created_at)::text,''), j.status, coalesce((extract(epoch from (min(e.created_at)-j.created_at))*1000)::bigint::text,'-1') FROM jobs j LEFT JOIN job_events e ON e.job_id=j.id AND e.to_status IN ('done','failed','canceled') WHERE j.id IN (${id_list_for_timeline}) GROUP BY j.id, j.created_at, j.status ORDER BY j.created_at" |
+			while IFS=$'\t' read -r tl_id tl_created tl_first_terminal tl_status tl_wall_ms; do
+				printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+					"$round" "$tl_id" "$tl_created" "$tl_first_terminal" "$tl_status" "$tl_wall_ms" "$round_last_recv_utc" \
+					>>"$EVIDENCE_TIMELINE_TSV"
+			done
+		echo "PASS: round ${round}: timeline rows appended to ${EVIDENCE_TIMELINE_TSV}"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1506,15 @@ RUN_END_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 	echo "# total_202=${TOTAL_202}"
 	echo "# total_429_quota_exceeded=${TOTAL_429_QUOTA}"
 	echo "# pod1_202=${POD1_202} pod1_429=${POD1_429} pod2_202=${POD2_202} pod2_429=${POD2_429}"
+	# Plan 55-07 additions -- append-only, existing lines above are
+	# untouched so a diff of this block against a pre-55-07 run only ever
+	# grows.
+	echo "# fixture=${FIXTURE}"
+	echo "# fixture_bytes=${FIXTURE_BYTES}"
+	echo "# target_format=${TARGET_FORMAT}"
+	echo "# burst_send_spread_ms_bound=${BURST_SEND_SPREAD_MS}"
+	echo "# min_engine_wall_ms=${MIN_ENGINE_WALL_MS}"
+	echo "# timeline_tsv=${EVIDENCE_TIMELINE_TSV_ABS}"
 	echo "#"
 } | tee -a "$EVIDENCE_TSV"
 
@@ -1147,7 +1528,7 @@ RUN_END_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 GATE_OK=1
 echo ""
 echo "=== GATE PASS: ${ROUNDS_PASSED}/${ROUNDS} rounds passed, ${PASS_COUNT} assertions passed, evidence at ${EVIDENCE_TSV_ABS} ==="
-echo "SC1 (QUOT-05): admitted count == K (${QUOTA_K}) exactly in every round; every round's cap decision crossed the ${API_POD_1}/${API_POD_2} replica boundary; aggregate cross-pod coverage confirmed both pods served both an admit and a quota_exceeded reject over the whole run."
-echo "SC2: timestamps, replica identifiers, and admitted/rejected counts committed to ${EVIDENCE_TSV_ABS}"
-echo "IMPORTANT: this evidence file must be committed (ROADMAP SC2) BEFORE the trap below uninstalls the release -- teardown never deletes \$EVIDENCE_DIR but does not commit it either. Commit it explicitly, e.g.:"
-echo "  git add -f ${EVIDENCE_TSV_ABS}"
+echo "SC1 (QUOT-05): exactly K (${QUOTA_K}) jobs admitted in every round; every round's cap decision crossed the ${API_POD_1}/${API_POD_2} replica boundary; aggregate cross-pod coverage confirmed both pods served both an admit and a quota_exceeded reject over the whole run. The no-premature-terminal precondition for the exact-K assertion was proven from Postgres every round (Plan 55-07)."
+echo "SC2: timestamps, replica identifiers, and admitted/rejected counts committed to ${EVIDENCE_TSV_ABS}; the per-job status timeline (created_at/first_terminal_at/status/wall_ms) committed to ${EVIDENCE_TIMELINE_TSV_ABS}"
+echo "IMPORTANT: BOTH evidence files must be committed (ROADMAP SC2) BEFORE the trap below uninstalls the release -- teardown never deletes \$EVIDENCE_DIR but does not commit it either. Commit them explicitly, e.g.:"
+echo "  git add -f ${EVIDENCE_TSV_ABS} ${EVIDENCE_TIMELINE_TSV_ABS}"
