@@ -61,6 +61,14 @@
 // those two limits share the same locked-transaction structure this
 // comment already argues is replica-safe by construction, but that
 // specific claim has not itself been exercised under N live replicas.
+//
+// The live run's parameters are likewise the bounds of what it observed,
+// and nothing more: K=2, the image engine, and exactly 2 api replicas. It
+// says nothing empirical about other cap values, other engine classes, or
+// three-or-more replicas. Those rest on the structural argument above --
+// which is generic in all three, since the advisory-lock key is derived
+// per (client, engine) and the serialization happens in Postgres rather
+// than in any replica -- but they have not been watched happening.
 package jobs
 
 import (
