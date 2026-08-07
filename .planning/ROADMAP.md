@@ -185,7 +185,7 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 - [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
 - [x] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (7/7 plans; initial verification 9/10 `gaps_found` on SC2, closed by 53-05..53-07, re-verified 10/10 `passed`) (completed 2026-08-05)
 - [x] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero (completed 2026-08-06)
-- [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
+- [x] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design (completed 2026-08-07)
 
 ## Phase Details
 
@@ -381,7 +381,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 55-05-PLAN.md — operator-gated live run (calibration then 10/10 rounds at `api.replicas: 2`), committed evidence, and the SC2 "no `replicas: 1` caveat" counter-statement in `internal/jobs/admission.go`
+- [x] 55-05-PLAN.md — operator-gated live run (calibration then 10/10 rounds at `api.replicas: 2`), committed evidence, and the SC2 "no `replicas: 1` caveat" counter-statement in `internal/jobs/admission.go`
 
 **Autonomous**: false (Plan 05 is an operator-run live gate — requires a real 2+-replica run, cannot be closed by static verification alone)
 
@@ -443,7 +443,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 6/7 | In Progress|  |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete   | 2026-08-07 |
 
 ---
 
