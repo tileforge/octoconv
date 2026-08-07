@@ -6,7 +6,7 @@ status: planning
 last_updated: "2026-08-07T19:50:24.491Z"
 last_activity: 2026-08-07
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.13 Inspect & Operations — определение требований (фазы нумеруются с 56)
+**Current focus:** v1.13 Inspect & Operations — Phase 56 (JobRunner + структурированные коды ошибок)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 56 — JobRunner Consolidation & Structured Error Codes (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-08-07 — Milestone v1.13 started
+Status: Roadmap approved — ready to plan Phase 56
+Last activity: 2026-08-07 — Milestone v1.13 roadmap created (6 phases, 28/28 requirements mapped)
 
 ## Performance Metrics
 
@@ -107,7 +107,21 @@ Last activity: 2026-08-07 — Milestone v1.13 started
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap decisions (recorded at roadmap creation, 2026-08-02):
+Decisions are logged in PROJECT.md Key Decisions table.
+
+**v1.13-specific roadmap decisions (recorded at roadmap creation, 2026-08-07):**
+
+- **Phase numbering continues from v1.12's Phase 55 — this milestone is Phases 56-61**, not a restart at 1.
+- **`inspect` is a SYNCHRONOUS `POST /v1/inspect`, not a job.** The whole point is deciding *before* queuing an expensive job. The cost was accepted knowingly: the path bypasses quotas, accounting, the reconciler, webhooks and SSE, so it must carry its own bounds (INSP-05) and prove process isolation with a live gate (INSP-06) rather than assume it.
+- **`sanitize` is a NEW `jobs.operation` value, engine `probe`** — not a reuse of `extract`. The verb names what it does; `extract` would lie (sanitize extracts nothing) and would consume a value needed on its merits in the Document wave. This **supersedes SEED-013's framing** (`engine=probe`, `operation=inspect|convert`), which two independent researchers flagged as inconsistent with the milestone description.
+- **The whole error-code contract lands in ONE phase (56), including the 4xx half in `internal/api/handlers.go`** — splitting it would make two MCP servers and the frontend migrate twice inside one milestone (PITFALLS.md Pitfall 11).
+- **ROLE-02 must close in Phase 57, before sanitize ships in 60.** `handleGetJob` takes `outs[0]` with no role awareness (`internal/api/handlers.go:857-870`, verified live) — the defect is already in the code, merely unreachable until a second output exists.
+- **INSP-06's live gate lives INSIDE Phase 58, unlike QUOT-05 which was its own phase (55).** The gate proves a property of code written in the same phase, with no intervening phase able to change it — matching Phase 51 Plan 05's precedent (operator-run KEDA gate inside the phase that built the metrics). If the gate fails, the fix is likely a design change (moving deep analysis to a worker), so the phase should not close until the design is proven.
+- **The three DEBT items are their own phase (61), not folded into 56-60** — zero file overlap, and folding them would add unrelated diff noise to the main work's review. Phase 54 (CAPA-01) precedent.
+- **Research corrections carried into the roadmap:** SEED-020 overstated its own cost (handler bodies are 79–110 lines, not 94–163; `process()` at worker.go:1847-1942 is already the shared orchestrator; av's disk guards and ocr's page caps are converter-internal, not handler-level). Its "14 symmetric call sites" claim is exactly correct. Adding an eighth queue is **low** blast radius (each ScaledObject's PromQL is self-contained; proven twice in v1.10/v1.11) — *renaming* one is the expensive operation, and v1.13 requires none. The real KEDA risk here is metric-label drift during the refactor.
+- **Coverage: 28/28 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
+
+**v1.12-specific roadmap decisions (recorded at roadmap creation, 2026-08-02):**
 
 - **Phase numbering continues from v1.11's Phase 50 — this milestone is Phases 51-55**, not a restart at 1.
 - **Attribution before enforcement before visibility (Phase 51 → 52 → 53), mirroring the milestone's own framing** ("Атрибуция" before "Границы"): quotas can't be enforced against numbers that aren't tracked yet, and the operator endpoint has nothing to show without the rollup existing first.
@@ -138,7 +152,19 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 
 ### Blockers/Concerns
 
-None currently blocking. Sequencing carried into the roadmap:
+None currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
+
+- Hard-ordered spine: **56 → 57 → 58 → 59**, and **56 + 57 → 60**. Phase 61 (debt tail) is fully independent and can execute in any slot.
+- **Highest-blast-radius risk is Phase 56, and it is not the refactor itself — it is metric-label drift.** The phase touches all 14 metric call sites in the same milestone that adds an `operation` dimension; the natural "let's add an `operation` label while we're here" impulse would break KEDA scale-from-zero for all seven existing engine classes. `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` must stay green, verified by diff, mirroring FAIR-02's v1.12 method.
+- **Second-highest risk in Phase 56:** `isAudioTerminal` and `isAVTerminal` encode stage-level asymmetries with **opposite polarity from each other**, deliberately. The descriptor must model `(stage, isTimeout)`, not `(engine, isTimeout)`, or the refactor silently regresses the two costliest engine classes. A test suite that proves the runner's shape rather than the seven engines' pre-existing behavior would pass while regressing.
+- **Highest operational risk is Phase 58:** the synchronous inspect handler shares a process with `/healthz`. A pathological burst can fail the k8s liveness probe and cascade a fleet-wide restart, not merely slow one client. This is why INSP-06 is an operator-gated live proof.
+- **Highest security bar is Phase 60.** Verified against real sources: PDF incremental updates leave "removed" objects byte-recoverable in an earlier revision; naive OOXML zip-entry deletion leaves dangling `[Content_Types].xml`/`.rels` references or leaves payload bytes physically present; self-verification with the removing parser is structurally blind to polyglot bypasses (CVE-2015-5092 precedent). Apply the project's own veraPDF precedent — verify with an independent implementation.
+- **Two design decisions deliberately left open for Phase 60 planning** (research could not close them honestly): blacklist-removal vs reconstruct-from-trusted-content, and the independent verification parser choice. Both must be written decisions before code lands.
+- **Operator-gated phases:** 58 (live process-isolation proof) and 60 (measured `probe` engine timeout on its own corpus — copying a sibling's timeout is a documented project anti-pattern; every class has a distinct value: 65s pandoc, 742s audio, 744s ocr, 753s av).
+- **Explicit non-goals for v1.13 (do not resurface):** SEED-010 dynamic capability registry (third rejection), SEED-021 Opportunity 2 (per-page Mixed-PDF routing — unresolved merging contract), rasterize-and-rebuild sanitize, poppler/qpdf/mutool/ffprobe/exiftool in `Dockerfile.api`, renaming any existing queue, SEED-017/SEED-018.
+- Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record) — relevant again for Phase 58's and Phase 60's live runs.
+
+Carried from v1.12:
 
 - Hard-ordered spine for the accounting/quota work: 51 (attribution + retention — new rollup table + client-labeled counter, additive/zero-behavior-change) → 52 (quota enforcement + baseline fairness, same mechanism — needs Phase 51's table) → 53 (operator visibility — reads Phase 51's table, sequenced after 52 starts so "usage vs. limit" is meaningful).
 - Phase 54 (CAPA-01/SEED-011) is fully independent — chart-only, can execute at any point; placed as a hygiene tail so it doesn't add unrelated diff noise to 51-53's review.
@@ -243,12 +269,15 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-07T15:47:57.024Z
-Stopped at: Phase 55 complete (QUOT-05 live-gate PASS, 7/7 plan files)
+Stopped at: v1.13 roadmap created (Phases 56-61, 28/28 requirements mapped)
 Resume file: None
 
 ## Operator Next Steps
 
+- **Milestone v1.13 (Inspect & Operations) started 2026-08-07** — 6 phases (56-61), 28/28 v1 requirements mapped, 0 orphans. Research complete (`.planning/research/`, 5 files). Next: `/gsd:discuss-phase 56` then `/gsd:plan-phase 56`.
+- **Four live defects found by v1.13 research, actionable regardless of phase order:** `internal/reconciler/reconciler.go:311-312` (unguarded `RecordReconcilerAction("exhausted")` — the exact PR #4 defect class, uncaught; closed by RUNR-02), `internal/api/handlers.go:857-870` (`handleGetJob` presigns `outs[0]` with no role awareness; closed by ROLE-02), `internal/jobs/retention.go:126` (`PurgeUsage` on the Go clock; closed by DEBT-11), `internal/convert/ocrguards.go:227-228` (comment steers clients to an engine that does not accept pdf as source; closed by BDPD-02).
+- **One new Go dependency planned:** `github.com/pdfcpu/pdfcpu` v0.14.0 (Apache-2.0, pure Go, `CGO_ENABLED=0`). Largest new dependency since the MCP `go-sdk` (Phase 21) — justified specifically on `/JS`/`/OpenAction`/`/EmbeddedFile` detection inside compressed object streams, where a byte scan has a real false-negative rate. It also doubles as the sanitize verifier.
 - **Milestone v1.12 (Consumer Accounting & Fairness) closed and archived 2026-08-07** — 5 phases, 30 plans, 79 tasks, 15/15 requirements. Audit status `tech_debt`: 0 blockers, 9/9 cross-phase seams, 16 non-blocking debt items recorded (`.planning/milestones/v1.12-MILESTONE-AUDIT.md`). `.planning/REQUIREMENTS.md` is intentionally absent — `/gsd:new-milestone` creates a fresh one.
 - **Highest-value carry-forward: 52 WR-01.** An in-flight job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day, with no operator remedy in `cmd/manage-clients` and no documentation of the new quota ↔ `cmd/webhook-worker` health coupling. Natural shape for a first phase of the next milestone, together with the README self-contradiction (52 WR-09).
-- Next: `/gsd:new-milestone` (questioning → research → requirements → roadmap). Phase numbering continues from 55 — never restart at 1.
-- Phase directories for 51-55 were deliberately left in `.planning/phases/` rather than moved to `milestones/v1.12-phases/`; run `/gsd:cleanup` to archive them retroactively if the directory gets noisy.
+- Phase numbering continues from 55 — v1.13 is Phases 56-61, never restart at 1.
+- Phase directories for 51-55 were archived into `.planning/milestones/v1.12-phases/` at v1.13 milestone start (commit a2b8d5b); v1.12 research moved to `.planning/milestones/v1.12-research/`.

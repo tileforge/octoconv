@@ -121,40 +121,40 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RUNR-01 | — | Pending |
-| RUNR-02 | — | Pending |
-| RUNR-03 | — | Pending |
-| ERRC-01 | — | Pending |
-| ERRC-02 | — | Pending |
-| ERRC-03 | — | Pending |
-| OPRN-01 | — | Pending |
-| OPRN-02 | — | Pending |
-| OPRN-03 | — | Pending |
-| ROLE-01 | — | Pending |
-| ROLE-02 | — | Pending |
-| INSP-01 | — | Pending |
-| INSP-02 | — | Pending |
-| INSP-03 | — | Pending |
-| INSP-04 | — | Pending |
-| INSP-05 | — | Pending |
-| INSP-06 | — | Pending |
-| BDPD-01 | — | Pending |
-| BDPD-02 | — | Pending |
-| SANI-01 | — | Pending |
-| SANI-02 | — | Pending |
-| SANI-03 | — | Pending |
-| SANI-04 | — | Pending |
-| SANI-05 | — | Pending |
-| SANI-06 | — | Pending |
-| DEBT-09 | — | Pending |
-| DEBT-10 | — | Pending |
-| DEBT-11 | — | Pending |
+| RUNR-01 | Phase 56 | Pending |
+| RUNR-02 | Phase 56 | Pending |
+| RUNR-03 | Phase 56 | Pending |
+| ERRC-01 | Phase 56 | Pending |
+| ERRC-02 | Phase 56 | Pending |
+| ERRC-03 | Phase 56 | Pending |
+| OPRN-01 | Phase 57 | Pending |
+| OPRN-02 | Phase 57 | Pending |
+| OPRN-03 | Phase 57 | Pending |
+| ROLE-01 | Phase 57 | Pending |
+| ROLE-02 | Phase 57 | Pending |
+| INSP-01 | Phase 58 | Pending |
+| INSP-02 | Phase 58 | Pending |
+| INSP-03 | Phase 58 | Pending |
+| INSP-04 | Phase 58 | Pending |
+| INSP-05 | Phase 58 | Pending |
+| INSP-06 | Phase 58 | Pending |
+| BDPD-01 | Phase 59 | Pending |
+| BDPD-02 | Phase 59 | Pending |
+| SANI-01 | Phase 60 | Pending |
+| SANI-02 | Phase 60 | Pending |
+| SANI-03 | Phase 60 | Pending |
+| SANI-04 | Phase 60 | Pending |
+| SANI-05 | Phase 60 | Pending |
+| SANI-06 | Phase 60 | Pending |
+| DEBT-09 | Phase 61 | Pending |
+| DEBT-10 | Phase 61 | Pending |
+| DEBT-11 | Phase 61 | Pending |
 
 **Coverage:**
 - v1 requirements: 28 total
-- Mapped to phases: 0
-- Unmapped: 28 ⚠️ (заполняется роадмаппером)
+- Mapped to phases: 28
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-08-07*
-*Last updated: 2026-08-07 after initial definition*
+*Last updated: 2026-08-07 after roadmap creation (Phases 56-61)*
