@@ -377,7 +377,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 55-07-PLAN.md — gap closure after the FAILED full run (round 4/10, `admitted count expected [2], got [3]`, most likely legitimate slot reuse the gate could not distinguish from a cap violation): heavy 9000x9000 burst fixture so an admitted job cannot go terminal inside a burst, `BURST_SEND_SPREAD_MS` 1000→250 behind a self-checking window/engine-time invariant, jitter-free in-pod barrier, app-image freshness preflight, and a per-round Postgres assertion that proves the exact-K premise before asserting it — no assertion weakened
+- [x] 55-07-PLAN.md — gap closure after the FAILED full run (round 4/10, `admitted count expected [2], got [3]`, most likely legitimate slot reuse the gate could not distinguish from a cap violation): heavy 9000x9000 burst fixture so an admitted job cannot go terminal inside a burst, `BURST_SEND_SPREAD_MS` 1000→250 behind a self-checking window/engine-time invariant, jitter-free in-pod barrier, app-image freshness preflight, and a per-round Postgres assertion that proves the exact-K premise before asserting it — no assertion weakened
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
@@ -443,7 +443,7 @@ Plans:
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 5/6 | In Progress|  |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 6/7 | In Progress|  |
 
 ---
 
