@@ -20,6 +20,47 @@
 // a count that goes negative -- are permanent, unlike an occupancy count
 // derived live from jobs.status, which can never drift from ground truth
 // because it IS ground truth.
+//
+// Unlike internal/ratelimit -- whose package comment documents that its
+// in-process httprate counter stops being shared the moment the API is
+// horizontally scaled, with an explicit upgrade path to a Redis-backed
+// counter for that day -- this mechanism carries NO api.replicas: 1-only
+// caveat. The reason is structural, not empirical: the per-(client, engine)
+// pg_advisory_xact_lock plus the COUNT run in the SAME transaction as the
+// INSERT (see admitLocked below) is correct under any number of API
+// replicas by construction, because Postgres, not process memory, is what
+// serializes concurrent admissions.
+//
+// That structural argument is now also confirmed by direct live
+// observation, closing ROADMAP Phase 55 SC1/SC2 (QUOT-05):
+// scripts/quota-multireplica-liveproof.sh ran ten independent rounds of ten
+// concurrent job-creation requests against a real two-pod api.replicas: 2
+// deployment (image engine, max_concurrent=2), and every round admitted
+// exactly K=2 and rejected exactly 8 with quota_exceeded, with zero
+// rate_limited responses. Every round's cap decision was split across both
+// serving pods (api-6769bc54f7-frgdx, api-6769bc54f7-t8j4m), and the
+// aggregate coverage over the whole run was pod1 202=10/429=42, pod2
+// 202=10/429=38 -- both pods served both outcomes. 10/10 rounds passed,
+// 167 assertions passed, run id 20260807T153358Z. Since plan 55-07, each
+// round additionally proves from Postgres, BEFORE asserting admitted==K,
+// that no admitted job reached a terminal status at or before that round's
+// last response, so the exact-K count rests on a proven premise rather
+// than an assumed one. Evidence committed at
+// .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/
+// quota-multireplica-20260807T153358Z.tsv (per-request rows) and
+// quota-multireplica-20260807T153358Z-timeline.tsv (per-admitted-job
+// terminal timeline); the gate script and both files are re-runnable and
+// re-derivable (the aggregate counts are re-derivable from the TSV with
+// awk alone), so this claim stays falsifiable rather than merely asserted.
+//
+// What this run does NOT cover: only the concurrency limit (max_concurrent)
+// was exercised live. The daily-jobs and daily-bytes caps were deliberately
+// out of scope for the live gate (55-CONTEXT.md D-03) and remain covered
+// only by the in-process burst tests in admission_test.go (e.g.
+// TestConcurrentBurstAdmitsExactlyK) -- the correct scope for now, since
+// those two limits share the same locked-transaction structure this
+// comment already argues is replica-safe by construction, but that
+// specific claim has not itself been exercised under N live replicas.
 package jobs
 
 import (
