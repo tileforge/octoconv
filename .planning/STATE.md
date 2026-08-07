@@ -17,10 +17,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-07 after v1.12 milestone close)
+See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.12 закрыт и заархивирован — следующий милстоун не определён (`/gsd:new-milestone`)
+**Current focus:** v1.13 Inspect & Operations — определение требований (фазы нумеруются с 56)
 
 ## Current Position
 
