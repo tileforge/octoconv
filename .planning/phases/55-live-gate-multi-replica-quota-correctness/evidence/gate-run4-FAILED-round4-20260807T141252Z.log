@@ -1,0 +1,163 @@
+=== Phase 55 (QUOT-05) quota multi-replica live gate -- run 20260807T141252Z ===
+
+--- STEP 1: preflight ---
+PASS: kubectl reaches the OrbStack cluster (context: orbstack)
+PASS: helm, kubectl, docker, awk, base64 all present on PATH (jq is NOT required -- this script parses JSON with grep/cut, matching the existing scripts)
+PASS: fixture file present at internal/e2e/testdata/sample.png
+PASS: compose stack is down (0 octoconv-* containers running)
+PASS: local driver script present at scripts/quota-burst-driver.sh
+PASS: burst image buildpack-deps:bookworm-curl available locally
+
+--- STEP 2: two-phase install (migration-race guard) ---
+Release "octoconv" does not exist. Installing it now.
+NAME: octoconv
+LAST DEPLOYED: Fri Aug  7 17:12:53 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 1
+DESCRIPTION: Install complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: Phase A helm upgrade --install (api.replicas forced to 1) complete
+deployment.apps/postgres condition met
+PASS: deployment/postgres Available (Phase A)
+deployment.apps/redis condition met
+PASS: deployment/redis Available (Phase A)
+deployment.apps/minio condition met
+PASS: deployment/minio Available (Phase A)
+deployment.apps/api condition met
+PASS: deployment/api Available (Phase A)
+deployment.apps/worker condition met
+PASS: deployment/worker Available (Phase A)
+Release "octoconv" has been upgraded. Happy Helming!
+NAME: octoconv
+LAST DEPLOYED: Fri Aug  7 17:13:13 2026
+NAMESPACE: octoconv
+STATUS: deployed
+REVISION: 2
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+NOTES:
+OctoConv has been deployed to namespace "octoconv".
+
+In-cluster API URL (for other in-cluster services):
+  http://api.octoconv.svc.cluster.local:8090
+
+Note: /metrics on every pod is NOT publicly exposed — it is intended to be
+scoped by a NetworkPolicy to the observability namespace only (see plan 02).
+Do not assume it is reachable from arbitrary pods in this namespace.
+
+Check pod status:
+  kubectl --context orbstack -n octoconv get pods
+PASS: Phase B helm upgrade (api.replicas from overlay = 2) complete
+deployment "api" successfully rolled out
+PASS: deployment/api rollout complete (Phase B)
+
+--- STEP 3: replica / endpoint / pod-set assertions (SC1 precondition) ---
+PASS: api Deployment spec.replicas == 2
+endpoint source used: endpoints
+PASS: api Service ready endpoint count == 2
+PASS: api pod count discovered == 2
+PASS: API_POD_1 discovered == api-6769bc54f7-gtcks
+PASS: API_POD_2 discovered == api-6769bc54f7-s4g5w
+api pods: api-6769bc54f7-gtcks api-6769bc54f7-s4g5w
+PASS: pod set recorded to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.qVE65rf9il/api-pods-start.txt for the end-of-run pod-set-unchanged assertion (Plan 55-02)
+
+--- STEP 4: ClusterIP discovery + in-cluster burst pod + calibration ---
+PASS: api Service ClusterIP discovered == 192.168.194.234
+pod/octoconv-burst-20260807t141252z created
+pod/octoconv-burst-20260807t141252z condition met
+PASS: burst pod octoconv-burst-20260807t141252z ready (image buildpack-deps:bookworm-curl, component=quota-burst -- distinct from the component=api selector the pod-set assertions use)
+PASS: burst pod toolchain complete (mkfifo awk seq base64 sha256sum) (empty, as required)
+PASS: burst pod millisecond clock honors %3N (1786112002913) == 1786112002913
+PASS: driver and fixture transferred into octoconv-burst-20260807t141252z
+PASS: driver sha256 matches after transfer == 2f309d396a4fba792a3980c3df904e229cfa5acbab397a2e4cea67aa7ef2bacd
+PASS: driver byte count matches after transfer == 10316
+PASS: fixture sha256 matches after transfer == ed9da338bded863ce7cdee1631d1da54de618ffe7b6744168b08a17a748397f4
+PASS: fixture byte count matches after transfer == 86
+PASS: calibration probes returning 200 == 20
+PASS: calibration probes landed on API_POD_1 (api-6769bc54f7-gtcks) (10 >= 1)
+PASS: calibration probes landed on API_POD_2 (api-6769bc54f7-s4g5w) (10 >= 1)
+PASS: calibration pod-hit sum equals probes fired == 20
+PASS: calibration -- in-cluster ClusterIP routing (burst pod octoconv-burst-20260807t141252z) distributed 20 probes across both api pods (pod1=10, pod2=10) -- this line is itself SC2 evidence that two replicas really served traffic
+
+--- STEP 5: postgres port-forward, DB ground truth, throwaway client provisioning ---
+PASS: psql_q preflight (SELECT 1 against postgres pod) == 1
+PASS: minted client id == 1e232357-53cd-40e3-885a-f41eef78b78c
+PASS: minted client api key == [REDACTED, 43 chars]
+2026/08/07 17:13:34 set limit for client 1e232357-53cd-40e3-885a-f41eef78b78c engine image
+2026/08/07 17:13:34 set enforcement mode enforce for client 1e232357-53cd-40e3-885a-f41eef78b78c
+PASS: set-limit + set-mode invoked (max-concurrent=2, unlimited daily bytes/jobs, enforcement_mode=enforce)
+PASS: client_limits.max_concurrent readback == 2
+PASS: client_limits.max_daily_bytes IS NULL readback == t
+PASS: client_limits.max_daily_jobs IS NULL readback == t
+PASS: clients.enforcement_mode readback == enforce
+PASS: api key transferred into octoconv-burst-20260807t141252z (byte count matches; key itself never echoed) == 43
+PASS: QUOTA_ENFORCEMENT_DISABLED kill-switch off (read from api-6769bc54f7-gtcks) == false
+PASS: fresh client starts with zero in-flight jobs == 0
+PASS: evidence TSV initialized at /Users/apaderin/dev/octoconv/.planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/quota-multireplica-20260807T141252Z.tsv
+
+--- STEP 6: 10-round burst loop (K=2, N=10 per round) ---
+
+--- round 1/10 ---
+PASS: round 1: cap is free before the barrier fires == 0
+PASS: round 1: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 1: every request attributed to exactly one pod == 10
+PASS: round 1: admitted count == 2
+PASS: round 1: quota_exceeded rejection count == 8
+PASS: round 1: cross-pod cap decision -- api-6769bc54f7-gtcks admit=0 reject=6, api-6769bc54f7-s4g5w admit=2 reject=2
+PASS: round 1: burst send spread (ms) (9 <= 1000)
+PASS: round 1: requests provably in flight when the last request was sent (10 >= 5)
+round 1: min_send=1786112017315 max_send=1786112017324 in_flight_at_max_send=10
+drain: job 3e562bc6-c5f4-47f0-97ae-053566d3ccbb last status=done
+drain: job a91b487a-59b1-4812-9ad5-351af83e9605 last status=done
+PASS: drain_round -- all jobs [ 3e562bc6-c5f4-47f0-97ae-053566d3ccbb a91b487a-59b1-4812-9ad5-351af83e9605] terminal, inflight_count(1e232357-53cd-40e3-885a-f41eef78b78c)=0
+
+--- round 2/10 ---
+PASS: round 2: cap is free before the barrier fires == 0
+PASS: round 2: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 2: every request attributed to exactly one pod == 10
+PASS: round 2: admitted count == 2
+PASS: round 2: quota_exceeded rejection count == 8
+PASS: round 2: cross-pod cap decision -- api-6769bc54f7-gtcks admit=1 reject=4, api-6769bc54f7-s4g5w admit=1 reject=4
+PASS: round 2: burst send spread (ms) (1 <= 1000)
+PASS: round 2: requests provably in flight when the last request was sent (10 >= 5)
+round 2: min_send=1786112020562 max_send=1786112020563 in_flight_at_max_send=10
+drain: job 6ebead95-1e09-411a-a72e-f6ee097d4891 last status=done
+drain: job e65f6586-2528-4c91-8253-0c6ddf23d906 last status=done
+PASS: drain_round -- all jobs [ 6ebead95-1e09-411a-a72e-f6ee097d4891 e65f6586-2528-4c91-8253-0c6ddf23d906] terminal, inflight_count(1e232357-53cd-40e3-885a-f41eef78b78c)=0
+
+--- round 3/10 ---
+PASS: round 3: cap is free before the barrier fires == 0
+PASS: round 3: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 3: every request attributed to exactly one pod == 10
+PASS: round 3: admitted count == 2
+PASS: round 3: quota_exceeded rejection count == 8
+PASS: round 3: cross-pod cap decision -- api-6769bc54f7-gtcks admit=2 reject=6, api-6769bc54f7-s4g5w admit=0 reject=2
+PASS: round 3: burst send spread (ms) (92 <= 1000)
+PASS: round 3: requests provably in flight when the last request was sent (10 >= 5)
+round 3: min_send=1786112023341 max_send=1786112023433 in_flight_at_max_send=10
+drain: job 22924f38-9f52-4091-9a21-ab3aec6f84ed last status=done
+drain: job 7f052e48-ad16-4809-a9aa-9022fd6225bb last status=done
+PASS: drain_round -- all jobs [ 22924f38-9f52-4091-9a21-ab3aec6f84ed 7f052e48-ad16-4809-a9aa-9022fd6225bb] terminal, inflight_count(1e232357-53cd-40e3-885a-f41eef78b78c)=0
+
+--- round 4/10 ---
+PASS: round 4: cap is free before the barrier fires == 0
+PASS: round 4: every driver row has exactly six tab-separated fields (empty, as required)
+PASS: round 4: every request attributed to exactly one pod == 10
+FAIL: round 4: admitted count -- expected [2], got [3]
+
+=== TEARDOWN (OrbStack must never be left hot) ===
+
+FAIL -- Phase 55 (QUOT-05) quota multi-replica live gate did NOT complete (exit=1, checks passed=56).
