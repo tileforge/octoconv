@@ -18,10 +18,10 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
+See: .planning/PROJECT.md (updated 2026-08-07 after v1.12 milestone close)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Milestone complete
+**Current focus:** v1.12 закрыт и заархивирован — следующий милстоун не определён (`/gsd:new-milestone`)
 
 ## Current Position
 
@@ -249,4 +249,7 @@ Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- **Milestone v1.12 (Consumer Accounting & Fairness) closed and archived 2026-08-07** — 5 phases, 30 plans, 79 tasks, 15/15 requirements. Audit status `tech_debt`: 0 blockers, 9/9 cross-phase seams, 16 non-blocking debt items recorded (`.planning/milestones/v1.12-MILESTONE-AUDIT.md`). `.planning/REQUIREMENTS.md` is intentionally absent — `/gsd:new-milestone` creates a fresh one.
+- **Highest-value carry-forward: 52 WR-01.** An in-flight job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day, with no operator remedy in `cmd/manage-clients` and no documentation of the new quota ↔ `cmd/webhook-worker` health coupling. Natural shape for a first phase of the next milestone, together with the README self-contradiction (52 WR-09).
+- Next: `/gsd:new-milestone` (questioning → research → requirements → roadmap). Phase numbering continues from 55 — never restart at 1.
+- Phase directories for 51-55 were deliberately left in `.planning/phases/` rather than moved to `milestones/v1.12-phases/`; run `/gsd:cleanup` to archive them retroactively if the directory gets noisy.
