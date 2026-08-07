@@ -358,7 +358,7 @@ Plans:
   1. With `api.replicas` set to 2 or more, N concurrent job-creation requests from one client whose concurrency cap is `K` result in at most `K` admitted jobs — observed directly on a live run, never more, regardless of which replica handled which request.
   2. The live run's evidence (timestamps, replica identifiers, admitted/rejected counts) is captured and committed, mirroring this project's existing live-gate discipline (KEDA scale-from-zero, downscale-survival), and the phase records explicitly that the quota mechanism — unlike `internal/ratelimit` — does not carry a replicas-count caveat.
 
-**Plans**: 6 plans
+**Plans**: 7 plans
 
 Plans:
 **Wave 1**
@@ -376,6 +376,10 @@ Plans:
 - [x] 55-06-PLAN.md — gap closure after the FAILED live calibration (host->ClusterIP is unreachable on OrbStack, RESEARCH.md assumption A1 disproven): relocate the FIFO-barrier burst driver into a throwaway in-namespace pod per RESEARCH.md's Pattern 1 fallback, with no assertion weakened
 
 **Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 55-07-PLAN.md — gap closure after the FAILED full run (round 4/10, `admitted count expected [2], got [3]`, most likely legitimate slot reuse the gate could not distinguish from a cap violation): heavy 9000x9000 burst fixture so an admitted job cannot go terminal inside a burst, `BURST_SEND_SPREAD_MS` 1000→250 behind a self-checking window/engine-time invariant, jitter-free in-pod barrier, app-image freshness preflight, and a per-round Postgres assertion that proves the exact-K premise before asserting it — no assertion weakened
+
+**Wave 5** *(blocked on Wave 4 completion)*
 
 - [ ] 55-05-PLAN.md — operator-gated live run (calibration then 10/10 rounds at `api.replicas: 2`), committed evidence, and the SC2 "no `replicas: 1` caveat" counter-statement in `internal/jobs/admission.go`
 
