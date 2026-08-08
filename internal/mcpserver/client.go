@@ -30,6 +30,18 @@ const (
 	statusDone   = "done"
 	statusFailed = "failed"
 
+	// Error codes this package branches on structurally (docs/ERROR-CODES.md).
+	// Hardcoded here rather than importing internal/errcode, for the same
+	// D-02 reason statusDone/statusFailed are hardcoded above: this package
+	// speaks only the API's public wire contract, never its internal Go
+	// types. These are a curated SUBSET (only the codes this package
+	// actually branches on) of the full closed vocabulary; any other code,
+	// known or future, falls through to the default/generic path everywhere
+	// it is checked (Pitfall 12).
+	codeRateLimited    = "rate_limited"    // sync 429: wait-then-retry is meaningful (D-12)
+	codeQuotaExceeded  = "quota_exceeded"  // sync 429: retrying will not help until the quota resets
+	codeInvalidOptions = "invalid_options" // shared sync/async code space (D-03): the request's opts were rejected
+
 	// apiRequestTimeout bounds a single control-plane request (create/get
 	// job, list formats/presets) -- distinct from the overall convert
 	// deadline, which is enforced by ConvertBlocking across many such calls.
@@ -395,11 +407,7 @@ func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, 
 			}
 			return ConvertResult{JobID: jobID, DownloadURL: job.DownloadURL, LocalPath: localPath}, nil
 		case statusFailed:
-			msg := job.ErrorMessage
-			if msg == "" {
-				msg = "conversion failed"
-			}
-			return ConvertResult{}, fmt.Errorf("job %s failed: %s", jobID, msg)
+			return ConvertResult{}, describeFailedJob(jobID, job)
 		}
 
 		if !time.Now().Before(deadline) {
@@ -411,6 +419,27 @@ func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, 
 			return ConvertResult{}, ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+// describeFailedJob builds the error ConvertBlocking returns for a job that
+// finished in the failed status, selecting its wording structurally from
+// job.ErrorCode (docs/ERROR-CODES.md's async table) -- never by matching
+// job.ErrorMessage's text. An unrecognized or absent code falls through to
+// the pre-existing generic wording unchanged, satisfying the unknown-code
+// fallback contract (Pitfall 12): a future additive async code must degrade
+// safely here without a code change.
+func describeFailedJob(jobID string, job JobStatus) error {
+	msg := job.ErrorMessage
+	if msg == "" {
+		msg = "conversion failed"
+	}
+
+	switch job.ErrorCode {
+	case codeInvalidOptions:
+		return fmt.Errorf("job %s failed: %s -- the request's opts were rejected; fix them and submit a new job", jobID, msg)
+	default:
+		return fmt.Errorf("job %s failed: %s", jobID, msg)
 	}
 }
 
@@ -453,21 +482,62 @@ func (c *Client) apiError(action string, resp *http.Response) error {
 		msg = fmt.Sprintf("unexpected status %d", resp.StatusCode)
 	}
 
-	if code == "" {
-		// Neither: the message exactly as today.
-		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	// retryAfter is -1 (no code, or a code with no usable Retry-After
+	// header) unless the response carried both -- distinct from an explicit
+	// "retry in 0 seconds", which parseRetryAfterSeconds treats as valid.
+	retryAfter := -1
+	if code != "" {
+		if ra, ok := parseRetryAfterSeconds(resp.Header.Get("Retry-After")); ok {
+			retryAfter = ra
+		}
 	}
 
-	retryAfter, ok := parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
-	if !ok {
-		// A code but no (usable) Retry-After header.
-		msg = fmt.Sprintf("%s (code=%s)", msg, code)
-		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	return &APIError{
+		Action:     action,
+		Status:     resp.StatusCode,
+		Code:       code,
+		Message:    redact(msg, c.apiKey),
+		RetryAfter: retryAfter,
 	}
+}
 
-	// Both a code and a Retry-After header.
-	msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, code, retryAfter)
-	return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+// APIError is the typed error every non-2xx API response produces (D-12,
+// ERRC-03). Error() reproduces byte-for-byte the message format this
+// package has always emitted -- the pre-existing text assertions in
+// client_test.go and quota_admission_test.go stay unmodified and passing.
+// A caller that needs to act on the failure structurally (a tool handler
+// choosing retry-now vs do-not-retry, or falling back generically on an
+// unrecognized code) should recover *APIError via errors.As and branch on
+// Code, never by matching Error()'s text (ERRC-03, docs/ERROR-CODES.md).
+type APIError struct {
+	Action string // the operation that failed, e.g. "get job"
+	Status int    // the HTTP status code
+	Code   string // the machine-readable code (docs/ERROR-CODES.md); "" if the body carried none
+	// Message is the human-readable text, already redacted (D-08) -- a
+	// typed field is just as agent-visible as Error()'s string, so
+	// redaction is applied once here rather than trusting every future
+	// caller to redact it again before logging or echoing it.
+	Message string
+	// RetryAfter is the parsed Retry-After header value in whole seconds,
+	// or -1 when the response carried no code, or a code but no (usable)
+	// Retry-After header.
+	RetryAfter int
+}
+
+// Error implements the error interface, reproducing the exact three
+// formats apiError has always produced: message alone, message+code, or
+// message+code+retry_after.
+func (e *APIError) Error() string {
+	msg := e.Message
+	switch {
+	case e.Code == "":
+		// No code at all: the message exactly as today.
+	case e.RetryAfter < 0:
+		msg = fmt.Sprintf("%s (code=%s)", msg, e.Code)
+	default:
+		msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, e.Code, e.RetryAfter)
+	}
+	return fmt.Sprintf("%s: %s", e.Action, msg)
 }
 
 // extractErrorBody pulls the "error" and "code" fields out of a JSON body
