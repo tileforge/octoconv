@@ -685,6 +685,16 @@ type Handler struct {
 	// solely so a pinning test can substitute a stub processFn on a Handler
 	// built from fakes, without a live engine/converter/storage stack.
 	processFn func(ctx context.Context, job *jobs.Job) error
+	// preConvertGuard, when non-nil, splices additional validation
+	// immediately before process()'s call to the engine's Convert (via
+	// runConvertWithOptionalProgress) — installed by NewRunner from the
+	// bound EngineDescriptor's PreConvertGuard field (runner.go). nil for
+	// six of the seven engines; only the audio Runner installs one,
+	// wrapping the unmodified enforceAudioGuardBeforeConvert
+	// (T-30-08/IN-02). A nil guard is functionally identical to the
+	// pre-Task-1 code path: enforceAudioGuardBeforeConvert's own
+	// engine-gate was already a pass-through for every non-audio engine.
+	preConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
 }
 
 // SetProgressWebhook installs the D-04 opt-in inline progress-webhook
@@ -1962,17 +1972,32 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// be documented — closes the gap where EnforceMaxDuration existed
 	// (Phase 30) but no caller ever invoked it. Runs AFTER download (there
 	// is nothing to probe before the file exists locally) and strictly
-	// BEFORE conv.Convert (the most expensive step) via
-	// enforceAudioGuardBeforeConvert, factored out as its own package-level
-	// function so the ordering is unit-testable without a live Postgres/S3
-	// Handler.
-	if err := enforceAudioGuardBeforeConvert(attemptCtx, job.Engine, inPath, h.audioMaxDuration, func() error {
+	// BEFORE conv.Convert (the most expensive step).
+	//
+	// D-09 (56-CONTEXT.md): the splice itself is now generic — h.preConvertGuard,
+	// installed by NewRunner from the bound EngineDescriptor's
+	// PreConvertGuard (runner.go), runs in front of convertFn when non-nil;
+	// every other engine (h.preConvertGuard == nil) calls convertFn()
+	// directly. This is functionally identical to the pre-refactor
+	// unconditional call to enforceAudioGuardBeforeConvert: that function's
+	// own engine-gate (`if engine == convert.EngineAudio`) was already a
+	// pass-through for every non-audio engine, so removing the
+	// always-audio-shaped wrapper here changes no externally observable
+	// behavior.
+	convertFn := func() error {
 		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
+	}
+	var convertErr error
+	if h.preConvertGuard != nil {
+		convertErr = h.preConvertGuard(attemptCtx, job, inPath, convertFn)
+	} else {
+		convertErr = convertFn()
+	}
+	if convertErr != nil {
+		return convertErr
 	}
 
 	outKey := storage.OutputKey(job.ID, 0, outName)

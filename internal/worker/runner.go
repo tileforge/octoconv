@@ -1,0 +1,282 @@
+package worker
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/hibiken/asynq"
+
+	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/metrics"
+	"github.com/apaderin/octoconv/internal/queue"
+)
+
+// EngineDescriptor carries every per-engine difference the seven
+// Handle*Convert wrappers used to hardcode into seven near-identical
+// 79-163-line functions (SEED-020, 56-CONTEXT.md D-09): the shared skeleton
+// now lives ONCE in Runner.Handle, and each engine supplies its own
+// differences as DATA, not a branch. Package-level `var`s per engine
+// (ImageDescriptor, DocumentDescriptor, ... in descriptors.go) -- never a
+// map[string]EngineDescriptor registry, matching the one-engine-per-binary
+// deployment model every worker cmd already uses (D-09).
+type EngineDescriptor struct {
+	// Engine is convert.EngineX -- byte-identical to queue.QueueX by
+	// construction (internal/queue/queue.go:38-45), so Runner reads
+	// job.Engine for every metric label and never needs a queue.QueueX
+	// literal of its own.
+	Engine string
+
+	// Type is queue.TypeXConvert, the asynq task type this engine's Runner
+	// is registered against (mux.HandleFunc in each worker cmd's main.go).
+	Type string
+
+	// OptsFromMap re-parses the job's persisted Opts strictly, discarding
+	// the parsed value and keeping only the error (D-10: garbage in
+	// jobs.options is a terminal, not transient, failure -- a corrupt
+	// column value can never fix itself on retry). nil for image only:
+	// image is the one engine with no opts-guard branch
+	// (TestPinnedImageHasNoOptsGuard).
+	OptsFromMap func(map[string]any) (any, error)
+
+	// IsTerminal classifies a process() error as terminal (no retry can
+	// help) vs. transient (broad-retry default). Required for all seven
+	// engines -- carried as a field VALUE with its body unchanged (the
+	// pre-existing isTerminal/isDocumentTerminal/isHTMLTerminal/
+	// isAudioTerminal/isAVTerminal/isOCRTerminal/isPandocTerminal
+	// functions).
+	//
+	// CRITICAL (PITFALLS.md Pitfall 2): this is func(error) bool, the exact
+	// signature of today's isXTerminal functions -- do NOT "simplify" this
+	// into a TimeoutIsTerminal bool or any (engine, isTimeout) shape.
+	// isAudioTerminal (worker.go) treats an ffmpeg-stage timeout as
+	// terminal and a whisper-stage timeout as transient; isAVTerminal
+	// (worker.go) has the OPPOSITE polarity -- a transcode-stage timeout is
+	// transient but any audio-extract/thumbnail-stage failure is terminal.
+	// A boolean cannot express either asymmetry; only a per-engine function
+	// value can. TestPinnedAudioStageAsymmetry and TestPinnedAVStageAsymmetry
+	// (pinning_test.go) are the acceptance gate for this constraint.
+	IsTerminal func(error) bool
+
+	// FailureCode maps a terminal error to the client-facing (code,
+	// message) pair MarkFailed records. nil means the shared default pair
+	// ("engine_error", "unsupported or corrupted input format") -- used by
+	// image/document/html. audio/av/ocr/pandoc supply their own mapping
+	// (audioFailureCode/avFailureCode/ocrFailureCode/pandocFailureCode,
+	// descriptors.go/worker.go), each already unit-tested independently of
+	// this refactor.
+	FailureCode func(err error) (code, message string)
+
+	// PreConvertGuard, when non-nil, splices additional validation
+	// immediately before the engine's Convert call (installed onto
+	// Handler.preConvertGuard by NewRunner). nil for six of the seven
+	// engines; only audio uses this hook, and NewRunner installs it via a
+	// dedicated engine-specific closure rather than populating this field
+	// directly on AudioDescriptor (see NewRunner's doc comment for why).
+	// Kept as a generic hook for any future engine with the same shape of
+	// need, even though no descriptor populates it today.
+	PreConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
+}
+
+// Runner is the single descriptor-driven asynq task handler every one of
+// the seven conversion engine classes now runs through (D-09): one Runner
+// per worker binary, wrapping the SAME *Handler every engine already
+// shared via process()/downloadTo/uploadFrom, plus one EngineDescriptor
+// naming that engine's own classifier/opts-parser/failure-code mapping.
+type Runner struct {
+	h *Handler
+	d EngineDescriptor
+}
+
+// NewRunner builds a Runner bound to h and d, installing d's pre-convert
+// guard (if any) onto h.preConvertGuard so process()'s splice
+// (worker.go) picks it up on every subsequent attempt -- mirrors the
+// established post-construction-setter precedent already used by
+// SetProgressThrottle/SetProgressWebhook: one Handler per binary, one
+// Runner per binary, the verified deployment model. Every worker cmd calls
+// this exactly once at startup, immediately before registering
+// r.Handle on the asynq mux, so the install always happens-before any
+// concurrent request processing (same happens-before boundary every other
+// process-wide config write in this codebase uses).
+//
+// AudioDescriptor.PreConvertGuard is deliberately left nil in
+// descriptors.go and special-cased here instead: EngineDescriptor is a
+// package-level var built once at package-init time, before any *Handler
+// (and therefore before h.audioMaxDuration, itself env-configured per
+// binary via NewHandler's last parameter) exists, so a closure assigned at
+// var-init time could never read a specific Handler's audioMaxDuration.
+// NewRunner is the one place with both the descriptor AND a concrete
+// *Handler in scope, so it is where the ceiling actually gets threaded
+// into enforceAudioGuardBeforeConvert (unmodified, T-30-08/IN-02) via
+// audioPreConvertGuard below. Chosen over adding a dedicated
+// EngineDescriptor.AudioMaxDuration field, which would violate the "exactly
+// these fields" instruction for a value only one of seven engines needs.
+func NewRunner(h *Handler, d EngineDescriptor) *Runner {
+	switch {
+	case d.Engine == convert.EngineAudio:
+		h.preConvertGuard = audioPreConvertGuard(h.audioMaxDuration)
+	case d.PreConvertGuard != nil:
+		// Generic hook for any future engine whose guard needs no
+		// per-Handler runtime config -- unused today (audio is the only
+		// PreConvertGuard consumer and takes the case above instead).
+		h.preConvertGuard = d.PreConvertGuard
+	}
+	return &Runner{h: h, d: d}
+}
+
+// audioPreConvertGuard builds a Handler.preConvertGuard-shaped closure
+// bound to a specific duration ceiling, so NewRunner can thread
+// h.audioMaxDuration (a per-Handler, env-configured value) into the
+// unmodified enforceAudioGuardBeforeConvert without changing that
+// function's own signature or body (T-30-08/IN-02's explicit constraint).
+func audioPreConvertGuard(maxDuration time.Duration) func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
+	return func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
+		return enforceAudioGuardBeforeConvert(ctx, job.Engine, inPath, maxDuration, convertFn)
+	}
+}
+
+// Handle runs one conversion attempt for r.d.Engine: parse payload -> load
+// job -> (opts guard, if any) -> mark active -> run the engine-agnostic
+// process() (via r.h.processFn) -> classify the outcome -> commit exactly
+// once through r.finish. This reproduces the shared skeleton every one of
+// the seven Handle*Convert wrappers duplicated, now written ONCE.
+//
+// A terminal error (bad input, unsupported pair, missing storage object,
+// invalid persisted opts) marks the job failed immediately and skips
+// asynq's retry (D-01/D-02); a transient error (network, S3/engine
+// timeout, Postgres write blip) is returned unwrapped so the job stays
+// active and asynq retries the same task (D-01/D-03/D-04) -- mirroring
+// HandleWebhookDeliver's own classification pattern, which this refactor
+// does not touch.
+func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
+	payload, err := queue.ParseConvertPayload(t.Payload())
+	if err != nil {
+		// Unparseable payload: nothing we can retry into success.
+		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+	}
+	jobID := payload.JobID
+
+	job, err := r.h.repo.Get(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load job %s: %w", jobID, err)
+	}
+
+	if r.d.OptsFromMap != nil {
+		// Strict re-parse of the persisted opts (D-10): garbage in
+		// jobs.options is a terminal, not transient, failure -- a corrupt
+		// column value can never fix itself on retry. This is a strictness
+		// check only; the applicability/enum business rules already ran
+		// once, at the API layer (single source of validation truth), and
+		// are deliberately not duplicated here. Runs BEFORE MarkActive --
+		// the job never leaves `queued`, which is why elapsed is 0
+		// (recordUsage derives wall_seconds from jobs.started_at, still
+		// NULL here, and falls back to 0, mirroring the reconciler
+		// exhaustion path's own 0).
+		//
+		// ERRC-02 (this plan's one intentional behavior change): routing
+		// this branch through r.finish means BOTH outcome counters now
+		// move on a terminal invalid_options failure, closing the metrics
+		// gap plan 56-01 deliberately left un-pinned
+		// (TestPinnedOptsGuardPrecedesMarkActive makes no counter
+		// assertion on this branch for exactly that reason).
+		if _, optsErr := r.d.OptsFromMap(job.Opts); optsErr != nil {
+			_ = r.finish(ctx, job, jobs.StatusFailed, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": optsErr.Error()}, 0)
+			return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, optsErr)
+		}
+	}
+
+	if err := r.h.repo.MarkActive(ctx, jobID); err != nil {
+		// Already active/done/canceled -- let asynq drop it rather than
+		// loop.
+		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
+	}
+
+	start := time.Now()
+	if err := r.h.processFn(ctx, job); err != nil {
+		if isCanceled(err) {
+			// D-07: the attempt was killed by a job:cancel signal via the
+			// registered CancelFunc (internal/cancel) -- the job is already
+			// `canceled` in Postgres (API's guarded transition). Do NOT
+			// MarkFailed (it would be rejected by the allow-list anyway,
+			// D-05, and re-failing a canceled job is wrong) and record no
+			// job-outcome metric (mirrors the transient branch's own
+			// no-double-count comment below).
+			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
+		}
+		if r.d.IsTerminal(err) {
+			// Sanitized message only in error_message (exposed via GET
+			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
+			// (which contains local temp paths) is kept in
+			// job_events.detail for internal diagnostics only.
+			code, message := "engine_error", "unsupported or corrupted input format"
+			if r.d.FailureCode != nil {
+				code, message = r.d.FailureCode(err)
+			}
+			_ = r.finish(ctx, job, jobs.StatusFailed, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
+			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+		}
+		// Transient: do NOT mark failed -- the job stays active so asynq's
+		// own retry/backoff (per-engine RetryDelay/MAX_RETRY) applies. Not
+		// a terminal outcome, so it is NOT recorded in the job-outcome
+		// metric (Pitfall 6 -- one asynq retry must not double-count).
+		return err
+	}
+
+	_ = r.finish(ctx, job, jobs.StatusDone, "", "", nil, time.Since(start))
+	return nil
+}
+
+// finish is the SOLE terminal-outcome commit point for every one of the
+// seven engines -- the ONLY place in the conversion path calling
+// metrics.RecordJobOutcome, metrics.RecordClientJobOutcome and
+// EnqueueWebhookDeliver (TestSingleTerminalEmissionCallSite,
+// runner_test.go, asserts this structurally). Every emission is textually
+// AFTER the MarkFailed assignment and inside or after its ferr check --
+// that single-site structure is what makes "fire before commit" impossible
+// (T-56-12), and plan 56-05's inversion run is the proof.
+func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, message string, detail map[string]any, elapsed time.Duration) error {
+	var ferr error
+	if status == jobs.StatusFailed {
+		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
+	}
+	// jobs.StatusDone: ferr stays nil -- process() (or a test's processFn
+	// stub standing in for it) already committed MarkDone inside its own
+	// transaction (worker.go's process(), the final line) before Handle
+	// ever calls finish. Guarding the done branch on this same nil is what
+	// keeps every terminal outcome (failed or done) flowing through the
+	// identical ferr==nil gate below.
+
+	// Deliberately NOT guarded on ferr, preserving the pre-existing
+	// asymmetry documented at every terminal branch this Runner replaces
+	// and pinned by TestPinnedMarkFailedErrorSuppressesClientCounterAndWebhook:
+	// a lost Prometheus increment is tolerable and never retried. This is
+	// NOT the same durability contract as MarkFailed's client_usage_daily
+	// rollup (D-05), which is transactional and exactly-once -- the two
+	// calls sit on adjacent lines here but must not be read as equivalent.
+	// This is NOT the RUNR-02 defect (internal/reconciler/reconciler.go's
+	// entirely unguarded RecordReconcilerAction("exhausted")), which plan
+	// 56-05 fixes separately.
+	metrics.RecordJobOutcome(job.Engine, status, elapsed)
+
+	// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
+	// concurrent transition won the guarded allow-list), the job is NOT
+	// actually in `status` yet. A retry or the reconciler will reach a
+	// terminal state later and increment then -- counting here too would
+	// double-count this client, or attribute an outcome that never
+	// happened.
+	if ferr == nil {
+		metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, status)
+	}
+
+	// Postgres-first: enqueue the webhook ONLY once the transition is
+	// actually committed. If MarkFailed itself failed (Postgres blip), the
+	// job is still active -- a webhook now would re-read the row and
+	// deliver a status the contract never defines (WR-04); the reconciler
+	// will requeue the still-active job instead. A failed enqueue after a
+	// successful commit must not fail the conversion -- best-effort only.
+	if ferr == nil && job.CallbackURL != "" {
+		_ = r.h.enqueuer.EnqueueWebhookDeliver(ctx, job.ID)
+	}
+	return ferr
+}
