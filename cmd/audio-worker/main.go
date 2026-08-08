@@ -110,7 +110,7 @@ func main() {
 	log.Printf("🧵 audio threads=%d (source=%s)", threads, threadSource)
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeAudioConvert, h.HandleAudioConvert)
+	mux.HandleFunc(queue.TypeAudioConvert, worker.NewRunner(h, worker.AudioDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("AUDIO_WORKER_CONCURRENCY", 2),

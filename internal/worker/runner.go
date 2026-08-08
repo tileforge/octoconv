@@ -23,9 +23,11 @@ import (
 // deployment model every worker cmd already uses (D-09).
 type EngineDescriptor struct {
 	// Engine is convert.EngineX -- byte-identical to queue.QueueX by
-	// construction (internal/queue/queue.go:38-45), so Runner reads
-	// job.Engine for every metric label and never needs a queue.QueueX
-	// literal of its own.
+	// construction (internal/queue/queue.go:38-45). finish() uses this
+	// field (not job.Engine) for every metric label: the two are
+	// byte-identical in production, but this Runner is structurally bound
+	// to Engine at construction (NewRunner(h, d)), so metric labeling needs
+	// no defensive check and no queue.QueueX literal of its own.
 	Engine string
 
 	// Type is queue.TypeXConvert, the asynq task type this engine's Runner
@@ -181,7 +183,7 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 		// (TestPinnedOptsGuardPrecedesMarkActive makes no counter
 		// assertion on this branch for exactly that reason).
 		if _, optsErr := r.d.OptsFromMap(job.Opts); optsErr != nil {
-			_ = r.finish(ctx, job, jobs.StatusFailed, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": optsErr.Error()}, 0)
+			_ = r.finish(ctx, job, jobs.StatusFailed, CodeInvalidOptions, "stored conversion options are invalid", map[string]any{"opts_error": optsErr.Error()}, 0)
 			return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, optsErr)
 		}
 	}
@@ -209,7 +211,7 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
 			// (which contains local temp paths) is kept in
 			// job_events.detail for internal diagnostics only.
-			code, message := "engine_error", "unsupported or corrupted input format"
+			code, message := CodeEngineError, "unsupported or corrupted input format"
 			if r.d.FailureCode != nil {
 				code, message = r.d.FailureCode(err)
 			}
@@ -257,7 +259,15 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 	// This is NOT the RUNR-02 defect (internal/reconciler/reconciler.go's
 	// entirely unguarded RecordReconcilerAction("exhausted")), which plan
 	// 56-05 fixes separately.
-	metrics.RecordJobOutcome(job.Engine, status, elapsed)
+	//
+	// r.d.Engine, not job.Engine: both are byte-identical in production
+	// (a job's persisted engine column always matches the descriptor its
+	// own asynq task type routed to), but r.d.Engine is the value this
+	// Runner is STRUCTURALLY bound to at construction (NewRunner(h, d)) --
+	// it needs no defensive nil/empty check and, unlike job.Engine, does
+	// not depend on every test fixture populating Job.Engine (frozen
+	// pinning_test.go's newPinJob deliberately does not, D-10 step 2).
+	metrics.RecordJobOutcome(r.d.Engine, status, elapsed)
 
 	// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
 	// concurrent transition won the guarded allow-list), the job is NOT
@@ -266,7 +276,7 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 	// double-count this client, or attribute an outcome that never
 	// happened.
 	if ferr == nil {
-		metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, status)
+		metrics.RecordClientJobOutcome(job.ClientID.String(), r.d.Engine, status)
 	}
 
 	// Postgres-first: enqueue the webhook ONLY once the transition is

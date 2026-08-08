@@ -153,7 +153,7 @@ func main() {
 	// sweeper of any kind is constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeOCRConvert, h.HandleOCRConvert)
+	mux.HandleFunc(queue.TypeOCRConvert, worker.NewRunner(h, worker.OCRDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("OCR_WORKER_CONCURRENCY", 1), // D-03 (Phase 45): one OCR job at a time (mirrors av/audio) -- avoids CPU oversubscription/CFS-thrashing on the cgroup-limited worker; a per-job OCR already streams pages sequentially. A concurrency > 1 is a measured-evidence future tweak, not v1.

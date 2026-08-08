@@ -155,7 +155,7 @@ func main() {
 	// sweeper of any kind is constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypePandocConvert, h.HandlePandocConvert)
+	mux.HandleFunc(queue.TypePandocConvert, worker.NewRunner(h, worker.PandocDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		// 1, not 2: pandoc is CPU-fast but MEMORY-heavy, so it belongs with the
