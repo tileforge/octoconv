@@ -392,7 +392,7 @@ Plans:
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
-| 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete   | 2026-08-08 |
+| 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
 | 57. Operation Dimension & Output Roles | v1.13 | 0/TBD | Not started | — |
 | 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
