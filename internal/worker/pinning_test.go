@@ -124,6 +124,22 @@ func newPinHandler(_ *testing.T, r *pinRepo, e *pinEnqueuer) *Handler {
 	return &Handler{repo: r, enqueuer: e, engineTimout: time.Second}
 }
 
+// pinSuccessProcessFn builds a processFn stub that mirrors process()'s own
+// success contract: process() itself calls h.repo.MarkDone before
+// returning nil (worker.go's process(), the final line), so every
+// Handle*Convert success branch is documented as running AFTER MarkDone
+// already committed ("Postgres-first: MarkDone already committed inside
+// process()"). A processFn stub that simply returns nil would silently
+// drop that MarkDone call from the shared ordered log, making an ordering
+// assertion (TestPinnedEmissionNeverPrecedesCommit) vacuously pass for the
+// wrong reason. This stub calls repo.MarkDone itself, exactly as
+// process() does, before returning nil.
+func pinSuccessProcessFn(repo *pinRepo) func(context.Context, *jobs.Job) error {
+	return func(ctx context.Context, job *jobs.Job) error {
+		return repo.MarkDone(ctx, job.ID, 0)
+	}
+}
+
 // countToken counts how many times token appears in the shared ordered
 // call log.
 func countToken(calls []string, token string) int {
@@ -581,7 +597,7 @@ func TestPinnedSuccessOutcomePerEngine(t *testing.T) {
 			repo := &pinRepo{job: job, calls: &calls}
 			enq := &pinEnqueuer{calls: &calls}
 			h := newPinHandler(t, repo, enq)
-			h.processFn = func(context.Context, *jobs.Job) error { return nil }
+			h.processFn = pinSuccessProcessFn(repo)
 
 			labels := map[string]string{"engine": tc.engine, "status": jobs.StatusDone}
 			clientLabels := map[string]string{"client_id": job.ClientID.String(), "engine": tc.engine, "status": jobs.StatusDone}
@@ -664,10 +680,328 @@ func TestPinnedEmissionLabelSets(t *testing.T) {
 	h.processFn = func(context.Context, *jobs.Job) error { return tc.terminalErr }
 	_ = tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
 
-	h.processFn = func(context.Context, *jobs.Job) error { return nil }
+	h.processFn = pinSuccessProcessFn(repo)
 	_ = tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
 
 	assertLabelNames(t, "octoconv_job_outcomes_total", []string{"engine", "status"})
 	assertLabelNames(t, "octoconv_job_duration_seconds", []string{"engine", "status"})
 	assertLabelNames(t, "octoconv_client_job_outcomes_total", []string{"client_id", "engine", "status"})
+}
+
+// --- TestPinnedEmissionNeverPrecedesCommit --------------------------------
+
+// assertWebhookNeverPrecedesCommit walks the shared ordered call log and
+// fails if any "EnqueueWebhookDeliver" token appears before a preceding
+// "MarkFailed"/"MarkDone" commit token has been observed. Because calls is
+// already in real execution order, a simple forward scan with a
+// once-set "committed" flag IS the positional assertion the plan requires
+// -- it can detect a future diff that moves the webhook enqueue before the
+// guarded transition commits (the exact defect class plan 56-05's
+// inversion run must be able to break), unlike a count-only assertion.
+func assertWebhookNeverPrecedesCommit(t *testing.T, calls []string) {
+	t.Helper()
+	committed := false
+	for _, c := range calls {
+		switch c {
+		case "MarkFailed", "MarkDone":
+			committed = true
+		case "EnqueueWebhookDeliver":
+			if !committed {
+				t.Fatalf("EnqueueWebhookDeliver appears before any MarkFailed/MarkDone commit token in %v", calls)
+			}
+		}
+	}
+}
+
+// TestPinnedEmissionNeverPrecedesCommit pins, for each of the seven
+// engines, that a terminal failure and a success both preserve
+// "commit strictly before webhook enqueue" ordering on the real call log.
+func TestPinnedEmissionNeverPrecedesCommit(t *testing.T) {
+	for _, tc := range pinEngines {
+		t.Run(tc.name+"/terminal", func(t *testing.T) {
+			job, jobID := newPinJob("https://example.test/hook")
+			calls := []string{}
+			repo := &pinRepo{job: job, calls: &calls}
+			enq := &pinEnqueuer{calls: &calls}
+			h := newPinHandler(t, repo, enq)
+			h.processFn = func(context.Context, *jobs.Job) error { return tc.terminalErr }
+
+			_ = tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
+			assertWebhookNeverPrecedesCommit(t, calls)
+		})
+		t.Run(tc.name+"/success", func(t *testing.T) {
+			job, jobID := newPinJob("https://example.test/hook")
+			calls := []string{}
+			repo := &pinRepo{job: job, calls: &calls}
+			enq := &pinEnqueuer{calls: &calls}
+			h := newPinHandler(t, repo, enq)
+			h.processFn = pinSuccessProcessFn(repo)
+
+			_ = tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
+			assertWebhookNeverPrecedesCommit(t, calls)
+		})
+	}
+}
+
+// --- TestPinnedMarkFailedErrorSuppressesClientCounterAndWebhook ----------
+
+// TestPinnedMarkFailedErrorSuppressesClientCounterAndWebhook pins, for each
+// of the seven engines, that a MarkFailed call which itself returns an
+// error (a Postgres blip, or a concurrent transition winning the guarded
+// allow-list) suppresses BOTH the per-client counter and the webhook
+// enqueue -- while octoconv_job_outcomes_total (the duration-histogram
+// counterpart) is DELIBERATELY NOT guarded the same way and still moves.
+// This asymmetry is a pre-existing, deliberate choice documented at every
+// terminal branch in worker.go's own comments ("Guarded on ferr: ...
+// counting here too would double-count this client, or attribute an
+// outcome that never happened" for the client counter and webhook; no
+// equivalent guard exists on the RecordJobOutcome call immediately above
+// it) -- it is NOT the RUNR-02 defect this phase's reconciler fix
+// addresses (that defect is an entirely unguarded reconciler-side
+// increment, internal/reconciler/reconciler.go:311-312, fixed separately
+// in this phase). Pinned here as-is; plan 56-04's consolidation must
+// preserve this exact asymmetry verbatim rather than "fix" it into a
+// symmetric guard.
+func TestPinnedMarkFailedErrorSuppressesClientCounterAndWebhook(t *testing.T) {
+	for _, tc := range pinEngines {
+		t.Run(tc.name, func(t *testing.T) {
+			job, jobID := newPinJob("https://example.test/hook")
+			calls := []string{}
+			repo := &pinRepo{job: job, calls: &calls, markFailedErr: errors.New("postgres blip")}
+			enq := &pinEnqueuer{calls: &calls}
+			h := newPinHandler(t, repo, enq)
+			h.processFn = func(context.Context, *jobs.Job) error { return tc.terminalErr }
+
+			labels := map[string]string{"engine": tc.engine, "status": jobs.StatusFailed}
+			clientLabels := map[string]string{"client_id": job.ClientID.String(), "engine": tc.engine, "status": jobs.StatusFailed}
+			beforeJob := readCounter(t, "octoconv_job_outcomes_total", labels)
+			beforeClient := readCounter(t, "octoconv_client_job_outcomes_total", clientLabels)
+
+			_ = tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
+
+			afterJob := readCounter(t, "octoconv_job_outcomes_total", labels)
+			afterClient := readCounter(t, "octoconv_client_job_outcomes_total", clientLabels)
+
+			if afterJob != beforeJob+1 {
+				t.Fatalf("%s: octoconv_job_outcomes_total delta = %v, want 1 (unguarded on MarkFailed's own error -- a deliberate pre-existing asymmetry, not a bug)", tc.name, afterJob-beforeJob)
+			}
+			if afterClient != beforeClient {
+				t.Fatalf("%s: octoconv_client_job_outcomes_total delta = %v, want 0 (guarded on ferr==nil)", tc.name, afterClient-beforeClient)
+			}
+			if n := countToken(calls, "EnqueueWebhookDeliver"); n != 0 {
+				t.Fatalf("%s: EnqueueWebhookDeliver calls = %d, want 0 (guarded on ferr==nil)", tc.name, n)
+			}
+		})
+	}
+}
+
+// --- TestPinnedOptsGuardPrecedesMarkActive / TestPinnedImageHasNoOptsGuard -
+
+// pinInvalidOptsCases holds one engine-specific map[string]any that
+// provably fails that engine's own convert.*OptsFromMap strict re-parse --
+// derived by reading each of the six OptsFromMap functions (opts.go,
+// htmlopts.go, audioopts.go, avopts.go, ocropts.go, pandocopts.go), never
+// guessed: an out-of-allowlist enum value for each engine's own closed
+// field.
+var pinInvalidOptsCases = []struct {
+	engine string
+	opts   map[string]any
+}{
+	{"document", map[string]any{"pdf_profile": "bogus"}},
+	{"html", map[string]any{"page_size": "bogus"}},
+	{"audio", map[string]any{"language": "xx"}},
+	{"av", map[string]any{"codec": "bogus"}},
+	{"ocr", map[string]any{"language": "fra"}},
+	{"pandoc", map[string]any{"wrap": "bogus"}},
+}
+
+// TestPinnedOptsGuardPrecedesMarkActive pins, for each of the six engines
+// with a strict opts re-parse guard, that a job whose stored Opts fail that
+// parse produces exactly one MarkFailed(code="invalid_options",
+// message="stored conversion options are invalid", attempt=0), with
+// "MarkActive" entirely absent from the call log, a SkipRetry-wrapped
+// return, and the webhook enqueued exactly once when CallbackURL is set
+// and zero times when it is empty.
+//
+// CRITICAL (D-10/ERRC-02): this test deliberately makes NO assertion about
+// octoconv_job_outcomes_total or octoconv_client_job_outcomes_total. Today
+// neither counter fires on this branch -- that gap is exactly what ERRC-02
+// (this milestone's structured-error-code work) closes, in plan 56-04.
+// Pinning today's absent-counter behavior here would make this frozen
+// suite CONTRADICT a phase requirement the moment 56-04 lands; a future
+// reader must not "complete" these assertions.
+func TestPinnedOptsGuardPrecedesMarkActive(t *testing.T) {
+	for _, oc := range pinInvalidOptsCases {
+		pe := pinEngineByName(t, oc.engine)
+		for _, callbackURL := range []string{"https://example.test/hook", ""} {
+			name := oc.engine + "/with_callback"
+			if callbackURL == "" {
+				name = oc.engine + "/no_callback"
+			}
+			t.Run(name, func(t *testing.T) {
+				clientID := uuid.New()
+				jobID := uuid.New()
+				job := &jobs.Job{ID: jobID, ClientID: clientID, CallbackURL: callbackURL, Opts: oc.opts}
+				calls := []string{}
+				repo := &pinRepo{job: job, calls: &calls}
+				enq := &pinEnqueuer{calls: &calls}
+				h := newPinHandler(t, repo, enq)
+				h.processFn = func(context.Context, *jobs.Job) error {
+					t.Fatal("processFn must not be called when the opts guard rejects the job")
+					return nil
+				}
+
+				err := pe.wrapper(h, context.Background(), newTask(t, pe.taskType, jobID))
+
+				if !errors.Is(err, asynq.SkipRetry) {
+					t.Fatalf("%s: err = %v, want errors.Is(err, asynq.SkipRetry)", oc.engine, err)
+				}
+				if len(repo.markFailed) != 1 {
+					t.Fatalf("%s: MarkFailed calls = %d, want 1", oc.engine, len(repo.markFailed))
+				}
+				if got := repo.markFailed[0]; got.code != "invalid_options" || got.message != "stored conversion options are invalid" || got.attempt != 0 {
+					t.Fatalf("%s: MarkFailed(code=%q, message=%q, attempt=%v), want (code=invalid_options, message=%q, attempt=0)", oc.engine, got.code, got.message, got.attempt, "stored conversion options are invalid")
+				}
+				if n := countToken(calls, "MarkActive"); n != 0 {
+					t.Fatalf("%s: MarkActive appears %d time(s) in %v, want 0 (opts guard runs BEFORE MarkActive)", oc.engine, n, calls)
+				}
+				wantWebhook := 0
+				if callbackURL != "" {
+					wantWebhook = 1
+				}
+				if n := countToken(calls, "EnqueueWebhookDeliver"); n != wantWebhook {
+					t.Fatalf("%s: EnqueueWebhookDeliver calls = %d, want %d", oc.engine, n, wantWebhook)
+				}
+			})
+		}
+	}
+}
+
+// TestPinnedImageHasNoOptsGuard pins the one deliberate divergence from
+// the other six engines: HandleImageConvert performs no opts re-parse at
+// all, so an arbitrary Opts map (even one that would fail every other
+// engine's own strict parse) reaches MarkActive unchanged.
+func TestPinnedImageHasNoOptsGuard(t *testing.T) {
+	job, jobID := newPinJob("")
+	job.Opts = map[string]any{"pdf_profile": "bogus"} // arbitrary; image never re-parses Opts.
+	calls := []string{}
+	repo := &pinRepo{job: job, calls: &calls}
+	enq := &pinEnqueuer{calls: &calls}
+	h := newPinHandler(t, repo, enq)
+	h.processFn = pinSuccessProcessFn(repo)
+
+	tc := pinEngineByName(t, "image")
+	if err := tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID)); err != nil {
+		t.Fatalf("image: err = %v, want nil", err)
+	}
+	if n := countToken(calls, "MarkActive"); n != 1 {
+		t.Fatalf("image: MarkActive calls = %d, want 1 (image performs no opts re-parse guard)", n)
+	}
+}
+
+// --- TestPinnedAudioStageAsymmetry / TestPinnedAVStageAsymmetry ----------
+
+// stageAsymmetryCase is one row of a stage-tagged terminal/transient
+// assertion, driven through the real handler wrapper.
+type stageAsymmetryCase struct {
+	name     string
+	err      error
+	terminal bool
+}
+
+// TestPinnedAudioStageAsymmetry and TestPinnedAVStageAsymmetry are the two
+// engines PITFALLS.md Pitfall 2 names by name: isAudioTerminal and
+// isAVTerminal encode DELIBERATELY OPPOSITE stage-level polarities for the
+// "same shaped" wrapped-context.DeadlineExceeded timeout error --
+// isAudioTerminal's ffmpeg (normalize) stage timeout is TERMINAL while its
+// whisper (transcribe) stage timeout is TRANSIENT; isAVTerminal's
+// transcode stage timeout is TRANSIENT while its audio-extract/thumbnail
+// stage failure (timeout or not) is TERMINAL -- the exact opposite
+// polarity from audio's cheap/expensive-stage split. Any future descriptor
+// that models terminal/transient as a function of (engine, isTimeout)
+// instead of (stage, isTimeout) cannot satisfy both classifiers
+// simultaneously; these two tests are therefore the acceptance gate for
+// plan 56-04's per-engine descriptor design, driven through the real
+// wrapper (not the pure isAudioTerminal/isAVTerminal functions directly)
+// so a descriptor refactor that silently drops the stage tag fails here
+// even if the pure classifier were somehow preserved unchanged elsewhere.
+func TestPinnedAudioStageAsymmetry(t *testing.T) {
+	tc := pinEngineByName(t, "audio")
+	cases := []stageAsymmetryCase{
+		{
+			name:     "ffmpeg-stage timeout is terminal",
+			err:      fmt.Errorf("convert: %w", fmt.Errorf("audio: ffmpeg: %w", fmt.Errorf("ffmpeg killed: %w", context.DeadlineExceeded))),
+			terminal: true,
+		},
+		{
+			name:     "whisper-stage timeout is transient",
+			err:      fmt.Errorf("convert: %w", fmt.Errorf("audio: whisper-cli: %w", fmt.Errorf("whisper-cli killed: %w", context.DeadlineExceeded))),
+			terminal: false,
+		},
+	}
+	runStageAsymmetryCases(t, tc, cases)
+}
+
+func TestPinnedAVStageAsymmetry(t *testing.T) {
+	tc := pinEngineByName(t, "av")
+	cases := []stageAsymmetryCase{
+		{
+			name:     "transcode-stage timeout is transient",
+			err:      fmt.Errorf("convert: %w", fmt.Errorf("%w: %w", convert.ErrAVTranscodeFailed, fmt.Errorf("ffmpeg killed: %w", context.DeadlineExceeded))),
+			terminal: false,
+		},
+		{
+			name:     "audio-extract-stage failure is terminal",
+			err:      fmt.Errorf("convert: %w", fmt.Errorf("%w: %w", convert.ErrAVAudioExtractFailed, errors.New("exit status 1"))),
+			terminal: true,
+		},
+	}
+	runStageAsymmetryCases(t, tc, cases)
+}
+
+// runStageAsymmetryCases drives every stageAsymmetryCase through the real
+// wrapper and asserts the terminal-vs-transient verdict through observable
+// effects (MarkFailed count, SkipRetry wrapping, counter movement) --
+// never by calling the pure classifier function directly.
+func runStageAsymmetryCases(t *testing.T, tc pinEngine, cases []stageAsymmetryCase) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			job, jobID := newPinJob("")
+			calls := []string{}
+			repo := &pinRepo{job: job, calls: &calls}
+			enq := &pinEnqueuer{calls: &calls}
+			h := newPinHandler(t, repo, enq)
+			h.processFn = func(context.Context, *jobs.Job) error { return c.err }
+
+			labels := map[string]string{"engine": tc.engine, "status": jobs.StatusFailed}
+			before := readCounter(t, "octoconv_job_outcomes_total", labels)
+
+			err := tc.wrapper(h, context.Background(), newTask(t, tc.taskType, jobID))
+
+			after := readCounter(t, "octoconv_job_outcomes_total", labels)
+
+			if c.terminal {
+				if !errors.Is(err, asynq.SkipRetry) {
+					t.Fatalf("%s: err = %v, want errors.Is(err, asynq.SkipRetry) (terminal)", c.name, err)
+				}
+				if len(repo.markFailed) != 1 {
+					t.Fatalf("%s: MarkFailed calls = %d, want 1 (terminal)", c.name, len(repo.markFailed))
+				}
+				if after != before+1 {
+					t.Fatalf("%s: octoconv_job_outcomes_total delta = %v, want 1 (terminal)", c.name, after-before)
+				}
+				return
+			}
+			if errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("%s: err = %v, want NOT errors.Is(err, asynq.SkipRetry) (transient)", c.name, err)
+			}
+			if len(repo.markFailed) != 0 {
+				t.Fatalf("%s: MarkFailed calls = %d, want 0 (transient)", c.name, len(repo.markFailed))
+			}
+			if after != before {
+				t.Fatalf("%s: octoconv_job_outcomes_total moved on a transient error", c.name)
+			}
+		})
+	}
 }
