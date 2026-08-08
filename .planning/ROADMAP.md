@@ -216,7 +216,7 @@ Full details: `.planning/milestones/v1.12-ROADMAP.md`
 
 **Note on cost (research correction)**: SEED-020 переоценил собственную цену. Тела хендлеров — 79–110 строк (86–127 с доккоментами), а не 94–163, и `process()` (`worker.go:1847-1942`) **уже** является общей функцией оркестрации, поэтому ×7 тариф живёт целиком в обёрточном бойлерплейте. «Disk guards у av / page caps у ocr», описанные как различия уровня хендлера, оказались внутренностями конвертеров. Счёт «14 симметричных call sites» подтверждён точно.
 
-**Plans:** 4/7 plans executed
+**Plans:** 6/7 plans executed
 
 Plans:
 **Wave 1**
@@ -231,8 +231,8 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 56-05-PLAN.md — Inversion run + metric-label zero-diff proof + reconciler RUNR-02 guard fix
-- [ ] 56-06-PLAN.md — docs/ERROR-CODES.md freeze point + bidirectional Go-to-doc sync test
+- [x] 56-05-PLAN.md — Inversion run + metric-label zero-diff proof + reconciler RUNR-02 guard fix
+- [x] 56-06-PLAN.md — docs/ERROR-CODES.md freeze point + bidirectional Go-to-doc sync test
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -392,7 +392,7 @@ Plans:
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
-| 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 4/7 | In Progress|  |
+| 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 6/7 | In Progress|  |
 | 57. Operation Dimension & Output Roles | v1.13 | 0/TBD | Not started | — |
 | 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
