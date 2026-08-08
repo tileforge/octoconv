@@ -604,15 +604,51 @@ func isCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+// convertRepo is the narrow, interface-segregated subset of *jobs.Repo the
+// seven Handle*Convert wrappers and process() depend on (mirrors
+// internal/api/api.go's Repo/Storage/Enqueuer interface-segregation
+// precedent, and this package's own pre-existing progressRepo). It is a
+// STRICT SUPERSET of progressRepo's two methods (UpdateProgress,
+// SetSourceDuration) — process() passes h.repo, typed convertRepo, straight
+// into runConvertWithOptionalProgress's progressRepo parameter, and Go only
+// permits that interface-to-interface assignment while convertRepo retains
+// both. Introduced as a behavior-preserving test seam (56-CONTEXT.md D-10
+// step 1, RUNR-03): before this, Handler.repo was a concrete *jobs.Repo, so
+// constructing a Handler for a handler-level test needed a live Postgres
+// (internal/worker/pandoc_integration_test.go documented this exact
+// limitation). Unexported: satisfiable only from within package worker, so
+// no external package gains a way to substitute a repo (T-56-01).
+type convertRepo interface {
+	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
+	MarkActive(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error
+	MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error
+	Inputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Input, error)
+	AddOutput(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
+	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
+	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
+	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
+}
+
+// webhookEnqueuer is the narrow, interface-segregated subset of
+// *queue.Client the seven Handle*Convert wrappers depend on — the single
+// EnqueueWebhookDeliver call fired after a terminal or successful outcome
+// commits. Introduced alongside convertRepo as a behavior-preserving test
+// seam (56-CONTEXT.md D-10 step 1, RUNR-03); unexported for the same reason
+// (T-56-01).
+type webhookEnqueuer interface {
+	EnqueueWebhookDeliver(ctx context.Context, jobID uuid.UUID) error
+}
+
 // Handler processes image conversion tasks end to end.
 type Handler struct {
-	repo          *jobs.Repo
+	repo          convertRepo
 	store         *storage.Client
 	registry      *convert.Registry
 	engineTimout  time.Duration
 	webhookRepo   *webhook.Repo
 	deliverer     *webhook.Deliverer
-	enqueuer      *queue.Client
+	enqueuer      webhookEnqueuer
 	signingSecret []byte
 	presignTTL    time.Duration
 	// audioMaxDuration is the AUDIO_MAX_DURATION_SECONDS ceiling passed to
@@ -642,6 +678,13 @@ type Handler struct {
 	progressWebhookDelivr  progressWebhookDeliverer
 	progressWebhookSecret  []byte
 	progressWebhookTimeout time.Duration
+	// processFn is the D-10 processFn indirection: assigned to the method
+	// value h.process in NewHandler (after the struct literal is built), and
+	// called by all seven Handle*Convert wrappers in place of a direct
+	// h.process(...) call. h.process itself is unchanged — this field exists
+	// solely so a pinning test can substitute a stub processFn on a Handler
+	// built from fakes, without a live engine/converter/storage stack.
+	processFn func(ctx context.Context, job *jobs.Job) error
 }
 
 // SetProgressWebhook installs the D-04 opt-in inline progress-webhook
@@ -670,7 +713,12 @@ func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int
 	h.progressMinDeltaPct = minDeltaPct
 }
 
-// NewHandler builds a worker handler.
+// NewHandler builds a worker handler. repo and enqueuer keep their concrete
+// *jobs.Repo / *queue.Client parameter types — only the Handler struct
+// fields they populate are typed as the narrower convertRepo/webhookEnqueuer
+// interfaces (D-10 step 1): both concrete types satisfy those interfaces
+// structurally, so no production wiring changes, and no external package
+// gains a way to inject an alternative store (T-56-01).
 func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration) *Handler {
 	if engineTimeout == 0 {
 		engineTimeout = 120 * time.Second
@@ -680,7 +728,7 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		// or dead-lettered client can still fetch the result.
 		presignTTL = 6 * time.Hour
 	}
-	return &Handler{
+	h := &Handler{
 		repo:             repo,
 		store:            store,
 		registry:         registry,
@@ -692,6 +740,12 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		presignTTL:       presignTTL,
 		audioMaxDuration: audioMaxDuration,
 	}
+	// processFn defaults to h.process (D-10): the struct literal above cannot
+	// reference h while h is still being constructed, so the method value is
+	// assigned here instead. A pinning test overrides this field directly on
+	// a Handler built from fakes.
+	h.processFn = h.process
+	return h
 }
 
 // HandleImageConvert runs one image conversion: load job -> mark active ->
@@ -720,7 +774,7 @@ func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -848,7 +902,7 @@ func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) erro
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -959,7 +1013,7 @@ func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -1075,7 +1129,7 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -1238,7 +1292,7 @@ func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -1356,7 +1410,7 @@ func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -1478,7 +1532,7 @@ func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error 
 	}
 
 	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
+	if err := h.processFn(ctx, job); err != nil {
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
