@@ -300,7 +300,11 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// Cap exceeded: terminally fail and, if a callback_url is set,
 			// fire a webhook (D-14, Postgres-first best-effort — the failed
 			// status is already committed by MarkFailed above, so a failed
-			// enqueue must not undo it).
+			// enqueue must not undo it). The webhook enqueue below is
+			// itself guarded on ferr == nil (RUNR-02) -- a webhook telling
+			// the client the job failed must never fire off the back of a
+			// MarkFailed call that did not actually commit; the row is
+			// still stranded and the next sweep tick re-evaluates it.
 			job, _ := s.store.Get(ctx, j.ID)
 			// attempt=0: the reconciler never ran the engine and has no
 			// attempt clock of its own -- recordUsage (D-05, internal/jobs/
@@ -309,7 +313,21 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// in `queued` (never activated, started_at NULL) that correctly
 			// falls back to 0 -- it never occupied a worker at all.
 			ferr := s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"}, 0)
-			metrics.RecordReconcilerAction("exhausted")
+			// RUNR-02: RecordReconcilerAction("exhausted") is guarded on
+			// ferr == nil for the same reason RecordClientJobOutcome below
+			// already is -- MarkFailed's error was previously discarded
+			// here, so a transition that never committed still inflated the
+			// exhaustion count every sweep tick (the same job is retried
+			// and would increment again on top). This is the exact defect
+			// class PR #4 found and fixed in the seven Handle*Convert
+			// wrappers (see internal/worker/runner.go's single guarded
+			// finish() call site) but had not yet been closed here. Kept as
+			// its own `if`, not merged with the guard below, because this
+			// call does not read job and must not be skipped just because
+			// job is nil.
+			if ferr == nil {
+				metrics.RecordReconcilerAction("exhausted")
+			}
 			if job != nil && ferr == nil {
 				// Closes T-51-10 (Repudiation): a job the reconciler
 				// terminally fails after exhausting recoveries was, before
@@ -324,7 +342,7 @@ func (s *Sweeper) sweep(ctx context.Context) {
 				// same job and would increment again.
 				metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, jobs.StatusFailed)
 			}
-			if job != nil && job.CallbackURL != "" {
+			if job != nil && ferr == nil && job.CallbackURL != "" {
 				_ = s.enq.EnqueueWebhookDeliver(ctx, j.ID)
 			}
 			continue
