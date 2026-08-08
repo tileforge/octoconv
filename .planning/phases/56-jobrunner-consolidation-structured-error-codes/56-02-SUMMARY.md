@@ -122,3 +122,13 @@ None - no external service configuration required.
 ---
 *Phase: 56-jobrunner-consolidation-structured-error-codes*
 *Completed: 2026-08-08*
+
+## Self-Check: PASSED
+
+- FOUND: internal/errcode/errcode.go
+- FOUND: internal/errcode/errcode_test.go
+- FOUND: .planning/phases/56-jobrunner-consolidation-structured-error-codes/56-02-SUMMARY.md
+- FOUND commit: e816f67 (test: failing errcode vocabulary tests)
+- FOUND commit: f794ce5 (feat: errcode.go implementation)
+- FOUND commit: ddbc2bf (test: failing auth/ratelimit adoption tests)
+- FOUND commit: 8735c68 (feat: auth/ratelimit adoption)
