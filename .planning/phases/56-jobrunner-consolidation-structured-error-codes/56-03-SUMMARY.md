@@ -150,3 +150,11 @@ None — no external service configuration required.
 ---
 *Phase: 56-jobrunner-consolidation-structured-error-codes*
 *Completed: 2026-08-08*
+
+## Self-Check: PASSED
+
+- FOUND: internal/api/errcode_envelope_test.go
+- FOUND: .planning/phases/56-jobrunner-consolidation-structured-error-codes/56-03-SUMMARY.md
+- FOUND commit: f17b0b8 (feat: widen writeError, tag all 112 call sites)
+- FOUND commit: 4857cc3 (test: errcode_envelope_test.go)
+- FOUND commit: 6320e37 (docs: complete plan)
