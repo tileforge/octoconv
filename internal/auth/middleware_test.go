@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 )
 
 // fakeResolver implements ClientResolver for middleware tests: it returns a
@@ -152,6 +153,64 @@ func TestMiddleware_ResolverError_InternalServerError(t *testing.T) {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	assertJSONErrorBody(t, rec, presentedKey)
+}
+
+// TestUnauthorizedBodyCarriesCode asserts the decoded 401 JSON body carries
+// code == errcode.Unauthorized for both the missing-header and invalid-key
+// paths -- the two 401s this middleware can produce.
+func TestUnauthorizedBodyCarriesCode(t *testing.T) {
+	t.Run("missing header", func(t *testing.T) {
+		resolver := &fakeResolver{client: &clients.Client{ID: uuid.New()}}
+		next := &sentinelNext{}
+
+		rec := httptest.NewRecorder()
+		Middleware(resolver)(next.handler()).ServeHTTP(rec, newRequest(""))
+
+		body := decodeErrorBody(t, rec.Body.Bytes())
+		if body["code"] != errcode.Unauthorized {
+			t.Fatalf("code = %q, want %q", body["code"], errcode.Unauthorized)
+		}
+	})
+
+	t.Run("invalid key", func(t *testing.T) {
+		resolver := &fakeResolver{err: ErrInvalidKey}
+		next := &sentinelNext{}
+
+		rec := httptest.NewRecorder()
+		Middleware(resolver)(next.handler()).ServeHTTP(rec, newRequest("ApiKey bad-key"))
+
+		body := decodeErrorBody(t, rec.Body.Bytes())
+		if body["code"] != errcode.Unauthorized {
+			t.Fatalf("code = %q, want %q", body["code"], errcode.Unauthorized)
+		}
+	})
+}
+
+// TestAuthErrorCodesAreKnown asserts every error path this middleware can
+// produce (401 missing header, 401 invalid key, 500 resolver error) emits a
+// code from the closed internal/errcode vocabulary.
+func TestAuthErrorCodesAreKnown(t *testing.T) {
+	cases := []struct {
+		name     string
+		resolver *fakeResolver
+		header   string
+	}{
+		{"missing header", &fakeResolver{client: &clients.Client{ID: uuid.New()}}, ""},
+		{"invalid key", &fakeResolver{err: ErrInvalidKey}, "ApiKey bad-key"},
+		{"resolver error", &fakeResolver{err: errors.New("db down")}, "ApiKey some-key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next := &sentinelNext{}
+			rec := httptest.NewRecorder()
+			Middleware(tc.resolver)(next.handler()).ServeHTTP(rec, newRequest(tc.header))
+
+			body := decodeErrorBody(t, rec.Body.Bytes())
+			if !errcode.IsKnown(body["code"]) {
+				t.Fatalf("code %q is not in the closed errcode vocabulary", body["code"])
+			}
+		})
+	}
 }
 
 // TestParseAPIKey covers the shared ApiKey scheme parser used by both the
