@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -179,7 +180,7 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		period = periodToday
 	}
 	if _, ok := validUsagePeriods[period]; !ok {
-		writeError(w, http.StatusUnprocessableEntity, "invalid period filter")
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid period filter")
 		return
 	}
 
@@ -189,7 +190,7 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("client_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid client_id")
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid client_id")
 			return
 		}
 		clientID = &id
@@ -209,20 +210,20 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	// true.
 	today, err := s.usageRepo.UTCToday(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to resolve current day")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to resolve current day")
 		return
 	}
 	dayFrom, dayTo := resolveUsagePeriod(period, today)
 
 	usageRows, err := s.usageRepo.UsageSummary(ctx, clientID, dayFrom, dayTo)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load usage")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load usage")
 		return
 	}
 
 	limitRows, err := s.limitsRepo.ListAllLimits(ctx, clientID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load limits")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load limits")
 		return
 	}
 
