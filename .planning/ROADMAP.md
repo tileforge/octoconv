@@ -216,6 +216,17 @@ Full details: `.planning/milestones/v1.12-ROADMAP.md`
 
 **Note on cost (research correction)**: SEED-020 переоценил собственную цену. Тела хендлеров — 79–110 строк (86–127 с доккоментами), а не 94–163, и `process()` (`worker.go:1847-1942`) **уже** является общей функцией оркестрации, поэтому ×7 тариф живёт целиком в обёрточном бойлерплейте. «Disk guards у av / page caps у ocr», описанные как различия уровня хендлера, оказались внутренностями конвертеров. Счёт «14 симметричных call sites» подтверждён точно.
 
+**Plans:** 7 plans in 4 waves
+
+Plans:
+- [ ] 56-01-PLAN.md — Worker test seams + seven-handler pinning suite (D-10 step 1, frozen)
+- [ ] 56-02-PLAN.md — internal/errcode closed sync vocabulary + auth/ratelimit adoption
+- [ ] 56-03-PLAN.md — internal/api 4xx code sweep (112 call sites) + envelope proofs
+- [ ] 56-04-PLAN.md — Runner + EngineDescriptor consolidation, seven handlers deleted, ERRC-02 closed
+- [ ] 56-05-PLAN.md — Inversion run + metric-label zero-diff proof + reconciler RUNR-02 guard fix
+- [ ] 56-06-PLAN.md — docs/ERROR-CODES.md freeze point + bidirectional Go-to-doc sync test
+- [ ] 56-07-PLAN.md — Frontend + both MCP servers migrate to codes; ERRC-03 no-text-matching proof
+
 **Autonomous**: true
 
 ### Phase 57: Operation Dimension & Output Roles
