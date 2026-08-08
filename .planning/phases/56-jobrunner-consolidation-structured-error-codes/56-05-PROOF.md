@@ -270,3 +270,138 @@ MarkFailed/MarkDone commit token`, `octoconv_client_job_outcomes_total delta
 the full test suite is green.
 
 ---
+
+## Task 3: Metric-label zero-diff evidence
+
+This section proves ROADMAP SC3 (label sets unchanged) by diff against the
+phase base commit `c6ccfd4`, per PITFALLS.md Pitfall 4's prescribed method
+(mirroring v1.12's FAIR-02) — not by running the pinning tests once at the
+end.
+
+### Command 1 — `git diff c6ccfd4..HEAD --stat -- internal/metrics`
+
+```
+$ git diff c6ccfd4..HEAD --stat -- internal/metrics
+```
+
+Output: (empty — no files changed)
+
+### Command 2 — `git diff c6ccfd4..HEAD -- internal/metrics/metrics.go`
+
+```
+$ git diff c6ccfd4..HEAD -- internal/metrics/metrics.go
+```
+
+Output: (empty)
+
+### Command 3 — label-declaration-line grep across the phase's `internal/metrics` diff
+
+```
+$ git diff c6ccfd4..HEAD --unified=0 -- internal/metrics | grep -E '\[\]string\{' || echo "NO LABEL DECLARATION LINES IN DIFF"
+```
+
+Output:
+
+```
+NO LABEL DECLARATION LINES IN DIFF
+```
+
+This is the FAIR-02 method quoted in Pitfall 4: no `[]string{...}` label
+declaration line appears anywhere in the phase's diff of `internal/metrics`,
+which is both necessary and sufficient — an empty file-level diff (Command 1)
+already implies this, and this command is the belt-and-suspenders check
+Pitfall 4 prescribes running independently rather than inferring it from the
+first two.
+
+### Command 4 — pinned-label tests
+
+```
+$ go test ./internal/metrics/... -count=1 -run 'TestJobDurationLabelsPinned|TestQueueDepthLabelsPinned' -v
+```
+
+Output:
+
+```
+=== RUN   TestJobDurationLabelsPinned
+--- PASS: TestJobDurationLabelsPinned (0.00s)
+=== RUN   TestQueueDepthLabelsPinned
+--- PASS: TestQueueDepthLabelsPinned (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/metrics	0.316s
+```
+
+### Command 5 — the phase's actual footprint (recorded for reviewer context)
+
+```
+$ git diff c6ccfd4..HEAD --stat -- internal/worker cmd internal/reconciler internal/api internal/errcode
+```
+
+Output:
+
+```
+ cmd/audio-worker/main.go                     |    2 +-
+ cmd/av-worker/main.go                        |    2 +-
+ cmd/chromium-worker/main.go                  |    2 +-
+ cmd/document-worker/main.go                  |    2 +-
+ cmd/ocr-worker/main.go                       |    2 +-
+ cmd/pandoc-worker/main.go                    |    2 +-
+ cmd/worker/main.go                           |    2 +-
+ internal/api/errcode_envelope_test.go        |  325 +++++++++++++++++++++++++++
+ internal/api/handlers.go                     |  139 ++++++------
+ internal/api/handlers_test.go                |   36 +--
+ internal/api/jobs_list_handler.go            |    9 +-
+ internal/api/presets_handlers.go             |   37 ++--
+ internal/api/sse.go                          |    9 +-
+ internal/api/system_presets_handlers.go      |   39 ++--
+ internal/api/system_presets_handlers_test.go |    5 +-
+ internal/api/system_usage_handlers.go        |   11 +-
+ internal/api/system_usage_handlers_test.go   |   15 +-
+ internal/errcode/errcode.go                  |   71 ++++++
+ internal/errcode/errcode_test.go             |   71 ++++++
+ internal/reconciler/reconciler.go            |   24 +-
+ internal/reconciler/reconciler_test.go       |  161 +++++++++++++-
+ internal/worker/descriptors.go               |  182 +++++++++++++++
+ internal/worker/pandoc_integration_test.go   |   14 +-
+ internal/worker/pinning_test.go              | 1007 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ internal/worker/runner.go                    |  292 ++++++++++++++++++++++++
+ internal/worker/runner_test.go               |  233 +++++++++++++++++++
+ internal/worker/worker.go                    |  997 ++++++++++++++++------------------------------------------------------------------
+ 27 files changed, 2731 insertions(+), 960 deletions(-)
+```
+
+(This command's output is recorded verbatim above for reviewer context, per
+the plan's action text; exact insertion/deletion counts are illustrative of
+the phase's real footprint at the time this document was written and are not
+themselves a pass/fail criterion — the `internal/metrics` zero-diff above is
+the load-bearing assertion. `internal/api`/`internal/errcode` changes are
+plans 56-01 through 56-03's work, already committed before this plan started
+— the structured 4xx error-code contract this milestone's roadmap describes;
+this plan (56-05) touches only `internal/reconciler` within that footprint,
+plus the now-restored, untouched-on-disk `internal/worker/runner.go`.)
+
+### Statement — ROADMAP SC3 is satisfied
+
+`octoconv_job_duration_seconds` still carries exactly `{engine, status}` and
+`octoconv_queue_depth` exactly `{queue, state}` (Commands 1-3 above: a
+byte-for-byte empty diff against the phase base commit `c6ccfd4` for the
+entire `internal/metrics` package, and specifically for `metrics.go` where
+both label declarations live). The seven existing ScaledObjects' PromQL
+triggers, which read `octoconv_queue_depth{queue="...",state="..."}`, are
+therefore untouched by this phase. **No `operation` label was added to
+either pinned metric** — this milestone (v1.13) introduces an `operation`
+dimension elsewhere (the `jobs.operation` column and API surface, out of
+this plan's scope), and the natural "let's add an `operation` label while
+we're here" impulse that PROJECT.md's roadmap decisions specifically flag as
+this phase's highest-blast-radius risk did not occur: Command 3's grep found
+zero label-declaration lines in the entire phase's `internal/metrics` diff.
+
+Both pinned-label tests (`TestJobDurationLabelsPinned`,
+`TestQueueDepthLabelsPinned`) pass (Command 4), and the whole-repo suite is
+green:
+
+```
+$ go test ./... -count=1
+```
+
+(See the plan SUMMARY for the full package-by-package output; every package
+reports `ok`.)
