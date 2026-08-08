@@ -87,7 +87,7 @@ func main() {
 	// constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeImageConvert, h.HandleImageConvert)
+	mux.HandleFunc(queue.TypeImageConvert, worker.NewRunner(h, worker.ImageDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("WORKER_CONCURRENCY", 4),

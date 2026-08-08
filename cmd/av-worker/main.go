@@ -151,7 +151,7 @@ func main() {
 	// independent sweep loops recovering the same stranded job.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeAVConvert, h.HandleAVConvert)
+	mux.HandleFunc(queue.TypeAVConvert, worker.NewRunner(h, worker.AVDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("AV_WORKER_CONCURRENCY", 2), // transcode is CPU-bound; the container-level CPU/RAM ceiling is Phase 36's to size
