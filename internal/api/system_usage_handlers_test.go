@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -93,7 +94,7 @@ func TestSystemUsage_NonOperatorNoLeak404(t *testing.T) {
 	}
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("ROADMAP SC3: body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -145,7 +146,7 @@ func TestSystemUsage_EmptyAllowlistDeniesEveryone(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -183,8 +184,8 @@ func TestSystemUsage_InvalidPeriodRejectedBeforeAnyRepoCall(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
 			if tc.wantStatus == http.StatusUnprocessableEntity {
-				if strings.TrimSpace(rec.Body.String()) != `{"error":"invalid period filter"}` {
-					t.Errorf("body = %q, want {\"error\":\"invalid period filter\"}", rec.Body.String())
+				if strings.TrimSpace(rec.Body.String()) != `{"code":"invalid_request","error":"invalid period filter"}` {
+					t.Errorf("body = %q, want {\"code\":\"invalid_request\",\"error\":\"invalid period filter\"}", rec.Body.String())
 				}
 				if usage.calls != 0 || limits.calls != 0 {
 					t.Errorf("D-03: invalid period must cost zero repo calls; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
@@ -210,8 +211,8 @@ func TestSystemUsage_InvalidClientIDRejectedBeforeAnyRepoCall(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
-	if strings.TrimSpace(rec.Body.String()) != `{"error":"invalid client_id"}` {
-		t.Errorf("body = %q, want {\"error\":\"invalid client_id\"}", rec.Body.String())
+	if strings.TrimSpace(rec.Body.String()) != `{"code":"invalid_request","error":"invalid client_id"}` {
+		t.Errorf("body = %q, want {\"code\":\"invalid_request\",\"error\":\"invalid client_id\"}", rec.Body.String())
 	}
 	if usage.calls != 0 || limits.calls != 0 {
 		t.Errorf("expected zero repo calls before validation completes; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
@@ -1111,7 +1112,7 @@ func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
 	}
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("SC3 regression: body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}

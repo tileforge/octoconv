@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/apaderin/octoconv/internal/auth"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/presets"
 )
 
@@ -85,7 +86,7 @@ func decodePresetRequest(w http.ResponseWriter, r *http.Request) (presetRequest,
 	var req presetRequest
 	r.Body = http.MaxBytesReader(w, r.Body, maxPresetBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid JSON body")
 		return presetRequest{}, false
 	}
 	return req, true
@@ -112,11 +113,11 @@ func (s *Server) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validPresetName(req.Name) {
-		writeError(w, http.StatusBadRequest, invalidPresetName)
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 	if err := presets.ValidateOptsJSON(req.Options); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 		return
 	}
 
@@ -129,16 +130,16 @@ func (s *Server) handleCreatePreset(w http.ResponseWriter, r *http.Request) {
 		Description:  req.Description,
 	}); err != nil {
 		if errors.Is(err, presets.ErrAlreadyExists) {
-			writeError(w, http.StatusConflict, "preset already exists")
+			writeError(w, http.StatusConflict, errcode.AlreadyExists, "preset already exists")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to create preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create preset")
 		return
 	}
 
 	created, err := s.presetAdmin.GetForClient(ctx, &client.ID, req.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load created preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load created preset")
 		return
 	}
 	writeJSON(w, http.StatusCreated, newPresetResponse(created))
@@ -155,7 +156,7 @@ func (s *Server) handleListPresets(w http.ResponseWriter, r *http.Request) {
 	includeInactive := r.URL.Query().Get("all") == "true"
 	list, err := s.presetAdmin.ListForClient(ctx, &client.ID, includeInactive)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list presets")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to list presets")
 		return
 	}
 
@@ -176,17 +177,17 @@ func (s *Server) handleShowPreset(w http.ResponseWriter, r *http.Request) {
 
 	name := chi.URLParam(r, "name")
 	if !validPresetName(name) {
-		writeError(w, http.StatusBadRequest, invalidPresetName)
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 
 	p, err := s.presetAdmin.GetForClient(ctx, &client.ID, name)
 	if errors.Is(err, presets.ErrNotFound) {
-		writeError(w, http.StatusNotFound, noSuchPreset)
+		writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load preset")
 		return
 	}
 	writeJSON(w, http.StatusOK, newPresetResponse(p))
@@ -205,7 +206,7 @@ func (s *Server) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 
 	name := chi.URLParam(r, "name")
 	if !validPresetName(name) {
-		writeError(w, http.StatusBadRequest, invalidPresetName)
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 
@@ -214,22 +215,22 @@ func (s *Server) handleUpdatePreset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := presets.ValidateOptsJSON(req.Options); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 		return
 	}
 
 	if _, err := s.presetAdmin.Update(ctx, presets.ScopeUser, &client.ID, name, req.TargetFormat, req.Options, req.Description); err != nil {
 		if errors.Is(err, presets.ErrNotFound) {
-			writeError(w, http.StatusNotFound, noSuchPreset)
+			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to update preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to update preset")
 		return
 	}
 
 	updated, err := s.presetAdmin.GetForClient(ctx, &client.ID, name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load updated preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load updated preset")
 		return
 	}
 	writeJSON(w, http.StatusOK, newPresetResponse(updated))
@@ -245,16 +246,16 @@ func (s *Server) handleDeactivatePreset(w http.ResponseWriter, r *http.Request) 
 
 	name := chi.URLParam(r, "name")
 	if !validPresetName(name) {
-		writeError(w, http.StatusBadRequest, invalidPresetName)
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, invalidPresetName)
 		return
 	}
 
 	if err := s.presetAdmin.Deactivate(ctx, presets.ScopeUser, &client.ID, name); err != nil {
 		if errors.Is(err, presets.ErrNotFound) {
-			writeError(w, http.StatusNotFound, noSuchPreset)
+			writeError(w, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to deactivate preset")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to deactivate preset")
 		return
 	}
 

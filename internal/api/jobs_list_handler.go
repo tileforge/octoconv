@@ -6,6 +6,7 @@ import (
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -35,7 +36,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	status := q.Get("status")
 	if status != "" {
 		if _, ok := listJobsValidStatuses[status]; !ok {
-			writeError(w, http.StatusUnprocessableEntity, "invalid status filter")
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid status filter")
 			return
 		}
 	}
@@ -43,7 +44,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	engine := q.Get("engine")
 	if engine != "" {
 		if _, ok := convert.Default.Classes()[engine]; !ok {
-			writeError(w, http.StatusUnprocessableEntity, "invalid engine filter")
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid engine filter")
 			return
 		}
 	}
@@ -65,7 +66,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("cursor"); v != "" {
 		c, err := jobs.DecodeCursor(v)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid cursor")
+			writeError(w, http.StatusBadRequest, errcode.InvalidCursor, "invalid cursor")
 			return
 		}
 		cursor = &c
@@ -73,7 +74,7 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 	summaries, next, err := s.repo.List(ctx, client.ID, jobs.ListFilter{Status: status, Engine: engine}, cursor, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list jobs")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to list jobs")
 		return
 	}
 

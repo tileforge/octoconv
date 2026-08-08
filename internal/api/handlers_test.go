@@ -21,6 +21,7 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
 )
@@ -974,10 +975,13 @@ func TestCreateJob_PreAdmitInfraErrorDoesNotBlock(t *testing.T) {
 	}
 }
 
-// TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField pins D-10's "every other
-// error body left byte-for-byte unchanged": neither a pre-existing 422 nor a
-// pre-existing 413 gains a code field.
-func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
+// TestCreateJob_NonQuotaErrorBodiesCarryClosedVocabularyCode supersedes the
+// pre-56-03 D-10 boundary ("every other error body left byte-for-byte
+// unchanged, no code field"): SEED-020/ERRC-01 widens writeError so every
+// 4xx/422/413 now ALSO carries a code from the closed internal/errcode
+// vocabulary, assigned by failure class (D-02), while the error message text
+// itself stays byte-for-byte unchanged.
+func TestCreateJob_NonQuotaErrorBodiesCarryClosedVocabularyCode(t *testing.T) {
 	t.Run("422 unsupported pair", func(t *testing.T) {
 		repo := &fakeRepo{}
 		store := &fakeStorage{}
@@ -993,7 +997,7 @@ func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 		}
-		assertNoCodeField(t, rec.Body.Bytes())
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
 	})
 
 	t.Run("413 engine size limit", func(t *testing.T) {
@@ -1015,27 +1019,27 @@ func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
 		}
-		assertNoCodeField(t, rec.Body.Bytes())
+		assertErrorCode(t, rec.Body.Bytes(), errcode.PayloadTooLarge)
 	})
 }
 
-// assertNoCodeField decodes body and asserts it has exactly one key, error,
-// and no code key -- the D-10 shape every non-quota, non-rate-limit error
-// response must keep.
-func assertNoCodeField(t *testing.T, body []byte) {
+// assertErrorCode decodes body and asserts it has exactly the two flat keys
+// D-01 mandates (error, code), that error is non-empty, and that code
+// equals wantCode exactly.
+func assertErrorCode(t *testing.T, body []byte, wantCode string) {
 	t.Helper()
 	var resp map[string]any
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if len(resp) != 1 {
-		t.Errorf("body has %d keys, want exactly 1 (error); body=%s", len(resp), body)
+	if len(resp) != 2 {
+		t.Errorf("body has %d keys, want exactly 2 (error, code); body=%s", len(resp), body)
 	}
-	if _, ok := resp["error"]; !ok {
-		t.Errorf("body missing error key; body=%s", body)
+	if errMsg, ok := resp["error"]; !ok || errMsg == "" {
+		t.Errorf("body missing non-empty error key; body=%s", body)
 	}
-	if _, ok := resp["code"]; ok {
-		t.Errorf("body must not have a code key; body=%s", body)
+	if code, ok := resp["code"]; !ok || code != wantCode {
+		t.Errorf("code = %v, want %q; body=%s", code, wantCode, body)
 	}
 }
 
