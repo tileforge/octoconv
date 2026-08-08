@@ -110,6 +110,45 @@ func TestPerClient_DifferentClientsAreIsolated(t *testing.T) {
 	}
 }
 
+// TestRateLimitBodyCodeUnchanged asserts the 429 body's code field is the
+// LITERAL string "rate_limited", not the errcode.RateLimited constant --
+// this catches a future rename of the constant's value before it ships,
+// since internal/mcpserver/client.go and the frontend match on the literal
+// wire value (T-56-06).
+func TestRateLimitBodyCodeUnchanged(t *testing.T) {
+	h := ByIP(2)(okHandler())
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+		req.RemoteAddr = "203.0.113.9:12345"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: got status %d, want 200", i+1, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req.RemoteAddr = "203.0.113.9:12345"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("3rd request: got status %d, want 429", rec.Code)
+	}
+
+	var body struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode 429 body: %v", err)
+	}
+	if body.Code != "rate_limited" {
+		t.Fatalf("429 body code = %q, want literal %q", body.Code, "rate_limited")
+	}
+}
+
 func TestByIP_OverLimitReturns429(t *testing.T) {
 	h := ByIP(2)(okHandler())
 
