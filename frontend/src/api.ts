@@ -35,11 +35,17 @@ export type ProgressEvent = {
 
 export class ApiError extends Error {
   readonly status: number;
+  // Machine-readable error code from the response body's flat {"error","code"}
+  // envelope (docs/ERROR-CODES.md, D-01). Undefined when the body carries no
+  // code at all (non-JSON error, SSE frame, legacy/proxy error) -- describeError
+  // in App.tsx falls back to the status-derived message in that case.
+  readonly code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -54,7 +60,9 @@ async function parseResponse<T>(response: Response): Promise<T> {
       typeof body === 'object' && body !== null && 'error' in body
         ? String(body.error)
         : response.statusText || 'Request failed';
-    throw new ApiError(response.status, message);
+    const code =
+      typeof body === 'object' && body !== null && 'code' in body ? String(body.code) : undefined;
+    throw new ApiError(response.status, message, code);
   }
 
   return body as T;
