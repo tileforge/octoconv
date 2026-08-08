@@ -256,6 +256,28 @@ Plans:
 
 **Decision locked (2026-08-07)**: `sanitize` вводится как НОВОЕ значение `jobs.operation` (миграция расширяет CHECK, который сегодня разрешает `convert|extract|archive|inspect|render`), движок — `probe`, зарезервированный в схеме с `0001_init.sql`. Переиспользование `extract` отвергнуто: sanitize ничего не извлекает, и `extract` понадобится по назначению в следующем милстоуне. Решение расходится с формулировкой SEED-013 (`engine=probe`, `operation=inspect|convert`) — семя фиксирует старую модель, эта запись её замещает.
 
+**Plans:** 7 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 57-01-PLAN.md — Golden-пиннинг до-фазовых тел /v1/formats и /v1/jobs (D-17, шаг 1) + код unsupported_operation
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 57-02-PLAN.md — Реестр на ключ-тройку: OperationalConverter, panic-on-collision Register, Replace в трёх воркерах
+- [ ] 57-03-PLAN.md — Миграция 0015: job_outputs.role + jobs_operation_check до sanitize; Output.Role в модели и SELECT
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 57-04-PLAN.md — Приём operation в handleCreateJob, двухступенчатый fail-closed 422, ключ operations в /v1/formats, LookupOp в воркере
+- [ ] 57-05-PLAN.md — Инвариант D-13: MarkDone требует ровно один primary-выход; приведение DB-тестов
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 57-06-PLAN.md — Role-driven handleGetJob + outputs[]; доказательство обратным порядком и инверсией (D-18)
+- [ ] 57-07-PLAN.md — Проброс operation в оба MCP-сервера и референсный фронтенд (D-05)
+
 **Autonomous**: true
 
 ### Phase 58: Synchronous Inspection
