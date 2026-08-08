@@ -219,12 +219,23 @@ Full details: `.planning/milestones/v1.12-ROADMAP.md`
 **Plans:** 7 plans in 4 waves
 
 Plans:
+**Wave 1**
+
 - [ ] 56-01-PLAN.md — Worker test seams + seven-handler pinning suite (D-10 step 1, frozen)
 - [ ] 56-02-PLAN.md — internal/errcode closed sync vocabulary + auth/ratelimit adoption
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 56-03-PLAN.md — internal/api 4xx code sweep (112 call sites) + envelope proofs
 - [ ] 56-04-PLAN.md — Runner + EngineDescriptor consolidation, seven handlers deleted, ERRC-02 closed
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 56-05-PLAN.md — Inversion run + metric-label zero-diff proof + reconciler RUNR-02 guard fix
 - [ ] 56-06-PLAN.md — docs/ERROR-CODES.md freeze point + bidirectional Go-to-doc sync test
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [ ] 56-07-PLAN.md — Frontend + both MCP servers migrate to codes; ERRC-03 no-text-matching proof
 
 **Autonomous**: true
