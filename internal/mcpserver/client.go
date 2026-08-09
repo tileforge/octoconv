@@ -120,9 +120,24 @@ type EngineFormats struct {
 	Pairs [][2]string `json:"pairs"`
 }
 
-// FormatsResponse is the decoded shape of GET /v1/formats.
+// FormatsResponse is the decoded shape of GET /v1/formats. It is ALSO the
+// list_supported_formats MCP tool's output type (tools.go:269), so every
+// field's json tag doubles as agent-facing documentation.
 type FormatsResponse struct {
 	Engines map[string]EngineFormats `json:"engines"`
+	// Operations is the {operation -> engine -> supported (source, target)
+	// pairs} tree GET /v1/formats emits unconditionally since 57-04
+	// (internal/api/formats_handlers.go:41-61). tools.go:68's convert_file
+	// jsonschema already tells agents to consult "the operations key of the
+	// list_supported_formats/GET /v1/formats response" to discover the
+	// currently available operations (convert is the default when the
+	// operation field is omitted); without this field that key was silently
+	// dropped by this decoder, so the advertised discovery path could not
+	// actually be performed (codex PR #7 finding #2). Both MCP binaries
+	// (cmd/mcp, cmd/mcp-http) route through this one package, so this single
+	// field serves both. omitempty so a pre-Phase-57 API build that does not
+	// emit the key yields an absent field rather than an empty object.
+	Operations map[string]map[string]EngineFormats `json:"operations,omitempty" jsonschema:"operation -> engine -> supported (source, target) pairs; convert is the default operation when convert_file's operation field is omitted"`
 }
 
 // Preset is the decoded shape of one entry from GET /v1/presets.

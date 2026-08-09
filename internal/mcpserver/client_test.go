@@ -505,6 +505,56 @@ func TestListFormats(t *testing.T) {
 	if len(eng.Pairs) != 1 || eng.Pairs[0] != [2]string{"png", "jpg"} {
 		t.Fatalf("pairs = %v, want [[png jpg]]", eng.Pairs)
 	}
+	if fr.Operations != nil {
+		t.Fatalf("Operations = %v, want nil when the response body omits the operations key (pre-Phase-57 API build)", fr.Operations)
+	}
+}
+
+// TestListFormats_OperationsDecoded (codex PR #7 finding #2) proves the
+// operations key of GET /v1/formats -- the discovery path tools.go:68's
+// convert_file jsonschema advertises -- actually survives decoding instead
+// of being silently dropped.
+func TestListFormats_OperationsDecoded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/formats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"engines": map[string]any{
+				"image": map[string]any{"pairs": [][2]string{{"png", "jpg"}}},
+			},
+			"operations": map[string]any{
+				"convert": map[string]any{
+					"image": map[string]any{"pairs": [][2]string{{"png", "jpg"}}},
+				},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	fr, err := c.ListFormats(context.Background())
+	if err != nil {
+		t.Fatalf("ListFormats: %v", err)
+	}
+	byEngine, ok := fr.Operations["convert"]
+	if !ok {
+		t.Fatal("ListFormats: missing convert operation in decoded response")
+	}
+	eng, ok := byEngine["image"]
+	if !ok {
+		t.Fatal("ListFormats: missing image engine under convert operation")
+	}
+	if len(eng.Pairs) != 1 || eng.Pairs[0] != [2]string{"png", "jpg"} {
+		t.Fatalf("operations[convert][image].Pairs = %v, want [[png jpg]]", eng.Pairs)
+	}
 }
 
 // TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
