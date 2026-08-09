@@ -104,7 +104,21 @@ func NewClientForKey(base Config, apiKey string) (*Client, error) {
 	return NewClient(base)
 }
 
-// JobStatus is the decoded shape of GET /v1/jobs/{id}.
+// JobOutput is one entry of GET /v1/jobs/{id}'s outputs array: a single
+// artifact the job produced, tagged with the role that says what it IS.
+// Shape mirrors internal/api/handlers.go's render exactly (role, ordinal,
+// format, size_bytes, url) -- do not add fields the API does not emit.
+type JobOutput struct {
+	Role      string `json:"role" jsonschema:"what this artifact is -- primary is the conversion result itself; report, preview and thumbnail are secondary artifacts. Never assume the first element is the primary one; select by this field"`
+	Ordinal   int    `json:"ordinal" jsonschema:"position of this output within the job, assigned by the worker; carries no meaning about which output is the main result"`
+	Format    string `json:"format" jsonschema:"the artifact's format, e.g. webp or json"`
+	SizeBytes int64  `json:"size_bytes" jsonschema:"size of the artifact in bytes"`
+	URL       string `json:"url" jsonschema:"presigned download URL for this artifact, valid for a limited time"`
+}
+
+// JobStatus is the decoded shape of GET /v1/jobs/{id}. It is ALSO the
+// get_job_status MCP tool's output type (tools.go:192), so every field's
+// json tag and jsonschema description doubles as agent-facing documentation.
 type JobStatus struct {
 	JobID        string         `json:"job_id"`
 	Status       string         `json:"status"`
@@ -112,6 +126,17 @@ type JobStatus struct {
 	DownloadURL  string         `json:"download_url,omitempty"`
 	ErrorCode    string         `json:"error_code,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`
+	// Outputs is every artifact a done job produced, present only when the
+	// job has more than one (a single-output convert job keeps the
+	// pre-Phase-57 body shape and reports its one artifact through
+	// DownloadURL alone). DownloadURL always points at the primary output,
+	// selected by role rather than by position; the secondary artifacts --
+	// a sanitize report, for instance -- are reachable ONLY through this
+	// field. Without it this decoder silently discarded the whole array, so
+	// download_result could hand an agent the primary URL and nothing else
+	// (codex PR #7 second-round finding). Both MCP binaries route through
+	// this one package, so this single field serves both.
+	Outputs []JobOutput `json:"outputs,omitempty" jsonschema:"all artifacts of a done job, present only when it produced more than one; select the one you want by its role field"`
 }
 
 // EngineFormats is one engine class's supported (source, target) pairs, as

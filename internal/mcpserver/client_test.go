@@ -557,6 +557,76 @@ func TestListFormats_OperationsDecoded(t *testing.T) {
 	}
 }
 
+// TestGetJob_OutputsDecoded proves the outputs array of GET /v1/jobs/{id}
+// survives decoding into JobStatus. Before JobStatus carried Outputs,
+// encoding/json silently dropped the whole array, so a sanitize report --
+// reachable ONLY through it -- was invisible to both MCP servers even though
+// the API published it (codex PR #7 second-round finding).
+//
+// The fixture puts report at ordinal 0 and primary at ordinal 1 on purpose:
+// a decoder that survives this ordering cannot be passing by accident on a
+// fixture where position and role happen to agree.
+func TestGetJob_OutputsDecoded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":       "00000000-0000-0000-0000-000000000057",
+			"status":       "done",
+			"download_url": "https://s3.example/results/J/1-out.webp?sig=a",
+			"outputs": []map[string]any{
+				{"role": "report", "ordinal": 0, "format": "json", "size_bytes": 12, "url": "https://s3.example/results/J/0-report.json?sig=b"},
+				{"role": "primary", "ordinal": 1, "format": "webp", "size_bytes": 4242, "url": "https://s3.example/results/J/1-out.webp?sig=a"},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	js, err := c.GetJob(context.Background(), "00000000-0000-0000-0000-000000000057")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(js.Outputs) != 2 {
+		t.Fatalf("len(Outputs) = %d, want 2 -- the outputs array was dropped by the decoder", len(js.Outputs))
+	}
+
+	byRole := map[string]JobOutput{}
+	for _, o := range js.Outputs {
+		byRole[o.Role] = o
+	}
+	report, ok := byRole["report"]
+	if !ok {
+		t.Fatal("no output with role=report decoded")
+	}
+	primary, ok := byRole["primary"]
+	if !ok {
+		t.Fatal("no output with role=primary decoded")
+	}
+	if report.Ordinal != 0 || report.Format != "json" || report.SizeBytes != 12 {
+		t.Fatalf("report output = %+v, want ordinal 0, format json, size 12", report)
+	}
+	if primary.Ordinal != 1 || primary.Format != "webp" || primary.SizeBytes != 4242 {
+		t.Fatalf("primary output = %+v, want ordinal 1, format webp, size 4242", primary)
+	}
+	// The secondary artifact must be reachable, not merely counted: its URL
+	// is the only path an agent has to the report.
+	if report.URL != "https://s3.example/results/J/0-report.json?sig=b" {
+		t.Fatalf("report.URL = %q, want the report's own presigned URL", report.URL)
+	}
+	if primary.URL != js.DownloadURL {
+		t.Fatalf("primary.URL = %q, want it to equal download_url %q", primary.URL, js.DownloadURL)
+	}
+}
+
 // TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
 // CreateJob writes a multipart part named "operation" with the supplied
 // value when operation is non-empty.
