@@ -77,7 +77,7 @@ either side — that would split one code space into two for no client-visible b
 
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Fourteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Fifteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
@@ -85,6 +85,7 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 |------|---------------------|----------------|--------------------------|
 | `invalid_request` | 400 | Generic request/form validation failure: missing target format, preset+target conflict, unrecognized source format, invalid `callback_url`, malformed job id, invalid `status`/`engine` filter, invalid `client_id`, invalid period filter, invalid JSON body, invalid preset name | Fix the request; the `message` names the specific field/reason |
 | `unsupported_conversion` | 422 | The requested `(source, target)` format pair is not served by any registered engine | Do not retry unmodified; check `GET /v1/formats` for a supported pair |
+| `unsupported_operation` | 422 | The requested `operation` is not registered by any engine at all — no `(source, target)` triple exists under it (client typo, or the engine is not compiled into this build) | Check the `operation` value against `GET /v1/formats`; do not retry unmodified |
 | `invalid_options` | 422 | `opts` present but malformed/invalid for the chosen conversion (shared code space with the async `invalid_options` below — D-03) | Fix `opts` against the conversion's documented schema; do not retry unmodified |
 | `opts_not_applicable` | 422 | `opts` are well-formed JSON but not meaningful for this specific conversion | Omit `opts` or use only fields the target conversion documents |
 | `missing_file` | 400 | No file part present in the multipart request body | Attach the file; do not retry unmodified |

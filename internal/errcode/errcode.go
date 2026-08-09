@@ -13,22 +13,32 @@ package errcode
 // Sync error codes, one per class of 4xx/429 rejection (D-02). Granularity is
 // by failure CLASS, not by call site — do not add a new constant per
 // writeError message string; only per distinguishable client-actionable
-// class. The list is closed at fourteen codes.
+// class. The list is closed at fifteen codes.
 const (
 	InvalidRequest        = "invalid_request"        // generic request/form validation: missing target, preset+target conflict, unrecognized source format, invalid callback_url, bad job id, invalid status/engine filter, invalid client_id, invalid period filter, invalid JSON body, invalid preset name
 	UnsupportedConversion = "unsupported_conversion" // the (source,target) pair is not served by any engine
-	InvalidOptions        = "invalid_options"        // opts present but malformed/invalid for the chosen conversion — same name as the async code (D-03)
-	OptsNotApplicable     = "opts_not_applicable"    // opts are well-formed but not meaningful for this conversion
-	MissingFile           = "missing_file"           // no file part in the multipart body
-	UnknownPreset         = "unknown_preset"         // named preset does not exist / is not active
-	PayloadTooLarge       = "payload_too_large"      // 413: body or opts field exceeds its cap
-	NotFound              = "not_found"              // 404: job or preset does not exist for this client
-	InvalidCursor         = "invalid_cursor"         // 400: opaque list cursor failed to decode
-	AlreadyExists         = "already_exists"         // 409: preset name collision
-	Unauthorized          = "unauthorized"           // 401: missing/malformed Authorization header, or invalid api key
-	QuotaExceeded         = "quota_exceeded"         // 429: v1.12 quota gate — value already on the wire, must not change
-	RateLimited           = "rate_limited"           // 429: internal/ratelimit — value already on the wire, must not change
-	InternalError         = "internal_error"         // 5xx: anything the client cannot act on
+	// UnsupportedOperation is a DIFFERENT failure class than
+	// UnsupportedConversion (57-CONTEXT.md D-03): the requested operation
+	// itself has no registered triple in convert.Default AT ALL -- not one
+	// pair is registered under it -- either a client typo or an engine that
+	// simply is not compiled into this build. UnsupportedConversion, by
+	// contrast, means the operation exists but this specific (from, to)
+	// pair under it does not. Declared right after UnsupportedConversion so
+	// the two read in order: "no such operation" -> "operation exists, no
+	// such pair under it".
+	UnsupportedOperation = "unsupported_operation"
+	InvalidOptions       = "invalid_options"     // opts present but malformed/invalid for the chosen conversion — same name as the async code (D-03)
+	OptsNotApplicable    = "opts_not_applicable" // opts are well-formed but not meaningful for this conversion
+	MissingFile          = "missing_file"        // no file part in the multipart body
+	UnknownPreset        = "unknown_preset"      // named preset does not exist / is not active
+	PayloadTooLarge      = "payload_too_large"   // 413: body or opts field exceeds its cap
+	NotFound             = "not_found"           // 404: job or preset does not exist for this client
+	InvalidCursor        = "invalid_cursor"      // 400: opaque list cursor failed to decode
+	AlreadyExists        = "already_exists"      // 409: preset name collision
+	Unauthorized         = "unauthorized"        // 401: missing/malformed Authorization header, or invalid api key
+	QuotaExceeded        = "quota_exceeded"      // 429: v1.12 quota gate — value already on the wire, must not change
+	RateLimited          = "rate_limited"        // 429: internal/ratelimit — value already on the wire, must not change
+	InternalError        = "internal_error"      // 5xx: anything the client cannot act on
 )
 
 // all is the single place this vocabulary is enumerated; All() and IsKnown()
@@ -36,6 +46,7 @@ const (
 var all = []string{
 	InvalidRequest,
 	UnsupportedConversion,
+	UnsupportedOperation,
 	InvalidOptions,
 	OptsNotApplicable,
 	MissingFile,
