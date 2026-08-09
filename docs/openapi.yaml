@@ -146,7 +146,32 @@ components:
         download_url:
           type: string
           format: uri
-          description: Presigned S3 GET URL for the first output. Only present when status=done.
+          description: >-
+            Presigned S3 GET URL of the role=primary output, selected by
+            role, never by position. Only present when status=done.
+        outputs:
+          type: array
+          description: >-
+            Present only when the job has MORE THAN ONE output, so a
+            single-output convert job's response body is unchanged from the
+            pre-Phase-57 shape. role values come from job_outputs.role, with
+            "primary" being the one presigned into download_url.
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+              ordinal:
+                type: integer
+              format:
+                type: string
+              size_bytes:
+                type: integer
+                format: int64
+              url:
+                type: string
+                format: uri
+            required: [role, ordinal, format, size_bytes, url]
         error_code:
           type: string
           description: >-
@@ -170,26 +195,43 @@ components:
           type: boolean
       additionalProperties: false
 
+    EngineFormats:
+      type: object
+      description: One engine class's supported (source, target) pairs, each rendered as a two-element [from, to] array.
+      properties:
+        pairs:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+            minItems: 2
+            maxItems: 2
+      required: [pairs]
+
     FormatsResponse:
       type: object
       description: >-
-        Registry-derived capability map: for each engine class, every
-        (source, target) pair it currently supports.
+        Registry-derived capability map returned by GET /v1/formats
+        (internal/api/formats_handlers.go:41-61). engines is keyed by engine
+        class, e.g. "image"; operations is keyed by operation (e.g.
+        "convert") then by engine class -- {operation -> engine ->
+        EngineFormats} -- and is the discovery path POST /v1/jobs's
+        operation field's description points callers at. Both keys are
+        emitted unconditionally by handleListFormats, never guarded on
+        non-emptiness, so both are required here.
       properties:
         engines:
           type: object
           additionalProperties:
+            $ref: "#/components/schemas/EngineFormats"
+        operations:
+          type: object
+          additionalProperties:
             type: object
-            properties:
-              pairs:
-                type: array
-                items:
-                  type: array
-                  items:
-                    type: string
-                  minItems: 2
-                  maxItems: 2
-      required: [engines]
+            additionalProperties:
+              $ref: "#/components/schemas/EngineFormats"
+      required: [engines, operations]
 
     PresetRequest:
       type: object
@@ -369,6 +411,13 @@ paths:
                 preset:
                   type: string
                   description: Named server preset supplying target_format and opts. Mutually exclusive with target/opts.
+                operation:
+                  type: string
+                  description: >-
+                    The operation to perform. Defaults to "convert" when
+                    omitted or empty; compared exactly, no trimming, no
+                    case-folding. The currently available set is discoverable
+                    via the operations key of GET /v1/formats.
               required: [file]
               additionalProperties: false
             examples:
@@ -566,6 +615,11 @@ paths:
                       - [ogg, srt]
                       - [ogg, vtt]
                       - [ogg, json]
+                operations:
+                  convert:
+                    image:
+                      pairs:
+                        - [png, jpg]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
