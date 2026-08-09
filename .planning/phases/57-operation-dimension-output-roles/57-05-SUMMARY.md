@@ -225,3 +225,7 @@ $ psql "postgres://octo:octo-pass@localhost:5434/octo_db" -tAc \
 ```
 
 This job/output pair was written by `TestMarkDoneAcceptsSinglePrimaryOutput`'s `addPrimaryOutput` call and left in the database (that test has no `t.Cleanup`), giving a literal, live-Postgres proof of the exact query the plan's `<verification>` section specifies.
+
+## Self-Check: PASSED
+
+All modified files confirmed present on disk (`internal/jobs/repo.go`, `internal/jobs/output_role_test.go`, SUMMARY.md itself); all three commit hashes (`2043f32`, `15bffb3`, `428d59d`) confirmed present in `git log --oneline --all`.
