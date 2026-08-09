@@ -45,6 +45,8 @@ export function describeError(error: unknown): string {
         return 'Choose a file to convert.';
       case 'not_found':
         return error.message || 'The requested job or preset could not be found.';
+      case 'unsupported_operation':
+        return error.message || 'The requested operation is not supported by this server.';
       default:
         // Unrecognized (or absent) code: degrade to the status-derived
         // message below rather than throwing or rendering nothing. A
