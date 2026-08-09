@@ -406,6 +406,17 @@ func (r *Repo) RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, stat
 // DO UPDATE rather than DO NOTHING: the retried conversion may legitimately
 // produce a different object_key or size, and the newest attempt is the one
 // whose object actually exists in storage.
+//
+// role is deliberately absent from both the INSERT column list and the
+// ON CONFLICT SET clause (D-16): job_outputs.role carries a DB-level default
+// ('primary', 0015_operation_and_output_roles.sql), and that default -- not
+// this Go layer -- is the source of truth, closing the class of defect where
+// an API-side default silently drifts out of sync with the DB default. When
+// Phase 60 starts writing an output with role='report', it needs a dedicated
+// write path for that column, added deliberately alongside a guarantee that
+// no existing caller of AddOutput starts silently overwriting a row's role
+// back to a Go zero-value ("") on retry -- do not add role to this upsert
+// without that guarantee in place.
 func (r *Repo) AddOutput(ctx context.Context, jobID uuid.UUID, o Output) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
@@ -530,10 +541,16 @@ func (r *Repo) Inputs(ctx context.Context, jobID uuid.UUID) ([]Input, error) {
 	return out, rows.Err()
 }
 
-// Outputs lists a job's outputs ordered by ordinal.
+// Outputs lists a job's outputs ordered by ordinal. ORDER BY ordinal is kept
+// as-is (not extended to role): job_outputs_job_ordinal_key UNIQUE (job_id,
+// ordinal) (0012_output_identity_and_retention_index.sql) already makes
+// ordinal a stable sort key, and primary-output selection in handleGetJob is
+// role-driven, not positional -- adding role to this ORDER BY would resolve
+// no existing ambiguity while introducing a second, hidden dependency on row
+// order.
 func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT ordinal, object_key, filename, format, size_bytes, content_type
+		SELECT ordinal, object_key, filename, format, size_bytes, content_type, role
 		FROM job_outputs WHERE job_id = $1 ORDER BY ordinal`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("query outputs: %w", err)
@@ -545,7 +562,11 @@ func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 		var o Output
 		var key, name, format, ct *string
 		var size *int64
-		if err := rows.Scan(&o.Ordinal, &key, &name, &format, &size, &ct); err != nil {
+		// role is NOT NULL (0015_operation_and_output_roles.sql), so unlike
+		// object_key/filename/format/content_type above it scans directly into
+		// a plain string, not through the *string + deref() nullable-column
+		// pattern.
+		if err := rows.Scan(&o.Ordinal, &key, &name, &format, &size, &ct, &o.Role); err != nil {
 			return nil, fmt.Errorf("scan output: %w", err)
 		}
 		o.ObjectKey, o.Filename, o.Format, o.ContentType = deref(key), deref(name), deref(format), deref(ct)
