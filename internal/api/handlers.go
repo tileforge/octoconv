@@ -37,6 +37,11 @@ const (
 	// (57-04): the literal "convert" now lives in exactly one place,
 	// internal/convert/convert.go.
 	operationConv = convert.OperationConvert
+	// outputRolePrimary is the job_outputs.role value that selects the
+	// output handleGetJob presigns into "download_url" (ROLE-02, 57-06):
+	// the primary result of the job, chosen by role, never by ordinal or
+	// position in the []jobs.Output slice returned by Repo.Outputs.
+	outputRolePrimary = "primary"
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
@@ -909,12 +914,63 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(outs) > 0 {
-			url, err := s.storage.PresignGet(ctx, outs[0].ObjectKey, s.presignTTL)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to presign output")
-				return
+			// ROLE-02/D-11/D-12/D-13 (57-06): every output is presigned
+			// eager, in one pass, with the same s.presignTTL as before --
+			// D-12, this only happens inside case jobs.StatusDone, so
+			// polling an active job still makes zero PresignGet calls.
+			// D-11: this single outputs[] shape covers any number of
+			// future roles (preview, thumbnail, ...) without a new
+			// response key per role; a flat report_url field was rejected
+			// because every additional role would need its own key, and
+			// carrying both a flat field AND outputs[] was rejected as two
+			// representations of the same data that could silently drift
+			// apart from each other.
+			items := make([]map[string]any, 0, len(outs))
+			var downloadURL string
+			var hasPrimary bool
+			for _, o := range outs {
+				url, err := s.storage.PresignGet(ctx, o.ObjectKey, s.presignTTL)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to presign output")
+					return
+				}
+				items = append(items, map[string]any{
+					"role":       o.Role,
+					"ordinal":    o.Ordinal,
+					"format":     o.Format,
+					"size_bytes": o.SizeBytes,
+					"url":        url,
+				})
+				// The primary result is selected by ROLE, never by ordinal
+				// or by position in outs -- a report or preview output
+				// must never end up in download_url just because it sorts
+				// first (T-57-24).
+				if o.Role == outputRolePrimary {
+					downloadURL = url
+					hasPrimary = true
+				}
 			}
-			resp["download_url"] = url
+			// D-13 (plan 57-05): MarkDone's apply closure refuses to
+			// commit a done job unless job_outputs has EXACTLY ONE row
+			// with role='primary', enforced against the database on the
+			// same locked transaction as the status update. A done job
+			// with no primary output is therefore unreachable by
+			// construction, not merely unobserved -- this handler does
+			// not branch or guess at a substitute here; hasPrimary simply
+			// stays false in that unreachable case and download_url is
+			// omitted exactly like the pre-existing empty-outs case above.
+			if hasPrimary {
+				resp["download_url"] = downloadURL
+			}
+			// Additive key, guarded on non-emptiness like resp["opts"]
+			// above: outputs is present only when there is more than one
+			// output, so a single-output convert job's response body
+			// stays byte-identical to the pre-Phase-57 golden fixture
+			// (SC4) -- an absent map key, not an empty array, is what
+			// keeps the bytes unchanged.
+			if len(outs) > 1 {
+				resp["outputs"] = items
+			}
 		}
 	case jobs.StatusFailed:
 		if job.ErrorCode != "" {
