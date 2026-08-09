@@ -30,7 +30,13 @@ const (
 	formFieldProgressWebhook = "progress_webhook"
 	formFieldOpts            = "opts"
 	formFieldPreset          = "preset"
-	operationConv            = "convert"
+	formFieldOperation       = "operation"
+	// operationConv is kept as a local alias of convert.OperationConvert so
+	// existing call sites in this file (the operation-omitted default and
+	// the Create call below) do not need touching beyond this one line
+	// (57-04): the literal "convert" now lives in exactly one place,
+	// internal/convert/convert.go.
+	operationConv = convert.OperationConvert
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
@@ -134,6 +140,22 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	rawTarget := r.FormValue(formFieldTarget)
 	rawOpts := r.FormValue(formFieldOpts)
 	usingPreset := presetName != ""
+
+	// D-04: normalize the operation field to operationConv ONE line after
+	// FormValue, before any branching whatsoever. Below this point, "the
+	// client sent no operation field" and "the client sent operation=convert"
+	// are physically indistinguishable -- there is nowhere for the API
+	// default and the DB default to diverge, because there is only ever one
+	// value from here on (Pitfall 13). A three-valued scheme ("absent" vs
+	// "empty" vs "explicit") was deliberately rejected: it would require a
+	// third 422 branch to reject an empty-but-present field for no operator
+	// benefit, and it is exactly the kind of extra branch this normalization
+	// exists to make impossible. No strings.TrimSpace and no lower-casing --
+	// operation is compared exactly, the same discipline as an engine class.
+	operation := r.FormValue(formFieldOperation)
+	if operation == "" {
+		operation = operationConv
+	}
 
 	if usingPreset && (rawTarget != "" || (rawOpts != "" && rawOpts != "{}")) {
 		// D-01: preset and an explicit target/opts are mutually exclusive --
@@ -391,11 +413,36 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the conversion pair BEFORE writing anything to storage, and
-	// derive the engine class in the same step (D-01/D-02). The DETECTED
-	// format (not the extension-derived one) is the source of truth fed into
-	// the pair-check (D-05).
-	engine, ok := convert.Default.EngineFor(detected, target)
+	// Two fail-closed 422 gates, in this order, both strictly before
+	// s.storage.Upload and s.repo.Create below (57-04, T-57-13): a garbage
+	// operation or an unregistered triple must never spend S3 bytes or a
+	// client's daily quota. These are two DIFFERENT failure classes with
+	// different client actions (D-03) -- "this operation does not exist at
+	// all" vs "this operation exists but not for this pair" -- so splitting
+	// them into two error codes follows the existing per-failure-class
+	// granularity, it does not violate it.
+	//
+	// Gate 1: is the operation itself known to this build at all? The
+	// allowlist is the REGISTRY (convert.Default.IsKnownOperation), not the
+	// jobs.operation DB CHECK constraint -- a value legal in the schema but
+	// with no registered triple (e.g. sanitize before Phase 60, or
+	// extract/archive/inspect/render) is rejected exactly like any other
+	// garbage value (T-57-14). The message names the rejected value and
+	// points at GET /v1/formats for the current list -- it does not itself
+	// enumerate operations, which stays the responsibility of that
+	// authenticated endpoint (T-57-16).
+	if !convert.Default.IsKnownOperation(operation) {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedOperation,
+			"unsupported operation: "+operation+" -- see GET /v1/formats for supported operations")
+		return
+	}
+
+	// Gate 2: given a KNOWN operation, is this (source, target) pair
+	// registered under it? The DETECTED format (not the extension-derived
+	// one) is the source of truth fed into the pair-check (D-05). This
+	// message text is unchanged from before this plan -- it is already on
+	// the wire and consumers key off it.
+	engine, ok := convert.Default.EngineForOp(operation, detected, target)
 	if !ok {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
@@ -728,7 +775,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
 		ID:              jobID,
 		ClientID:        client.ID,
-		Operation:       operationConv,
+		Operation:       operation,
 		Engine:          engine,
 		SourceFormat:    detected,
 		TargetFormat:    target,

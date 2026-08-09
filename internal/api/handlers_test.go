@@ -679,6 +679,31 @@ func multipartBodyWithOpts(t *testing.T, filename, target string, data []byte, o
 	return &b, w.FormDataContentType()
 }
 
+// multipartBodyWithOperation is multipartBody plus an optional "operation"
+// form field, written only when non-empty -- lets 57-04's operation-field
+// tests send an explicit value (or omit it entirely by passing "") without a
+// new bespoke multipart builder per test.
+func multipartBodyWithOperation(t *testing.T, filename, target, operation string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	if filename != "" {
+		fw, err := w.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fw.Write(data)
+	}
+	if target != "" {
+		_ = w.WriteField("target", target)
+	}
+	if operation != "" {
+		_ = w.WriteField("operation", operation)
+	}
+	_ = w.Close()
+	return &b, w.FormDataContentType()
+}
+
 // multipartBodyWithCallback is multipartBody plus optional "callback_url" and
 // "progress_webhook" form fields, each written only when non-empty -- used
 // by the progress_webhook opt-in parse tests (PUSH-02/D-03).
@@ -784,6 +809,157 @@ func TestCreateJob_OK(t *testing.T) {
 	if q.enqueuedDocument != uuid.Nil {
 		t.Errorf("enqueuedDocument = %s, want uuid.Nil (image upload must never touch the document queue)", q.enqueuedDocument)
 	}
+}
+
+// TestCreateJob_OperationAbsentDefaultsToConvert pins D-04: omitting the
+// operation field entirely must record jobs.operation = "convert", the same
+// value an explicit operation=convert produces (proven by the next test).
+func TestCreateJob_OperationAbsentDefaultsToConvert(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Operation != "convert" {
+		t.Errorf("repo.created.Operation = %+v, want \"convert\"", repo.created)
+	}
+}
+
+// TestCreateJob_OperationExplicitConvertIdenticalToAbsent pins D-04's core
+// claim: below the normalization point, "field absent" and "field=convert"
+// are indistinguishable. Proven two ways -- same recorded Operation, AND a
+// byte-identical response body for a fixed createdID.
+func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
+	fixedID := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+
+	runOnce := func(operation string) (int, []byte, string) {
+		repo := &fakeRepo{createdID: fixedID}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+
+		body, ct := multipartBodyWithOperation(t, "in.png", "webp", operation, pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if repo.created == nil || repo.created.Operation != "convert" {
+			t.Fatalf("operation=%q: repo.created.Operation = %+v, want \"convert\"", operation, repo.created)
+		}
+		return rec.Code, rec.Body.Bytes(), operation
+	}
+
+	absentCode, absentBody, _ := runOnce("")
+	explicitCode, explicitBody, _ := runOnce("convert")
+
+	if absentCode != http.StatusAccepted || explicitCode != http.StatusAccepted {
+		t.Fatalf("status codes = %d, %d, want both 202", absentCode, explicitCode)
+	}
+	if !bytes.Equal(absentBody, explicitBody) {
+		t.Errorf("response bodies differ:\nabsent:   %s\nexplicit: %s", absentBody, explicitBody)
+	}
+}
+
+// TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate is the direct
+// proof of SC3/T-57-13/T-57-14: an operation with no registered triple at
+// all -- sanitize (registered under no engine yet) and bogus (never
+// registered under any build) -- must be rejected 422 unsupported_operation
+// strictly before s.storage.Upload and s.repo.Create, and the queue must
+// stay untouched.
+func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
+	for _, operation := range []string{"sanitize", "bogus"} {
+		t.Run(operation, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+
+			body, ct := multipartBodyWithOperation(t, "in.png", "webp", operation, pngBytesFixture())
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+			}
+			assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedOperation)
+			if store.uploadCalls != 0 {
+				t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+			}
+			if repo.created != nil {
+				t.Errorf("repo.created = %+v, want nil", repo.created)
+			}
+			if repo.preAdmitCalls != 0 {
+				t.Errorf("repo.PreAdmit called %d times, want 0", repo.preAdmitCalls)
+			}
+			if q.enqueueCalls != 0 {
+				t.Errorf("queue enqueue called %d times, want 0", q.enqueueCalls)
+			}
+		})
+	}
+}
+
+// TestCreateJob_KnownOperationUnsupportedPairRejected proves the split
+// between the two 422 codes didn't break the pre-existing pair-rejection
+// path: a KNOWN operation (convert) with an unregistered pair still gets
+// unsupported_conversion, not unsupported_operation.
+func TestCreateJob_KnownOperationUnsupportedPairRejected(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "mp3", "convert", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+	if repo.created != nil {
+		t.Errorf("repo.created = %+v, want nil", repo.created)
+	}
+}
+
+// TestCreateJob_OperationIsCaseSensitive pins T-57-15: no normalization
+// beyond the D-04 empty-string default. "Convert" is a different string
+// from "convert" and must be rejected as an unknown operation, not silently
+// accepted.
+func TestCreateJob_OperationIsCaseSensitive(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "Convert", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedOperation)
 }
 
 // TestCreateJob_QuotaConcurrency_429BeforeUpload pins the SEQUENTIAL property
