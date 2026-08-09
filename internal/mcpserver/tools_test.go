@@ -184,6 +184,57 @@ func TestConvertFile_HappyPath(t *testing.T) {
 	}
 }
 
+// TestConvertFile_OperationForwardedToCreateJob (OPRN-01) proves a
+// convert_file call carrying an Operation input reaches POST /v1/jobs as the
+// "operation" multipart field, all the way through
+// ConvertFileInput -> ConvertBlocking -> CreateJob.
+func TestConvertFile_OperationForwardedToCreateJob(t *testing.T) {
+	var sawOperation string
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		if vals, ok := r.MultipartForm.Value[formFieldOperation]; ok && len(vals) > 0 {
+			sawOperation = vals[0]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "job-op-tool"})
+	})
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(JobStatus{
+			JobID:       "job-op-tool",
+			Status:      "done",
+			DownloadURL: srv.URL + "/results/job-op-tool/out.jpg",
+		})
+	})
+	mux.HandleFunc("/results/job-op-tool/out.jpg", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte{0xFF, 0xD8, 0xFF})
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	h := newHarness(t, Config{BaseURL: srv.URL}, nil)
+
+	res, err := h.cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "convert_file",
+		Arguments: map[string]any{"path": sampleFile, "target_format": "jpg", "operation": "sanitize"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError = true, want false; content = %v", res.Content)
+	}
+	if sawOperation != "sanitize" {
+		t.Fatalf("operation multipart field = %q, want sanitize", sawOperation)
+	}
+}
+
 // TestConvertFile_ProgressNotifiedOnEveryTick asserts NotifyProgress fires
 // once per poll tick when the calling request supplies a progress token
 // (D-04).

@@ -44,6 +44,16 @@ describe('describeError code-driven behavior', () => {
     const err = new ApiError(401, 'no auth header', undefined);
     expect(describeError(err)).toBe('API key is missing, invalid, or revoked.');
   });
+
+  it('maps code=unsupported_operation (422) to the server message, not a status-derived fallback (OPRN-01)', () => {
+    const err = new ApiError(422, 'operation "sanitize" is not supported', 'unsupported_operation');
+    expect(describeError(err)).toBe('operation "sanitize" is not supported');
+  });
+
+  it('falls back to its own neutral text when unsupported_operation carries no server message', () => {
+    const err = new ApiError(422, '', 'unsupported_operation');
+    expect(describeError(err)).toBe('The requested operation is not supported by this server.');
+  });
 });
 
 describe('ApiError.code end-to-end through parseResponse', () => {

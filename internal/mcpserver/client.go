@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	formFieldFile   = "file"
-	formFieldTarget = "target"
-	formFieldPreset = "preset"
-	formFieldOpts   = "opts"
+	formFieldFile      = "file"
+	formFieldOperation = "operation"
+	formFieldTarget    = "target"
+	formFieldPreset    = "preset"
+	formFieldOpts      = "opts"
 
 	// Job status values, mirroring internal/jobs' status constants. Hardcoded
 	// here (not imported) because internal/mcpserver may import no other
@@ -161,9 +162,16 @@ func (e *TimeoutError) Error() string {
 // CreateJob uploads the file at filePath as a multipart POST /v1/jobs
 // request. target and preset are mutually exclusive per the wire contract;
 // this client forwards whatever the caller supplies without arbitrating
-// between them -- the API itself is the single enforcement authority. opts
-// is an optional raw JSON string. Returns the created job id.
-func (c *Client) CreateJob(ctx context.Context, filePath, target, preset, opts string) (string, error) {
+// between them -- the API itself is the single enforcement authority. The
+// same "forward without arbitrating" rule applies to operation: this client
+// never checks whether operation is a known value -- it writes it verbatim
+// (guarded on non-emptiness, like target/preset/opts) and lets the API's
+// registry (convert.Default) be the single source of truth. A local
+// allowlist here would be a second source of truth that could silently
+// diverge from the registry, and the API's 422 unsupported_operation
+// response is forwarded to the caller unchanged either way. opts is an
+// optional raw JSON string. Returns the created job id.
+func (c *Client) CreateJob(ctx context.Context, filePath, operation, target, preset, opts string) (string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("open input file: %w", err)
@@ -178,6 +186,11 @@ func (c *Client) CreateJob(ctx context.Context, filePath, target, preset, opts s
 	}
 	if _, err := io.Copy(fw, f); err != nil {
 		return "", fmt.Errorf("build multipart request: %w", err)
+	}
+	if operation != "" {
+		if err := mw.WriteField(formFieldOperation, operation); err != nil {
+			return "", fmt.Errorf("build multipart request: %w", err)
+		}
 	}
 	if target != "" {
 		if err := mw.WriteField(formFieldTarget, target); err != nil {
@@ -373,9 +386,10 @@ func (c *Client) downloadClient() *http.Client {
 // ConvertBlocking runs the full blocking convert workflow: CreateJob, then
 // poll GetJob every PollInterval (invoking onTick with the latest status on
 // every tick) bounded by ConvertTimeout, then Download the presigned result
-// on success.
-func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, opts string, onTick func(status string)) (ConvertResult, error) {
-	jobID, err := c.CreateJob(ctx, filePath, target, preset, opts)
+// on success. operation is forwarded to CreateJob verbatim -- see CreateJob's
+// doc comment for why this client never arbitrates its value.
+func (c *Client) ConvertBlocking(ctx context.Context, filePath, operation, target, preset, opts string, onTick func(status string)) (ConvertResult, error) {
+	jobID, err := c.CreateJob(ctx, filePath, operation, target, preset, opts)
 	if err != nil {
 		return ConvertResult{}, err
 	}

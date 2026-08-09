@@ -8,6 +8,11 @@ export function isTerminal(status: JobStatus): boolean {
 
 export type FormatsResponse = {
   engines: Record<string, { pairs: [string, string][] }>;
+  // operations is additive (Plan 57-04): {operation -> engine -> pairs}.
+  // Declared optional deliberately -- this frontend must keep working
+  // unmodified against an older API server whose GET /v1/formats response
+  // predates this key entirely (T-57-34).
+  operations?: Record<string, Record<string, { pairs: [string, string][] }>>;
 };
 
 export type CreateJobResponse = {
@@ -25,6 +30,18 @@ export type JobStatusResponse = {
   download_url?: string;
   error_code?: string;
   error_message?: string;
+  // outputs is additive (Plan 57-04) and present ONLY when a done job has
+  // more than one output -- it is ABSENT (not an empty array) for the
+  // single-output case, which is the only case this frontend currently
+  // produces. download_url therefore remains the primary result the UI
+  // renders; outputs is supplementary information, never a replacement.
+  outputs?: Array<{
+    role: string;
+    ordinal: number;
+    format: string;
+    size_bytes: number;
+    url: string;
+  }>;
 };
 
 export type ProgressEvent = {
@@ -87,6 +104,7 @@ export async function createJob(params: {
   file: File;
   target: string;
   opts?: string;
+  operation?: string;
 }): Promise<CreateJobResponse> {
   const form = new FormData();
   form.append('file', params.file);
@@ -95,6 +113,15 @@ export async function createJob(params: {
   const trimmedOpts = params.opts?.trim();
   if (trimmedOpts) {
     form.append('opts', trimmedOpts);
+  }
+
+  // Guarded exactly like opts above: an absent or empty/whitespace-only
+  // operation appends nothing at all -- the request body of a caller that
+  // never sends operation stays byte-for-byte identical to before this
+  // field existed (T-57-31).
+  const trimmedOperation = params.operation?.trim();
+  if (trimmedOperation) {
+    form.append('operation', trimmedOperation);
   }
 
   const response = await fetch('/v1/jobs', {

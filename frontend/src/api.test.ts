@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError, getJobWithRetry, isRetryableError } from './api';
-import type { JobStatusResponse } from './api';
+import type { FormatsResponse, JobStatusResponse } from './api';
 
 describe('isRetryableError', () => {
   it('treats 5xx ApiErrors as retryable', () => {
@@ -107,5 +107,87 @@ describe('getJobWithRetry', () => {
     ).rejects.toBe(err);
     expect(fetchJob).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledTimes(0);
+  });
+});
+
+// createJob's operation field is guarded exactly like its pre-existing opts
+// field (T-57-31): these tests drive the real fetch+FormData pipeline via a
+// stubbed global fetch, capturing the request body FormData directly,
+// rather than re-implementing the guard logic in the test.
+describe('createJob operation field (OPRN-01)', () => {
+  async function captureCreateJobBody(operation?: string): Promise<FormData> {
+    const response = new Response(JSON.stringify({ job_id: 'job-1', status: 'queued' }), {
+      status: 202,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    let capturedBody: FormData | undefined;
+    const fetchStub = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      capturedBody = init.body as FormData;
+      return Promise.resolve(response);
+    });
+    vi.stubGlobal('fetch', fetchStub);
+
+    const { createJob } = await import('./api');
+    const file = new File(['bytes'], 'photo.png', { type: 'image/png' });
+    await createJob({ apiKey: 'k', file, target: 'jpg', operation });
+
+    vi.unstubAllGlobals();
+    if (!capturedBody) {
+      throw new Error('fetch was never called with a body');
+    }
+    return capturedBody;
+  }
+
+  it('appends the operation field to FormData when non-empty', async () => {
+    const body = await captureCreateJobBody('sanitize');
+    expect(body.has('operation')).toBe(true);
+    expect(body.get('operation')).toBe('sanitize');
+  });
+
+  it('omits the operation field from FormData when absent', async () => {
+    const body = await captureCreateJobBody(undefined);
+    expect(body.has('operation')).toBe(false);
+  });
+
+  it('omits the operation field from FormData when empty/whitespace', async () => {
+    const body = await captureCreateJobBody('   ');
+    expect(body.has('operation')).toBe(false);
+  });
+});
+
+// listFormats must tolerate both the pre-57 shape (no operations key) and
+// the additive 57-04 shape (operations present) -- T-57-34: an older API
+// server's response must not break this frontend.
+describe('listFormats operations key (backward compatibility, T-57-34)', () => {
+  async function stubFormatsResponse(body: unknown): Promise<FormatsResponse> {
+    const response = new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    const fetchStub = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchStub);
+
+    const { listFormats } = await import('./api');
+    const result = await listFormats({ apiKey: 'k' });
+
+    vi.unstubAllGlobals();
+    return result;
+  }
+
+  it('parses a response that includes the operations tree', async () => {
+    const result = await stubFormatsResponse({
+      engines: { image: { pairs: [['png', 'jpg']] } },
+      operations: { convert: { image: { pairs: [['png', 'jpg']] } } },
+    });
+    expect(result.operations?.convert.image.pairs).toEqual([['png', 'jpg']]);
+    expect(result.engines.image.pairs).toEqual([['png', 'jpg']]);
+  });
+
+  it('parses a response with no operations key at all without error', async () => {
+    const result = await stubFormatsResponse({
+      engines: { image: { pairs: [['png', 'jpg']] } },
+    });
+    expect(result.operations).toBeUndefined();
+    expect(result.engines.image.pairs).toEqual([['png', 'jpg']]);
   });
 });
