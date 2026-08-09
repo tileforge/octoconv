@@ -126,6 +126,25 @@ type JobStatus struct {
 	DownloadURL  string         `json:"download_url,omitempty"`
 	ErrorCode    string         `json:"error_code,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`
+	// ProgressPct and EtaSeconds mirror the null-aware contract
+	// handleGetJob has emitted since Phase 41 (PROG-01/PROG-04,
+	// internal/api/handlers.go:902-910): both keys are ALWAYS present, and
+	// null is a meaningful value meaning "indeterminate" -- an av job before
+	// its first tick, or any engine that cannot report progress at all. A
+	// done job reads 100; a job canceled mid-stream keeps its frozen last
+	// value (D-06).
+	//
+	// Pointers, and deliberately NOT omitempty: dropping the key on nil
+	// would turn an explicit "we do not know" into an absent field, and
+	// would also make 0% indistinguishable from unknown. That distinction is
+	// the whole reason the API refuses to invent a fabricated number here
+	// (PROG-V2-02 recorded "null is the honest answer"), so the MCP surface
+	// must not quietly discard it either. Until now this decoder dropped
+	// both keys outright, so an agent polling get_job_status on a long video
+	// conversion saw no progress at all even though the API was publishing
+	// it on every response.
+	ProgressPct *int `json:"progress_pct" jsonschema:"percent complete 0-100, or null when the engine cannot report progress (only av jobs report it today); null means indeterminate, never zero"`
+	EtaSeconds  *int `json:"eta_seconds" jsonschema:"estimated seconds remaining, or null when indeterminate"`
 	// Outputs is every artifact a done job produced, present only when the
 	// job has more than one (a single-output convert job keeps the
 	// pre-Phase-57 body shape and reports its one artifact through
