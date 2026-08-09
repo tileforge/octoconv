@@ -932,6 +932,35 @@ func buildTerminalWebhookBody(job *jobs.Job) map[string]any {
 	return body
 }
 
+// setWebhookDownloadURL sets body["download_url"] to the presigned URL of
+// the job's PRIMARY output, selected by ROLE (jobs.OutputRolePrimary), never
+// by ordinal or slice position -- a report or preview output must never
+// reach download_url just because it sorts first (codex PR #7 finding #1;
+// same defect class ROLE-02/T-57-24 closed for handleGetJob at
+// handlers.go:944-951). With no primary present in outs, it sets nothing and
+// returns nil: an asynq retry storm over a state D-13 makes unreachable
+// (a done job always has exactly one primary output) would be worse than an
+// omitted key, and substituting another output is the very bug being fixed
+// here -- this mirrors handleGetJob's hasPrimary=false path exactly. A
+// presign error is returned unwrapped; the caller applies its own
+// "presign output for job %s: %w" wrapping. Factored out as a pure function
+// (same rationale as buildTerminalWebhookBody above) because
+// HandleWebhookDeliver itself cannot be unit-tested: h.store is a concrete
+// *storage.Client whose constructor does a live BucketExists round trip.
+func setWebhookDownloadURL(ctx context.Context, body map[string]any, outs []jobs.Output, presign func(context.Context, string) (string, error)) error {
+	for _, o := range outs {
+		if o.Role == jobs.OutputRolePrimary {
+			url, err := presign(ctx, o.ObjectKey)
+			if err != nil {
+				return err
+			}
+			body["download_url"] = url
+			return nil
+		}
+	}
+	return nil
+}
+
 func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error {
 	payload, err := queue.ParseWebhookPayload(t.Payload())
 	if err != nil {
@@ -961,11 +990,11 @@ func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error
 		}
 		// D-09: regenerate a fresh presigned URL on every attempt, never
 		// reuse a stale one across retries.
-		url, err := h.store.PresignGet(ctx, outs[0].ObjectKey, h.presignTTL)
-		if err != nil {
+		if err := setWebhookDownloadURL(ctx, body, outs, func(c context.Context, key string) (string, error) {
+			return h.store.PresignGet(c, key, h.presignTTL)
+		}); err != nil {
 			return fmt.Errorf("presign output for job %s: %w", jobID, err)
 		}
-		body["download_url"] = url
 	}
 	if job.Status == jobs.StatusFailed {
 		if job.ErrorCode != "" {

@@ -40,8 +40,11 @@ const (
 	// outputRolePrimary is the job_outputs.role value that selects the
 	// output handleGetJob presigns into "download_url" (ROLE-02, 57-06):
 	// the primary result of the job, chosen by role, never by ordinal or
-	// position in the []jobs.Output slice returned by Repo.Outputs.
-	outputRolePrimary = "primary"
+	// position in the []jobs.Output slice returned by Repo.Outputs. Aliased
+	// from jobs.OutputRolePrimary (codex PR #7 finding #1) so the literal
+	// "primary" is declared exactly once in Go, shared with
+	// internal/worker's terminal webhook selection.
+	outputRolePrimary = jobs.OutputRolePrimary
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
