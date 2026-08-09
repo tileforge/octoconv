@@ -1257,9 +1257,16 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return err
 	}
 
-	conv, ok := h.registry.Lookup(job.SourceFormat, job.TargetFormat)
+	// job.Operation is the value handleCreateJob recorded and validated
+	// fail-closed (57-04): this is the ONLY point in the worker that reads
+	// the registry, and it trusts job.Operation completely -- it does NOT
+	// substitute a default. If job.Operation is ever empty (a row created
+	// outside the API, bypassing its validation), LookupOp simply finds no
+	// converter and the job fails honestly instead of being silently
+	// processed as convert.
+	conv, ok := h.registry.LookupOp(job.Operation, job.SourceFormat, job.TargetFormat)
 	if !ok {
-		return fmt.Errorf("no converter for %s -> %s", job.SourceFormat, job.TargetFormat)
+		return fmt.Errorf("no converter for operation %s: %s -> %s", job.Operation, job.SourceFormat, job.TargetFormat)
 	}
 
 	workDir, err := os.MkdirTemp("", "octoconv-"+job.ID.String()+"-")
