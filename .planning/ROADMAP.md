@@ -256,7 +256,7 @@ Plans:
 
 **Decision locked (2026-08-07)**: `sanitize` вводится как НОВОЕ значение `jobs.operation` (миграция расширяет CHECK, который сегодня разрешает `convert|extract|archive|inspect|render`), движок — `probe`, зарезервированный в схеме с `0001_init.sql`. Переиспользование `extract` отвергнуто: sanitize ничего не извлекает, и `extract` понадобится по назначению в следующем милстоуне. Решение расходится с формулировкой SEED-013 (`engine=probe`, `operation=inspect|convert`) — семя фиксирует старую модель, эта запись её замещает.
 
-**Plans:** 3/7 plans executed
+**Plans:** 5/7 plans executed
 
 Plans:
 **Wave 1**
@@ -270,8 +270,8 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 57-04-PLAN.md — Приём operation в handleCreateJob, двухступенчатый fail-closed 422, ключ operations в /v1/formats, LookupOp в воркере
-- [ ] 57-05-PLAN.md — Инвариант D-13: MarkDone требует ровно один primary-выход; приведение DB-тестов
+- [x] 57-04-PLAN.md — Приём operation в handleCreateJob, двухступенчатый fail-closed 422, ключ operations в /v1/formats, LookupOp в воркере
+- [x] 57-05-PLAN.md — Инвариант D-13: MarkDone требует ровно один primary-выход; приведение DB-тестов
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -415,7 +415,7 @@ Plans:
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
 | 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
-| 57. Operation Dimension & Output Roles | v1.13 | 3/7 | In Progress|  |
+| 57. Operation Dimension & Output Roles | v1.13 | 5/7 | In Progress|  |
 | 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
 | 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
