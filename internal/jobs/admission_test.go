@@ -150,6 +150,7 @@ func TestTerminalStatusFreesSlotWithNoReleaseCode(t *testing.T) {
 			if err := r.MarkActive(context.Background(), id); err != nil {
 				t.Fatalf("MarkActive: %v", err)
 			}
+			addPrimaryOutput(t, r, id)
 			if err := r.MarkDone(context.Background(), id, 0); err != nil {
 				t.Fatalf("MarkDone: %v", err)
 			}
@@ -316,6 +317,77 @@ func TestDailyJobsLimit(t *testing.T) {
 			t.Fatalf("create exceeding daily job count (5+1=6) error = %v, want ErrDailyJobsLimit", err)
 		}
 	})
+}
+
+// TestDailyQuotaErrorCarriesPostgresEvaluationClock pins the fix for
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+// daily verdict must carry the Postgres instant evaluate's daily branch was
+// evaluated at, obtained from the same statement that filtered the daily
+// window -- errors.As must yield a *DailyQuotaError with a non-zero
+// EvaluatedAt close to (and on the same UTC date as) a same-instant read
+// from the test's own pool, and errors.Is against ErrDailyJobsLimit must
+// still hold through the wrapper.
+func TestDailyQuotaErrorCarriesPostgresEvaluationClock(t *testing.T) {
+	r := newTestRepo(t)
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", nil, nil, int64Ptr(5))
+	seedDailyUsage(t, r, clientID, "image", 0, 5)
+
+	_, err := createFixture(t, r, clientID, "image", "uploads/adm-dqe/0-in.png", 10)
+	if !errors.Is(err, ErrDailyJobsLimit) {
+		t.Fatalf("create exceeding daily job count error = %v, want ErrDailyJobsLimit", err)
+	}
+
+	var dqe *DailyQuotaError
+	if !errors.As(err, &dqe) {
+		t.Fatalf("errors.As(err, &dqe) = false, want true; err = %v (%T)", err, err)
+	}
+	if dqe.EvaluatedAt.IsZero() {
+		t.Fatal("DailyQuotaError.EvaluatedAt is zero, want the Postgres transaction's now()")
+	}
+
+	var dbNow time.Time
+	if err := r.pool.QueryRow(context.Background(), `SELECT now()`).Scan(&dbNow); err != nil {
+		t.Fatalf("read now() from test pool: %v", err)
+	}
+	var dbToday time.Time
+	if err := r.pool.QueryRow(context.Background(), `SELECT (now() AT TIME ZONE 'utc')::date`).Scan(&dbToday); err != nil {
+		t.Fatalf("read today's UTC date from test pool: %v", err)
+	}
+
+	diff := dbNow.Sub(dqe.EvaluatedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 60*time.Second {
+		t.Errorf("DailyQuotaError.EvaluatedAt = %v is %v away from a same-instant SELECT now() = %v, want within 60s", dqe.EvaluatedAt, diff, dbNow)
+	}
+	if dqe.EvaluatedAt.UTC().Format("2006-01-02") != dbToday.Format("2006-01-02") {
+		t.Errorf("DailyQuotaError.EvaluatedAt UTC date = %s, want %s (SELECT (now() AT TIME ZONE 'utc')::date)", dqe.EvaluatedAt.UTC().Format("2006-01-02"), dbToday.Format("2006-01-02"))
+	}
+}
+
+// TestConcurrencyRejectionIsNotADailyQuotaError pins the concurrency
+// branch's deliberate non-wrapping (DailyQuotaError has no meaning for a
+// concurrency rejection: its Retry-After is a fixed constant with no clock
+// dependency) -- errors.As for *DailyQuotaError must be false for a
+// concurrency verdict.
+func TestConcurrencyRejectionIsNotADailyQuotaError(t *testing.T) {
+	r := newTestRepo(t)
+	clientID := createTestClient(t, r)
+	setEnforcementMode(t, r, clientID, enforcementModeEnforce)
+	setClientLimits(t, r, clientID, "image", intPtr(0), nil, nil)
+
+	_, err := createFixture(t, r, clientID, "image", "uploads/adm-dqe-conc/0-in.png", 10)
+	if !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("create against max_concurrent=0 error = %v, want ErrConcurrencyLimit", err)
+	}
+
+	var dqe *DailyQuotaError
+	if errors.As(err, &dqe) {
+		t.Fatalf("errors.As(err, &dqe) = true, want false for a concurrency rejection; dqe = %+v", dqe)
+	}
 }
 
 // TestDailyLimitIgnoresOtherDaysAndOtherEngines pins that the daily read is
@@ -817,6 +889,7 @@ func TestInFlightAndTerminalUsageCountedExactlyOnce(t *testing.T) {
 	if err := r.MarkActive(ctx, idA); err != nil {
 		t.Fatalf("MarkActive(A): %v", err)
 	}
+	addPrimaryOutput(t, r, idA)
 	if err := r.MarkDone(ctx, idA, 0); err != nil {
 		t.Fatalf("MarkDone(A): %v", err)
 	}

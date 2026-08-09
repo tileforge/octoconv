@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -93,7 +94,7 @@ func TestSystemUsage_NonOperatorNoLeak404(t *testing.T) {
 	}
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("ROADMAP SC3: body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -145,7 +146,7 @@ func TestSystemUsage_EmptyAllowlistDeniesEveryone(t *testing.T) {
 		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -183,8 +184,8 @@ func TestSystemUsage_InvalidPeriodRejectedBeforeAnyRepoCall(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
 			if tc.wantStatus == http.StatusUnprocessableEntity {
-				if strings.TrimSpace(rec.Body.String()) != `{"error":"invalid period filter"}` {
-					t.Errorf("body = %q, want {\"error\":\"invalid period filter\"}", rec.Body.String())
+				if strings.TrimSpace(rec.Body.String()) != `{"code":"invalid_request","error":"invalid period filter"}` {
+					t.Errorf("body = %q, want {\"code\":\"invalid_request\",\"error\":\"invalid period filter\"}", rec.Body.String())
 				}
 				if usage.calls != 0 || limits.calls != 0 {
 					t.Errorf("D-03: invalid period must cost zero repo calls; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
@@ -210,8 +211,8 @@ func TestSystemUsage_InvalidClientIDRejectedBeforeAnyRepoCall(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
-	if strings.TrimSpace(rec.Body.String()) != `{"error":"invalid client_id"}` {
-		t.Errorf("body = %q, want {\"error\":\"invalid client_id\"}", rec.Body.String())
+	if strings.TrimSpace(rec.Body.String()) != `{"code":"invalid_request","error":"invalid client_id"}` {
+		t.Errorf("body = %q, want {\"code\":\"invalid_request\",\"error\":\"invalid client_id\"}", rec.Body.String())
 	}
 	if usage.calls != 0 || limits.calls != 0 {
 		t.Errorf("expected zero repo calls before validation completes; usage.calls=%d limits.calls=%d", usage.calls, limits.calls)
@@ -448,8 +449,11 @@ func TestSystemUsage_KillSwitchMakesRemainingNotAuthoritative(t *testing.T) {
 }
 
 // TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative (plan 53-07,
-// WR-02): the live case still asserts remaining is authoritative, AND the
-// note actually carries the observe-mode caveat, not just claims to.
+// WR-02; note text updated by plan 55-04 Task 2/WR-01): the live case still
+// asserts remaining is authoritative, AND the note points the reader at the
+// per-row enforced field rather than restating the observe-mode caveat as
+// prose (the per-row enforced boolean, added by WR-01, now carries that
+// fact directly).
 func TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative(t *testing.T) {
 	usage := &fakeUsageRepo{}
 	limits := &fakeLimitsRepo{}
@@ -474,8 +478,8 @@ func TestSystemUsage_TodayWithLiveEnforcementIsAuthoritative(t *testing.T) {
 	if resp.RemainingSemantics != "live_admission_gate" {
 		t.Errorf("WR-02: remaining_semantics = %q, want \"live_admission_gate\"", resp.RemainingSemantics)
 	}
-	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "observe") {
-		t.Errorf("WR-02: remaining_note = %q, want a non-empty note mentioning the observe-mode caveat", resp.RemainingNote)
+	if resp.RemainingNote == "" || !strings.Contains(resp.RemainingNote, "enforced") {
+		t.Errorf("WR-01: remaining_note = %q, want a non-empty note pointing at the per-row enforced field", resp.RemainingNote)
 	}
 }
 
@@ -605,7 +609,12 @@ func TestSystemUsage_UsedTerminalAndInFlightReportedSeparately(t *testing.T) {
 		TerminalJobCount: 10, TerminalBytesIn: 1000, TerminalBytesOut: 9000000,
 		InFlightJobCount: 3, InFlightBytesIn: 500,
 	}}}
-	limits := &fakeLimitsRepo{}
+	// A real ListAllLimits always carries a metadata entry for any client
+	// with usage (WR-02 fix, Task 1) — an all-empty limits fake would now
+	// make this usage row's metadata lookup miss and skip the row entirely.
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: clientID, ClientName: "usage-only-co", EnforcementMode: "observe", Engine: nil},
+	}}
 	srv := newOperatorUsageTestServer(usage, limits)
 
 	rec := httptest.NewRecorder()
@@ -809,7 +818,14 @@ func TestSystemUsage_SortedByConsumptionDescending(t *testing.T) {
 		{ClientID: high, Engine: "video", TerminalBytesIn: 5000},
 		{ClientID: high, Engine: "audio", TerminalBytesIn: 5000},
 	}}
-	limits := &fakeLimitsRepo{}
+	// A real ListAllLimits always carries a metadata entry for any client
+	// with usage (WR-02 fix, Task 1) — an all-empty limits fake would now
+	// make every usage row's metadata lookup miss and skip all six rows.
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: low, ClientName: "low-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: mid, ClientName: "mid-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: high, ClientName: "high-co", EnforcementMode: "observe", Engine: nil},
+	}}
 	srv := newOperatorUsageTestServer(usage, limits)
 
 	rec := httptest.NewRecorder()
@@ -1096,7 +1112,7 @@ func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
 	}
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("SC3 regression: body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -1107,6 +1123,184 @@ func TestSystemUsage_NonOperatorNoLeak404EvenWithClientsPresent(t *testing.T) {
 	if usage.todayCalls != 0 {
 		t.Errorf("SC3 regression: a non-operator must not cause any DB work, including UTCToday; usage.todayCalls=%d", usage.todayCalls)
 	}
+}
+
+// TestSystemUsage_UsageRowWithoutClientMetadataIsSkipped (53-REVIEW-GAPS.md
+// WR-02): UsageSummary and ListAllLimits run as two unsynchronized reads
+// (system_usage_handlers.go:202,208) — a client deleted between them yields
+// a usage key with no meta entry. The handler must skip that row rather
+// than emit enforcement_mode:"", which would violate the OpenAPI
+// enum:[observe, enforce]+required contract. Client A has usage AND
+// metadata; client B has usage but no metadata (simulating the
+// vanished-between-reads case) — only A's row must appear.
+func TestSystemUsage_UsageRowWithoutClientMetadataIsSkipped(t *testing.T) {
+	clientA := uuid.New()
+	clientB := uuid.New()
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: clientA, Engine: "image", TerminalJobCount: 1, TerminalBytesIn: 100},
+		{ClientID: clientB, Engine: "image", TerminalJobCount: 2, TerminalBytesIn: 200},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: clientA, ClientName: "acme", EnforcementMode: "enforce", Engine: strPtr("image")},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("WR-02: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) != 1 {
+		t.Fatalf("WR-02: usage rows = %d, want exactly 1 (B's metadata-less row must be skipped); body=%s", len(resp.Usage), rec.Body.String())
+	}
+	if resp.Usage[0].ClientID != clientA {
+		t.Errorf("WR-02: surviving row client_id = %s, want %s (A, the one with metadata)", resp.Usage[0].ClientID, clientA)
+	}
+	for _, row := range resp.Usage {
+		if row.EnforcementMode == "" {
+			t.Errorf("WR-02: no row may have an empty enforcement_mode, got row for client %s", row.ClientID)
+		}
+	}
+}
+
+// TestSystemUsage_EnforcementModeNeverOutsideEnum sweeps every row of a
+// richer fixture (idle-unlimited, limits-but-no-usage, usage-but-no-limits,
+// both) and fails if any enforcement_mode falls outside {observe, enforce}
+// — the exact enum docs/openapi.yaml declares required.
+func TestSystemUsage_EnforcementModeNeverOutsideEnum(t *testing.T) {
+	busy := uuid.New()
+	idle := uuid.New()
+	limitedOnly := uuid.New()
+	usage := &fakeUsageRepo{rows: []jobs.UsageRow{
+		{ClientID: busy, Engine: "image", TerminalJobCount: 5, TerminalBytesIn: 500},
+	}}
+	limits := &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+		{ClientID: busy, ClientName: "busy-co", EnforcementMode: "enforce", Engine: strPtr("image")},
+		{ClientID: idle, ClientName: "idle-co", EnforcementMode: "observe", Engine: nil},
+		{ClientID: limitedOnly, ClientName: "limited-co", EnforcementMode: "enforce", Engine: strPtr("document"), MaxDailyJobs: int64Ptr(10)},
+	}}
+	srv := newOperatorUsageTestServer(usage, limits)
+
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, usageRequest(""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp systemUsageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Usage) == 0 {
+		t.Fatalf("expected at least one row; body=%s", rec.Body.String())
+	}
+	for _, row := range resp.Usage {
+		if row.EnforcementMode != "observe" && row.EnforcementMode != "enforce" {
+			t.Errorf("row for client %s has enforcement_mode=%q, want one of {observe, enforce}", row.ClientID, row.EnforcementMode)
+		}
+	}
+}
+
+// TestSystemUsage_EnforcedIsPerRowNotResponseLevel (53-REVIEW-GAPS.md
+// WR-01): the response-level remaining_matches_admission_gate states only
+// that the response-level preconditions hold; each row's own `enforced`
+// carries whether THAT row is actually enforced. An observe-mode row must
+// have enforced:false even while remaining_matches_admission_gate is true.
+func TestSystemUsage_EnforcedIsPerRowNotResponseLevel(t *testing.T) {
+	observeClient := uuid.New()
+	enforceClient := uuid.New()
+	newFixture := func() (*fakeUsageRepo, *fakeLimitsRepo) {
+		return &fakeUsageRepo{}, &fakeLimitsRepo{rows: []clients.LimitWithMeta{
+			{ClientID: observeClient, ClientName: "observe-co", EnforcementMode: "observe", Engine: nil},
+			{ClientID: enforceClient, ClientName: "enforce-co", EnforcementMode: "enforce", Engine: nil},
+		}}
+	}
+
+	// rowEnforced decodes the raw JSON into a map so a field that is
+	// OMITTED (rather than present-and-false) fails the assertion — a
+	// *bool would silently default to nil/false either way.
+	rowEnforced := func(t *testing.T, body []byte, clientID uuid.UUID) any {
+		t.Helper()
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Fatalf("decode raw response: %v", err)
+		}
+		for _, r := range raw["usage"].([]any) {
+			rowMap := r.(map[string]any)
+			if rowMap["client_id"] == clientID.String() {
+				v, present := rowMap["enforced"]
+				if !present {
+					t.Fatalf("row for client %s has no \"enforced\" key at all (must never be omitted); row=%v", clientID, rowMap)
+				}
+				return v
+			}
+		}
+		t.Fatalf("no row found for client %s; body=%s", clientID, body)
+		return nil
+	}
+
+	t.Run("default server: kill-switch off, period=today", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServer(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest(""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp systemUsageResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if !resp.RemainingMatchesAdmissionGate {
+			t.Fatalf("WR-01: remaining_matches_admission_gate = false, want true")
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: observe-mode row's enforced = %v, want false even while remaining_matches_admission_gate is true", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != true {
+			t.Errorf("WR-01: enforce-mode row's enforced = %v, want true", v)
+		}
+	})
+
+	t.Run("kill-switch on: every row enforced false", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServerQuotaDisabled(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest(""))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: kill-switch on, observe row enforced = %v, want false", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != false {
+			t.Errorf("WR-01: kill-switch on, enforce row enforced = %v, want false", v)
+		}
+	})
+
+	t.Run("period=7d: every row enforced false", func(t *testing.T) {
+		usage, limits := newFixture()
+		srv := newOperatorUsageTestServer(usage, limits)
+
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, usageRequest("period=7d"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), observeClient); v != false {
+			t.Errorf("WR-01: period=7d, observe row enforced = %v, want false", v)
+		}
+		if v := rowEnforced(t, rec.Body.Bytes(), enforceClient); v != false {
+			t.Errorf("WR-01: period=7d, enforce row enforced = %v, want false", v)
+		}
+	})
 }
 
 // TestSystemUsage_EmptyResultMarshalsAsEmptyArray: both fakes return no

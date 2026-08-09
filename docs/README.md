@@ -3,6 +3,12 @@
 `openapi.yaml` is an OpenAPI 3.1 spec describing the OctoConv HTTP API
 exactly as implemented in `internal/api/`.
 
+`ERROR-CODES.md` is the frozen, versioned list of every machine-readable
+error code the service can emit — both the synchronous 4xx/429 half and the
+asynchronous job-failure half. It is the migration target for the frontend
+and both MCP servers; publishing this list into `openapi.yaml` as an enum
+(ERRC-V2-02) is a separate, deferred step.
+
 ## Import into Yaak
 
 Yaak -> **Import** -> **OpenAPI** -> select `docs/openapi.yaml`.

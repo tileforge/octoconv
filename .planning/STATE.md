@@ -1,40 +1,40 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.12
-milestone_name: Consumer Accounting & Fairness
-status: ready_to_plan
-stopped_at: Phase 53 complete (7/7) — ready to discuss Phase 54
-last_updated: 2026-08-05T20:27:58.608Z
-last_activity: 2026-08-05 -- Phase 53 planning complete
+milestone: v1.13
+milestone_name: Inspect & Operations
+status: executing
+stopped_at: Phase 57 complete, verified 9/9; PR #7 open with codex review addressed
+last_updated: "2026-08-09T19:30:00.000Z"
+last_activity: 2026-08-09 -- Phase 57 complete; codex review fixes landed
 progress:
-  total_phases: 5
-  completed_phases: 2
-  total_plans: 21
-  completed_plans: 21
-  percent: 40
+  total_phases: 6
+  completed_phases: 1
+  total_plans: 7
+  completed_plans: 7
+  percent: 17
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-02 after v1.12 roadmap creation)
+See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 54 — per class capacity floor (seed 011)
+**Current focus:** Phase 57 — operation-dimension-output-roles
 
 ## Current Position
 
-Phase: 54
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-08-05
+Phase: 57 (operation-dimension-output-roles) — COMPLETE (verified 9/9, no gaps)
+Plan: 7 of 7
+Status: PR #7 open (phases 54-57), codex review received and addressed
+Last activity: 2026-08-09 - Completed quick task 260809-ul4 (codex PR #7 review fixes)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 137 (all v1.0–v1.11)
+- Total plans completed: 153 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -93,8 +93,9 @@ Last activity: 2026-08-05
 | 51 | 5 | - | - |
 | 52 | TBD | - | - |
 | 53 | 7 | - | - |
-| 54 | TBD | - | - |
-| 55 | TBD | - | - |
+| 54 | 2 | - | - |
+| 55 | 7 | - | - |
+| 56 | 7 | - | - |
 
 **Recent Trend:**
 
@@ -102,12 +103,27 @@ Last activity: 2026-08-05
 - Trend: -
 
 *Updated after each plan completion*
+| Phase 55 P05 | 15min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap decisions (recorded at roadmap creation, 2026-08-02):
+Decisions are logged in PROJECT.md Key Decisions table.
+
+**v1.13-specific roadmap decisions (recorded at roadmap creation, 2026-08-07):**
+
+- **Phase numbering continues from v1.12's Phase 55 — this milestone is Phases 56-61**, not a restart at 1.
+- **`inspect` is a SYNCHRONOUS `POST /v1/inspect`, not a job.** The whole point is deciding *before* queuing an expensive job. The cost was accepted knowingly: the path bypasses quotas, accounting, the reconciler, webhooks and SSE, so it must carry its own bounds (INSP-05) and prove process isolation with a live gate (INSP-06) rather than assume it.
+- **`sanitize` is a NEW `jobs.operation` value, engine `probe`** — not a reuse of `extract`. The verb names what it does; `extract` would lie (sanitize extracts nothing) and would consume a value needed on its merits in the Document wave. This **supersedes SEED-013's framing** (`engine=probe`, `operation=inspect|convert`), which two independent researchers flagged as inconsistent with the milestone description.
+- **The whole error-code contract lands in ONE phase (56), including the 4xx half in `internal/api/handlers.go`** — splitting it would make two MCP servers and the frontend migrate twice inside one milestone (PITFALLS.md Pitfall 11).
+- **ROLE-02 must close in Phase 57, before sanitize ships in 60.** `handleGetJob` takes `outs[0]` with no role awareness (`internal/api/handlers.go:857-870`, verified live) — the defect is already in the code, merely unreachable until a second output exists.
+- **INSP-06's live gate lives INSIDE Phase 58, unlike QUOT-05 which was its own phase (55).** The gate proves a property of code written in the same phase, with no intervening phase able to change it — matching Phase 51 Plan 05's precedent (operator-run KEDA gate inside the phase that built the metrics). If the gate fails, the fix is likely a design change (moving deep analysis to a worker), so the phase should not close until the design is proven.
+- **The three DEBT items are their own phase (61), not folded into 56-60** — zero file overlap, and folding them would add unrelated diff noise to the main work's review. Phase 54 (CAPA-01) precedent.
+- **Research corrections carried into the roadmap:** SEED-020 overstated its own cost (handler bodies are 79–110 lines, not 94–163; `process()` at worker.go:1847-1942 is already the shared orchestrator; av's disk guards and ocr's page caps are converter-internal, not handler-level). Its "14 symmetric call sites" claim is exactly correct. Adding an eighth queue is **low** blast radius (each ScaledObject's PromQL is self-contained; proven twice in v1.10/v1.11) — *renaming* one is the expensive operation, and v1.13 requires none. The real KEDA risk here is metric-label drift during the refactor.
+- **Coverage: 28/28 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
+
+**v1.12-specific roadmap decisions (recorded at roadmap creation, 2026-08-02):**
 
 - **Phase numbering continues from v1.11's Phase 50 — this milestone is Phases 51-55**, not a restart at 1.
 - **Attribution before enforcement before visibility (Phase 51 → 52 → 53), mirroring the milestone's own framing** ("Атрибуция" before "Границы"): quotas can't be enforced against numbers that aren't tracked yet, and the operator endpoint has nothing to show without the rollup existing first.
@@ -117,6 +133,7 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 - **CAPA-01 (SEED-011, minReplicaCount) is its own small phase (54), not folded into 51-53**: zero data/code coupling with the accounting/quota work (pure Helm values/`ScaledObject` change) — keeping it separate avoids unrelated chart-diff noise in the accounting/quota review and lets it ship/rollback independently; sequenced as a low-risk hygiene tail per research, not blocking or blocked by anything.
 - **Per-client sub-queue fairness (the design that renames queues and touches all 7 ScaledObject PromQL strings) is explicitly NOT in this roadmap** — deferred (FAIR-V2-01 in REQUIREMENTS.md v2), evidence-gated on Phase 53's operator visibility showing the admission-cap baseline is actually insufficient in practice. Building it speculatively would repeat the SEED-010 rejection pattern already recorded in PROJECT.md, this time risking the KEDA scale-from-zero contract instead of the compile-time engine allowlist.
 - **Coverage: 15/15 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
+- [Phase 55]: internal/jobs/admission.go records that quota admission carries no api.replicas:1-only caveat, citing live gate run 20260807T153358Z (10/10 rounds, 167 assertions) by path — Closes ROADMAP Phase 55 SC2 and QUOT-05; mirrors internal/ratelimit's own caveat register, inverted
 
 ### Quick Tasks Completed
 
@@ -129,6 +146,9 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 | 260802-9de | Закрытие оставшихся замечаний code review PR#2: потолок pandoc-аплоада в API теперь берётся из PANDOC_MAX_INPUT_BYTES (оверсайз отклоняется на входе, а не падает асинхронно в воркере), и обрезка неполной UTF-8-руны перед валидацией sniff-префикса (файлы >1 MiB больше не отклоняются ложно) | 2026-08-02 | fbc51ea | [260802-9de-close-remaining-pr-2-review-findings-enf](./quick/260802-9de-close-remaining-pr-2-review-findings-enf/) |
 | 260802-9zc | Устранён последний экземпляр PR#2 finding-2: LooksLikeHTML держал собственную копию логики sniff-префикса и потому не получил фикс обрезки неполной UTF-8-руны — HTML-файлы >1 MiB с руной на границе кэпа отклонялись ложно. Копия заменена вызовом общего readSniffPrefix | 2026-08-02 | fff79da | [260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i](./quick/260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i/) |
 | 260802-asr | Три фронтенд-бага из ревью PR#2: терминальный SSE-кадр отбрасывал финальный GET и готовая конверсия оставалась без ссылки Download (job?.status убран из deps эффекта, запись гейтится по identity джобы); finalize получил bounded retry (3 попытки, backoff 400/1200мс, только 5xx/429/408/сеть); селектор таргетов фильтруется по формату выбранного файла с зеркалом NormalizeFormat (jpeg/tif/htm/tex) вместо глобального объединения, дававшего избегаемые 422. Добавлен vitest, 23 теста | 2026-08-02 | d41593d | [260802-asr-fix-three-frontend-bugs-found-in-pr-2-re](./quick/260802-asr-fix-three-frontend-bugs-found-in-pr-2-re/) |
+| 260809-ul4 | Четыре замечания codex из ревью PR#7. Функциональные: (1) `HandleWebhookDeliver` презайнил `outs[0]` — тот же дефект, что ROLE-02 закрыл для `GET /v1/jobs/{id}`, но callback-путь не входил в букву требования, поэтому верификатор фазы 57 его пропустил; литерал `"primary"` поднят в `jobs.OutputRolePrimary` как единственное объявление на `api` и `worker`; (2) `mcpserver.FormatsResponse` терял ключ `operations` при декодировании, хотя `tools.go` в jsonschema отсылал агентов именно к нему. Контрактные: (3) `docs/openapi.yaml` не объявлял `operation` при `additionalProperties: false` (SDK не мог отправить поле), `operations` и `outputs`; (4) спека утверждала «code is never added to any non-429 response», что стало ложью после фазы 56 — `Error.code` теперь required с enum по закрытому словарю, `QuotaError` удалён как избыточный, а `internal/errcode/openapi_sync_test.go` механически стережёт спеку от дрейфа (раньше `TestErrorCodeDocSync` стерёг только ERROR-CODES.md). Инверсия вебхук-фикса воспроизведена независимо | 2026-08-09 | 032cc78 | [260809-ul4-4-codex-pr-7-role-driven-download-url-op](./quick/260809-ul4-4-codex-pr-7-role-driven-download-url-op/) |
+
+| 260809-fast | codex, второй круг ревью PR#7: `mcpserver.JobStatus` не объявлял `Outputs`, поэтому массив `outputs` из `GET /v1/jobs/{id}` молча терялся у обоих MCP-серверов. `JobStatus` служит типом вывода `get_job_status`, а `download_result` отдаёт только primary-URL — значит вторичный артефакт (отчёт sanitize) был недостижим через MCP вообще. Тот же класс, что находка №2 про `FormatsResponse`: соседний DTO в том же файле, который узкая правка не подмела. Латентно до фазы 60. Тег-инверсия (`outputs`→`output`) доказывает, что тест ловит потерю данных, а не только отсутствие поля | 2026-08-09 | 23bf611 | — |
 
 ### Pending Todos
 
@@ -137,7 +157,19 @@ Decisions are logged in PROJECT.md Key Decisions table. v1.12-specific roadmap d
 
 ### Blockers/Concerns
 
-None currently blocking. Sequencing carried into the roadmap:
+None currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
+
+- Hard-ordered spine: **56 → 57 → 58 → 59**, and **56 + 57 → 60**. Phase 61 (debt tail) is fully independent and can execute in any slot.
+- **Highest-blast-radius risk is Phase 56, and it is not the refactor itself — it is metric-label drift.** The phase touches all 14 metric call sites in the same milestone that adds an `operation` dimension; the natural "let's add an `operation` label while we're here" impulse would break KEDA scale-from-zero for all seven existing engine classes. `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` must stay green, verified by diff, mirroring FAIR-02's v1.12 method.
+- **Second-highest risk in Phase 56:** `isAudioTerminal` and `isAVTerminal` encode stage-level asymmetries with **opposite polarity from each other**, deliberately. The descriptor must model `(stage, isTimeout)`, not `(engine, isTimeout)`, or the refactor silently regresses the two costliest engine classes. A test suite that proves the runner's shape rather than the seven engines' pre-existing behavior would pass while regressing.
+- **Highest operational risk is Phase 58:** the synchronous inspect handler shares a process with `/healthz`. A pathological burst can fail the k8s liveness probe and cascade a fleet-wide restart, not merely slow one client. This is why INSP-06 is an operator-gated live proof.
+- **Highest security bar is Phase 60.** Verified against real sources: PDF incremental updates leave "removed" objects byte-recoverable in an earlier revision; naive OOXML zip-entry deletion leaves dangling `[Content_Types].xml`/`.rels` references or leaves payload bytes physically present; self-verification with the removing parser is structurally blind to polyglot bypasses (CVE-2015-5092 precedent). Apply the project's own veraPDF precedent — verify with an independent implementation.
+- **Two design decisions deliberately left open for Phase 60 planning** (research could not close them honestly): blacklist-removal vs reconstruct-from-trusted-content, and the independent verification parser choice. Both must be written decisions before code lands.
+- **Operator-gated phases:** 58 (live process-isolation proof) and 60 (measured `probe` engine timeout on its own corpus — copying a sibling's timeout is a documented project anti-pattern; every class has a distinct value: 65s pandoc, 742s audio, 744s ocr, 753s av).
+- **Explicit non-goals for v1.13 (do not resurface):** SEED-010 dynamic capability registry (third rejection), SEED-021 Opportunity 2 (per-page Mixed-PDF routing — unresolved merging contract), rasterize-and-rebuild sanitize, poppler/qpdf/mutool/ffprobe/exiftool in `Dockerfile.api`, renaming any existing queue, SEED-017/SEED-018.
+- Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record) — relevant again for Phase 58's and Phase 60's live runs.
+
+Carried from v1.12:
 
 - Hard-ordered spine for the accounting/quota work: 51 (attribution + retention — new rollup table + client-labeled counter, additive/zero-behavior-change) → 52 (quota enforcement + baseline fairness, same mechanism — needs Phase 51's table) → 53 (operator visibility — reads Phase 51's table, sequenced after 52 starts so "usage vs. limit" is meaningful).
 - Phase 54 (CAPA-01/SEED-011) is fully independent — chart-only, can execute at any point; placed as a hygiene tail so it doesn't add unrelated diff noise to 51-53's review.
@@ -147,6 +179,26 @@ None currently blocking. Sequencing carried into the roadmap:
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
 
 ## Deferred Items
+
+Items acknowledged and deferred at v1.12 milestone close on 2026-08-07. Milestone audit status
+`tech_debt` — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers
+(`.planning/milestones/v1.12-MILESTONE-AUDIT.md` has the itemized list):
+
+| Category | Item | Status |
+|----------|------|--------|
+| tech_debt | **52 WR-01** — an in-flight (`queued`/`active`) job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day; no operator remedy exists in `cmd/manage-clients` (raw SQL only), and the new coupling between quota availability and `cmd/webhook-worker`'s health is undocumented | Accepted, non-blocking — the unavoidable price of making the daily cap real; self-heals via the reconciler in a correctly operated deployment. **Highest-value follow-up in the milestone** |
+| tech_debt | 52 WR-09 — `README.md:242` claims enforcement happens "before the upload touches storage", contradicted by `README.md:294`; `README.md:257` hardcodes "the seven known engine classes" instead of deriving from `convert.AllEngines()` | Open — documentation accuracy only, shipped behavior is correct |
+| tech_debt | 52 WR-03/WR-04 — migration 0014 uses `DROP CONSTRAINT IF EXISTS` against repo convention with no exactly-once CHECK assertion; `recordUsage` can now abort `Repo.Cancel` via the status CHECK, which migrations 0011/0013 explicitly argued against for `engine` on the same table | Latent risks, verified non-defective at close |
+| tech_debt | 52 WR-05 — `internal/presets/repo.go` and `internal/clients/repo.go` still use bare `pgx.BeginFunc` without the `pgx.ReadCommitted` pin adopted in `internal/jobs` for the identical read-modify-write shape | Out of phase scope, pre-existing inconsistency |
+| accepted_risk | 52 — `admitLocked` runs after `s.storage.Upload`, so a concurrent burst wastes a bounded N−K uploads before the 429 | Disclosed and measured (`internal/jobs/admission.go:531-596`, `TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste`) — accepted deviation from ROADMAP SC2b's literal wording, not debt to close |
+| tech_debt | 53 WR-05/WR-06/WR-08 — `GET /v1/system/usage` all-clients response is unpaginated; a mistyped `client_limits.engine` is reported as an enforceable budget the gate never applies; `api.go`'s "never nil after NewServer" contract is not panic-enforced | Informational; unpaginated response accepted per D-02 (small internal client population) |
+| tech_debt | 54 IN-04/IN-06 — the new `ci.yml` `helm` job has no `timeout-minutes`; `values.yaml:189-190` hardcodes `minioadmin` defaults (pre-existing, untouched) | CI hygiene |
+| tech_debt | 54 WR-03/WR-04 — `azure/setup-helm@v4` tag-pinned not SHA-pinned; the four pre-existing CI jobs carry no workflow-level `permissions:` | Accepted overrides with recorded rationale in 54-VERIFICATION.md frontmatter (threat model T-54-03; purely-additive `ci.yml` invariant) |
+| tech_debt | 55 Gap Note A — the live-gate harness proves the cross-replica claim with aggregate per-pod admit/reject counts, where 55-05-PLAN.md's acceptance criteria asked for a transcript line naming a specific admitted and a specific rejected request-id on different pods | Unflagged deviation, not a functional gap — the underlying claim is independently verified; recorded so a future reader does not hunt for a line that isn't there |
+| tech_debt | Cross-phase — `internal/jobs/retention.go:126` `PurgeUsage` derives its cutoff from `time.Now().UTC()` rather than Postgres's `now()`, unlike `evaluate()`/`recordUsage`/`UTCToday` | Inconsequential at a 400-day window; inconsistent with the clock discipline this milestone established |
+| infra | `internal/storage` `TestRoundTrip` fails on the shared dev host — the `octoconv-minio` volume is at 100% disk (`49G used / 256M avail`) | Host housekeeping, not application code (53-06 deferred-items.md) |
+| tooling_noise | `audit-open` reports 12 quick tasks as `missing` | False positives — all 12 have both PLAN.md and SUMMARY.md; the SDK parser expects a `status:` frontmatter field these files do not carry |
+| seeds | SEED-004..007, 010, 013..021 (14 dormant) | Dormant by design — forward-looking parking lot. SEED-011 flipped to `implemented` at this close (delivered by Phase 54 / CAPA-01); SEED-017 (PDF split/merge) is the concrete future demand the ACCT-02 multi-ordinal byte accounting was built for |
 
 Items acknowledged and deferred at v1.11 milestone close on 2026-08-02:
 
@@ -221,13 +273,16 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-08-05T10:44:24.163Z
-Stopped at: Phase 53 context gathered
-Resume file: .planning/phases/53-operator-usage-visibility/53-CONTEXT.md
+Last session: 2026-08-08T18:29:50.308Z
+Stopped at: Phase 57 context gathered
+Resume file: .planning/phases/57-operation-dimension-output-roles/57-CONTEXT.md
 
 ## Operator Next Steps
 
-- Phase 52 is complete and verified (9/9 plans, shipped as PR #5).
-- Start phase planning with `/gsd:plan-phase 53`.
-
-</content>
+- **Milestone v1.13 (Inspect & Operations) started 2026-08-07** — 6 phases (56-61), 28/28 v1 requirements mapped, 0 orphans. Research complete (`.planning/research/`, 5 files). Next: `/gsd:discuss-phase 56` then `/gsd:plan-phase 56`.
+- **Four live defects found by v1.13 research, actionable regardless of phase order:** `internal/reconciler/reconciler.go:311-312` (unguarded `RecordReconcilerAction("exhausted")` — the exact PR #4 defect class, uncaught; closed by RUNR-02), `internal/api/handlers.go:857-870` (`handleGetJob` presigns `outs[0]` with no role awareness; closed by ROLE-02), `internal/jobs/retention.go:126` (`PurgeUsage` on the Go clock; closed by DEBT-11), `internal/convert/ocrguards.go:227-228` (comment steers clients to an engine that does not accept pdf as source; closed by BDPD-02).
+- **One new Go dependency planned:** `github.com/pdfcpu/pdfcpu` v0.14.0 (Apache-2.0, pure Go, `CGO_ENABLED=0`). Largest new dependency since the MCP `go-sdk` (Phase 21) — justified specifically on `/JS`/`/OpenAction`/`/EmbeddedFile` detection inside compressed object streams, where a byte scan has a real false-negative rate. It also doubles as the sanitize verifier.
+- **Milestone v1.12 (Consumer Accounting & Fairness) closed and archived 2026-08-07** — 5 phases, 30 plans, 79 tasks, 15/15 requirements. Audit status `tech_debt`: 0 blockers, 9/9 cross-phase seams, 16 non-blocking debt items recorded (`.planning/milestones/v1.12-MILESTONE-AUDIT.md`). `.planning/REQUIREMENTS.md` is intentionally absent — `/gsd:new-milestone` creates a fresh one.
+- **Highest-value carry-forward: 52 WR-01.** An in-flight job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day, with no operator remedy in `cmd/manage-clients` and no documentation of the new quota ↔ `cmd/webhook-worker` health coupling. Natural shape for a first phase of the next milestone, together with the README self-contradiction (52 WR-09).
+- Phase numbering continues from 55 — v1.13 is Phases 56-61, never restart at 1.
+- Phase directories for 51-55 were archived into `.planning/milestones/v1.12-phases/` at v1.13 milestone start (commit a2b8d5b); v1.12 research moved to `.planning/milestones/v1.12-research/`.

@@ -67,29 +67,38 @@ components:
     Error:
       type: object
       description: >-
-        The error body used by every non-2xx response EXCEPT 429. 429
-        responses use the QuotaError schema below instead, which adds the
-        required machine-readable code discriminator.
-      properties:
-        error:
-          type: string
-      required: [error]
-
-    QuotaError:
-      type: object
-      description: >-
-        The error body used ONLY by 429 responses. Every other error body in
-        this API remains the one-property Error schema above — code is never
-        added to any non-429 response. code distinguishes the two producers
-        of a 429 in this service: the per-IP/per-client rate limiter
-        (rate_limited) and the per-client quota admission gate
-        (quota_exceeded, QUOT-01..04).
+        The flat {"error", "code"} envelope used by EVERY non-2xx JSON
+        response from /v1/*. The two and only writers are internal/api's
+        writeError (handlers.go) and internal/ratelimit
+        (ratelimit.go) — both set code unconditionally, never only on 429.
+        code is a machine-readable discriminator enumerated over the closed
+        vocabulary frozen by docs/ERROR-CODES.md (milestone v1.13 Phase 56,
+        ERRC-01); internal/errcode/openapi_sync_test.go mechanically proves
+        this enum never drifts from internal/errcode's Go constants. On a
+        429, code distinguishes the two independent producers of that status:
+        the per-IP/per-client rate limiter (rate_limited) and the per-client
+        quota admission gate (quota_exceeded, QUOT-01..04).
       properties:
         error:
           type: string
         code:
           type: string
-          enum: [quota_exceeded, rate_limited]
+          enum:
+            - invalid_request
+            - unsupported_conversion
+            - unsupported_operation
+            - invalid_options
+            - opts_not_applicable
+            - missing_file
+            - unknown_preset
+            - payload_too_large
+            - not_found
+            - invalid_cursor
+            - already_exists
+            - unauthorized
+            - quota_exceeded
+            - rate_limited
+            - internal_error
       required: [error, code]
 
     JobCreated:
@@ -137,7 +146,32 @@ components:
         download_url:
           type: string
           format: uri
-          description: Presigned S3 GET URL for the first output. Only present when status=done.
+          description: >-
+            Presigned S3 GET URL of the role=primary output, selected by
+            role, never by position. Only present when status=done.
+        outputs:
+          type: array
+          description: >-
+            Present only when the job has MORE THAN ONE output, so a
+            single-output convert job's response body is unchanged from the
+            pre-Phase-57 shape. role values come from job_outputs.role, with
+            "primary" being the one presigned into download_url.
+          items:
+            type: object
+            properties:
+              role:
+                type: string
+              ordinal:
+                type: integer
+              format:
+                type: string
+              size_bytes:
+                type: integer
+                format: int64
+              url:
+                type: string
+                format: uri
+            required: [role, ordinal, format, size_bytes, url]
         error_code:
           type: string
           description: >-
@@ -161,26 +195,43 @@ components:
           type: boolean
       additionalProperties: false
 
+    EngineFormats:
+      type: object
+      description: One engine class's supported (source, target) pairs, each rendered as a two-element [from, to] array.
+      properties:
+        pairs:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+            minItems: 2
+            maxItems: 2
+      required: [pairs]
+
     FormatsResponse:
       type: object
       description: >-
-        Registry-derived capability map: for each engine class, every
-        (source, target) pair it currently supports.
+        Registry-derived capability map returned by GET /v1/formats
+        (internal/api/formats_handlers.go:41-61). engines is keyed by engine
+        class, e.g. "image"; operations is keyed by operation (e.g.
+        "convert") then by engine class -- {operation -> engine ->
+        EngineFormats} -- and is the discovery path POST /v1/jobs's
+        operation field's description points callers at. Both keys are
+        emitted unconditionally by handleListFormats, never guarded on
+        non-emptiness, so both are required here.
       properties:
         engines:
           type: object
           additionalProperties:
+            $ref: "#/components/schemas/EngineFormats"
+        operations:
+          type: object
+          additionalProperties:
             type: object
-            properties:
-              pairs:
-                type: array
-                items:
-                  type: array
-                  items:
-                    type: string
-                  minItems: 2
-                  maxItems: 2
-      required: [engines]
+            additionalProperties:
+              $ref: "#/components/schemas/EngineFormats"
+      required: [engines, operations]
 
     PresetRequest:
       type: object
@@ -283,7 +334,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/QuotaError"
+            $ref: "#/components/schemas/Error"
     InternalError:
       description: Unexpected server-side failure (storage, database, or queue).
       content:
@@ -360,6 +411,13 @@ paths:
                 preset:
                   type: string
                   description: Named server preset supplying target_format and opts. Mutually exclusive with target/opts.
+                operation:
+                  type: string
+                  description: >-
+                    The operation to perform. Defaults to "convert" when
+                    omitted or empty; compared exactly, no trimming, no
+                    case-folding. The currently available set is discoverable
+                    via the operations key of GET /v1/formats.
               required: [file]
               additionalProperties: false
             examples:
@@ -411,6 +469,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: file exceeds size limit
+                code: payload_too_large
         "422":
           description: >-
             Semantically rejected: unsupported conversion pair, declared
@@ -470,6 +529,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid job id
+                code: invalid_request
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -480,6 +540,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: job not found
+                code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
@@ -554,6 +615,11 @@ paths:
                       - [ogg, srt]
                       - [ogg, vtt]
                       - [ogg, json]
+                operations:
+                  convert:
+                    image:
+                      pairs:
+                        - [png, jpg]
         "401":
           $ref: "#/components/responses/Unauthorized"
         "429":
@@ -593,6 +659,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset already exists
+                code: already_exists
         "422":
           description: Invalid opts.
           content:
@@ -691,6 +758,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "422":
           description: Invalid opts.
           content:
@@ -770,6 +838,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "409":
           description: A system preset with this name already exists.
           content:
@@ -1009,14 +1078,15 @@ paths:
                     type: boolean
                     description: >-
                       true only when period=today AND
-                      quota_enforcement_disabled is false — the ONLY
-                      combination where remaining is exactly what the
-                      admission gate (evaluate()) would decide right now. A
-                      per-row enforcement_mode of "observe" means that row's
-                      own verdict is computed and counted but never enforced,
-                      even when this field is true for the response as a
-                      whole — see remaining_note on each response for the
-                      per-row caveat.
+                      quota_enforcement_disabled is false — these are the
+                      RESPONSE-LEVEL preconditions for remaining to be
+                      exactly what the admission gate (evaluate()) would
+                      decide right now. This field does NOT state that any
+                      given row is actually enforced: see each row's own
+                      enforced field for that — a row whose own
+                      enforcement_mode is "observe" has its verdict computed
+                      and counted but never acted on, even while this field
+                      is true for the response as a whole.
                   remaining_semantics:
                     type: string
                     enum: [live_admission_gate, computed_but_not_enforced, hypothetical_single_day_equivalent]
@@ -1068,6 +1138,16 @@ paths:
                             never rejects on it — a negative remaining on an
                             observe-mode row does not mean requests are being
                             rejected.
+                        enforced:
+                          type: boolean
+                          description: >-
+                            true only when period=today, the service-wide
+                            kill-switch (quota_enforcement_disabled) is
+                            false, AND this row's own enforcement_mode is
+                            "enforce". A row with enforced: false has its
+                            verdict computed and counted but never acted on,
+                            so a negative remaining on it does not mean
+                            requests are being rejected.
                         used_terminal:
                           type: object
                           description: Terminal (done/failed/canceled) usage over the resolved period, from client_usage_daily.
@@ -1105,7 +1185,7 @@ paths:
                             daily_jobs:
                               type: [integer, "null"]
                           required: [concurrent, daily_bytes, daily_jobs]
-                      required: [client_id, client_name, engine, enforcement_mode, used_terminal, used_in_flight, limits, remaining]
+                      required: [client_id, client_name, engine, enforcement_mode, enforced, used_terminal, used_in_flight, limits, remaining]
                 required: [period, day_from, day_to, quota_enforcement_disabled, remaining_matches_admission_gate, remaining_semantics, remaining_note, usage]
         "400":
           description: Malformed client_id (not a valid UUID).
@@ -1115,6 +1195,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid client_id
+                code: invalid_request
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1125,6 +1206,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "422":
           description: Invalid period filter — not one of today/7d/30d.
           content:
@@ -1133,5 +1215,6 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid period filter
+                code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"

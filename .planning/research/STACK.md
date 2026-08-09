@@ -1,145 +1,351 @@
-# Stack Research
+# Stack Research — v1.13 "Inspect & Operations"
 
-**Domain:** Per-consumer accounting, quotas, and intra-class fairness for an existing Go/asynq/Postgres/Redis async conversion service
-**Researched:** 2026-08-02
-**Confidence:** HIGH (asynq claims verified against vendored v0.26.0 source; httprate claims verified against vendored v0.15.0 source; Prometheus cardinality guidance is MEDIUM — WebSearch-derived, cross-checked against multiple sources, no single canonical Prometheus doc page fetched)
+**Domain:** Synchronous file inspection + async sanitization added to an existing 7-engine Go
+conversion service
+**Researched:** 2026-08-07
+**Confidence:** HIGH for pure-Go/existing-code findings (verified by reading the source);
+MEDIUM for library capabilities verified via Context7/official docs; LOW flagged explicitly where
+only WebSearch was available (mostly SEED-021's `pdf-inspector`, sourced from its own README/blog).
 
-## Recommended Stack
+## Executive Verdict (one line each)
 
-### Core Technologies — additions
+| Workstream | Verdict | Stack element |
+|---|---|---|
+| A. Format/size/macro/encryption/bomb signals | **Already built, zero new dependency** | `internal/convert/sniff.go`, `docsniff.go`, `dimensions.go`, `olecfb.go` — extend, don't replace |
+| A. PDF page count / encryption / embedded files / JS / OpenAction | **Adopt `pdfcpu` v0.14.0 as a Go library (not a binary)** | New *direct* Go dependency, imported into `cmd/api` — the one real addition this milestone needs |
+| A. AV duration/resolution/declared-codec in the sync path | **Write new pure-Go bounded container parsers** (extends `avsniff.go`/`audiosniff.go` family) — no ffprobe in API container | Zero new dependency, real new code |
+| B. SEED-021 `pdf-inspector` | **Confirmed MIT/offline/no-ML; still "spike first, not a phase"** — its 0.1.x version and unmeasured binary size reinforce, not weaken, that conclusion | No stack change this milestone |
+| C. PDF/OOXML sanitize | **`pdfcpu` (already adopted for A) for PDF; Go stdlib `archive/zip`+`encoding/xml` for OOXML; existing `vips copy ...[strip]` for images** | One dependency doing double duty (detect *and* verify); everything else is stdlib/already-present |
+| D. Structured error codes | **No framework, no library — Go 1.13+ error-wrapping idiom the project already partially uses** | Zero new dependency |
+| E. Bounded sync path | **`context.WithTimeout` + the pdfcpu pre-check-before-full-walk pattern + the already-present `go-chi/httprate` for a second rate budget** | Zero new dependency |
+
+---
+
+## A. Synchronous `POST /v1/inspect` — signal-by-signal
+
+The API container today (`Dockerfile.api`) is `debian:bookworm-slim` + `ca-certificates` only,
+`USER nobody`, `CGO_ENABLED=0` static binary, zero subprocess invocations. Every existing engine
+shells out through the hardened `internal/convert/exec.go` `runCommand`; the API process itself
+has never called `runCommand` — it only *validates* (magic bytes, zip central directory,
+declared-dimension bounds) before enqueueing. Inspect must preserve that: it is a new *read path*
+in the API process, not a new subprocess surface.
+
+### Already answerable, pure Go, zero new dependency (verified by reading the code)
+
+| Signal | Source | Confidence |
+|---|---|---|
+| True format (magic bytes) | `internal/convert/sniff.go` `Sniff()` — 9 fixed-offset signatures incl. `%PDF-` | HIGH |
+| OOXML/ODF/epub format + total uncompressed size (bomb signal) | `internal/convert/docsniff.go` `SniffContainer()` — single-pass ZIP central-directory read | HIGH |
+| **OOXML macros (`vbaProject.bin`, ODF `Basic/`)** | `docsniff.go` `SniffContainer().HasMacro` — **already computed today**, just not surfaced to a client-facing report | HIGH |
+| Legacy binary / password-protected OOXML (OLE-CFB) | `internal/convert/olecfb.go` | HIGH |
+| Image declared width/height (decompression-bomb-safe, pre-decode) | `internal/convert/dimensions.go` — png/jpg/webp/heic/tiff | HIGH |
+| Size | `Content-Length` / bytes read | HIGH |
+
+**Cost to surface these in `/v1/inspect`: none.** The detection already runs on the upload path;
+inspect just needs to call the same functions and shape the response — this is the single biggest
+finding of this research and should shrink the estimated Phase-56 scope accordingly.
+
+### Requires a new dependency — the one recommended addition
+
+**PDF page count, encryption status, `/EmbeddedFile` attachments, `/JS` `/JavaScript`
+`/OpenAction` `/AA`, `/URI` `/GoToR` remote references, and a page-box bomb bound — all need a
+real PDF object-graph parse**, not a byte scan. This is the one place in the whole milestone where
+hand-rolling pure-Go code is the *wrong* call, for a reason specific to PDF: modern producers
+routinely put these very keys inside **compressed object streams** (`/ObjStm`) and **cross-reference
+streams** (PDF 1.5+), so a naive `bytes.Contains(b, []byte("/JavaScript"))` scan has a real false-negative
+rate — exactly the "silent bypass" failure mode this project has been careful to avoid elsewhere (OLE-CFB
+fail-closed rigor, saturating-add zip-bomb guard). Writing a correct compressed-xref/object-stream
+PDF parser from scratch is not in the same risk class as the fixed 8-byte PNG/TIFF headers this
+project already hand-rolls in `dimensions.go` — it is a miniature PDF parser, and getting it wrong
+is a security bug, not a cosmetic one.
+
+**Recommendation: `github.com/pdfcpu/pdfcpu` v0.14.0 (released 2026-08-03), Apache-2.0, pure Go,
+zero CGO, zero new container binary.**
+
+| Need | pdfcpu Go API (verified via Context7/pkg.go.dev) | Notes |
+|---|---|---|
+| Page count | `api.PageCount(rs io.ReadSeeker, conf *model.Configuration) (int, error)` | Direct, one call |
+| Encryption status | `model.XRefTable.Encrypt != nil` (low-level) or CLI-equivalent `pdfcpu info` | Confirmed present, exact Go call needs a short spike but the capability is real |
+| Embedded files | `pkg/cli` `ListAttachments`/`ListAttachmentsFile` (`cli.Command`) | Returns attachment list directly |
+| JS / OpenAction / AA / remote-reference detection | **Not a single built-in call** — requires walking the parsed `XRefTable`/Catalog/Names-tree/page-annotation objects that pdfcpu already resolves (including inside object streams) | Real custom code, but on top of a maintained parser instead of a hand-rolled one — this is the trade this recommendation is making |
+| Page-box bomb bound | `MediaBox` is already on the parsed page object pdfcpu exposes | Replaces the worker-only `pdfinfo`-based check for the sync path without adding `pdfinfo` to the API image |
+
+Why this is a *Go dependency* recommendation, not a *container binary* recommendation: pdfcpu is a
+library, imported with `go get`, compiled into the static `api` binary like every other Go module
+this project already has. It adds zero apt packages, zero subprocess surface, and stays inside
+`CGO_ENABLED=0`. It does **not** touch `internal/convert/exec.go` — it simply never uses it, the
+same way the decompression-bomb guards never do.
+
+Cost to state honestly: this is the largest single new Go dependency the project has taken since
+the MCP `go-sdk` (v1.6.1, Phase 21) — a real content-parsing library, not a thin client wrapper
+like `minio-go`/`pgx`/`asynq`. Justify it on the JS/OpenAction/EmbeddedFile need specifically; do
+not use it as an excuse to also reimplement page-count-for-office-docs or anything already covered
+above.
+
+### Genuinely NOT worth a container binary
+
+Do **not** add `poppler-utils`, `qpdf`, `mutool`, `exiftool`, or `ffprobe`/`ffmpeg` to
+`Dockerfile.api`. Every one of them would either (a) duplicate what `pdfcpu`-as-a-library already
+gives for PDF, or (b) be needed only for a signal (AV codec/resolution precision) this research
+recommends reporting as best-effort/approximate rather than buying a whole binary + subprocess
+surface for. Adding any of these to the API image also reopens a question this project has
+deliberately kept closed: *the API process has never run `runCommand`.* Don't open that door for
+a synchronous, request-scoped code path with its own rate budget and no queue to fall back on if a
+subprocess hangs.
+
+### Media duration / resolution / declared codec — the sharp case
+
+**Verified:** today, duration/resolution/codec detection for audio/video exists **only** in
+`internal/convert/av.go`, and **only** via `ffprobe` through `runCommand`
+(`ffprobeAudioCodecArgs`, `probeAudioCodec`, `avProbeTimeout`) — that binary lives in the
+**av-worker** image (built from ffmpeg n8.1.2 source), never in the API container. This is
+exactly the case the question anticipates: **there is no zero-cost pure-Go path to ffprobe-grade
+codec/profile detail**, and adding ffprobe to the API image means either (a) a second from-source
+ffmpeg build stage duplicating the av-worker's, or (b) cross-Dockerfile artifact sharing that this
+project's build system doesn't currently support (each `Dockerfile.*` is self-contained).
+
+**Recommendation: write a new bounded pure-Go container-header parser** (a `probe.go` sibling to
+`avsniff.go`/`audiosniff.go`/`dimensions.go`, same fail-closed discipline: declared value or
+explicit "unknown", never a decode, never unbounded) covering:
+- MP4/MOV: `moov > mvhd` (duration+timescale), `moov > trak > tkhd` (declared width/height),
+  `stsd` sample-entry fourCC (declared codec identifier, e.g. `avc1`/`hvc1`/`mp4a`) — same box-walk
+  discipline `avsniff.go` already uses for `ftyp`.
+- RIFF (AVI/WAV): `avih`/`strh` chunks for AVI duration+resolution, `fmt `/`fact`/`data` chunks for
+  WAV duration/sample-rate/channels — same discipline `audiosniff.go`'s `matchWAV`/`matchAVI`
+  already establishes for the container shape.
+- EBML (MKV/WEBM): extend the existing bounded EBML vint walker (`avsniff.go`) to also read
+  `Segment > Info > Duration` and the video/audio `TrackEntry`'s `CodecID` string — the walker
+  infrastructure (vint length, bounded `avPeekLen`) already exists; this is additive, not new
+  machinery.
+- MP3/OGG: **explicitly best-effort.** MP3 duration without a Xing/VBRI header requires either a
+  full frame count (expensive) or a CBR-bitrate estimate (approximate); OGG duration requires
+  reading the last page's granule position. Report these as `"approximate": true` in the inspect
+  response rather than skip them — this reuses the same "honest partiality" discipline the
+  milestone description already requires for page sampling.
+
+State the boundary explicitly in the requirements that come out of this research: **exact
+codec/profile-level detail (H.264 profile/level, precise AAC sample format, etc.) is out of scope
+for `/v1/inspect` and stays with the async `convert` path**, where the appropriate worker already
+has `ffprobe`. Inspect reports a *declared* codec tag, not an *audited* one — consistent with how
+`dimensions.go` already reports *declared* pixel dimensions, not decoded ones.
+
+---
+
+## B. SEED-021 — `firecrawl/pdf-inspector` re-evaluated
+
+Confirmed against current sources, extending (not repeating) SEED-021's own analysis:
+
+| Fact | Value | Source/confidence |
+|---|---|---|
+| License | MIT | HIGH — GitHub repo header |
+| Language | Rust, `lopdf`-based, no ML | HIGH |
+| Binaries | `detect-pdf` (classify: TextBased/Scanned/ImageBased/Mixed + confidence + per-page routing), `pdf2md` (PDF→Markdown, has `--pages`/`--select-pages` flags suggesting **per-page operation is supported** — resolves one of SEED-021's open "assumptions a harvester must confirm") | MEDIUM — official README via WebFetch |
+| Current version | 0.1.7 on crates.io (8 published versions total) | MEDIUM — crates.io via WebSearch |
+| Runtime network | None — "pure Rust", "no external services" | MEDIUM — project's own claim, not independently verified against a live process trace |
+| Binary size | **Not published anywhere found** — SEED-021's own "10-50ms classification" claim is likewise the project's own README, not measured against real OctoConv inputs | Confirmed still unverified — LOW |
+| Risk-signal detection (macros/JS/encryption/embedded files) | **None.** `detect-pdf` only classifies text-vs-scan content via `Tj`/`TJ`/`Do` operator and font-encoding inspection — it is not a security tool and does not overlap with Section A/C at all | HIGH — scope confirmed via README |
+| Build story for dual-arch static binaries | **No official prebuilt release binaries found for amd64+arm64.** Adoption means a `cargo build --release` (or `cross`) stage in `Dockerfile.ocr-worker`, the same *shape* of cost as the from-source Leptonica/Tesseract/ffmpeg build stages this project has already paid three times (D-01 precedent) — bounded, precedented, but a **new toolchain (Rust) in one Dockerfile**, not free | MEDIUM |
+
+**Verdict: unchanged from SEED-021 — spike first, not a phase.** Two independent reasons now
+reinforce this, beyond SEED-021's own "empirical question, cheap to answer" framing:
+1. **0.1.x is pre-1.0** — no API-stability guarantee; committing a phase around it before a spike
+   risks building against an interface that moves.
+2. **It answers zero questions in Sections A or C.** Do not let its adoption for OCR-routing (a
+   real, separable win per SEED-021 Opportunity 1) get conflated with the PDF risk-detection need
+   this milestone actually has — those are answered by `pdfcpu`, not `pdf-inspector`.
+
+Also worth restating plainly for the roadmap: **`pdfcpu`'s "content" extraction is *not* a
+`pdftotext`/`pdf2md` substitute** — it extracts raw PDF content-stream operators, not decoded
+plain text. If SEED-021 is harvested later, `pdf2md`/`pdftotext` remain the live candidates for
+*text extraction*; `pdfcpu` stays scoped to *structure/security* (page count, encryption,
+attachments, action dictionaries). Don't let one library's adoption for A/C be read as solving B.
+
+---
+
+## C. PDF and Office sanitization
+
+| Tool | Version | License | Offline | Debian bookworm (amd64+arm64) | Can it *verify* its own output? |
+|---|---|---|---|---|---|
+| **pdfcpu** (recommended) | v0.14.0 | Apache-2.0 | Yes | N/A — pure Go, no apt package needed | **Yes, uniquely** — the same library that detects `/JS`/`/OpenAction`/`/EmbeddedFile` for inspect (Section A) can immediately re-walk the *sanitized output* before it's written to S3 and fail closed if any residual risk key remains. No other candidate in this table has that property in-process. |
+| qpdf | 12.3.2 upstream / **11.3.0-1+deb12u1** Debian bookworm | Apache-2.0 (since v7, 2017) | Yes | Yes, standard multi-arch apt package | No built-in "remove JS/OpenAction/EmbeddedFile" flag found (searched issue tracker — users ask for this, e.g. #1312, no shipped answer). Strong at repair/linearize/decrypt/encrypt, weak as a sanitizer per se. |
+| mutool (MuPDF) | 1.27.2 upstream / **1.21.1+ds2-1+b4** Debian bookworm (`mupdf-tools`) | **AGPLv3** or commercial (Artifex) | Yes | Yes, standard multi-arch apt package | `mutool clean` strips document metadata **by default** (only `-m` *preserves* it) and `-s` sanitizes content-stream *graphics* operators — but has **no flag for `/JS`/`/OpenAction`/`/EmbeddedFile` removal** (checked the full flag list). Same structural gap as qpdf. |
+| exiftool | 13.53 | Artistic-1.0-Perl OR GPL-1.0+ | Yes | Needs `perl` added to a container (not in bookworm-slim's minimal set) | Good for EXIF/IPTC/XMP/PDF-Info stripping (`-all=`) but carries a documented RCE history (e.g. CVE-2021-22204, arbitrary code execution via a crafted DjVu thumbnail) — a real concern for a service whose entire threat model is untrusted uploads. Runtime cost: interpreter + hundreds of format-specific Perl modules. |
+| Ghostscript | 10.07.1 | **AGPLv3** or commercial | Yes | Yes, apt | Rewriting through `-sDEVICE=pdfwrite` drops non-visual actions as a *side effect* of re-rendering, not a designed sanitize guarantee, and is lossy (can alter visual output). AGPL raises a licensing question worth flagging to whoever owns legal review — not resolved here, out of scope for engineering. |
+| pikepdf | 10.10.0 / 10.11.0 | MPL-2.0 | Yes | Wheels for linux x86-64 + arm64 | Python wrapper **around qpdf's own C++ engine** — adds a Python runtime for no capability qpdf/pdfcpu don't already give directly. Redundant given the two Go/CLI options above. |
+| Hand-rolled pure-Go PDF editor | — | — | — | — | **Rejected.** This is precisely the complexity class (compressed xref/object streams) the project's existing zero-dependency wins (PNG/TIFF headers, ZIP central directory, RIFF chunks) do *not* resemble — see Section A's reasoning. |
+
+### Recommended sanitize pipeline
+
+- **PDF (macros N/A, JS/OpenAction/AA/EmbeddedFile/external refs):** `pdfcpu` Go API — delete
+  `/OpenAction` from the Catalog, remove the `/Names /JavaScript` tree, strip `/AA` from the
+  Catalog and every page/annotation, remove `/URI` and `/GoToR` actions, call attachments-remove
+  for `/EmbeddedFile`s, then **re-run the exact same detection walk built for Section A against
+  the output** before upload — fail closed if anything remains. Report `role=report` output lists
+  what was found and what was removed (first real consumer of the `role` model per PROJECT.md).
+- **PDF document-info / XMP:** same `pdfcpu` dependency — clear `/Info` dictionary entries and
+  drop the `/Metadata` XMP stream reference from the Catalog. No second tool needed.
+- **OOXML macros:** **Go stdlib `archive/zip` + `encoding/xml` — zero new dependency**, extending
+  the exact pattern `internal/convert/docsniff.go` already uses to *detect*
+  `word|xl|ppt/vbaProject.bin` and ODF `Basic/`-prefixed parts. Sanitize = copy every zip entry
+  except the macro-storage parts, plus removing the corresponding `<Override>` in
+  `[Content_Types].xml` and the relationship entries pointing at them (mirrors
+  `ocrPageMerger`'s discipline of building output via a real encoder, never string
+  concatenation, per PROJECT.md/SEED-021 breadcrumb). **Verification is free**: re-run
+  `SniffContainer(output).HasMacro` — the literal existing function — against the sanitized
+  bytes. This is the cheapest and most rigorous "prove it's gone" story in the whole milestone.
+- **Image EXIF/GPS/IPTC/XMP:** `vips copy inPath outPath[strip]` — a one-argument change to the
+  **already-existing** `LibvipsConverter.Convert` call in `internal/convert/libvips.go`, through
+  the **already-hardened** `runCommand`. Zero new dependency, zero new binary, zero new container.
+  Verification: add a minimal pure-Go **presence-only** marker check (JPEG `APP1`/`Exif`,
+  `APP1`/`http://ns.adobe.com/xap` XMP, Photoshop IRB IPTC segment; PNG `eXIf`/`tEXt`/`iTXt`
+  chunks) in the same family as `dimensions.go` — detecting *presence*, not decoding field values,
+  is exactly the same bounded-header-read complexity class as the code already there, so it's a
+  legitimate zero-dependency addition (unlike the PDF case above).
+
+### Explicit what-NOT-to-adopt for Section C
+
+- **Ghostscript** — AGPL licensing question unresolved, lossy rewrite, not a designed sanitizer.
+- **exiftool** — new interpreted-language runtime + a real historical RCE surface on
+  untrusted-input parsing, for a capability `vips[strip]` and a small pure-Go presence-check
+  already cover for images, and `pdfcpu` covers for PDF `/Info`/XMP.
+- **pikepdf** — new Python runtime for zero capability beyond what `pdfcpu` or direct `qpdf`
+  already provide.
+- **qpdf/mutool as the primary sanitize tool** — both lack a built-in JS/OpenAction/EmbeddedFile
+  strip (verified against their own docs/issue trackers), so adopting either still means writing
+  the same custom object-graph-editing code `pdfcpu` requires, without `pdfcpu`'s advantage of
+  being a Go library that fits `CGO_ENABLED=0` and can double as the Section A detector. Keep
+  `qpdf` in mind only as a fallback if implementation reveals a `pdfcpu` capability gap — not as
+  a parallel primary dependency (running both is explicitly the worst outcome, per SEED-021's own
+  framing of the analogous `pdftotext`-vs-`detect-pdf` question).
+
+---
+
+## D. Structured error codes (short, per the question's instruction)
+
+No framework recommendation — none is warranted. The Go community convention for stable,
+machine-readable API error codes is:
+
+1. A small exported `type Error struct { Code string; Msg string; Err error }` implementing
+   `error` and `Unwrap() error` (stdlib `errors` package, Go 1.13+ wrapping).
+2. Package-level sentinel `var Err<Reason> = &Error{Code: "quota_exceeded", ...}` (or a plain
+   `errors.New` wrapped at the boundary) — checked with `errors.Is`/`errors.As`, exactly as
+   `internal/jobs/repo.go`'s `ErrNotFound` and `internal/api/handlers.go`'s `http.MaxBytesError`
+   handling already do today.
+3. The HTTP (and MCP) boundary layer does one `errors.As` translation to `{status, error_code,
+   message}` — this project's own `quota_exceeded` (v1.12) is already exactly this pattern, just
+   not yet generalized past ad hoc string literals per handler (the `invalid_options`
+   metrics-gap SEED-020 names is a direct symptom of that lack of generalization).
+
+This requires **zero new dependencies.** The relevant prior art worth naming for the roadmap
+(not adopting, just naming as convention validation): `k8s.io/apimachinery`'s `apierrors` package
+and Stripe's Go client both use this exact sentinel-plus-code-field shape without any external
+error-handling library. SEED-020's JobRunner is the right place to centralize the mapping — that
+is a Go-internal refactor, not a stack decision.
+
+---
+
+## E. Bounded synchronous path — stack implications (mechanism only, not policy)
+
+Two concrete stack elements answer "what does the sync path need that it doesn't have," both
+already present in the module graph:
+
+1. **`context.WithTimeout`** (stdlib) — the same `ctx`-first convention every handler already
+   follows. The work ceiling for inspect is a deadline on the request context, propagated into
+   the `pdfcpu` parse calls exactly as `avProbeTimeout` already bounds `ffprobe` in the worker.
+2. **`github.com/go-chi/httprate` v0.15.0 — already a direct dependency** (`go.mod`, already used
+   for existing rate limiting). `/v1/inspect` needs its **own** limiter instance/key, separate from
+   the existing per-client limiter and entirely separate from the v1.12 Postgres admission gate it
+   bypasses by design — this is a second instantiation of a library already in the tree, not a new
+   one.
+
+One additional stdlib primitive worth naming as defense-in-depth (not a substitute for #1/#2):
+`runtime/debug.SetMemoryLimit` (Go 1.19+, stdlib) — a coarse, process-wide soft memory cap. It
+protects the API process as a whole from a single pathological inspect request, but it is
+process-scoped, not request-scoped, so it complements rather than replaces bounding the *input*
+before the expensive parse (the same "bound before you touch it" discipline `enforceMaxPages`/
+`enforcePageBoxBound`/`enforceImagePixelBound` already establish in `ocrguards.go`): read
+`pdfcpu`'s cheap page-count/MediaBox info **before** any full-document object-graph walk, exactly
+mirroring the existing `pdfinfo`-cap-runs-first pattern from `ocrguards.go`.
+
+No new dependency is implied by this section beyond the `pdfcpu` adoption already justified in
+Section A.
+
+---
+
+## Recommended Stack — summary tables
+
+### Core additions
 
 | Technology | Version | Purpose | Why Recommended |
-|------------|---------|---------|-----------------|
-| PostgreSQL (existing) | 18 | Durable per-client counters: concurrency-in-flight cap, daily volume quota | Already the system of record; already in the hot path of every job-creation request (`internal/api/handlers.go`'s "Postgres-first double write"); a quota check that lives in the *same transaction* as the job INSERT gets atomicity for free — no dual-write hazard. Verified: no new infra call needed. |
-| `pg_advisory_xact_lock` (Postgres built-in, existing pattern) | n/a | Serializes the "count in-flight jobs for (client_id, engine) then insert" check-then-act sequence across concurrent API replicas | Already used in this codebase for reconciler-sweeper leader election (`internal/reconciler/reconciler.go`, `advisorylock_test.go`) — reusing a proven idiom rather than introducing a new one. Closes the classic COUNT-then-INSERT race that a bare `SELECT COUNT(*)` under READ COMMITTED does not. |
-| asynq `Queues` priority map (existing dependency, v0.26.0) | — | Coarse, *queue-level* prioritization only — NOT per-tenant fairness | See "asynq capabilities" section below. Verified in vendored source (`server.go:131-160`). Recommended only as an optional future SEED (priority *tiers*, e.g. `image` vs `image-low`), not as this milestone's fairness mechanism. |
-| Prometheus `client_golang` (existing, v1.23.2) | — | `client_id` label on a **new low-cardinality-safe counter**, NOT retrofitted onto the existing histogram | See cardinality section. Existing `octoconv_job_duration_seconds` (Histogram) must NOT gain a `client_id` label — bucket multiplication makes it the wrong metric to extend. Add a separate `Counter` instead. |
+|---|---|---|---|
+| `github.com/pdfcpu/pdfcpu` | v0.14.0 (2026-08-03) | PDF page count, encryption status, embedded-file listing, and (with custom code on top of its parsed object model) JS/OpenAction/AA/remote-reference detection *and* sanitize-and-verify | Only correct-and-cheap way to answer PDF risk signals without either shelling out from the API container or hand-rolling a compressed-object-stream PDF parser; pure Go, Apache-2.0, `CGO_ENABLED=0`-compatible, doubles as the sanitize verifier |
 
-### Supporting Libraries — evaluated, none recommended as new dependencies
+### Supporting code (not libraries — new pure-Go files following existing conventions)
 
-| Library | Version | Purpose | Verdict |
-|---------|---------|---------|---------|
-| `github.com/redis/go-redis/v9` (already a **direct** dependency, v9.14.1) | already present | Could theoretically host quota counters via `INCR`/`EXPIRE` | **Not recommended for durable quotas** — see "Quota counting" section. Already used directly for `job:cancel` pub/sub (`internal/cancel/pubsub.go`) so it costs nothing to *keep using* for what it's already good at, but extending it to quota/accounting state would violate the explicitly documented "Redis is transient" constraint (CLAUDE.md Constraints; PROJECT.md v1.12 context: "Postgres остаётся системой записи — новых хранилищ не заводим"). |
-| `github.com/go-redis/redis_rate/v10` | not installed | Distributed sliding-window rate limiter on Redis | Not needed. This library solves *rate* (requests/sec), not *quota* (durable daily volume / concurrency caps) or *fairness*. The existing `internal/ratelimit` package's doc comment already names this as the documented upgrade path *if* the API is horizontally scaled and RPM limits need to stay in sync across replicas — that is an orthogonal, already-anticipated future need, not something v1.12 must solve. Do not pull it in now; today's `httprate` in-process counter is correct for `replicas: 1` (confirmed in `deploy/chart/octoconv/values.yaml:33`). |
-| `golang.org/x/time/rate` | v0.14.0 (already resolved transitively, in `go.sum`, zero new dependency to add) | In-process token-bucket smoothing | Not needed for quotas/fairness (same single-replica-only limitation as `httprate`'s local counter — doesn't solve cross-replica races). Could be reused later for local burst-smoothing, but out of scope here. |
-| Any dedicated "multi-tenant fair scheduler" library (e.g. generic Go weighted-fair-queuing packages) | — | Per-key fair dequeue ordering | **Investigated and rejected.** No mature, actively maintained Go library implements weighted-fair-queuing *on top of asynq specifically* — asynq's task model (opaque payload, Redis sorted-set-backed queue) does not expose a pluggable dequeue-ordering hook a third-party scheduler could attach to. Building this yourself would mean either forking asynq's processor loop or building an entirely separate admission-side scheduler — see "Fairness" recommendation below for the cheaper alternative that avoids this altogether. |
-
-## Verified: asynq v0.26.0 capabilities (read from vendored source, not assumed)
-
-Checked against `/go/pkg/mod/github.com/hibiken/asynq@v0.26.0` (the exact module version pinned in this repo's `go.mod`).
-
-### 1. Queue-level priority (`Config.Queues`, `Config.StrictPriority`) — `server.go:131-160`
-
-```go
-// List of queues to process with given priority value. Keys are the names of the
-// queues and values are associated priority value.
-//
-// Example:
-//     Queues: map[string]int{
-//         "critical": 6,
-//         "default":  3,
-//         "low":      1,
-//     }
-//
-// With the above config and given that all queues are not empty, the tasks
-// in "critical", "default", "low" should be processed 60%, 30%, 10% of
-// the time respectively.
-Queues map[string]int
-```
-
-**This is priority between *named Redis queues* processed by the same worker process** (weighted round-robin by default; strict cutoff if `StrictPriority: true`). It is **not** per-task, per-client, or per-tenant. OctoConv already uses one queue per *engine class* (`image`, `document`, `av`, …) — this mechanism has no notion of "client" at all. The only way to use it for fairness would be to create additional queues per priority *tier* (e.g. `image` + `image-low`) and statically route clients to a tier — a coarse, few-buckets mechanism, not per-client fairness. **Does not solve** "one client cannot starve the others inside a single engine's queue."
-
-### 2. Task Groups / `GroupAggregator` — `server.go:219-273`, `aggregator.go`, `client.go:212`
-
-```go
-// GroupGracePeriod specifies the amount of time the server will wait for an incoming task before aggregating
-// the tasks into one task... GroupAggregator aggregates a group of tasks into one before the tasks are passed to the Handler.
-```
-
-`asynq.Group(name)` on `Client.Enqueue` puts a task into a named group; `GroupAggregator` is a user function that combines **multiple tasks sharing a group into a single task** delivered to the `Handler` once (batching/debouncing use case — e.g. "collapse 10 near-simultaneous notification tasks for the same user into 1 digest"). **This is task aggregation, not fairness or per-tenant isolation.** Using it here would be actively wrong: it would merge multiple *different clients'* conversion jobs into one `Handler` invocation, breaking the "one job = one task, all detail re-read from Postgres by job_id" invariant this codebase relies on everywhere (`ConvertPayload{JobID}` minimal-payload discipline). **Verdict: does not apply to this problem; do not use it.**
-
-### 3. No per-task priority within a queue
-
-Searched `client.go` and `internal/base/base.go` for any per-`Task` priority/weight option analogous to `Config.Queues`' weighting — none exists. Within a single named queue, asynq's pending set is strictly FIFO by enqueue order (confirmed: no priority score field on individual task messages, only on queues as a whole). **There is no built-in notion of "this client's task should be dequeued before/after that one" inside one queue.**
-
-### Conclusion — what must be built on top
-
-asynq v0.26.0 (as used here, one queue per engine class) provides **zero per-tenant fairness primitives**. To satisfy "one consumer cannot starve an engine class" you cannot lean on asynq's priority/group features — both were checked and both solve a different problem. The two realistic options, cheapest first:
-
-1. **Recommended: admission-side concurrency cap per (client_id, engine).** Before enqueueing, check (inside the same Postgres transaction as the job INSERT, guarded by `pg_advisory_xact_lock(hashtext(client_id::text || engine))`) how many of that client's jobs are currently `queued` or `active` for that engine (`jobs` table already has both columns; add a partial composite index `(client_id, engine) WHERE status IN ('queued','active')`). If the client is at/above a configurable per-client concurrency cap for that engine (e.g. `IMAGE_MAX_CONCURRENT_PER_CLIENT`), reject with `429` + `Retry-After` — same response shape `internal/ratelimit` already uses. This bounds the worst case exactly: if the cap is `K` and KEDA's `maxReplicaCount` for that engine is `M` (`K < M`), a single client can occupy at most `K` of the `M` available worker slots, guaranteeing `M-K` slots stay available to everyone else — a provable, deterministic guarantee, not a heuristic. Zero new dependencies; reuses the existing guarded-transaction and advisory-lock idioms verbatim.
-2. **Optional future SEED, not needed for this milestone:** priority-tier queues (e.g. `image` + `image-low`), using asynq's *actually-supported* `Config.Queues` weighting, with clients statically assigned a tier. Doubles the number of queues and KEDA `ScaledObject`s per engine class (7 classes × 2 = 14) — real operational cost. Flag as a SEED if the concurrency cap alone proves insufficient in practice (e.g. operator wants "gold clients always jump the line", not just "no one is starved").
-
-Do not attempt to build true weighted-fair-queuing (virtual-finish-time scheduling) on top of asynq's Redis lists — it would require intercepting/reordering asynq's own dequeue loop, which is internal and not designed for external hooking. The admission-cap approach sidesteps this entirely by controlling *supply* into the queue rather than *order* within it.
-
-## Quota counting: Postgres vs Redis — recommendation and trade-off
-
-**Recommendation: Postgres, for both counters this milestone needs.**
-
-| Counter | Mechanism | Why Postgres wins here |
+| File (new) | Purpose | Pattern mirrored |
 |---|---|---|
-| Concurrent jobs in flight per (client, engine) | Derived directly from `jobs.status` (no new counter table) via `SELECT count(*) ... WHERE client_id=$1 AND engine=$2 AND status IN ('queued','active')`, serialized by `pg_advisory_xact_lock` in the same transaction as the job INSERT | The value being counted (`jobs.status`) is *already* durably in Postgres — there is nothing to keep in sync with a second store. A Redis counter here would be a second source of truth that can drift from `jobs.status` on any partial failure (worker crash mid-update, reconciler recovery, cancellation) — exactly the dual-write hazard the existing "Postgres-first double write" pattern was designed to avoid (`internal/api/handlers.go:83-109` doc comment). |
-| Daily/period volume quota (job count and/or bytes per client per day) | New small table, e.g. `client_usage_daily(client_id, usage_date, engine, jobs_count, bytes_total)`, atomic `INSERT ... ON CONFLICT (client_id, usage_date, engine) DO UPDATE SET jobs_count = client_usage_daily.jobs_count + 1 RETURNING jobs_count`, checked against the client's quota inside the same transaction as the job INSERT — over-quota rolls the whole transaction back (job never gets created, quota never gets consumed) | Atomicity: "quota consumed if and only if job admitted" falls out for free from one Postgres transaction. A Redis `INCR`+`EXPIRE` equivalent requires either (a) a second round trip with no shared transaction with the Postgres INSERT — a job could get created after the Redis INCR fails, or the reverse — or (b) Lua-scripted atomicity inside Redis alone, which still doesn't couple to the Postgres commit. Given Redis is explicitly documented as a transient broker in this project (CLAUDE.md Constraints, PROJECT.md v1.12 context), reusing it as a durable ledger contradicts an already-locked architectural decision. |
+| `internal/convert/avprobe.go` (name TBD) | Bounded MP4/MOV/RIFF/EBML duration+resolution+declared-codec parse for the sync inspect path | `avsniff.go`'s box/vint walkers, `dimensions.go`'s declared-value discipline |
+| `internal/convert/imgmeta.go` (name TBD) | Presence-only EXIF/XMP/IPTC marker check (pre- and post-sanitize) | `dimensions.go`'s fixed-offset, bounded-peek discipline |
+| OOXML macro-stripping helper alongside `docsniff.go` | Zip-copy-minus-macro-parts + Content_Types/rels edit | `SniffContainer`'s single-pass, stdlib-only `archive/zip` discipline; `ocrPageMerger`'s real-encoder-not-string-concat discipline |
 
-**Trade-off spelled out (durability/consistency vs latency):**
-- Postgres: fully durable (survives Redis flush/restart — note Redis here has *no* persistence guarantee configured; it is treated as ephemeral broker state), transactionally consistent with job admission, adds ~0 extra network hops (already paying a Postgres round trip per job creation) — at the cost of being the *slower* of the two options and adding write load (one extra small UPSERT + one advisory lock) to Postgres per job creation. At this service's internal, non-billing scale (7 engine classes, KEDA-scaled to low replica counts, RPM-gated at the edge already) this write volume is not a concern — it's one more statement in a transaction that already writes the `jobs` row.
-- Redis: lower latency, trivially atomic per-key (`INCR`), horizontally consistent across replicas natively — but no durability guarantee in this deployment, and no natural way to make the counter change atomic *with* the Postgres job-admission decision without reintroducing a dual-write race. Appropriate for *approximate*, best-effort request-rate throttling (what `internal/ratelimit` already does, and could later move to Redis via `httprate.WithLimitCounter` if the API is horizontally scaled — see Alternatives) but wrong for *exact*, durable business quotas that an operator will treat as a hard guarantee ("this client gets 500 conversions/day, not 501").
+### Installation
 
-**Do not build a new Redis-backed quota system for this milestone.** Keep Redis doing exactly what it already does (asynq broker, `job:cancel` pub/sub) and put all new durable counters in Postgres, reusing the transaction that already exists around job creation.
+```bash
+# Core new Go dependency
+go get github.com/pdfcpu/pdfcpu@v0.14.0
 
-## Prometheus cardinality: adding `client_id`
+# No new apt packages in Dockerfile.api
+# No new apt packages needed in any worker for this milestone's committed scope
+```
 
-**Accepted practice (MEDIUM confidence, WebSearch-derived, cross-checked across multiple 2025/2026 sources — see Sources):**
-- Every unique label-value combination is a new stored time series; cost is roughly linear in (label A cardinality) × (label B cardinality) × ... for all labels on one metric.
-- A commonly cited rule of thumb: keep any single label's cardinality comfortably under ~1,000 distinct values; treat 10,000+ as high risk. This service's `clients` table is a small, operator-managed internal-services list (currently a handful of rows, PROJECT.md explicitly frames this as "internal-only" ecosystem) — comfortably inside the safe range today and for the foreseeable future of an internal-services-only client base.
-- **Histograms multiply cost far faster than counters.** `octoconv_job_duration_seconds` is a `HistogramVec` with `prometheus.DefBuckets` (11 default buckets) already labeled `{engine, status}` (7 engines × ~2-3 statuses ≈ ~15-20 combos × ~13 series each [11 buckets + `_sum` + `_count`] ≈ ~250 series today). Adding `client_id` directly to this histogram would multiply that by the client count — the wrong place to add the label even at a "safe" client count, because histogram cost compounds with every other label already present.
-- **Recommendation:** do NOT add `client_id` to `octoconv_job_duration_seconds` (histogram). DO add it to a **new, separate `CounterVec`** purpose-built for accounting (e.g. `octoconv_client_job_outcomes_total{client_id, engine, status}` mirroring the shape of the existing `octoconv_job_outcomes_total` but scoped only to the accounting use case) — counters cost exactly 1 series per label combination, no bucket multiplication. This keeps the existing latency/SLO metrics cheap and keeps the new per-client accounting metric's cost bounded and predictable: (client count) × (engine count) × (status count), which at internal-service scale (dozens of clients at most, 7 engines, 2-3 statuses) is a few hundred series — trivial for a single-node Prometheus instance.
-- Do not add `client_id` to `octoconv_queue_depth`, `octoconv_reconciler_actions_total`, or `octoconv_webhook_deliveries_total` — none of these are naturally scoped to a single client (queue depth spans all clients; reconciler/webhook actions are operational, not per-tenant), and none need it for this milestone's stated goal.
+## Alternatives Considered
 
-**Explicit bound this project should fix in code/docs:** given the client base is internal-services-only and PROJECT.md's own Key Decisions table already calls this "осознанный рост кардинальности... лимит фиксируется явно" (a deliberate cardinality increase with the limit stated explicitly) — recommend hard-coding a sanity ceiling (e.g. reject client creation past N=500 active clients, or alert if `count(distinct client_id)` in the new metric exceeds a threshold) rather than leaving it unbounded. This is a cheap guard, not a new dependency.
-
-**Escape hatch if client count grows unexpectedly beyond the safe range:**
-1. **First, and cheapest:** stop relying on Prometheus for the accounting *ledger* — it already isn't the source of truth here (Postgres is; the accounting metric is a convenience view for dashboards/alerting, not the audit trail). The durable per-client usage data lives in Postgres (`client_usage_daily` / `jobs` table) regardless of what happens to the Prometheus metric; the operator-facing "who and how much" answer (this milestone's explicit requirement) can be served from a Postgres-backed API/dashboard query instead of PromQL if cardinality ever becomes a problem — this removes the pressure to keep scaling the Prometheus label.
-2. If per-client Prometheus visibility is still wanted at higher client counts: drop the raw `client_id` label and replace it with a small number of cohort/tier buckets (e.g. a `tier` label with ≤10 values, set by the operator) — this is the standard "bucket instead of raw ID" mitigation cited across the cardinality guidance above.
-3. If truly high-cardinality per-client metrics become a hard requirement later (unlikely for an internal-services-only product per PROJECT.md's own framing), that is a genuinely different infrastructure decision (e.g. a cardinality-tolerant backend such as Mimir/VictoriaMetrics/Thanos) — explicitly out of scope for this milestone and not recommended pre-emptively; the internal client scale does not justify it today.
+| Recommended | Alternative | When the alternative would actually be better |
+|---|---|---|
+| `pdfcpu` (Go library) | `qpdf` CLI (Apache-2.0, in Debian bookworm) | If a `pdfcpu` Go-API gap is discovered during implementation (e.g. some encryption edge case), `qpdf` is a reasonable *fallback subprocess* in the async sanitize worker (which already runs `runCommand`) — never in the API container, and never running alongside `pdfcpu` for the same signal |
+| Pure-Go container-header parsers for AV | `ffprobe` in the API container | If the product later needs exact codec/profile-level detail in the *synchronous* path (not just approximate declared values) — at that point this becomes a real architecture question (own build stage vs. cross-image artifact sharing), not a quick addition |
+| `pdf-inspector`'s `pdf2md`/`detect-pdf` deferred (spike only) | Committing SEED-021 now | If the spike (cheap, per SEED-021's own framing) shows `detect-pdf`'s per-page classification reliably beats the current `pdftotext`-threshold heuristic on real mixed PDFs, *and* v0.1.x has reached a more stable release by then |
 
 ## What NOT to Use
 
 | Avoid | Why | Use Instead |
-|-------|-----|-------------|
-| asynq `Config.Queues` per-client priority weighting | Verified: queue-level only, not per-task/per-tenant; would require one Redis queue *per client* to actually use it for per-client fairness — does not scale and breaks the "one queue per engine class" design this codebase is built around | Admission-side per-client concurrency cap in Postgres (see above) |
-| asynq `Group`/`GroupAggregator` | Verified: batches multiple tasks into one before the `Handler` runs — the opposite of isolating tenants; would violate the one-job-one-task invariant | Leave tasks as-is; solve fairness at admission, not at dequeue |
-| Redis (`INCR`/`EXPIRE` or a rate-limiting library) as the durable quota ledger | Redis is explicitly a transient broker in this project's constraints; a Redis-only counter can drift from Postgres `jobs.status` on partial failures, recreating the dual-write hazard the existing "Postgres-first double write" pattern was built to avoid | Postgres, inside the existing job-creation transaction |
-| Adding `client_id` to `octoconv_job_duration_seconds` (Histogram) | Histogram cost multiplies by bucket count; adding a label here multiplies an already-labeled `{engine,status}` histogram by client count for no benefit (per-client latency SLOs are not this milestone's goal) | A new, separate `CounterVec` scoped to accounting only |
-| A third-party generic "fair queue"/"weighted round robin" Go library bolted onto asynq | Investigated: no library plugs into asynq's internal dequeue loop; would require forking asynq or building a parallel scheduler — high cost for a problem the admission-cap approach solves more cheaply | Postgres-backed admission-side concurrency cap |
-| `github.com/go-redis/redis_rate` (or similar) right now | Solves a different, currently-unneeded problem (cross-replica RPM rate limiting) — the API runs at `replicas: 1` today (`deploy/chart/octoconv/values.yaml:33`), so the existing in-process `httprate` counter is correct as-is | Keep `httprate`'s local counter; revisit only if/when the API is horizontally scaled (the upgrade path is already documented in `internal/ratelimit/ratelimit.go`'s package doc comment) |
-
-## Stack Patterns by Variant
-
-**If the "cannot starve" requirement is judged to need strict prioritization (not just a starvation-proof cap) later:**
-- Use asynq's real `Config.Queues` weighting with a small number of statically-assigned client tiers (2-3 extra queues per engine class), not per-client queues.
-- Because that is the only per-queue mechanism asynq actually offers verified in source; per-client queues would not scale (7 engines × N clients queues, N KEDA ScaledObjects) and asynq has no per-task priority to fall back on within one queue.
-
-**If client count is expected to grow well past "internal services only" (dozens) toward hundreds+:**
-- Revisit the cardinality ceiling on the new `client_id`-labeled counter before it happens, not after — add the sanity guard mentioned above now, since it's cheap, rather than reactively once a metric collapses.
-- Because Prometheus cardinality problems are cheap to prevent and expensive to firefight in production (per WebSearch guidance across multiple sources).
+|---|---|---|
+| `poppler-utils`, `qpdf`, `mutool`, `ffprobe` in `Dockerfile.api` | API container has never run a subprocess; every one of these signals is answered by `pdfcpu` (Go library) or a bounded pure-Go parser instead | `pdfcpu` import + new pure-Go probe files |
+| `exiftool` | Perl runtime + real RCE CVE history on untrusted-format parsing (CVE-2021-22204) for a capability already covered by `vips[strip]` (images) and `pdfcpu` (PDF Info/XMP) | `vips copy ...[strip]`, `pdfcpu`-based Info/XMP clearing |
+| `pikepdf` | Python runtime wrapping the same `qpdf` engine already available directly; no unique capability | `pdfcpu` or direct `qpdf` |
+| Ghostscript | AGPL licensing question, lossy rewrite, not a designed sanitizer | `pdfcpu` |
+| Byte-scanning a PDF for `/JS`/`/OpenAction` without an object-graph parse | False-negative risk against compressed object streams — a silent security bypass, not a cosmetic gap | `pdfcpu`'s parsed `XRefTable` |
+| `golang.org/x/image` or any general image-metadata library for the EXIF presence check | Same zero-dependency bias that already rejected `x/image` for decompression-bomb guards (PROJECT.md Key Decisions) — presence-only detection is the same complexity class as the existing hand-rolled dimension parsers | New pure-Go presence-only marker scan, `dimensions.go`-style |
+| Committing SEED-021 (`pdf-inspector`) as a phase this milestone | 0.1.x pre-1.0 crate, unmeasured binary size, and zero overlap with this milestone's actual risk-signal need | Leave dormant; spike separately per SEED-021's own conclusion |
 
 ## Version Compatibility
 
-| Package | Version (pinned in `go.mod`) | Notes |
-|---------|-------------------------------|-------|
-| `github.com/hibiken/asynq` | v0.26.0 | Claims above verified against this exact vendored version's source in `$GOMODCACHE`. `Config.Queues`, `StrictPriority`, `Group`/`GroupAggregator` all confirmed present and behave as described; no per-task priority field found anywhere in `client.go` or `internal/base/base.go`. |
-| `github.com/go-chi/httprate` | v0.15.0 | `LimitCounter` interface and `WithLimitCounter` option confirmed present in vendored source (`limiter.go`, `httprate.go`) — the Redis-upgrade escape hatch documented in `internal/ratelimit/ratelimit.go`'s package comment is real and already wired for a future swap, not aspirational. |
-| `github.com/redis/go-redis/v9` | v9.14.1 | Already a **direct** dependency (not just via asynq) — used today for `job:cancel` pub/sub (`internal/cancel/pubsub.go`). No version bump needed for anything recommended here, since nothing new is proposed for Redis. |
-| `github.com/prometheus/client_golang` | v1.23.2 | No version change needed — `CounterVec`/`HistogramVec` APIs used here are unchanged; only a new metric is added, following the exact pattern already in `internal/metrics/metrics.go`. |
-| PostgreSQL | 18 (existing) | No version change needed. `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING` and `pg_advisory_xact_lock` are both long-standing, stable Postgres features already used elsewhere in this codebase or well within reach of pgx v5.10.0. |
+| Package | Compatible With | Notes |
+|---|---|---|
+| `pdfcpu` v0.14.0 | Go 1.26.4 (project's pinned toolchain) | Pure Go, no CGO — no toolchain interaction risk beyond normal `go.sum` pinning |
+| `pdfcpu` v0.14.0 | `CGO_ENABLED=0` static build (`Dockerfile.api`) | Confirmed compatible — pure Go module, same class as every other existing dependency |
 
 ## Sources
 
-- `asynq@v0.26.0` vendored source, read directly: `server.go` (Config.Queues/StrictPriority/GroupGracePeriod/GroupAggregator doc comments and struct fields), `client.go` (Group option, no per-task priority found), `aggregator.go`, `inspector.go` (Groups/GroupInfo) — HIGH confidence, primary source.
-- `httprate@v0.15.0` vendored source, read directly: `limiter.go`, `local_counter.go`, `httprate.go` — HIGH confidence, primary source.
-- This repository: `internal/metrics/metrics.go`, `internal/queue/queue.go`, `internal/ratelimit/ratelimit.go`, `internal/db/migrations/0001_init.sql`, `internal/reconciler/reconciler.go` (advisory lock precedent), `deploy/chart/octoconv/values.yaml` (API replica count), `.planning/PROJECT.md` (Current Milestone, Constraints, Key Decisions) — HIGH confidence, read directly.
-- WebSearch: "Prometheus label cardinality best practice tenant_id per-user label" — MEDIUM confidence (aggregated blog-post guidance, not a single official Prometheus doc page; numbers cross-checked across multiple independent sources returned in the same search and consistent with each other): [The Prometheus Cardinality Bomb](https://openobserve.ai/blog/prometheus-data-cardinality/), [Prometheus Label Best Practices](https://oneuptime.com/blog/post/2026-01-30-prometheus-label-best-practices/view), [Prometheus Labels: Understanding and Best Practices](https://middleware.io/blog/prometheus-labels/), [What are the Limitations of Prometheus Labels?](https://signoz.io/guides/what-are-the-limitations-of-prometheus-labels/), [How to Manage Metric Cardinality in Prometheus](https://oneuptime.com/blog/post/2026-01-25-prometheus-metric-cardinality/view).
+- `internal/convert/sniff.go`, `docsniff.go`, `dimensions.go`, `olecfb.go`, `ocrguards.go`,
+  `av.go`, `avsniff.go`, `audiosniff.go`, `libvips.go`, `exec.go` — read directly, HIGH confidence
+- `Dockerfile.api`, `Dockerfile.ocr-worker` — read directly, HIGH confidence
+- Context7 `/websites/pdfcpu_io`, `/websites/pkg_go_dev_github_com_pdfcpu_pdfcpu` — command set,
+  `api.PageCount`, `cli.ListAttachments`, `Info` signature — MEDIUM/HIGH
+- [pdfcpu GitHub releases](https://github.com/pdfcpu/pdfcpu/releases) / pkg.go.dev versions page —
+  v0.14.0, 2026-08-03 — MEDIUM
+- [pdfcpu issue #653](https://github.com/pdfcpu/pdfcpu/issues/653) — confirms JS-removal is an
+  open, unresolved feature request, not shipped — MEDIUM
+- [qpdf GitHub](https://github.com/qpdf/qpdf), [qpdf license docs](https://qpdf.readthedocs.io/en/stable/license.html) — 12.3.2 upstream, Apache-2.0 since v7 — MEDIUM/HIGH
+- [Debian bookworm qpdf package](https://packages.debian.org/bookworm/qpdf) — 11.3.0-1+deb12u1, multi-arch — MEDIUM
+- [MuPDF license docs](https://mupdf.readthedocs.io/en/1.27.2/license.html), [mutool clean docs](https://mupdf.readthedocs.io/en/latest/tools/mutool-clean.html) — 1.27.2 upstream AGPLv3, full flag list checked — MEDIUM/HIGH
+- Debian bookworm `mupdf-tools` (1.21.1+ds2-1+b4), `poppler-utils` (22.12.0-2+deb12u1) — MEDIUM
+- [ExifTool version/license](https://en.wikipedia.org/wiki/ExifTool) — 13.53, Artistic-1.0-Perl OR GPL-1.0+ — MEDIUM
+- [Ghostscript releases/licensing](https://ghostscript.com/licensing/) — 10.07.1, AGPLv3/commercial — MEDIUM
+- [pikepdf GitHub/PyPI](https://github.com/pikepdf/pikepdf) — 10.10.0/10.11.0, MPL-2.0 — MEDIUM
+- [firecrawl/pdf-inspector GitHub](https://github.com/firecrawl/pdf-inspector), crates.io — MIT, 0.1.7, no explicit dual-arch prebuilt binaries found — LOW/MEDIUM (project's own claims for network/size/timing, not independently measured)
+- `.planning/seeds/SEED-021.md`, `.planning/seeds/SEED-013.md`, `.planning/PROJECT.md` — read directly, HIGH confidence
 
 ---
-*Stack research for: Consumer Accounting & Fairness (v1.12) in OctoConv*
-*Researched: 2026-08-02*
+*Stack research for: OctoConv v1.13 Inspect & Operations*
+*Researched: 2026-08-07*

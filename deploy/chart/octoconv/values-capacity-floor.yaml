@@ -1,0 +1,58 @@
+# Capacity-floor overlay — EXAMPLE ONLY, this is NOT a production values
+# file to be applied unreviewed. Demonstrates SEED-011/CAPA-01's
+# operator-settable per-class minReplicaCount by pinning exactly ONE class
+# (image) to a warm floor of 2. Applying this file to a real cluster
+# permanently pins 2 `worker` pods, at permanent infrastructure cost --
+# deciding whether that trade-off is worth it is an operational judgment
+# based on observed traffic, deliberately out of scope for this phase
+# (54-CONTEXT.md <deferred> — "Guidance on when to raise a floor").
+#
+# LAYERING DELIBERATELY DIVERGES from its overlay siblings
+# (values-loadproof.yaml, values-e2e.yaml): those layer ON TOP OF
+# values-local.yaml to configure a live local cluster for a gate. This
+# file layers directly on the chart's own values.yaml defaults instead,
+# because its whole point is to be the ONLY delta from the shipped
+# defaults — so a diff between the default render and this overlay's
+# render (as done by the `helm` job in .github/workflows/ci.yml, SC2)
+# attributes every changed rendered line to this one key, not to
+# values-local.yaml's other overrides (D-04).
+#
+# Exact invocation (matches the `helm` job in .github/workflows/ci.yml):
+#
+#   helm template octoconv deploy/chart/octoconv \
+#     -f deploy/chart/octoconv/values-capacity-floor.yaml \
+#     --set keda.enabled=true --set prometheus.enabled=true
+#
+# BOTH --set flags are MANDATORY, not optional convenience: every
+# ScaledObject template (templates/scaledobject-*.yaml) is gated on
+# `{{- if and .Values.keda.enabled .Values.prometheus.enabled }}` — the
+# chart's co-dependency guard, which exists so a ScaledObject's
+# Prometheus trigger never dangles against a Service that was never
+# created. Omitting either flag renders ZERO ScaledObjects, and every
+# downstream isolation/diff assertion would then pass vacuously.
+#
+# Why `image` and why `2` (SEED-011/D-04, D-05):
+#   - `image` is the hottest class in this chart (keda.image.threshold:
+#     "5", pollingInterval: 5, cooldownPeriod: 60 in values.yaml) — the
+#     class whose cold-start latency this feature most plausibly targets,
+#     so it is the natural demonstration for a warm floor.
+#   - keda.image.maxReplicaCount: 4 leaves real headroom above a floor of
+#     2, so this is a valid configuration rather than a floor pinned
+#     against its own ceiling (see D-02's fail-fast guard on
+#     minReplicaCount > maxReplicaCount).
+#   - 2 rather than 1 is deliberate: at 1, the D-05 fallback expression
+#     `max(1, minReplicaCount)` still yields `fallback.replicas: 1`, so
+#     the floor's effect on the fallback path would be invisible in a
+#     rendered-output diff. At 2 the rendered image ScaledObject changes
+#     on BOTH the `minReplicaCount` line AND the `fallback.replicas`
+#     line, which is what lets the CI diff prove D-05 as well as D-01.
+#
+# Do not add any other key here — this file's isolation IS the point
+# (D-04). Do not modify values-local.yaml, values-e2e.yaml or
+# values-loadproof.yaml to add this override; they exist to prove other
+# things (a live local cluster, E2E, scale-FROM-zero) and a non-zero
+# floor would silently invalidate the one values-loadproof.yaml exists to
+# prove.
+keda:
+  image:
+    minReplicaCount: 2

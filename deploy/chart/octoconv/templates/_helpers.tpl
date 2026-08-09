@@ -82,3 +82,92 @@ scrape_configs:
       - targets:
           - api.{{ .Values.global.namespace }}.svc.cluster.local:9090
 {{- end }}
+
+{{/*
+Per-class KEDA replica floor (SEED-011/CAPA-01, D-01/D-02/D-03). Callers
+pass a dict with `class` (the keda.<class> key, e.g. "image") and `root`
+(the root context $), e.g.:
+  {{- include "octoconv.kedaMinReplicaCount" (dict "class" "image" "root" $) }}
+Resolves the per-class config with `index .root.Values.keda .class` and
+emits the raw integer .Values.keda.<class>.minReplicaCount, with NO
+surrounding whitespace (callers place it inline after `minReplicaCount: `)
+and deliberately NO conditional wrapper (D-01): minReplicaCount is a
+required scalar on every ScaledObject whose default is the falsy 0, so
+wrapping it in an `if` would reintroduce exactly the HARD-03/D-06 falsy-0
+trap that scaleDownStabilizationSeconds needed a hasKey+ne-nil guard to
+escape (see scaledobject-av.yaml's FALSY-0 GUARD comment) -- removing the
+conditional removes the trap instead of repeating the guard.
+Fails fast via `fail` (D-02) rather than rendering an unsafe manifest: a
+value that is not a whole number, a negative value, or one exceeding that
+class's own maxReplicaCount aborts the render naming the class and the
+offending value(s) -- SC3's verification surface is the render itself, not
+a live KEDA admission webhook that would only fire at `helm install` time.
+
+WHAT "ABORTS" MEANS HERE, precisely (WR-01): `fail` aborts `helm template`,
+`helm install` and `helm upgrade` with a non-zero exit. It does NOT abort
+`helm lint` -- helm v4.2.3 downgrades a template `fail` to an INFO log line
+(`level=INFO msg="funcMap fail"`) and still reports `0 chart(s) failed`,
+exit 0. So `helm lint` is deliberately NOT part of this guard's verification
+surface, and the CI job's D-02 negative cases use `helm template` only.
+
+WHY THE RAW KIND IS VALIDATED BEFORE ANY `int` COERCION (CR-01): sprig's
+`int` is cast.ToInt, which discards its parse error and returns 0. Helm's
+`--set` strvals parser only produces a Go int64 for a bare base-10 integer;
+`2.0`, `2.9`, `99.9`, `-0.5`, `abc`, `" 3"` and an empty value all arrive as
+a string, and `true`/`false` as a bool. Coercing first therefore made BOTH
+guards below unreachable for every one of those inputs and handed the
+operator a silent floor of 0 -- i.e. no warm floor at all, with the render
+exiting 0 -- which is precisely the silent-bug class this phase exists to
+close. Checking `kindOf` on the RAW value first is what keeps the two guards
+reachable. maxReplicaCount is validated the same way so an absent or null
+ceiling (kind "invalid") is reported as its own misconfiguration rather than
+being coerced to 0 and blamed on minReplicaCount.
+*/}}
+{{- define "octoconv.kedaMinReplicaCount" -}}
+{{- $cfg := index .root.Values.keda .class -}}
+{{- $rawMin := $cfg.minReplicaCount -}}
+{{- $rawMax := $cfg.maxReplicaCount -}}
+{{/* A values.yaml/-f number arrives as float64 (helm parses YAML via JSON), a
+     bare `--set` integer as int64; anything else is NOT a usable integer. A
+     float64 additionally has to be integral -- 2.9 must not become 2. */}}
+{{- $minIsWhole := or (kindIs "int" $rawMin) (kindIs "int64" $rawMin) -}}
+{{- if kindIs "float64" $rawMin -}}
+{{- $minIsWhole = eq $rawMin (floor $rawMin) -}}
+{{- end -}}
+{{- if not $minIsWhole -}}
+{{- fail (printf "keda.%s.%s must be a whole number, got %#v (kind %s) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor" .class "minReplicaCount" $rawMin (kindOf $rawMin)) -}}
+{{- end -}}
+{{- $maxIsWhole := or (kindIs "int" $rawMax) (kindIs "int64" $rawMax) -}}
+{{- if kindIs "float64" $rawMax -}}
+{{- $maxIsWhole = eq $rawMax (floor $rawMax) -}}
+{{- end -}}
+{{- if not $maxIsWhole -}}
+{{- fail (printf "keda.%s.%s must be a whole number, got %#v (kind %s) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor" .class "maxReplicaCount" $rawMax (kindOf $rawMax)) -}}
+{{- end -}}
+{{- $min := int $rawMin -}}
+{{- $max := int $rawMax -}}
+{{- if lt $min 0 -}}
+{{- fail (printf "keda.%s.minReplicaCount (%d) must not be negative" .class $min) -}}
+{{- end -}}
+{{- if gt $min $max -}}
+{{- fail (printf "keda.%s.minReplicaCount (%d) must not exceed keda.%s.maxReplicaCount (%d)" .class $min .class $max) -}}
+{{- end -}}
+{{- $min -}}
+{{- end }}
+
+{{/*
+Per-class KEDA fallback floor (SEED-011/CAPA-01, D-05). Same call
+convention as octoconv.kedaMinReplicaCount:
+  {{- include "octoconv.kedaFallbackReplicas" (dict "class" "image" "root" $) }}
+Emits max(1, minReplicaCount) so a sustained Prometheus scaler outage
+cannot silently undo an operator-configured floor -- at the shipped
+default (a zero floor) this still emits 1, matching today's hardcoded
+fallback replica count byte-for-byte (SC1). Deliberately computed
+via an `include` of octoconv.kedaMinReplicaCount rather than re-reading
+.Values directly: this is what makes D-02's validation fire from the
+fallback.replicas call site too, so the guard cannot be bypassed by
+reaching this path alone (T-54-02).
+*/}}
+{{- define "octoconv.kedaFallbackReplicas" -}}
+{{- max 1 (int (include "octoconv.kedaMinReplicaCount" .)) -}}
+{{- end }}

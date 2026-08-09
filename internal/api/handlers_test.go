@@ -21,6 +21,7 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
 )
@@ -167,6 +168,21 @@ type fakeStorage struct {
 	uploaded    bool
 	contentType string
 	presigned   string
+	// presignByKey (57-06, D-18) lets PresignGet return a DIFFERENT url per
+	// object key, so a test can tell two outputs' presigned URLs apart --
+	// something a single shared presigned field cannot do. Looked up first;
+	// when the passed key has no entry, PresignGet falls back to the
+	// pre-existing presigned field unchanged, so every test written before
+	// this field existed keeps working without modification.
+	presignByKey map[string]string
+	// presignCalls/presignTTLs (57-06, D-12/T-57-27) count PresignGet
+	// invocations and record the ttl argument of each, in call order --
+	// used to prove presigning happens exactly once per output, only for a
+	// terminal (done) job, and always with the server's configured
+	// presignTTL, mirroring uploadCalls' existing "assert with an exact
+	// integer" idiom below.
+	presignCalls int
+	presignTTLs  []time.Duration
 	// uploadedBytes captures the full stream s.storage.Upload received, so
 	// tests can assert byte-for-byte integrity (T-31-02: the SniffAudio
 	// truncation trap must never drop the leading bytes of an audio upload).
@@ -185,7 +201,12 @@ func (f *fakeStorage) Upload(_ context.Context, _ string, r io.Reader, _ int64, 
 	f.contentType = contentType
 	return nil
 }
-func (f *fakeStorage) PresignGet(_ context.Context, _ string, _ time.Duration) (string, error) {
+func (f *fakeStorage) PresignGet(_ context.Context, key string, ttl time.Duration) (string, error) {
+	f.presignCalls++
+	f.presignTTLs = append(f.presignTTLs, ttl)
+	if url, ok := f.presignByKey[key]; ok {
+		return url, nil
+	}
 	return f.presigned, nil
 }
 
@@ -678,6 +699,31 @@ func multipartBodyWithOpts(t *testing.T, filename, target string, data []byte, o
 	return &b, w.FormDataContentType()
 }
 
+// multipartBodyWithOperation is multipartBody plus an optional "operation"
+// form field, written only when non-empty -- lets 57-04's operation-field
+// tests send an explicit value (or omit it entirely by passing "") without a
+// new bespoke multipart builder per test.
+func multipartBodyWithOperation(t *testing.T, filename, target, operation string, data []byte) (*bytes.Buffer, string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	if filename != "" {
+		fw, err := w.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = fw.Write(data)
+	}
+	if target != "" {
+		_ = w.WriteField("target", target)
+	}
+	if operation != "" {
+		_ = w.WriteField("operation", operation)
+	}
+	_ = w.Close()
+	return &b, w.FormDataContentType()
+}
+
 // multipartBodyWithCallback is multipartBody plus optional "callback_url" and
 // "progress_webhook" form fields, each written only when non-empty -- used
 // by the progress_webhook opt-in parse tests (PUSH-02/D-03).
@@ -785,6 +831,157 @@ func TestCreateJob_OK(t *testing.T) {
 	}
 }
 
+// TestCreateJob_OperationAbsentDefaultsToConvert pins D-04: omitting the
+// operation field entirely must record jobs.operation = "convert", the same
+// value an explicit operation=convert produces (proven by the next test).
+func TestCreateJob_OperationAbsentDefaultsToConvert(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.Operation != "convert" {
+		t.Errorf("repo.created.Operation = %+v, want \"convert\"", repo.created)
+	}
+}
+
+// TestCreateJob_OperationExplicitConvertIdenticalToAbsent pins D-04's core
+// claim: below the normalization point, "field absent" and "field=convert"
+// are indistinguishable. Proven two ways -- same recorded Operation, AND a
+// byte-identical response body for a fixed createdID.
+func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
+	fixedID := uuid.MustParse("00000000-0000-0000-0000-0000000000aa")
+
+	runOnce := func(operation string) (int, []byte, string) {
+		repo := &fakeRepo{createdID: fixedID}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+
+		body, ct := multipartBodyWithOperation(t, "in.png", "webp", operation, pngBytesFixture())
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if repo.created == nil || repo.created.Operation != "convert" {
+			t.Fatalf("operation=%q: repo.created.Operation = %+v, want \"convert\"", operation, repo.created)
+		}
+		return rec.Code, rec.Body.Bytes(), operation
+	}
+
+	absentCode, absentBody, _ := runOnce("")
+	explicitCode, explicitBody, _ := runOnce("convert")
+
+	if absentCode != http.StatusAccepted || explicitCode != http.StatusAccepted {
+		t.Fatalf("status codes = %d, %d, want both 202", absentCode, explicitCode)
+	}
+	if !bytes.Equal(absentBody, explicitBody) {
+		t.Errorf("response bodies differ:\nabsent:   %s\nexplicit: %s", absentBody, explicitBody)
+	}
+}
+
+// TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate is the direct
+// proof of SC3/T-57-13/T-57-14: an operation with no registered triple at
+// all -- sanitize (registered under no engine yet) and bogus (never
+// registered under any build) -- must be rejected 422 unsupported_operation
+// strictly before s.storage.Upload and s.repo.Create, and the queue must
+// stay untouched.
+func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
+	for _, operation := range []string{"sanitize", "bogus"} {
+		t.Run(operation, func(t *testing.T) {
+			repo := &fakeRepo{}
+			store := &fakeStorage{}
+			q := &fakeQueue{}
+			srv, _ := newTestServer(repo, store, q)
+
+			body, ct := multipartBodyWithOperation(t, "in.png", "webp", operation, pngBytesFixture())
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+			}
+			assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedOperation)
+			if store.uploadCalls != 0 {
+				t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+			}
+			if repo.created != nil {
+				t.Errorf("repo.created = %+v, want nil", repo.created)
+			}
+			if repo.preAdmitCalls != 0 {
+				t.Errorf("repo.PreAdmit called %d times, want 0", repo.preAdmitCalls)
+			}
+			if q.enqueueCalls != 0 {
+				t.Errorf("queue enqueue called %d times, want 0", q.enqueueCalls)
+			}
+		})
+	}
+}
+
+// TestCreateJob_KnownOperationUnsupportedPairRejected proves the split
+// between the two 422 codes didn't break the pre-existing pair-rejection
+// path: a KNOWN operation (convert) with an unregistered pair still gets
+// unsupported_conversion, not unsupported_operation.
+func TestCreateJob_KnownOperationUnsupportedPairRejected(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "mp3", "convert", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+	if repo.created != nil {
+		t.Errorf("repo.created = %+v, want nil", repo.created)
+	}
+}
+
+// TestCreateJob_OperationIsCaseSensitive pins T-57-15: no normalization
+// beyond the D-04 empty-string default. "Convert" is a different string
+// from "convert" and must be rejected as an unknown operation, not silently
+// accepted.
+func TestCreateJob_OperationIsCaseSensitive(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "Convert", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedOperation)
+}
+
 // TestCreateJob_QuotaConcurrency_429BeforeUpload pins the SEQUENTIAL property
 // of the pre-upload quota gate (QUOT-02, T-52-21): a client that already
 // knows it is over quota gets its 429 without an upload. It does NOT and
@@ -875,6 +1072,42 @@ func TestCreateJob_QuotaDailyBytes_RetryAfterUntilMidnight(t *testing.T) {
 	}
 }
 
+// TestCreateJob_QuotaDailyBytes_RetryAfterStraddlesMidnight is the
+// end-to-end regression case
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md asked
+// for: a *jobs.DailyQuotaError whose EvaluatedAt is seconds before UTC
+// midnight must produce a small Retry-After, even though the test process's
+// own wall clock is nowhere near midnight. TestSecondsUntilUTCMidnight
+// cannot reach this case -- it only varies the input to a pure function, not
+// the DB-vs-API timing gap that caused the bug.
+func TestCreateJob_QuotaDailyBytes_RetryAfterStraddlesMidnight(t *testing.T) {
+	evaluatedAt := time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)
+	repo := &fakeRepo{preAdmitErr: &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: evaluatedAt}}
+	store := &fakeStorage{}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "in.png", "webp", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429; body=%s", rec.Code, rec.Body.String())
+	}
+	retryAfter, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After not an integer: %q", rec.Header().Get("Retry-After"))
+	}
+	if retryAfter >= 60 {
+		t.Errorf("Retry-After = %d, want < 60 (derived from EvaluatedAt=%v, one second before UTC midnight) -- a value near 86400 means Retry-After regressed to using the process wall clock instead of the DB-evaluated instant", retryAfter, evaluatedAt)
+	}
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+}
+
 // TestCreateJob_QuotaFromCreate_429AfterUpload exercises the accepted
 // post-upload race path (T-52-21): PreAdmit passed, but Create's
 // authoritative admitLocked check lost the race. The upload already
@@ -938,10 +1171,13 @@ func TestCreateJob_PreAdmitInfraErrorDoesNotBlock(t *testing.T) {
 	}
 }
 
-// TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField pins D-10's "every other
-// error body left byte-for-byte unchanged": neither a pre-existing 422 nor a
-// pre-existing 413 gains a code field.
-func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
+// TestCreateJob_NonQuotaErrorBodiesCarryClosedVocabularyCode supersedes the
+// pre-56-03 D-10 boundary ("every other error body left byte-for-byte
+// unchanged, no code field"): SEED-020/ERRC-01 widens writeError so every
+// 4xx/422/413 now ALSO carries a code from the closed internal/errcode
+// vocabulary, assigned by failure class (D-02), while the error message text
+// itself stays byte-for-byte unchanged.
+func TestCreateJob_NonQuotaErrorBodiesCarryClosedVocabularyCode(t *testing.T) {
 	t.Run("422 unsupported pair", func(t *testing.T) {
 		repo := &fakeRepo{}
 		store := &fakeStorage{}
@@ -957,7 +1193,7 @@ func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 		}
-		assertNoCodeField(t, rec.Body.Bytes())
+		assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
 	})
 
 	t.Run("413 engine size limit", func(t *testing.T) {
@@ -979,27 +1215,27 @@ func TestCreateJob_NonQuotaErrorBodiesHaveNoCodeField(t *testing.T) {
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
 		}
-		assertNoCodeField(t, rec.Body.Bytes())
+		assertErrorCode(t, rec.Body.Bytes(), errcode.PayloadTooLarge)
 	})
 }
 
-// assertNoCodeField decodes body and asserts it has exactly one key, error,
-// and no code key -- the D-10 shape every non-quota, non-rate-limit error
-// response must keep.
-func assertNoCodeField(t *testing.T, body []byte) {
+// assertErrorCode decodes body and asserts it has exactly the two flat keys
+// D-01 mandates (error, code), that error is non-empty, and that code
+// equals wantCode exactly.
+func assertErrorCode(t *testing.T, body []byte, wantCode string) {
 	t.Helper()
 	var resp map[string]any
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if len(resp) != 1 {
-		t.Errorf("body has %d keys, want exactly 1 (error); body=%s", len(resp), body)
+	if len(resp) != 2 {
+		t.Errorf("body has %d keys, want exactly 2 (error, code); body=%s", len(resp), body)
 	}
-	if _, ok := resp["error"]; !ok {
-		t.Errorf("body missing error key; body=%s", body)
+	if errMsg, ok := resp["error"]; !ok || errMsg == "" {
+		t.Errorf("body missing non-empty error key; body=%s", body)
 	}
-	if _, ok := resp["code"]; ok {
-		t.Errorf("body must not have a code key; body=%s", body)
+	if code, ok := resp["code"]; !ok || code != wantCode {
+		t.Errorf("code = %v, want %q; body=%s", code, wantCode, body)
 	}
 }
 
@@ -1028,6 +1264,74 @@ func TestSecondsUntilUTCMidnight(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestQuotaRejection_RetryAfterUsesDBEvaluationInstantNotProcessClock is a
+// pure unit test on quotaRejection (no HTTP, no DB), pinning the fix for
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+// daily rejection's Retry-After must derive from a wrapped
+// *jobs.DailyQuotaError's EvaluatedAt, never from the process's own wall
+// clock at response-write time.
+func TestQuotaRejection_RetryAfterUsesDBEvaluationInstantNotProcessClock(t *testing.T) {
+	t.Run("daily bytes, EvaluatedAt one second before midnight", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 1 {
+			t.Errorf("Retry-After = %d, want exactly 1", retryAfter)
+		}
+	})
+
+	t.Run("daily jobs, EvaluatedAt one second before midnight", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyJobsLimit, EvaluatedAt: time.Date(2026, 8, 3, 23, 59, 59, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 1 {
+			t.Errorf("Retry-After = %d, want exactly 1", retryAfter)
+		}
+	})
+
+	t.Run("daily bytes, EvaluatedAt at midday", func(t *testing.T) {
+		err := &jobs.DailyQuotaError{Err: jobs.ErrDailyBytesLimit, EvaluatedAt: time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)}
+		_, retryAfter, ok := quotaRejection(err)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != 43200 {
+			t.Errorf("Retry-After = %d, want exactly 43200", retryAfter)
+		}
+	})
+
+	t.Run("bare sentinel fallback (no wrapper) still returns a valid Retry-After", func(t *testing.T) {
+		_, retryAfter, ok := quotaRejection(jobs.ErrDailyBytesLimit)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter < 1 {
+			t.Errorf("Retry-After = %d, want >= 1 -- a bare sentinel must never regress to a zero/missing header", retryAfter)
+		}
+	})
+
+	t.Run("concurrency rejection returns the fixed constant, unaffected by DailyQuotaError handling", func(t *testing.T) {
+		_, retryAfter, ok := quotaRejection(jobs.ErrConcurrencyLimit)
+		if !ok {
+			t.Fatal("ok = false, want true")
+		}
+		if retryAfter != quotaConcurrencyRetryAfterSeconds {
+			t.Errorf("Retry-After = %d, want %d", retryAfter, quotaConcurrencyRetryAfterSeconds)
+		}
+	})
+
+	t.Run("non-quota error returns ok=false", func(t *testing.T) {
+		_, _, ok := quotaRejection(errors.New("boom"))
+		if ok {
+			t.Error("ok = true, want false for a non-quota error")
+		}
+	})
 }
 
 // TestCreateJob_ContentMismatch verifies D-01/D-04/D-05: a filename claiming
@@ -1639,8 +1943,14 @@ func TestGetJob_DonePresigned(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{
-		getJob:  &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
-		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp"}},
+		getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+		// Role: "primary" (57-06): this fixture predates jobs.Output.Role
+		// (added by plan 57-03); handleGetJob now selects download_url by
+		// role, not by outs[0], so this pre-existing test needs the same
+		// fixture fix as the golden-pinning suite's exception #2 to keep
+		// testing what it claims (that a done job's single output is
+		// presigned into download_url).
+		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp", Role: "primary"}},
 	}
 	store := &fakeStorage{presigned: "https://example/download"}
 	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
@@ -1656,6 +1966,189 @@ func TestGetJob_DonePresigned(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp["status"] != jobs.StatusDone || resp["download_url"] != "https://example/download" {
 		t.Fatalf("unexpected response: %v", resp)
+	}
+}
+
+// TestGetJob_DownloadURLResolvesToPrimaryNotOrdinalZero is the core D-18/
+// ROLE-02 proof: two outputs in a deliberately "wrong" order -- a report at
+// ordinal 0, the primary result at ordinal 1 -- so a bug that picks outs[0]
+// instead of the role='primary' output is caught by a POSITIVE assertion
+// (download_url equals the primary output's own URL), not merely by
+// asserting it isn't the report's URL. T-57-24 in the plan's threat register
+// names exactly this defect class.
+func TestGetJob_DownloadURLResolvesToPrimaryNotOrdinalZero(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	reportKey := "results/x/0-report.json"
+	primaryKey := "results/x/1-out.webp"
+	repo := &fakeRepo{
+		getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+		outputs: []jobs.Output{
+			{Ordinal: 0, ObjectKey: reportKey, Format: "json", SizeBytes: 111, Role: "report"},
+			{Ordinal: 1, ObjectKey: primaryKey, Format: "webp", SizeBytes: 222, Role: "primary"},
+		},
+	}
+	store := &fakeStorage{
+		presignByKey: map[string]string{
+			reportKey:  "https://example/report",
+			primaryKey: "https://example/primary",
+		},
+	}
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+
+	// Positive assertion: download_url must equal the PRIMARY output's own
+	// presigned URL -- not merely "not the report's URL".
+	if resp["download_url"] != "https://example/primary" {
+		t.Fatalf("download_url = %v, want the primary output's url (https://example/primary)", resp["download_url"])
+	}
+
+	rawOutputs, ok := resp["outputs"]
+	if !ok {
+		t.Fatalf("response missing outputs key; body=%s", rec.Body.String())
+	}
+	outputsList, ok := rawOutputs.([]any)
+	if !ok || len(outputsList) != 2 {
+		t.Fatalf("outputs = %v, want a 2-element list", rawOutputs)
+	}
+
+	var sawReport, sawPrimary bool
+	for _, raw := range outputsList {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("outputs element is not an object: %v", raw)
+		}
+		if url, _ := item["url"].(string); url == "" {
+			t.Fatalf("outputs element missing url: %v", item)
+		}
+		if format, _ := item["format"].(string); format == "" {
+			t.Fatalf("outputs element missing format: %v", item)
+		}
+		if _, ok := item["size_bytes"]; !ok {
+			t.Fatalf("outputs element missing size_bytes: %v", item)
+		}
+		switch item["role"] {
+		case "report":
+			sawReport = true
+			if item["ordinal"] != float64(0) {
+				t.Errorf("report ordinal = %v, want 0", item["ordinal"])
+			}
+		case "primary":
+			sawPrimary = true
+			if item["ordinal"] != float64(1) {
+				t.Errorf("primary ordinal = %v, want 1", item["ordinal"])
+			}
+		default:
+			t.Fatalf("unexpected role in outputs element: %v", item)
+		}
+	}
+	if !sawReport || !sawPrimary {
+		t.Fatalf("outputs missing one of report/primary roles: %v", outputsList)
+	}
+}
+
+// TestGetJob_SingleOutputHasNoOutputsKey pins SC4: a done job with exactly
+// one output has no "outputs" key at all (not an empty array), keeping a
+// single-output convert job's response byte-shape unchanged from
+// pre-Phase-57 -- while download_url is still present via the role-driven
+// selection.
+func TestGetJob_SingleOutputHasNoOutputsKey(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{
+		getJob:  &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp", Role: "primary"}},
+	}
+	store := &fakeStorage{presigned: "https://example/download"}
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+	if _, ok := resp["outputs"]; ok {
+		t.Fatalf("response has an outputs key for a single-output job; body=%s", rec.Body.String())
+	}
+	if resp["download_url"] != "https://example/download" {
+		t.Fatalf("download_url = %v, want https://example/download", resp["download_url"])
+	}
+}
+
+// TestGetJob_AllOutputsPresignedWithSameTTL pins D-12: every output of a
+// done job is presigned eager, in one round trip per output, all with the
+// server's configured presignTTL -- never a per-role or per-ordinal
+// different TTL.
+func TestGetJob_AllOutputsPresignedWithSameTTL(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{
+		getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+		outputs: []jobs.Output{
+			{Ordinal: 0, ObjectKey: "results/x/0-out.webp", Role: "primary"},
+			{Ordinal: 1, ObjectKey: "results/x/1-report.json", Role: "report"},
+			{Ordinal: 2, ObjectKey: "results/x/2-preview.webp", Role: "preview"},
+		},
+	}
+	store := &fakeStorage{presigned: "https://example/download"}
+	wantTTL := 7 * time.Minute
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20, PresignTTL: wantTTL})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.presignCalls != 3 {
+		t.Fatalf("PresignGet called %d times, want 3 (one per output)", store.presignCalls)
+	}
+	for i, ttl := range store.presignTTLs {
+		if ttl != wantTTL {
+			t.Errorf("PresignGet call %d ttl = %v, want %v (server's configured presignTTL)", i, ttl, wantTTL)
+		}
+	}
+}
+
+// TestGetJob_ActiveJobPresignsNothing pins D-12's other half: polling an
+// active (non-terminal) job makes zero PresignGet calls -- presigning lives
+// exclusively inside case jobs.StatusDone.
+func TestGetJob_ActiveJobPresignsNothing(t *testing.T) {
+	id := uuid.New()
+	resolver := newFakeResolver()
+	repo := &fakeRepo{
+		getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusActive},
+	}
+	store := &fakeStorage{}
+	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if store.presignCalls != 0 {
+		t.Fatalf("PresignGet called %d times, want 0 (an active job must never presign, D-12)", store.presignCalls)
 	}
 }
 

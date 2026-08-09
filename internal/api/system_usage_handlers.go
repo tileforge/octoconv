@@ -13,18 +13,18 @@
 // starts lying about what the admission gate will actually do.
 //
 // The arithmetic matching evaluate() is NOT the same claim as "the gate is
-// actually enforcing" (plan 53-07, WR-02). remaining_matches_admission_gate
-// distinguishes the two, and is true only when NONE of these three break
-// the equivalence: (1) the resolved period is not periodToday — a multi-day
-// window has no admission-gate analogue at all; (2) the service-wide
-// QUOTA_ENFORCEMENT_DISABLED kill-switch is on — every verdict is computed
-// and counted but nothing is rejected; (3) a given row's own
-// enforcement_mode is "observe" — that row's own verdict is computed and
-// counted but never enforced, even while (1) and (2) hold. Case (3) has no
-// dedicated boolean (it is per-row, and enforcement_mode already reports
-// it); it is instead named in remaining_note. quota_enforcement_disabled is
-// a separate top-level field surfacing case (2) directly, since no per-row
-// field can carry a service-wide fact.
+// actually enforcing" (plan 53-07 WR-02; per-row half added by plan 55-04
+// Task 2, 53-REVIEW-GAPS.md WR-01). remaining_matches_admission_gate states
+// only that the RESPONSE-LEVEL preconditions hold: (1) the resolved period
+// is periodToday — a multi-day window has no admission-gate analogue at
+// all; (2) the service-wide QUOTA_ENFORCEMENT_DISABLED kill-switch is off —
+// when it is on, every verdict is computed and counted but nothing is
+// rejected. Each row's own enforced field states the THIRD, per-row
+// precondition: that row's own enforcement_mode is "enforce", not
+// "observe" — an observe-mode row's verdict is computed and counted but
+// never enforced, even while (1) and (2) hold for the response as a whole.
+// quota_enforcement_disabled is a separate top-level field surfacing case
+// (2) directly, since no per-row field can carry a service-wide fact.
 package api
 
 import (
@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -112,17 +113,32 @@ type usageRemaining struct {
 	DailyJobs  *int64 `json:"daily_jobs"`
 }
 
+// enforcementModeEnforce mirrors the CHECK on clients.enforcement_mode
+// (internal/db/migrations/0013_client_limits.sql:66-67, the two legal
+// values are "observe" and "enforce"). It cannot be imported from
+// internal/jobs because that package's own enforcementModeObserve/
+// enforcementModeEnforce constants (internal/jobs/admission.go:41-42) are
+// unexported.
+const enforcementModeEnforce = "enforce"
+
 // systemUsageRow is one (client, engine) row of the response envelope's
 // `usage` array.
 type systemUsageRow struct {
-	ClientID        uuid.UUID      `json:"client_id"`
-	ClientName      string         `json:"client_name"`
-	Engine          string         `json:"engine"`
-	EnforcementMode string         `json:"enforcement_mode"`
-	UsedTerminal    usedTerminal   `json:"used_terminal"`
-	UsedInFlight    usedInFlight   `json:"used_in_flight"`
-	Limits          usageLimits    `json:"limits"`
-	Remaining       usageRemaining `json:"remaining"`
+	ClientID        uuid.UUID `json:"client_id"`
+	ClientName      string    `json:"client_name"`
+	Engine          string    `json:"engine"`
+	EnforcementMode string    `json:"enforcement_mode"`
+	// Enforced is the per-row half of the claim prescribed by 53-REVIEW.md
+	// WR-02 and re-raised by 53-REVIEW-GAPS.md WR-01: the response-level
+	// remaining_matches_admission_gate states only that the response-level
+	// preconditions hold (period=today, kill-switch off), and because
+	// clients.enforcement_mode is NOT NULL DEFAULT 'observe' the typical
+	// fleet has every row unenforced while those preconditions are true.
+	Enforced     bool           `json:"enforced"`
+	UsedTerminal usedTerminal   `json:"used_terminal"`
+	UsedInFlight usedInFlight   `json:"used_in_flight"`
+	Limits       usageLimits    `json:"limits"`
+	Remaining    usageRemaining `json:"remaining"`
 }
 
 // systemUsageResponse is the top-level envelope for GET /v1/system/usage,
@@ -164,7 +180,7 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		period = periodToday
 	}
 	if _, ok := validUsagePeriods[period]; !ok {
-		writeError(w, http.StatusUnprocessableEntity, "invalid period filter")
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "invalid period filter")
 		return
 	}
 
@@ -174,7 +190,7 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("client_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid client_id")
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid client_id")
 			return
 		}
 		clientID = &id
@@ -194,20 +210,20 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 	// true.
 	today, err := s.usageRepo.UTCToday(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to resolve current day")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to resolve current day")
 		return
 	}
 	dayFrom, dayTo := resolveUsagePeriod(period, today)
 
 	usageRows, err := s.usageRepo.UsageSummary(ctx, clientID, dayFrom, dayTo)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load usage")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load usage")
 		return
 	}
 
 	limitRows, err := s.limitsRepo.ListAllLimits(ctx, clientID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load limits")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load limits")
 		return
 	}
 
@@ -267,19 +283,33 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		ur := usageByKey[k] // zero value if absent: all used_* fields zero
 		lm, hasLimit := limitsByKey[k]
 
-		// A usage row's client should always have a metadata entry (every
-		// client_usage_daily row's client_id has a FK to clients, ON DELETE
-		// CASCADE) — this lookup is defensive only. If it is somehow absent,
-		// still emit the row with empty name/enforcement_mode rather than
-		// dropping it, because dropping would hide real usage from the
-		// operator.
-		cm := meta[k.clientID]
+		// UsageSummary (:202) and ListAllLimits (:208) share no transaction or
+		// snapshot, so a client deleted between them yields a usage key with
+		// no metadata entry; emitting it would produce client_name: "" and
+		// enforcement_mode: "", and docs/openapi.yaml declares
+		// enforcement_mode as enum: [observe, enforce] and required — the
+		// exact output shape the client_id IS NOT NULL guards in
+		// internal/jobs/usage_query.go:106,126 were added to prevent through
+		// the other door (53-REVIEW-GAPS.md WR-02). Skipping here is correct
+		// rather than lossy: a key reaching this branch can only describe a
+		// client that no longer exists, so there is no live operator subject
+		// whose usage is being hidden. Defaulting to "observe" was
+		// considered and rejected — it would fabricate a configuration claim
+		// about a client that is gone. The meta-seeded third term of the
+		// key-set union above is by construction always present in meta, so
+		// this skip can only ever fire for a usageByKey or limitsByKey key,
+		// never for a synthetic idle-client row.
+		cm, haveMeta := meta[k.clientID]
+		if !haveMeta {
+			continue
+		}
 
 		row := systemUsageRow{
 			ClientID:        k.clientID,
 			ClientName:      cm.name,
 			Engine:          k.engine,
 			EnforcementMode: cm.enforcementMode,
+			Enforced:        period == periodToday && !s.quotaEnforcementDisabled && cm.enforcementMode == enforcementModeEnforce,
 			UsedTerminal: usedTerminal{
 				JobCount: ur.TerminalJobCount,
 				BytesIn:  ur.TerminalBytesIn,
@@ -362,7 +392,7 @@ func (s *Server) handleSystemUsage(w http.ResponseWriter, r *http.Request) {
 		resp.RemainingNote = "period=today: the arithmetic is exactly what the admission gate (evaluate()) computes, but QUOTA_ENFORCEMENT_DISABLED is set service-wide right now — no request is being rejected. Verdicts are still computed and counted, never enforced, until the kill-switch is turned off."
 	default:
 		resp.RemainingSemantics = "live_admission_gate"
-		resp.RemainingNote = "period=today: remaining is exactly what the admission gate (evaluate()) computes right now. A row whose own enforcement_mode is \"observe\" has its verdict computed and counted here too, but that row is never actually enforced — a negative remaining on such a row does not mean requests are being rejected for it."
+		resp.RemainingNote = "period=today: remaining is exactly what the admission gate (evaluate()) computes right now. See each row's own enforced field for whether that specific row is actually enforced — a row with enforced: false has its verdict computed and counted but never acted on, so a negative remaining on it does not mean requests are being rejected."
 	}
 
 	// 11. writeJSON never logs (internal/* never logs).

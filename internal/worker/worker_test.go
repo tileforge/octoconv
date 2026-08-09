@@ -20,6 +20,7 @@ import (
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 )
 
@@ -1277,5 +1278,167 @@ func TestPandocEmptyOutputSucceeds_SC4(t *testing.T) {
 	}
 	if len(data) != 0 {
 		t.Fatalf("output = %q, want empty (empty-body source producing an empty result)", data)
+	}
+}
+
+// --- 57-04 Task 3: process() routes by (job.Operation, source, target) ---
+
+// opGateRepo is a minimal convertRepo fake purpose-built for exercising
+// process() up to and past h.registry.LookupOp WITHOUT a live database or
+// storage: inputs is returned verbatim from Inputs() (inputKey runs BEFORE
+// the registry gate, so it must succeed for the gate itself to be reached),
+// and markDoneCalls/addOutputCalls count invocations so a test can assert a
+// routing failure never reaches either.
+type opGateRepo struct {
+	inputs []jobs.Input
+
+	markDoneCalls  int
+	addOutputCalls int
+}
+
+func (r *opGateRepo) Get(_ context.Context, _ uuid.UUID) (*jobs.Job, error) { return nil, nil }
+func (r *opGateRepo) MarkActive(_ context.Context, _ uuid.UUID) error       { return nil }
+func (r *opGateRepo) MarkFailed(_ context.Context, _ uuid.UUID, _, _ string, _ map[string]any, _ time.Duration) error {
+	return nil
+}
+func (r *opGateRepo) MarkDone(_ context.Context, _ uuid.UUID, _ time.Duration) error {
+	r.markDoneCalls++
+	return nil
+}
+func (r *opGateRepo) Inputs(_ context.Context, _ uuid.UUID) ([]jobs.Input, error) {
+	return r.inputs, nil
+}
+func (r *opGateRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
+	r.addOutputCalls++
+	return nil
+}
+func (r *opGateRepo) Outputs(_ context.Context, _ uuid.UUID) ([]jobs.Output, error) { return nil, nil }
+func (r *opGateRepo) UpdateProgress(_ context.Context, _ uuid.UUID, _ int, _ *int) error {
+	return nil
+}
+func (r *opGateRepo) SetSourceDuration(_ context.Context, _ uuid.UUID, _ float64) error {
+	return nil
+}
+
+// identityTestConverter is a synthetic Converter registered ONLY under
+// convert.OperationConvert (never "sanitize") for a single txt->txt pair --
+// it exercises a REAL, freshly-built *convert.Registry (never convert.Default,
+// so these tests never mutate global registration state) without needing any
+// real engine binary. Convert is a plain byte copy.
+type identityTestConverter struct{}
+
+func (identityTestConverter) Pairs() []convert.Pair {
+	return []convert.Pair{{From: "txt", To: "txt"}}
+}
+func (identityTestConverter) Engine() string { return "test" }
+func (identityTestConverter) Convert(_ context.Context, inPath, outPath string, _ map[string]any) error {
+	data, err := os.ReadFile(inPath)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(outPath, data, 0o600)
+}
+
+// TestProcess_UnregisteredOperationFailsWithoutMarkDone proves process()
+// routes by the FULL (operation, source, target) triple, not just
+// (source, target): a job carrying Operation "sanitize" for a pair that is
+// registered ONLY under "convert" must fail -- naming "sanitize" in the
+// error -- and must never reach h.repo.MarkDone. This is the direct proof
+// that a garbage/unrouted operation is not silently processed as convert.
+func TestProcess_UnregisteredOperationFailsWithoutMarkDone(t *testing.T) {
+	registry := convert.NewRegistry()
+	registry.Register(identityTestConverter{})
+
+	repo := &opGateRepo{inputs: []jobs.Input{{
+		Ordinal:   0,
+		ObjectKey: "uploads/57-04-task3/0-in.txt",
+		Filename:  "in.txt",
+		Format:    "txt",
+	}}}
+	h := &Handler{repo: repo, registry: registry, engineTimout: 5 * time.Second}
+
+	job := &jobs.Job{
+		ID:           uuid.New(),
+		Operation:    "sanitize",
+		SourceFormat: "txt",
+		TargetFormat: "txt",
+	}
+
+	err := h.process(context.Background(), job)
+	if err == nil {
+		t.Fatal("process() = nil, want an error -- \"sanitize\" has no registered txt->txt triple")
+	}
+	if !strings.Contains(err.Error(), "sanitize") {
+		t.Errorf("process() error = %q, want it to name the rejected operation %q", err.Error(), "sanitize")
+	}
+	if repo.markDoneCalls != 0 {
+		t.Errorf("MarkDone called %d times, want 0 (a routing failure must never reach MarkDone)", repo.markDoneCalls)
+	}
+	if repo.addOutputCalls != 0 {
+		t.Errorf("AddOutput called %d times, want 0 (a routing failure must never reach AddOutput)", repo.addOutputCalls)
+	}
+}
+
+// requireS3IntegrationForOperationTest mirrors internal/storage/storage_test.go's
+// TestRoundTrip skip precedent: this package has no existing fake for h.store
+// (a concrete *storage.Client, D-10 step 1's convertRepo seam deliberately
+// stops at the repo/enqueuer boundary), so a genuine end-to-end success run
+// needs a real S3-compatible endpoint.
+func requireS3IntegrationForOperationTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("S3_ENDPOINT") == "" {
+		t.Skip("S3_ENDPOINT not set; skipping live end-to-end operation-routing success test")
+	}
+}
+
+// TestProcess_KnownOperationConvertSucceeds is the success-side complement
+// of TestProcess_UnregisteredOperationFailsWithoutMarkDone: a job carrying
+// Operation "convert" for a pair registered under "convert" must run
+// process() to completion -- through the SAME h.registry.LookupOp call --
+// ending in exactly one AddOutput and one MarkDone. Gated on a real
+// S3-compatible endpoint (see requireS3IntegrationForOperationTest) because
+// process() downloads/uploads through h.store, a concrete *storage.Client
+// with no in-package fake.
+func TestProcess_KnownOperationConvertSucceeds(t *testing.T) {
+	requireS3IntegrationForOperationTest(t)
+
+	ctx := context.Background()
+	store, err := storage.New(ctx)
+	if err != nil {
+		t.Fatalf("storage.New: %v", err)
+	}
+
+	jobID := uuid.New()
+	inKey := "uploads/57-04-task3-success/0-in.txt"
+	if uerr := store.Upload(ctx, inKey, strings.NewReader("hello operation routing"), -1, "text/plain"); uerr != nil {
+		t.Fatalf("seed upload: %v", uerr)
+	}
+
+	registry := convert.NewRegistry()
+	registry.Register(identityTestConverter{})
+
+	repo := &opGateRepo{inputs: []jobs.Input{{
+		Ordinal:   0,
+		ObjectKey: inKey,
+		Filename:  "in.txt",
+		Format:    "txt",
+	}}}
+	h := &Handler{repo: repo, store: store, registry: registry, engineTimout: 30 * time.Second}
+
+	job := &jobs.Job{
+		ID:           jobID,
+		Operation:    "convert",
+		SourceFormat: "txt",
+		TargetFormat: "txt",
+	}
+
+	if perr := h.process(ctx, job); perr != nil {
+		t.Fatalf("process() = %v, want nil (convert is registered for txt->txt)", perr)
+	}
+	if repo.addOutputCalls != 1 {
+		t.Errorf("AddOutput called %d times, want 1", repo.addOutputCalls)
+	}
+	if repo.markDoneCalls != 1 {
+		t.Errorf("MarkDone called %d times, want 1", repo.markDoneCalls)
 	}
 }

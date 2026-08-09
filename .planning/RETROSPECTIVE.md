@@ -326,6 +326,36 @@ Sixth engine class: OCR/text-extraction. Standalone OCRConverter (image/PDF → 
 - A passed unit/integration suite is not a substitute for a live containerized E2E — three of this milestone's real bugs were invisible until the actual image ran in the actual pipeline.
 - Chart grace (774s) vs compose grace (764s) legitimately differ by convention; both must be ≥ the measured timeout, verified, not copied.
 
+## Milestone: v1.12 — Consumer Accounting & Fairness
+
+**Shipped:** 2026-08-07
+**Phases:** 5 | **Plans:** 30 | **Tasks:** 79
+
+### What Was Built
+The first milestone that adds no engine. Per-client consumption accounting written inside the guarded terminal transaction (`client_usage_daily`, bytes summed over all inputs/outputs); a cardinality-bounded per-client Prometheus counter added as a separate series so the duration histogram and `queue_depth` label sets stay pinned; a transaction-scoped `pg_advisory_xact_lock` admission gate enforcing per-client limits fail-closed on all three job-creation paths with 429/`quota_exceeded`, observe mode and a kill-switch; executable retention on the reconciler tick; `GET /v1/system/usage` for the operator; values-driven per-class KEDA `minReplicaCount` (SEED-011); and QUOT-05 closed by a live 2-replica gate rather than by design argument.
+
+### What Worked
+- **Proving a property by breaking it.** Phase 51's exactly-once claim was verified by deliberately moving the usage write out of the transaction and observing `job_count = 2` — then reverting. A test that has never been seen to fail is not yet evidence.
+- **The verify → gap-plan → re-verify loop earned its keep twice.** Phases 52 and 53 both scored `gaps_found` on first pass (daily cap unenforceable without a concurrency cap; idle unlimited clients invisible), and both re-verifications reproduced the fix independently against live Postgres instead of re-running the closure plans' own tests.
+- **Structural fixes over threshold loosening.** The Phase 55 gate failed twice for real — a disproven host→ClusterIP reachability assumption and a round-4 over-admit that could not be told apart from legitimate slot reuse. Neither was closed by relaxing an assertion; the second was closed by proving the `exact-K` premise from Postgres every round before asserting it.
+- **Writing down what a proof does NOT cover.** `admission.go`'s no-caveat statement names its own bounds (K=2, image engine, exactly 2 replicas) and leads with the structural argument, so the live run reads as confirmation rather than as the whole claim.
+
+### What Was Inefficient
+- The Phase 55 live gate consumed 7 plans, 4 of them written after a failure — two full harness rewrites (driver relocated into an in-namespace pod; heavy fixture + jitter-free barrier + per-round Postgres precondition) before a single passing run. RESEARCH.md's assumption A1 (host reachability of ClusterIP on OrbStack) was recorded as an assumption and still cost a failed calibration; it was already knowable.
+- Closing the daily-cap gap (52-06) introduced WR-01 — in-flight work now charges the daily budget with no time bound — and the operator-facing remedy for it was never built, so the milestone ships with a debt item created by its own gap closure.
+- REQUIREMENTS.md checkbox sync lagged behind reality in three separate phase verifications (51, 53, 54 each flagged a stale row), each time as a documentation-only note rather than a fix at the moment of noticing.
+
+### Patterns Established
+- Accounting writes ride inside the guarded transition's transaction, never adjacent to it — a worker that dies between a committed terminal transition and a separate accounting write leaves usage permanently unrecorded, since neither asynq nor the reconciler revisits a terminal job.
+- Quota status domains are declared explicitly (`quotaInFlightStatuses`/`quotaLedgerStatuses`/`quotaUnaccountedStatuses`) and pinned by a test that cross-checks them against the partial index's WHERE predicate, so a future status cannot silently fall outside quota accounting.
+- Date computation in the quota/accounting path reads Postgres's clock (`UTCToday`), not the API host's, so the endpoint and the admission gate can never disagree about which day it is.
+- Reporting endpoints state the limits of their own truth claims (`remaining_matches_admission_gate`, per-row `enforced`, an explicit caveat when a row's own mode is observe) instead of implying enforcement they do not have.
+
+### Key Lessons
+- A gap closure can create the next milestone's debt. 52-06 made the daily cap real and, in the same stroke, made a stuck job able to lock out a client's budget indefinitely. The right response was not to avoid the fix but to ship the operator remedy alongside it — which did not happen, and is now the milestone's top carry-forward item.
+- Assumptions recorded in RESEARCH.md are still assumptions. A1 was written down, reviewed, and wrong; the cost was a failed live calibration and a harness rewrite. Recording an assumption is not the same as cheaply testing it first.
+- When a live gate fails ambiguously, the fix is a discriminator, not a looser bound. Round 4/10's `expected [2], got [3]` was most likely legitimate slot reuse — and the only honest way to keep asserting `==` was to make the premise checkable.
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
@@ -341,6 +371,7 @@ Sixth engine class: OCR/text-extraction. Standalone OCRConverter (image/PDF → 
 | v1.6 | ~1 | 5 | First infrastructure milestone; values-gated overrides; live gates with committed timestamped evidence became the proof standard |
 | v1.7 | ~1 | 5 | Fourth engine class fully autonomous session (plan→execute→review→verify→secure per phase); RTF measurement gate reused; frozen-scripts discipline; one-off live proofs institutionalized as repeatable E2E |
 | v1.10 | ~1 | 4 | Sixth engine class; seconds-per-page measurement gate (new metric shape vs. RTF ratio); three live-only bugs (enqueue-switch gap, opts-dispatch case, config bake) surfaced only by containerized E2E |
+| v1.12 | ~1 | 5 | First non-engine milestone; two phases went gaps_found → closure → re-verification with independent live reproduction; a live gate failed twice for real and was fixed structurally (discriminating precondition) rather than by loosening an assertion; a property proven by deliberately breaking it |
 
 ### Cumulative Quality
 
@@ -355,6 +386,7 @@ Sixth engine class: OCR/text-extraction. Standalone OCRConverter (image/PDF → 
 | v1.6 | 9/9 satisfied | 0 | advisory tail (OPER-01 live-script gap, WR-01 semantics, gate-tooling warnings) — closed by v1.7 Phase 29 |
 | v1.7 | 12/12 satisfied | 0 | 4 advisory (WR-05 frozen-script jsonpath forward-fix, registry cold-pull measurement, arm64 RTF caveat, review Info nits), documented in v1.7-MILESTONE-AUDIT.md |
 | v1.10 | 12/12 satisfied | 0 | advisory tail (WR-05 frozen-script jsonpath residual carried, corpus-representativeness lesson recorded), documented in v1.10-MILESTONE-AUDIT.md |
+| v1.12 | 15/15 satisfied | 0 | 16 non-blocking items — heaviest is 52 WR-01 (unbounded in-flight daily charge, no operator remedy), a debt created by this milestone's own gap closure; documented in v1.12-MILESTONE-AUDIT.md and STATE.md |
 
 ### Top Lessons (Verified Across Milestones)
 
@@ -363,3 +395,4 @@ Sixth engine class: OCR/text-extraction. Standalone OCRConverter (image/PDF → 
 3. Fix code-review findings that overlap verification criteria before spawning the verifier — learned in v1.2 (paid a gap cycle), applied in v1.3 (two first-pass verifications).
 4. Live hard gates discover bugs planning cannot — confirmed across v1.3 (chromium research corrections) and v1.4 (terminal-Close hang, CI 429 cascade); make them unconditional in every plan that touches infrastructure.
 5. Never let a piped command's masked exit code gate destructive cleanup — v1.5's dangling-commit incident; success-branch-only cleanup is now the standard merge shape.
+6. A gap closure can manufacture the next debt item — v1.12's 52-06 made the daily quota real and simultaneously made a stuck job able to lock out a client indefinitely; ship the operator remedy in the same phase as the fix that needs it.

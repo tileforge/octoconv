@@ -92,7 +92,7 @@ func main() {
 	convert.SetVeraPDFTimeout(envDuration("VERAPDF_TIMEOUT", 60*time.Second))
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeDocumentConvert, h.HandleDocumentConvert)
+	mux.HandleFunc(queue.TypeDocumentConvert, worker.NewRunner(h, worker.DocumentDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("DOCUMENT_WORKER_CONCURRENCY", 2),

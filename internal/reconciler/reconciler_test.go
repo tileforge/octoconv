@@ -9,9 +9,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/worker"
 )
 
 // fakeStore is an in-memory jobStore implementation for unit tests, with
@@ -30,6 +32,10 @@ type fakeStore struct {
 
 	markFailedCalls    []uuid.UUID
 	markFailedAttempts []time.Duration
+	// markFailedErr, if non-nil, is returned by every MarkFailed call
+	// instead of nil -- used by TestSweepExhaustedActionGuardedOnMarkFailed
+	// to exercise the ferr != nil branch of the exhaustion path.
+	markFailedErr error
 
 	webhookGaps              []jobs.WebhookGapJob
 	findWebhookGapsErr       error
@@ -83,7 +89,7 @@ func (f *fakeStore) RequeueStale(ctx context.Context, id uuid.UUID, reason strin
 func (f *fakeStore) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
 	f.markFailedCalls = append(f.markFailedCalls, id)
 	f.markFailedAttempts = append(f.markFailedAttempts, attempt)
-	return nil
+	return f.markFailedErr
 }
 
 func (f *fakeStore) Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error) {
@@ -897,5 +903,158 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run did not return within 1s of context cancellation")
+	}
+}
+
+// readCounter gathers family from prometheus.DefaultGatherer -- the same
+// registerer promauto.NewCounterVec registers into inside internal/metrics,
+// so reconciler-emitted metrics are visible from this package without
+// exporting anything from internal/metrics -- and returns the counter value
+// whose label set matches labels EXACTLY (0 when absent). Mirrors
+// internal/worker/pinning_test.go's readCounter idiom (56-04). Every caller
+// MUST treat this as a before/after DELTA read: the default registerer is
+// process-wide and other tests in this package also emit into the same
+// series.
+func readCounter(t *testing.T, family string, labels map[string]string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != family {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			got := make(map[string]string, len(labels))
+			for _, l := range m.GetLabel() {
+				got[l.GetName()] = l.GetValue()
+			}
+			if len(got) != len(labels) {
+				continue
+			}
+			match := true
+			for k, v := range labels {
+				if got[k] != v {
+					match = false
+					break
+				}
+			}
+			if match && m.GetCounter() != nil {
+				return m.GetCounter().GetValue()
+			}
+		}
+	}
+	return 0
+}
+
+// TestSweepExhaustedActionGuardedOnMarkFailed proves RUNR-02 both ways:
+// when the guarded transition (MarkFailed) does NOT commit, none of
+// octoconv_reconciler_actions_total{action="exhausted"},
+// octoconv_client_job_outcomes_total, or the webhook enqueue fire; when it
+// DOES commit, the action counter increments by exactly 1. Reads are
+// before/after deltas, never absolute values (other tests in this package
+// share the same process-wide default registerer).
+func TestSweepExhaustedActionGuardedOnMarkFailed(t *testing.T) {
+	id := uuid.New()
+	engine := "image"
+	clientID := uuid.New()
+
+	// --- MarkFailed fails: nothing should move. ---
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: engine}},
+		recoveryCount: map[uuid.UUID]int{id: 3},
+		jobs:          map[uuid.UUID]*jobs.Job{id: {ID: id, ClientID: clientID, Engine: engine, CallbackURL: "https://example.test/hook"}},
+		markFailedErr: errors.New("db write failed"),
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	actionBefore := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "exhausted"})
+	clientBefore := readCounter(t, "octoconv_client_job_outcomes_total", map[string]string{"client_id": clientID.String(), "engine": engine, "status": jobs.StatusFailed})
+
+	s.sweep(context.Background())
+
+	actionAfterFail := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "exhausted"})
+	clientAfterFail := readCounter(t, "octoconv_client_job_outcomes_total", map[string]string{"client_id": clientID.String(), "engine": engine, "status": jobs.StatusFailed})
+
+	if delta := actionAfterFail - actionBefore; delta != 0 {
+		t.Fatalf("action=exhausted delta = %v, want 0 when MarkFailed did not commit", delta)
+	}
+	if delta := clientAfterFail - clientBefore; delta != 0 {
+		t.Fatalf("client_job_outcomes delta = %v, want 0 when MarkFailed did not commit", delta)
+	}
+	if len(enq.webhookCalls) != 0 {
+		t.Fatalf("EnqueueWebhookDeliver calls = %d, want 0 when MarkFailed did not commit", len(enq.webhookCalls))
+	}
+
+	// --- MarkFailed succeeds: the action counter increments by exactly 1. ---
+	id2 := uuid.New()
+	store2 := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id2, Status: jobs.StatusActive, Engine: engine}},
+		recoveryCount: map[uuid.UUID]int{id2: 3},
+		jobs:          map[uuid.UUID]*jobs.Job{id2: {ID: id2, ClientID: clientID, Engine: engine, CallbackURL: "https://example.test/hook"}},
+	}
+	enq2 := &fakeEnqueuer{}
+	s2 := NewSweeper(store2, enq2, testConfig())
+
+	actionBefore2 := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "exhausted"})
+
+	s2.sweep(context.Background())
+
+	actionAfter2 := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "exhausted"})
+	if delta := actionAfter2 - actionBefore2; delta != 1 {
+		t.Fatalf("action=exhausted delta = %v, want 1 when MarkFailed committed", delta)
+	}
+}
+
+// TestSweepUnroutableEngineActionStillUnguarded proves the fix did not
+// over-apply: the fail-closed default branch's
+// octoconv_reconciler_actions_total{action="unroutable_engine"} still
+// increments unconditionally, because there is no MarkFailed call on that
+// path at all.
+func TestSweepUnroutableEngineActionStillUnguarded(t *testing.T) {
+	id := uuid.New()
+	store := &fakeStore{
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "cad"}},
+		recoveryCount: map[uuid.UUID]int{id: 0},
+	}
+	enq := &fakeEnqueuer{}
+	s := NewSweeper(store, enq, testConfig())
+
+	before := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "unroutable_engine"})
+
+	s.sweep(context.Background())
+
+	after := readCounter(t, "octoconv_reconciler_actions_total", map[string]string{"action": "unroutable_engine"})
+	if delta := after - before; delta != 1 {
+		t.Fatalf("action=unroutable_engine delta = %v, want 1", delta)
+	}
+	if len(store.markFailedCalls) != 0 {
+		t.Fatalf("MarkFailed calls = %d, want 0 on the unroutable_engine path", len(store.markFailedCalls))
+	}
+}
+
+// TestReconcilerExhaustedCodeMatchesFrozenRegistry ties the reconciler's
+// "reconciler_exhausted" literal to plan 56-04's frozen async job-failure
+// registry (internal/worker/descriptors.go), so the two can never drift
+// independently. internal/worker does not import internal/reconciler (see
+// `go list -deps`), so this test-only edge introduces no import cycle.
+func TestReconcilerExhaustedCodeMatchesFrozenRegistry(t *testing.T) {
+	const reconcilerLiteral = "reconciler_exhausted"
+
+	if reconcilerLiteral != worker.CodeReconcilerExhausted {
+		t.Fatalf("reconciler literal %q != worker.CodeReconcilerExhausted %q", reconcilerLiteral, worker.CodeReconcilerExhausted)
+	}
+
+	found := false
+	for _, code := range worker.AllFailureCodes() {
+		if code == reconcilerLiteral {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("%q not found in worker.AllFailureCodes()", reconcilerLiteral)
 	}
 }

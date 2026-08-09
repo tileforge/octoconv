@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/auth"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -105,17 +106,17 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid job id")
 		return
 	}
 
 	job, err := s.repo.Get(ctx, id)
 	if errors.Is(err, jobs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load job")
 		return
 	}
 
@@ -124,7 +125,7 @@ func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
 	// distinct 403 (T-42-04).
 	client, _ := auth.ClientFromContext(ctx)
 	if job.ClientID != client.ID {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 

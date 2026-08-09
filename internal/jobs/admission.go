@@ -20,6 +20,55 @@
 // a count that goes negative -- are permanent, unlike an occupancy count
 // derived live from jobs.status, which can never drift from ground truth
 // because it IS ground truth.
+//
+// Unlike internal/ratelimit -- whose package comment documents that its
+// in-process httprate counter stops being shared the moment the API is
+// horizontally scaled, with an explicit upgrade path to a Redis-backed
+// counter for that day -- this mechanism carries NO api.replicas: 1-only
+// caveat. The reason is structural, not empirical: the per-(client, engine)
+// pg_advisory_xact_lock plus the COUNT run in the SAME transaction as the
+// INSERT (see admitLocked below) is correct under any number of API
+// replicas by construction, because Postgres, not process memory, is what
+// serializes concurrent admissions.
+//
+// That structural argument is now also confirmed by direct live
+// observation, closing ROADMAP Phase 55 SC1/SC2 (QUOT-05):
+// scripts/quota-multireplica-liveproof.sh ran ten independent rounds of ten
+// concurrent job-creation requests against a real two-pod api.replicas: 2
+// deployment (image engine, max_concurrent=2), and every round admitted
+// exactly K=2 and rejected exactly 8 with quota_exceeded, with zero
+// rate_limited responses. Every round's cap decision was split across both
+// serving pods (api-6769bc54f7-frgdx, api-6769bc54f7-t8j4m), and the
+// aggregate coverage over the whole run was pod1 202=10/429=42, pod2
+// 202=10/429=38 -- both pods served both outcomes. 10/10 rounds passed,
+// 167 assertions passed, run id 20260807T153358Z. Since plan 55-07, each
+// round additionally proves from Postgres, BEFORE asserting admitted==K,
+// that no admitted job reached a terminal status at or before that round's
+// last response, so the exact-K count rests on a proven premise rather
+// than an assumed one. Evidence committed at
+// .planning/phases/55-live-gate-multi-replica-quota-correctness/evidence/
+// quota-multireplica-20260807T153358Z.tsv (per-request rows) and
+// quota-multireplica-20260807T153358Z-timeline.tsv (per-admitted-job
+// terminal timeline); the gate script and both files are re-runnable and
+// re-derivable (the aggregate counts are re-derivable from the TSV with
+// awk alone), so this claim stays falsifiable rather than merely asserted.
+//
+// What this run does NOT cover: only the concurrency limit (max_concurrent)
+// was exercised live. The daily-jobs and daily-bytes caps were deliberately
+// out of scope for the live gate (55-CONTEXT.md D-03) and remain covered
+// only by the in-process burst tests in admission_test.go (e.g.
+// TestConcurrentBurstAdmitsExactlyK) -- the correct scope for now, since
+// those two limits share the same locked-transaction structure this
+// comment already argues is replica-safe by construction, but that
+// specific claim has not itself been exercised under N live replicas.
+//
+// The live run's parameters are likewise the bounds of what it observed,
+// and nothing more: K=2, the image engine, and exactly 2 api replicas. It
+// says nothing empirical about other cap values, other engine classes, or
+// three-or-more replicas. Those rest on the structural argument above --
+// which is generic in all three, since the advisory-lock key is derived
+// per (client, engine) and the serialization happens in Postgres rather
+// than in any replica -- but they have not been watched happening.
 package jobs
 
 import (
@@ -27,6 +76,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -48,11 +98,44 @@ const (
 // a daily rejection returns the seconds remaining until UTC midnight, a
 // concurrency rejection returns a short constant, because a slot frees
 // unpredictably.
+//
+// The two daily sentinels are now normally delivered wrapped in a
+// *DailyQuotaError (see below), never bare, so any consumer MUST keep using
+// errors.Is (or errors.As for DailyQuotaError itself) -- never ==, which
+// would stop matching the moment a verdict arrives wrapped.
 var (
 	ErrConcurrencyLimit = errors.New("concurrency limit exceeded")
 	ErrDailyBytesLimit  = errors.New("daily byte limit exceeded")
 	ErrDailyJobsLimit   = errors.New("daily job-count limit exceeded")
 )
+
+// DailyQuotaError wraps ErrDailyBytesLimit or ErrDailyJobsLimit with the
+// Postgres instant evaluate's daily branch was evaluated at (EvaluatedAt),
+// so a caller computing a daily rejection's Retry-After can derive it
+// against the SAME clock the daily-window filter used, rather than the API
+// process's own wall clock at response-write time -- the bug closed by
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md (a
+// daily rejection could otherwise advertise Retry-After: ~86400 for a quota
+// that had already reset, in the narrow window where the DB evaluation
+// happens just before UTC midnight and the response is formatted just
+// after).
+//
+// The sentinel stays the identity for errors.Is: Unwrap returns Err
+// unchanged, so QuotaReason and every existing errors.Is(err,
+// ErrDailyBytesLimit/ErrDailyJobsLimit) call site need no change at all.
+// EvaluatedAt is Postgres's now() at transaction start -- the identical
+// value recordUsage (usage.go) writes its client_usage_daily.day from -- not
+// a value re-derived on the API side.
+type DailyQuotaError struct {
+	// Err is always ErrDailyBytesLimit or ErrDailyJobsLimit.
+	Err error
+	// EvaluatedAt is the Postgres now() the daily-window filter used.
+	EvaluatedAt time.Time
+}
+
+func (e *DailyQuotaError) Error() string { return e.Err.Error() }
+
+func (e *DailyQuotaError) Unwrap() error { return e.Err }
 
 // Quota reason labels. The SAME taxonomy is reused for both the observe-mode
 // would-be-rejected signal and any live-enforcement rejection (D-14) -- one
@@ -245,6 +328,12 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 		}
 		// >= is deliberate: it is what makes an explicit max_concurrent = 0
 		// deny the engine entirely (0013_client_limits.sql).
+		//
+		// Returned bare, never wrapped in DailyQuotaError (or an analogous
+		// wrapper): its Retry-After is the fixed
+		// quotaConcurrencyRetryAfterSeconds constant, with no dependency on
+		// any evaluation clock, so wrapping it would add a field nothing
+		// reads.
 		if count >= *st.maxConcurrent {
 			return ErrConcurrencyLimit, nil
 		}
@@ -282,6 +371,7 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 		// never over-admission, already bounded and measured by plan
 		// 52-05's TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste.
 		var bytesUsed, jobsUsed int64
+		var evaluatedAt time.Time
 		if err := q.QueryRow(ctx, `
 			SELECT
 				COALESCE((SELECT sum(bytes_in) FROM client_usage_daily
@@ -291,7 +381,17 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 				COALESCE((SELECT sum(job_count) FROM client_usage_daily
 					WHERE client_id = $1 AND engine = $2 AND day = (now() AT TIME ZONE 'utc')::date), 0)
 				+ COALESCE((SELECT count(*) FROM jobs j
-					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0)`,
+					WHERE j.client_id = $1 AND j.engine = $2 AND j.status IN ('queued', 'active')), 0),
+				-- Third column, added for DailyQuotaError.EvaluatedAt: bare
+				-- now() (transaction-start time), NOT (now() AT TIME ZONE
+				-- 'utc') as used by the day filters above. Selecting the bare
+				-- form keeps it a timestamptz, so pgx returns an unambiguous
+				-- instant; the API layer's secondsUntilUTCMidnight already
+				-- normalizes via now.UTC(), so the zone work happens exactly
+				-- once, there. Scanning a timestamp WITHOUT time zone here
+				-- instead would be a silent zone trap: it would carry no
+				-- offset and get reinterpreted at the read site.
+				now()`,
 			// The in-flight subqueries above write their two statuses as SQL
 			// literals, NOT as bound parameters: the literal form is what the
 			// planner can match against jobs_client_engine_inflight_idx's
@@ -346,17 +446,17 @@ func evaluate(ctx context.Context, q pgxQuerier, st quotaState, clientID uuid.UU
 			// `j.created_at >= (now() AT TIME ZONE 'utc')::date` predicate
 			// would silently have.
 			clientID, engine,
-		).Scan(&bytesUsed, &jobsUsed); err != nil {
+		).Scan(&bytesUsed, &jobsUsed, &evaluatedAt); err != nil {
 			return nil, fmt.Errorf("read daily usage: %w", err)
 		}
 		// The incoming request's own input size, and its own +1 job,
 		// participate in the comparison -- the limit means "would exceed",
 		// not "already exceeded".
 		if st.maxDailyBytes != nil && bytesUsed+inputBytes > *st.maxDailyBytes {
-			return ErrDailyBytesLimit, nil
+			return &DailyQuotaError{Err: ErrDailyBytesLimit, EvaluatedAt: evaluatedAt}, nil
 		}
 		if st.maxDailyJobs != nil && jobsUsed+1 > *st.maxDailyJobs {
-			return ErrDailyJobsLimit, nil
+			return &DailyQuotaError{Err: ErrDailyJobsLimit, EvaluatedAt: evaluatedAt}, nil
 		}
 	}
 

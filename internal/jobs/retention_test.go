@@ -48,6 +48,7 @@ func createAgedJob(t *testing.T, r *Repo, clientID uuid.UUID, status string, age
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
+		addPrimaryOutput(t, r, id)
 		if err := r.MarkDone(ctx, id, 0); err != nil {
 			t.Fatalf("MarkDone: %v", err)
 		}

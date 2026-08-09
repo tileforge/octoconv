@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,10 +23,49 @@ import (
 // WITHOUT ever surfacing it as a protocol-level error (verified by reading
 // mcp.toolForErr in the pinned v1.6.1 source) -- this is exactly the
 // mechanism D-11 requires, so handlers simply return the underlying error.
+//
+// ERRC-03: consumers of this package branch on the typed *APIError.Code
+// field (client.go), recovered via errors.As -- never by matching
+// err.Error()'s text. classifyAPIError below is the one place that
+// distinction is made; every handler that can surface a Client error routes
+// it through classifyAPIError before returning. An unrecognized (or absent)
+// code MUST fall through to the generic, unannotated error unchanged
+// (docs/ERROR-CODES.md, Pitfall 12) -- a future additive code is safe here
+// by construction, not by convention.
+
+// classifyAPIError recovers a *APIError from err via errors.As and appends a
+// structural, code-driven hint distinguishing retry-now (rate_limited) from
+// do-not-retry (quota_exceeded) -- the exact ambiguity client.go:441-443
+// documents as the reason the code was surfaced in the first place. The
+// original error (and, for an *APIError, its unmodified Error() text) is
+// always preserved via %w, so nothing here can hide or replace the
+// server's own message. Any code not explicitly handled -- including "no
+// code at all" and "not an *APIError at all" -- passes err through
+// unchanged: the default/fallback branch every consumer of this contract
+// must have (Pitfall 12).
+func classifyAPIError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+
+	switch apiErr.Code {
+	case codeRateLimited:
+		return fmt.Errorf("%w -- transient; safe to retry after the wait hint above", err)
+	case codeQuotaExceeded:
+		return fmt.Errorf("%w -- retrying immediately will not help; this client's quota will not reset until later", err)
+	default:
+		return err
+	}
+}
 
 // ConvertFileInput is the input to the convert_file tool.
 type ConvertFileInput struct {
 	Path         string         `json:"path" jsonschema:"absolute or relative path to an existing local regular file to convert"`
+	Operation    string         `json:"operation,omitempty" jsonschema:"operation to perform on the file, defaults to convert when omitted -- see the operations key of the list_supported_formats/GET /v1/formats response for the full set of currently available operations; leave empty for a plain format conversion"`
 	TargetFormat string         `json:"target_format,omitempty" jsonschema:"desired output format, e.g. jpg/png/webp -- provide exactly one of target_format or preset, never both, never neither"`
 	Preset       string         `json:"preset,omitempty" jsonschema:"name of a saved conversion preset to apply -- provide exactly one of target_format or preset, never both, never neither"`
 	Opts         map[string]any `json:"opts,omitempty" jsonschema:"engine-specific conversion options; only meaningful alongside target_format, not preset"`
@@ -72,9 +112,9 @@ func convertFileHandler(c *Client) mcp.ToolHandlerFor[ConvertFileInput, ConvertF
 
 		onTick := progressTicker(ctx, req)
 
-		result, err := c.ConvertBlocking(ctx, path, in.TargetFormat, in.Preset, rawOpts, onTick)
+		result, err := c.ConvertBlocking(ctx, path, in.Operation, in.TargetFormat, in.Preset, rawOpts, onTick)
 		if err != nil {
-			return nil, ConvertFileOutput{}, err
+			return nil, ConvertFileOutput{}, classifyAPIError(err)
 		}
 
 		out := ConvertFileOutput{
@@ -152,7 +192,7 @@ type GetJobStatusInput struct {
 func getJobStatusHandler(c *Client) mcp.ToolHandlerFor[GetJobStatusInput, JobStatus] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, in GetJobStatusInput) (*mcp.CallToolResult, JobStatus, error) {
 		js, err := c.GetJob(ctx, in.JobID)
-		return nil, js, err
+		return nil, js, classifyAPIError(err)
 	}
 }
 
@@ -182,7 +222,7 @@ func downloadResultHandler(c *Client) mcp.ToolHandlerFor[DownloadResultInput, Do
 	return func(ctx context.Context, req *mcp.CallToolRequest, in DownloadResultInput) (*mcp.CallToolResult, DownloadResultOutput, error) {
 		js, err := c.GetJob(ctx, in.JobID)
 		if err != nil {
-			return nil, DownloadResultOutput{}, err
+			return nil, DownloadResultOutput{}, classifyAPIError(err)
 		}
 		if js.Status != statusDone {
 			return nil, DownloadResultOutput{}, fmt.Errorf("job %s is %s, not done -- use get_job_status to check on it", in.JobID, js.Status)
@@ -200,7 +240,7 @@ func downloadResultHandler(c *Client) mcp.ToolHandlerFor[DownloadResultInput, Do
 
 		localPath, err := c.Download(ctx, in.JobID, js.DownloadURL)
 		if err != nil {
-			return nil, DownloadResultOutput{}, err
+			return nil, DownloadResultOutput{}, classifyAPIError(err)
 		}
 
 		if in.Filename != "" {
@@ -229,7 +269,7 @@ type ListSupportedFormatsInput struct{}
 func listSupportedFormatsHandler(c *Client) mcp.ToolHandlerFor[ListSupportedFormatsInput, FormatsResponse] {
 	return func(ctx context.Context, req *mcp.CallToolRequest, _ ListSupportedFormatsInput) (*mcp.CallToolResult, FormatsResponse, error) {
 		fr, err := c.ListFormats(ctx)
-		return nil, fr, err
+		return nil, fr, classifyAPIError(err)
 	}
 }
 
@@ -250,7 +290,7 @@ func listPresetsHandler(c *Client) mcp.ToolHandlerFor[ListPresetsInput, ListPres
 	return func(ctx context.Context, req *mcp.CallToolRequest, in ListPresetsInput) (*mcp.CallToolResult, ListPresetsOutput, error) {
 		presets, err := c.ListPresets(ctx, in.IncludeInactive)
 		if err != nil {
-			return nil, ListPresetsOutput{}, err
+			return nil, ListPresetsOutput{}, classifyAPIError(err)
 		}
 		return nil, ListPresetsOutput{Presets: presets}, nil
 	}

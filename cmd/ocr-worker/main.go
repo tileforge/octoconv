@@ -78,6 +78,13 @@ func main() {
 	// every concurrent read (same happens-before boundary as
 	// AV_MAX_DURATION_SECONDS/AV_DISK_SAFETY_FACTOR in cmd/av-worker/main.go).
 	//
+	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
+	// instead of silently last-write-winning -- this deliberate overwrite of
+	// converters.go's own placeholder registration moved to Registry.Replace,
+	// which performs the identical unconditional overwrite without the
+	// occupancy check. Using Register here would panic on startup against
+	// the very placeholder this re-registration exists to override.
+	//
 	// OCR_MAX_PAGES default (200) is PROVISIONAL -- Plan 03's measurement
 	// finalizes the real ceiling from a measured p95 seconds-per-page run,
 	// mirroring AV_MAX_DURATION_SECONDS's own provisional-then-measured
@@ -87,7 +94,7 @@ func main() {
 	// class, just enforced by the OCR converter instead of the API layer.
 	ocrMaxPages := envInt("OCR_MAX_PAGES", 200)
 	ocrMaxPixels := uint64(envInt64("OCR_MAX_IMAGE_PIXELS", 100_000_000))
-	convert.Default.Register(buildOCRConverter(ocrMaxPages, ocrMaxPixels))
+	convert.Default.Replace(buildOCRConverter(ocrMaxPages, ocrMaxPixels))
 
 	// D-03 (Phase 45): tesseract's own OpenMP thread use is pinned to the
 	// cgroup CPU quota via OMP_THREAD_LIMIT (mirrors av-worker's
@@ -153,7 +160,7 @@ func main() {
 	// sweeper of any kind is constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeOCRConvert, h.HandleOCRConvert)
+	mux.HandleFunc(queue.TypeOCRConvert, worker.NewRunner(h, worker.OCRDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("OCR_WORKER_CONCURRENCY", 1), // D-03 (Phase 45): one OCR job at a time (mirrors av/audio) -- avoids CPU oversubscription/CFS-thrashing on the cgroup-limited worker; a per-job OCR already streams pages sequentially. A concurrency > 1 is a measured-evidence future tweak, not v1.

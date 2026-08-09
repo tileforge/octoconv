@@ -1,6 +1,7 @@
 ---
 id: SEED-011
-status: dormant
+status: implemented
+implemented_in: "v1.12 Phase 54 (CAPA-01) — `minReplicaCount` templatized out of all 7 `scaledobject-*.yaml` into per-class Helm values via the validating `octoconv.kedaMinReplicaCount` helper, default `0` (zero behavior change); `fallback.replicas` derived as `max(1, minReplicaCount)` through `octoconv.kedaFallbackReplicas` so validation cannot be bypassed; negative/over-max/non-integer values abort the render; `values-capacity-floor.yaml` ships as the example override and a CI `helm` job proves per-class isolation. The `av: { minReplicaCount: 1 }` warm floor this seed suggested was NOT applied — the mechanism ships, choosing the floor is left to the operator. Verified 2026-08-06."
 planted: 2026-07-26
 planted_during: post-v1.9 (design discussion after milestone close)
 trigger_when: when an engine has steady enough load to justify a warm floor (avoid cold-start), OR when tuning per-engine autoscaling

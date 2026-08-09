@@ -1,206 +1,247 @@
 # Project Research Summary
 
-**Project:** OctoConv — v1.12 "Consumer Accounting & Fairness"
-**Domain:** Adding per-consumer attribution, quotas, and intra-class fairness to an already-shipped internal Go async file-conversion platform (7 engine classes, asynq/Redis queues, Postgres system of record, Kubernetes + KEDA scale-from-zero)
-**Researched:** 2026-08-02
-**Confidence:** HIGH
+**Project:** OctoConv — v1.13 "Inspect & Operations"
+**Domain:** Document/file-processing API (inspection, CDR/sanitization, operation modeling, structured errors)
+**Researched:** 2026-08-07
+**Confidence:** HIGH for codebase-grounded claims (direct file reads), MEDIUM for external library/industry findings
 
 ## Executive Summary
 
-This is not a greenfield "add multi-tenancy" problem — it is an integration problem into a live, already-hardened platform. All four researchers converged independently on the same conclusion from four different angles (library internals, feature landscape, code architecture, failure-mode analysis): **fairness and quotas must be built as Postgres-backed admission control at the API layer, not as queue-topology changes.** asynq v0.26.0, verified against vendored source, has zero intra-queue fairness primitive — `Config.Queues`/`StrictPriority` weight named *queues*, not clients or tasks, and `Group`/`GroupAggregator` batches tasks together (the opposite of isolation). The one design that looks like the "textbook" answer — per-client sub-queues — is explicitly the one design that must **not** be built this milestone: it renames queues, which breaks the PromQL in all 7 `scaledobject-*.yaml` templates, `AllConvertQueues()`, the queue-depth collector, and the reconciler's engine→queue routing switch — the entire scale-from-zero contract this project has spent five milestones proving live. A per-client concurrency cap (admission-time, `K` of `M` = `maxReplicaCount`) gives a *provable, structural* anti-starvation guarantee using the exact mechanism quotas already need, at zero cost to queue topology.
+v1.13 turns OctoConv from a format converter into a small processing API: an `operation` dimension on
+jobs, a synchronous `POST /v1/inspect`, `sanitize` as the first async non-convert operation, born-digital
+PDF routing, and a JobRunner consolidation with structured error codes underneath it all.
 
-The recommended approach: capture nothing new (all raw usage data — `client_id`, `started_at`/`finished_at`, `job_inputs/outputs.size_bytes` — already exists in the schema), add one new Postgres rollup table (`client_usage_daily`) written atomically from the same choke point every worker already hits (`MarkDone`/`MarkFailed` → `metrics.RecordJobOutcome`), and enforce three admission gates in `handleCreateJob` before the S3 write: a cheap concurrency-cap read, a cheap byte-budget read, and an atomic Postgres reserve immediately before `repo.Create` (reusing the exact TOCTOU-recheck shape the preset-resolution code already established). Postgres, not Redis, is the counter of record — Redis is contractually transient in this architecture, and the existing `internal/ratelimit` package's own doc comment already documents (and warns against reusing, for this purpose) an in-process counter that is correct only at `api.replicas: 1`.
+The four researchers converge on one central, non-obvious point that should shape the whole roadmap:
+**inspect is cheap in dependencies but expensive in blast radius, while sanitize is expensive in tooling
+but its real risk is a false-clean guarantee.** Most of what inspect must report already runs in the API
+process today (`Sniff`, `SniffContainer().HasMacro`, `ClassifyCFB`, `Dimensions`) — it is an
+aggregation/exposure layer, not green-field parsing. But it is the first request path that parses
+adversarial bytes *inline*, in the same process that serves `/healthz`, in a service whose entire safety
+model assumes worker-side isolation with measured timeouts. Sanitize is the inverse: nothing in the
+codebase parses or rewrites PDF or OOXML content today, so the tooling is genuinely new — and the
+security literature is unanimous that a sanitizer verified by the same parser that did the removal is
+structurally blind to its own bypasses.
 
-The key risks are not implementation-technique risks but *blast-radius* risks: (1) `client_id` multiplies, not adds to, existing Prometheus label cardinality — it must land on a new purpose-built counter, never on the existing histogram, and never, under any circumstance, on `octoconv_queue_depth`, the one metric KEDA reads; and (2) every current OctoConv consumer has run against an unlimited API for up to a year — shipping hard enforcement with no rollout period risks breaking already-integrated production consumers with zero warning. Both risks are mitigated by discipline already established elsewhere in this codebase (pinning tests, `NULL`-means-unlimited instead of sentinel values, observe-only-before-enforce), not by new tooling.
+The research also **corrected the milestone's own framing in three places** (see Corrections below), the
+largest being that SEED-020's JobRunner scope is real but smaller than assumed. It still earns its place:
+it is where the eighth engine class gets built the right way instead of hand-copied an eighth time, and
+it is where a live, currently-uncaught instance of the PR #4 defect class gets fixed structurally.
+
+**The single biggest open decision blocking implementation:** `operation='sanitize'` does not exist in
+the schema (`0001_init.sql`'s CHECK allows `convert|extract|archive|inspect|render`) and the project's
+own planning artifacts model it inconsistently — SEED-013 framed it as `engine=probe` with
+`operation=inspect|convert`, the milestone framing treats `sanitize` as a literal new operation value.
+This must be a written decision before any migration lands.
 
 ## Key Findings
 
 ### Recommended Stack
 
-No new infrastructure or third-party dependencies are recommended. The entire stack addition is: one new Postgres table + index, `pg_advisory_xact_lock` (already used for reconciler leader election), and one new Prometheus `CounterVec`. asynq's priority/group features, a Redis-backed quota counter, `golang.org/x/time/rate`, `github.com/go-redis/redis_rate`, and any third-party fair-queueing library were all evaluated and explicitly rejected — see STACK.md's "What NOT to Use" table for the full rationale per item.
+The stack answer is unusually cheap. Most inspect signals need **zero new dependency** — the detection
+already runs on the upload path and only needs to be surfaced. The one real addition is a Go library, not
+a container binary: **`github.com/pdfcpu/pdfcpu` v0.14.0** (Apache-2.0, pure Go, `CGO_ENABLED=0`-compatible,
+released 2026-08-03). It is the only clean way to get PDF page count, encryption status, `/EmbeddedFile`
+listing and `/JS`/`/OpenAction`/`/AA`/remote-reference detection without either adding subprocess binaries
+to the API container or hand-rolling a compressed-object-stream PDF parser — a genuinely risky DIY, unlike
+the fixed-header formats this project already hand-rolls. And it does double duty: the same parser that
+detects PDF risks for inspect can re-scan sanitize output to prove the risks are gone.
 
-**Core additions:**
-- **PostgreSQL 18 (existing)** — durable counters for concurrency-in-flight and daily volume, written inside the same transaction as job creation/completion — gets atomicity for free from a pattern already in production use.
-- **`pg_advisory_xact_lock` (existing pattern)** — serializes check-then-act quota sequences across concurrent API replicas; already proven in `internal/reconciler/reconciler.go`.
-- **`prometheus/client_golang` (existing)** — one new, separate `CounterVec` (e.g. `octoconv_client_job_outcomes_total{client_id,engine,status}`) for accounting; never retrofit `client_id` onto the existing histogram.
-- **asynq `Config.Queues` (existing, unused for this purpose)** — verified in vendored source (`server.go:131-160`) to be queue-level weighting only, with zero per-task/per-client notion; noted only as a possible future SEED for coarse priority *tiers*, not this milestone's mechanism.
+**Core technologies:**
+- `pdfcpu` v0.14.0 (Apache-2.0, pure Go) — PDF structure/security signals for inspect AND sanitize-and-verify. The largest new Go dependency since the MCP `go-sdk` (Phase 21); justify it on the JS/OpenAction/EmbeddedFile need specifically.
+- Go stdlib `archive/zip` + `encoding/xml` — OOXML macro/embedded-object stripping, extending the exact pattern `docsniff.go` already uses to *detect* `vbaProject.bin`. Verification is free: re-run the existing `SniffContainer(output).HasMacro`.
+- Existing `vips copy in out[strip]` — image EXIF/GPS/IPTC/XMP scrub. A one-argument change to the already-hardened `LibvipsConverter.Convert` path. Zero new dependency, zero new binary.
+- Existing `go-chi/httprate` (already a direct dependency) — a *second* limiter instance scoped to `/v1/inspect`, plus `context.WithTimeout` for the work ceiling.
+- Structured error codes: **no framework**. Go 1.13+ `errors.Is`/`As` with a typed `Code` field — the project already does this partially (`quota_exceeded`).
+
+**What NOT to add (explicit):** `poppler-utils`/`qpdf`/`mutool`/`ffprobe`/`exiftool` in `Dockerfile.api`
+(the API process has never run a subprocess — do not open that door for a synchronous path with no queue
+to fall back on); `exiftool` anywhere (Perl runtime + CVE-2021-22204 RCE history on untrusted-input
+parsing, for a capability `vips[strip]` and `pdfcpu` already cover); `pikepdf` (Python runtime wrapping
+qpdf's engine for zero extra capability); Ghostscript (AGPL question, lossy rewrite, not a designed
+sanitizer); `golang.org/x/image` for EXIF presence checks (same zero-dependency bias that already
+rejected it for the decompression-bomb guards); byte-scanning a PDF for `/JS` without an object-graph
+parse (false negatives against compressed object streams — a silent security bypass).
 
 ### Expected Features
 
-**Must have (table stakes, P1 — this milestone):**
-- `client_id` label on job outcome/duration metrics — closes the milestone's stated "чей это трафик" gap, near-zero cost
-- Per-client, per-engine concurrent-jobs admission cap, fail-closed before S3 write, additive/opt-in (existing clients see zero change until an operator sets a limit)
-- Per-client daily byte-volume and/or jobs-per-window quota — covers the abuse shape (few-huge-jobs / sustained volume) the concurrency cap alone misses
-- Per-engine allowance per client (governance: which engine classes a client may use)
-- Operator-facing usage endpoint under the existing `OPERATOR_CLIENT_IDS` gate (Phase 26 precedent)
-- `minReplicaCount` per engine class configurable (SEED-011) — small, independent, chart-only
+**Must have (table stakes):**
+- Inspect reports the **detected** format via magic bytes, never the declared/extension one.
+- Format-appropriate characteristics (per-format-shaped response, not one flat schema with nulls everywhere).
+- A **typed findings list** — `code` + `severity` + `location`, closed enum, not free text.
+- An explicit **tri-state per check**: checked-and-clean vs not-applicable vs could-not-determine. This is the single most commonly *missing* property in home-grown inspection APIs, and no OctoConv code models it today (current code is binary reject/pass).
+- **Honest sampling/partial-analysis disclosure** when a bound is hit (`sampled: true`, `pages_checked: N of M`) — already promised in the milestone framing, not optional polish.
+- Sanitize removal set — PDF: JavaScript, embedded files, launch actions, external URI references. OOXML: VBA macros **including p-code**, not just source (VBA-stomping defense is baseline, not advanced), and embedded OLE objects. Images: EXIF/GPS/IPTC/XMP.
+- A sanitize **report** as a second output with `role=report` — CDR products that silently mutate a file with no accounting are exactly what security teams distrust.
+- `GET /v1/jobs/{id}` returns all outputs with roles when there are several.
+- Sanitize is a separate explicit `operation`, never an implicit side effect of convert.
+- Machine-readable error `code` on every terminal failure and every 4xx — the service already ships `quota_exceeded`/`rate_limited`, so having it on 2 of N paths is a half-finished contract both MCP servers already work around by string-matching.
+- Born-digital PDF stops being an unconditional dead end.
 
-**Should have (differentiators, P2 — sequence after P1 with evidence):**
-- Two-tier weighted priority queue per engine class (`image` + `image-deprioritized`), using asynq's *real* weighted-queue feature — bounded to one extra queue per engine class, not per-client
-- Soft-quota response headers (`X-Quota-*`) for self-throttling DX
-- Dashboard panel(s) on top of the new client-labeled metric
+**Should have (differentiators):**
+- Inspect reports available `(operation, target)` pairs **with a duration estimate and a quota check for this specific file** — Tika/ffprobe/exiftool cannot do this; it is differentiated precisely because v1.12 built the accounting.
+- The sanitize report as a first-class retrievable audit artifact (S3 object, TTL, presigned GET) rather than a UI-only document.
+- Confidence/sampling exposed to the client rather than used only internally.
 
-**Defer (v2+ / evidence-gated):**
-- Usage rollup/materialized view beyond the daily table — defer until raw-row query cost is actually measured
-- Any retention/purge policy for `jobs`/`job_events` — genuinely orthogonal to this milestone, but flag as a tracked gap, not silence
-- Per-client sub-queues / dynamic virtual queues (Q4 option C in ARCHITECTURE.md) — explicitly deferred, evidence-gated on admission caps proving insufficient in practice
+**Defer (v2+):**
+- SEED-021 **Opportunity 2** — per-page Mixed-PDF classification/routing. The seed itself flags an unresolved merging contract (page order, non-duplication, Markdown-vs-hOCR asymmetry). Spike, not a phase.
+- Dangerzone-style rasterize-and-rebuild sanitize — strictly higher assurance but lossy by construction (text becomes an OCR approximation, forms become raster). Legitimate future mode, but must ship under a distinct name, never silently substituted for targeted-removal sanitize.
+- Migrating the existing 429 bodies into the new error envelope; richer client-tunable inspect sampling.
 
-**Explicit anti-features** (wrong for this context, and why):
-- **Billing/invoicing, usage-based pricing** — no monetization exists in this internal service; PROJECT.md locks this out explicitly
-- **Self-service quota portal, tiered plans (free/premium/enterprise)** — no self-service signup exists today (`cmd/manage-clients` is operator-run); a portal implies an external trust boundary this service doesn't have
-- **Per-request/per-MB pricing model** — nothing to price; recording bytes is for ops visibility only, never cost
-- **Full weighted-fair-queueing scheduler (Inngest-style per-tenant virtual queues)** — the textbook answer at high concurrency, but with 1-2 concurrent slots per pod and max 2 pods, ordering barely matters compared to occupancy; the implementation cost (dynamic queues, KEDA-per-queue breakage) is high for near-zero marginal benefit at this scale
-- **ML/anomaly-detection abuse throttling** — consumers are a small, known, internal, non-adversarial set; an explainable numeric quota an operator can reason about beats an opaque model
-- **Formal SLA tiers** — no SLA concept exists anywhere in OctoConv; would formalize a relationship that doesn't exist
-- **A new distributed/external rate-limiting service (Envoy global ratelimit, standalone Redis cluster)** — solves horizontal-scale problems this single-replica-today API doesn't have, and quota state needs to be durable/query-able anyway, which points at Postgres
+**Anti-features explicitly called out:** claiming sanitize output is "guaranteed malware-free"; semantically
+*repairing* removed form JavaScript instead of removing and reporting it; a bare `{"error","code"}` shape
+with no envelope (locks out a future RFC 9457 migration as anything but a breaking change); a dynamic,
+runtime-discoverable finding/error code namespace (the same argument that rejected SEED-010 three times);
+treating an earlier `inspect` result as authority to skip the fail-closed checks on the subsequent job
+creation (TOCTOU — inspect is stateless and pins nothing).
 
 ### Architecture Approach
 
-Quota enforcement is not one gate but three tiers of increasing cost and authority, layered exactly the way `maxUploadByte` → `maxEngineBytes[engine]` are already layered in `handleCreateJob` today: (1) a cheap concurrency-admission read immediately after auth, before content sniffing; (2) a cheap byte-budget soft-check once the engine is known, before the S3 write; (3) an atomic Postgres reserve immediately before `repo.Create`, reusing the exact TOCTOU-recheck shape the existing preset-resolution code already established ("Pitfall 8" precedent) — a tier-3 rejection leaves the already-uploaded S3 object in place for TTL cleanup, never deletes it inline. Usage is recorded at the single natural choke point every `Handle*Convert` worker handler already hits (`MarkDone`/`MarkFailed` → `metrics.RecordJobOutcome`), as one additional atomic `INSERT ... ON CONFLICT DO UPDATE` against a new `client_usage_daily` rollup table — the same statement that serves both accounting-for-reporting and quota-enforcement, avoiding duplicate bookkeeping.
+Every claim below was verified against the code, and several corrected the seeds that asserted them.
+`operation` turns out to be **already fully plumbed at the persistence layer** — only a single hardcoded
+`operationConv = "convert"` in `internal/api/handlers.go` blocks client-supplied operations. `Registry`
+can become operation-aware via an `OperationalConverter` optional interface (mirroring the existing
+`ProgressConverter` precedent) with zero changes to any of the 30+ existing `Lookup`/`Supports`/`EngineFor`
+call sites. The v1.12 admission gate and `client_usage_daily` are already engine-only and
+operation-agnostic, so a `sanitize` job on a new `probe` engine gets correct isolated quota accounting for
+free — with one disclosed limitation: the ledger's grain is `(client_id, engine, day, status)` with no
+operation column, so a *second* probe-engine operation later would be indistinguishable from the first.
 
 **Major components:**
-1. **`client_usage_daily` (new table)** — `(client_id, usage_date, engine)` primary key, `jobs_count`/`bytes_in`/`bytes_out`/`engine_seconds` — additive, zero-migration-impact rollup, source of truth for both reporting and the quota reserve.
-2. **`jobs_client_inflight_idx` (new partial index)** — `(client_id) WHERE status IN ('queued','active')`, mirroring the existing `jobs_inflight_idx` pattern — makes the concurrency cap a live query over ground truth, not a separate counter.
-3. **Three inline gates in `handleCreateJob`** — no new chi middleware (quota logic needs the engine, resolved deep in the handler, and a Postgres round trip httprate-style in-process middleware can't provide); reuses the existing `writeError` convention.
-4. **`RecordUsage` in `internal/jobs/repo.go`** — the atomic UPSERT called from the worker-side terminal-transition choke point, extending the guarded-transaction pattern `Repo.transition` already uses.
-5. **Operator usage endpoint** — extends the Phase 26 `OPERATOR_CLIENT_IDS`-gated `/v1/system/*` pattern, reads `client_usage_daily` directly (cheap, pre-aggregated — not raw Prometheus, not a full `jobs` scan).
-6. **Untouched, deliberately**: `internal/metrics/queue_collector.go`, all 7 `deploy/chart/octoconv/templates/scaledobject-*.yaml`, and the reconciler's `enqueuer` interface — none of these should show a diff line under the recommended build order.
+1. `internal/worker/runner.go` (new) — `EngineDescriptor` + `Runner` replacing seven `Handle*Convert` methods. Note `process()` (worker.go:1847-1942) is *already* the shared orchestrator; the ×7 tax is in the wrapper boilerplate around it.
+2. `internal/inspect/` (new package) + `internal/api/inspect_handlers.go` — synchronous inspection, composing existing `internal/convert` sniffers.
+3. `internal/convert/convert.go` (modified) — `OperationalConverter` optional interface, `Pair` gains `Operation`, `LookupOp`/`SupportsOp`/`EngineForOp` added with existing signatures kept as convert-defaulting wrappers.
+4. `cmd/probe-worker/` (new binary) + `QueueProbe`/`TypeProbeConvert` + `scaledobject-probe.yaml` — the eighth engine class, built via the Phase-56 descriptor pattern instead of hand-copied.
+5. Migrations — widen `jobs_operation_check`; add `job_outputs.role DEFAULT 'primary'`. `jobs_engine_check` needs no change (`probe` reserved since `0001`).
 
 ### Critical Pitfalls
 
-1. **`client_id` multiplies existing Prometheus cardinality, not adds to it** (compounds with every other label already on a metric) — add it to exactly one new, purpose-built `CounterVec`, never to the existing `{engine,status}` histogram, and enforce a cap derived from the bounded `clients` table rather than trusting request input.
-2. **Adding `client_id` to `octoconv_queue_depth` breaks the one metric KEDA reads** — freeze that metric's label set explicitly (`{queue,state}` only), add a pinning test that fails loudly on any future diff, and treat any PR touching `queue_collector.go` or the ScaledObject PromQL with the same live-gate discipline as `scripts/keda-gate.sh`.
-3. **In-process quota counters race across API replicas** exactly like `internal/ratelimit`'s own doc comment already warns — quota state must be Postgres-atomic (`SELECT...FOR UPDATE` or `ON CONFLICT DO UPDATE`) inside the same transaction as job creation/completion, verified under 2+ concurrent replicas, not assumed correct at `replicas: 1`.
-4. **Per-client sub-queues break the KEDA + reconciler contract** — any design that puts `client_id` into a queue *name* requires rewriting all 7 ScaledObject PromQL strings, the queue-depth collector, `AllConvertQueues()`, and the reconciler's hardcoded engine→queue routing switch simultaneously; this is explicitly the design to avoid, deferred behind evidence.
-5. **Shipping enforcement with no rollout period silently breaks already-integrated consumers** — every existing client has run against an unlimited API for up to a year and has never seen a quota-shaped rejection; `NULL` (not a large sentinel number) must mean unlimited, and an observe-only period ("would have rejected" counter, no actual rejection) should run before real enforcement per client.
+1. **The sync `/v1/inspect` handler shares a process with `/healthz`.** A pathological inspect burst can fail the k8s liveness probe and cascade a fleet-wide restart — not merely slow one client. Needs a live-gated process-isolation proof as a named success criterion, not just a request timeout.
+2. **The JobRunner refactor can collapse per-engine timeout classification onto one axis.** `isAudioTerminal` and `isAVTerminal` encode a *stage*-level asymmetry with **opposite polarity** from each other, deliberately. The descriptor must model `(stage, isTimeout)`, not `(engine, isTimeout)`, or the refactor silently regresses the two costliest engine classes.
+3. **`handleGetJob` takes `outs[0]` unconditionally** (`internal/api/handlers.go:857-870`) — verified live. The moment sanitize ships a second `role=report` output, the report can be served as the primary result or the primary result can be hidden. Must be fixed in the operation/roles phase, **before** sanitize ships.
+4. **KEDA metric-label drift.** The refactor touches all 14 metric call sites in the same milestone that adds an operation dimension — the natural "let's add an `operation` label while we're here" impulse breaks scale-from-zero for all seven engine classes. `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` must stay green; verify by diff, mirroring FAIR-02's v1.12 method.
+5. **Sanitize's false-clean guarantee.** Verified against real sources: PDF incremental updates leave "removed" objects byte-recoverable in an earlier revision; naive OOXML zip-entry deletion leaves dangling `[Content_Types].xml`/`.rels` references or leaves payload bytes physically present; self-verification with the removing parser is blind to polyglot bypasses (CVE-2015-5092 precedent). The project already has the right precedent — veraPDF verifying LibreOffice's PDF/A output with an *independent* parser. Apply it here: forced full-rewrite saves, and verification by a second implementation.
+
+**Live defects the research found in existing code** (actionable regardless of this milestone):
+
+| Location | Defect |
+|---|---|
+| `internal/reconciler/reconciler.go:311-312` | `RecordReconcilerAction("exhausted")` fires unconditionally, not guarded on `MarkFailed`'s result — **the exact PR #4 defect class, uncaught** |
+| `internal/api/handlers.go:857-870` | `handleGetJob` presigns `outs[0]` with no role awareness |
+| `internal/jobs/retention.go:126` | `PurgeUsage` derives its cutoff from `time.Now().UTC()` while every other v1.12-era time-sensitive read uses Postgres `now()` |
+| `internal/convert/ocrguards.go:227-228` | Comment claims the rejection steers the client "to the document engine instead" — the document engine does not accept pdf as a source at all |
 
 ## Implications for Roadmap
 
-Based on research, suggested phase structure (ordered by actual data/mechanism dependency, not by PROJECT.md's feature-list order):
+Suggested phase structure, numbering continuing from 56.
 
-### Phase 1: Attribution (metrics label + usage rollup table + wiring)
-**Rationale:** Everything downstream *reads* this data — quotas can't be enforced against numbers that aren't tracked, and the operator endpoint has nothing to show without it. Purely additive: new table, new label argument, one new call site per `Handle*Convert`. Zero behavior change for existing clients.
-**Delivers:** `client_usage_daily` migration + partial index groundwork; `client_id` label on a new, separate accounting `CounterVec`; `RecordUsage` wired into all 7 `MarkDone`/`MarkFailed` choke points.
-**Addresses:** "Атрибуция" (FEATURES.md table stakes: client_id label, per-job accounting record).
-**Avoids:** Pitfall 1 (cardinality multiplication) and Pitfall 2 (`octoconv_queue_depth` contamination) — both must be closed as this phase's own success criteria, with a pinning test proving `octoconv_queue_depth`'s label set is unchanged.
+### Phase 56: JobRunner consolidation + structured error codes (async half)
+**Rationale:** Foundation. Everything downstream benefits from landing on a descriptor-driven runner
+before an eighth handler is added, and this is where retry classification and terminal error handling get
+centralized — their natural home for error codes. No hard dependency *from* 56, but building sanitize
+against seven hand-copied handlers would compound the exact problem the milestone exists to remove.
+**Delivers:** `EngineDescriptor` + `Runner`; `FailureCode` folded into the descriptor; the
+`reconciler.go:311-312` unguarded-metric fix; the `invalid_options` metrics gap closed.
+**Avoids:** Pitfalls 2 (stage-asymmetry collapse), 4 (KEDA label drift), 14 (tests that prove the runner's
+shape rather than the seven engines' behavior).
 
-### Phase 2: Quota enforcement (the three-tier gate + admission-control fairness)
-**Rationale:** Depends on Phase 1's table existing (tiers 2/3 read/write it) and on `jobs.status` already being ground truth (tier 1 needs only a new index). This phase also delivers the baseline fairness requirement for free — the concurrency cap read for a fairness purpose is the identical mechanism read for a quota purpose, so no separate "fairness phase" is needed for the non-sub-queue baseline.
-**Delivers:** `jobs_client_inflight_idx`; three inline gates in `handleCreateJob` (concurrency, byte-budget soft-check, atomic reserve); per-engine allowance check; 429+`Retry-After` response contract, `rate_limited` vs `quota_exceeded` distinguished in the error body.
-**Uses:** Postgres `pg_advisory_xact_lock` / `ON CONFLICT DO UPDATE` idioms from STACK.md; the existing TOCTOU-recheck shape from the preset-resolution precedent.
-**Implements:** ARCHITECTURE.md's Q1/Q3 three-tier gate and Q4 option A (admission control).
-**Avoids:** Pitfall 4 (in-process/racy counters — test with 2+ API replicas), Pitfall 5 (reconciler double-count race — pair with a soak test forcing the stale-recovery race), Pitfall 6 (check-before-S3-write ordering; release-on-every-terminal-state, not just success), Pitfall 7 (rollout safety — `NULL`-means-unlimited, observe-only period, per-client staged rollout), Pitfall 10 (enforce in the shared layer, tested through both REST and at least one MCP entry point, never 403).
+### Phase 57: `operation` dimension + output roles
+**Rationale:** Both are additive schema/registry work with no client-visible behavior yet, and both gate
+sanitize. Bundled because they share one migration and one review.
+**Delivers:** migration widening `jobs_operation_check` + `job_outputs.role DEFAULT 'primary'`;
+`OperationalConverter`; `handleCreateJob` accepting `operation` with `convert` default;
+`GET /v1/formats` gaining an additive `operations` key with `engines` byte-identical.
+**Must resolve here:** the `sanitize` vocabulary decision, and `handleGetJob`'s role-blindness — **before**
+sanitize ships, not concurrently.
+**Avoids:** Pitfalls 3, 9, 10, 13.
 
-### Phase 3: Operator visibility (endpoint and/or dashboard)
-**Rationale:** Depends only on Phase 1 (reads `client_usage_daily`); sequenced after quota work has started so "usage vs. configured limit" is a meaningful comparison, though it does not technically require Phase 2 to be complete.
-**Delivers:** `/v1/system/usage`-style endpoint under `OPERATOR_CLIENT_IDS`; optionally a Grafana panel over the new accounting counter.
-**Addresses:** "Видимость для оператора" (milestone requirement #4).
+### Phase 58: Synchronous `POST /v1/inspect`
+**Rationale:** Depends on 57 for "available `(operation, target)` pairs" to be meaningful. Does not depend
+on roles.
+**Delivers:** `internal/inspect/` (pure-Go sniffers + `pdfcpu`), the report envelope with typed findings,
+tri-state check status and sampling disclosure; work ceiling, body cap, dedicated rate budget.
+**Uses:** `pdfcpu` v0.14.0, existing `httprate`, `context.WithTimeout`.
+**Avoids:** Pitfalls 1 (needs a live process-isolation gate as a success criterion) and 8 (unmetered abuse
+budget on a path that bypasses the v1.12 gate by design).
 
-### Phase 4: SEED-011 (`minReplicaCount` per engine class)
-**Rationale:** Fully independent of Phases 1-3 — zero data/code coupling, pure Helm values/`ScaledObject` change. Can land at any point; a defensible low-risk "quick win" or hygiene tail.
-**Delivers:** Operator-selectable `minReplicaCount` per class, replacing the hardcoded zero.
+### Phase 59: Born-digital PDF routing (SEED-021 Opportunity 1 — routing only)
+**Rationale:** Hard dependency on 58. Deliberately excludes adopting any specific extraction tool.
+**Delivers:** `text_layer_present` in the inspect report, pair-recommendation suppression, and the
+`ocrguards.go:227-228` comment fix regardless of tool choice.
+
+### Phase 60: `sanitize` — the first async non-convert operation
+**Rationale:** Sequenced last. Highest security bar, and the first consumer of every piece built in 56/57.
+**Delivers:** `SanitizeConverter` (engine `probe`), `QueueProbe`/`TypeProbeConvert`, `cmd/probe-worker`,
+an eighth `ScaledObject` (additive, zero diff to the existing seven), a second `AddOutput` with
+`role='report'`, and independent-parser verification of the sanitized output before upload.
+**Avoids:** Pitfalls 5, 6, 7, 15.
+
+### Independent hygiene tail (any slot)
+52 WR-01 (stuck in-flight job burns the daily budget forever, no operator relief but raw SQL), 52 WR-09
+(self-contradictory README quota section), and `PurgeUsage`'s Go-clock cutoff. **Zero file overlap** with
+56–60, per the Phase-54 precedent of shipping hygiene debt as an explicitly separate, non-noisy phase.
 
 ### Phase Ordering Rationale
 
-- Attribution before enforcement before visibility mirrors the milestone's own stated ordering ("Атрибуция" before "Границы") and is the only order in which each phase has real data to build against.
-- Quota enforcement and baseline fairness are the same phase because they are the same mechanism (Q1/Q3 = Q4 option A) — building them separately would duplicate the admission-cap machinery for no benefit.
-- Per-client sub-queue fairness (the one design that touches KEDA) is deliberately **not** in this roadmap — it is evidence-gated behind Phase 3's operator visibility showing admission caps are insufficient, consistent with this project's own precedent of rejecting speculative infrastructure that weakens an existing guarantee (SEED-010 rejection cited in PROJECT.md).
-- SEED-011 is unordered relative to the rest because it shares no code or data with the accounting/quota/fairness work.
+- **Attribution of dependencies is asymmetric:** 57 gates 58 and 60; 58 gates 59; 56 gates nothing hard but pays for itself in 60.
+- **Sanitize last, not first,** despite being the strongest product story — it needs the descriptor pattern, the operation dimension and the role column to all exist, and it carries the milestone's highest security bar.
+- **Adding an eighth queue is NOT high blast radius.** Verified: each `scaledobject-*.yaml`'s PromQL is self-contained to its own queue-name literal, and `AllConvertQueues()` exists precisely so the collector needs no second edit. Proven twice already (v1.10 OCR, v1.11 pandoc). *Renaming* a queue is the expensive operation — nothing in v1.13 requires it. Do not over-fear this and under-fear metric-label drift, which is the real KEDA risk here.
 
 ### Research Flags
 
-Needs research during phase planning:
-- **Phase 2 (quota enforcement):** the two open product decisions research explicitly left unresolved — (a) HTTP semantics for concurrency-cap rejection specifically (daily-volume overage has a clean 429+Retry-After answer; concurrency-cap rejection has no fixed retry time and could defensibly be 429-without-Retry-After or a distinct code — this is a product decision, not an architecture one); (b) whether `client_usage_daily` needs to be a daily rollup as designed, or whether the existing `jobs_client_created_idx` already covers "basic reporting" cheaply enough to defer the new table's write path. Both should be resolved as explicit roadmap/plan decisions, not assumed during implementation.
-- **Phase 2:** multi-replica correctness needs a live test with 2+ API replicas hammering one client's limit — this is a new class of test this project hasn't needed before (existing `api.replicas: 1` in every prior milestone).
+Needs a design spike during planning:
+- **Phase 58** — does any Tier-2 signal justify putting `pdfinfo`/`pdftotext`/`ffprobe` in `Dockerfile.api`? (Research recommends no; the trade-off is disclosed, not resolved.) Exact `pdfcpu` Go-API calls for encryption status and JS/OpenAction walking need a short implementation spike — the capability is confirmed in the object model, but there is no single convenience function.
+- **Phase 60** — the sanitize vocabulary decision; blacklist-removal vs reconstruct-from-trusted-content; the independent-verification parser choice.
 
-Phases with standard, well-documented patterns (skip research-phase):
-- **Phase 1:** pure extension of existing, already-proven patterns (`RecordJobOutcome` call sites, `promauto.NewCounterVec`, guarded-transaction UPSERT) — no open questions.
-- **Phase 3:** direct extension of the Phase 26 `OPERATOR_CLIENT_IDS` REST precedent — a solved problem in this codebase already.
-- **Phase 4 (SEED-011):** chart-only Helm values change, no architectural novelty.
+Standard patterns, skip a dedicated research phase: **56**, **57**, **59**.
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | asynq v0.26.0 and httprate v0.15.0 claims verified directly against vendored source, not assumed from docs. Prometheus cardinality guidance is MEDIUM (WebSearch-derived, cross-checked across multiple sources, no single canonical doc page) but the specific application to this codebase's metric shapes is HIGH (direct code read). |
-| Features | MEDIUM-HIGH | Grounded in the actual current schema/code (HIGH) plus verified ecosystem patterns (asynq wiki, k8s admission-control docs, MDN on 429) — a few forward-looking specifics (exact quota numbers, retention window) are explicitly flagged LOW and left as open questions for planning, not guessed at. |
-| Architecture | HIGH | No external ecosystem claims required — this is an internal-integration question, and every finding is sourced directly from repo files (`handlers.go`, `repo.go`, `queue.go`, `metrics.go`, `queue_collector.go`, `reconciler.go`, `0001_init.sql`, all 7 `scaledobject-*.yaml`, `PROJECT.md`). |
-| Pitfalls | HIGH (internal) / MEDIUM (external) | Every pitfall is anchored to a specific file/line/decision already in this repository (reconciler's documented T-03-12 residual race, ratelimit's own doc comment, the preset TOCTOU precedent). External cardinality-guidance sources are MEDIUM confidence (blog posts, cross-checked); the KEDA-specific fairness-breakage claim (Pitfall 8) is explicitly noted as LOW-external/HIGH-internal since no KEDA-specific fairness literature surfaced in search — the finding rests entirely on this codebase's own static PromQL/routing code. |
+| Stack | HIGH for existing-code findings (source read directly); MEDIUM for `pdfcpu` API specifics | Exact Go calls for JS/OpenAction detection need an implementation spike |
+| Features | MEDIUM-HIGH | Official docs (Tika, ffprobe, RFC 9457, Stripe) + vendor primary sources (OPSWAT, Glasswall) + open-source primary (Dangerzone) |
+| Architecture | HIGH | Every claim tied to a file/line read this session; all SEED-020/SEED-021 assertions independently re-verified |
+| Pitfalls | HIGH for codebase claims and PDF/OOXML security claims; MEDIUM for the k8s liveness-cascade inference | PDF incremental-update and OOXML zip-deletion behavior verified against spec/SANS ISC/a confirmed Open-XML-SDK issue; polyglot claim against CVE-2015-5092 |
 
-**Overall confidence:** HIGH
+**Overall confidence:** HIGH-MEDIUM
+
+### Corrections to the project's own artifacts (made by this research)
+
+1. **SEED-020 overstated its own cost.** Handler bodies measure 79–110 lines (86–127 with doc comments), not 94–163. `process()` at worker.go:1847-1942 is already the shared orchestration function, so the ×7 tax lives entirely in wrapper boilerplate. The "disk guards (av) / page caps (ocr)" the milestone framed as handler-level differences are converter-internal. Its "14 symmetric call sites" claim, however, is **exactly correct** (verified by grep).
+2. **SEED-021's code claims are fully verified** — `pdf` is a source format in exactly one place (`ocr.go:34`), the misleading comment is present verbatim, and the document engine genuinely never accepts pdf as source.
+3. **The queue blast-radius fear is misplaced.** Adding a queue is cheap and precedented; renaming one is not. The real KEDA risk in this milestone is metric-label drift.
 
 ### Gaps to Address
 
-- **HTTP semantics for concurrency-cap quota rejection** (429 without `Retry-After` vs. a distinct status) is unresolved by design — flag as a roadmap/plan-time decision point in Phase 2, not something to assume during research synthesis.
-- **`client_usage_daily` vs. reusing `jobs_client_created_idx`** — research recommends the new rollup table but flags that the existing per-job index may already answer "basic reporting" cheaply enough that the new table's write path could be deferred; resolve this trade-off explicitly when planning Phase 1/3, ideally validated against a realistic row-count estimate.
-- **Retention/purge policy for `jobs`/`job_events`** (and, by extension, `client_usage_daily`) — genuinely orthogonal to this milestone per all four researchers, but is a pre-existing, unaddressed gap this milestone's own new table would otherwise silently repeat. Recommend the new table state its retention/rollup design explicitly in its creation migration even if a full purge mechanism is out of scope, and track the pre-existing `jobs`/`job_events` gap as a named, ID'd tech-debt item (matching this project's existing AVX-02/K8SV2-03-style tracking discipline) rather than leaving it silent.
-- **Exact quota default values** (concurrency cap per engine, daily byte/job budget) — not resolved by research; these are operator-tunable, default-`NULL` (unlimited) values to be set during rollout, not fixed architectural constants.
-- **Enforcement coverage across every job-creation entry point**, including `cmd/mcp-server` and `cmd/mcp-http`, not just the REST handler — flagged repeatedly (PITFALLS.md Pitfall 10) as a place bypass risk hides if enforcement is later refactored into HTTP-middleware-only; must be an explicit success criterion (integration test through both REST and at least one MCP path) in whichever phase ships enforcement, not assumed to "just work" because MCP currently proxies to REST.
+- **`sanitize` operation vocabulary** — undecided, and the sources disagree (`0001_init.sql` CHECK vs SEED-013's `probe`-as-engine framing vs the milestone's literal-new-value framing). Must be a written decision in Phase 57, before any migration lands.
+- **Blacklist-removal vs reconstruct-from-trusted-content** for sanitize — a real design decision this research could not resolve; depends on available offline-CLI tooling compatible with the `runCommand` convention.
+- **Independent-verification parser choice** for sanitize output.
+- **Whether Tier-2 inspect signals justify binaries in `Dockerfile.api`** — disclosed trade-off, not resolved.
+- **Born-digital extraction tool choice** — explicitly not settled by this research or by the milestone scope.
+- **Whether inspect's rate budget needs multi-replica correctness** (QUOT-05-style) — depends on the deployment target for this milestone.
+- **Whether `GET /v1/jobs/{id}` must stay byte-identical for existing convert jobs** — needs an explicit testable requirement, not an assumption; both MCP servers depend on it.
+- **LOW-confidence external claims:** exact JSON field names for Tika `/meta`, CloudConvert `get-metadata`, and pdf-inspector's `--json`; pdf-inspector's own unmeasured binary-size and 10-50ms timing claims.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- `asynq@v0.26.0` vendored source (`server.go`, `client.go`, `aggregator.go`, `inspector.go`) — read directly, not assumed
-- `httprate@v0.15.0` vendored source (`limiter.go`, `local_counter.go`, `httprate.go`) — read directly
-- OctoConv repository (authoritative for all architecture/pitfall findings): `internal/api/handlers.go`, `internal/jobs/repo.go`, `internal/queue/queue.go`, `internal/metrics/metrics.go`, `internal/metrics/queue_collector.go`, `internal/ratelimit/ratelimit.go`, `internal/reconciler/reconciler.go`, `internal/worker/worker.go`, `internal/clients/clients.go`, `internal/db/migrations/0001_init.sql`, `deploy/chart/octoconv/templates/scaledobject-*.yaml`, `deploy/chart/octoconv/values.yaml`, `.planning/PROJECT.md`
-- [Queue Priority · hibiken/asynq Wiki](https://github.com/hibiken/asynq/wiki/Queue-Priority) — official project wiki, confirms weighted/strict priority is a named-queue property, not per-task
-- [Admission Control in Kubernetes](https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/) and [ResourceQuota admission-control design doc](https://github.com/kubernetes/design-proposals-archive/blob/main/resource-management/admission_control_resource_quota.md) — official k8s docs, precedent for reject-at-admission
-- [429 Too Many Requests — MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/429)
+- Direct reads of `internal/worker/worker.go` (full, 1990 lines), `internal/jobs/{repo,admission,usage,retention}.go`, `internal/convert/{convert,converters,ocrguards,ocr,sniff,docsniff,dimensions,olecfb,av,avsniff,audiosniff,libvips,exec}.go`, `internal/api/{handlers,api,formats_handlers}.go`, `internal/queue/queue.go`, `internal/metrics/metrics.go`, `internal/reconciler/reconciler.go`, migrations `0001`–`0014`, `deploy/chart/octoconv/templates/scaledobject-*.yaml`, `Dockerfile.api`, `Dockerfile.ocr-worker`
+- [RFC 9457: Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457.html)
+- [ffprobe documentation](https://ffmpeg.org/ffprobe.html) — cross-verified against this project's own `avduration.go`
+- [Stripe API error codes](https://docs.stripe.com/error-codes)
+- [Dangerzone (freedomofpress)](https://github.com/freedomofpress/dangerzone)
+- Context7 `/websites/pdfcpu_io`, `/websites/pkg_go_dev_github_com_pdfcpu_pdfcpu`
 
 ### Secondary (MEDIUM confidence)
-- Prometheus label cardinality best practices — multiple independent WebSearch sources, cross-checked and consistent: [The Prometheus Cardinality Bomb](https://openobserve.ai/blog/prometheus-data-cardinality/), [Prometheus Label Best Practices](https://oneuptime.com/blog/post/2026-01-30-prometheus-label-best-practices/view), [Prometheus Labels: Understanding and Best Practices](https://middleware.io/blog/prometheus-labels/), [SigNoz: Limitations of Prometheus Labels](https://signoz.io/guides/what-are-the-limitations-of-prometheus-labels/), [Last9: High Cardinality in Prometheus](https://last9.io/blog/how-to-manage-high-cardinality-metrics-in-prometheus/)
-- [Fixing noisy neighbor problems in multi-tenant queueing systems — Inngest Blog](https://www.inngest.com/blog/fixing-multi-tenant-queueing-concurrency-problems) — used to argue against porting per-tenant virtual queues at this system's scale
-- [prometheus/client_golang Discussion #970](https://github.com/prometheus/client_golang/discussions/970) — client-side cardinality guarding pattern
+- [OPSWAT Deep CDR](https://www.opswat.com/technologies/deep-cdr) and its VBA-stomping page; [Glasswall CDR docs](https://docs.glasswall.com/docs/about-glasswall-cdr)
+- [Apache Tika Server docs](https://tika.apache.org/docs/4.0.0-SNAPSHOT/using-tika/server/index.html); [CloudConvert API v2](https://cloudconvert.com/api/v2); [Transloadit Robots](https://transloadit.com/docs/robots/)
+- [qpdf](https://qpdf.readthedocs.io/en/stable/license.html), [mutool clean](https://mupdf.readthedocs.io/en/latest/tools/mutool-clean.html), Debian bookworm package tracker, [Ghostscript licensing](https://ghostscript.com/licensing/), [pikepdf](https://github.com/pikepdf/pikepdf)
+- [pdfcpu releases](https://github.com/pdfcpu/pdfcpu/releases) and [issue #653](https://github.com/pdfcpu/pdfcpu/issues/653) (JS removal is an open request, not shipped)
 
-### Tertiary (LOW confidence)
-- KEDA-specific fairness/priority-queue claims (PITFALLS.md Pitfall 8) — no KEDA-specific fairness literature surfaced via search; conclusion rests entirely on direct reading of this codebase's own static PromQL/routing code (HIGH internal confidence, LOW external corroboration)
+### Tertiary (LOW confidence — needs validation)
+- [firecrawl/pdf-inspector](https://github.com/firecrawl/pdf-inspector) — MIT, 0.1.7 pre-1.0, no prebuilt dual-arch binaries found; network/timing/size claims are the project's own README, unmeasured
+- VirusTotal / Cloudmersive response schemas — search-summarized, not fetched live
 
 ---
-*Research completed: 2026-08-02*
+*Research completed: 2026-08-07*
 *Ready for roadmap: yes*
-
----
-
-## Corrections after PR #3 review (2026-08-02)
-
-An external review of the milestone plan found four design defects in
-`ARCHITECTURE.md`'s proposed integration shape. **Where this section and
-`ARCHITECTURE.md` disagree, this section wins** — the phase planner should treat
-the items below as binding.
-
-1. **The admission check must be serialized per (client, engine).**
-   `ARCHITECTURE.md` describes a `SELECT count(*)` of the client's queued/active
-   jobs followed by `Repo.Create`. Reading shared Postgres rows does not make
-   check-and-insert atomic: two API replicas can both observe a count below the
-   cap and both admit, so a cap of K admits more than K. The count and the create
-   must share one transaction under a per-(client, engine) advisory lock or an
-   equivalent atomic counter. `STACK.md` did specify `pg_advisory_xact_lock`;
-   `ARCHITECTURE.md` dropped it.
-
-2. **The authoritative reservation must precede the S3 write.**
-   `ARCHITECTURE.md`'s gate ordering uploads the request body before the tier-3
-   reserve resolves, so a client that loses the reserve has already consumed S3
-   bandwidth and storage — repeatedly, at will. This contradicts QUOT-02 as
-   written ("до записи в S3"). Reserve first; release the reservation if a later
-   step fails.
-
-3. **Reservations and completed usage must be distinguishable.**
-   If admission increments the daily rollup to reserve capacity and the terminal
-   transition increments the same counters again, every completed job is counted
-   twice and clients exhaust their daily budget early. The table needs a
-   reserved-versus-consumed distinction (or an identifiable reservation that
-   completion finalizes), not one pair of counters written by both paths.
-
-4. **The usage write belongs inside the terminal-transition transaction.**
-   `ARCHITECTURE.md` proposes an adjacent `RecordUsage` call after
-   `MarkDone`/`MarkFailed`. If the worker dies in between, the job is already
-   terminal — neither an asynq retry nor the reconciler will revisit it — and the
-   usage is lost permanently. ACCT-03's exactly-once guarantee requires the rollup
-   update to be part of the same guarded transaction as the status transition.
-
-Two further findings were applied directly to the ROADMAP's Phase 51 success
-criteria and need no separate design note: cardinality must be bounded by a
-configured numeric ceiling with a stable overflow label (restricting labels to
-IDs present in `clients` is not a bound, since clients can be added
-indefinitely), and retention must be an executable mechanism proven to remove
-aged rows, not a policy described in a migration comment.

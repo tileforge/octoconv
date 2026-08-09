@@ -76,6 +76,13 @@ func main() {
 	// registered converter, so this single write must happen-before every
 	// concurrent read.
 	//
+	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
+	// instead of silently last-write-winning -- this deliberate overwrite of
+	// converters.go's own placeholder registration moved to Registry.Replace,
+	// which performs the identical unconditional overwrite without the
+	// occupancy check. Using Register here would panic on startup against
+	// the very placeholder this re-registration exists to override.
+	//
 	// PANDOC_MAX_INPUT_BYTES default (50 MiB) is Claude's Discretion
 	// (48-CONTEXT.md): pandoc reads its input linearly with no exotic
 	// pre-parse "bomb shape" to guard against (markupsniff.go's own
@@ -90,7 +97,7 @@ func main() {
 	// evidence/blocker1-memory-probe-20260802.txt). Do not raise the deployed
 	// value without re-running that probe.
 	pandocMaxInputBytes := envInt64("PANDOC_MAX_INPUT_BYTES", 50<<20)
-	convert.Default.Register(buildPandocConverter(pandocMaxInputBytes))
+	convert.Default.Replace(buildPandocConverter(pandocMaxInputBytes))
 	log.Printf("📏 PANDOC_MAX_INPUT_BYTES=%d", pandocMaxInputBytes)
 
 	// PANDOC_ENGINE_TIMEOUT default of 90s is the UNMEASURED FALLBACK for a
@@ -155,7 +162,7 @@ func main() {
 	// sweeper of any kind is constructed or run here.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypePandocConvert, h.HandlePandocConvert)
+	mux.HandleFunc(queue.TypePandocConvert, worker.NewRunner(h, worker.PandocDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		// 1, not 2: pandoc is CPU-fast but MEMORY-heavy, so it belongs with the

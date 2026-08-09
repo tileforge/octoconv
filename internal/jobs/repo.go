@@ -203,6 +203,35 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 // clock).
 func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
 	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+		// D-13: a done job without exactly one primary output is an
+		// unreachable state, enforced here rather than in transition()
+		// because this is a precondition of MarkDone's own semantics, not
+		// of the transition mechanics transition() implements — the
+		// transition helper itself is a documented untouchable invariant
+		// (PROJECT.md, 56-CONTEXT.md) shared by MarkFailed/Cancel/
+		// MarkActive/RequeueStale, none of which need this check and none
+		// of which call this closure. There is no race: this SELECT runs
+		// on the SAME tx that transition() already holds the job row
+		// locked on (`SELECT status ... FOR UPDATE` above, this function),
+		// under the pinned ReadCommitted isolation level, so no concurrent
+		// AddOutput/MarkDone can slip between the count and the UPDATE
+		// below. If this returns an error, transition()'s pgx.BeginTxFunc
+		// rolls back the whole apply closure — the UPDATE jobs above never
+		// happened either, and recordUsage never runs — so the job stays
+		// active, not half-done. For the caller (the worker), this is an
+		// ordinary, retryable error: it is NOT wrapped in asynq.SkipRetry
+		// like the illegal-transition case in internal/worker/worker.go,
+		// because the path self-heals — a retried task re-runs AddOutput
+		// (upsert on (job_id, ordinal)) before calling MarkDone again.
+		var n int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM job_outputs WHERE job_id = $1 AND role = 'primary'`, id,
+		).Scan(&n); err != nil {
+			return fmt.Errorf("count primary outputs for job %s: %w", id, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("job %s has %d primary outputs, exactly 1 required to mark done", id, n)
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err
@@ -406,6 +435,17 @@ func (r *Repo) RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, stat
 // DO UPDATE rather than DO NOTHING: the retried conversion may legitimately
 // produce a different object_key or size, and the newest attempt is the one
 // whose object actually exists in storage.
+//
+// role is deliberately absent from both the INSERT column list and the
+// ON CONFLICT SET clause (D-16): job_outputs.role carries a DB-level default
+// ('primary', 0015_operation_and_output_roles.sql), and that default -- not
+// this Go layer -- is the source of truth, closing the class of defect where
+// an API-side default silently drifts out of sync with the DB default. When
+// Phase 60 starts writing an output with role='report', it needs a dedicated
+// write path for that column, added deliberately alongside a guarantee that
+// no existing caller of AddOutput starts silently overwriting a row's role
+// back to a Go zero-value ("") on retry -- do not add role to this upsert
+// without that guarantee in place.
 func (r *Repo) AddOutput(ctx context.Context, jobID uuid.UUID, o Output) error {
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
@@ -530,10 +570,16 @@ func (r *Repo) Inputs(ctx context.Context, jobID uuid.UUID) ([]Input, error) {
 	return out, rows.Err()
 }
 
-// Outputs lists a job's outputs ordered by ordinal.
+// Outputs lists a job's outputs ordered by ordinal. ORDER BY ordinal is kept
+// as-is (not extended to role): job_outputs_job_ordinal_key UNIQUE (job_id,
+// ordinal) (0012_output_identity_and_retention_index.sql) already makes
+// ordinal a stable sort key, and primary-output selection in handleGetJob is
+// role-driven, not positional -- adding role to this ORDER BY would resolve
+// no existing ambiguity while introducing a second, hidden dependency on row
+// order.
 func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT ordinal, object_key, filename, format, size_bytes, content_type
+		SELECT ordinal, object_key, filename, format, size_bytes, content_type, role
 		FROM job_outputs WHERE job_id = $1 ORDER BY ordinal`, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("query outputs: %w", err)
@@ -545,7 +591,11 @@ func (r *Repo) Outputs(ctx context.Context, jobID uuid.UUID) ([]Output, error) {
 		var o Output
 		var key, name, format, ct *string
 		var size *int64
-		if err := rows.Scan(&o.Ordinal, &key, &name, &format, &size, &ct); err != nil {
+		// role is NOT NULL (0015_operation_and_output_roles.sql), so unlike
+		// object_key/filename/format/content_type above it scans directly into
+		// a plain string, not through the *string + deref() nullable-column
+		// pattern.
+		if err := rows.Scan(&o.Ordinal, &key, &name, &format, &size, &ct, &o.Role); err != nil {
 			return nil, fmt.Errorf("scan output: %w", err)
 		}
 		o.ObjectKey, o.Filename, o.Format, o.ContentType = deref(key), deref(name), deref(format), deref(ct)

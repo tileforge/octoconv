@@ -1,334 +1,892 @@
 # Pitfalls Research
 
-**Domain:** Adding per-tenant accounting, quotas, and fairness to a live, already-integrated multi-consumer async conversion platform (OctoConv v1.12)
-**Researched:** 2026-08-02
-**Confidence:** HIGH (grounded directly in this codebase's existing metrics/queue/reconciler/rate-limit implementation) / MEDIUM (external Prometheus-cardinality and KEDA-fairness claims, verified against multiple sources but not against OctoConv's own live Prometheus at scale)
-
-This is not generic "quotas are hard" advice. Every pitfall below is anchored to a specific file, decision, or documented residual risk already in this repository: `internal/metrics/metrics.go`, `internal/metrics/queue_collector.go`, `internal/reconciler/reconciler.go`, `internal/ratelimit/ratelimit.go`, `deploy/chart/octoconv/templates/scaledobject-*.yaml`, and the project's own recorded anti-patterns (constant-copying — "PITFALLS.md Pitfall 7" referenced repeatedly in `.planning/STATE.md`/`PROJECT.md` across the AV/OCR/Pandoc milestones — and env-value drift between Go defaults, docker-compose, `.env.example`, and the Helm ConfigMap, which recurred twice in the v1.11 milestone).
+**Domain:** Adding inspect/sanitize/operation-dimension/large-handler-refactor to an
+existing production-hardened Go async file-conversion service (OctoConv v1.13 "Inspect &
+Operations")
+**Researched:** 2026-08-07
+**Confidence:** MEDIUM-HIGH — codebase claims verified directly against
+`internal/worker/worker.go`, `internal/api/handlers.go`, `internal/convert/ocrguards.go`,
+`internal/metrics/metrics.go`, `.planning/PROJECT.md`, `.planning/seeds/SEED-020.md`,
+`SEED-013.md`, `SEED-021.md`, and `v1.12-MILESTONE-AUDIT.md`; sanitization security claims
+verified against public CVEs, the PDF spec's incremental-update mechanism, OOXML/OPC package
+semantics, and CDR vendor documentation (see Sources) — LOW confidence only where explicitly
+flagged.
 
 ## Critical Pitfalls
 
-### Pitfall 1: `client_id` multiplies existing cardinality, not just adds to it
+### Pitfall 1: The synchronous `/v1/inspect` handler starves `/healthz` and cascades a fleet-wide outage
 
 **What goes wrong:**
-Today `octoconv_job_outcomes_total` and `octoconv_job_duration_seconds` are labeled `{engine, status}` — 7 engines × ~3 statuses = ~21 series for the counter, and 21 × 15 histogram buckets for the duration histogram (`internal/metrics/metrics.go:13-22`). Adding `client_id` does not add N series, it **multiplies** the existing label space by N: 21×N for the counter, 21×15×N for the histogram. With ~20-30 internal clients and 7 (soon 8+) engines, this is a low-hundreds-to-low-thousands series count today — survivable — but every new engine class the project has shipped roughly once a month makes the multiplier permanent and growing, and nothing in the current `promauto.NewCounterVec`/`NewHistogramVec` declarations enforces a ceiling on distinct `client_id` values actually seen.
+`handleHealth` and the future `handleInspect` both live in the same `net/http` server
+process (`cmd/api/main.go`), sharing its goroutine pool and CPU allocation. Every other
+safety property in this codebase — engine timeouts, `Setpgid`+SIGKILL, per-engine
+concurrency caps — exists because analysis-on-untrusted-input is assumed to happen in a
+worker with its own cgroup (`docker-compose.yml`: worker `cpus: "2.0"`, `memory: 1g`,
+isolated per engine class). `/v1/inspect` is the first code path that puts real parsing of
+adversarial bytes (magic-byte sniff is cheap; page/frame/stream analysis for "pages,
+duration, resolution, codecs, risks" is not) directly on the same process that serves
+`/healthz`, which k8s liveness probes and (transitively, via pod restarts) the whole fleet
+depend on. A handful of concurrent pathological inspect requests (deeply nested PDF object
+graphs, a crafted OOXML with a huge but not-yet-bomb-classified zip central directory, a
+media file with a degenerate container) can consume enough CPU/goroutines to make
+`/healthz` itself slow or unresponsive — which is not "that one client gets a slow
+response," it is "the liveness probe fails, k8s restarts the API pod, and every client's
+`POST /v1/jobs` and quota-gate traffic drops with it."
 
 **Why it happens:**
-Teams reason about cardinality additively ("one more label, N more series") instead of multiplicatively against every *already-existing* label on the same metric. OctoConv already has 4 metrics; adding `client_id` to all of them "for consistency" (job outcomes, job duration, webhook deliveries, reconciler actions) compounds the problem across every one rather than just the one that actually needs per-client attribution.
+Every existing synchronous handler in `internal/api/handlers.go` does bounded, cheap work
+(multipart parse capped by `MaxBytesReader`, magic-byte sniff of a fixed prefix, declared
+image-dimension parse without decode) specifically so it can stay synchronous safely. Inspect
+is different in kind, not degree — it is being asked to do real content analysis, and the
+milestone spec itself concedes this ("границы обязаны быть явными требованиями, а не
+допущением: потолок работы + ограниченная выборка страниц"). The risk is that "explicit
+bound" gets implemented as a per-analysis-step timeout (easy, familiar) rather than as a
+process-wide isolation guarantee (hard, unfamiliar to this codebase, which has never needed
+it before).
 
 **How to avoid:**
-- Add `client_id` to exactly one metric family purpose-built for accounting (e.g. a new `octoconv_client_job_total{client_id, engine, status}` counter), not by editing the existing 4 metrics in place. Keep `octoconv_job_outcomes_total`/`octoconv_job_duration_seconds` engine/status-only for operational dashboards and alerting that must stay cheap and stable.
-- Do not add `client_id` to a histogram at all — histograms already multiply by bucket count; a per-client duration histogram is the single most expensive shape available. Use a counter (or, if duration matters, per-client only a `_sum`/`_count` pair, not full buckets) for the accounting-purpose metric.
-- `clients` is a bounded, operator-managed Postgres table (internal services only) — cap cardinality explicitly by deriving the label set from `SELECT id FROM clients`, not by trusting whatever string arrives at label-time. Never label with anything derived from request input (job id, filename, preset name) even by accident.
-- Enforce the cap in code, not by convention: register the accounting metric behind a small allowlist check (reject/collapse to `"unknown"` any `client_id` not present in a periodically-refreshed in-memory set from the `clients` table) so a bug elsewhere (e.g. a malformed UUID leaking through) cannot mint unbounded series.
+- Treat `/v1/inspect` work as requiring the SAME `runCommand` hardening discipline
+  (`internal/convert/exec.go`, Setpgid + process-group SIGKILL) as every worker engine
+  invocation — never ad-hoc `os/exec` or in-process parsing libraries without an explicit
+  wall-clock bound tied to `r.Context()`.
+- Bound total inspect work with a dedicated, small, measured timeout — do not reuse or
+  guess from any `*_ENGINE_TIMEOUT` (this project's own anti-pattern, restated seven times in
+  Key Decisions: never copy a sibling's timeout).
+- Consider a bounded worker-pool / semaphore specifically for inspect (distinct from the
+  general `net/http` goroutine-per-request model) so a burst of inspect requests cannot
+  starve the health-check goroutine or the quota-admission code path, both of which share
+  the process.
+- Live-gate this the same way KEDA scale-from-zero was live-gated: fire a burst of
+  adversarial-shaped inspect requests concurrently and assert `/healthz` latency and the
+  liveness-probe SLA hold, not just that inspect itself returns a bounded response.
 
 **Warning signs:**
-`/metrics` scrape body size or scrape duration growing measurably after the accounting feature ships; `prometheus_tsdb_symbol_table_size_bytes` or head series count climbing in step with new client onboarding rather than staying flat; Grafana panels querying `octoconv_job_duration_seconds` becoming slow.
+`/healthz` p99 latency degrading under inspect load in staging; k8s pod restarts correlated
+with inspect traffic; `POST /v1/jobs` (which shares the process) showing latency spikes with
+no corresponding change in Postgres/S3/Redis load.
 
 **Phase to address:**
-The phase that introduces the accounting metric itself — cardinality bounding must be a stated success criterion of that phase, not a follow-up hardening task.
+The synchronous `POST /v1/inspect` phase — this must be a named success criterion (with a
+live gate, following this project's own precedent), not an assumption folded into "add the
+endpoint."
 
 ---
 
-### Pitfall 2: Adding `client_id` to `octoconv_queue_depth` breaks the one metric KEDA actually reads
+### Pitfall 2: The JobRunner refactor collapses per-engine timeout classification onto a single axis, silently destroying stage-based asymmetries
 
 **What goes wrong:**
-`octoconv_queue_depth{queue, state}` is collected via `queueDepthCollector.Collect` (`internal/metrics/queue_collector.go:32-45`), which calls `asynq.Inspector.GetQueueInfo(q)` once per queue — a cheap, O(1)-ish aggregate Redis call. KEDA's PromQL is `sum(octoconv_queue_depth{queue="image", state=~"pending|active|retry"})` (`deploy/chart/octoconv/templates/scaledobject-image.yaml:38`, mirrored per engine). If `client_id` is added to this metric "for consistency" with the accounting work, two things break at once:
-1. **Cardinality**: `GetQueueInfo` has no per-client breakdown — producing per-client queue depth would require enumerating individual tasks (`ListPendingTasks`/`ListActiveTasks`/`ListRetryTasks`) per queue per scrape, turning a cheap aggregate call into an O(queue depth) Redis scan on every Prometheus scrape interval, for every one of 8 engine queues.
-2. **Query semantics**: KEDA's `sum(...)` already aggregates away extra labels, so functionally nothing changes for KEDA *if done correctly* — but the risk is a copy-paste mistake where someone updates the ScaledObject template's PromQL to filter or group by `client_id` "to be more precise," which then undercounts total backlog (a `sum without(client_id)` bug, or a stray `client_id="x"` filter left in a template) and KEDA scales on a fraction of the real backlog.
+`internal/worker/worker.go` currently has seven bespoke terminal-error classifiers, and at
+least two of them are NOT expressible as "is a timeout terminal for this engine: yes/no."
+`isAudioTerminal` (worker.go:293-338) treats a timeout during the ffmpeg-normalize stage as
+terminal but a timeout during the whisper-cli-transcribe stage as transient — a stage
+distinction WITHIN one engine. `isAVTerminal` (worker.go:355-389) goes further: a timeout
+during the expensive transcode stage is transient, but ANY failure (timeout or not) during
+the cheap audio-extract/thumbnail stages is terminal — the opposite polarity from audio's
+own rule, deliberately, per the codebase's own comment: "porting audio's rule verbatim would
+... silently destroy the transient-retry behavior this classifier exists to provide." If
+SEED-020's "per-engine differences as data, not branches" is implemented as a per-engine
+`TimeoutIsTerminal bool` (the natural first design), it has no way to represent
+`isAVTerminal`'s per-STAGE split, and the refactor will either (a) force AV and Audio into a
+shape they don't fit, silently changing retry behavior for the two most expensive engine
+classes, or (b) leave them as hardcoded exceptions bolted onto the "data-driven" runner,
+defeating the stated purpose of the refactor for exactly the two cases where the tax the
+refactor is meant to eliminate is highest.
 
 **Why it happens:**
-"We're adding `client_id` everywhere for attribution" is a natural but wrong generalization — `octoconv_queue_depth` was deliberately relocated from per-worker to the always-on `api` process specifically to make it a single scrape-cheap source of truth for KEDA (documented in Phase 27's KEDA-01 decision and re-verified by `TestQueueDepthMetricRelocationE2E`). It is infrastructure-critical, not an accounting metric, and should be governed by a different, stricter change-control bar.
+The refactor's stated contract (SEED-020) is "per-engine differences ... as data." Stage-
+level differences are a strictly finer axis than engine-level differences, and it is easy to
+under-model the data schema on the first pass — especially because five of the seven engines
+(image, document, html, ocr, pandoc) genuinely ARE representable as a single per-engine
+timeout-classification flag, making the two outliers (audio, av) look like noise rather than
+signal until a live/load test exercises them specifically.
 
 **How to avoid:**
-- Explicit rule for this milestone: `octoconv_queue_depth` gets zero new labels and zero new label values. Per-client backlog visibility (if wanted) is a **separate** metric computed a **separate** way (e.g. periodic Postgres aggregation of `jobs` rows in `queued`/`active` grouped by `client_id`, not derived from the asynq Inspector).
-- Treat any diff touching `internal/metrics/queue_collector.go` or `deploy/chart/octoconv/templates/scaledobject-*.yaml` during this milestone as requiring the same live KEDA gate discipline the project already uses (`scripts/keda-gate.sh`) before merge — this metric has a proven blast radius (WR-01: a scrape gap here already once caused KEDA to read an empty queue as "nothing pending").
-- Add a pinning test (mirroring the project's existing `TestNewQueueDepthCollectorDescribeAllFourQueues` style) that asserts the `octoconv_queue_depth` label set is exactly `{queue, state}` and fails loudly if a future PR adds a label to it.
+- Before writing the runner, enumerate every `isXTerminal` function's FULL decision tree
+  (not just its timeout branch) as data: at minimum `(stage, isTimeout) -> terminal|transient`,
+  not `(engine, isTimeout) -> terminal|transient`. Audio and AV are the forcing examples;
+  design the schema to fit them first, then verify the other five degenerate correctly to a
+  single implicit stage.
+- Port every existing pinning test (`TestIsAudioTerminal`, and any analogous test for AV, OCR,
+  Pandoc) unchanged in intent — same input errors, same expected terminal/transient verdict —
+  against the NEW data-driven classifier, not just against a generic "runner produces the
+  right Mark* call" test.
+- Do not let "the data model is uglier for two engines" become pressure to special-case those
+  two OUTSIDE the runner; that reintroduces exactly the branch-not-data shape SEED-020 exists
+  to remove, just relocated.
 
 **Warning signs:**
-Any new label appearing in a diff to `queue_collector.go` or the ScaledObject PromQL strings; scrape latency on `/metrics` (api process) increasing after the accounting feature ships; KEDA's `external.metrics.k8s.io` values disagreeing with `asynqmon`'s reported queue depth for the same queue.
+A refactored classifier that takes only `(engine, err)` and internally still has an `if
+engine == "av" { ... }` branch — that is the smell of an under-fit data schema. A code review
+or diff where `isAudioTerminal`'s or `isAVTerminal`'s stage-prefix string matching
+(`"audio: ffmpeg:"`, `ErrAVTranscodeFailed` vs `ErrAVAudioExtractFailed`) gets flattened into
+one boolean during the port.
 
 **Phase to address:**
-The phase that touches Prometheus metrics at all — make "queue_depth is frozen" an explicit, tested constraint stated in that phase's plan, not an assumption.
+The JobRunner consolidation phase (SEED-020) — this is the single highest-value thing a
+reviewer should check line-by-line against the pre-refactor `worker.go`, not sample-check.
 
 ---
 
-### Pitfall 3: A cardinality-degraded Prometheus silently degrades autoscaling for the whole platform, not just accounting
+### Pitfall 3: `outs[0]` is not role-aware — a `sanitize` job's report can be served as the primary result, or the primary result can be hidden
 
 **What goes wrong:**
-If the accounting metrics (Pitfall 1) do explode cardinality despite precautions, the blast radius is not contained to accounting dashboards. The in-chart Prometheus (`deploy/chart/octoconv/templates/prometheus.yaml`) is the same instance KEDA's Prometheus scaler queries for `octoconv_queue_depth`. High cardinality does not typically crash Prometheus outright, but it does increase scrape duration, WAL/head-block memory, and query latency across *every* series it holds — including KEDA's own polling query. Given the chart's already-adopted defensive posture (`ignoreNullValues: "false"` + `fallback.replicas: 1` from WR-01, precisely because a *different* Prometheus availability gap once caused KEDA to misread an empty scrape as zero backlog), a slow-but-not-down Prometheus under cardinality pressure risks the same failure mode returning through a new door: KEDA's query times out or returns stale data, and every engine class silently falls back to its `fallback.replicas` value instead of scaling to real backlog.
+`handleGetJob` (`internal/api/handlers.go:857-870`) does this today, unconditionally:
+
+```go
+outs, err := s.repo.Outputs(ctx, id)
+...
+if len(outs) > 0 {
+    url, err := s.storage.PresignGet(ctx, outs[0].ObjectKey, s.presignTTL)
+    ...
+    resp["download_url"] = url
+}
+```
+
+It always presigns `outs[0]` with zero awareness of a `role` column. The moment `sanitize`
+produces two outputs (`role=primary` cleaned file, `role=report` findings JSON) via
+`AddOutput`, whichever one happens to be inserted or returned first by
+`Repo.Outputs`'s ordering becomes `download_url`. If insertion order is not `primary` before
+`report` in every code path (initial implementation, a retry, a reconciler recovery), a
+client can silently receive the findings report where it expects the cleaned file — or the
+reverse, silently never seeing the report at all. This is not a hypothetical: it is the
+literal, present-tense shape of the handler this milestone is about to feed multi-output data
+for the first time.
 
 **Why it happens:**
-"Accounting" and "autoscaling" feel like separate concerns because they're separate *features*, but in this architecture they share one Prometheus instance and one scrape budget. A change that is purely additive from the accounting feature's point of view is not additive from KEDA's point of view.
+Every engine class shipped so far is strictly 1-input/1-output (PROJECT.md's own documented
+architectural constraint: "Single-input/single-output assumption ... the worker and API
+currently only read/write ordinal 0"). `handleGetJob` was written and reviewed under that
+assumption and has never been exercised with `len(outs) > 1`. Nothing in the existing test
+suite proves `outs[0]` is safe to special-case for role, because nothing before `sanitize`
+ever populates a second output row.
 
 **How to avoid:**
-- Load-test the `/metrics` scrape (api process) with a synthetic client-population-sized cardinality *before* shipping, not after — the project already has a `scripts/keda-load-proof.sh`-style discipline for measuring real behavior instead of assuming it; reuse that instinct here.
-- Consider a scrape-time or exposition-time budget check: alert if total exposed series count crosses a defined ceiling, independent of Prometheus's own storage limits.
-- Keep KEDA's scaler query as cheap as it is today (`sum(octoconv_queue_depth{...})` over a 2-label metric) — do not let it become a query that also has to filter/aggregate over a high-cardinality label, even transitively via recording rules that might later get reused carelessly.
+- Make `handleGetJob`'s output selection explicitly role-aware (`role == "primary"`) before
+  `sanitize` ships, not implicitly ordering-dependent. Treat `role=report` as a SEPARATE
+  response field (e.g. `report_url`), never conflatable with `download_url`.
+- Add a test that inserts outputs in `report, primary` order (the "wrong" order) and asserts
+  `download_url` still resolves to the primary file — proving the selection is role-driven,
+  not position-driven.
+- Audit `Repo.Outputs`'s SQL ordering guarantee (or lack of one) directly — an `ORDER BY
+  ordinal` without a role tiebreaker is exactly the kind of thing that "happens to work" until
+  a retry inserts rows in a different order.
 
 **Warning signs:**
-KEDA scale-from-zero live-gate timing regressing (compare against the project's own recorded baselines, e.g. Phase 28's 11s/60s SC1 proof) after the accounting feature ships; Prometheus scrape duration or evaluation duration metrics trending up.
+Any code review comment that reads "outs[0] is fine, sanitize always writes primary first" —
+that is an assumption, not an invariant, unless a test proves it under retry/reconciler-
+recovery interleaving too.
 
 **Phase to address:**
-Whichever phase ships the client-labeled accounting metrics should include a live regression check against the existing KEDA scale-from-zero gate as an explicit success criterion — not a new gate, the *existing* one, re-run to prove non-regression.
+The operation-dimension / `role` phase, BEFORE `sanitize` ships (not concurrently with it) —
+`handleGetJob`'s role-awareness is a precondition for `sanitize` being safe to expose, not a
+follow-on cleanup.
 
 ---
 
-### Pitfall 4: In-process quota counters race across API replicas exactly like the existing rate limiter already flags as a future problem
+### Pitfall 4: Metric-label drift breaks the KEDA contract during the exact milestone most likely to tempt it
 
 **What goes wrong:**
-`internal/ratelimit/ratelimit.go` is explicit in its own package doc: it uses `httprate`'s **in-process, in-memory** counter, which is correct only because today's deployment runs a single `api` replica (`deploy/chart/octoconv/values.yaml`, `api.replicas: 1`). The doc comment already names the upgrade path (`httprate.WithLimitCounter` + a Redis-backed counter) as a *known, deferred* gap. If quota/fairness counters (parallel-jobs-in-flight, daily-volume-consumed) are implemented the same way — an in-process map or counter inside the `api` binary — the moment an operator sets `api.replicas: 2` (a one-line Helm values change, not a code change, and nothing today prevents it), each replica enforces the limit independently: a client with a limit of 10 concurrent jobs can actually run up to 10×N concurrent jobs across N replicas, silently. This is a classic TOCTOU race even at replicas=1 if two requests from the same client land concurrently on the same process and both read-then-write the counter non-atomically.
+`TestJobDurationLabelsPinned` and `TestQueueDepthLabelsPinned` guard
+`octoconv_job_duration_seconds{engine,status}` and `octoconv_queue_depth{queue,state}` —
+every one of the seven `ScaledObject`s' PromQL triggers depends on exactly these label sets
+(PROJECT.md FAIR-02: "ноль `queue_depth` hits in the `metrics.go` diff" was itself a
+verified milestone invariant in v1.12). This milestone adds an `operation` dimension to the
+job model in the SAME window as the JobRunner refactor that touches every
+`RecordJobOutcome`/`RecordClientJobOutcome` call site (14 sites today, per SEED-020's own
+count). The natural, well-intentioned next thought during that refactor is "we're already
+touching all 14 call sites — let's add `operation` as a label while we're here, so an
+operator can distinguish `convert` failures from `sanitize` failures." That single line
+change breaks scale-from-zero for all seven engine classes simultaneously, silently, because
+neither pinning test's failure surfaces as a KEDA symptom until a real 0-replica engine class
+gets a job and nothing scales it up.
 
 **Why it happens:**
-The rate limiter precedent looks like a template to copy; its known limitation is well-documented but easy to miss if the new code is written by pattern-matching on existing code rather than reading its doc comments. Quotas feel like "the same shape as rate limiting" but have a materially different consequence for correctness — an over-limit *burst* from rate limiting self-heals next window; an over-limit *quota breach* from a race can mean a client silently exceeded its daily volume cap for the rest of the day with no automatic correction.
+The refactor and the operation dimension are two of this milestone's five target features
+landing in the same milestone, touching the same call sites, at the same time — the ideal
+conditions for “while we’re here” scope creep on a metric contract that has no compile-time
+enforcement, only two specific unit tests.
 
 **How to avoid:**
-- Do not implement quota/parallel-jobs counting as in-process state. Use Postgres — the system of record — as the single source of truth, inside the same transaction family as the existing "Postgres-first double write" (`internal/api/handlers.go`, `pgx.BeginFunc`).
-- Concretely: the admission check ("is this client under its parallel-jobs limit / daily-volume limit?") must be evaluated with a `SELECT ... FOR UPDATE` (or an equivalent atomic constraint, e.g. a partial unique index / `INSERT ... WHERE (subquery) < limit`) inside the **same transaction** that inserts the `jobs` row — mirroring the guarded-transition pattern (`Repo.transition`, row lock + allow-list check + write, all atomic) already used for job status changes. This closes the race at the database level regardless of how many `api` replicas exist.
-- If a fast in-process check is wanted as a pre-filter for cheap rejection (avoid a DB round-trip for obviously-over-limit clients), it must be advisory-only and re-verified atomically in Postgres before the row is actually written — never authoritative on its own.
+- State explicitly, in the JobRunner phase's plan, that `octoconv_job_duration_seconds` and
+  `octoconv_queue_depth` keep their EXACT current label sets — `operation`, if surfaced at
+  all, goes on `octoconv_client_job_outcomes_total` (already unbounded-cardinality-managed via
+  the `clientLabel` allocator) or a NEW counter, never on the two pinned metrics.
+- Keep `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` green through every commit
+  of the refactor, not just at the end — this project's own CI runs `go test` on every push;
+  make sure these two tests are not skipped or the metric that would fail is not accidentally
+  removed and re-added under a different name (which changes the test's own label-set literal
+  and would falsely "pass" a re-authored pinning test).
+- Mirror v1.12 Phase 51's own precedent for `octoconv_client_job_outcomes_total`: a NEW,
+  purpose-built counter for a new dimension, deliberately NOT added to the two histograms
+  already near ~250 series.
 
 **Warning signs:**
-Load-testing a single client's concurrent job submissions against 2+ `api` replicas and observing more in-flight jobs than the configured limit; any quota-check code path that does not touch Postgres inside the same transaction as job creation.
+Any diff to `internal/metrics/metrics.go` during the JobRunner or operation-dimension phases
+that touches the `[]string{"engine","status"}` or `[]string{"queue","state"}` label
+declarations at all — that line should not appear in this milestone's diff, full stop
+(mirrors FAIR-02's own "zero-diff" verification method from v1.12).
 
 **Phase to address:**
-The phase that implements the fail-closed admission check — this must be a stated design constraint of that phase's plan (Postgres-atomic, replica-count-independent), verified with a live test that runs 2+ API replicas concurrently, not just 1.
+The JobRunner consolidation phase — verify with a diff-based check (`git diff` against the
+label declarations, exactly as FAIR-02 was verified in Phase 52), not just by running the
+pinning tests once at the end.
 
 ---
 
-### Pitfall 5: Reconciler re-enqueue can double-fire usage accounting through the exact race the project already documented and accepted for `RecoveryCount`
+### Pitfall 5: `sanitize` implemented as "delete known-bad" rather than "reconstruct from known-good" produces a false-clean guarantee
 
 **What goes wrong:**
-The reconciler's own code comment (`internal/reconciler/reconciler.go:358-376`, T-03-12) documents an **accepted residual race**: if the first `RequeueStale` call actually commits server-side but the client (the reconciler process) observes a transport error before acknowledging it, the reconciler's bounded single retry runs a **second** genuinely-successful transition and records a second recovery event — over-counting `RecoveryCount` by one. This is accepted today because the only consequence is one job reaching `reconciler_exhausted` slightly earlier than intended. If a new usage/accounting write is hooked onto the same code path (e.g., "record machine-time consumed" at the point a job transitions to `done`, or "decrement in-flight quota" at the point a job is marked failed/done), the same race window means a job that was merely *slow, not actually stranded* — and completed normally between the reconciler's `FindStale` read and its `RequeueStale` write — could, in the rare double-fault case, have its terminal transition recorded twice if the accounting write is not independently idempotent.
+There are two fundamentally different implementation strategies for a sanitizer, and they
+produce different security guarantees while looking identical in a demo:
 
-More generally: a job re-enqueued by the reconciler (whether via the queued/active stale-recovery path or the webhook-gap path) must be counted **once** toward any usage/quota metric, regardless of how many times it is physically re-enqueued. The reconciler's enqueue-first + `asynq.ErrDuplicateTask` guard already solves this for *task execution* (a duplicate enqueue is rejected, so the job doesn't run twice) — but usage accounting is a *separate write path* and does not automatically inherit that guarantee unless it is deliberately built on the same guard or an equivalent one.
+1. **Blacklist removal** ("find macros/JS/embedded-files/external-refs and delete them"):
+   fast, preserves fidelity, but is only as complete as the removal logic's enumeration of
+   "bad." It cannot make a positive claim about the rest of the file.
+2. **Positive-selection reconstruction** (CDR's "rebuild from a template using only known-good
+   components," per vendor documentation — Glasswall, OPSWAT Deep CDR): rebuilds the document
+   from a trusted schema, discarding anything not explicitly reconstructed. Stronger
+   guarantee, but admittedly imperfect too — CDR vendors themselves document that "CDR is
+   unable to distinguish between malicious and benign files [so] legitimate content can be
+   destroyed" (Kiteworks, OPSWAT).
+
+The milestone spec's own report language — "что найдено и вырезано" (what was found and cut)
+— describes the FIRST strategy. If the `sanitize` engine is implemented as strategy 1 but the
+findings report is worded (or consumed downstream) as if it were strategy 2's guarantee — "we
+sanitized this file" rather than "we removed the specific things we know to look for" — every
+consumer of that report inherits a false sense of completeness. This is the single most
+consequential wording/design choice in the whole milestone: sanitizer output that is
+confidently wrong is worse than no sanitizer, because it removes the downstream consumer's own
+incentive to be cautious.
 
 **Why it happens:**
-It's tempting to add an accounting increment at "the point where I already have the job object and know its terminal status" — e.g., inside the worker's existing `metrics.RecordJobOutcome(...)` call sites (`internal/worker/worker.go`, one per engine, at `MarkDone`/`MarkFailed`). Those call sites already run once per *successful terminal transition* today (because `Repo.transition`'s guarded allow-list makes a second `MarkDone` on an already-`done` job fail), so job-outcome counting is naturally exactly-once. But if a *new* usage/quota write is added as a **separate** statement rather than inside the same guarded transaction as `MarkDone`/`MarkFailed`, it loses that exactly-once property the moment any retry or reconnect logic surrounds it.
+Blacklist removal is dramatically cheaper to build (grep the OOXML relationships graph for
+`vbaProject`, strip a PDF's `/JavaScript`/`/EmbeddedFile`/`/URI` name-tree entries) and this
+codebase's whole philosophy elsewhere is "closed allowlist, fail-closed" — but that philosophy
+has always been applied to ACCEPTING input (reject anything not on the allowlist), never
+before to REMOVING content from an already-accepted file, which is the opposite operation and
+does not inherit the same guarantee for free.
 
 **How to avoid:**
-- Write usage accounting (bytes processed, machine-time, parallel-slot release) inside the **same Postgres transaction** as the guarded `MarkDone`/`MarkFailed` transition, not as a separate statement after it. `Repo.transition`'s existing pattern (row lock, allow-list check, update, event-log insert, all-or-nothing) is exactly the primitive to extend — add the usage write as one more statement inside that same closure, so it inherits the same "exactly-once because the source status can only be consumed once" guarantee.
-- If a separate usage table is used, give it a `UNIQUE(job_id)` constraint (or `UNIQUE(job_id, event_type)` for a ledger) so even an accidental double-write becomes a no-op conflict rather than a silent double-count — cheap, durable insurance independent of getting the transaction boundary exactly right everywhere.
-- Never accrue usage at *enqueue* time for anything the reconciler can re-enqueue (queued/active recovery). Accrue it at the terminal transition (done/failed/reconciler_exhausted), which the guarded-transition allow-list already protects from being reached twice for the same job.
+- Decide and document, explicitly, in the phase's CONTEXT/design doc, which strategy
+  `sanitize` implements, and word the `role=report` output honestly: "the following known
+  risk categories were found and removed" (accurate for blacklist removal), never "this file
+  is safe" or "this file has been sanitized" unqualified.
+- If full reconstruct-from-trusted-content is out of scope for v1 (very plausible given the
+  engine-CLI-invoked-via-hardened-`runCommand` convention this project uses everywhere else,
+  and given no CDR-class tool fits that convention as a drop-in binary), say so as an explicit,
+  disclosed residual-risk decision — mirroring this project's own precedent for disclosed
+  residual risks (e.g. `file://` passive-load risk in chromium-worker, Key Decisions table:
+  "accepted residual risk").
+- Do not let the phrase "sanitize" in the operation name imply a guarantee the implementation
+  does not make. If a future consumer (a legal/compliance stakeholder inside the company)
+  reads `role=report` as an attestation, that gap is a real liability, not just an engineering
+  nuance.
 
 **Warning signs:**
-A usage/quota decrement or increment that lives in a different function/transaction than `MarkDone`/`MarkFailed`; any accounting table without a uniqueness constraint on job id; a soak test (mirroring the project's existing reconciler soak test discipline, `internal/reconciler/reconciler_soak_test.go`) that intentionally forces the stale-recovery race and checks the usage total, not just the recovery count.
+Any documentation, API description, or `role=report` JSON schema that uses unqualified
+language like "clean," "safe," or "sanitized" without stating what was checked FOR — the
+absence of a stated scope is itself the warning sign.
 
 **Phase to address:**
-The phase implementing Postgres usage accounting — pair it with a soak/race test analogous to the existing reconciler soak test, specifically exercising a job that completes normally right as the reconciler's stale-sweep would have recovered it.
+The `sanitize` operation phase — this should be a locked design decision (with rationale)
+before implementation starts, the same way PDF/A validation strategy (full ISO 19005 vs
+OutputIntent sanity-check) was an explicit, disclosed Key Decision in v1.3.
 
 ---
 
-### Pitfall 6: Checking quota after the S3 upload (or not decrementing "in-flight" on failure) creates a cheap DoS and self-inflicted starvation
+### Pitfall 6: The sanitizer is verified by the same parser that performed the removal, so it cannot catch its own blind spots
 
 **What goes wrong:**
-The milestone context is explicit: limits must be checked "fail-closed on input — before the S3 write and before enqueue." `handleCreateJob` today already has a precedent for get-this-order-right: content-magic-byte validation runs *before* the S3 write specifically so a malformed/oversized upload never costs a storage write. Two related mistakes are easy to make when adding quota:
-1. **Ordering mistake**: implementing the quota/admission check *after* `ParseMultipartForm`/S3 upload (e.g., because the client_id is only convenient to check once other fields are parsed) means an over-quota client's *rejected* request still costs a full multipart parse and S3 PUT — a client already blocked by quota can still cheaply flood S3 storage (and later TTL cleanup load) with uploads that are rejected only at the very end.
-2. **Semantics mistake**: if a "max parallel jobs" quota is incremented at admission and only decremented on `done`, a client whose jobs frequently `fail` (e.g., due to a format they don't realize is unsupported) permanently loses in-flight slots — starving *itself* out of its own quota with no automatic recovery, which looks to the client like a platform bug rather than a quota bug.
-
-**Why it happens:**
-Quota checks are naturally written where `client_id` is already resolved and convenient (deep in the handler, after auth but often after other parsing), not where the fail-closed contract actually requires them (as early as physically possible). And "decrement on completion" is usually written to mean "decrement on success" by default, because that's the intuitive happy-path case to write first.
+If the `sanitize` engine uses library/CLI X to both remove content and confirm the output is
+clean (re-run the same scan, see zero hits), it is structurally incapable of detecting the
+class of bug that matters most: content that X's parser does not see but a DIFFERENT parser
+(the one a downstream consumer's Office/Adobe/browser actually uses) does. This is precisely
+the polyglot-file threat model: CVE-2015-5092 demonstrated PDF/SVG polyglots that pass Adobe
+Reader's content-smuggling countermeasure specifically because that countermeasure's own
+parser missed content a DIFFERENT parser (an SVG interpreter) would render — the general
+technique ("parasite polyglots" embedding a secondary file "within the structural or ignored
+segments of the primary file type," per Glasswall's own polyglot research) is exactly the
+shape a same-parser self-check will always be blind to, by construction.
 
 **How to avoid:**
-- Place the quota admission check immediately after `auth.Middleware` resolves the client and before `ParseMultipartForm` is even called — the same position magic-byte validation earns for content correctness, but one step earlier, since quota doesn't need file bytes at all (only `client_id`, and for daily-volume limits, `Content-Length`/the pre-parse size ceiling already available via `http.MaxBytesReader`).
-- Decrement/release any "parallel jobs in flight" counter on **every** terminal transition — `done`, `failed`, and `reconciler_exhausted` alike — not just `done`. This is a direct consequence of Pitfall 5's guidance: hook the release into the same guarded transition that already fires for all three outcomes.
-- For daily-volume-style quotas (bytes/day), decide explicitly whether admission is metered on *accepted bytes* (before conversion, matches the existing pre-parse size ceiling) or *consumed machine-time* (after conversion) — and document the choice, since it changes whether a rejected/failed job still "costs" quota. The safer default for an anti-noisy-neighbor goal (not billing) is to meter on admission (bytes/jobs accepted), since the resource cost to the platform (S3 write, queue slot, worker CPU) is incurred regardless of the job's eventual success.
+- Verify `sanitize` output with a SECOND, independently-implemented parser from the one that
+  performed removal — this project already has a live precedent for exactly this discipline:
+  veraPDF validates a LibreOffice-produced PDF/A export with a completely separate JVM-based
+  ISO 19005 validator (Phase 23), fail-closed, because "an unverifiable archival claim is a
+  failed archival claim, never silently retried into a false done" (D-06). Apply the same
+  discipline here: the tool that scrubs is never the tool that certifies clean.
+- Scope the verification to what the second parser can actually check (macro/JS/embedded-file
+  presence, external-reference presence) — an unverifiable claim should mark the job's report
+  as "could not verify with independent parser" rather than silently passing, mirroring
+  veraPDF's fail-closed-on-unparseable-report precedent (`terminalVeraPDFSignatures`: "pdf/a
+  validation error" for ANY invocation/parse failure, not just a real non-compliance).
+- Budget for this: a second parser invocation is real added latency/CPU per sanitize job — an
+  explicit tradeoff, not a free addition, and it belongs in the same measured-cost discipline
+  this project applies to timeouts (measure, don't assume it's cheap).
 
 **Warning signs:**
-Any quota-check call site that appears after `r.ParseMultipartForm` or after the S3 `Put` call in `handleCreateJob`; an in-flight counter that only has a decrement in the success path; client complaints of quota exhaustion that don't correlate with successful job volume.
+A `sanitize` implementation whose "verify clean" step calls the exact same binary/library
+with the exact same invocation shape as the removal step — that is definitionally unable to
+catch anything the removal step itself missed.
 
 **Phase to address:**
-The phase implementing the admission gate — the plan for that phase should explicitly state the check's position in the handler (before parse, before S3 write) as a testable success criterion, and the release-on-all-terminal-states requirement as a second one.
+The `sanitize` operation phase.
 
 ---
 
-### Pitfall 7: Shipping enforced limits with no rollout period silently breaks already-integrated consumers
+### Pitfall 7: PDF incremental updates and OOXML zip-entry deletion leave "removed" content physically recoverable in the output bytes
 
 **What goes wrong:**
-Every current client of OctoConv is an internal service that has been integrated and running against an *unlimited* API for up to several months (the project's own milestone history runs v1.0 → v1.11 without any concept of per-client caps). Introducing a hard 429/403-style quota rejection with no transition period means the first time any existing integration hits a limit, it fails in production with no warning, no prior signal, and — worse — no guarantee the calling service even has retry/backoff logic for a response shape it has never seen from OctoConv before (existing consumers may treat any non-2xx from `POST /v1/jobs` as a hard failure rather than a "come back later" signal, since today the only non-2xx codes they've ever observed are 401/404/413/422/429-from-rate-limiting).
+Two distinct, verified mechanisms make a naive "delete the bad part" sanitizer produce a file
+that LOOKS clean to a report but still CONTAINS the removed bytes on disk:
+
+- **PDF incremental updates.** The PDF spec explicitly allows appending changes after the
+  original file's bytes rather than rewriting the document; a cross-reference section added
+  by an update "contains entries only for objects that have been changed, replaced, or
+  deleted, and deleted objects are left unchanged in the file but are marked as deleted by
+  means of their cross-reference entries" — the bytes of a "deleted" object are still present
+  in the file, recoverable by walking the earlier xref/trailer chain or simply scanning the
+  raw byte stream. This is the well-documented reason PDF redaction failures are recoverable
+  ("Phishing PDF With Incremental Updates," SANS ISC). A sanitizer that opens a PDF, deletes
+  the `/JavaScript` name-tree entry, and SAVES via an incremental update (the cheap, fast,
+  default save mode in many PDF libraries) has produced a file whose JavaScript object is
+  merely unlinked, not gone.
+- **OOXML zip-entry deletion.** OOXML is an Open Packaging Conventions zip archive where
+  parts are graph-connected via `[Content_Types].xml` and `.rels` relationship files, "as
+  it's a graph structure rather than a tree" — deleting only the `vbaProject.bin` zip entry
+  without removing every relationship AND content-type declaration pointing at it leaves
+  dangling references (confirmed pattern: `dotnet/Open-XML-SDK` issue #618, "ChangeDocumentType
+  does not fully remove vbaProject reference"). Two failure directions exist here: (a) leaving
+  the bytes IN the zip while only unregistering the relationship — the macro payload is still
+  physically present and trivially recoverable by any zip tool, even though Office no longer
+  auto-runs it; (b) deleting the bytes but leaving `[Content_Types].xml`/`.rels` pointing at a
+  now-missing part — a corrupt-but-frequently-silently-repaired file (Office often just
+  "fixes" it on open with no user-visible error, masking the defect from whoever built the
+  sanitizer).
 
 **Why it happens:**
-Quota features are usually designed and tested against the *new* behavior (does the limit actually block a client at N+1?) without equally designing the *transition* from "everyone unlimited" to "some clients limited." The milestone's own locked decision ("existing clients notice nothing until an operator sets a quota") already points at the right default, but that default has to be enforced structurally, not just intended.
+Both are "it opened fine and the report says clean" traps — the sanitizer's own read-back
+check (if it re-parses via the SAME library) will not flag either issue, because the
+library's own writer produced them and its own reader tolerates them.
 
 **How to avoid:**
-- Make "no limit" the literal absence of a row/value, not a large numeric default. E.g., `clients.max_parallel_jobs NULLABLE` with `NULL` meaning unlimited, checked as `limit IS NULL OR count < limit` — never a large hardcoded number like `1000000` that could later be mistaken for a real, low, intentional default (this is the same class of mistake the project has already been bitten by twice this milestone cycle with env-value drift between Go defaults/compose/`.env.example`/Helm ConfigMap — a numeric default that quietly diverges from "actually unlimited" is exactly that pattern applied to a new value).
-- Ship an **observe-only mode** first: compute and log/metric what *would* have been rejected (e.g. `metrics.RecordReconcilerAction`-style counter for "would_reject_quota") without actually rejecting, for at least one full operational cycle (the project's own daily/weekly quota window) before flipping enforcement on for any specific client.
-- Expose usage-so-far to clients before enforcement exists for them — e.g., response headers (`X-OctoConv-Usage-Today`, `X-OctoConv-Limit`) present even when the limit is `NULL`/unenforced, so integrators can build retry/backoff logic and see their own numbers *before* a limit can ever bite them, not after.
-- Roll out enforcement per-client (operator sets a limit on one client at a time, per the milestone's own "quota per client" design), not as a global cutover flag — this bounds the blast radius of the first real limit hit to one integration at a time, mirroring the same "hard cutover with observation" discipline the project used successfully for auth (Phase 1) and content validation (Phase 4), both of which shipped with fail-closed defaults it had already load-tested, not with a silent global flip.
+- For PDF: force a FULL rewrite/rebuild on save (not an incremental update) — e.g. `qpdf`'s
+  default linearize/rewrite behavior discards prior revisions entirely rather than appending;
+  confirm whichever library/CLI is chosen does NOT default to incremental-save mode, and add
+  an explicit regression test that a sanitized PDF's raw byte stream does not contain the
+  known-bad substring/object that was "removed" (grep the OUTPUT bytes, not just re-parse
+  them).
+- For OOXML: when removing a part, remove it from all three places atomically — the zip
+  entry's bytes, its `[Content_Types].xml` declaration, and every `.rels` relationship that
+  points at it (walking the graph, not assuming a single reference) — and verify with a
+  structural OPC-aware checker (this project already has `internal/convert/cfb.go`'s
+  directory-entry-aware classification as a precedent for "don't trust the cheap magic-byte
+  prefilter alone, actually parse the structure").
+- Add exactly the kind of test this project already has a template for: `ocrguards_test.go`'s
+  `TestDetectBornDigitalPDF_RealBinary` fixture-based real-binary assertion — build a fixture
+  PDF/OOXML with a KNOWN embedded macro/script, sanitize it, and assert the byte pattern is
+  ABSENT from the output file (not just absent from a re-parse), and separately assert the
+  output still opens cleanly in a structural validator.
 
 **Warning signs:**
-Any migration that sets a non-NULL default limit on existing rows; enforcement code with no corresponding "would-have-blocked" counter; no per-client staged rollout mechanism in the plan.
+A sanitize implementation whose test suite only asserts "re-parsing the output finds no
+macro/JS" without a raw-byte-level absence check, or a chosen PDF library whose docs describe
+"incremental update" as the default/fast save path.
 
 **Phase to address:**
-The phase that ships enforcement (not the phase that ships the accounting data) — the roadmap should structurally separate "collect usage data" (safe, additive, phase N) from "enforce limits based on usage data" (risky, phase N+1 or later), exactly as the milestone's own feature list already implies ("Атрибуция" before "Границы").
+The `sanitize` operation phase — this is the section of the milestone where being wrong is
+most costly, per the task's own quality gate, and it is the one place a live gate (real
+fixture files, real byte-level assertions) is non-negotiable rather than optional.
 
 ---
 
-### Pitfall 8: A fairness mechanism built as per-client queues breaks KEDA's static per-engine PromQL and the reconciler's hardcoded one-queue-per-engine routing
+### Pitfall 8: The synchronous inspect path bypasses the v1.12 quota gate, creating an unmetered abuse budget the milestone spec names but a rushed implementation can under-scope
 
 **What goes wrong:**
-The most intuitive way to implement "one client can't starve others within an engine class" is per-client sub-queues with weighted dequeue (asynq does support named queues with relative weights, e.g. `critical:6,default:3,low:1`). Applied naively — one asynq queue per `(engine, client)` pair — this breaks multiple load-bearing assumptions simultaneously:
-1. **KEDA**: each ScaledObject's PromQL hardcodes a single queue name per engine (`queue="image"`, `queue="audio"`, etc. — `deploy/chart/octoconv/templates/scaledobject-*.yaml`). A dynamic, client-derived set of queue names has no static Helm template to match against; either the ScaledObject query has to `sum` over a wildcard/regex queue-name match (weakening the "exactly this engine's backlog" precision KEDA currently has) or a new ScaledObject would be needed per client — which does not scale operationally and reintroduces the same cardinality problem as Pitfall 1, this time in Kubernetes objects rather than Prometheus series.
-2. **Reconciler routing**: `sweep()`'s recovery switch is hardcoded one `Enqueue<Engine>Convert` method per engine (`internal/reconciler/reconciler.go:287-314`), and the `enqueuer` interface has exactly one such method per engine, not per `(engine, client)` pair. Per-client queues would require either N methods per engine (does not scale) or a dynamic queue-name parameter threaded through — a structural change to a component the project has deliberately kept simple and hardcoded through 7 engine additions specifically to keep the recovery path auditable.
-3. **`octoconv_queue_depth` collector**: `NewQueueDepthCollector` takes a fixed `queues ...string` list wired at startup (`cmd/api/main.go`) — per-client queues would need this list to grow dynamically as clients are added/removed, which the collector was not built for and which reintroduces Pitfall 1/2's cardinality risk on the metric KEDA depends on.
+Every admission control this service has — `client_limits`, the `pg_advisory_xact_lock`-
+serialized admission gate, daily byte/job caps, concurrency caps — is wired through exactly
+one insertion point: `jobs.Repo.Create`, called only from `handleCreateJob`
+(`internal/api/handlers.go:727`) and proxied identically by both MCP entry points (v1.12
+audit, seam #3: "No bypass path, no duplicated admission code to keep in sync"). `/v1/inspect`
+does not call `Create` — by the milestone's own description it is "the first request path
+that does real file analysis inline instead of queuing a job," meaning the entire quota
+subsystem this project spent a whole milestone building has zero visibility into inspect
+traffic. The milestone spec explicitly names this ("минует v1.12 admission-гейт... собственный
+rate-бюджет") — the risk is not that this goes unnoticed, but that "собственный rate-бюджет"
+gets implemented as a generic per-client rate limiter (the existing `internal/ratelimit`
+package, already documented as "verified only at `api.replicas: 1`" per admission.go's own
+comment) rather than something that accounts for the fact that inspect's cost profile (CPU-
+bound parsing) is completely different from the byte/job-count profile quotas already model.
 
 **Why it happens:**
-"Fairness" is conceptually a scheduling/queueing problem, and per-tenant queues are the textbook answer in systems built for exactly that. But OctoConv's queue architecture was deliberately designed around "one queue per **engine class**, routing decided at compile time" (documented pattern: "Engine-class queue routing") specifically to keep KEDA and the reconciler simple — extending the *same axis* (queue identity) to also encode client identity conflates two orthogonal concerns that the architecture currently keeps cleanly separated.
+Reaching for the existing rate-limit middleware is the path of least resistance — it is
+already wired into the router. But `internal/ratelimit`'s own documented limitation (only
+correct at `api.replicas: 1`) is exactly the flaw QUOT-05's live gate spent a whole phase
+proving quotas do NOT have — reusing it for inspect reintroduces, for a NEW attack surface,
+the multi-replica gap this project just spent Phase 55 closing for a different one.
 
 **How to avoid:**
-- Implement fairness as **admission control**, not queue restructuring: cap how many of a given client's jobs may be concurrently `active` within one engine class (enforced the same atomic-Postgres way as Pitfall 4/6), so no client can occupy more than its fair share of the worker pool's concurrency, without touching queue topology at all. This keeps exactly one asynq queue per engine, keeps KEDA's PromQL untouched, keeps the reconciler's routing untouched.
-- If richer fairness (weighted scheduling, not just a hard per-client concurrency cap) is genuinely required, treat it as a much larger, separately-researched architectural change explicitly out of scope for a milestone whose own locked decision says "queue architecture and KEDA are not rewritten this milestone" — do not let fairness quietly reopen that constraint through the back door of "just add client to the queue name."
-- If asynq's native weighted-queue feature is used at all, keep the weight *dimension* aligned with what already exists (engine class), not client — e.g. it is legitimate to weight `image` vs `document` differently, that is orthogonal to per-client fairness and does not touch KEDA's per-engine queries.
+- Treat inspect's rate budget as a genuinely separate design decision, not a reuse of
+  `internal/ratelimit` by default — if per-replica rate limiting is accepted for inspect, that
+  acceptance should be an explicit, disclosed decision (mirroring this project's pattern of
+  disclosed residual risks) stating it does not hold at `api.replicas > 1`, not a silent
+  inheritance of a known limitation into a new surface.
+  - If it needs multi-replica correctness, it needs the same Postgres-serialized-counter
+  pattern QUOT-05 proved, sized for inspect's actual cost (CPU-seconds or request-count, not
+  bytes).
+- Measure inspect's actual CPU cost per request class (small image vs large multi-page PDF)
+  before picking a budget number — this project's own convention (measure, don't guess,
+  restated at every engine-timeout Key Decision) applies here just as much as it does to
+  engine timeouts.
 
 **Warning signs:**
-Any design doc or PR that proposes a queue name containing `client_id`; any change to the `enqueuer` interface signature to accept a queue-name parameter; any ScaledObject template change from an exact `queue="x"` match to a regex/wildcard match.
+An inspect rate-limit implementation that is a one-line reuse of the existing
+per-IP/per-client middleware with no note about its multi-replica correctness, or a rate
+budget picked as a round number without a measured cost basis.
 
 **Phase to address:**
-Whichever phase designs the fairness mechanism — the plan should state up front "fairness is admission control, not queue topology" as a design constraint, verified by a diff review that touches zero lines in `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero lines in the reconciler's `enqueuer` interface.
+The synchronous `POST /v1/inspect` phase — should be an explicit success criterion, ideally
+proven with the same kind of live multi-replica gate that validated QUOT-05, if inspect is
+expected to run at `api.replicas > 1` (which it will, since it lives in the same process as
+everything else).
 
 ---
 
-### Pitfall 9: Accounting-data growth repeats the platform's existing unbounded-Postgres-growth gap, now on a per-job table
+### Pitfall 9: `sanitize`'s operation vocabulary conflicts with what SEED-013 actually specified, and the existing DB CHECK constraint does not contain it
 
 **What goes wrong:**
-OctoConv already has an unaddressed retention gap: `jobs`, `job_events`, and `webhook_deliveries` grow forever in Postgres — MinIO's ILM lifecycle rule (`uploads/`/`results/` TTL) only cleans up **S3 objects**, not the Postgres rows describing them (`internal/db/migrations/0001_init.sql`). This has been survivable so far because the service is young and internal-scale, but it is a documented architectural gap, not a solved problem. Adding a new fine-grained per-job usage/accounting table on top — especially if designed as a per-job or (worse) per-event ledger rather than a rollup — creates a second unbounded-growth table with no retention story from day one, at exactly the kind of "many jobs run" service this platform already is (the project's own throughput has been proven at 20 jobs/burst → 4 replicas in 11s in the KEDA load-proof; multiply that by months of steady internal traffic across 8 engine classes).
+Two sources in this project's own planning artifacts model the same feature two different
+ways, and neither has been reconciled:
 
-**Why it happens:**
-Accounting features are usually designed around "what data do we need to answer today's question" (who/how much) without designing for "how does this table look after a year of production traffic," and retention/partitioning is easy to defer as a later hardening task — exactly the kind of deferred-but-never-scheduled work this project's own `Out of Scope`/advisory-debt sections already show accumulates (e.g. veraPDF full validation, CFB directory parsing were explicitly deferred with a tracked ID; an accounting table without a retention plan risks becoming an *untracked* version of the same pattern).
+- `internal/db/migrations/0001_init.sql`'s existing `operation` CHECK constraint enumerates
+  `convert/extract/archive/inspect/render` — it does **not** include `sanitize` or `probe`.
+  Any implementation that inserts `operation = 'sanitize'` without a schema migration will
+  fail at the database with a CHECK-constraint violation (fail-closed, which is good) — but if
+  that migration is written casually as "just add sanitize to the list," it may not reconcile
+  with the second source below.
+- SEED-013 (the actual origin of this feature) models it differently: `probe` is the
+  **engine** enum value reserved for metadata-probing, and the SEED explicitly says "this
+  stretches the current convert-centric model... the `operation` might be `inspect` (read) and
+  `convert`/`extract` (strip → cleaned copy)" — i.e. SEED-013's own author was unsure whether
+  "strip metadata" should be `operation=convert` (a same-format transform) or a new distinct
+  operation value at all, and reserved `probe` for the ENGINE, not the operation.
+
+The milestone's target-features description, by contrast, treats `sanitize` as a literal new
+`operation` value ("`sanitize` — первая асинхронная не-convert операция"). If phase design
+proceeds directly from the milestone description without re-reading SEED-013's own open
+question, the schema and the engine registry can be built around a vocabulary
+(`operation='sanitize'`, presumably `engine=` something new or reused) that was never actually
+decided against the seed's own reserved `probe` value — creating exactly the "compile-time
+enum in Go vs CHECK constraint in SQL" drift the question explicitly warns about, except
+happening at design time rather than as later code drift.
 
 **How to avoid:**
-- Given the milestone's own explicit "no billing" decision, prefer an **aggregated rollup** (e.g. daily per-`client_id`-per-`engine` counters: jobs count, bytes, machine-time) over a per-job or per-event ledger. A rollup answers "who and how much" without ever growing proportionally to job volume — it grows proportionally to `clients × engines × days`, which is bounded and small.
-- If a per-job record is kept anyway (e.g. because the existing `jobs` table with its `jobs_client_created_idx (client_id, created_at DESC)` index is reused directly for reporting, rather than a new table), that index already exists and answers most "recent usage by client" queries without inventing new storage — evaluate whether a new table is needed at all before building one.
-- If a new ledger-style table is built regardless, design retention/partitioning (e.g. monthly partitions dropped after N months, mirroring the S3 TTL's intent for Postgres) as part of the same migration that creates the table, not as a follow-up. State the retention window as an explicit, operator-visible constant from day one.
-- Treat "the accounting table has no retention policy" as the same class of finding the project's own audits already catch for other subsystems (advisory tech debt items are tracked with an ID and revisited, e.g. AVX-02, K8SV2-03) — give it one, don't let it be silently absent.
+- Resolve, explicitly and in writing (a CONTEXT.md D-decision, this project's own convention),
+  whether `sanitize` is a new `operation` enum value, whether `probe` is used as the `engine`
+  value for it, and how these map — before any migration or Go code is written.
+- Whichever vocabulary is chosen, add BOTH the SQL CHECK-constraint update and the Go-side
+  enum/allowlist in the SAME commit, with a test that inserts every valid `operation` value
+  the Go code can produce and asserts none of them are rejected by the live CHECK constraint
+  (a runtime cross-check, not just a code review comparison) — this is the concrete
+  countermeasure to "operation vocabulary being compile-time in Go but CHECK in SQL."
+- Grep `0001_init.sql`'s CHECK constraint list literally as part of phase planning, not from
+  memory of what SEED-013/the milestone description say it contains — the two documents
+  disagree with each other and with the actual migration file.
 
 **Warning signs:**
-A migration adding an accounting/usage table with no corresponding cleanup job, partition scheme, or documented retention window; a design that stores one row per job rather than one row per `(client, engine, day)`.
+A phase plan that writes `operation IN ('convert', 'sanitize', ...)` in prose without a
+corresponding grep of the live migration file; two different phases independently deciding
+what value `sanitize`'s engine registration uses.
 
 **Phase to address:**
-The phase that creates the accounting schema — retention/growth bound should be a stated design decision in that phase's plan (rollup vs ledger, explicit retention window), not deferred.
+The operation-dimension phase, before the `sanitize` phase begins — this is a modeling
+decision that both phases depend on and that neither should discover mid-implementation.
 
 ---
 
-### Pitfall 10: Treating an advisory/client-side limit signal as an authorization boundary
+### Pitfall 10: Registry, reconciler routing, and unique-lock TTL derivation are keyed by `(engine)` or `(source,target)` today — none of them are operation-aware by default
 
 **What goes wrong:**
-Two distinct concerns get conflated under "limits": (a) *authentication/authorization* — is this caller who it claims to be, and is it allowed to act at all (the existing `auth.Middleware`, 401/404 semantics, a real security boundary) — and (b) *quota/fairness* — is this caller currently within its operational budget (a soft, revisable, 429-style operational control, explicitly **not** a security boundary per the milestone's own framing: "это учёт и защита от соседа, а не монетизация"). Two concrete ways this conflation causes real problems in OctoConv's specific architecture:
-1. **Bypassable enforcement point**: job creation has more than one entry path today — the direct REST `POST /v1/jobs`, the MCP stdio server (`cmd/mcp-server`), and the in-cluster MCP HTTP server (`cmd/mcp-http`, which does per-request caller-key pass-through per Phase 25). If the quota/admission check is implemented as HTTP middleware on the REST router only, and the MCP servers proxy to the REST endpoint (as they appear to today), enforcement is naturally uniform — but if a future optimization has an MCP path call an internal Go function directly instead of going through the HTTP handler (a plausible "avoid the network hop" refactor), quota silently stops applying to that path. The check belongs in the shared code path both entry points ultimately funnel through (the guarded-transition/Postgres-atomic layer from Pitfall 4), not solely in HTTP middleware, so it cannot be bypassed by a future internal-call shortcut.
-2. **Trusting client-supplied priority/quota hints**: if a "fairness" or "priority" opt is ever exposed as a client-settable field (e.g. an `opts.priority` or a header), it must go through the same closed-allowlist, server-validated discipline the project already enforces for `DocOpts`/`AudioOpts`/`OCROpts` (client bytes never reach engine argv unchecked, closed allowlist, strict-parse) — a client-claimed priority/quota-tier value must be **resolved server-side from the `clients` table**, never accepted as authoritative input. The operator-only system routes (`OPERATOR_CLIENT_IDS` allowlist, Phase 26) are the right precedent: operator identity is checked against a server-side allowlist, never trusted from client-supplied data.
+Three separate subsystems currently assume "engine" (or "format pair") is sufficient to
+route/recover/de-duplicate a job, and none of them currently know about `operation`:
+
+1. **Registry lookup** — `convert.Default.EngineFor(detected, target)` returns an engine for a
+   `(source, target)` pair. A `sanitize` job on `pdf→pdf` (source format equals target format —
+   a case that has never occurred in this codebase, since every existing engine class converts
+   BETWEEN formats) risks either (a) not matching any registered pair at all if the registry
+   assumes source≠target implicitly, or (b) matching a coincidentally-registered
+   identity/no-op pair meant for something else, if `Register`/`Lookup` are not made
+   operation-aware in the SAME change that introduces `pdf→pdf` as a valid pair for the first
+   time.
+2. **Reconciler engine routing** — PROJECT.md documents the reconciler routing stuck jobs "по
+   `jobs.engine` (image/document...)" with "fail-closed skip и метрикой для нераспознанного
+   engine" (Phase 10, DOC-09). A stuck `sanitize` job recovered by an engine-only switch could
+   silently re-enqueue onto the CONVERT handler for that engine — producing a converted file
+   where a sanitized-file-plus-report was expected, a correctness bug that would not surface
+   as an error, only as wrong output.
+3. **Unique-lock TTL derivation** — each engine's `asynq.Unique` TTL (`ImageUniqueTTL`,
+   `AudioUniqueTTL`, etc.) is derived from that engine's own worst-case CONVERT retry budget.
+   A `sanitize` job on the same engine class may have a materially different duration profile
+   (extra parsing pass + report generation); reusing the convert-derived TTL risks either
+   permitting a duplicate enqueue mid-attempt (TTL too short for sanitize's real worst case) or
+   blocking legitimate re-enqueues for too long (TTL too generous) — the exact kind of
+   "verified live, not derived by analogy" gap this project's Key Decisions table repeatedly
+   calls out for engine timeouts.
 
 **Why it happens:**
-"Limits" and "authorization" both produce 4xx responses and both gate access to a resource, so it's easy to reuse the same code path, response semantics, or even the same status code (403) for both — which then makes a legitimate quota-exceeded response indistinguishable from an actual authorization failure to both operators (misdiagnosing incidents) and to client integrations (which may special-case 403 as "never retry," the correct behavior for real authz failures but the wrong behavior for a transient quota condition).
+`operation` defaulting to `convert` everywhere (the milestone's own stated backward-
+compatibility guarantee) makes it very easy to thread that default through the ONE place it's
+explicitly required (job creation) and miss the several other places engine-scoped logic
+implicitly assumed "operation=convert" as an unstated invariant, because until now that
+invariant was always true.
 
 **How to avoid:**
-- Keep quota-exceeded on 429 (with `Retry-After`, mirroring the existing rate-limit response shape in `internal/ratelimit/ratelimit.go`'s `limitHandler`), never 403 — 403 stays reserved for the project's existing real authorization failures (cross-client 404-not-403 policy already established for auth; operator-route 403 for non-operator callers).
-- Enforce quota checks in the shared, non-bypassable layer identified in Pitfall 4/6 (Postgres-atomic, inside the job-creation transaction), and add an explicit test that exercises quota enforcement through **every** job-creation entry point the project has (REST directly, and at least one MCP path), not just the primary handler — this is the concrete, actionable equivalent of "don't assume all paths funnel through the same gate," it's a test that proves it.
-- Any client-supplied field that could influence admission (priority, requested quota tier, "urgent" flags) must be validated against server-side state (the `clients` table), never trusted verbatim — apply the exact discipline already proven for `DocOpts`/`AudioOpts`/`OCROpts` typed-opts-with-closed-allowlist to this new surface.
+- Audit every place `jobs.engine` alone currently drives a routing/dedup/TTL decision (the
+  registry, the reconciler's engine switch, each `*UniqueTTL` constant, the worker's dispatch
+  from queue to handler) and make each one explicitly `(operation, engine)`-keyed rather than
+  assuming the default is safe to leave implicit.
+- Add a registry disjointness test analogous to the existing pandoc/chromium pair-disjointness
+  guard (v1.11 Key Decision: "пары disjoint by construction, guard-тест на disjointness") —
+  but for `(operation, source, target)` triples, specifically covering the `pdf→pdf` identity
+  case sanitize introduces for the first time.
+- Derive `sanitize`'s unique-lock TTL from its OWN measured worst case, never inherited from
+  the same-engine convert TTL — measure, don't copy, this project's standing rule.
 
 **Warning signs:**
-Any quota-exceeded response using status 403; any admission-check code reachable only from `internal/api/handlers.go` and not from a shared lower layer; any client-settable field named anything like `priority`/`tier`/`quota` that is read and used without a corresponding server-side lookup.
+Any reconciler or dedup code that switches on `job.Engine` without also branching on
+`job.Operation`; a `pdf→pdf` registry entry that "just works" without an explicit test proving
+it does not collide with any existing convert pair.
 
 **Phase to address:**
-The phase implementing enforcement — include an integration test asserting quota is enforced identically via REST and via at least one MCP entry point as an explicit success criterion.
+The operation-dimension phase for the registry/lookup piece; the `sanitize` phase for its own
+TTL measurement; both phases should include the reconciler-routing audit as a named task, not
+an implicit side effect of "operation is additive."
+
+---
+
+### Pitfall 11: Error-code vocabulary churns within the SAME milestone that asks two MCP servers and a frontend to migrate onto it
+
+**What goes wrong:**
+SEED-020 correctly identifies that structured error codes belong in the JobRunner
+consolidation ("codes get centralised... doing them as a separate earlier phase would edit
+the same seven sites twice"). But this creates a sequencing hazard: the JobRunner phase is
+EARLY in the milestone (it's the stated foundation), while the frontend/MCP migration that
+consumes the new codes presumably happens later, closer to when `inspect`/`sanitize` actually
+need new codes of their own (`quota_exceeded`-style names, `unverifiable_sanitize_output`,
+whatever `pdf→pdf` collisions produce, etc.). If the code vocabulary is not FROZEN and
+versioned at the end of the JobRunner phase, later phases (operation dimension, sanitize) will
+keep adding/renaming codes as they discover new failure modes — meaning the frontend/MCP
+migration, whenever it happens, is targeting a moving contract, and any consumer that starts
+migrating early (reasonable, since JobRunner ships first) will need to migrate AGAIN when
+later phases rename things for consistency.
+
+**Why it happens:**
+The natural, well-intentioned instinct during a consolidation refactor is to also clean up
+inconsistent naming while touching every site (`"engine_error"` used as a catch-all seven
+times, per-engine specific codes like `"born_digital"`, `"timecode_out_of_range"`,
+`"duration_exceeded"` — a reasonable person doing this refactor will want to rationalize these
+into a consistent taxonomy). That rationalization is exactly what makes the codes unstable
+across the SAME milestone a consumer migration is happening in.
+
+**How to avoid:**
+- Freeze the error-code vocabulary as a versioned, documented list at the END of the JobRunner
+  phase (a literal `ERROR_CODES.md` or an OpenAPI/JSON-schema enum, not just "grep the Go
+  source"), before any consumer migration work starts.
+- Treat every code added by LATER phases (operation dimension, inspect, sanitize) as strictly
+  additive to that frozen list — no renaming existing codes once the frontend/MCP migration
+  has started, even if a later phase's taxonomy would be cleaner in hindsight.
+- Coordinate with (or at minimum, notify) the frontend and both MCP server owners about the
+  exact commit/version at which the code vocabulary stabilizes, so their migration work has a
+  fixed target rather than chasing a moving one.
+
+**Warning signs:**
+A later phase's diff renaming an error code string that a consumer migration PR references;
+no single canonical list of valid codes existing anywhere in the repo.
+
+**Phase to address:**
+The JobRunner phase — the freeze point should be an explicit deliverable/success criterion of
+that phase, not an implicit byproduct.
+
+---
+
+### Pitfall 12: Adding new error codes is treated as "purely additive" without verifying the two MCP servers and frontend don't do exhaustive matching
+
+**What goes wrong:**
+"Additive, backward compatible" is true from the API's perspective (existing codes keep their
+meaning, new codes are new). It is not automatically true from a CONSUMER's perspective. A
+consumer that does `switch(code) { case "engine_error": ...; case "invalid_options": ...;
+default: throw new Error("unexpected code") }` breaks the instant `inspect`/`sanitize`
+introduce a genuinely new code, even though nothing about the existing contract changed. This
+is a well-known API-versioning trap, and this milestone is exactly the first time this
+service's error codes become a genuinely public, cross-repository (frontend + MCP servers,
+which the milestone explicitly names as existing consumers matching on TEXT today) contract —
+the risk was previously masked because text-matching consumers tend to already be tolerant
+(they usually only match specific known substrings and ignore the rest), but a MIGRATION to
+structured codes is exactly the moment someone is likely to write a stricter, code-generated,
+exhaustive switch — the more "correct-looking" implementation is the one most likely to break.
+
+**How to avoid:**
+- State explicitly, as part of the contract documentation delivered alongside the frozen code
+  list (Pitfall 11), that consumers MUST treat unrecognized codes as a generic/fallback case,
+  never as a hard error — and verify this against the actual two MCP server implementations'
+  migration PRs, not just document it and hope.
+- If either MCP server is written in a language/style that encourages exhaustive enum
+  matching (e.g. a generated TypeScript union type), prefer an open string type with a curated
+  set of known values plus an explicit `"unknown"` fallback over a closed enum, specifically to
+  make new-code-addition non-breaking by construction.
+
+**Warning signs:**
+An MCP server or frontend PR that generates a TypeScript/Go enum type from the current code
+list — that is the moment "additive" silently becomes "breaking on next addition."
+
+**Phase to address:**
+The JobRunner phase (documentation) and whichever phase does the actual frontend/MCP migration
+— should include the explicit "unknown codes are non-fatal" requirement.
+
+---
+
+### Pitfall 13: The new `role` and `operation` columns can disagree between what the API defaults and what the DB actually persists for edge-case insert paths
+
+**What goes wrong:**
+`handleCreateJob` already hardcodes `Operation: operationConv` (`"convert"`) for every job it
+creates today (`internal/api/handlers.go:730`) — that's the existing default, and it's
+explicit at the one call site that exists. The risk is not that path; it's every OTHER
+path that touches `jobs`/`job_outputs` rows and may not go through that same explicit default:
+the reconciler's job-recovery logic, any future admin/backfill tooling, and — concretely —
+EXISTING rows created before this migration ships. If the new `operation`/`role` columns are
+added with `DEFAULT NULL` (or no default) rather than `DEFAULT 'convert'`/`DEFAULT 'primary'`
+at the SQL level, pre-migration rows either get backfilled explicitly (requires a migration
+step, easy to forget) or are left `NULL`, and every downstream consumer that assumes
+`operation` is always populated (metrics, the reconciler's future operation-aware routing from
+Pitfall 10, any report-role logic in `handleGetJob`) needs to handle that `NULL` case
+correctly rather than assuming "additive, defaults to convert" was applied uniformly.
+
+**How to avoid:**
+- Set the SQL-level `DEFAULT 'convert'` (and `NOT NULL`) on the `operation` column and
+  `DEFAULT 'primary'` (`NOT NULL`) on `job_outputs.role` in the migration itself — do not rely
+  on the API layer being the only place that sets these values correctly. This mirrors the
+  general principle (and this project's own repeated practice, e.g. `client_limits`'s explicit
+  `NULL`-means-no-limit modeling in v1.12) that the DATABASE should be the source of truth for
+  what "unset" means, not application code.
+  applied.
+- Explicitly test that a row inserted with NO operation/role value in the Go struct still
+  round-trips as `convert`/`primary` when read back — proving the DB default, not just the Go
+  default, is what's load-bearing.
+- If a backfill of pre-existing rows is needed (it may not be, if the column defaults
+  correctly and existing rows are read with a coalesce), state that explicitly as a migration
+  step and verify with a row count, not assume `DEFAULT` retroactively applies (Postgres
+  `ADD COLUMN ... DEFAULT` does apply to existing rows since PG 11, but this must be VERIFIED
+  against PostgreSQL 18's actual behavior for this specific migration, not assumed from
+  general PostgreSQL knowledge).
+
+**Warning signs:**
+A migration that adds `operation`/`role` columns without an explicit `DEFAULT` clause, relying
+on the Go layer's `operationConv` constant to be the only place that matters; any downstream
+code (metrics, reports) that would panic or misbehave on a `NULL`/empty operation value rather
+than treating it as `convert`.
+
+**Phase to address:**
+The operation-dimension phase — this is exactly the kind of "additive and backward compatible"
+claim the question asks to be skeptical of; verify the DB-level default explicitly, don't take
+API-level defaulting as sufficient.
+
+---
+
+### Pitfall 14: The JobRunner refactor's test suite proves the runner's shape, not the seven engines' pre-existing behavior — regressions surface only under a live gate, not in CI
+
+**What goes wrong:**
+A natural first test suite for a new `JobRunner` asserts things like "given a converter that
+returns success, MarkDone is called and a webhook is enqueued" — testing the RUNNER's generic
+orchestration logic, which is correct and necessary, but is a DIFFERENT thing from testing
+that `HandleAVConvert`'s specific behavior (isAVTerminal's stage-aware split,
+`avFailureCode`'s specific code mapping for `ErrAVTimecodeOutOfRange` vs
+`ErrAVResolutionExceeded`, the exact metric queue label) is byte-for-byte preserved. If the
+seven engines' pre-refactor behaviors are each pinned only by tests that got DELETED or
+REWRITTEN as part of "the logic moved into the runner, so the old test doesn't apply anymore,"
+the refactor can pass 100% green CI while silently changing retry/error-code/metric behavior
+for any of the seven engines, and the first evidence would be a production symptom (a client
+sees a different `error_code` for a failure mode that used to be distinguishable, or a live
+KEDA gate under real load reveals a retry-storm on one engine class) — exactly the shape of
+bug this project's own history shows CI alone does not catch (the PR #4 finding that motivated
+this whole refactor was a REVIEW finding, not a test failure).
+
+**How to avoid:**
+- Before starting the refactor, inventory every existing engine-specific test
+  (`TestIsAudioTerminal`, any AV/OCR/Pandoc classifier test, `ocrFailureCode`/`avFailureCode`/
+  `pandocFailureCode` unit tests) as a checklist, and require each one to have a directly
+  analogous test against the NEW runner's classification for that engine — same inputs, same
+  expected outputs — not a generic runner-shape test standing in for it.
+  - Treat any DELETED per-engine test during the refactor as a red flag requiring explicit
+  justification in the PR description, not a routine cleanup.
+- Since this project already treats live gates as the final word when a design claim can't be
+  proven by unit tests alone (Phase 55's precedent: "the live gate has a real history of
+  failures and structural, not threshold, fixes"), consider a targeted live smoke test post-
+  refactor that exercises at least one failure mode per engine class end-to-end (not just AV
+  and Audio's stage-split, but a representative case from each of the seven) and asserts the
+  SAME error_code / terminal-vs-transient outcome as pre-refactor.
+
+**Warning signs:**
+A refactor PR whose diff shows net-negative test line count for `internal/worker`; any
+per-engine pinning test renamed rather than kept alongside a new runner-level test.
+
+**Phase to address:**
+The JobRunner consolidation phase — the test-inventory-and-preserve step should be an explicit
+task in the phase's plan, sequenced BEFORE the refactor's implementation task, not verified
+only at review time.
+
+---
+
+### Pitfall 15: XMP/embedded-thumbnail metadata and OOXML custom-properties survive a "strip metadata" pass that only targets the well-known EXIF/IPTC tag sets
+
+**What goes wrong:**
+Metadata scrubbing tools have a well-documented incompleteness trap: EXIF images commonly
+embed a SECOND, separate JPEG thumbnail inside the EXIF structure itself (the thumbnail IFD),
+which carries its own — potentially uncropped, unedited, GPS-tagged — copy of the image and
+its own metadata; a strip pass that walks only the primary EXIF/IPTC/XMP tag namespaces and
+does not also clear the embedded thumbnail can leave the exact GPS/author leak the operation
+exists to prevent, sitting one level deeper in the file structure. The general pattern
+recurs for OOXML (custom document properties, revision/comment author metadata, and — this
+project's own domain — tracked-changes/hidden-text content are metadata in the sense that
+matters for a privacy operation, even though they are not in the EXIF/IPTC/XMP tag sense the
+milestone spec's language emphasizes) and for PDF (document `/Info` dictionary vs XMP metadata
+stream vs per-object custom metadata — these are three separate places PDF can carry the SAME
+kind of information, and a tool scoped to only one of them "succeeds" while leaving the others
+intact).
+
+**How to avoid:**
+- Scope the sanitize/metadata-strip operation's format coverage explicitly per format (image
+  EXIF+IPTC+XMP+thumbnail-IFD; PDF `/Info`+XMP-metadata-stream+per-object custom properties;
+  OOXML core-properties+custom-properties+revision-history), and test each sub-location with a
+  fixture that specifically populates it — a single "strip metadata" fixture that only
+  populates the primary/well-known location will not catch a tool that misses the others.
+  Mirror this project's own precedent for per-branch fixture coverage (the OCR guard tests
+  exercise each guard axis — page count, page box, born-digital — as a SEPARATE fixture, not
+  one combined test).
+- If a chosen CLI tool (exiftool is the domain-standard, per public documentation) is used,
+  verify its invocation flags actually cover ALL these sub-locations (`-all=` is
+  comprehensive and does clear the thumbnail per exiftool's own documented behavior, but a
+  narrower flag set like a hand-picked GPS-only or EXIF-only removal will NOT) — and pin the
+  exact flag set with a test, the same way this project pins exact argv construction for every
+  other engine invocation (injection tests exist for every opts-to-argv path already).
+
+**Warning signs:**
+A sanitize/scrub implementation whose fixture only checks one metadata location (e.g. only
+top-level EXIF GPS tags) and declares victory; a CLI invocation using a narrower flag than the
+full "clear everything" mode without an explicit, documented reason.
+
+**Phase to address:**
+The `sanitize` operation phase.
 
 ---
 
 ## Technical Debt Patterns
 
 | Shortcut | Immediate Benefit | Long-term Cost | When Acceptable |
-|----------|-------------------|-----------------|------------------|
-| Reuse `httprate`'s in-process counter for quota (copy the rate-limit pattern) | Fast to write, matches existing code style | Silently wrong the moment `api.replicas > 1`; TOCTOU race even at replicas=1 | Never for quota/fairness — acceptable only for the coarse pre-auth `ByIP` rate limiter it already exists for |
-| Add `client_id` to all 4 existing Prometheus metrics "for consistency" | Uniform-looking metrics surface | Multiplicative cardinality across engine × status × client on every metric, including ones that don't need it | Never — add a purpose-built accounting metric instead |
-| Per-job usage ledger table instead of a daily rollup | Maximum reporting flexibility, feels more "correct" | Unbounded growth with the exact retention gap `jobs`/`job_events` already have; slow aggregation queries at scale | Only if a genuine per-job audit trail is required by a stated requirement — not by default given the "no billing" decision |
-| Hardcode a large numeric default limit (e.g. 1000) instead of `NULL`-means-unlimited | Simple schema, no null-handling logic | Silently becomes a real, low, enforced limit the moment traffic grows past the "large" number — exactly the numeric-default-drift pattern already seen twice this milestone cycle with env values | Never |
-| Skip the observe-only rollout period, enable enforcement globally on ship day | Faster to ship the milestone | Un-forewarned production incident for whichever existing consumer happens to be the first over any limit | Never for a live platform with already-integrated consumers |
+|----------|-------------------|-----------------|-----------------|
+| Implement `sanitize` as blacklist-removal only (no reconstruct-from-trusted-content) | Fits the existing hardened-CLI-via-`runCommand` convention; ships in-milestone | False-clean guarantee if report language overclaims (Pitfall 5) | Only with explicit, disclosed scope-of-guarantee language in the report and docs — never silently |
+| Verify sanitize output with the same tool/library that removed the content | Less engineering, one less dependency | Cannot catch parser-specific/polyglot blind spots (Pitfall 6) | Never for a security-sensitive operation named `sanitize`; acceptable only for a lower-stakes cosmetic scrub explicitly labeled as such |
+| Reuse `internal/ratelimit` for inspect's rate budget | Already wired into the router, zero new code | Inherits the documented `api.replicas: 1`-only correctness gap for a NEW attack surface (Pitfall 8) | Acceptable short-term ONLY if explicitly disclosed as a known multi-replica gap, mirroring this project's disclosed-residual-risk convention |
+| Add `operation` label to the two KEDA-pinned metrics "since we're already touching every call site" | Saves a second pass later if an operation-scoped metric is ever needed | Breaks scale-from-zero for all 7 engine classes (Pitfall 4) | Never — use a new or the existing client-scoped counter instead |
+| Skip a per-stage terminal-classification data model for AV/Audio, hardcode them outside the runner | Faster refactor for 5/7 engines | Reintroduces the exact branch-not-data shape the refactor exists to remove, for the two costliest engines (Pitfall 2) | Never — design the schema to fit the outliers first |
 
 ## Integration Gotchas
 
 | Integration | Common Mistake | Correct Approach |
 |-------------|-----------------|-------------------|
-| Prometheus / KEDA scaler | Adding `client_id` to `octoconv_queue_depth` or any metric KEDA's PromQL touches | Freeze `octoconv_queue_depth`'s label set; put accounting data in separate, KEDA-unrelated metrics/tables |
-| Reconciler recovery path | Hooking usage accounting onto a code path that can retry/re-fire (the reconciler's documented T-03-12 residual race) | Write usage inside the same guarded transaction as the terminal status transition, with a `UNIQUE(job_id)` constraint as backstop |
-| Helm chart / ScaledObject templates | Making queue names or ScaledObject count depend on `client_id` for fairness | Keep fairness as admission control (Postgres-side concurrency cap per client), zero queue-topology changes |
-| MCP server(s) (`cmd/mcp-server`, `cmd/mcp-http`) | Assuming quota enforcement "just works" because MCP proxies to REST today, without a test proving it | Explicit integration test enforcing quota identically via REST and MCP entry points |
-| `clients` table / operator tooling | Treating a client-supplied opts field (priority, tier) as authoritative | Resolve any priority/tier/quota-affecting value server-side from `clients`, same discipline as `DocOpts`/`AudioOpts` |
+| `handleGetJob` ↔ multi-output `sanitize` results | Presign `outs[0]` unconditionally, assuming ordering (Pitfall 3) | Select by `role == "primary"` explicitly; expose `role=report` as a separate field |
+| Reconciler ↔ new `operation` dimension | Route stuck-job recovery by `jobs.engine` alone, silently re-enqueuing a `sanitize` job onto a `convert` handler (Pitfall 10) | Route by `(operation, engine)`; add a fail-closed default for any unrecognized operation, mirroring the existing unrecognized-engine skip |
+| Registry `Lookup`/`EngineFor` ↔ `pdf→pdf` sanitize pair | Assume source≠target always holds, or let `pdf→pdf` collide with an unrelated future no-op convert registration | Make lookup `(operation, source, target)`-keyed; add a disjointness test covering the identity-pair case explicitly |
+| Frontend / MCP servers ↔ structured error codes | Treat "additive" as automatically non-breaking; consumer writes an exhaustive switch (Pitfall 12) | Document and verify "unknown codes are non-fatal" against the actual consumer implementations before/during migration |
+| Inspect endpoint ↔ `/healthz` (same process) | Assume request-level timeouts on inspect are sufficient isolation from the health-check path (Pitfall 1) | Treat process-level isolation (bounded worker pool / semaphore, hardened subprocess exec) as a first-class design requirement, live-gated |
 
 ## Performance Traps
 
 | Trap | Symptoms | Prevention | When It Breaks |
 |------|----------|------------|-----------------|
-| Per-client label on `octoconv_job_duration_seconds` (histogram) | `/metrics` scrape body grows, Grafana panels querying it slow down | Never label a histogram by client; use a counter, or `_sum`/`_count` only, for the accounting-purpose metric | Roughly linear in `clients × engines × 15 buckets` — noticeable well before "many" clients given 7-8 engines already |
-| Deriving per-client queue depth from `asynq.Inspector.ListPendingTasks`-style enumeration | Scrape duration on `/metrics` spikes proportional to actual queue length | Compute per-client backlog from Postgres (`jobs` rows in `queued`/`active` grouped by client), never from asynq's per-task list APIs on the scrape hot path | Breaks as soon as any queue has more than a trivial backlog — this is an O(n) Redis scan per scrape, not the O(1) `GetQueueInfo` call used today |
-| Per-job usage ledger with no partitioning | `SELECT`/aggregation queries for "who and how much" get slower month over month | Prefer daily rollups; if a ledger is kept, partition by month/retention window from the first migration | Breaks gradually as job volume accumulates — no sharp threshold, but the project's own KEDA load-proof already demonstrates burst throughput (20 jobs in seconds) that compounds fast over months |
+| Synchronous per-page/per-frame analysis inline in `/v1/inspect` for large PDFs/media | API pod CPU spikes, `/healthz` latency degrades, correlated pod restarts | Bound page/frame sampling explicitly (documented as partial), reuse the OCR engine's page-cap/page-box-cap guard discipline but enforce it IN the API process, not just the worker | Any multi-hundred-page PDF or long-duration media file submitted concurrently by even a few clients |
+| Adding `operation` (or any new dimension) to `octoconv_job_duration_seconds`/`octoconv_queue_depth` | KEDA ScaledObjects stop matching PromQL, scale-from-zero silently fails | Never touch the two pinned label sets; use `octoconv_client_job_outcomes_total`-style bounded/separate counters for new dimensions | The instant a `ScaledObject` needs to scale an engine class whose queue depth is no longer reported under the expected label set |
+| Reusing a convert-engine's `*UniqueTTL` for the same engine's `sanitize` jobs | Duplicate sanitize task enqueues under load, or overlong dedup blocking legitimate re-enqueues | Measure sanitize's own worst-case duration per engine, derive its own TTL constant | Any sanitize job whose real duration (extra pass + report generation) diverges materially from the convert TTL's basis |
 
 ## Security Mistakes
 
 | Mistake | Risk | Prevention |
 |---------|------|------------|
-| Quota-exceeded returns 403 instead of 429 | Operators/clients misdiagnose a soft operational limit as an authorization failure; clients may hard-fail instead of retrying | Use 429 + `Retry-After`, reserve 403 for actual authorization failures per existing convention |
-| Client-supplied priority/tier field trusted without server-side validation | A client could self-declare a higher tier and defeat fairness/quota entirely | Resolve priority/tier from `clients` table server-side, never from request input, mirroring `OPERATOR_CLIENT_IDS` allowlist discipline |
-| Quota check implemented only as HTTP middleware on the REST router | A future internal-call shortcut (MCP calling Go functions directly instead of over HTTP) silently bypasses quota | Enforce in the shared Postgres-atomic layer both entry points funnel through, and test both entry points |
-| S3 upload occurs before the quota admission check | Over-quota client can still cheaply flood storage before being rejected | Move quota check before `ParseMultipartForm`/S3 write, same ordering discipline already used for magic-byte validation |
-
-## UX Pitfalls
-
-| Pitfall | User Impact | Better Approach |
-|---------|-------------|------------------|
-| No warning before enforcement begins | Existing integration fails in production with no prior signal | Observe-only period + usage-exposing response headers before any client gets a real enforced limit |
-| "In-flight" quota only released on success | Client that has occasional legitimate failures slowly loses all its own concurrency headroom, looks like a platform bug | Release the in-flight slot on every terminal state (`done`, `failed`, `reconciler_exhausted`) |
-| Quota-exceeded response indistinguishable from a generic error | Client can't tell "retry later" from "this will never work" | Distinct, documented 429 response shape + `Retry-After`, consistent with the existing rate-limiter's response shape |
-| Operator "who and how much" answer requires reading raw Prometheus | Operators fall back to `promql` archaeology for a routine question | Ship the explicit reporting endpoint/dashboard the milestone already scopes, backed by the rollup table (Pitfall 9), not raw metrics |
+| Sanitizer saves PDF via incremental update rather than full rewrite | "Removed" JavaScript/embedded-file objects remain byte-recoverable in the output file (verified: PDF spec's own incremental-update xref semantics; SANS ISC "Phishing PDF With Incremental Updates") | Force full rewrite/rebuild on save; add a raw-byte-level absence test, not just a re-parse check |
+| OOXML macro removal deletes only the zip entry OR only the relationship, not both plus `[Content_Types].xml` | Physically recoverable payload (entry-only deletion) or a corrupt-but-silently-repaired file that masks the defect (relationship-only deletion) — verified: OPC package graph semantics, `dotnet/Open-XML-SDK#618` | Remove the part's bytes, its content-type declaration, and every relationship pointing at it atomically; verify structurally, not just by re-opening in Office |
+| Self-verification: sanitizer uses the same parser for removal and "confirm clean" | Cannot detect polyglot/parser-divergence payloads by construction — verified: CVE-2015-5092 PDF/SVG polyglot bypassing Adobe's own content-smuggling countermeasure; Glasswall's documented "parasite polyglot" pattern | Verify with an independently-implemented second parser, mirroring this project's own veraPDF-independent-of-LibreOffice precedent |
+| Metadata strip targets only top-level EXIF/IPTC/XMP tags, not the embedded EXIF thumbnail sub-image, OOXML custom-properties, or PDF `/Info`+XMP+per-object metadata | GPS/author/edit-history leak survives in a less-obvious sub-location (documented pattern: EXIF thumbnail IFD carrying an independent, potentially uncropped/tagged copy) | Scope and test each format's FULL set of metadata-carrying sub-locations separately, per fixture |
+| Sync inspect endpoint does adversarial-input parsing without the same hardened-subprocess discipline (`runCommand`, Setpgid+SIGKILL, context-bound timeout) applied everywhere else | A crafted input hangs or resource-exhausts the API process directly (not a worker), taking `/healthz` and quota admission down with it | Apply identical exec hardening to any subprocess/library the inspect path invokes; bound total inspect work independently of any engine's `*_ENGINE_TIMEOUT` |
 
 ## "Looks Done But Isn't" Checklist
 
-- [ ] **Client accounting metric added:** Often missing a cardinality ceiling — verify the metric's label values are derived from the bounded `clients` table, not from unchecked request input, and that a pinning test asserts the label set of `octoconv_queue_depth` is unchanged.
-- [ ] **Quota admission check added:** Often missing atomicity across replicas — verify the check-and-write happens inside a single Postgres transaction (`SELECT ... FOR UPDATE` or equivalent), not as a separate read-then-write, and verify it under 2+ concurrent `api` replicas, not just 1.
-- [ ] **Reconciler-touched jobs and usage accounting:** Often missing idempotency — verify a job that is stale-recovered by the reconciler and then completes normally is counted exactly once in usage accounting, with a test that deliberately forces the recovery race.
-- [ ] **Fairness mechanism:** Often missing a KEDA/reconciler regression check — verify zero diff lines in `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface.
-- [ ] **Rollout of enforcement:** Often missing an observe-only period — verify there is a "would have rejected" counter/log distinct from actual rejection, and that it ran for at least one full quota window before any client had enforcement enabled.
-- [ ] **Accounting table:** Often missing a retention/partitioning story — verify the migration that creates it also states (in code or a comment, matching the project's own documentation discipline) how old data is bounded or rolled up.
-- [ ] **Every job-creation entry point:** Often missing MCP-path coverage — verify quota enforcement is tested through both `POST /v1/jobs` directly and at least one MCP entry point (`cmd/mcp-server` or `cmd/mcp-http`).
-- [ ] **New limit constants (parallel jobs, daily volume, MB/day):** Often missing cross-service parity — verify the value is defined once and propagated byte-identically to Go default, `.env.example`, docker-compose, and the Helm ConfigMap, following the same `IN-02`-style pinning-test discipline already used for every `*_ENGINE_TIMEOUT` this project has shipped, since env-value drift between these four surfaces has already recurred twice in the prior milestone.
+- [ ] **`sanitize` reports "found and removed X"**: Often missing a stated scope of what was
+  and wasn't checked for — verify the report language does not imply a stronger guarantee
+  (full reconstruction) than the implementation (blacklist removal) actually provides.
+- [ ] **Sanitized output "passes validation"**: Often means "passes the SAME tool's own
+  re-check" — verify an independent second parser was actually used, not just re-invoked the
+  removal tool.
+- [ ] **`/v1/inspect` "has a timeout"**: Often means a per-step timeout inside the handler,
+  not a process-level isolation guarantee — verify `/healthz` latency under concurrent
+  adversarial inspect load, not just that a single inspect request eventually returns.
+- [ ] **"Operation defaults to `convert`, fully backward compatible"**: Often verified only at
+  the API layer's Go constant — verify the DB column itself has `DEFAULT 'convert' NOT NULL`,
+  and that every non-API insert path (reconciler, any admin tooling) is covered too.
+- [ ] **"Structured error codes are additive"**: Often verified only against the API's own
+  OpenAPI/contract, not against the actual frontend and MCP-server consumer implementations —
+  verify none of them do exhaustive switch/enum matching that a new code would break.
+- [ ] **JobRunner "passes all tests"**: Often means the new runner-level tests pass — verify
+  every PRE-EXISTING per-engine pinning test (terminal classification, failure-code mapping)
+  still has a direct analogue exercised against the new code path, not just deleted/replaced
+  by a generic test.
+- [ ] **KEDA "unaffected by this milestone"**: Often verified by running the two pinning tests
+  once at the end — verify with a `git diff` against the label declarations across the WHOLE
+  milestone's commit range, mirroring FAIR-02's own verification method from v1.12.
 
 ## Recovery Strategies
 
 | Pitfall | Recovery Cost | Recovery Steps |
-|---------|-----------------|------------------|
-| `client_id` cardinality explosion already shipped | MEDIUM | Stop labeling the offending metric by client (roll back the metric definition, not necessarily the whole feature), let old high-cardinality series age out of Prometheus retention, replace with a bounded rollup-table-based reporting path |
-| `client_id` accidentally added to `octoconv_queue_depth` | HIGH (touches KEDA) | Revert the collector/label change immediately, re-run the live KEDA scale-from-zero gate to confirm scaling behavior is restored before considering the incident closed |
-| Quota race caused an over-limit client to run unbounded jobs | LOW | The Postgres-atomic fix (Pitfall 4) is additive — no data corruption, just tighten the admission check; no rollback of already-completed jobs needed |
-| Existing consumer broken by unannounced enforcement | MEDIUM (trust cost is the real cost) | Immediately set the affected client's limit back to `NULL` (unlimited), communicate directly with the owning team, then re-roll-out with the observe-only period this pitfall doc recommends |
-| Accounting table grew unbounded before retention was added | MEDIUM | Backfill a rollup table from the raw data, then partition/prune the raw table going forward; do not attempt to retrofit partitioning onto a live unpartitioned table without a maintenance window |
+|---------|----------------|-----------------|
+| Metric-label drift breaks KEDA (Pitfall 4) | LOW if caught before merge (revert the label change); HIGH if it reaches production undetected (silent scale-from-zero failure across 7 classes, discovered only when an idle engine class gets traffic and never scales up) | Revert the label addition; re-run FAIR-02-style zero-diff verification; if already shipped, this needs an emergency patch + a live scale-from-zero re-proof per engine class before trusting it again |
+| `outs[0]` serves the wrong role (Pitfall 3) | MEDIUM — requires an API patch plus auditing whether any client already consumed a mismatched report/primary output | Ship the role-aware fix; audit `job_events`/access logs for the window it was live to identify affected clients; consider a temporary response field deprecation note |
+| Sanitize output is not actually clean (blacklist miss, incremental-update leftover, polyglot) | HIGH — a security-relevant false negative, potentially already delivered to a client who trusted the "sanitized" label | Re-scan all historically sanitized outputs still in retention with the corrected implementation; disclose the gap; this is the class of bug that justifies the pre-emptive cross-parser-verification design (Pitfall 6), because reactive recovery here is expensive and trust-damaging |
+| Inspect starves `/healthz`, causing pod restarts | LOW-MEDIUM — mitigated by k8s self-healing (restart), but availability impact is real during the window | Add process-level isolation (bounded pool) as a hotfix; consider moving inspect to its own deployment/process if the coupling proves structurally unfixable in-process |
+| Operation vocabulary mismatch between Go and SQL CHECK (Pitfall 9) | LOW — caught fail-closed at insert time (a CHECK violation is loud, not silent) | Add the missing migration; this pitfall's cost is mostly wasted design time, not data corruption, precisely because Postgres fails closed here |
 
 ## Pitfall-to-Phase Mapping
 
 | Pitfall | Prevention Phase | Verification |
 |---------|-------------------|----------------|
-| 1. Metric cardinality multiplication | Phase introducing accounting metrics | Pinning test on label sets; scrape-size/duration check before/after |
-| 2. `client_id` on `octoconv_queue_depth` | Same phase (metrics) | Pinning test asserting `octoconv_queue_depth` label set is exactly `{queue, state}` |
-| 3. Cardinality degrading KEDA transitively | Same phase (metrics) | Re-run existing `scripts/keda-gate.sh`/load-proof gate as a non-regression check |
-| 4. In-process/racy quota counters | Phase implementing admission/quota enforcement | Concurrency test with 2+ `api` replicas hammering one client's limit |
-| 5. Reconciler double-count race | Phase implementing usage accounting writes | Soak test forcing the stale-recovery race, asserting usage counted once |
-| 6. Quota check ordering / release-on-failure | Phase implementing admission gate | Handler-order test (quota check before parse/S3 write); release-on-all-terminal-states test |
-| 7. Silent breakage of existing consumers | Phase implementing enforcement (separate from data-collection phase) | Migration review confirming `NULL`-means-unlimited default; observe-only counter present before first client enforcement |
-| 8. Fairness breaking KEDA/reconciler | Phase designing fairness mechanism | Zero-diff check on ScaledObject templates and `enqueuer` interface |
-| 9. Unbounded accounting-table growth | Phase creating accounting schema | Migration includes stated retention/rollup design |
-| 10. Advisory limit treated as authz boundary | Phase implementing enforcement | Integration test enforcing quota identically via REST and MCP paths; 429-not-403 response check |
+| 1. Sync inspect starves `/healthz` | Synchronous `POST /v1/inspect` phase | Live gate: concurrent adversarial-shaped inspect burst, assert `/healthz` latency/liveness-probe SLA holds |
+| 2. Stage-based timeout classification collapsed | JobRunner consolidation phase | Per-engine pinning tests ported 1:1 against the new runner, not replaced by generic runner tests |
+| 3. `outs[0]` role-blindness | Operation-dimension / `role` phase (before `sanitize` ships) | Test inserting outputs in non-primary-first order; assert `download_url` still resolves to `role=primary` |
+| 4. KEDA label drift | JobRunner consolidation phase | `git diff` against the two pinned label-set declarations across the full milestone commit range (FAIR-02 method) |
+| 5. False-clean sanitize guarantee | `sanitize` operation phase | Explicit, reviewed design decision on removal-vs-reconstruction strategy; report wording matches the actual guarantee |
+| 6. Same-parser self-verification | `sanitize` operation phase | Independent second-parser verification step, mirroring veraPDF's independence from LibreOffice |
+| 7. PDF/OOXML "removed" content physically recoverable | `sanitize` operation phase | Raw-byte-level absence test on sanitized fixture output, not just a re-parse check |
+| 8. Inspect bypasses quota gate, unmetered abuse budget | Synchronous `POST /v1/inspect` phase | Measured rate-budget basis (not reused `internal/ratelimit` uncritically); multi-replica correctness explicitly stated |
+| 9. Operation vocabulary / CHECK-constraint drift | Operation-dimension phase, before `sanitize` phase | Runtime test inserting every Go-side operation value against the live CHECK constraint |
+| 10. Registry/reconciler/TTL not operation-aware | Operation-dimension phase (registry); `sanitize` phase (TTL) | Disjointness test covering `pdf→pdf`; reconciler routing audit as a named task |
+| 11. Error-code vocabulary churns mid-milestone | JobRunner consolidation phase | Frozen, versioned code list published as an explicit phase deliverable |
+| 12. New codes break exhaustive-match consumers | JobRunner phase (docs) + consumer migration phase | Explicit "unknown codes non-fatal" contract, checked against actual MCP/frontend implementations |
+| 13. `operation`/`role` DB default disagreement | Operation-dimension phase | SQL-level `DEFAULT ... NOT NULL`; round-trip test with no Go-side value set |
+| 14. Runner tests prove shape, not behavior | JobRunner consolidation phase | Test inventory-and-preserve step sequenced before refactor implementation |
+| 15. Metadata strip misses thumbnail/sub-location metadata | `sanitize` operation phase | Per-sub-location fixture coverage (thumbnail IFD, OOXML custom-properties, PDF `/Info`+XMP+per-object) |
 
 ## Sources
 
-- `internal/metrics/metrics.go`, `internal/metrics/queue_collector.go`, `internal/metrics/metrics_test.go` — current metric shapes and the queue-depth collector's design intent (HIGH confidence, direct code read)
-- `internal/reconciler/reconciler.go` — enqueue-first + `asynq.ErrDuplicateTask` guard, the documented T-03-12 accepted residual race, and the hardcoded per-engine routing switch (HIGH confidence, direct code read)
-- `internal/ratelimit/ratelimit.go` — documented in-process-counter limitation and its own stated upgrade path (HIGH confidence, direct code read)
-- `internal/api/handlers.go`, `internal/jobs/repo.go` — Postgres-first double write and guarded-transition pattern (HIGH confidence, direct code read)
-- `deploy/chart/octoconv/templates/scaledobject-*.yaml`, `deploy/chart/octoconv/values.yaml` — KEDA PromQL shape and `api.replicas` configurability (HIGH confidence, direct code read)
-- `internal/db/migrations/0001_init.sql` — existing table/index shapes, absence of Postgres-side retention vs. MinIO's S3-only ILM TTL (HIGH confidence, direct code read)
-- `.planning/PROJECT.md`, `.planning/STATE.md` — the project's own recorded anti-patterns: constant-copying ("PITFALLS.md Pitfall 7" recurrence across AV/OCR/Pandoc milestones) and env-value drift between Go defaults/compose/`.env.example`/Helm ConfigMap, recurring twice in the v1.11 milestone (HIGH confidence, direct project-history read)
-- [How to Create Prometheus Label Best Practices](https://oneuptime.com/blog/post/2026-01-30-prometheus-label-best-practices/view) — multiplicative cardinality effect of adding a label to an existing metric (MEDIUM confidence, WebSearch, cross-checked against multiple similar sources)
-- [What are the Limitations of Prometheus Labels? | SigNoz](https://signoz.io/guides/what-are-the-limitations-of-prometheus-labels/) — cardinality/memory relationship (MEDIUM confidence)
-- [Introduce a mechanism to guard against unbounded cardinality · prometheus/client_golang Discussion #970](https://github.com/prometheus/client_golang/discussions/970) — client-side cardinality guarding pattern referenced in Pitfall 1's prevention strategy (MEDIUM confidence)
-- [High Cardinality in Prometheus: How to Find and Fix It | Last9](https://last9.io/blog/how-to-manage-high-cardinality-metrics-in-prometheus/) — bucketing/rollup recommendations (MEDIUM confidence)
-- KEDA fairness/priority-queue blind-spot claims (Pitfall 8) are derived primarily from this codebase's own architecture (queue-per-engine routing, static ScaledObject PromQL) rather than external sources — general web search did not surface KEDA-specific fairness literature, so this pitfall is LOW-external-confidence but HIGH-internal-confidence (grounded directly in the reconciler/chart code cited above)
+- [PDF File Structure Object Streams Explained (Kestrel Tools, 2026)](https://blog.kestreltools.com/en/blog/pdf-object-streams-xref-mechanism-explainer-2026/) — PDF 1.5 object streams and cross-reference mechanism
+- [Phishing PDF With Incremental Updates — SANS ISC](https://isc.sans.edu/diary/25904) — confirms incremental-update-based content recovery is an active real-world technique
+- [PDF Writer and Incremental Updates — mozilla/pdf.js DeepWiki](https://deepwiki.com/mozilla/pdf.js/2.9-pdf-writer-and-incremental-updates) — incremental-update xref/deleted-object semantics
+- [ChangeDocumentType does not fully remove vbaProject reference — dotnet/Open-XML-SDK#618](https://github.com/OfficeDev/Open-XML-SDK/issues/618) — confirms OOXML dangling-reference-after-macro-removal is a real, documented defect class
+- [OOXML/Open Packaging Conventions (OPC) — Apache OpenOffice Wiki](https://wiki.openoffice.org/wiki/OOXML/Open_Packaging_Conventions_(OPC)) — OPC package relationship-graph semantics
+- [What is Content Disarm and Reconstruction (CDR)? — Kiteworks](https://www.kiteworks.com/risk-compliance-glossary/cdr-content-disarm-and-reconstruction/) — CDR rebuild-from-trusted-content approach and its documented limitations
+- [What is Content Disarm and Reconstruction? — OPSWAT](https://www.opswat.com/blog/what-is-content-disarm-and-reconstruction) — sanitization vs. full CDR distinction
+- [PDF-based polyglots through SVG images (CVE-2015-5092) — Minded Security](https://blog.mindedsecurity.com/2015/08/pdf-based-polyglots-through-svg-images.html) — confirmed CVE of a sanitizer/countermeasure bypassed by a cross-format polyglot
+- [Unmasking polyglot files — Glasswall](https://www.glasswall.com/us/blog/unmasking-polyglot-files-how-glasswalls-cdr-technology-tackles-this-stealthy-threat) — "parasite polyglot" pattern description
+- [Exploitation and Sanitization of Hidden Data in PDF Files — arXiv](https://arxiv.org/pdf/2103.02707) — academic treatment of PDF sanitization gaps and cross-tool comparison
+- [ExifTool: How to Remove All Metadata From Files (Safely + Completely)](https://renamer.io/blog/exiftool-how-to-remove-all-metadata-from-files-safely-completely/) — documents the embedded-thumbnail metadata survival trap and `-all=` as the comprehensive flag
+- Direct codebase verification: `internal/worker/worker.go` (seven handlers and their terminal classifiers, read in full), `internal/api/handlers.go` (`handleCreateJob`, `handleGetJob`'s `outs[0]` behavior), `internal/convert/ocrguards.go` (fail-closed guard precedent), `internal/metrics/metrics.go` (pinned label sets, bounded-cardinality precedent), `.planning/PROJECT.md` Key Decisions table, `.planning/seeds/SEED-020.md`, `SEED-013.md`, `SEED-021.md`, `.planning/milestones/v1.12-MILESTONE-AUDIT.md`
 
 ---
-*Pitfalls research for: OctoConv v1.12 Consumer Accounting & Fairness milestone*
-*Researched: 2026-08-02*
+*Pitfalls research for: OctoConv v1.13 Inspect & Operations*
+*Researched: 2026-08-07*

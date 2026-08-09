@@ -2,6 +2,14 @@ package convert
 
 import "testing"
 
+// The four tests below prove pair-level disjointness WITHIN the "convert"
+// operation only -- they predate the operation dimension (Phase 57) and are
+// left unmodified. operations_test.go (Phase 57, Plan 02) adds the
+// complementary suite: triple-level (operation, from, to) disjointness,
+// including the pdf->pdf identity case that never existed before Phase 57,
+// plus Register's new panic-on-collision behavior and Replace's deliberate-
+// overwrite semantics.
+//
 // TestAVAudioPairDisjointness proves AVConverter.Pairs() and
 // AudioConverter.Pairs() share no (from, to) pair -- the regression guard
 // Pitfall 7 (35-RESEARCH.md) and D-06 (35-CONTEXT.md) require.

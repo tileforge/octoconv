@@ -24,6 +24,11 @@ func init() {
 	// re-registers a CONFIGURED AVConverter (MaxSourceDuration derived from
 	// AV_MAX_DURATION_SECONDS) before it starts consuming tasks, using this
 	// same documented last-write-wins semantics (Phase 36/D-09).
+	//
+	// Phase 57, D-08/D-09: Register now panics on a triple collision instead
+	// of silently last-write-winning; cmd/av-worker's re-registration above
+	// now goes through the new Registry.Replace, which performs this exact
+	// overwrite deliberately and without panicking.
 	Default.Register(AVConverter{})
 	// Registered last (OCRP-01, Phase 44, D-01): OCRConverter's SOURCE set
 	// ({jpg,png,tiff,webp,pdf}) is disjoint from every other converter's own
@@ -39,6 +44,11 @@ func init() {
 	// contract above): a future cmd/ocr-worker/main.go (Plan 02/03) may
 	// re-register a CONFIGURED OCRConverter before it starts consuming
 	// tasks, using this same documented last-write-wins semantics.
+	//
+	// Phase 57, D-08/D-09: Register now panics on a triple collision instead
+	// of silently last-write-winning; cmd/ocr-worker's re-registration now
+	// goes through the new Registry.Replace, which performs this exact
+	// overwrite deliberately and without panicking.
 	Default.Register(OCRConverter{})
 	// Registered last (PDCP-01, Phase 48, D-02, 48-CONTEXT.md): PandocConverter's
 	// curated markup-family pairs (pandocPairTable, pandoc.go) are disjoint from
@@ -56,5 +66,10 @@ func init() {
 	// contract above): cmd/pandoc-worker (Phase 49) re-registers a CONFIGURED
 	// PandocConverter before it starts consuming tasks, using this same
 	// documented last-write-wins semantics.
+	//
+	// Phase 57, D-08/D-09: Register now panics on a triple collision instead
+	// of silently last-write-winning; cmd/pandoc-worker's re-registration now
+	// goes through the new Registry.Replace, which performs this exact
+	// overwrite deliberately and without panicking.
 	Default.Register(PandocConverter{})
 }

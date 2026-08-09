@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	formFieldFile   = "file"
-	formFieldTarget = "target"
-	formFieldPreset = "preset"
-	formFieldOpts   = "opts"
+	formFieldFile      = "file"
+	formFieldOperation = "operation"
+	formFieldTarget    = "target"
+	formFieldPreset    = "preset"
+	formFieldOpts      = "opts"
 
 	// Job status values, mirroring internal/jobs' status constants. Hardcoded
 	// here (not imported) because internal/mcpserver may import no other
@@ -29,6 +30,18 @@ const (
 	// wire contract.
 	statusDone   = "done"
 	statusFailed = "failed"
+
+	// Error codes this package branches on structurally (docs/ERROR-CODES.md).
+	// Hardcoded here rather than importing internal/errcode, for the same
+	// D-02 reason statusDone/statusFailed are hardcoded above: this package
+	// speaks only the API's public wire contract, never its internal Go
+	// types. These are a curated SUBSET (only the codes this package
+	// actually branches on) of the full closed vocabulary; any other code,
+	// known or future, falls through to the default/generic path everywhere
+	// it is checked (Pitfall 12).
+	codeRateLimited    = "rate_limited"    // sync 429: wait-then-retry is meaningful (D-12)
+	codeQuotaExceeded  = "quota_exceeded"  // sync 429: retrying will not help until the quota resets
+	codeInvalidOptions = "invalid_options" // shared sync/async code space (D-03): the request's opts were rejected
 
 	// apiRequestTimeout bounds a single control-plane request (create/get
 	// job, list formats/presets) -- distinct from the overall convert
@@ -91,7 +104,21 @@ func NewClientForKey(base Config, apiKey string) (*Client, error) {
 	return NewClient(base)
 }
 
-// JobStatus is the decoded shape of GET /v1/jobs/{id}.
+// JobOutput is one entry of GET /v1/jobs/{id}'s outputs array: a single
+// artifact the job produced, tagged with the role that says what it IS.
+// Shape mirrors internal/api/handlers.go's render exactly (role, ordinal,
+// format, size_bytes, url) -- do not add fields the API does not emit.
+type JobOutput struct {
+	Role      string `json:"role" jsonschema:"what this artifact is -- primary is the conversion result itself; report, preview and thumbnail are secondary artifacts. Never assume the first element is the primary one; select by this field"`
+	Ordinal   int    `json:"ordinal" jsonschema:"position of this output within the job, assigned by the worker; carries no meaning about which output is the main result"`
+	Format    string `json:"format" jsonschema:"the artifact's format, e.g. webp or json"`
+	SizeBytes int64  `json:"size_bytes" jsonschema:"size of the artifact in bytes"`
+	URL       string `json:"url" jsonschema:"presigned download URL for this artifact, valid for a limited time"`
+}
+
+// JobStatus is the decoded shape of GET /v1/jobs/{id}. It is ALSO the
+// get_job_status MCP tool's output type (tools.go:192), so every field's
+// json tag and jsonschema description doubles as agent-facing documentation.
 type JobStatus struct {
 	JobID        string         `json:"job_id"`
 	Status       string         `json:"status"`
@@ -99,6 +126,17 @@ type JobStatus struct {
 	DownloadURL  string         `json:"download_url,omitempty"`
 	ErrorCode    string         `json:"error_code,omitempty"`
 	ErrorMessage string         `json:"error_message,omitempty"`
+	// Outputs is every artifact a done job produced, present only when the
+	// job has more than one (a single-output convert job keeps the
+	// pre-Phase-57 body shape and reports its one artifact through
+	// DownloadURL alone). DownloadURL always points at the primary output,
+	// selected by role rather than by position; the secondary artifacts --
+	// a sanitize report, for instance -- are reachable ONLY through this
+	// field. Without it this decoder silently discarded the whole array, so
+	// download_result could hand an agent the primary URL and nothing else
+	// (codex PR #7 second-round finding). Both MCP binaries route through
+	// this one package, so this single field serves both.
+	Outputs []JobOutput `json:"outputs,omitempty" jsonschema:"all artifacts of a done job, present only when it produced more than one; select the one you want by its role field"`
 }
 
 // EngineFormats is one engine class's supported (source, target) pairs, as
@@ -107,9 +145,24 @@ type EngineFormats struct {
 	Pairs [][2]string `json:"pairs"`
 }
 
-// FormatsResponse is the decoded shape of GET /v1/formats.
+// FormatsResponse is the decoded shape of GET /v1/formats. It is ALSO the
+// list_supported_formats MCP tool's output type (tools.go:269), so every
+// field's json tag doubles as agent-facing documentation.
 type FormatsResponse struct {
 	Engines map[string]EngineFormats `json:"engines"`
+	// Operations is the {operation -> engine -> supported (source, target)
+	// pairs} tree GET /v1/formats emits unconditionally since 57-04
+	// (internal/api/formats_handlers.go:41-61). tools.go:68's convert_file
+	// jsonschema already tells agents to consult "the operations key of the
+	// list_supported_formats/GET /v1/formats response" to discover the
+	// currently available operations (convert is the default when the
+	// operation field is omitted); without this field that key was silently
+	// dropped by this decoder, so the advertised discovery path could not
+	// actually be performed (codex PR #7 finding #2). Both MCP binaries
+	// (cmd/mcp, cmd/mcp-http) route through this one package, so this single
+	// field serves both. omitempty so a pre-Phase-57 API build that does not
+	// emit the key yields an absent field rather than an empty object.
+	Operations map[string]map[string]EngineFormats `json:"operations,omitempty" jsonschema:"operation -> engine -> supported (source, target) pairs; convert is the default operation when convert_file's operation field is omitted"`
 }
 
 // Preset is the decoded shape of one entry from GET /v1/presets.
@@ -149,9 +202,16 @@ func (e *TimeoutError) Error() string {
 // CreateJob uploads the file at filePath as a multipart POST /v1/jobs
 // request. target and preset are mutually exclusive per the wire contract;
 // this client forwards whatever the caller supplies without arbitrating
-// between them -- the API itself is the single enforcement authority. opts
-// is an optional raw JSON string. Returns the created job id.
-func (c *Client) CreateJob(ctx context.Context, filePath, target, preset, opts string) (string, error) {
+// between them -- the API itself is the single enforcement authority. The
+// same "forward without arbitrating" rule applies to operation: this client
+// never checks whether operation is a known value -- it writes it verbatim
+// (guarded on non-emptiness, like target/preset/opts) and lets the API's
+// registry (convert.Default) be the single source of truth. A local
+// allowlist here would be a second source of truth that could silently
+// diverge from the registry, and the API's 422 unsupported_operation
+// response is forwarded to the caller unchanged either way. opts is an
+// optional raw JSON string. Returns the created job id.
+func (c *Client) CreateJob(ctx context.Context, filePath, operation, target, preset, opts string) (string, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("open input file: %w", err)
@@ -166,6 +226,11 @@ func (c *Client) CreateJob(ctx context.Context, filePath, target, preset, opts s
 	}
 	if _, err := io.Copy(fw, f); err != nil {
 		return "", fmt.Errorf("build multipart request: %w", err)
+	}
+	if operation != "" {
+		if err := mw.WriteField(formFieldOperation, operation); err != nil {
+			return "", fmt.Errorf("build multipart request: %w", err)
+		}
 	}
 	if target != "" {
 		if err := mw.WriteField(formFieldTarget, target); err != nil {
@@ -361,9 +426,10 @@ func (c *Client) downloadClient() *http.Client {
 // ConvertBlocking runs the full blocking convert workflow: CreateJob, then
 // poll GetJob every PollInterval (invoking onTick with the latest status on
 // every tick) bounded by ConvertTimeout, then Download the presigned result
-// on success.
-func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, opts string, onTick func(status string)) (ConvertResult, error) {
-	jobID, err := c.CreateJob(ctx, filePath, target, preset, opts)
+// on success. operation is forwarded to CreateJob verbatim -- see CreateJob's
+// doc comment for why this client never arbitrates its value.
+func (c *Client) ConvertBlocking(ctx context.Context, filePath, operation, target, preset, opts string, onTick func(status string)) (ConvertResult, error) {
+	jobID, err := c.CreateJob(ctx, filePath, operation, target, preset, opts)
 	if err != nil {
 		return ConvertResult{}, err
 	}
@@ -395,11 +461,7 @@ func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, 
 			}
 			return ConvertResult{JobID: jobID, DownloadURL: job.DownloadURL, LocalPath: localPath}, nil
 		case statusFailed:
-			msg := job.ErrorMessage
-			if msg == "" {
-				msg = "conversion failed"
-			}
-			return ConvertResult{}, fmt.Errorf("job %s failed: %s", jobID, msg)
+			return ConvertResult{}, describeFailedJob(jobID, job)
 		}
 
 		if !time.Now().Before(deadline) {
@@ -411,6 +473,27 @@ func (c *Client) ConvertBlocking(ctx context.Context, filePath, target, preset, 
 			return ConvertResult{}, ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+// describeFailedJob builds the error ConvertBlocking returns for a job that
+// finished in the failed status, selecting its wording structurally from
+// job.ErrorCode (docs/ERROR-CODES.md's async table) -- never by matching
+// job.ErrorMessage's text. An unrecognized or absent code falls through to
+// the pre-existing generic wording unchanged, satisfying the unknown-code
+// fallback contract (Pitfall 12): a future additive async code must degrade
+// safely here without a code change.
+func describeFailedJob(jobID string, job JobStatus) error {
+	msg := job.ErrorMessage
+	if msg == "" {
+		msg = "conversion failed"
+	}
+
+	switch job.ErrorCode {
+	case codeInvalidOptions:
+		return fmt.Errorf("job %s failed: %s -- the request's opts were rejected; fix them and submit a new job", jobID, msg)
+	default:
+		return fmt.Errorf("job %s failed: %s", jobID, msg)
 	}
 }
 
@@ -453,21 +536,62 @@ func (c *Client) apiError(action string, resp *http.Response) error {
 		msg = fmt.Sprintf("unexpected status %d", resp.StatusCode)
 	}
 
-	if code == "" {
-		// Neither: the message exactly as today.
-		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	// retryAfter is -1 (no code, or a code with no usable Retry-After
+	// header) unless the response carried both -- distinct from an explicit
+	// "retry in 0 seconds", which parseRetryAfterSeconds treats as valid.
+	retryAfter := -1
+	if code != "" {
+		if ra, ok := parseRetryAfterSeconds(resp.Header.Get("Retry-After")); ok {
+			retryAfter = ra
+		}
 	}
 
-	retryAfter, ok := parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
-	if !ok {
-		// A code but no (usable) Retry-After header.
-		msg = fmt.Sprintf("%s (code=%s)", msg, code)
-		return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+	return &APIError{
+		Action:     action,
+		Status:     resp.StatusCode,
+		Code:       code,
+		Message:    redact(msg, c.apiKey),
+		RetryAfter: retryAfter,
 	}
+}
 
-	// Both a code and a Retry-After header.
-	msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, code, retryAfter)
-	return fmt.Errorf("%s: %s", action, redact(msg, c.apiKey))
+// APIError is the typed error every non-2xx API response produces (D-12,
+// ERRC-03). Error() reproduces byte-for-byte the message format this
+// package has always emitted -- the pre-existing text assertions in
+// client_test.go and quota_admission_test.go stay unmodified and passing.
+// A caller that needs to act on the failure structurally (a tool handler
+// choosing retry-now vs do-not-retry, or falling back generically on an
+// unrecognized code) should recover *APIError via errors.As and branch on
+// Code, never by matching Error()'s text (ERRC-03, docs/ERROR-CODES.md).
+type APIError struct {
+	Action string // the operation that failed, e.g. "get job"
+	Status int    // the HTTP status code
+	Code   string // the machine-readable code (docs/ERROR-CODES.md); "" if the body carried none
+	// Message is the human-readable text, already redacted (D-08) -- a
+	// typed field is just as agent-visible as Error()'s string, so
+	// redaction is applied once here rather than trusting every future
+	// caller to redact it again before logging or echoing it.
+	Message string
+	// RetryAfter is the parsed Retry-After header value in whole seconds,
+	// or -1 when the response carried no code, or a code but no (usable)
+	// Retry-After header.
+	RetryAfter int
+}
+
+// Error implements the error interface, reproducing the exact three
+// formats apiError has always produced: message alone, message+code, or
+// message+code+retry_after.
+func (e *APIError) Error() string {
+	msg := e.Message
+	switch {
+	case e.Code == "":
+		// No code at all: the message exactly as today.
+	case e.RetryAfter < 0:
+		msg = fmt.Sprintf("%s (code=%s)", msg, e.Code)
+	default:
+		msg = fmt.Sprintf("%s (code=%s, retry_after=%ds)", msg, e.Code, e.RetryAfter)
+	}
+	return fmt.Sprintf("%s: %s", e.Action, msg)
 }
 
 // extractErrorBody pulls the "error" and "code" fields out of a JSON body

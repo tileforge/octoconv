@@ -84,7 +84,7 @@ func main() {
 	// recovering the same stranded job.
 
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TypeHTMLConvert, h.HandleHTMLConvert)
+	mux.HandleFunc(queue.TypeHTMLConvert, worker.NewRunner(h, worker.HTMLDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
 		Concurrency:    envInt("HTML_WORKER_CONCURRENCY", 2),

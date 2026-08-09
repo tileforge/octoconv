@@ -6,6 +6,20 @@ files:
   - internal/api/handlers.go:1017-1026 (quotaRejection)
   - internal/api/handlers.go:986 (secondsUntilUTCMidnight)
   - internal/jobs/jobs.go (ErrDailyBytesLimit, ErrDailyJobsLimit sentinels)
+completed: 2026-08-06
+completed_by: phase 55 plan 03 (folded todo, CONTEXT D-07)
+resolution: >-
+  Added internal/jobs.DailyQuotaError{Err, EvaluatedAt}, wrapping the two
+  daily sentinels with the Postgres now() evaluate's daily branch read (one
+  extra scanned column on the existing QueryRow, no new round trip).
+  quotaRejection (internal/api/handlers.go) now derives
+  secondsUntilUTCMidnight's input from that EvaluatedAt via errors.As,
+  falling back to time.Now() only for an unwrapped sentinel. Regression
+  test: TestCreateJob_QuotaDailyBytes_RetryAfterStraddlesMidnight
+  (internal/api/handlers_test.go), plus
+  TestQuotaRejection_RetryAfterUsesDBEvaluationInstantNotProcessClock and
+  TestDailyQuotaErrorCarriesPostgresEvaluationClock
+  (internal/jobs/admission_test.go).
 ---
 
 ## Problem

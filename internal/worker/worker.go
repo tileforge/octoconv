@@ -482,22 +482,22 @@ func isOCRTerminal(err error) bool {
 func ocrFailureCode(err error) (code, message string) {
 	switch {
 	case errors.Is(err, convert.ErrOCRBornDigital):
-		return "born_digital", "pdf already has an extractable text layer"
+		return CodeBornDigital, "pdf already has an extractable text layer"
 	case errors.Is(err, convert.ErrOCRTooManyPages):
-		return "too_many_pages", "pdf page count exceeds the configured maximum"
+		return CodeTooManyPages, "pdf page count exceeds the configured maximum"
 	case errors.Is(err, convert.ErrOCRPageBoxTooLarge):
-		return "page_too_large", "pdf page would rasterize beyond the configured pixel bound"
+		return CodePageTooLarge, "pdf page would rasterize beyond the configured pixel bound"
 	case errors.Is(err, convert.ErrOCRImageTooLarge):
-		return "image_too_large", "image dimensions exceed the configured maximum"
+		return CodeImageTooLarge, "image dimensions exceed the configured maximum"
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "unsupported language") {
-		return "unsupported_language", "requested ocr language is not supported"
+		return CodeUnsupportedLanguage, "requested ocr language is not supported"
 	}
 	if strings.Contains(msg, "unsupported target format") {
-		return "unsupported_target", "requested target format is not supported for ocr"
+		return CodeUnsupportedTarget, "requested target format is not supported for ocr"
 	}
-	return "engine_error", "unsupported or corrupted input format"
+	return CodeEngineError, "unsupported or corrupted input format"
 }
 
 // isPandocTerminal is the pandoc engine's engine-scoped terminal classifier
@@ -577,16 +577,16 @@ func isPandocTerminal(err error) bool {
 //   - default -> "engine_error", mirroring every other engine's fallback.
 func pandocFailureCode(err error) (code, message string) {
 	if errors.Is(err, convert.ErrPandocInputTooLarge) {
-		return "input_too_large", "pandoc input exceeds the configured maximum size"
+		return CodeInputTooLarge, "pandoc input exceeds the configured maximum size"
 	}
 	msg := strings.ToLower(err.Error())
 	if strings.Contains(msg, "unsupported conversion") {
-		return "unsupported_target", "requested conversion is not supported by the pandoc engine"
+		return CodeUnsupportedTarget, "requested conversion is not supported by the pandoc engine"
 	}
 	if strings.Contains(msg, "unsupported wrap") || strings.Contains(msg, "parse opts") {
-		return "invalid_options", "stored conversion options are invalid"
+		return CodeInvalidOptions, "stored conversion options are invalid"
 	}
-	return "engine_error", "unsupported or corrupted input format"
+	return CodeEngineError, "unsupported or corrupted input format"
 }
 
 // isCanceled reports whether err is (or wraps) context.Canceled -- the shape
@@ -604,15 +604,51 @@ func isCanceled(err error) bool {
 	return errors.Is(err, context.Canceled)
 }
 
+// convertRepo is the narrow, interface-segregated subset of *jobs.Repo the
+// seven Handle*Convert wrappers and process() depend on (mirrors
+// internal/api/api.go's Repo/Storage/Enqueuer interface-segregation
+// precedent, and this package's own pre-existing progressRepo). It is a
+// STRICT SUPERSET of progressRepo's two methods (UpdateProgress,
+// SetSourceDuration) — process() passes h.repo, typed convertRepo, straight
+// into runConvertWithOptionalProgress's progressRepo parameter, and Go only
+// permits that interface-to-interface assignment while convertRepo retains
+// both. Introduced as a behavior-preserving test seam (56-CONTEXT.md D-10
+// step 1, RUNR-03): before this, Handler.repo was a concrete *jobs.Repo, so
+// constructing a Handler for a handler-level test needed a live Postgres
+// (internal/worker/pandoc_integration_test.go documented this exact
+// limitation). Unexported: satisfiable only from within package worker, so
+// no external package gains a way to substitute a repo (T-56-01).
+type convertRepo interface {
+	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
+	MarkActive(ctx context.Context, id uuid.UUID) error
+	MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error
+	MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error
+	Inputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Input, error)
+	AddOutput(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
+	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
+	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
+	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
+}
+
+// webhookEnqueuer is the narrow, interface-segregated subset of
+// *queue.Client the seven Handle*Convert wrappers depend on — the single
+// EnqueueWebhookDeliver call fired after a terminal or successful outcome
+// commits. Introduced alongside convertRepo as a behavior-preserving test
+// seam (56-CONTEXT.md D-10 step 1, RUNR-03); unexported for the same reason
+// (T-56-01).
+type webhookEnqueuer interface {
+	EnqueueWebhookDeliver(ctx context.Context, jobID uuid.UUID) error
+}
+
 // Handler processes image conversion tasks end to end.
 type Handler struct {
-	repo          *jobs.Repo
+	repo          convertRepo
 	store         *storage.Client
 	registry      *convert.Registry
 	engineTimout  time.Duration
 	webhookRepo   *webhook.Repo
 	deliverer     *webhook.Deliverer
-	enqueuer      *queue.Client
+	enqueuer      webhookEnqueuer
 	signingSecret []byte
 	presignTTL    time.Duration
 	// audioMaxDuration is the AUDIO_MAX_DURATION_SECONDS ceiling passed to
@@ -642,6 +678,23 @@ type Handler struct {
 	progressWebhookDelivr  progressWebhookDeliverer
 	progressWebhookSecret  []byte
 	progressWebhookTimeout time.Duration
+	// processFn is the D-10 processFn indirection: assigned to the method
+	// value h.process in NewHandler (after the struct literal is built), and
+	// called by all seven Handle*Convert wrappers in place of a direct
+	// h.process(...) call. h.process itself is unchanged — this field exists
+	// solely so a pinning test can substitute a stub processFn on a Handler
+	// built from fakes, without a live engine/converter/storage stack.
+	processFn func(ctx context.Context, job *jobs.Job) error
+	// preConvertGuard, when non-nil, splices additional validation
+	// immediately before process()'s call to the engine's Convert (via
+	// runConvertWithOptionalProgress) — installed by NewRunner from the
+	// bound EngineDescriptor's PreConvertGuard field (runner.go). nil for
+	// six of the seven engines; only the audio Runner installs one,
+	// wrapping the unmodified enforceAudioGuardBeforeConvert
+	// (T-30-08/IN-02). A nil guard is functionally identical to the
+	// pre-Task-1 code path: enforceAudioGuardBeforeConvert's own
+	// engine-gate was already a pass-through for every non-audio engine.
+	preConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
 }
 
 // SetProgressWebhook installs the D-04 opt-in inline progress-webhook
@@ -670,7 +723,12 @@ func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int
 	h.progressMinDeltaPct = minDeltaPct
 }
 
-// NewHandler builds a worker handler.
+// NewHandler builds a worker handler. repo and enqueuer keep their concrete
+// *jobs.Repo / *queue.Client parameter types — only the Handler struct
+// fields they populate are typed as the narrower convertRepo/webhookEnqueuer
+// interfaces (D-10 step 1): both concrete types satisfy those interfaces
+// structurally, so no production wiring changes, and no external package
+// gains a way to inject an alternative store (T-56-01).
 func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration) *Handler {
 	if engineTimeout == 0 {
 		engineTimeout = 120 * time.Second
@@ -680,7 +738,7 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		// or dead-lettered client can still fetch the result.
 		presignTTL = 6 * time.Hour
 	}
-	return &Handler{
+	h := &Handler{
 		repo:             repo,
 		store:            store,
 		registry:         registry,
@@ -692,453 +750,74 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		presignTTL:       presignTTL,
 		audioMaxDuration: audioMaxDuration,
 	}
+	// processFn defaults to h.process (D-10): the struct literal above cannot
+	// reference h while h is still being constructed, so the method value is
+	// assigned here instead. A pinning test overrides this field directly on
+	// a Handler built from fakes.
+	h.processFn = h.process
+	return h
 }
 
-// HandleImageConvert runs one image conversion: load job -> mark active ->
-// download input -> run engine -> upload output -> record output -> mark done.
-// A terminal error (bad input, unsupported pair, missing storage object) marks
-// the job failed immediately and skips asynq's retry (D-01/D-02); a transient
-// error (network, S3/engine timeout, Postgres write blip) is returned
-// unwrapped so the job stays active and asynq retries the same task
-// (D-01/D-03/D-04) — mirroring HandleWebhookDeliver's classification pattern.
+// HandleImageConvert runs one image conversion end to end (load job -> mark
+// active -> download input -> run engine -> upload output -> record output
+// -> mark done), entirely through Runner.Handle over ImageDescriptor
+// (runner.go/descriptors.go, D-09): image is the one engine with no opts
+// re-parse guard (ImageDescriptor.OptsFromMap is nil,
+// TestPinnedImageHasNoOptsGuard) and no FailureCode override -- a terminal
+// image failure always uses isTerminal + the shared default "engine_error"
+// pair, mirroring HandleWebhookDeliver's own separate classification
+// pattern (untouched by this refactor).
+//
+// This method itself carries no conversion logic any more (D-09's "no
+// per-engine handler" truth): it exists solely so
+// internal/worker/pinning_test.go's frozen dispatch table
+// ((*Handler).HandleImageConvert, a Go method expression) keeps compiling
+// and keeps exercising the real Runner path unchanged -- every worker
+// binary's own mux registration (cmd/worker/main.go) calls
+// worker.NewRunner(h, worker.ImageDescriptor).Handle directly instead, never
+// through this method.
 func (h *Handler) HandleImageConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueueImage, jobs.StatusFailed, time.Since(start))
-			// RecordClientJobOutcome is fire-and-forget, same as
-			// RecordJobOutcome above: a lost Prometheus increment is
-			// tolerable and never retried. This is NOT the same durability
-			// contract as MarkFailed's client_usage_daily rollup (D-05),
-			// which is transactional and exactly-once -- the two calls now
-			// sit on adjacent lines throughout this file but must not be
-			// read as equivalent.
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (ImageRetryDelay/IMAGE_MAX_RETRY, Plan 01) applies.
-		// Not a terminal outcome, so it is NOT recorded in the job-outcome
-		// metric (Pitfall 6 — one asynq retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueImage, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueImage, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, ImageDescriptor).Handle(ctx, t)
 }
 
-// HandleDocumentConvert runs one document conversion: load job -> mark
-// active -> download input -> run LibreOffice (via the engine-agnostic
-// process(), which reuses registry.Lookup — the LibreOfficeConverter
-// registered in convert.Default handles the actual conversion) -> upload
-// output -> record output -> mark done. Structurally identical to
-// HandleImageConvert with exactly two differences (DOC-07/DOC-08): (1) the
-// terminal-classification branch calls isDocumentTerminal instead of
-// isTerminal, so a DOCUMENT_ENGINE_TIMEOUT expiry takes the terminal path
-// (MarkFailed + SkipRetry, no asynq retry) — a deliberate divergence from
-// the image engine, which treats the same timeout as transient; (2) both
-// metrics.RecordJobOutcome calls are tagged queue.QueueDocument. Non-timeout
-// transient failures (S3/Postgres blips) still fall through
-// isDocumentTerminal -> isTerminal -> false and are returned unwrapped so
-// asynq retries them, bounded by DOCUMENT_MAX_RETRY.
+// HandleDocumentConvert runs one document conversion end to end, entirely
+// through Runner.Handle over DocumentDescriptor (D-09): DOC-07/DOC-08's two
+// divergences from ImageDescriptor now live as DATA on the descriptor --
+// OptsFromMap (the strict opts re-parse guard image lacks) and
+// isDocumentTerminal (a DOCUMENT_ENGINE_TIMEOUT expiry takes the terminal
+// path, unlike the image engine's own isTerminal, which treats the same
+// timeout as transient). See HandleImageConvert's doc comment for why this
+// method still exists as a thin delegator (frozen pinning_test.go
+// compatibility, D-10 step 2) rather than being deleted outright.
 func (h *Handler) HandleDocumentConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.DocOptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		//
-		// attempt=0: this guard runs BEFORE MarkActive, so the job never
-		// left `queued` and never occupied a worker slot -- recordUsage
-		// (D-05) derives wall_seconds from jobs.started_at, which is still
-		// NULL here, and falls back to 0 (internal/jobs/usage.go), exactly
-		// mirroring the reconciler exhaustion path's own 0 (Task 2). Applied
-		// identically at every invalid_options site in this file; no
-		// RecordClientJobOutcome call is added here either, mirroring the
-		// existing absence of RecordJobOutcome at these sites -- the
-		// Postgres rollup is authoritative for this asymmetry.
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isDocumentTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueueDocument, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (DocumentRetryDelay/DOCUMENT_MAX_RETRY, Plan 01) applies.
-		// Not a terminal outcome, so it is NOT recorded in the job-outcome
-		// metric (Pitfall 6 — one asynq retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueDocument, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueDocument, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, DocumentDescriptor).Handle(ctx, t)
 }
 
-// HandleHTMLConvert runs one html->pdf conversion: load job -> mark active ->
-// download input -> run chromium-headless-shell (via the engine-agnostic
-// process(), which reuses registry.Lookup — the ChromiumConverter registered
-// in convert.Default handles the actual render) -> upload output -> record
-// output -> mark done. Structurally identical to HandleDocumentConvert, with
-// the same two divergences from the image path (HTML-01): (1) the
-// terminal-classification branch calls isHTMLTerminal instead of isTerminal,
-// so an HTML_ENGINE_TIMEOUT expiry takes the terminal path (MarkFailed +
-// SkipRetry, no asynq retry); (2) both metrics.RecordJobOutcome calls are
-// tagged queue.QueueHTML. Non-timeout transient failures (S3/Postgres blips)
-// still fall through isHTMLTerminal -> isTerminal -> false and are returned
-// unwrapped so asynq retries them, bounded by HTML_MAX_RETRY.
+// HandleHTMLConvert runs one html->pdf conversion end to end, entirely
+// through Runner.Handle over HTMLDescriptor (D-09). HTML-01's two
+// divergences from ImageDescriptor now live as DATA on the descriptor,
+// mirroring DocumentDescriptor's shape exactly: OptsFromMap and
+// isHTMLTerminal (an HTML_ENGINE_TIMEOUT expiry takes the terminal path).
+// See HandleImageConvert's doc comment for why this method still exists as
+// a thin delegator.
 func (h *Handler) HandleHTMLConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.HTMLOptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		// attempt=0: this guard runs BEFORE MarkActive (see the Document
-		// handler's invalid_options comment for the full rationale).
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isHTMLTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			ferr := h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueueHTML, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (HTMLRetryDelay/HTML_MAX_RETRY, Plan 01) applies.
-		// Not a terminal outcome, so it is NOT recorded in the job-outcome
-		// metric (Pitfall 6 — one asynq retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueHTML, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueHTML, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, HTMLDescriptor).Handle(ctx, t)
 }
 
-// HandleAudioConvert runs one audio transcription: load job -> mark active ->
-// download input -> run the ffmpeg-normalize/whisper-cli-transcribe pipeline
-// (via the engine-agnostic process(), which reuses registry.Lookup — the
-// AudioConverter registered in convert.Default handles the actual
-// transcription; process() also enforces the EnforceMaxDuration guard for
-// EngineAudio jobs, T-30-08/IN-02) -> upload output -> record output -> mark
-// done. Structurally mirrors HandleDocumentConvert/HandleHTMLConvert with
-// three differences (AUD-05): (1) the terminal-classification branch calls
-// isAudioTerminal instead of isDocumentTerminal/isHTMLTerminal — Key
-// Decision 1's stage-aware classifier, NOT a blanket
-// timeout-is-terminal copy; (2) a duration-guard rejection
-// (errors.Is(err, convert.ErrAudioDurationExceeded)) gets its own distinct
-// client-facing error_code "duration_exceeded" rather than the generic
-// "engine_error" (31-RESEARCH.md A3) — a declared-duration rejection is a
-// distinguishable, actionable failure mode for the client, not a generic
-// engine failure; (3) both metrics.RecordJobOutcome calls are tagged
-// queue.QueueAudio.
+// HandleAudioConvert runs one audio transcription end to end, entirely
+// through Runner.Handle over AudioDescriptor (D-09). AUD-05's three
+// divergences from ImageDescriptor now live as DATA on the descriptor:
+// OptsFromMap; isAudioTerminal (Key Decision 1's stage-aware classifier,
+// NOT a blanket timeout-is-terminal copy); and FailureCode = audioFailureCode
+// (descriptors.go), which gives a duration-guard rejection its own distinct
+// "duration_exceeded" client-facing code (31-RESEARCH.md A3) instead of the
+// generic "engine_error". process()'s own EnforceMaxDuration splice
+// (T-30-08/IN-02) is installed via NewRunner's audio-specific
+// preConvertGuard wiring, not through anything in this method. See
+// HandleImageConvert's doc comment for why this method still exists as a
+// thin delegator.
 func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.AudioOptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		// attempt=0: this guard runs BEFORE MarkActive (see the Document
-		// handler's invalid_options comment for the full rationale).
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isAudioTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			//
-			// A duration-guard rejection gets a distinct client-facing code
-			// (31-RESEARCH.md A3) — it must NOT reuse the generic
-			// "engine_error" path: "declared duration exceeds the configured
-			// maximum" is a distinguishable, actionable failure the client
-			// can react to differently than a generic corrupted-input
-			// failure.
-			var ferr error
-			if errors.Is(err, convert.ErrAudioDurationExceeded) {
-				ferr = h.repo.MarkFailed(ctx, jobID, "duration_exceeded", "declared audio duration exceeds the configured maximum", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			} else {
-				ferr = h.repo.MarkFailed(ctx, jobID, "engine_error", "unsupported or corrupted input format", map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			}
-			metrics.RecordJobOutcome(queue.QueueAudio, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (AudioRetryDelay/AUDIO_MAX_RETRY, Plan 01) applies.
-		// Not a terminal outcome, so it is NOT recorded in the job-outcome
-		// metric (Pitfall 6 — one asynq retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueAudio, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAudio, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, AudioDescriptor).Handle(ctx, t)
 }
 
 // avFailureCode maps a terminal process() error for an av job to the
@@ -1163,374 +842,67 @@ func (h *Handler) HandleAudioConvert(ctx context.Context, t *asynq.Task) error {
 func avFailureCode(err error) (code, message string) {
 	switch {
 	case errors.Is(err, convert.ErrAVTimecodeOutOfRange):
-		return "timecode_out_of_range", "requested thumbnail timecode exceeds source duration"
+		return CodeTimecodeOutOfRange, "requested thumbnail timecode exceeds source duration"
 	case errors.Is(err, convert.ErrAudioDurationExceeded):
-		return "duration_exceeded", "declared video duration exceeds the configured maximum"
+		return CodeDurationExceeded, "declared video duration exceeds the configured maximum"
 	case errors.Is(err, convert.ErrAVResolutionExceeded):
-		return "resolution_exceeded", "declared video resolution exceeds the configured maximum"
+		return CodeResolutionExceeded, "declared video resolution exceeds the configured maximum"
 	case errors.Is(err, convert.ErrAVNoVideoStream):
-		return "no_video_stream", "no video stream found in source"
+		return CodeNoVideoStream, "no video stream found in source"
 	default:
-		return "engine_error", "unsupported or corrupted input format"
+		return CodeEngineError, "unsupported or corrupted input format"
 	}
 }
 
 // HandleAVConvert runs one video conversion (transcode / audio-extract /
-// thumbnail): load job -> mark active -> download input -> run ffmpeg (via
-// the engine-agnostic process(), which reuses registry.Lookup — the
-// AVConverter registered in convert.Default handles the actual conversion)
-// -> upload output -> record output -> mark done. Mirrors
-// HandleDocumentConvert's/HandleHTMLConvert's SIMPLE shape (no guard
-// splice), NOT HandleAudioConvert's: AVConverter.Convert already
-// self-contains its own duration/resolution guard (av.go:388-400,
-// 35-RESEARCH.md Pattern 2), so process() needs no av-specific branch and
-// this handler calls it exactly as document/html do. Diverges from
-// HandleDocumentConvert in two ways (AVE-03): (1) the terminal-
-// classification branch calls isAVTerminal instead of isDocumentTerminal —
-// D-02's stage-aware split, NOT a blanket timeout-is-terminal copy; (2) a
-// terminal failure's error_code is selected via avFailureCode instead of
-// always "engine_error", so a client can distinguish a timecode/duration/
-// resolution/no-video-stream rejection from a generic corrupted-input
-// failure (mirrors HandleAudioConvert's own "duration_exceeded"
-// special-case, D-09/IN-01).
+// thumbnail) end to end, entirely through Runner.Handle over AVDescriptor
+// (D-09). AVE-03's two divergences from DocumentDescriptor's SIMPLE shape
+// (no PreConvertGuard: AVConverter.Convert already self-contains its own
+// duration/resolution guard, av.go:388-400) now live as DATA: isAVTerminal
+// (D-02's stage-aware split, the OPPOSITE polarity from isAudioTerminal)
+// and FailureCode = avFailureCode, so a client can distinguish a
+// timecode/duration/resolution/no-video-stream rejection from a generic
+// corrupted-input failure. See HandleImageConvert's doc comment for why
+// this method still exists as a thin delegator.
 func (h *Handler) HandleAVConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.AVOptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		// attempt=0: this guard runs BEFORE MarkActive (see the Document
-		// handler's invalid_options comment for the full rationale).
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isAVTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			code, message := avFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueueAV, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (AVRetryDelay/AV_MAX_RETRY) applies. Not a terminal
-		// outcome, so it is NOT recorded in the job-outcome metric (one asynq
-		// retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueAV, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueAV, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, AVDescriptor).Handle(ctx, t)
 }
 
 // HandleOCRConvert runs one OCR extraction (image or scanned/image-only PDF
-// -> txt/hOCR/ALTO): load job -> mark active -> download input -> run
-// tesseract/pdftoppm (via the engine-agnostic process(), which reuses
-// registry.Lookup -- the OCRConverter registered in convert.Default handles
-// the actual extraction, including its own page-count/page-box/born-digital/
-// image-pixel guards, ocrguards.go/ocrpdf.go) -> upload output -> record
-// output -> mark done. Mirrors HandleAVConvert's/HandleDocumentConvert's
-// SIMPLE shape (no guard splice): OCRConverter.Convert already self-contains
-// every guard, so process() needs no OCR-specific branch and this handler
-// calls it exactly as av/document do. Diverges from HandleAVConvert in two
-// ways (mirrors AVE-03's own divergence from HandleDocumentConvert): (1) the
-// terminal-classification branch calls isOCRTerminal instead of
-// isAVTerminal -- D-04's stage-aware split, NOT isAVTerminal's shape; (2) a
-// terminal failure's error_code is selected via ocrFailureCode instead of
-// avFailureCode, so a client can distinguish a born-digital/too-many-pages/
+// -> txt/hOCR/ALTO) end to end, entirely through Runner.Handle over
+// OCRDescriptor (D-09). OCRConverter.Convert already self-contains every
+// guard (page-count/page-box/born-digital/image-pixel, ocrguards.go/
+// ocrpdf.go), mirroring AVDescriptor's SIMPLE shape (no PreConvertGuard).
+// isOCRTerminal (D-04's stage-aware split, the OPPOSITE of isAVTerminal's
+// own shape) and FailureCode = ocrFailureCode live as DATA on the
+// descriptor, so a client can distinguish a born-digital/too-many-pages/
 // page-too-large/image-too-large/unsupported-language/unsupported-target
-// rejection from a generic corrupted-input failure. Both
-// metrics.RecordJobOutcome calls are tagged queue.QueueOCR.
+// rejection from a generic corrupted-input failure. See
+// HandleImageConvert's doc comment for why this method still exists as a
+// thin delegator.
 func (h *Handler) HandleOCRConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.OCROptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		// attempt=0: this guard runs BEFORE MarkActive (see the Document
-		// handler's invalid_options comment for the full rationale).
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isOCRTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			code, message := ocrFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (OCRRetryDelay/OCR_MAX_RETRY) applies. Not a terminal
-		// outcome, so it is NOT recorded in the job-outcome metric (one asynq
-		// retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueueOCR, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueueOCR, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, OCRDescriptor).Handle(ctx, t)
 }
 
-// HandlePandocConvert runs one pandoc markup-to-markup conversion: load job
-// -> mark active -> download input -> run pandoc (via the engine-agnostic
-// process(), which reuses registry.Lookup -- the PandocConverter registered
-// in convert.Default handles the actual conversion, including its own
-// unsupported-pair/opts/input-size guards and pandocValidateOutput's
-// target-appropriate content check, pandoc.go/markupsniff.go) -> upload
-// output -> record output -> mark done. Mirrors HandleOCRConvert's shape
-// (strict opts re-parse guard, D-10 defense-in-depth) with two divergences
-// (D-01, 48-CONTEXT.md): (1) the terminal-classification branch calls
-// isPandocTerminal instead of isOCRTerminal -- pandoc's timeout+engine-error
-// terminal classification mirrors isDocumentTerminal, the OPPOSITE of
-// isOCRTerminal's transient-timeout treatment; (2) a terminal failure's
-// error_code is selected via pandocFailureCode instead of ocrFailureCode.
-// Both metrics.RecordJobOutcome calls are tagged queue.QueuePandoc.
+// HandlePandocConvert runs one pandoc markup-to-markup conversion end to
+// end, entirely through Runner.Handle over PandocDescriptor (D-01,
+// 48-CONTEXT.md, D-09). PandocConverter.Convert already self-contains every
+// guard (unsupported-pair/opts/input-size, pandocValidateOutput's
+// target-appropriate content check, pandoc.go/markupsniff.go), mirroring
+// OCRDescriptor's strict-opts-reparse shape. isPandocTerminal (pandoc's
+// timeout+engine-error terminal classification mirrors isDocumentTerminal,
+// the OPPOSITE of isOCRTerminal's transient-timeout treatment) and
+// FailureCode = pandocFailureCode live as DATA on the descriptor.
 //
 // An empty-but-valid pandoc output (e.g. an empty-body markdown source
 // producing an empty plaintext/fragment result) completes as done, never
-// failed (SC4) -- there is no `if output==""{error}` branch here:
-// pandocValidateOutput (pandoc.go) already skips its content-sniff check on
-// a zero-size output and returns nil, so process() returns nil and this
-// handler's success path (h.repo.MarkDone, already committed inside
-// process()) runs unchanged.
+// failed (SC4): pandocValidateOutput (pandoc.go) already skips its
+// content-sniff check on a zero-size output and returns nil, so process()
+// returns nil and Runner.Handle's success path runs unchanged. See
+// HandleImageConvert's doc comment for why this method still exists as a
+// thin delegator.
 func (h *Handler) HandlePandocConvert(ctx context.Context, t *asynq.Task) error {
-	payload, err := queue.ParseConvertPayload(t.Payload())
-	if err != nil {
-		// Unparseable payload: nothing we can retry into success.
-		return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-	}
-	jobID := payload.JobID
-
-	job, err := h.repo.Get(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("load job %s: %w", jobID, err)
-	}
-
-	// Strict re-parse of the persisted opts (D-10): garbage in jobs.options
-	// is a terminal, not transient, failure -- a corrupt column value can
-	// never fix itself on retry. This is a strictness check only; the
-	// applicability/enum business rules already ran once, at the API layer
-	// (single source of validation truth), and are deliberately not
-	// duplicated here.
-	if _, err := convert.PandocOptsFromMap(job.Opts); err != nil {
-		// Mark failed BEFORE SkipRetry: without this the job would stay
-		// queued forever (no webhook, client polls a dead job) while the
-		// reconciler requeues it into the same failure until MaxRecoveries
-		// is exhausted (T-14-02b). Sanitized message only; the parse error
-		// is kept in job_events.detail for internal diagnostics.
-		// attempt=0: this guard runs BEFORE MarkActive (see the Document
-		// handler's invalid_options comment for the full rationale).
-		ferr := h.repo.MarkFailed(ctx, jobID, "invalid_options", "stored conversion options are invalid", map[string]any{"opts_error": err.Error()}, 0)
-		// Postgres-first: enqueue the webhook ONLY once the failed status is
-		// actually committed — if MarkFailed itself failed, a webhook now
-		// would report the non-terminal status "queued" (WR-04). A failed
-		// enqueue after a successful MarkFailed must not fail the job —
-		// best-effort only.
-		if ferr == nil && job.CallbackURL != "" {
-			_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-		}
-		return fmt.Errorf("%w: opts: %v", asynq.SkipRetry, err)
-	}
-
-	if err := h.repo.MarkActive(ctx, jobID); err != nil {
-		// Already active/done/canceled — let asynq drop it rather than loop.
-		return fmt.Errorf("%w: mark active: %v", asynq.SkipRetry, err)
-	}
-
-	start := time.Now()
-	if err := h.process(ctx, job); err != nil {
-		if isCanceled(err) {
-			// D-07: the attempt was killed by a job:cancel signal via the
-			// registered CancelFunc (internal/cancel) -- the job is already
-			// `canceled` in Postgres (API's guarded transition). Do NOT
-			// MarkFailed (it would be rejected by the allow-list anyway,
-			// D-05, and re-failing a canceled job is wrong) and record no
-			// job-outcome metric (mirrors the transient branch's own
-			// no-double-count comment below).
-			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
-		}
-		if isPandocTerminal(err) {
-			// Sanitized message only in error_message (exposed via GET
-			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
-			// (which contains local temp paths) is kept in job_events.detail
-			// for internal diagnostics only.
-			code, message := pandocFailureCode(err)
-			ferr := h.repo.MarkFailed(ctx, jobID, code, message, map[string]any{"engine_stderr": err.Error()}, time.Since(start))
-			metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusFailed, time.Since(start))
-			// Guarded on ferr: if MarkFailed did not commit (Postgres blip, or a
-			// concurrent transition won the guarded allow-list), the job is NOT
-			// failed yet. A retry or the reconciler will reach a terminal state
-			// later and increment then -- counting here too would double-count
-			// this client, or attribute an outcome that never happened.
-			if ferr == nil {
-				metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusFailed)
-			}
-			// Postgres-first: enqueue the webhook ONLY once the failed status
-			// is actually committed. If MarkFailed itself failed (Postgres
-			// blip), the job is still active — a webhook now would re-read the
-			// row and deliver the non-terminal status "active", which the
-			// contract never defines (WR-04); the reconciler will requeue the
-			// still-active job instead. A failed enqueue after a successful
-			// MarkFailed must not fail the conversion — best-effort only.
-			if ferr == nil && job.CallbackURL != "" {
-				_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-			}
-			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
-		}
-		// Transient: do NOT mark failed — the job stays active so asynq's own
-		// retry/backoff (PandocRetryDelay/PANDOC_MAX_RETRY, Plan 01) applies.
-		// Not a terminal outcome, so it is NOT recorded in the job-outcome
-		// metric (Pitfall 6 — one asynq retry must not double-count).
-		return err
-	}
-	metrics.RecordJobOutcome(queue.QueuePandoc, jobs.StatusDone, time.Since(start))
-	metrics.RecordClientJobOutcome(job.ClientID.String(), queue.QueuePandoc, jobs.StatusDone)
-	// Postgres-first: MarkDone already committed inside process(), so a
-	// failed enqueue must not fail the conversion — best-effort only.
-	if job.CallbackURL != "" {
-		_ = h.enqueuer.EnqueueWebhookDeliver(ctx, jobID)
-	}
-	return nil
+	return NewRunner(h, PandocDescriptor).Handle(ctx, t)
 }
 
 // HandleWebhookDeliver delivers one webhook attempt for a completed job:
@@ -1558,6 +930,35 @@ func buildTerminalWebhookBody(job *jobs.Job) map[string]any {
 	}
 	body["event"] = "completed"
 	return body
+}
+
+// setWebhookDownloadURL sets body["download_url"] to the presigned URL of
+// the job's PRIMARY output, selected by ROLE (jobs.OutputRolePrimary), never
+// by ordinal or slice position -- a report or preview output must never
+// reach download_url just because it sorts first (codex PR #7 finding #1;
+// same defect class ROLE-02/T-57-24 closed for handleGetJob at
+// handlers.go:944-951). With no primary present in outs, it sets nothing and
+// returns nil: an asynq retry storm over a state D-13 makes unreachable
+// (a done job always has exactly one primary output) would be worse than an
+// omitted key, and substituting another output is the very bug being fixed
+// here -- this mirrors handleGetJob's hasPrimary=false path exactly. A
+// presign error is returned unwrapped; the caller applies its own
+// "presign output for job %s: %w" wrapping. Factored out as a pure function
+// (same rationale as buildTerminalWebhookBody above) because
+// HandleWebhookDeliver itself cannot be unit-tested: h.store is a concrete
+// *storage.Client whose constructor does a live BucketExists round trip.
+func setWebhookDownloadURL(ctx context.Context, body map[string]any, outs []jobs.Output, presign func(context.Context, string) (string, error)) error {
+	for _, o := range outs {
+		if o.Role == jobs.OutputRolePrimary {
+			url, err := presign(ctx, o.ObjectKey)
+			if err != nil {
+				return err
+			}
+			body["download_url"] = url
+			return nil
+		}
+	}
+	return nil
 }
 
 func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error {
@@ -1589,11 +990,11 @@ func (h *Handler) HandleWebhookDeliver(ctx context.Context, t *asynq.Task) error
 		}
 		// D-09: regenerate a fresh presigned URL on every attempt, never
 		// reuse a stale one across retries.
-		url, err := h.store.PresignGet(ctx, outs[0].ObjectKey, h.presignTTL)
-		if err != nil {
+		if err := setWebhookDownloadURL(ctx, body, outs, func(c context.Context, key string) (string, error) {
+			return h.store.PresignGet(c, key, h.presignTTL)
+		}); err != nil {
 			return fmt.Errorf("presign output for job %s: %w", jobID, err)
 		}
-		body["download_url"] = url
 	}
 	if job.Status == jobs.StatusFailed {
 		if job.ErrorCode != "" {
@@ -1885,9 +1286,16 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return err
 	}
 
-	conv, ok := h.registry.Lookup(job.SourceFormat, job.TargetFormat)
+	// job.Operation is the value handleCreateJob recorded and validated
+	// fail-closed (57-04): this is the ONLY point in the worker that reads
+	// the registry, and it trusts job.Operation completely -- it does NOT
+	// substitute a default. If job.Operation is ever empty (a row created
+	// outside the API, bypassing its validation), LookupOp simply finds no
+	// converter and the job fails honestly instead of being silently
+	// processed as convert.
+	conv, ok := h.registry.LookupOp(job.Operation, job.SourceFormat, job.TargetFormat)
 	if !ok {
-		return fmt.Errorf("no converter for %s -> %s", job.SourceFormat, job.TargetFormat)
+		return fmt.Errorf("no converter for operation %s: %s -> %s", job.Operation, job.SourceFormat, job.TargetFormat)
 	}
 
 	workDir, err := os.MkdirTemp("", "octoconv-"+job.ID.String()+"-")
@@ -1908,17 +1316,32 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// be documented — closes the gap where EnforceMaxDuration existed
 	// (Phase 30) but no caller ever invoked it. Runs AFTER download (there
 	// is nothing to probe before the file exists locally) and strictly
-	// BEFORE conv.Convert (the most expensive step) via
-	// enforceAudioGuardBeforeConvert, factored out as its own package-level
-	// function so the ordering is unit-testable without a live Postgres/S3
-	// Handler.
-	if err := enforceAudioGuardBeforeConvert(attemptCtx, job.Engine, inPath, h.audioMaxDuration, func() error {
+	// BEFORE conv.Convert (the most expensive step).
+	//
+	// D-09 (56-CONTEXT.md): the splice itself is now generic — h.preConvertGuard,
+	// installed by NewRunner from the bound EngineDescriptor's
+	// PreConvertGuard (runner.go), runs in front of convertFn when non-nil;
+	// every other engine (h.preConvertGuard == nil) calls convertFn()
+	// directly. This is functionally identical to the pre-refactor
+	// unconditional call to enforceAudioGuardBeforeConvert: that function's
+	// own engine-gate (`if engine == convert.EngineAudio`) was already a
+	// pass-through for every non-audio engine, so removing the
+	// always-audio-shaped wrapper here changes no externally observable
+	// behavior.
+	convertFn := func() error {
 		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
+	}
+	var convertErr error
+	if h.preConvertGuard != nil {
+		convertErr = h.preConvertGuard(attemptCtx, job, inPath, convertFn)
+	} else {
+		convertErr = convertFn()
+	}
+	if convertErr != nil {
+		return convertErr
 	}
 
 	outKey := storage.OutputKey(job.ID, 0, outName)

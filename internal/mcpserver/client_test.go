@@ -139,7 +139,7 @@ func TestClientConvertBlocking_HappyPath(t *testing.T) {
 	})
 
 	var ticks []string
-	result, err := c.ConvertBlocking(context.Background(), sampleFile, "jpg", "", "", func(status string) {
+	result, err := c.ConvertBlocking(context.Background(), sampleFile, "", "jpg", "", "", func(status string) {
 		ticks = append(ticks, status)
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestClient_UnsupportedPair_422(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "weird", "", "")
+	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -430,7 +430,7 @@ func TestClient_422NoCode_UnchangedErrorText(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "weird", "", "")
+	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -504,6 +504,241 @@ func TestListFormats(t *testing.T) {
 	}
 	if len(eng.Pairs) != 1 || eng.Pairs[0] != [2]string{"png", "jpg"} {
 		t.Fatalf("pairs = %v, want [[png jpg]]", eng.Pairs)
+	}
+	if fr.Operations != nil {
+		t.Fatalf("Operations = %v, want nil when the response body omits the operations key (pre-Phase-57 API build)", fr.Operations)
+	}
+}
+
+// TestListFormats_OperationsDecoded (codex PR #7 finding #2) proves the
+// operations key of GET /v1/formats -- the discovery path tools.go:68's
+// convert_file jsonschema advertises -- actually survives decoding instead
+// of being silently dropped.
+func TestListFormats_OperationsDecoded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/formats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"engines": map[string]any{
+				"image": map[string]any{"pairs": [][2]string{{"png", "jpg"}}},
+			},
+			"operations": map[string]any{
+				"convert": map[string]any{
+					"image": map[string]any{"pairs": [][2]string{{"png", "jpg"}}},
+				},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	fr, err := c.ListFormats(context.Background())
+	if err != nil {
+		t.Fatalf("ListFormats: %v", err)
+	}
+	byEngine, ok := fr.Operations["convert"]
+	if !ok {
+		t.Fatal("ListFormats: missing convert operation in decoded response")
+	}
+	eng, ok := byEngine["image"]
+	if !ok {
+		t.Fatal("ListFormats: missing image engine under convert operation")
+	}
+	if len(eng.Pairs) != 1 || eng.Pairs[0] != [2]string{"png", "jpg"} {
+		t.Fatalf("operations[convert][image].Pairs = %v, want [[png jpg]]", eng.Pairs)
+	}
+}
+
+// TestGetJob_OutputsDecoded proves the outputs array of GET /v1/jobs/{id}
+// survives decoding into JobStatus. Before JobStatus carried Outputs,
+// encoding/json silently dropped the whole array, so a sanitize report --
+// reachable ONLY through it -- was invisible to both MCP servers even though
+// the API published it (codex PR #7 second-round finding).
+//
+// The fixture puts report at ordinal 0 and primary at ordinal 1 on purpose:
+// a decoder that survives this ordering cannot be passing by accident on a
+// fixture where position and role happen to agree.
+func TestGetJob_OutputsDecoded(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"job_id":       "00000000-0000-0000-0000-000000000057",
+			"status":       "done",
+			"download_url": "https://s3.example/results/J/1-out.webp?sig=a",
+			"outputs": []map[string]any{
+				{"role": "report", "ordinal": 0, "format": "json", "size_bytes": 12, "url": "https://s3.example/results/J/0-report.json?sig=b"},
+				{"role": "primary", "ordinal": 1, "format": "webp", "size_bytes": 4242, "url": "https://s3.example/results/J/1-out.webp?sig=a"},
+			},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	js, err := c.GetJob(context.Background(), "00000000-0000-0000-0000-000000000057")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(js.Outputs) != 2 {
+		t.Fatalf("len(Outputs) = %d, want 2 -- the outputs array was dropped by the decoder", len(js.Outputs))
+	}
+
+	byRole := map[string]JobOutput{}
+	for _, o := range js.Outputs {
+		byRole[o.Role] = o
+	}
+	report, ok := byRole["report"]
+	if !ok {
+		t.Fatal("no output with role=report decoded")
+	}
+	primary, ok := byRole["primary"]
+	if !ok {
+		t.Fatal("no output with role=primary decoded")
+	}
+	if report.Ordinal != 0 || report.Format != "json" || report.SizeBytes != 12 {
+		t.Fatalf("report output = %+v, want ordinal 0, format json, size 12", report)
+	}
+	if primary.Ordinal != 1 || primary.Format != "webp" || primary.SizeBytes != 4242 {
+		t.Fatalf("primary output = %+v, want ordinal 1, format webp, size 4242", primary)
+	}
+	// The secondary artifact must be reachable, not merely counted: its URL
+	// is the only path an agent has to the report.
+	if report.URL != "https://s3.example/results/J/0-report.json?sig=b" {
+		t.Fatalf("report.URL = %q, want the report's own presigned URL", report.URL)
+	}
+	if primary.URL != js.DownloadURL {
+		t.Fatalf("primary.URL = %q, want it to equal download_url %q", primary.URL, js.DownloadURL)
+	}
+}
+
+// TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
+// CreateJob writes a multipart part named "operation" with the supplied
+// value when operation is non-empty.
+func TestClientCreateJob_OperationFieldPresentWhenNonEmpty(t *testing.T) {
+	var sawOperation string
+	var hasOperationField bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		if vals, ok := r.MultipartForm.Value[formFieldOperation]; ok && len(vals) > 0 {
+			hasOperationField = true
+			sawOperation = vals[0]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "job-op-1"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	if _, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", ""); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if !hasOperationField {
+		t.Fatal("multipart body has no \"operation\" part, want one since operation was non-empty")
+	}
+	if sawOperation != "sanitize" {
+		t.Fatalf("operation field = %q, want sanitize", sawOperation)
+	}
+}
+
+// TestClientCreateJob_OperationFieldAbsentWhenEmpty (T-57-31) proves an
+// empty operation produces a multipart body with NO "operation" part at
+// all -- the wire form of a client that never sends the field is preserved
+// byte-for-byte.
+func TestClientCreateJob_OperationFieldAbsentWhenEmpty(t *testing.T) {
+	var hasOperationField bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		_, hasOperationField = r.MultipartForm.Value[formFieldOperation]
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "job-op-2"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	if _, err := c.CreateJob(context.Background(), sampleFile, "", "jpg", "", ""); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if hasOperationField {
+		t.Fatal("multipart body has an \"operation\" part, want none since operation was empty")
+	}
+}
+
+// TestClient_UnsupportedOperation422_ForwardedVerbatim (T-57-30) asserts the
+// API's 422 unsupported_operation error is surfaced by CreateJob unchanged,
+// exactly like the pre-existing unsupported_conversion case above -- this
+// client never arbitrates operation locally, so a 422 from the server's
+// registry gate is the only source of this rejection.
+func TestClient_UnsupportedOperation422_ForwardedVerbatim(t *testing.T) {
+	const errText = "unsupported operation: sanitize"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errText, "code": "unsupported_operation"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", "")
+	if err == nil {
+		t.Fatal("CreateJob: expected an error for an unsupported operation")
+	}
+	if !strings.Contains(err.Error(), errText) {
+		t.Fatalf("CreateJob error = %q, want it to contain %q", err.Error(), errText)
+	}
+	if !strings.Contains(err.Error(), "unsupported_operation") {
+		t.Fatalf("CreateJob error = %q, want it to contain the code %q", err.Error(), "unsupported_operation")
 	}
 }
 

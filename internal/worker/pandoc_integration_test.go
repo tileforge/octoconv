@@ -29,10 +29,16 @@ func requirePandocIntegrationBinary(t *testing.T) {
 // runConvertWithOptionalProgress -- not a bare call to PandocConverter.Convert
 // (mirrors TestOCRProgressIntegration's own documented precedent,
 // ocr_progress_integration_test.go). This does NOT exercise HandlePandocConvert
-// itself: process()'s h.repo/h.store are concrete types (*jobs.Repo/
-// *storage.Client), not interfaces (ARCHITECTURE.md's "Key Abstractions"
-// note), so a full Handler cannot be constructed in a pure unit test without
-// a live Postgres/S3 -- this proves the smallest testable proxy for
+// itself: process() still shells out to a real converter, downloads/uploads
+// through h.store (a concrete *storage.Client), and drives the real
+// engine binary -- none of that is faked by the convertRepo/webhookEnqueuer/
+// processFn seams introduced in 56-01 (D-10 step 1), which only lift the
+// restriction on constructing a *Handler without a live Postgres/Redis.
+// This integration test remains the proxy for the process()-internal
+// conversion seam specifically -- a real pandoc binary invocation end to
+// end -- while internal/worker/pinning_test.go now exercises
+// HandlePandocConvert (and its six siblings) directly via a Handler built
+// from fakes, proving the smallest testable proxy for
 // queued->active->done: a real pandoc invocation, through the exact
 // conversion seam the handler calls, succeeds and produces valid output.
 // PandocConverter does NOT implement convert.ProgressConverter (a single

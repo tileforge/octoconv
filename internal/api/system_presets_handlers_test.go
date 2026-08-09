@@ -12,6 +12,7 @@ import (
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/presets"
 )
 
@@ -121,7 +122,7 @@ func TestRequireOperator_NonOperatorNoLeak404(t *testing.T) {
 	}
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 	if !bytes.Equal(rec.Body.Bytes(), wantRec.Body.Bytes()) {
 		t.Errorf("body = %q, want byte-identical to noSuchPreset 404 %q", rec.Body.String(), wantRec.Body.String())
 	}
@@ -239,7 +240,7 @@ func TestSystemPresets_NonOperatorNoLeak404(t *testing.T) {
 	})
 
 	wantRec := httptest.NewRecorder()
-	writeError(wantRec, http.StatusNotFound, noSuchPreset)
+	writeError(wantRec, http.StatusNotFound, errcode.UnknownPreset, noSuchPreset)
 
 	for _, tc := range systemPresetCases() {
 		t.Run(tc.name, func(t *testing.T) {

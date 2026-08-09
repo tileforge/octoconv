@@ -17,6 +17,7 @@ import (
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/apaderin/octoconv/internal/storage"
@@ -29,7 +30,21 @@ const (
 	formFieldProgressWebhook = "progress_webhook"
 	formFieldOpts            = "opts"
 	formFieldPreset          = "preset"
-	operationConv            = "convert"
+	formFieldOperation       = "operation"
+	// operationConv is kept as a local alias of convert.OperationConvert so
+	// existing call sites in this file (the operation-omitted default and
+	// the Create call below) do not need touching beyond this one line
+	// (57-04): the literal "convert" now lives in exactly one place,
+	// internal/convert/convert.go.
+	operationConv = convert.OperationConvert
+	// outputRolePrimary is the job_outputs.role value that selects the
+	// output handleGetJob presigns into "download_url" (ROLE-02, 57-06):
+	// the primary result of the job, chosen by role, never by ordinal or
+	// position in the []jobs.Output slice returned by Repo.Outputs. Aliased
+	// from jobs.OutputRolePrimary (codex PR #7 finding #1) so the literal
+	// "primary" is declared exactly once in Go, shared with
+	// internal/worker's terminal webhook selection.
+	outputRolePrimary = jobs.OutputRolePrimary
 	// maxOptsBytes bounds the opts JSON field before it is even parsed
 	// (T-14-02): a conservative 4 KiB comfortably fits the closed DocOpts
 	// schema while bounding the DoS surface of an oversized field.
@@ -119,10 +134,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(multipartInMemoryBudget); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "file exceeds size limit")
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")
 			return
 		}
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
 		return
 	}
 
@@ -134,28 +149,44 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	rawOpts := r.FormValue(formFieldOpts)
 	usingPreset := presetName != ""
 
+	// D-04: normalize the operation field to operationConv ONE line after
+	// FormValue, before any branching whatsoever. Below this point, "the
+	// client sent no operation field" and "the client sent operation=convert"
+	// are physically indistinguishable -- there is nowhere for the API
+	// default and the DB default to diverge, because there is only ever one
+	// value from here on (Pitfall 13). A three-valued scheme ("absent" vs
+	// "empty" vs "explicit") was deliberately rejected: it would require a
+	// third 422 branch to reject an empty-but-present field for no operator
+	// benefit, and it is exactly the kind of extra branch this normalization
+	// exists to make impossible. No strings.TrimSpace and no lower-casing --
+	// operation is compared exactly, the same discipline as an engine class.
+	operation := r.FormValue(formFieldOperation)
+	if operation == "" {
+		operation = operationConv
+	}
+
 	if usingPreset && (rawTarget != "" || (rawOpts != "" && rawOpts != "{}")) {
 		// D-01: preset and an explicit target/opts are mutually exclusive --
 		// no merge, no precedence guessing.
-		writeError(w, http.StatusUnprocessableEntity, "specify either preset or target/opts, not both")
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest, "specify either preset or target/opts, not both")
 		return
 	}
 	if usingPreset && len(presetName) > maxPresetNameBytes {
 		// Length is request-independent of DB state, so a 400 here leaks
 		// nothing about preset existence (T-18-09).
-		writeError(w, http.StatusBadRequest, "invalid preset name")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid preset name")
 		return
 	}
 
 	target := convert.NormalizeFormat(rawTarget)
 	if !usingPreset && target == "" {
-		writeError(w, http.StatusBadRequest, "missing target format")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "missing target format")
 		return
 	}
 
 	file, header, err := r.FormFile(formFieldFile)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "missing file")
+		writeError(w, http.StatusBadRequest, errcode.MissingFile, "missing file")
 		return
 	}
 	defer file.Close()
@@ -166,7 +197,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// magic-byte-detected format — it is no longer trusted on its own.
 	source := convert.NormalizeFormat(strings.TrimPrefix(path.Ext(filename), "."))
 	if source == "" {
-		writeError(w, http.StatusBadRequest, "cannot determine source format from filename")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "cannot determine source format from filename")
 		return
 	}
 
@@ -192,10 +223,10 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, presets.ErrNotFound) {
 				// D-03: nonexistent, inactive, and cross-client all collapse
 				// to ErrNotFound inside Resolve -- no ownership branch here.
-				writeError(w, http.StatusUnprocessableEntity, errUnknownPreset)
+				writeError(w, http.StatusUnprocessableEntity, errcode.UnknownPreset, errUnknownPreset)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "failed to resolve preset")
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to resolve preset")
 			return
 		}
 		target = convert.NormalizeFormat(p.TargetFormat)
@@ -212,7 +243,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// s3.Upload below.
 	detected, rest, err := convert.Sniff(file)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
 		return
 	}
 	if detected == "" {
@@ -231,7 +262,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				// total before any storage write or decompression.
 				if cr.TotalUncompressed > s.maxDocumentUncompressedBytes {
 					log.Printf("content validation rejected: client_id=%s filename=%q reason=zip_bomb declared_uncompressed=%d limit=%d", client.ID, filename, cr.TotalUncompressed, s.maxDocumentUncompressedBytes)
-					writeError(w, http.StatusUnprocessableEntity,
+					writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 						"declared uncompressed size exceeds configured limit")
 					return
 				}
@@ -239,7 +270,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				// macro code never executes as part of producing a PDF output.
 				if cr.HasMacro {
 					log.Printf("content validation rejected: client_id=%s filename=%q reason=macro_detected", client.ID, filename)
-					writeError(w, http.StatusUnprocessableEntity,
+					writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 						"macro-carrying documents are not accepted")
 					return
 				}
@@ -303,17 +334,17 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		switch convert.ClassifyCFB(file, header.Size) {
 		case convert.CFBEncrypted:
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=encrypted_document", client.ID, filename)
-			writeError(w, http.StatusUnprocessableEntity,
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"password-protected Office file is not supported; remove the password and re-upload")
 			return
 		case convert.CFBLegacy:
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=legacy_document", client.ID, filename)
-			writeError(w, http.StatusUnprocessableEntity,
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"legacy binary Office format (.doc/.xls/.ppt) is not supported; convert to docx/xlsx/pptx")
 			return
 		default: // convert.CFBUnknown
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=legacy_or_encrypted_document", client.ID, filename)
-			writeError(w, http.StatusUnprocessableEntity,
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"legacy binary or password-protected Office format is not supported; convert to docx/xlsx/pptx or remove the password")
 			return
 		}
@@ -377,7 +408,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// (untrustworthy) extension win. D-08: scoped internal/* logging
 		// exception for this rejection, tagged with the resolved client.
 		log.Printf("content validation rejected: client_id=%s filename=%q reason=unrecognized_content", client.ID, filename)
-		writeError(w, http.StatusUnprocessableEntity,
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 			"unrecognized file content for "+filename)
 		return
 	}
@@ -385,18 +416,43 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// D-01/D-04: declared extension must be honest about the actual
 		// content; no auto-correction to the detected format.
 		log.Printf("content validation rejected: client_id=%s filename=%q reason=mismatch declared=%s detected=%s", client.ID, filename, source, detected)
-		writeError(w, http.StatusUnprocessableEntity,
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 			"declared format "+source+" does not match detected content "+detected)
 		return
 	}
 
-	// Validate the conversion pair BEFORE writing anything to storage, and
-	// derive the engine class in the same step (D-01/D-02). The DETECTED
-	// format (not the extension-derived one) is the source of truth fed into
-	// the pair-check (D-05).
-	engine, ok := convert.Default.EngineFor(detected, target)
+	// Two fail-closed 422 gates, in this order, both strictly before
+	// s.storage.Upload and s.repo.Create below (57-04, T-57-13): a garbage
+	// operation or an unregistered triple must never spend S3 bytes or a
+	// client's daily quota. These are two DIFFERENT failure classes with
+	// different client actions (D-03) -- "this operation does not exist at
+	// all" vs "this operation exists but not for this pair" -- so splitting
+	// them into two error codes follows the existing per-failure-class
+	// granularity, it does not violate it.
+	//
+	// Gate 1: is the operation itself known to this build at all? The
+	// allowlist is the REGISTRY (convert.Default.IsKnownOperation), not the
+	// jobs.operation DB CHECK constraint -- a value legal in the schema but
+	// with no registered triple (e.g. sanitize before Phase 60, or
+	// extract/archive/inspect/render) is rejected exactly like any other
+	// garbage value (T-57-14). The message names the rejected value and
+	// points at GET /v1/formats for the current list -- it does not itself
+	// enumerate operations, which stays the responsibility of that
+	// authenticated endpoint (T-57-16).
+	if !convert.Default.IsKnownOperation(operation) {
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedOperation,
+			"unsupported operation: "+operation+" -- see GET /v1/formats for supported operations")
+		return
+	}
+
+	// Gate 2: given a KNOWN operation, is this (source, target) pair
+	// registered under it? The DETECTED format (not the extension-derived
+	// one) is the source of truth fed into the pair-check (D-05). This
+	// message text is unchanged from before this plan -- it is already on
+	// the wire and consumers key off it.
+	engine, ok := convert.Default.EngineForOp(operation, detected, target)
 	if !ok {
-		writeError(w, http.StatusUnprocessableEntity,
+		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
 	}
@@ -413,7 +469,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// does not allowlist).
 	if limit, ok := s.maxEngineBytes[engine]; ok && header.Size > limit {
 		log.Printf("content validation rejected: client_id=%s filename=%q reason=engine_size_limit engine=%s size=%d limit=%d", client.ID, filename, engine, header.Size, limit)
-		writeError(w, http.StatusRequestEntityTooLarge,
+		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge,
 			"file exceeds size limit for this conversion type")
 		return
 	}
@@ -454,7 +510,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		width, height, dimRest, err := convert.Dimensions(detected, rest)
 		if err != nil {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimensions_unknown", client.ID, filename)
-			writeError(w, http.StatusUnprocessableEntity,
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"cannot determine declared image dimensions for "+filename)
 			return
 		}
@@ -462,7 +518,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		totalPixels := uint64(width) * uint64(height)
 		if totalPixels > s.maxImagePixels {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=dimension_limit width=%d height=%d limit=%d", client.ID, filename, width, height, s.maxImagePixels)
-			writeError(w, http.StatusUnprocessableEntity,
+			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"declared image dimensions exceed configured limit")
 			return
 		}
@@ -474,7 +530,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	callbackURL := r.FormValue(formFieldCallbackURL)
 	if callbackURL != "" {
 		if err := validateCallbackURL(callbackURL); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid callback_url")
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid callback_url")
 			return
 		}
 	}
@@ -516,7 +572,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		if len(presetOptsMap) > 0 {
 			presetOptsJSON, err := json.Marshal(presetOptsMap)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 			rawOpts = string(presetOptsJSON)
@@ -527,7 +583,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	if rawOpts != "" && rawOpts != "{}" {
 		if len(rawOpts) > maxOptsBytes {
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_too_large size=%d limit=%d", client.ID, filename, len(rawOpts), maxOptsBytes)
-			writeError(w, http.StatusUnprocessableEntity, "opts field too large")
+			writeError(w, http.StatusUnprocessableEntity, errcode.PayloadTooLarge, "opts field too large")
 			return
 		}
 		var normalizedRaw []byte
@@ -536,12 +592,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			audioOpts, err := convert.ParseAudioOpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidateAudioApplicability(engine, detected, target, audioOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -549,7 +605,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// validated enum value ever reaches storage.
 			normalizedRaw, err = json.Marshal(audioOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		case convert.EngineAV:
@@ -562,12 +618,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			avOpts, err := convert.ParseAVOpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidateAVApplicability(engine, detected, target, avOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -586,19 +642,19 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// once (34-REVIEW-FIX.md) -- it must not be reintroduced here.
 			normalizedRaw, err = json.Marshal(avOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		case convert.EngineHTML:
 			htmlOpts, err := convert.ParseHTMLOpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidateHTMLApplicability(engine, detected, target, htmlOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -606,7 +662,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// validated enum value ever reaches storage.
 			normalizedRaw, err = json.Marshal(htmlOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		case convert.EngineOCR:
@@ -618,12 +674,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			ocrOpts, err := convert.ParseOCROpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidateOCRApplicability(engine, detected, target, ocrOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -631,7 +687,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// validated enum value ever reaches storage.
 			normalizedRaw, err = json.Marshal(ocrOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		case convert.EnginePandoc:
@@ -644,12 +700,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			pandocOpts, err := convert.ParsePandocOpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidatePandocApplicability(engine, detected, target, pandocOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -657,19 +713,19 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// validated enum value ever reaches storage.
 			normalizedRaw, err = json.Marshal(pandocOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		default:
 			docOpts, err := convert.ParseDocOpts([]byte(rawOpts))
 			if err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "invalid opts")
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
 				return
 			}
 			if err := convert.ValidateApplicability(engine, detected, target, docOpts); err != nil {
 				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
-				writeError(w, http.StatusUnprocessableEntity, "opts not applicable to this conversion")
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
 				return
 			}
 			// D-08: persist the normalized struct, never the raw client
@@ -677,12 +733,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// validated enum value ever reaches storage.
 			normalizedRaw, err = json.Marshal(docOpts)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
 		}
 		if err := json.Unmarshal(normalizedRaw, &normalizedOpts); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to normalize opts")
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 			return
 		}
 	}
@@ -694,7 +750,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	contentType := convert.MIMEType(detected)
 
 	if err := s.storage.Upload(ctx, key, rest, header.Size, contentType); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store upload")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
 		return
 	}
 
@@ -710,14 +766,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		p2, err := s.presets.Resolve(ctx, client.ID, presetName)
 		if err != nil {
 			if errors.Is(err, presets.ErrNotFound) {
-				writeError(w, http.StatusUnprocessableEntity, errUnknownPreset)
+				writeError(w, http.StatusUnprocessableEntity, errcode.UnknownPreset, errUnknownPreset)
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "failed to resolve preset")
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to resolve preset")
 			return
 		}
 		if p2.ID != presetID || p2.Version != presetVer {
-			writeError(w, http.StatusUnprocessableEntity, errUnknownPreset)
+			writeError(w, http.StatusUnprocessableEntity, errcode.UnknownPreset, errUnknownPreset)
 			return
 		}
 	}
@@ -727,7 +783,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
 		ID:              jobID,
 		ClientID:        client.ID,
-		Operation:       operationConv,
+		Operation:       operation,
 		Engine:          engine,
 		SourceFormat:    detected,
 		TargetFormat:    target,
@@ -759,7 +815,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			writeQuotaError(w, msg, retryAfter)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to create job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to create job")
 		return
 	}
 
@@ -787,11 +843,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// silently dropped (T-11-02). EngineFor above only ever returns a
 		// value produced by a registered Converter.Engine(), so this branch
 		// signals a registry/routing bug, not a client input.
-		writeError(w, http.StatusInternalServerError, "failed to enqueue job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
 		return
 	}
 	if enqueueErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to enqueue job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to enqueue job")
 		return
 	}
 
@@ -812,17 +868,17 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid job id")
 		return
 	}
 
 	job, err := s.repo.Get(ctx, id)
 	if errors.Is(err, jobs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load job")
 		return
 	}
 
@@ -832,7 +888,7 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	// never a 403, never a distinct message.
 	client, _ := auth.ClientFromContext(ctx)
 	if job.ClientID != client.ID {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 
@@ -857,16 +913,67 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	case jobs.StatusDone:
 		outs, err := s.repo.Outputs(ctx, id)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load outputs")
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load outputs")
 			return
 		}
 		if len(outs) > 0 {
-			url, err := s.storage.PresignGet(ctx, outs[0].ObjectKey, s.presignTTL)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to presign output")
-				return
+			// ROLE-02/D-11/D-12/D-13 (57-06): every output is presigned
+			// eager, in one pass, with the same s.presignTTL as before --
+			// D-12, this only happens inside case jobs.StatusDone, so
+			// polling an active job still makes zero PresignGet calls.
+			// D-11: this single outputs[] shape covers any number of
+			// future roles (preview, thumbnail, ...) without a new
+			// response key per role; a flat report_url field was rejected
+			// because every additional role would need its own key, and
+			// carrying both a flat field AND outputs[] was rejected as two
+			// representations of the same data that could silently drift
+			// apart from each other.
+			items := make([]map[string]any, 0, len(outs))
+			var downloadURL string
+			var hasPrimary bool
+			for _, o := range outs {
+				url, err := s.storage.PresignGet(ctx, o.ObjectKey, s.presignTTL)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to presign output")
+					return
+				}
+				items = append(items, map[string]any{
+					"role":       o.Role,
+					"ordinal":    o.Ordinal,
+					"format":     o.Format,
+					"size_bytes": o.SizeBytes,
+					"url":        url,
+				})
+				// The primary result is selected by ROLE, never by ordinal
+				// or by position in outs -- a report or preview output
+				// must never end up in download_url just because it sorts
+				// first (T-57-24).
+				if o.Role == outputRolePrimary {
+					downloadURL = url
+					hasPrimary = true
+				}
 			}
-			resp["download_url"] = url
+			// D-13 (plan 57-05): MarkDone's apply closure refuses to
+			// commit a done job unless job_outputs has EXACTLY ONE row
+			// with role='primary', enforced against the database on the
+			// same locked transaction as the status update. A done job
+			// with no primary output is therefore unreachable by
+			// construction, not merely unobserved -- this handler does
+			// not branch or guess at a substitute here; hasPrimary simply
+			// stays false in that unreachable case and download_url is
+			// omitted exactly like the pre-existing empty-outs case above.
+			if hasPrimary {
+				resp["download_url"] = downloadURL
+			}
+			// Additive key, guarded on non-emptiness like resp["opts"]
+			// above: outputs is present only when there is more than one
+			// output, so a single-output convert job's response body
+			// stays byte-identical to the pre-Phase-57 golden fixture
+			// (SC4) -- an absent map key, not an empty array, is what
+			// keeps the bytes unchanged.
+			if len(outs) > 1 {
+				resp["outputs"] = items
+			}
 		}
 	case jobs.StatusFailed:
 		if job.ErrorCode != "" {
@@ -907,17 +1014,17 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid job id")
+		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid job id")
 		return
 	}
 
 	job, err := s.repo.Get(ctx, id)
 	if errors.Is(err, jobs.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to load job")
 		return
 	}
 
@@ -925,7 +1032,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 	// to a different client is reported exactly as a truly-missing job.
 	client, _ := auth.ClientFromContext(ctx)
 	if job.ClientID != client.ID {
-		writeError(w, http.StatusNotFound, "job not found")
+		writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 		return
 	}
 
@@ -938,7 +1045,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.repo.Cancel(ctx, id); err != nil {
 		if errors.Is(err, jobs.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "job not found")
+			writeError(w, http.StatusNotFound, errcode.NotFound, "job not found")
 			return
 		}
 		// D-02 terminal-race: the job reached done/failed between the read
@@ -950,7 +1057,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"job_id": current.ID, "status": current.Status})
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to cancel job")
+		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to cancel job")
 		return
 	}
 
@@ -1006,7 +1113,7 @@ func secondsUntilUTCMidnight(now time.Time) int {
 // sweep is SEED-020.
 func writeQuotaError(w http.ResponseWriter, msg string, retryAfterSeconds int) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds))
-	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": msg, "code": "quota_exceeded"})
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": msg, "code": errcode.QuotaExceeded})
 }
 
 // quotaRejection maps a jobs error to the (message, Retry-After, ok) a 429
@@ -1015,19 +1122,46 @@ func writeQuotaError(w http.ResponseWriter, msg string, retryAfterSeconds int) {
 // client's state, never the configured limit value: an operator reads
 // limits from manage-clients, a client does not need them and should not be
 // able to probe them (T-52-24).
+//
+// A daily rejection's Retry-After is computed against the instant Postgres
+// evaluated the daily window at (jobs.DailyQuotaError.EvaluatedAt), not
+// against this process's own wall clock -- this is the fix for
+// .planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md: a
+// transaction that evaluates just before UTC midnight while the response is
+// formatted just after would otherwise advertise ~86400 seconds for a quota
+// that has already reset. The time.Now() fallback below exists only for a
+// bare sentinel arriving from a path that did not go through evaluate
+// (today: none in production -- every daily verdict evaluate returns is
+// wrapped -- and only the fake repos in handlers_test.go construct one
+// directly); it is deliberately not a panic or a zero, because a missing
+// Retry-After would be a worse regression than an over-long one.
 func quotaRejection(err error) (msg string, retryAfterSeconds int, ok bool) {
+	var dqe *jobs.DailyQuotaError
+	errors.As(err, &dqe)
+	dailyNow := time.Now()
+	if dqe != nil && !dqe.EvaluatedAt.IsZero() {
+		dailyNow = dqe.EvaluatedAt
+	}
 	switch {
 	case errors.Is(err, jobs.ErrConcurrencyLimit):
 		return "too many concurrent jobs for this conversion type", quotaConcurrencyRetryAfterSeconds, true
 	case errors.Is(err, jobs.ErrDailyBytesLimit):
-		return "daily byte quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+		return "daily byte quota exceeded for this conversion type", secondsUntilUTCMidnight(dailyNow), true
 	case errors.Is(err, jobs.ErrDailyJobsLimit):
-		return "daily job quota exceeded for this conversion type", secondsUntilUTCMidnight(time.Now()), true
+		return "daily job quota exceeded for this conversion type", secondsUntilUTCMidnight(dailyNow), true
 	default:
 		return "", 0, false
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+// writeError writes the closed-vocabulary error envelope every 4xx/429 in
+// internal/api uses: a FLAT {"error": msg, "code": code} body, never nested
+// as {"error": {"code": ..., "message": ...}} (D-01) -- frontend/src/api.ts:54
+// reads body.error as a plain string, so nesting would break every existing
+// caller. code must always be an internal/errcode constant, assigned by
+// failure CLASS, never a bare string literal and never one code per message
+// (D-02, D-03, SEED-020) -- sync invalid_options reuses the identical code
+// name the async worker taxonomy uses for the same failure class.
+func writeError(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg, "code": code})
 }

@@ -14,7 +14,8 @@
 - ✅ **v1.9 Job Progress & Control** — Phases 38-42 (shipped 2026-07-25) — see `.planning/milestones/v1.9-ROADMAP.md`
 - ✅ **v1.10 OCR Engine (text extraction)** — Phases 43-46 (shipped 2026-07-27) — see `.planning/milestones/v1.10-ROADMAP.md`
 - ✅ **v1.11 Pandoc Engine** — Phases 47-50 (shipped 2026-08-02) — see `.planning/milestones/v1.11-ROADMAP.md`
-- 🚧 **v1.12 Consumer Accounting & Fairness** — Phases 51-55 (in progress)
+- ✅ **v1.12 Consumer Accounting & Fairness** — Phases 51-55 (shipped 2026-08-07) — see `.planning/milestones/v1.12-ROADMAP.md`
+- 🚧 **v1.13 Inspect & Operations** — Phases 56-61 (in progress)
 
 ## Phases
 
@@ -177,180 +178,182 @@ Full details: `.planning/milestones/v1.11-ROADMAP.md`
 
 </details>
 
-### 🚧 v1.12 Consumer Accounting & Fairness (In Progress)
+<details>
+<summary>✅ v1.12 Consumer Accounting & Fairness (Phases 51-55) — SHIPPED 2026-08-07</summary>
 
 **Milestone Goal:** превратить OctoConv из «сервиса, который умеет конвертировать» в общую платформу, которая знает своих потребителей — кто сколько потребляет, в каких границах, и как не дать одному потребителю выжрать класс движка целиком.
 
-- [x] **Phase 51: Attribution, Accounting & Retention** - Per-client job outcomes and consumption are tracked in Postgres and Prometheus without multiplying existing metric cardinality or repeating the platform's unbounded-table-growth debt (completed 2026-08-02)
-- [x] **Phase 52: Quota Enforcement & Intra-Class Fairness** - Operator-settable per-client limits are enforced fail-closed on every job-creation path (REST + both MCP entry points), rolled out via an observe-only period, and structurally prevent one client from starving others within an engine class (completed 2026-08-03)
-- [x] **Phase 53: Operator Usage Visibility** - Operator can answer "who consumed what, and what are this client's limits/remaining budget" through a dedicated endpoint, without reading raw Prometheus (7/7 plans; initial verification 9/10 `gaps_found` on SC2, closed by 53-05..53-07, re-verified 10/10 `passed`) (completed 2026-08-05)
-- [ ] **Phase 54: Per-Class Capacity Floor (SEED-011)** - `minReplicaCount` becomes operator-selectable per engine class instead of the hardcoded zero
-- [ ] **Phase 55: Live Gate — Multi-Replica Quota Correctness** - Quota admission is proven correct under 2+ concurrent API replicas via a live run, not merely assumed from the atomic-Postgres design
+- [x] Phase 51: Attribution, Accounting & Retention (5/5 plans) — completed 2026-08-02
+- [x] Phase 52: Quota Enforcement & Intra-Class Fairness (9/9 plans) — completed 2026-08-03
+- [x] Phase 53: Operator Usage Visibility (7/7 plans) — completed 2026-08-05
+- [x] Phase 54: Per-Class Capacity Floor (SEED-011) (2/2 plans) — completed 2026-08-06
+- [x] Phase 55: Live Gate — Multi-Replica Quota Correctness (7/7 plans) — completed 2026-08-07
 
-## Phase Details
+Full details: `.planning/milestones/v1.12-ROADMAP.md`
 
-### Phase 51: Attribution, Accounting & Retention
+</details>
 
-**Goal**: Every job's client and consumption (bytes, count, engine class) is tracked in Postgres and exposed in Prometheus with a purpose-built, cardinality-bounded shape — and the new accounting data does not repeat OctoConv's existing unbounded-Postgres-growth gap (`jobs`/`job_events` rows that never age out).
-**Depends on**: Nothing (first phase of v1.12 — builds directly on the stable v1.0–v1.11 platform; everything downstream in this milestone reads the data this phase produces)
-**Requirements**: ACCT-01, ACCT-02, ACCT-03, ACCT-04, RETN-01
+## 🚧 v1.13 Inspect & Operations (Phases 56-61)
+
+**Milestone Goal:** превратить OctoConv из конвертера форматов в processing API — ввести измерение «операция» с двумя первыми не-конвертерными возможностями (`inspect`, `sanitize`) и убрать ×7 тариф, который сегодня платит каждая сквозная забота, проходящая через семь копий одного хендлера.
+
+**Coverage:** 28/28 v1 requirements mapped, 0 orphans.
+
+### Phase 56: JobRunner Consolidation & Structured Error Codes
+
+**Goal**: Все семь конверсионных хендлеров исполняются одним дескриптор-управляемым code-path, терминальный исход эмитится ровно одним вызовом в ровно одном месте и структурно не может выстрелить до коммита транзакции, а отказы становятся машиночитаемым контрактом, выпущенным один раз и потреблённым REST'ом, обоими MCP и фронтендом.
+**Depends on**: Nothing (первая фаза v1.13; строится на стабильной платформе v1.0–v1.12)
+**Requirements**: RUNR-01, RUNR-02, RUNR-03, ERRC-01, ERRC-02, ERRC-03
 **Success Criteria** (what must be TRUE):
 
-  1. A new, purpose-built Prometheus counter carries a `client_id` label on job outcomes, while `octoconv_job_duration_seconds` stays engine/status-only and `octoconv_queue_depth`'s label set remains exactly `{queue, state}` — proven by a pinning test that fails loudly on any future diff.
-  2. Every job's terminal transition (`done`/`failed`, including jobs recovered by the reconciler) increments a Postgres daily usage rollup (jobs count, bytes in/out, per client/engine/day) exactly once, and the rollup write happens **inside the same transaction as the guarded status transition** — not as an adjacent call after it. A worker that dies between a committed `MarkDone` and a separate accounting write would leave the job terminal and the usage permanently unrecorded, since neither an asynq retry nor the reconciler revisits a terminal job. Proven by a soak test that deliberately forces the reconciler's documented stale-recovery race and asserts the usage total, not just the recovery count. *(Tightened 2026-08-02 after PR #3 review.)*
-  3. `client_id` label cardinality is bounded by an explicit **configured numeric ceiling** with defined overflow behavior (clients beyond the ceiling collapse into a single stable `overflow` label value), not merely restricted to IDs present in `clients` — `cmd/manage-clients` can add valid clients indefinitely, so "a real client id" is not a bound. An unrecognized or malformed ID never mints a new series. *(Tightened 2026-08-02 after PR #3 review.)*
-  4. Retention is **executable, not documentary**: a concrete purge / partition-drop / archival mechanism runs and is proven to actually remove rows past the window (a test that ages data and asserts it is gone), covering both the new usage table (which grows with `clients × engines × days`, not raw job volume) and the pre-existing `jobs`/`job_events` gap. A retention policy described only in a migration comment does not satisfy RETN-01. *(Tightened 2026-08-02 after PR #3 review.)*
-  5. Re-running the existing KEDA scale-from-zero live gate after the new metrics/table land shows no regression — accounting is additive to the platform's operational surface, not a new blast radius for autoscaling.
-  6. Byte accounting sums over ALL of a job's inputs and outputs (`Repo.Inputs`/`Repo.Outputs`, `ORDER BY ordinal`) rather than reading ordinal 0 — so a job that ever produces or consumes more than one file is counted correctly without an accounting rewrite. See the constraint note below.
+  1. Ни один из семи конверсионных классов больше не имеет собственного хендлера: все проходят через `Runner` поверх `EngineDescriptor`, где таймаут, лимит входа, opts-схема, retry-классификация, unique-lock TTL и progress-репортинг — поля данных, а не ветвления. `HandleWebhookDeliver` байт-неизменен (иная retry/dead-letter семантика, сознательно вне скоупа).
+  2. Каждый из семи классов ведёт себя в точности как до рефакторинга. В частности сохранены **противоположные по полярности** стадийные асимметрии `isAudioTerminal` и `isAVTerminal` — дескриптор моделирует `(стадия, таймаут)`, а не `(движок, таймаут)`; закреплено пиннинг-тестом на каждый класс, падающим громко на любой будущий дифф.
+  3. Набор меток `octoconv_job_duration_seconds` остался ровно `{engine, status}`, а `octoconv_queue_depth` — ровно `{queue, state}`; доказано существующими пиннинг-тестами плюс диффом, поэтому KEDA scale-from-zero всех семи классов заведомо не тронут. Соблазн «раз уж мы здесь, добавим метку `operation`» — главный риск взрывного радиуса в этой фазе.
+  4. Терминальный исход задачи эмитится ровно одним вызовом в ровно одном месте, и выстрелить им до коммита охраняемого перехода структурно невозможно — доказано инверсионным прогоном (перенос эмиссии раньше коммита ломает тест). Той же дисциплиной закрыт живой дефект `internal/reconciler/reconciler.go:311-312`, где `RecordReconcilerAction("exhausted")` инкрементится безусловно — тот же класс, который ревью PR #4 нашло в семи местах и здесь не заметило.
+  5. Каждый терминальный отказ джобы и каждый клиентский 4xx несёт стабильный код из закрытого версионированного перечня; референсный фронтенд и оба MCP-сервера выбирают поведение по коду, и тест доказывает, что ни один потребитель не матчит текст сообщения. Терминальные отказы `invalid_options` появились в обоих счётчиках исходов.
 
-**Constraint — do not hardcode one-input/one-output (added 2026-08-02, SEED-017):**
-Today every job is exactly one input, one engine invocation, one output, so
-reading `job_inputs`/`job_outputs` at ordinal 0 would work and would be the
-natural thing to write. It must not be written that way. The schema has carried
-an `ordinal` column on both tables since `0001_init.sql`, `internal/jobs/repo.go`
-already exposes `Repo.Inputs`/`Repo.Outputs` ordered by it, and SEED-017 (PDF
-split/merge) is the first concrete demand for N — split alone produces N outputs
-from one input. Baking the 1:1 assumption into the accounting layer would make
-byte totals silently wrong the moment that lands, and retrofitting it is exactly
-the multi-site value drift that bit this project twice during v1.11. Summing over
-the lists costs nothing now.
+**Note on scope**: весь контракт кодов ошибок вводится ЗДЕСЬ и один раз — включая 4xx-половину в `internal/api/handlers.go`. Дробление его между фазами заставило бы двух MCP-потребителей и фронтенд мигрировать дважды внутри одного милстоуна (PITFALLS.md Pitfall 11).
 
-**Plans**: 5 plans
+**Note on cost (research correction)**: SEED-020 переоценил собственную цену. Тела хендлеров — 79–110 строк (86–127 с доккоментами), а не 94–163, и `process()` (`worker.go:1847-1942`) **уже** является общей функцией оркестрации, поэтому ×7 тариф живёт целиком в обёрточном бойлерплейте. «Disk guards у av / page caps у ocr», описанные как различия уровня хендлера, оказались внутренностями конвертеров. Счёт «14 симметричных call sites» подтверждён точно.
+
+**Plans:** 7/7 plans complete
 
 Plans:
 **Wave 1**
 
-- [x] 51-01-PLAN.md — client_usage_daily migration + cardinality-bounded per-client counter (additive, zero behavior change)
+- [x] 56-01-PLAN.md — Worker test seams + seven-handler pinning suite (D-10 step 1, frozen)
+- [x] 56-02-PLAN.md — internal/errcode closed sync vocabulary + auth/ratelimit adoption
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [x] 51-02-PLAN.md — rollup UPSERT inside the guarded terminal-transition transaction; MarkDone/MarkFailed widened
+- [x] 56-03-PLAN.md — internal/api 4xx code sweep (112 call sites) + envelope proofs
+- [x] 56-04-PLAN.md — Runner + EngineDescriptor consolidation, seven handlers deleted, ERRC-02 closed
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [x] 51-03-PLAN.md — call-site propagation across 7 engine handlers + reconciler; forced stale-recovery race proof
+- [x] 56-05-PLAN.md — Inversion run + metric-label zero-diff proof + reconciler RUNR-02 guard fix
+- [x] 56-06-PLAN.md — docs/ERROR-CODES.md freeze point + bidirectional Go-to-doc sync test
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [x] 51-04-PLAN.md — executable batched retention purge on the reconciler tick + env plumbing
+- [x] 56-07-PLAN.md — Frontend + both MCP servers migrate to codes; ERRC-03 no-text-matching proof
 
-**Wave 5** *(blocked on Wave 4 completion)*
+**Autonomous**: true
 
-- [x] 51-05-PLAN.md — autoscaling-contract zero-diff proof + KEDA scale-from-zero live gate (operator-gated)
+### Phase 57: Operation Dimension & Output Roles
 
-**Autonomous**: false (Plan 05 is an operator-run live gate)
-
-### Phase 52: Quota Enforcement & Intra-Class Fairness
-
-**Goal**: An operator can cap what a client may consume (concurrent jobs, daily volume, allowed engines), enforcement is fail-closed on every job-creation path and rolled out safely to already-integrated consumers, and the same admission mechanism gives a structural guarantee that one client cannot starve others within an engine class — all without touching queue topology or the KEDA contract.
-**Depends on**: Phase 51 (tiers 2/3 of the admission gate read/write the `client_usage_daily` rollup; the concurrency cap reads `jobs.status`, already ground truth, but the byte/volume checks need Phase 51's table to exist and be populated)
-**Requirements**: QUOT-01, QUOT-02, QUOT-03, QUOT-04, FAIR-01, FAIR-02
+**Goal**: У джобы появляется измерение «операция» (`convert` по умолчанию, абсолютная обратная совместимость), реестр разрешает движок по тройке `(operation, from, to)`, а у выходов появляется роль — так что отчёт больше никогда не может быть отдан вместо основного результата.
+**Depends on**: Phase 56 (`process()` начинает читать `job.Operation` — делать это до консолидации значило бы править семь хендлеров, а потом их схлопывать)
+**Requirements**: OPRN-01, OPRN-02, OPRN-03, ROLE-01, ROLE-02
 **Success Criteria** (what must be TRUE):
 
-  1. An operator can set per-client limits (concurrent jobs per engine, daily byte/job volume, allowed engine set) where the absence of a limit is a literal `NULL` meaning unlimited — never a large sentinel number — and no existing client's behavior changes until an operator explicitly sets one.
-  2. Every job-creation entry point (`POST /v1/jobs`, `cmd/mcp-server`, `cmd/mcp-http`) enforces the identical fail-closed admission check before the S3 write and before enqueue — proven by an integration test that exercises both REST and at least one MCP path, not assumed from proxying. Two properties are load-bearing and must be designed in, not discovered: **(a)** the check-and-admit is serialized per (client, engine) — a bare `SELECT count(*)` followed by an insert lets two API replicas both observe "below cap" and both admit, so the count and the create must share one transaction under a per-client/per-engine advisory lock or an equivalent atomic counter; **(b)** the authoritative reservation happens **before** the upload body is written to S3, with reservation release if a later step fails — otherwise an over-quota client repeatedly burns S3 bandwidth and storage before receiving its 429. *(Added 2026-08-02 after PR #3 review.)*
-  2b. Admission reservations and completed usage are **distinguishable**, so a job admitted against the daily budget and later completed is counted once, not twice. The rollup cannot be a single pair of counters that both the admission reserve and the terminal write increment. *(Added 2026-08-02 after PR #3 review.)*
+  1. Клиент, не приславший `operation`, не наблюдает НИ ОДНОГО изменения: та же форма запроса, тот же 202, то же тело `GET /v1/jobs/{id}` и байт-идентичный ключ `engines` в `GET /v1/formats` — доказано пиннинг-тестом против до-фазового вывода, а не рассуждением.
+  2. Клиент может прислать `operation` явно; реестр разрешает тройку `(operation, from, to)`, и пара с совпадающими форматами (`pdf→pdf`), зарегистрированная для не-convert операции, не может быть выбрана для `convert` — доказано тестом на дизъюнктность в духе pandoc/chromium-гарда v1.11.
+  3. Неподдерживаемая тройка `(operation, from, to)` отклоняется 422 с машиночитаемым кодом до того, как хоть один байт попал в S3 и до создания строки джобы — fail-closed, как сегодняшняя проверка пары.
+  4. `job_outputs` несёт роль, существующие строки корректны без backfill, и `GET /v1/jobs/{id}` возвращает КАЖДЫЙ выход с его ролью — при этом ответ одновыходной convert-джобы остаётся байт-идентичным. Закрывает живой дефект `internal/api/handlers.go:857-870`, где `outs[0]` презайнится без учёта роли.
 
-  3. A limit-exceeding request is rejected with `429` + `Retry-After` and a `quota_exceeded` error code distinguishable from the existing `rate_limited` code — never `403` — and an in-flight concurrency slot is released on every terminal state (`done`, `failed`, `reconciler_exhausted`), not only on success.
-  4. An observe-only mode computes and exposes what would have been rejected (metric/log, no actual rejection), able to run for at least one full quota window before an operator enables real enforcement for any specific client.
-  5. The per-client, per-engine concurrency cap gives a structural guarantee — at cap `K` and `maxReplicaCount` `M`, one client can occupy at most `K` of `M` slots — and this ships with zero diff lines in any `deploy/chart/octoconv/templates/scaledobject-*.yaml` and zero signature changes to the reconciler's `enqueuer` interface, proving `octoconv_queue_depth` semantics and all 7 ScaledObjects' PromQL are unchanged.
+**Constraint — ROLE-02 обязан закрыться ЗДЕСЬ, а не параллельно с Phase 60.** Сегодня `handleGetJob` берёт `outs[0]` безусловно. В момент, когда sanitize отдаст второй выход с `role=report`, отчёт может быть выдан как основной результат или основной результат может быть скрыт. Это не гипотетика — дефект уже в коде, просто пока недостижим.
 
-**Plans**: 9 plans (5 shipped + 4 gap-closure, planned 2026-08-03 after verification scored 8/9)
+**Decision locked (2026-08-07)**: `sanitize` вводится как НОВОЕ значение `jobs.operation` (миграция расширяет CHECK, который сегодня разрешает `convert|extract|archive|inspect|render`), движок — `probe`, зарезервированный в схеме с `0001_init.sql`. Переиспользование `extract` отвергнуто: sanitize ничего не извлекает, и `extract` понадобится по назначению в следующем милстоуне. Решение расходится с формулировкой SEED-013 (`engine=probe`, `operation=inspect|convert`) — семя фиксирует старую модель, эта запись её замещает.
+
+**Plans:** 7/7 plans complete
 
 Plans:
 **Wave 1**
 
-- [x] 52-01-PLAN.md — `client_limits` migration (`(client_id, engine)`, NULL = unlimited) + `clients.enforcement_mode` + limits repo + `manage-clients` subcommands
-- [x] 52-02-PLAN.md — observe-only counter through the Phase 51 bounded allocator + `code: "rate_limited"` on the existing 429 + MCP proxy carries code/Retry-After
+- [x] 57-01-PLAN.md — Golden-пиннинг до-фазовых тел /v1/formats и /v1/jobs (D-17, шаг 1) + код unsupported_operation
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [x] 52-03-PLAN.md — admission gate inside `Repo.Create`'s transaction under a per-`(client, engine)` `pg_advisory_xact_lock`; queued+active slot predicate; no release code
+- [x] 57-02-PLAN.md — Реестр на ключ-тройку: OperationalConverter, panic-on-collision Register, Replace в трёх воркерах
+- [x] 57-03-PLAN.md — Миграция 0015: job_outputs.role + jobs_operation_check до sanitize; Output.Role в модели и SELECT
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [x] 52-04-PLAN.md — pre-upload gate before the S3 write, 429 + `Retry-After` + `quota_exceeded` (never 403), kill-switch and metrics wiring
+- [x] 57-04-PLAN.md — Приём operation в handleCreateJob, двухступенчатый fail-closed 422, ключ operations в /v1/formats, LookupOp в воркере
+- [x] 57-05-PLAN.md — Инвариант D-13: MarkDone требует ровно один primary-выход; приведение DB-тестов
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [x] 52-05-PLAN.md — REST + real MCP tool admission proof against one live API, FAIR-02 zero-diff contract gate, OpenAPI/README contract docs
+- [x] 57-06-PLAN.md — Role-driven handleGetJob + outputs[]; доказательство обратным порядком и инверсией (D-18)
+- [x] 57-07-PLAN.md — Проброс operation в оба MCP-сервера и референсный фронтенд (D-05)
 
-**Wave 5** *(gap closure — 52-VERIFICATION.md status `gaps_found`, 8/9 must-haves)*
+**Autonomous**: true
 
-- [x] 52-06-PLAN.md — daily quota charges in-flight (queued+active) admitted work inside the advisory-locked transaction; false `K x MAX_INPUT_BYTES` bound deleted; daily-only (`max_concurrent = nil`) test coverage
-- [x] 52-07-PLAN.md — `convert.AllEngines()`/`IsKnownEngine()` as the guarded source of truth; `manage-clients set-limit` rejects an unknown engine before any DB write (WR-08)
+### Phase 58: Synchronous Inspection
 
-**Wave 6** *(blocked on Wave 5 completion)*
-
-- [x] 52-08-PLAN.md — migration 0014 widens the usage rollup's status domain; `Cancel` records usage so `create -> cancel -> create` no longer resets the daily cap (WR-01); `Repo.Create`/`transition` pin `pgx.ReadCommitted` (WR-02)
-
-**Wave 7** *(blocked on Wave 6 completion)*
-
-- [x] 52-09-PLAN.md — REQUIREMENTS.md QUOT-01/QUOT-04 sync, README daily-cap semantics corrected, full regression suite + FAIR-02 zero-diff re-proof from `d7ac603`
-
-**Autonomous**: true (Phase 55 is where the operator-gated multi-replica live proof happens)
-
-### Phase 53: Operator Usage Visibility
-
-**Goal**: An operator can answer "who consumed what, by engine class, over what period" and "what are this client's limits and remaining budget" through a dedicated, already-established access-control pattern — not by hand-querying raw Prometheus or the `jobs` table.
-**Depends on**: Phase 51 (reads `client_usage_daily`; does not require Phase 52 to be complete, but is sequenced after quota work has started so a "usage vs. configured limit" view is meaningful rather than empty)
-**Requirements**: OPSV-01, OPSV-02
+**Goal**: Клиент может узнать правду о файле до того, как поставит дорогую джобу — реальный формат, характеристики, риски и доступные операции с проверкой квоты — одним синхронным запросом, чьи границы доказаны живым гейтом, а не допущением.
+**Depends on**: Phase 57 (перечисление доступных `(operation, target)` в отчёте осмысленно только после введения измерения операции)
+**Requirements**: INSP-01, INSP-02, INSP-03, INSP-04, INSP-05, INSP-06
 **Success Criteria** (what must be TRUE):
 
-  1. An operator, authenticated through the existing `OPERATOR_CLIENT_IDS`-gated mechanism (the Phase 26 precedent), can retrieve per-client, per-engine usage for a given period from a dedicated endpoint, backed by the Phase 51 rollup rather than a raw `jobs` scan or Prometheus query.
-  2. Per client, the operator can see the currently configured limits and the remaining budget/quota state, so limits can be set from observed data rather than guessed.
-  3. A non-operator caller receives the identical no-leak response the project's existing operator-only routes already guarantee (byte-identical 404, not a distinguishable 403) — no new information-disclosure surface introduced by this endpoint.
+  1. Клиент может отправить файл в `POST /v1/inspect` и синхронно получить определённый по magic bytes формат (никогда по расширению) и только те характеристики, которые применимы именно к этому формату — а не одну плоскую схему с нулями во всех неподходящих полях.
+  2. Находки возвращаются типизированным списком из закрытого перечня — код, уровень серьёзности и, где осмысленно, местоположение: макросы OOXML, PDF JavaScript и action-словари, вложенные файлы, внешние ссылки, шифрование, форма decompression bomb, класс OLE-CFB.
+  3. Отчёт никогда не переоценивает свою полноту: каждая названная проверка несёт clean / not_applicable / unknown, а отчёт под потолком работы явно сообщает охват — усечённый анализ не может выглядеть как полноуверенное «чисто». Сегодняшний код бинарный (reject/pass), трёхзначного состояния в нём нет нигде.
+  4. Ответ перечисляет доступные для этого файла `(operation, target)` с обслуживающим движком, оценкой длительности и живой проверкой квоты — клиент узнаёт «пройдёт ли и сколько займёт» за один round-trip.
+  5. Путь ограничен независимо от v1.12 admission-гейта, который он минует по построению: потолок работы, потолок тела, собственный rate-бюджет, отказ машиночитаемым кодом. Результат inspect не даёт права пропустить fail-closed валидацию при создании джобы — доказано тестом, который инспектирует один файл и создаёт джобу с другими байтами (TOCTOU).
+  6. **Живой гейт**: операторский залп патологических inspect-запросов против живого API оставляет `/healthz` отвечающим в пределах liveness-порога весь прогон, evidence закоммичен и перепроверяем. Статическим рассуждением этот критерий не закрывается.
 
-**Plans**: 7 plans (4 original + 3 gap closure)
+**Why the gate lives inside this phase, not as its own** (в отличие от QUOT-05/Phase 55): гейт проверяет свойство кода, который пишется в этой же фазе, и между ними нет фазы, способной это свойство изменить. Прецедент — Phase 51 Plan 05 (операторский KEDA-гейт внутри фазы, которая построила метрики). Если гейт упадёт, починка — вероятно перенос глубокого анализа в воркер, то есть изменение дизайна: фаза и не должна закрываться до того, как дизайн доказан.
 
-Plans:
-**Wave 1**
+**Risk note**: это первый в проекте request-path, разбирающий недоверенные байты **инлайн**, в том же процессе, что обслуживает `/healthz`, в сервисе, вся модель безопасности которого построена на воркер-изоляции с измеренными таймаутами. Патологический залп валит liveness-пробу и каскадит рестарт всего флота, а не тормозит одного клиента.
 
-- [x] 53-01-PLAN.md — jobs.UsageSummary: status-unfiltered client_usage_daily aggregate plus the literal-status in-flight term, pinned to evaluate()'s formula (D-05)
-- [x] 53-02-PLAN.md — clients.ListAllLimits: batch limits + enforcement_mode read with an optional single-client narrowing bind (OPSV-02)
+**Autonomous**: false (SC6 — операторский живой гейт)
 
-**Wave 2** *(blocked on Wave 1 completion)*
+### Phase 59: Born-Digital PDF Routing
 
-- [x] 53-03-PLAN.md — api.UsageRepo/LimitsRepo interfaces, widened NewServer, and all three call sites updated with hand-written fakes
-
-**Wave 3** *(blocked on Wave 2 completion)*
-
-- [x] 53-04-PLAN.md — GET /v1/system/usage behind requireOperator: combined usage+limits+remaining response, byte-identical no-leak 404, D-09 caveat fields, OpenAPI spec
-
-**Wave 4** *(gap closure — blocked on Wave 3 completion; closes 53-VERIFICATION.md Gap #1 / SC2 / OPSV-02)*
-
-- [x] 53-05-PLAN.md — Seed the merge key set from every client in meta so an idle unlimited client is visible and distinguishable from a nonexistent client_id, without weakening SC3's no-leak 404
-- [x] 53-06-PLAN.md — Exclude ON DELETE SET NULL orphans from both in-flight aggregates (WR-01) and add jobs.Repo.UTCToday so the endpoint and evaluate() read one clock (WR-03)
-
-**Wave 5** *(blocked on Wave 4 completion)*
-
-- [x] 53-07-PLAN.md — Enforcement-aware truth claims: remaining_matches_admission_gate honors the QUOTA_ENFORCEMENT_DISABLED kill-switch and observe mode (WR-02), day range derived from the Postgres clock (WR-03)
-
-### Phase 54: Per-Class Capacity Floor (SEED-011)
-
-**Goal**: An operator can choose a non-zero `minReplicaCount` per engine class to eliminate cold-start latency under sustained load, instead of the hardcoded zero every class ships with today.
-**Depends on**: Nothing (fully independent of Phases 51-53 — zero data or code coupling, pure Helm values/`ScaledObject` change; sequenced here as a low-risk hygiene tail so it doesn't add unrelated chart diff noise to the accounting/quota review, per research's explicit "can land at any point" finding)
-**Requirements**: CAPA-01
+**Goal**: Born-digital PDF перестаёт быть тупиком: inspect становится маршрутизатором вместо слепого прогона через Tesseract на 744-секундном таймауте или безусловного отказа.
+**Depends on**: Phase 58 (маршрутизация читает отчёт inspect — без него решать нечем)
+**Requirements**: BDPD-01, BDPD-02
 **Success Criteria** (what must be TRUE):
 
-  1. Each of the seven engine classes' `minReplicaCount` is set via a Helm values field instead of a hardcoded `0`, defaulting to today's `0` (zero behavior change for the current deployment).
-  2. Setting a non-zero `minReplicaCount` for one engine class does not alter another class's `ScaledObject`/PromQL or its scale-from-zero behavior — confirmed by a template diff touching only the intended class.
-  3. `helm lint`/`helm template` render cleanly for both the default (all-zero) values and an example non-zero override, with no live cluster required — this is chart-only, no architectural novelty (research: skip live-gate for this phase).
+  1. Отчёт inspect сообщает, содержит ли PDF пригодный текстовый слой, с той же честностью о выборочности, что и любое другое утверждение отчёта.
+  2. Клиент с born-digital PDF получает пригодный маршрут вместо слепого прогона или отказа, и комментарий `internal/convert/ocrguards.go:227-228` больше не советует document-движок, который pdf на вход не принимает вовсе (проверено: `pdf` — source-формат ровно в одном месте, `ocr.go:34`).
 
-**Plans**: TBD
+**Scope fence**: берётся только SEED-021 Opportunity 1 (маршрутизация). Opportunity 2 — постраничная классификация Mixed-PDF — отложена: семя само фиксирует нерешённый merging-контракт (порядок страниц, недублирование, асимметрия Markdown vs hOCR/ALTO). Выбор инструмента извлечения текста НЕ предрешён этой фазой; `firecrawl/pdf-inspector` (0.1.x, без готовых dual-arch сборок, ноль пересечения с risk-сигналами) остаётся спайком, не фазой.
 
-### Phase 55: Live Gate — Multi-Replica Quota Correctness
+**Autonomous**: true
 
-**Goal**: Prove, on a live multi-replica setup, that the quota admission counter built in Phase 52 is correct when 2+ API replicas concurrently serve the same client — the one claim in this milestone that cannot be proven statically, matching this project's own precedent (`internal/ratelimit`'s documented `api.replicas: 1`-only caveat) for exactly this class of correctness claim.
-**Depends on**: Phase 52 (needs the atomic Postgres admission mechanism built and enforcing before its multi-replica correctness can be exercised)
-**Requirements**: QUOT-05
+### Phase 60: Sanitize — Eighth Engine Class
+
+**Goal**: Клиент может получить безопасную копию документа — без макросов, JavaScript, вложений, внешних ссылок и метаданных — с отчётом о том, что было найдено и вырезано, и с доказанной, а не заявленной чистотой результата.
+**Depends on**: Phase 56 (дескриптор-паттерн — probe становится ПЕРВЫМ классом, добавленным правильно, а не восьмой ручной копией) и Phase 57 (измерение операции + роль выхода для отчёта)
+**Requirements**: SANI-01, SANI-02, SANI-03, SANI-04, SANI-05, SANI-06
 **Success Criteria** (what must be TRUE):
 
-  1. With `api.replicas` set to 2 or more, N concurrent job-creation requests from one client whose concurrency cap is `K` result in at most `K` admitted jobs — observed directly on a live run, never more, regardless of which replica handled which request.
-  2. The live run's evidence (timestamps, replica identifiers, admitted/rejected counts) is captured and committed, mirroring this project's existing live-gate discipline (KEDA scale-from-zero, downscale-survival), and the phase records explicitly that the quota mechanism — unlike `internal/ratelimit` — does not carry a replicas-count caveat.
+  1. Клиент может санировать PDF и получить тот же документ без JavaScript, action-словарей (`/OpenAction`, `/AA`), launch-действий, вложенных файлов и внешних URI-ссылок; и санировать OOXML — без VBA-макросов **включая p-код**, а не только исходник (защита от VBA stomping — это базовая ставка, а не продвинутая), и без встроенных OLE-объектов, с консистентными `[Content_Types].xml` и relationship-ссылками (файл открывается чисто).
+  2. EXIF/GPS/IPTC/XMP отсутствуют в изображениях, `/Info` и XMP — в PDF, подтверждено проверкой присутствия.
+  3. Чистота **доказана, а не заявлена**: выход перепроверяется реализацией разбора, независимой от той, что удаляла (прецедент проекта — veraPDF, проверяющий вывод LibreOffice); удалённое физически отсутствует в выходных байтах — полная перезапись, а не incremental update, оставляющий объект восстановимым в предыдущей ревизии; любой остаток валит джобу closed до того, как что-либо попало в S3.
+  4. Клиент получает вторым выходом с `role=report` перечень найденного и удалённого, сформулированный так, что заявляет ТОЛЬКО реально проверенные классы угроз — никогда общую свободу от вредоносного содержимого. Это ложная гарантия, а не маркетинг: индустрия прямо фиксирует, что CDR не определяет функциональность вредоносного кода.
+  5. `probe` — полноценный восьмой engine-класс по отлаженному шаблону: своя очередь, свой бинарник и контейнер, fail-closed валидация входа, transient/terminal классификация, **ИЗМЕРЕННЫЙ** на собственном корпусе таймаут (отличный от 65s/742s/744s/753s — копирование чужого таймаута зафиксировано как антипаттерн проекта), и восьмой ScaledObject, оставляющий существующие семь байт-неизменными.
 
-**Plans**: TBD
-**Autonomous**: false (operator-gated live proof — requires a real 2+-replica run, cannot be closed by static verification alone)
+**Design decisions deferred to phase planning** (research не смог их закрыть, и это честно): blacklist-удаление против reconstruct-from-trusted-content; выбор независимого парсера-верификатора. Оба должны быть записаны как решения ДО того, как ляжет код.
+
+**Blast-radius note (research correction)**: добавление восьмой очереди — НЕ высокий риск. PromQL каждого `scaledobject-*.yaml` замкнут на собственный литерал имени очереди, а `AllConvertQueues()` существует именно для того, чтобы коллектор глубины не правился второй раз; доказано дважды (v1.10 OCR, v1.11 pandoc). Дорого — **переименование** очереди (7 PromQL + `AllConvertQueues()` + маршрутизация реконсилятора), и v1.13 его не требует.
+
+**Autonomous**: false (SC5 — операторский замер таймаута на собственном корпусе)
+
+### Phase 61: v1.12 Debt Tail
+
+**Goal**: Закрыть самый весомый перенос v1.12 — застрявшая джоба, навсегда съедающая суточный бюджет клиента без операторского средства это снять — плюс два мелких пункта с нулевым пересечением по файлам с остальным милстоуном.
+**Depends on**: Nothing (полностью независима; файловый набор не пересекается с фазами 56-60)
+**Requirements**: DEBT-09, DEBT-10, DEBT-11
+**Success Criteria** (what must be TRUE):
+
+  1. Оператор может снять застрявшую in-flight джобу штатным средством, а не сырым SQL, поэтому навсегда застрявшая джоба больше не блокирует суточный бюджет клиента каждый следующий UTC-день; связка «доступность квот ↔ здоровье `cmd/webhook-worker`» задокументирована.
+  2. Секция квот в README внутренне непротиворечива (`README.md:242` против `README.md:294`), и список engine-классов выводится из `convert.AllEngines()`, а не хардкодится числом.
+  3. `PurgeUsage` (`internal/jobs/retention.go:126`) берёт cutoff из часов Postgres, как `evaluate()`, `recordUsage` и `UTCToday`, а не из `time.Now()` хоста.
+
+**Placement**: отдельной фазой-хвостом по прецеденту Phase 54 (CAPA-01) — сворачивание в 56-60 добавило бы несвязанный шум в дифф ревью основной работы. Может исполняться в любом слоте.
+
+**Autonomous**: true
+
+### Phase Ordering Rationale
+
+- **Жёсткие зависимости, проверенные по коду**: 56 → 57 (после консолидации `process()` читает `job.Operation` из одного места, а не из семи); 57 → 58 (перечисление доступных операций осмысленно только после измерения); 58 → 59 (маршрутизация читает отчёт); 56+57 → 60.
+- **Sanitize последним, несмотря на сильнейшую продуктовую историю** — ему нужны дескриптор-паттерн, измерение операции и роль выхода одновременно, и он несёт самую высокую планку безопасности в милстоуне.
+- **56 не имеет жёстких зависимостей вниз, но окупается в 60**: без него `probe` был бы восьмой ручной копией, а каждая будущая post-commit забота платила бы ×8.
+- **Хвост долга (61) изолирован по файлам** и может уехать в любой слот — вынесен отдельно ровно для чистоты ревью, как Phase 54 в v1.12.
 
 ## Progress
 
@@ -409,10 +412,18 @@ Plans:
 | 51. Attribution, Accounting & Retention | v1.12 | 5/5 | Complete    | 2026-08-02 |
 | 52. Quota Enforcement & Intra-Class Fairness | v1.12 | 9/9 | Complete   | 2026-08-03 |
 | 53. Operator Usage Visibility | v1.12 | 7/7 | Complete    | 2026-08-05 |
-| 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 0/TBD | Not started | - |
-| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 0/TBD | Not started | - |
+| 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
+| 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
+| 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
+| 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
+| 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
+| 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
+| 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
+| 61. v1.12 Debt Tail | v1.13 | 0/TBD | Not started | — |
 
 ---
 
-*v1.11 (Pandoc Engine) shipped 2026-08-02, Phases 47-50 — 9/9 requirements, milestone audit passed (9/9 requirements, 6/6 cross-phase seams), 3 live gates (compose E2E, KEDA scale-from-zero, downscale-survival). v1.12 (Consumer Accounting & Fairness) roadmap created 2026-08-02, Phases 51-55 — 15/15 v1 requirements mapped, 11/15 complete (ACCT-01..04, RETN-01, QUOT-01..04, FAIR-01, FAIR-02, per REQUIREMENTS.md's traceability table), with QUOT-05 (Phase 55), OPSV-01/02 (Phase 53) and CAPA-01 (Phase 54) pending. Next: `/gsd:plan-phase 53`.*
+*v1.13 (Inspect & Operations) started 2026-08-07, Phases 56-61 — 28/28 v1 requirements mapped, 0 orphans. Two operator-gated phases: 58 (live process-isolation proof for the synchronous inspect path) and 60 (measured `probe` engine timeout). Next: `/gsd:discuss-phase 56`.*
+
+*v1.12 (Consumer Accounting & Fairness) shipped 2026-08-07, Phases 51-55 — 15/15 v1 requirements, 30 plans, milestone audit `tech_debt` (15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers, 16 non-blocking debt items recorded). One live gate: multi-replica quota correctness at `api.replicas: 2` (10/10 rounds, 167 assertions, evidence committed). Phases 52 and 53 each went through a real gaps_found → closure → re-verification cycle. Next: `/gsd:new-milestone`.*
 </content>
