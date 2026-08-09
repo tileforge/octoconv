@@ -66,7 +66,9 @@ type Input struct {
 	ContentType string
 }
 
-// Output is a row of the job_outputs table.
+// Output is a row of the job_outputs table. Role comes from job_outputs.role;
+// its default ('primary') is supplied by the database (0015_operation_and_output_roles.sql,
+// D-16), never by this Go layer.
 type Output struct {
 	Ordinal     int
 	ObjectKey   string
@@ -74,6 +76,7 @@ type Output struct {
 	Format      string
 	SizeBytes   int64
 	ContentType string
+	Role        string
 }
 
 // JobSummary is the per-row listing shape returned by Repo.List, selected
