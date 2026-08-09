@@ -4,7 +4,32 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 )
+
+// addPrimaryOutput writes a single job_outputs row at ordinal 0 via
+// r.AddOutput, relying entirely on the DB DEFAULT (D-16) for role='primary'
+// -- it never sets Output.Role. This reproduces the order every one of the
+// seven engines already follows in production (internal/worker/worker.go):
+// AddOutput always runs before MarkDone. Existing DB-integration tests that
+// call MarkDone use this helper to satisfy MarkDone's D-13 precondition
+// (exactly one primary output) without duplicating the AddOutput boilerplate
+// at every call site.
+func addPrimaryOutput(t *testing.T, r *Repo, jobID uuid.UUID) {
+	t.Helper()
+	if err := r.AddOutput(context.Background(), jobID, Output{
+		Ordinal:     0,
+		ObjectKey:   "results/d13/" + jobID.String() + "-0-out.webp",
+		Filename:    "out.webp",
+		Format:      "webp",
+		SizeBytes:   1,
+		ContentType: "image/webp",
+	}); err != nil {
+		t.Fatalf("addPrimaryOutput: AddOutput: %v", err)
+	}
+}
 
 // TestAddOutputWithoutRoleReadsBackAsPrimary is D-16's core proof: AddOutput
 // is called with Role left at its Go zero-value (""), and the row read back
@@ -209,5 +234,182 @@ func TestOutputsReturnsRoleForEveryOutput(t *testing.T) {
 	}
 	if outs[1].Ordinal != 1 || outs[1].Role != "report" {
 		t.Fatalf("outs[1] = %+v, want ordinal=1 role=report", outs[1])
+	}
+}
+
+// TestMarkDoneRejectsJobWithNoOutputs is D-13's primary negative proof: an
+// active job with zero job_outputs rows cannot be marked done. This also
+// proves the whole apply closure rolls back on rejection, not merely the
+// UPDATE jobs statement -- status stays active, finished_at stays unset, no
+// job_events row records a done transition, and no client_usage_daily row
+// appears for this job (recordUsage never ran).
+func TestMarkDoneRejectsJobWithNoOutputs(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	jobID := createTestJob(t, r, clientID, "image")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err == nil {
+		t.Fatal("MarkDone on a job with zero outputs must error, got nil")
+	}
+
+	var status string
+	var finishedAt *time.Time
+	if err := r.pool.QueryRow(ctx,
+		`SELECT status, finished_at FROM jobs WHERE id = $1`, jobID,
+	).Scan(&status, &finishedAt); err != nil {
+		t.Fatalf("query job after rejected MarkDone: %v", err)
+	}
+	if status != StatusActive {
+		t.Fatalf("status = %q, want %q (rejected MarkDone must leave the job active)", status, StatusActive)
+	}
+	if finishedAt != nil {
+		t.Fatalf("finished_at = %v, want nil (rejected MarkDone must not stamp finished_at)", *finishedAt)
+	}
+
+	var doneEvents int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM job_events WHERE job_id = $1 AND to_status = 'done'`, jobID,
+	).Scan(&doneEvents); err != nil {
+		t.Fatalf("count job_events: %v", err)
+	}
+	if doneEvents != 0 {
+		t.Fatalf("job_events rows with to_status='done' = %d, want 0 (rolled back)", doneEvents)
+	}
+
+	var usageRows int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM client_usage_daily WHERE client_id = $1 AND engine = 'image' AND status = 'done'`, clientID,
+	).Scan(&usageRows); err != nil {
+		t.Fatalf("count client_usage_daily: %v", err)
+	}
+	if usageRows != 0 {
+		t.Fatalf("client_usage_daily rows = %d, want 0 (recordUsage must never have run)", usageRows)
+	}
+}
+
+// TestMarkDoneRejectsJobWithOnlyReportOutput is the exact scenario D-13
+// exists for: a sanitize job whose report output was recorded but whose
+// primary result never was. MarkDone must reject it, not silently promote
+// the report to "the" result.
+func TestMarkDoneRejectsJobWithOnlyReportOutput(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "image")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, 0, $2, $3, $4, $5, $6, $7)`,
+		jobID, "results/d13/report-only.json", "report.json", "json", int64(30), "application/json", "report",
+	); err != nil {
+		t.Fatalf("insert report-only output: %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err == nil {
+		t.Fatal("MarkDone on a job with only a report output must error, got nil")
+	}
+
+	var status string
+	if err := r.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		t.Fatalf("query job status: %v", err)
+	}
+	if status != StatusActive {
+		t.Fatalf("status = %q, want %q", status, StatusActive)
+	}
+}
+
+// TestMarkDoneRejectsJobWithTwoPrimaryOutputs proves the invariant is
+// "exactly one", not "at least one": two outputs both marked primary (on
+// distinct ordinals) must also be rejected.
+func TestMarkDoneRejectsJobWithTwoPrimaryOutputs(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "image")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, 0, $2, $3, $4, $5, $6, 'primary'), ($1, 1, $7, $8, $9, $10, $11, 'primary')`,
+		jobID,
+		"results/d13/two-primary-0.webp", "0.webp", "webp", int64(10), "image/webp",
+		"results/d13/two-primary-1.webp", "1.webp", "webp", int64(20), "image/webp",
+	); err != nil {
+		t.Fatalf("insert two primary outputs: %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err == nil {
+		t.Fatal("MarkDone on a job with two primary outputs must error, got nil")
+	}
+}
+
+// TestMarkDoneAcceptsPrimaryPlusReport proves the invariant does not break
+// the future it exists to enable: a job with one primary output AND one
+// report output (the sanitize shape) must mark done successfully.
+func TestMarkDoneAcceptsPrimaryPlusReport(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+	jobID := createTestJob(t, r, clientID, "image")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if _, err := r.pool.Exec(ctx, `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, 0, $2, $3, $4, $5, $6, 'primary'), ($1, 1, $7, $8, $9, $10, $11, 'report')`,
+		jobID,
+		"results/d13/primary.webp", "primary.webp", "webp", int64(10), "image/webp",
+		"results/d13/report.json", "report.json", "json", int64(5), "application/json",
+	); err != nil {
+		t.Fatalf("insert primary+report outputs: %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err != nil {
+		t.Fatalf("MarkDone: %v", err)
+	}
+
+	var status string
+	if err := r.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		t.Fatalf("query job status: %v", err)
+	}
+	if status != StatusDone {
+		t.Fatalf("status = %q, want %q", status, StatusDone)
+	}
+
+	var usageRows int
+	if err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM client_usage_daily WHERE client_id = $1 AND engine = 'image' AND status = 'done'`, clientID,
+	).Scan(&usageRows); err != nil {
+		t.Fatalf("count client_usage_daily: %v", err)
+	}
+	if usageRows != 1 {
+		t.Fatalf("client_usage_daily rows = %d, want 1", usageRows)
+	}
+}
+
+// TestMarkDoneAcceptsSinglePrimaryOutput is the basic happy path through
+// addPrimaryOutput, the helper every other rewritten DB test in this package
+// now relies on to satisfy MarkDone's D-13 precondition.
+func TestMarkDoneAcceptsSinglePrimaryOutput(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "image")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	addPrimaryOutput(t, r, jobID)
+
+	if err := r.MarkDone(ctx, jobID, 0); err != nil {
+		t.Fatalf("MarkDone: %v", err)
 	}
 }

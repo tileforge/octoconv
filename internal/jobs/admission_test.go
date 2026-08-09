@@ -150,6 +150,7 @@ func TestTerminalStatusFreesSlotWithNoReleaseCode(t *testing.T) {
 			if err := r.MarkActive(context.Background(), id); err != nil {
 				t.Fatalf("MarkActive: %v", err)
 			}
+			addPrimaryOutput(t, r, id)
 			if err := r.MarkDone(context.Background(), id, 0); err != nil {
 				t.Fatalf("MarkDone: %v", err)
 			}
@@ -888,6 +889,7 @@ func TestInFlightAndTerminalUsageCountedExactlyOnce(t *testing.T) {
 	if err := r.MarkActive(ctx, idA); err != nil {
 		t.Fatalf("MarkActive(A): %v", err)
 	}
+	addPrimaryOutput(t, r, idA)
 	if err := r.MarkDone(ctx, idA, 0); err != nil {
 		t.Fatalf("MarkDone(A): %v", err)
 	}
