@@ -164,10 +164,11 @@ func TestPre57GoldenGetJobSingleOutput(t *testing.T) {
 	srv, resolver := newTestServer(repo, store, &fakeQueue{})
 
 	repo.getJob = &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone}
-	// No Role field set below: jobs.Output.Role does not exist until plan
-	// 57-03 (wave 2) adds it. Plan 57-06 (exception 2 in this file's header)
-	// is the ONLY plan allowed to add Role: "primary" to this literal --
-	// see 57-06 for the grep anchor.
+	// Exception 2 (this file's header comment) applied by 57-06: Role:
+	// "primary" is set here so handleGetJob's role-driven selection still
+	// finds a primary output for this single-output fixture. "role" is not
+	// part of a single-output done job's response body, so the golden
+	// file's bytes are unaffected by this literal change.
 	repo.outputs = []jobs.Output{{
 		Ordinal:     0,
 		ObjectKey:   "results/pinned/0-out.webp",
@@ -175,6 +176,7 @@ func TestPre57GoldenGetJobSingleOutput(t *testing.T) {
 		Format:      "webp",
 		SizeBytes:   4242,
 		ContentType: "image/webp",
+		Role:        "primary",
 	}}
 
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))

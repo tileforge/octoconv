@@ -1923,8 +1923,14 @@ func TestGetJob_DonePresigned(t *testing.T) {
 	id := uuid.New()
 	resolver := newFakeResolver()
 	repo := &fakeRepo{
-		getJob:  &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
-		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp"}},
+		getJob: &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+		// Role: "primary" (57-06): this fixture predates jobs.Output.Role
+		// (added by plan 57-03); handleGetJob now selects download_url by
+		// role, not by outs[0], so this pre-existing test needs the same
+		// fixture fix as the golden-pinning suite's exception #2 to keep
+		// testing what it claims (that a done job's single output is
+		// presigned into download_url).
+		outputs: []jobs.Output{{Ordinal: 0, ObjectKey: "results/x/0-out.webp", Role: "primary"}},
 	}
 	store := &fakeStorage{presigned: "https://example/download"}
 	srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
