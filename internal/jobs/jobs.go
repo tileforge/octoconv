@@ -66,8 +66,21 @@ type Input struct {
 	ContentType string
 }
 
+// OutputRolePrimary is the job_outputs.role value that identifies a job's
+// PRIMARY result -- the value the database defaults to (migration
+// 0015_operation_and_output_roles.sql), the value Repo.MarkDone's D-13 guard
+// counts (that SQL literal inside the guard's query string stays a literal;
+// this constant does not reach into SQL text), and the value EVERY consumer
+// (internal/api's handleGetJob, internal/worker's terminal webhook) must
+// select on instead of taking the first element of a []Output slice. Declared
+// once here, on the type it describes, so a second unexported copy of
+// "primary" can never drift from this one the way internal/api and
+// internal/worker had drifted before this constant existed (codex PR #7
+// finding #1).
+const OutputRolePrimary = "primary"
+
 // Output is a row of the job_outputs table. Role comes from job_outputs.role;
-// its default ('primary') is supplied by the database (0015_operation_and_output_roles.sql,
+// its default (OutputRolePrimary) is supplied by the database (0015_operation_and_output_roles.sql,
 // D-16), never by this Go layer.
 type Output struct {
 	Ordinal     int
