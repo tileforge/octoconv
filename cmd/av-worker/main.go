@@ -77,8 +77,15 @@ func main() {
 	// write must happen-before every concurrent read (no mutex needed, same
 	// happens-before boundary as AUDIO_MODEL_PATH/AUDIO_THREADS in
 	// cmd/audio-worker/main.go).
+	//
+	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
+	// instead of silently last-write-winning -- this deliberate overwrite of
+	// converters.go's own placeholder registration moved to Registry.Replace,
+	// which performs the identical unconditional overwrite without the
+	// occupancy check. Using Register here would panic on startup against
+	// the very placeholder this re-registration exists to override.
 	maxDuration := envDurationSeconds("AV_MAX_DURATION_SECONDS", 4*time.Hour)
-	convert.Default.Register(convert.AVConverter{
+	convert.Default.Replace(convert.AVConverter{
 		MaxSourceDuration:         maxDuration,
 		MaxSourceResolutionHeight: 4320,
 	})
