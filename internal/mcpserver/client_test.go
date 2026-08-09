@@ -627,6 +627,90 @@ func TestGetJob_OutputsDecoded(t *testing.T) {
 	}
 }
 
+// TestGetJob_ProgressFieldsDecoded proves progress_pct and eta_seconds
+// survive decoding, INCLUDING the difference between a real zero and an
+// absent value. handleGetJob has emitted both keys on every response since
+// Phase 41 (PROG-01/PROG-04, handlers.go:902-910) with null meaning
+// "indeterminate", but this decoder carried no fields for them, so an agent
+// polling get_job_status on a long video conversion saw no progress at all.
+//
+// The 0-vs-null distinction is the point of the pointer types: a plain int
+// decodes both a JSON null and a real 0 as 0, which would report "0% done"
+// for an engine that cannot report progress at all.
+func TestGetJob_ProgressFieldsDecoded(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    map[string]any
+		wantPct *int
+		wantETA *int
+		wantWhy string
+	}{
+		{
+			name:    "live values",
+			body:    map[string]any{"job_id": "j", "status": "active", "progress_pct": 42, "eta_seconds": 90},
+			wantPct: intPtr(42), wantETA: intPtr(90),
+			wantWhy: "an av job mid-stream reports real numbers",
+		},
+		{
+			name:    "explicit nulls",
+			body:    map[string]any{"job_id": "j", "status": "active", "progress_pct": nil, "eta_seconds": nil},
+			wantPct: nil, wantETA: nil,
+			wantWhy: "an engine that cannot report progress must stay indeterminate, not become 0",
+		},
+		{
+			name:    "genuine zero",
+			body:    map[string]any{"job_id": "j", "status": "active", "progress_pct": 0, "eta_seconds": 0},
+			wantPct: intPtr(0), wantETA: intPtr(0),
+			wantWhy: "0 percent is a real measurement and must not collapse into null",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/jobs/", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(tc.body)
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			c := newTestClient(t, Config{
+				BaseURL:        srv.URL,
+				APIKey:         testAPIKey,
+				OutputDir:      t.TempDir(),
+				ConvertTimeout: time.Second,
+				PollInterval:   time.Millisecond,
+			})
+
+			js, err := c.GetJob(context.Background(), "j")
+			if err != nil {
+				t.Fatalf("GetJob: %v", err)
+			}
+			if !eqIntPtr(js.ProgressPct, tc.wantPct) {
+				t.Fatalf("ProgressPct = %s, want %s -- %s", fmtIntPtr(js.ProgressPct), fmtIntPtr(tc.wantPct), tc.wantWhy)
+			}
+			if !eqIntPtr(js.EtaSeconds, tc.wantETA) {
+				t.Fatalf("EtaSeconds = %s, want %s -- %s", fmtIntPtr(js.EtaSeconds), fmtIntPtr(tc.wantETA), tc.wantWhy)
+			}
+		})
+	}
+}
+
+func eqIntPtr(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func fmtIntPtr(p *int) string {
+	if p == nil {
+		return "null"
+	}
+	return fmt.Sprintf("%d", *p)
+}
+
 // TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
 // CreateJob writes a multipart part named "operation" with the supplied
 // value when operation is non-empty.
