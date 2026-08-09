@@ -40,6 +40,16 @@ func TestPurgeDeletesAgedRows(t *testing.T) {
 	if err := repo.MarkActive(ctx, agedID); err != nil {
 		t.Fatalf("MarkActive (aged): %v", err)
 	}
+	// D-13: MarkDone requires exactly one primary output. jobs.addPrimaryOutput
+	// is not visible from this package, so replicate its effect directly via
+	// the public Repo.AddOutput, relying on the DB DEFAULT for role (D-16) --
+	// the same order every engine already follows in production.
+	if err := repo.AddOutput(ctx, agedID, jobs.Output{
+		Ordinal: 0, ObjectKey: "results/retention-soak/0-aged-out.webp", Filename: "out.webp",
+		Format: "webp", SizeBytes: 1, ContentType: "image/webp",
+	}); err != nil {
+		t.Fatalf("AddOutput (aged): %v", err)
+	}
 	if err := repo.MarkDone(ctx, agedID, 0); err != nil {
 		t.Fatalf("MarkDone (aged): %v", err)
 	}
@@ -154,6 +164,12 @@ func TestPurgeDisabledWhenWindowsUnset(t *testing.T) {
 		}
 		if err := repo.MarkActive(ctx, agedID); err != nil {
 			t.Fatalf("MarkActive: %v", err)
+		}
+		if err := repo.AddOutput(ctx, agedID, jobs.Output{
+			Ordinal: 0, ObjectKey: "results/retention-soak/0-disabled-out.webp", Filename: "out.webp",
+			Format: "webp", SizeBytes: 1, ContentType: "image/webp",
+		}); err != nil {
+			t.Fatalf("AddOutput: %v", err)
 		}
 		if err := repo.MarkDone(ctx, agedID, 0); err != nil {
 			t.Fatalf("MarkDone: %v", err)

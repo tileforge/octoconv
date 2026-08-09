@@ -203,6 +203,35 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 // clock).
 func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
 	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+		// D-13: a done job without exactly one primary output is an
+		// unreachable state, enforced here rather than in transition()
+		// because this is a precondition of MarkDone's own semantics, not
+		// of the transition mechanics transition() implements — the
+		// transition helper itself is a documented untouchable invariant
+		// (PROJECT.md, 56-CONTEXT.md) shared by MarkFailed/Cancel/
+		// MarkActive/RequeueStale, none of which need this check and none
+		// of which call this closure. There is no race: this SELECT runs
+		// on the SAME tx that transition() already holds the job row
+		// locked on (`SELECT status ... FOR UPDATE` above, this function),
+		// under the pinned ReadCommitted isolation level, so no concurrent
+		// AddOutput/MarkDone can slip between the count and the UPDATE
+		// below. If this returns an error, transition()'s pgx.BeginTxFunc
+		// rolls back the whole apply closure — the UPDATE jobs above never
+		// happened either, and recordUsage never runs — so the job stays
+		// active, not half-done. For the caller (the worker), this is an
+		// ordinary, retryable error: it is NOT wrapped in asynq.SkipRetry
+		// like the illegal-transition case in internal/worker/worker.go,
+		// because the path self-heals — a retried task re-runs AddOutput
+		// (upsert on (job_id, ordinal)) before calling MarkDone again.
+		var n int
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM job_outputs WHERE job_id = $1 AND role = 'primary'`, id,
+		).Scan(&n); err != nil {
+			return fmt.Errorf("count primary outputs for job %s: %w", id, err)
+		}
+		if n != 1 {
+			return fmt.Errorf("job %s has %d primary outputs, exactly 1 required to mark done", id, n)
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'done', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err

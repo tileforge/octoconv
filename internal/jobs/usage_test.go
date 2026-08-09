@@ -45,6 +45,15 @@ func TestRecordUsageSumsAllOrdinals(t *testing.T) {
 	if err := r.AddOutput(ctx, id, Output{Ordinal: 1, ObjectKey: "results/ru1/1-out.webp", Filename: "out2.webp", Format: "webp", SizeBytes: 20, ContentType: "image/webp"}); err != nil {
 		t.Fatalf("AddOutput (1): %v", err)
 	}
+	// D-13: MarkDone requires EXACTLY ONE primary output, and AddOutput never
+	// writes role (D-16, it is DB-defaulted), so both rows above defaulted to
+	// 'primary'. Demote ordinal 1 to 'report' via direct SQL -- AddOutput has
+	// no write path for role -- so this test keeps proving what it is actually
+	// about (recordUsage sums size_bytes over EVERY ordinal regardless of
+	// role, SEED-017) without violating D-13's precondition.
+	if _, err := r.pool.Exec(ctx, `UPDATE job_outputs SET role = 'report' WHERE job_id = $1 AND ordinal = 1`, id); err != nil {
+		t.Fatalf("demote ordinal 1 to role=report: %v", err)
+	}
 
 	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
@@ -157,6 +166,7 @@ func TestRecordUsageFailedPathAndStatusSeparation(t *testing.T) {
 	if err := r.MarkActive(ctx, doneID); err != nil {
 		t.Fatalf("MarkActive done job: %v", err)
 	}
+	addPrimaryOutput(t, r, doneID)
 	if err := r.MarkDone(ctx, doneID, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
@@ -248,6 +258,7 @@ func TestRecordUsageSkipsOrphanedClient(t *testing.T) {
 	}
 	before.Close()
 
+	addPrimaryOutput(t, r, id)
 	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone on orphaned-client job must succeed (a deleted client must never wedge a job in active), got: %v", err)
 	}
@@ -296,6 +307,7 @@ func TestRecordUsageWallSeconds(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
+		addPrimaryOutput(t, r, id)
 		if err := r.MarkDone(ctx, id, 1500*time.Millisecond); err != nil {
 			t.Fatalf("MarkDone: %v", err)
 		}
@@ -528,9 +540,15 @@ func TestRecordUsageSecondTerminalTransitionIsRejected(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
+		addPrimaryOutput(t, r, id)
 		if err := r.MarkDone(ctx, id, 0); err != nil {
 			t.Fatalf("first MarkDone: %v", err)
 		}
+		// Second MarkDone must still be rejected by transition()'s allow-list
+		// (status is already 'done', not in allowedFrom={active}) BEFORE the
+		// D-13 primary-output check in MarkDone's apply closure ever runs --
+		// no additional output fixture is needed for this call to keep
+		// testing what it claims to test.
 		if err := r.MarkDone(ctx, id, 0); err == nil {
 			t.Fatalf("second MarkDone on an already-done job must error, got nil")
 		}
@@ -558,6 +576,7 @@ func TestRecordUsageSecondTerminalTransitionIsRejected(t *testing.T) {
 		if err := r.MarkActive(ctx, id); err != nil {
 			t.Fatalf("MarkActive: %v", err)
 		}
+		addPrimaryOutput(t, r, id)
 		if err := r.MarkDone(ctx, id, 0); err != nil {
 			t.Fatalf("MarkDone: %v", err)
 		}

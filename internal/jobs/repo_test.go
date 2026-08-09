@@ -296,6 +296,7 @@ func TestCancelDoneRejected(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
+	addPrimaryOutput(t, r, id)
 	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
@@ -663,6 +664,7 @@ func TestRequeueStale(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive before MarkDone: %v", err)
 	}
+	addPrimaryOutput(t, r, id)
 	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
@@ -814,6 +816,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, gapDone); err != nil {
 		t.Fatalf("MarkActive gapDone: %v", err)
 	}
+	addPrimaryOutput(t, r, gapDone)
 	if err := r.MarkDone(ctx, gapDone, 0); err != nil {
 		t.Fatalf("MarkDone gapDone: %v", err)
 	}
@@ -853,6 +856,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, delivered); err != nil {
 		t.Fatalf("MarkActive delivered: %v", err)
 	}
+	addPrimaryOutput(t, r, delivered)
 	if err := r.MarkDone(ctx, delivered, 0); err != nil {
 		t.Fatalf("MarkDone delivered: %v", err)
 	}
@@ -880,6 +884,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, deadLettered); err != nil {
 		t.Fatalf("MarkActive deadLettered: %v", err)
 	}
+	addPrimaryOutput(t, r, deadLettered)
 	if err := r.MarkDone(ctx, deadLettered, 0); err != nil {
 		t.Fatalf("MarkDone deadLettered: %v", err)
 	}
@@ -906,6 +911,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, freshDone); err != nil {
 		t.Fatalf("MarkActive freshDone: %v", err)
 	}
+	addPrimaryOutput(t, r, freshDone)
 	if err := r.MarkDone(ctx, freshDone, 0); err != nil {
 		t.Fatalf("MarkDone freshDone: %v", err)
 	}
@@ -922,6 +928,7 @@ func TestFindWebhookGaps(t *testing.T) {
 	if err := r.MarkActive(ctx, noCallback); err != nil {
 		t.Fatalf("MarkActive noCallback: %v", err)
 	}
+	addPrimaryOutput(t, r, noCallback)
 	if err := r.MarkDone(ctx, noCallback, 0); err != nil {
 		t.Fatalf("MarkDone noCallback: %v", err)
 	}
@@ -1249,6 +1256,7 @@ func TestUpdateProgressInactiveJobIsNoop(t *testing.T) {
 	if err := r.MarkActive(ctx, id); err != nil {
 		t.Fatalf("MarkActive: %v", err)
 	}
+	addPrimaryOutput(t, r, id)
 	if err := r.MarkDone(ctx, id, 0); err != nil {
 		t.Fatalf("MarkDone: %v", err)
 	}
