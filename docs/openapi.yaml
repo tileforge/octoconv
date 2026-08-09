@@ -67,29 +67,38 @@ components:
     Error:
       type: object
       description: >-
-        The error body used by every non-2xx response EXCEPT 429. 429
-        responses use the QuotaError schema below instead, which adds the
-        required machine-readable code discriminator.
-      properties:
-        error:
-          type: string
-      required: [error]
-
-    QuotaError:
-      type: object
-      description: >-
-        The error body used ONLY by 429 responses. Every other error body in
-        this API remains the one-property Error schema above — code is never
-        added to any non-429 response. code distinguishes the two producers
-        of a 429 in this service: the per-IP/per-client rate limiter
-        (rate_limited) and the per-client quota admission gate
-        (quota_exceeded, QUOT-01..04).
+        The flat {"error", "code"} envelope used by EVERY non-2xx JSON
+        response from /v1/*. The two and only writers are internal/api's
+        writeError (handlers.go) and internal/ratelimit
+        (ratelimit.go) — both set code unconditionally, never only on 429.
+        code is a machine-readable discriminator enumerated over the closed
+        vocabulary frozen by docs/ERROR-CODES.md (milestone v1.13 Phase 56,
+        ERRC-01); internal/errcode/openapi_sync_test.go mechanically proves
+        this enum never drifts from internal/errcode's Go constants. On a
+        429, code distinguishes the two independent producers of that status:
+        the per-IP/per-client rate limiter (rate_limited) and the per-client
+        quota admission gate (quota_exceeded, QUOT-01..04).
       properties:
         error:
           type: string
         code:
           type: string
-          enum: [quota_exceeded, rate_limited]
+          enum:
+            - invalid_request
+            - unsupported_conversion
+            - unsupported_operation
+            - invalid_options
+            - opts_not_applicable
+            - missing_file
+            - unknown_preset
+            - payload_too_large
+            - not_found
+            - invalid_cursor
+            - already_exists
+            - unauthorized
+            - quota_exceeded
+            - rate_limited
+            - internal_error
       required: [error, code]
 
     JobCreated:
@@ -283,7 +292,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/QuotaError"
+            $ref: "#/components/schemas/Error"
     InternalError:
       description: Unexpected server-side failure (storage, database, or queue).
       content:
@@ -411,6 +420,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: file exceeds size limit
+                code: payload_too_large
         "422":
           description: >-
             Semantically rejected: unsupported conversion pair, declared
@@ -470,6 +480,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid job id
+                code: invalid_request
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -480,6 +491,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: job not found
+                code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
@@ -593,6 +605,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset already exists
+                code: already_exists
         "422":
           description: Invalid opts.
           content:
@@ -691,6 +704,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "422":
           description: Invalid opts.
           content:
@@ -770,6 +784,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "409":
           description: A system preset with this name already exists.
           content:
@@ -1126,6 +1141,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid client_id
+                code: invalid_request
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1136,6 +1152,7 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: preset not found
+                code: unknown_preset
         "422":
           description: Invalid period filter — not one of today/7d/30d.
           content:
@@ -1144,5 +1161,6 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: invalid period filter
+                code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
