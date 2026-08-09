@@ -256,12 +256,12 @@ Plans:
 
 **Decision locked (2026-08-07)**: `sanitize` вводится как НОВОЕ значение `jobs.operation` (миграция расширяет CHECK, который сегодня разрешает `convert|extract|archive|inspect|render`), движок — `probe`, зарезервированный в схеме с `0001_init.sql`. Переиспользование `extract` отвергнуто: sanitize ничего не извлекает, и `extract` понадобится по назначению в следующем милстоуне. Решение расходится с формулировкой SEED-013 (`engine=probe`, `operation=inspect|convert`) — семя фиксирует старую модель, эта запись её замещает.
 
-**Plans:** 7 plans
+**Plans:** 1/7 plans executed
 
 Plans:
 **Wave 1**
 
-- [ ] 57-01-PLAN.md — Golden-пиннинг до-фазовых тел /v1/formats и /v1/jobs (D-17, шаг 1) + код unsupported_operation
+- [x] 57-01-PLAN.md — Golden-пиннинг до-фазовых тел /v1/formats и /v1/jobs (D-17, шаг 1) + код unsupported_operation
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -415,7 +415,7 @@ Plans:
 | 54. Per-Class Capacity Floor (SEED-011) | v1.12 | 2/2 | Complete    | 2026-08-06 |
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
 | 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
-| 57. Operation Dimension & Output Roles | v1.13 | 0/TBD | Not started | — |
+| 57. Operation Dimension & Output Roles | v1.13 | 1/7 | In Progress|  |
 | 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
 | 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
