@@ -11,10 +11,11 @@ package api
 // commit already happened and simply proves the two fixtures still
 // byte-match TODAY's handler output on every subsequent run. Every later
 // plan in this phase MUST leave this suite passing WITHOUT modification --
-// the SUT changes, this test does not -- with EXACTLY three closed
-// exceptions to the Go source (never to the golden bytes themselves),
-// listed here and ONLY here, so a future executor finds the complete list
-// in one place instead of assembling it from other plans' PLAN.md files:
+// the SUT changes, this test does not -- with EXACTLY three closed allowed
+// exceptions ("Разрешённые исключения") to the Go source (never to the
+// golden bytes themselves), listed here and ONLY here, so a future executor
+// finds the complete list in one place instead of assembling it from other
+// plans' PLAN.md files:
 //
 //  1. Plan 57-04, Task 2 -- TestPre57GoldenListFormats moves to comparing a
 //     sub-map. GET /v1/formats gains the additive "operations" key (D-10),
@@ -62,6 +63,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -105,9 +107,15 @@ func assertGolden(t *testing.T, name string, got []byte) {
 }
 
 // TestPre57GoldenListFormats pins GET /v1/formats' exact pre-Phase-57 body.
-// See the exceptions list in this file's header comment for the one
-// permitted future edit to this test (57-04, Task 2) and the standing
-// prohibition on ever touching the golden file's bytes.
+// EXCEPTION 1 applied (see this file's header comment): as of Plan 57-04
+// Task 2, GET /v1/formats gained the additive "operations" key, so the full
+// response body is no longer byte-equal to the golden file -- that is
+// expected, not a regression. This test now compares the golden bytes
+// against ONLY the "engines" sub-map, re-encoded with the exact same
+// encoder settings writeJSON uses (see the encoder call below) -- so the
+// comparison mechanism stays bytes.Equal against the untouched golden
+// file; only the INPUT to that comparison changed, not the mechanism
+// itself.
 func TestPre57GoldenListFormats(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 
@@ -118,7 +126,24 @@ func TestPre57GoldenListFormats(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	assertGolden(t, "formats.golden.json", rec.Body.Bytes())
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+	enginesOnly, ok := body["engines"]
+	if !ok {
+		t.Fatalf(`response missing "engines" key; body=%s`, rec.Body.String())
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(map[string]json.RawMessage{"engines": enginesOnly}); err != nil {
+		t.Fatalf("re-encode engines sub-map: %v", err)
+	}
+
+	assertGolden(t, "formats.golden.json", buf.Bytes())
 }
 
 // TestPre57GoldenGetJobSingleOutput pins GET /v1/jobs/{id}'s exact
