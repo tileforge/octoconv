@@ -139,7 +139,7 @@ func TestClientConvertBlocking_HappyPath(t *testing.T) {
 	})
 
 	var ticks []string
-	result, err := c.ConvertBlocking(context.Background(), sampleFile, "jpg", "", "", func(status string) {
+	result, err := c.ConvertBlocking(context.Background(), sampleFile, "", "jpg", "", "", func(status string) {
 		ticks = append(ticks, status)
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestClient_UnsupportedPair_422(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "weird", "", "")
+	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -430,7 +430,7 @@ func TestClient_422NoCode_UnchangedErrorText(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "weird", "", "")
+	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -504,6 +504,121 @@ func TestListFormats(t *testing.T) {
 	}
 	if len(eng.Pairs) != 1 || eng.Pairs[0] != [2]string{"png", "jpg"} {
 		t.Fatalf("pairs = %v, want [[png jpg]]", eng.Pairs)
+	}
+}
+
+// TestClientCreateJob_OperationFieldPresentWhenNonEmpty (D-05/OPRN-01) proves
+// CreateJob writes a multipart part named "operation" with the supplied
+// value when operation is non-empty.
+func TestClientCreateJob_OperationFieldPresentWhenNonEmpty(t *testing.T) {
+	var sawOperation string
+	var hasOperationField bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		if vals, ok := r.MultipartForm.Value[formFieldOperation]; ok && len(vals) > 0 {
+			hasOperationField = true
+			sawOperation = vals[0]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "job-op-1"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	if _, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", ""); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if !hasOperationField {
+		t.Fatal("multipart body has no \"operation\" part, want one since operation was non-empty")
+	}
+	if sawOperation != "sanitize" {
+		t.Fatalf("operation field = %q, want sanitize", sawOperation)
+	}
+}
+
+// TestClientCreateJob_OperationFieldAbsentWhenEmpty (T-57-31) proves an
+// empty operation produces a multipart body with NO "operation" part at
+// all -- the wire form of a client that never sends the field is preserved
+// byte-for-byte.
+func TestClientCreateJob_OperationFieldAbsentWhenEmpty(t *testing.T) {
+	var hasOperationField bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+		}
+		_, hasOperationField = r.MultipartForm.Value[formFieldOperation]
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(w).Encode(map[string]string{"job_id": "job-op-2"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	if _, err := c.CreateJob(context.Background(), sampleFile, "", "jpg", "", ""); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if hasOperationField {
+		t.Fatal("multipart body has an \"operation\" part, want none since operation was empty")
+	}
+}
+
+// TestClient_UnsupportedOperation422_ForwardedVerbatim (T-57-30) asserts the
+// API's 422 unsupported_operation error is surfaced by CreateJob unchanged,
+// exactly like the pre-existing unsupported_conversion case above -- this
+// client never arbitrates operation locally, so a 422 from the server's
+// registry gate is the only source of this rejection.
+func TestClient_UnsupportedOperation422_ForwardedVerbatim(t *testing.T) {
+	const errText = "unsupported operation: sanitize"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": errText, "code": "unsupported_operation"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      t.TempDir(),
+		ConvertTimeout: time.Second,
+		PollInterval:   time.Millisecond,
+	})
+
+	_, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", "")
+	if err == nil {
+		t.Fatal("CreateJob: expected an error for an unsupported operation")
+	}
+	if !strings.Contains(err.Error(), errText) {
+		t.Fatalf("CreateJob error = %q, want it to contain %q", err.Error(), errText)
+	}
+	if !strings.Contains(err.Error(), "unsupported_operation") {
+		t.Fatalf("CreateJob error = %q, want it to contain the code %q", err.Error(), "unsupported_operation")
 	}
 }
 

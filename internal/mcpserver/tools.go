@@ -65,6 +65,7 @@ func classifyAPIError(err error) error {
 // ConvertFileInput is the input to the convert_file tool.
 type ConvertFileInput struct {
 	Path         string         `json:"path" jsonschema:"absolute or relative path to an existing local regular file to convert"`
+	Operation    string         `json:"operation,omitempty" jsonschema:"operation to perform on the file, defaults to convert when omitted -- see the operations key of the list_supported_formats/GET /v1/formats response for the full set of currently available operations; leave empty for a plain format conversion"`
 	TargetFormat string         `json:"target_format,omitempty" jsonschema:"desired output format, e.g. jpg/png/webp -- provide exactly one of target_format or preset, never both, never neither"`
 	Preset       string         `json:"preset,omitempty" jsonschema:"name of a saved conversion preset to apply -- provide exactly one of target_format or preset, never both, never neither"`
 	Opts         map[string]any `json:"opts,omitempty" jsonschema:"engine-specific conversion options; only meaningful alongside target_format, not preset"`
@@ -111,7 +112,7 @@ func convertFileHandler(c *Client) mcp.ToolHandlerFor[ConvertFileInput, ConvertF
 
 		onTick := progressTicker(ctx, req)
 
-		result, err := c.ConvertBlocking(ctx, path, in.TargetFormat, in.Preset, rawOpts, onTick)
+		result, err := c.ConvertBlocking(ctx, path, in.Operation, in.TargetFormat, in.Preset, rawOpts, onTick)
 		if err != nil {
 			return nil, ConvertFileOutput{}, classifyAPIError(err)
 		}
