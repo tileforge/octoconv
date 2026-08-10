@@ -118,6 +118,47 @@ func TestTrackerConsumeNonPositiveNoop(t *testing.T) {
 	}
 }
 
+// TestTrackerMarkCeilingHitSetsExhausted is quick/260811-r3s's core receptacle
+// proof at the Tracker level: MarkCeilingHit alone (no Consume call at all)
+// makes both ExhaustedReason and Exhausted report a ceiling.
+func TestTrackerMarkCeilingHitSetsExhausted(t *testing.T) {
+	tr := NewTracker(Budget{MaxBytes: 1 << 30, MaxDuration: time.Minute})
+	if tr.Exhausted() {
+		t.Fatal("Exhausted() = true before MarkCeilingHit, want false")
+	}
+	tr.MarkCeilingHit()
+	if !tr.Exhausted() {
+		t.Fatal("Exhausted() = false after MarkCeilingHit, want true")
+	}
+	if got := tr.ExhaustedReason(); got != ReasonWorkCeilingBytes {
+		t.Fatalf("ExhaustedReason() = %q, want %q", got, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestTrackerMarkCeilingHitNilSafe proves a nil *Tracker tolerates
+// MarkCeilingHit as a no-op -- every family analyzer accepts a possibly-nil
+// tr (isolated unit tests, BuildReport's own nil tolerance), and a scanner
+// several calls deep must be free to call tr.MarkCeilingHit() unconditionally.
+func TestTrackerMarkCeilingHitNilSafe(t *testing.T) {
+	var tr *Tracker
+	tr.MarkCeilingHit() // must not panic
+}
+
+// TestTrackerMarkCeilingHitDoesNotAffectConsume proves MarkCeilingHit is a
+// SEPARATE signal from Consume's own byte/time budget (MarkCeilingHit's own
+// doc comment): calling it does not make a subsequent, otherwise-legal
+// Consume call fail, and does not change Remaining().
+func TestTrackerMarkCeilingHitDoesNotAffectConsume(t *testing.T) {
+	tr := NewTracker(Budget{MaxBytes: 100, MaxDuration: time.Minute})
+	tr.MarkCeilingHit()
+	if !tr.Consume(50) {
+		t.Fatal("Consume(50) = false after MarkCeilingHit alone, want true -- MarkCeilingHit must not short-circuit Consume's own byte/time budget")
+	}
+	if got := tr.Remaining(); got != 50 {
+		t.Fatalf("Remaining() = %d, want 50", got)
+	}
+}
+
 // TestTrackerConcurrent exercises Consume from multiple goroutines sharing
 // ONE Tracker -- the shape a single inspect operation invoking several
 // family analyzers concurrently would produce. Run under -race; must not

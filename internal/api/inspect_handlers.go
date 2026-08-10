@@ -527,6 +527,14 @@ func zipDirectoryCeilingFamilyResult() inspect.FamilyResult {
 // than what was actually available to read would risk letting several
 // dispatched families in a future format collectively exceed tr's own
 // ceiling without it ever noticing).
+//
+// tr itself is ALSO passed to every analyzer now (quick/260811-r3s), on top
+// of maxBytes: it is the shared receptacle a scanner deep inside any family
+// analyzer calls tr.MarkCeilingHit() on the instant it hits its OWN local
+// resource ceiling, so inspect.BuildReport's Coverage claim can never come
+// back Complete:true for an operation where some scanner gave up early --
+// regardless of whether the specific Check/characteristic Reason wiring
+// this file never sees got it right.
 func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, file multipart.File, size int64, tr *inspect.Tracker) []inspect.FamilyResult {
 	maxBytes := tr.Remaining()
 	var families []inspect.FamilyResult
@@ -542,7 +550,7 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// based on this upload's own declared size at all.
 		return append(families, zipDirectoryCeilingFamilyResult())
 	case detected == "pdf":
-		families = append(families, inspect.AnalyzePDF(file, size, maxBytes))
+		families = append(families, inspect.AnalyzePDF(file, size, maxBytes, tr))
 	case inspectContainerFormats[detected]:
 		// Reuse detection's own sniff instead of walking the same
 		// attacker-controlled central directory a second time (codex PR #9
@@ -551,14 +559,14 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// detectInspectFormat can only have reached BY sniffing; the nil
 		// branch stays as a correctness fallback rather than an assumption.
 		if sniffed != nil {
-			families = append(families, inspect.AnalyzeContainerWith(*sniffed, file, size, maxBytes, inspectZipBombFindingThreshold))
+			families = append(families, inspect.AnalyzeContainerWith(*sniffed, file, size, maxBytes, inspectZipBombFindingThreshold, tr))
 		} else {
-			families = append(families, inspect.AnalyzeContainer(file, size, maxBytes, inspectZipBombFindingThreshold))
+			families = append(families, inspect.AnalyzeContainer(file, size, maxBytes, inspectZipBombFindingThreshold, tr))
 		}
 	case inspectMediaFormats[detected]:
-		families = append(families, inspect.AnalyzeMedia(detected, file, size, maxBytes))
+		families = append(families, inspect.AnalyzeMedia(detected, file, size, maxBytes, tr))
 	case inspectImageFormats[detected]:
-		families = append(families, inspect.AnalyzeImage(detected, file, size, maxBytes, inspectPixelBombFindingThreshold))
+		families = append(families, inspect.AnalyzeImage(detected, file, size, maxBytes, inspectPixelBombFindingThreshold, tr))
 	case detected == inspectOLECFBFormat:
 		families = append(families, cfbFamilyResult(convert.ClassifyCFB(file, size)))
 	default:

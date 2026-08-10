@@ -286,7 +286,7 @@ func otherFamilyNotApplicableChecks(res FamilyResult) []Check {
 func TestAnalyzePDFCleanFileReportsPageCountAndAllClean(t *testing.T) {
 	data := cleanPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if pc, ok := res.Characteristics["page_count"]; !ok || pc != 3 {
 		t.Fatalf("Characteristics[page_count] = %v (ok=%v), want 3", pc, ok)
@@ -313,7 +313,7 @@ func TestAnalyzePDFCleanFileReportsPageCountAndAllClean(t *testing.T) {
 func TestAnalyzePDFJavaScriptIsFindingNotCheck(t *testing.T) {
 	data := jsPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	f, ok := findingFor(res, CodePDFJavaScript)
 	if !ok {
@@ -341,7 +341,7 @@ func TestAnalyzePDFJavaScriptIsFindingNotCheck(t *testing.T) {
 func TestAnalyzePDFObjStmNeverReportsClean(t *testing.T) {
 	data := objStmPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if pc, ok := res.Characteristics["page_count"]; !ok || pc != nil {
 		t.Fatalf("Characteristics[page_count] = %v, want nil under /ObjStm", pc)
@@ -370,7 +370,7 @@ func TestAnalyzePDFObjStmNeverReportsClean(t *testing.T) {
 func TestAnalyzePDFFindingSurvivesObjStm(t *testing.T) {
 	data := jsAndObjStmPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	f, ok := findingFor(res, CodePDFJavaScript)
 	if !ok {
@@ -402,7 +402,7 @@ func TestAnalyzePDFFindingSurvivesObjStm(t *testing.T) {
 func TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean(t *testing.T) {
 	data := hexEscapeJSPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	for _, rt := range pdfRiskTokens {
 		if _, isFinding := findingFor(res, rt.code); isFinding {
@@ -428,7 +428,7 @@ func TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean(t *testing.T) {
 func TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown(t *testing.T) {
 	data := hexEscapeObjStmPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if res.Characteristics["uses_compressed_object_streams"] != false {
 		t.Fatalf("uses_compressed_object_streams = %v, want false -- this test is about the hex-escape path, not the literal /ObjStm compression-signal path", res.Characteristics["uses_compressed_object_streams"])
@@ -457,7 +457,7 @@ func TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown(t *testing.T) {
 func TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean(t *testing.T) {
 	data := jsInsideStreamOnlyPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if f, ok := findingFor(res, CodePDFJavaScript); ok {
 		t.Fatalf("got a critical Finding %+v for a /JS token that occurs ONLY inside a stream body", f)
@@ -484,7 +484,7 @@ func TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean(t *test
 func TestAnalyzePDFJScriptNameDoesNotMatchJS(t *testing.T) {
 	data := jscriptOnlyPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if f, ok := findingFor(res, CodePDFJavaScript); ok {
 		t.Fatalf("got a critical Finding %+v for /JScript, which is a different PDF name from /JS -- a substring match without a name-boundary check is exactly codex PR9 round 2's finding", f)
@@ -509,7 +509,7 @@ func TestAnalyzePDFJScriptNameDoesNotMatchJS(t *testing.T) {
 func TestAnalyzePDFJSInsideLiteralStringIsUnknownNotCriticalNotClean(t *testing.T) {
 	data := jsInsideLiteralStringOnlyPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if f, ok := findingFor(res, CodePDFJavaScript); ok {
 		t.Fatalf("got a critical Finding %+v for a /JS token that occurs ONLY inside a literal string's data", f)
@@ -556,7 +556,7 @@ func TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic(t *testing.T) {
 
 	done := make(chan FamilyResult, 1)
 	go func() {
-		done <- AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+		done <- AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	}()
 
 	select {
@@ -585,7 +585,7 @@ func TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean(t *testing.T) {
 	data := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte("/JSX"), repeats)...)
 	data = append(data, []byte("\n%%EOF")...)
 
-	res := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	c, ok := checkFor(res, CodePDFJavaScript)
 	if !ok {
@@ -602,7 +602,7 @@ func TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean(t *testing.T) {
 func TestAnalyzePDFEncryptedYieldsFinding(t *testing.T) {
 	data := encryptedPDFFixture()
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if _, ok := findingFor(res, CodePDFEncrypted); !ok {
 		t.Fatal("no Finding for CodePDFEncrypted on a PDF with /Encrypt in its trailer")
@@ -615,7 +615,7 @@ func TestAnalyzePDFEncryptedYieldsFinding(t *testing.T) {
 // same reason.
 func TestAnalyzePDFMalformedInputNeverPanicsAndReportsUnknown(t *testing.T) {
 	r := erroringReaderAt{}
-	res := AnalyzePDF(r, 100, 100)
+	res := AnalyzePDF(r, 100, 100, nil)
 
 	if pc, ok := res.Characteristics["page_count"]; !ok || pc != nil {
 		t.Fatalf("Characteristics[page_count] = %v, want nil", pc)
@@ -648,7 +648,7 @@ func (erroringReaderAt) ReadAt([]byte, int64) (int, error) {
 // Reason values.
 func TestAnalyzePDFCeilingReasonDiffersFromCompressionReason(t *testing.T) {
 	objStmData := objStmPDFFixture()
-	objStmRes := AnalyzePDF(bytes.NewReader(objStmData), int64(len(objStmData)), int64(len(objStmData)))
+	objStmRes := AnalyzePDF(bytes.NewReader(objStmData), int64(len(objStmData)), int64(len(objStmData)), nil)
 	c1, ok := checkFor(objStmRes, CodePDFEmbeddedFile)
 	if !ok || c1.Reason != ReasonCompressedObjectStreams {
 		t.Fatalf("objStm case: Check(pdf_embedded_file) = %+v, want reason=%q", c1, ReasonCompressedObjectStreams)
@@ -657,7 +657,7 @@ func TestAnalyzePDFCeilingReasonDiffersFromCompressionReason(t *testing.T) {
 	cleanData := cleanPDFFixture()
 	// maxBytes smaller than the header alone -- forces truncation with no
 	// compression signal anywhere in what little was read.
-	truncRes := AnalyzePDF(bytes.NewReader(cleanData), int64(len(cleanData)), 8)
+	truncRes := AnalyzePDF(bytes.NewReader(cleanData), int64(len(cleanData)), 8, nil)
 	c2, ok := checkFor(truncRes, CodePDFEmbeddedFile)
 	if !ok || c2.Reason != ReasonWorkCeilingBytes {
 		t.Fatalf("truncated case: Check(pdf_embedded_file) = %+v, want reason=%q", c2, ReasonWorkCeilingBytes)
@@ -712,7 +712,7 @@ func TestAnalyzePDFBoundedReads(t *testing.T) {
 	const maxBytes = 1 << 20
 	r := &countingTailReaderAt{size: virtualSize}
 
-	_ = AnalyzePDF(r, virtualSize, maxBytes)
+	_ = AnalyzePDF(r, virtualSize, maxBytes, nil)
 
 	limit := int64(maxBytes + defaultTailWindow)
 	if r.totalRead > limit {
@@ -733,7 +733,7 @@ func TestAnalyzePDFLocationIsFileOffsetNotWindowOffset(t *testing.T) {
 	copy(tail[relOffset:], []byte("/Encrypt"))
 
 	r := &countingTailReaderAt{size: virtualSize, tail: tail}
-	res := AnalyzePDF(r, virtualSize, maxBytes)
+	res := AnalyzePDF(r, virtualSize, maxBytes, nil)
 
 	f, ok := findingFor(res, CodePDFEncrypted)
 	if !ok {
@@ -775,7 +775,7 @@ func TestAnalyzePDFNeverPanics(t *testing.T) {
 					t.Fatalf("AnalyzePDF panicked: %v", p)
 				}
 			}()
-			res := AnalyzePDF(tc.r, tc.size, tc.maxBytes)
+			res := AnalyzePDF(tc.r, tc.size, tc.maxBytes, nil)
 			if _, ok := res.Characteristics["page_count"]; !ok {
 				t.Fatalf("Characteristics missing page_count key")
 			}
@@ -799,7 +799,7 @@ func TestAnalyzePDFPageCountReasonIsMalformedNotACeilingWord(t *testing.T) {
 this is not a pages dictionary at all
 %%EOF`)
 	r := bytes.NewReader(data)
-	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
 
 	if pc, ok := res.Characteristics["page_count"]; !ok || pc != nil {
 		t.Fatalf("Characteristics[page_count] = %v, want nil", pc)
@@ -814,7 +814,7 @@ this is not a pages dictionary at all
 // insurance against a silent regression in extractPDFVersion.
 func TestAnalyzePDFVersionExtracted(t *testing.T) {
 	data := cleanPDFFixture()
-	res := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	v, ok := res.Characteristics["pdf_version"]
 	if !ok {
 		t.Fatal("Characteristics[pdf_version] missing")
@@ -832,7 +832,7 @@ func TestScanAllOccurrencesRespectsIterationCeiling(t *testing.T) {
 	buf := bytes.Repeat(token, 10) // 10 occurrences
 
 	var calls int
-	ceilingHit := scanAllOccurrences(buf, token, 5, func(pos int) bool {
+	ceilingHit := scanAllOccurrences(buf, token, 5, nil, func(pos int) bool {
 		calls++
 		return true
 	})
@@ -849,7 +849,7 @@ func TestScanAllOccurrencesNoCeilingWhenUnderCap(t *testing.T) {
 	buf := bytes.Repeat(token, 3)
 
 	var calls int
-	ceilingHit := scanAllOccurrences(buf, token, 100, func(pos int) bool {
+	ceilingHit := scanAllOccurrences(buf, token, 100, nil, func(pos int) bool {
 		calls++
 		return true
 	})
@@ -858,5 +858,115 @@ func TestScanAllOccurrencesNoCeilingWhenUnderCap(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Fatalf("scanAllOccurrences invoked fn %d times, want 3", calls)
+	}
+}
+
+// --- quick/260811-r3s Task 2: the four named findings ---
+
+// TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale is the
+// pdf.go:800 finding, verbatim: "When a PDF contains more than
+// maxTokenScanIterations Pages-dictionary markers and an early marker has a
+// legible count, scanAllOccurrences sets ceilingHit, but this branch
+// returns the early value before examining that signal. A later marker can
+// belong to the current incremental revision and carry a different count,
+// so the response publishes a stale page_count with complete coverage even
+// though the scan stopped early."
+//
+// The fixture places exactly maxTokenScanIterations+1 occurrences of
+// "/Type/Pages": the FIRST carries a legible "/Count 5", then
+// maxTokenScanIterations-1 filler occurrences with no /Count of their OWN
+// nearby, then ONE further occurrence -- past the cap, never itself
+// visited by the loop -- carrying a DIFFERENT "/Count 99". (findCountAfter's
+// own 512-byte lookahead means the LAST occurrence the loop does visit can,
+// depending on exact spacing, end up seeing either count -- what matters
+// for this test is not WHICH value leaks, but that a ceiling-truncated walk
+// must never publish ANY value it saw as if it were authoritative: this
+// fixture is guaranteed to sit at the ceiling boundary either way.)
+func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T) {
+	variant := []byte("/Type/Pages")
+	var buf bytes.Buffer
+	buf.Write(variant)
+	buf.WriteString("/Count 5 ") // first occurrence's own nearby count: the stale, early answer
+	buf.Write(bytes.Repeat(variant, maxTokenScanIterations-1))
+	buf.Write(variant)
+	buf.WriteString("/Count 99 ") // ONE further occurrence past the cap, with a DIFFERENT count
+	head := buf.Bytes()
+
+	count, reason := extractPDFPageCount(head, false, false, false, nil)
+	if count != nil {
+		t.Fatalf("page_count = %d, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative", *count)
+	}
+	if reason != ReasonWorkCeilingBytes {
+		t.Fatalf("reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// jsInsideLiteralStringPastOpaqueScanCeilingPDFFixture is the pdf.go:543
+// finding's own worked example, made concrete: maxTokenScanIterations
+// harmless, cheaply-closed "()" literal strings BEFORE
+// "(documentation says /JS)" -- scanPDFLiteralAndHexStringRanges's own
+// iteration cap fires while walking the filler, so the range covering the
+// target string is never recorded, and a naive scanTokenOccurrences call
+// would report "/JS" as found OUTSIDE every known opaque range (a false
+// positive) rather than correctly recognizing it sits inside string DATA.
+func jsInsideLiteralStringPastOpaqueScanCeilingPDFFixture() []byte {
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 3 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n4 0 obj\n<< /Filler ")
+	// Each pair below is its own COMPLETE, top-level literal string (not
+	// nested inside a wrapping "(...)"): the depth tracker in
+	// scanPDFLiteralAndHexStringRanges returns to depth 0 after every pair,
+	// so each one costs its OWN iteration of the outer loop -- exactly
+	// maxTokenScanIterations of them exhausts the cap before the target
+	// string below is ever reached.
+	//
+	// Every 16th pair is "(<)" instead of "()": scanPDFLiteralAndHexStringRanges
+	// also probes for the NEXT '<' on every iteration (to decide paren-vs-hex-
+	// string precedence), and a '(' is always immediately at hand here, so
+	// that probe's result never actually changes which branch is taken -- but
+	// bytes.IndexByte still has to WALK to find it. Scattering a harmless '<'
+	// DATA byte (not a delimiter -- the depth tracker inside a "(...)" string
+	// only special-cases '\\', '(', ')') every 32 bytes keeps that probe O(1)
+	// instead of degrading into the O(n) remaining-buffer scan a fixture with
+	// no '<' anywhere until the very end would otherwise force -- a
+	// pre-existing, out-of-scope cost this test must not pay to prove its own
+	// point.
+	const block = 16
+	pairs := make([]byte, 0, maxTokenScanIterations*2)
+	for i := 0; i < maxTokenScanIterations; i++ {
+		if i%block == 0 {
+			pairs = append(pairs, '(', '<', ')')
+		} else {
+			pairs = append(pairs, '(', ')')
+		}
+	}
+	buf.Write(pairs)
+	buf.WriteString(" /Title (documentation says /JS) >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
+	return buf.Bytes()
+}
+
+// TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding proves
+// the pdf.go:543 fix: a risk-token match "found" only because the opaque-
+// range scan that would have filtered it out was itself truncated by its
+// own iteration cap must NEVER become a critical Finding, and must NOT fall
+// back to StatusClean either -- both directions the finding names
+// explicitly ("the filter... has no right to confirm a finding OR declare
+// clean").
+func TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding(t *testing.T) {
+	data := jsInsideLiteralStringPastOpaqueScanCeilingPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)), nil)
+
+	if _, isFinding := findingFor(res, CodePDFJavaScript); isFinding {
+		t.Fatal("got a critical Finding for pdf_javascript -- the opaque-range scan that would have recognized this match sits inside a literal string was itself truncated by its own cap, so this is exactly the false-positive class the literal/hex-string filter exists to close")
+	}
+	c, ok := checkFor(res, CodePDFJavaScript)
+	if !ok {
+		t.Fatal("no Check for pdf_javascript")
+	}
+	if c.Status != StatusUnknown {
+		t.Fatalf("Check(pdf_javascript).Status = %s, want %s -- the opaque-range scan's own ceiling means this scan cannot confirm the match is real dictionary syntax, and it must not fall back to declaring the file clean either", c.Status, StatusUnknown)
+	}
+	if c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(pdf_javascript).Reason = %s, want %s", c.Reason, ReasonWorkCeilingBytes)
 	}
 }

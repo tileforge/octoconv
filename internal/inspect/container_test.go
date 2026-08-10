@@ -324,7 +324,7 @@ func corruptCompressedData(t *testing.T, data []byte, targetName string) []byte 
 
 func TestAnalyzeContainerMacroFindingLocation(t *testing.T) {
 	data := macroDocxFixture(t)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	f, ok := findingFor(res, CodeOOXMLMacro)
 	if !ok {
@@ -340,7 +340,7 @@ func TestAnalyzeContainerBombThresholdIndependentOfRejectThreshold(t *testing.T)
 	const hypotheticalHardRejectThreshold = 10_000_000 // a stand-in for handleCreateJob's own, larger, separate threshold
 
 	data := zipBombDocxFixture(t, 5_000_000) // strictly between the two
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), bombThreshold)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), bombThreshold, nil)
 
 	if _, ok := findingFor(res, CodeZipBombShape); !ok {
 		t.Fatal("no Finding for CodeZipBombShape for a size between the findings threshold and a hypothetical hard-reject threshold")
@@ -352,7 +352,7 @@ func TestAnalyzeContainerBombThresholdIndependentOfRejectThreshold(t *testing.T)
 
 func TestAnalyzeContainerSheetCountXLSX(t *testing.T) {
 	data := xlsxFixture(t, 3)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if sc, ok := res.Characteristics["sheet_count"]; !ok || sc != 3 {
 		t.Fatalf("Characteristics[sheet_count] = %v (ok=%v), want 3", sc, ok)
@@ -369,7 +369,7 @@ func TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed(t *
 	data := xlsxFixture(t, 3)
 	patched := patchDeclaredUncompressedSize(t, data, "xl/workbook.xml", 1<<30)
 
-	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30, nil)
 
 	if res.Characteristics["sheet_count"] != nil {
 		t.Fatalf("sheet_count = %#v, want nil -- workbook.xml was skipped by its own lying declared size", res.Characteristics["sheet_count"])
@@ -379,9 +379,37 @@ func TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed(t *
 	}
 }
 
+// TestAnalyzeContainerSheetCountLimitReaderBoundaryIsWorkCeilingNotComplete
+// is the container.go:497 finding, verbatim: "For a ZIP entry declaring
+// exactly maxRelsPartBytes but decompressing to more data, io.LimitReader
+// returns exactly the allowed prefix with no error because it never asks
+// the ZIP reader for the next byte. This function then reports the sheet
+// count from that prefix as complete, so sheets located after 256 KiB are
+// silently omitted; read one extra byte or otherwise verify EOF before
+// returning ok=true."
+//
+// workbook.xml's REAL content is far larger than maxRelsPartBytes (10000
+// <sheet/> elements), but its declared UncompressedSize64 is byte-patched
+// down to EXACTLY maxRelsPartBytes -- passing the earlier
+// "f.UncompressedSize64 > maxRelsPartBytes" skip (it is not GREATER, only
+// equal) and reaching the io.LimitReader boundary itself.
+func TestAnalyzeContainerSheetCountLimitReaderBoundaryIsWorkCeilingNotComplete(t *testing.T) {
+	data := xlsxFixture(t, 10000) // real workbook.xml content, comfortably over maxRelsPartBytes (256 KiB)
+	patched := patchDeclaredUncompressedSize(t, data, "xl/workbook.xml", uint32(maxRelsPartBytes))
+
+	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30, nil)
+
+	if res.Characteristics["sheet_count"] != nil {
+		t.Fatalf("sheet_count = %#v, want nil -- the part's real content runs past maxRelsPartBytes even though it DECLARES exactly maxRelsPartBytes; a count computed from the truncated prefix would silently omit sheets past the boundary", res.Characteristics["sheet_count"])
+	}
+	if reason, _ := res.Characteristics["sheet_count_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("sheet_count_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
 func TestAnalyzeContainerPageCountKeyAbsentForSpreadsheets(t *testing.T) {
 	data := xlsxFixture(t, 1)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if _, ok := res.Characteristics["page_count"]; ok {
 		t.Fatalf("Characteristics contains page_count for xlsx, want absent entirely")
@@ -390,7 +418,7 @@ func TestAnalyzeContainerPageCountKeyAbsentForSpreadsheets(t *testing.T) {
 
 func TestAnalyzeContainerDocxSheetCountAbsentPageCountUnknown(t *testing.T) {
 	data := cleanDocxFixture(t)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if _, ok := res.Characteristics["sheet_count"]; ok {
 		t.Fatal("Characteristics contains sheet_count for docx, want absent")
@@ -407,7 +435,7 @@ func TestAnalyzeContainerDocxSheetCountAbsentPageCountUnknown(t *testing.T) {
 
 func TestAnalyzeContainerExternalRefLocationIsPartPath(t *testing.T) {
 	data := externalRefDocxFixture(t)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	f, ok := findingFor(res, CodeExternalReference)
 	if !ok {
@@ -420,7 +448,7 @@ func TestAnalyzeContainerExternalRefLocationIsPartPath(t *testing.T) {
 
 func TestAnalyzeContainerCleanDocxAllClean(t *testing.T) {
 	data := cleanDocxFixture(t)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	for _, code := range containerDomainCodes {
 		c, ok := checkFor(res, code)
@@ -435,7 +463,7 @@ func TestAnalyzeContainerCleanDocxAllClean(t *testing.T) {
 
 func TestAnalyzeContainerDuplicateRootPartAllUnknown(t *testing.T) {
 	data := duplicateRootPartDocxFixture(t)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	for _, code := range containerDomainCodes {
 		c, ok := checkFor(res, code)
@@ -453,7 +481,7 @@ func TestAnalyzeContainerDuplicateRootPartAllUnknown(t *testing.T) {
 
 func TestAnalyzeContainerNotAZipNotApplicable(t *testing.T) {
 	data := bareNonZipFixture()
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	for _, code := range containerDomainCodes {
 		c, ok := checkFor(res, code)
@@ -472,7 +500,7 @@ func TestAnalyzeContainerNotAZipNotApplicable(t *testing.T) {
 // analog of T-58-16.
 func TestAnalyzeContainerCeilingYieldsUnknownNotClean(t *testing.T) {
 	data := manyEntriesFixture(t, maxZipEntriesScanned+500)
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	c, ok := checkFor(res, CodeExternalReference)
 	if !ok {
@@ -519,7 +547,7 @@ func TestAnalyzeContainerNeverAllocatesOnDeclaredSize(t *testing.T) {
 	// maxRelsPartBytes, even though the real bytes above are tiny.
 	patched := patchDeclaredUncompressedSize(t, data, "word/_rels/document.xml.rels", 1<<30)
 
-	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30, nil)
 
 	if f, ok := findingFor(res, CodeExternalReference); ok {
 		t.Fatalf("got Finding %+v for a part that should have been skipped by its (lying) declared size -- this scan must never trust declared size enough to open a part that claims to exceed maxRelsPartBytes", f)
@@ -557,7 +585,7 @@ func TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean(t *testing.T) {
 	data := buf.Bytes()
 	corrupted := corruptCompressionMethod(t, data, "word/_rels/document.xml.rels")
 
-	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30, nil)
 
 	if f, ok := findingFor(res, CodeExternalReference); ok {
 		t.Fatalf("got Finding %+v for a part this scan could not even open (unsupported compression method)", f)
@@ -595,7 +623,7 @@ func TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean(t *testing.T) {
 	data := buf.Bytes()
 	corrupted := corruptCompressedData(t, data, "word/_rels/document.xml.rels")
 
-	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30, nil)
 
 	if f, ok := findingFor(res, CodeExternalReference); ok {
 		t.Fatalf("got Finding %+v for a part whose compressed body was corrupted mid-read", f)
@@ -668,7 +696,7 @@ func TestAnalyzeContainerLimitReaderBoundsCrossPartBudget(t *testing.T) {
 	// few dozen bytes) plus only a small prefix of styles.xml -- nowhere
 	// near enough to reach the marker near its tail.
 	const tightBudget = 100
-	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), tightBudget, 1<<30)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), tightBudget, 1<<30, nil)
 
 	if f, ok := findingFor(res, CodeExternalReference); ok {
 		t.Fatalf("got Finding %+v with a %d-byte total budget -- io.LimitReader must stop the styles.xml read long before its tail-placed marker, using the budget REMAINING after content.xml was already read, not a fresh maxRelsPartBytes allowance per part", f, tightBudget)
@@ -694,7 +722,7 @@ func TestAnalyzeContainerLimitReaderBoundsCrossPartBudget(t *testing.T) {
 	// highly-repetitive filler compresses extremely well, so the whole
 	// fixture's compressed size is actually much SMALLER than its own
 	// uncompressed styles.xml content alone.
-	resGenerous := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), 1<<20, 1<<30)
+	resGenerous := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), 1<<20, 1<<30, nil)
 	if _, ok := findingFor(resGenerous, CodeExternalReference); !ok {
 		t.Fatal("fixture sanity check failed: no Finding for CodeExternalReference even with a generous budget -- the marker must be reachable for the tight-budget assertion above to mean anything")
 	}
@@ -716,7 +744,7 @@ func TestAnalyzeContainerNeverPanics(t *testing.T) {
 					t.Fatalf("AnalyzeContainer panicked: %v", p)
 				}
 			}()
-			AnalyzeContainer(bytes.NewReader(tc.data), int64(len(tc.data)), int64(len(tc.data)), 1<<30)
+			AnalyzeContainer(bytes.NewReader(tc.data), int64(len(tc.data)), int64(len(tc.data)), 1<<30, nil)
 		})
 	}
 }
@@ -741,13 +769,13 @@ func TestAnalyzeContainerWithMatchesAnalyzeContainer(t *testing.T) {
 			r := bytes.NewReader(data)
 			size := int64(len(data))
 
-			viaSniff := AnalyzeContainer(r, size, size, 1<<30)
+			viaSniff := AnalyzeContainer(r, size, size, 1<<30, nil)
 
 			cr, err := convert.SniffContainer(r, size)
 			if err != nil {
 				t.Fatalf("SniffContainer: %v", err)
 			}
-			viaHandoff := AnalyzeContainerWith(cr, r, size, size, 1<<30)
+			viaHandoff := AnalyzeContainerWith(cr, r, size, size, 1<<30, nil)
 
 			if !reflect.DeepEqual(viaSniff, viaHandoff) {
 				t.Fatalf("AnalyzeContainer and AnalyzeContainerWith disagree on identical bytes -- the deduplicated API path would report something different from the self-sniffing path\nAnalyzeContainer:     %+v\nAnalyzeContainerWith: %+v", viaSniff, viaHandoff)

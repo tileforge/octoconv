@@ -221,7 +221,7 @@ func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 
 func TestAnalyzeMediaFindsMoovAtHead(t *testing.T) {
 	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok {
 		t.Fatalf("duration_seconds missing or wrong type: %#v (reason=%v)", res.Characteristics["duration_seconds"], res.Characteristics["duration_seconds_reason"])
@@ -240,7 +240,7 @@ func TestAnalyzeMediaFindsMoovAtTail(t *testing.T) {
 	// possibly reach moov; the tail window (clamped to maxBytes) must.
 	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", 9000)
 	const maxBytes = 2048
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes)
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok {
 		t.Fatalf("duration_seconds missing or wrong type: %#v (reason=%v)", res.Characteristics["duration_seconds"], res.Characteristics["duration_seconds_reason"])
@@ -257,7 +257,7 @@ func TestAnalyzeMediaMVHDVersion1SixtyFourBit(t *testing.T) {
 	moov := moovBox(mvhd, trak)
 	data := append(append([]byte{}, minimalFtyp()...), moov...)
 
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok || dur != 12.0 {
 		t.Fatalf("duration_seconds = %#v, want 12.0", res.Characteristics["duration_seconds"])
@@ -266,7 +266,7 @@ func TestAnalyzeMediaMVHDVersion1SixtyFourBit(t *testing.T) {
 
 func TestAnalyzeMediaTkhdDimensionsAreFixedPointDecoded(t *testing.T) {
 	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	w, ok := res.Characteristics["width"].(uint32)
 	if !ok {
 		t.Fatalf("width missing or wrong type: %#v", res.Characteristics["width"])
@@ -291,7 +291,7 @@ func TestAnalyzeMediaMP4OversizedBoxDoesNotPanicOrOverAllocate(t *testing.T) {
 			t.Fatalf("AnalyzeMedia panicked: %v", p)
 		}
 	}()
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil", res.Characteristics["duration_seconds"])
 	}
@@ -306,7 +306,7 @@ func TestAnalyzeMediaMoovNotFoundWithinCoverageIsMalformed(t *testing.T) {
 	// absent, so the reason must be malformed_input, not a resource
 	// ceiling that was never actually hit.
 	data := append(append([]byte{}, minimalFtyp()...), isobmffBox("mdat", make([]byte, 16))...)
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	reason, _ := res.Characteristics["duration_seconds_reason"].(string)
 	if reason != string(ReasonMalformedInput) {
 		t.Fatalf("duration_seconds_reason = %q, want %q (windows covered the whole file)", reason, ReasonMalformedInput)
@@ -317,7 +317,7 @@ func TestAnalyzeMediaMoovNotFoundBeyondCoverageIsWorkCeiling(t *testing.T) {
 	filler := make([]byte, 20000)
 	data := append(append([]byte{}, minimalFtyp()...), filler...)
 	const maxBytes = 512 // far smaller than len(filler): head+tail cannot cover the middle
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes)
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
 	reason, _ := res.Characteristics["duration_seconds_reason"].(string)
 	if reason != string(ReasonWorkCeilingBytes) {
 		t.Fatalf("duration_seconds_reason = %q, want %q (windows did not cover the whole file)", reason, ReasonWorkCeilingBytes)
@@ -344,7 +344,7 @@ func TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes(t *testin
 	mdat := isobmffBox("mdat", make([]byte, 64))
 	data := append(append(append([]byte{}, minimalFtyp()...), moov...), mdat...)
 
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil (mvhd sits past firstChildBox's own iteration ceiling)", res.Characteristics["duration_seconds"])
@@ -369,7 +369,7 @@ func TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes(t *testin
 func TestAnalyzeMediaWAVWindowTruncationIsWorkCeilingBytes(t *testing.T) {
 	data := minimalWAVFixture(44100, 2, 16, 44100*2*2*3) // 3 seconds, real file
 	const maxBytes = 30                                  // covers RIFF/WAVE + the "fmt " tag but cuts the fmt chunk's own body short
-	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), maxBytes)
+	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
 
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil (fmt/data sit past the truncated window)", res.Characteristics["duration_seconds"])
@@ -399,7 +399,7 @@ func TestAnalyzeMediaWAVIterationCeilingIsWorkCeilingBytes(t *testing.T) {
 
 	// maxBytes covers the ENTIRE file -- isolating this test to the
 	// iteration-ceiling path, not the byte-window path.
-	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil (fmt/data sit past maxRIFFChunks filler chunks)", res.Characteristics["duration_seconds"])
@@ -427,7 +427,7 @@ func TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling(t *testing.
 	segmentElem := ebmlElem(ebmlIDBytes(0x18538067, 4), tracksElem)
 	data := append(header, segmentElem...)
 
-	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil", res.Characteristics["duration_seconds"])
@@ -446,7 +446,7 @@ func TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling(t *testing.
 
 func TestAnalyzeMediaMKVDurationWithinHeadWindow(t *testing.T) {
 	data := minimalMKVFixture()
-	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok {
 		t.Fatalf("duration_seconds missing or wrong type: %#v (reason=%v)", res.Characteristics["duration_seconds"], res.Characteristics["duration_seconds_reason"])
@@ -465,7 +465,7 @@ func TestAnalyzeMediaEBMLWindowDoesNotGrow(t *testing.T) {
 	data := mkvFixtureWithPadding(8192)
 	cr := &countingReaderAt{data: data}
 	const smallMaxBytes = 2048
-	res := AnalyzeMedia("mkv", cr, int64(len(data)), smallMaxBytes)
+	res := AnalyzeMedia("mkv", cr, int64(len(data)), smallMaxBytes, nil)
 
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil (Duration sits outside the bounded window)", res.Characteristics["duration_seconds"])
@@ -485,7 +485,7 @@ func TestAnalyzeMediaWAVDuration(t *testing.T) {
 	dataSize := byteRate * 3 // 3 seconds
 	data := minimalWAVFixture(sampleRate, channels, bits, dataSize)
 
-	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok || dur != 3.0 {
 		t.Fatalf("duration_seconds = %#v, want 3.0", res.Characteristics["duration_seconds"])
@@ -496,7 +496,7 @@ func TestAnalyzeMediaMP3AndOGGReportUnknownDuration(t *testing.T) {
 	for _, format := range []string{"mp3", "ogg"} {
 		t.Run(format, func(t *testing.T) {
 			data := []byte{0, 1, 2, 3}
-			res := AnalyzeMedia(format, bytes.NewReader(data), int64(len(data)), int64(len(data)))
+			res := AnalyzeMedia(format, bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 			if res.Characteristics["duration_seconds"] != nil {
 				t.Fatalf("duration_seconds = %#v, want nil", res.Characteristics["duration_seconds"])
 			}
@@ -517,7 +517,7 @@ func TestAnalyzeMediaAudioHasNoResolutionKeys(t *testing.T) {
 	}
 	for format, data := range fixtures {
 		t.Run(format, func(t *testing.T) {
-			res := AnalyzeMedia(format, bytes.NewReader(data), int64(len(data)), int64(len(data)))
+			res := AnalyzeMedia(format, bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 			if _, ok := res.Characteristics["width"]; ok {
 				t.Fatalf("%s Characteristics contains width key, want absent", format)
 			}
@@ -530,7 +530,7 @@ func TestAnalyzeMediaAudioHasNoResolutionKeys(t *testing.T) {
 
 func TestAnalyzeMediaM4ADuration(t *testing.T) {
 	data := fastStartMP4Fixture(1000, 5000, 0, 0, "mp4a")
-	res := AnalyzeMedia("m4a", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("m4a", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok || dur != 5.0 {
 		t.Fatalf("duration_seconds = %#v, want 5.0", res.Characteristics["duration_seconds"])
@@ -547,7 +547,7 @@ func TestAnalyzeMediaNeverReadsBeyondBudget(t *testing.T) {
 	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", 9000)
 	cr := &countingReaderAt{data: data}
 	const maxBytes = 2048
-	_ = AnalyzeMedia("mp4", cr, int64(len(data)), maxBytes)
+	_ = AnalyzeMedia("mp4", cr, int64(len(data)), maxBytes, nil)
 
 	limit := int64(maxBytes) + mp4TailWindow
 	if cr.totalRequested > limit {
@@ -594,7 +594,7 @@ func TestAnalyzeMediaNeverPanics(t *testing.T) {
 					t.Fatalf("AnalyzeMedia panicked: %v", p)
 				}
 			}()
-			_ = AnalyzeMedia(tc.format, bytes.NewReader(tc.data), tc.size, tc.maxBytes)
+			_ = AnalyzeMedia(tc.format, bytes.NewReader(tc.data), tc.size, tc.maxBytes, nil)
 		})
 	}
 }
@@ -604,11 +604,79 @@ func TestAnalyzeMediaNeverPanics(t *testing.T) {
 // Check/Finding to the report assembler.
 func TestAnalyzeMediaDeclaresNoFindingsOrChecks(t *testing.T) {
 	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
-	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	if len(res.Findings) != 0 {
 		t.Fatalf("Findings = %+v, want empty", res.Findings)
 	}
 	if len(res.Checks) != 0 {
 		t.Fatalf("Checks = %+v, want empty", res.Checks)
+	}
+}
+
+// --- quick/260811-r3s Task 2: media.go:575 finding ---
+
+// TestFindEBMLDurationTimestampScaleCeilingHitYieldsUnknownNotDefaultScale
+// is the media.go:575 finding, verbatim: "If Info contains Duration before
+// 512 filler elements and a non-default TimestampScale after them, this
+// lookup exhausts maxEBMLElements but discards ceilingHit; the separate
+// Duration lookup succeeds, and the analyzer computes and publishes a
+// duration using the default scale. The default is valid only when the
+// element is known to be absent, not when its search stopped early, so this
+// path must return an unknown ceiling result instead of an incorrect
+// duration."
+//
+// Info's payload here is: Duration (element #1, found immediately) + 600
+// filler Void elements (well past maxEBMLElements=512) + a non-default
+// TimestampScale (element #602, never reached).
+func TestFindEBMLDurationTimestampScaleCeilingHitYieldsUnknownNotDefaultScale(t *testing.T) {
+	durElem := ebmlElem(ebmlIDBytes(0x4489, 2), float64Bytes(12.5)) // Duration: found first, before any filler
+	var filler []byte
+	for i := 0; i < 600; i++ {
+		filler = append(filler, ebmlElem(ebmlIDBytes(0xEC, 1), []byte{})...) // Void, well past maxEBMLElements
+	}
+	tsElem := ebmlElem(ebmlIDBytes(0x2AD7B1, 3), uintBytes32(500000)) // non-default TimestampScale, placed AFTER the filler
+	infoPayload := append(append(append([]byte{}, durElem...), filler...), tsElem...)
+	infoElem := ebmlElem(ebmlIDBytes(0x1549A966, 4), infoPayload)
+
+	dur, ok, ceilingHit := findEBMLDuration(infoElem, nil)
+	if ok {
+		t.Fatalf("findEBMLDuration returned ok=true, dur=%v -- must not compute a duration against an unproven default TimestampScale (its own search was cut short, not proven absent)", dur)
+	}
+	if !ceilingHit {
+		t.Fatal("ceilingHit = false, want true -- TimestampScale's own lookup exhausted maxEBMLElements before an answer was reached")
+	}
+}
+
+// TestAnalyzeMediaEBMLTimestampScaleCeilingHitYieldsUnknownDuration is the
+// same finding at the AnalyzeMedia integration level: duration_seconds must
+// come back nil/work_ceiling_bytes, never a value computed against the
+// default (unproven) TimestampScale.
+func TestAnalyzeMediaEBMLTimestampScaleCeilingHitYieldsUnknownDuration(t *testing.T) {
+	header := ebmlElem(ebmlIDBytes(0x1A45DFA3, 4), []byte{})
+
+	durElem := ebmlElem(ebmlIDBytes(0x4489, 2), float64Bytes(12.5))
+	var filler []byte
+	for i := 0; i < 600; i++ {
+		filler = append(filler, ebmlElem(ebmlIDBytes(0xEC, 1), []byte{})...)
+	}
+	tsElem := ebmlElem(ebmlIDBytes(0x2AD7B1, 3), uintBytes32(500000))
+	infoPayload := append(append(append([]byte{}, durElem...), filler...), tsElem...)
+	infoElem := ebmlElem(ebmlIDBytes(0x1549A966, 4), infoPayload)
+
+	codecElem := ebmlElem(ebmlIDBytes(0x86, 1), []byte("V_MPEG4/ISO/AVC"))
+	trackEntryElem := ebmlElem(ebmlIDBytes(0xAE, 1), codecElem)
+	tracksElem := ebmlElem(ebmlIDBytes(0x1654AE6B, 4), trackEntryElem)
+
+	segmentPayload := append(append([]byte{}, infoElem...), tracksElem...)
+	segmentElem := ebmlElem(ebmlIDBytes(0x18538067, 4), segmentPayload)
+	data := append(header, segmentElem...)
+
+	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
+	if v := res.Characteristics["duration_seconds"]; v != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- TimestampScale's search was cut short, not proven absent, so no value may be published", v)
+	}
+	reason, _ := res.Characteristics["duration_seconds_reason"].(string)
+	if reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
 	}
 }
