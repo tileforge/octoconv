@@ -324,6 +324,126 @@ func TestAnalyzeMediaMoovNotFoundBeyondCoverageIsWorkCeiling(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes is
+// media.go's own audit finding (round 2 plan's explicit instruction to
+// check every scanner, not only the codes the reviewer named): a moov box
+// containing more than maxISOBMFFBoxes sibling boxes BEFORE mvhd/trak
+// exhausts firstChildBox's own iteration ceiling -- OUR resource limit, not
+// a structural fact about the file -- and must report
+// unknown/work_ceiling_bytes for duration/width/height/declared_codec,
+// never malformed_input (which never marks Coverage partial).
+func TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes(t *testing.T) {
+	var fillers []byte
+	for i := 0; i < maxISOBMFFBoxes+10; i++ {
+		fillers = append(fillers, isobmffBox("free", []byte{})...)
+	}
+	mvhd := mvhdBoxV0(1000, 5000)
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"))
+	moovPayload := append(append(append([]byte{}, fillers...), mvhd...), trak...)
+	moov := isobmffBox("moov", moovPayload)
+	mdat := isobmffBox("mdat", make([]byte, 64))
+	data := append(append(append([]byte{}, minimalFtyp()...), moov...), mdat...)
+
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil (mvhd sits past firstChildBox's own iteration ceiling)", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR iteration ceiling, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+	if reason, _ := res.Characteristics["width_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("width_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+	if reason, _ := res.Characteristics["declared_codec_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("declared_codec_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaWAVWindowTruncationIsWorkCeilingBytes is media.go's own
+// audit finding: wavCharacteristics previously reported EVERY miss as
+// malformed_input, including a miss caused by the byte window not covering
+// the whole file (fmt/data chunks placed past maxBytes) -- OUR OWN resource
+// limit, exactly the D-02a class every other analyzer in this package
+// already closed.
+func TestAnalyzeMediaWAVWindowTruncationIsWorkCeilingBytes(t *testing.T) {
+	data := minimalWAVFixture(44100, 2, 16, 44100*2*2*3) // 3 seconds, real file
+	const maxBytes = 30                                  // covers RIFF/WAVE + the "fmt " tag but cuts the fmt chunk's own body short
+	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), maxBytes)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil (fmt/data sit past the truncated window)", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the byte window, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaWAVIterationCeilingIsWorkCeilingBytes isolates the OTHER
+// half: a byte window that covers the WHOLE file, but whose chunk walk
+// exhausts maxRIFFChunks on filler chunks before ever reaching fmt/data.
+func TestAnalyzeMediaWAVIterationCeilingIsWorkCeilingBytes(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WAVE")
+	for i := 0; i < maxRIFFChunks+10; i++ {
+		data = append(data, riffChunk("JUNK", []byte{1, 2})...)
+	}
+	fmtChunk := make([]byte, 16)
+	binary.LittleEndian.PutUint16(fmtChunk[0:2], 1)
+	binary.LittleEndian.PutUint16(fmtChunk[2:4], 2)
+	binary.LittleEndian.PutUint32(fmtChunk[4:8], 44100)
+	binary.LittleEndian.PutUint32(fmtChunk[8:12], 44100*2*2)
+	binary.LittleEndian.PutUint16(fmtChunk[12:14], 4)
+	binary.LittleEndian.PutUint16(fmtChunk[14:16], 16)
+	data = append(data, riffChunk("fmt ", fmtChunk)...)
+	data = append(data, riffChunk("data", make([]byte, 100))...)
+
+	// maxBytes covers the ENTIRE file -- isolating this test to the
+	// iteration-ceiling path, not the byte-window path.
+	res := AnalyzeMedia("wav", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil (fmt/data sit past maxRIFFChunks filler chunks)", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the chunk-count ceiling, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling is
+// media.go's own audit finding: ebmlCharacteristics previously reported
+// EVERY miss as work_ceiling_bytes unconditionally, even for a tiny,
+// entirely-buffered file with no Info element at all -- collapsing a
+// genuine structural fact ("this file has no Duration, and this scan
+// examined the whole thing") into a claim that THIS SERVICE's own budget
+// was responsible, which would falsely mark the report selective for a
+// file this scan actually finished inspecting.
+func TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling(t *testing.T) {
+	header := ebmlElem(ebmlIDBytes(0x1A45DFA3, 4), []byte{})
+	codecElem := ebmlElem(ebmlIDBytes(0x86, 1), []byte("V_MPEG4/ISO/AVC"))
+	trackEntryElem := ebmlElem(ebmlIDBytes(0xAE, 1), codecElem)
+	tracksElem := ebmlElem(ebmlIDBytes(0x1654AE6B, 4), trackEntryElem)
+	// Deliberately NO Info element anywhere -- Duration is genuinely absent,
+	// not merely unreached.
+	segmentElem := ebmlElem(ebmlIDBytes(0x18538067, 4), tracksElem)
+	data := append(header, segmentElem...)
+
+	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)))
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- this tiny file was read and walked in full, with no ceiling of any kind hit; the absence of Info/Duration is a fact about the FILE", reason, ReasonMalformedInput)
+	}
+	// declared_codec DOES exist (Tracks/TrackEntry/CodecID are present) --
+	// proving this is a genuinely mixed file, not one where everything
+	// happens to be absent.
+	codec, _ := res.Characteristics["declared_codec"].(string)
+	if codec != "V_MPEG4/ISO/AVC" {
+		t.Fatalf("declared_codec = %q, want %q -- sanity check that this fixture is not simply empty/malformed everywhere", codec, "V_MPEG4/ISO/AVC")
+	}
+}
+
 func TestAnalyzeMediaMKVDurationWithinHeadWindow(t *testing.T) {
 	data := minimalMKVFixture()
 	res := AnalyzeMedia("mkv", bytes.NewReader(data), int64(len(data)), int64(len(data)))
