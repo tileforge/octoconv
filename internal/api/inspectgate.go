@@ -70,7 +70,47 @@ func newInspectSemaphore(maxConcurrent int) *inspectSemaphore {
 	return &inspectSemaphore{sem: make(chan struct{}, maxConcurrent)}
 }
 
-// middleware wraps next with the semaphore.
+// acquireOrReject attempts, WITHOUT BLOCKING, to take one slot. On success
+// it returns a release func the caller must defer (or call directly on
+// every exit path) and ok==true. On failure -- the semaphore already at
+// capacity -- it writes the SAME 429 errcode.InspectBusy response
+// middleware below writes (Retry-After header included) and returns
+// ok==false; the caller must return immediately without writing anything
+// further.
+//
+// This exists so the slot can be acquired at a point OTHER than "wraps an
+// entire http.Handler" (middleware below still does exactly that, for
+// every existing caller that wants it): T-SLF-02 (PR #9 finding at
+// inspectgate.go:120, ORIGINALLY documented on middleware's own doc
+// comment as a property that must not be refactored away) is that the
+// synchronous inspect handler used to acquire this slot BEFORE reading its
+// own request body, so four authenticated clients trickling a multipart
+// body arbitrarily slowly could hold every slot without ever doing any
+// parsing -- turning the defense against a burst into a burst vector
+// itself. handleInspect (internal/api/inspect_handlers.go) now calls THIS
+// method directly, after its own body intake completes, instead of being
+// wrapped by middleware below.
+//
+// The D-06a property that made "wrap the whole handler" attractive in the
+// first place -- a held slot bounds concurrent Repo.PreAdmit calls against
+// the shared *pgxpool.Pool, protecting GET /healthz's own Postgres ping --
+// is UNCHANGED by this move: PreAdmit still runs while whatever slot this
+// method returned is held, exactly like before. Only the body-transfer
+// portion of the request, which never touches the pool or any CPU-bound
+// parser, is no longer covered -- and covering it bought nothing but the
+// slowloris exposure this fix closes.
+func (g *inspectSemaphore) acquireOrReject(w http.ResponseWriter) (release func(), ok bool) {
+	select {
+	case g.sem <- struct{}{}:
+		return func() { <-g.sem }, true
+	default:
+		w.Header().Set("Retry-After", strconv.Itoa(inspectBusyRetryAfterSeconds))
+		writeError(w, http.StatusTooManyRequests, errcode.InspectBusy, inspectBusyMessage)
+		return nil, false
+	}
+}
+
+// middleware wraps next with the semaphore, via acquireOrReject above.
 //
 // Capture is a NON-BLOCKING select with a default branch: a full semaphore
 // returns 429 immediately -- in the tens of milliseconds it takes to run
@@ -80,22 +120,13 @@ func newInspectSemaphore(maxConcurrent int) *inspectSemaphore {
 // and open connections while callers wait); an immediate, honest 429 tells
 // the caller the truth right away instead (T-58-30, 58-CONTEXT.md D-06).
 //
-// D-06a PROPERTY (58-CONTEXT.md) -- recorded here because it is easy to
-// lose by refactoring, not because it is obvious: the acquired slot is
-// held for the ENTIRE duration of next.ServeHTTP, not released early or
-// re-acquired partway through. The synchronous inspect handler this gate
-// protects (Plan 58-07) calls jobs.Repo.PreAdmit (INSP-04) from INSIDE
-// that same call, so the number of concurrent PreAdmit calls a burst of
-// inspect requests can issue against the shared *pgxpool.Pool is, BY
-// CONSTRUCTION, bounded by the exact same maxConcurrent this semaphore
-// enforces -- a THIRD, independent way (alongside Plan 58-03's dedicated
-// health pool, internal/db/db.go's ConnectHealth, and its DB_MAX_CONNS
-// sizing arithmetic) that a pathological inspect burst cannot exhaust the
-// pool GET /healthz's own Postgres ping depends on. Moving slot
-// acquisition to AFTER the PreAdmit call -- e.g. wrapping only the byte-
-// parsing step rather than the whole handler -- would silently remove this
-// property; do not refactor the acquisition point without re-reading this
-// comment first.
+// This method is no longer mounted ahead of POST /v1/inspect (routes.go) --
+// see acquireOrReject's own doc comment above for why the acquisition
+// point moved INSIDE handleInspect, after body intake. middleware is kept,
+// unchanged in behavior, because it remains the simplest correct shape for
+// a caller that genuinely wants "wrap this whole handler" (every test in
+// inspectgate_test.go exercises exactly that shape, in isolation from
+// handleInspect, and continues to pass unmodified).
 //
 // Release is via `defer`, placed BEFORE next.ServeHTTP runs, so the slot
 // frees on every exit path from next.ServeHTTP: a normal return, a
@@ -110,14 +141,11 @@ func newInspectSemaphore(maxConcurrent int) *inspectSemaphore {
 // next.ServeHTTP returning at all.
 func (g *inspectSemaphore) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case g.sem <- struct{}{}:
-		default:
-			w.Header().Set("Retry-After", strconv.Itoa(inspectBusyRetryAfterSeconds))
-			writeError(w, http.StatusTooManyRequests, errcode.InspectBusy, inspectBusyMessage)
+		release, ok := g.acquireOrReject(w)
+		if !ok {
 			return
 		}
-		defer func() { <-g.sem }()
+		defer release()
 		next.ServeHTTP(w, r)
 	})
 }

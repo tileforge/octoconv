@@ -19,6 +19,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -77,6 +78,61 @@ const (
 	// Never registered as a source format under any (operation, target)
 	// triple -- availableOperations naturally reports an empty list for it.
 	inspectOLECFBFormat = "ole_cfb"
+	// inspectZipTooLargeFormat is the Detected-format sentinel for a
+	// PK-shaped upload whose OWN declared End-Of-Central-Directory fields
+	// (entry count and/or central-directory byte size) exceed
+	// zipDirectoryExceedsStructuralBound's ceiling -- like
+	// inspectOLECFBFormat above, never a real registered format, and never
+	// matched by inspectContainerFormats. This is T-SLF-01's own fix: the
+	// PR #9 finding at inspect_handlers.go:216 is that archive/zip.NewReader
+	// (invoked, today, from BOTH detectInspectFormat's own
+	// convert.SniffContainer call AND, again, from inside
+	// inspect.AnalyzeContainer's dispatch) walks the ENTIRE declared
+	// central directory before anything -- this handler, SniffContainer, or
+	// AnalyzeContainer -- sees a single entry, so a near-100 MiB archive
+	// declaring a huge number of tiny entries burns CPU/heap far beyond
+	// s.inspectMaxWorkBytes regardless of every ceiling that only applies
+	// AFTER that parse. Reaching this sentinel means neither
+	// convert.SniffContainer's own zip.NewReader call NOR
+	// inspect.AnalyzeContainer's ran at all for this request -- the bound
+	// is checked from the EOCD record's OWN declared fields, at most 64 KiB
+	// of ReadAt, zero decompression, never archive/zip.NewReader.
+	inspectZipTooLargeFormat = "zip_directory_too_large"
+)
+
+const (
+	// inspectMaxZipDirEntries is the structural ceiling on a ZIP-shaped
+	// upload's OWN declared central-directory entry count -- checked from
+	// the End-Of-Central-Directory record itself, BEFORE archive/zip.
+	// NewReader ever runs (T-SLF-01). It deliberately matches
+	// internal/inspect/container.go's own maxZipEntriesScanned value
+	// exactly, so the two ceilings agree about what "too many entries"
+	// means for a ZIP-shaped upload: setting THIS bound any lower than
+	// that one would reject, at this earlier gate, an archive
+	// AnalyzeContainer's own later per-entry scan cap would have tolerated
+	// just fine. A real docx/xlsx/pptx/odt/ods/odp/epub upload is a few
+	// dozen parts; 4096 is generous headroom over any legitimate file.
+	inspectMaxZipDirEntries = 4096
+	// inspectMaxZipDirBytes bounds the DECLARED byte size of the central
+	// directory itself (the EOCD's own cd-size field), independent of
+	// entry count: a small number of entries with pathologically long
+	// names/extra fields could still inflate the directory's own byte size
+	// well past what a real archive's directory ever needs. 4 MiB is
+	// generous headroom over any real office/epub archive's central
+	// directory (typically well under 100 KiB) -- an SC6-calibrated
+	// starting point, like every other ceiling this phase introduces
+	// (internal/inspect/budget.go's own Budget doc comment), not a
+	// measured number.
+	inspectMaxZipDirBytes = 4 << 20
+	// zipEOCDRecordMaxLen is the largest a ZIP End-Of-Central-Directory
+	// record can ever be: the 22-byte fixed header plus the largest
+	// possible comment (the comment-length field is a uint16, so at most
+	// 65535 bytes). zipDirectoryExceedsStructuralBound never reads more
+	// than this many bytes from the TAIL of the upload, regardless of the
+	// upload's own total size.
+	zipEOCDRecordMaxLen = 22 + 65535
+	// zipEOCDFixedLen is the fixed (non-comment) portion of the EOCD record.
+	zipEOCDFixedLen = 22
 )
 
 // inspectResponse is the flat wire shape of POST /v1/inspect's 200 body:
@@ -99,20 +155,6 @@ type inspectResponse struct {
 // aspiration): no call in this file, or anything it calls, reaches
 // s.storage.Upload or s.repo.Create.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
-	// D-06 mechanism 1's time ceiling, applied at the one place in this
-	// handler that is genuinely I/O-bound and context-aware: the
-	// Repo.PreAdmit call inside availableOperations below. The CPU-bound
-	// family-analyzer dispatch further down is NOT bounded by this ctx --
-	// it is bounded by the shared Tracker plus each analyzer's own hard
-	// iteration caps (window.go's maxTokenScanIterations and siblings),
-	// for the identical reason internal/inspect/budget.go's own Tracker
-	// doc comment gives: a context deadline does not interrupt a
-	// CPU-bound loop that never checks it. This ctx is therefore a real,
-	// functioning courtesy bound for the ONE sub-call that can actually
-	// observe it, not decoration.
-	ctx, cancel := context.WithTimeout(r.Context(), s.inspectMaxWorkDuration)
-	defer cancel()
-
 	// 1. Accept. Deliberately repeats handleCreateJob's own multipart
 	// intake SHAPE (MaxBytesReader -> ParseMultipartForm -> FormFile,
 	// http.MaxBytesError -> 413, anything else -> 400) rather than
@@ -122,6 +164,22 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// separate from and smaller than s.maxUploadByte (Config.
 	// InspectMaxUploadBytes's own doc comment, api.go) -- this is a
 	// conscious repetition of a proven shape, not copy-paste debt.
+	//
+	// T-SLF-02/T-SLF-03 (PR #9 findings at inspectgate.go:120 and
+	// inspect_handlers.go:114): body intake happens BEFORE this handler
+	// takes the concurrency-gate slot AND before the D-06 mechanism-1 work
+	// ceiling exists. Neither guards network transfer time -- the slot
+	// exists to bound concurrent PARSING work (a client trickling its
+	// upload arbitrarily slowly must not hold a slot it is not using), and
+	// the work ceiling exists to bound the ANALYSIS this handler does
+	// AFTER it already has the full body (a legitimately slow upload must
+	// not arrive at Repo.PreAdmit below with an already-expired context,
+	// which previously turned every quota verdict into "unknown"
+	// regardless of the client's real quota state). Read intake is still
+	// itself size-bounded by MaxBytesReader above, so this reordering does
+	// not simply move an unbounded read earlier -- it only stops charging
+	// a slot/deadline for time this handler spends waiting on the
+	// network, neither of which it can shorten anyway.
 	r.Body = http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes)
 	if err := r.ParseMultipartForm(multipartInMemoryBudget); err != nil {
 		var maxErr *http.MaxBytesError
@@ -139,6 +197,23 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	// 2. Gate. The D-06 mechanism-2 concurrency slot is taken HERE -- after
+	// body intake has fully completed, immediately before the CPU-bound
+	// analysis it actually protects -- rather than as outer middleware
+	// wrapping this entire handler (routes.go no longer mounts a
+	// concurrency gate ahead of this route for exactly this reason). See
+	// inspectSemaphore.acquireOrReject's own doc comment (inspectgate.go)
+	// for the T-SLF-02 finding this addresses. The D-06a property this
+	// slot has always guaranteed -- that a held slot bounds concurrent
+	// Repo.PreAdmit calls against the shared *pgxpool.Pool -- still holds
+	// unchanged: PreAdmit (step 4 below) still runs while this slot is
+	// held, only body transfer no longer does.
+	release, ok := s.inspectSem.acquireOrReject(w)
+	if !ok {
+		return
+	}
+	defer release()
 
 	filename := path.Base(header.Filename)
 	// declaredFormat is the normalized filename-extension-derived format --
@@ -173,6 +248,26 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// 4. Assemble. availableOperations (Task 2) reads convert.Default's own
 	// registry and calls the SAME Repo.PreAdmit the job-creation path uses,
 	// read-only, once per distinct engine.
+	//
+	// The work-ceiling context is created HERE -- after body intake AND
+	// after the CPU-bound family-analyzer dispatch above -- not at handler
+	// entry (T-SLF-03, PR #9 finding at inspect_handlers.go:114): this
+	// ctx's only functioning consumer is the Repo.PreAdmit call inside
+	// availableOperations, so its deadline must bound THAT call, not
+	// however long the client's own upload took to arrive. Creating it at
+	// handler entry meant any legitimately slow upload taking longer than
+	// s.inspectMaxWorkDuration arrived at PreAdmit with an
+	// already-expired context, turning every quota verdict into "unknown"
+	// (quotaOfferFromPreAdmitError's non-quota-error branch) regardless of
+	// the client's actual quota state -- INSP-04 degraded to permanently
+	// unknown for exactly the uploads it most needs to answer honestly
+	// about. The CPU-bound dispatch above is unaffected by this ctx either
+	// way (bounded by tr's own Tracker, not by a context deadline -- see
+	// this handler's own step-3 comment history / budget.go's doc comment
+	// on why a context cannot interrupt a tight loop), so moving this
+	// creation point later changes nothing about what that step bounds.
+	ctx, cancel := context.WithTimeout(r.Context(), s.inspectMaxWorkDuration)
+	defer cancel()
 	operations := s.availableOperations(ctx, client.ID, detected, header.Size)
 
 	// 5. Nothing is written. Neither s.storage.Upload nor s.repo.Create is
@@ -212,7 +307,18 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 		// inspect the central directory instead, mirroring handleCreateJob.
 		var prefix [4]byte
 		if n, _ := file.ReadAt(prefix[:], 0); n == 4 && bytes.Equal(prefix[:], []byte{'P', 'K', 3, 4}) {
-			if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
+			// T-SLF-01 (PR #9 finding at inspect_handlers.go:216): check
+			// the structural ceiling BEFORE convert.SniffContainer ever
+			// runs -- that call invokes archive/zip.NewReader, which walks
+			// the ENTIRE declared central directory unconditionally,
+			// regardless of how many (or how few) entries it declares.
+			// Checking this from the EOCD record's own declared fields
+			// costs at most 64 KiB of ReadAt and zero decompression; a
+			// check placed AFTER zip.NewReader would only bound work that
+			// has already been paid for.
+			if exceeds, _, _ := zipDirectoryExceedsStructuralBound(file, size); exceeds {
+				detected = inspectZipTooLargeFormat
+			} else if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 			}
 			// A DuplicateRootPart result, ErrNotAZip, or Format=="" leaves
@@ -244,6 +350,88 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 	return detected
 }
 
+// zipDirectoryExceedsStructuralBound reports whether r's own declared
+// End-Of-Central-Directory fields (entry count, central-directory byte
+// size) exceed this handler's structural ceiling (inspectMaxZipDirEntries /
+// inspectMaxZipDirBytes), reading ONLY the tail of the file -- never more
+// than zipEOCDRecordMaxLen bytes -- and never invoking archive/zip.
+// NewReader (T-SLF-01). This is the ONE place in this handler that answers
+// "how big a central directory is this upload declaring" before anything
+// downstream pays the cost of actually parsing it.
+//
+// The consistency check below (tailOffset+i+zipEOCDFixedLen+commentLen ==
+// size) is the same one archive/zip's own unexported reader applies to
+// resolve an identical ambiguity: an attacker-controlled EOCD comment could
+// itself contain bytes that happen to match the signature, and without
+// requiring the record's OWN declared comment length to land EXACTLY at the
+// file's true end, this function could be fooled into reading a FAKE EOCD
+// with a small declared entry count sitting earlier in the comment, letting
+// the REAL (huge) directory right behind it through. Scanning backward from
+// the highest offset and returning the FIRST occurrence satisfying that
+// consistency check finds the genuine record (extremely unlikely to
+// collide, and no more exploitable than the identical resolution the
+// standard library itself relies on).
+//
+// If no EOCD record can be located within the tail at all (corrupt or
+// truncated zip), this reports exceeds=false: that upload is not this
+// function's problem to diagnose -- convert.SniffContainer's own zip.
+// NewReader call fails it as ErrNotAZip exactly as it does today, and
+// failing to locate a signature is not, itself, attacker-controlled WORK.
+func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool, entries uint16, dirBytes uint32) {
+	if size < zipEOCDFixedLen {
+		return false, 0, 0
+	}
+	tailLen := int64(zipEOCDRecordMaxLen)
+	if tailLen > size {
+		tailLen = size
+	}
+	tailOffset := size - tailLen
+	buf := make([]byte, tailLen)
+	n, err := r.ReadAt(buf, tailOffset)
+	if err != nil && err != io.EOF {
+		return false, 0, 0
+	}
+	buf = buf[:n]
+
+	for i := len(buf) - zipEOCDFixedLen; i >= 0; i-- {
+		if buf[i] != 'P' || buf[i+1] != 'K' || buf[i+2] != 0x05 || buf[i+3] != 0x06 {
+			continue
+		}
+		commentLen := int64(binary.LittleEndian.Uint16(buf[i+20 : i+22]))
+		if tailOffset+int64(i)+zipEOCDFixedLen+commentLen != size {
+			// A signature that merely happens to appear inside an earlier,
+			// attacker-controlled comment byte sequence, not the real EOCD.
+			continue
+		}
+		entries = binary.LittleEndian.Uint16(buf[i+10 : i+12])
+		dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
+		exceeds = entries > inspectMaxZipDirEntries || dirBytes > inspectMaxZipDirBytes
+		return exceeds, entries, dirBytes
+	}
+	return false, 0, 0
+}
+
+// zipDirectoryCeilingFamilyResult is the FamilyResult reached when
+// zipDirectoryExceedsStructuralBound trips: every container-domain code
+// (mirroring internal/inspect/container.go's own containerDomainCodes)
+// becomes an honest unknown/work_ceiling_bytes -- NOT clean (D-03's own
+// prohibition on ever claiming cleanliness about bytes this handler
+// declined to read), NOT not_applicable (this format IS a container, this
+// handler simply refused to pay for parsing it), and never a 500. Using
+// ReasonWorkCeilingBytes (not ReasonMalformedInput) is deliberate:
+// status.go's own Reason doc comment draws exactly this line -- THIS
+// SERVICE's own resource ceiling, not a property of the file, which is
+// also why inspect.BuildReport's Coverage claim degrades to incomplete for
+// this report (status.go buildCoverage), honestly telling the client this
+// report is selective, not merely "this file happens to be unknown".
+func zipDirectoryCeilingFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range []inspect.Code{inspect.CodeOOXMLMacro, inspect.CodeZipBombShape, inspect.CodeExternalReference} {
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes})
+	}
+	return res
+}
+
 // dispatchInspectFamilies runs the ONE family analyzer applicable to
 // detected (if any) under tr's shared byte/time budget. A format matching
 // none of the four families (html/latex/md/rst/org/text, a bare zip, or any
@@ -265,6 +453,15 @@ func dispatchInspectFamilies(detected string, file multipart.File, size int64, t
 	var families []inspect.FamilyResult
 
 	switch {
+	case detected == inspectZipTooLargeFormat:
+		// T-SLF-01: the structural ceiling already tripped in
+		// detectInspectFormat, before any zip.NewReader call -- reaching
+		// here spends nothing further. tr.Consume is deliberately skipped
+		// (this is the SAME `return` shape the default case below uses):
+		// charging a byte budget for a parse that never happened would be
+		// dishonest accounting, and this path never reads or allocates
+		// based on this upload's own declared size at all.
+		return append(families, zipDirectoryCeilingFamilyResult())
 	case detected == "pdf":
 		families = append(families, inspect.AnalyzePDF(file, size, maxBytes))
 	case inspectContainerFormats[detected]:
@@ -326,6 +523,20 @@ func cfbFamilyResult(class convert.CFBClass) inspect.FamilyResult {
 // tried).
 func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.FamilyResult {
 	switch {
+	case detected == inspectZipTooLargeFormat:
+		// T-SLF-01: detected does not name a real format at all here -- it
+		// is the "declined to parse" sentinel, so there is genuinely
+		// nothing to compare declaredFormat against, EITHER a match or a
+		// mismatch would overclaim knowledge this handler does not have.
+		// Unknown/work_ceiling_bytes (not not_applicable/
+		// format_not_applicable below) is the honest answer: this IS a
+		// container this handler could have compared, had it not declined
+		// to parse it for its own resource reasons -- the identical
+		// distinction zipDirectoryCeilingFamilyResult already draws for
+		// the three container-domain codes.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes},
+		}}
 	case detected == "" || declaredFormat == "":
 		// Nothing to compare: an unrecognized upload, or a filename with no
 		// extension at all, leaves this check with nothing to check.

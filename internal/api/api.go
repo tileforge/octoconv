@@ -240,18 +240,6 @@ type Server struct {
 	engineTimeouts map[string]time.Duration
 }
 
-// inspectConcurrencyGate is the chi middleware Plan 58-07's POST
-// /v1/inspect route mounts to enforce InspectMaxConcurrent (D-06 mechanism
-// 2). The actual semaphore behavior -- non-blocking capture, immediate
-// 429 errcode.InspectBusy, defer-based release, and the D-06a property
-// that holding the slot for the whole request bounds concurrent
-// Repo.PreAdmit calls too -- is documented once, on inspectSemaphore.
-// middleware itself (internal/api/inspectgate.go); this method only wires
-// the instance NewServer already constructed and sized from Config.
-func (s *Server) inspectConcurrencyGate(next http.Handler) http.Handler {
-	return s.inspectSem.middleware(next)
-}
-
 // inspectRateLimit is the chi middleware constructor Plan 58-07's POST
 // /v1/inspect route mounts for its own rate budget (D-06 mechanism 4).
 // See newInspectRateLimit's doc comment (internal/api/inspectgate.go) for
