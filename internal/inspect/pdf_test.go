@@ -109,6 +109,76 @@ trailer
 %%EOF`)
 }
 
+// hexEscapeJSPDFFixture spells /JavaScript as /Java#53cript (0x53 = 'S') --
+// codex PR9 finding 1's own worked example (pdf.go:112). A scanner that only
+// ever matches the literal byte spelling "/JavaScript"/"/JS" would report
+// this file clean despite carrying a real, active JavaScript action.
+func hexEscapeJSPDFFixture() []byte {
+	return []byte(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+4 0 obj
+<< /S /Java#53cript (app.alert('x')) >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`)
+}
+
+// hexEscapeObjStmPDFFixture spells /ObjStm as /Obj#53tm (0x53 = 'S') --
+// codex PR9 finding 1's OTHER worked example, proving the hex-escape
+// downgrade fires independently of pdfCompressionSignalTokens's own literal
+// "/ObjStm" match (which this spelling does NOT trigger).
+func hexEscapeObjStmPDFFixture() []byte {
+	return []byte(`%PDF-1.6
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Obj#53tm /N 3 /First 20 >>
+stream
+somecompresseddatagoeshere
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`)
+}
+
+// jsInsideStreamOnlyPDFFixture places the literal "/JS" ONLY inside a
+// stream body -- codex PR9 finding 2's own example (pdf.go:199): three-byte
+// markers like /JS and /AA are especially prone to appearing in arbitrary
+// compressed/binary stream payloads. No dictionary outside the stream
+// carries a JavaScript action anywhere in this fixture.
+func jsInsideStreamOnlyPDFFixture() []byte {
+	return []byte(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+5 0 obj
+<< /Length 28 >>
+stream
+totally unrelated /JS bytes
+endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`)
+}
+
 // --- assertion helpers ---
 
 func findingFor(res FamilyResult, code Code) (Finding, bool) {
@@ -268,6 +338,86 @@ func TestAnalyzePDFFindingSurvivesObjStm(t *testing.T) {
 		if c.Status != StatusUnknown || c.Reason != ReasonCompressedObjectStreams {
 			t.Fatalf("Check(%q) = %+v, want unknown/compressed_object_streams", rt.code, c)
 		}
+	}
+}
+
+// TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean is codex PR9 finding 1
+// (T-SLE-01): PDF names permit hexadecimal escapes, so /JavaScript can be
+// spelled /Java#53cript and still be a completely legal, active JavaScript
+// action -- a scanner that only matches literal byte spellings would
+// report this file clean. No PDF-domain code may answer StatusClean here.
+func TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean(t *testing.T) {
+	data := hexEscapeJSPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+
+	for _, rt := range pdfRiskTokens {
+		if _, isFinding := findingFor(res, rt.code); isFinding {
+			continue // a positive finding is not what this test is about
+		}
+		c, ok := checkFor(res, rt.code)
+		if !ok {
+			t.Fatalf("no Check for code %q", rt.code)
+		}
+		if c.Status == StatusClean {
+			t.Fatalf("code %q reported StatusClean on a PDF using a hex-escaped name (/Java#53cript) -- an escaped name must never be trusted as absent", rt.code)
+		}
+		if c.Reason != ReasonPDFNameEscape {
+			t.Fatalf("Check(%q).Reason = %q, want %q", rt.code, c.Reason, ReasonPDFNameEscape)
+		}
+	}
+}
+
+// TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown is codex PR9 finding 1's
+// other worked example: /ObjStm spelled /Obj#53tm is invisible to
+// containsCompressionSignal's literal match, but the hex-escape detector
+// alone must still be enough to downgrade the whole PDF block to unknown.
+func TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown(t *testing.T) {
+	data := hexEscapeObjStmPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+
+	if res.Characteristics["uses_compressed_object_streams"] != false {
+		t.Fatalf("uses_compressed_object_streams = %v, want false -- this test is about the hex-escape path, not the literal /ObjStm compression-signal path", res.Characteristics["uses_compressed_object_streams"])
+	}
+	for _, rt := range pdfRiskTokens {
+		c, ok := checkFor(res, rt.code)
+		if !ok {
+			t.Fatalf("no Check for code %q", rt.code)
+		}
+		if c.Status == StatusClean {
+			t.Fatalf("code %q reported StatusClean on a PDF with a hex-escaped /ObjStm marker (/Obj#53tm)", rt.code)
+		}
+		if c.Reason != ReasonPDFNameEscape {
+			t.Fatalf("Check(%q).Reason = %q, want %q", rt.code, c.Reason, ReasonPDFNameEscape)
+		}
+	}
+}
+
+// TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean is
+// codex PR9 finding 2 (T-SLE-02): a literal match found ONLY inside a
+// stream body must never be promoted to a critical Finding (this scanner
+// cannot verify the bytes are a real PDF name, not coincidental
+// opaque-payload content) -- but it must equally never fall back to
+// StatusClean, which would be an equally false claim in the other
+// direction.
+func TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean(t *testing.T) {
+	data := jsInsideStreamOnlyPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+
+	if f, ok := findingFor(res, CodePDFJavaScript); ok {
+		t.Fatalf("got a critical Finding %+v for a /JS token that occurs ONLY inside a stream body", f)
+	}
+	c, ok := checkFor(res, CodePDFJavaScript)
+	if !ok {
+		t.Fatal("no Check for CodePDFJavaScript")
+	}
+	if c.Status == StatusClean {
+		t.Fatal("Check(pdf_javascript).Status = clean, want unknown -- a /JS match inside a stream body is not evidence of absence either")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonPDFStreamBodyToken {
+		t.Fatalf("Check(pdf_javascript) = %+v, want unknown/pdf_stream_body_token", c)
 	}
 }
 

@@ -192,6 +192,79 @@ func TestBuildReportStructuralUnknownKeepsCoverageComplete(t *testing.T) {
 	}
 }
 
+// TestBuildReportCharacteristicCeilingReasonMarksCoveragePartial is codex
+// PR9 finding 5 (T-SLE-05): a characteristic-level "<name>_reason" key
+// admitting ReasonWorkCeilingBytes with ZERO accompanying Checks must still
+// mark the report-wide Coverage incomplete -- a report that says
+// duration_seconds_reason=work_ceiling_bytes in one field and
+// coverage.complete=true in another is self-contradictory.
+func TestBuildReportCharacteristicCeilingReasonMarksCoveragePartial(t *testing.T) {
+	fr := FamilyResult{Characteristics: Characteristics{
+		"duration_seconds":        nil,
+		"duration_seconds_reason": string(ReasonWorkCeilingBytes),
+	}}
+
+	r := BuildReport("mp4", "mp4", 100, NewTracker(Budget{}), fr)
+
+	for _, c := range r.Checks {
+		if c.Reason == ReasonWorkCeilingBytes {
+			t.Fatalf("test setup error: expected zero Checks carrying ReasonWorkCeilingBytes, got %+v -- this test is specifically about a characteristic-ONLY ceiling with no accompanying Check", c)
+		}
+	}
+	if r.Coverage.Complete {
+		t.Fatal("Coverage.Complete = true, want false -- duration_seconds_reason admitted work_ceiling_bytes truncation with no accompanying Check")
+	}
+	if r.Coverage.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Coverage.Reason = %s, want %s", r.Coverage.Reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestBuildReportStructuralCharacteristicReasonKeepsCoverageComplete is the
+// inverse of the above: a characteristic-level "<name>_reason" key carrying
+// a NON-ceiling reason (parser_unavailable, malformed_input, ...) must NOT
+// mark Coverage incomplete -- only the two service-load reasons may ever do
+// that (status.go's own Coverage doc comment).
+func TestBuildReportStructuralCharacteristicReasonKeepsCoverageComplete(t *testing.T) {
+	fr := FamilyResult{Characteristics: Characteristics{
+		"sheet_count":        nil,
+		"sheet_count_reason": string(ReasonParserUnavailable),
+	}}
+
+	r := BuildReport("ods", "ods", 100, NewTracker(Budget{}), fr)
+
+	if !r.Coverage.Complete {
+		t.Fatalf("Coverage.Complete = false, want true -- sheet_count_reason=parser_unavailable is a structural fact about this build, not this service's own load")
+	}
+	if r.Coverage.Reason != "" {
+		t.Fatalf("Coverage.Reason = %s, want empty", r.Coverage.Reason)
+	}
+}
+
+// TestBuildReportUnrecognizedFormatYieldsUnknownNotNotApplicable is codex
+// PR9 finding 6 (T-SLE-06): when detection never claimed a format at all
+// (format == ""), every code in the closed vocabulary must report unknown/
+// format_unrecognized, never not_applicable/format_not_applicable --
+// applicability cannot be established when the format itself is unknown.
+func TestBuildReportUnrecognizedFormatYieldsUnknownNotNotApplicable(t *testing.T) {
+	r := BuildReport("", "", 100, NewTracker(Budget{}))
+
+	if len(r.Checks) != len(AllCodes()) {
+		t.Fatalf("len(r.Checks) = %d, want %d (every code in the closed vocabulary)", len(r.Checks), len(AllCodes()))
+	}
+	for _, code := range AllCodes() {
+		c := checkByCodeT(t, r.Checks, code)
+		if c.Status == StatusNotApplicable {
+			t.Errorf("code %s: status=not_applicable, want unknown -- an unrecognized format cannot honestly claim any code is inapplicable", code)
+		}
+		if c.Status != StatusUnknown {
+			t.Errorf("code %s: status=%s, want unknown", code, c.Status)
+		}
+		if c.Reason != ReasonFormatUnrecognized {
+			t.Errorf("code %s: reason=%s, want %s", code, c.Reason, ReasonFormatUnrecognized)
+		}
+	}
+}
+
 // TestBuildReportFindingsSortedByCode proves the merged Findings slice is
 // deterministically ordered, independent of family call order.
 func TestBuildReportFindingsSortedByCode(t *testing.T) {
