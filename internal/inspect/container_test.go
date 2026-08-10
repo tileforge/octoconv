@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/apaderin/octoconv/internal/convert"
@@ -202,6 +203,121 @@ func patchDeclaredUncompressedSize(t *testing.T, data []byte, targetName string,
 	return out
 }
 
+// corruptCompressionMethod byte-patches BOTH the local file header's and the
+// central directory's "compression method" field for the entry named
+// targetName to an unregistered method code (99) -- mirrors
+// patchDeclaredUncompressedSize's technique (archive/zip.Writer offers no
+// API to write an invalid method, so the already-written bytes are edited
+// directly). zip.NewReader itself does not validate the method (it only
+// parses central-directory metadata), but File.Open looks up a registered
+// decompressor for it and returns an error for an unrecognized one --
+// exactly the "candidate part this scan cannot even open" case codex PR9
+// round 2 (container.go:334) describes, without needing to fabricate a
+// genuinely corrupt DEFLATE stream.
+func corruptCompressionMethod(t *testing.T, data []byte, targetName string) []byte {
+	t.Helper()
+	out := append([]byte{}, data...)
+	patched := 0
+
+	for i := 0; i+4 <= len(out); i++ {
+		switch {
+		case out[i] == 0x50 && out[i+1] == 0x4B && out[i+2] == 0x03 && out[i+3] == 0x04:
+			if i+30 > len(out) {
+				continue
+			}
+			nameLen := int(binary.LittleEndian.Uint16(out[i+26 : i+28]))
+			if i+30+nameLen > len(out) {
+				continue
+			}
+			if string(out[i+30:i+30+nameLen]) == targetName {
+				binary.LittleEndian.PutUint16(out[i+8:i+10], 99)
+				patched++
+			}
+		case out[i] == 0x50 && out[i+1] == 0x4B && out[i+2] == 0x01 && out[i+3] == 0x02:
+			if i+46 > len(out) {
+				continue
+			}
+			nameLen := int(binary.LittleEndian.Uint16(out[i+28 : i+30]))
+			if i+46+nameLen > len(out) {
+				continue
+			}
+			if string(out[i+46:i+46+nameLen]) == targetName {
+				binary.LittleEndian.PutUint16(out[i+10:i+12], 99)
+				patched++
+			}
+		}
+	}
+	if patched != 2 {
+		t.Fatalf("corruptCompressionMethod(%q): patched %d header(s), want 2 (local + central)", targetName, patched)
+	}
+	return out
+}
+
+// corruptCompressedData overwrites the RAW compressed bytes of the entry
+// named targetName with 0xFF -- unlike corruptCompressionMethod, this leaves
+// the DEFLATE method intact, so f.Open succeeds and returns a flate.Reader,
+// but reading from it fails partway through with a genuine "flate: corrupt
+// input" error. This is codex PR9 round 2's OTHER container.go:334 case:
+// io.ReadAll's error was previously discarded even though f.Open succeeded.
+//
+// zip.Writer streams its output (it does not know the final compressed size
+// until Close), so the LOCAL file header's own compressedSize field is left
+// at 0 (bit 3 of the flags field marks "sizes follow in a trailing data
+// descriptor instead"). compSize must therefore come from the CENTRAL
+// DIRECTORY entry, which IS written with the real, final size -- reading it
+// from the local header (as an earlier draft of this helper did) computes
+// an empty [dataStart:dataStart] range and silently corrupts nothing.
+func corruptCompressedData(t *testing.T, data []byte, targetName string) []byte {
+	t.Helper()
+	out := append([]byte{}, data...)
+
+	var compSize int
+	foundCentral := false
+	for i := 0; i+4 <= len(out); i++ {
+		if !(out[i] == 0x50 && out[i+1] == 0x4B && out[i+2] == 0x01 && out[i+3] == 0x02) {
+			continue
+		}
+		if i+46 > len(out) {
+			continue
+		}
+		nameLen := int(binary.LittleEndian.Uint16(out[i+28 : i+30]))
+		if i+46+nameLen > len(out) || string(out[i+46:i+46+nameLen]) != targetName {
+			continue
+		}
+		compSize = int(binary.LittleEndian.Uint32(out[i+20 : i+24]))
+		foundCentral = true
+		break
+	}
+	if !foundCentral {
+		t.Fatalf("corruptCompressedData(%q): central directory entry not found", targetName)
+	}
+
+	for i := 0; i+4 <= len(out); i++ {
+		if !(out[i] == 0x50 && out[i+1] == 0x4B && out[i+2] == 0x03 && out[i+3] == 0x04) {
+			continue
+		}
+		if i+30 > len(out) {
+			continue
+		}
+		nameLen := int(binary.LittleEndian.Uint16(out[i+26 : i+28]))
+		extraLen := int(binary.LittleEndian.Uint16(out[i+28 : i+30]))
+		if i+30+nameLen > len(out) || string(out[i+30:i+30+nameLen]) != targetName {
+			continue
+		}
+		dataStart := i + 30 + nameLen + extraLen
+		dataEnd := dataStart + compSize
+		if dataEnd > len(out) || compSize == 0 {
+			t.Fatalf("corruptCompressedData(%q): computed data range [%d:%d) (compSize=%d from central directory) invalid against buffer length %d", targetName, dataStart, dataEnd, compSize, len(out))
+		}
+		for j := dataStart; j < dataEnd; j++ {
+			out[j] = 0xFF
+		}
+		return out
+	}
+	t.Fatalf("corruptCompressedData(%q): local file header not found", targetName)
+	return nil
+}
+
 // --- assertion helpers shared with pdf_test.go's checkFor/findingFor ---
 
 // --- <behavior> coverage ---
@@ -240,6 +356,26 @@ func TestAnalyzeContainerSheetCountXLSX(t *testing.T) {
 
 	if sc, ok := res.Characteristics["sheet_count"]; !ok || sc != 3 {
 		t.Fatalf("Characteristics[sheet_count] = %v (ok=%v), want 3", sc, ok)
+	}
+}
+
+// TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed is
+// an audit finding applying scanExternalReferences's own already-fixed
+// discipline to extractXLSXSheetCount, which neither review round named:
+// workbook.xml being skipped by its own (lying) declared size is THIS
+// scan's refusal to read the part, not evidence the workbook has no sheets
+// -- sheet_count_reason must be work_ceiling_bytes, never malformed_input.
+func TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed(t *testing.T) {
+	data := xlsxFixture(t, 3)
+	patched := patchDeclaredUncompressedSize(t, data, "xl/workbook.xml", 1<<30)
+
+	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30)
+
+	if res.Characteristics["sheet_count"] != nil {
+		t.Fatalf("sheet_count = %#v, want nil -- workbook.xml was skipped by its own lying declared size", res.Characteristics["sheet_count"])
+	}
+	if reason, _ := res.Characteristics["sheet_count_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("sheet_count_reason = %q, want %q -- this scan's own declared-size skip, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
 	}
 }
 
@@ -397,6 +533,82 @@ func TestAnalyzeContainerNeverAllocatesOnDeclaredSize(t *testing.T) {
 	}
 	if c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
 		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/work_ceiling_bytes -- the only candidate part was never opened because its declared size exceeded this scan's own ceiling", c)
+	}
+}
+
+// TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean is codex PR9
+// round 2 (container.go:334): a candidate .rels part this scan cannot even
+// OPEN (here: an unsupported compression method) must never be silently
+// treated as "found nothing" -- if it is the container's only relevant
+// part, that would report the whole file clean having inspected none of
+// its content, the exact mistake the declared-size-skip case (T-SLE-04)
+// already closed one step earlier in this same loop.
+func TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean(t *testing.T) {
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	// The actual content below genuinely contains TargetMode="External" --
+	// if this scan ever successfully opened and read it, it WOULD find the
+	// marker; corruptCompressionMethod below is what prevents that.
+	mustWriteZipEntry(t, zw, "word/_rels/document.xml.rels", `TargetMode="External"`)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	data := buf.Bytes()
+	corrupted := corruptCompressionMethod(t, data, "word/_rels/document.xml.rels")
+
+	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30)
+
+	if f, ok := findingFor(res, CodeExternalReference); ok {
+		t.Fatalf("got Finding %+v for a part this scan could not even open (unsupported compression method)", f)
+	}
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status == StatusClean {
+		t.Fatal("Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part could not be opened, so clean is not an honest answer about the file")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/work_ceiling_bytes -- the only candidate part was never successfully read because f.Open failed", c)
+	}
+}
+
+// TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean is codex PR9
+// round 2's other container.go:334 case: f.Open succeeds, but the read
+// itself fails partway through (corrupted DEFLATE stream) -- io.ReadAll's
+// error must not be silently discarded, or a container whose only relevant
+// part has a corrupted compressed body would report external_reference
+// clean having read none of its real, decompressed content.
+func TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean(t *testing.T) {
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	// A long, genuinely compressible payload -- big enough that overwriting
+	// its compressed bytes with 0xFF reliably breaks the DEFLATE stream
+	// rather than accidentally decoding to something error-free.
+	relsContent := strings.Repeat("no external reference marker here ", 200) + `TargetMode="External"`
+	mustWriteZipEntry(t, zw, "word/_rels/document.xml.rels", relsContent)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	data := buf.Bytes()
+	corrupted := corruptCompressedData(t, data, "word/_rels/document.xml.rels")
+
+	res := AnalyzeContainer(bytes.NewReader(corrupted), int64(len(corrupted)), int64(len(corrupted)), 1<<30)
+
+	if f, ok := findingFor(res, CodeExternalReference); ok {
+		t.Fatalf("got Finding %+v for a part whose compressed body was corrupted mid-read", f)
+	}
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status == StatusClean {
+		t.Fatal("Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part's read failed partway through, so clean is not an honest answer")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/work_ceiling_bytes -- io.ReadAll's error must not be silently discarded", c)
 	}
 }
 

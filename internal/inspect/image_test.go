@@ -193,6 +193,100 @@ func TestAnalyzeImageMetadataPastWindowIsUnknownNotClean(t *testing.T) {
 	}
 }
 
+// TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean is codex PR9 round 2
+// (image.go:209): a PNG whose bounded window covers the WHOLE file (so the
+// byte-window truncation flag alone is false) can still hide metadata past
+// scanPNGMetadata's own maxMetadataMarkerScanIterations cap if enough
+// harmless chunks precede the eXIf chunk -- that miss must report unknown,
+// never clean with complete coverage.
+func TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean(t *testing.T) {
+	data := pngFixture(10, 10)
+	for i := 0; i < maxMetadataMarkerScanIterations+10; i++ {
+		data = pngAppendChunk(data, "tEXt", []byte{'a'})
+	}
+	data = pngAppendChunk(data, "eXIf", []byte{0, 0, 0, 0})
+
+	// maxBytes covers the ENTIRE file -- the byte-window truncation flag
+	// must be false, isolating this test to the iteration-ceiling path.
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+
+	if _, ok := findingFor(res, CodeMetadataPresent); ok {
+		t.Fatal("got a Finding for metadata_present -- the eXIf chunk sits past the iteration ceiling and must never be reported as found")
+	}
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	for _, c := range res.Checks {
+		if c.Code == CodeMetadataPresent && c.Reason != ReasonWorkCeilingBytes {
+			t.Fatalf("Check(metadata_present).Reason = %q, want %q", c.Reason, ReasonWorkCeilingBytes)
+		}
+	}
+}
+
+// TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean is
+// TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean's JPEG analog --
+// codex PR9 round 2's own phrasing ("The JPEG and WebP walkers have the
+// same shape") names this walker explicitly.
+func TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean(t *testing.T) {
+	var filler []byte
+	// Each COM (0xFE) segment with a 1-byte payload costs one iteration of
+	// scanJPEGMetadata's marker loop.
+	for i := 0; i < maxMetadataMarkerScanIterations+10; i++ {
+		filler = append(filler, jpegSegment(0xFE, []byte{'x'})...)
+	}
+	app1 := append([]byte("Exif\x00\x00"), []byte{0x4D, 0x4D, 0, 0}...)
+	data := []byte{0xFF, 0xD8} // SOI
+	data = append(data, filler...)
+	data = append(data, jpegSegment(0xE1, app1)...) // APP1 Exif, past the ceiling
+
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+
+	if _, ok := findingFor(res, CodeMetadataPresent); ok {
+		t.Fatal("got a Finding for metadata_present -- the APP1 Exif segment sits past the iteration ceiling and must never be reported as found")
+	}
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	for _, c := range res.Checks {
+		if c.Code == CodeMetadataPresent && c.Reason != ReasonWorkCeilingBytes {
+			t.Fatalf("Check(metadata_present).Reason = %q, want %q", c.Reason, ReasonWorkCeilingBytes)
+		}
+	}
+}
+
+// TestAnalyzeImageWebPIterationCeilingIsUnknownNotClean is
+// TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean's WebP analog.
+func TestAnalyzeImageWebPIterationCeilingIsUnknownNotClean(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WEBP")
+	for i := 0; i < maxMetadataMarkerScanIterations+10; i++ {
+		data = append(data, riffChunk("JUNK", []byte{'x'})...)
+	}
+	data = append(data, riffChunk("EXIF", []byte{0, 0, 0, 0})...)
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+
+	if _, ok := findingFor(res, CodeMetadataPresent); ok {
+		t.Fatal("got a Finding for metadata_present -- the EXIF chunk sits past the iteration ceiling and must never be reported as found")
+	}
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	for _, c := range res.Checks {
+		if c.Code == CodeMetadataPresent && c.Reason != ReasonWorkCeilingBytes {
+			t.Fatalf("Check(metadata_present).Reason = %q, want %q", c.Reason, ReasonWorkCeilingBytes)
+		}
+	}
+}
+
+// riffChunk builds one RIFF chunk (fourCC + little-endian size + data,
+// word-aligned with a trailing pad byte for odd-length data).
+func riffChunk(fourCC string, data []byte) []byte {
+	out := []byte(fourCC)
+	size := make([]byte, 4)
+	binary.LittleEndian.PutUint32(size, uint32(len(data)))
+	out = append(out, size...)
+	out = append(out, data...)
+	if len(data)%2 == 1 {
+		out = append(out, 0)
+	}
+	return out
+}
+
 func TestAnalyzeImageMetadataLocationNamesMarker(t *testing.T) {
 	app1 := append([]byte("Exif\x00\x00"), []byte{0, 0, 0, 0}...)
 	data := jpegFixtureWithAPP1(app1, 100, 50)

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- fixtures, built as in-code byte literals (D-15 discipline: a
@@ -173,6 +174,58 @@ endobj
 stream
 totally unrelated /JS bytes
 endstream
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`)
+}
+
+// jscriptOnlyPDFFixture places the dictionary key /JScript (a real, legal
+// PDF name distinct from /JS) as the ONLY thing in the file that contains
+// "/JS" as a substring -- codex PR9 round 2's own worked example
+// (pdf.go:515): "/JS" must not match inside "/JScript" because the byte
+// immediately after the substring match ('c') continues the same PDF name.
+// No genuine /JS or /JavaScript token exists anywhere in this fixture.
+func jscriptOnlyPDFFixture() []byte {
+	return []byte(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+4 0 obj
+<< /Language /JScript /Source (some script text) >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF`)
+}
+
+// jsInsideLiteralStringOnlyPDFFixture places the literal "/JS" ONLY inside a
+// PDF literal string's DATA -- codex PR9 round 2's own worked example
+// (pdf.go:515): "(documentation says /JS)" is string content, not PDF
+// dictionary syntax, and must not be promoted to a critical Finding. Unlike
+// jscriptOnlyPDFFixture, this occurrence DOES pass the name-boundary check
+// (the byte after "/JS" is ")", a delimiter) -- it is excluded because it
+// sits inside a literal-string opaque range, not because of the boundary
+// rule, so this fixture exercises the OTHER new branch of the round 2 fix.
+func jsInsideLiteralStringOnlyPDFFixture() []byte {
+	return []byte(`%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+4 0 obj
+<< /Title (documentation says /JS) >>
 endobj
 trailer
 << /Root 1 0 R >>
@@ -418,6 +471,131 @@ func TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean(t *test
 	}
 	if c.Status != StatusUnknown || c.Reason != ReasonPDFStreamBodyToken {
 		t.Fatalf("Check(pdf_javascript) = %+v, want unknown/pdf_stream_body_token", c)
+	}
+}
+
+// TestAnalyzePDFJScriptNameDoesNotMatchJS is codex PR9 round 2's own worked
+// example (pdf.go:515): a dictionary key /JScript must never trigger
+// CodePDFJavaScript by matching its "/JS" prefix as a substring. Since no
+// genuine /JS or /JavaScript token exists anywhere in this fixture, and the
+// PDF carries no compression signal, no hex escape, and no truncation, the
+// honest answer is StatusClean -- unlike the opaque-range cases, there is
+// no genuine ambiguity here: "/JScript" is unambiguously a different name.
+func TestAnalyzePDFJScriptNameDoesNotMatchJS(t *testing.T) {
+	data := jscriptOnlyPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+
+	if f, ok := findingFor(res, CodePDFJavaScript); ok {
+		t.Fatalf("got a critical Finding %+v for /JScript, which is a different PDF name from /JS -- a substring match without a name-boundary check is exactly codex PR9 round 2's finding", f)
+	}
+	c, ok := checkFor(res, CodePDFJavaScript)
+	if !ok {
+		t.Fatal("no Check for CodePDFJavaScript")
+	}
+	if c.Status != StatusClean {
+		t.Fatalf("Check(pdf_javascript) = %+v, want clean -- /JScript is unambiguously not /JS, there is no ambiguity left to report as unknown", c)
+	}
+}
+
+// TestAnalyzePDFJSInsideLiteralStringIsUnknownNotCriticalNotClean is codex
+// PR9 round 2's other worked example (pdf.go:515): "/JS" appearing only
+// inside a PDF literal string's DATA ("(documentation says /JS)") must
+// never be promoted to a critical Finding, but must also never fall back to
+// StatusClean -- this scanner cannot rule out that the same bytes also
+// appear as a real PDF name elsewhere, and treating string-embedded
+// coincidental content as proof of absence would repeat exactly the
+// mistake round 1 already fixed for stream bodies and comments.
+func TestAnalyzePDFJSInsideLiteralStringIsUnknownNotCriticalNotClean(t *testing.T) {
+	data := jsInsideLiteralStringOnlyPDFFixture()
+	r := bytes.NewReader(data)
+	res := AnalyzePDF(r, int64(len(data)), int64(len(data)))
+
+	if f, ok := findingFor(res, CodePDFJavaScript); ok {
+		t.Fatalf("got a critical Finding %+v for a /JS token that occurs ONLY inside a literal string's data", f)
+	}
+	c, ok := checkFor(res, CodePDFJavaScript)
+	if !ok {
+		t.Fatal("no Check for CodePDFJavaScript")
+	}
+	if c.Status == StatusClean {
+		t.Fatal("Check(pdf_javascript).Status = clean, want unknown -- a /JS match inside a literal string's data is not evidence of absence either")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonPDFStreamBodyToken {
+		t.Fatalf("Check(pdf_javascript) = %+v, want unknown/pdf_stream_body_token", c)
+	}
+}
+
+// TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic is codex PR9 round 2's
+// performance/DoS finding (pdf.go:520): a PDF with thousands of opaque
+// (stream) ranges and a huge number of "/JS" occurrences packed into the
+// LAST range must still return quickly -- the original, pre-fix
+// implementation made inOpaqueRange a linear scan over every range, so
+// occurrences times ranges is billions of comparisons for these sizes.
+// Deliberately does not check ceilingHit/StatusUnknown here (that is
+// TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean's job) -- this test
+// is purely about wall-clock time, run with an explicit deadline rather than
+// t.Short() so it always exercises the real cost in CI.
+func TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	// 16384 small, harmless streams -- each contributes one opaque range
+	// that a linear inOpaqueRange scan must walk past before reaching the
+	// LAST range below, where every "/JS" occurrence actually lives.
+	const rangeCount = 16384
+	for i := 0; i < rangeCount; i++ {
+		buf.WriteString("stream\nx\nendstream\n")
+	}
+	// One final, large stream packed with "/JS" occurrences -- every one of
+	// them must be checked against all 4096+ preceding ranges by
+	// inOpaqueRange under the old linear-scan implementation.
+	buf.WriteString("stream\n")
+	buf.Write(bytes.Repeat([]byte("/JS "), maxTokenScanIterations-100))
+	buf.WriteString("\nendstream\n%%EOF")
+	data := buf.Bytes()
+
+	done := make(chan FamilyResult, 1)
+	go func() {
+		done <- AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	}()
+
+	select {
+	case res := <-done:
+		if c, ok := checkFor(res, CodePDFJavaScript); ok && c.Status == StatusClean {
+			t.Fatal("Check(pdf_javascript).Status = clean, want unknown -- /JS occurs (inside opaque stream bodies) throughout this fixture")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("AnalyzePDF did not return within 5s -- the opaque-range filter is quadratic in occurrences x ranges again")
+	}
+}
+
+// TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean is codex PR9 round
+// 2's occurrence-cap requirement (pdf.go:520): even with inOpaqueRange's
+// binary search removing the range-count multiplier, the NUMBER of
+// occurrences a scan walks is itself attacker-controlled, so
+// scanTokenOccurrences must have its OWN ceiling, and exhausting it must
+// report unknown, never clean. A token with no delimiter after it anywhere
+// (so every occurrence keeps advancing the walk rather than concluding via
+// a real match) repeated well past maxTokenScanIterations forces the cap.
+func TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean(t *testing.T) {
+	// "/JSX" never satisfies "/JS" boundary-valid (next byte 'X' continues
+	// the name), so scanTokenOccurrences must walk every occurrence without
+	// ever concluding "found" or "no more occurrences" -- forcing the cap.
+	repeats := maxTokenScanIterations + 1000
+	data := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte("/JSX"), repeats)...)
+	data = append(data, []byte("\n%%EOF")...)
+
+	res := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+
+	c, ok := checkFor(res, CodePDFJavaScript)
+	if !ok {
+		t.Fatal("no Check for CodePDFJavaScript")
+	}
+	if c.Status == StatusClean {
+		t.Fatal("Check(pdf_javascript).Status = clean, want unknown -- the occurrence-scan ceiling was exhausted, so clean is not an honest answer")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(pdf_javascript) = %+v, want unknown/work_ceiling_bytes", c)
 	}
 }
 

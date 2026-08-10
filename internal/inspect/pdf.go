@@ -34,6 +34,7 @@ package inspect
 import (
 	"bytes"
 	"io"
+	"sort"
 	"strconv"
 )
 
@@ -199,33 +200,28 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 	// STEP 2/3/4: token-scan every risk code, then apply the single verdict
 	// rule (verdictForCode) uniformly to every one of them.
 	for _, rt := range pdfRiskTokens {
-		pos, found := firstTokenLocationOutsideOpaqueRanges(head, rt.tokens, headOpaque)
+		// scanTokenOccurrences is the single primitive that now does
+		// EVERYTHING firstTokenLocation/firstTokenLocationOutsideOpaqueRanges
+		// used to do separately (codex PR9 round 2, finding pdf.go:515/520):
+		// it rejects a match whose PDF-name boundary is not real (so "/JS"
+		// inside "/JScript" is not a match at all, not merely an ambiguous
+		// one), classifies a boundary-valid match inside an opaque range as
+		// "filtered" rather than "found", and reports ceilingHit when its own
+		// per-token occurrence cap -- not the buffer's content -- decided
+		// when the walk stopped. See its own doc comment for why a single
+		// function replaces what used to be two.
+		pos, found, filtered, ceilingHit := scanTokenOccurrences(head, rt.tokens, headOpaque)
 		loc := pos
-		// matchedInsideOpaque tracks "this literal occurs SOMEWHERE in the
-		// scanned bytes, but only inside a stream body or a comment"
-		// (codex PR9 finding 2 / T-SLE-02): the lexical filter above
-		// correctly refuses to promote that occurrence to a Finding (a
-		// stream body's compressed/opaque payload bytes are not a PDF name
-		// in an action dictionary), but it must NEVER be allowed to fall
-		// through to the ordinary verdict rule below either -- that rule
-		// would report StatusClean for "no match found outside opaque
-		// ranges", which is a false claim of absence when a match exists,
-		// just one this scanner cannot verify. See the two branches below.
-		matchedInsideOpaque := false
-		if !found {
-			if _, anyFound := firstTokenLocation(head, rt.tokens); anyFound {
-				matchedInsideOpaque = true
-			}
-		}
 		if !found && rt.code == CodePDFEncrypted && tailOK {
 			// /Encrypt lives in the trailer or the XRef-stream dict, which
 			// is conventionally at the file's tail -- scan there too for
 			// this one code (58-RESEARCH.md Q1).
-			if tpos, tfound := firstTokenLocationOutsideOpaqueRanges(tail, rt.tokens, tailOpaque); tfound {
+			if tpos, tfound, tfiltered, tceilingHit := scanTokenOccurrences(tail, rt.tokens, tailOpaque); tfound {
 				found = true
 				loc = int(tailOff) + tpos
-			} else if _, anyFoundTail := firstTokenLocation(tail, rt.tokens); anyFoundTail {
-				matchedInsideOpaque = true
+			} else {
+				filtered = filtered || tfiltered
+				ceilingHit = ceilingHit || tceilingHit
 			}
 		}
 
@@ -239,7 +235,30 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 			continue
 		}
 
-		if matchedInsideOpaque {
+		if ceilingHit {
+			// codex PR9 round 2 (pdf.go:520): exhausting THIS SCAN'S OWN
+			// occurrence cap -- not the file's structure -- decided the
+			// answer here. That is OUR ceiling, exactly like a byte-window
+			// truncation, and must carry the same Reason so report.go's
+			// Coverage accounting (status.go's MarkTruncated) sees it: a
+			// scan that gave up because of its own budget must mark the
+			// report selective, never silently agree with "clean".
+			res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+			continue
+		}
+
+		if filtered {
+			// matchedInsideOpaque (this scan's own former name for this
+			// case): the literal occurs SOMEWHERE in the scanned bytes, but
+			// only inside a stream body, a comment, or a literal/hex string
+			// (codex PR9 finding 2 / T-SLE-02, extended in round 2 to
+			// literal and hex strings). The lexical filter above correctly
+			// refuses to promote that occurrence to a Finding, but it must
+			// NEVER be allowed to fall through to the ordinary verdict rule
+			// below either -- that rule would report StatusClean for "no
+			// match found outside opaque ranges", which is a false claim of
+			// absence when a match exists, just one this scanner cannot
+			// verify.
 			res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonPDFStreamBodyToken})
 			continue
 		}
@@ -344,24 +363,6 @@ func containsCompressionSignal(buf []byte) bool {
 	return false
 }
 
-// firstTokenLocation returns the earliest byte offset within buf at which
-// any spelling in tokens occurs, and whether any spelling occurred at all.
-// Like containsCompressionSignal, this is bounded by the small, fixed
-// number of spellings per code (at most two), not by the file's content --
-// it needs no iteration ceiling.
-func firstTokenLocation(buf []byte, tokens [][]byte) (int, bool) {
-	best := -1
-	for _, tok := range tokens {
-		if idx := bytes.Index(buf, tok); idx >= 0 && (best < 0 || idx < best) {
-			best = idx
-		}
-	}
-	if best < 0 {
-		return 0, false
-	}
-	return best, true
-}
-
 // isPDFNameByte reports whether b can appear inside a PDF name token (ISO
 // 32000 §7.3.5): anything except whitespace and the eight delimiter
 // characters. A name STARTS at "/" and runs until the first byte for which
@@ -393,9 +394,9 @@ func isHexDigit(b byte) bool {
 // This is a single linear pass over buf: the outer loop only ever restarts
 // its inner scan from the position where the previous name token ended, so
 // total work is bounded by len(buf) regardless of how many "/" bytes the
-// buffer contains -- no separate iteration ceiling is needed (the same
-// reasoning as firstTokenLocation's own doc comment, generalized to a
-// single full pass instead of two fixed token comparisons).
+// buffer contains -- no separate iteration ceiling is needed (a genuinely
+// monotonic single pass, unlike scanTokenOccurrences below, which walks
+// occurrences of a FIXED token and therefore does need one).
 func containsPDFNameHexEscape(buf []byte) bool {
 	for i := 0; i < len(buf); i++ {
 		if buf[i] != '/' {
@@ -415,35 +416,62 @@ func containsPDFNameHexEscape(buf []byte) bool {
 
 // pdfOpaqueRange marks a [start, end) byte range within a scanned buffer
 // whose content this scanner does not attempt to interpret as PDF syntax --
-// a stream body (between the "stream" keyword and "endstream") or a comment
-// (from "%" to the end of its line). A risk-token literal that occurs ONLY
-// inside one of these ranges is not evidence either way (codex PR9 finding
-// 2 / T-SLE-02): it could be a coincidental byte sequence inside
+// a stream body (between the "stream" keyword and "endstream"), a comment
+// (from "%" to the end of its line), or a literal "(...)"/hex "<...>" string
+// (codex PR9 round 2, finding pdf.go:515: a dictionary key like /JScript
+// must not match /JS, and neither must a literal string such as
+// "(documentation says /JS)"). A risk-token literal that occurs ONLY inside
+// one of these ranges is not evidence either way (codex PR9 finding 2 /
+// T-SLE-02): it could be a coincidental byte sequence inside
 // compressed/opaque payload data (far more likely for a short token like
-// "/JS" or "/AA"), or it could genuinely be a PDF name -- this scanner
-// cannot tell, and the correct response to "cannot tell" is never to fall
-// back to StatusClean (see the matchedInsideOpaque handling in AnalyzePDF).
+// "/JS" or "/AA"), or inside string DATA rather than PDF syntax, or it could
+// genuinely be a PDF name -- this scanner cannot tell, and the correct
+// response to "cannot tell" is never to fall back to StatusClean (see the
+// "filtered" handling in AnalyzePDF).
 type pdfOpaqueRange struct {
 	start, end int
 }
 
-// scanPDFOpaqueRanges finds every stream-body and comment range in buf.
-// Both walks are capped by maxTokenScanIterations: an adversarial PDF could
-// repeat "stream"/"endstream" or "%" pairs without bound, and this is
-// exactly the CPU-bound-loop shape window.go's own doc comment warns a
-// context deadline cannot interrupt -- the same discipline scanAllOccurrences
-// already applies to pdf.go's other multi-match loops.
+// scanPDFOpaqueRanges finds every stream-body, comment, and literal/hex
+// string range in buf, then merges and sorts them (mergeOpaqueRanges) so
+// inOpaqueRange can binary-search instead of linear-scanning -- codex PR9
+// round 2's performance finding (pdf.go:520): the ORIGINAL per-occurrence
+// linear scan over every range made scanning a token whose occurrences
+// number in the millions (trivial to construct: repeat a 3-byte token
+// inside one giant, otherwise-legitimate stream) cost occurrences times
+// ranges comparisons -- billions of comparisons for a bounded, 8 MiB input,
+// and neither the tracker's time budget nor maxTokenScanIterations
+// interrupts a tight loop that never checks either (window.go's own "why
+// iterations, not context" note). Sorting once per scanPDFOpaqueRanges call
+// (called at most twice per AnalyzePDF call: head and tail) and then doing
+// O(log ranges) lookups per occurrence removes the multiplier this file
+// itself introduced.
 //
-// This intentionally OVER-approximates rather than under-approximates: a
-// bare substring match of "stream" (not anchored to a preceding newline) or
-// treating the "%PDF-"/"%%EOF" markers as ordinary comments can mark a
-// byte range as opaque when a stricter parser would not. That direction is
-// safe here -- opaque ranges only ever SUPPRESS a Finding in favor of
-// StatusUnknown, never promote a Check to StatusClean, so over-marking
-// costs at most a missed positive Finding, never a false absence claim.
+// All three sub-scans intentionally OVER-approximate rather than
+// under-approximate: a bare substring match of "stream" (not anchored to a
+// preceding newline), treating the "%PDF-"/"%%EOF" markers as ordinary
+// comments, or marking a "(" that is actually inside an already-opaque
+// stream body as ALSO the start of a literal string, can all mark a byte
+// range as opaque when a stricter parser would not. That direction is safe
+// here -- opaque ranges only ever SUPPRESS a Finding in favor of
+// StatusUnknown, never promote a Check to StatusClean, so over-marking (and
+// the merge step below, which only ever WIDENS a range by combining
+// overlaps) costs at most a missed positive Finding, never a false absence
+// claim.
 func scanPDFOpaqueRanges(buf []byte) []pdfOpaqueRange {
 	var ranges []pdfOpaqueRange
+	ranges = append(ranges, scanPDFStreamRanges(buf)...)
+	ranges = append(ranges, scanPDFCommentRanges(buf)...)
+	ranges = append(ranges, scanPDFLiteralAndHexStringRanges(buf)...)
+	return mergeOpaqueRanges(ranges)
+}
 
+// scanPDFStreamRanges finds every "stream"..."endstream" body in buf,
+// capped by maxTokenScanIterations: an adversarial PDF could repeat
+// "stream"/"endstream" pairs without bound (window.go's "why iterations,
+// not context" note).
+func scanPDFStreamRanges(buf []byte) []pdfOpaqueRange {
+	var ranges []pdfOpaqueRange
 	pos := 0
 	for iter := 0; iter < maxTokenScanIterations; iter++ {
 		idx := bytes.Index(buf[pos:], []byte("stream"))
@@ -466,8 +494,15 @@ func scanPDFOpaqueRanges(buf []byte) []pdfOpaqueRange {
 			break
 		}
 	}
+	return ranges
+}
 
-	pos = 0
+// scanPDFCommentRanges finds every "%"-to-end-of-line comment range in buf,
+// capped by maxTokenScanIterations for the same reason scanPDFStreamRanges
+// is.
+func scanPDFCommentRanges(buf []byte) []pdfOpaqueRange {
+	var ranges []pdfOpaqueRange
+	pos := 0
 	for iter := 0; iter < maxTokenScanIterations; iter++ {
 		idx := bytes.IndexByte(buf[pos:], '%')
 		if idx < 0 {
@@ -484,55 +519,194 @@ func scanPDFOpaqueRanges(buf []byte) []pdfOpaqueRange {
 			break
 		}
 	}
-
 	return ranges
 }
 
-// inOpaqueRange reports whether pos falls inside any of ranges.
-func inOpaqueRange(pos int, ranges []pdfOpaqueRange) bool {
-	for _, r := range ranges {
-		if pos >= r.start && pos < r.end {
-			return true
+// scanPDFLiteralAndHexStringRanges finds every PDF literal "(...)" string
+// (ISO 32000 §7.3.4.2, honoring "\(" / "\)" escapes and balanced unescaped
+// nesting) and every hex "<...>" string (§7.3.4.3) in buf -- codex PR9
+// round 2's own worked example, "(documentation says /JS)", is exactly a
+// literal string whose DATA happens to contain a risk-token spelling. "<<"
+// is explicitly excluded: it opens a PDF dictionary, not a hex string, and
+// treating it as one would wrongly mark an entire dictionary body opaque.
+//
+// The outer loop advances via bytes.IndexByte jumps between candidate
+// delimiters (not one byte at a time), so its iteration count is bounded by
+// the number of "(" / "<" bytes actually found, not by len(buf) -- capped by
+// maxTokenScanIterations for the same adversarial-repetition reason every
+// other multi-match loop in this file is.
+func scanPDFLiteralAndHexStringRanges(buf []byte) []pdfOpaqueRange {
+	var ranges []pdfOpaqueRange
+	pos := 0
+	for iter := 0; iter < maxTokenScanIterations; iter++ {
+		idxParen := bytes.IndexByte(buf[pos:], '(')
+		idxAngle := bytes.IndexByte(buf[pos:], '<')
+
+		var next int
+		isParen := false
+		switch {
+		case idxParen < 0 && idxAngle < 0:
+			return ranges
+		case idxParen < 0:
+			next, isParen = idxAngle, false
+		case idxAngle < 0:
+			next, isParen = idxParen, true
+		case idxParen < idxAngle:
+			next, isParen = idxParen, true
+		default:
+			next, isParen = idxAngle, false
+		}
+		start := pos + next
+
+		if isParen {
+			depth := 1
+			j := start + 1
+			for j < len(buf) && depth > 0 {
+				if buf[j] == '\\' {
+					j += 2
+					continue
+				}
+				if buf[j] == '(' {
+					depth++
+				} else if buf[j] == ')' {
+					depth--
+				}
+				j++
+			}
+			ranges = append(ranges, pdfOpaqueRange{start: start, end: j})
+			pos = j
+		} else {
+			if start+1 < len(buf) && buf[start+1] == '<' {
+				// "<<" opens a dictionary, not a hex string -- skip both
+				// bytes and keep scanning from there.
+				pos = start + 2
+				if pos >= len(buf) {
+					return ranges
+				}
+				continue
+			}
+			closeIdx := bytes.IndexByte(buf[start+1:], '>')
+			if closeIdx < 0 {
+				// No closing ">" within the scanned window -- treat the
+				// rest of buf as opaque, the same over-approximation
+				// scanPDFStreamRanges applies to an unterminated stream.
+				ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+				return ranges
+			}
+			end := start + 1 + closeIdx + 1
+			ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+			pos = end
+		}
+		if pos >= len(buf) {
+			break
 		}
 	}
-	return false
+	return ranges
 }
 
-// firstTokenLocationOutsideOpaqueRanges is firstTokenLocation restricted to
-// occurrences NOT inside any of opaque's ranges -- see pdfOpaqueRange's own
-// doc comment for why a match inside one of those ranges must never be
-// treated the same as a match found in ordinary PDF syntax. Each token
-// spelling's inner scan only ever advances forward through buf and stops at
-// its first out-of-range hit, so total work stays bounded by len(buf) times
-// the small, fixed number of spellings per code (at most two) -- the same
-// bound firstTokenLocation itself relies on, no separate iteration ceiling
-// needed.
-func firstTokenLocationOutsideOpaqueRanges(buf []byte, tokens [][]byte, opaque []pdfOpaqueRange) (int, bool) {
+// mergeOpaqueRanges sorts ranges by start and merges any that overlap or
+// touch, so inOpaqueRange's binary search can trust that ranges never
+// overlap (a point can be inside at most one merged range) and are in
+// ascending order. Merging only ever WIDENS coverage -- safe per
+// scanPDFOpaqueRanges's own doc comment on over-approximation.
+func mergeOpaqueRanges(ranges []pdfOpaqueRange) []pdfOpaqueRange {
+	if len(ranges) < 2 {
+		return ranges
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].start < ranges[j].start })
+	merged := ranges[:1]
+	for _, r := range ranges[1:] {
+		last := &merged[len(merged)-1]
+		if r.start <= last.end {
+			if r.end > last.end {
+				last.end = r.end
+			}
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
+}
+
+// inOpaqueRange reports whether pos falls inside any of ranges via binary
+// search -- codex PR9 round 2's performance finding (pdf.go:520): ranges
+// MUST already be sorted and non-overlapping (mergeOpaqueRanges's
+// postcondition) for this to be correct; a linear scan here, repeated once
+// per occurrence of a token that can repeat millions of times in an
+// attacker-controlled stream, is exactly the quadratic blowup this fix
+// closes.
+func inOpaqueRange(pos int, ranges []pdfOpaqueRange) bool {
+	i := sort.Search(len(ranges), func(i int) bool { return ranges[i].start > pos })
+	if i == 0 {
+		return false
+	}
+	return pos < ranges[i-1].end
+}
+
+// scanTokenOccurrences is the single primitive AnalyzePDF's token loop uses
+// for every risk code -- it replaces what used to be two separate functions
+// (firstTokenLocation and firstTokenLocationOutsideOpaqueRanges) because
+// codex PR9 round 2 (pdf.go:515) requires the SAME lexical-boundary check in
+// both: a match is only real if the byte immediately following it is a PDF
+// delimiter/whitespace or EOF (ISO 32000 §7.3.5 -- a name ends there), so
+// "/JS" inside "/JScript" is not a match for "/JS" AT ALL, in neither
+// function, not merely an ambiguous one.
+//
+//   - found: a boundary-valid match exists outside every range in opaque
+//     (or opaque is nil, meaning "do not filter by range at all" -- the mode
+//     firstTokenLocation used to run in for the matchedInsideOpaque
+//     fallback).
+//   - filtered: a boundary-valid match exists, but every one seen so far was
+//     inside a range in opaque -- the caller must report unknown, never
+//     clean and never a Finding (see AnalyzePDF's own handling).
+//   - ceilingHit: this call's own per-token-spelling occurrence cap
+//     (maxTokenScanIterations) was reached before a conclusive answer
+//     (found or "no more occurrences") was reached -- codex PR9 round 2's
+//     DoS finding (pdf.go:520). This is needed IN ADDITION to
+//     inOpaqueRange's binary search, not instead of it: the binary search
+//     removes the RANGE-COUNT multiplier, but the number of OCCURRENCES of a
+//     short token is itself attacker-controlled independently of how many
+//     opaque ranges exist, so the walk over occurrences still needs its own
+//     bound.
+func scanTokenOccurrences(buf []byte, tokens [][]byte, opaque []pdfOpaqueRange) (pos int, found bool, filtered bool, ceilingHit bool) {
 	best := -1
 	for _, tok := range tokens {
-		pos := 0
-		for {
-			idx := bytes.Index(buf[pos:], tok)
+		p := 0
+		for iter := 0; iter < maxTokenScanIterations; iter++ {
+			idx := bytes.Index(buf[p:], tok)
 			if idx < 0 {
 				break
 			}
-			abs := pos + idx
-			if !inOpaqueRange(abs, opaque) {
-				if best < 0 || abs < best {
-					best = abs
+			abs := p + idx
+			end := abs + len(tok)
+			validBoundary := end >= len(buf) || !isPDFNameByte(buf[end])
+			if validBoundary {
+				if opaque != nil && inOpaqueRange(abs, opaque) {
+					filtered = true
+				} else {
+					if best < 0 || abs < best {
+						best = abs
+					}
+					break
 				}
+			}
+			p = end
+			if p >= len(buf) {
 				break
 			}
-			pos = abs + len(tok)
-			if pos >= len(buf) {
-				break
+			if iter == maxTokenScanIterations-1 {
+				// About to exit only because the cap was reached, not
+				// because occurrences ran out or a conclusive answer was
+				// found -- the occurrence walk, not the buffer's content,
+				// decided the outcome for this token spelling.
+				ceilingHit = true
 			}
 		}
 	}
-	if best < 0 {
-		return 0, false
+	if best >= 0 {
+		return best, true, filtered, false
 	}
-	return best, true
+	return 0, false, filtered, ceilingHit
 }
 
 // scanAllOccurrences invokes fn(pos) for every successive, non-overlapping

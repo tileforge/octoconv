@@ -125,7 +125,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		return c
 	}
 
-	if mvhdPayload, ok := firstChildBox(moovPayload, "mvhd"); ok {
+	if mvhdPayload, ok, ceilingHit := firstChildBox(moovPayload, "mvhd"); ok {
 		if durSec, ok, malformed := parseMVHD(mvhdPayload); ok {
 			c["duration_seconds"] = durSec
 		} else {
@@ -133,31 +133,48 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 			c["duration_seconds"] = nil
 			c["duration_seconds_reason"] = string(ReasonMalformedInput)
 		}
+	} else if ceilingHit {
+		// firstChildBox's own maxISOBMFFBoxes cap -- not the file's
+		// structure -- decided this miss (media.go's own audit finding,
+		// same class as image.go's iteration-ceiling defect): OUR resource
+		// limit, so this must mark the report selective, never agree with
+		// "malformed" (which never does).
+		c["duration_seconds"] = nil
+		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
 	} else {
 		// mvhd is MANDATORY inside a well-formed moov (ISO/IEC 14496-12) --
-		// its absence here is a structural fact about THIS file, not a
-		// resource ceiling: the full moov box is already in hand.
+		// its absence here (with the cap NOT exhausted) is a structural
+		// fact about THIS file, not a resource ceiling: the full moov box
+		// is already in hand and was walked to completion.
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(ReasonMalformedInput)
 	}
 
 	if includeDims {
-		if w, h, ok := findTrackDimensions(moovPayload); ok {
+		if w, h, ok, ceilingHit := findTrackDimensions(moovPayload); ok {
 			c["width"] = w
 			c["height"] = h
 		} else {
+			reason := ReasonMalformedInput
+			if ceilingHit {
+				reason = ReasonWorkCeilingBytes
+			}
 			c["width"] = nil
-			c["width_reason"] = string(ReasonMalformedInput)
+			c["width_reason"] = string(reason)
 			c["height"] = nil
-			c["height_reason"] = string(ReasonMalformedInput)
+			c["height_reason"] = string(reason)
 		}
 	}
 
-	if codec, ok := findDeclaredCodec(moovPayload); ok {
+	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload); ok {
 		c["declared_codec"] = codec
 	} else {
+		reason := ReasonMalformedInput
+		if ceilingHit {
+			reason = ReasonWorkCeilingBytes
+		}
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ReasonMalformedInput)
+		c["declared_codec_reason"] = string(reason)
 	}
 
 	return c
@@ -182,11 +199,14 @@ func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
 		headLen = size
 	}
 	var headActual int64
+	var headCeilingHit bool
 	headWin, headOK := readWindow(r, 0, headLen, size)
 	if headOK {
 		headActual = int64(len(headWin))
-		if payload, ok := firstChildBox(headWin, "moov"); ok {
+		if payload, ok, ceilingHit := firstChildBox(headWin, "moov"); ok {
 			return payload, ""
+		} else {
+			headCeilingHit = ceilingHit
 		}
 	}
 
@@ -232,53 +252,64 @@ func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
 		}
 	}
 
-	if headActual+tailActual >= size {
+	if headActual+tailActual >= size && !headCeilingHit {
 		// Both windows together covered the entire file (accounting for
-		// possible overlap on small files) and moov still never appeared --
-		// this is a fact about the FILE, not about our own resource limits.
+		// possible overlap on small files), the head window's own box-count
+		// cap was never exhausted while looking for moov there, and moov
+		// still never appeared -- this is a fact about the FILE, not about
+		// our own resource limits. If headCeilingHit is true, the head
+		// window DID cover its bytes but the box-count cap -- not the
+		// file's structure -- decided the miss, so this must not collapse
+		// into ReasonMalformedInput either (media.go's own audit finding).
 		return nil, ReasonMalformedInput
 	}
 	return nil, ReasonWorkCeilingBytes
 }
 
 // findTrackDimensions descends moov -> trak (first) -> tkhd and decodes
-// its declared width/height.
-func findTrackDimensions(moovPayload []byte) (width, height uint32, ok bool) {
-	trakPayload, ok := firstChildBox(moovPayload, "trak")
-	if !ok {
-		return 0, 0, false
+// its declared width/height. ceilingHit is true if ANY step along the
+// descent hit firstChildBox's own maxISOBMFFBoxes cap before an answer was
+// reached -- the caller must not report a ceilingHit miss the same way it
+// reports a genuine structural absence.
+func findTrackDimensions(moovPayload []byte) (width, height uint32, ok bool, ceilingHit bool) {
+	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak")
+	if !ok1 {
+		return 0, 0, false, c1
 	}
-	tkhdPayload, ok := firstChildBox(trakPayload, "tkhd")
-	if !ok {
-		return 0, 0, false
+	tkhdPayload, ok2, c2 := firstChildBox(trakPayload, "tkhd")
+	if !ok2 {
+		return 0, 0, false, c1 || c2
 	}
-	return parseTKHD(tkhdPayload)
+	w, h, ok3 := parseTKHD(tkhdPayload)
+	return w, h, ok3, c1 || c2
 }
 
 // findDeclaredCodec descends moov -> trak (first) -> mdia -> minf -> stbl
-// -> stsd and reads the first sample entry's fourCC.
-func findDeclaredCodec(moovPayload []byte) (string, bool) {
-	trakPayload, ok := firstChildBox(moovPayload, "trak")
-	if !ok {
-		return "", false
+// -> stsd and reads the first sample entry's fourCC. ceilingHit is the same
+// signal as findTrackDimensions's own.
+func findDeclaredCodec(moovPayload []byte) (codec string, ok bool, ceilingHit bool) {
+	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak")
+	if !ok1 {
+		return "", false, c1
 	}
-	mdiaPayload, ok := firstChildBox(trakPayload, "mdia")
-	if !ok {
-		return "", false
+	mdiaPayload, ok2, c2 := firstChildBox(trakPayload, "mdia")
+	if !ok2 {
+		return "", false, c1 || c2
 	}
-	minfPayload, ok := firstChildBox(mdiaPayload, "minf")
-	if !ok {
-		return "", false
+	minfPayload, ok3, c3 := firstChildBox(mdiaPayload, "minf")
+	if !ok3 {
+		return "", false, c1 || c2 || c3
 	}
-	stblPayload, ok := firstChildBox(minfPayload, "stbl")
-	if !ok {
-		return "", false
+	stblPayload, ok4, c4 := firstChildBox(minfPayload, "stbl")
+	if !ok4 {
+		return "", false, c1 || c2 || c3 || c4
 	}
-	stsdPayload, ok := firstChildBox(stblPayload, "stsd")
-	if !ok {
-		return "", false
+	stsdPayload, ok5, c5 := firstChildBox(stblPayload, "stsd")
+	if !ok5 {
+		return "", false, c1 || c2 || c3 || c4 || c5
 	}
-	return parseSTSDCodec(stsdPayload)
+	codec, ok6 := parseSTSDCodec(stsdPayload)
+	return codec, ok6, c1 || c2 || c3 || c4 || c5
 }
 
 // parseMVHD decodes mvhd's timescale+duration (ISO/IEC 14496-12 8.2.2.1),
@@ -367,47 +398,60 @@ func parseSTSDCodec(b []byte) (codec string, ok bool) {
 // box size is validated against the REMAINING bounded buffer before being
 // trusted (T-58-24) -- this function never allocates by a declared size and
 // never reads past len(buf).
-func walkTopLevelBoxes(buf []byte, fn func(boxType string, payload []byte) bool) {
+//
+// ceilingHit reports whether maxISOBMFFBoxes -- not a malformed/truncated
+// box header, not fn returning false, not the end of buf -- is what stopped
+// the walk (media.go's own sibling of image.go's iteration-ceiling class,
+// found auditing media.go per the round 2 plan's explicit instruction to
+// check every scanner, not only the codes the reviewer named): a box this
+// caller is looking for (mvhd, trak, stsd, ...) can be preceded by more
+// sibling boxes than the cap allows, and treating that exhaustion the same
+// as "genuinely absent" would misattribute THIS scan's own resource limit
+// to a fact about the file -- exactly the D-02a mistake, one level removed.
+func walkTopLevelBoxes(buf []byte, fn func(boxType string, payload []byte) bool) (ceilingHit bool) {
 	i := 0
-	for count := 0; i+8 <= len(buf) && count < maxISOBMFFBoxes; count++ {
+	for count := 0; i+8 <= len(buf); count++ {
+		if count >= maxISOBMFFBoxes {
+			return true
+		}
 		size64 := uint64(binary.BigEndian.Uint32(buf[i : i+4]))
 		boxType := string(buf[i+4 : i+8])
 		headerLen := 8
 		switch size64 {
 		case 1:
 			if i+16 > len(buf) {
-				return
+				return false
 			}
 			size64 = binary.BigEndian.Uint64(buf[i+8 : i+16])
 			headerLen = 16
 		case 0:
-			return // "extends to EOF": not expected within a bounded window, bail conservatively
+			return false // "extends to EOF": not expected within a bounded window, bail conservatively
 		}
 		if size64 < uint64(headerLen) || size64 > uint64(len(buf)-i) {
-			return // truncated or malformed within the bounded window: fail closed
+			return false // truncated or malformed within the bounded window: fail closed
 		}
 		size := int(size64)
 		if !fn(boxType, buf[i+headerLen:i+size]) {
-			return
+			return false
 		}
 		i += size
 	}
+	return false
 }
 
 // firstChildBox returns the payload of the first top-level box of boxType
-// within buf, or (nil, false) if none is found within maxISOBMFFBoxes
-// boxes.
-func firstChildBox(buf []byte, boxType string) ([]byte, bool) {
-	var payload []byte
-	found := false
-	walkTopLevelBoxes(buf, func(t string, p []byte) bool {
+// within buf, whether it was found, and whether maxISOBMFFBoxes was
+// exhausted before an answer was reached (see walkTopLevelBoxes's own doc
+// comment for why callers must not collapse that into "not found").
+func firstChildBox(buf []byte, boxType string) (payload []byte, found bool, ceilingHit bool) {
+	ceilingHit = walkTopLevelBoxes(buf, func(t string, p []byte) bool {
 		if t == boxType {
 			payload, found = p, true
 			return false
 		}
 		return true
 	})
-	return payload, found
+	return payload, found, ceilingHit
 }
 
 // ===== Part 2: EBML (mkv/webm) =====
@@ -432,12 +476,24 @@ const (
 // Segment -> Tracks -> TrackEntry -> CodecID, within a single bounded head
 // window (ebmlInfoWindow, clamped by maxBytes).
 //
-// Safe-refusal discipline required by 58-RESEARCH.md Assumption A2: if
-// Duration is not found within the window, the result is unknown with
-// ReasonWorkCeilingBytes -- the window is NEVER grown adaptively "until it
-// is found". Growing a buffer in response to untrusted content not
-// containing what you are looking for is exactly the lever an adversarial
-// input turns into a resource-exhaustion primitive (T-58-23).
+// Safe-refusal discipline required by 58-RESEARCH.md Assumption A2: the
+// window is NEVER grown adaptively "until it is found" -- growing a buffer
+// in response to untrusted content not containing what you are looking for
+// is exactly the lever an adversarial input turns into a resource-
+// exhaustion primitive (T-58-23).
+//
+// windowCoversWholeFile (media.go's own audit finding, same round as the
+// isobmffCharacteristics fix above) distinguishes the two facts a miss can
+// mean here: if the window covers the ENTIRE file AND the internal element
+// walk never hit its own maxEBMLElements cap, a miss is a genuine structural
+// fact about the file (ReasonMalformedInput) and must NOT make Coverage
+// selective; otherwise the miss is THIS scan's own ceiling
+// (ReasonWorkCeilingBytes), which must. An earlier version of this function
+// reported every miss as ReasonWorkCeilingBytes unconditionally -- safe in
+// the sense that it never claimed "clean" or "complete" falsely, but wrong
+// in the OTHER direction: a small, fully-buffered, genuinely malformed mkv
+// would always mark the whole report selective even though nothing was
+// actually left unexamined.
 func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	c := Characteristics{}
 
@@ -448,6 +504,7 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	if winLen > size {
 		winLen = size
 	}
+	windowCoversWholeFile := winLen >= size
 
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
@@ -458,87 +515,108 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 		return c
 	}
 
-	segmentPayload, foundSegment := firstEBMLChild(buf, ebmlIDSegment)
+	segmentPayload, foundSegment, segCeilingHit := firstEBMLChild(buf, ebmlIDSegment)
 	if !foundSegment {
+		reason := ebmlMissReason(windowCoversWholeFile, segCeilingHit)
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
+		c["duration_seconds_reason"] = string(reason)
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ReasonWorkCeilingBytes)
+		c["declared_codec_reason"] = string(reason)
 		return c
 	}
 
-	if durSec, ok := findEBMLDuration(segmentPayload); ok {
+	if durSec, ok, ceilingHit := findEBMLDuration(segmentPayload); ok {
 		c["duration_seconds"] = durSec
 	} else {
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
+		c["duration_seconds_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit))
 	}
 
-	if codec, ok := findEBMLCodecID(segmentPayload); ok {
+	if codec, ok, ceilingHit := findEBMLCodecID(segmentPayload); ok {
 		c["declared_codec"] = codec
 	} else {
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ReasonWorkCeilingBytes)
+		c["declared_codec_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit))
 	}
 
 	return c
 }
 
-func findEBMLDuration(segment []byte) (float64, bool) {
-	infoPayload, ok := firstEBMLChild(segment, ebmlIDInfo)
-	if !ok {
-		return 0, false
+// ebmlMissReason is ebmlCharacteristics's single verdict rule for a miss:
+// OUR OWN ceiling (byte window did not cover the whole file, or an internal
+// element walk hit maxEBMLElements) versus a genuine structural fact about
+// the file. See ebmlCharacteristics's own doc comment for why these must
+// never collapse into one answer.
+func ebmlMissReason(windowCoversWholeFile, ceilingHit bool) Reason {
+	if !windowCoversWholeFile || ceilingHit {
+		return ReasonWorkCeilingBytes
+	}
+	return ReasonMalformedInput
+}
+
+// findEBMLDuration returns Duration (seconds) plus whether ANY step along
+// Segment -> Info -> Duration/TimestampScale hit firstEBMLChild's own
+// maxEBMLElements cap before an answer was reached.
+func findEBMLDuration(segment []byte) (durationSeconds float64, ok bool, ceilingHit bool) {
+	infoPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDInfo)
+	if !ok1 {
+		return 0, false, c1
 	}
 	// TimestampScale defaults to 1,000,000 (nanoseconds per timestamp unit)
-	// per the Matroska spec when the element is absent.
+	// per the Matroska spec when the element is absent -- its own ceilingHit
+	// is deliberately not tracked into the result: a default is substituted
+	// either way, so whether the cap fired while looking for it changes
+	// nothing about whether Duration itself was found.
 	timestampScale := uint64(1000000)
-	if tsBytes, ok := firstEBMLChild(infoPayload, ebmlIDTimestamp); ok {
+	if tsBytes, ok, _ := firstEBMLChild(infoPayload, ebmlIDTimestamp); ok {
 		if v, ok := ebmlReadUint(tsBytes); ok {
 			timestampScale = v
 		}
 	}
-	durBytes, ok := firstEBMLChild(infoPayload, ebmlIDDuration)
-	if !ok {
-		return 0, false
+	durBytes, ok2, c2 := firstEBMLChild(infoPayload, ebmlIDDuration)
+	if !ok2 {
+		return 0, false, c1 || c2
 	}
-	durRaw, ok := ebmlReadFloat(durBytes)
-	if !ok {
-		return 0, false
+	durRaw, ok3 := ebmlReadFloat(durBytes)
+	if !ok3 {
+		return 0, false, false // Duration WAS found, just not decodable -- a structural fact, not a ceiling
 	}
 	if timestampScale == 0 {
-		return 0, false
+		return 0, false, false
 	}
-	return durRaw * float64(timestampScale) / 1e9, true
+	return durRaw * float64(timestampScale) / 1e9, true, false
 }
 
-func findEBMLCodecID(segment []byte) (string, bool) {
-	tracksPayload, ok := firstEBMLChild(segment, ebmlIDTracks)
-	if !ok {
-		return "", false
+// findEBMLCodecID returns the declared codec plus the same ceilingHit signal
+// as findEBMLDuration's own.
+func findEBMLCodecID(segment []byte) (codec string, ok bool, ceilingHit bool) {
+	tracksPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDTracks)
+	if !ok1 {
+		return "", false, c1
 	}
-	trackEntryPayload, ok := firstEBMLChild(tracksPayload, ebmlIDTrackEntry)
-	if !ok {
-		return "", false
+	trackEntryPayload, ok2, c2 := firstEBMLChild(tracksPayload, ebmlIDTrackEntry)
+	if !ok2 {
+		return "", false, c1 || c2
 	}
-	codecBytes, ok := firstEBMLChild(trackEntryPayload, ebmlIDCodecID)
-	if !ok {
-		return "", false
+	codecBytes, ok3, c3 := firstEBMLChild(trackEntryPayload, ebmlIDCodecID)
+	if !ok3 {
+		return "", false, c1 || c2 || c3
 	}
-	return string(codecBytes), true
+	return string(codecBytes), true, false
 }
 
-// firstEBMLChild returns the payload of the first element of id within buf.
-func firstEBMLChild(buf []byte, id uint32) ([]byte, bool) {
-	var payload []byte
-	found := false
-	walkEBMLElements(buf, func(gotID uint32, p []byte) bool {
+// firstEBMLChild returns the payload of the first element of id within buf,
+// whether it was found, and whether maxEBMLElements was exhausted before an
+// answer was reached (walkEBMLElements's own ceilingHit).
+func firstEBMLChild(buf []byte, id uint32) (payload []byte, found bool, ceilingHit bool) {
+	ceilingHit = walkEBMLElements(buf, func(gotID uint32, p []byte) bool {
 		if gotID == id {
 			payload, found = p, true
 			return false
 		}
 		return true
 	})
-	return payload, found
+	return payload, found, ceilingHit
 }
 
 // walkEBMLElements iterates EBML elements in buf, calling fn(id, payload)
@@ -551,17 +629,24 @@ func firstEBMLChild(buf []byte, id uint32) ([]byte, bool) {
 // it at all would make ebmlInfoWindow useless for the majority of real
 // files. This never grows buf itself -- it only ever narrows how much of
 // the buffer already in hand is treated as this element's payload.
-func walkEBMLElements(buf []byte, fn func(id uint32, payload []byte) bool) {
+//
+// ceilingHit reports whether maxEBMLElements -- not a malformed vint, not fn
+// returning false, not the end of buf -- is what stopped the walk (the EBML
+// analog of walkTopLevelBoxes's own ceilingHit, media.go's audit finding).
+func walkEBMLElements(buf []byte, fn func(id uint32, payload []byte) bool) (ceilingHit bool) {
 	pos := 0
-	for count := 0; pos < len(buf) && count < maxEBMLElements; count++ {
+	for count := 0; pos < len(buf); count++ {
+		if count >= maxEBMLElements {
+			return true
+		}
 		id, idLen, ok := ebmlReadIDVint(buf, pos)
 		if !ok {
-			return
+			return false
 		}
 		pos += idLen
 		sizeRaw, sizeLen, ok := ebmlReadSizeVint(buf, pos)
 		if !ok {
-			return
+			return false
 		}
 		pos += sizeLen
 		remaining := uint64(len(buf) - pos)
@@ -572,10 +657,11 @@ func walkEBMLElements(buf []byte, fn func(id uint32, payload []byte) bool) {
 		}
 		payload := buf[pos:end]
 		if !fn(id, payload) {
-			return
+			return false
 		}
 		pos = end
 	}
+	return false
 }
 
 // ebmlVintLen returns the byte-length of an EBML variable-length integer
@@ -662,6 +748,15 @@ func ebmlReadFloat(b []byte) (float64, bool) {
 // one audio format in this analyzer with a cheap, bounded, exact duration
 // -- unlike mp3/ogg below, WAV's RIFF header carries everything needed
 // directly, with no frame-walk or tail-read required.
+//
+// media.go's own audit finding (round 2 plan's explicit instruction to
+// check every scanner, not only the codes the reviewer named): this
+// function previously reported EVERY miss as ReasonMalformedInput,
+// including a miss caused by (a) the byte window not covering the whole
+// file, or (b) maxRIFFChunks being exhausted before fmt/data were both
+// seen -- both are OUR OWN resource limits, exactly the D-02a class every
+// other analyzer in this package already closed. windowTruncated and
+// ceilingHit below close it here too.
 func wavCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	c := Characteristics{}
 
@@ -669,17 +764,37 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	if winLen > size {
 		winLen = size
 	}
+	windowTruncated := winLen < size
+
 	buf, ok := readWindow(r, 0, winLen, size)
-	if !ok || len(buf) < 12 || string(buf[0:4]) != "RIFF" || string(buf[8:12]) != "WAVE" {
+	if !ok {
+		reason := ReasonMalformedInput
+		if windowTruncated {
+			reason = ReasonWorkCeilingBytes
+		}
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonMalformedInput)
+		c["duration_seconds_reason"] = string(reason)
+		return c
+	}
+	if len(buf) < 12 || string(buf[0:4]) != "RIFF" || string(buf[8:12]) != "WAVE" {
+		reason := ReasonMalformedInput
+		if windowTruncated {
+			reason = ReasonWorkCeilingBytes
+		}
+		c["duration_seconds"] = nil
+		c["duration_seconds_reason"] = string(reason)
 		return c
 	}
 
 	var byteRate, dataSize uint32
 	foundFmt, foundData := false, false
 	pos := 12
-	for count := 0; pos+8 <= len(buf) && count < maxRIFFChunks && !(foundFmt && foundData); count++ {
+	ceilingHit := false
+	for count := 0; pos+8 <= len(buf) && !(foundFmt && foundData); count++ {
+		if count >= maxRIFFChunks {
+			ceilingHit = true
+			break
+		}
 		chunkID := string(buf[pos : pos+4])
 		chunkSize := binary.LittleEndian.Uint32(buf[pos+4 : pos+8])
 		chunkStart := pos + 8
@@ -705,8 +820,12 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	}
 
 	if !foundFmt || !foundData || byteRate == 0 {
+		reason := ReasonMalformedInput
+		if windowTruncated || ceilingHit {
+			reason = ReasonWorkCeilingBytes
+		}
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonMalformedInput)
+		c["duration_seconds_reason"] = string(reason)
 		return c
 	}
 
