@@ -265,6 +265,17 @@ None. Every new parsing surface introduced by this plan (PDF token scan, ZIP `.r
 - `go.mod`/`go.sum` and `internal/convert/` are untouched by this plan (verified via `git diff --stat`) -- D-01/D-02's "stdlib only, in this process" constraint holds.
 - The cross-part budget correctness fix (Deviation 1) is a precedent worth remembering for 58-05's own analyzers if they ever scan multiple candidate parts/boxes against a shared byte budget: "read exactly up to the cap without finding anything" must map to `unknown`, not `clean`.
 
+## Self-Check: PASSED
+
+- FOUND: internal/inspect/pdf.go
+- FOUND: internal/inspect/pdf_test.go
+- FOUND: internal/inspect/container.go
+- FOUND: internal/inspect/container_test.go
+- FOUND: 1118fec (feat(58-04): add PDF analyzer with compressed-object-stream downgrade (D-02a))
+- FOUND: c976d6b (feat(58-04): add ZIP-container analyzer for macros, bomb shape, external refs)
+- FOUND: 05db7e4 (fix(58-04): report unknown, not clean, when a truncated .rels read finds nothing)
+- Verified: `go test ./internal/inspect/... -count=1 -race` green; `go test ./... -count=1` green; `go vet ./...` clean; `gofmt -l internal/inspect` empty; `git diff --stat -- go.mod go.sum internal/convert/` empty
+
 ---
 *Phase: 58-synchronous-inspection*
 *Completed: 2026-08-10*
