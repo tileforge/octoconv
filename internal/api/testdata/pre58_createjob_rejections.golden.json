@@ -1,0 +1,72 @@
+{
+  "dimension_limit": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "declared image dimensions exceed configured limit"
+    }
+  },
+  "dimensions_unknown": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "cannot determine declared image dimensions for in.png"
+    }
+  },
+  "encrypted_document": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "password-protected Office file is not supported; remove the password and re-upload"
+    }
+  },
+  "engine_size_limit": {
+    "status": 413,
+    "body": {
+      "code": "payload_too_large",
+      "error": "file exceeds size limit for this conversion type"
+    }
+  },
+  "legacy_document": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "legacy binary Office format (.doc/.xls/.ppt) is not supported; convert to docx/xlsx/pptx"
+    }
+  },
+  "legacy_or_encrypted_document": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "legacy binary or password-protected Office format is not supported; convert to docx/xlsx/pptx or remove the password"
+    }
+  },
+  "macro_detected": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "macro-carrying documents are not accepted"
+    }
+  },
+  "mismatch": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "declared format jpg does not match detected content png"
+    }
+  },
+  "unrecognized_content": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "unrecognized file content for in.png"
+    }
+  },
+  "zip_bomb": {
+    "status": 422,
+    "body": {
+      "code": "invalid_request",
+      "error": "declared uncompressed size exceeds configured limit"
+    }
+  }
+}
