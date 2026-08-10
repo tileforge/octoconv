@@ -414,17 +414,20 @@ func odtFixtureWithTwoParts(t *testing.T, stylesSize int) []byte {
 	return buf.Bytes()
 }
 
-// TestAnalyzeContainerLimitReaderBoundsCrossPartBudget proves io.LimitReader
-// (fed the REMAINING per-request byte budget, not just the static
-// maxRelsPartBytes cap) is what stops this scan from reading an external
-// marker placed near the tail of a SECOND, genuinely and honestly small
-// part once an earlier part has already spent most of the request's
-// budget. Both parts here have entirely truthful declared sizes -- this
-// is deliberately NOT the "declared size lies" scenario (that one is
-// already covered by TestAnalyzeContainerNeverAllocatesOnDeclaredSize and,
-// as it turns out, is independently blocked by archive/zip's own
-// checksumReader, which refuses to return more bytes than a file's
-// declared UncompressedSize64 regardless of this package's own code). The
+// TestAnalyzeContainerLimitReaderBoundsCrossPartBudget proves two things
+// together: (1) io.LimitReader (fed the REMAINING per-request byte budget,
+// not just the static maxRelsPartBytes cap) is what stops this scan from
+// reading an external marker placed near the tail of a SECOND, genuinely
+// and honestly small part once an earlier part has already spent most of
+// the request's budget, and (2) a read cut short that way is reported as
+// unknown/work_ceiling_bytes, never clean -- exactly the D-02a discipline
+// applied to this family: a truncated read is not evidence of absence.
+// Both parts here have entirely truthful declared sizes -- this is
+// deliberately NOT the "declared size lies" scenario (that one is already
+// covered by TestAnalyzeContainerNeverAllocatesOnDeclaredSize and, as it
+// turns out, is independently blocked by archive/zip's own checksumReader,
+// which refuses to return more bytes than a file's declared
+// UncompressedSize64 regardless of this package's own code). The
 // cross-part budget is a fact ONLY this scan's own bookkeeping enforces --
 // the stdlib zip reader has no notion of a budget shared across multiple
 // files in one request.
@@ -441,9 +444,14 @@ func TestAnalyzeContainerLimitReaderBoundsCrossPartBudget(t *testing.T) {
 	if f, ok := findingFor(res, CodeExternalReference); ok {
 		t.Fatalf("got Finding %+v with a %d-byte total budget -- io.LimitReader must stop the styles.xml read long before its tail-placed marker, using the budget REMAINING after content.xml was already read, not a fresh maxRelsPartBytes allowance per part", f, tightBudget)
 	}
+	// The styles.xml read was genuinely cut short by the exhausted budget
+	// (its real content is far longer than what this scan's budget allowed
+	// it to see) -- clean would be a FALSE claim of completeness here,
+	// exactly the D-02a mistake applied to this family: a truncated read
+	// must report unknown/work_ceiling_bytes, never clean.
 	c, ok := checkFor(res, CodeExternalReference)
-	if !ok || c.Status != StatusClean {
-		t.Fatalf("Check(CodeExternalReference) = %+v (ok=%v), want clean", c, ok)
+	if !ok || c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(CodeExternalReference) = %+v (ok=%v), want unknown/work_ceiling_bytes -- the styles.xml read was truncated by the exhausted budget, so clean would overclaim completeness", c, ok)
 	}
 
 	// Sanity check on the fixture itself: with a GENEROUS budget, the exact

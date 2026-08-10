@@ -241,12 +241,23 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 // ("", true) if any of this scan's own ceilings were exhausted before an
 // answer was reached, or ("", false) if the whole (unbounded-by-ceiling)
 // candidate set was searched and nothing was found.
+//
+// "Exhausted" is not only the obvious pre-loop cases (too many entries, too
+// many parts opened, budget already gone before opening the next
+// candidate) -- it is ALSO true of a part that WAS opened but whose read
+// was cut short by io.LimitReader (case ceilingReached below). Treating
+// that case as an ordinary "found nothing" would repeat exactly the mistake
+// D-02a exists to prevent in pdf.go: a part that was only PARTIALLY read
+// has not actually been ruled clean, and reporting it as such would be a
+// false claim of completeness driven by this scan's own budget, not by the
+// part's real content.
 func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (location string, ceilingHit bool) {
 	partsOpened := 0
 	budgetLeft := maxBytes
 	if budgetLeft <= 0 {
 		budgetLeft = maxRelsPartBytes // a caller passing maxBytes<=0 still gets ONE part's worth of budget, never zero -- zero would make every container's external-reference check spuriously "ceiling hit".
 	}
+	truncatedAnyPart := false
 
 	for i, f := range zr.File {
 		if i >= maxZipEntriesScanned {
@@ -295,6 +306,18 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 		if containsExternalReference(data, format) {
 			return f.Name, false
 		}
+		// A read that filled the entire allowance handed to io.LimitReader
+		// is indistinguishable, from here, between "the part's real content
+		// happened to end exactly there" and "there was more we never got
+		// to see" -- the conservative (and correct, D-02a-consistent) choice
+		// is to treat it as the latter, exactly like a PDF window truncated
+		// by maxBytes never gets to claim clean.
+		if int64(len(data)) >= limit {
+			truncatedAnyPart = true
+		}
+	}
+	if truncatedAnyPart {
+		return "", true
 	}
 	return "", false
 }
