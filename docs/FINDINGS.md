@@ -77,6 +77,45 @@ actions a client can honestly take:
 | warning | Passive risk: content that could be an exfiltration/tracking vector, but requires the recipient to act | Consider `sanitize` before further processing |
 | critical | Active/auto-triggered risk: executes/takes effect without further recipient action | Strongly recommend `sanitize` or reject |
 
+## Check status (three values, never two)
+
+Every check `inspect` performs against a code in the vocabulary above carries exactly one of
+three status values (`internal/inspect/status.go`):
+
+| Status | Meaning |
+|--------|---------|
+| `clean` | The check applies to this format, ran to completion, and found nothing |
+| `not_applicable` | The check does not apply to this format at all — there was nothing to look for, not "we looked and found nothing" |
+| `unknown` | The check applies, but its result could not be determined — this is NEITHER a synonym for `clean` NOR for `not_applicable` |
+
+**Consumers MUST have three branches for this field, never two.** A client-side check of the
+shape `if status != "clean"` silently collapses `unknown` into `not_applicable` (or vice versa) —
+exactly the defect this three-value scale exists to prevent. The correct consumer shape is a
+`switch`/`if` with one branch per value plus an `unknown-value` fallback for a future addition to
+this list (the same open-string discipline as the "Consumer contract" section above).
+
+## Report coverage is a separate claim
+
+Whether an inspect report is honest about its own completeness is a DIFFERENT question from any
+individual check's status, and the two are never folded into one field (`internal/inspect/status.go`,
+`Coverage`):
+
+| Reason a check is not `clean` | Property of | Makes the report selective? |
+|---|---|---|
+| `format_not_applicable` | the file's format | No |
+| `compressed_object_streams` | the file's structure (D-02a: PDF `/ObjStm` blindness) | No |
+| `parser_unavailable` | this build | No |
+| `malformed_input` | the file | No |
+| `work_ceiling_bytes` | **this service's own load** | **Yes** |
+| `work_ceiling_time` | **this service's own load** | **Yes** |
+
+Only the last two reasons may ever mark a report `coverage.complete: false`. A structurally
+`unknown` check (parser blindness, an inapplicable format, a malformed file) does not, by itself,
+make the report incomplete — the checker did everything it could and is honestly reporting what
+it couldn't determine. This is the actual denial-of-service-relevant distinction Phase 58 exists
+to make honest: "we don't know" about one file property is not the same claim as "we stopped
+looking early because we were busy."
+
 ## Keeping this document honest
 
 `internal/inspect/doc_sync_test.go` (`TestFindingCodesDocMatchesGoConstants`) parses the code
