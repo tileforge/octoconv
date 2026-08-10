@@ -56,6 +56,21 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
+	// D-06a (Phase 58): a dedicated, deliberately tiny pool used for
+	// exactly one thing -- the Postgres ping inside GET /healthz -- so a
+	// burst of concurrent POST /v1/inspect requests exhausting pool above
+	// (through Repo.PreAdmit, INSP-04) cannot delay or fail that ping.
+	// Mirrors the redisPinger precedent below (a dedicated connection
+	// purely for /healthz), applied to Postgres instead of Redis. See
+	// db.ConnectHealth's own doc comment for why the second /healthz
+	// listener (internal/api/routes.go HealthRoutes) does NOT make this
+	// pool redundant.
+	healthPool, err := db.ConnectHealth(ctx)
+	if err != nil {
+		log.Fatalf("postgres (health pool): %v", err)
+	}
+	defer healthPool.Close()
+
 	store, err := storage.New(ctx)
 	if err != nil {
 		log.Fatalf("storage: %v", err)
@@ -162,10 +177,23 @@ func main() {
 	}
 
 	health := api.HealthDeps{
-		Postgres: pool,
+		// D-06a: healthPool, NEVER pool. pool is the same pool
+		// Repo.PreAdmit reads through on every synchronous inspect request
+		// (INSP-04); pointing this field back at pool re-opens exactly the
+		// pool-contention path healthPool exists to close, and the second
+		// /healthz listener (internal/api/routes.go HealthRoutes) does not
+		// catch that regression -- HTTP-accept isolation and Postgres-pool
+		// isolation are independent claims. Proven mechanically by
+		// cmd/api/wiring_test.go, not just asserted in this comment.
+		Postgres: healthPool,
 		Redis:    redisPinger{client: rdb},
 		S3:       store,
 	}
+	// jobsRepo is built from pool (the MAIN pool), never healthPool -- the
+	// jobs repository, and therefore Repo.PreAdmit, must stay on the pool
+	// sized for ordinary + inspect traffic (D-06a); healthPool is sized
+	// (MaxConns=2) for exactly one caller, the health ping, and would starve
+	// immediately if anything else were routed through it.
 	jobsRepo := jobs.NewRepo(pool)
 	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
 	// as the UsageRepo -- because the two interfaces are narrow views of the
