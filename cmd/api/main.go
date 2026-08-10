@@ -310,9 +310,46 @@ func main() {
 		}
 	}()
 
+	// GET /healthz gets its OWN listener on HEALTH_ADDR (Phase 58 Task 2,
+	// D-06/D-08): a burst against API_ADDR (in particular POST /v1/inspect,
+	// INSP-05) saturates httpSrv's accept queue and goroutines without
+	// taking a single accept-path resource away from THIS http.Server --
+	// they are two separate net.Listeners. This closes the HTTP-accept half
+	// of the liveness risk; the DEPENDENCY half (the Postgres ping inside
+	// handleHealth) is closed separately by healthPool above (D-06a) --
+	// see internal/api/routes.go's HealthRoutes doc comment for why the two
+	// are independent fixes, not one. srv.Routes() (API_ADDR) keeps serving
+	// /healthz too (D-08) for the three existing consumers that already
+	// probe it there.
+	healthAddr := os.Getenv("HEALTH_ADDR")
+	if healthAddr == "" {
+		healthAddr = ":8091"
+	}
+	healthSrv := &http.Server{
+		Addr:              healthAddr,
+		Handler:           srv.HealthRoutes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("🩺 health listening on %s", healthAddr)
+		if err := healthSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("health listen: %v", err)
+		}
+	}()
+
 	<-ctx.Done()
 	log.Println("🛑 shutting down API...")
 
+	// Shutdown order is deliberate, not incidental (Phase 58 Task 2): httpSrv
+	// first (stop accepting new /v1 work, including inspect), then
+	// metricsSrv, and healthSrv LAST. During a rolling deploy's drain
+	// window, the liveness probe must keep answering as long as possible --
+	// shutting healthSrv down first would make kubelet see a dead probe
+	// while httpSrv is still gracefully draining in-flight /v1 requests,
+	// which is exactly the false-restart risk this ordering avoids. All
+	// three Shutdown calls share shutdownCtx, mirroring the pre-existing
+	// httpSrv/metricsSrv pair this extends.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -320,6 +357,9 @@ func main() {
 	}
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("metrics graceful shutdown failed: %v", err)
+	}
+	if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("health graceful shutdown failed: %v", err)
 	}
 	log.Println("bye 👋")
 }
