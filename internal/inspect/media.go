@@ -75,17 +75,17 @@ const ebmlInfoWindow = 256 * 1024
 // not_applicable Checks for codes it has no opinion about would just be
 // duplicated boilerplate repeated once per family. This is a deliberate
 // omission, not an oversight.
-func AnalyzeMedia(format string, r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
+func AnalyzeMedia(format string, r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyResult {
 	var chars Characteristics
 	switch format {
 	case "mp4", "mov":
-		chars = isobmffCharacteristics(r, size, maxBytes, true)
+		chars = isobmffCharacteristics(r, size, maxBytes, true, tr)
 	case "m4a":
-		chars = isobmffCharacteristics(r, size, maxBytes, false)
+		chars = isobmffCharacteristics(r, size, maxBytes, false, tr)
 	case "mkv", "webm":
-		chars = ebmlCharacteristics(r, size, maxBytes)
+		chars = ebmlCharacteristics(r, size, maxBytes, tr)
 	case "wav":
-		chars = wavCharacteristics(r, size, maxBytes)
+		chars = wavCharacteristics(r, size, maxBytes, tr)
 	case "mp3", "ogg":
 		chars = unsupportedAudioDurationCharacteristics()
 	case "avi":
@@ -107,10 +107,10 @@ func AnalyzeMedia(format string, r io.ReaderAt, size int64, maxBytes int64) Fami
 // requires ffprobe and is out of scope (INSP-V2-02), exactly as
 // convert.Dimensions reports declared pixel dimensions, never decoded
 // pixels.
-func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims bool) Characteristics {
+func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims bool, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
-	moovPayload, reason := findMoov(r, size, maxBytes)
+	moovPayload, reason := findMoov(r, size, maxBytes, tr)
 	if moovPayload == nil {
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)
@@ -125,7 +125,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		return c
 	}
 
-	if mvhdPayload, ok, ceilingHit := firstChildBox(moovPayload, "mvhd"); ok {
+	if mvhdPayload, ok, ceilingHit := firstChildBox(moovPayload, "mvhd", tr); ok {
 		if durSec, ok, malformed := parseMVHD(mvhdPayload); ok {
 			c["duration_seconds"] = durSec
 		} else {
@@ -151,7 +151,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 	}
 
 	if includeDims {
-		if w, h, ok, ceilingHit := findTrackDimensions(moovPayload); ok {
+		if w, h, ok, ceilingHit := findTrackDimensions(moovPayload, tr); ok {
 			c["width"] = w
 			c["height"] = h
 		} else {
@@ -166,7 +166,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		}
 	}
 
-	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload); ok {
+	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload, tr); ok {
 		c["declared_codec"] = codec
 	} else {
 		reason := ReasonMalformedInput
@@ -189,7 +189,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // (ReasonMalformedInput). These are two different facts and must not be
 // collapsed into one (D-02a's whole point, applied here to media instead
 // of PDF).
-func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
+func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
 	}
@@ -203,7 +203,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
 	headWin, headOK := readWindow(r, 0, headLen, size)
 	if headOK {
 		headActual = int64(len(headWin))
-		if payload, ok, ceilingHit := firstChildBox(headWin, "moov"); ok {
+		if payload, ok, ceilingHit := firstChildBox(headWin, "moov", tr); ok {
 			return payload, ""
 		} else {
 			headCeilingHit = ceilingHit
@@ -240,7 +240,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
 			boxStart := idx - 4
 			var payload []byte
 			found := false
-			walkTopLevelBoxes(tailWin[boxStart:], func(t string, p []byte) bool {
+			walkTopLevelBoxes(tailWin[boxStart:], tr, func(t string, p []byte) bool {
 				if t == "moov" {
 					payload, found = p, true
 				}
@@ -271,12 +271,12 @@ func findMoov(r io.ReaderAt, size, maxBytes int64) ([]byte, Reason) {
 // descent hit firstChildBox's own maxISOBMFFBoxes cap before an answer was
 // reached -- the caller must not report a ceilingHit miss the same way it
 // reports a genuine structural absence.
-func findTrackDimensions(moovPayload []byte) (width, height uint32, ok bool, ceilingHit bool) {
-	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak")
+func findTrackDimensions(moovPayload []byte, tr *Tracker) (width, height uint32, ok bool, ceilingHit bool) {
+	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak", tr)
 	if !ok1 {
 		return 0, 0, false, c1
 	}
-	tkhdPayload, ok2, c2 := firstChildBox(trakPayload, "tkhd")
+	tkhdPayload, ok2, c2 := firstChildBox(trakPayload, "tkhd", tr)
 	if !ok2 {
 		return 0, 0, false, c1 || c2
 	}
@@ -287,24 +287,24 @@ func findTrackDimensions(moovPayload []byte) (width, height uint32, ok bool, cei
 // findDeclaredCodec descends moov -> trak (first) -> mdia -> minf -> stbl
 // -> stsd and reads the first sample entry's fourCC. ceilingHit is the same
 // signal as findTrackDimensions's own.
-func findDeclaredCodec(moovPayload []byte) (codec string, ok bool, ceilingHit bool) {
-	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak")
+func findDeclaredCodec(moovPayload []byte, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
+	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak", tr)
 	if !ok1 {
 		return "", false, c1
 	}
-	mdiaPayload, ok2, c2 := firstChildBox(trakPayload, "mdia")
+	mdiaPayload, ok2, c2 := firstChildBox(trakPayload, "mdia", tr)
 	if !ok2 {
 		return "", false, c1 || c2
 	}
-	minfPayload, ok3, c3 := firstChildBox(mdiaPayload, "minf")
+	minfPayload, ok3, c3 := firstChildBox(mdiaPayload, "minf", tr)
 	if !ok3 {
 		return "", false, c1 || c2 || c3
 	}
-	stblPayload, ok4, c4 := firstChildBox(minfPayload, "stbl")
+	stblPayload, ok4, c4 := firstChildBox(minfPayload, "stbl", tr)
 	if !ok4 {
 		return "", false, c1 || c2 || c3 || c4
 	}
-	stsdPayload, ok5, c5 := firstChildBox(stblPayload, "stsd")
+	stsdPayload, ok5, c5 := firstChildBox(stblPayload, "stsd", tr)
 	if !ok5 {
 		return "", false, c1 || c2 || c3 || c4 || c5
 	}
@@ -408,10 +408,11 @@ func parseSTSDCodec(b []byte) (codec string, ok bool) {
 // sibling boxes than the cap allows, and treating that exhaustion the same
 // as "genuinely absent" would misattribute THIS scan's own resource limit
 // to a fact about the file -- exactly the D-02a mistake, one level removed.
-func walkTopLevelBoxes(buf []byte, fn func(boxType string, payload []byte) bool) (ceilingHit bool) {
+func walkTopLevelBoxes(buf []byte, tr *Tracker, fn func(boxType string, payload []byte) bool) (ceilingHit bool) {
 	i := 0
 	for count := 0; i+8 <= len(buf); count++ {
 		if count >= maxISOBMFFBoxes {
+			tr.MarkCeilingHit()
 			return true
 		}
 		size64 := uint64(binary.BigEndian.Uint32(buf[i : i+4]))
@@ -443,8 +444,8 @@ func walkTopLevelBoxes(buf []byte, fn func(boxType string, payload []byte) bool)
 // within buf, whether it was found, and whether maxISOBMFFBoxes was
 // exhausted before an answer was reached (see walkTopLevelBoxes's own doc
 // comment for why callers must not collapse that into "not found").
-func firstChildBox(buf []byte, boxType string) (payload []byte, found bool, ceilingHit bool) {
-	ceilingHit = walkTopLevelBoxes(buf, func(t string, p []byte) bool {
+func firstChildBox(buf []byte, boxType string, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
+	ceilingHit = walkTopLevelBoxes(buf, tr, func(t string, p []byte) bool {
 		if t == boxType {
 			payload, found = p, true
 			return false
@@ -494,7 +495,7 @@ const (
 // in the OTHER direction: a small, fully-buffered, genuinely malformed mkv
 // would always mark the whole report selective even though nothing was
 // actually left unexamined.
-func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
+func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
 	winLen := int64(ebmlInfoWindow)
@@ -515,7 +516,7 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 		return c
 	}
 
-	segmentPayload, foundSegment, segCeilingHit := firstEBMLChild(buf, ebmlIDSegment)
+	segmentPayload, foundSegment, segCeilingHit := firstEBMLChild(buf, ebmlIDSegment, tr)
 	if !foundSegment {
 		reason := ebmlMissReason(windowCoversWholeFile, segCeilingHit)
 		c["duration_seconds"] = nil
@@ -525,14 +526,14 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 		return c
 	}
 
-	if durSec, ok, ceilingHit := findEBMLDuration(segmentPayload); ok {
+	if durSec, ok, ceilingHit := findEBMLDuration(segmentPayload, tr); ok {
 		c["duration_seconds"] = durSec
 	} else {
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(ebmlMissReason(windowCoversWholeFile, ceilingHit))
 	}
 
-	if codec, ok, ceilingHit := findEBMLCodecID(segmentPayload); ok {
+	if codec, ok, ceilingHit := findEBMLCodecID(segmentPayload, tr); ok {
 		c["declared_codec"] = codec
 	} else {
 		c["declared_codec"] = nil
@@ -557,25 +558,47 @@ func ebmlMissReason(windowCoversWholeFile, ceilingHit bool) Reason {
 // findEBMLDuration returns Duration (seconds) plus whether ANY step along
 // Segment -> Info -> Duration/TimestampScale hit firstEBMLChild's own
 // maxEBMLElements cap before an answer was reached.
-func findEBMLDuration(segment []byte) (durationSeconds float64, ok bool, ceilingHit bool) {
-	infoPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDInfo)
+func findEBMLDuration(segment []byte, tr *Tracker) (durationSeconds float64, ok bool, ceilingHit bool) {
+	infoPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDInfo, tr)
 	if !ok1 {
 		return 0, false, c1
 	}
 	// TimestampScale defaults to 1,000,000 (nanoseconds per timestamp unit)
-	// per the Matroska spec when the element is absent -- its own ceilingHit
-	// is deliberately not tracked into the result: a default is substituted
-	// either way, so whether the cap fired while looking for it changes
-	// nothing about whether Duration itself was found.
+	// per the Matroska spec when the element is absent (RFC 8794/Matroska).
+	// quick/260811-r3s (media.go:575 finding): that default is a legitimate
+	// substitution ONLY when TimestampScale is PROVEN absent -- not when its
+	// own search was cut short by maxEBMLElements. An earlier version of
+	// this function discarded firstEBMLChild's ceilingHit here ("a default
+	// is substituted either way, so whether the cap fired ... changes
+	// nothing"), which is exactly backwards: if Info places 512+ filler
+	// elements before a NON-default TimestampScale, this lookup exhausts its
+	// own cap, the separate Duration lookup below can still succeed, and the
+	// function would publish a duration computed against the WRONG
+	// (default) scale with complete-looking coverage. tsCeilingHit is
+	// tracked and, if Duration was otherwise found, forces a ceiling result
+	// instead of a computed value -- the same "unknown, not a guess"
+	// discipline D-02a already applies to checks, applied here to a
+	// characteristic's own default-value substitution.
 	timestampScale := uint64(1000000)
-	if tsBytes, ok, _ := firstEBMLChild(infoPayload, ebmlIDTimestamp); ok {
+	tsCeilingHit := false
+	if tsBytes, tsOK, tsCeil := firstEBMLChild(infoPayload, ebmlIDTimestamp, tr); tsOK {
 		if v, ok := ebmlReadUint(tsBytes); ok {
 			timestampScale = v
 		}
+	} else {
+		tsCeilingHit = tsCeil
 	}
-	durBytes, ok2, c2 := firstEBMLChild(infoPayload, ebmlIDDuration)
+	durBytes, ok2, c2 := firstEBMLChild(infoPayload, ebmlIDDuration, tr)
 	if !ok2 {
 		return 0, false, c1 || c2
+	}
+	if tsCeilingHit {
+		// Duration WAS found, but the scale needed to convert its raw value
+		// to seconds was never proven absent -- only unreached. Publishing
+		// durRaw against the unproven default would be a guess dressed as a
+		// fact (the same reasoning distinguishing clean from unknown,
+		// applied to a characteristic instead of a Check).
+		return 0, false, true
 	}
 	durRaw, ok3 := ebmlReadFloat(durBytes)
 	if !ok3 {
@@ -589,16 +612,16 @@ func findEBMLDuration(segment []byte) (durationSeconds float64, ok bool, ceiling
 
 // findEBMLCodecID returns the declared codec plus the same ceilingHit signal
 // as findEBMLDuration's own.
-func findEBMLCodecID(segment []byte) (codec string, ok bool, ceilingHit bool) {
-	tracksPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDTracks)
+func findEBMLCodecID(segment []byte, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
+	tracksPayload, ok1, c1 := firstEBMLChild(segment, ebmlIDTracks, tr)
 	if !ok1 {
 		return "", false, c1
 	}
-	trackEntryPayload, ok2, c2 := firstEBMLChild(tracksPayload, ebmlIDTrackEntry)
+	trackEntryPayload, ok2, c2 := firstEBMLChild(tracksPayload, ebmlIDTrackEntry, tr)
 	if !ok2 {
 		return "", false, c1 || c2
 	}
-	codecBytes, ok3, c3 := firstEBMLChild(trackEntryPayload, ebmlIDCodecID)
+	codecBytes, ok3, c3 := firstEBMLChild(trackEntryPayload, ebmlIDCodecID, tr)
 	if !ok3 {
 		return "", false, c1 || c2 || c3
 	}
@@ -608,8 +631,8 @@ func findEBMLCodecID(segment []byte) (codec string, ok bool, ceilingHit bool) {
 // firstEBMLChild returns the payload of the first element of id within buf,
 // whether it was found, and whether maxEBMLElements was exhausted before an
 // answer was reached (walkEBMLElements's own ceilingHit).
-func firstEBMLChild(buf []byte, id uint32) (payload []byte, found bool, ceilingHit bool) {
-	ceilingHit = walkEBMLElements(buf, func(gotID uint32, p []byte) bool {
+func firstEBMLChild(buf []byte, id uint32, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
+	ceilingHit = walkEBMLElements(buf, tr, func(gotID uint32, p []byte) bool {
 		if gotID == id {
 			payload, found = p, true
 			return false
@@ -633,10 +656,11 @@ func firstEBMLChild(buf []byte, id uint32) (payload []byte, found bool, ceilingH
 // ceilingHit reports whether maxEBMLElements -- not a malformed vint, not fn
 // returning false, not the end of buf -- is what stopped the walk (the EBML
 // analog of walkTopLevelBoxes's own ceilingHit, media.go's audit finding).
-func walkEBMLElements(buf []byte, fn func(id uint32, payload []byte) bool) (ceilingHit bool) {
+func walkEBMLElements(buf []byte, tr *Tracker, fn func(id uint32, payload []byte) bool) (ceilingHit bool) {
 	pos := 0
 	for count := 0; pos < len(buf); count++ {
 		if count >= maxEBMLElements {
+			tr.MarkCeilingHit()
 			return true
 		}
 		id, idLen, ok := ebmlReadIDVint(buf, pos)
@@ -757,7 +781,7 @@ func ebmlReadFloat(b []byte) (float64, bool) {
 // seen -- both are OUR OWN resource limits, exactly the D-02a class every
 // other analyzer in this package already closed. windowTruncated and
 // ceilingHit below close it here too.
-func wavCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
+func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
 	winLen := maxBytes
@@ -793,6 +817,7 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64) Characteristics {
 	for count := 0; pos+8 <= len(buf) && !(foundFmt && foundData); count++ {
 		if count >= maxRIFFChunks {
 			ceilingHit = true
+			tr.MarkCeilingHit()
 			break
 		}
 		chunkID := string(buf[pos : pos+4])

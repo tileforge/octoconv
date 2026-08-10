@@ -20,7 +20,7 @@ const maxMetadataMarkerScanIterations = 4096
 // AnalyzeImage extracts INSP-01 image characteristics and the two
 // image-applicable INSP-02 findings for one already format-detected image
 // upload.
-func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixelBombThreshold uint64) FamilyResult {
+func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixelBombThreshold uint64, tr *Tracker) FamilyResult {
 	c := Characteristics{}
 
 	// Reuse, not reimplement: the function referenced below is the ONLY
@@ -78,7 +78,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusClean})
 	}
 
-	loc, found, metaWindowTruncated := scanImageMetadata(format, r, size, maxBytes)
+	loc, found, metaWindowTruncated := scanImageMetadata(format, r, size, maxBytes, tr)
 	switch {
 	case found:
 		sev, _ := SeverityOf(CodeMetadataPresent)
@@ -113,7 +113,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // StatusClean whenever truncated is true and no marker was found. A miss
 // with truncated==false remains a legitimate StatusClean: the whole file
 // was actually inspected and nothing was there.
-func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (location string, found bool, truncated bool) {
+func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, truncated bool) {
 	winLen := maxBytes
 	if winLen > size {
 		winLen = size
@@ -138,10 +138,10 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (loca
 		// signal the caller (AnalyzeImage) treats identically -- this
 		// scan's own byte ceiling and its own iteration ceiling are both
 		// OUR resource limits, not facts about the file.
-		loc, ok, ceilingHit := scanJPEGMetadata(buf)
+		loc, ok, ceilingHit := scanJPEGMetadata(buf, tr)
 		return loc, ok, windowTruncated || ceilingHit
 	case "png":
-		loc, ok, ceilingHit := scanPNGMetadata(buf)
+		loc, ok, ceilingHit := scanPNGMetadata(buf, tr)
 		return loc, ok, windowTruncated || ceilingHit
 	case "tiff":
 		// A TIFF file carries an IFD by construction -- its presence is
@@ -157,7 +157,7 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (loca
 		// The JPEG and WebP walkers have the same shape (codex PR9 round 2's
 		// own phrasing, image.go:209) -- the same ceilingHit reasoning above
 		// applies here.
-		loc, ok, ceilingHit := scanRIFFChunkMetadata(buf)
+		loc, ok, ceilingHit := scanRIFFChunkMetadata(buf, tr)
 		return loc, ok, windowTruncated || ceilingHit
 	case "heic":
 		loc, ok := scanISOBMFFMetadataTokens(buf)
@@ -179,13 +179,14 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (loca
 // 4096+ harmless marker segments before an APP1 Exif/XMP segment, and this
 // cap would otherwise silently return a miss indistinguishable from "walked
 // every marker to EOI/SOS and found nothing".
-func scanJPEGMetadata(b []byte) (location string, found bool, ceilingHit bool) {
+func scanJPEGMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
 	if len(b) < 4 || b[0] != 0xFF || b[1] != 0xD8 {
 		return "", false, false
 	}
 	i := 2
 	for iter := 0; i+1 < len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
+			tr.MarkCeilingHit()
 			return "", false, true
 		}
 		if b[i] != 0xFF {
@@ -228,13 +229,14 @@ func scanJPEGMetadata(b []byte) (location string, found bool, ceilingHit bool) {
 // scanPNGMetadata walks PNG chunks after the 8-byte signature looking for
 // an eXIf chunk or an iTXt chunk carrying the Adobe XMP keyword. ceilingHit
 // is the same signal as scanJPEGMetadata's own -- see its doc comment.
-func scanPNGMetadata(b []byte) (location string, found bool, ceilingHit bool) {
+func scanPNGMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
 	if len(b) < 8 {
 		return "", false, false
 	}
 	pos := 8
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
+			tr.MarkCeilingHit()
 			return "", false, true
 		}
 		length := int(binary.BigEndian.Uint32(b[pos : pos+4]))
@@ -260,13 +262,14 @@ func scanPNGMetadata(b []byte) (location string, found bool, ceilingHit bool) {
 // RIFF/WEBP header) looking for an EXIF or XMP chunk. ceilingHit is the same
 // signal as scanJPEGMetadata's own -- codex PR9 round 2's own phrasing
 // ("The JPEG and WebP walkers have the same shape") applies literally here.
-func scanRIFFChunkMetadata(b []byte) (location string, found bool, ceilingHit bool) {
+func scanRIFFChunkMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
 	if len(b) < 12 {
 		return "", false, false
 	}
 	pos := 12
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
+			tr.MarkCeilingHit()
 			return "", false, true
 		}
 		fourCC := string(b[pos : pos+4])

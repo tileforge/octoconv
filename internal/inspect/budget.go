@@ -92,6 +92,15 @@ type Tracker struct {
 	start     time.Time
 	consumed  int64
 	exhausted Reason
+	// ceilingHit is the quick/260811-r3s receptacle: set directly by a
+	// scanner, from wherever it detects that its OWN local resource ceiling
+	// (an iteration/box/entry-count cap living INSIDE a family parser --
+	// window.go's maxTokenScanIterations, media.go's maxISOBMFFBoxes/
+	// maxEBMLElements/maxRIFFChunks, container.go's maxRelsPartBytes, ...)
+	// fired, NOT the byte/time budget Consume enforces above. See
+	// MarkCeilingHit's own doc comment for why this is a SEPARATE field
+	// from exhausted rather than reusing it.
+	ceilingHit bool
 }
 
 // NewTracker builds a Tracker for one inspect operation. b's zero fields
@@ -151,13 +160,81 @@ func (t *Tracker) Consume(n int64) bool {
 	return true
 }
 
-// ExhaustedReason returns the first ceiling this Tracker hit
-// (ReasonWorkCeilingBytes or ReasonWorkCeilingTime), or "" if neither
-// ceiling has been hit yet.
+// MarkCeilingHit is quick/260811-r3s's receptacle write: it records,
+// DIRECTLY on this operation's shared Tracker, that some scanner --
+// possibly several call frames deep inside a family analyzer -- stopped
+// work early because of its OWN local resource ceiling (see this type's
+// own doc comment for the distinction from Consume's byte/time budget).
+// Once marked, ExhaustedReason/Exhausted report a ceiling for the rest of
+// this Tracker's lifetime, and BuildReport's Coverage claim can never come
+// back Complete:true for this operation -- regardless of what any
+// individual Check or characteristic's own Reason field ends up saying.
+//
+// This is the mechanism that makes the class of defect quick/260811-r3s
+// exists to close structurally impossible: three review rounds each found
+// a caller several layers up that forgot to thread a local ceilingHit
+// signal into a Check.Reason or a characteristic's "<name>_reason" key,
+// silently leaving Coverage.Complete:true on a selective report. Coverage
+// no longer depends on any one caller getting that threading right --
+// MarkCeilingHit is called at the exact point each scanner detects its own
+// ceiling, and BuildReport reads the union of every scanner's marks
+// directly, with nothing for an intermediate caller to drop.
+//
+// A SEPARATE field from exhausted (Consume's own byte/time signal) rather
+// than reusing it: reusing exhausted would make Consume's own
+// "time-checked-before-bytes, first-reason-wins" contract ambiguous about
+// which of two entirely different ceilings actually fired first, and would
+// also make a local ceiling hit short-circuit every SUBSEQUENT Consume call
+// for the rest of the operation (Consume's own first line: "if
+// t.exhausted != \"\" { return false }") -- a side effect this quick task's
+// design explicitly does not require and that could change existing
+// Consume-driven truncation behavior in ways no test here exercises.
+// ExhaustedReason/Exhausted below read BOTH fields, so the observable
+// contract (a report-wide "is this operation's own ceiling exhausted"
+// answer) is a strict superset of what it was before, without touching
+// Consume's own byte/time semantics at all.
+//
+// Every local ceiling this package currently detects maps to
+// ReasonWorkCeilingBytes -- exactly the existing convention every scanner
+// already uses when translating its own local ceilingHit into a
+// Check/characteristic Reason (e.g. extractXLSXSheetCount, scanJPEGMetadata)
+// -- so MarkCeilingHit does not take a Reason parameter; it always means
+// "the same kind of thing Consume's own byte ceiling means", just detected
+// somewhere Consume itself was never called.
+//
+// A nil receiver is a safe no-op: every family analyzer in this package
+// accepts a possibly-nil *Tracker (a caller/test exercising one family in
+// isolation, exactly like BuildReport's own nil-tolerant tr), and a scanner
+// several calls deep must be free to call tr.MarkCeilingHit() unconditionally
+// without every call site re-checking tr != nil first.
+func (t *Tracker) MarkCeilingHit() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ceilingHit = true
+}
+
+// ExhaustedReason returns the first ceiling this Tracker hit --
+// ReasonWorkCeilingBytes or ReasonWorkCeilingTime from Consume's own
+// byte/time budget, or ReasonWorkCeilingBytes if only MarkCeilingHit's
+// receptacle was marked (see MarkCeilingHit's own doc comment for why a
+// local ceiling always reports as the bytes reason) -- or "" if neither has
+// ever fired. Consume's own exhausted field is checked first: if the shared
+// byte/time budget already has a reason latched, that is definitionally the
+// FIRST ceiling this Tracker hit in wall-clock terms among the two fields,
+// consistent with Consume's own first-reason-wins contract.
 func (t *Tracker) ExhaustedReason() Reason {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.exhausted
+	if t.exhausted != "" {
+		return t.exhausted
+	}
+	if t.ceilingHit {
+		return ReasonWorkCeilingBytes
+	}
+	return ""
 }
 
 // Exhausted reports whether either ceiling has been hit.

@@ -27,7 +27,7 @@ func checkByCodeT(t *testing.T, checks []Check, code Code) Check {
 // image-domain codes carry AnalyzeImage's real result.
 func TestBuildReportPNGCompletesPDFAndCFBBlocksAsNotApplicable(t *testing.T) {
 	data := pngFixture(100, 100)
-	img := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	img := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	tr := NewTracker(Budget{})
 
 	r := BuildReport("png", "png", int64(len(data)), tr, img)
@@ -60,13 +60,13 @@ func TestBuildReportPNGCompletesPDFAndCFBBlocksAsNotApplicable(t *testing.T) {
 // zero families at all (an unrecognized/unsupported format).
 func TestBuildReportSatisfiesUnionInvariant(t *testing.T) {
 	pngData := pngFixture(100, 100)
-	img := AnalyzeImage("png", bytes.NewReader(pngData), int64(len(pngData)), int64(len(pngData)), 1<<30)
+	img := AnalyzeImage("png", bytes.NewReader(pngData), int64(len(pngData)), int64(len(pngData)), 1<<30, nil)
 
 	pdfData := cleanPDFFixture()
-	pdf := AnalyzePDF(bytes.NewReader(pdfData), int64(len(pdfData)), int64(len(pdfData)))
+	pdf := AnalyzePDF(bytes.NewReader(pdfData), int64(len(pdfData)), int64(len(pdfData)), nil)
 
 	jsData := jsPDFFixture()
-	jsPDF := AnalyzePDF(bytes.NewReader(jsData), int64(len(jsData)), int64(len(jsData)))
+	jsPDF := AnalyzePDF(bytes.NewReader(jsData), int64(len(jsData)), int64(len(jsData)), nil)
 
 	cases := []struct {
 		name     string
@@ -93,7 +93,7 @@ func TestBuildReportSatisfiesUnionInvariant(t *testing.T) {
 // ValidateReport's aggregate error).
 func TestBuildReportExcludesCodeFromChecksWhenInFindings(t *testing.T) {
 	jsData := jsPDFFixture()
-	pdf := AnalyzePDF(bytes.NewReader(jsData), int64(len(jsData)), int64(len(jsData)))
+	pdf := AnalyzePDF(bytes.NewReader(jsData), int64(len(jsData)), int64(len(jsData)), nil)
 
 	r := BuildReport("pdf", "pdf", int64(len(jsData)), NewTracker(Budget{}), pdf)
 
@@ -126,7 +126,7 @@ func TestBuildReportWorkCeilingBytesMarksCoveragePartial(t *testing.T) {
 	data := cleanPDFFixture()
 	padded := append(data, bytes.Repeat([]byte(" "), 1024)...)
 	maxBytes := int64(len(data)) // smaller than len(padded): forces truncated=true
-	pdf := AnalyzePDF(bytes.NewReader(padded), int64(len(padded)), maxBytes)
+	pdf := AnalyzePDF(bytes.NewReader(padded), int64(len(padded)), maxBytes, nil)
 
 	tr := NewTracker(Budget{MaxBytes: maxBytes, MaxDuration: defaultMaxDuration})
 	tr.Consume(maxBytes) // exhausts the byte ceiling, mirroring what the real dispatcher would do
@@ -169,7 +169,7 @@ func TestBuildReportWorkCeilingBytesMarksCoveragePartial(t *testing.T) {
 // NOT mark the report partial -- Coverage.Complete stays true.
 func TestBuildReportStructuralUnknownKeepsCoverageComplete(t *testing.T) {
 	data := objStmPDFFixture()
-	pdf := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	pdf := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	sawCompressedUnknown := false
 	for _, c := range pdf.Checks {
@@ -269,7 +269,7 @@ func TestBuildReportUnrecognizedFormatYieldsUnknownNotNotApplicable(t *testing.T
 // deterministically ordered, independent of family call order.
 func TestBuildReportFindingsSortedByCode(t *testing.T) {
 	data := jsAndObjStmPDFFixture()
-	pdf := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)))
+	pdf := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 
 	r := BuildReport("pdf", "pdf", int64(len(data)), NewTracker(Budget{}), pdf)
 
@@ -285,7 +285,7 @@ func TestBuildReportFindingsSortedByCode(t *testing.T) {
 // (e.g. insertion order from whichever family happened to run).
 func TestBuildReportChecksSortedInAllCodesOrder(t *testing.T) {
 	data := pngFixture(100, 100)
-	img := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	img := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	r := BuildReport("png", "png", int64(len(data)), NewTracker(Budget{}), img)
 
@@ -404,6 +404,73 @@ func TestBuildReportFamilyCharacteristicKeysDoNotCollide(t *testing.T) {
 				t.Errorf("%s vs %s: unexpected key collision %v", names[i], names[j], got)
 			}
 		}
+	}
+}
+
+// TestBuildReportCallerMarkedCeilingHitAloneMakesCoverageIncomplete is
+// quick/260811-r3s's central acceptance-criteria proof: a scanner marks
+// exhaustion on the shared Tracker (tr.MarkCeilingHit()), and the CALLER
+// does NOTHING special -- no Check carries a ceiling Reason, no
+// characteristic "<name>_reason" key carries one either. Coverage.Complete
+// must still be false, because BuildReport reads completeness from the
+// receptacle directly, not from anything a caller had to remember to thread
+// through a Check or characteristic. This is the property three review
+// rounds each found a caller failing to uphold by hand; the receptacle
+// makes it structurally impossible to get wrong.
+func TestBuildReportCallerMarkedCeilingHitAloneMakesCoverageIncomplete(t *testing.T) {
+	tr := NewTracker(Budget{})
+	tr.MarkCeilingHit() // simulates a scanner several calls deep hitting its own local ceiling
+
+	// A FamilyResult with ZERO ceiling-carrying Check/characteristic Reason
+	// anywhere -- everything here is StatusClean, the caller "did nothing
+	// special" to propagate the ceiling.
+	fr := FamilyResult{
+		Characteristics: Characteristics{"declared_format": "png"},
+		Checks: []Check{
+			{Code: CodeImagePixelBombShape, Status: StatusClean},
+			{Code: CodeMetadataPresent, Status: StatusClean},
+		},
+	}
+
+	r := BuildReport("png", "png", 100, tr, fr)
+
+	for _, c := range r.Checks {
+		if c.Reason == ReasonWorkCeilingBytes || c.Reason == ReasonWorkCeilingTime {
+			t.Fatalf("test setup error: expected zero Checks carrying a ceiling Reason, got %+v -- this test is specifically about a receptacle-ONLY signal with nothing threaded through Checks", c)
+		}
+	}
+	if r.Coverage.Complete {
+		t.Fatal("Coverage.Complete = true, want false -- tr.MarkCeilingHit() was called directly and nothing else propagated it, proving the receptacle alone drives Coverage")
+	}
+	if r.Coverage.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Coverage.Reason = %s, want %s", r.Coverage.Reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestBuildReportStructuralBlindnessKeepsCompleteWhileCeilingHitDoesNot is a
+// SIDE-BY-SIDE proof that the two kinds of incompleteness (status.go's own
+// central distinction) remain separated after quick/260811-r3s's refactor:
+// an /ObjStm PDF (structural blindness about the FILE) leaves Coverage
+// complete, while an otherwise-identical Tracker on which MarkCeilingHit was
+// called (this service's own ceiling) does not -- proving the receptacle
+// carries the distinction rather than collapsing it into "something is
+// wrong".
+func TestBuildReportStructuralBlindnessKeepsCompleteWhileCeilingHitDoesNot(t *testing.T) {
+	data := objStmPDFFixture()
+
+	trStructural := NewTracker(Budget{})
+	pdfStructural := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), trStructural)
+	rStructural := BuildReport("pdf", "pdf", int64(len(data)), trStructural, pdfStructural)
+	if !rStructural.Coverage.Complete {
+		t.Fatalf("structural /ObjStm blindness: Coverage.Complete = false, want true (trStructural was never marked -- AnalyzePDF's own /ObjStm downgrade must not touch the receptacle)")
+	}
+
+	trCeiling := NewTracker(Budget{})
+	pdfCeiling := AnalyzePDF(bytes.NewReader(data), int64(len(data)), int64(len(data)), trCeiling)
+	trCeiling.MarkCeilingHit() // simulates this service's own ceiling firing somewhere in the same operation
+	rCeiling := BuildReport("pdf", "pdf", int64(len(data)), trCeiling, pdfCeiling)
+	if rCeiling.Coverage.Complete {
+		t.Fatal("ceiling-hit case: Coverage.Complete = true, want false -- the receptacle must make this selective even though AnalyzePDF's own Checks look identical to the structural case above")
 	}
 }
 

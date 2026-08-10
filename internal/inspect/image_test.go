@@ -84,7 +84,7 @@ func assertCheckStatus(t *testing.T, res FamilyResult, code Code, status CheckSt
 
 func TestAnalyzeImagePNGDimensions(t *testing.T) {
 	data := pngFixture(100, 50)
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	w, ok := res.Characteristics["width"].(uint32)
 	if !ok || w != 100 {
@@ -102,14 +102,14 @@ func TestAnalyzeImagePNGDimensions(t *testing.T) {
 
 func TestAnalyzeImagePixelBombShapeFinding(t *testing.T) {
 	data := pngFixture(100000, 100000) // 10 billion declared pixels
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<20)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<20, nil)
 	assertFinding(t, res, CodeImagePixelBombShape)
 }
 
 func TestAnalyzeImagePixelProductDoesNotOverflow(t *testing.T) {
 	const big = 0xFFFFFFFE // just under max-uint32
 	data := pngFixture(big, big)
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<40)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<40, nil)
 
 	pixels, ok := res.Characteristics["pixels"].(uint64)
 	if !ok {
@@ -125,27 +125,27 @@ func TestAnalyzeImagePixelProductDoesNotOverflow(t *testing.T) {
 func TestAnalyzeImageJPEGWithEXIFAPP1IsMetadataPresent(t *testing.T) {
 	app1 := append([]byte("Exif\x00\x00"), []byte{0x4D, 0x4D, 0, 0}...)
 	data := jpegFixtureWithAPP1(app1, 100, 50)
-	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	assertFinding(t, res, CodeMetadataPresent)
 }
 
 func TestAnalyzeImageJPEGWithXMPAPP1IsMetadataPresent(t *testing.T) {
 	app1 := append([]byte("http://ns.adobe.com/xap/1.0/\x00"), []byte("<x:xmpmeta/>")...)
 	data := jpegFixtureWithAPP1(app1, 100, 50)
-	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	assertFinding(t, res, CodeMetadataPresent)
 }
 
 func TestAnalyzeImagePNGWithEXIfChunkIsMetadataPresent(t *testing.T) {
 	data := pngFixture(10, 10)
 	data = pngAppendChunk(data, "eXIf", []byte{0, 0, 0, 0})
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	assertFinding(t, res, CodeMetadataPresent)
 }
 
 func TestAnalyzeImageCleanPNGHasCleanChecks(t *testing.T) {
 	data := pngFixture(10, 10)
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
 	assertCheckStatus(t, res, CodeImagePixelBombShape, StatusClean)
 }
@@ -156,7 +156,7 @@ func TestAnalyzeImageCleanPNGHasCleanChecks(t *testing.T) {
 // "we don't know" is not "we know there is no bomb" (T-58-26).
 func TestAnalyzeImageUnknownDimensionsNeverReportClean(t *testing.T) {
 	data := pngFixture(100, 50)[:20] // truncated before IHDR's width/height are fully readable
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	assertCheckStatus(t, res, CodeImagePixelBombShape, StatusUnknown)
 	if res.Characteristics["width"] != nil {
@@ -180,7 +180,7 @@ func TestAnalyzeImageMetadataPastWindowIsUnknownNotClean(t *testing.T) {
 	data = pngAppendChunk(data, "eXIf", []byte{0, 0, 0, 0})
 
 	const window = 33 // covers exactly the IHDR chunk, ends before the eXIf chunk appended above
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), window, 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), window, 1<<30, nil)
 
 	if _, ok := findingFor(res, CodeMetadataPresent); ok {
 		t.Fatal("got a Finding for metadata_present -- the eXIf chunk sits past the read window and must never be reported as found")
@@ -208,7 +208,7 @@ func TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean(t *testing.T) {
 
 	// maxBytes covers the ENTIRE file -- the byte-window truncation flag
 	// must be false, isolating this test to the iteration-ceiling path.
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if _, ok := findingFor(res, CodeMetadataPresent); ok {
 		t.Fatal("got a Finding for metadata_present -- the eXIf chunk sits past the iteration ceiling and must never be reported as found")
@@ -237,7 +237,7 @@ func TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean(t *testing.T) {
 	data = append(data, filler...)
 	data = append(data, jpegSegment(0xE1, app1)...) // APP1 Exif, past the ceiling
 
-	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if _, ok := findingFor(res, CodeMetadataPresent); ok {
 		t.Fatal("got a Finding for metadata_present -- the APP1 Exif segment sits past the iteration ceiling and must never be reported as found")
@@ -260,7 +260,7 @@ func TestAnalyzeImageWebPIterationCeilingIsUnknownNotClean(t *testing.T) {
 	data = append(data, riffChunk("EXIF", []byte{0, 0, 0, 0})...)
 	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
 
-	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	if _, ok := findingFor(res, CodeMetadataPresent); ok {
 		t.Fatal("got a Finding for metadata_present -- the EXIF chunk sits past the iteration ceiling and must never be reported as found")
@@ -290,7 +290,7 @@ func riffChunk(fourCC string, data []byte) []byte {
 func TestAnalyzeImageMetadataLocationNamesMarker(t *testing.T) {
 	app1 := append([]byte("Exif\x00\x00"), []byte{0, 0, 0, 0}...)
 	data := jpegFixtureWithAPP1(app1, 100, 50)
-	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 
 	f := assertFinding(t, res, CodeMetadataPresent)
 	if f.Location == "" {
@@ -300,7 +300,7 @@ func TestAnalyzeImageMetadataLocationNamesMarker(t *testing.T) {
 
 func TestAnalyzeImageDeclaredFormatIsPresent(t *testing.T) {
 	data := pngFixture(10, 10)
-	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	if res.Characteristics["declared_format"] != "png" {
 		t.Fatalf("declared_format = %#v, want %q", res.Characteristics["declared_format"], "png")
 	}
@@ -326,7 +326,7 @@ func TestAnalyzeImageNeverPanics(t *testing.T) {
 					t.Fatalf("AnalyzeImage panicked: %v", p)
 				}
 			}()
-			_ = AnalyzeImage(tc.format, bytes.NewReader(tc.data), tc.size, tc.size, 1<<30)
+			_ = AnalyzeImage(tc.format, bytes.NewReader(tc.data), tc.size, tc.size, 1<<30, nil)
 		})
 	}
 }

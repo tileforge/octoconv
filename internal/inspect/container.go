@@ -93,7 +93,7 @@ var ooxmlMacroPartNames = map[string]bool{
 // ratio than the request-creation path would ever act on. It never returns
 // an error: any parse failure becomes an unknown-status Check, exactly
 // like AnalyzePDF (D-01's "unknown is a correct answer, not a failure").
-func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64) FamilyResult {
+func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64, tr *Tracker) FamilyResult {
 	res := FamilyResult{Characteristics: Characteristics{}}
 
 	// The one and only call in this file to the shared sniffer: it owns the
@@ -104,7 +104,7 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 	if err != nil {
 		return notApplicableContainerResult(res)
 	}
-	return AnalyzeContainerWith(cr, r, size, maxBytes, bombThreshold)
+	return AnalyzeContainerWith(cr, r, size, maxBytes, bombThreshold, tr)
 }
 
 // AnalyzeContainerWith is AnalyzeContainer for a caller that has ALREADY
@@ -121,7 +121,7 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 //
 // Callers that have no ContainerResult in hand should keep using
 // AnalyzeContainer, which sniffs and delegates here.
-func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64) FamilyResult {
+func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64, tr *Tracker) FamilyResult {
 	res := FamilyResult{Characteristics: Characteristics{}}
 
 	if cr.DuplicateRootPart {
@@ -154,8 +154,8 @@ func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64,
 
 	appendMacroResult(&res, zr, cr.HasMacro)
 	appendBombResult(&res, cr.TotalUncompressed, bombThreshold)
-	appendExternalReferenceResult(&res, zr, cr.Format, maxBytes)
-	setSheetAndPageCharacteristics(&res, zr, cr.Format)
+	appendExternalReferenceResult(&res, zr, cr.Format, maxBytes, tr)
+	setSheetAndPageCharacteristics(&res, zr, cr.Format, tr)
 
 	return res
 }
@@ -237,8 +237,8 @@ func appendBombResult(res *FamilyResult, totalUncompressed, bombThreshold uint64
 // The first match found stops the scan immediately: one finding is enough
 // to answer the question, and continuing to scan after that would only
 // spend more of maxBytes' budget for an answer already known.
-func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, maxBytes int64) {
-	loc, ceilingHit := scanExternalReferences(zr, format, maxBytes)
+func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, maxBytes int64, tr *Tracker) {
+	loc, ceilingHit := scanExternalReferences(zr, format, maxBytes, tr)
 	switch {
 	case loc != "":
 		sev, _ := SeverityOf(CodeExternalReference)
@@ -277,7 +277,7 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 // this scan could not decode it, has not actually been ruled clean, and
 // reporting it as such would be a false claim of completeness driven by
 // this scan's own limits, not by the part's real content.
-func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (location string, ceilingHit bool) {
+func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *Tracker) (location string, ceilingHit bool) {
 	partsOpened := 0
 	budgetLeft := maxBytes
 	if budgetLeft <= 0 {
@@ -287,12 +287,14 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 
 	for i, f := range zr.File {
 		if i >= maxZipEntriesScanned {
+			tr.MarkCeilingHit()
 			return "", true
 		}
 		if !isExternalRefCandidate(f.Name, format) {
 			continue
 		}
 		if partsOpened >= maxRelsPartsScanned {
+			tr.MarkCeilingHit()
 			return "", true
 		}
 		partsOpened++
@@ -320,9 +322,11 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 		// io.LimitReader-truncation branch below sets it.
 		if f.UncompressedSize64 > uint64(maxRelsPartBytes) {
 			truncatedAnyPart = true
+			tr.MarkCeilingHit()
 			continue
 		}
 		if budgetLeft <= 0 {
+			tr.MarkCeilingHit()
 			return "", true
 		}
 
@@ -342,6 +346,7 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 			// `continue`-ing here would let the caller report the whole
 			// file clean having inspected none of its content.
 			truncatedAnyPart = true
+			tr.MarkCeilingHit()
 			continue
 		}
 		data, readErr := io.ReadAll(io.LimitReader(rc, limit))
@@ -361,6 +366,7 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 			// read is not proof the marker is absent from the rest of the
 			// part this scan never got to see.
 			truncatedAnyPart = true
+			tr.MarkCeilingHit()
 		}
 		// A read that filled the entire allowance handed to io.LimitReader
 		// is indistinguishable, from here, between "the part's real content
@@ -370,6 +376,7 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 		// by maxBytes never gets to claim clean.
 		if int64(len(data)) >= limit {
 			truncatedAnyPart = true
+			tr.MarkCeilingHit()
 		}
 	}
 	if truncatedAnyPart {
@@ -430,10 +437,10 @@ func containsExternalReference(data []byte, format string) bool {
 // container). Reporting an honest nil here is not laziness, it is the same
 // discipline PROG-V2-02 already applies elsewhere in this project: a
 // guessed number is worse than an admitted unknown.
-func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format string) {
+func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format string, tr *Tracker) {
 	switch format {
 	case "xlsx":
-		if n, ok, ceilingHit := extractXLSXSheetCount(zr); ok {
+		if n, ok, ceilingHit := extractXLSXSheetCount(zr, tr); ok {
 			res.Characteristics["sheet_count"] = n
 		} else {
 			// codex PR9 round 2 audit finding (container.go, found applying
@@ -472,26 +479,51 @@ func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format st
 // maxBytes-sized window).
 //
 // ceilingHit distinguishes THIS scan's own refusal to read the part
-// (declared size exceeding maxRelsPartBytes, f.Open failing, or io.ReadAll
-// erroring) from workbook.xml genuinely not existing in the archive --
-// audit finding applying scanExternalReferences's own already-fixed
-// discipline to this function, which had not been touched by either review
-// round.
-func extractXLSXSheetCount(zr *zip.Reader) (count int, ok bool, ceilingHit bool) {
+// (declared size exceeding maxRelsPartBytes, f.Open failing, io.ReadAll
+// erroring, or the LimitReader-boundary trap below) from workbook.xml
+// genuinely not existing in the archive -- audit finding applying
+// scanExternalReferences's own already-fixed discipline to this function,
+// which had not been touched by either review round.
+//
+// quick/260811-r3s (container.go:497 finding): io.LimitReader(rc,
+// maxRelsPartBytes) returns EXACTLY maxRelsPartBytes bytes with io.EOF==nil
+// when the real part decompresses to MORE than that -- io.LimitReader never
+// asks rc for one more byte once its own limit is reached, so a part that is
+// truncated at the boundary is byte-for-byte indistinguishable from a part
+// whose real content happens to end exactly there. The fix reads ONE EXTRA
+// byte (maxRelsPartBytes+1): if that many bytes actually come back, the part
+// exceeded this scan's budget and every <sheet> element past byte
+// maxRelsPartBytes was never seen -- reporting a count computed from a
+// truncated prefix would have silently omitted trailing sheets, exactly the
+// finding's own worked example ("a ZIP entry declaring exactly
+// maxRelsPartBytes but decompressing to more data").
+func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, ceilingHit bool) {
 	for _, f := range zr.File {
 		if f.Name != "xl/workbook.xml" {
 			continue
 		}
 		if f.UncompressedSize64 > uint64(maxRelsPartBytes) {
+			tr.MarkCeilingHit()
 			return 0, false, true
 		}
 		rc, err := f.Open()
 		if err != nil {
+			tr.MarkCeilingHit()
 			return 0, false, true
 		}
-		data, readErr := io.ReadAll(io.LimitReader(rc, maxRelsPartBytes))
+		data, readErr := io.ReadAll(io.LimitReader(rc, maxRelsPartBytes+1))
 		rc.Close()
 		if readErr != nil {
+			tr.MarkCeilingHit()
+			return 0, false, true
+		}
+		if int64(len(data)) > maxRelsPartBytes {
+			// The extra byte came back: this part's real content runs past
+			// what this scan is willing to read. A count computed from the
+			// maxRelsPartBytes-byte prefix could silently omit sheets
+			// declared after that boundary -- our own ceiling, not a fact
+			// about the workbook, so no partial count is published.
+			tr.MarkCeilingHit()
 			return 0, false, true
 		}
 		return countSheetElements(data), true, false
