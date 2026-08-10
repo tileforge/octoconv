@@ -32,9 +32,9 @@ func AllStatuses() []CheckStatus {
 
 // Reason is a closed vocabulary explaining WHY a Check's status is not
 // clean. Only ReasonFormatNotApplicable is a legitimate reason for
-// StatusNotApplicable; the other five explain a StatusUnknown result.
+// StatusNotApplicable; the rest explain a StatusUnknown result.
 //
-// The line that matters most in this type (D-02a/INSP-03): the first four
+// The line that matters most in this type (D-02a/INSP-03): the first six
 // reasons below are properties of the FILE or of this BUILD -- they
 // produce an unknown status on one check, but never make the report itself
 // partial. The last two are properties of THIS SERVICE'S OWN LOAD -- and
@@ -51,6 +51,22 @@ const (
 	// objects inside /ObjStm, which a byte scan cannot see (D-02a). The
 	// primary trigger for StatusUnknown in this phase.
 	ReasonCompressedObjectStreams = "compressed_object_streams"
+	// ReasonPDFNameEscape: a PDF name used a hexadecimal escape ("#XX")
+	// this scanner's literal-byte token tables cannot recognize (codex PR9
+	// finding 1 / T-SLE-01). Deliberately a DIFFERENT reason from
+	// ReasonCompressedObjectStreams: it is a different blind spot (an
+	// escape this build chooses not to decode, not an object stream this
+	// build cannot see into at all) -- collapsing the two would make it
+	// impossible for a future reader to tell which one actually fired.
+	ReasonPDFNameEscape = "pdf_name_escape"
+	// ReasonPDFStreamBodyToken: a risk-token literal was found ONLY inside
+	// a PDF stream body or comment, never in ordinary dictionary syntax
+	// (codex PR9 finding 2 / T-SLE-02). Lexical filtering correctly refuses
+	// to promote that occurrence to a Finding (it cannot verify the bytes
+	// are really a PDF name rather than coincidental opaque payload
+	// content), but the same filtering must never fall back to StatusClean
+	// either -- this reason is the honest middle ground.
+	ReasonPDFStreamBodyToken = "pdf_stream_body_token"
 	// ReasonParserUnavailable: no parser has been written for this
 	// characteristic/finding in this build (D-01: an honest answer, not a
 	// failure).

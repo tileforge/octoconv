@@ -170,22 +170,62 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 	compressed := containsCompressionSignal(head) || (tailOK && containsCompressionSignal(tail))
 	res.Characteristics["uses_compressed_object_streams"] = compressed
 
+	// STEP 1b (codex PR9 finding 1 / T-SLE-01) -- PDF names permit
+	// hexadecimal escapes ("#XX"), so a dictionary can spell /JavaScript as
+	// /Java#53cript. This scanner recognizes only literal byte spellings
+	// (pdfRiskTokens above), so a name using an escape would otherwise be
+	// invisible to it -- option (б) from 58-CONTEXT.md's own discipline
+	// (bounded, no new parsing): rather than writing a PDF name-escape
+	// decoder, ANY "#" byte in a position syntactically possible inside a
+	// name (immediately after an unterminated "/" token, before the next
+	// PDF delimiter/whitespace) downgrades this whole block to unknown,
+	// exactly like /ObjStm does. This is deliberately a DIFFERENT Reason
+	// from ReasonCompressedObjectStreams: it is a different blind spot (an
+	// escape this scanner chose not to decode, not a compressed object
+	// stream this scanner cannot see into at all), and collapsing the two
+	// would rob a future reader of the ability to tell which one fired.
+	hexEscape := containsPDFNameHexEscape(head) || (tailOK && containsPDFNameHexEscape(tail))
+
 	if v, ok := extractPDFVersion(head); ok {
 		res.Characteristics["pdf_version"] = v
+	}
+
+	headOpaque := scanPDFOpaqueRanges(head)
+	var tailOpaque []pdfOpaqueRange
+	if tailOK {
+		tailOpaque = scanPDFOpaqueRanges(tail)
 	}
 
 	// STEP 2/3/4: token-scan every risk code, then apply the single verdict
 	// rule (verdictForCode) uniformly to every one of them.
 	for _, rt := range pdfRiskTokens {
-		pos, found := firstTokenLocation(head, rt.tokens)
+		pos, found := firstTokenLocationOutsideOpaqueRanges(head, rt.tokens, headOpaque)
 		loc := pos
+		// matchedInsideOpaque tracks "this literal occurs SOMEWHERE in the
+		// scanned bytes, but only inside a stream body or a comment"
+		// (codex PR9 finding 2 / T-SLE-02): the lexical filter above
+		// correctly refuses to promote that occurrence to a Finding (a
+		// stream body's compressed/opaque payload bytes are not a PDF name
+		// in an action dictionary), but it must NEVER be allowed to fall
+		// through to the ordinary verdict rule below either -- that rule
+		// would report StatusClean for "no match found outside opaque
+		// ranges", which is a false claim of absence when a match exists,
+		// just one this scanner cannot verify. See the two branches below.
+		matchedInsideOpaque := false
+		if !found {
+			if _, anyFound := firstTokenLocation(head, rt.tokens); anyFound {
+				matchedInsideOpaque = true
+			}
+		}
 		if !found && rt.code == CodePDFEncrypted && tailOK {
 			// /Encrypt lives in the trailer or the XRef-stream dict, which
 			// is conventionally at the file's tail -- scan there too for
 			// this one code (58-RESEARCH.md Q1).
-			if tpos, tfound := firstTokenLocation(tail, rt.tokens); tfound {
+			if tpos, tfound := firstTokenLocationOutsideOpaqueRanges(tail, rt.tokens, tailOpaque); tfound {
 				found = true
 				loc = int(tailOff) + tpos
+			} else if _, anyFoundTail := firstTokenLocation(tail, rt.tokens); anyFoundTail {
+				matchedInsideOpaque = true
 			}
 		}
 
@@ -196,6 +236,11 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 				Severity: sev,
 				Location: strconv.Itoa(loc),
 			})
+			continue
+		}
+
+		if matchedInsideOpaque {
+			res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonPDFStreamBodyToken})
 			continue
 		}
 
@@ -217,12 +262,12 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 		// safe redundancy for an unverified one.
 		res.Checks = append(res.Checks, Check{
 			Code:   rt.code,
-			Status: verdictStatus(compressed, truncated),
-			Reason: verdictReason(compressed, truncated),
+			Status: verdictStatus(compressed, truncated, hexEscape),
+			Reason: verdictReason(compressed, truncated, hexEscape),
 		})
 	}
 
-	count, reason := extractPDFPageCount(head, compressed, truncated)
+	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape)
 	if count != nil {
 		res.Characteristics["page_count"] = *count
 	} else {
@@ -241,22 +286,25 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64) FamilyResult {
 // ever called) is subject to:
 //
 //   - compression signal present -> StatusUnknown / ReasonCompressedObjectStreams
-//   - no compression signal, but OUR OWN byte ceiling truncated the window -> StatusUnknown / ReasonWorkCeilingBytes
-//   - neither -> StatusClean
+//   - no compression signal, but a hex-escaped name was seen -> StatusUnknown / ReasonPDFNameEscape
+//   - neither of the above, but OUR OWN byte ceiling truncated the window -> StatusUnknown / ReasonWorkCeilingBytes
+//   - none of the above -> StatusClean
 //
 // Split into two functions purely so the call site above reads as "status,
-// reason" rather than duplicating the same three-way branch twice.
-func verdictStatus(compressed, truncated bool) CheckStatus {
-	if compressed || truncated {
+// reason" rather than duplicating the same four-way branch twice.
+func verdictStatus(compressed, truncated, hexEscape bool) CheckStatus {
+	if compressed || truncated || hexEscape {
 		return StatusUnknown
 	}
 	return StatusClean
 }
 
-func verdictReason(compressed, truncated bool) Reason {
+func verdictReason(compressed, truncated, hexEscape bool) Reason {
 	switch {
 	case compressed:
 		return ReasonCompressedObjectStreams
+	case hexEscape:
+		return ReasonPDFNameEscape
 	case truncated:
 		return ReasonWorkCeilingBytes
 	default:
@@ -306,6 +354,179 @@ func firstTokenLocation(buf []byte, tokens [][]byte) (int, bool) {
 	for _, tok := range tokens {
 		if idx := bytes.Index(buf, tok); idx >= 0 && (best < 0 || idx < best) {
 			best = idx
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+	return best, true
+}
+
+// isPDFNameByte reports whether b can appear inside a PDF name token (ISO
+// 32000 §7.3.5): anything except whitespace and the eight delimiter
+// characters. A name STARTS at "/" and runs until the first byte for which
+// this returns false -- that is the boundary this file uses to decide
+// whether a "#" sits in a position syntactically possible inside a name.
+func isPDFNameByte(b byte) bool {
+	switch b {
+	case 0x00, 0x09, 0x0A, 0x0C, 0x0D, 0x20, // whitespace (ISO 32000 Table 1)
+		'(', ')', '<', '>', '[', ']', '{', '}', '/', '%': // delimiters
+		return false
+	}
+	return true
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'A' && b <= 'F') || (b >= 'a' && b <= 'f')
+}
+
+// containsPDFNameHexEscape reports whether buf contains a "/" immediately
+// followed (within the same unbroken run of name bytes) by a "#" spelled
+// with two hex digits -- codex PR9 finding 1 / T-SLE-01. This is
+// deliberately NOT a name-escape decoder: it is the cheaper, conservative
+// alternative 58-CONTEXT.md's own D-01/D-02 discipline prefers (option (б)
+// in the plan) -- treat the mere POSSIBILITY of an escaped name as reason
+// enough to stop trusting a literal-byte token match, the same way
+// containsCompressionSignal treats the mere presence of /ObjStm as reason
+// enough to stop trusting an absence claim.
+//
+// This is a single linear pass over buf: the outer loop only ever restarts
+// its inner scan from the position where the previous name token ended, so
+// total work is bounded by len(buf) regardless of how many "/" bytes the
+// buffer contains -- no separate iteration ceiling is needed (the same
+// reasoning as firstTokenLocation's own doc comment, generalized to a
+// single full pass instead of two fixed token comparisons).
+func containsPDFNameHexEscape(buf []byte) bool {
+	for i := 0; i < len(buf); i++ {
+		if buf[i] != '/' {
+			continue
+		}
+		j := i + 1
+		for j < len(buf) && isPDFNameByte(buf[j]) {
+			if buf[j] == '#' && j+2 < len(buf) && isHexDigit(buf[j+1]) && isHexDigit(buf[j+2]) {
+				return true
+			}
+			j++
+		}
+		i = j - 1 // resume right after this name token; the outer i++ advances past it
+	}
+	return false
+}
+
+// pdfOpaqueRange marks a [start, end) byte range within a scanned buffer
+// whose content this scanner does not attempt to interpret as PDF syntax --
+// a stream body (between the "stream" keyword and "endstream") or a comment
+// (from "%" to the end of its line). A risk-token literal that occurs ONLY
+// inside one of these ranges is not evidence either way (codex PR9 finding
+// 2 / T-SLE-02): it could be a coincidental byte sequence inside
+// compressed/opaque payload data (far more likely for a short token like
+// "/JS" or "/AA"), or it could genuinely be a PDF name -- this scanner
+// cannot tell, and the correct response to "cannot tell" is never to fall
+// back to StatusClean (see the matchedInsideOpaque handling in AnalyzePDF).
+type pdfOpaqueRange struct {
+	start, end int
+}
+
+// scanPDFOpaqueRanges finds every stream-body and comment range in buf.
+// Both walks are capped by maxTokenScanIterations: an adversarial PDF could
+// repeat "stream"/"endstream" or "%" pairs without bound, and this is
+// exactly the CPU-bound-loop shape window.go's own doc comment warns a
+// context deadline cannot interrupt -- the same discipline scanAllOccurrences
+// already applies to pdf.go's other multi-match loops.
+//
+// This intentionally OVER-approximates rather than under-approximates: a
+// bare substring match of "stream" (not anchored to a preceding newline) or
+// treating the "%PDF-"/"%%EOF" markers as ordinary comments can mark a
+// byte range as opaque when a stricter parser would not. That direction is
+// safe here -- opaque ranges only ever SUPPRESS a Finding in favor of
+// StatusUnknown, never promote a Check to StatusClean, so over-marking
+// costs at most a missed positive Finding, never a false absence claim.
+func scanPDFOpaqueRanges(buf []byte) []pdfOpaqueRange {
+	var ranges []pdfOpaqueRange
+
+	pos := 0
+	for iter := 0; iter < maxTokenScanIterations; iter++ {
+		idx := bytes.Index(buf[pos:], []byte("stream"))
+		if idx < 0 {
+			break
+		}
+		start := pos + idx + len("stream")
+		endIdx := bytes.Index(buf[start:], []byte("endstream"))
+		if endIdx < 0 {
+			// No matching "endstream" within the scanned window at all --
+			// treat everything from here to the end of buf as opaque
+			// (the stream may simply continue past this window).
+			ranges = append(ranges, pdfOpaqueRange{start: start, end: len(buf)})
+			break
+		}
+		end := start + endIdx
+		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		pos = end + len("endstream")
+		if pos >= len(buf) {
+			break
+		}
+	}
+
+	pos = 0
+	for iter := 0; iter < maxTokenScanIterations; iter++ {
+		idx := bytes.IndexByte(buf[pos:], '%')
+		if idx < 0 {
+			break
+		}
+		start := pos + idx
+		end := start
+		for end < len(buf) && buf[end] != '\n' && buf[end] != '\r' {
+			end++
+		}
+		ranges = append(ranges, pdfOpaqueRange{start: start, end: end})
+		pos = end
+		if pos >= len(buf) {
+			break
+		}
+	}
+
+	return ranges
+}
+
+// inOpaqueRange reports whether pos falls inside any of ranges.
+func inOpaqueRange(pos int, ranges []pdfOpaqueRange) bool {
+	for _, r := range ranges {
+		if pos >= r.start && pos < r.end {
+			return true
+		}
+	}
+	return false
+}
+
+// firstTokenLocationOutsideOpaqueRanges is firstTokenLocation restricted to
+// occurrences NOT inside any of opaque's ranges -- see pdfOpaqueRange's own
+// doc comment for why a match inside one of those ranges must never be
+// treated the same as a match found in ordinary PDF syntax. Each token
+// spelling's inner scan only ever advances forward through buf and stops at
+// its first out-of-range hit, so total work stays bounded by len(buf) times
+// the small, fixed number of spellings per code (at most two) -- the same
+// bound firstTokenLocation itself relies on, no separate iteration ceiling
+// needed.
+func firstTokenLocationOutsideOpaqueRanges(buf []byte, tokens [][]byte, opaque []pdfOpaqueRange) (int, bool) {
+	best := -1
+	for _, tok := range tokens {
+		pos := 0
+		for {
+			idx := bytes.Index(buf[pos:], tok)
+			if idx < 0 {
+				break
+			}
+			abs := pos + idx
+			if !inOpaqueRange(abs, opaque) {
+				if best < 0 || abs < best {
+					best = abs
+				}
+				break
+			}
+			pos = abs + len(tok)
+			if pos >= len(buf) {
+				break
+			}
 		}
 	}
 	if best < 0 {
@@ -367,14 +588,21 @@ func scanAllOccurrences(buf, token []byte, max int, fn func(pos int) bool) (ceil
 // compressed is true: the Pages dict itself may be one of the objects
 // hidden inside an /ObjStm, so even a nearby /Count found via this scan
 // cannot be trusted to be the WHOLE truth (D-02a). Returns
+// (nil, ReasonPDFNameEscape) unconditionally when hexEscape is true, for the
+// identical reason applied to a different blind spot: a hex-escaped
+// "/Type#XX..." spelling of the Pages-dict marker would not be recognized
+// by pdfPagesDictTokens's literal byte match either. Returns
 // (nil, ReasonWorkCeilingBytes) when the iteration budget was exhausted or
 // when truncated is true and no match was found (the real Pages dict may
 // simply live past the read window). Returns (nil, ReasonMalformedInput)
 // when the whole (untruncated) window was searched and no Pages dict with a
 // legible /Count was ever found.
-func extractPDFPageCount(head []byte, compressed, truncated bool) (*int, Reason) {
+func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool) (*int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
+	}
+	if hexEscape {
+		return nil, ReasonPDFNameEscape
 	}
 
 	var found *int
