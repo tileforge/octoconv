@@ -701,3 +701,72 @@ func TestInspectPreAdmitGetsFreshContextAfterSlowBody(t *testing.T) {
 		}
 	}
 }
+
+// memMultipartFile adapts a byte slice to multipart.File so a test can call
+// dispatchInspectFamilies directly, without going through an HTTP request.
+type memMultipartFile struct{ *bytes.Reader }
+
+func (memMultipartFile) Close() error { return nil }
+
+// oversizedWorkbookXLSXFixture is a structurally valid xlsx whose
+// xl/workbook.xml is larger than maxRelsPartBytes, so extractXLSXSheetCount
+// refuses to read it and marks the Tracker's ceiling receptacle instead of
+// reporting a sheet count.
+func oversizedWorkbookXLSXFixture(t *testing.T) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "[Content_Types].xml", "<Types/>")
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "xl/workbook.xml", Method: zip.Deflate})
+	if err != nil {
+		t.Fatalf("CreateHeader: %v", err)
+	}
+	// 512 KiB of a repeating, highly compressible sheet element -- twice the
+	// 256 KiB maxRelsPartBytes ceiling, so the part is refused whichever way
+	// the ceiling is detected (declared size or read overrun).
+	chunk := bytes.Repeat([]byte(`<sheet name="s"/>`), 1<<15)
+	if _, err := w.Write(chunk); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestDispatchInspectFamiliesMarksTheTrackerItWasGiven pins the one thing the
+// exhaustion receptacle cannot enforce about itself: that the production path
+// actually hands the analyzers a live Tracker.
+//
+// The receptacle was introduced (quick task 260811-r3s) because exhaustion had
+// been an ordinary return value that callers could silently drop, and three
+// consecutive review rounds each found another dropped one. Recording it on a
+// per-operation Tracker removed the need to thread anything -- but it replaced
+// "every caller must remember to pass the flag up" with "the one entry point
+// must remember to pass a non-nil Tracker down", and a *Tracker is a pointer,
+// so nil is expressible and MarkCeilingHit on nil is a deliberate no-op.
+//
+// That residue was not hypothetical: replacing tr with nil at all five
+// dispatch sites left the ENTIRE repository test suite green while every
+// report silently claimed complete coverage. This test is what turns that
+// substitution red. It asserts the property (the tracker this dispatch was
+// given comes back marked) rather than the mechanism, so it keeps holding if
+// the analyzers are re-plumbed again.
+func TestDispatchInspectFamiliesMarksTheTrackerItWasGiven(t *testing.T) {
+	data := oversizedWorkbookXLSXFixture(t)
+	f := memMultipartFile{bytes.NewReader(data)}
+
+	tr := inspect.NewTracker(inspect.Budget{
+		MaxBytes:    int64(len(data)) * 4,
+		MaxDuration: time.Minute,
+	})
+	if tr.Exhausted() {
+		t.Fatal("precondition: a fresh Tracker with a generous budget must not start exhausted")
+	}
+
+	_ = dispatchInspectFamilies("xlsx", nil, f, int64(len(data)), tr)
+
+	if !tr.Exhausted() {
+		t.Fatal("dispatchInspectFamilies returned without marking the Tracker it was given -- an analyzer hit its own internal ceiling (xl/workbook.xml over maxRelsPartBytes) and that fact did not reach the tracker, so BuildReport would report complete coverage over an analysis that stopped early. The usual cause is a dispatch site passing nil instead of tr.")
+	}
+}
