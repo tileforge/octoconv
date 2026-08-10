@@ -433,11 +433,22 @@ func containsExternalReference(data []byte, format string) bool {
 func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format string) {
 	switch format {
 	case "xlsx":
-		if n, ok := extractXLSXSheetCount(zr); ok {
+		if n, ok, ceilingHit := extractXLSXSheetCount(zr); ok {
 			res.Characteristics["sheet_count"] = n
 		} else {
+			// codex PR9 round 2 audit finding (container.go, found applying
+			// the same table this session built for scanExternalReferences
+			// to extractXLSXSheetCount): a declared-size skip or an
+			// f.Open/io.ReadAll error here is THIS scan's own refusal to
+			// read the part, not a structural fact about the file -- the
+			// exact same class scanExternalReferences already closed for
+			// external_reference, just unaddressed for sheet_count.
+			reason := ReasonMalformedInput
+			if ceilingHit {
+				reason = ReasonWorkCeilingBytes
+			}
 			res.Characteristics["sheet_count"] = nil
-			res.Characteristics["sheet_count_reason"] = string(ReasonMalformedInput)
+			res.Characteristics["sheet_count_reason"] = string(reason)
 		}
 	case "ods":
 		// Sheet count for ODF spreadsheets would require parsing
@@ -459,23 +470,33 @@ func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format st
 // maxRelsPartBytes bytes -- so it needs no separate iteration ceiling of
 // its own, unlike pdf.go's page-count scan (which walks a much larger,
 // maxBytes-sized window).
-func extractXLSXSheetCount(zr *zip.Reader) (int, bool) {
+//
+// ceilingHit distinguishes THIS scan's own refusal to read the part
+// (declared size exceeding maxRelsPartBytes, f.Open failing, or io.ReadAll
+// erroring) from workbook.xml genuinely not existing in the archive --
+// audit finding applying scanExternalReferences's own already-fixed
+// discipline to this function, which had not been touched by either review
+// round.
+func extractXLSXSheetCount(zr *zip.Reader) (count int, ok bool, ceilingHit bool) {
 	for _, f := range zr.File {
 		if f.Name != "xl/workbook.xml" {
 			continue
 		}
 		if f.UncompressedSize64 > uint64(maxRelsPartBytes) {
-			return 0, false
+			return 0, false, true
 		}
 		rc, err := f.Open()
 		if err != nil {
-			return 0, false
+			return 0, false, true
 		}
-		data, _ := io.ReadAll(io.LimitReader(rc, maxRelsPartBytes))
+		data, readErr := io.ReadAll(io.LimitReader(rc, maxRelsPartBytes))
 		rc.Close()
-		return countSheetElements(data), true
+		if readErr != nil {
+			return 0, false, true
+		}
+		return countSheetElements(data), true, false
 	}
-	return 0, false
+	return 0, false, false
 }
 
 func countSheetElements(data []byte) int {

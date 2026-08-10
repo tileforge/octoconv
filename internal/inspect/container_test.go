@@ -359,6 +359,26 @@ func TestAnalyzeContainerSheetCountXLSX(t *testing.T) {
 	}
 }
 
+// TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed is
+// an audit finding applying scanExternalReferences's own already-fixed
+// discipline to extractXLSXSheetCount, which neither review round named:
+// workbook.xml being skipped by its own (lying) declared size is THIS
+// scan's refusal to read the part, not evidence the workbook has no sheets
+// -- sheet_count_reason must be work_ceiling_bytes, never malformed_input.
+func TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed(t *testing.T) {
+	data := xlsxFixture(t, 3)
+	patched := patchDeclaredUncompressedSize(t, data, "xl/workbook.xml", 1<<30)
+
+	res := AnalyzeContainer(bytes.NewReader(patched), int64(len(patched)), int64(len(patched)), 1<<30)
+
+	if res.Characteristics["sheet_count"] != nil {
+		t.Fatalf("sheet_count = %#v, want nil -- workbook.xml was skipped by its own lying declared size", res.Characteristics["sheet_count"])
+	}
+	if reason, _ := res.Characteristics["sheet_count_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("sheet_count_reason = %q, want %q -- this scan's own declared-size skip, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+}
+
 func TestAnalyzeContainerPageCountKeyAbsentForSpreadsheets(t *testing.T) {
 	data := xlsxFixture(t, 1)
 	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30)
