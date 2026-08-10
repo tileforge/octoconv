@@ -1,8 +1,10 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +12,27 @@ import (
 
 	"github.com/apaderin/octoconv/internal/inspect"
 )
+
+// manyEntriesDocxFixture is a REAL, valid docx-shaped zip (word/document.xml
+// root part present, so convert.SniffContainer would resolve Format="docx"
+// were it allowed to run to completion) plus n additional tiny junk
+// entries. Used to exercise zipDirectoryExceedsStructuralBound's own entry-
+// count ceiling with a genuinely parseable archive rather than a
+// hand-crafted/inconsistent one -- n above inspectMaxZipDirEntries proves
+// the bound trips BEFORE the docx root part would otherwise be recognized.
+func manyEntriesDocxFixture(t *testing.T, n int) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	for i := 0; i < n; i++ {
+		mustWriteZipEntry(t, zw, fmt.Sprintf("junk/%05d.bin", i), "x")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
 
 func doInspect(t *testing.T, srv *Server, filename string, data []byte) (int, []byte) {
 	t.Helper()
@@ -249,5 +272,140 @@ func TestInspectNoAuthHeaderUnauthorized(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestInspectZipDirectoryOverBoundReportsUnknownNot500 is T-SLF-01's central
+// proof: a REAL, valid docx-shaped zip whose entry count exceeds
+// inspectMaxZipDirEntries is reported as format=zip_directory_too_large
+// (never the docx root part a full parse would have found), the three
+// container-domain codes are unknown/work_ceiling_bytes (never clean, never
+// 500), and Coverage is honestly marked incomplete.
+func TestInspectZipDirectoryOverBoundReportsUnknownNot500(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	fixture := manyEntriesDocxFixture(t, inspectMaxZipDirEntries+1)
+	status, body := doInspect(t, srv, "in.docx", fixture)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (never 500, never a rejection); body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != inspectZipTooLargeFormat {
+		t.Errorf("Format = %q, want %q -- the archive must NOT be resolved to docx (that would mean the bound was never checked)", resp.Format, inspectZipTooLargeFormat)
+	}
+	if resp.Coverage.Complete {
+		t.Errorf("Coverage.Complete = true, want false -- exceeding this handler's own structural ceiling must mark the report selective")
+	}
+	if resp.Coverage.Reason != inspect.ReasonWorkCeilingBytes {
+		t.Errorf("Coverage.Reason = %q, want %q", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
+	}
+
+	wantUnknown := map[inspect.Code]bool{
+		inspect.CodeOOXMLMacro:        true,
+		inspect.CodeZipBombShape:      true,
+		inspect.CodeExternalReference: true,
+	}
+	seen := map[inspect.Code]bool{}
+	for _, c := range resp.Checks {
+		if !wantUnknown[c.Code] {
+			continue
+		}
+		seen[c.Code] = true
+		if c.Status != inspect.StatusUnknown {
+			t.Errorf("check %s: status = %q, want %q (never clean)", c.Code, c.Status, inspect.StatusUnknown)
+		}
+		if c.Reason != inspect.ReasonWorkCeilingBytes {
+			t.Errorf("check %s: reason = %q, want %q", c.Code, c.Reason, inspect.ReasonWorkCeilingBytes)
+		}
+	}
+	for code := range wantUnknown {
+		if !seen[code] {
+			t.Errorf("check %s missing from response entirely", code)
+		}
+	}
+	if err := inspect.ValidateReport(resp.Findings, resp.Checks); err != nil {
+		t.Errorf("ValidateReport: %v", err)
+	}
+}
+
+// TestInspectZipDirectoryWithinBoundUnaffected proves normal-sized ZIP
+// office uploads are completely unaffected by the new structural ceiling:
+// the SAME docx-shaped fixture, with an entry count comfortably under
+// inspectMaxZipDirEntries, resolves to format=docx exactly as before.
+func TestInspectZipDirectoryWithinBoundUnaffected(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	status, body := doInspect(t, srv, "in.docx", docxFixture(t))
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != "docx" {
+		t.Errorf("Format = %q, want docx -- a normal-sized office upload must not be affected by the new structural ceiling", resp.Format)
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive proves
+// zipDirectoryExceedsStructuralBound itself answers the entries/dirBytes
+// question from the EOCD record alone, for both a real small archive
+// (exceeds=false) and a real archive whose entry count crosses the ceiling
+// (exceeds=true) -- exercised directly, independent of the HTTP handler,
+// against real archive/zip.Writer output.
+func TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive(t *testing.T) {
+	small := docxFixture(t)
+	r := bytes.NewReader(small)
+	if exceeds, _, _ := zipDirectoryExceedsStructuralBound(r, int64(len(small))); exceeds {
+		t.Errorf("small docx fixture: exceeds = true, want false")
+	}
+
+	junkEntries := inspectMaxZipDirEntries + 1
+	wantEntries := junkEntries + 1 // +1 for the fixture's own word/document.xml root part
+	big := manyEntriesDocxFixture(t, junkEntries)
+	r2 := bytes.NewReader(big)
+	exceeds, entries, _ := zipDirectoryExceedsStructuralBound(r2, int64(len(big)))
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true for %d entries (bound is %d)", wantEntries, inspectMaxZipDirEntries)
+	}
+	if int(entries) != wantEntries {
+		t.Errorf("entries = %d, want %d", entries, wantEntries)
+	}
+}
+
+// TestInspectZipDirectoryBoundInversion is D-16's own inversion discipline,
+// applied here directly at the unit level rather than by temporarily
+// editing production code: manually constructing an EOCD-only buffer that
+// declares an over-bound entry count but is NOT preceded by the PK\x03\x04
+// detectInspectFormat gates on proves the bound-check FUNCTION itself is
+// what produces exceeds=true (not some other accidental signal) -- and,
+// documented here in prose per D-16, temporarily commenting out the
+// zipDirectoryExceedsStructuralBound call in detectInspectFormat's own ZIP
+// branch (restoring the pre-fix code exactly) makes
+// TestInspectZipDirectoryOverBoundReportsUnknownNot500 above fail: Format
+// becomes "docx" (the full, unbounded parse succeeds) and every
+// container-domain check reports clean instead of unknown/work_ceiling_bytes
+// -- verified by hand while writing this fix, reverted before this commit.
+func TestInspectZipDirectoryBoundInversion(t *testing.T) {
+	// A minimal, self-consistent 22-byte EOCD record (no comment, no real
+	// central directory behind it) declaring entries=inspectMaxZipDirEntries+1.
+	eocd := make([]byte, 22)
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	entries := uint16(inspectMaxZipDirEntries + 1)
+	eocd[10] = byte(entries)
+	eocd[11] = byte(entries >> 8)
+	// comment length (offset 20:22) left at zero.
+
+	exceeds, gotEntries, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true")
+	}
+	if gotEntries != entries {
+		t.Fatalf("entries = %d, want %d", gotEntries, entries)
 	}
 }
