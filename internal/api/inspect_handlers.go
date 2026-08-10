@@ -155,20 +155,6 @@ type inspectResponse struct {
 // aspiration): no call in this file, or anything it calls, reaches
 // s.storage.Upload or s.repo.Create.
 func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
-	// D-06 mechanism 1's time ceiling, applied at the one place in this
-	// handler that is genuinely I/O-bound and context-aware: the
-	// Repo.PreAdmit call inside availableOperations below. The CPU-bound
-	// family-analyzer dispatch further down is NOT bounded by this ctx --
-	// it is bounded by the shared Tracker plus each analyzer's own hard
-	// iteration caps (window.go's maxTokenScanIterations and siblings),
-	// for the identical reason internal/inspect/budget.go's own Tracker
-	// doc comment gives: a context deadline does not interrupt a
-	// CPU-bound loop that never checks it. This ctx is therefore a real,
-	// functioning courtesy bound for the ONE sub-call that can actually
-	// observe it, not decoration.
-	ctx, cancel := context.WithTimeout(r.Context(), s.inspectMaxWorkDuration)
-	defer cancel()
-
 	// 1. Accept. Deliberately repeats handleCreateJob's own multipart
 	// intake SHAPE (MaxBytesReader -> ParseMultipartForm -> FormFile,
 	// http.MaxBytesError -> 413, anything else -> 400) rather than
@@ -178,6 +164,22 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// separate from and smaller than s.maxUploadByte (Config.
 	// InspectMaxUploadBytes's own doc comment, api.go) -- this is a
 	// conscious repetition of a proven shape, not copy-paste debt.
+	//
+	// T-SLF-02/T-SLF-03 (PR #9 findings at inspectgate.go:120 and
+	// inspect_handlers.go:114): body intake happens BEFORE this handler
+	// takes the concurrency-gate slot AND before the D-06 mechanism-1 work
+	// ceiling exists. Neither guards network transfer time -- the slot
+	// exists to bound concurrent PARSING work (a client trickling its
+	// upload arbitrarily slowly must not hold a slot it is not using), and
+	// the work ceiling exists to bound the ANALYSIS this handler does
+	// AFTER it already has the full body (a legitimately slow upload must
+	// not arrive at Repo.PreAdmit below with an already-expired context,
+	// which previously turned every quota verdict into "unknown"
+	// regardless of the client's real quota state). Read intake is still
+	// itself size-bounded by MaxBytesReader above, so this reordering does
+	// not simply move an unbounded read earlier -- it only stops charging
+	// a slot/deadline for time this handler spends waiting on the
+	// network, neither of which it can shorten anyway.
 	r.Body = http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes)
 	if err := r.ParseMultipartForm(multipartInMemoryBudget); err != nil {
 		var maxErr *http.MaxBytesError
@@ -195,6 +197,23 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	// 2. Gate. The D-06 mechanism-2 concurrency slot is taken HERE -- after
+	// body intake has fully completed, immediately before the CPU-bound
+	// analysis it actually protects -- rather than as outer middleware
+	// wrapping this entire handler (routes.go no longer mounts a
+	// concurrency gate ahead of this route for exactly this reason). See
+	// inspectSemaphore.acquireOrReject's own doc comment (inspectgate.go)
+	// for the T-SLF-02 finding this addresses. The D-06a property this
+	// slot has always guaranteed -- that a held slot bounds concurrent
+	// Repo.PreAdmit calls against the shared *pgxpool.Pool -- still holds
+	// unchanged: PreAdmit (step 4 below) still runs while this slot is
+	// held, only body transfer no longer does.
+	release, ok := s.inspectSem.acquireOrReject(w)
+	if !ok {
+		return
+	}
+	defer release()
 
 	filename := path.Base(header.Filename)
 	// declaredFormat is the normalized filename-extension-derived format --
@@ -229,6 +248,26 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// 4. Assemble. availableOperations (Task 2) reads convert.Default's own
 	// registry and calls the SAME Repo.PreAdmit the job-creation path uses,
 	// read-only, once per distinct engine.
+	//
+	// The work-ceiling context is created HERE -- after body intake AND
+	// after the CPU-bound family-analyzer dispatch above -- not at handler
+	// entry (T-SLF-03, PR #9 finding at inspect_handlers.go:114): this
+	// ctx's only functioning consumer is the Repo.PreAdmit call inside
+	// availableOperations, so its deadline must bound THAT call, not
+	// however long the client's own upload took to arrive. Creating it at
+	// handler entry meant any legitimately slow upload taking longer than
+	// s.inspectMaxWorkDuration arrived at PreAdmit with an
+	// already-expired context, turning every quota verdict into "unknown"
+	// (quotaOfferFromPreAdmitError's non-quota-error branch) regardless of
+	// the client's actual quota state -- INSP-04 degraded to permanently
+	// unknown for exactly the uploads it most needs to answer honestly
+	// about. The CPU-bound dispatch above is unaffected by this ctx either
+	// way (bounded by tr's own Tracker, not by a context deadline -- see
+	// this handler's own step-3 comment history / budget.go's doc comment
+	// on why a context cannot interrupt a tight loop), so moving this
+	// creation point later changes nothing about what that step bounds.
+	ctx, cancel := context.WithTimeout(r.Context(), s.inspectMaxWorkDuration)
+	defer cancel()
 	operations := s.availableOperations(ctx, client.ID, detected, header.Size)
 
 	// 5. Nothing is written. Neither s.storage.Upload nor s.repo.Create is

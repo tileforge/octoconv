@@ -3,12 +3,19 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/inspect"
 )
@@ -407,5 +414,163 @@ func TestInspectZipDirectoryBoundInversion(t *testing.T) {
 	}
 	if gotEntries != entries {
 		t.Fatalf("entries = %d, want %d", gotEntries, entries)
+	}
+}
+
+// incompleteMultipartPrefix builds a real, well-formed multipart body up to
+// (and including) the file field's own content, but deliberately never
+// calls (*multipart.Writer).Close -- the closing boundary
+// ("--<boundary>--\r\n") is never written. Returned alongside the
+// boundary string a caller needs for the request's Content-Type header.
+func incompleteMultipartPrefix(t *testing.T, filename string, data []byte) (prefix []byte, boundary string) {
+	t.Helper()
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	boundary = w.Boundary()
+	fw, err := w.CreateFormFile(formFieldFile, filename)
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return b.Bytes(), boundary
+}
+
+// blockingReader serves prefix immediately (real bytes, non-blocking), then
+// blocks on block for every subsequent Read -- modeling a client that has
+// sent SOME of its body and is now trickling the rest arbitrarily slowly.
+// Read never returns once prefix is exhausted, until the test closes
+// block.
+type blockingReader struct {
+	prefix []byte
+	pos    int
+	block  chan struct{}
+}
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if r.pos < len(r.prefix) {
+		n := copy(p, r.prefix[r.pos:])
+		r.pos += n
+		return n, nil
+	}
+	<-r.block
+	return 0, io.EOF
+}
+
+// TestInspectSlowBodyDoesNotHoldConcurrencySlot is T-SLF-02's central proof:
+// more concurrent slow-body clients than InspectMaxConcurrent must NOT
+// exhaust the concurrency gate, because none of them have finished reading
+// their own request body yet -- the slot is acquired AFTER body intake, not
+// before. Before this fix, the same scenario would have every slot held by
+// a slow-body client doing no parsing at all, and the legitimate request
+// below would receive 429 inspect_busy.
+func TestInspectSlowBodyDoesNotHoldConcurrencySlot(t *testing.T) {
+	resolver := newFakeResolver()
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		InspectMaxConcurrent: 2,
+	})
+
+	const slowClients = 3 // exceeds InspectMaxConcurrent (2)
+	var wg sync.WaitGroup
+	blockers := make([]chan struct{}, slowClients)
+	for i := range blockers {
+		blockers[i] = make(chan struct{})
+		prefix, boundary := incompleteMultipartPrefix(t, "in.png", pngBytesFixture())
+		body := &blockingReader{prefix: prefix, block: blockers[i]}
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/inspect", body))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			srv.Routes().ServeHTTP(httptest.NewRecorder(), req)
+		}()
+	}
+	t.Cleanup(func() {
+		for _, ch := range blockers {
+			close(ch)
+		}
+		wg.Wait()
+	})
+
+	// Give the slow clients a moment to reach (and block inside)
+	// ParseMultipartForm -- long enough that, if the OLD code still
+	// acquired the slot before reading the body, all three would already
+	// hold (or be rejected for) a slot by now.
+	time.Sleep(150 * time.Millisecond)
+
+	status, body := doInspect(t, srv, "legit.png", pngBytesFixture())
+	if status != http.StatusOK {
+		t.Fatalf("legit request status = %d, want 200 -- must not be blocked by %d slow-body clients holding no slot; body=%s", status, slowClients, body)
+	}
+}
+
+// fakeContextAwarePreAdmitRepo mimics a property a REAL jobs.Repo.PreAdmit
+// has (a DB call made with an ALREADY-EXPIRED context fails immediately,
+// exactly like pgx would) that fakeRepo's own PreAdmit does not: fakeRepo
+// ignores ctx entirely and always succeeds, which could never catch the
+// T-SLF-03 regression this file's own test below proves fixed.
+type fakeContextAwarePreAdmitRepo struct {
+	*fakeRepo
+}
+
+func (f *fakeContextAwarePreAdmitRepo) PreAdmit(ctx context.Context, _ uuid.UUID, _ string, _ int64) error {
+	return ctx.Err()
+}
+
+// delayedReader sleeps once, for delay, before its FIRST Read, then
+// delegates every read (including that first one) to r -- modeling a
+// legitimately slow-but-complete upload: real bytes, arriving late, never
+// truncated.
+type delayedReader struct {
+	r     io.Reader
+	delay time.Duration
+	slept bool
+}
+
+func (d *delayedReader) Read(p []byte) (int, error) {
+	if !d.slept {
+		d.slept = true
+		time.Sleep(d.delay)
+	}
+	return d.r.Read(p)
+}
+
+// TestInspectPreAdmitGetsFreshContextAfterSlowBody is T-SLF-03's central
+// proof: a body whose intake takes LONGER than InspectMaxWorkDuration must
+// still reach Repo.PreAdmit with a live (non-expired) context -- the
+// work-ceiling context is created AFTER body intake, not at handler entry.
+// Before this fix, the same scenario would create a 2s-shorter-than-the-
+// actual-delay context BEFORE ParseMultipartForm, so by the time PreAdmit
+// ran it would already be expired, and every quota verdict would report
+// Allowed == nil ("unknown") regardless of the client's real quota state.
+func TestInspectPreAdmitGetsFreshContextAfterSlowBody(t *testing.T) {
+	resolver := newFakeResolver()
+	repo := &fakeContextAwarePreAdmitRepo{fakeRepo: &fakeRepo{}}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		InspectMaxWorkDuration: 50 * time.Millisecond,
+	})
+
+	full, ct := multipartBody(t, "in.png", "", pngBytesFixture())
+	slow := &delayedReader{r: bytes.NewReader(full.Bytes()), delay: 200 * time.Millisecond}
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/inspect", slow))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp inspectResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.Operations) == 0 {
+		t.Fatalf("Operations empty -- test assumption broken: png must have at least one registered (operation, target)")
+	}
+	for _, op := range resp.Operations {
+		if op.Quota.Allowed == nil {
+			t.Errorf("operation %+v: Quota.Allowed = nil (unknown) after a slow-but-legitimate body read -- the work-ceiling context must not start before body intake", op)
+		}
 	}
 }
