@@ -349,7 +349,20 @@ paths:
       tags: [Health]
       operationId: getHealth
       summary: Liveness and dependency reachability probe
-      description: Read-only ping of Postgres, Redis, and S3/MinIO. Public — no API key required.
+      description: >-
+        Read-only ping of Postgres, Redis, and S3/MinIO. Public — no API key
+        required. Served on TWO listeners as of Phase 58 (D-06/D-08):
+        API_ADDR (the same address /v1/* answers on, kept for existing
+        operational consumers) and a dedicated HEALTH_ADDR. The response
+        body is byte-identical on both — this is a second accept path for
+        the exact same handler, not a second endpoint. The Helm chart's
+        liveness/readiness probes target HEALTH_ADDR specifically, so a
+        burst against API_ADDR cannot delay the probe's own accept path;
+        see internal/api/routes.go's HealthRoutes doc comment for what this
+        additionally does and does not isolate (the Postgres ping itself
+        uses a separate connection pool from the one INSP-04's quota check
+        uses, closed independently — HTTP-listener isolation and
+        Postgres-pool isolation are two different guarantees).
       security: []
       responses:
         "200":

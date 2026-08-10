@@ -83,6 +83,17 @@ services:
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
       API_ADDR: ":8090"
+      # HEALTH_ADDR (Phase 58, D-06/D-08): dedicated listener for GET
+      # /healthz, mirroring the Helm chart's health containerPort. The same
+      # endpoint continues to answer on API_ADDR too (D-08) for anything
+      # that already probes it there.
+      HEALTH_ADDR: ":8091"
+      # DB_MAX_CONNS (Phase 58, D-06a): explicit main-pool sizing --
+      # arithmetic recorded in internal/db/db.go's Connect doc comment
+      # (10 = 4 concurrent inspect + 6 headroom for ordinary /v1/jobs
+      # traffic sharing the same pool). Before this phase MaxConns was
+      # never set at all.
+      DB_MAX_CONNS: "10"
       MAX_UPLOAD_BYTES: "2147483648"
       MAX_IMAGE_PIXELS: "100000000"
       MAX_DOCUMENT_UNCOMPRESSED_BYTES: "524288000"
@@ -153,6 +164,20 @@ services:
       # permitted to relax them, for the in-test webhook receiver (DEBT-05).
     ports:
       - "8090:8090"
+      - "8091:8091"
+    # D-06b (Phase 58): api's FIRST resource limit ever, mirroring worker's
+    # own deploy.resources.limits shape below verbatim (this compose file's
+    # only limit syntax -- not `mem_limit`/`cpus` top-level keys). Compose is
+    # NOT where the live gate calibrates this pair (the gate runs in k8s,
+    # D-13) -- these are the same starting values as
+    # deploy/chart/octoconv/values.yaml's api.resources.limits, present here
+    # only so api is not the one container in this file with no ceiling at
+    # all now that it parses untrusted bytes inline (POST /v1/inspect).
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
 
   worker:
     build:
