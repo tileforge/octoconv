@@ -46,6 +46,29 @@ func (s *Server) Routes() chi.Router {
 		r.Use(auth.Middleware(s.resolver))
 		r.Use(ratelimit.PerClient(s.clientRateRPM))
 		r.Post("/jobs", s.handleCreateJob)
+		// POST /v1/inspect (Plan 58-07, INSP-01..INSP-06): a dedicated
+		// sub-group so this route carries TWO extra layers the rest of
+		// /v1 does not, in this exact order and for this exact reason
+		// (58-CONTEXT.md D-06). ratelimit.ByIP -> auth.Middleware ->
+		// ratelimit.PerClient above are inherited from the outer /v1
+		// group and stay first -- they gate every route identically.
+		// Inspect's own rate budget runs NEXT, AFTER auth, because it is
+		// keyed by the now-resolved client identity (mechanism 4: an
+		// independent, smaller rate budget than the general per-client
+		// limit, since one inspect parse is materially more expensive
+		// than one status poll). The concurrency gate below runs LAST,
+		// immediately before the handler (mechanism 2): the semaphore
+		// slot must be acquired as close to the actual byte-parsing work
+		// as possible, so it is held for exactly the duration of that
+		// work -- including the handler's own Repo.PreAdmit call
+		// (INSP-04) -- and never while a request is merely queued behind
+		// an earlier limiter (inspectgate.go's own D-06a property doc
+		// comment).
+		r.Group(func(r chi.Router) {
+			r.Use(s.inspectRateLimit())
+			r.Use(s.inspectConcurrencyGate)
+			r.Post("/inspect", s.handleInspect)
+		})
 		r.Get("/jobs", s.handleListJobs)
 		r.Get("/jobs/{id}", s.handleGetJob)
 		// GET /jobs/{id}/events (PUSH-01, Phase 42): SSE progress stream.
