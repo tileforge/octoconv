@@ -116,6 +116,39 @@ it couldn't determine. This is the actual denial-of-service-relevant distinction
 to make honest: "we don't know" about one file property is not the same claim as "we stopped
 looking early because we were busy."
 
+## Binding to existing job-creation rejections (D-04)
+
+`handleCreateJob` (`internal/api/handlers.go`) already rejects thirteen classes of
+content-validation failure with a `422`/`413` response, predating this findings vocabulary.
+`internal/inspect/bindings.go` (`RejectBindings`) declares, for every one of those thirteen
+`reason=` log tokens, whether the rejection is a statement about the FILE (a finding code from
+the table above) or a statement about the REQUEST/POLICY (an `internal/errcode` value that is not
+a finding about the file at all):
+
+| Reason token | Binding |
+|---|---|
+| `zip_bomb` | finding `zip_bomb_shape` |
+| `macro_detected` | finding `ooxml_macro` |
+| `encrypted_document` | finding `ole_cfb_encrypted` |
+| `legacy_document` | finding `ole_cfb_legacy` |
+| `legacy_or_encrypted_document` | finding `ole_cfb_unclassified` |
+| `mismatch` | finding `extension_mismatch` |
+| `dimension_limit` | finding `image_pixel_bomb_shape` |
+| `unrecognized_content` | not a finding — `errcode.invalid_request` (format could not be identified at all) |
+| `dimensions_unknown` | not a finding — `errcode.invalid_request` (a failed characteristic extraction, not a risk signal) |
+| `engine_size_limit` | not a finding — `errcode.payload_too_large` (server configuration, not file content) |
+| `invalid_opts` | not a finding — `errcode.invalid_options` (a property of the request's `opts` field) |
+| `opts_not_applicable` | not a finding — `errcode.opts_not_applicable` (a property of the request's `opts` field) |
+| `opts_too_large` | not a finding — `errcode.payload_too_large` (a property of the request's `opts` field) |
+
+**Migrating `handleCreateJob` onto this vocabulary is NOT done in this phase.** This section
+declares the correspondence and proves it stays complete
+(`TestRejectBindingsCoverEveryContentValidationReason` scans `internal/api/handlers.go` itself),
+but `handleCreateJob`'s actual rejection code, HTTP statuses, and response bodies are unchanged
+byte-for-byte. That migration is deliberately deferred (candidate: Phase 61) — the fail-closed
+job-creation path is the single riskiest piece of code in this milestone, and a phase that already
+carries Phase 58's own risk does not also get to rewrite it.
+
 ## Keeping this document honest
 
 `internal/inspect/doc_sync_test.go` (`TestFindingCodesDocMatchesGoConstants`) parses the code
