@@ -23,6 +23,7 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/envcfg"
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -252,6 +253,20 @@ func main() {
 		InspectMaxWorkDuration: envDuration("INSPECT_MAX_WORK_DURATION", 0),
 		InspectMaxConcurrent:   int(envInt64("INSPECT_MAX_CONCURRENT", 0)),
 		InspectRateLimitRPM:    int(envInt64("RATE_LIMIT_INSPECT_RPM", 0)),
+		// INSP-04 (Plan 58-07): the SAME seven per-engine timeout env vars
+		// every worker process already reads at its own startup, now ALSO
+		// read here so POST /v1/inspect can report each engine's upper
+		// bound -- no new env var name, envDuration is the same helper
+		// already used above for SSE_*/INSPECT_MAX_WORK_DURATION.
+		EngineTimeouts: map[string]time.Duration{
+			convert.EngineImage:    envDuration("ENGINE_TIMEOUT", 120*time.Second),
+			convert.EngineDocument: envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second),
+			convert.EngineHTML:     envDuration("HTML_ENGINE_TIMEOUT", 60*time.Second),
+			convert.EngineAudio:    envDuration("AUDIO_ENGINE_TIMEOUT", 742*time.Second),
+			convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
+			convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
+			convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
+		},
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher
