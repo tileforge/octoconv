@@ -34,7 +34,7 @@ func AllStatuses() []CheckStatus {
 // clean. Only ReasonFormatNotApplicable is a legitimate reason for
 // StatusNotApplicable; the rest explain a StatusUnknown result.
 //
-// The line that matters most in this type (D-02a/INSP-03): the first six
+// The line that matters most in this type (D-02a/INSP-03): the first seven
 // reasons below are properties of the FILE or of this BUILD -- they
 // produce an unknown status on one check, but never make the report itself
 // partial. The last two are properties of THIS SERVICE'S OWN LOAD -- and
@@ -47,6 +47,15 @@ const (
 	// ReasonFormatNotApplicable is the only legitimate reason paired with
 	// StatusNotApplicable.
 	ReasonFormatNotApplicable = "format_not_applicable"
+	// ReasonFormatUnrecognized: detection never claimed a format at all
+	// (Report.Format is empty -- nothing in the sniffer chain recognized the
+	// content). Deliberately DIFFERENT from ReasonFormatNotApplicable:
+	// "not_applicable" is the honest claim "there was nothing HERE to look
+	// for" and requires knowing what format IS being inspected; when the
+	// format itself is unknown, applicability cannot be established either
+	// way, so every code in the closed vocabulary reports unknown with this
+	// reason instead (codex PR9 finding 6 / T-SLE-06).
+	ReasonFormatUnrecognized = "format_unrecognized"
 	// ReasonCompressedObjectStreams: structural blindness -- PDF 1.5+ hides
 	// objects inside /ObjStm, which a byte scan cannot see (D-02a). The
 	// primary trigger for StatusUnknown in this phase.
@@ -129,6 +138,27 @@ func (c *Coverage) MarkTruncated(r Reason, code Code) {
 		}
 	}
 	c.TruncatedChecks = append(c.TruncatedChecks, code)
+}
+
+// MarkTruncatedByCharacteristic records that some CHARACTERISTIC (not a
+// Check) was cut short by r -- report.go's buildCoverage calls this when an
+// analyzer's own "<name>_reason" characteristic key carries one of the two
+// service-ceiling reasons even though no accompanying Check exists for it
+// (codex PR9 finding 5 / T-SLE-05: e.g. media.go can report
+// duration_seconds_reason=work_ceiling_bytes with zero Checks at all, and a
+// Coverage that only ever inspected checks would stay Complete:true while
+// admitting a truncation in the very same response body). Same
+// ceiling-reason gate and first-reason-wins rule as MarkTruncated;
+// TruncatedChecks is deliberately left untouched here, because it is a
+// Code-keyed list and a bare characteristic key does not name one.
+func (c *Coverage) MarkTruncatedByCharacteristic(r Reason) {
+	if r != ReasonWorkCeilingBytes && r != ReasonWorkCeilingTime {
+		return
+	}
+	c.Complete = false
+	if c.Reason == "" {
+		c.Reason = r
+	}
 }
 
 // ValidateReport is the single place the report's UNION invariant is

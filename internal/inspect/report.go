@@ -8,7 +8,10 @@
 // the two must not collapse into one field).
 package inspect
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // Report is the JSON shape POST /v1/inspect returns for the part this
 // package owns: the detected format, the applicable-only characteristics
@@ -62,8 +65,8 @@ type Report struct {
 func BuildReport(format, declaredFormat string, size int64, tr *Tracker, families ...FamilyResult) Report {
 	merged := mergeCharacteristics(families)
 	findings := mergeFindings(families)
-	checks := buildChecks(families, findings)
-	coverage := buildCoverage(checks, tr)
+	checks := buildChecks(format, families, findings)
+	coverage := buildCoverage(merged, checks, tr)
 	coverage = degradeCoverageOnInvariantViolation(findings, checks, coverage)
 
 	return Report{
@@ -116,15 +119,27 @@ func mergeFindings(families []FamilyResult) []Finding {
 // buildChecks completes the closed findings-vocabulary section: for every
 // code AllCodes() declares that did not produce a Finding, take the FIRST
 // family's own Check for that code if one exists, else fall back to
-// StatusNotApplicable/ReasonFormatNotApplicable. This completion lives HERE,
-// not inside any one family analyzer, because a single analyzer only knows
-// its OWN domain's codes and has no standing to declare a code from a
-// DIFFERENT family's domain "not applicable" -- only the assembler, which
-// sees every family's result at once, can safely make that claim for the
-// codes nobody else claimed. Iterating AllCodes() in its own declaration
-// order also means the returned slice is already sorted the way the closed
-// vocabulary is declared -- no separate sort needed.
-func buildChecks(families []FamilyResult, findings []Finding) []Check {
+// StatusNotApplicable/ReasonFormatNotApplicable -- UNLESS format is empty
+// (codex PR9 finding 6 / T-SLE-06), in which case the fallback becomes
+// StatusUnknown/ReasonFormatUnrecognized instead. "not_applicable" is the
+// honest claim "there was nothing HERE to look for", which requires
+// knowing what format IS being inspected; when detection never claimed a
+// format at all (Report.Format's own doc comment: empty means nothing in
+// the sniffer chain recognized the content), applicability cannot be
+// established either way, so the whole vocabulary must say "unknown", not
+// "not applicable" -- a client currently receiving a complete
+// not_applicable report for unrecognized content would wrongly conclude
+// every risk check was irrelevant.
+//
+// This completion lives HERE, not inside any one family analyzer, because
+// a single analyzer only knows its OWN domain's codes and has no standing
+// to declare a code from a DIFFERENT family's domain "not applicable" --
+// only the assembler, which sees every family's result at once, can safely
+// make that claim for the codes nobody else claimed. Iterating AllCodes()
+// in its own declaration order also means the returned slice is already
+// sorted the way the closed vocabulary is declared -- no separate sort
+// needed.
+func buildChecks(format string, families []FamilyResult, findings []Finding) []Check {
 	findingCodes := make(map[Code]bool, len(findings))
 	for _, f := range findings {
 		findingCodes[f.Code] = true
@@ -139,6 +154,8 @@ func buildChecks(families []FamilyResult, findings []Finding) []Check {
 		}
 	}
 
+	unrecognizedFormat := format == ""
+
 	checks := make([]Check, 0, len(allCodes))
 	for _, code := range AllCodes() {
 		if findingCodes[code] {
@@ -148,13 +165,18 @@ func buildChecks(families []FamilyResult, findings []Finding) []Check {
 			checks = append(checks, c)
 			continue
 		}
+		if unrecognizedFormat {
+			checks = append(checks, Check{Code: code, Status: StatusUnknown, Reason: ReasonFormatUnrecognized})
+			continue
+		}
 		checks = append(checks, Check{Code: code, Status: StatusNotApplicable, Reason: ReasonFormatNotApplicable})
 	}
 	return checks
 }
 
 // buildCoverage computes the report-wide Coverage claim from the already-
-// completed checks slice, plus tr's own exhaustion state.
+// completed checks slice, the merged Characteristics bag, and tr's own
+// exhaustion state.
 //
 // The per-Check loop below is the PRIMARY mechanism and is intentionally
 // narrow: it marks Coverage incomplete for EXACTLY the codes whose own
@@ -166,27 +188,57 @@ func buildChecks(families []FamilyResult, findings []Finding) []Check {
 // mechanically: structural blindness about the FILE never makes the REPORT
 // selective; only exhausting THIS SERVICE'S OWN byte/time budget does.
 //
-// The tr-wide fallback below it is a SEPARATE, narrower safety net: if the
-// shared Tracker for the whole operation is exhausted but no individual
-// Check happens to carry a ceiling reason yet (e.g. it was never even
-// dispatched to before the shared budget ran dry, so it fell through to the
-// generic not_applicable/format_not_applicable branch above with no way for
-// this function to know that was actually a starved analyzer rather than a
-// genuinely inapplicable format), Coverage.Complete is still flipped to
-// false and Reason is filled in -- but ONLY when the main loop left Reason
-// empty, and WITHOUT touching TruncatedChecks. Guessing which additional
-// codes to list there would risk incorrectly reclassifying a code that
-// really is not_applicable to this format as if the operation's own budget
-// were the reason it is missing, which is worse than an honest "the report
-// as a whole is incomplete, but this package will not name individual codes
-// it cannot actually prove were affected."
-func buildCoverage(checks []Check, tr *Tracker) Coverage {
+// The characteristics loop below it closes codex PR9 finding 5 / T-SLE-05:
+// a Check is not the only place a ceiling reason can appear. A media
+// analyzer can report a characteristic-level "<name>_reason" key (e.g.
+// duration_seconds_reason) carrying ReasonWorkCeilingBytes/
+// ReasonWorkCeilingTime with NO accompanying Check at all -- the per-Check
+// loop above would never see it, and a Coverage that only ever examined
+// checks would say Complete:true in the same response body that admits a
+// characteristic was truncated by this service's own ceiling, which is a
+// self-contradictory report. merged's keys are walked in SORTED order so
+// that, when more than one characteristic admits a ceiling truncation,
+// which one supplies Coverage.Reason (the first one seen) is deterministic
+// across runs of the same input, not dependent on Go's randomized map
+// iteration order.
+//
+// The tr-wide fallback below both loops is a SEPARATE, narrower safety net:
+// if the shared Tracker for the whole operation is exhausted but neither
+// loop above happened to see a ceiling reason yet (e.g. an analyzer was
+// never even dispatched to before the shared budget ran dry, so it fell
+// through to the generic not_applicable/format_not_applicable branch above
+// with no way for this function to know that was actually a starved
+// analyzer rather than a genuinely inapplicable format), Coverage.Complete
+// is still flipped to false and Reason is filled in -- but ONLY when
+// nothing above already left Reason non-empty, and WITHOUT touching
+// TruncatedChecks. Guessing which additional codes to list there would risk
+// incorrectly reclassifying a code that really is not_applicable to this
+// format as if the operation's own budget were the reason it is missing,
+// which is worse than an honest "the report as a whole is incomplete, but
+// this package will not name individual codes it cannot actually prove
+// were affected."
+func buildCoverage(merged Characteristics, checks []Check, tr *Tracker) Coverage {
 	coverage := Coverage{Complete: true}
 	for _, c := range checks {
 		if c.Reason == ReasonWorkCeilingBytes || c.Reason == ReasonWorkCeilingTime {
 			coverage.MarkTruncated(c.Reason, c.Code)
 		}
 	}
+
+	characteristicKeys := make([]string, 0, len(merged))
+	for k := range merged {
+		characteristicKeys = append(characteristicKeys, k)
+	}
+	sort.Strings(characteristicKeys)
+	for _, k := range characteristicKeys {
+		if !strings.HasSuffix(k, "_reason") {
+			continue
+		}
+		if s, ok := merged[k].(string); ok {
+			coverage.MarkTruncatedByCharacteristic(Reason(s))
+		}
+	}
+
 	if tr != nil && tr.Exhausted() {
 		coverage.Complete = false
 		if coverage.Reason == "" {
