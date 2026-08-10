@@ -264,15 +264,19 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 // "Exhausted" is not only the obvious pre-loop cases (too many entries, too
 // many parts opened, budget already gone before opening the next
 // candidate) -- it is ALSO true of a part that WAS opened but whose read
-// was cut short by io.LimitReader (case ceilingReached below), AND of a
+// was cut short by io.LimitReader (case ceilingReached below), of a
 // candidate part that was never opened AT ALL because its own DECLARED size
-// already exceeded maxRelsPartBytes (codex PR9 finding 4 / T-SLE-04).
-// Treating either case as an ordinary "found nothing" would repeat exactly
-// the mistake D-02a exists to prevent in pdf.go: a part that was only
-// PARTIALLY read, or never read at all because this scan chose not to pay
-// for it, has not actually been ruled clean, and reporting it as such would
-// be a false claim of completeness driven by this scan's own budget, not by
-// the part's real content.
+// already exceeded maxRelsPartBytes (codex PR9 finding 4 / T-SLE-04), and,
+// as of codex PR9 round 2 (container.go:334), of a candidate part that WAS
+// opened but errored -- either f.Open itself failing (corrupt deflate
+// stream, unsupported compression method) or io.ReadAll returning a
+// mid-stream read error. Treating any of these as an ordinary "found
+// nothing" would repeat exactly the mistake D-02a exists to prevent in
+// pdf.go: a part that was only PARTIALLY read, never read at all because
+// this scan chose not to pay for it, or never successfully read because
+// this scan could not decode it, has not actually been ruled clean, and
+// reporting it as such would be a false claim of completeness driven by
+// this scan's own limits, not by the part's real content.
 func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (location string, ceilingHit bool) {
 	partsOpened := 0
 	budgetLeft := maxBytes
@@ -329,14 +333,34 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 
 		rc, operr := f.Open()
 		if operr != nil {
-			continue // a single unreadable part is not a ceiling hit -- keep scanning the rest
+			// codex PR9 round 2 (container.go:334): a part this scan
+			// considers a genuine candidate but cannot even OPEN (corrupt
+			// deflate stream, unsupported compression method) has not been
+			// looked at at all -- the exact same "refusal to look" as the
+			// declared-size skip above, just discovered a step later. If
+			// this is the container's only relevant part, silently
+			// `continue`-ing here would let the caller report the whole
+			// file clean having inspected none of its content.
+			truncatedAnyPart = true
+			continue
 		}
-		data, _ := io.ReadAll(io.LimitReader(rc, limit))
+		data, readErr := io.ReadAll(io.LimitReader(rc, limit))
 		rc.Close()
 		budgetLeft -= int64(len(data))
 
 		if containsExternalReference(data, format) {
 			return f.Name, false
+		}
+		if readErr != nil {
+			// codex PR9 round 2 (container.go:334)'s sibling case: the part
+			// WAS opened, but the read stopped partway through with a real
+			// error (e.g. a decompression error mid-stream), not merely
+			// hitting io.LimitReader's allowance. Whatever bytes were read
+			// before the error are still searched above (data may already
+			// contain the marker), but a MISS in a partial, error-terminated
+			// read is not proof the marker is absent from the rest of the
+			// part this scan never got to see.
+			truncatedAnyPart = true
 		}
 		// A read that filled the entire allowance handed to io.LimitReader
 		// is indistinguishable, from here, between "the part's real content
