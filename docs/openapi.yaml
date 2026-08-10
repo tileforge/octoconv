@@ -426,8 +426,7 @@ components:
           type: object
           properties:
             allowed:
-              type: boolean
-              nullable: true
+              type: [boolean, "null"]
               description: >-
                 null when the pre-admission check itself could not run --
                 NEVER true in that case; unknowing is never permission.
