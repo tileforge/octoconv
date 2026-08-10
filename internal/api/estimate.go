@@ -108,6 +108,54 @@ var engineEstimateSource = map[string]EstimateSource{
 	convert.EnginePandoc:   EstimateSourceMeasured,
 }
 
+// engineMeasuredDefaultSeconds records the EXACT upper-bound value each
+// measured engine's provenance in engineEstimateSource was measured AT --
+// the .env.example figure named in that map's own per-engine comment above
+// (Phase 32/36/45/49's supervised RTF-measurement runs). This is D-11's own
+// 2026-08-10 correction (58-CONTEXT.md), closing a PR #9 finding
+// (estimate.go:241, dated): engineEstimateSource answers "does THIS ENGINE
+// have a documented measurement run at all", a property of the engine's
+// HISTORY that does not change from one request to the next; it says
+// nothing about whether the number THIS request is about to report is the
+// exact value that run measured. An operator who overrides
+// Config.EngineTimeouts for a measured engine (api.go) produces a
+// DIFFERENT number than the one the documented run measured -- reporting
+// "measured" for that arbitrary replacement would be exactly the
+// mislabeling the finding calls out. estimateSourceFor below is the one
+// place that closes it.
+var engineMeasuredDefaultSeconds = map[string]int{
+	convert.EngineAudio:  742, // AUDIO_ENGINE_TIMEOUT=742s (.env.example): Phase 32 AUD-07, RTF-measured
+	convert.EngineAV:     753, // AV_ENGINE_TIMEOUT=753s (.env.example): Phase 36 Plan 04, RTF-measured
+	convert.EngineOCR:    744, // OCR_ENGINE_TIMEOUT=744s (.env.example): Phase 45 Plan 03, measured
+	convert.EnginePandoc: 65,  // PANDOC_ENGINE_TIMEOUT=65s (.env.example): Phase 49 Plan 03, measured
+}
+
+// estimateSourceFor is the provenance THIS SPECIFIC offer carries -- not
+// "does this engine have a measured history in the abstract"
+// (engineEstimateSource answers that alone), but "does actualSeconds --
+// the number THIS request is about to report -- equal the exact figure the
+// documented run measured". An engine with no measured provenance at all
+// (image/document/html) is always unmeasured regardless of its configured
+// value: there is no "measured" claim on the table for those to lose. An
+// engine WITH measured provenance whose runtime-configurable
+// Config.EngineTimeouts value diverges from engineMeasuredDefaultSeconds is
+// downgraded to unmeasured HERE -- chosen side (б) of the plan's own
+// two-option choice (conservative relabel over threading provenance
+// through Config as a new field): a mislabeled operator override is
+// exactly the failure mode this closes, and erring toward "unmeasured" is
+// the safe direction to be wrong in, mirroring PROG-V2-02's "an honest
+// unknown beats a confident guess" discipline elsewhere in this project.
+func estimateSourceFor(engine string, actualSeconds int) EstimateSource {
+	base := engineEstimateSource[engine]
+	if base != EstimateSourceMeasured {
+		return base
+	}
+	if want, ok := engineMeasuredDefaultSeconds[engine]; ok && want == actualSeconds {
+		return EstimateSourceMeasured
+	}
+	return EstimateSourceUnmeasured
+}
+
 // operationOffer is one row of the "operations" section POST /v1/inspect's
 // response carries (INSP-04) -- one (operation, target) triple available
 // for the detected format, the engine that serves it, its upper-bound
@@ -232,13 +280,20 @@ func (s *Server) availableOperations(ctx context.Context, clientID uuid.UUID, de
 	}
 
 	for _, p := range pending {
+		secs := engineTimeoutSeconds(s.engineTimeouts[p.engine])
 		offers = append(offers, operationOffer{
 			Operation:           p.operation,
 			Target:              p.target,
 			Engine:              p.engine,
-			EstimatedMaxSeconds: engineTimeoutSeconds(s.engineTimeouts[p.engine]),
-			EstimateSource:      engineEstimateSource[p.engine],
-			Quota:               quotaByEngine[p.engine],
+			EstimatedMaxSeconds: secs,
+			// estimateSourceFor (not the fixed engineEstimateSource table
+			// directly) is D-11's own 2026-08-10 correction: it downgrades
+			// to unmeasured whenever secs diverges from the exact value
+			// the documented run measured, closing PR #9's finding that an
+			// operator-overridden timeout could otherwise masquerade as
+			// measured.
+			EstimateSource: estimateSourceFor(p.engine, secs),
+			Quota:          quotaByEngine[p.engine],
 		})
 	}
 	sort.Slice(offers, func(i, j int) bool {

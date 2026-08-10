@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -242,6 +243,90 @@ func envExampleBlockContaining(content, varName string) (string, bool) {
 // is the sync check the plan requires -- a future .env.example edit that
 // changes an engine's provenance without updating engineEstimateSource to
 // match will fail this test, not silently drift.
+// TestEstimateSourceForMeasuredEngineNotOverridden proves a measured
+// engine's provenance stays "measured" when its configured value equals
+// EXACTLY the documented run's own figure.
+func TestEstimateSourceForMeasuredEngineNotOverridden(t *testing.T) {
+	got := estimateSourceFor(convert.EngineAudio, engineMeasuredDefaultSeconds[convert.EngineAudio])
+	if got != EstimateSourceMeasured {
+		t.Fatalf("estimateSourceFor(audio, %d) = %q, want %q", engineMeasuredDefaultSeconds[convert.EngineAudio], got, EstimateSourceMeasured)
+	}
+}
+
+// TestEstimateSourceForMeasuredEngineOverride is the plan's own central
+// proof (PR #9 finding at estimate.go:241): a measured engine whose
+// configured value DIVERGES from the documented run's own figure must NOT
+// report "measured" -- an operator override cannot masquerade as the
+// exact number a supervised RTF run actually measured.
+func TestEstimateSourceForMeasuredEngineOverride(t *testing.T) {
+	overridden := engineMeasuredDefaultSeconds[convert.EngineAudio] + 100
+	got := estimateSourceFor(convert.EngineAudio, overridden)
+	if got != EstimateSourceUnmeasured {
+		t.Fatalf("estimateSourceFor(audio, %d) = %q, want %q (overridden away from the measured default %d)", overridden, got, EstimateSourceUnmeasured, engineMeasuredDefaultSeconds[convert.EngineAudio])
+	}
+}
+
+// TestEstimateSourceForUnmeasuredEngineAlwaysUnmeasured proves an engine
+// with no measured provenance at all reports unmeasured regardless of its
+// configured value -- there is no "measured" claim on the table for it to
+// lose or keep.
+func TestEstimateSourceForUnmeasuredEngineAlwaysUnmeasured(t *testing.T) {
+	for _, secs := range []int{0, 120, 99999} {
+		got := estimateSourceFor(convert.EngineImage, secs)
+		if got != EstimateSourceUnmeasured {
+			t.Errorf("estimateSourceFor(image, %d) = %q, want %q", secs, got, EstimateSourceUnmeasured)
+		}
+	}
+}
+
+// TestEstimateSourceForMatchesEnvExampleDefaults mechanically re-verifies
+// engineMeasuredDefaultSeconds against .env.example's OWN numeric value for
+// each measured engine's timeout var, exactly like
+// TestEstimateSourceMatchesEnvExampleProvenance re-verifies the
+// measured/unmeasured classification below -- a future .env.example edit
+// that changes a measured value without updating this map fails here
+// rather than silently drifting.
+func TestEstimateSourceForMatchesEnvExampleDefaults(t *testing.T) {
+	content, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+	text := string(content)
+
+	for engine, wantSeconds := range engineMeasuredDefaultSeconds {
+		varName, ok := envExampleEngineVar[engine]
+		if !ok {
+			t.Fatalf("engine %s has no envExampleEngineVar entry", engine)
+		}
+		block, found := envExampleBlockContaining(text, varName)
+		if !found {
+			t.Fatalf("var %s (engine %s) not found in .env.example", varName, engine)
+		}
+		var gotSeconds int
+		if _, err := fmt.Sscanf(strings.TrimSpace(strings.Split(block, "\n")[0]), varName+"=%ds", &gotSeconds); err != nil {
+			// The var's own assignment line is not necessarily the block's
+			// first line for every engine -- fall back to a direct scan of
+			// every line in the block.
+			found := false
+			for _, line := range strings.Split(block, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, varName+"=") {
+					if _, serr := fmt.Sscanf(trimmed, varName+"=%ds", &gotSeconds); serr == nil {
+						found = true
+						break
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("could not parse %s's numeric value from .env.example block:\n%s", varName, block)
+			}
+		}
+		if gotSeconds != wantSeconds {
+			t.Errorf("engine %s (%s): .env.example = %ds, engineMeasuredDefaultSeconds = %ds", engine, varName, gotSeconds, wantSeconds)
+		}
+	}
+}
+
 func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 	content, err := os.ReadFile("../../.env.example")
 	if err != nil {
