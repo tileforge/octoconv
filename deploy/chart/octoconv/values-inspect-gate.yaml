@@ -1,0 +1,61 @@
+# Inspect-burst live-gate overlay — layered ON TOP of values-local.yaml,
+# NEVER standalone (same convention as values-e2e.yaml/values-multireplica.yaml):
+#
+#   helm upgrade --install octoconv deploy/chart/octoconv \
+#     -f deploy/chart/octoconv/values-local.yaml \
+#     -f deploy/chart/octoconv/values-inspect-gate.yaml \
+#     -n octoconv --create-namespace
+#
+# Backs scripts/inspect-burst-liveproof.sh (Phase 58, INSP-06/SC6): a
+# pathological burst of POST /v1/inspect against a live OrbStack Kubernetes
+# api Deployment must never cause GET /healthz to fail six consecutive
+# liveness probes (deployment-api.yaml's own periodSeconds:10/
+# failureThreshold:6, unchanged by this phase — see that template's own
+# comment for why).
+
+api:
+  # api.replicas: 1 -- EXPLICIT, not inherited from values.yaml's own
+  # default of 1. This is the SC6 gate's own load-bearing precondition, not
+  # decoration: internal/ratelimit's in-process rate budget (D-07,
+  # 58-RESEARCH.md Pitfall 5) and the inspect concurrency semaphore
+  # (internal/api/inspectgate.go) are BOTH per-process state, never shared
+  # across replicas. A gate run at api.replicas > 1 would silently divide
+  # the effective inspect budget across N processes and prove a WEAKER
+  # property than SC6 claims — scripts/inspect-burst-liveproof.sh asserts
+  # this value explicitly and fails loudly, by name, if it is ever anything
+  # other than 1 (grep this file's own value, not a hardcoded literal, so
+  # the two can never silently drift apart).
+  replicas: 1
+
+  # Four inspect boundaries, restated here explicitly (not merely inherited
+  # from the ConfigMap's own INSPECT_MAX_* defaults) so an operator
+  # recalibrating this gate has ONE place to change every knob the burst
+  # depends on, without editing deploy/chart/octoconv/templates/configmap.yaml
+  # itself (extraEnv's `env:` entries take precedence over envFrom-sourced
+  # ConfigMap values for the same key — deployment-api.yaml's own comment).
+  extraEnv:
+    # LOWERED from the ConfigMap's 8 MiB default to 1 MiB. This is the knob
+    # that makes "fixture above the work ceiling, below the upload
+    # ceiling, and only a few committed megabytes" simultaneously
+    # achievable — at the 8 MiB default, satisfying "above the work
+    # ceiling" alone would require committing tens of megabytes of fixture
+    # per format. See scripts/fixtures/README.md for the exact arithmetic
+    # this value was chosen against, and for every fixture's own measured
+    # size relative to it.
+    INSPECT_MAX_WORK_BYTES: "1048576"
+    # UNCHANGED from the ConfigMap's own 100 MiB default — restated
+    # explicitly, not because this gate needs a different value, but so
+    # this overlay is a complete, self-describing record of every boundary
+    # the burst depends on, per this file's own header comment.
+    INSPECT_MAX_UPLOAD_BYTES: "104857600"
+    # UNCHANGED — a courtesy outer bound, not the mechanism this gate
+    # exercises (internal/inspect/budget.go's own doc comment: a context
+    # deadline alone cannot interrupt a CPU-bound parsing loop that never
+    # checks it). Restated here for the same completeness reason as above.
+    INSPECT_MAX_WORK_DURATION: "2s"
+    # UNCHANGED — D-06a ties this to DB_MAX_CONNS (the api pod's Postgres
+    # pool sizing, .env.example) with a fixed 4-inspect/6-headroom split;
+    # raising it here without raising DB_MAX_CONNS to match would reopen
+    # the pool-contention path Plan 58-03 closed (58-RESEARCH.md Pitfall 1).
+    # This gate deliberately does not touch that arithmetic.
+    INSPECT_MAX_CONCURRENT: "4"
