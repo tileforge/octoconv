@@ -298,12 +298,12 @@ Plans:
 
 **Risk note**: это первый в проекте request-path, разбирающий недоверенные байты **инлайн**, в том же процессе, что обслуживает `/healthz`, в сервисе, вся модель безопасности которого построена на воркер-изоляции с измеренными таймаутами. Патологический залп валит liveness-пробу и каскадит рестарт всего флота, а не тормозит одного клиента.
 
-**Plans:** 8 plans in 5 waves
+**Plans:** 3/8 plans executed
 
 Plans:
-- [ ] 58-01-PLAN.md — доказательная база D-15: пиннинг до-фазовых тел /healthz, /v1/formats и десяти content-validation отказов + код отказа inspect_busy
-- [ ] 58-02-PLAN.md — закрытый словарь находок с severity, трёхзначная шкала статуса и отдельное понятие полноты отчёта, привязка существующих 422 (D-04)
-- [ ] 58-03-PLAN.md — /healthz на собственном listener, выделенный пул Postgres для пинга (D-06a), resources.limits у api (D-06b), деплой
+- [x] 58-01-PLAN.md — доказательная база D-15: пиннинг до-фазовых тел /healthz, /v1/formats и десяти content-validation отказов + код отказа inspect_busy
+- [x] 58-02-PLAN.md — закрытый словарь находок с severity, трёхзначная шкала статуса и отдельное понятие полноты отчёта, привязка существующих 422 (D-04)
+- [x] 58-03-PLAN.md — /healthz на собственном listener, выделенный пул Postgres для пинга (D-06a), resources.limits у api (D-06b), деплой
 - [ ] 58-04-PLAN.md — PDF-анализатор с приоритетом детектора /ObjStm (D-02a) и анализатор ZIP-контейнеров
 - [ ] 58-05-PLAN.md — медиа (mp4/mov хвостовой moov, mkv/webm, wav) и изображения (размеры, пиксельная бомба, EXIF/XMP)
 - [ ] 58-06-PLAN.md — потолок работы, семафор с немедленным 429 inspect_busy и собственный rate-бюджет с оговоркой D-07
@@ -428,7 +428,7 @@ Plans:
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
 | 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
 | 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
-| 58. Synchronous Inspection | v1.13 | 0/TBD | Not started | — |
+| 58. Synchronous Inspection | v1.13 | 3/8 | In Progress|  |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
 | 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
 | 61. v1.12 Debt Tail | v1.13 | 0/TBD | Not started | — |
