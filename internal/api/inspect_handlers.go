@@ -102,28 +102,60 @@ const (
 
 const (
 	// inspectMaxZipDirEntries is the structural ceiling on a ZIP-shaped
-	// upload's OWN declared central-directory entry count -- checked from
-	// the End-Of-Central-Directory record itself, BEFORE archive/zip.
-	// NewReader ever runs (T-SLF-01). It deliberately matches
-	// internal/inspect/container.go's own maxZipEntriesScanned value
-	// exactly, so the two ceilings agree about what "too many entries"
-	// means for a ZIP-shaped upload: setting THIS bound any lower than
-	// that one would reject, at this earlier gate, an archive
-	// AnalyzeContainer's own later per-entry scan cap would have tolerated
-	// just fine. A real docx/xlsx/pptx/odt/ods/odp/epub upload is a few
-	// dozen parts; 4096 is generous headroom over any legitimate file.
+	// upload's central-directory entry count, expressed as an entry count
+	// for readability -- but, since round 2 of PR #9 review
+	// (PR9R2-F5-EOCD-UINT16-WRAP), it is NEVER compared directly against a
+	// value the archive declares about itself. The EOCD's own entry-count
+	// field is a uint16 that wraps at 65536: an archive with 65,537 minimal
+	// 46-byte central-directory records declares entries=1, a value that
+	// would sail under any ceiling this field could ever be compared
+	// against, however tight. This constant is used ONLY to derive
+	// inspectMaxZipDirBytes below, which is what the exceeds decision
+	// actually reads (see zipDirectoryExceedsStructuralBound's own doc
+	// comment). It deliberately matches internal/inspect/container.go's own
+	// maxZipEntriesScanned value, for the same reason the round-1 comment
+	// gave: setting it lower than that one would reject, at this earlier
+	// gate, an archive AnalyzeContainer's own later per-entry scan cap
+	// would have tolerated just fine. A real docx/xlsx/pptx/odt/ods/odp/
+	// epub upload is a few dozen parts; 4096 is generous headroom over any
+	// legitimate file.
 	inspectMaxZipDirEntries = 4096
+	// zipCentralDirMinRecordLen is the smallest a single ZIP central
+	// directory file header record can ever be: 46 fixed bytes, with a
+	// zero-length name, extra field, and comment. Every real record costs
+	// AT LEAST this many bytes, so dirBytes / zipCentralDirMinRecordLen is
+	// a valid UPPER bound on how many records a directory of a given
+	// declared byte size could possibly contain -- unlike the EOCD's own
+	// entry-count field, dirBytes is a uint32 (wraps at 4 GiB, far outside
+	// any bound this handler would ever set), so this upper bound cannot be
+	// defeated by the same wraparound trick.
+	zipCentralDirMinRecordLen = 46
 	// inspectMaxZipDirBytes bounds the DECLARED byte size of the central
-	// directory itself (the EOCD's own cd-size field), independent of
-	// entry count: a small number of entries with pathologically long
-	// names/extra fields could still inflate the directory's own byte size
-	// well past what a real archive's directory ever needs. 4 MiB is
-	// generous headroom over any real office/epub archive's central
-	// directory (typically well under 100 KiB) -- an SC6-calibrated
-	// starting point, like every other ceiling this phase introduces
-	// (internal/inspect/budget.go's own Budget doc comment), not a
-	// measured number.
-	inspectMaxZipDirBytes = 4 << 20
+	// directory itself (the EOCD's own cd-size field) -- and, since round 2
+	// of PR #9 review, is the ONLY field zipDirectoryExceedsStructuralBound's
+	// exceeds decision reads. Deriving it as inspectMaxZipDirEntries *
+	// zipCentralDirMinRecordLen (~184 KiB) -- rather than round 1's flat
+	// 4 MiB, chosen independently of the entry ceiling -- guarantees this
+	// bound can never wave through a directory containing MORE than
+	// inspectMaxZipDirEntries records, however those bytes are distributed
+	// among them: every real record costs at least
+	// zipCentralDirMinRecordLen bytes, so exceeding the entry ceiling
+	// always costs more declared bytes than this bound allows, regardless
+	// of what the EOCD's own (untrusted, wrapping) entry-count field says.
+	//
+	// The correspondence with inspectMaxZipDirEntries is now
+	// ONE-DIRECTIONAL, not exact, and that asymmetry is a deliberate,
+	// documented trade, not an oversight: an archive whose ACTUAL entry
+	// count is within inspectMaxZipDirEntries but whose average record is
+	// larger than the 46-byte minimum (long filenames, extra fields) can
+	// still trip this bound even though internal/inspect/container.go's own
+	// maxZipEntriesScanned cap would have scanned it to completion happily.
+	// A real office/epub central directory is typically well under 100 KiB
+	// (a few dozen parts, short ASCII names) -- comfortably inside the
+	// ~184 KiB this derivation yields -- so this is headroom being traded
+	// for a bound that cannot be defeated by a uint16 wraparound, not a
+	// tightening expected to reject real uploads.
+	inspectMaxZipDirBytes = inspectMaxZipDirEntries * zipCentralDirMinRecordLen
 	// zipEOCDRecordMaxLen is the largest a ZIP End-Of-Central-Directory
 	// record can ever be: the 22-byte fixed header plus the largest
 	// possible comment (the comment-length field is a uint16, so at most
@@ -357,13 +389,38 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 }
 
 // zipDirectoryExceedsStructuralBound reports whether r's own declared
-// End-Of-Central-Directory fields (entry count, central-directory byte
-// size) exceed this handler's structural ceiling (inspectMaxZipDirEntries /
-// inspectMaxZipDirBytes), reading ONLY the tail of the file -- never more
-// than zipEOCDRecordMaxLen bytes -- and never invoking archive/zip.
-// NewReader (T-SLF-01). This is the ONE place in this handler that answers
-// "how big a central directory is this upload declaring" before anything
-// downstream pays the cost of actually parsing it.
+// central-directory byte size (the EOCD's cd-size field) exceeds this
+// handler's structural ceiling (inspectMaxZipDirBytes), reading ONLY the
+// tail of the file -- never more than zipEOCDRecordMaxLen bytes -- and
+// never invoking archive/zip.NewReader (T-SLF-01). This is the ONE place in
+// this handler that answers "how big a central directory is this upload
+// declaring" before anything downstream pays the cost of actually parsing
+// it.
+//
+// Round 2 of PR #9 review (PR9R2-F5-EOCD-UINT16-WRAP) found that the
+// round-1 version of this function based its exceeds decision on BOTH the
+// EOCD's entry-count field AND its cd-size field -- and the entry-count
+// field is a uint16 that wraps at 65536. An archive with 65,537 minimal
+// 46-byte central-directory records declares entries=1 while dirBytes lands
+// around 2.9 MiB, comfortably under round 1's flat 4 MiB ceiling: both
+// checks passed, and archive/zip.NewReader went on to allocate and walk all
+// 65,537 records anyway. THIS version's exceeds decision reads dirBytes
+// ONLY -- entries is still returned (and still read from the same bytes)
+// purely for the caller's own diagnostics, but nothing in this function's
+// control flow branches on its value. dirBytes is a uint32 (wraps at 4 GiB,
+// far outside inspectMaxZipDirBytes), and inspectMaxZipDirBytes is itself
+// derived from inspectMaxZipDirEntries * zipCentralDirMinRecordLen (its own
+// doc comment), so a directory containing more than inspectMaxZipDirEntries
+// records can never declare a dirBytes value under this bound, however that
+// count is achieved.
+//
+// ZIP64 sentinel: dirBytes == 0xFFFFFFFF means "the real central-directory
+// size is in the ZIP64 end-of-central-directory record, not this field" --
+// it is treated as EXCEEDING the bound explicitly, rather than relying on
+// the plain numeric comparison to reject it merely because 0xFFFFFFFF
+// happens to be a large number. The same sentinel convention applies to the
+// entries field (0xFFFF), but since entries is no longer part of the
+// decision, no separate handling is needed for it here.
 //
 // The consistency check below (tailOffset+i+zipEOCDFixedLen+commentLen ==
 // size) is the same one archive/zip's own unexported reader applies to
@@ -371,12 +428,12 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 // itself contain bytes that happen to match the signature, and without
 // requiring the record's OWN declared comment length to land EXACTLY at the
 // file's true end, this function could be fooled into reading a FAKE EOCD
-// with a small declared entry count sitting earlier in the comment, letting
-// the REAL (huge) directory right behind it through. Scanning backward from
-// the highest offset and returning the FIRST occurrence satisfying that
-// consistency check finds the genuine record (extremely unlikely to
-// collide, and no more exploitable than the identical resolution the
-// standard library itself relies on).
+// with a small declared directory size sitting earlier in the comment,
+// letting the REAL (huge) directory right behind it through. Scanning
+// backward from the highest offset and returning the FIRST occurrence
+// satisfying that consistency check finds the genuine record (extremely
+// unlikely to collide, and no more exploitable than the identical
+// resolution the standard library itself relies on).
 //
 // If no EOCD record can be located within the tail at all (corrupt or
 // truncated zip), this reports exceeds=false: that upload is not this
@@ -409,9 +466,17 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 			// attacker-controlled comment byte sequence, not the real EOCD.
 			continue
 		}
+		// entries is read here for the caller's diagnostics ONLY -- the
+		// exceeds decision below never uses it (see this function's own
+		// doc comment for PR9R2-F5-EOCD-UINT16-WRAP, the finding that made
+		// this split necessary).
 		entries = binary.LittleEndian.Uint16(buf[i+10 : i+12])
 		dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
-		exceeds = entries > inspectMaxZipDirEntries || dirBytes > inspectMaxZipDirBytes
+		// 0xFFFFFFFF is the ZIP64 "look elsewhere" sentinel, not a literal
+		// declared size -- treated as exceeding explicitly, not merely
+		// because the comparison below would also reject it as a large
+		// number.
+		exceeds = dirBytes == 0xFFFFFFFF || dirBytes > inspectMaxZipDirBytes
 		return exceeds, entries, dirBytes
 	}
 	return false, 0, 0
