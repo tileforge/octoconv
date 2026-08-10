@@ -51,20 +51,55 @@ spec:
               containerPort: 8090
             - name: metrics
               containerPort: 9090
-          # api serves /healthz on API_ADDR (:8090) — the only app component
-          # with a real health endpoint (D-08). Readiness is tight so a
-          # transient dependency blip pulls the pod from rotation quickly;
-          # liveness is tolerant so the same blip doesn't trigger a restart
-          # storm on top of the rotation pull.
+            # health (Phase 58, D-06/D-06a/D-08): a THIRD, dedicated port
+            # for GET /healthz, distinct from http (8090). api is still the
+            # only app component with a real health endpoint. The probes
+            # below deliberately opt INTO this port rather than staying on
+            # 8090: this phase for the first time parses untrusted bytes
+            # inline in the api process (POST /v1/inspect, INSP-05/06), and
+            # a pathological burst against 8090 must not be able to starve
+            # the liveness probe's own accept path. This closes the
+            # HTTP-accept half of that risk only -- the Postgres-pool half
+            # (handleHealth's dependency ping sharing a pool with
+            # Repo.PreAdmit) is closed separately by internal/db.ConnectHealth
+            # (D-06a, Plan 58-03 Task 1); moving the port alone does NOT
+            # close that half, and this comment says so explicitly so the
+            # next reader does not repeat the mistake.
+            - name: health
+              containerPort: 8091
+          # Readiness is tight so a transient dependency blip pulls the pod
+          # from rotation quickly; liveness is tolerant so the same blip
+          # doesn't trigger a restart storm on top of the rotation pull.
+          # periodSeconds/failureThreshold below are UNCHANGED by Phase 58
+          # (5/2 and 10/6) -- they are the contract the live gate (58-08)
+          # calibrates its pathological-burst pass/fail threshold against
+          # (six consecutive liveness failures = ~60s to a restart); only
+          # WHICH PORT they poll changed.
           readinessProbe:
             httpGet:
               path: /healthz
-              port: 8090
+              port: 8091
             periodSeconds: 5
             failureThreshold: 2
           livenessProbe:
             httpGet:
               path: /healthz
-              port: 8090
+              port: 8091
             periodSeconds: 10
             failureThreshold: 6
+          # D-06b: api gets resources.limits for the first time in this
+          # phase. Before Phase 58, api's profile was "small, I/O-bound,
+          # cheap" and never carried a cgroup limit at all (every worker
+          # Deployment does, see deployment-worker.yaml). This phase is the
+          # first to parse untrusted bytes inline in the api process
+          # (POST /v1/inspect) -- without a cgroup backstop, the in-process
+          # byte/time work ceiling (Plan 58-06) would be the ONLY line of
+          # defense, and a bug in it could grow the process until the NODE,
+          # not just the pod, is under memory/CPU pressure. Values below are
+          # STARTING points (see values.yaml api.resources.limits' own
+          # comment) subject to calibration by the live gate (58-08), not a
+          # measured ceiling yet.
+          resources:
+            limits:
+              cpu: {{ .Values.api.resources.limits.cpu | quote }}
+              memory: {{ .Values.api.resources.limits.memory | quote }}

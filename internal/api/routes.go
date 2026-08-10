@@ -24,6 +24,15 @@ import (
 // True-Client-IP) is intentionally ignored — trusting them here would let a
 // single attacker manufacture unlimited fresh rate-limit buckets by varying
 // the header per request, defeating ratelimit.ByIP entirely.
+//
+// /healthz stays registered here too (Phase 58, D-08) even though
+// HealthRoutes below now also serves it on its own listener:
+// deploy/chart/octoconv/templates/job-e2e.yaml:48 waits on
+// api:8090/healthz before starting E2E, and scripts/cancel-liveproof.sh:179
+// / scripts/quota-burst-driver.sh:219 both probe it at this same address.
+// Removing the route from here would break three live consumers for zero
+// isolation gain — the isolation HealthRoutes buys comes from a SEPARATE
+// probe hitting a SEPARATE port, not from this path disappearing.
 func (s *Server) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -79,5 +88,41 @@ func (s *Server) Routes() chi.Router {
 			r.Get("/", s.handleSystemUsage)
 		})
 	})
+	return r
+}
+
+// HealthRoutes builds a SECOND, minimal chi router carrying exactly one
+// route: GET /healthz. cmd/api/main.go binds this to its own http.Server on
+// HEALTH_ADDR (Phase 58 Task 2), separate from the http.Server Routes()
+// above binds to API_ADDR.
+//
+// What this buys, precisely: a burst against /v1/* (in particular
+// POST /v1/inspect, INSP-05) saturates Routes()'s http.Server — its accept
+// queue, its goroutines, its listener socket — without taking a single
+// accept-path resource away from THIS router's http.Server, because they
+// are two separate net.Listeners in two separate http.Server values. The
+// liveness probe gets its own place in line, unconditionally.
+//
+// What this does NOT buy — stated explicitly because an earlier design
+// discussion in this project assumed otherwise, and that assumption was
+// wrong (58-CONTEXT.md D-06a): this router does not isolate handleHealth's
+// DEPENDENCY pings. The Postgres ping inside handleHealth still runs
+// against whatever *pgxpool.Pool sits in s.health.Postgres, and the Redis/
+// S3 pings still run against whatever s.health.Redis/S3 point at. Splitting
+// the HTTP listener does nothing about a shared, exhausted connection pool
+// — that half of the fix is db.ConnectHealth's dedicated health pool
+// (internal/db/db.go, Task 1), wired in by cmd/api/main.go, not this
+// router. HTTP-accept isolation and dependency-pool isolation are two
+// independent claims; this method only proves the first one.
+//
+// Middleware is deliberately minimal: only middleware.Recoverer. No
+// middleware.Logger — a probe firing every 5-10s produces no useful signal
+// and only adds log noise; no middleware.RequestID/ClientIPFromRemoteAddr —
+// nothing on this router ever reads either value, unlike Routes()'s /v1
+// subtree.
+func (s *Server) HealthRoutes() chi.Router {
+	r := chi.NewRouter()
+	r.Use(middleware.Recoverer)
+	r.Get("/healthz", s.handleHealth)
 	return r
 }

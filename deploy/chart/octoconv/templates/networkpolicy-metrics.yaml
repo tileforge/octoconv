@@ -26,14 +26,22 @@ Ingress rules:
       Without this rule, attaching an Ingress policy to api's pod would
       black-hole :8090 for every in-namespace caller (default-deny once any
       Ingress policy selects a pod).
+  (c) :8091 (api health, Phase 58 D-06/D-08) — allowed from the whole
+      octoconv namespace, same shape as rule (b). This is NOT for kubelet's
+      probes (see the note below) — it exists so the live gate's (58-08)
+      in-cluster burst driver can poll GET /healthz through this Service
+      port during a pathological inspect burst, exactly the way plan 03's
+      E2E Job already relies on rule (b) for :8090.
 
 NOTE: kubelet health-probe traffic (readiness/liveness) is node-local and
 sourced from outside any Pod/Namespace selector this policy can express —
 it is NOT blocked by NetworkPolicy (kube-proxy/kubelet probes bypass the
-CNI's pod-to-pod policy enforcement in standard implementations). If
-OrbStack's CNI is ever found to enforce policy against node-origin probes,
-a follow-up allow-from-node rule would be needed — verify in plan 03's live
-gate.
+CNI's pod-to-pod policy enforcement in standard implementations). This
+applies identically to the new :8091 health port added by rule (c) above:
+kubelet's own liveness/readinessProbe (deployment-api.yaml) never goes
+through this policy at all, on any port. If OrbStack's CNI is ever found to
+enforce policy against node-origin probes, a follow-up allow-from-node rule
+would be needed — verify in plan 03's / 58-08's live gate.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -63,3 +71,10 @@ spec:
       ports:
         - protocol: TCP
           port: 8090
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+      ports:
+        - protocol: TCP
+          port: 8091

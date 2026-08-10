@@ -16,7 +16,17 @@ data:
   S3_BUCKET: {{ .Values.s3.bucket | quote }}
   S3_USE_SSL: {{ .Values.s3.useSSL | quote }}
   API_ADDR: ":8090"
+  # HEALTH_ADDR (Phase 58, D-06/D-08): dedicated listener for GET /healthz,
+  # matching deployment-api.yaml's health containerPort (8091) and
+  # service-api.yaml's health Service port. See internal/api/routes.go's
+  # HealthRoutes doc comment for what this port does and does not isolate.
+  HEALTH_ADDR: ":8091"
   METRICS_ADDR: {{ .Values.metrics.addr | quote }}
+  # DB_MAX_CONNS (Phase 58, D-06a): explicit main-pool sizing -- arithmetic
+  # recorded in internal/db/db.go's Connect doc comment (10 = 4 concurrent
+  # inspect + 6 headroom for ordinary /v1/jobs traffic sharing the same
+  # pool). Before this phase MaxConns was never set at all.
+  DB_MAX_CONNS: "10"
   MAX_UPLOAD_BYTES: "104857600"
   MAX_IMAGE_PIXELS: "100000000"
   MAX_DOCUMENT_UNCOMPRESSED_BYTES: "524288000"
