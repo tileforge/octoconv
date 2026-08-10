@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -339,6 +340,65 @@ func TestInspectZipDirectoryOverBoundReportsUnknownNot500(t *testing.T) {
 	}
 }
 
+// reviewerScenarioZipFixture builds the SMALLEST possible upload that
+// reproduces codex's round-2 review scenario end-to-end through the real
+// HTTP handler: a PK\x03\x04 local-file-header signature (so
+// detectInspectFormat's ZIP branch is entered at all) immediately followed
+// by a 22-byte EOCD record declaring entries=1 (65537 mod 65536) and
+// dirBytes=65537*46=3,014,702 -- the exact wraparound arithmetic the
+// finding gave. No actual central-directory bytes are present: this
+// handler's own structural bound must reject the upload from the EOCD's
+// declared fields alone, before archive/zip.NewReader (or anything that
+// would notice the directory is not really there) ever runs.
+func reviewerScenarioZipFixture() []byte {
+	wrappedEntries := uint16(65537 % 65536) // == 1
+	trueDirBytes := uint32(65537 * zipCentralDirMinRecordLen)
+
+	buf := make([]byte, 4+22)
+	buf[0], buf[1], buf[2], buf[3] = 'P', 'K', 3, 4 // local-file-header magic, gates detectInspectFormat's ZIP branch
+	eocd := buf[4:]
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	binary.LittleEndian.PutUint16(eocd[10:12], wrappedEntries)
+	binary.LittleEndian.PutUint32(eocd[12:16], trueDirBytes)
+	// comment length (last 2 bytes) left at zero.
+	return buf
+}
+
+// TestInspectReviewerScenarioReportsUnknownNot500 is the plan's central
+// PR9R2-F5-EOCD-UINT16-WRAP proof, exercised through the real handler
+// end-to-end (not just the bound-check function in isolation): an upload
+// whose declared EOCD entry count wraps to 1 while its declared directory
+// size matches 65,537 real minimal records must still be reported as
+// format=zip_directory_too_large -- never resolved as a real container
+// format, never clean, never 500 -- exactly like
+// TestInspectZipDirectoryOverBoundReportsUnknownNot500 above proves for the
+// round-1 (non-wrapping) over-bound case.
+func TestInspectReviewerScenarioReportsUnknownNot500(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	status, body := doInspect(t, srv, "in.zip", reviewerScenarioZipFixture())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (never 500, never a rejection); body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != inspectZipTooLargeFormat {
+		t.Errorf("Format = %q, want %q -- entries=1 (wrapped) must NOT let this upload past the structural bound", resp.Format, inspectZipTooLargeFormat)
+	}
+	if resp.Coverage.Complete {
+		t.Errorf("Coverage.Complete = true, want false")
+	}
+	if resp.Coverage.Reason != inspect.ReasonWorkCeilingBytes {
+		t.Errorf("Coverage.Reason = %q, want %q", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
+	}
+	if err := inspect.ValidateReport(resp.Findings, resp.Checks); err != nil {
+		t.Errorf("ValidateReport: %v", err)
+	}
+}
+
 // TestInspectZipDirectoryWithinBoundUnaffected proves normal-sized ZIP
 // office uploads are completely unaffected by the new structural ceiling:
 // the SAME docx-shaped fixture, with an entry count comfortably under
@@ -360,11 +420,15 @@ func TestInspectZipDirectoryWithinBoundUnaffected(t *testing.T) {
 }
 
 // TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive proves
-// zipDirectoryExceedsStructuralBound itself answers the entries/dirBytes
-// question from the EOCD record alone, for both a real small archive
-// (exceeds=false) and a real archive whose entry count crosses the ceiling
-// (exceeds=true) -- exercised directly, independent of the HTTP handler,
-// against real archive/zip.Writer output.
+// zipDirectoryExceedsStructuralBound itself trips on a real archive whose
+// entry count crosses the ceiling (exceeds=true) and stays untripped for a
+// real small archive (exceeds=false) -- exercised directly, independent of
+// the HTTP handler, against real archive/zip.Writer output. Since round 2
+// of PR #9 review this passes not because the entry COUNT was compared
+// against a ceiling, but because that many real (non-minimal, named)
+// central-directory records inevitably declare a dirBytes value past
+// inspectMaxZipDirBytes -- see TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount
+// below for the direct proof that entries itself is never consulted.
 func TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive(t *testing.T) {
 	small := docxFixture(t)
 	r := bytes.NewReader(small)
@@ -376,44 +440,107 @@ func TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive(t *testin
 	wantEntries := junkEntries + 1 // +1 for the fixture's own word/document.xml root part
 	big := manyEntriesDocxFixture(t, junkEntries)
 	r2 := bytes.NewReader(big)
-	exceeds, entries, _ := zipDirectoryExceedsStructuralBound(r2, int64(len(big)))
+	exceeds, entries, dirBytes := zipDirectoryExceedsStructuralBound(r2, int64(len(big)))
 	if !exceeds {
 		t.Fatalf("exceeds = false, want true for %d entries (bound is %d)", wantEntries, inspectMaxZipDirEntries)
 	}
 	if int(entries) != wantEntries {
 		t.Errorf("entries = %d, want %d", entries, wantEntries)
 	}
+	if dirBytes <= inspectMaxZipDirBytes {
+		t.Errorf("dirBytes = %d, want > %d -- this test's own exceeds=true only proves the fix works if the byte bound, not the entry bound, is what actually tripped", dirBytes, inspectMaxZipDirBytes)
+	}
 }
 
-// TestInspectZipDirectoryBoundInversion is D-16's own inversion discipline,
-// applied here directly at the unit level rather than by temporarily
-// editing production code: manually constructing an EOCD-only buffer that
-// declares an over-bound entry count but is NOT preceded by the PK\x03\x04
-// detectInspectFormat gates on proves the bound-check FUNCTION itself is
-// what produces exceeds=true (not some other accidental signal) -- and,
-// documented here in prose per D-16, temporarily commenting out the
-// zipDirectoryExceedsStructuralBound call in detectInspectFormat's own ZIP
-// branch (restoring the pre-fix code exactly) makes
-// TestInspectZipDirectoryOverBoundReportsUnknownNot500 above fail: Format
-// becomes "docx" (the full, unbounded parse succeeds) and every
-// container-domain check reports clean instead of unknown/work_ceiling_bytes
-// -- verified by hand while writing this fix, reverted before this commit.
-func TestInspectZipDirectoryBoundInversion(t *testing.T) {
+// TestInspectZipDirectoryWithinBoundToleratesRealisticOfficeArchive proves a
+// legitimate multi-part archive -- several dozen parts, the shape a real
+// docx/xlsx/pptx/odt/ods/odp/epub upload actually has, not the two-entry toy
+// fixture TestInspectZipDirectoryWithinBoundUnaffected uses -- still resolves
+// to its real format under the new byte-derived bound (inspectMaxZipDirBytes,
+// ~184 KiB). This is the fixture-backed proof the plan requires, not
+// reasoning about the arithmetic: a real central directory this size is
+// nowhere near the ~184 KiB ceiling.
+func TestInspectZipDirectoryWithinBoundToleratesRealisticOfficeArchive(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	fixture := manyEntriesDocxFixture(t, 50) // 51 parts total with the root
+	status, body := doInspect(t, srv, "in.docx", fixture)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != "docx" {
+		t.Errorf("Format = %q, want docx -- a realistic multi-part office archive must not be rejected by the byte-derived structural ceiling", resp.Format)
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount reproduces
+// the EXACT scenario codex's round-2 review gave, arithmetic included: an
+// archive with 65,537 minimal 46-byte central-directory records declares
+// entries=1 (65537 mod 65536, the uint16 wraparound) while its true
+// directory size is 65537*46 = 3,014,702 bytes (~2.9 MiB) -- a value round
+// 1's flat 4 MiB ceiling would have let straight through. Constructing only
+// the 22-byte EOCD record itself (no actual 3 MiB of central-directory
+// bytes behind it) is sufficient: zipDirectoryExceedsStructuralBound never
+// reads the directory itself, only the EOCD's own declared fields, so this
+// is a direct, minimal proof that dirBytes alone -- not entries -- drives
+// the decision.
+//
+// D-16 inversion, performed by hand while writing this fix and reverted
+// before this commit (see this quick task's SUMMARY.md for the literal
+// before/after `go test` output): temporarily changing the exceeds
+// assignment inside zipDirectoryExceedsStructuralBound back to
+// round-1's `entries > inspectMaxZipDirEntries || dirBytes > inspectMaxZipDirBytes`
+// makes this test fail (entries=1 is not > inspectMaxZipDirEntries=4096,
+// and dirBytes=3,014,702 is not > round-1's 4 MiB, so exceeds stays false)
+// -- reproducing the exact bypass PR9R2-F5-EOCD-UINT16-WRAP reported.
+func TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount(t *testing.T) {
+	const trueRecordCount = 65537
+	wrappedEntries := uint16(trueRecordCount % 65536)                   // == 1
+	trueDirBytes := uint32(trueRecordCount * zipCentralDirMinRecordLen) // 3,014,702
+
 	// A minimal, self-consistent 22-byte EOCD record (no comment, no real
-	// central directory behind it) declaring entries=inspectMaxZipDirEntries+1.
+	// central-directory bytes behind it -- this function never reads them).
 	eocd := make([]byte, 22)
 	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
-	entries := uint16(inspectMaxZipDirEntries + 1)
-	eocd[10] = byte(entries)
-	eocd[11] = byte(entries >> 8)
+	binary.LittleEndian.PutUint16(eocd[10:12], wrappedEntries)
+	binary.LittleEndian.PutUint32(eocd[12:16], trueDirBytes)
 	// comment length (offset 20:22) left at zero.
 
-	exceeds, gotEntries, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
-	if !exceeds {
-		t.Fatalf("exceeds = false, want true")
+	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	if gotEntries != wrappedEntries {
+		t.Fatalf("entries = %d, want %d (the wrapped value the reviewer's scenario declares)", gotEntries, wrappedEntries)
 	}
-	if gotEntries != entries {
-		t.Fatalf("entries = %d, want %d", gotEntries, entries)
+	if gotDirBytes != trueDirBytes {
+		t.Fatalf("dirBytes = %d, want %d", gotDirBytes, trueDirBytes)
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- entries=%d (wrapped, looks tiny) must NOT be able to wave a %d-byte declared directory (~2.9 MiB, %d real minimal records) through the structural bound", gotEntries, gotDirBytes, trueRecordCount)
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundTreatsZip64SentinelAsExceeding
+// proves dirBytes == 0xFFFFFFFF -- the ZIP64 "the real size is in the
+// ZIP64 end-of-central-directory record, not this field" sentinel -- is
+// treated as exceeding the bound. entries is deliberately left at the
+// wrapped value 1 from the round-2 scenario above, so this test also proves
+// the sentinel check is not merely riding along on a coincidentally large
+// entries value.
+func TestZipDirectoryExceedsStructuralBoundTreatsZip64SentinelAsExceeding(t *testing.T) {
+	eocd := make([]byte, 22)
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	eocd[10], eocd[11] = 1, 0 // entries = 1
+	eocd[12], eocd[13], eocd[14], eocd[15] = 0xFF, 0xFF, 0xFF, 0xFF
+
+	exceeds, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	if dirBytes != 0xFFFFFFFF {
+		t.Fatalf("dirBytes = %#x, want 0xffffffff", dirBytes)
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- the ZIP64 sentinel must never be read as a small-enough declared size")
 	}
 }
 
