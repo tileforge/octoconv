@@ -240,6 +240,18 @@ func main() {
 		// diverge, or GET /v1/system/usage would report an enforcement
 		// posture the admission gate does not actually have.
 		QuotaEnforcementDisabled: quotaDisabled,
+		// Five inspect boundaries (58-CONTEXT.md D-06, Plan 58-06 Task 3):
+		// api.NewServer applies its own documented defaults (100 MiB / 8
+		// MiB / 2s / 4 / 30) when any of these are left at zero -- an
+		// absent env var is never a behaviour change, same defaulting
+		// discipline as every other Config field above. See api.Config's
+		// own doc comments for what each one bounds and why the two byte
+		// ceilings (upload vs. work) are separate fields.
+		InspectMaxUploadBytes:  envInt64("INSPECT_MAX_UPLOAD_BYTES", 0),
+		InspectMaxWorkBytes:    envInt64("INSPECT_MAX_WORK_BYTES", 0),
+		InspectMaxWorkDuration: envDuration("INSPECT_MAX_WORK_DURATION", 0),
+		InspectMaxConcurrent:   int(envInt64("INSPECT_MAX_CONCURRENT", 0)),
+		InspectRateLimitRPM:    int(envInt64("RATE_LIMIT_INSPECT_RPM", 0)),
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher

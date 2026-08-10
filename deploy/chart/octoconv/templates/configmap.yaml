@@ -32,6 +32,17 @@ data:
   MAX_DOCUMENT_UNCOMPRESSED_BYTES: "524288000"
   RATE_LIMIT_IP_RPM: "60"
   RATE_LIMIT_CLIENT_RPM: "120"
+  # Synchronous inspect boundaries (58-CONTEXT.md D-06, Plan 58-06):
+  # STARTING values for the live gate (Plan 58-08, SC6) to calibrate, not
+  # measured numbers. Compose-parity byte-for-byte (docker-compose.yml api
+  # service block) -- see .env.example for the full rationale, including
+  # the distinction between the two byte ceilings (upload vs. work) and
+  # the D-07 replicas:1 caveat on the rate budget below.
+  INSPECT_MAX_UPLOAD_BYTES: "104857600"
+  INSPECT_MAX_WORK_BYTES: "8388608"
+  INSPECT_MAX_WORK_DURATION: "2s"
+  INSPECT_MAX_CONCURRENT: "4"
+  RATE_LIMIT_INSPECT_RPM: "30"
   WORKER_CONCURRENCY: "4"
   DOCUMENT_WORKER_CONCURRENCY: "2"
   HTML_WORKER_CONCURRENCY: "2"
