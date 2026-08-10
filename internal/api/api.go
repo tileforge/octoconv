@@ -231,6 +231,13 @@ type Server struct {
 	inspectSem *inspectSemaphore
 	// inspectRateRPM mirrors Config.InspectRateLimitRPM (D-06 mechanism 4).
 	inspectRateRPM int
+	// engineTimeouts mirrors Config.EngineTimeouts (INSP-04, Plan 58-07):
+	// the per-engine upper bound POST /v1/inspect's availableOperations
+	// reports as estimated_max_seconds. Never nil after NewServer -- a
+	// caller that leaves Config.EngineTimeouts nil gets the seven-engine
+	// default map (see NewServer), never an empty map that would silently
+	// report every engine's ceiling as 0.
+	engineTimeouts map[string]time.Duration
 }
 
 // inspectConcurrencyGate is the chi middleware Plan 58-07's POST
@@ -380,6 +387,20 @@ type Config struct {
 	// because one inspect parse is a materially more expensive request
 	// than one status poll.
 	InspectRateLimitRPM int
+	// EngineTimeouts is the per-engine upper-bound duration POST
+	// /v1/inspect's availableOperations reports as estimated_max_seconds
+	// (INSP-04, Plan 58-07) -- the SAME per-engine timeout value each
+	// worker process already reads at its own startup (ENGINE_TIMEOUT,
+	// DOCUMENT_ENGINE_TIMEOUT, HTML_ENGINE_TIMEOUT, AUDIO_ENGINE_TIMEOUT,
+	// AV_ENGINE_TIMEOUT, OCR_ENGINE_TIMEOUT, PANDOC_ENGINE_TIMEOUT), now
+	// ALSO read by cmd/api so the API process can report it without a new
+	// env var. A nil map (the default when this field is left unset)
+	// triggers NewServer's own seven-engine default, mirroring
+	// MaxEngineBytes' nil-triggers-default discipline above -- an engine
+	// key absent from a caller-supplied map is simply reported with a
+	// zero-second ceiling (engineTimeoutSeconds' own documented behavior
+	// for a non-positive duration), it is not backfilled from the default.
+	EngineTimeouts map[string]time.Duration
 }
 
 // NewServer builds an API server. resolver authenticates every /v1 request
@@ -478,6 +499,25 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.InspectRateLimitRPM == 0 {
 		cfg.InspectRateLimitRPM = 30 // deliberately below ClientRateLimitRPM's 120
 	}
+	if cfg.EngineTimeouts == nil {
+		// INSP-04 (Plan 58-07): mirrors each worker's own startup default for
+		// the SAME seven env vars (ENGINE_TIMEOUT=120s,
+		// DOCUMENT_ENGINE_TIMEOUT=300s, HTML_ENGINE_TIMEOUT=60s,
+		// AUDIO_ENGINE_TIMEOUT=742s, AV_ENGINE_TIMEOUT=753s,
+		// OCR_ENGINE_TIMEOUT=744s, PANDOC_ENGINE_TIMEOUT=65s) -- cmd/api/main.go
+		// overrides every entry from the actual env vars when set; this is
+		// only the code-level fallback for an unset/empty value, exactly like
+		// every other Config field's zero-triggers-default discipline above.
+		cfg.EngineTimeouts = map[string]time.Duration{
+			convert.EngineImage:    120 * time.Second,
+			convert.EngineDocument: 300 * time.Second,
+			convert.EngineHTML:     60 * time.Second,
+			convert.EngineAudio:    742 * time.Second,
+			convert.EngineAV:       753 * time.Second,
+			convert.EngineOCR:      744 * time.Second,
+			convert.EnginePandoc:   65 * time.Second,
+		}
+	}
 	operators := cfg.OperatorClientIDs
 	if operators == nil {
 		operators = map[uuid.UUID]struct{}{}
@@ -511,5 +551,6 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		inspectMaxWorkDuration:       cfg.InspectMaxWorkDuration,
 		inspectSem:                   newInspectSemaphore(cfg.InspectMaxConcurrent),
 		inspectRateRPM:               cfg.InspectRateLimitRPM,
+		engineTimeouts:               cfg.EngineTimeouts,
 	}
 }
