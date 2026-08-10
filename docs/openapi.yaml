@@ -98,6 +98,7 @@ components:
             - unauthorized
             - quota_exceeded
             - rate_limited
+            - inspect_busy
             - internal_error
       required: [error, code]
 
