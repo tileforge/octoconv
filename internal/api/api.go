@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,6 +216,42 @@ type Server struct {
 	// 53-07): reporting-only state read by handleSystemUsage, never consulted
 	// by any admission decision.
 	quotaEnforcementDisabled bool
+	// inspectMaxUploadBytes / inspectMaxWorkBytes / inspectMaxWorkDuration
+	// mirror Config's identically-named fields (D-06, Plan 58-06 Task 3);
+	// see those doc comments for the ceiling each one enforces and why the
+	// two byte ceilings are separate fields, not one. Plan 58-07's POST
+	// /v1/inspect handler is the only reader.
+	inspectMaxUploadBytes  int64
+	inspectMaxWorkBytes    int64
+	inspectMaxWorkDuration time.Duration
+	// inspectSem is the constructed D-06 mechanism-2 semaphore
+	// (internal/api/inspectgate.go), sized by Config.InspectMaxConcurrent.
+	// Never nil after NewServer -- newInspectSemaphore applies its own
+	// documented default for a non-positive input.
+	inspectSem *inspectSemaphore
+	// inspectRateRPM mirrors Config.InspectRateLimitRPM (D-06 mechanism 4).
+	inspectRateRPM int
+}
+
+// inspectConcurrencyGate is the chi middleware Plan 58-07's POST
+// /v1/inspect route mounts to enforce InspectMaxConcurrent (D-06 mechanism
+// 2). The actual semaphore behavior -- non-blocking capture, immediate
+// 429 errcode.InspectBusy, defer-based release, and the D-06a property
+// that holding the slot for the whole request bounds concurrent
+// Repo.PreAdmit calls too -- is documented once, on inspectSemaphore.
+// middleware itself (internal/api/inspectgate.go); this method only wires
+// the instance NewServer already constructed and sized from Config.
+func (s *Server) inspectConcurrencyGate(next http.Handler) http.Handler {
+	return s.inspectSem.middleware(next)
+}
+
+// inspectRateLimit is the chi middleware constructor Plan 58-07's POST
+// /v1/inspect route mounts for its own rate budget (D-06 mechanism 4).
+// See newInspectRateLimit's doc comment (internal/api/inspectgate.go) for
+// the independence argument and the D-07 replicas:1 caveat; this method
+// only supplies the rpm NewServer already resolved from Config.
+func (s *Server) inspectRateLimit() func(http.Handler) http.Handler {
+	return newInspectRateLimit(s.inspectRateRPM)
 }
 
 // SetCancelPublisher installs the CancelPublisher a successful cancel
@@ -290,6 +327,59 @@ type Config struct {
 	SSEPollInterval      time.Duration
 	SSEHeartbeatInterval time.Duration
 	SSEMaxStreamDuration time.Duration
+	// InspectMaxUploadBytes is the pre-parse http.MaxBytesReader ceiling
+	// Plan 58-07's POST /v1/inspect applies to the request BODY, before any
+	// byte is handed to a parser. It is deliberately SEPARATE from, and
+	// smaller than, MaxUploadBytes (the job-creation path's own ceiling,
+	// currently 2 GiB): inspect never writes to S3 and never enqueues a
+	// job, so there is no reason to accept a multi-gigabyte body just to
+	// look at its magic bytes. Zero triggers NewServer's 100 MiB default
+	// (58-CONTEXT.md D-06, SC6-calibrated starting value, not measured).
+	// Exceeding THIS ceiling is a 413 -- a rejection of the request itself
+	// -- which is a different failure than exceeding InspectMaxWorkBytes
+	// below (INSP-03's partial-coverage report, never a rejection).
+	InspectMaxUploadBytes int64
+	// InspectMaxWorkBytes is the byte ceiling on how much of the ALREADY-
+	// ACCEPTED upload every family analyzer sharing one inspect operation
+	// may read in total (internal/inspect.Budget.MaxBytes, D-06 mechanism
+	// 1). The distinction from InspectMaxUploadBytes above, stated plainly
+	// because it is easy to conflate: InspectMaxUploadBytes bounds how many
+	// bytes the service will ACCEPT onto the wire; InspectMaxWorkBytes
+	// bounds how many of the accepted bytes the service will actually
+	// READ/PARSE. Exhausting the former is a 413 (request rejected);
+	// exhausting the latter marks the report's Coverage partial (INSP-03)
+	// -- the report is still returned, honestly labeled incomplete, never
+	// refused. Zero triggers NewServer's 8 MiB default (SC6-calibrated,
+	// mirrors internal/inspect.Budget's own default).
+	InspectMaxWorkBytes int64
+	// InspectMaxWorkDuration is the wall-clock ceiling on the same
+	// operation (internal/inspect.Budget.MaxDuration, D-06 mechanism 1) --
+	// a courtesy outer bound, not the load-bearing mechanism (see
+	// internal/inspect/budget.go's Tracker doc comment for why a context
+	// deadline alone cannot stop a CPU-bound parsing loop). Zero triggers
+	// NewServer's 2s default (SC6-calibrated).
+	InspectMaxWorkDuration time.Duration
+	// InspectMaxConcurrent is the capacity of the semaphore bounding how
+	// many inspect requests may be parsing bytes at once (D-06 mechanism
+	// 2, internal/api/inspectgate.go). This number MUST stay comfortably
+	// below DB_MAX_CONNS (internal/db/db.go's Connect, default 10 = 4
+	// inspect + 6 headroom): the semaphore slot is held for the whole
+	// inspect request, including its Repo.PreAdmit call (INSP-04), so the
+	// number of concurrent PreAdmit calls a burst of inspect requests can
+	// issue against the shared *pgxpool.Pool is bounded by this exact
+	// number (D-06a) -- raising this without raising DB_MAX_CONNS to match
+	// reopens the pool-contention path that plan closed. Zero triggers
+	// NewServer's 4 default (SC6-calibrated, matches the arithmetic
+	// internal/db/db.go's defaultMaxConns doc comment already assumes).
+	InspectMaxConcurrent int
+	// InspectRateLimitRPM is inspect's OWN per-client rate budget (D-06
+	// mechanism 4, D-07 caveat -- see internal/api/inspectgate.go's
+	// newInspectRateLimit doc comment for the full in-process/replicas:1
+	// caveat), independent of ClientRateLimitRPM above. Zero triggers
+	// NewServer's 30 default -- noticeably below ClientRateLimitRPM's 120,
+	// because one inspect parse is a materially more expensive request
+	// than one status poll.
+	InspectRateLimitRPM int
 }
 
 // NewServer builds an API server. resolver authenticates every /v1 request
@@ -366,6 +456,28 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.SSEMaxStreamDuration == 0 {
 		cfg.SSEMaxStreamDuration = 30 * time.Minute // D-02 default safety cap
 	}
+	// Five inspect boundaries (58-CONTEXT.md D-06, Plan 58-06 Task 3): every
+	// default below is a STARTING value the live gate (Plan 58-08, SC6)
+	// calibrates, not a measured number -- copying a number from an
+	// unrelated engine class is this project's own documented anti-pattern
+	// (see .env.example's AUDIO_ENGINE_TIMEOUT/OCR_ENGINE_TIMEOUT measured-
+	// provenance comments), and inventing one with no calibration plan is
+	// no better.
+	if cfg.InspectMaxUploadBytes == 0 {
+		cfg.InspectMaxUploadBytes = 100 << 20 // 100 MiB
+	}
+	if cfg.InspectMaxWorkBytes == 0 {
+		cfg.InspectMaxWorkBytes = 8 << 20 // 8 MiB, mirrors internal/inspect.Budget's own default
+	}
+	if cfg.InspectMaxWorkDuration == 0 {
+		cfg.InspectMaxWorkDuration = 2 * time.Second
+	}
+	if cfg.InspectMaxConcurrent == 0 {
+		cfg.InspectMaxConcurrent = 4 // MUST stay well below DB_MAX_CONNS (internal/db/db.go, D-06a)
+	}
+	if cfg.InspectRateLimitRPM == 0 {
+		cfg.InspectRateLimitRPM = 30 // deliberately below ClientRateLimitRPM's 120
+	}
 	operators := cfg.OperatorClientIDs
 	if operators == nil {
 		operators = map[uuid.UUID]struct{}{}
@@ -394,5 +506,10 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		sseHeartbeatInterval:         cfg.SSEHeartbeatInterval,
 		sseMaxStreamDuration:         cfg.SSEMaxStreamDuration,
 		quotaEnforcementDisabled:     cfg.QuotaEnforcementDisabled,
+		inspectMaxUploadBytes:        cfg.InspectMaxUploadBytes,
+		inspectMaxWorkBytes:          cfg.InspectMaxWorkBytes,
+		inspectMaxWorkDuration:       cfg.InspectMaxWorkDuration,
+		inspectSem:                   newInspectSemaphore(cfg.InspectMaxConcurrent),
+		inspectRateRPM:               cfg.InspectRateLimitRPM,
 	}
 }

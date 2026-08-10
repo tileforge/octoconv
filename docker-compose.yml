@@ -106,6 +106,16 @@ services:
       OPERATOR_CLIENT_IDS: "${OPERATOR_CLIENT_IDS:-}"
       RATE_LIMIT_IP_RPM: "60"
       RATE_LIMIT_CLIENT_RPM: "120"
+      # Synchronous inspect boundaries (58-CONTEXT.md D-06, Plan 58-06):
+      # STARTING values for the live gate (Plan 58-08, SC6) to calibrate,
+      # not measured numbers. See .env.example for the full rationale,
+      # including the distinction between the two byte ceilings (upload
+      # vs. work) and the D-07 replicas:1 caveat on the rate budget below.
+      INSPECT_MAX_UPLOAD_BYTES: "104857600"
+      INSPECT_MAX_WORK_BYTES: "8388608"
+      INSPECT_MAX_WORK_DURATION: "2s"
+      INSPECT_MAX_CONCURRENT: "4"
+      RATE_LIMIT_INSPECT_RPM: "30"
       # queue.NewClient() (constructed by cmd/api/main.go) reads these vars
       # UNCONDITIONALLY, even though the api process only enqueues (it
       # never runs the engine) -- DEBT-05.
