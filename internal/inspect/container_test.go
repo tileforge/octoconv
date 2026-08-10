@@ -356,6 +356,14 @@ func TestAnalyzeContainerCeilingYieldsUnknownNotClean(t *testing.T) {
 // lies (claims huge, actual bytes tiny AND actually contain a real
 // external reference) must never surface a Finding, because this scan
 // skips it by declared size alone before ever opening it.
+//
+// codex PR9 finding 4 / T-SLE-04: this test used to ALSO assert that the
+// resulting Check was StatusClean -- which froze exactly the false-absence
+// claim the finding describes. Skipping the container's ONLY external-ref
+// candidate by declared size is a refusal to look, not a clean read of it;
+// the "part was never opened" assertion below stays (it is real and
+// valuable), but the verdict this scan reports for having skipped its one
+// candidate must be unknown/work_ceiling_bytes, never clean.
 func TestAnalyzeContainerNeverAllocatesOnDeclaredSize(t *testing.T) {
 	buf := new(bytes.Buffer)
 	zw := zip.NewWriter(buf)
@@ -378,8 +386,14 @@ func TestAnalyzeContainerNeverAllocatesOnDeclaredSize(t *testing.T) {
 		t.Fatalf("got Finding %+v for a part that should have been skipped by its (lying) declared size -- this scan must never trust declared size enough to open a part that claims to exceed maxRelsPartBytes", f)
 	}
 	c, ok := checkFor(res, CodeExternalReference)
-	if !ok || c.Status != StatusClean {
-		t.Fatalf("Check(CodeExternalReference) = %+v (ok=%v), want clean -- the only candidate part was skipped by declared size, so the scan legitimately found nothing", c, ok)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status == StatusClean {
+		t.Fatalf("Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part was skipped by its own declared size (this scan's own ceiling), so clean is not an honest answer about the file")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonWorkCeilingBytes {
+		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/work_ceiling_bytes -- the only candidate part was never opened because its declared size exceeded this scan's own ceiling", c)
 	}
 }
 

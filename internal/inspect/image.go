@@ -78,10 +78,19 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusClean})
 	}
 
-	if loc, found := scanImageMetadata(format, r, size, maxBytes); found {
+	loc, found, metaWindowTruncated := scanImageMetadata(format, r, size, maxBytes)
+	switch {
+	case found:
 		sev, _ := SeverityOf(CodeMetadataPresent)
 		findings = append(findings, Finding{Code: CodeMetadataPresent, Severity: sev, Location: loc})
-	} else {
+	case metaWindowTruncated:
+		// codex PR9 finding 3 / T-SLE-03: a miss inside a window that did
+		// NOT cover the whole file is not evidence the metadata does not
+		// exist past that window -- valid PNG/WebP/HEIC/JPEG files can
+		// place EXIF/XMP metadata past the default byte ceiling. See
+		// scanImageMetadata's own doc comment.
+		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+	default:
 		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusClean})
 	}
 
@@ -94,20 +103,33 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // closed, never trusts a declared length past the read window
 // (58-RESEARCH.md Q1 "Images" row). It stops at the FIRST match --
 // presence is a yes/no fact, not a catalog.
-func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (location string, found bool) {
+//
+// truncated reports whether the bounded window it actually read covered
+// the WHOLE file (codex PR9 finding 3 / T-SLE-03): for an image larger
+// than maxBytes, a miss inside the head window is NOT evidence the
+// metadata does not exist -- valid PNG, WebP, HEIC, and JPEG files can all
+// place EXIF/XMP metadata after the default byte ceiling, so the caller
+// (AnalyzeImage) must report unknown/work_ceiling_bytes rather than
+// StatusClean whenever truncated is true and no marker was found. A miss
+// with truncated==false remains a legitimate StatusClean: the whole file
+// was actually inspected and nothing was there.
+func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (location string, found bool, truncated bool) {
 	winLen := maxBytes
 	if winLen > size {
 		winLen = size
 	}
+	truncated = winLen < size
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
-		return "", false
+		return "", false, truncated
 	}
 	switch format {
 	case "jpg", "jpeg":
-		return scanJPEGMetadata(buf)
+		loc, ok := scanJPEGMetadata(buf)
+		return loc, ok, truncated
 	case "png":
-		return scanPNGMetadata(buf)
+		loc, ok := scanPNGMetadata(buf)
+		return loc, ok, truncated
 	case "tiff":
 		// A TIFF file carries an IFD by construction -- its presence is
 		// almost always true and is NOT a false positive (58-05-PLAN.md
@@ -115,15 +137,17 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64) (loca
 		// contains a parseable TIFF byte-order header, without re-deriving
 		// the same IFD walk the dimension parser already validated.
 		if len(buf) >= 8 && (bytes.Equal(buf[0:2], []byte{0x49, 0x49}) || bytes.Equal(buf[0:2], []byte{0x4D, 0x4D})) {
-			return "TIFF IFD0", true
+			return "TIFF IFD0", true, truncated
 		}
-		return "", false
+		return "", false, truncated
 	case "webp":
-		return scanRIFFChunkMetadata(buf)
+		loc, ok := scanRIFFChunkMetadata(buf)
+		return loc, ok, truncated
 	case "heic":
-		return scanISOBMFFMetadataTokens(buf)
+		loc, ok := scanISOBMFFMetadataTokens(buf)
+		return loc, ok, truncated
 	default:
-		return "", false
+		return "", false, truncated
 	}
 }
 

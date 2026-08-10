@@ -245,12 +245,15 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 // "Exhausted" is not only the obvious pre-loop cases (too many entries, too
 // many parts opened, budget already gone before opening the next
 // candidate) -- it is ALSO true of a part that WAS opened but whose read
-// was cut short by io.LimitReader (case ceilingReached below). Treating
-// that case as an ordinary "found nothing" would repeat exactly the mistake
-// D-02a exists to prevent in pdf.go: a part that was only PARTIALLY read
-// has not actually been ruled clean, and reporting it as such would be a
-// false claim of completeness driven by this scan's own budget, not by the
-// part's real content.
+// was cut short by io.LimitReader (case ceilingReached below), AND of a
+// candidate part that was never opened AT ALL because its own DECLARED size
+// already exceeded maxRelsPartBytes (codex PR9 finding 4 / T-SLE-04).
+// Treating either case as an ordinary "found nothing" would repeat exactly
+// the mistake D-02a exists to prevent in pdf.go: a part that was only
+// PARTIALLY read, or never read at all because this scan chose not to pay
+// for it, has not actually been ruled clean, and reporting it as such would
+// be a false claim of completeness driven by this scan's own budget, not by
+// the part's real content.
 func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (location string, ceilingHit bool) {
 	partsOpened := 0
 	budgetLeft := maxBytes
@@ -283,7 +286,17 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64) (loca
 		// declared-small size enough to skip a bound) that keeps this loop's
 		// total work bounded by declared metadata alone, before a single
 		// byte of that part is ever read.
+		//
+		// Skipping the part this way is a REFUSAL to do the work, driven by
+		// THIS scan's own per-part ceiling, not a clean read of the part's
+		// real content (codex PR9 finding 4 / T-SLE-04): if this is the
+		// only external-reference candidate the container has, silently
+		// `continue`-ing here would let the caller report the whole file
+		// clean having never actually looked at its one relevant part.
+		// truncatedAnyPart must be set here for exactly the same reason the
+		// io.LimitReader-truncation branch below sets it.
 		if f.UncompressedSize64 > uint64(maxRelsPartBytes) {
+			truncatedAnyPart = true
 			continue
 		}
 		if budgetLeft <= 0 {

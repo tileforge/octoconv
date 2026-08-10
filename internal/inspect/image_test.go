@@ -171,6 +171,28 @@ func TestAnalyzeImageUnknownDimensionsNeverReportClean(t *testing.T) {
 	}
 }
 
+// TestAnalyzeImageMetadataPastWindowIsUnknownNotClean is codex PR9 finding 3
+// (T-SLE-03): an eXIf chunk placed AFTER the bounded read window must never
+// be reported clean -- the window did not cover the whole file, so a miss
+// inside it is not evidence the metadata does not exist.
+func TestAnalyzeImageMetadataPastWindowIsUnknownNotClean(t *testing.T) {
+	data := pngFixture(10, 10) // signature(8) + length(4) + "IHDR"(4) + 13-byte IHDR body + CRC(4) = 33 bytes
+	data = pngAppendChunk(data, "eXIf", []byte{0, 0, 0, 0})
+
+	const window = 33 // covers exactly the IHDR chunk, ends before the eXIf chunk appended above
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), window, 1<<30)
+
+	if _, ok := findingFor(res, CodeMetadataPresent); ok {
+		t.Fatal("got a Finding for metadata_present -- the eXIf chunk sits past the read window and must never be reported as found")
+	}
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	for _, c := range res.Checks {
+		if c.Code == CodeMetadataPresent && c.Reason != ReasonWorkCeilingBytes {
+			t.Fatalf("Check(metadata_present).Reason = %q, want %q", c.Reason, ReasonWorkCeilingBytes)
+		}
+	}
+}
+
 func TestAnalyzeImageMetadataLocationNamesMarker(t *testing.T) {
 	app1 := append([]byte("Exif\x00\x00"), []byte{0, 0, 0, 0}...)
 	data := jpegFixtureWithAPP1(app1, 100, 50)
