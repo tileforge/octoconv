@@ -132,6 +132,78 @@ func TestFindingCodesDocMatchesGoConstants(t *testing.T) {
 	}
 }
 
+// reasonTableHeader delimits the reason table inside docs/FINDINGS.md.
+// Matched as a line PREFIX, like findingsTableHeader.
+const reasonTableHeader = "## Report coverage is a separate claim"
+
+// TestReasonsDocMatchesGoConstants does for the reason vocabulary exactly
+// what TestFindingCodesDocMatchesGoConstants does for the code vocabulary.
+//
+// It exists because its absence had already cost something. The codes table
+// was mechanically enforced from the start; the reason table was not, and it
+// silently fell out of date the moment the codex PR #9 fixes added
+// format_unrecognized, pdf_name_escape and pdf_stream_body_token to the Go
+// constants. Nothing failed, because nothing was checking. That is the same
+// failure mode that let docs/openapi.yaml drift from internal/errcode until
+// openapi_sync_test.go was added -- an unenforced table is documentation, and
+// documentation drifts.
+//
+// If this test fails, fix whichever side is wrong. Never relax the test.
+func TestReasonsDocMatchesGoConstants(t *testing.T) {
+	doc := readDoc(t)
+
+	docReasons := extractTableCodes(doc, reasonTableHeader)
+	if len(docReasons) == 0 {
+		t.Fatal("extracted zero reasons from the reason table -- the section header or table format in docs/FINDINGS.md changed in a way this parser no longer understands")
+	}
+
+	var goReasons []string
+	for _, r := range inspect.AllReasons() {
+		goReasons = append(goReasons, string(r))
+	}
+
+	if missing, extra := diffSets(goReasons, docReasons); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("reason table drift between inspect.AllReasons() and docs/FINDINGS.md -- in Go but not in the document: %v; in the document but not declared by inspect.AllReasons(): %v", missing, extra)
+	}
+}
+
+// TestAllReasonsCoversEveryDeclaredConstant guards the one way
+// TestReasonsDocMatchesGoConstants can be defeated without anybody noticing:
+// declaring a new Reason constant in status.go and forgetting to add it to
+// AllReasons(). Both sides of the parity check would then agree with each
+// other while both omitting the new reason, and the document would once again
+// be silently incomplete.
+//
+// Parsing the source is deliberate. Reflection cannot enumerate untyped
+// string constants, so the only way to see a constant that AllReasons()
+// forgot is to read the declaration itself.
+func TestAllReasonsCoversEveryDeclaredConstant(t *testing.T) {
+	const statusPath = "status.go"
+
+	src, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", statusPath, err)
+	}
+
+	declPattern := regexp.MustCompile(`(?m)^\s*Reason[A-Za-z0-9]*\s*=\s*"([a-z][a-z0-9_]*)"`)
+	var declared []string
+	for _, m := range declPattern.FindAllStringSubmatch(string(src), -1) {
+		declared = append(declared, m[1])
+	}
+	if len(declared) == 0 {
+		t.Fatalf("found zero Reason constant declarations in %s -- the declaration shape changed in a way this parser no longer understands", statusPath)
+	}
+
+	var listed []string
+	for _, r := range inspect.AllReasons() {
+		listed = append(listed, string(r))
+	}
+
+	if missing, extra := diffSets(declared, listed); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("AllReasons() does not match the Reason constants declared in %s -- declared but not returned by AllReasons(): %v; returned but not declared: %v", statusPath, missing, extra)
+	}
+}
+
 // TestDocDeclaresUnknownCodeFallback makes the unknown-code fallback
 // requirement mechanical rather than aspirational: the document must
 // state, as a requirement rather than a suggestion, that consumers treat

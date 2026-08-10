@@ -103,11 +103,26 @@ individual check's status, and the two are never folded into one field (`interna
 | Reason a check is not `clean` | Property of | Makes the report selective? |
 |---|---|---|
 | `format_not_applicable` | the file's format | No |
+| `format_unrecognized` | the file (format could not be determined at all) | No |
 | `compressed_object_streams` | the file's structure (D-02a: PDF `/ObjStm` blindness) | No |
+| `pdf_name_escape` | the file's structure (a PDF name written with a `#XX` hex escape) | No |
+| `pdf_stream_body_token` | the file's structure (the token was seen only inside a stream body or comment) | No |
 | `parser_unavailable` | this build | No |
 | `malformed_input` | the file | No |
 | `work_ceiling_bytes` | **this service's own load** | **Yes** |
 | `work_ceiling_time` | **this service's own load** | **Yes** |
+
+`format_unrecognized` is deliberately distinct from `format_not_applicable`. The latter says
+"there was nothing of this kind to look for in a file of this format" — a claim that requires
+knowing the format. When the format itself could not be determined, that claim cannot be made,
+so every code reports `unknown/format_unrecognized` instead of a whole vocabulary of confident
+"not applicable".
+
+`pdf_name_escape` and `pdf_stream_body_token` are both *positive-observation* blindness: something
+was seen, but not in a position that proves what it means. A `#XX` escape means a name may be
+spelled in a way the literal scan does not match; a token inside a stream body may be arbitrary
+payload rather than a PDF name. In both cases the honest answer is `unknown` — never `clean`, and
+never a confident `critical` finding either.
 
 Only the last two reasons may ever mark a report `coverage.complete: false`. A structurally
 `unknown` check (parser blindness, an inapplicable format, a malformed file) does not, by itself,

@@ -435,10 +435,18 @@ func zipDirectoryCeilingFamilyResult() inspect.FamilyResult {
 // dispatchInspectFamilies runs the ONE family analyzer applicable to
 // detected (if any) under tr's shared byte/time budget. A format matching
 // none of the four families (html/latex/md/rst/org/text, a bare zip, or any
-// other unrecognized content) returns an empty slice -- inspect.BuildReport
-// completes the full closed-vocabulary section from `not_applicable`
-// fallbacks for that case, which is itself a correct, complete report
-// (58-07-PLAN.md's own action text).
+// other unrecognized content) returns an empty slice, and inspect.BuildReport
+// completes the closed-vocabulary section itself.
+//
+// WHICH fallback it uses depends on whether a format was determined at all,
+// and the distinction is load-bearing: a KNOWN format with no family analyzer
+// gets `not_applicable/format_not_applicable` (there was genuinely nothing of
+// that kind to look for), while an UNRECOGNIZED format gets
+// `unknown/format_unrecognized` -- applicability cannot be claimed when the
+// format itself was never established. An earlier version of this comment
+// said `not_applicable` for both cases; that was true of the code until the
+// codex PR #9 review (finding 6) showed it made an unrecognized upload look
+// like a file whose every risk check was confidently irrelevant.
 //
 // tr.Remaining() is passed as maxBytes to whichever analyzer runs, and the
 // SAME amount is Consume()d back into tr afterward -- a deliberately

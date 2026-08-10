@@ -91,6 +91,32 @@ const (
 	ReasonWorkCeilingTime = "work_ceiling_time"
 )
 
+// AllReasons returns the closed reason vocabulary, in declaration order.
+//
+// This exists for the same purpose AllCodes() does: it is the Go source of
+// truth a doc-parity test can compare docs/FINDINGS.md against. Without it
+// the reason table was documentation rather than contract, and it drifted
+// exactly as an unenforced table will -- three reasons added by the codex
+// PR #9 fixes (format_unrecognized, pdf_name_escape, pdf_stream_body_token)
+// reached the code without reaching the document, and nothing failed.
+// TestReasonsDocMatchesGoConstants closes that.
+//
+// Adding a Reason constant WITHOUT adding it here defeats the parity test
+// silently, so keep this list adjacent to the const block above.
+func AllReasons() []Reason {
+	return []Reason{
+		ReasonFormatNotApplicable,
+		ReasonFormatUnrecognized,
+		ReasonCompressedObjectStreams,
+		ReasonPDFNameEscape,
+		ReasonPDFStreamBodyToken,
+		ReasonParserUnavailable,
+		ReasonMalformedInput,
+		ReasonWorkCeilingBytes,
+		ReasonWorkCeilingTime,
+	}
+}
+
 // Check is the three-value outcome of one named check against one Code.
 type Check struct {
 	Code   Code        `json:"code"`
