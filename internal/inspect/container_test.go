@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"reflect"
 	"testing"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // --- fixture helpers, mirroring internal/api/handlers_test.go's shape
@@ -502,6 +505,41 @@ func TestAnalyzeContainerNeverPanics(t *testing.T) {
 				}
 			}()
 			AnalyzeContainer(bytes.NewReader(tc.data), int64(len(tc.data)), int64(len(tc.data)), 1<<30)
+		})
+	}
+}
+
+// TestAnalyzeContainerWithMatchesAnalyzeContainer guards the split introduced
+// when the API stopped sniffing the same archive twice (codex PR #9 finding
+// 5): AnalyzeContainer now sniffs and delegates to AnalyzeContainerWith, and
+// the API calls AnalyzeContainerWith directly with detection's own result.
+//
+// The whole point of the deduplication was that two independent sniffs of one
+// upload could in principle disagree with nothing noticing. A split that
+// itself drifts would reintroduce exactly that, one layer up -- so pin the two
+// entry points to the same answer on the same bytes.
+func TestAnalyzeContainerWithMatchesAnalyzeContainer(t *testing.T) {
+	fixtures := map[string][]byte{
+		"macro docx": macroDocxFixture(t),
+		"plain xlsx": xlsxFixture(t, 3),
+	}
+
+	for name, data := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			r := bytes.NewReader(data)
+			size := int64(len(data))
+
+			viaSniff := AnalyzeContainer(r, size, size, 1<<30)
+
+			cr, err := convert.SniffContainer(r, size)
+			if err != nil {
+				t.Fatalf("SniffContainer: %v", err)
+			}
+			viaHandoff := AnalyzeContainerWith(cr, r, size, size, 1<<30)
+
+			if !reflect.DeepEqual(viaSniff, viaHandoff) {
+				t.Fatalf("AnalyzeContainer and AnalyzeContainerWith disagree on identical bytes -- the deduplicated API path would report something different from the self-sniffing path\nAnalyzeContainer:     %+v\nAnalyzeContainerWith: %+v", viaSniff, viaHandoff)
+			}
 		})
 	}
 }

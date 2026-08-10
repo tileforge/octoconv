@@ -104,6 +104,25 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 	if err != nil {
 		return notApplicableContainerResult(res)
 	}
+	return AnalyzeContainerWith(cr, r, size, maxBytes, bombThreshold)
+}
+
+// AnalyzeContainerWith is AnalyzeContainer for a caller that has ALREADY
+// sniffed the container and can hand over the result.
+//
+// It exists because the API's format detection must sniff the archive to know
+// what it is, and AnalyzeContainer would then sniff the identical bytes a
+// second time -- two full walks of an attacker-controlled central directory
+// per request where one suffices (codex PR #9 finding 5). The structural
+// bound in internal/api now caps that work before archive/zip ever runs, so
+// the second walk was no longer a denial-of-service vector, but it remained
+// wasted work and, worse, a second opinion: two independent sniffs of the
+// same upload could in principle disagree, and nothing would notice.
+//
+// Callers that have no ContainerResult in hand should keep using
+// AnalyzeContainer, which sniffs and delegates here.
+func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64) FamilyResult {
+	res := FamilyResult{Characteristics: Characteristics{}}
 
 	if cr.DuplicateRootPart {
 		// handleCreateJob treats this as fail-closed: a duplicate root part
