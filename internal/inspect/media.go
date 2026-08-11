@@ -272,7 +272,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 
 // maxMoovTailCandidatesScanned bounds how many candidate positions of the
 // literal 4-byte "moov" substring within the tail window findMoovInTail will
-// try as a real box header before giving up (T-R4B-02).
+// try as a real, USABLE box before giving up (T-R4B-02).
 //
 // PR9R4 finding (media.go:239), verbatim: "When the tail window contains
 // the bytes `moov` inside media payload before the real `moov` box,
@@ -285,17 +285,32 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 // instead of giving up -- and that walk must itself be bounded, or fixing
 // this correctness bug would reopen the unbounded-work class round 3 of
 // this same review already closed elsewhere in this package.
+//
+// PR9R5 finding (media.go:321), verbatim: "If media payload contains
+// \x00\x00\x00\x08moov before the real tail moov, this local walk accepts
+// the incidental bytes as a valid empty box and immediately returns its
+// empty payload. The analyzer then reports malformed characteristics and
+// never examines the genuine later box, even though the MP4 itself is
+// valid." Round 4 raised the acceptance bar from "the literal substring
+// moov was found somewhere" to "parses as a self-consistent box" -- but a
+// bare, empty box header parses exactly as cleanly as a real one, so the
+// winning criterion never actually distinguished a genuine moov from a
+// decoy shaped like one. findMoovInTail now raises the bar again, to
+// "yields a USABLE moov structure" (isUsableMoovCandidate) -- the SAME
+// candidate cap still bounds how many occurrences are tried either way.
 const maxMoovTailCandidatesScanned = 64
 
-// findMoovInTail searches tailWin for a REAL moov box, trying every literal
-// "moov" substring occurrence in order (bounded by
+// findMoovInTail searches tailWin for a REAL, USABLE moov box, trying every
+// literal "moov" substring occurrence in order (bounded by
 // maxMoovTailCandidatesScanned) rather than only the first. A candidate is
-// validated by attempting to parse it as one top-level box via
-// walkTopLevelBoxes (its own declared size must be self-consistent within
-// the bounded buffer AND its type must genuinely be "moov" -- an incidental
-// occurrence inside arbitrary media payload bytes will almost always fail
-// one of those two checks, at which point the search continues to the NEXT
-// occurrence rather than giving up).
+// first validated by attempting to parse it as one self-consistent
+// top-level box via walkTopLevelBoxes (its own declared size must fit
+// within the bounded buffer AND its type must genuinely be "moov"); a
+// candidate that DOES parse that way is validated FURTHER, against
+// isUsableMoovCandidate -- only a candidate that yields the actual
+// structure this analyzer needs (mvhd, at least one trak) is accepted.
+// Any other candidate, parseable or not, causes the search to continue to
+// the NEXT occurrence rather than giving up or accepting an unusable box.
 func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
 	searchFrom := 0
 	for candidates := 0; candidates < maxMoovTailCandidatesScanned; candidates++ {
@@ -310,21 +325,62 @@ func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ce
 		}
 		boxStart := idx - 4
 		var candidatePayload []byte
-		matched := false
+		matchedType := false
 		walkTopLevelBoxes(tailWin[boxStart:], tr, func(t string, p []byte) bool {
 			if t == "moov" {
-				candidatePayload, matched = p, true
+				candidatePayload, matchedType = p, true
 			}
 			return false // only the box located at boxStart is meaningful for this candidate
 		})
-		if matched {
+		if !matchedType {
+			continue
+		}
+		usable, usabilityCeilingHit := isUsableMoovCandidate(candidatePayload, tr)
+		if usable {
 			return candidatePayload, true, false
 		}
+		if usabilityCeilingHit {
+			// This candidate's OWN usability check could not reach an
+			// answer within maxISOBMFFBoxes -- OUR OWN resource limit, not
+			// proof this candidate is unusable. Silently treating an
+			// inconclusive check as "reject and keep going" would risk
+			// eventually reporting "not found" for a file whose real moov
+			// this scan never actually ruled out -- abort the whole search
+			// with a ceiling result instead, exactly like every other
+			// ceilingHit branch in this package.
+			return nil, false, true
+		}
+		// This candidate parsed as a self-consistent "moov" box header, but
+		// its payload does not yield mvhd+trak -- PR9R5's own incidental
+		// "\x00\x00\x00\x08moov" case, and any other empty/truncated/garbage
+		// payload shaped the same way. A box header that merely PARSES is
+		// not proof it is the file's real moov; keep searching.
 	}
-	// The candidate cap was exhausted without validating a real moov box --
+	// The candidate cap was exhausted without validating a USABLE moov box --
 	// OUR OWN resource limit, not proof the file lacks one.
 	tr.MarkCeilingHit()
 	return nil, false, true
+}
+
+// isUsableMoovCandidate reports whether payload -- already validated as a
+// self-consistent top-level box of type "moov" -- actually carries the
+// child structure this analyzer exists to read out of it: mvhd (ISO/IEC
+// 14496-12's own MANDATORY moov child, carrying duration) and at least one
+// trak (also mandatory -- a moov describing zero tracks describes no media
+// at all). A bare box header that merely parses (round 4's own criterion)
+// is not evidence of either; this is that missing distinction (PR9R5,
+// media.go:321). ceilingHit is true if EITHER lookup exhausted
+// firstChildBox's own maxISOBMFFBoxes cap before reaching an answer -- the
+// caller must treat that as "this scan could not determine usability",
+// never as "not usable" (D-02a, applied one level down from every other
+// ceilingHit in this file).
+func isUsableMoovCandidate(payload []byte, tr *Tracker) (usable bool, ceilingHit bool) {
+	_, hasMvhd, c1 := firstChildBox(payload, "mvhd", tr)
+	if !hasMvhd {
+		return false, c1
+	}
+	_, hasTrak, c2 := firstChildBox(payload, "trak", tr)
+	return hasTrak, c1 || c2
 }
 
 // findTrackDimensions descends moov -> trak (first) -> tkhd and decodes

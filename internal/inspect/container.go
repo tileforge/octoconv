@@ -233,39 +233,68 @@ func appendBombResult(res *FamilyResult, totalUncompressed, bombThreshold uint64
 // file: it opens zip.NewReader (already done by the caller) and reads the
 // small subset of parts that can plausibly carry an external reference --
 // OOXML's *.rels parts (under any _rels/ directory) or ODF/epub's
-// content.xml/styles.xml -- looking for a literal TargetMode="External"
-// (OOXML) or an xlink:href carrying a network/file URL scheme (ODF/epub).
-// The first match found stops the scan immediately: one finding is enough
-// to answer the question, and continuing to scan after that would only
-// spend more of maxBytes' budget for an answer already known.
+// content.xml/styles.xml -- looking for a TargetMode="External" attribute
+// (OOXML) or an href attribute in the XLink namespace carrying a
+// network/file URL scheme (ODF/epub), both parsed SEMANTICALLY with
+// encoding/xml (see containsExternalRelationship/containsODFExternalHref),
+// never by comparing raw bytes against a literal serialization. The first
+// match found stops the scan immediately: one finding is enough to answer
+// the question, and continuing to scan after that would only spend more of
+// maxBytes' budget for an answer already known.
 func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, maxBytes int64, tr *Tracker) {
-	loc, ceilingHit := scanExternalReferences(zr, format, maxBytes, tr)
+	st := scanExternalReferences(zr, format, maxBytes, tr)
 	switch {
-	case loc != "":
+	case st.location != "":
 		sev, _ := SeverityOf(CodeExternalReference)
-		res.Findings = append(res.Findings, Finding{Code: CodeExternalReference, Severity: sev, Location: loc})
-	case ceilingHit:
+		res.Findings = append(res.Findings, Finding{Code: CodeExternalReference, Severity: sev, Location: st.location})
+	case st.ceiling:
 		// Exhausting ANY of this scan's own ceilings (entries considered,
 		// parts opened, per-part bytes, or the overall maxBytes budget) is
 		// OUR OWN resource limit, never the file's fault -- it must never be
 		// reported as clean (T-58-16's sibling concern, applied to the
 		// container family).
 		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+	case st.malformed:
+		// A candidate part was read to completion, within EVERY one of this
+		// scan's own ceilings, and STILL failed to parse as XML -- a fact
+		// about the FILE (malformed_input), never this scan's own resource
+		// limit (PR9R5, container.go:462; see externalRefStatus's own doc
+		// comment for why this is a THIRD outcome, not a synonym for ceiling).
+		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: ReasonMalformedInput})
 	default:
 		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusClean})
 	}
 }
 
+// externalRefStatus is scanExternalReferences' own three-value result: at
+// most one of location (non-empty), ceiling, or malformed is ever
+// meaningful. ceiling means THIS SCAN's own resource limit fired before an
+// answer was reached (entries considered, parts opened, per-part bytes, or
+// the overall maxBytes budget -- Reason ReasonWorkCeilingBytes); malformed
+// means every candidate part was read to completion WITHIN every one of
+// those ceilings, but at least one failed to PARSE as its own declared XML
+// format (Reason ReasonMalformedInput) -- a property of the FILE, not of
+// this scan's own limits, and it must never be reported the same way a
+// ceiling hit is (PR9R5, container.go:462: the previous version of this
+// scan had no way to express this third outcome at all -- a decode failure
+// and a scanned-clean miss both fell out as the same signal). Neither field
+// set at all means the whole (bounded) candidate set was searched, every
+// part that was opened parsed successfully, and none carried an external
+// reference: a genuine clean.
+type externalRefStatus struct {
+	location  string
+	ceiling   bool
+	malformed bool
+}
+
 // scanExternalReferences walks zr.File looking for the first external
-// reference. It returns the matching part's Location and false, or
-// ("", true) if any of this scan's own ceilings were exhausted before an
-// answer was reached, or ("", false) if the whole (unbounded-by-ceiling)
-// candidate set was searched and nothing was found.
+// reference. It returns an externalRefStatus (see that type's own doc
+// comment for the three-way location/ceiling/malformed distinction).
 //
-// "Exhausted" is not only the obvious pre-loop cases (too many entries, too
-// many parts opened, budget already gone before opening the next
-// candidate) -- it is ALSO true of a part that WAS opened but whose read
-// was cut short by io.LimitReader (case ceilingReached below), of a
+// The ceiling outcome is not only the obvious pre-loop cases (too many
+// entries, too many parts opened, budget already gone before opening the
+// next candidate) -- it is ALSO true of a part that WAS opened but whose
+// read was cut short by io.LimitReader (case ceilingReached below), of a
 // candidate part that was never opened AT ALL because its own DECLARED size
 // already exceeded maxRelsPartBytes (codex PR9 finding 4 / T-SLE-04), and,
 // as of codex PR9 round 2 (container.go:334), of a candidate part that WAS
@@ -278,25 +307,37 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 // this scan could not decode it, has not actually been ruled clean, and
 // reporting it as such would be a false claim of completeness driven by
 // this scan's own limits, not by the part's real content.
-func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *Tracker) (location string, ceilingHit bool) {
+//
+// The malformed outcome (PR9R5, container.go:462) is DIFFERENT in kind: a
+// part that WAS read to completion, entirely within every one of the
+// ceilings above, but whose content still failed to parse as XML. That is a
+// fact about the FILE, not about this scan's own limits -- reporting it
+// with the same signal as the paragraph above would mislabel a malformed
+// document as this service's own resource exhaustion. A malformed result
+// computed from a read this scan ALSO cut short (readErr != nil, or the
+// io.LimitReader boundary trap) is an artifact of that truncation, not new
+// information about the file -- truncatedAnyPart already accounts for it,
+// and takes priority over malformedAnyPart below for exactly that reason.
+func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *Tracker) externalRefStatus {
 	partsOpened := 0
 	budgetLeft := maxBytes
 	if budgetLeft <= 0 {
 		budgetLeft = maxRelsPartBytes // a caller passing maxBytes<=0 still gets ONE part's worth of budget, never zero -- zero would make every container's external-reference check spuriously "ceiling hit".
 	}
 	truncatedAnyPart := false
+	malformedAnyPart := false
 
 	for i, f := range zr.File {
 		if i >= maxZipEntriesScanned {
 			tr.MarkCeilingHit()
-			return "", true
+			return externalRefStatus{ceiling: true}
 		}
 		if !isExternalRefCandidate(f.Name, format) {
 			continue
 		}
 		if partsOpened >= maxRelsPartsScanned {
 			tr.MarkCeilingHit()
-			return "", true
+			return externalRefStatus{ceiling: true}
 		}
 		partsOpened++
 
@@ -328,7 +369,7 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *T
 		}
 		if budgetLeft <= 0 {
 			tr.MarkCeilingHit()
-			return "", true
+			return externalRefStatus{ceiling: true}
 		}
 
 		limit := int64(maxRelsPartBytes)
@@ -354,8 +395,11 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *T
 		rc.Close()
 		budgetLeft -= int64(len(data))
 
-		if containsExternalReference(data, format) {
-			return f.Name, false
+		switch containsExternalReference(data, format) {
+		case xmlScanFound:
+			return externalRefStatus{location: f.Name}
+		case xmlScanMalformed:
+			malformedAnyPart = true
 		}
 		if readErr != nil {
 			// codex PR9 round 2 (container.go:334)'s sibling case: the part
@@ -380,10 +424,14 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *T
 			tr.MarkCeilingHit()
 		}
 	}
-	if truncatedAnyPart {
-		return "", true
+	switch {
+	case truncatedAnyPart:
+		return externalRefStatus{ceiling: true}
+	case malformedAnyPart:
+		return externalRefStatus{malformed: true}
+	default:
+		return externalRefStatus{}
 	}
-	return "", false
 }
 
 // isExternalRefCandidate reports whether name is a part this format's
@@ -399,29 +447,57 @@ func isExternalRefCandidate(name, format string) bool {
 	}
 }
 
-// odfExternalHrefSchemes are the xlink:href URL schemes this file treats as
-// an external reference for ODF/epub -- network schemes plus file:, which
-// can still exfiltrate/track via a local-resource probe.
-var odfExternalHrefSchemes = [][]byte{
-	[]byte(`xlink:href="http:`),
-	[]byte(`xlink:href="https:`),
-	[]byte(`xlink:href="ftp:`),
-	[]byte(`xlink:href="file:`),
-}
+// xlinkNamespace is the URI the XLink specification conventionally binds
+// to the "xlink" prefix -- but XML namespace binding is a property of
+// WHICH URI a prefix resolves to, never of the prefix's own spelling: any
+// document is free to bind this exact namespace to a different prefix (or
+// even declare it as a default, unprefixed namespace on some element) and
+// every attribute using that other prefix still means exactly the same
+// thing. containsODFExternalHref below matches THIS namespace URI, never
+// the literal string "xlink:" (PR9R5 finding, container.go:419: "an
+// equivalent attribute using another prefix bound to the XLink namespace"
+// carries an identical external reference that a literal-prefix match would
+// miss entirely).
+const xlinkNamespace = "http://www.w3.org/1999/xlink"
 
-func containsExternalReference(data []byte, format string) bool {
+// xmlScanResult is the three-value outcome of scanning ONE already-read
+// part's content for a format-specific external-reference marker.
+// xmlScanFound and xmlScanNotFound are exactly what a bool return used to
+// express; xmlScanMalformed is the THIRD state PR9R5's own review finding
+// (container.go:462) shows was missing entirely: a part that was fully read
+// (this scan's own ceilings never fired) but whose XML failed to decode. A
+// bool return can only ever hold two of these three states, so returning
+// bool forced every caller to fold "could not determine" into either
+// "found" or "not found" -- in practice always the latter, which is exactly
+// the false-absence-claim class quick/260811-r3s already closed once for
+// ceiling exhaustion and this task closes again for decode failure.
+// Declaring a THIRD named value here, rather than adding a second bool
+// return alongside the first (which a caller remains free to ignore), makes
+// the ambiguity impossible to construct: every call site must name which of
+// the three results it got, not merely check a single true/false.
+type xmlScanResult int
+
+const (
+	xmlScanNotFound xmlScanResult = iota
+	xmlScanFound
+	xmlScanMalformed
+)
+
+// odfExternalHrefSchemes are the URL schemes this file treats as an
+// external reference when they prefix an xlink:href attribute's VALUE --
+// already extracted by containsODFExternalHref's semantic XML parse, never
+// matched against the part's raw serialized bytes -- network schemes plus
+// file:, which can still exfiltrate/track via a local-resource probe.
+var odfExternalHrefSchemes = []string{"http:", "https:", "ftp:", "file:"}
+
+func containsExternalReference(data []byte, format string) xmlScanResult {
 	switch format {
 	case "docx", "xlsx", "pptx":
 		return containsExternalRelationship(data)
 	case "odt", "ods", "odp", "epub":
-		for _, tok := range odfExternalHrefSchemes {
-			if bytes.Contains(data, tok) {
-				return true
-			}
-		}
-		return false
+		return containsODFExternalHref(data)
 	default:
-		return false
+		return xmlScanNotFound
 	}
 }
 
@@ -446,20 +522,34 @@ func containsExternalReference(data []byte, format string) bool {
 // for free, because it actually parses the attribute rather than
 // pattern-matching its serialized bytes.
 //
-// A decode error (truncated by this scan's own maxRelsPartBytes ceiling, or
-// genuinely malformed XML) is treated conservatively: this function reports
-// false ("no CONFIRMED external reference"), never true -- it is the
-// caller's own truncation bookkeeping (scanExternalReferences's
-// truncatedAnyPart) that is responsible for downgrading the overall verdict
-// to unknown/work_ceiling_bytes rather than clean, exactly as it already
-// does for every other refusal-to-look case in that function. This function
-// only ever answers "did I find one", never "I looked at everything".
-func containsExternalRelationship(data []byte) bool {
+// PR9R5 finding (container.go:462), verbatim: "When a fully read .rels part
+// is malformed or otherwise rejected by encoding/xml before an external
+// relationship is reached, this returns the same false as a successful
+// parse with no match. Because scanExternalReferences receives no error
+// signal and no byte ceiling was hit, it reports external_reference clean."
+// The PREVIOUS version of THIS doc comment rationalized returning false on
+// ANY decode error by pointing at the caller's own truncation bookkeeping
+// (scanExternalReferences's truncatedAnyPart) -- that rationale was WRONG,
+// and is deleted rather than kept alongside the fix below: truncatedAnyPart
+// is set only when THIS SCAN's own byte ceiling actually fired (a
+// declared-size skip, an f.Open failure, a mid-read error, or the
+// io.LimitReader boundary trap), never merely because dec.Token() returned
+// an error. A part that was read to completion WITHIN budget and STILL
+// failed to parse (genuinely malformed XML) hits none of those ceilings, so
+// the caller's truncation bookkeeping was never going to catch it -- this
+// function now distinguishes the two outcomes itself: io.EOF (the decoder
+// consumed the whole part and found no match -- an honest "not found") from
+// any other decode error (the part's XML could not be parsed at all --
+// xmlScanMalformed, never silently folded into "not found").
+func containsExternalRelationship(data []byte) xmlScanResult {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			return false
+			if err == io.EOF {
+				return xmlScanNotFound
+			}
+			return xmlScanMalformed
 		}
 		se, ok := tok.(xml.StartElement)
 		if !ok || se.Name.Local != "Relationship" {
@@ -467,7 +557,58 @@ func containsExternalRelationship(data []byte) bool {
 		}
 		for _, attr := range se.Attr {
 			if attr.Name.Local == "TargetMode" && attr.Value == "External" {
-				return true
+				return xmlScanFound
+			}
+		}
+	}
+}
+
+// containsODFExternalHref reports whether data (an ODF/epub content.xml or
+// styles.xml part) declares any element attribute in the XLink namespace
+// (see xlinkNamespace's own doc comment), local name "href", whose value
+// carries one of odfExternalHrefSchemes -- parsed with encoding/xml (D-02,
+// exactly like containsExternalRelationship above), never matched against
+// the part's raw serialized bytes.
+//
+// PR9R5 finding (container.go:419), verbatim: "For ODT/ODS/ODP/EPUB, valid
+// XML such as xlink:href = 'https://example.com' or an equivalent attribute
+// using another prefix bound to the XLink namespace does not contain any of
+// these exact byte strings. A fully read document using either legal
+// serialization therefore falls through to a clean external_reference check
+// despite containing an external URL." This is the THIRD appearance of one
+// class this project has now closed three times (PDF hex-escaped names,
+// OOXML's TargetMode quote/whitespace variants, and now this): a STRUCTURED
+// format compared as an opaque byte sequence, blind to any of its other
+// legal serializations. encoding/xml resolves whichever prefix a document
+// actually bound to the XLink namespace on its own (see the xmlns handling
+// in encoding/xml's own Token(): a StartElement's xmlns: declarations are
+// registered into the namespace stack BEFORE that SAME element's other
+// attribute names are translated, so xmlns:anyPrefix="http://www.w3.org/
+// 1999/xlink" declared on the very element that also carries
+// anyPrefix:href is enough) -- this function never has to know which prefix
+// a given document chose.
+func containsODFExternalHref(data []byte) xmlScanResult {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			if err == io.EOF {
+				return xmlScanNotFound
+			}
+			return xmlScanMalformed
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		for _, attr := range se.Attr {
+			if attr.Name.Space != xlinkNamespace || attr.Name.Local != "href" {
+				continue
+			}
+			for _, scheme := range odfExternalHrefSchemes {
+				if strings.HasPrefix(attr.Value, scheme) {
+					return xmlScanFound
+				}
 			}
 		}
 	}

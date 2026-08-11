@@ -79,6 +79,29 @@ func docxFixtureWithRels(t *testing.T, relsXML string) []byte {
 	return buf.Bytes()
 }
 
+// odtFixtureWithContent builds a minimal odt whose ONLY external-reference
+// candidate part is content.xml, carrying contentXML verbatim -- mirrors
+// docxFixtureWithRels's own shape for the OOXML side, used to exercise
+// containsODFExternalHref against every legal XML serialization of an
+// xlink:href attribute, not just odtFixtureWithTwoParts's own fixed marker.
+func odtFixtureWithContent(t *testing.T, contentXML string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatalf("CreateHeader(mimetype): %v", err)
+	}
+	if _, err := mw.Write([]byte("application/vnd.oasis.opendocument.text")); err != nil {
+		t.Fatalf("Write(mimetype): %v", err)
+	}
+	mustWriteZipEntry(t, zw, "content.xml", contentXML)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func duplicateRootPartDocxFixture(t *testing.T) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
@@ -518,6 +541,128 @@ func TestAnalyzeContainerExternalRefInternalRelationshipStaysClean(t *testing.T)
 	}
 }
 
+// TestAnalyzeContainerODFExternalHrefRecognizesEveryLegalXMLSerialization is
+// the PR9R5 finding (container.go:419) verbatim: valid XML such as
+// `xlink:href = 'https://example.com'` (single quotes, whitespace around
+// '=') or an equivalent attribute bound to the XLink namespace through a
+// DIFFERENT prefix must still be recognized -- neither is the exact byte
+// sequence the previous byte-comparison implementation matched.
+func TestAnalyzeContainerODFExternalHrefRecognizesEveryLegalXMLSerialization(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			"single-quoted, spaces around equals, conventional xlink prefix",
+			`<office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href = 'https://example.com'/></office:document-content>`,
+		},
+		{
+			"double-quoted, no spaces (original serialization)",
+			`<office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href="https://example.com"/></office:document-content>`,
+		},
+		{
+			"XLink namespace bound to a DIFFERENT prefix",
+			`<office:document-content xmlns:ns7="http://www.w3.org/1999/xlink"><text:a ns7:href="https://example.com"/></office:document-content>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := odtFixtureWithContent(t, tc.content)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			f, ok := findingFor(res, CodeExternalReference)
+			if !ok {
+				c, _ := checkFor(res, CodeExternalReference)
+				t.Fatalf("no Finding for CodeExternalReference (got Check %+v instead) -- this serialization must NOT reach a clean verdict", c)
+			}
+			if f.Location != "content.xml" {
+				t.Fatalf("Finding(CodeExternalReference).Location = %q, want %q", f.Location, "content.xml")
+			}
+		})
+	}
+}
+
+// TestAnalyzeContainerODFInternalHrefStaysClean proves the fix is not
+// simply "any xlink:href is now a finding" -- an href with no
+// external-scheme prefix (an internal document fragment reference, the
+// conventional ODF use of xlink:href for cross-references within the same
+// package) must still report clean.
+func TestAnalyzeContainerODFInternalHrefStaysClean(t *testing.T) {
+	data := odtFixtureWithContent(t, `<office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href="#Table1"/></office:document-content>`)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status != StatusClean {
+		t.Fatalf("Check(CodeExternalReference).Status = %q, want %q -- an internal fragment href must not be flagged", c.Status, StatusClean)
+	}
+}
+
+// TestAnalyzeContainerODFHrefWithoutNamespaceBindingStaysClean proves
+// containsODFExternalHref matches the RESOLVED namespace, not merely the
+// local attribute name "href" -- an unprefixed href attribute (no
+// namespace at all, per XML Namespaces: attributes without a prefix are
+// NEVER in any namespace, unlike elements, which inherit a default
+// namespace) must not be treated as XLink's own href.
+func TestAnalyzeContainerODFHrefWithoutNamespaceBindingStaysClean(t *testing.T) {
+	data := odtFixtureWithContent(t, `<office:document-content><text:a href="http://example.com"/></office:document-content>`)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status != StatusClean {
+		t.Fatalf("Check(CodeExternalReference).Status = %q, want %q -- an href attribute with no namespace binding is not XLink's own href", c.Status, StatusClean)
+	}
+}
+
+// TestAnalyzeContainerMalformedRelsPartYieldsUnknownMalformedNotCeiling is
+// the PR9R5 finding (container.go:462) verbatim: a fully read, genuinely
+// malformed .rels part (never truncated by any of this scan's own
+// ceilings) must report unknown/malformed_input, distinct from
+// unknown/work_ceiling_bytes -- a decode failure is a fact about the FILE,
+// not about this scan's own resource limits. The fixture's declared and
+// real sizes match exactly (mustWriteZipEntry writes the exact string
+// below, and archive/zip.Writer computes UncompressedSize64 from the bytes
+// actually written) -- this part is read to completion, never truncated by
+// f.UncompressedSize64's own declared-size skip or by io.LimitReader.
+func TestAnalyzeContainerMalformedRelsPartYieldsUnknownMalformedNotCeiling(t *testing.T) {
+	data := docxFixtureWithRels(t, `<Relationships><Relationship Id="rId1" TargetMode="External"`) // truncated mid-tag: never closed, never a complete document
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	if f, ok := findingFor(res, CodeExternalReference); ok {
+		t.Fatalf("got Finding %+v for a part that never successfully parsed", f)
+	}
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonMalformedInput {
+		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/malformed_input -- the part was read to completion (declared size == real size, budget is 1<<30) and its XML genuinely failed to parse; this must not be reported the same way a ceiling hit is", c)
+	}
+}
+
+// TestAnalyzeContainerMalformedODFPartYieldsUnknownMalformedNotCeiling is
+// TestAnalyzeContainerMalformedRelsPartYieldsUnknownMalformedNotCeiling's
+// ODF/epub sibling -- the SAME PR9R5 finding applies to
+// containsODFExternalHref exactly as it does to
+// containsExternalRelationship.
+func TestAnalyzeContainerMalformedODFPartYieldsUnknownMalformedNotCeiling(t *testing.T) {
+	data := odtFixtureWithContent(t, `<office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href="http://example.com"`) // truncated mid-tag
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	if f, ok := findingFor(res, CodeExternalReference); ok {
+		t.Fatalf("got Finding %+v for a part that never successfully parsed", f)
+	}
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonMalformedInput {
+		t.Fatalf("Check(CodeExternalReference) = %+v, want unknown/malformed_input -- the part was read to completion (declared size == real size, budget is 1<<30) and its XML genuinely failed to parse; this must not be reported the same way a ceiling hit is", c)
+	}
+}
+
 func TestAnalyzeContainerCleanDocxAllClean(t *testing.T) {
 	data := cleanDocxFixture(t)
 	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
@@ -715,10 +860,12 @@ func TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean(t *testing.T) {
 // odtFixtureWithTwoParts builds a minimal, entirely HONEST odt (no forged
 // metadata anywhere -- every declared size matches its real content
 // exactly) with two external-reference candidate parts: content.xml (small,
-// no marker) and styles.xml (moderate size, with an xlink:href external
-// marker placed near its tail). ODF's TWO fixed candidate names
-// (content.xml, styles.xml) are exactly what lets a single-format test
-// exercise a MULTI-PART scan, unlike OOXML's single .rels convention.
+// no marker) and styles.xml (moderate size, genuinely valid XML with an
+// xlink:href external marker placed near its tail, padded via an XML
+// comment so containsODFExternalHref's semantic parse -- not a byte
+// comparison -- is what has to reach the marker). ODF's TWO fixed candidate
+// names (content.xml, styles.xml) are exactly what lets a single-format
+// test exercise a MULTI-PART scan, unlike OOXML's single .rels convention.
 func odtFixtureWithTwoParts(t *testing.T, stylesSize int) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
@@ -734,7 +881,13 @@ func odtFixtureWithTwoParts(t *testing.T, stylesSize int) []byte {
 
 	mustWriteZipEntry(t, zw, "content.xml", "small content, no external reference here at all")
 
-	styles := append(bytes.Repeat([]byte("A"), stylesSize-len(`xlink:href="http://example.com"`)), []byte(`xlink:href="http://example.com"`)...)
+	prefix := []byte(`<office:document-styles xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><!--`)
+	suffix := []byte(`--><text:a xlink:href="http://example.com"/></office:body></office:document-styles>`)
+	padLen := stylesSize - len(prefix) - len(suffix)
+	if padLen < 0 {
+		padLen = 0
+	}
+	styles := append(append(append([]byte{}, prefix...), bytes.Repeat([]byte("A"), padLen)...), suffix...)
 	mustWriteZipEntry(t, zw, "styles.xml", string(styles))
 
 	if err := zw.Close(); err != nil {
