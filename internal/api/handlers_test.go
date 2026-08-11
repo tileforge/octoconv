@@ -552,8 +552,13 @@ func init() {
 // --- document container fixture helpers (mirror internal/convert/docsniff_test.go) ---
 
 // mustWriteZipEntry adds a single deflate-compressed entry to zw, failing
-// the test on any write error.
-func mustWriteZipEntry(t *testing.T, zw *zip.Writer, name, content string) {
+// the test on any write error. Takes testing.TB (not the concrete *testing.T)
+// so fuzz targets can build these same fixtures as seed corpus entries at
+// *testing.F setup time -- testing.TB is "the interface common to T, B, and
+// F" (testing package doc), and every existing call site already passes a
+// concrete *testing.T, which satisfies it without any change at the call
+// site.
+func mustWriteZipEntry(t testing.TB, zw *zip.Writer, name, content string) {
 	t.Helper()
 	w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate})
 	if err != nil {
@@ -566,7 +571,7 @@ func mustWriteZipEntry(t *testing.T, zw *zip.Writer, name, content string) {
 
 // docxFixture returns a minimal, valid-shaped docx built via archive/zip.Writer
 // (word/document.xml root part present) so convert.SniffContainer detects it.
-func docxFixture(t *testing.T) []byte {
+func docxFixture(t testing.TB) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
 	zw := zip.NewWriter(buf)
@@ -3641,7 +3646,7 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		callID func(*fakeQueue) uuid.UUID
 	}{
 		{convert.EngineImage, fixture{"in.png", "webp", func(*testing.T) []byte { return pngBytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedImage }},
-		{convert.EngineDocument, fixture{"in.docx", "pdf", docxFixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedDocument }},
+		{convert.EngineDocument, fixture{"in.docx", "pdf", func(t *testing.T) []byte { return docxFixture(t) }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedDocument }},
 		{convert.EngineHTML, fixture{"in.html", "pdf", func(*testing.T) []byte { return htmlFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedHTML }},
 		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
