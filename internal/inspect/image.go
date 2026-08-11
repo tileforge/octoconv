@@ -78,18 +78,29 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusClean})
 	}
 
-	loc, found, metaWindowTruncated := scanImageMetadata(format, r, size, maxBytes, tr)
+	loc, found, ceilingHit, malformedHit := scanImageMetadata(format, r, size, maxBytes, tr)
 	switch {
 	case found:
 		sev, _ := SeverityOf(CodeMetadataPresent)
 		findings = append(findings, Finding{Code: CodeMetadataPresent, Severity: sev, Location: loc})
-	case metaWindowTruncated:
-		// codex PR9 finding 3 / T-SLE-03: a miss inside a window that did
-		// NOT cover the whole file is not evidence the metadata does not
-		// exist past that window -- valid PNG/WebP/HEIC/JPEG files can
-		// place EXIF/XMP metadata past the default byte ceiling. See
-		// scanImageMetadata's own doc comment.
+	case ceilingHit:
+		// codex PR9 finding 3 / T-SLE-03: a miss inside a window (or an
+		// iteration walk) that did NOT cover/complete the whole scan is not
+		// evidence the metadata does not exist past what was actually
+		// looked at. See scanImageMetadata's own doc comment for every
+		// source folded into this single signal.
 		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
+	case malformedHit:
+		// quick/260811-r5p task 4 (class sweep, PR9R5-SWEEP-CLASSES(б)): a
+		// scan that aborted on a STRUCTURAL problem -- a declared
+		// length/size running past the buffer, a magic-byte header that
+		// does not parse, or leftover bytes that never form the format's
+		// own natural end -- must never be folded into the same signal a
+		// genuinely complete, empty walk produces. See scanImageMetadata's
+		// own doc comment for the full ceiling/malformed distinction, which
+		// deliberately mirrors container.go's externalRefStatus
+		// (PR9R5, container.go:462).
+		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: ReasonMalformedInput})
 	default:
 		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusClean})
 	}
@@ -104,66 +115,113 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // (58-RESEARCH.md Q1 "Images" row). It stops at the FIRST match --
 // presence is a yes/no fact, not a catalog.
 //
-// truncated reports whether the bounded window it actually read covered
-// the WHOLE file (codex PR9 finding 3 / T-SLE-03): for an image larger
-// than maxBytes, a miss inside the head window is NOT evidence the
+// windowTruncated reports whether the bounded window it actually read
+// covered the WHOLE file (codex PR9 finding 3 / T-SLE-03): for an image
+// larger than maxBytes, a miss inside the head window is NOT evidence the
 // metadata does not exist -- valid PNG, WebP, HEIC, and JPEG files can all
-// place EXIF/XMP metadata after the default byte ceiling, so the caller
-// (AnalyzeImage) must report unknown/work_ceiling_bytes rather than
-// StatusClean whenever truncated is true and no marker was found. A miss
-// with truncated==false remains a legitimate StatusClean: the whole file
-// was actually inspected and nothing was there.
-func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, truncated bool) {
+// place EXIF/XMP metadata after the default byte ceiling.
+//
+// Return shape (quick/260811-r5p task 4, PR9R5-SWEEP-CLASSES(б)): a MISS
+// can come from three genuinely different places, kept as three genuinely
+// different named results instead of folding any two of them into the same
+// bool -- exactly the discipline container.go's externalRefStatus already
+// applies to the container family (see imageMetadataStatus's own doc
+// comment below, which this function's per-format branches compose with
+// windowTruncated via composeMetadataStatus):
+//
+//   - found: a marker/chunk WAS located -- location names it.
+//   - ceilingHit: THIS operation's own resource limit is why nothing was
+//     found -- either this function's own byte window did not cover the
+//     whole file (windowTruncated), or a per-format scanner's own
+//     maxMetadataMarkerScanIterations cap fired first. Neither is a fact
+//     about the file; both are OUR refusal to keep looking.
+//   - malformedHit: a per-format scanner read every byte it was given,
+//     within every one of ITS OWN local ceilings, and STILL could not reach
+//     the format's own natural end (JPEG's EOI/SOS; PNG's and WebP's chunk
+//     walk consuming the buffer exactly; TIFF's byte-order header check) --
+//     a declared length/size running past the buffer, a header that fails
+//     its own structural check, or leftover bytes too short to form
+//     another chunk/segment header. That is a fact about the FILE, never
+//     this scan's own limit.
+//
+// Precedence when a scanner's own malformed signal and the byte-window
+// ceiling could both apply: ceilingHit always wins (composeMetadataStatus
+// below). If the window itself was cut short, this function cannot tell
+// whether the REAL file is malformed or was merely never fully read -- the
+// honest answer is our own ceiling, not a claim about the file's structure
+// (the same precedence container.go's scanExternalReferences applies
+// between truncatedAnyPart and malformedAnyPart).
+func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, ceilingHit bool, malformedHit bool) {
 	winLen := maxBytes
 	if winLen > size {
 		winLen = size
 	}
-	// windowTruncated is the byte-window half of "truncated" (codex PR9
+	// windowTruncated is the byte-window half of "ceilingHit" (codex PR9
 	// finding 3 / T-SLE-03, round 1): the bounded read itself did not cover
 	// the whole file.
 	windowTruncated := winLen < size
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
-		return "", false, windowTruncated
+		return "", false, windowTruncated, false
 	}
 	switch format {
 	case "jpg", "jpeg":
-		// codex PR9 round 2 (image.go:209): a miss can ALSO come from
-		// scanJPEGMetadata's own maxMetadataMarkerScanIterations cap being
-		// reached before EOI/SOS -- a fully-buffered file (windowTruncated
-		// == false) with enough harmless markers before an APP1 Exif/XMP
-		// segment can exhaust that cap with metadata still unseen. Either
-		// half being true means this scan cannot rule out metadata past
-		// what it actually walked, so both feed the SAME "truncated"
-		// signal the caller (AnalyzeImage) treats identically -- this
-		// scan's own byte ceiling and its own iteration ceiling are both
-		// OUR resource limits, not facts about the file.
-		loc, ok, ceilingHit := scanJPEGMetadata(buf, tr)
-		return loc, ok, windowTruncated || ceilingHit
+		return composeMetadataStatus(scanJPEGMetadata(buf, tr), windowTruncated)
 	case "png":
-		loc, ok, ceilingHit := scanPNGMetadata(buf, tr)
-		return loc, ok, windowTruncated || ceilingHit
+		return composeMetadataStatus(scanPNGMetadata(buf, tr), windowTruncated)
 	case "tiff":
-		// A TIFF file carries an IFD by construction -- its presence is
-		// almost always true and is NOT a false positive (58-05-PLAN.md
-		// action text, Part 3): report it whenever the bounded window
-		// contains a parseable TIFF byte-order header, without re-deriving
-		// the same IFD walk the dimension parser already validated.
-		if len(buf) >= 8 && (bytes.Equal(buf[0:2], []byte{0x49, 0x49}) || bytes.Equal(buf[0:2], []byte{0x4D, 0x4D})) {
-			return "TIFF IFD0", true, windowTruncated
-		}
-		return "", false, windowTruncated
+		return scanTIFFMetadata(buf, windowTruncated)
 	case "webp":
-		// The JPEG and WebP walkers have the same shape (codex PR9 round 2's
-		// own phrasing, image.go:209) -- the same ceilingHit reasoning above
-		// applies here.
-		loc, ok, ceilingHit := scanRIFFChunkMetadata(buf, tr)
-		return loc, ok, windowTruncated || ceilingHit
+		return composeMetadataStatus(scanRIFFChunkMetadata(buf, tr), windowTruncated)
 	case "heic":
 		loc, ok := scanISOBMFFMetadataTokens(buf)
-		return loc, ok, windowTruncated
+		return loc, ok, windowTruncated, false
 	default:
-		return "", false, windowTruncated
+		return "", false, windowTruncated, false
+	}
+}
+
+// imageMetadataStatus is the shared three-way result scanJPEGMetadata,
+// scanPNGMetadata, and scanRIFFChunkMetadata (WebP) each return -- the same
+// shape as container.go's externalRefStatus, mirrored here on purpose
+// (quick/260811-r5p task 4): at most one of location (non-empty), ceiling,
+// or malformed is ever meaningful.
+//
+//   - location non-empty: the format-specific marker/chunk WAS found.
+//   - ceiling: THIS scanner's own local resource limit
+//     (maxMetadataMarkerScanIterations) fired before the walk could reach
+//     the format's own natural end.
+//   - malformed: the walk read every byte in b, within its own ceiling, and
+//     STILL never reached the format's own natural end -- see each
+//     scanner's own doc comment for what "natural end" means for that
+//     format. A declared length/size that runs past b, a header that fails
+//     its own magic-byte check, or leftover bytes too short to form another
+//     header are all this outcome, never a synonym for "scanned to the end
+//     and found nothing".
+//   - all three zero-valued: the walk reached the format's own natural end
+//     within b and never saw a metadata marker -- a genuine clean, exactly
+//     as much a real answer as a non-empty location is.
+type imageMetadataStatus struct {
+	location  string
+	ceiling   bool
+	malformed bool
+}
+
+// composeMetadataStatus applies the SAME precedence rule to every per-format
+// scanner that returns an imageMetadataStatus: a byte-window ceiling (the
+// caller did not read enough of the file to cover the whole thing) is
+// checked BEFORE a scanner's own structural malformed signal, never after
+// -- see scanImageMetadata's own doc comment for why.
+func composeMetadataStatus(st imageMetadataStatus, windowTruncated bool) (location string, found bool, ceilingHit bool, malformedHit bool) {
+	switch {
+	case st.location != "":
+		return st.location, true, false, false
+	case windowTruncated || st.ceiling:
+		return "", false, true, false
+	case st.malformed:
+		return "", false, false, true
+	default:
+		return "", false, false, false
 	}
 }
 
@@ -173,21 +231,42 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *T
 // NOT stop at the first SOF -- it must see every marker up to SOS/EOI,
 // because APP1 can appear before or after other APPn segments.
 //
-// ceilingHit reports whether maxMetadataMarkerScanIterations -- not EOI/SOS,
-// not a malformed segment, not the end of the buffer -- is what stopped the
-// walk (codex PR9 round 2, image.go:209): a fully-buffered JPEG can place
-// 4096+ harmless marker segments before an APP1 Exif/XMP segment, and this
-// cap would otherwise silently return a miss indistinguishable from "walked
-// every marker to EOI/SOS and found nothing".
-func scanJPEGMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
+// Every exit below is classified against JPEG's own natural end -- EOI
+// (0xD9) or SOS (0xDA), the only two markers that legitimately end the
+// marker-segment stream this walk understands (quick/260811-r5p task 4,
+// PR9R5-SWEEP-CLASSES(б), applying the exact rule task 2 already applied to
+// container.go's XML parsing: only a walk that reaches the FORMAT'S OWN
+// natural end may report clean):
+//
+//   - No valid SOI at all, a marker-length field running past b, or a
+//     declared segment length running past b are all a STRUCTURAL problem
+//     with the bytes this scan was given, not a "scanned everything, found
+//     nothing" miss -- each now reports malformed, never the same
+//     zero-value a genuine EOI/SOS-terminated miss reports.
+//   - Running out of buffer without ever hitting EOI/SOS (the loop
+//     condition failing, with no earlier explicit return) is the SAME
+//     class: a real, complete JPEG always reaches SOS before its
+//     entropy-coded data and EOI at the very end, so falling off the end of
+//     b without seeing either means this walk never reached the format's
+//     own end -- also malformed.
+//   - ceilingHit (maxMetadataMarkerScanIterations firing before EOI/SOS) is
+//     kept as its OWN, separate outcome from malformed for exactly the
+//     reason container.go's ceiling/malformed split exists: a fully-
+//     buffered JPEG can place 4096+ harmless marker segments before an
+//     APP1 Exif/XMP segment, and that is THIS scan's own resource limit,
+//     never a fact about the file (codex PR9 round 2, image.go:209).
+func scanJPEGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	if len(b) < 4 || b[0] != 0xFF || b[1] != 0xD8 {
-		return "", false, false
+		// Not even a parseable SOI marker within the bytes this scan
+		// received: a structural problem with the file, never this scan's
+		// own iteration ceiling (see doc comment above).
+		return imageMetadataStatus{malformed: true}
 	}
 	i := 2
 	for iter := 0; i+1 < len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
 			tr.MarkCeilingHit()
-			return "", false, true
+			return imageMetadataStatus{ceiling: true}
 		}
 		if b[i] != 0xFF {
 			i++ // resync on stray non-marker byte
@@ -203,86 +282,133 @@ func scanJPEGMetadata(b []byte, tr *Tracker) (location string, found bool, ceili
 			continue
 		}
 		if marker == 0xD9 || marker == 0xDA {
-			return "", false, false // EOI or SOS reached: no metadata marker seen
+			// EOI or SOS reached: JPEG's own natural end, genuinely clean
+			// if no metadata marker was seen before this point.
+			return imageMetadataStatus{}
 		}
 		if i+4 > len(b) {
-			return "", false, false
+			return imageMetadataStatus{malformed: true} // buffer ends mid marker-length field: not a natural end
 		}
 		segLen := int(b[i+2])<<8 | int(b[i+3])
 		if segLen < 2 || i+2+segLen > len(b) {
-			return "", false, false
+			return imageMetadataStatus{malformed: true} // declared segment length runs past the buffer: not a natural end
 		}
 		if marker == 0xE1 { // APP1
 			payload := b[i+4 : i+2+segLen]
 			if bytes.HasPrefix(payload, []byte("Exif\x00\x00")) {
-				return "JPEG APP1 Exif", true, false
+				return imageMetadataStatus{location: "JPEG APP1 Exif"}
 			}
 			if bytes.Contains(payload, []byte("http://ns.adobe.com/xap/1.0/")) {
-				return "JPEG APP1 XMP", true, false
+				return imageMetadataStatus{location: "JPEG APP1 XMP"}
 			}
 		}
 		i += 2 + segLen
 	}
-	return "", false, false
+	// Ran out of buffer without ever reaching EOI/SOS: never JPEG's own
+	// natural end, so this miss cannot be reported clean (see doc comment
+	// above).
+	return imageMetadataStatus{malformed: true}
 }
 
 // scanPNGMetadata walks PNG chunks after the 8-byte signature looking for
-// an eXIf chunk or an iTXt chunk carrying the Adobe XMP keyword. ceilingHit
-// is the same signal as scanJPEGMetadata's own -- see its doc comment.
-func scanPNGMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
+// an eXIf chunk or an iTXt chunk carrying the Adobe XMP keyword.
+//
+// PNG has no single terminal marker byte the way JPEG's EOI is (an IEND
+// chunk is conventional, but this walk does not require seeing one by
+// name): the natural end this walk recognizes is the chunk walk consuming
+// the buffer EXACTLY, with zero leftover bytes (quick/260811-r5p task 4,
+// PR9R5-SWEEP-CLASSES(б), same rule task 2 applied to container.go's XML
+// parsing). Every other exit is a structural problem, not a clean miss:
+//
+//   - len(b) < 8: not even the PNG signature fits.
+//   - A declared chunk length running past b (dataStart+length+4 >
+//     len(b)): the same "declared size past the window" shape
+//     scanExternalReferences already closes for zip parts.
+//   - The loop exits with pos < len(b) but too few bytes remain for another
+//     8-byte chunk header: leftover bytes this walk never accounted for,
+//     never a proof that no chunk follows.
+//
+// Reaching pos == len(b) with the loop condition simply false is the ONE
+// exit that means the whole buffer was legitimately consumed, chunk by
+// chunk, with nothing left unaccounted for -- exactly as much a genuine
+// answer as finding eXIf/iTXt is.
+//
+// ceilingHit reports whether maxMetadataMarkerScanIterations -- not the
+// buffer end, not a malformed chunk -- is what stopped the walk (codex PR9
+// round 2, image.go:209): kept as its own outcome, separate from malformed,
+// for the same reason scanJPEGMetadata's own ceiling is separate.
+func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	if len(b) < 8 {
-		return "", false, false
+		return imageMetadataStatus{malformed: true}
 	}
 	pos := 8
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
 			tr.MarkCeilingHit()
-			return "", false, true
+			return imageMetadataStatus{ceiling: true}
 		}
 		length := int(binary.BigEndian.Uint32(b[pos : pos+4]))
 		chunkType := string(b[pos+4 : pos+8])
 		dataStart := pos + 8
 		if length < 0 || uint64(dataStart)+uint64(length)+4 > uint64(len(b)) {
-			return "", false, false // declared chunk length runs past the bounded window: fail closed
+			return imageMetadataStatus{malformed: true} // declared chunk length runs past the buffer: not a natural end
 		}
 		switch chunkType {
 		case "eXIf":
-			return "PNG eXIf chunk", true, false
+			return imageMetadataStatus{location: "PNG eXIf chunk"}
 		case "iTXt":
 			if bytes.Contains(b[dataStart:dataStart+length], []byte("XML:com.adobe.xmp")) {
-				return "PNG iTXt XMP", true, false
+				return imageMetadataStatus{location: "PNG iTXt XMP"}
 			}
 		}
 		pos = dataStart + length + 4 // +4 for the trailing CRC
 	}
-	return "", false, false
+	if pos == len(b) {
+		// The chunk walk consumed the buffer exactly, with nothing left
+		// over: PNG's own natural end for this walk (see doc comment).
+		return imageMetadataStatus{}
+	}
+	// Leftover bytes remain that do not form a full chunk header: this walk
+	// did not reach the buffer's end cleanly, so a miss here is not proof
+	// metadata is absent from whatever those leftover/unaccounted bytes (or
+	// anything the real file has past them) might carry.
+	return imageMetadataStatus{malformed: true}
 }
 
 // scanRIFFChunkMetadata walks WebP's RIFF chunks (after the 12-byte
-// RIFF/WEBP header) looking for an EXIF or XMP chunk. ceilingHit is the same
-// signal as scanJPEGMetadata's own -- codex PR9 round 2's own phrasing
-// ("The JPEG and WebP walkers have the same shape") applies literally here.
-func scanRIFFChunkMetadata(b []byte, tr *Tracker) (location string, found bool, ceilingHit bool) {
+// RIFF/WEBP header) looking for an EXIF or XMP chunk.
+//
+// The same shape as scanPNGMetadata above -- codex PR9 round 2's own
+// phrasing ("The JPEG and WebP walkers have the same shape") already
+// applied to the ceiling outcome; quick/260811-r5p task 4
+// (PR9R5-SWEEP-CLASSES(б)) applies it to the malformed/natural-end split
+// too, which the original review rounds never named for this scanner. RIFF
+// has no format-level terminal marker either, so the natural end this walk
+// recognizes is identical to PNG's: the chunk walk consuming the buffer
+// EXACTLY. A declared chunk size running past b, or leftover bytes too
+// short for another 8-byte fourCC+size header, are both a structural
+// problem, never a clean miss.
+func scanRIFFChunkMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	if len(b) < 12 {
-		return "", false, false
+		return imageMetadataStatus{malformed: true}
 	}
 	pos := 12
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
 			tr.MarkCeilingHit()
-			return "", false, true
+			return imageMetadataStatus{ceiling: true}
 		}
 		fourCC := string(b[pos : pos+4])
 		size := int(binary.LittleEndian.Uint32(b[pos+4 : pos+8]))
 		dataStart := pos + 8
 		if size < 0 || uint64(dataStart)+uint64(size) > uint64(len(b)) {
-			return "", false, false // declared chunk size runs past the bounded window: fail closed
+			return imageMetadataStatus{malformed: true} // declared chunk size runs past the buffer: not a natural end
 		}
 		switch fourCC {
 		case "EXIF":
-			return "WebP EXIF chunk", true, false
+			return imageMetadataStatus{location: "WebP EXIF chunk"}
 		case "XMP ":
-			return "WebP XMP chunk", true, false
+			return imageMetadataStatus{location: "WebP XMP chunk"}
 		}
 		advance := size
 		if advance%2 == 1 {
@@ -290,7 +416,45 @@ func scanRIFFChunkMetadata(b []byte, tr *Tracker) (location string, found bool, 
 		}
 		pos = dataStart + advance
 	}
-	return "", false, false
+	if pos == len(b) {
+		// The chunk walk consumed the buffer exactly: RIFF's own natural
+		// end for this walk (see doc comment).
+		return imageMetadataStatus{}
+	}
+	// Leftover bytes remain that do not form a full chunk header: not a
+	// natural end, so a miss here is not proof metadata is absent.
+	return imageMetadataStatus{malformed: true}
+}
+
+// scanTIFFMetadata reports whether buf begins with a valid TIFF byte-order
+// header ("II" or "MM") within at least 8 bytes -- a TIFF file carries an
+// IFD by construction (58-05-PLAN.md action text, Part 3), so a valid
+// header alone is enough to report metadata FOUND without re-deriving the
+// same IFD walk the dimension parser already validated.
+//
+// A MISS was, before this task, folded into exactly the defect class this
+// file closes elsewhere (quick/260811-r5p task 4, PR9R5-SWEEP-CLASSES(б)):
+// the original inline branch this function replaces returned "not found"
+// identically whether the window was merely too short to cover 8 bytes, OR
+// the window covered the WHOLE file and those bytes simply are not a valid
+// TIFF header at all. Those are different facts:
+//
+//   - windowTruncated true: this scan's own byte ceiling is why the header
+//     could not be validated -- OUR limit, not the file's fault.
+//   - windowTruncated false and the header still does not match: the
+//     format claim (format=="tiff", from upstream sniffing) and the bytes
+//     this scan actually read disagree within a COMPLETE read of the file
+//     -- a structural fact about the file, the same class as
+//     scanJPEGMetadata's own magic-byte check, and it must never be
+//     reported the same way an honestly short window is.
+func scanTIFFMetadata(buf []byte, windowTruncated bool) (location string, found bool, ceilingHit bool, malformedHit bool) {
+	if len(buf) >= 8 && (bytes.Equal(buf[0:2], []byte{0x49, 0x49}) || bytes.Equal(buf[0:2], []byte{0x4D, 0x4D})) {
+		return "TIFF IFD0", true, false, false
+	}
+	if windowTruncated {
+		return "", false, true, false
+	}
+	return "", false, false, true
 }
 
 // scanISOBMFFMetadataTokens looks for the literal EXIF/XMP box-type tokens
@@ -302,6 +466,31 @@ func scanRIFFChunkMetadata(b []byte, tr *Tracker) (location string, found bool, 
 // cheap, bounded approximation used here: it can false-negative on an
 // encoder that never emits these bytes contiguously, but it never claims a
 // structural walk it did not actually do.
+//
+// quick/260811-r5p task 4 (class sweep, PR9R5-SWEEP-CLASSES(б)) explicitly
+// weighed whether this function belongs to the SAME defect class as
+// scanJPEGMetadata/scanPNGMetadata/scanRIFFChunkMetadata (an abort-on-
+// structural-problem exit reporting exactly what a genuinely clean miss
+// reports) -- and the answer, stated plainly rather than left implicit, is
+// NO: this function performs no structural walk at all to abort FROM. It is
+// bytes.Contains over the entire window, unconditionally, every single
+// time -- there is no declared length to run past, no magic-byte header to
+// fail, no chunk boundary that could leave leftover bytes unaccounted for.
+// Its only source of incompleteness is the byte WINDOW itself, already
+// reported as ceilingHit via windowTruncated at the call site identically
+// to every other format here, plus the approximation's own inherent
+// false-negative risk on a non-contiguous encoding -- a property of the
+// APPROXIMATION CHOSEN, not of any exit path this function takes.
+//
+// Giving that false-negative risk its own unknown/malformed_input verdict
+// would mean EVERY HEIC upload with no metadata reports unknown instead of
+// clean -- a much larger behavior change than replacing a mis-classified
+// abort with an honest one, is not what any of the five container/image
+// review rounds asked for, and was already surfaced as a known,
+// deliberately-unchanged limitation rather than silent omission (see
+// 260811-r5p-SUMMARY-task4-sweep.md, "Раскрытые ограничения" item 1). A
+// miss here therefore keeps reporting clean whenever the byte window was
+// not truncated -- on purpose, not by omission.
 func scanISOBMFFMetadataTokens(b []byte) (string, bool) {
 	if bytes.Contains(b, []byte("Exif")) {
 		return "HEIC Exif item", true
