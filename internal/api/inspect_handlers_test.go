@@ -544,6 +544,220 @@ func TestZipDirectoryExceedsStructuralBoundTreatsZip64SentinelAsExceeding(t *tes
 	}
 }
 
+// realZipCentralDirectoryFixture builds a raw byte stream shaped like a real
+// ZIP upload: a PK\x03\x04 local-file-header magic (gates
+// detectInspectFormat's ZIP branch for the HTTP-level tests below; harmless
+// for direct zipDirectoryExceedsStructuralBound calls), n REAL, valid
+// central-directory records (PK\x01\x02, each carrying a nameLen-byte name
+// whose CONTENT is immaterial -- only the declared length affects the
+// walk's own record-length arithmetic), and a trailing EOCD whose
+// directoryOffset points at the real directory and whose entries/dirBytes
+// fields are whatever the caller declares -- letting tests build both
+// honest and lying EOCDs from one builder.
+func realZipCentralDirectoryFixture(n, nameLen int, declaredEntries uint16, declaredDirBytes uint32) []byte {
+	recordLen := zipCentralDirMinRecordLen + nameLen
+	dir := make([]byte, n*recordLen)
+	for i := 0; i < n; i++ {
+		rec := dir[i*recordLen : (i+1)*recordLen]
+		rec[0], rec[1], rec[2], rec[3] = 'P', 'K', 0x01, 0x02
+		binary.LittleEndian.PutUint16(rec[28:30], uint16(nameLen))
+	}
+	buf := make([]byte, 4+len(dir)+22)
+	buf[0], buf[1], buf[2], buf[3] = 'P', 'K', 3, 4
+	copy(buf[4:], dir)
+	eocd := buf[4+len(dir):]
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	binary.LittleEndian.PutUint16(eocd[10:12], declaredEntries)
+	binary.LittleEndian.PutUint32(eocd[12:16], declaredDirBytes)
+	binary.LittleEndian.PutUint32(eocd[16:20], 4) // directoryOffset points at the real directory, right after the 4-byte local-header magic
+	// comment length (last 2 bytes) left at zero.
+	return buf
+}
+
+// round4RealDirectoryZipFixture reproduces the FOURTH round of review
+// verbatim: "an archive with 65,537 valid 46-byte central-directory
+// headers, entries=1, directorySize=46, and directoryOffset pointing to the
+// real directory". Unlike round 2's own fixture (a bare 22-byte EOCD
+// claiming a directory that was never actually there), this one contains
+// 65,537 REAL central-directory records at the offset its EOCD honestly
+// points to -- archive/zip.NewReader really would walk all of them -- but
+// LIES about the directory's declared byte size (46, not the true
+// 3,014,702), exactly the value round 2's dirBytes-only comparison would
+// have waved through unchanged.
+func round4RealDirectoryZipFixture() []byte {
+	const trueRecordCount = 65537
+	wrappedEntries := uint16(trueRecordCount % 65536) // == 1
+	return realZipCentralDirectoryFixture(trueRecordCount, 0, wrappedEntries, zipCentralDirMinRecordLen)
+}
+
+// TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize
+// is the central round-4 proof: zipDirectoryExceedsStructuralBound must
+// reject round4RealDirectoryZipFixture even though NEITHER declared EOCD
+// field (entries=1, dirBytes=46) is itself large enough to trip a
+// comparison against any ceiling -- the previous two fixes both only ever
+// compared a declared field against a ceiling, so both would pass this
+// fixture. Only counting the REAL records behind the lying declaration
+// catches it.
+func TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize(t *testing.T) {
+	data := round4RealDirectoryZipFixture()
+	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	if gotEntries != 1 {
+		t.Fatalf("entries = %d, want 1 (65537 mod 65536, read verbatim from the EOCD's own field)", gotEntries)
+	}
+	if gotDirBytes != zipCentralDirMinRecordLen {
+		t.Fatalf("dirBytes = %d, want %d (the lying declared size)", gotDirBytes, zipCentralDirMinRecordLen)
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- 65,537 REAL central-directory records sit behind a 46-byte lying declared size; a bound that only reads declared fields (round 1's entries, round 2's dirBytes) cannot catch this")
+	}
+}
+
+// TestInspectRound4ScenarioReportsUnknownNot500 is
+// TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize's
+// end-to-end sibling, exercised through the real HTTP handler exactly like
+// TestInspectReviewerScenarioReportsUnknownNot500 proves for round 2's own
+// scenario: the upload must be reported as format=zip_directory_too_large,
+// never resolved as docx, never clean, never 500.
+func TestInspectRound4ScenarioReportsUnknownNot500(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	status, body := doInspect(t, srv, "in.zip", round4RealDirectoryZipFixture())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (never 500, never a rejection); body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != inspectZipTooLargeFormat {
+		t.Errorf("Format = %q, want %q -- a 46-byte lying declared directory size must not let 65,537 real records past the structural bound", resp.Format, inspectZipTooLargeFormat)
+	}
+	if resp.Coverage.Complete {
+		t.Errorf("Coverage.Complete = true, want false")
+	}
+	if resp.Coverage.Reason != inspect.ReasonWorkCeilingBytes {
+		t.Errorf("Coverage.Reason = %q, want %q", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
+	}
+	if err := inspect.ValidateReport(resp.Findings, resp.Checks); err != nil {
+		t.Errorf("ValidateReport: %v", err)
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundWindowExhaustionIsExceeding proves
+// the SECOND shape round 4 requires: a directory whose entry count would
+// stay safely under inspectMaxZipDirEntries, but whose real records are
+// large enough that reading inspectMaxZipDirBytes of them does not reach
+// the directory's own (structurally located, not declared) end. The plan's
+// own words: "the window ran out, and the directory did not end -- an
+// exceeded bound, not a pass: you do not know what follows, and guessing is
+// what got the previous two versions bypassed." Every EOCD field in this
+// fixture is completely HONEST (matches the real bytes on disk exactly) --
+// proving this is the fixed-size window itself doing the rejecting, not
+// merely a lying-declared-field detector (that is what the round-4 test
+// above already proves).
+func TestZipDirectoryExceedsStructuralBoundWindowExhaustionIsExceeding(t *testing.T) {
+	const n, nameLen = 100, 2000 // 100 * (46+2000) = 204,600 bytes > inspectMaxZipDirBytes (188,416); 100 records is nowhere near the 4096 entry ceiling
+	recordLen := uint32(zipCentralDirMinRecordLen + nameLen)
+	data := realZipCentralDirectoryFixture(n, nameLen, uint16(n), uint32(n)*recordLen)
+
+	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	if gotEntries != n || gotDirBytes != uint32(n)*recordLen {
+		t.Fatalf("entries/dirBytes = %d/%d, want %d/%d -- this test's own EOCD is completely honest", gotEntries, gotDirBytes, n, uint32(n)*recordLen)
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- the %d-byte window ran out before reaching the real, located end of a %d-record, honestly-declared directory (entries=%d is nowhere near the %d ceiling); not knowing what lies past the window must never pass", inspectMaxZipDirBytes, n, n, inspectMaxZipDirEntries)
+	}
+}
+
+// virtualHostileZipReader synthesizes an arbitrarily large ZIP-shaped byte
+// stream ON DEMAND -- it never materializes more than the single slice a
+// caller's ReadAt asks for, however large `size` claims to be. Every byte
+// from directoryOffset onward (up to a real EOCD at the true tail) is a
+// valid, minimal (zipCentralDirMinRecordLen-byte) central-directory record;
+// the EOCD itself lies about the directory's byte size (46) exactly like
+// round4RealDirectoryZipFixture. Used to prove
+// zipDirectoryExceedsStructuralBound's own total read volume, for a single
+// call, is bounded by a FIXED CONSTANT -- never by size or anything the
+// "archive" declares -- without the test itself allocating anywhere near
+// `size` bytes to prove it.
+type virtualHostileZipReader struct {
+	size             int64
+	directoryOffset  int64
+	maxSingleReadLen int64 // high-water mark across every ReadAt call; read by the test after the call under test returns
+}
+
+func (v *virtualHostileZipReader) ReadAt(p []byte, off int64) (int, error) {
+	if int64(len(p)) > v.maxSingleReadLen {
+		v.maxSingleReadLen = int64(len(p))
+	}
+	eocdOffset := v.size - zipEOCDFixedLen
+	for i := range p {
+		abs := off + int64(i)
+		switch {
+		case abs >= eocdOffset && abs < v.size:
+			switch abs - eocdOffset {
+			case 0:
+				p[i] = 'P'
+			case 1:
+				p[i] = 'K'
+			case 2:
+				p[i] = 0x05
+			case 3:
+				p[i] = 0x06
+			case 12:
+				p[i] = zipCentralDirMinRecordLen // dirBytes lies: declares 46, not the true (enormous) span
+			case 16:
+				p[i] = byte(v.directoryOffset)
+			case 17:
+				p[i] = byte(v.directoryOffset >> 8)
+			default:
+				p[i] = 0
+			}
+		case abs >= v.directoryOffset && abs < eocdOffset:
+			switch (abs - v.directoryOffset) % zipCentralDirMinRecordLen {
+			case 0:
+				p[i] = 'P'
+			case 1:
+				p[i] = 'K'
+			case 2:
+				p[i] = 0x01
+			case 3:
+				p[i] = 0x02
+			default:
+				p[i] = 0
+			}
+		default:
+			p[i] = 0
+		}
+	}
+	return len(p), nil
+}
+
+// TestZipDirectoryExceedsStructuralBoundReadVolumeBoundedByConstant is the
+// plan's own explicit acceptance criterion: "Объём чтения при любом входе
+// ограничен константой, не зависящей от содержимого архива". size here is
+// 1 TiB and the (virtual, never-materialized) real directory is comparably
+// enormous -- if this function's own read volume depended on anything the
+// archive declares or actually contains, this call would attempt to read
+// gigabytes. It must not: every ReadAt this function issues is capped by
+// either zipEOCDRecordMaxLen (the tail scan) or inspectMaxZipDirBytes (the
+// record-counting window), both fixed package constants.
+func TestZipDirectoryExceedsStructuralBoundReadVolumeBoundedByConstant(t *testing.T) {
+	v := &virtualHostileZipReader{size: 1 << 40, directoryOffset: 4} // 1 TiB, never actually allocated
+	exceeds, _, _ := zipDirectoryExceedsStructuralBound(v, v.size)
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- a directory this large can never be verified within a bounded window")
+	}
+	wantMax := int64(inspectMaxZipDirBytes) // the larger of this function's two own per-call ceilings (zipEOCDRecordMaxLen < inspectMaxZipDirBytes)
+	if v.maxSingleReadLen == 0 {
+		t.Fatalf("ReadAt was never called -- test fixture broken")
+	}
+	if v.maxSingleReadLen > wantMax {
+		t.Fatalf("largest single ReadAt request = %d bytes, want <= %d -- read volume must be bounded by a fixed constant, not by size (%d) or anything the archive declares", v.maxSingleReadLen, wantMax, v.size)
+	}
+}
+
 // incompleteMultipartPrefix builds a real, well-formed multipart body up to
 // (and including) the file field's own content, but deliberately never
 // calls (*multipart.Writer).Close -- the closing boundary
