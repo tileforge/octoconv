@@ -150,8 +150,20 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		c["duration_seconds_reason"] = string(ReasonMalformedInput)
 	}
 
+	// wantHandler selects which trak this analyzer cares about, via the
+	// SAME mdia -> hdlr -> handler_type ("vide"/"soun") every real
+	// MP4/MOV/M4A muxer already writes: mp4/mov (includeDims==true) want
+	// the VIDEO track's dimensions and codec; m4a (includeDims==false) is
+	// audio-only and wants the AUDIO track's codec. See findTrackByHandler's
+	// own doc comment (PR9R4 finding, media.go:275) for why "the first
+	// trak" is no longer an acceptable selection for either.
+	wantHandler := isobmffHandlerAudio
 	if includeDims {
-		if w, h, ok, ceilingHit := findTrackDimensions(moovPayload, tr); ok {
+		wantHandler = isobmffHandlerVideo
+	}
+
+	if includeDims {
+		if w, h, ok, ceilingHit := findTrackDimensions(moovPayload, wantHandler, tr); ok {
 			c["width"] = w
 			c["height"] = h
 		} else {
@@ -166,7 +178,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		}
 	}
 
-	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload, tr); ok {
+	if codec, ok, ceilingHit := findDeclaredCodec(moovPayload, wantHandler, tr); ok {
 		c["declared_codec"] = codec
 	} else {
 		reason := ReasonMalformedInput
@@ -233,37 +245,86 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		tailOff = 0
 	}
 	var tailActual int64
+	var tailCeilingHit bool
 	tailWin, tailOK := readWindow(r, tailOff, tailLen, size)
 	if tailOK {
 		tailActual = int64(len(tailWin))
-		if idx := bytes.Index(tailWin, []byte("moov")); idx >= 4 {
-			boxStart := idx - 4
-			var payload []byte
-			found := false
-			walkTopLevelBoxes(tailWin[boxStart:], tr, func(t string, p []byte) bool {
-				if t == "moov" {
-					payload, found = p, true
-				}
-				return false // only the box located at boxStart is meaningful here
-			})
-			if found {
-				return payload, ""
-			}
+		if payload, found, ceilingHit := findMoovInTail(tailWin, tr); found {
+			return payload, ""
+		} else {
+			tailCeilingHit = ceilingHit
 		}
 	}
 
-	if headActual+tailActual >= size && !headCeilingHit {
+	if headActual+tailActual >= size && !headCeilingHit && !tailCeilingHit {
 		// Both windows together covered the entire file (accounting for
-		// possible overlap on small files), the head window's own box-count
-		// cap was never exhausted while looking for moov there, and moov
-		// still never appeared -- this is a fact about the FILE, not about
-		// our own resource limits. If headCeilingHit is true, the head
-		// window DID cover its bytes but the box-count cap -- not the
-		// file's structure -- decided the miss, so this must not collapse
-		// into ReasonMalformedInput either (media.go's own audit finding).
+		// possible overlap on small files), NEITHER window's own iteration
+		// ceiling fired while looking for moov there, and moov still never
+		// appeared -- this is a fact about the FILE, not about our own
+		// resource limits. If either ceiling fired, its own window DID
+		// cover its bytes but an iteration cap -- not the file's structure
+		// -- decided the miss, so this must not collapse into
+		// ReasonMalformedInput either (media.go's own audit finding).
 		return nil, ReasonMalformedInput
 	}
 	return nil, ReasonWorkCeilingBytes
+}
+
+// maxMoovTailCandidatesScanned bounds how many candidate positions of the
+// literal 4-byte "moov" substring within the tail window findMoovInTail will
+// try as a real box header before giving up (T-R4B-02).
+//
+// PR9R4 finding (media.go:239), verbatim: "When the tail window contains
+// the bytes `moov` inside media payload before the real `moov` box,
+// bytes.Index selects that incidental first occurrence. If its preceding
+// four bytes do not form a valid box size, the single validation attempt
+// fails and the later real box is never considered, so a valid file loses
+// all MP4 characteristics." The fix is the same shape as the trak-selection
+// fix below it in this file: the first match is not necessarily the only
+// candidate, so the search must walk forward past a failed candidate
+// instead of giving up -- and that walk must itself be bounded, or fixing
+// this correctness bug would reopen the unbounded-work class round 3 of
+// this same review already closed elsewhere in this package.
+const maxMoovTailCandidatesScanned = 64
+
+// findMoovInTail searches tailWin for a REAL moov box, trying every literal
+// "moov" substring occurrence in order (bounded by
+// maxMoovTailCandidatesScanned) rather than only the first. A candidate is
+// validated by attempting to parse it as one top-level box via
+// walkTopLevelBoxes (its own declared size must be self-consistent within
+// the bounded buffer AND its type must genuinely be "moov" -- an incidental
+// occurrence inside arbitrary media payload bytes will almost always fail
+// one of those two checks, at which point the search continues to the NEXT
+// occurrence rather than giving up).
+func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
+	searchFrom := 0
+	for candidates := 0; candidates < maxMoovTailCandidatesScanned; candidates++ {
+		rel := bytes.Index(tailWin[searchFrom:], []byte("moov"))
+		if rel < 0 {
+			return nil, false, false
+		}
+		idx := searchFrom + rel
+		searchFrom = idx + 1 // resume one byte later so overlapping occurrences are still found
+		if idx < 4 {
+			continue
+		}
+		boxStart := idx - 4
+		var candidatePayload []byte
+		matched := false
+		walkTopLevelBoxes(tailWin[boxStart:], tr, func(t string, p []byte) bool {
+			if t == "moov" {
+				candidatePayload, matched = p, true
+			}
+			return false // only the box located at boxStart is meaningful for this candidate
+		})
+		if matched {
+			return candidatePayload, true, false
+		}
+	}
+	// The candidate cap was exhausted without validating a real moov box --
+	// OUR OWN resource limit, not proof the file lacks one.
+	tr.MarkCeilingHit()
+	return nil, false, true
 }
 
 // findTrackDimensions descends moov -> trak (first) -> tkhd and decodes
@@ -271,9 +332,18 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 // descent hit firstChildBox's own maxISOBMFFBoxes cap before an answer was
 // reached -- the caller must not report a ceilingHit miss the same way it
 // reports a genuine structural absence.
-func findTrackDimensions(moovPayload []byte, tr *Tracker) (width, height uint32, ok bool, ceilingHit bool) {
-	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak", tr)
-	if !ok1 {
+//
+// PR9R4 finding (media.go:275), verbatim: "Valid MP4/MOV files may place an
+// audio trak before their video trak. This lookup always selects the first
+// track, successfully parses its audio tkhd, and reports width and height
+// as zero while ignoring the later video track's actual dimensions." Zero
+// width/height for an audio track is not "the dimensions are zero" -- it is
+// "this track was never about dimensions at all" -- so the fix selects the
+// VIDEO track by its own mdia -> hdlr -> handler_type (findTrackByHandler),
+// never merely the first trak encountered.
+func findTrackDimensions(moovPayload []byte, wantHandler string, tr *Tracker) (width, height uint32, ok bool, ceilingHit bool) {
+	trakPayload, found, c1 := findTrackByHandler(moovPayload, wantHandler, tr)
+	if !found {
 		return 0, 0, false, c1
 	}
 	tkhdPayload, ok2, c2 := firstChildBox(trakPayload, "tkhd", tr)
@@ -284,12 +354,21 @@ func findTrackDimensions(moovPayload []byte, tr *Tracker) (width, height uint32,
 	return w, h, ok3, c1 || c2
 }
 
-// findDeclaredCodec descends moov -> trak (first) -> mdia -> minf -> stbl
-// -> stsd and reads the first sample entry's fourCC. ceilingHit is the same
-// signal as findTrackDimensions's own.
-func findDeclaredCodec(moovPayload []byte, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
-	trakPayload, ok1, c1 := firstChildBox(moovPayload, "trak", tr)
-	if !ok1 {
+// findDeclaredCodec descends moov -> trak (selected by wantHandler, see
+// findTrackByHandler) -> mdia -> minf -> stbl -> stsd and reads the first
+// sample entry's fourCC. ceilingHit is the same signal as
+// findTrackDimensions's own.
+//
+// Selecting by handler here, not merely by the same trak
+// findTrackDimensions resolves, is deliberate consistency (not a separate
+// finding): reporting the video track's real dimensions alongside a
+// declared_codec pulled from a DIFFERENT (audio) track purely because it
+// happened to come first would be its own quiet mislabeling -- the same
+// "first match treated as the only candidate" shape the plan calls out,
+// one function over.
+func findDeclaredCodec(moovPayload []byte, wantHandler string, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
+	trakPayload, found, c1 := findTrackByHandler(moovPayload, wantHandler, tr)
+	if !found {
 		return "", false, c1
 	}
 	mdiaPayload, ok2, c2 := firstChildBox(trakPayload, "mdia", tr)
@@ -310,6 +389,73 @@ func findDeclaredCodec(moovPayload []byte, tr *Tracker) (codec string, ok bool, 
 	}
 	codec, ok6 := parseSTSDCodec(stsdPayload)
 	return codec, ok6, c1 || c2 || c3 || c4 || c5
+}
+
+// isobmffHandlerVideo / isobmffHandlerAudio are the two ISO/IEC 14496-12
+// handler_type fourCCs (mdia -> hdlr) this analyzer selects a trak by:
+// "vide" for the video track (mp4/mov's own dimensions and codec),
+// "soun" for the audio track (m4a's own codec).
+const (
+	isobmffHandlerVideo = "vide"
+	isobmffHandlerAudio = "soun"
+)
+
+// maxTrakCandidatesScanned bounds how many `trak` boxes findTrackByHandler
+// will open (descend into mdia/hdlr) while looking for a specific handler
+// type -- separate from, and smaller than, maxISOBMFFBoxes, which only
+// bounds the OUTER top-level walk of moov's own direct children (T-R4B-02).
+// A moov box could in principle declare far more trak children than any
+// real file would ever have; without a candidate-specific cap, an
+// adversarial upload with thousands of tiny trak boxes preceding the real
+// one could make this search arbitrarily expensive even though
+// maxISOBMFFBoxes already bounds the outer walk.
+const maxTrakCandidatesScanned = 64
+
+// findTrackByHandler walks moovPayload's own top-level `trak` boxes
+// (bounded by maxTrakCandidatesScanned, not merely the first one
+// encountered) looking for the first whose mdia -> hdlr declares
+// handler_type == wantHandler. ceilingHit is true if either the outer moov
+// walk (maxISOBMFFBoxes, via walkTopLevelBoxes) or this function's own
+// candidate cap was exhausted before a match was found or ruled out -- in
+// that case the caller must report unknown, never silently fall back to
+// whichever trak happened to be examined last (that fallback is exactly
+// the PR9R4 finding this function exists to close).
+func findTrackByHandler(moovPayload []byte, wantHandler string, tr *Tracker) (trakPayload []byte, found bool, ceilingHit bool) {
+	candidates := 0
+	outerCeilingHit := walkTopLevelBoxes(moovPayload, tr, func(t string, p []byte) bool {
+		if found {
+			return false
+		}
+		if t != "trak" {
+			return true
+		}
+		if candidates >= maxTrakCandidatesScanned {
+			tr.MarkCeilingHit()
+			ceilingHit = true
+			return false
+		}
+		candidates++
+		mdiaPayload, ok1, c1 := firstChildBox(p, "mdia", tr)
+		if !ok1 {
+			ceilingHit = ceilingHit || c1
+			return true
+		}
+		hdlrPayload, ok2, c2 := firstChildBox(mdiaPayload, "hdlr", tr)
+		if !ok2 {
+			ceilingHit = ceilingHit || c1 || c2
+			return true
+		}
+		if len(hdlrPayload) < 12 {
+			return true // malformed hdlr: not a match, keep looking
+		}
+		if string(hdlrPayload[8:12]) == wantHandler {
+			trakPayload, found = p, true
+			return false
+		}
+		return true
+	})
+	ceilingHit = ceilingHit || outerCeilingHit
+	return trakPayload, found, ceilingHit
 }
 
 // parseMVHD decodes mvhd's timescale+duration (ISO/IEC 14496-12 8.2.2.1),

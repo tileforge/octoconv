@@ -130,31 +130,24 @@ const (
 	// any bound this handler would ever set), so this upper bound cannot be
 	// defeated by the same wraparound trick.
 	zipCentralDirMinRecordLen = 46
-	// inspectMaxZipDirBytes bounds the DECLARED byte size of the central
-	// directory itself (the EOCD's own cd-size field) -- and, since round 2
-	// of PR #9 review, is the ONLY field zipDirectoryExceedsStructuralBound's
-	// exceeds decision reads. Deriving it as inspectMaxZipDirEntries *
-	// zipCentralDirMinRecordLen (~184 KiB) -- rather than round 1's flat
-	// 4 MiB, chosen independently of the entry ceiling -- guarantees this
-	// bound can never wave through a directory containing MORE than
-	// inspectMaxZipDirEntries records, however those bytes are distributed
-	// among them: every real record costs at least
-	// zipCentralDirMinRecordLen bytes, so exceeding the entry ceiling
-	// always costs more declared bytes than this bound allows, regardless
-	// of what the EOCD's own (untrusted, wrapping) entry-count field says.
-	//
-	// The correspondence with inspectMaxZipDirEntries is now
-	// ONE-DIRECTIONAL, not exact, and that asymmetry is a deliberate,
-	// documented trade, not an oversight: an archive whose ACTUAL entry
-	// count is within inspectMaxZipDirEntries but whose average record is
-	// larger than the 46-byte minimum (long filenames, extra fields) can
-	// still trip this bound even though internal/inspect/container.go's own
-	// maxZipEntriesScanned cap would have scanned it to completion happily.
-	// A real office/epub central directory is typically well under 100 KiB
-	// (a few dozen parts, short ASCII names) -- comfortably inside the
-	// ~184 KiB this derivation yields -- so this is headroom being traded
-	// for a bound that cannot be defeated by a uint16 wraparound, not a
-	// tightening expected to reject real uploads.
+	// inspectMaxZipDirBytes is round 4's own bound, and it is READ
+	// differently from every earlier round: it is no longer compared
+	// against anything the archive declares about itself. It is now the
+	// FIXED-SIZE WINDOW, starting at the EOCD's declared directoryOffset,
+	// that zipDirectoryExceedsStructuralBound is willing to read and walk
+	// one real central-directory record at a time (see that function's own
+	// doc comment for the full history and the walk itself). Deriving it as
+	// inspectMaxZipDirEntries * zipCentralDirMinRecordLen (~184 KiB) keeps
+	// the same value round 2 chose, for the same reason: a window this size
+	// can hold at least inspectMaxZipDirEntries real minimal-size records,
+	// so a legitimate archive within the entry ceiling is never rejected
+	// merely because the window ran out first (a real office/epub central
+	// directory is typically well under 100 KiB -- a few dozen parts, short
+	// ASCII names -- comfortably inside the ~184 KiB this derivation
+	// yields). What changed is the READ site: round 2 used this constant to
+	// bound a COMPARISON against a declared field; round 4 uses it to bound
+	// an actual ReadAt call, so its value is now load-bearing for a
+	// completely different reason (see zipDirectoryExceedsStructuralBound).
 	inspectMaxZipDirBytes = inspectMaxZipDirEntries * zipCentralDirMinRecordLen
 	// zipEOCDRecordMaxLen is the largest a ZIP End-Of-Central-Directory
 	// record can ever be: the 22-byte fixed header plus the largest
@@ -388,52 +381,80 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 	return detected, sniffed
 }
 
-// zipDirectoryExceedsStructuralBound reports whether r's own declared
-// central-directory byte size (the EOCD's cd-size field) exceeds this
-// handler's structural ceiling (inspectMaxZipDirBytes), reading ONLY the
-// tail of the file -- never more than zipEOCDRecordMaxLen bytes -- and
-// never invoking archive/zip.NewReader (T-SLF-01). This is the ONE place in
-// this handler that answers "how big a central directory is this upload
-// declaring" before anything downstream pays the cost of actually parsing
-// it.
+// zipDirectoryExceedsStructuralBound reports whether the ZIP EOCD record
+// found in the tail of r describes a central directory this handler is
+// willing to pay to parse. This is the THIRD time this decision has been
+// implemented, and the first two attempts were each bypassed by trusting a
+// number the archive declares about itself -- the history is recorded here,
+// in full, because it is exactly the kind of thing a future "simplification"
+// would reintroduce without it:
 //
-// Round 2 of PR #9 review (PR9R2-F5-EOCD-UINT16-WRAP) found that the
-// round-1 version of this function based its exceeds decision on BOTH the
-// EOCD's entry-count field AND its cd-size field -- and the entry-count
-// field is a uint16 that wraps at 65536. An archive with 65,537 minimal
-// 46-byte central-directory records declares entries=1 while dirBytes lands
-// around 2.9 MiB, comfortably under round 1's flat 4 MiB ceiling: both
-// checks passed, and archive/zip.NewReader went on to allocate and walk all
-// 65,537 records anyway. THIS version's exceeds decision reads dirBytes
-// ONLY -- entries is still returned (and still read from the same bytes)
-// purely for the caller's own diagnostics, but nothing in this function's
-// control flow branches on its value. dirBytes is a uint32 (wraps at 4 GiB,
-// far outside inspectMaxZipDirBytes), and inspectMaxZipDirBytes is itself
-// derived from inspectMaxZipDirEntries * zipCentralDirMinRecordLen (its own
-// doc comment), so a directory containing more than inspectMaxZipDirEntries
-// records can never declare a dirBytes value under this bound, however that
-// count is achieved.
+//  1. Round 1 compared the EOCD's own entry-count field (a uint16) against a
+//     ceiling. The entry-count field WRAPS at 65536: an archive with 65,537
+//     minimal 46-byte central-directory records declares entries=1, sailing
+//     under any ceiling that field could ever be compared against.
 //
-// ZIP64 sentinel: dirBytes == 0xFFFFFFFF means "the real central-directory
-// size is in the ZIP64 end-of-central-directory record, not this field" --
-// it is treated as EXCEEDING the bound explicitly, rather than relying on
-// the plain numeric comparison to reject it merely because 0xFFFFFFFF
-// happens to be a large number. The same sentinel convention applies to the
-// entries field (0xFFFF), but since entries is no longer part of the
-// decision, no separate handling is needed for it here.
+//  2. Round 2 (PR9R2-F5-EOCD-UINT16-WRAP) dropped entries from the decision
+//     and compared the EOCD's declared central-directory BYTE SIZE (dirBytes,
+//     a uint32) against inspectMaxZipDirBytes instead -- reasoning that a
+//     uint32 cannot represent the same wraparound at any bound this handler
+//     would ever set. This closed the SPECIFIC round-1 bypass, but not the
+//     underlying mistake: dirBytes is EQUALLY a field the archive declares
+//     about itself, and nothing forces it to describe the real bytes on
+//     disk. Round 4's review built an archive with 65,537 REAL, valid
+//     46-byte central-directory records (so archive/zip.NewReader really
+//     does walk all of them once it starts reading), entries=1 (still
+//     wrapped, now irrelevant either way), and dirBytes=46 -- a bald-faced
+//     lie about the directory's true size that round 2's comparison
+//     (46 > inspectMaxZipDirBytes? no) waved straight through.
 //
-// The consistency check below (tailOffset+i+zipEOCDFixedLen+commentLen ==
-// size) is the same one archive/zip's own unexported reader applies to
-// resolve an identical ambiguity: an attacker-controlled EOCD comment could
-// itself contain bytes that happen to match the signature, and without
-// requiring the record's OWN declared comment length to land EXACTLY at the
-// file's true end, this function could be fooled into reading a FAKE EOCD
-// with a small declared directory size sitting earlier in the comment,
-// letting the REAL (huge) directory right behind it through. Scanning
-// backward from the highest offset and returning the FIRST occurrence
-// satisfying that consistency check finds the genuine record (extremely
-// unlikely to collide, and no more exploitable than the identical
-// resolution the standard library itself relies on).
+// The mistake both rounds shared: bounding a hostile structure by reading
+// that structure's OWN description of itself. Every field in the EOCD is
+// attacker-controlled, so no comparison against a value read FROM the EOCD
+// can ever be trustworthy, however many times the specific field is swapped.
+//
+// Round 4's fix has a different shape: it does not compare a declared field
+// against a ceiling at all. It reads the EOCD's declared directoryOffset (still
+// untrusted -- it is only ever used as a place to START reading, exactly as
+// harmless as any other file offset), then WALKS the actual bytes at that
+// offset, counting real "PK\x01\x02" central-directory-record signatures one
+// at a time, advancing by each record's own real length -- inside a window
+// WE choose (inspectMaxZipDirBytes, a fixed constant never derived from
+// anything the archive declares) rather than however many bytes the archive
+// claims the directory occupies. If the real record count reaches
+// inspectMaxZipDirEntries before the walk reaches the EOCD's own (structurally
+// LOCATED, not declared) offset, that is exceeds=true. If the window runs out
+// before the walk reaches that offset, that is ALSO exceeds=true: at that
+// point this function genuinely does not know what lies beyond the window,
+// and guessing "probably fine" is the exact reasoning that failed twice
+// already -- "I don't know" means "I don't let it through", not "I'll assume
+// the best". See zipCentralDirectoryExceedsBound for the walk itself.
+//
+// A cheap, sound, non-bypassable pre-check rides alongside the walk: dirBytes
+// cannot legitimately exceed the upload's own real total byte count (size) --
+// that comparison is NOT round 2's mistake repeated, because size is ground
+// truth (the actual number of bytes this handler received), not a second
+// number the archive also controls. This check exists only to catch a lying
+// dirBytes cheaply (and to keep TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount
+// and its Zip64-sentinel sibling passing unmodified, both of which construct
+// a bare EOCD -- no real directory bytes at all -- declaring a directory far
+// larger than the tiny fixture itself); it is explicitly NOT what closes the
+// round-4 bypass, since round 4's own dirBytes (46) is smaller than its real
+// file. Only the record-counting walk closes that one.
+//
+// ZIP64 sentinels (dirBytes == 0xFFFFFFFF, the declared directory offset ==
+// 0xFFFFFFFF, or entries == 0xFFFF) are treated as exceeding explicitly, not
+// merely because a numeric comparison happens to also reject them.
+//
+// The EOCD-location step below (scanning the tail backward for the
+// signature, verifying tailOffset+i+zipEOCDFixedLen+commentLen == size) is
+// unchanged from round 1/2 and is not the part of this function that was
+// ever bypassed: it resolves the standard "a comment could itself contain a
+// fake signature" ambiguity the same way archive/zip's own unexported reader
+// does, and the record it locates this way is a real, structural fact (a
+// byte OFFSET this function found by scanning, not a value the archive
+// merely claims) -- it is exactly the trustworthy anchor round 4's walk
+// needs to know when the directory has genuinely ended.
 //
 // If no EOCD record can be located within the tail at all (corrupt or
 // truncated zip), this reports exceeds=false: that upload is not this
@@ -466,20 +487,104 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 			// attacker-controlled comment byte sequence, not the real EOCD.
 			continue
 		}
-		// entries is read here for the caller's diagnostics ONLY -- the
-		// exceeds decision below never uses it (see this function's own
-		// doc comment for PR9R2-F5-EOCD-UINT16-WRAP, the finding that made
-		// this split necessary).
+		eocdOffset := tailOffset + int64(i)
+		// entries and dirBytes are read here and RETURNED for the caller's
+		// diagnostics -- exactly as round 2 left them -- but round 4's
+		// exceeds decision (below) never compares either of them against a
+		// ceiling; see this function's own doc comment.
 		entries = binary.LittleEndian.Uint16(buf[i+10 : i+12])
 		dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
-		// 0xFFFFFFFF is the ZIP64 "look elsewhere" sentinel, not a literal
-		// declared size -- treated as exceeding explicitly, not merely
-		// because the comparison below would also reject it as a large
-		// number.
-		exceeds = dirBytes == 0xFFFFFFFF || dirBytes > inspectMaxZipDirBytes
+		dirOffsetField := binary.LittleEndian.Uint32(buf[i+16 : i+20])
+
+		exceeds = zipCentralDirectoryExceedsBound(r, size, eocdOffset, dirOffsetField, dirBytes, entries)
 		return exceeds, entries, dirBytes
 	}
 	return false, 0, 0
+}
+
+// zipCentralDirectoryExceedsBound is round 4's own decision, isolated from
+// the EOCD-location scan above so its own doc comment (on
+// zipDirectoryExceedsStructuralBound) stays readable. size is the upload's
+// real, ground-truth byte count; eocdOffset is the REAL, LOCATED byte offset
+// of the EOCD record (a structural fact, not a declared one);
+// dirOffsetField/dirBytes/entriesField are read directly from the EOCD's own
+// bytes and are, individually, exactly as untrustworthy as everything else
+// in a ZIP's metadata.
+func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirOffsetField, dirBytes uint32, entriesField uint16) bool {
+	// ZIP64 "look elsewhere" sentinels -- explicit, not merely large numbers.
+	if dirBytes == 0xFFFFFFFF || dirOffsetField == 0xFFFFFFFF || entriesField == 0xFFFF {
+		return true
+	}
+	// A central directory cannot legitimately be larger than the whole
+	// upload -- size is ground truth (the real number of bytes this
+	// handler received), not a second archive-controlled number, so this
+	// comparison is NOT round 2's mistake repeated. It exists purely to
+	// catch a lying dirBytes cheaply; round 4's own bypass sets dirBytes to
+	// a small, plausible-looking value specifically to slip past checks
+	// like this one, so this alone does not, and is not meant to, close
+	// round 4 -- the walk below does that.
+	if uint64(dirBytes) > uint64(size) {
+		return true
+	}
+
+	directoryOffset := int64(dirOffsetField)
+	if directoryOffset > eocdOffset {
+		// The directory claims to start after its own terminator --
+		// structurally impossible. Fail closed.
+		return true
+	}
+	if directoryOffset == eocdOffset {
+		return false // Zero real bytes of directory content: an empty archive.
+	}
+
+	windowLen := eocdOffset - directoryOffset
+	if windowLen > inspectMaxZipDirBytes {
+		// This is the ENTIRE point: read at most a constant WE chose,
+		// never however many bytes the real gap (itself derived from an
+		// untrusted offset) happens to be. A directory bigger than this
+		// window can never be fully verified, and "cannot be fully
+		// verified" is exceeds=true below, not exceeds=false.
+		windowLen = inspectMaxZipDirBytes
+	}
+	window := make([]byte, windowLen)
+	n, rerr := r.ReadAt(window, directoryOffset)
+	if rerr != nil && rerr != io.EOF {
+		return true
+	}
+	window = window[:n]
+
+	pos := int64(0)
+	count := 0
+	for {
+		if directoryOffset+pos == eocdOffset {
+			// The walk reached the REAL (located, not declared) end of the
+			// directory with the record count staying under the ceiling
+			// the whole way -- a legitimate, fully-verified directory.
+			return false
+		}
+		if pos+zipCentralDirMinRecordLen > int64(len(window)) {
+			// The window ran out before the walk reached eocdOffset. This
+			// function does not know what the remaining (unread) bytes
+			// contain -- possibly thousands more real records, exactly
+			// like round 4's own reviewer scenario. Not knowing means not
+			// letting it through.
+			return true
+		}
+		if window[pos] != 'P' || window[pos+1] != 'K' || window[pos+2] != 0x01 || window[pos+3] != 0x02 {
+			// Not a real central-directory record where the walk expected
+			// one -- directoryOffset (or a prior record's declared length)
+			// is inconsistent with the actual bytes present. Fail closed.
+			return true
+		}
+		nameLen := int64(binary.LittleEndian.Uint16(window[pos+28 : pos+30]))
+		extraLen := int64(binary.LittleEndian.Uint16(window[pos+30 : pos+32]))
+		commentLen := int64(binary.LittleEndian.Uint16(window[pos+32 : pos+34]))
+		pos += int64(zipCentralDirMinRecordLen) + nameLen + extraLen + commentLen
+		count++
+		if count > inspectMaxZipDirEntries {
+			return true
+		}
+	}
 }
 
 // zipDirectoryCeilingFamilyResult is the FamilyResult reached when

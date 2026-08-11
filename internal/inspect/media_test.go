@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"testing"
+	"time"
 )
 
 // ===== fixture builders: ISOBMFF (mp4/mov) =====
@@ -55,10 +56,27 @@ func stsdBox(codec string) []byte {
 	return isobmffBox("stsd", p)
 }
 
-func trakBox(tkhd, stsdWrapped []byte) []byte {
+// hdlrBox builds a minimal mdia -> hdlr FullBox declaring handlerType
+// ("vide" or "soun") -- ISO/IEC 14496-12 8.4.3: version+flags(4) +
+// pre_defined(4) + handler_type(4) + reserved(12) [+ name, omitted here
+// since findTrackByHandler never reads past handler_type].
+func hdlrBox(handlerType string) []byte {
+	p := make([]byte, 24)
+	copy(p[8:12], handlerType)
+	return isobmffBox("hdlr", p)
+}
+
+// trakBox builds a trak whose mdia declares handlerType via hdlr -- real
+// MP4/MOV/M4A muxers always write this box, and findTrackByHandler
+// (media.go, PR9R4 finding at media.go:275) now selects a track by it
+// rather than by position, so every fixture representing a real track must
+// carry one.
+func trakBox(tkhd, stsdWrapped []byte, handlerType string) []byte {
+	hdlr := hdlrBox(handlerType)
 	stbl := isobmffBox("stbl", stsdWrapped)
 	minf := isobmffBox("minf", stbl)
-	mdia := isobmffBox("mdia", minf)
+	mdiaPayload := append(append([]byte{}, hdlr...), minf...)
+	mdia := isobmffBox("mdia", mdiaPayload)
 	payload := append(append([]byte{}, tkhd...), mdia...)
 	return isobmffBox("trak", payload)
 }
@@ -73,11 +91,13 @@ func minimalFtyp() []byte {
 }
 
 // fastStartMP4Fixture places moov right after ftyp -- the head window
-// covers it directly.
-func fastStartMP4Fixture(timescale, duration, width, height uint32, codec string) []byte {
+// covers it directly. handlerType is the single track's own mdia -> hdlr
+// declaration ("vide" for a real video track, "soun" for an audio-only
+// track such as m4a) -- see trakBox's own doc comment.
+func fastStartMP4Fixture(timescale, duration, width, height uint32, codec, handlerType string) []byte {
 	mvhd := mvhdBoxV0(timescale, duration)
 	tkhd := tkhdBoxV0(width, height)
-	trak := trakBox(tkhd, stsdBox(codec))
+	trak := trakBox(tkhd, stsdBox(codec), handlerType)
 	moov := moovBox(mvhd, trak)
 	mdat := isobmffBox("mdat", make([]byte, 64))
 	buf := append(append([]byte{}, minimalFtyp()...), moov...)
@@ -87,10 +107,10 @@ func fastStartMP4Fixture(timescale, duration, width, height uint32, codec string
 // tailMoovMP4Fixture places a large mdat BEFORE moov, forcing a real
 // tail-anchored search -- mirrors what a real, non-faststart encoder
 // produces (Assumption A1).
-func tailMoovMP4Fixture(timescale, duration, width, height uint32, codec string, mdatSize int) []byte {
+func tailMoovMP4Fixture(timescale, duration, width, height uint32, codec, handlerType string, mdatSize int) []byte {
 	mvhd := mvhdBoxV0(timescale, duration)
 	tkhd := tkhdBoxV0(width, height)
-	trak := trakBox(tkhd, stsdBox(codec))
+	trak := trakBox(tkhd, stsdBox(codec), handlerType)
 	moov := moovBox(mvhd, trak)
 	mdat := isobmffBox("mdat", make([]byte, mdatSize))
 	buf := append(append([]byte{}, minimalFtyp()...), mdat...)
@@ -220,7 +240,7 @@ func (c *countingReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // ===== Task 1 behavior tests =====
 
 func TestAnalyzeMediaFindsMoovAtHead(t *testing.T) {
-	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
+	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo)
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok {
@@ -238,7 +258,7 @@ func TestAnalyzeMediaFindsMoovAtHead(t *testing.T) {
 func TestAnalyzeMediaFindsMoovAtTail(t *testing.T) {
 	// mdat is deliberately large enough that a small head window cannot
 	// possibly reach moov; the tail window (clamped to maxBytes) must.
-	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", 9000)
+	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
 	const maxBytes = 2048
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
@@ -253,7 +273,7 @@ func TestAnalyzeMediaFindsMoovAtTail(t *testing.T) {
 func TestAnalyzeMediaMVHDVersion1SixtyFourBit(t *testing.T) {
 	mvhd := mvhdBoxV1(90000, 1080000) // 12 seconds
 	tkhd := tkhdBoxV0(1920, 1080)
-	trak := trakBox(tkhd, stsdBox("hvc1"))
+	trak := trakBox(tkhd, stsdBox("hvc1"), isobmffHandlerVideo)
 	moov := moovBox(mvhd, trak)
 	data := append(append([]byte{}, minimalFtyp()...), moov...)
 
@@ -265,7 +285,7 @@ func TestAnalyzeMediaMVHDVersion1SixtyFourBit(t *testing.T) {
 }
 
 func TestAnalyzeMediaTkhdDimensionsAreFixedPointDecoded(t *testing.T) {
-	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
+	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo)
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	w, ok := res.Characteristics["width"].(uint32)
 	if !ok {
@@ -282,7 +302,7 @@ func TestAnalyzeMediaTkhdDimensionsAreFixedPointDecoded(t *testing.T) {
 
 func TestAnalyzeMediaMP4OversizedBoxDoesNotPanicOrOverAllocate(t *testing.T) {
 	mvhdCorrupt := corruptBoxSize(mvhdBoxV0(1000, 5000), 0x7FFFFFFF)
-	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"))
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
 	moov := moovBox(mvhdCorrupt, trak)
 	data := append(append([]byte{}, minimalFtyp()...), moov...)
 
@@ -338,7 +358,7 @@ func TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes(t *testin
 		fillers = append(fillers, isobmffBox("free", []byte{})...)
 	}
 	mvhd := mvhdBoxV0(1000, 5000)
-	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"))
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
 	moovPayload := append(append(append([]byte{}, fillers...), mvhd...), trak...)
 	moov := isobmffBox("moov", moovPayload)
 	mdat := isobmffBox("mdat", make([]byte, 64))
@@ -357,6 +377,166 @@ func TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes(t *testin
 	}
 	if reason, _ := res.Characteristics["declared_codec_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
 		t.Fatalf("declared_codec_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// ===== quick/260811-r4b Task 2: candidate-walk fixes (media.go:239, :275) =====
+
+// TestAnalyzeMediaVideoDimensionsFoundWhenAudioTrackPrecedesVideoTrack is
+// the PR9R4 finding at media.go:275, verbatim: "Valid MP4/MOV files may
+// place an audio trak before the video trak. This lookup always selects the
+// first track, successfully parses its audio tkhd, and reports width and
+// height as zero while ignoring the later video track's actual
+// dimensions." The audio trak's own tkhd is deliberately 0x0 (conventional
+// for an audio-only track) -- if the fix regressed to "the first trak",
+// this test would observe width=height=0, not an error.
+func TestAnalyzeMediaVideoDimensionsFoundWhenAudioTrackPrecedesVideoTrack(t *testing.T) {
+	mvhd := mvhdBoxV0(1000, 5000)
+	audioTrak := trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio)
+	videoTrak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moovPayload := append(append(append([]byte{}, mvhd...), audioTrak...), videoTrak...)
+	moov := isobmffBox("moov", moovPayload)
+	data := append(append([]byte{}, minimalFtyp()...), moov...)
+	data = append(data, isobmffBox("mdat", make([]byte, 16))...)
+
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
+
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640 -- the VIDEO track's real dimensions, not the preceding audio track's 0x0", res.Characteristics["width"])
+	}
+	h, ok := res.Characteristics["height"].(uint32)
+	if !ok || h != 480 {
+		t.Fatalf("height = %#v, want 480", res.Characteristics["height"])
+	}
+	codec, ok := res.Characteristics["declared_codec"].(string)
+	if !ok || codec != "avc1" {
+		t.Fatalf("declared_codec = %#v, want %q -- the video track's own codec, not the preceding audio track's %q", res.Characteristics["declared_codec"], "avc1", "mp4a")
+	}
+}
+
+// TestAnalyzeMediaNoVideoTrackYieldsUnknownDimensionsNotZero is the plan's
+// own explicit requirement: "отсутствие видеодорожки после ограниченного
+// обхода -- unknown, не ноль". A moov with only an audio trak (no track
+// anywhere declares handler_type="vide") must report width/height as
+// nil/malformed_input, never silently fall back to the audio track's own
+// (zero) tkhd dimensions.
+func TestAnalyzeMediaNoVideoTrackYieldsUnknownDimensionsNotZero(t *testing.T) {
+	mvhd := mvhdBoxV0(1000, 5000)
+	audioTrak := trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio)
+	moov := moovBox(mvhd, audioTrak)
+	data := append(append([]byte{}, minimalFtyp()...), moov...)
+	data = append(data, isobmffBox("mdat", make([]byte, 16))...)
+
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
+
+	if res.Characteristics["width"] != nil {
+		t.Fatalf("width = %#v, want nil -- no track declares handler_type=vide; must never report 0 as if that were a real measurement", res.Characteristics["width"])
+	}
+	if reason, _ := res.Characteristics["width_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("width_reason = %q, want %q -- the full moov was in hand and walked to completion; a genuinely missing video track is a structural fact, not a resource ceiling", reason, ReasonMalformedInput)
+	}
+	if res.Characteristics["height"] != nil {
+		t.Fatalf("height = %#v, want nil", res.Characteristics["height"])
+	}
+}
+
+// TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload is
+// the PR9R4 finding at media.go:239, verbatim: "When the tail window
+// contains the bytes `moov` inside media payload before the real `moov`
+// box, bytes.Index selects that incidental first occurrence. If its
+// preceding four bytes do not form a valid box size, the single validation
+// attempt fails and the later real box is never considered, so a valid
+// file loses all MP4 characteristics." maxBytes is deliberately smaller
+// than mdat's own declared box size, so the head window cannot skip past
+// mdat as a single top-level box and the search genuinely must fall
+// through to the tail-anchored substring search this test exercises.
+func TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload(t *testing.T) {
+	fakeOccurrence := append(bytes.Repeat([]byte{'X'}, 4), []byte("moov")...) // preceding 4 bytes ('X','X','X','X') do not form a plausible box-size field
+	mdatPayload := append(make([]byte, 6000), fakeOccurrence...)              // the incidental occurrence sits near mdat's END, i.e. inside the tail window
+	mdat := isobmffBox("mdat", mdatPayload)
+
+	mvhd := mvhdBoxV0(1000, 5000)
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moov := moovBox(mvhd, trak)
+
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 4096 // smaller than mdat's own ~6012-byte declared size (head cannot skip it as one box), comfortably larger than fakeOccurrence+moov (both fall inside the tail window)
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- an incidental earlier \"moov\" byte sequence inside mdat's own payload must not stop the search from reaching the REAL moov box that follows it", res.Characteristics["duration_seconds"])
+	}
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640", res.Characteristics["width"])
+	}
+}
+
+// TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes proves
+// findTrackByHandler's own candidate cap (maxTrakCandidatesScanned,
+// T-R4B-02): more trak candidates than the cap allows, none of which
+// declare handler_type="vide", must report unknown/work_ceiling_bytes --
+// never malformed_input (which would wrongly claim the full moov was
+// examined) -- and must mark the Tracker it was given.
+func TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
+	const n = maxTrakCandidatesScanned + 20 // exceeds the per-search candidate cap; comfortably under maxISOBMFFBoxes so the OUTER box walk's own ceiling is not what fires here
+	moovPayload := append([]byte{}, mvhdBoxV0(1000, 5000)...)
+	for i := 0; i < n; i++ {
+		moovPayload = append(moovPayload, trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio)...)
+	}
+	moov := isobmffBox("moov", moovPayload)
+	data := append(append([]byte{}, minimalFtyp()...), moov...)
+	data = append(data, isobmffBox("mdat", make([]byte, 16))...)
+
+	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), tr)
+
+	if res.Characteristics["width"] != nil {
+		t.Fatalf("width = %#v, want nil -- none of the %d trak candidates examined declares handler_type=vide, and exhausting the candidate cap must not silently fall back to any of them", res.Characteristics["width"], n)
+	}
+	if reason, _ := res.Characteristics["width_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("width_reason = %q, want %q -- OUR OWN candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+	if !tr.Exhausted() {
+		t.Fatal("Tracker was never marked -- findTrackByHandler's own candidate-cap exhaustion must reach the Tracker it was given")
+	}
+}
+
+// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes proves
+// findMoovInTail's own candidate cap (maxMoovTailCandidatesScanned,
+// T-R4B-02): more incidental "moov" substring occurrences in the tail
+// window than the cap allows, none of which validate as a real box, must
+// report unknown/work_ceiling_bytes -- never malformed_input -- and must
+// mark the Tracker it was given.
+func TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
+	const n = maxMoovTailCandidatesScanned + 20
+	var payload []byte
+	for i := 0; i < n; i++ {
+		// Each occurrence's own preceding 4 bytes ('Y','Y','Y','Y') never
+		// form a plausible box-size field, so every candidate fails
+		// validation and the search must advance to the next one.
+		payload = append(payload, bytes.Repeat([]byte{'Y'}, 4)...)
+		payload = append(payload, []byte("moov")...)
+		payload = append(payload, bytes.Repeat([]byte{'Y'}, 4)...)
+	}
+	mdat := isobmffBox("mdat", payload)
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+
+	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- both windows cover the whole tiny file, isolating the candidate cap as the ONLY thing that can produce a ceiling result here
+	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- no real moov box exists in this fixture at all", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+	if !tr.Exhausted() {
+		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
 	}
 }
 
@@ -513,7 +693,7 @@ func TestAnalyzeMediaAudioHasNoResolutionKeys(t *testing.T) {
 		"mp3": {0, 1, 2, 3},
 		"ogg": {0, 1, 2, 3},
 		"wav": minimalWAVFixture(44100, 2, 16, 44100*2*2),
-		"m4a": fastStartMP4Fixture(1000, 5000, 0, 0, "mp4a"),
+		"m4a": fastStartMP4Fixture(1000, 5000, 0, 0, "mp4a", isobmffHandlerAudio),
 	}
 	for format, data := range fixtures {
 		t.Run(format, func(t *testing.T) {
@@ -529,7 +709,7 @@ func TestAnalyzeMediaAudioHasNoResolutionKeys(t *testing.T) {
 }
 
 func TestAnalyzeMediaM4ADuration(t *testing.T) {
-	data := fastStartMP4Fixture(1000, 5000, 0, 0, "mp4a")
+	data := fastStartMP4Fixture(1000, 5000, 0, 0, "mp4a", isobmffHandlerAudio)
 	res := AnalyzeMedia("m4a", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	dur, ok := res.Characteristics["duration_seconds"].(float64)
 	if !ok || dur != 5.0 {
@@ -544,7 +724,7 @@ func TestAnalyzeMediaM4ADuration(t *testing.T) {
 // TestAnalyzeMediaNeverReadsBeyondBudget proves the mp4 tail search is
 // bounded by maxBytes and mp4TailWindow, not by the actual file size.
 func TestAnalyzeMediaNeverReadsBeyondBudget(t *testing.T) {
-	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", 9000)
+	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
 	cr := &countingReaderAt{data: data}
 	const maxBytes = 2048
 	_ = AnalyzeMedia("mp4", cr, int64(len(data)), maxBytes, nil)
@@ -558,7 +738,7 @@ func TestAnalyzeMediaNeverReadsBeyondBudget(t *testing.T) {
 func TestAnalyzeMediaNeverPanics(t *testing.T) {
 	oversizedBoxData := func() []byte {
 		mvhdCorrupt := corruptBoxSize(mvhdBoxV0(1000, 5000), 0x7FFFFFFF)
-		trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"))
+		trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
 		moov := moovBox(mvhdCorrupt, trak)
 		return append(append([]byte{}, minimalFtyp()...), moov...)
 	}()
@@ -603,7 +783,7 @@ func TestAnalyzeMediaNeverPanics(t *testing.T) {
 // documented decision (AnalyzeMedia's doc comment) to leave every code's
 // Check/Finding to the report assembler.
 func TestAnalyzeMediaDeclaresNoFindingsOrChecks(t *testing.T) {
-	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1")
+	data := fastStartMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo)
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), int64(len(data)), nil)
 	if len(res.Findings) != 0 {
 		t.Fatalf("Findings = %+v, want empty", res.Findings)

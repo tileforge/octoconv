@@ -63,6 +63,22 @@ func externalRefDocxFixture(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+// docxFixtureWithRels builds a minimal docx-shaped zip whose ONLY
+// .rels-part content is relsXML -- used to test containsExternalRelationship
+// against every legal XML serialization of TargetMode, not just the one
+// externalRefDocxFixture above happens to use.
+func docxFixtureWithRels(t *testing.T, relsXML string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	mustWriteZipEntry(t, zw, "word/_rels/document.xml.rels", relsXML)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func duplicateRootPartDocxFixture(t *testing.T) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
@@ -443,6 +459,62 @@ func TestAnalyzeContainerExternalRefLocationIsPartPath(t *testing.T) {
 	}
 	if f.Location != "word/_rels/document.xml.rels" {
 		t.Fatalf("Finding(CodeExternalReference).Location = %q, want %q", f.Location, "word/_rels/document.xml.rels")
+	}
+}
+
+// TestAnalyzeContainerExternalRefRecognizesEveryLegalXMLSerialization is the
+// PR9R4 finding (container.go:414) verbatim, both directions: single quotes
+// / whitespace around '=' must still be recognized as an external
+// reference, and the original double-quoted/unspaced serialization
+// externalRefDocxFixture already covers must keep working unchanged.
+func TestAnalyzeContainerExternalRefRecognizesEveryLegalXMLSerialization(t *testing.T) {
+	cases := []struct {
+		name string
+		rels string
+	}{
+		{
+			"single-quoted, spaces around equals",
+			`<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="hyperlink" Target="http://example.com" TargetMode = 'External'/></Relationships>`,
+		},
+		{
+			"double-quoted, no spaces (original serialization)",
+			`<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="hyperlink" Target="http://example.com" TargetMode="External"/></Relationships>`,
+		},
+		{
+			"attribute order reversed",
+			`<?xml version="1.0"?><Relationships><Relationship TargetMode="External" Target="http://example.com" Type="hyperlink" Id="rId1"/></Relationships>`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := docxFixtureWithRels(t, tc.rels)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			f, ok := findingFor(res, CodeExternalReference)
+			if !ok {
+				c, _ := checkFor(res, CodeExternalReference)
+				t.Fatalf("no Finding for CodeExternalReference (got Check %+v instead) -- this serialization must NOT reach a clean verdict", c)
+			}
+			if f.Location != "word/_rels/document.xml.rels" {
+				t.Fatalf("Finding(CodeExternalReference).Location = %q, want %q", f.Location, "word/_rels/document.xml.rels")
+			}
+		})
+	}
+}
+
+// TestAnalyzeContainerExternalRefInternalRelationshipStaysClean proves the
+// fix is not simply "any Relationship element is now a finding" -- a
+// .rels part with no TargetMode="External" anywhere (an ordinary internal
+// relationship, TargetMode absent, which OPC defines as defaulting to
+// Internal) must still report clean.
+func TestAnalyzeContainerExternalRefInternalRelationshipStaysClean(t *testing.T) {
+	data := docxFixtureWithRels(t, `<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="styles" Target="styles.xml"/></Relationships>`)
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	c, ok := checkFor(res, CodeExternalReference)
+	if !ok {
+		t.Fatal("no Check for CodeExternalReference")
+	}
+	if c.Status != StatusClean {
+		t.Fatalf("Check(CodeExternalReference).Status = %q, want %q -- a relationship with no TargetMode=\"External\" anywhere must not be flagged", c.Status, StatusClean)
 	}
 }
 
