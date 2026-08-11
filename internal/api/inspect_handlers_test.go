@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -755,6 +756,314 @@ func TestZipDirectoryExceedsStructuralBoundReadVolumeBoundedByConstant(t *testin
 	}
 	if v.maxSingleReadLen > wantMax {
 		t.Fatalf("largest single ReadAt request = %d bytes, want <= %d -- read volume must be bounded by a fixed constant, not by size (%d) or anything the archive declares", v.maxSingleReadLen, wantMax, v.size)
+	}
+}
+
+// zipEOCDFixture is round 5's own generic corpus builder. Unlike
+// realZipCentralDirectoryFixture above (which always places the real
+// directory immediately after a 4-byte local-header magic and always
+// declares directoryOffset==4), this lets a test vary every axis round 5's
+// own divergence table needs independently: WHERE the real directory
+// physically sits (realDirStart), WHAT the EOCD declares about it
+// (declaredEntries/declaredDirBytes/declaredDirOffset -- three
+// INDEPENDENTLY liable fields, per this function's own doc comment), and
+// how the EOCD's own comment is terminated (commentLen, trailingGarbage).
+type zipEOCDFixture struct {
+	realDirStart      int64 // absolute offset where the real directory records begin
+	realRecordCount   int   // how many REAL PK\x01\x02 records physically exist at realDirStart
+	nameLen           int   // per-record declared name length (content immaterial)
+	declaredEntries   uint16
+	declaredDirBytes  uint32
+	declaredDirOffset uint32
+	commentLen        uint16 // EOCD's own declared comment length
+	trailingGarbage   int    // extra bytes appended AFTER the declared comment end
+}
+
+func (f zipEOCDFixture) build() []byte {
+	recordLen := zipCentralDirMinRecordLen + f.nameLen
+	dirLen := int64(f.realRecordCount) * int64(recordLen)
+	eocdOff := f.realDirStart + dirLen
+	total := eocdOff + zipEOCDFixedLen + int64(f.commentLen) + int64(f.trailingGarbage)
+	buf := make([]byte, total)
+	buf[0], buf[1], buf[2], buf[3] = 'P', 'K', 3, 4
+	for i := 0; i < f.realRecordCount; i++ {
+		off := f.realDirStart + int64(i)*int64(recordLen)
+		rec := buf[off : off+int64(recordLen)]
+		rec[0], rec[1], rec[2], rec[3] = 'P', 'K', 0x01, 0x02
+		binary.LittleEndian.PutUint16(rec[28:30], uint16(f.nameLen))
+	}
+	eocd := buf[eocdOff : eocdOff+zipEOCDFixedLen+int64(f.commentLen)]
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	binary.LittleEndian.PutUint16(eocd[10:12], f.declaredEntries)
+	binary.LittleEndian.PutUint32(eocd[12:16], f.declaredDirBytes)
+	binary.LittleEndian.PutUint32(eocd[16:20], f.declaredDirOffset)
+	binary.LittleEndian.PutUint16(eocd[20:22], f.commentLen)
+	return buf
+}
+
+// round5ReviewerScenarioZipFixture reproduces the FIFTH round of review
+// verbatim (inspect_handlers.go:530, quoted in full in this quick task's
+// PLAN.md): an HONEST full dirBytes (matching the real 65,537-record
+// directory's true size), a wrapped entries=1, and a directoryOffset field
+// pointing only at the directory's OWN final 100 records -- not its real
+// start. Round 4's own walk starts exactly at directoryOffset, finds only
+// ~100 real records, reaches eocdOffset, and returns exceeds=false.
+// archive/zip does not: it computes
+// baseOffset = eocdOffset - dirBytes - directoryOffset -- sharply negative,
+// since dirBytes describes the FULL span but directoryOffset points deep
+// into it -- and reads from baseOffset+directoryOffset instead: the TRUE
+// start of the real directory, walking all 65,537 records.
+func round5ReviewerScenarioZipFixture() []byte {
+	const trueRecordCount = 65537
+	const suffixRecordCount = 100
+	wrappedEntries := uint16(trueRecordCount % 65536) // == 1
+	trueDirBytes := uint32(trueRecordCount * zipCentralDirMinRecordLen)
+	f := zipEOCDFixture{
+		realDirStart:      4,
+		realRecordCount:   trueRecordCount,
+		declaredEntries:   wrappedEntries,
+		declaredDirBytes:  trueDirBytes, // HONEST: matches the real, full span
+		declaredDirOffset: uint32(4 + (trueRecordCount-suffixRecordCount)*zipCentralDirMinRecordLen),
+	}
+	return f.build()
+}
+
+// TestZipDirectoryExceedsStructuralBoundRound5ScenarioCatchesNegativeBaseOffset
+// is the central round-5 proof, reproducing the reviewer's own scenario
+// literally (see round5ReviewerScenarioZipFixture's own doc comment). It
+// first confirms, against REAL archive/zip.NewReader, that this fixture
+// really does exhibit the reported behavior (archive/zip parses all 65,537
+// records via its own negative-baseOffset correction) -- so a future change
+// that made this fixture stop reproducing the scenario would fail loudly
+// here, rather than this test silently passing for the wrong reason.
+func TestZipDirectoryExceedsStructuralBoundRound5ScenarioCatchesNegativeBaseOffset(t *testing.T) {
+	data := round5ReviewerScenarioZipFixture()
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("archive/zip.NewReader: %v -- this fixture must reproduce a real archive/zip.NewReader success (the round-5 scenario is that archive/zip DOES parse this successfully via its own negative baseOffset)", err)
+	}
+	if len(zr.File) <= inspectMaxZipDirEntries {
+		t.Fatalf("archive/zip.NewReader parsed %d records, want > %d -- this fixture must reproduce archive/zip walking the FULL 65,537-record directory via its own baseOffset correction, not the short suffix directoryOffset points at directly", len(zr.File), inspectMaxZipDirEntries)
+	}
+
+	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	if gotEntries != 1 {
+		t.Fatalf("entries = %d, want 1 (65537 mod 65536, read verbatim from the EOCD's own field)", gotEntries)
+	}
+	if gotDirBytes != uint32(65537*zipCentralDirMinRecordLen) {
+		t.Fatalf("dirBytes = %d, want %d (the HONEST full declared size)", gotDirBytes, uint32(65537*zipCentralDirMinRecordLen))
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- an honest full dirBytes with a directoryOffset field pointing only at the directory's own final 100 records must not let archive/zip's own negative-baseOffset walk of all 65,537 real records past this bound (round 5's own reviewer scenario)")
+	}
+}
+
+// TestInspectRound5ScenarioReportsUnknownNot500 is
+// TestZipDirectoryExceedsStructuralBoundRound5ScenarioCatchesNegativeBaseOffset's
+// end-to-end sibling, exercised through the real HTTP handler exactly like
+// TestInspectRound4ScenarioReportsUnknownNot500 proves for round 4's own
+// scenario: the upload must be reported as format=zip_directory_too_large,
+// never resolved as docx, never clean, never 500.
+func TestInspectRound5ScenarioReportsUnknownNot500(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+
+	status, body := doInspect(t, srv, "in.zip", round5ReviewerScenarioZipFixture())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (never 500, never a rejection); body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+	if resp.Format != inspectZipTooLargeFormat {
+		t.Errorf("Format = %q, want %q -- an honest dirBytes with a directoryOffset pointing only at the final 100 records must not let archive/zip's own negative-baseOffset walk of all 65,537 records past the structural bound", resp.Format, inspectZipTooLargeFormat)
+	}
+	if resp.Coverage.Complete {
+		t.Errorf("Coverage.Complete = true, want false")
+	}
+	if resp.Coverage.Reason != inspect.ReasonWorkCeilingBytes {
+		t.Errorf("Coverage.Reason = %q, want %q", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
+	}
+	if err := inspect.ValidateReport(resp.Findings, resp.Checks); err != nil {
+		t.Errorf("ValidateReport: %v", err)
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundTruncatedCommentDoesNotBypassOverCeilingDirectory
+// is divergence row #2 (and #3) of zipDirectoryExceedsStructuralBound's own
+// doc comment: an EOCD whose declared comment (here, zero bytes) ends
+// BEFORE the file's own end -- archive/zip's own findSignatureInBlock
+// tolerates this explicitly (n+22+i<=len(b), not ==) -- must not let an
+// over-ceiling real directory through merely because rounds 1-4's own
+// exact-match-to-file-end rule would have scanned straight past this EOCD
+// looking (in vain) for a different one.
+func TestZipDirectoryExceedsStructuralBoundTruncatedCommentDoesNotBypassOverCeilingDirectory(t *testing.T) {
+	const over = inspectMaxZipDirEntries + 1
+	data := zipEOCDFixture{
+		realDirStart:      4,
+		realRecordCount:   over,
+		declaredEntries:   uint16(over % 65536),
+		declaredDirBytes:  uint32(over) * zipCentralDirMinRecordLen,
+		declaredDirOffset: 4,
+		commentLen:        0,
+		trailingGarbage:   1000, // the (zero-byte) comment ends 1000 bytes before the file's own end
+	}.build()
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("archive/zip.NewReader: %v -- this fixture must be one archive/zip itself accepts (a short/truncated comment is explicitly tolerated)", err)
+	}
+	if len(zr.File) <= inspectMaxZipDirEntries {
+		t.Fatalf("archive/zip.NewReader parsed %d records, want > %d", len(zr.File), inspectMaxZipDirEntries)
+	}
+
+	exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- an EOCD whose comment ends before the file's own end must not let an over-ceiling real directory through just because an exact-match-to-file-end locator would have scanned past it looking for another signature")
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundDirBytesFFFFTreatedAsZip64Sentinel is
+// divergence row #4: archive/zip's own ZIP64 "look elsewhere" trigger
+// (reader.go:608) compares directorySize against 0xffff (65,535), NOT
+// 0xffffffff -- a value small enough to have sailed straight through every
+// prior round's own dirBytes-vs-ceiling comparison as an "ordinary", if odd,
+// declared size.
+func TestZipDirectoryExceedsStructuralBoundDirBytesFFFFTreatedAsZip64Sentinel(t *testing.T) {
+	eocd := make([]byte, 22)
+	eocd[0], eocd[1], eocd[2], eocd[3] = 'P', 'K', 0x05, 0x06
+	eocd[10], eocd[11] = 1, 0 // entries = 1
+	binary.LittleEndian.PutUint32(eocd[12:16], 0xFFFF)
+
+	exceeds, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	if dirBytes != 0xFFFF {
+		t.Fatalf("dirBytes = %#x, want 0xffff", dirBytes)
+	}
+	if !exceeds {
+		t.Fatalf("exceeds = false, want true -- dirBytes == 0xFFFF is archive/zip's own ZIP64 'look elsewhere' trigger value (directorySize==0xffff, reader.go:608), and must not be read as an ordinary small declared size")
+	}
+}
+
+// zipDifferentialCase is one corpus entry for
+// TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip.
+// describe is written verbatim into any failure message so a future
+// round's own audit can see exactly which input, if any, exposed a new
+// divergence -- the plan's own explicit requirement for this test.
+type zipDifferentialCase struct {
+	name     string
+	data     []byte
+	describe string
+}
+
+// zipDirectoryDifferentialCorpus builds the corpus
+// TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip runs
+// the forbidden-combination property over: reproductions of rounds 1, 2, 4,
+// and 5's own bypass scenarios, an EOCD comment ending before the file's
+// own end, two EOCD signatures in one file, dirBytes==0xFFFF, a legitimate
+// (JAR-style) positive baseOffset, and legitimate small/realistic office
+// archives -- built by a generator (zipEOCDFixture/manyEntriesDocxFixture/
+// docxFixture), not binary fixtures, per the plan's own requirement.
+func zipDirectoryDifferentialCorpus(t *testing.T) []zipDifferentialCase {
+	t.Helper()
+	const over = inspectMaxZipDirEntries + 1
+
+	commentEndsBeforeEOF := zipEOCDFixture{
+		realDirStart:      4,
+		realRecordCount:   over,
+		declaredEntries:   uint16(over % 65536),
+		declaredDirBytes:  uint32(over) * zipCentralDirMinRecordLen,
+		declaredDirOffset: 4,
+		trailingGarbage:   1000,
+	}.build()
+
+	dualSignature := func() []byte {
+		data := zipEOCDFixture{
+			realDirStart:      4,
+			realRecordCount:   over,
+			declaredEntries:   uint16(over % 65536),
+			declaredDirBytes:  uint32(over) * zipCentralDirMinRecordLen,
+			declaredDirOffset: 4,
+			commentLen:        40,
+		}.build()
+		// A second 'PK\x05\x06' byte sequence embedded inside the real
+		// EOCD's own comment bytes -- closer to the file's own end than the
+		// real record data, the classic "signature ambiguity" case
+		// findSignatureInBlock's own hard-fail-on-first-candidate rule
+		// exists to settle one way or the other, consistently with
+		// archive/zip's own choice.
+		commentStart := len(data) - 40
+		data[commentStart+10], data[commentStart+11], data[commentStart+12], data[commentStart+13] = 'P', 'K', 5, 6
+		return data
+	}()
+
+	dirBytesFFFF := zipEOCDFixture{
+		realDirStart:      4,
+		realRecordCount:   over,
+		declaredEntries:   uint16(over % 65536),
+		declaredDirBytes:  0xFFFF,
+		declaredDirOffset: 4,
+	}.build()
+
+	positiveBaseOffsetJARStyle := func() []byte {
+		const prefixLen = 1000
+		data := zipEOCDFixture{
+			realDirStart:      prefixLen + 4,
+			realRecordCount:   over,
+			declaredEntries:   uint16(over % 65536),
+			declaredDirBytes:  uint32(over) * zipCentralDirMinRecordLen,
+			declaredDirOffset: 4, // relative to the ZIP's own start, not the file's
+		}.build()
+		// zipEOCDFixture.build unconditionally writes the local-header magic
+		// at byte 0 -- clear it and place a fake, non-zip script prefix (all
+		// zero bytes here; content is immaterial) with the REAL zip magic
+		// at prefixLen instead, modeling a JAR-style "bash script + zip"
+		// concatenation.
+		data[0], data[1], data[2], data[3] = 0, 0, 0, 0
+		copy(data[prefixLen:prefixLen+4], []byte{'P', 'K', 3, 4})
+		return data
+	}()
+
+	return []zipDifferentialCase{
+		{"round1_real_overflowing_docx", manyEntriesDocxFixture(t, over), "a real, valid docx-shaped archive with inspectMaxZipDirEntries+1 real entries -- round 1's own repro shape"},
+		{"round2_wrapped_entries_lying_dirbytes_no_real_directory", reviewerScenarioZipFixture(), "a bare 22-byte EOCD declaring entries=1 (wrapped) and dirBytes=65537*46, with no real directory bytes behind it at all -- round 2's own reviewer scenario"},
+		{"round4_real_directory_behind_lying_dirbytes", round4RealDirectoryZipFixture(), "65,537 REAL central-directory records behind a lying dirBytes=46 -- round 4's own reviewer scenario"},
+		{"round5_honest_dirbytes_directoryoffset_at_final_suffix", round5ReviewerScenarioZipFixture(), "an honest full dirBytes describing all 65,537 real records, with directoryOffset pointing only at the final 100 of them -- round 5's own reviewer scenario, the negative-baseOffset bypass"},
+		{"eocd_comment_ends_before_file_end", commentEndsBeforeEOF, "an over-ceiling real directory whose EOCD declares a 0-byte comment that ends 1000 bytes before the file's own end"},
+		{"dual_eocd_signature_in_real_comment", dualSignature, "an over-ceiling real directory whose EOCD's own 40-byte comment contains a second 'PK\\x05\\x06' byte sequence"},
+		{"dirbytes_0xffff_zip64_trigger", dirBytesFFFF, "dirBytes == 0xFFFF (65,535), archive/zip's own ZIP64 trigger value, behind an over-ceiling real directory"},
+		{"positive_baseoffset_jar_style_prefix", positiveBaseOffsetJARStyle, "a 1000-byte non-zip script prefix before an over-ceiling real directory, directoryOffset declared relative to the ZIP's own start -- a legitimate JAR-style positive baseOffset"},
+		{"legit_small_docx", docxFixture(t), "a real, tiny, legitimate docx (2 entries) -- must never be a false positive"},
+		{"legit_realistic_office_archive", manyEntriesDocxFixture(t, 50), "a realistic 51-part office archive, comfortably under the ceiling"},
+	}
+}
+
+// TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip is the
+// plan's own central artifact (see this quick task's PLAN.md,
+// <the_recurring_one_read_this_first>): for every input in the corpus
+// above, the forbidden combination "archive/zip.NewReader parsed more than
+// inspectMaxZipDirEntries real records" AND "zipDirectoryExceedsStructuralBound
+// said exceeds=false" must never occur. This is a PROPERTY, not a list of
+// scenarios -- it does not require guessing the next field a sixth round of
+// review might find; it is checked directly against the real
+// archive/zip package this function exists to predict correctly.
+func TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip(t *testing.T) {
+	for _, tc := range zipDirectoryDifferentialCorpus(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.data
+
+			realCount := -1
+			if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil || errors.Is(err, zip.ErrInsecurePath) {
+				realCount = len(zr.File)
+			}
+
+			exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+
+			if realCount > inspectMaxZipDirEntries && !exceeds {
+				t.Fatalf("FORBIDDEN COMBINATION on corpus case %q: archive/zip.NewReader parsed %d real records (> ceiling %d) but zipDirectoryExceedsStructuralBound said exceeds=false.\nInput: %s", tc.name, realCount, inspectMaxZipDirEntries, tc.describe)
+			}
+		})
 	}
 }
 

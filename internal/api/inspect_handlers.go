@@ -149,13 +149,31 @@ const (
 	// an actual ReadAt call, so its value is now load-bearing for a
 	// completely different reason (see zipDirectoryExceedsStructuralBound).
 	inspectMaxZipDirBytes = inspectMaxZipDirEntries * zipCentralDirMinRecordLen
-	// zipEOCDRecordMaxLen is the largest a ZIP End-Of-Central-Directory
-	// record can ever be: the 22-byte fixed header plus the largest
-	// possible comment (the comment-length field is a uint16, so at most
-	// 65535 bytes). zipDirectoryExceedsStructuralBound never reads more
-	// than this many bytes from the TAIL of the upload, regardless of the
-	// upload's own total size.
-	zipEOCDRecordMaxLen = 22 + 65535
+	// zipEOCDRecordMaxLen is round 5's own redefinition of this constant.
+	// It used to be sized to the largest a single EOCD record could ever
+	// legitimately BE (22 fixed bytes + the largest possible comment,
+	// 65535 bytes = 65,557) -- reasoning that no well-formed record could
+	// ever need this function to look further back than that. Round 5's
+	// own divergence audit (see zipDirectoryExceedsStructuralBound's own
+	// doc comment, divergence row #3) found that is the WRONG thing to
+	// size this against: archive/zip's own readDirectoryEnd
+	// ($GOROOT/src/archive/zip/reader.go:572) does not search "as far back
+	// as the largest legitimate record could require" -- it unconditionally
+	// searches the last 65*1024 (66,560) bytes of the file in its second
+	// stage, 1,003 bytes MORE than 65,557, regardless of what any comment
+	// declares. A comment that ends BEFORE the file's own end (Go tolerates
+	// this -- divergence row #2) does not bound how far from the file's end
+	// the EOCD SIGNATURE itself can sit, only how far the record it
+	// introduces extends past it: the signature can sit anywhere within
+	// that 66,560-byte window, all the way to its front edge, with a
+	// near-zero declared comment length. A window narrower than Go's own
+	// could miss a real EOCD record Go's own reader would find and walk --
+	// this function would return exceeds=false having never SEEN the
+	// record at all, the single most dangerous mistake it can make (worse
+	// than any miscounted record: an unconditional pass). This constant is
+	// now sized to match Go's own second-stage window exactly, not the
+	// smaller, more "reasonable-looking" largest-legitimate-record bound.
+	zipEOCDRecordMaxLen = 65 * 1024
 	// zipEOCDFixedLen is the fixed (non-comment) portion of the EOCD record.
 	zipEOCDFixedLen = 22
 )
@@ -383,11 +401,10 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 
 // zipDirectoryExceedsStructuralBound reports whether the ZIP EOCD record
 // found in the tail of r describes a central directory this handler is
-// willing to pay to parse. This is the THIRD time this decision has been
-// implemented, and the first two attempts were each bypassed by trusting a
-// number the archive declares about itself -- the history is recorded here,
-// in full, because it is exactly the kind of thing a future "simplification"
-// would reintroduce without it:
+// willing to pay to parse. This is the FIFTH time this decision has been
+// implemented, and the history is recorded here, in full, because it is
+// exactly the kind of thing a future "simplification" would reintroduce
+// without it:
 //
 //  1. Round 1 compared the EOCD's own entry-count field (a uint16) against a
 //     ceiling. The entry-count field WRAPS at 65536: an archive with 65,537
@@ -408,59 +425,129 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 //     lie about the directory's true size that round 2's comparison
 //     (46 > inspectMaxZipDirBytes? no) waved straight through.
 //
-// The mistake both rounds shared: bounding a hostile structure by reading
-// that structure's OWN description of itself. Every field in the EOCD is
-// attacker-controlled, so no comparison against a value read FROM the EOCD
-// can ever be trustworthy, however many times the specific field is swapped.
+//  4. Round 4 stopped comparing declared fields against ceilings entirely.
+//     It reads the EOCD's declared directoryOffset (still untrusted -- only
+//     ever used as a place to START reading), then WALKS the actual bytes at
+//     that offset, counting real "PK\x01\x02" signatures one at a time,
+//     advancing by each record's own real length, inside a window WE choose
+//     (inspectMaxZipDirBytes) -- exceeds=true if the count crosses
+//     inspectMaxZipDirEntries, or if the window runs out before the walk
+//     reaches the EOCD's own LOCATED offset ("I don't know" means "I don't
+//     let it through"). This closed round 1 and round 2's mistake (bounding
+//     a hostile structure by reading that structure's OWN description of
+//     itself) -- but it was still, itself, a PREDICTION of what
+//     archive/zip.Reader.init would do with that same directoryOffset,
+//     written by re-deriving the shape of $GOROOT/src/archive/zip/reader.go
+//     from memory rather than checking against it line by line.
 //
-// Round 4's fix has a different shape: it does not compare a declared field
-// against a ceiling at all. It reads the EOCD's declared directoryOffset (still
-// untrusted -- it is only ever used as a place to START reading, exactly as
-// harmless as any other file offset), then WALKS the actual bytes at that
-// offset, counting real "PK\x01\x02" central-directory-record signatures one
-// at a time, advancing by each record's own real length -- inside a window
-// WE choose (inspectMaxZipDirBytes, a fixed constant never derived from
-// anything the archive declares) rather than however many bytes the archive
-// claims the directory occupies. If the real record count reaches
-// inspectMaxZipDirEntries before the walk reaches the EOCD's own (structurally
-// LOCATED, not declared) offset, that is exceeds=true. If the window runs out
-// before the walk reaches that offset, that is ALSO exceeds=true: at that
-// point this function genuinely does not know what lies beyond the window,
-// and guessing "probably fine" is the exact reasoning that failed twice
-// already -- "I don't know" means "I don't let it through", not "I'll assume
-// the best". See zipCentralDirectoryExceedsBound for the walk itself.
+//  5. Round 5's own finding (inspect_handlers.go:530, quoted verbatim in
+//     this quick task's PLAN.md): "archive/zip does not necessarily start
+//     at the raw EOCD directoryOffset: it derives baseOffset = eocdOffset -
+//     dirBytes - directoryOffset and reads from baseOffset+directoryOffset."
+//     An archive can declare an HONEST full dirBytes (matching the real,
+//     total directory size), a wrapped entries=1, and a directoryOffset
+//     field pointing only at the FINAL ~100 records of a real 65,537-record
+//     directory. Round 4's walk starts exactly at that directoryOffset,
+//     finds ~100 real records, reaches eocdOffset, and returns
+//     exceeds=false. archive/zip does not: it computes
+//     baseOffset = eocdOffset - dirBytes - directoryOffset, which -- because
+//     dirBytes is honest and describes the FULL 65,537-record span -- comes
+//     out sharply negative, and reads from baseOffset+directoryOffset
+//     instead: the TRUE start of the real directory, walking all 65,537
+//     records. Round 4's walk and archive/zip's walk start at two DIFFERENT
+//     offsets for the identical input.
+//
+// Orchestrator-read divergence audit (round 5), built by reading
+// readDirectoryEnd, findSignatureInBlock, Reader.init, and
+// readDirectoryHeader in $GOROOT/src/archive/zip/reader.go line by line,
+// not by re-deriving their shape from memory -- the review named only
+// row #1 below; rows #2-4 were found by this audit and are exactly as
+// load-bearing:
+//
+//	# | Go does (reader.go)                          | Round 4 did             | Divergent input                                            | Closed by
+//	1 | baseOffset = eocdOffset-dirBytes-dirOffset;  | walked from the raw     | Honest full dirBytes, wrapped entries=1,                   | Refuse whenever
+//	  | reads from baseOffset+dirOffset (:624,:137). | dirOffsetField          | dirOffsetField pointing at the directory's                | baseOffset != 0
+//	  | baseOffset>0 has its OWN fallback to 0       | directly, ignoring      | final ~100 records                                         | (see below)
+//	  | (:636-641): two possible starts, content-     | baseOffset entirely.   |                                                             |
+//	  | dependent.                                    |                        |                                                             |
+//	2 | findSignatureInBlock accepts a comment that   | Required the comment   | An EOCD whose comment ends BEFORE the file's own end,      | locateZipEOCDInBlock
+//	  | ends AT OR BEFORE the block's own end          | to end EXACTLY at the  | with a real, larger directory further back that Go        | mirrors Go's own
+//	  | (n+22+i<=len(b)); on the FIRST 'PK\x05\x06'    | file's own end,        | would locate and walk, that this locator would either      | rule exactly: accept
+//	  | candidate found scanning backward, truncation  | and kept scanning      | miss (continuing past it) or misidentify (an earlier,      | with <=, and on the
+//	  | is a HARD failure -- it never tries an earlier  | backward past any      | attacker-placed fake signature).                           | FIRST candidate,
+//	  | candidate (:697-713).                          | mismatch for another   |                                                             | truncated or not,
+//	  |                                                 | signature.             |                                                             | stop -- never keep
+//	  |                                                 |                        |                                                             | scanning backward.
+//	3 | readDirectoryEnd searches the last 1024 bytes, | Read a single tail     | An EOCD signature sitting between (size-66560) and         | zipEOCDRecordMaxLen
+//	  | then (if not found) the last 65*1024 (66,560)  | window of 22+65535=    | (size-65557): within Go's own second-stage window, outside | widened to 65*1024,
+//	  | bytes -- unconditionally, regardless of what   | 65,557 bytes.          | ours -- this function would locate NO EOCD at all and       | matching Go's own
+//	  | any comment declares (:569-588).               |                        | return exceeds=false, never having seen the real record.    | second-stage size.
+//	4 | ZIP64 "look elsewhere" trigger compares         | Compared dirBytes      | dirBytes == 0xFFFF (65,535): triggers Go's own ZIP64        | Added dirBytes ==
+//	  | directorySize against 0xffff, NOT 0xffffffff   | against 0xFFFFFFFF     | detour (a value we were NOT treating as a sentinel at      | 0xFFFF as an
+//	  | (:608).                                        | only.                  | all), while our own check let it fall through as an        | additional (not
+//	  |                                                 |                        | ordinary, comparably-small declared size.                  | replacing) sentinel.
+//
+// Reviewed and found to introduce NO further divergence relevant to this
+// function's own decision (see this quick task's SUMMARY.md for the fuller
+// writeup): Reader.init's preallocation heuristic (:132, a pure allocation
+// optimization); the uint16-masked directoryRecords comparison Reader.init
+// makes AFTER the per-record read loop (:158-162, irrelevant here because
+// round 4 already abandoned comparing declared entry counts); readDirectory-
+// Header's zip64-extra-field handling for an individual record's own sizes
+// (:426-454, changes what a record MEANS, never how many bytes it occupies,
+// so it cannot affect this function's own position-advancing walk); and the
+// "record boundary overshoots eocdOffset" edge case (a record's own declared
+// nameLen/extraLen/commentLen carries the walk PAST the located EOCD offset
+// without landing on it exactly) -- pos only ever increases, so once it
+// overshoots it can never return to == eocdOffset-directoryOffset, meaning
+// the walk can only end via window-exhaustion, a bad signature, or the
+// count ceiling -- all three already exceeds=true.
+//
+// Round 5's fix is a REFUSAL, not a mirror of Go's own baseOffset>0 fallback
+// (:636-641): rather than replicating that fallback's own content-dependent
+// choice between two possible starts, this function computes the identical
+// baseOffset formula and refuses outright (exceeds=true) whenever it is
+// anything other than zero. This is sound, not merely conservative: every
+// legitimate docx/xlsx/pptx/odt/ods/odp/epub upload has baseOffset==0 (no
+// leading prefix bytes before the ZIP proper), and when baseOffset==0, both
+// of Go's own possible starts collapse into the SAME one -- Go's own
+// fallback branch (:636) never triggers, because it only exists to correct
+// a NONZERO baseOffset. Refusing whenever baseOffset!=0 removes the
+// divergence surface entirely rather than trying to track it.
 //
 // A cheap, sound, non-bypassable pre-check rides alongside the walk: dirBytes
 // cannot legitimately exceed the upload's own real total byte count (size) --
 // that comparison is NOT round 2's mistake repeated, because size is ground
 // truth (the actual number of bytes this handler received), not a second
-// number the archive also controls. This check exists only to catch a lying
-// dirBytes cheaply (and to keep TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount
-// and its Zip64-sentinel sibling passing unmodified, both of which construct
-// a bare EOCD -- no real directory bytes at all -- declaring a directory far
-// larger than the tiny fixture itself); it is explicitly NOT what closes the
-// round-4 bypass, since round 4's own dirBytes (46) is smaller than its real
-// file. Only the record-counting walk closes that one.
+// number the archive also controls.
 //
-// ZIP64 sentinels (dirBytes == 0xFFFFFFFF, the declared directory offset ==
-// 0xFFFFFFFF, or entries == 0xFFFF) are treated as exceeding explicitly, not
-// merely because a numeric comparison happens to also reject them.
+// ZIP64 sentinels (dirBytes == 0xFFFFFFFF or 0xFFFF, the declared directory
+// offset == 0xFFFFFFFF, or entries == 0xFFFF) are treated as exceeding
+// explicitly, not merely because a numeric comparison happens to also
+// reject them.
 //
-// The EOCD-location step below (scanning the tail backward for the
-// signature, verifying tailOffset+i+zipEOCDFixedLen+commentLen == size) is
-// unchanged from round 1/2 and is not the part of this function that was
-// ever bypassed: it resolves the standard "a comment could itself contain a
-// fake signature" ambiguity the same way archive/zip's own unexported reader
-// does, and the record it locates this way is a real, structural fact (a
-// byte OFFSET this function found by scanning, not a value the archive
-// merely claims) -- it is exactly the trustworthy anchor round 4's walk
-// needs to know when the directory has genuinely ended.
+// The EOCD-location step below now mirrors archive/zip's own
+// findSignatureInBlock rule exactly (locateZipEOCDInBlock, divergence row #2
+// above) over a window sized to Go's own second-stage search (divergence
+// row #3 above) -- a single such window is provably equivalent to Go's own
+// two-stage (1024-byte, then 65*1024-byte) search for locating the SAME
+// EOCD record: both scans start from the same absolute end-of-file anchor
+// and walk backward in the same order, so the nearest-to-end candidate
+// either scan encounters first is identical whenever both windows are large
+// enough to reach it, and a smaller Go stage failing to reach it at all
+// simply defers to Go's own larger stage, which this function's own single
+// maximal window already covers.
 //
 // If no EOCD record can be located within the tail at all (corrupt or
 // truncated zip), this reports exceeds=false: that upload is not this
 // function's problem to diagnose -- convert.SniffContainer's own zip.
-// NewReader call fails it as ErrNotAZip exactly as it does today, and
-// failing to locate a signature is not, itself, attacker-controlled WORK.
+// NewReader call fails it as ErrNotAZip (or an equivalent parse error)
+// exactly as it does today, and failing to locate a signature is not,
+// itself, attacker-controlled WORK -- if archive/zip's own two-stage search
+// also cannot locate a valid, non-truncated EOCD anywhere in the identical
+// bytes (which locateZipEOCDInBlock's mirrored rule guarantees), it never
+// reaches the per-record walk that round 4/5 exist to bound in the first
+// place.
 func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool, entries uint16, dirBytes uint32) {
 	if size < zipEOCDFixedLen {
 		return false, 0, 0
@@ -477,32 +564,58 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 	}
 	buf = buf[:n]
 
+	i, found := locateZipEOCDInBlock(buf)
+	if !found {
+		return false, 0, 0
+	}
+	eocdOffset := tailOffset + int64(i)
+	// entries and dirBytes are read here and RETURNED for the caller's
+	// diagnostics -- exactly as round 2 left them -- but the exceeds
+	// decision (below) never compares either of them against a ceiling by
+	// itself; see this function's own doc comment.
+	entries = binary.LittleEndian.Uint16(buf[i+10 : i+12])
+	dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
+	dirOffsetField := binary.LittleEndian.Uint32(buf[i+16 : i+20])
+
+	exceeds = zipCentralDirectoryExceedsBound(r, size, eocdOffset, dirOffsetField, dirBytes, entries)
+	return exceeds, entries, dirBytes
+}
+
+// locateZipEOCDInBlock finds the EOCD signature within buf using the EXACT
+// selection rule archive/zip's own unexported findSignatureInBlock uses
+// ($GOROOT/src/archive/zip/reader.go:697-713, divergence row #2 in
+// zipDirectoryExceedsStructuralBound's own doc comment): scan backward from
+// buf's own end, and on the VERY FIRST 'PK\x05\x06' byte sequence
+// encountered (nearest to buf's own end), either accept it -- if its
+// declared comment fits inside buf, where the comment is explicitly allowed
+// to end BEFORE buf's own end, not only exactly at it -- or reject the
+// ENTIRE search outright, with no further scanning, if the declared comment
+// would run past buf's own end (a truncated comment). Go NEVER continues
+// past the first candidate it finds, truncated or not; rounds 1 through 4 of
+// this function's own history required an EXACT match to the file's end and
+// kept scanning backward past any mismatch, a divergence this round's own
+// audit found undocumented in every prior round. Mirroring Go's rule exactly
+// is the only way to guarantee this locator and archive/zip's own never
+// select a different EOCD record for the same bytes.
+func locateZipEOCDInBlock(buf []byte) (i int, ok bool) {
 	for i := len(buf) - zipEOCDFixedLen; i >= 0; i-- {
 		if buf[i] != 'P' || buf[i+1] != 'K' || buf[i+2] != 0x05 || buf[i+3] != 0x06 {
 			continue
 		}
-		commentLen := int64(binary.LittleEndian.Uint16(buf[i+20 : i+22]))
-		if tailOffset+int64(i)+zipEOCDFixedLen+commentLen != size {
-			// A signature that merely happens to appear inside an earlier,
-			// attacker-controlled comment byte sequence, not the real EOCD.
-			continue
+		commentLen := int(buf[i+20]) | int(buf[i+21])<<8
+		if commentLen+zipEOCDFixedLen+i > len(buf) {
+			// Truncated: the declared comment would run past buf's own end.
+			// Go hard-fails here (returns "not found" for the WHOLE search),
+			// it does not keep scanning backward for an earlier candidate --
+			// see this function's own doc comment.
+			return 0, false
 		}
-		eocdOffset := tailOffset + int64(i)
-		// entries and dirBytes are read here and RETURNED for the caller's
-		// diagnostics -- exactly as round 2 left them -- but round 4's
-		// exceeds decision (below) never compares either of them against a
-		// ceiling; see this function's own doc comment.
-		entries = binary.LittleEndian.Uint16(buf[i+10 : i+12])
-		dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
-		dirOffsetField := binary.LittleEndian.Uint32(buf[i+16 : i+20])
-
-		exceeds = zipCentralDirectoryExceedsBound(r, size, eocdOffset, dirOffsetField, dirBytes, entries)
-		return exceeds, entries, dirBytes
+		return i, true
 	}
-	return false, 0, 0
+	return 0, false
 }
 
-// zipCentralDirectoryExceedsBound is round 4's own decision, isolated from
+// zipCentralDirectoryExceedsBound is round 4/5's own decision, isolated from
 // the EOCD-location scan above so its own doc comment (on
 // zipDirectoryExceedsStructuralBound) stays readable. size is the upload's
 // real, ground-truth byte count; eocdOffset is the REAL, LOCATED byte offset
@@ -511,8 +624,15 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 // bytes and are, individually, exactly as untrustworthy as everything else
 // in a ZIP's metadata.
 func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirOffsetField, dirBytes uint32, entriesField uint16) bool {
-	// ZIP64 "look elsewhere" sentinels -- explicit, not merely large numbers.
-	if dirBytes == 0xFFFFFFFF || dirOffsetField == 0xFFFFFFFF || entriesField == 0xFFFF {
+	// ZIP64 "look elsewhere" sentinels -- explicit, not merely large
+	// numbers. Go's own trigger (reader.go:608) is
+	// directoryRecords==0xffff || directorySize==0xffff ||
+	// directoryOffset==0xffffffff -- note directorySize is compared against
+	// 0xffff, NOT 0xffffffff (round 5's own divergence row #4). The
+	// pre-existing 0xFFFFFFFF check for dirBytes is kept alongside it:
+	// refusing on EITHER value only ever makes this function MORE cautious
+	// than Go, never less, so keeping both is safe.
+	if dirBytes == 0xFFFFFFFF || dirBytes == 0xFFFF || dirOffsetField == 0xFFFFFFFF || entriesField == 0xFFFF {
 		return true
 	}
 	// A central directory cannot legitimately be larger than the whole
@@ -527,6 +647,30 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 		return true
 	}
 
+	// Round 5's own fix (divergence row #1): mirror archive/zip's own
+	// baseOffset formula EXACTLY (reader.go:624,
+	// baseOffset = directoryEndOffset - directorySize - directoryOffset),
+	// and refuse whenever it is anything other than zero -- see this
+	// function's own package-level doc comment for why refusing here,
+	// rather than replicating Go's own content-dependent fallback
+	// (reader.go:636-641), is both safe and sufficient. Every legitimate
+	// office/epub upload has baseOffset==0; a nonzero value means this
+	// upload either carries a leading prefix (a JAR-style script, or an
+	// adversarial one) or an EOCD whose own fields are inconsistent with
+	// where this function located it, and "honest full dirBytes with a
+	// directoryOffset field pointing only at the directory's OWN final
+	// records" (round 5's exact reviewer scenario) always produces a
+	// sharply nonzero baseOffset, caught here before any walk begins.
+	baseOffset := eocdOffset - int64(dirBytes) - int64(dirOffsetField)
+	if baseOffset != 0 {
+		return true
+	}
+
+	// directoryOffset is now provably <= eocdOffset given baseOffset==0
+	// above (dirBytes >= 0, so dirOffsetField = eocdOffset-dirBytes <=
+	// eocdOffset) -- this check is kept anyway, as defense in depth against
+	// a future change to the baseOffset check above, not because it can
+	// currently trigger.
 	directoryOffset := int64(dirOffsetField)
 	if directoryOffset > eocdOffset {
 		// The directory claims to start after its own terminator --
