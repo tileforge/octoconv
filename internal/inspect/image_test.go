@@ -80,6 +80,23 @@ func assertCheckStatus(t *testing.T, res FamilyResult, code Code, status CheckSt
 	t.Fatalf("checks %+v do not contain %s", res.Checks, code)
 }
 
+// assertCheckReason is assertCheckStatus's Reason-checking sibling, used by
+// the quick/260811-r5p task 4 tests below to pin down which of
+// ReasonWorkCeilingBytes/ReasonMalformedInput a Check carries -- the whole
+// point of this task's fix is that these two are no longer interchangeable.
+func assertCheckReason(t *testing.T, res FamilyResult, code Code, reason Reason) {
+	t.Helper()
+	for _, c := range res.Checks {
+		if c.Code == code {
+			if c.Reason != reason {
+				t.Fatalf("check %s reason = %q, want %q", code, c.Reason, reason)
+			}
+			return
+		}
+	}
+	t.Fatalf("checks %+v do not contain %s", res.Checks, code)
+}
+
 // ===== Task 2 behavior tests =====
 
 func TestAnalyzeImagePNGDimensions(t *testing.T) {
@@ -329,4 +346,211 @@ func TestAnalyzeImageNeverPanics(t *testing.T) {
 			_ = AnalyzeImage(tc.format, bytes.NewReader(tc.data), tc.size, tc.size, 1<<30, nil)
 		})
 	}
+}
+
+// ===== quick/260811-r5p task 4 (class sweep, PR9R5-SWEEP-CLASSES(б)) =====
+//
+// scanJPEGMetadata, scanPNGMetadata, scanRIFFChunkMetadata (WebP), and the
+// TIFF branch all used to abort on a STRUCTURAL problem (a declared
+// length/size running past the buffer, an invalid magic-byte header,
+// leftover bytes too short for another header) by returning exactly what a
+// fully-walked, genuinely empty scan returns. The tests below pin the fix:
+// only reaching the format's own natural end (JPEG EOI/SOS; PNG/WebP chunk
+// walk consuming the buffer exactly; TIFF's byte-order header check against
+// a COMPLETE window) may report clean. Every other exit reports
+// unknown/malformed_input, distinct from unknown/work_ceiling_bytes.
+
+// TestAnalyzeImageJPEGReachingEOIWithNoMetadataIsClean is the JPEG positive
+// natural-end case: a buffer that walks all the way to EOI without any
+// metadata marker is a genuine clean, not a structural failure.
+func TestAnalyzeImageJPEGReachingEOIWithNoMetadataIsClean(t *testing.T) {
+	data := []byte{0xFF, 0xD8} // SOI
+	data = append(data, jpegSegment(0xFE, []byte("no metadata here"))...)
+	data = append(data, 0xFF, 0xD9) // EOI: JPEG's own natural end
+
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// TestAnalyzeImageJPEGMissingSOIIsMalformedNotClean is the defect's own
+// worked example applied to JPEG's magic bytes: a buffer that never even
+// starts with a valid SOI marker must not be reported the same way a
+// genuine EOI-terminated miss is.
+func TestAnalyzeImageJPEGMissingSOIIsMalformedNotClean(t *testing.T) {
+	data := []byte{0x00, 0x01, 0x02, 0x03} // no FFD8 at all
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageJPEGSegmentLengthPastBufferIsMalformedNotClean is the
+// NAMED inversion test for scanJPEGMetadata's segLen-overflow exit
+// (image.go's `segLen < 2 || i+2+segLen > len(b)` branch): a JPEG whose
+// APP1 segment declares a length running past the buffer must never be
+// reported metadata_present:clean.
+func TestAnalyzeImageJPEGSegmentLengthPastBufferIsMalformedNotClean(t *testing.T) {
+	data := []byte{0xFF, 0xD8} // SOI
+	data = append(data, 0xFF, 0xE1, 0xFF, 0xFF)
+	// APP1 marker claiming a 0xFFFF-byte segment, but the buffer ends
+	// immediately after the length field -- the declared length runs
+	// nowhere near an actual EOI/SOS.
+
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageJPEGTruncatedMarkerHeaderIsMalformedNotClean exercises
+// scanJPEGMetadata's `i+4 > len(b)` exit: the buffer ends mid marker-length
+// field, before EOI/SOS is ever reached.
+func TestAnalyzeImageJPEGTruncatedMarkerHeaderIsMalformedNotClean(t *testing.T) {
+	data := []byte{0xFF, 0xD8, 0xFF, 0xE1} // SOI + start of an APP1 marker, no length bytes at all
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImagePNGWithIENDIsCleanNaturalEnd is the PNG positive
+// natural-end case: a well-formed PNG that reaches IEND (its own chunk
+// stream ending exactly at the buffer's end) with no metadata is genuinely
+// clean.
+func TestAnalyzeImagePNGWithIENDIsCleanNaturalEnd(t *testing.T) {
+	data := pngFixture(10, 10)
+	data = pngAppendChunk(data, "IEND", []byte{})
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// TestAnalyzeImagePNGDeclaredLengthPastBufferIsMalformedNotClean is the
+// defect's own worked example: a PNG whose second chunk declares a length
+// running past the file must never be reported metadata_present:clean --
+// this is the exact scenario 260811-r5p-SUMMARY-task4-sweep.md names.
+func TestAnalyzeImagePNGDeclaredLengthPastBufferIsMalformedNotClean(t *testing.T) {
+	data := pngFixture(10, 10)
+	chunkHeader := make([]byte, 8)
+	binary.BigEndian.PutUint32(chunkHeader[0:4], 0xFFFFFF00) // huge declared length
+	copy(chunkHeader[4:8], []byte("IDAT"))
+	data = append(data, chunkHeader...)
+	data = append(data, 0, 0, 0, 0) // a few trailing bytes, nowhere near the declared length
+
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImagePNGLeftoverBytesAreMalformedNotClean is the NAMED
+// inversion test for scanPNGMetadata's natural-end rule: leftover bytes too
+// short to form another chunk header, with the window covering the whole
+// file, must not be reported clean even though the OLD code's loop-exit
+// fallthrough returned exactly that.
+func TestAnalyzeImagePNGLeftoverBytesAreMalformedNotClean(t *testing.T) {
+	data := pngFixture(10, 10)
+	data = append(data, 0x00, 0x00, 0x00) // 3 leftover bytes: too short for another chunk header
+
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageWebPBufferConsumedExactlyIsCleanNaturalEnd is the WebP
+// positive natural-end case: the RIFF chunk walk consuming the buffer
+// exactly, with no metadata chunk seen, is a genuine clean.
+func TestAnalyzeImageWebPBufferConsumedExactlyIsCleanNaturalEnd(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WEBP")
+	data = append(data, riffChunk("VP8 ", []byte{1, 2, 3, 4})...) // even-length payload: no pad byte
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// TestAnalyzeImageWebPDeclaredSizePastBufferIsMalformedNotClean is the
+// NAMED inversion test for scanRIFFChunkMetadata's declared-size-overflow
+// exit -- the exact same shape as scanPNGMetadata's, which
+// 260811-r5p-SUMMARY-task4-sweep.md's own table never separately examined
+// for WebP.
+func TestAnalyzeImageWebPDeclaredSizePastBufferIsMalformedNotClean(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WEBP")
+	chunk := make([]byte, 8)
+	copy(chunk[0:4], []byte("JUNK"))
+	binary.LittleEndian.PutUint32(chunk[4:8], 0xFFFFFF00) // huge declared size
+	data = append(data, chunk...)
+	data = append(data, 0, 0, 0, 0) // trailing bytes nowhere near the declared size
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageWebPLeftoverBytesAreMalformedNotClean mirrors
+// TestAnalyzeImagePNGLeftoverBytesAreMalformedNotClean for WebP's RIFF
+// chunk walk.
+func TestAnalyzeImageWebPLeftoverBytesAreMalformedNotClean(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WEBP")
+	data = append(data, riffChunk("VP8 ", []byte{1, 2, 3, 4})...)
+	data = append(data, 0x00, 0x00, 0x00) // 3 leftover bytes: too short for another chunk header
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8))
+
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageTIFFValidHeaderIsMetadataPresent confirms scanTIFFMetadata
+// still reports FOUND for a minimal valid byte-order header -- TIFF carries
+// an IFD by construction, so this path is unaffected by this task's fix.
+func TestAnalyzeImageTIFFValidHeaderIsMetadataPresent(t *testing.T) {
+	data := []byte{0x49, 0x49, 42, 0, 8, 0, 0, 0} // "II" little-endian header
+	res := AnalyzeImage("tiff", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertFinding(t, res, CodeMetadataPresent)
+}
+
+// TestAnalyzeImageTIFFInvalidHeaderWithFullWindowIsMalformedNotClean is the
+// NAMED inversion test for the TIFF branch: a full-window read (the byte
+// window covers the WHOLE claimed file) whose first bytes are not a valid
+// TIFF byte-order mark disagrees with the format claim itself and must
+// report malformed_input, never the same clean a short window would have
+// produced under the OLD code.
+func TestAnalyzeImageTIFFInvalidHeaderWithFullWindowIsMalformedNotClean(t *testing.T) {
+	data := []byte{0, 1, 2, 3, 4, 5, 6, 7} // neither "II" nor "MM"
+	res := AnalyzeImage("tiff", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
+// TestAnalyzeImageTIFFShortWindowIsCeilingNotMalformed is
+// TestAnalyzeImageTIFFInvalidHeaderWithFullWindowIsMalformedNotClean's
+// counterpart: when the window is too short to even validate the 8-byte
+// header (maxBytes < size), the same "header did not validate" symptom
+// must report work_ceiling_bytes, not malformed_input -- this is this
+// task's own precedence rule (ceiling wins when the window itself was cut
+// short) applied to the TIFF branch specifically.
+func TestAnalyzeImageTIFFShortWindowIsCeilingNotMalformed(t *testing.T) {
+	data := []byte{0x49, 0x49, 42, 0, 8, 0, 0, 0, 0, 0, 0, 0} // a genuinely valid header, 12 bytes total
+	const window = 4                                          // shorter than the 8 bytes scanTIFFMetadata needs to validate a header
+
+	res := AnalyzeImage("tiff", bytes.NewReader(data), int64(len(data)), window, 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonWorkCeilingBytes)
+}
+
+// TestAnalyzeImageHEICMissWithFullWindowStaysClean documents the
+// deliberate, justified exception: scanISOBMFFMetadataTokens performs no
+// structural walk to abort from (see its own doc comment), so a miss with
+// a full (non-truncated) window keeps reporting clean, unlike every other
+// scanner this task touches.
+func TestAnalyzeImageHEICMissWithFullWindowStaysClean(t *testing.T) {
+	data := []byte("ftypheicmeta no relevant tokens here")
+	res := AnalyzeImage("heic", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
 }
