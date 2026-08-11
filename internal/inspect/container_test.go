@@ -564,6 +564,25 @@ func TestAnalyzeContainerODFExternalHrefRecognizesEveryLegalXMLSerialization(t *
 			"XLink namespace bound to a DIFFERENT prefix",
 			`<office:document-content xmlns:ns7="http://www.w3.org/1999/xlink"><text:a ns7:href="https://example.com"/></office:document-content>`,
 		},
+		{
+			// PR9R5-SWEEP-CLASSES: found by sweeping the class INSIDE the
+			// fix written for the class. encoding/xml only resolves
+			// Name.Space to the XLink URI when the document actually bound
+			// the prefix; leaving xmlns:xlink undeclared yields the literal
+			// Space=="xlink" instead, which a URI-only comparison misses --
+			// the same false-clean the semantic parse was written to close,
+			// one serialization further out. The document's own bytes still
+			// say `xlink:href`, and a lenient ODF importer keying off the
+			// qualified name resolves it.
+			"xlink prefix used but never declared",
+			`<office:document-content><text:a xlink:href="https://example.com"/></office:document-content>`,
+		},
+		{
+			// A URI scheme is case-insensitive (RFC 3986 3.1), so this is
+			// the same external target spelled legally another way.
+			"uppercase scheme",
+			`<office:document-content xmlns:xlink="http://www.w3.org/1999/xlink"><text:a xlink:href="HTTPS://example.com"/></office:document-content>`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

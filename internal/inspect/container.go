@@ -587,6 +587,33 @@ func containsExternalRelationship(data []byte) xmlScanResult {
 // 1999/xlink" declared on the very element that also carries
 // anyPrefix:href is enough) -- this function never has to know which prefix
 // a given document chose.
+//
+// Round 5's own sweep (PR9R5-SWEEP-CLASSES) then found the SAME class one
+// level down, inside the fix above, and this is why hrefAttrIsExternal
+// exists rather than a direct comparison here:
+//
+//   - encoding/xml only fills Name.Space with the RESOLVED namespace URI
+//     when the document actually bound the prefix. Probed directly against
+//     Go 1.26: `<r xmlns:xlink="http://www.w3.org/1999/xlink"><a
+//     xlink:href="http://evil"/></r>` yields Space=="http://www.w3.org/
+//     1999/xlink", and so does the same document using any other prefix
+//     bound to that URI (the case the review named) -- but
+//     `<r><a xlink:href="http://evil"/></r>`, with the prefix left
+//     UNDECLARED, yields Space=="xlink", the literal prefix. Comparing only
+//     against the URI therefore lets an undeclared-prefix document reach a
+//     clean external_reference verdict, which is precisely the defect this
+//     function was written to close, expressed one serialization further
+//     out. An undeclared prefix is not namespace-well-formed, but
+//     encoding/xml accepts it without error, so "the parser tolerated it"
+//     is exactly the situation where refusing to claim cleanliness matters.
+//   - A URI scheme is case-INSENSITIVE (RFC 3986 §3.1), so `HTTP://evil`
+//     and `Https://evil` are legal spellings of the same external target
+//     that a case-sensitive prefix comparison misses.
+//
+// Both are handled by widening what counts as a match, never by narrowing
+// what counts as clean: an over-report costs an external_reference FINDING
+// on a document that may not have deserved one, while a miss costs a false
+// clean -- and this project has now paid the second cost four times.
 func containsODFExternalHref(data []byte) xmlScanResult {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	for {
@@ -602,16 +629,43 @@ func containsODFExternalHref(data []byte) xmlScanResult {
 			continue
 		}
 		for _, attr := range se.Attr {
-			if attr.Name.Space != xlinkNamespace || attr.Name.Local != "href" {
-				continue
-			}
-			for _, scheme := range odfExternalHrefSchemes {
-				if strings.HasPrefix(attr.Value, scheme) {
-					return xmlScanFound
-				}
+			if hrefAttrIsExternal(attr) {
+				return xmlScanFound
 			}
 		}
 	}
+}
+
+// hrefAttrIsExternal reports whether one already-parsed XML attribute is an
+// href carrying an external scheme. See containsODFExternalHref's own doc
+// comment for why the namespace test accepts three spellings rather than
+// only the resolved XLink URI, and why the scheme test is
+// case-insensitive.
+//
+// An EMPTY Space (a bare href="http:...", no prefix at all) is deliberately
+// NOT matched, and that asymmetry is the whole point of listing the cases
+// explicitly. The bytes of an undeclared-prefix document literally say
+// `xlink:href`, so a lenient consumer keying off the qualified name -- as
+// real ODF importers do -- resolves it as XLink's own href and fetches the
+// target. A bare `href` says no such thing: ODF's schema has no unprefixed
+// href, nothing resolves it, and matching it would only manufacture
+// external_reference findings for documents that carry no external target
+// (see TestAnalyzeContainerODFHrefWithoutNamespaceBindingStaysClean).
+func hrefAttrIsExternal(attr xml.Attr) bool {
+	if attr.Name.Local != "href" {
+		return false
+	}
+	switch attr.Name.Space {
+	case xlinkNamespace, "xlink":
+	default:
+		return false
+	}
+	for _, scheme := range odfExternalHrefSchemes {
+		if len(attr.Value) >= len(scheme) && strings.EqualFold(attr.Value[:len(scheme)], scheme) {
+			return true
+		}
+	}
+	return false
 }
 
 // setSheetAndPageCharacteristics fills in exactly the characteristics
