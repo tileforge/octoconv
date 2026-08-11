@@ -475,6 +475,109 @@ func TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload(t *tes
 	}
 }
 
+// TestAnalyzeMediaSkipsIncidentalEmptyMoovBoxForRealOne is the PR9R5 finding
+// at media.go:321, verbatim: "If media payload contains \x00\x00\x00\x08moov
+// before the real tail moov, this local walk accepts the incidental bytes
+// as a valid empty box and immediately returns its empty payload. The
+// analyzer then reports malformed characteristics and never examines the
+// genuine later box, even though the MP4 itself is valid." Unlike the round
+// 4 fixture above (whose fake occurrence's preceding 4 bytes do NOT form a
+// valid box size), fakeEmptyMoov here IS a fully self-consistent, valid
+// moov box header (size=8, type="moov", zero-length payload) -- exactly the
+// literal byte sequence the finding names -- so round 4's own "parses as a
+// box" criterion alone is not enough to reject it.
+func TestAnalyzeMediaSkipsIncidentalEmptyMoovBoxForRealOne(t *testing.T) {
+	fakeEmptyMoov := isobmffBox("moov", []byte{}) // self-consistent, VALID, but EMPTY moov box header
+	mdatPayload := append(make([]byte, 6000), fakeEmptyMoov...)
+	mdat := isobmffBox("mdat", mdatPayload)
+
+	mvhd := mvhdBoxV0(1000, 5000)
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moov := moovBox(mvhd, trak)
+
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 4096 // smaller than mdat's own declared size (head cannot skip it as one box), same shape as the round 4 fixture above
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- an incidental, self-consistent but EMPTY \"moov\" box (valid header, no mvhd/trak) must not be accepted as the real moov just because it PARSES; the real moov that follows must still be found", res.Characteristics["duration_seconds"])
+	}
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640", res.Characteristics["width"])
+	}
+}
+
+// TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes proves the
+// plan's own explicit requirement: exhausting maxMoovTailCandidatesScanned
+// on candidates that DO parse as self-consistent "moov" box headers -- but
+// never yield a USABLE moov structure (every one of them is the same
+// incidental empty box from the test above, repeated) -- still reports
+// unknown/work_ceiling_bytes, never "not found", and marks the Tracker.
+func TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes(t *testing.T) {
+	const n = maxMoovTailCandidatesScanned + 20
+	fakeEmptyMoov := isobmffBox("moov", []byte{})
+	var payload []byte
+	for i := 0; i < n; i++ {
+		payload = append(payload, fakeEmptyMoov...)
+	}
+	mdat := isobmffBox("mdat", payload)
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+
+	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- both windows cover the whole tiny file, isolating the candidate cap as the ONLY thing that can produce a ceiling result here
+	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a self-consistent but EMPTY moov box (no mvhd), never a usable structure", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	}
+	if !tr.Exhausted() {
+		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	}
+}
+
+// TestFindMoovInTailUsabilityCheckOwnCeilingIsWorkCeilingBytes proves that
+// when the ONLY moov candidate reachable in the tail window DOES have a
+// real mvhd/trak, but more than maxISOBMFFBoxes filler boxes precede mvhd
+// inside it, isUsableMoovCandidate's own lookup cannot reach an answer --
+// this must abort with unknown/work_ceiling_bytes, never silently treat the
+// inconclusive check as "not usable" and report the file as if it had no
+// moov at all (which would misattribute OUR OWN iteration cap to the
+// file's structure, D-02a).
+func TestFindMoovInTailUsabilityCheckOwnCeilingIsWorkCeilingBytes(t *testing.T) {
+	var fillers []byte
+	for i := 0; i < maxISOBMFFBoxes+10; i++ {
+		fillers = append(fillers, isobmffBox("free", []byte{})...)
+	}
+	mvhd := mvhdBoxV0(1000, 5000)
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moovPayload := append(append(append([]byte{}, fillers...), mvhd...), trak...)
+	moov := isobmffBox("moov", moovPayload)
+
+	const mdatSize = 2 << 20 // large enough that the head window (maxBytes below) cannot skip it as one top-level box
+	mdat := isobmffBox("mdat", make([]byte, mdatSize))
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 1 << 20 // smaller than mdat's own declared size, forcing the tail-anchored search; the fixed mp4TailWindow (2 MiB) still comfortably reaches moov near EOF
+	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- the only moov candidate reachable in the tail window has a REAL mvhd/trak, but more than maxISOBMFFBoxes filler boxes precede mvhd, so this candidate's own usability check cannot reach an answer", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- silently treating an inconclusive usability check as \"not usable\" and moving on would misattribute this ceiling to the file's structure", reason, ReasonWorkCeilingBytes)
+	}
+	if !tr.Exhausted() {
+		t.Fatal("Tracker was never marked -- isUsableMoovCandidate's own iteration-ceiling exhaustion must reach the Tracker it was given")
+	}
+}
+
 // TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes proves
 // findTrackByHandler's own candidate cap (maxTrakCandidatesScanned,
 // T-R4B-02): more trak candidates than the cap allows, none of which
