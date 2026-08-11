@@ -22,6 +22,7 @@ package inspect
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/xml"
 	"io"
 	"strings"
 
@@ -411,7 +412,7 @@ var odfExternalHrefSchemes = [][]byte{
 func containsExternalReference(data []byte, format string) bool {
 	switch format {
 	case "docx", "xlsx", "pptx":
-		return bytes.Contains(data, []byte(`TargetMode="External"`))
+		return containsExternalRelationship(data)
 	case "odt", "ods", "odp", "epub":
 		for _, tok := range odfExternalHrefSchemes {
 			if bytes.Contains(data, tok) {
@@ -421,6 +422,54 @@ func containsExternalReference(data []byte, format string) bool {
 		return false
 	default:
 		return false
+	}
+}
+
+// containsExternalRelationship reports whether data (an OOXML .rels part)
+// declares ANY <Relationship> element with TargetMode="External", parsed
+// with encoding/xml (stdlib, D-02 -- a .rels part is small and bounded by
+// maxRelsPartBytes, so a real XML parse here is cheap, unlike the whole-PDF
+// byte scan D-02a deliberately avoids for a much larger, unbounded-shape
+// input).
+//
+// PR9R4 finding (container.go:414), verbatim: "A valid OOXML relationship
+// can use single quotes or whitespace around '=', for example
+// `TargetMode = 'External'`, but this exact byte match recognizes only the
+// double-quoted, unspaced serialization. Such a document reaches the clean
+// external_reference result even though it contains an external target."
+// The prior version of this function was a single literal byte-sequence
+// comparison against the exact bytes TargetMode="External" -- exactly the
+// same class of defect as comparing hex-escaped PDF names byte-for-byte: a
+// STRUCTURED format compared as an opaque byte sequence, blind to any of
+// its other legal serializations (attribute order, quote character,
+// whitespace around '='). encoding/xml's own tokenizer handles all of those
+// for free, because it actually parses the attribute rather than
+// pattern-matching its serialized bytes.
+//
+// A decode error (truncated by this scan's own maxRelsPartBytes ceiling, or
+// genuinely malformed XML) is treated conservatively: this function reports
+// false ("no CONFIRMED external reference"), never true -- it is the
+// caller's own truncation bookkeeping (scanExternalReferences's
+// truncatedAnyPart) that is responsible for downgrading the overall verdict
+// to unknown/work_ceiling_bytes rather than clean, exactly as it already
+// does for every other refusal-to-look case in that function. This function
+// only ever answers "did I find one", never "I looked at everything".
+func containsExternalRelationship(data []byte) bool {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		se, ok := tok.(xml.StartElement)
+		if !ok || se.Name.Local != "Relationship" {
+			continue
+		}
+		for _, attr := range se.Attr {
+			if attr.Name.Local == "TargetMode" && attr.Value == "External" {
+				return true
+			}
+		}
 	}
 }
 
