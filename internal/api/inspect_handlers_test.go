@@ -29,7 +29,10 @@ import (
 // count ceiling with a genuinely parseable archive rather than a
 // hand-crafted/inconsistent one -- n above inspectMaxZipDirEntries proves
 // the bound trips BEFORE the docx root part would otherwise be recognized.
-func manyEntriesDocxFixture(t *testing.T, n int) []byte {
+// Takes testing.TB (see mustWriteZipEntry's own doc comment, handlers_test.go)
+// so FuzzZipDirectoryGateNeverUnderestimates can seed from
+// zipDirectoryDifferentialCorpus directly, at *testing.F setup time.
+func manyEntriesDocxFixture(t testing.TB, n int) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
 	zw := zip.NewWriter(buf)
@@ -965,7 +968,14 @@ type zipDifferentialCase struct {
 // (JAR-style) positive baseOffset, and legitimate small/realistic office
 // archives -- built by a generator (zipEOCDFixture/manyEntriesDocxFixture/
 // docxFixture), not binary fixtures, per the plan's own requirement.
-func zipDirectoryDifferentialCorpus(t *testing.T) []zipDifferentialCase {
+//
+// Takes testing.TB (see mustWriteZipEntry's own doc comment,
+// handlers_test.go), not the concrete *testing.T, so
+// FuzzZipDirectoryGateNeverUnderestimates can call this directly with its
+// own *testing.F to seed the fuzz corpus with every entry here -- the known
+// scenarios stay covered by the fuzzer's own corpus, not only by
+// TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip below.
+func zipDirectoryDifferentialCorpus(t testing.TB) []zipDifferentialCase {
 	t.Helper()
 	const over = inspectMaxZipDirEntries + 1
 
@@ -1065,6 +1075,73 @@ func TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip(t *test
 			}
 		})
 	}
+}
+
+// zipDirectoryGateFuzzMaxInputLen bounds every input
+// FuzzZipDirectoryGateNeverUnderestimates actually exercises: large enough
+// to hold the round-4/5 seed corpus (65,537 real 46-byte records, ~3 MiB)
+// with headroom, small enough that a fuzzer-mutated length can never make
+// the REFERENCE call below (archive/zip.NewReader) walk an unbounded
+// number of records. This is deliberately NOT about
+// zipDirectoryExceedsStructuralBound's own read volume -- that is already
+// bounded by a fixed constant regardless of input size
+// (TestZipDirectoryExceedsStructuralBoundReadVolumeBoundedByConstant proves
+// this directly, with a 1 TiB virtual input) -- it is about archive/zip's
+// own reader, which has no such ceiling and will happily parse however many
+// real records a mutated input contains. Anything the fuzzer or corpus
+// proposes above this is skipped (t.Skip), never allocated.
+const zipDirectoryGateFuzzMaxInputLen = 8 << 20 // 8 MiB
+
+// FuzzZipDirectoryGateNeverUnderestimates is
+// TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip's own
+// property, run against FUZZER-GENERATED inputs rather than only a
+// human-enumerated corpus. A fixed table proves the property on cases
+// someone thought of, and every one of this bound's four prior bypasses
+// (see zipDirectoryExceedsStructuralBound's own doc comment) was an input
+// nobody enumerated -- the exact gap a fixed corpus cannot close on its
+// own.
+//
+// Seeded with every entry of zipDirectoryDifferentialCorpus (round 1/2/4/5
+// reproductions, the truncated-comment/dual-signature/0xFFFF/positive-
+// baseOffset cases, and the two legitimate office archives), via f.Add, so
+// the known scenarios stay covered by the fuzzer's own corpus too, not only
+// by the table test above. zipDirectoryDifferentialCorpus takes
+// testing.TB, not *testing.T, specifically so this *testing.F can call it
+// directly (see mustWriteZipEntry's own doc comment, handlers_test.go).
+//
+// The fuzz body asserts EXACTLY the one property the table test asserts,
+// nothing more: legitimate-file assertions would make this flaky, since a
+// fuzzer mutating raw bytes overwhelmingly produces garbage that is not,
+// and was never meant to be, a valid archive of any kind -- the plan's own
+// discipline against enumerating scenarios extends to not enumerating
+// EXPECTED OUTCOMES either; only the one forbidden combination is checked.
+func FuzzZipDirectoryGateNeverUnderestimates(f *testing.F) {
+	for _, tc := range zipDirectoryDifferentialCorpus(f) {
+		f.Add(tc.data)
+	}
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if len(data) > zipDirectoryGateFuzzMaxInputLen {
+			// Bound the cost of the reference call below, not this
+			// function's own gate (already proven bounded independent of
+			// input size) -- skip rather than allocate/parse an arbitrarily
+			// large mutated input. None of the seed corpus entries are
+			// anywhere near this cap (the largest, round 4/5's 65,537-record
+			// fixtures, are ~3 MiB), so no seed is ever skipped.
+			t.Skip("input exceeds zipDirectoryGateFuzzMaxInputLen")
+		}
+
+		realCount := -1
+		if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil || errors.Is(err, zip.ErrInsecurePath) {
+			realCount = len(zr.File)
+		}
+
+		exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+
+		if realCount > inspectMaxZipDirEntries && !exceeds {
+			t.Fatalf("FORBIDDEN COMBINATION: archive/zip.NewReader parsed %d real records (> ceiling %d) but zipDirectoryExceedsStructuralBound said exceeds=false.\nInput (%d bytes, hex): %x", realCount, inspectMaxZipDirEntries, len(data), data)
+		}
+	})
 }
 
 // incompleteMultipartPrefix builds a real, well-formed multipart body up to
