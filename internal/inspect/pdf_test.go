@@ -613,23 +613,35 @@ func TestAnalyzePDFEncryptedYieldsFinding(t *testing.T) {
 // read failure (not merely a truncation): every PDF-domain code must
 // degrade to unknown/malformed_input, and page_count must be nil with the
 // same reason.
-func TestAnalyzePDFMalformedInputNeverPanicsAndReportsUnknown(t *testing.T) {
+// TestAnalyzePDFReadFailureNeverPanicsAndReportsReadFailed replaces the
+// former TestAnalyzePDFMalformedInputNeverPanicsAndReportsUnknown, which
+// pinned ReasonMalformedInput for this exact erroringReaderAt fixture.
+//
+// That pinning was itself the defect, not a contract: the fixture never
+// produces a malformed PDF, it produces an unreadable one. Round 6's
+// neighbour audit found AnalyzePDF labeling an operational read failure as a
+// structural claim about the file, and the test had frozen that mislabeling
+// in place -- which is exactly how a wrong behavior survives review rounds.
+// What the test was really guarding (never panic, never clean, always an
+// honest unknown for every PDF-domain code) is preserved and strengthened
+// below; only the reason is corrected.
+func TestAnalyzePDFReadFailureNeverPanicsAndReportsReadFailed(t *testing.T) {
 	r := erroringReaderAt{}
 	res := AnalyzePDF(r, 100, 100, nil)
 
 	if pc, ok := res.Characteristics["page_count"]; !ok || pc != nil {
 		t.Fatalf("Characteristics[page_count] = %v, want nil", pc)
 	}
-	if reason, ok := res.Characteristics["page_count_reason"]; !ok || reason != string(ReasonMalformedInput) {
-		t.Fatalf("Characteristics[page_count_reason] = %v, want %q", reason, ReasonMalformedInput)
+	if reason, ok := res.Characteristics["page_count_reason"]; !ok || reason != string(ReasonReadFailed) {
+		t.Fatalf("Characteristics[page_count_reason] = %v, want %q -- an unreadable upload is not a malformed one", reason, ReasonReadFailed)
 	}
 	for _, rt := range pdfRiskTokens {
 		c, ok := checkFor(res, rt.code)
 		if !ok {
 			t.Fatalf("no Check for code %q", rt.code)
 		}
-		if c.Status != StatusUnknown || c.Reason != ReasonMalformedInput {
-			t.Fatalf("Check(%q) = %+v, want unknown/malformed_input", rt.code, c)
+		if c.Status != StatusUnknown || c.Reason != ReasonReadFailed {
+			t.Fatalf("Check(%q) = %+v, want unknown/read_failed -- never clean, and never a claim about the FILE when the failure was our inability to read it", rt.code, c)
 		}
 	}
 }

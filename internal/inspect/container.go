@@ -23,6 +23,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"errors"
 	"io"
 	"strings"
 
@@ -103,7 +104,17 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 	// never re-implemented.
 	cr, err := convert.SniffContainer(r, size)
 	if err != nil {
-		return notApplicableContainerResult(res)
+		// convert.ErrNotAZip is a genuine answer about the upload: it is not
+		// a zip container, so the container-domain codes do not apply to it.
+		// Any OTHER error reached the sniffer through the io.ReaderAt, and
+		// round 6's own neighbour audit flagged reporting THAT as
+		// not_applicable -- "these checks do not apply to this file" is a
+		// conclusion, and we have no grounds for it when the failure was our
+		// inability to read the bytes at all.
+		if errors.Is(err, convert.ErrNotAZip) {
+			return notApplicableContainerResult(res)
+		}
+		return unknownContainerResult(res, ReasonReadFailed)
 	}
 	return AnalyzeContainerWith(cr, r, size, maxBytes, bombThreshold, tr)
 }
@@ -148,9 +159,18 @@ func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64,
 		// SniffContainer just parsed these exact bytes as a zip successfully
 		// -- reaching here would mean archive/zip disagrees with itself
 		// between two of its own entry points, which should not happen in
-		// practice. Fail closed exactly like a malformed input rather than
-		// trusting a partially-computed result.
-		return malformedContainerResult(res)
+		// practice. Fail closed rather than trusting a partially-computed
+		// result -- but fail closed with the RIGHT reason: round 6's own
+		// neighbour audit found this site reporting ReasonMalformedInput
+		// unconditionally, which turns "we could not read the upload" into a
+		// claim about the upload's structure. archive/zip's own sentinel
+		// errors say which of the two it is; anything that is not one of
+		// them reached here through the io.ReaderAt, so it is a read
+		// failure.
+		if errors.Is(zerr, zip.ErrFormat) || errors.Is(zerr, zip.ErrAlgorithm) || errors.Is(zerr, zip.ErrChecksum) {
+			return malformedContainerResult(res)
+		}
+		return unknownContainerResult(res, ReasonReadFailed)
 	}
 
 	appendMacroResult(&res, zr, cr.HasMacro)
@@ -176,8 +196,17 @@ func duplicateRootPartContainerResult(res FamilyResult) FamilyResult {
 }
 
 func malformedContainerResult(res FamilyResult) FamilyResult {
+	return unknownContainerResult(res, ReasonMalformedInput)
+}
+
+// unknownContainerResult is malformedContainerResult generalized over WHY
+// nothing could be determined. Same shape -- every container-domain code
+// becomes an honest unknown, never clean -- with the reason left to the
+// caller, because "this archive is malformed" and "we could not read this
+// archive" are different claims and only one of them is about the archive.
+func unknownContainerResult(res FamilyResult, reason Reason) FamilyResult {
 	for _, code := range containerDomainCodes {
-		res.Checks = append(res.Checks, Check{Code: code, Status: StatusUnknown, Reason: ReasonMalformedInput})
+		res.Checks = append(res.Checks, Check{Code: code, Status: StatusUnknown, Reason: reason})
 	}
 	return res
 }

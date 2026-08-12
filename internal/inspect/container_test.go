@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -1026,4 +1027,53 @@ func TestAnalyzeContainerWithMatchesAnalyzeContainer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnalyzeContainerReadFailureIsReadFailedNotNotApplicable is round 6's
+// neighbour-audit fix at the container layer. An io.ReaderAt that fails is
+// not evidence that the container-domain checks do not apply -- that is a
+// conclusion, and an unreadable upload gives no grounds for one. Before this
+// fix the result was StatusNotApplicable, which reads as "we looked and
+// these questions are irrelevant to this file".
+//
+// Reaching this at all required a fix one layer down: convert.SniffContainer
+// collapsed EVERY zip.NewReader failure, read errors included, into
+// ErrNotAZip, so this distinction was unavailable to callers no matter how
+// carefully they branched on it.
+func TestAnalyzeContainerReadFailureIsReadFailedNotNotApplicable(t *testing.T) {
+	res := AnalyzeContainer(erroringReaderAtC{}, 1024, 1024, 1<<30, nil)
+	for _, code := range containerDomainCodes {
+		c, ok := checkFor(res, code)
+		if !ok {
+			t.Fatalf("no Check for code %q", code)
+		}
+		if c.Status != StatusUnknown || c.Reason != ReasonReadFailed {
+			t.Errorf("Check(%q) = %+v, want unknown/read_failed -- a failed read is not a verdict that these checks are not applicable", code, c)
+		}
+	}
+}
+
+// TestAnalyzeContainerNonZipStaysNotApplicable is the other half: a genuine
+// non-zip input IS a fact about the upload, and not_applicable remains the
+// right answer for it. Without this test the fix above could be satisfied by
+// reporting read_failed for everything.
+func TestAnalyzeContainerNonZipStaysNotApplicable(t *testing.T) {
+	data := []byte("this is definitely not a zip archive, not even slightly")
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	for _, code := range containerDomainCodes {
+		c, ok := checkFor(res, code)
+		if !ok {
+			t.Fatalf("no Check for code %q", code)
+		}
+		if c.Status != StatusNotApplicable {
+			t.Errorf("Check(%q).Status = %q, want %q", code, c.Status, StatusNotApplicable)
+		}
+	}
+}
+
+// erroringReaderAtC always fails with a real, non-EOF error.
+type erroringReaderAtC struct{}
+
+func (erroringReaderAtC) ReadAt([]byte, int64) (int, error) {
+	return 0, errors.New("simulated disk read failure")
 }

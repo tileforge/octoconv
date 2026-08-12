@@ -3,6 +3,7 @@ package convert
 import (
 	"archive/zip"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 )
@@ -20,6 +21,17 @@ type ContainerResult struct {
 // ErrNotAZip is returned when SniffContainer's input cannot be parsed as a
 // ZIP central directory at all (as opposed to being a valid-but-unrecognized
 // zip, which returns ContainerResult{} with Format=="" and a nil error).
+//
+// It reports a fact about the INPUT. A failure to read the input at all --
+// a non-EOF io.ReaderAt error -- is deliberately NOT reported as this
+// sentinel, because "this is not a zip" is a conclusion and an unreadable
+// upload gives no grounds for one. Callers that need the distinction test
+// with errors.Is; callers that only care whether the sniff succeeded keep
+// working unchanged, since both cases are still non-nil errors. This split
+// exists because internal/inspect must choose between reporting
+// not_applicable and read_failed, and it could not while every failure
+// arrived here wearing the same sentinel (codex PR #9, round 6 neighbour
+// audit).
 var ErrNotAZip = errors.New("not a valid zip container")
 
 // ooxmlRootParts is the closed set of OOXML root-part paths this project
@@ -69,7 +81,16 @@ var ooxmlMacroParts = map[string]bool{
 func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
-		return ContainerResult{}, ErrNotAZip
+		// archive/zip's own sentinels say the bytes are not a usable zip;
+		// anything else reached us through r.ReadAt and is an operational
+		// read failure, which must not be dressed up as a verdict about the
+		// input (see ErrNotAZip's own doc comment). Wrapping keeps
+		// errors.Is(err, ErrNotAZip) true for the format cases while
+		// preserving the underlying cause for diagnosis.
+		if errors.Is(err, zip.ErrFormat) || errors.Is(err, zip.ErrAlgorithm) || errors.Is(err, zip.ErrChecksum) {
+			return ContainerResult{}, fmt.Errorf("%w: %w", ErrNotAZip, err)
+		}
+		return ContainerResult{}, fmt.Errorf("read zip container: %w", err)
 	}
 
 	var res ContainerResult

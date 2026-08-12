@@ -145,7 +145,15 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	}
 	head, headOK := readWindow(r, 0, headLen, size)
 	if !headOK {
-		return malformedPDFResult(res)
+		// readWindow only reports failure on a genuine, non-EOF read error
+		// (size and maxBytes were already validated above), so this is an
+		// operational failure to READ the upload, not a discovery about its
+		// structure. Round 6's own neighbour audit found this site labeling
+		// it ReasonMalformedInput -- never clean, so not the severe half of
+		// the class, but still a claim about the FILE made on the strength
+		// of our own inability to read it. The two are different facts and
+		// carry different Reason values (status.go's own vocabulary note).
+		return unknownPDFResult(res, ReasonReadFailed)
 	}
 
 	// truncated is the source of ReasonWorkCeilingBytes below -- OUR OWN
@@ -385,11 +393,20 @@ func verdictReason(compressed, truncated, hexEscape, opaqueRangesCeilingHit bool
 // for it, and false is the only claim this function can make truthfully
 // about zero evidence.
 func malformedPDFResult(res FamilyResult) FamilyResult {
+	return unknownPDFResult(res, ReasonMalformedInput)
+}
+
+// unknownPDFResult is malformedPDFResult generalized over WHY nothing could
+// be determined. The shape is identical -- every PDF-domain code becomes an
+// honest unknown, never clean -- but the reason is the caller's to choose,
+// because "this file is malformed" and "we could not read this file" are
+// different claims and only one of them is about the file.
+func unknownPDFResult(res FamilyResult, reason Reason) FamilyResult {
 	res.Characteristics["uses_compressed_object_streams"] = false
 	res.Characteristics["page_count"] = nil
-	res.Characteristics["page_count_reason"] = string(ReasonMalformedInput)
+	res.Characteristics["page_count_reason"] = string(reason)
 	for _, rt := range pdfRiskTokens {
-		res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonMalformedInput})
+		res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: reason})
 	}
 	return res
 }
