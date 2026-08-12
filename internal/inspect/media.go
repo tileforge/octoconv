@@ -110,7 +110,25 @@ func AnalyzeMedia(format string, r io.ReaderAt, size int64, maxBytes int64, tr *
 func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims bool, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
-	moovPayload, reason := findMoov(r, size, maxBytes, tr)
+	// wantHandler selects which trak this analyzer cares about, via the
+	// SAME mdia -> hdlr -> handler_type ("vide"/"soun") every real
+	// MP4/MOV/M4A muxer already writes: mp4/mov (includeDims==true) want
+	// the VIDEO track's dimensions and codec; m4a (includeDims==false) is
+	// audio-only and wants the AUDIO track's codec. See findTrackByHandler's
+	// own doc comment (PR9R4 finding, media.go:275) for why "the first
+	// trak" is no longer an acceptable selection for either.
+	//
+	// Resolved HERE, before findMoov, not after (round 6, T-R6C-01):
+	// isUsableMoovCandidate needs to know which extraction
+	// isobmffCharacteristics will actually perform on a TAIL-anchored
+	// candidate while it is still deciding whether that candidate IS the
+	// real moov box -- not merely after one has already been accepted.
+	wantHandler := isobmffHandlerAudio
+	if includeDims {
+		wantHandler = isobmffHandlerVideo
+	}
+
+	moovPayload, reason := findMoov(r, size, maxBytes, wantHandler, includeDims, tr)
 	if moovPayload == nil {
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)
@@ -148,18 +166,6 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 		// is already in hand and was walked to completion.
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(ReasonMalformedInput)
-	}
-
-	// wantHandler selects which trak this analyzer cares about, via the
-	// SAME mdia -> hdlr -> handler_type ("vide"/"soun") every real
-	// MP4/MOV/M4A muxer already writes: mp4/mov (includeDims==true) want
-	// the VIDEO track's dimensions and codec; m4a (includeDims==false) is
-	// audio-only and wants the AUDIO track's codec. See findTrackByHandler's
-	// own doc comment (PR9R4 finding, media.go:275) for why "the first
-	// trak" is no longer an acceptable selection for either.
-	wantHandler := isobmffHandlerAudio
-	if includeDims {
-		wantHandler = isobmffHandlerVideo
 	}
 
 	if includeDims {
@@ -201,7 +207,7 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // (ReasonMalformedInput). These are two different facts and must not be
 // collapsed into one (D-02a's whole point, applied here to media instead
 // of PDF).
-func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason) {
+func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDims bool, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
 	}
@@ -249,7 +255,7 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	tailWin, tailOK := readWindow(r, tailOff, tailLen, size)
 	if tailOK {
 		tailActual = int64(len(tailWin))
-		if payload, found, ceilingHit := findMoovInTail(tailWin, tr); found {
+		if payload, found, ceilingHit := findMoovInTail(tailWin, wantHandler, includeDims, tr); found {
 			return payload, ""
 		} else {
 			tailCeilingHit = ceilingHit
@@ -295,9 +301,34 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 // moov was found somewhere" to "parses as a self-consistent box" -- but a
 // bare, empty box header parses exactly as cleanly as a real one, so the
 // winning criterion never actually distinguished a genuine moov from a
-// decoy shaped like one. findMoovInTail now raises the bar again, to
-// "yields a USABLE moov structure" (isUsableMoovCandidate) -- the SAME
-// candidate cap still bounds how many occurrences are tried either way.
+// decoy shaped like one. Round 5 raised the bar again, to "mvhd and trak
+// children are PRESENT" -- and that bar fell too:
+//
+// PR9R6 finding (media.go:382), verbatim: "Fresh evidence after the prior
+// `moov` comment: a tail payload containing a locally valid 24-byte decoy
+// (`moov` with empty 8-byte `mvhd` and `trak` children) now passes this
+// usability check, so `findMoovInTail` still selects it and ignores the
+// genuine later `moov`; downstream parsing then reports malformed or
+// missing characteristics for an otherwise valid MP4/MOV. Validate that
+// `mvhd` parses and that a suitable track has the structure consumed
+// downstream before accepting the candidate."
+//
+// Three rounds, three separately-chosen thresholds, three decoys built one
+// step past each: "substring present" (defeated by an incidental
+// occurrence); "parses as a box" (defeated by a valid, empty box); "children
+// present" (defeated by children that are present but themselves empty).
+// Every threshold of THIS shape can be defeated by a decoy built to clear
+// it without carrying a single real, consumable field. isUsableMoovCandidate
+// no longer chooses its own threshold at all: it runs the SAME extraction
+// isobmffCharacteristics performs when a candidate is actually accepted
+// (parseMVHD's own duration fields; a track selected by handler_type whose
+// tkhd or stsd genuinely decodes) and accepts a candidate only if that
+// extraction yields a real answer. A decoy that clears THIS bar is no
+// longer a decoy -- it is real, consumable data, and isobmffCharacteristics'
+// own tests (parseMVHD, parseTKHD, parseSTSDCodec, ...) already cover
+// whether that data is trustworthy. See isUsableMoovCandidate's own doc
+// comment for the full reasoning and the DoS cost analysis this criterion
+// change requires (T-R6C-02).
 const maxMoovTailCandidatesScanned = 64
 
 // findMoovInTail searches tailWin for a REAL, USABLE moov box, trying every
@@ -307,11 +338,15 @@ const maxMoovTailCandidatesScanned = 64
 // top-level box via walkTopLevelBoxes (its own declared size must fit
 // within the bounded buffer AND its type must genuinely be "moov"); a
 // candidate that DOES parse that way is validated FURTHER, against
-// isUsableMoovCandidate -- only a candidate that yields the actual
-// structure this analyzer needs (mvhd, at least one trak) is accepted.
-// Any other candidate, parseable or not, causes the search to continue to
-// the NEXT occurrence rather than giving up or accepting an unusable box.
-func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
+// isUsableMoovCandidate -- only a candidate whose ACTUAL consumer
+// extraction (mvhd's duration fields, or the wantHandler track's
+// dimensions/codec) yields a real answer is accepted. Any other candidate,
+// parseable or not, causes the search to continue to the NEXT occurrence
+// rather than giving up or accepting an unusable box. wantHandler and
+// includeDims are threaded through from isobmffCharacteristics unchanged --
+// see isUsableMoovCandidate's own doc comment for why the criterion needs
+// them.
+func findMoovInTail(tailWin []byte, wantHandler string, includeDims bool, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
 	searchFrom := 0
 	for candidates := 0; candidates < maxMoovTailCandidatesScanned; candidates++ {
 		rel := bytes.Index(tailWin[searchFrom:], []byte("moov"))
@@ -335,26 +370,30 @@ func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ce
 		if !matchedType {
 			continue
 		}
-		usable, usabilityCeilingHit := isUsableMoovCandidate(candidatePayload, tr)
+		usable, usabilityCeilingHit := isUsableMoovCandidate(candidatePayload, wantHandler, includeDims, tr)
 		if usable {
 			return candidatePayload, true, false
 		}
 		if usabilityCeilingHit {
 			// This candidate's OWN usability check could not reach an
-			// answer within maxISOBMFFBoxes -- OUR OWN resource limit, not
-			// proof this candidate is unusable. Silently treating an
-			// inconclusive check as "reject and keep going" would risk
-			// eventually reporting "not found" for a file whose real moov
-			// this scan never actually ruled out -- abort the whole search
-			// with a ceiling result instead, exactly like every other
-			// ceilingHit branch in this package.
+			// answer within maxISOBMFFBoxes (directly, or via
+			// findTrackByHandler's own maxTrakCandidatesScanned) -- OUR OWN
+			// resource limit, not proof this candidate is unusable.
+			// Silently treating an inconclusive check as "reject and keep
+			// going" would risk eventually reporting "not found" for a file
+			// whose real moov this scan never actually ruled out -- abort
+			// the whole search with a ceiling result instead, exactly like
+			// every other ceilingHit branch in this package.
 			return nil, false, true
 		}
 		// This candidate parsed as a self-consistent "moov" box header, but
-		// its payload does not yield mvhd+trak -- PR9R5's own incidental
-		// "\x00\x00\x00\x08moov" case, and any other empty/truncated/garbage
-		// payload shaped the same way. A box header that merely PARSES is
-		// not proof it is the file's real moov; keep searching.
+		// neither its mvhd nor its wantHandler-selected track actually
+		// yields a real value this analyzer would publish -- PR9R5's own
+		// incidental "\x00\x00\x00\x08moov" case, PR9R6's own 24-byte
+		// empty-children decoy, and any other empty/truncated/garbage
+		// payload shaped the same way. A box that merely PARSES, or merely
+		// carries present-but-empty children, is not proof it is the
+		// file's real moov; keep searching.
 	}
 	// The candidate cap was exhausted without validating a USABLE moov box --
 	// OUR OWN resource limit, not proof the file lacks one.
@@ -362,25 +401,129 @@ func findMoovInTail(tailWin []byte, tr *Tracker) (payload []byte, found bool, ce
 	return nil, false, true
 }
 
-// isUsableMoovCandidate reports whether payload -- already validated as a
-// self-consistent top-level box of type "moov" -- actually carries the
-// child structure this analyzer exists to read out of it: mvhd (ISO/IEC
-// 14496-12's own MANDATORY moov child, carrying duration) and at least one
-// trak (also mandatory -- a moov describing zero tracks describes no media
-// at all). A bare box header that merely parses (round 4's own criterion)
-// is not evidence of either; this is that missing distinction (PR9R5,
-// media.go:321). ceilingHit is true if EITHER lookup exhausted
-// firstChildBox's own maxISOBMFFBoxes cap before reaching an answer -- the
-// caller must treat that as "this scan could not determine usability",
-// never as "not usable" (D-02a, applied one level down from every other
-// ceilingHit in this file).
-func isUsableMoovCandidate(payload []byte, tr *Tracker) (usable bool, ceilingHit bool) {
-	_, hasMvhd, c1 := firstChildBox(payload, "mvhd", tr)
-	if !hasMvhd {
-		return false, c1
+// codecFromTrak descends an ALREADY-SELECTED trakPayload -> mdia -> minf ->
+// stbl -> stsd and reads the first sample entry's fourCC -- the shared tail
+// of findDeclaredCodec (moov -> trak -> ...) and isUsableMoovCandidate's own
+// codec-extraction attempt (round 6, T-R6C-01). Factored out so both
+// callers run the IDENTICAL descent from a trak already in hand: duplicating
+// this chain inline in isUsableMoovCandidate would mean validating a
+// candidate against one extraction and later publishing a value computed by
+// a subtly different one, exactly the kind of drift this round's whole fix
+// exists to make structurally impossible rather than merely unlikely.
+func codecFromTrak(trakPayload []byte, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
+	mdiaPayload, ok1, c1 := firstChildBox(trakPayload, "mdia", tr)
+	if !ok1 {
+		return "", false, c1
 	}
-	_, hasTrak, c2 := firstChildBox(payload, "trak", tr)
-	return hasTrak, c1 || c2
+	minfPayload, ok2, c2 := firstChildBox(mdiaPayload, "minf", tr)
+	if !ok2 {
+		return "", false, c1 || c2
+	}
+	stblPayload, ok3, c3 := firstChildBox(minfPayload, "stbl", tr)
+	if !ok3 {
+		return "", false, c1 || c2 || c3
+	}
+	stsdPayload, ok4, c4 := firstChildBox(stblPayload, "stsd", tr)
+	if !ok4 {
+		return "", false, c1 || c2 || c3 || c4
+	}
+	codec, ok5 := parseSTSDCodec(stsdPayload)
+	return codec, ok5, c1 || c2 || c3 || c4
+}
+
+// isUsableMoovCandidate reports whether payload -- already validated as a
+// self-consistent top-level box of type "moov" -- is USABLE in the one
+// sense that actually matters: does the extraction isobmffCharacteristics
+// will ACTUALLY perform against it yield at least one real answer? This
+// replaces round 4's and round 5's own criteria in turn ("parses as a
+// self-consistent box header"; "carries mvhd+trak children, present but
+// possibly empty") -- both were a bar SEPARATE from what the consumer
+// extracts, and a separate bar can always be defeated by a decoy built to
+// clear it without carrying anything real (see maxMoovTailCandidatesScanned's
+// own doc comment for the three-round history). A candidate is accepted
+// here the instant EITHER of the two extractions isobmffCharacteristics
+// performs succeeds:
+//
+//   - mvhd's own duration fields decode (parseMVHD) -- mvhd is mandatory in
+//     a well-formed moov, and a moov whose duration alone is real (even one
+//     with no matching track, e.g. an mp4 with only an audio track) is
+//     still THIS file's genuine moov, never a decoy (this is also why an
+//     MP4 with no video track still reports a real duration and only
+//     width/height/declared_codec become unknown -- the plan's own explicit
+//     requirement).
+//   - OR the wantHandler-selected track's tkhd (when includeDims) or its
+//     stsd sample entry actually decodes -- the SAME descent
+//     findTrackDimensions/findDeclaredCodec perform, via the shared
+//     codecFromTrak helper for the codec half.
+//
+// Defeating this criterion would require a candidate that satisfies
+// isobmffCharacteristics's OWN consumer code (parseMVHD, parseTKHD,
+// parseSTSDCodec) -- and that code already has its own tests
+// (TestAnalyzeMediaMVHDVersion1SixtyFourBit,
+// TestAnalyzeMediaTkhdDimensionsAreFixedPointDecoded, ...), so a "decoy"
+// that clears this bar is, by construction, no longer a decoy: it IS real,
+// consumable data.
+//
+// ceilingHit is true if ANY of the lookups below (mvhd; findTrackByHandler,
+// including its own maxTrakCandidatesScanned cap; tkhd; codecFromTrak's own
+// chain) exhausted firstChildBox's own maxISOBMFFBoxes cap before an answer
+// was reached along EVERY attempted extraction -- an inconclusive check,
+// never proof of unusability (D-02a, applied one level down from every
+// other ceilingHit in this file). The caller aborts the whole tail search
+// on ceilingHit, exactly as it already did.
+//
+// Cost (T-R6C-02, round 6's own DoS threat disposition): this candidate
+// check now costs up to one mvhd descent (bounded by the EXISTING
+// maxISOBMFFBoxes cap) plus one findTrackByHandler search (bounded by the
+// EXISTING maxISOBMFFBoxes cap for the outer walk and the EXISTING
+// maxTrakCandidatesScanned cap for how many trak siblings it opens) plus,
+// only for the ONE track handler-selected (never more than one), up to five
+// more bounded descents (tkhd; mdia/minf/stbl/stsd via codecFromTrak) --
+// every one of those bounds is an EXISTING, already-enforced constant, none
+// of them grows because of this fix. That fixed, input-independent ceiling
+// is paid at most maxMoovTailCandidatesScanned times per findMoov call, and
+// findMoovInTail aborts the ENTIRE candidate scan the instant any single
+// candidate's own lookup is inconclusive (ceilingHit above) rather than
+// paying this cost speculatively on every remaining candidate too -- so the
+// worst-case total work this correctness fix can ever add is a compile-time
+// constant, never a function of attacker-controlled file content beyond the
+// windows already bounded elsewhere in this file. See
+// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded for a
+// wall-clock proof this stays cheap even under an adversarial shape.
+func isUsableMoovCandidate(payload []byte, wantHandler string, includeDims bool, tr *Tracker) (usable bool, ceilingHit bool) {
+	var anyCeiling bool
+
+	if mvhdPayload, found, c := firstChildBox(payload, "mvhd", tr); found {
+		if _, ok, _ := parseMVHD(mvhdPayload); ok {
+			return true, false
+		}
+	} else if c {
+		anyCeiling = true
+	}
+
+	trakPayload, foundTrak, c := findTrackByHandler(payload, wantHandler, tr)
+	anyCeiling = anyCeiling || c
+	if !foundTrak {
+		return false, anyCeiling
+	}
+
+	if includeDims {
+		if tkhdPayload, ok, c2 := firstChildBox(trakPayload, "tkhd", tr); ok {
+			if _, _, ok2 := parseTKHD(tkhdPayload); ok2 {
+				return true, false
+			}
+		} else if c2 {
+			anyCeiling = true
+		}
+	}
+
+	if _, ok, c2 := codecFromTrak(trakPayload, tr); ok {
+		return true, false
+	} else if c2 {
+		anyCeiling = true
+	}
+
+	return false, anyCeiling
 }
 
 // findTrackDimensions descends moov -> trak (first) -> tkhd and decodes
@@ -412,8 +555,9 @@ func findTrackDimensions(moovPayload []byte, wantHandler string, tr *Tracker) (w
 
 // findDeclaredCodec descends moov -> trak (selected by wantHandler, see
 // findTrackByHandler) -> mdia -> minf -> stbl -> stsd and reads the first
-// sample entry's fourCC. ceilingHit is the same signal as
-// findTrackDimensions's own.
+// sample entry's fourCC, via the shared codecFromTrak descent (also reused
+// by isUsableMoovCandidate, round 6, T-R6C-01). ceilingHit is the same
+// signal as findTrackDimensions's own.
 //
 // Selecting by handler here, not merely by the same trak
 // findTrackDimensions resolves, is deliberate consistency (not a separate
@@ -427,24 +571,8 @@ func findDeclaredCodec(moovPayload []byte, wantHandler string, tr *Tracker) (cod
 	if !found {
 		return "", false, c1
 	}
-	mdiaPayload, ok2, c2 := firstChildBox(trakPayload, "mdia", tr)
-	if !ok2 {
-		return "", false, c1 || c2
-	}
-	minfPayload, ok3, c3 := firstChildBox(mdiaPayload, "minf", tr)
-	if !ok3 {
-		return "", false, c1 || c2 || c3
-	}
-	stblPayload, ok4, c4 := firstChildBox(minfPayload, "stbl", tr)
-	if !ok4 {
-		return "", false, c1 || c2 || c3 || c4
-	}
-	stsdPayload, ok5, c5 := firstChildBox(stblPayload, "stsd", tr)
-	if !ok5 {
-		return "", false, c1 || c2 || c3 || c4 || c5
-	}
-	codec, ok6 := parseSTSDCodec(stsdPayload)
-	return codec, ok6, c1 || c2 || c3 || c4 || c5
+	codec, ok, c2 := codecFromTrak(trakPayload, tr)
+	return codec, ok, c1 || c2
 }
 
 // isobmffHandlerVideo / isobmffHandlerAudio are the two ISO/IEC 14496-12
@@ -983,6 +1111,16 @@ func ebmlReadFloat(b []byte) (float64, bool) {
 // seen -- both are OUR OWN resource limits, exactly the D-02a class every
 // other analyzer in this package already closed. windowTruncated and
 // ceilingHit below close it here too.
+//
+// quick/260812-r6c task 2's own neighbour audit (media.go, the same file
+// image.go:165's finding named): the readWindow failure branch below had
+// the SAME defect that finding named for image.go, one file over -- when
+// windowTruncated is false (this window was sized to cover the file IN
+// FULL) but the read itself still failed, this reported ReasonMalformedInput
+// -- a claim about the FILE's structure -- for an operational read failure
+// that examined zero bytes. ReasonReadFailed (status.go) is the honest
+// answer for that one branch; windowTruncated still wins when the window
+// itself was too small, unchanged from before.
 func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
@@ -994,9 +1132,17 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Charac
 
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
-		reason := ReasonMalformedInput
-		if windowTruncated {
+		reason := ReasonMalformedInput // degenerate window (size<=0 or maxBytes<=0): no read was even attempted, not an operational failure
+		switch {
+		case windowTruncated:
 			reason = ReasonWorkCeilingBytes
+		case winLen > 0:
+			// winLen>0 and NOT windowTruncated: sized to cover the file IN
+			// FULL, so this failure is readWindow's own io.ReaderAt.ReadAt
+			// call failing on bytes this scan intended to examine in full
+			// -- never a fact about the file's structure (quick/260812-r6c
+			// task 2).
+			reason = ReasonReadFailed
 		}
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)
