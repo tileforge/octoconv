@@ -109,6 +109,7 @@ individual check's status, and the two are never folded into one field (`interna
 | `pdf_stream_body_token` | the file's structure (the token was seen only inside a stream body or comment) | No |
 | `parser_unavailable` | this build | No |
 | `malformed_input` | the file | No |
+| `read_failed` | an operational I/O failure (independent of the file's structure and of this service's own byte/time budget) | No |
 | `work_ceiling_bytes` | **this service's own load** | **Yes** |
 | `work_ceiling_time` | **this service's own load** | **Yes** |
 
@@ -123,6 +124,16 @@ was seen, but not in a position that proves what it means. A `#XX` escape means 
 spelled in a way the literal scan does not match; a token inside a stream body may be arbitrary
 payload rather than a PDF name. In both cases the honest answer is `unknown` — never `clean`, and
 never a confident `critical` finding either.
+
+`read_failed` is deliberately distinct from both `malformed_input` and the two ceiling reasons: a
+read failure (a real, non-EOF error from the underlying storage, or a truthful empty read where
+bytes were expected) proves nothing about the file's own structure -- the bytes were never
+examined at all -- so calling it `malformed_input` would be a false claim about the file. It is
+also independent of how large `maxBytes`/the time budget are, so it is not one of the two ceiling
+reasons either: raising either budget would not fix a read that is failing for an unrelated
+operational reason. It sits alongside `malformed_input` in the table above rather than with the
+two ceiling reasons for the same reason `parser_unavailable` does not mark the report selective --
+this is a still-open design question this document does not resolve further today.
 
 Only the last two reasons may ever mark a report `coverage.complete: false`. A structurally
 `unknown` check (parser blindness, an inapplicable format, a malformed file) does not, by itself,

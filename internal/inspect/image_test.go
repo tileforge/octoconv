@@ -3,6 +3,7 @@ package inspect
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -552,5 +553,73 @@ func TestAnalyzeImageTIFFShortWindowIsCeilingNotMalformed(t *testing.T) {
 func TestAnalyzeImageHEICMissWithFullWindowStaysClean(t *testing.T) {
 	data := []byte("ftypheicmeta no relevant tokens here")
 	res := AnalyzeImage("heic", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// ===== quick/260812-r6c task 2 (codex PR9R6 finding 2, image.go:165) =====
+
+// readFailureReaderAt is an io.ReaderAt whose ReadAt always fails with a
+// real, non-EOF error -- simulating a temp-file or disk read failure that is
+// entirely independent of the file's declared size, unlike every other
+// fixture in this file (which is always a real, in-memory bytes.Reader).
+// Deliberately a DIFFERENT type from pdf_test.go's own erroringReaderAt
+// (which is a zero-field, value-receiver type returning a fixed "boom"
+// error): this one carries its own configurable err so a future test can
+// tell distinct injected errors apart if it ever needs to.
+type readFailureReaderAt struct {
+	err error
+}
+
+func (e *readFailureReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	return 0, e.err
+}
+
+var errSimulatedDiskFailure = errors.New("simulated disk read failure")
+
+// TestAnalyzeImageReadFailureWithFullWindowIsNotClean is the NAMED
+// inversion test for the finding itself, verbatim: "When readWindow fails
+// with a non-EOF I/O error while size <= maxBytes, windowTruncated is
+// false, so this returns all false flags and AnalyzeImage emits
+// metadata_present: clean. Thus a temporary-file or disk read failure is
+// presented as a successful complete scan; this exit should carry an
+// unknown/malformed or explicit read-failure status rather than the clean
+// zero value." size <= maxBytes here (the window is sized to cover the
+// file IN FULL), so windowTruncated is false and the ONLY reason
+// readWindow fails is readFailureReaderAt's own non-EOF error -- exactly the
+// scenario the finding names.
+func TestAnalyzeImageReadFailureWithFullWindowIsNotClean(t *testing.T) {
+	r := &readFailureReaderAt{err: errSimulatedDiskFailure}
+	const size = 1024
+	res := AnalyzeImage("png", r, size, size, 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonReadFailed)
+}
+
+// TestAnalyzeImageReadFailureWithTruncatedWindowStillReportsCeiling proves
+// the read-failure branch does not disturb the PRE-EXISTING ceiling
+// classification when the window itself was ALSO too small (maxBytes <
+// size): windowTruncated must still win, exactly as it did before this
+// task, whether or not the underlying read happened to fail too.
+func TestAnalyzeImageReadFailureWithTruncatedWindowStillReportsCeiling(t *testing.T) {
+	r := &readFailureReaderAt{err: errSimulatedDiskFailure}
+	const size = 1024
+	const maxBytes = 256 // smaller than size: windowTruncated must win over readFailed
+	res := AnalyzeImage("png", r, size, maxBytes, 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonWorkCeilingBytes)
+}
+
+// TestAnalyzeImageEmptyFileStaysCleanNotReadFailed pins the deliberate
+// boundary this task draws: size<=0 means readWindow's own off>=size guard
+// fires before any read is even attempted (n<=0/off>=size, not a real
+// io.ReaderAt.ReadAt failure), so this is a degenerate-input fact, not an
+// operational read failure. This preserves this scan's prior, already-
+// exercised behavior for a genuinely empty upload (see
+// TestAnalyzeImageNeverPanics's "empty png" case) rather than mislabeling a
+// read that never happened as one that failed.
+func TestAnalyzeImageEmptyFileStaysCleanNotReadFailed(t *testing.T) {
+	res := AnalyzeImage("png", bytes.NewReader(nil), 0, 4096, 1<<30, nil)
 	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
 }

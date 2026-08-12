@@ -762,6 +762,29 @@ func TestAnalyzeMediaWAVWindowTruncationIsWorkCeilingBytes(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMediaWAVReadFailureWithFullWindowIsNotMalformed is
+// quick/260812-r6c task 2's own neighbour-audit finding: wavCharacteristics'
+// readWindow failure branch had the SAME defect image.go:165's finding
+// named, one file over -- when windowTruncated is false (the window was
+// sized to cover the file IN FULL) but the underlying read genuinely fails,
+// this used to report ReasonMalformedInput, a claim about the FILE's
+// structure, for an operational read failure that examined zero bytes.
+// readFailureReaderAt (image_test.go) always fails with a non-EOF error,
+// independent of size, isolating this to the read-failure path.
+func TestAnalyzeMediaWAVReadFailureWithFullWindowIsNotMalformed(t *testing.T) {
+	r := &readFailureReaderAt{err: errSimulatedDiskFailure}
+	const size = 1024
+	res := AnalyzeMedia("wav", r, size, size, nil) // maxBytes == size: window sized to cover the file IN FULL
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- readFailureReaderAt never returns real bytes", res.Characteristics["duration_seconds"])
+	}
+	reason, _ := res.Characteristics["duration_seconds_reason"].(string)
+	if reason != string(ReasonReadFailed) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a read failure with a full-coverage window is neither a fact about the file's structure (malformed_input) nor this scan's own byte ceiling (work_ceiling_bytes)", reason, ReasonReadFailed)
+	}
+}
+
 // TestAnalyzeMediaWAVIterationCeilingIsWorkCeilingBytes isolates the OTHER
 // half: a byte window that covers the WHOLE file, but whose chunk walk
 // exhausts maxRIFFChunks on filler chunks before ever reaching fmt/data.

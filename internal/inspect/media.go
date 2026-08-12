@@ -1111,6 +1111,16 @@ func ebmlReadFloat(b []byte) (float64, bool) {
 // seen -- both are OUR OWN resource limits, exactly the D-02a class every
 // other analyzer in this package already closed. windowTruncated and
 // ceilingHit below close it here too.
+//
+// quick/260812-r6c task 2's own neighbour audit (media.go, the same file
+// image.go:165's finding named): the readWindow failure branch below had
+// the SAME defect that finding named for image.go, one file over -- when
+// windowTruncated is false (this window was sized to cover the file IN
+// FULL) but the read itself still failed, this reported ReasonMalformedInput
+// -- a claim about the FILE's structure -- for an operational read failure
+// that examined zero bytes. ReasonReadFailed (status.go) is the honest
+// answer for that one branch; windowTruncated still wins when the window
+// itself was too small, unchanged from before.
 func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
@@ -1122,9 +1132,17 @@ func wavCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Charac
 
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
-		reason := ReasonMalformedInput
-		if windowTruncated {
+		reason := ReasonMalformedInput // degenerate window (size<=0 or maxBytes<=0): no read was even attempted, not an operational failure
+		switch {
+		case windowTruncated:
 			reason = ReasonWorkCeilingBytes
+		case winLen > 0:
+			// winLen>0 and NOT windowTruncated: sized to cover the file IN
+			// FULL, so this failure is readWindow's own io.ReaderAt.ReadAt
+			// call failing on bytes this scan intended to examine in full
+			// -- never a fact about the file's structure (quick/260812-r6c
+			// task 2).
+			reason = ReasonReadFailed
 		}
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)

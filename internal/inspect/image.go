@@ -78,11 +78,24 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusClean})
 	}
 
-	loc, found, ceilingHit, malformedHit := scanImageMetadata(format, r, size, maxBytes, tr)
+	loc, found, ceilingHit, malformedHit, readFailed := scanImageMetadata(format, r, size, maxBytes, tr)
 	switch {
 	case found:
 		sev, _ := SeverityOf(CodeMetadataPresent)
 		findings = append(findings, Finding{Code: CodeMetadataPresent, Severity: sev, Location: loc})
+	case readFailed:
+		// quick/260812-r6c, codex PR9R6 finding 2 (image.go:165): the ONE
+		// readWindow call this function makes failed even though the
+		// window was sized to cover the file IN FULL (not merely too
+		// small) -- a real I/O error, or a truthful empty read, on bytes
+		// this scan otherwise intended to examine. Round 5's own sweep of
+		// this exact file fixed every WALK exit that conflated "aborted"
+		// with "found nothing" and missed this READ exit one line above
+		// them: reporting the zero-value here presented a disk/temp-file
+		// failure as a successful, complete scan. See scanImageMetadata's
+		// own doc comment for the full three-way read-failure/ceiling/
+		// degenerate-window split this case is the first of.
+		checks = append(checks, Check{Code: CodeMetadataPresent, Status: StatusUnknown, Reason: ReasonReadFailed})
 	case ceilingHit:
 		// codex PR9 finding 3 / T-SLE-03: a miss inside a window (or an
 		// iteration walk) that did NOT cover/complete the whole scan is not
@@ -121,20 +134,33 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // metadata does not exist -- valid PNG, WebP, HEIC, and JPEG files can all
 // place EXIF/XMP metadata after the default byte ceiling.
 //
-// Return shape (quick/260811-r5p task 4, PR9R5-SWEEP-CLASSES(б)): a MISS
-// can come from three genuinely different places, kept as three genuinely
-// different named results instead of folding any two of them into the same
-// bool -- exactly the discipline container.go's externalRefStatus already
-// applies to the container family (see imageMetadataStatus's own doc
-// comment below, which this function's per-format branches compose with
-// windowTruncated via composeMetadataStatus):
+// Return shape (quick/260811-r5p task 4, PR9R5-SWEEP-CLASSES(б); extended
+// quick/260812-r6c task 2 with readFailed): a MISS can come from FOUR
+// genuinely different places, kept as four genuinely different named
+// results instead of folding any two of them into the same bool -- exactly
+// the discipline container.go's externalRefStatus already applies to the
+// container family (see imageMetadataStatus's own doc comment below, which
+// this function's per-format branches compose with windowTruncated via
+// composeMetadataStatus):
 //
 //   - found: a marker/chunk WAS located -- location names it.
+//   - readFailed: THIS scan's own single readWindow call failed even
+//     though the window it asked for was sized to cover the file IN FULL
+//     (winLen > 0 and NOT windowTruncated) -- a real, non-EOF error from
+//     the underlying io.ReaderAt, or a truthful empty read where bytes
+//     were expected. This is neither a fact about the file's structure nor
+//     about this scan's own byte-window/iteration ceiling: no bytes were
+//     ever examined at all (codex PR9R6 finding 2, image.go:165 -- round
+//     5's own sweep of this file fixed every WALK exit that conflated
+//     "aborted" with "found nothing" and missed this READ exit one line
+//     above them).
 //   - ceilingHit: THIS operation's own resource limit is why nothing was
 //     found -- either this function's own byte window did not cover the
 //     whole file (windowTruncated), or a per-format scanner's own
 //     maxMetadataMarkerScanIterations cap fired first. Neither is a fact
-//     about the file; both are OUR refusal to keep looking.
+//     about the file; both are OUR refusal to keep looking, but -- unlike
+//     readFailed -- a refusal driven by a PRESET budget, not by an
+//     operational inability to read at all.
 //   - malformedHit: a per-format scanner read every byte it was given,
 //     within every one of ITS OWN local ceilings, and STILL could not reach
 //     the format's own natural end (JPEG's EOI/SOS; PNG's and WebP's chunk
@@ -142,7 +168,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 //     a declared length/size running past the buffer, a header that fails
 //     its own structural check, or leftover bytes too short to form
 //     another chunk/segment header. That is a fact about the FILE, never
-//     this scan's own limit.
+//     this scan's own limit, and never an unexamined read either.
 //
 // Precedence when a scanner's own malformed signal and the byte-window
 // ceiling could both apply: ceilingHit always wins (composeMetadataStatus
@@ -150,8 +176,11 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // whether the REAL file is malformed or was merely never fully read -- the
 // honest answer is our own ceiling, not a claim about the file's structure
 // (the same precedence container.go's scanExternalReferences applies
-// between truncatedAnyPart and malformedAnyPart).
-func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, ceilingHit bool, malformedHit bool) {
+// between truncatedAnyPart and malformedAnyPart). readFailed can only ever
+// be returned directly from the readWindow call below -- once buf is in
+// hand, every per-format scanner operates on bytes that were genuinely
+// read, so none of them can produce it.
+func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, ceilingHit bool, malformedHit bool, readFailed bool) {
 	winLen := maxBytes
 	if winLen > size {
 		winLen = size
@@ -162,22 +191,50 @@ func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *T
 	windowTruncated := winLen < size
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
-		return "", false, windowTruncated, false
+		switch {
+		case windowTruncated:
+			// OUR OWN byte window (winLen < size, which also covers a
+			// non-positive maxBytes) is why nothing was read -- the
+			// pre-existing ceiling classification, unchanged.
+			return "", false, true, false, false
+		case winLen <= 0:
+			// size <= 0: there is no file (or a non-positive size claim)
+			// to read at all. readWindow's own off>=size guard fires
+			// before it ever calls ReadAt, so no read was even attempted
+			// -- this is a degenerate-input fact, not an operational read
+			// failure and not this scan's own ceiling. Deliberately
+			// preserves this scan's prior behavior for a genuinely empty
+			// upload rather than mislabeling it as a read failure that
+			// never actually happened.
+			return "", false, false, false, false
+		default:
+			// winLen > 0 and NOT windowTruncated: this window was sized to
+			// cover the WHOLE file, so readWindow's failure here is
+			// neither our own ceiling nor a degenerate zero-size input --
+			// it is readWindow's own io.ReaderAt.ReadAt call failing (a
+			// real, non-EOF error, or a truthful empty read) on bytes this
+			// scan otherwise intended to examine in full.
+			return "", false, false, false, true
+		}
 	}
 	switch format {
 	case "jpg", "jpeg":
-		return composeMetadataStatus(scanJPEGMetadata(buf, tr), windowTruncated)
+		loc, f, c, m := composeMetadataStatus(scanJPEGMetadata(buf, tr), windowTruncated)
+		return loc, f, c, m, false
 	case "png":
-		return composeMetadataStatus(scanPNGMetadata(buf, tr), windowTruncated)
+		loc, f, c, m := composeMetadataStatus(scanPNGMetadata(buf, tr), windowTruncated)
+		return loc, f, c, m, false
 	case "tiff":
-		return scanTIFFMetadata(buf, windowTruncated)
+		loc, f, c, m := scanTIFFMetadata(buf, windowTruncated)
+		return loc, f, c, m, false
 	case "webp":
-		return composeMetadataStatus(scanRIFFChunkMetadata(buf, tr), windowTruncated)
+		loc, f, c, m := composeMetadataStatus(scanRIFFChunkMetadata(buf, tr), windowTruncated)
+		return loc, f, c, m, false
 	case "heic":
 		loc, ok := scanISOBMFFMetadataTokens(buf)
-		return loc, ok, windowTruncated, false
+		return loc, ok, windowTruncated, false, false
 	default:
-		return "", false, windowTruncated, false
+		return "", false, windowTruncated, false, false
 	}
 }
 

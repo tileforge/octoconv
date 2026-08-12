@@ -34,12 +34,13 @@ func AllStatuses() []CheckStatus {
 // clean. Only ReasonFormatNotApplicable is a legitimate reason for
 // StatusNotApplicable; the rest explain a StatusUnknown result.
 //
-// The line that matters most in this type (D-02a/INSP-03): the first seven
-// reasons below are properties of the FILE or of this BUILD -- they
-// produce an unknown status on one check, but never make the report itself
-// partial. The last two are properties of THIS SERVICE'S OWN LOAD -- and
-// ONLY those two may ever mark a Coverage incomplete (see MarkTruncated).
-// This is the actual DoS-relevant distinction Phase 58 exists to make
+// The line that matters most in this type (D-02a/INSP-03): the first eight
+// reasons below are properties of the FILE, of this BUILD, or of an
+// operational failure to read at all -- they produce an unknown status on
+// one check, but never make the report itself partial. The last two are
+// properties of THIS SERVICE'S OWN LOAD -- and ONLY those two may ever mark
+// a Coverage incomplete (see MarkTruncated). This is the actual DoS-relevant
+// distinction Phase 58 exists to make
 // honest, and it cannot be folded into a single field without losing it.
 type Reason string
 
@@ -83,6 +84,28 @@ const (
 	// ReasonMalformedInput: structure is present but did not parse
 	// (truncated/corrupted file).
 	ReasonMalformedInput = "malformed_input"
+	// ReasonReadFailed: the underlying io.ReaderAt could not be read at all
+	// for a window this scan otherwise intended to cover IN FULL -- a real,
+	// non-EOF error from ReadAt, or a truthful empty read where bytes were
+	// expected (quick/260812-r6c, codex PR9R6 finding 2, image.go:165): a
+	// temporary-file or disk read failure was previously indistinguishable
+	// from "we read this file in full and it was clean" (worse) or
+	// indistinguishable from "we read this file in full and its structure
+	// is broken" (media.go's own wavCharacteristics, the same class found
+	// auditing this file's neighbours per this round's own instruction).
+	// Deliberately NOT ReasonMalformedInput: that reason is a claim about
+	// the FILE's own structure, and a read failure proves nothing about it
+	// -- the bytes were never examined at all. Deliberately NOT one of the
+	// two ceiling reasons below, either: those describe THIS SERVICE
+	// choosing to stop within a byte/time budget it could have kept
+	// spending; a read failure is independent of budget size -- raising
+	// maxBytes or the time budget would not fix it, only a successful
+	// retry of the read would. Whether a read failure should ALSO flip a
+	// report's Coverage to incomplete is a narrower, still-open question
+	// this round deliberately leaves alone (see docs/FINDINGS.md) --
+	// today it behaves like the seven reasons above it: an honest unknown
+	// that does not, by itself, make the whole report selective.
+	ReasonReadFailed = "read_failed"
 	// ReasonWorkCeilingBytes: parsing stopped because THIS SERVICE'S OWN
 	// byte ceiling was hit.
 	ReasonWorkCeilingBytes = "work_ceiling_bytes"
@@ -112,6 +135,7 @@ func AllReasons() []Reason {
 		ReasonPDFStreamBodyToken,
 		ReasonParserUnavailable,
 		ReasonMalformedInput,
+		ReasonReadFailed,
 		ReasonWorkCeilingBytes,
 		ReasonWorkCeilingTime,
 	}
