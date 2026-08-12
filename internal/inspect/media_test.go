@@ -510,6 +510,53 @@ func TestAnalyzeMediaSkipsIncidentalEmptyMoovBoxForRealOne(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMediaRejectsEmptyMvhdTrakDecoyForRealMoov is the PR9R6 finding
+// at media.go:382, verbatim: "Fresh evidence after the prior `moov` comment:
+// a tail payload containing a locally valid 24-byte decoy (`moov` with empty
+// 8-byte `mvhd` and `trak` children) now passes this usability check, so
+// `findMoovInTail` still selects it and ignores the genuine later `moov`;
+// downstream parsing then reports malformed or missing characteristics for
+// an otherwise valid MP4/MOV. Validate that `mvhd` parses and that a
+// suitable track has the structure consumed downstream before accepting the
+// candidate." Unlike the round 5 fixture above (an empty moov with NO
+// children at all), this decoy's mvhd AND trak children are each PRESENT
+// (round 5's own bar, cleared) but each carries a ZERO-byte payload:
+// parseMVHD cannot decode a duration out of an empty mvhd, and
+// findTrackByHandler cannot find mdia/hdlr inside an empty trak -- so round
+// 6's consumer-collapsed criterion (isUsableMoovCandidate) must reject this
+// candidate on that ground and keep searching for the genuine moov that
+// follows, exactly as it already does for round 4 and round 5's own decoys.
+func TestAnalyzeMediaRejectsEmptyMvhdTrakDecoyForRealMoov(t *testing.T) {
+	decoyMoov := moovBox(isobmffBox("mvhd", []byte{}), isobmffBox("trak", []byte{}))
+	if len(decoyMoov) != 24 {
+		t.Fatalf("decoy fixture is %d bytes, want 24 -- fixture no longer matches the finding's own worked example", len(decoyMoov))
+	}
+	mdatPayload := append(make([]byte, 6000), decoyMoov...)
+	mdat := isobmffBox("mdat", mdatPayload)
+
+	mvhd := mvhdBoxV0(1000, 5000)
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moov := moovBox(mvhd, trak)
+
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 4096 // smaller than mdat's own declared size (head cannot skip it as one box), same shape as the round 4/5 fixtures above
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- a 24-byte decoy moov with EMPTY mvhd and trak children (present, but carrying zero real fields) must not be accepted just because both children exist; the real moov that follows must still be found", res.Characteristics["duration_seconds"])
+	}
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640", res.Characteristics["width"])
+	}
+	codec, ok := res.Characteristics["declared_codec"].(string)
+	if !ok || codec != "avc1" {
+		t.Fatalf("declared_codec = %#v, want %q", res.Characteristics["declared_codec"], "avc1")
+	}
+}
+
 // TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes proves the
 // plan's own explicit requirement: exhausting maxMoovTailCandidatesScanned
 // on candidates that DO parse as self-consistent "moov" box headers -- but
@@ -575,6 +622,59 @@ func TestFindMoovInTailUsabilityCheckOwnCeilingIsWorkCeilingBytes(t *testing.T) 
 	}
 	if !tr.Exhausted() {
 		t.Fatal("Tracker was never marked -- isUsableMoovCandidate's own iteration-ceiling exhaustion must reach the Tracker it was given")
+	}
+}
+
+// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded is round 6's
+// own DoS threat disposition (T-R6C-02): isUsableMoovCandidate's validation
+// now costs more per candidate than round 5's "children present" check did
+// (see isUsableMoovCandidate's own doc comment for the exact bound), and
+// that higher per-candidate cost is paid up to maxMoovTailCandidatesScanned
+// times. This constructs an adversarial tail window shaped to make EVERY
+// occurrence do real, non-ceiling-shortcut work: each decoy moov box carries
+// a present-but-empty mvhd (so parseMVHD is attempted and fails) plus
+// several non-matching trak siblings (so findTrackByHandler must walk all of
+// them, opening each one's own mdia/hdlr, before concluding "no match" --
+// comfortably under maxTrakCandidatesScanned so the rejection is genuine,
+// never a shortcut via that cap's own ceilingHit). The whole scan must still
+// complete in well under a second, proving the fix did not reopen the
+// unbounded-work class round 3 of this review already closed.
+func TestFindMoovInTailWorstCaseCandidateValidationStaysBounded(t *testing.T) {
+	nonMatchingTrak := trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio) // handler_type="soun", never matches wantHandler="vide" below
+	const traksPerDecoy = 20                                                          // real, non-ceiling-hitting work per candidate -- comfortably under maxTrakCandidatesScanned (64) so every decoy is rejected on genuine absence, never on its own ceiling
+	var decoyPayload []byte
+	for i := 0; i < traksPerDecoy; i++ {
+		decoyPayload = append(decoyPayload, nonMatchingTrak...)
+	}
+	decoyPayload = append(isobmffBox("mvhd", []byte{}), decoyPayload...) // present-but-empty mvhd: parses as a child, never as a real duration
+	decoyMoov := isobmffBox("moov", decoyPayload)
+
+	const n = maxMoovTailCandidatesScanned // every one of these must be individually rejected, none via its own ceiling
+	var payload []byte
+	for i := 0; i < n; i++ {
+		payload = append(payload, decoyMoov...)
+	}
+	mdat := isobmffBox("mdat", payload)
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+
+	const maxBytes = 1 << 20
+	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
+
+	start := time.Now()
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Fatalf("AnalyzeMedia took %v against %d adversarial candidates x %d non-matching trak siblings each -- want comfortably under 2s; the fix's own cost bound (isUsableMoovCandidate's doc comment, T-R6C-02) is broken", elapsed, n, traksPerDecoy)
+	}
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a decoy with an empty mvhd and only non-matching trak siblings", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the candidate cap, not any single candidate's own ceiling, must be what exhausts here", reason, ReasonWorkCeilingBytes)
+	}
+	if !tr.Exhausted() {
+		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
 	}
 }
 
