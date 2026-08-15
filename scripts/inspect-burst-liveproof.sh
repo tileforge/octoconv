@@ -120,6 +120,16 @@ BURST_N="${BURST_N:-9}"
 # stand in for the whole gate -- mirrors every sibling live gate's own
 # multi-round design.
 ROUNDS="${ROUNDS:-10}"
+# BURST_ROUND_TIMEOUT_S bounds ONE round's kubectl exec. A round is BURST_N
+# concurrent requests each bounded by the api's own INSPECT_MAX_WORK_DURATION
+# (2s in values-inspect-gate.yaml) behind a semaphore of INSPECT_MAX_CONCURRENT
+# (4), so an honest round finishes in seconds; observed rounds on this gate's
+# own reference stand run ~1.3s. 60s is therefore generous by more than an
+# order of magnitude -- it exists to catch a STALL, never to time a slow-but-
+# working round, and a round that genuinely needs a minute is itself a finding
+# worth failing on. See the watchdog at STEP 10 for the run that made this
+# necessary.
+BURST_ROUND_TIMEOUT_S="${BURST_ROUND_TIMEOUT_S:-60}"
 # POLL_INTERVAL_S / POLL_TIMEOUT_S: the SAME cadence and per-probe timeout
 # kubelet itself uses against :8091 (deployment-api.yaml's own
 # livenessProbe: periodSeconds:10 governs the RESTART contract; this
@@ -646,8 +656,36 @@ log "STEP 10: ${ROUNDS}-round burst loop (N=${BURST_N} per round)"
 for r in $(seq 1 "$ROUNDS"); do
 	log "round ${r}/${ROUNDS}"
 
+	# EVERY ROUND IS WATCHDOGGED, and the reason is a real run, not caution.
+	#
+	# Run 20260815T230358Z hung at round 32 and stayed hung: the api pod was
+	# healthy throughout (ready=true, restartCount unchanged, /healthz
+	# answering 200 in 1.4ms through a FRESH exec into the very same poller
+	# pod), the node reported no pressure, and both driver pods were Running
+	# -- what stalled was this one kubectl exec stream, not the service under
+	# test. Without a bound, that stall is indistinguishable from progress:
+	# the script simply stops forever, printing nothing, while an operator
+	# waits on a PASS/FAIL line that will never come. A gate that cannot
+	# report its own hang is exactly as useless as one that cannot fail.
+	#
+	# macOS ships no timeout(1) and this project's own live gates must run on
+	# the operator's Mac, so the watchdog is a plain background killer rather
+	# than coreutils: start the exec, arm a sleeper that TERMs it if the
+	# round outlives BURST_ROUND_TIMEOUT_S, and disarm the sleeper the moment
+	# the round returns.
 	kubectl exec -i -n "$NAMESPACE" "$BURST_POD" -- sh -s -- "$BURST_N" "$POD_APIKEY_PATH" "$API_URL" "$POD_WORKDIR" \
-		<<<"$BURST_DRIVER_SCRIPT" >"$WORKDIR/r${r}-rows.tsv" 2>"$WORKDIR/r${r}-driver.err" || {
+		<<<"$BURST_DRIVER_SCRIPT" >"$WORKDIR/r${r}-rows.tsv" 2>"$WORKDIR/r${r}-driver.err" &
+	exec_pid=$!
+	( sleep "$BURST_ROUND_TIMEOUT_S"; kill -TERM "$exec_pid" 2>/dev/null || true ) &
+	watchdog_pid=$!
+	exec_rc=0
+	wait "$exec_pid" || exec_rc=$?
+	kill -TERM "$watchdog_pid" 2>/dev/null || true
+	wait "$watchdog_pid" 2>/dev/null || true
+	[ "$exec_rc" -eq 0 ] || {
+		if [ "$exec_rc" -ge 128 ]; then
+			echo "FAIL: round ${r} -- burst driver exec did not return within ${BURST_ROUND_TIMEOUT_S}s and was killed by this script's own watchdog (exit=${exec_rc}). Check the three reads below to tell a wedged api from a stalled kubectl stream: if the api pod is ready with an unchanged restartCount and /healthz still answers, the stall was in the exec transport, not in the service under test." >&2
+		fi
 		echo "FAIL: round ${r} -- burst driver exec failed. stderr tail:" >&2
 		tail -n 20 "$WORKDIR/r${r}-driver.err" >&2 2>/dev/null || true
 		# A bare "command terminated with exit code 137" names a signal, not
