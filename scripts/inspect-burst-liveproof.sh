@@ -599,8 +599,22 @@ set -eu
 N="$1"; APIKEY_FILE="$2"; URL_BASE="$3"; POD_WORKDIR="$4"
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
-BARRIER="$SCRATCH/barrier"
-mkfifo "$BARRIER"
+# START BARRIER -- a file, deliberately not a FIFO.
+#
+# This used to be a mkfifo that the parent fed one "go" line per worker while
+# all N workers blocked on `read` from it. That is a race, and it is what hung
+# this gate three separate times (rounds 6, 21 and 32 of three different
+# runs): a FIFO does not distribute lines one-per-reader, so a single reader
+# can buffer more than its share, leaving another blocked on `read` forever.
+# `wait` then never returns and the whole kubectl exec stalls with every pod
+# healthy and the node idle -- which is exactly the confusing shape the
+# earlier diagnostics reported (driver container running, restartCount 0, no
+# node pressure, /healthz answering in 1.4ms).
+#
+# Spinning on a file's existence has no such race at any N. The added start
+# skew is one poll interval, ~10ms against rounds that take ~1.3s, which
+# leaves "genuinely concurrent" as true as the FIFO ever made it.
+BARRIER="$SCRATCH/go"
 APIKEY_VALUE=$(cat "$APIKEY_FILE")
 i=1
 while [ "$i" -le "$N" ]; do
@@ -611,8 +625,7 @@ while [ "$i" -le "$N" ]; do
 	3) FIX="${POD_WORKDIR}/inspect-burst-pathological.mp4"; CT="video/mp4" ;;
 	esac
 	(
-		exec 3<"$BARRIER"
-		read -r _ <&3
+		while [ ! -f "$BARRIER" ]; do sleep 0.01; done
 		t0=$(date +%s%3N)
 		body="$SCRATCH/resp-${i}.json"
 		status=$(curl -s -o "$body" -w '%{http_code}' --max-time 30 \
@@ -626,9 +639,7 @@ while [ "$i" -le "$N" ]; do
 	) &
 	i=$((i + 1))
 done
-for i in $(seq 1 "$N"); do
-	printf 'go\n'
-done >"$BARRIER"
+: >"$BARRIER"
 wait
 for i in $(seq 1 "$N"); do
 	cat "$SCRATCH/row-${i}.tsv" 2>/dev/null || printf '%s\t?\t000\t-\t-1\n' "$i"
