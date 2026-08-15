@@ -549,7 +549,7 @@ kubectl run octoconv-inspect-burst-"${RUN_ID_LOWER}" \
 	--restart=Never \
 	--namespace="$NAMESPACE" \
 	--labels="app.kubernetes.io/component=inspect-burst" \
-	--overrides='{"spec":{"automountServiceAccountToken":false,"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"runAsGroup":65534},"containers":[{"name":"burst","image":"'"$BURST_IMAGE"'","command":["sleep","3600"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},"resources":{"requests":{"cpu":"500m","memory":"64Mi"},"limits":{"cpu":"2","memory":"256Mi"}}}]}}' \
+	--overrides='{"spec":{"automountServiceAccountToken":false,"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"runAsGroup":65534},"containers":[{"name":"burst","image":"'"$BURST_IMAGE"'","command":["sleep","3600"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}},"resources":{"requests":{"cpu":"500m","memory":"64Mi"},"limits":{"cpu":"2","memory":"512Mi"}}}]}}' \
 	-- sleep 3600
 BURST_POD="octoconv-inspect-burst-${RUN_ID_LOWER}"
 kubectl wait --for=condition=Ready pod/"$BURST_POD" -n "$NAMESPACE" --timeout=180s
@@ -650,6 +650,19 @@ for r in $(seq 1 "$ROUNDS"); do
 		<<<"$BURST_DRIVER_SCRIPT" >"$WORKDIR/r${r}-rows.tsv" 2>"$WORKDIR/r${r}-driver.err" || {
 		echo "FAIL: round ${r} -- burst driver exec failed. stderr tail:" >&2
 		tail -n 20 "$WORKDIR/r${r}-driver.err" >&2 2>/dev/null || true
+		# A bare "command terminated with exit code 137" names a signal, not
+		# a cause, and 137 has at least three of them here: the driver
+		# container OOMKilled against its own limits.memory, the NODE
+		# evicting the pod under memory pressure, or the api pod dying and
+		# taking the connection with it. Guessing between them once cost a
+		# run; these three reads distinguish them from the cluster's own
+		# records, and they are cheap because this branch is already fatal.
+		echo "--- burst driver pod state (why 137) ---" >&2
+		kubectl get pod "$BURST_POD" -n "$NAMESPACE" -o jsonpath='{range .status.containerStatuses[*]}state={.state}{"\n"}lastState={.lastState}{"\n"}restartCount={.restartCount}{"\n"}{end}' >&2 2>/dev/null || true
+		echo "--- node conditions (eviction/memory pressure) ---" >&2
+		kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{range .status.conditions[*]}{.type}={.status}{" "}{end}{"\n"}{end}' >&2 2>/dev/null || true
+		echo "--- namespace events, most recent last ---" >&2
+		kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp 2>/dev/null | tail -n 15 >&2 || true
 		exit 1
 	}
 
