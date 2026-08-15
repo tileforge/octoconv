@@ -757,6 +757,64 @@ assert_ge "$BURST_200_COUNT" "1" "burst responses with status 200 (at least one 
 BURST_TOTAL_ROWS=$(awk -F'\t' 'NR>1' "$EVIDENCE_BURST_TSV" | wc -l | tr -d '[:space:]')
 assert_eq "$((ROUNDS * BURST_N))" "$BURST_TOTAL_ROWS" "burst TSV data rows (rounds * burst_n)"
 
+# --- THE TWO ASSERTIONS BELOW EXIST BECAUSE THIS GATE ONCE PASSED WITHOUT
+# --- BEING ABLE TO FAIL. Read this before relaxing either of them.
+#
+# The first real run of this gate (20260812T223622Z) reported GATE PASS on 36
+# assertions, and every one of them was true. It still proved almost nothing:
+#
+#   * The whole run lasted 10.3 seconds (11 poll rows at POLL_INTERVAL_S=1).
+#     The liveness contract this gate exists to defend needs SIX CONSECUTIVE
+#     failures at periodSeconds:10 -- roughly 60 seconds of sustained
+#     unavailability -- before kubelet restarts anything. A 10-second
+#     observation window CANNOT contain the failure it claims the api
+#     survived, so "max consecutive failures 0 < 6" passed vacuously.
+#   * RATE_LIMIT_INSPECT_RPM was 30 while the burst sent 90 requests in those
+#     10 seconds, so rounds 5 through 10 -- 60 of 90 requests -- were shed at
+#     the door by internal/ratelimit and never reached the inspect path at
+#     all. Only 27 requests were ever inspected, and only 3 ever reached the
+#     concurrency semaphore this gate is named after.
+#   * Every one of those 27 was the docx fixture: the pdf and mp4 pathological
+#     fixtures were transferred, checksummed, and never actually inspected,
+#     while the gate reported PASS on all three being "present".
+#
+# An assertion that cannot fail is not evidence. Both checks below make the
+# scenario prove it was capable of producing the failure it did not produce.
+
+# (1) The observation window must be long enough for the liveness contract to
+# have been violable. Anything shorter and a clean poll record is a statement
+# about the run's brevity, not about the api's resilience.
+#
+# periodSeconds and failureThreshold are read from the LIVE Deployment, not
+# restated as literals here. Every other mention of "periodSeconds:10,
+# failureThreshold:6" in this file is prose that can go stale the moment
+# deployment-api.yaml changes; the number this assertion actually divides by
+# must come from the object kubelet is really enforcing.
+LIVENESS_PERIOD_SECONDS=$(kubectl get deployment api -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.periodSeconds}' 2>/dev/null)
+LIVENESS_FAILURE_THRESHOLD=$(kubectl get deployment api -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].livenessProbe.failureThreshold}' 2>/dev/null)
+if ! [ "${LIVENESS_PERIOD_SECONDS:-0}" -gt 0 ] 2>/dev/null || ! [ "${LIVENESS_FAILURE_THRESHOLD:-0}" -gt 0 ] 2>/dev/null; then
+	echo "FAIL: could not read the api container's own livenessProbe periodSeconds/failureThreshold from the live Deployment (got period=[${LIVENESS_PERIOD_SECONDS}] threshold=[${LIVENESS_FAILURE_THRESHOLD}]). This gate's whole claim is stated against that contract; it must not be assumed." >&2
+	exit 1
+fi
+echo "PASS: liveness contract read from the live Deployment == periodSeconds:${LIVENESS_PERIOD_SECONDS} failureThreshold:${LIVENESS_FAILURE_THRESHOLD}"
+
+POLL_SPAN_MS=$(awk -F'\t' 'NR==1{first=$1} {last=$1} END{print last-first}' "$WORKDIR/poll-raw.tsv")
+LIVENESS_WINDOW_MS=$((LIVENESS_PERIOD_SECONDS * LIVENESS_FAILURE_THRESHOLD * 1000))
+if [ "${POLL_SPAN_MS:-0}" -lt "$LIVENESS_WINDOW_MS" ]; then
+	echo "FAIL: the poller observed only ${POLL_SPAN_MS}ms, shorter than the ${LIVENESS_WINDOW_MS}ms this deployment's own liveness contract needs (periodSeconds:${LIVENESS_PERIOD_SECONDS} x failureThreshold:${LIVENESS_FAILURE_THRESHOLD}) before kubelet would restart anything. A clean poll record over a window that short cannot distinguish 'the api survived the burst' from 'the burst ended before the contract could be violated'. Raise ROUNDS (currently ${ROUNDS}) until the run outlasts the window." >&2
+	exit 1
+fi
+assert_ge "$POLL_SPAN_MS" "$LIVENESS_WINDOW_MS" "observation window outlasts the liveness contract it claims the api survived (ms)"
+
+# (2) Every fixture must have been genuinely inspected at least once. A 200
+# per fixture is the only thing separating "three pathological formats were
+# stressed" from "three files were copied into a pod and one of them was
+# stressed".
+for ord in 1 2 3; do
+	FIXTURE_200=$(awk -F'\t' -v o="$ord" 'NR>1 && $3 == o && $4 == "200"' "$EVIDENCE_BURST_TSV" | wc -l | tr -d '[:space:]')
+	assert_ge "$FIXTURE_200" "1" "fixture ordinal ${ord} was actually inspected at least once (status 200), not merely transferred"
+done
+
 # RESOURCE CALIBRATION: kubectl top pod peaks vs resources.limits
 # (Plan 58-03, D-06b). This is a CALIBRATION check, not a hard cap the
 # gate polices on this script's own authority -- exceeding the LIMIT would
