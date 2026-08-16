@@ -1,11 +1,29 @@
 # Phase 58 (INSP-06/SC6) evidence
 
-**Status: PASSED.** Run `20260815T235101Z`, 230 assertions, 200 rounds ×
+**Status: PASSED.** Run `20260816T021758Z`, 230 assertions, 200 rounds ×
 9 concurrent `POST /v1/inspect` against a live OrbStack Kubernetes api
 Deployment.
 
-The passing run is the last of ten. The nine before it are the reason this
-directory is worth reading: four of them were harness defects wearing a
+This run supersedes `20260815T235101Z`, which passed identically but against
+an earlier binary. Round 8 of review changed the request path itself (a
+bounded multipart intake stage, `internal/api/inspect_handlers.go`), so the
+older evidence described code that no longer exists. The gate now refuses to
+run at all when the image predates any Go source or the tree carries
+uncommitted Go changes — the re-run was not a courtesy, it was the new
+preflight's requirement:
+
+```
+PASS: octoconv-api:dev is at least as new as every Go source file
+PASS: no uncommitted Go changes -- the image can correspond to the committed tree
+PASS: deployed api image matches the validated tag == octoconv-api:dev
+```
+
+That check exists because `20260815T235101Z`'s evidence was sound only by
+luck: its image happened to be built six minutes after the last Go commit,
+and nobody verified it until a review finding asked.
+
+The passing run is the last of eleven. The ten before it are the reason this
+directory is worth reading: five of them were harness defects wearing a
 verdict, and one of those was a PASS.
 
 ## What run 20260815T235101Z proves
@@ -13,10 +31,11 @@ verdict, and one of those was a PASS.
 | Claim | Observed |
 |---|---|
 | api container never restarted | `restart_count_before=2 restart_count_after=2` |
-| `/healthz` stayed inside kubelet's liveness contract | 0 failures across 86 polls; longest consecutive run of failures 0, against `failureThreshold:6` |
-| the observation window could have caught a restart | 86,238 ms against the contract's own 60,000 ms (`periodSeconds:10 × failureThreshold:6`, read from the live Deployment, not from a literal) |
-| the burst reached the code under test | 1,566 of 1,800 requests genuinely inspected; all 234 rejects carried `inspect_busy`, none `rate_limited` — the binding constraint was the concurrency semaphore this gate is named after |
-| all three pathological fixtures were actually parsed | ordinals 1/2/3 → 514 / 528 / 524 responses with status 200 |
+| `/healthz` stayed inside kubelet's liveness contract | 0 failures across 87 polls; longest consecutive run of failures 0, against `failureThreshold:6` |
+| the observation window could have caught a restart | 87,369 ms against the contract's own 60,000 ms (`periodSeconds:10 × failureThreshold:6`, read from the live Deployment, not from a literal) |
+| the binary matched the code under review | image newer than every `.go` file; no uncommitted Go changes; deployed image equals the validated tag |
+| the burst reached the code under test | 1,585 of 1,800 requests genuinely inspected; every reject carried `inspect_busy`, none `rate_limited` — the binding constraint was the concurrency semaphore this gate is named after |
+| all three pathological fixtures were actually parsed | ordinals 1/2/3 → 522 / 536 / 527 responses with status 200 |
 | no request ever failed abnormally | 0 responses with 5xx, 0 with a status outside {200,429}, 0 with an empty status cell (a hung connection) |
 | the ceilings under test were the ones deployed | `INSPECT_MAX_WORK_BYTES=1048576`, `INSPECT_MAX_UPLOAD_BYTES=104857600`, `INSPECT_MAX_CONCURRENT=4`, `resources.limits` cpu=2 memory=1Gi, all read back off the live pod |
 
@@ -28,6 +47,9 @@ verdict, and one of those was a PASS.
   semaphore are per-process, in-memory state. This gate pins one replica
   deliberately (see `values-inspect-gate.yaml`), so it says nothing about
   a multi-replica fleet's aggregate behavior.
+- **Nothing about the bounded intake stage added in round 8.** This gate
+  drives 9 concurrent requests; the OOM scenario that stage closes needs
+  roughly 30. A green run here is not evidence about it.
 - **Nothing about the rate limiters.** All three (`ByIP`, `PerClient`,
   inspect's own) were lifted for this run precisely so they would stop
   shedding the burst before it reached the inspect path. Their own unit
@@ -97,8 +119,10 @@ eviction, which is how the race became findable at all.
 
 ## Files
 
+- `inspect-burst-20260816T021758Z-{burst,poll}.tsv` + `-transcript.log` —
+  the passing run.
 - `inspect-burst-20260815T235101Z-{burst,poll}.tsv` + `-transcript.log` —
-  the passing run. Every assertion in the transcript is re-derivable from
+  the superseded pass, against the pre-round-8 binary. Every assertion in the transcript is re-derivable from
   the two TSVs by a reader who never watched the run.
 - `inspect-burst-20260815T234900Z-{burst,poll}.tsv` — 75 rounds clean,
   failed only the window assertion. Kept because it is the clearest record
@@ -115,7 +139,7 @@ eviction, which is how the race became findable at all.
 docker compose down                       # compose and k8s must never be hot together
 docker build -f Dockerfile.api    -t octoconv-api:dev .
 docker build -f Dockerfile.worker -t octoconv-worker:dev .
-ROUNDS=200 ./scripts/inspect-burst-liveproof.sh
+ROUNDS=200 ./scripts/inspect-burst-liveproof.sh   # refuses if the image predates any .go file
 ```
 
 The script tears the k8s install down on exit, pass or fail. `ROUNDS` must
