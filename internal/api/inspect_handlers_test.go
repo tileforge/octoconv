@@ -780,14 +780,26 @@ func TestInspectReviewerScenarioReportsUnknownNot500(t *testing.T) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		t.Fatalf("decode body: %v; body=%s", err, body)
 	}
-	if resp.Format != inspectZipTooLargeFormat {
-		t.Errorf("Format = %q, want %q -- entries=1 (wrapped) must NOT let this upload past the structural bound", resp.Format, inspectZipTooLargeFormat)
+	// PR9R13 reclassified this fixture, deliberately. It is a bare 22-byte
+	// EOCD declaring a 2.9 MiB directory -- a directory larger than the
+	// whole upload, which no legal archive has and no ceiling increase can
+	// make exist. "We refused to spend the work" was the wrong reason for
+	// it; "this archive is impossible" is the right one, and a client
+	// reading the first would go looking for a limit to raise.
+	//
+	// What this test actually guards is unchanged and still asserted below:
+	// the wrapped entry count does not get the upload past the bound, the
+	// response is 200 rather than a 500 or a rejection, nothing is reported
+	// clean, and -- the part that must never regress -- the coverage is NOT
+	// complete, because this archive's contents were never parsed.
+	if resp.Format != inspectZipMalformedFormat {
+		t.Errorf("Format = %q, want %q -- entries=1 (wrapped) must NOT let this upload past the structural bound", resp.Format, inspectZipMalformedFormat)
 	}
 	if resp.Coverage.Complete {
-		t.Errorf("Coverage.Complete = true, want false")
+		t.Errorf("Coverage.Complete = true, want false -- a refusal to parse must never publish as a full inspection, whatever reason the checks carry")
 	}
 	if resp.Coverage.Reason != inspect.ReasonWorkCeilingBytes {
-		t.Errorf("Coverage.Reason = %q, want %q", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
+		t.Errorf("Coverage.Reason = %q, want %q -- the CHECKS say malformed_input (a fact about the archive) while the COVERAGE says we declined to read it; the two are separate claims", resp.Coverage.Reason, inspect.ReasonWorkCeilingBytes)
 	}
 	if err := inspect.ValidateReport(resp.Findings, resp.Checks); err != nil {
 		t.Errorf("ValidateReport: %v", err)

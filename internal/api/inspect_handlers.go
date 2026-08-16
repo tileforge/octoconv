@@ -881,11 +881,16 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	// like this one, so this alone does not, and is not meant to, close
 	// round 4 -- the walk below does that.
 	if uint64(dirBytes) > uint64(size) {
-		// A directory larger than the whole upload cannot exist -- but this
-		// is a REFUSAL TO SPEND WORK, decided before a single directory byte
-		// was read, so it keeps the ceiling classification. See the walk's
-		// own signature check below for where the line actually falls.
-		return zipBoundExceedsCeiling
+		// A directory larger than the whole upload cannot exist, and that is
+		// PROVEN by bytes already read (the EOCD) against ground truth (the
+		// real byte count) -- no legal archive has this shape, and raising
+		// any ceiling cannot make the directory exist. Round 12 classified
+		// this as a ceiling on the reasoning that no directory byte had been
+		// read yet; round 13 corrected it, and the correction is right: what
+		// matters is whether the inconsistency is PROVEN, not which bytes
+		// proved it. Coverage is handled separately -- see the dispatcher,
+		// which marks the tracker so a refusal never publishes as complete.
+		return zipBoundMalformed
 	}
 
 	// Round 5's own fix (divergence row #1): mirror archive/zip's own
@@ -904,9 +909,11 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	// sharply nonzero baseOffset, caught here before any walk begins.
 	baseOffset := eocdOffset - int64(dirBytes) - int64(dirOffsetField)
 	if baseOffset != 0 {
-		// The EOCD's own fields are inconsistent with where it was located.
-		// Still a refusal decided before reading any directory content --
-		// ceiling, not a verdict about structure we examined.
+		// Deliberately NOT malformed, and the distinction is not the one
+		// round 12 drew: a nonzero baseOffset is a shape archive/zip
+		// TOLERATES (a self-extracting archive with a prefix is legal), so
+		// it is not proof of anything being broken -- it is a legal shape
+		// this service declines to follow. Declining is a ceiling.
 		return zipBoundExceedsCeiling
 	}
 
@@ -1109,6 +1116,17 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// PR9R8-F4: same reasoning as inspectZipReadFailedFormat above --
 		// SniffContainer ran and read real bytes before concluding the
 		// structure itself does not parse.
+		//
+		// PR9R13: the checks say malformed_input, which is the honest reason
+		// -- and the report must ALSO say the coverage is incomplete, which
+		// is a separate fact: this archive's contents were never parsed. The
+		// two are decoupled deliberately, because collapsing them is what
+		// made round 12's first attempt publish an unparsed archive as fully
+		// inspected. Marking the tracker is how a refusal reaches
+		// buildCoverage without borrowing a ceiling reason for a check that
+		// is not about a ceiling (round 3's exhaustion sink, reused exactly
+		// as intended).
+		tr.MarkCeilingHit()
 		families = append(families, zipMalformedFamilyResult())
 	case detected == "pdf":
 		families = append(families, inspect.AnalyzePDF(file, size, maxBytes, tr))

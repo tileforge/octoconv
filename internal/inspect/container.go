@@ -844,14 +844,22 @@ func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, cei
 // <e:sheets><e:sheet/></e:sheets> is parsed successfully and publishes
 // sheet_count: 2 with complete coverage."
 //
-// The empty namespace is accepted alongside them, and that is a deliberate
-// judgement rather than an oversight: a part that declares no namespace at
-// all has no foreign markup to be confused WITH -- extension markup is
-// namespaced by construction, which is the entire mechanism by which it
-// extends anything. Rejecting the empty case would drop the count for a
-// minimal or hand-written workbook while closing nothing.
+// PR9R13 (container.go:856) then found the hole in accepting the empty
+// namespace GLOBALLY, which is what round 12 did: "when the workbook root
+// uses SpreadsheetML but a nested extension resets the default namespace,
+// such as <ext><sheets xmlns=""><sheet/></sheets></ext>, this global
+// empty-namespace allowance counts the extension leaf as a worksheet".
+//
+// The reasoning that admitted it was sound as far as it went -- extension
+// markup is namespaced by construction, so an unnamespaced part has nothing
+// to be confused with -- and stopped one step short: xmlns="" RESETS to the
+// empty namespace mid-document, so a namespaced workbook can contain
+// unnamespaced elements after all. The allowance is therefore no longer
+// global. The workbook's OWN namespace is taken from its root element, and
+// sheets/sheet must match THAT: a wholly unnamespaced workbook still counts
+// (its root is unnamespaced too), while an unnamespaced island inside a
+// SpreadsheetML document no longer does.
 var spreadsheetMLNamespaces = map[string]bool{
-	"": true,
 	"http://schemas.openxmlformats.org/spreadsheetml/2006/main": true,
 	"http://purl.oclc.org/ooxml/spreadsheetml/main":             true,
 }
@@ -859,6 +867,13 @@ var spreadsheetMLNamespaces = map[string]bool{
 func countSheetElements(data []byte) (count int, ok bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	inSheets := false
+	// workbookNS is the namespace the ROOT element declared, and every
+	// sheets/sheet that counts must match it exactly. Deciding this from the
+	// document rather than from a fixed allow-list is what closes the
+	// xmlns="" reset (PR9R13): the root's namespace is a property of the
+	// document as a whole, which a nested element cannot redefine.
+	workbookNS := ""
+	haveRoot := false
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -869,7 +884,18 @@ func countSheetElements(data []byte) (count int, ok bool) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if !spreadsheetMLNamespaces[t.Name.Space] {
+			if !haveRoot {
+				haveRoot = true
+				workbookNS = t.Name.Space
+				// A root outside SpreadsheetML is not a workbook part at
+				// all; the only namespace accepted without being one of the
+				// two known URIs is the empty one, i.e. a wholly
+				// unnamespaced (minimal or hand-written) workbook.
+				if workbookNS != "" && !spreadsheetMLNamespaces[workbookNS] {
+					return 0, true
+				}
+			}
+			if t.Name.Space != workbookNS {
 				continue
 			}
 			switch t.Name.Local {
@@ -885,7 +911,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				}
 			}
 		case xml.EndElement:
-			if spreadsheetMLNamespaces[t.Name.Space] && t.Name.Local == "sheets" {
+			if t.Name.Space == workbookNS && t.Name.Local == "sheets" {
 				inSheets = false
 			}
 		}

@@ -1121,6 +1121,15 @@ func TestAnalyzeContainerSheetCountRecognizesEveryLegalSerialization(t *testing.
 			1,
 		},
 		{
+			// PR9R13: xmlns="" resets to the empty namespace mid-document,
+			// so a namespaced workbook CAN contain unnamespaced elements --
+			// which is exactly what round 12's global empty-namespace
+			// allowance let through.
+			"extension resetting the default namespace must not count",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets><ext><sheets xmlns=""><sheet name="ghost"/></sheets></ext></workbook>`,
+			1,
+		},
+		{
 			"OOXML strict namespace",
 			`<workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`,
 			2,
