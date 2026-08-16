@@ -100,6 +100,33 @@ const (
 	// is checked from the EOCD record's OWN declared fields, at most 64 KiB
 	// of ReadAt, zero decompression, never archive/zip.NewReader.
 	inspectZipTooLargeFormat = "zip_directory_too_large"
+	// inspectZipReadFailedFormat is the Detected-format sentinel for a
+	// PK-shaped upload whose first four bytes were readable (the PK\x03\x04
+	// prefix matched) but convert.SniffContainer could not finish reading
+	// what came after -- docsniff.go's own readerAtRecorder OBSERVED the
+	// underlying io.ReaderAt itself fail (PR9R8-F3-SNIFF-FAILURE-OBSERVABLE,
+	// PR9R8-F4-STRUCTURAL-VS-IO): this handler DID recognize the upload as
+	// zip-shaped, it simply could not finish reading it, which is a fact
+	// about THIS SERVICE's ability to read the upload, never a verdict
+	// about the upload's own bytes -- see inspect.ReasonReadFailed's own
+	// doc comment for the identical distinction drawn at the vocabulary
+	// level. Never a real registered format, and never matched by
+	// inspectContainerFormats, like inspectZipTooLargeFormat above.
+	inspectZipReadFailedFormat = "zip_read_failed"
+	// inspectZipMalformedFormat is the Detected-format sentinel for a
+	// PK-shaped upload whose first four bytes were readable but
+	// convert.SniffContainer's own zip.NewReader call failed STRUCTURALLY
+	// (errors.Is(err, convert.ErrNotAZip)) -- docsniff.go's own
+	// readerAtRecorder observed every ReadAt call it made succeed, so the
+	// failure describes THIS UPLOAD's own bytes, not this handler's ability
+	// to read them. Reported as inspect.ReasonMalformedInput, distinct from
+	// inspectZipReadFailedFormat above precisely so a client can tell "this
+	// service could not read your upload" apart from "your upload's own
+	// central directory does not parse" -- collapsing the two back into one
+	// generic format_unrecognized fallback is the exact defect PR9R8-F3
+	// closes. Never a real registered format, and never matched by
+	// inspectContainerFormats.
+	inspectZipMalformedFormat = "zip_malformed"
 )
 
 const (
@@ -495,8 +522,30 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 			} else if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				sniffed = &cr
+			} else if cerr != nil {
+				// PR9R8-F2/F3 (finding at inspect_handlers.go:371, quoted
+				// verbatim in this quick task's PLAN.md): the PREVIOUS
+				// version of this branch was a success-only conditional --
+				// any non-nil cerr silently left detected empty, the SAME
+				// outcome as a genuinely unrecognized upload. That made
+				// inspect.ReasonReadFailed unreachable on this production
+				// sniff path: a real ReadAt failure while reading the EOCD
+				// or central directory produced the identical
+				// unknown/format_unrecognized report a truly unknown format
+				// would, so the new reason existed only in a unit test, not
+				// in what a client could ever observe. docsniff.go's own
+				// readerAtRecorder (PR9R8-F4-STRUCTURAL-VS-IO) makes the
+				// distinction below an OBSERVED fact, not a guess from
+				// cerr's own shape: errors.Is(cerr, convert.ErrNotAZip) is
+				// true if, and only if, every ReadAt the recorder wrapped
+				// actually succeeded.
+				if errors.Is(cerr, convert.ErrNotAZip) {
+					detected = inspectZipMalformedFormat
+				} else {
+					detected = inspectZipReadFailedFormat
+				}
 			}
-			// A DuplicateRootPart result, ErrNotAZip, or Format=="" leaves
+			// A DuplicateRootPart result or Format=="" (cerr == nil) leaves
 			// detected empty intentionally, mirroring handleCreateJob.
 		}
 	}
@@ -878,6 +927,42 @@ func zipDirectoryCeilingFamilyResult() inspect.FamilyResult {
 	return res
 }
 
+// zipReadFailedFamilyResult is the FamilyResult reached when
+// detectInspectFormat observes -- via docsniff.go's own readerAtRecorder,
+// not by guessing from an error's shape -- that the underlying io.ReaderAt
+// itself failed while convert.SniffContainer was reading a PK-prefixed
+// upload's EOCD or central directory (PR9R8-F3-SNIFF-FAILURE-OBSERVABLE):
+// every container-domain code becomes an honest unknown/read_failed, the
+// SAME closed-vocabulary reason a unit test could already produce before
+// this fix but the production sniff path never actually reached. NOT a
+// silent fold into format_unrecognized (this handler DID recognize the
+// PK\x03\x04 prefix; it simply could not finish reading what came after
+// it), and never a 500.
+func zipReadFailedFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range []inspect.Code{inspect.CodeOOXMLMacro, inspect.CodeZipBombShape, inspect.CodeExternalReference} {
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed})
+	}
+	return res
+}
+
+// zipMalformedFamilyResult is the FamilyResult reached when
+// convert.SniffContainer's own zip.NewReader call fails STRUCTURALLY
+// (errors.Is(cerr, convert.ErrNotAZip)) -- docsniff.go's own
+// readerAtRecorder observed every ReadAt it made succeed, so the failure
+// describes THIS UPLOAD's own bytes, not this handler's ability to read
+// them (PR9R8-F4-STRUCTURAL-VS-IO). Every container-domain code becomes an
+// honest unknown/malformed_input, distinct from zipReadFailedFamilyResult
+// above precisely so a client can tell "this service could not read your
+// upload" apart from "your upload's own central directory does not parse".
+func zipMalformedFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range []inspect.Code{inspect.CodeOOXMLMacro, inspect.CodeZipBombShape, inspect.CodeExternalReference} {
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput})
+	}
+	return res
+}
+
 // dispatchInspectFamilies runs the ONE family analyzer applicable to
 // detected (if any) under tr's shared byte/time budget. A format matching
 // none of the four families (html/latex/md/rst/org/text, a bare zip, or any
@@ -924,6 +1009,17 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// dishonest accounting, and this path never reads or allocates
 		// based on this upload's own declared size at all.
 		return append(families, zipDirectoryCeilingFamilyResult())
+	case detected == inspectZipReadFailedFormat:
+		// PR9R8-F3: unlike inspectZipTooLargeFormat above, SniffContainer
+		// DID run (and DID spend the read work this attempt cost) before
+		// failing -- tr.Consume below still applies, same as every other
+		// case that actually dispatched an analyzer.
+		families = append(families, zipReadFailedFamilyResult())
+	case detected == inspectZipMalformedFormat:
+		// PR9R8-F4: same reasoning as inspectZipReadFailedFormat above --
+		// SniffContainer ran and read real bytes before concluding the
+		// structure itself does not parse.
+		families = append(families, zipMalformedFamilyResult())
 	case detected == "pdf":
 		families = append(families, inspect.AnalyzePDF(file, size, maxBytes, tr))
 	case inspectContainerFormats[detected]:
@@ -1008,6 +1104,21 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		// the three container-domain codes.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes},
+		}}
+	case detected == inspectZipReadFailedFormat:
+		// PR9R8-F3: same reasoning as inspectZipTooLargeFormat above --
+		// detected names a "could not finish reading" sentinel, not a real
+		// format, so there is nothing honest to compare declaredFormat
+		// against; unknown/read_failed says so explicitly rather than
+		// falling through to the generic format_unrecognized case below.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed},
+		}}
+	case detected == inspectZipMalformedFormat:
+		// PR9R8-F4: same reasoning, for the structural (not operational)
+		// sibling sentinel.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
 		}}
 	case detected == "" || declaredFormat == "":
 		// Nothing to compare: an unrecognized upload, or a filename with no
