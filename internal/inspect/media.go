@@ -219,26 +219,40 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // round 8: consumer extraction succeeds) -- every one of those criteria
 // asked "is what we found any good", never "is what we found actually
 // WHERE a top-level box would be". When the file is larger than maxBytes
-// (oversizedFile below) and moov is not in the head, this function now
-// FIRST tries to PROVE a tail-anchored position via
-// headBoxChainProvenEnd: walk the REAL top-level box chain from file
-// offset 0 -- exactly like a conformant parser would, never looking
-// inside any box's own payload -- until a box is found whose declared
-// size runs past the head window; THAT box's own declared END, computed
-// from its header alone (never its payload), is a FACT about the file's
-// structure, not a guess. A box planted inside e.g. `mdat`'s own opaque
-// payload can never produce this proof, because reaching it would
-// require looking INSIDE the preceding box's payload, which a genuine
-// top-level walk never does -- it only ever hops FORWARD by a box's own
-// declared size, skipping `mdat`'s entire declared payload (fake `moov`
-// included) in one hop. Only when this proof is unavailable (no box in
-// head exceeds the window, the position it proves falls outside the tail
-// window's own coverage, or nothing named "moov" follows it before the
-// tail window runs out) does the search fall back to findMoovInTail's
-// substring scan below, completely unchanged -- every existing
+// (oversizedFile below) and moov is not in the head, this function PROVES
+// a tail-anchored position via headBoxChainProvenEnd: walk the REAL
+// top-level box chain from file offset 0 -- exactly like a conformant
+// parser would, never looking inside any box's own payload -- until a box
+// is found whose declared size runs past the head window; THAT box's own
+// declared END, computed from its header alone (never its payload), is a
+// FACT about the file's structure, not a guess. A box planted inside e.g.
+// `mdat`'s own opaque payload can never produce this proof, because
+// reaching it would require looking INSIDE the preceding box's payload,
+// which a genuine top-level walk never does -- it only ever hops FORWARD
+// by a box's own declared size, skipping `mdat`'s entire declared payload
+// (fake `moov` included) in one hop.
+//
+// PR9R9 finding (media.go:498, the round-8 fix itself): "headBoxChainProvenEnd
+// returning !ok is trivially attacker-controlled [size==0, a header
+// declaring less than its own length, a 64-bit size field truncated at the
+// window edge]. In every one of those, control falls straight through to
+// findMoovInTail, the exact substring scan the finding is about, and the
+// decoy in mdat wins precisely as it did before." Falling through to the
+// substring scan whenever placement could not be proven reopened exactly
+// the hole the proof exists to close -- an attacker picks the head box
+// shape, so the file shapes that defeat headBoxChainProvenEnd's proof are
+// exactly the ones an attacker would choose. When oversizedFile is true,
+// findMoovInTail (the substring scan) is therefore NEVER invoked anymore:
+// either the proof succeeds and the candidate it names is trusted
+// directly, or it does not, and the outcome is an HONEST unknown or a
+// PROVEN absence -- never a guess. An unnecessary unknown costs a missing
+// characteristic; an unproven accept costs a wrong value presented as
+// fact, and D-01/D-03 both forbid the latter. Every existing
 // candidate/ceiling test this file already had before round 8 exercises
 // files that fit within either window on their own (oversizedFile below
-// is false for them) and is therefore untouched by this addition.
+// is false for them, where the existing complete head walk already makes
+// the substring scan harmless -- see headBoxChainProvenEnd's own doc
+// comment) and is therefore untouched by this change.
 //
 // PR9R8 finding (media.go:255), verbatim: "For an MP4/MOV larger than
 // maxBytes whose moov is not found in the head, the analyzer first reads
@@ -331,26 +345,68 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	var tailActual int64
 	var tailCeilingHit bool
 	tailWin, tailOK := readWindow(r, tailOff, tailLen, size)
-	if tailOK {
+	if !tailOK {
+		consumeActual(tr, tailActual)
+		if oversizedFile {
+			// No tail window to prove anything against at all -- our own
+			// inability to read, never a fact about the file's structure.
+			return nil, ReasonWorkCeilingBytes
+		}
+	} else {
 		tailActual = int64(len(tailWin))
 		consumeActual(tr, tailActual)
 
 		if oversizedFile {
-			if nextOff, ok := headBoxChainProvenEnd(headWin, tr); ok && nextOff >= tailOff && nextOff < size {
-				rel := nextOff - tailOff
-				if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
-					return payload, ""
-				} else if ceilingHit {
-					return nil, ReasonWorkCeilingBytes
-				}
-				// The proven position was reachable but no box named
-				// "moov" followed it before tailWin ran out -- fall
-				// through to the substring scan below rather than
-				// concluding "absent" here: tailWin's own coverage is
-				// now clamped by tailReserve, not the old maxBytes-sized
-				// window, so a chain that runs past tailWin's own end is
-				// not yet proof that no moov exists past this point.
+			// PR9R9 fix: PROVE, never scan. See this function's own doc
+			// comment for why findMoovInTail (substring scan) must not run
+			// at all in this branch.
+			nextOff, ok := headBoxChainProvenEnd(headWin, tr)
+			if !ok {
+				// headBoxChainProvenEnd could not establish ANY proven
+				// top-level boundary -- whether because its own
+				// maxISOBMFFBoxes ceiling fired, or because the box it was
+				// examining was malformed/declared size 0/had a 64-bit
+				// size field truncated at the window edge. Every one of
+				// these is OUR OWN inability to prove a position, never a
+				// fact about the file (an attacker chooses these shapes
+				// specifically to defeat the proof, so treating any of
+				// them as "genuinely absent" would hand the decoy right
+				// back its opening).
+				return nil, ReasonWorkCeilingBytes
 			}
+			if nextOff < tailOff {
+				// The proven boundary exists but falls in the gap between
+				// what the head and tail windows actually cover -- we
+				// genuinely do not know what is there.
+				return nil, ReasonWorkCeilingBytes
+			}
+			if nextOff >= size {
+				// The proven boundary is AT or PAST the file's actual end:
+				// either nothing more can follow within the real file
+				// (declaring more would be dishonest), or this box's own
+				// declared size already claims more bytes than the file
+				// has. Combined with the [0, nextOff) chain
+				// headBoxChainProvenEnd already walked box-by-box (and the
+				// prior firstChildBox(headWin, "moov", ...) call already
+				// ruled "moov" out among all of those), this is COMPLETE,
+				// proven coverage of the file's entire top-level
+				// structure: moov genuinely does not exist.
+				return nil, ReasonMalformedInput
+			}
+			rel := nextOff - tailOff
+			if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
+				return payload, ""
+			} else if ceilingHit {
+				return nil, ReasonWorkCeilingBytes
+			}
+			// tailWin's own end IS the file's true end (tailOff+tailLen ==
+			// size by construction), so a walk from the PROVEN nextOff all
+			// the way to len(tailWin) that neither found "moov" nor hit a
+			// ceiling has just walked the ENTIRE remainder of the file as
+			// a real top-level chain, cleanly. Combined with the equally
+			// proven [0, nextOff) head chain, moov is proven absent from
+			// the file, not merely unreached by this scan.
+			return nil, ReasonMalformedInput
 		}
 
 		if payload, found, ceilingHit := findMoovInTail(tailWin, wantHandler, includeDims, tr); found {
@@ -358,8 +414,6 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 		} else {
 			tailCeilingHit = ceilingHit
 		}
-	} else {
-		consumeActual(tr, tailActual)
 	}
 
 	if headActual+tailActual >= size && !headCeilingHit && !tailCeilingHit {
@@ -416,9 +470,20 @@ func consumeActual(tr *Tracker, n int64) {
 // a box's declared size extends to EOF (size64==0, never expected within
 // a bounded window), or maxISOBMFFBoxes was exhausted first (ceilingHit
 // is marked on tr in that case, the same convention walkTopLevelBoxes
-// itself already uses). Callers must fall back to the existing tail
-// substring search in every one of these cases, exactly as if this
-// function did not exist.
+// itself already uses).
+//
+// PR9R9 finding (media.go:498, the round-8 fix's own gap): every one of
+// these !ok shapes is TRIVIALLY attacker-controlled -- a crafted file can
+// choose exactly which one fires. The original round-8 fix fell back to
+// findMoovInTail's substring scan whenever ok was false, which handed the
+// decoy this whole mechanism exists to defeat a second, guaranteed way
+// in: an attacker simply shapes the box after ftyp to trip one of these
+// cases, and the fallback scans straight into their planted `moov`.
+// Callers MUST NOT fall back to the substring search on !ok (or on any
+// other failure to reach a usable "moov" from the proven position) --
+// report an honest unknown (or a proven absence, when full coverage was
+// established) instead. See findMoov's own doc comment and its
+// oversizedFile branch for the exact reasoning per outcome.
 func headBoxChainProvenEnd(headWin []byte, tr *Tracker) (nextOffset int64, ok bool) {
 	i := 0
 	for count := 0; i+8 <= len(headWin); count++ {
