@@ -1130,6 +1130,21 @@ func TestAnalyzeContainerSheetCountRecognizesEveryLegalSerialization(t *testing.
 			1,
 		},
 		{
+			// PR9R19: a <sheets> subtree nested below another element is
+			// extension markup reusing SpreadsheetML names, not the
+			// workbook's worksheet list. Only workbook > sheets > sheet
+			// counts.
+			"same-namespace sheets nested under another element must not count",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets><ext><sheets><sheet name="ghost"/></sheets></ext></workbook>`,
+			1,
+		},
+		{
+			// The worksheet must be a DIRECT child of the list, too.
+			"sheet buried below the real sheets list must not count",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/><group><sheet name="ghost"/></group></sheets></workbook>`,
+			1,
+		},
+		{
 			"OOXML strict namespace",
 			`<workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`,
 			2,

@@ -866,7 +866,6 @@ var spreadsheetMLNamespaces = map[string]bool{
 
 func countSheetElements(data []byte) (count int, ok bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
-	inSheets := false
 	// workbookNS is the namespace the ROOT element declared, and every
 	// sheets/sheet that counts must match it exactly. Deciding this from the
 	// document rather than from a fixed allow-list is what closes the
@@ -874,6 +873,13 @@ func countSheetElements(data []byte) (count int, ok bool) {
 	// document as a whole, which a nested element cannot redefine.
 	workbookNS := ""
 	haveRoot := false
+	// depth is the nesting level of the element currently open: the root is
+	// 1, its children 2, and so on. sheetsDepth is the depth of the
+	// workbook's OWN <sheets> list once found, or 0 while outside it --
+	// tracking the real ancestry rather than a global "somewhere inside a
+	// sheets" flag.
+	depth := 0
+	sheetsDepth := 0
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -891,6 +897,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			depth++
 			if !haveRoot {
 				haveRoot = true
 				workbookNS = t.Name.Space
@@ -920,20 +927,27 @@ func countSheetElements(data []byte) (count int, ok bool) {
 			}
 			switch t.Name.Local {
 			case "sheets":
-				inSheets = true
+				// depth == 2 means a DIRECT child of the root workbook.
+				// A boolean "are we inside some <sheets>" (PR9R18's shape)
+				// could not tell that from <workbook><ext><sheets>...,
+				// which is extension markup reusing SpreadsheetML names
+				// and declares no worksheets at all (PR9R19,
+				// container.go:923). Only the first such list counts.
+				if depth == 2 && sheetsDepth == 0 {
+					sheetsDepth = depth
+				}
 			case "sheet":
-				// Only the <sheets> list declares worksheets. Scoping to it
-				// keeps an unrelated element that happens to be named
-				// "sheet" elsewhere in the part from inflating the count,
-				// which the previous byte scan could not distinguish at all.
-				if inSheets {
+				// A worksheet is workbook > sheets > sheet, and nothing
+				// else: a direct child of the list located above.
+				if sheetsDepth != 0 && depth == sheetsDepth+1 {
 					count++
 				}
 			}
 		case xml.EndElement:
-			if t.Name.Space == workbookNS && t.Name.Local == "sheets" {
-				inSheets = false
+			if sheetsDepth != 0 && depth == sheetsDepth && t.Name.Space == workbookNS && t.Name.Local == "sheets" {
+				sheetsDepth = 0
 			}
+			depth--
 		}
 	}
 }
