@@ -25,7 +25,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/convert"
@@ -98,6 +100,119 @@ const (
 	// is checked from the EOCD record's OWN declared fields, at most 64 KiB
 	// of ReadAt, zero decompression, never archive/zip.NewReader.
 	inspectZipTooLargeFormat = "zip_directory_too_large"
+	// inspectZipReadFailedFormat is the Detected-format sentinel for a
+	// PK-shaped upload whose first four bytes were readable (the PK\x03\x04
+	// prefix matched) but convert.SniffContainer could not finish reading
+	// what came after -- docsniff.go's own readerAtRecorder OBSERVED the
+	// underlying io.ReaderAt itself fail (PR9R8-F3-SNIFF-FAILURE-OBSERVABLE,
+	// PR9R8-F4-STRUCTURAL-VS-IO): this handler DID recognize the upload as
+	// zip-shaped, it simply could not finish reading it, which is a fact
+	// about THIS SERVICE's ability to read the upload, never a verdict
+	// about the upload's own bytes -- see inspect.ReasonReadFailed's own
+	// doc comment for the identical distinction drawn at the vocabulary
+	// level. Never a real registered format, and never matched by
+	// inspectContainerFormats, like inspectZipTooLargeFormat above.
+	inspectZipReadFailedFormat = "zip_read_failed"
+	// inspectZipMalformedFormat is the Detected-format sentinel for a
+	// PK-shaped upload whose first four bytes were readable but
+	// convert.SniffContainer's own zip.NewReader call failed STRUCTURALLY
+	// (errors.Is(err, convert.ErrNotAZip)) -- docsniff.go's own
+	// readerAtRecorder observed every ReadAt call it made succeed, so the
+	// failure describes THIS UPLOAD's own bytes, not this handler's ability
+	// to read them. Reported as inspect.ReasonMalformedInput, distinct from
+	// inspectZipReadFailedFormat above precisely so a client can tell "this
+	// service could not read your upload" apart from "your upload's own
+	// central directory does not parse" -- collapsing the two back into one
+	// generic format_unrecognized fallback is the exact defect PR9R8-F3
+	// closes. Never a real registered format, and never matched by
+	// inspectContainerFormats.
+	inspectZipMalformedFormat = "zip_malformed"
+)
+
+const (
+	// inspectIntakeMaxConcurrent bounds how many requests may be inside
+	// http.Request.ParseMultipartForm -- buffering an untrusted upload into
+	// the process heap -- AT THE SAME TIME (PR9R8-F1-INTAKE-BOUND, the
+	// finding quoted verbatim at inspect_handlers.go:227 in this quick
+	// task's PLAN.md). Moving s.inspectSem's own acquisition to AFTER body
+	// intake (T-SLF-02, see handleInspect's own step-2 comment) correctly
+	// stopped a slow client from starving the four analysis slots without
+	// doing any analysis -- but it left THIS call, the one that actually
+	// buffers the bytes, with no concurrency bound of its own: every
+	// request that reaches this handler runs ParseMultipartForm
+	// unconditionally, however many are already running it right now.
+	//
+	// inspectIntakeSem (api.go) holds this slot for exactly the duration of
+	// ONE ParseMultipartForm call, released the instant it returns
+	// (success or failure) -- NOT for the rest of the handler. This is
+	// deliberately unlike the T-SLF-02 mistake, not a repeat of it: the
+	// resource this slot protects (heap bytes ParseMultipartForm is
+	// actively buffering) really is occupied for exactly as long as the
+	// client's own network transfer takes, so holding the slot for that
+	// long is correct, not wasteful -- unlike s.inspectSem's CPU/DB-pool
+	// slot, which was never actually consumed while waiting on the network
+	// and therefore should never be held for it.
+	//
+	// The arithmetic this capacity was chosen from, stated here because a
+	// future "simplification" that drops it is exactly the kind of change
+	// this project's own history shows recurring:
+	//   - multipartInMemoryBudget (handlers.go) = 32 MiB: the MOST heap
+	//     ParseMultipartForm will ever hold for ONE request, regardless of
+	//     INSPECT_MAX_UPLOAD_BYTES's own 100 MiB ceiling on total body size
+	//     -- bytes past this budget spill to a disk-backed temp file, not
+	//     RAM (net/http's own ParseMultipartForm doc comment).
+	//   - inspectIntakeMaxConcurrent (this constant) = 8.
+	//   - Worst case: 8 * 32 MiB = 256 MiB -- a QUARTER of the deployed api
+	//     pod's own resources.limits.memory = 1 GiB
+	//     (deploy/chart/octoconv/values.yaml), not the ~30 * 32 MiB ≈
+	//     960 MiB (94% of that same 1 GiB) an UNBOUNDED intake stage can
+	//     reach under the default RATE_LIMIT_INSPECT_RPM=30 burst budget
+	//     (api.go's own InspectRateLimitRPM default) -- the exact PR9R8-F1
+	//     scenario this constant closes.
+	//   - This is a SEPARATE budget from INSPECT_MAX_CONCURRENT's own
+	//     default of 4 (Config.InspectMaxConcurrent): that one bounds the
+	//     ANALYSIS phase, which only starts once a request has already
+	//     released THIS slot (see handleInspect's own step-1/step-2 split),
+	//     so the two are never charged against the same 1 GiB for the same
+	//     concurrent request at the same time -- 4 concurrent analyses at
+	//     INSPECT_MAX_WORK_BYTES's own 8 MiB default costs a further
+	//     32 MiB, comfortably inside the 768 MiB this constant leaves free.
+	//   - Deliberately NOT sized to 30 (matching RATE_LIMIT_INSPECT_RPM's
+	//     own default): that would merely rename PR9R8-F1's own bug, not
+	//     close it.
+	//   - Deliberately a fixed Go constant, not a new env-configurable
+	//     Config field: this bound protects a deployment-topology fact
+	//     already hard-coded in the Helm chart (the pod's own memory
+	//     ceiling), not a per-environment tuning knob like
+	//     INSPECT_MAX_CONCURRENT.
+	inspectIntakeMaxConcurrent = 8
+
+	// inspectIntakeReadDeadline bounds how long ONE request's
+	// ParseMultipartForm call may block waiting on that request's own body
+	// bytes to arrive. cmd/api/main.go sets httpSrv.ReadHeaderTimeout
+	// (10s) but configures no equivalent deadline for the REQUEST BODY --
+	// PR9R8-F1's own finding text names this gap explicitly ("cmd/api/
+	// main.go still configures no request-body timeout"). Without it, a
+	// client that opens a connection and then sends bytes at an
+	// arbitrarily slow rate could hold an inspectIntakeSem slot
+	// indefinitely, which is a slowloris-shaped resource hold even though
+	// this slot's OWN capacity (unlike s.inspectSem's) is meant to
+	// tolerate genuinely slow network transfer, not an unbounded one.
+	// Applied via http.NewResponseController(w).SetReadDeadline -- the
+	// standard net/http mechanism (Go 1.20+) for bounding how long the
+	// underlying connection's Read may block -- rather than a context
+	// timeout: a context deadline alone does not unblock an in-progress
+	// net.Conn.Read the way SetReadDeadline does.
+	inspectIntakeReadDeadline = 30 * time.Second
+
+	// inspectIntakeBusyMessage mirrors inspectBusyMessage's own
+	// non-leaking discipline (inspectgate.go) -- names the SERVICE's
+	// state, never a number -- but is worded for the intake stage
+	// specifically: a client that saw inspectBusyMessage's own wording
+	// ("...parsing ceiling...") after being rejected here, before any
+	// parsing began, could reasonably read it as a report about the wrong
+	// stage.
+	inspectIntakeBusyMessage = "service is at its concurrent inspect-intake ceiling right now"
 )
 
 const (
@@ -223,10 +338,48 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// not simply move an unbounded read earlier -- it only stops charging
 	// a slot/deadline for time this handler spends waiting on the
 	// network, neither of which it can shorten anyway.
+	//
+	// PR9R8-F1-INTAKE-BOUND (finding at inspect_handlers.go:227, quoted
+	// verbatim in this quick task's PLAN.md): the paragraph above fixed
+	// T-SLF-02 by moving s.inspectSem's own acquisition to AFTER this
+	// point, but that left THIS call -- the one that actually buffers an
+	// untrusted upload into the process heap -- with no concurrency bound
+	// of its own at all. inspectIntakeSem closes that gap; see
+	// inspectIntakeMaxConcurrent's own doc comment for the arithmetic this
+	// capacity was chosen from. Acquired non-blocking, exactly like
+	// s.inspectSem's own acquireOrReject below: a saturated intake stage is
+	// an immediate, honest 429 (the same closed-vocabulary InspectBusy
+	// code, never a 500), not a queued wait that would itself accumulate
+	// goroutines.
+	select {
+	case s.inspectIntakeSem <- struct{}{}:
+	default:
+		w.Header().Set("Retry-After", strconv.Itoa(inspectBusyRetryAfterSeconds))
+		writeError(w, http.StatusTooManyRequests, errcode.InspectBusy, inspectIntakeBusyMessage)
+		return
+	}
+
+	// See inspectIntakeReadDeadline's own doc comment: bounds how long THIS
+	// request's own ParseMultipartForm call may block on the network before
+	// the slot just acquired above is released. Ignored when unsupported
+	// (e.g. this package's own tests, which exercise handleInspect through
+	// httptest.NewRecorder rather than a real net.Conn) -- the
+	// inspectIntakeMaxConcurrent bound above still holds either way, since
+	// it does not depend on this deadline to be effective.
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(inspectIntakeReadDeadline))
+
 	r.Body = http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes)
-	if err := r.ParseMultipartForm(multipartInMemoryBudget); err != nil {
+	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
+	// Released HERE, immediately after the buffering call returns --
+	// success or failure -- not deferred to handler exit: the resource this
+	// slot bounds (heap bytes ParseMultipartForm is actively filling) is
+	// spent by the time this call returns, whatever ended up in memory from
+	// here on is already accounted for by multipartInMemoryBudget's own
+	// per-request ceiling, the same as it always was before this fix.
+	<-s.inspectIntakeSem
+	if parseErr != nil {
 		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
+		if errors.As(parseErr, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")
 			return
 		}
@@ -369,8 +522,30 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 			} else if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				sniffed = &cr
+			} else if cerr != nil {
+				// PR9R8-F2/F3 (finding at inspect_handlers.go:371, quoted
+				// verbatim in this quick task's PLAN.md): the PREVIOUS
+				// version of this branch was a success-only conditional --
+				// any non-nil cerr silently left detected empty, the SAME
+				// outcome as a genuinely unrecognized upload. That made
+				// inspect.ReasonReadFailed unreachable on this production
+				// sniff path: a real ReadAt failure while reading the EOCD
+				// or central directory produced the identical
+				// unknown/format_unrecognized report a truly unknown format
+				// would, so the new reason existed only in a unit test, not
+				// in what a client could ever observe. docsniff.go's own
+				// readerAtRecorder (PR9R8-F4-STRUCTURAL-VS-IO) makes the
+				// distinction below an OBSERVED fact, not a guess from
+				// cerr's own shape: errors.Is(cerr, convert.ErrNotAZip) is
+				// true if, and only if, every ReadAt the recorder wrapped
+				// actually succeeded.
+				if errors.Is(cerr, convert.ErrNotAZip) {
+					detected = inspectZipMalformedFormat
+				} else {
+					detected = inspectZipReadFailedFormat
+				}
 			}
-			// A DuplicateRootPart result, ErrNotAZip, or Format=="" leaves
+			// A DuplicateRootPart result or Format=="" (cerr == nil) leaves
 			// detected empty intentionally, mirroring handleCreateJob.
 		}
 	}
@@ -752,6 +927,42 @@ func zipDirectoryCeilingFamilyResult() inspect.FamilyResult {
 	return res
 }
 
+// zipReadFailedFamilyResult is the FamilyResult reached when
+// detectInspectFormat observes -- via docsniff.go's own readerAtRecorder,
+// not by guessing from an error's shape -- that the underlying io.ReaderAt
+// itself failed while convert.SniffContainer was reading a PK-prefixed
+// upload's EOCD or central directory (PR9R8-F3-SNIFF-FAILURE-OBSERVABLE):
+// every container-domain code becomes an honest unknown/read_failed, the
+// SAME closed-vocabulary reason a unit test could already produce before
+// this fix but the production sniff path never actually reached. NOT a
+// silent fold into format_unrecognized (this handler DID recognize the
+// PK\x03\x04 prefix; it simply could not finish reading what came after
+// it), and never a 500.
+func zipReadFailedFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range []inspect.Code{inspect.CodeOOXMLMacro, inspect.CodeZipBombShape, inspect.CodeExternalReference} {
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed})
+	}
+	return res
+}
+
+// zipMalformedFamilyResult is the FamilyResult reached when
+// convert.SniffContainer's own zip.NewReader call fails STRUCTURALLY
+// (errors.Is(cerr, convert.ErrNotAZip)) -- docsniff.go's own
+// readerAtRecorder observed every ReadAt it made succeed, so the failure
+// describes THIS UPLOAD's own bytes, not this handler's ability to read
+// them (PR9R8-F4-STRUCTURAL-VS-IO). Every container-domain code becomes an
+// honest unknown/malformed_input, distinct from zipReadFailedFamilyResult
+// above precisely so a client can tell "this service could not read your
+// upload" apart from "your upload's own central directory does not parse".
+func zipMalformedFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range []inspect.Code{inspect.CodeOOXMLMacro, inspect.CodeZipBombShape, inspect.CodeExternalReference} {
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput})
+	}
+	return res
+}
+
 // dispatchInspectFamilies runs the ONE family analyzer applicable to
 // detected (if any) under tr's shared byte/time budget. A format matching
 // none of the four families (html/latex/md/rst/org/text, a bare zip, or any
@@ -798,6 +1009,17 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// dishonest accounting, and this path never reads or allocates
 		// based on this upload's own declared size at all.
 		return append(families, zipDirectoryCeilingFamilyResult())
+	case detected == inspectZipReadFailedFormat:
+		// PR9R8-F3: unlike inspectZipTooLargeFormat above, SniffContainer
+		// DID run (and DID spend the read work this attempt cost) before
+		// failing -- tr.Consume below still applies, same as every other
+		// case that actually dispatched an analyzer.
+		families = append(families, zipReadFailedFamilyResult())
+	case detected == inspectZipMalformedFormat:
+		// PR9R8-F4: same reasoning as inspectZipReadFailedFormat above --
+		// SniffContainer ran and read real bytes before concluding the
+		// structure itself does not parse.
+		families = append(families, zipMalformedFamilyResult())
 	case detected == "pdf":
 		families = append(families, inspect.AnalyzePDF(file, size, maxBytes, tr))
 	case inspectContainerFormats[detected]:
@@ -882,6 +1104,21 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		// the three container-domain codes.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes},
+		}}
+	case detected == inspectZipReadFailedFormat:
+		// PR9R8-F3: same reasoning as inspectZipTooLargeFormat above --
+		// detected names a "could not finish reading" sentinel, not a real
+		// format, so there is nothing honest to compare declaredFormat
+		// against; unknown/read_failed says so explicitly rather than
+		// falling through to the generic format_unrecognized case below.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed},
+		}}
+	case detected == inspectZipMalformedFormat:
+		// PR9R8-F4: same reasoning, for the structural (not operational)
+		// sibling sentinel.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
 		}}
 	case detected == "" || declaredFormat == "":
 		// Nothing to compare: an unrecognized upload, or a filename with no

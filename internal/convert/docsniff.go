@@ -69,6 +69,43 @@ var ooxmlMacroParts = map[string]bool{
 	"ppt/vbaProject.bin":  true,
 }
 
+// readerAtRecorder wraps an io.ReaderAt and remembers whether ITS OWN
+// underlying ReadAt call ever returned a real (non-EOF) error -- codex PR #9
+// round 8's own finding (docsniff.go:93, PR9R8-F4-STRUCTURAL-VS-IO): the
+// previous approach classified a zip.NewReader error as "operational" by
+// checking whether it matched one of three known sentinels
+// (zip.ErrFormat/zip.ErrAlgorithm/zip.ErrChecksum) and defaulting
+// everything else to "operational read failure" -- which broke on the very
+// next error archive/zip returns that was never enumerated
+// (io.ErrUnexpectedEOF for a truncated central-directory header,
+// "zip: invalid comment length" for an inconsistent EOCD -- neither
+// originates in ReadAt, both are properties of the bytes themselves). The
+// only reliable way to know whether a failure originated in the READER
+// (this handler's own inability to get bytes at all) rather than in the
+// PARSER's interpretation of bytes it successfully received is to be told
+// so by the reader itself -- not to infer origin from the shape of
+// whatever error the parser built on top of it happens to return. A caller
+// that reads failed AFTER zip.NewReader has already returned gets an
+// OBSERVED fact, not a guess.
+type readerAtRecorder struct {
+	r      io.ReaderAt
+	failed bool
+	err    error
+}
+
+// ReadAt delegates to the wrapped reader and records the FIRST real
+// (non-EOF) failure it observes -- later calls after a recorded failure
+// still delegate (archive/zip may retry at a different offset after a
+// short read elsewhere), but do not overwrite the first recorded cause.
+func (rr *readerAtRecorder) ReadAt(p []byte, off int64) (int, error) {
+	n, err := rr.r.ReadAt(p, off)
+	if err != nil && err != io.EOF && !rr.failed {
+		rr.failed = true
+		rr.err = err
+	}
+	return n, err
+}
+
 // SniffContainer inspects a ZIP-shaped upload's central directory to
 // disambiguate the six supported office formats plus epub (D-01, T-47-05c),
 // sum declared uncompressed size across every entry for the zip-bomb guard
@@ -79,18 +116,23 @@ var ooxmlMacroParts = map[string]bool{
 // unconsumed upload source (e.g. multipart.File), not a re-stitched
 // io.Reader -- the archive/zip package requires positional access.
 func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
-	zr, err := zip.NewReader(r, size)
+	rr := &readerAtRecorder{r: r}
+	zr, err := zip.NewReader(rr, size)
 	if err != nil {
-		// archive/zip's own sentinels say the bytes are not a usable zip;
-		// anything else reached us through r.ReadAt and is an operational
-		// read failure, which must not be dressed up as a verdict about the
-		// input (see ErrNotAZip's own doc comment). Wrapping keeps
-		// errors.Is(err, ErrNotAZip) true for the format cases while
-		// preserving the underlying cause for diagnosis.
-		if errors.Is(err, zip.ErrFormat) || errors.Is(err, zip.ErrAlgorithm) || errors.Is(err, zip.ErrChecksum) {
-			return ContainerResult{}, fmt.Errorf("%w: %w", ErrNotAZip, err)
+		// PR9R8-F4-STRUCTURAL-VS-IO: classify by what rr actually OBSERVED
+		// about the underlying reader (see readerAtRecorder's own doc
+		// comment), never by matching err against a closed list of known
+		// archive/zip sentinels. rr.failed is set if, and only if, the
+		// wrapped io.ReaderAt itself returned a genuine (non-EOF) error --
+		// every OTHER zip.NewReader failure, whatever Go error type it
+		// happens to be, describes bytes this function DID successfully
+		// read, so it is always ErrNotAZip (see that sentinel's own doc
+		// comment), never an operational read failure, regardless of
+		// whether this exact error shape has ever been seen before.
+		if rr.failed {
+			return ContainerResult{}, fmt.Errorf("read zip container: %w", rr.err)
 		}
-		return ContainerResult{}, fmt.Errorf("read zip container: %w", err)
+		return ContainerResult{}, fmt.Errorf("%w: %w", ErrNotAZip, err)
 	}
 
 	var res ContainerResult

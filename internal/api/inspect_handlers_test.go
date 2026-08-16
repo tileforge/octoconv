@@ -344,6 +344,98 @@ func TestInspectZipDirectoryOverBoundReportsUnknownNot500(t *testing.T) {
 	}
 }
 
+// failingAfterPrefixContainerFile implements multipart.File (Read,
+// ReadAt, Seek, Close), succeeding for a ReadAt exactly at offset 0
+// requesting AT MOST the 4-byte PK\x03\x04 prefix detectInspectFormat's own
+// ZIP-detection branch reads first, and failing every OTHER call (any
+// larger read at offset 0, or any read at a nonzero offset) with failErr --
+// codex PR #9 round 8's own reviewer scenario, quoted verbatim in this
+// quick task's PLAN.md: "the first four bytes are readable but a later
+// ReadAt fails while reading the EOCD or central directory". Go's real
+// multipart.File (memory- or disk-backed) offers no portable, deterministic
+// way to script a genuine mid-read i/o failure through an actual net/http
+// request, so this test exercises detectInspectFormat/dispatchInspectFamilies
+// directly -- the exact production functions handleInspect itself calls on
+// its own sniff path -- rather than going through httptest's own multipart
+// writer.
+type failingAfterPrefixContainerFile struct {
+	data    []byte
+	failErr error
+}
+
+func (f *failingAfterPrefixContainerFile) ReadAt(p []byte, off int64) (int, error) {
+	if off == 0 && len(p) <= 4 {
+		return copy(p, f.data[:4]), nil
+	}
+	return 0, f.failErr
+}
+func (f *failingAfterPrefixContainerFile) Read(p []byte) (int, error) { return 0, f.failErr }
+func (f *failingAfterPrefixContainerFile) Seek(int64, int) (int64, error) {
+	return 0, f.failErr
+}
+func (f *failingAfterPrefixContainerFile) Close() error { return nil }
+
+// TestInspectSniffReadFailureIsObservableAsReadFailed is PR9R8-F2/F3's own
+// central proof: a ReaderAt that can deliver the 4-byte PK\x03\x04 prefix
+// but fails on every read after it must surface as unknown/read_failed on
+// the SAME production sniff path handleInspect actually runs
+// (detectInspectFormat -> dispatchInspectFamilies -> inspect.BuildReport),
+// never silently folded into unknown/format_unrecognized -- the exact
+// defect the finding names: "detectInspectFormat consequently returns an
+// empty format ... the HTTP report labels every check
+// unknown/format_unrecognized rather than unknown/read_failed".
+func TestInspectSniffReadFailureIsObservableAsReadFailed(t *testing.T) {
+	data := macroDocxFixture(t) // real docx-shaped bytes; only the PK prefix is ever actually read through the failing wrapper below
+	file := &failingAfterPrefixContainerFile{data: data, failErr: errors.New("simulated disk read failure")}
+
+	detected, sniffed := detectInspectFormat(file, int64(len(data)), "docx")
+	if detected != inspectZipReadFailedFormat {
+		t.Fatalf("detected = %q, want %q", detected, inspectZipReadFailedFormat)
+	}
+	if sniffed != nil {
+		t.Fatalf("sniffed = %+v, want nil -- SniffContainer never succeeded", sniffed)
+	}
+
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
+	families := dispatchInspectFamilies(detected, sniffed, file, int64(len(data)), tr)
+	families = append(families, extensionMismatchFamilyResult(detected, "docx"))
+	report := inspect.BuildReport(detected, "docx", int64(len(data)), tr, families...)
+
+	if err := inspect.ValidateReport(report.Findings, report.Checks); err != nil {
+		t.Fatalf("ValidateReport: %v", err)
+	}
+
+	wantReadFailed := map[inspect.Code]bool{
+		inspect.CodeOOXMLMacro:        true,
+		inspect.CodeZipBombShape:      true,
+		inspect.CodeExternalReference: true,
+		inspect.CodeExtensionMismatch: true,
+	}
+	seen := map[inspect.Code]bool{}
+	for _, c := range report.Checks {
+		if !wantReadFailed[c.Code] {
+			continue
+		}
+		seen[c.Code] = true
+		if c.Status != inspect.StatusUnknown || c.Reason != inspect.ReasonReadFailed {
+			t.Errorf("check %s = %+v, want status=unknown reason=read_failed", c.Code, c)
+		}
+	}
+	for code := range wantReadFailed {
+		if !seen[code] {
+			t.Errorf("check %s missing from report.Checks entirely", code)
+		}
+	}
+	// The defect this test closes: BEFORE this fix, this identical scenario
+	// produced format_unrecognized everywhere -- indistinguishable from a
+	// genuinely unrecognized upload this handler never even tried to read.
+	for _, c := range report.Checks {
+		if c.Reason == inspect.ReasonFormatUnrecognized {
+			t.Errorf("check %+v carries format_unrecognized -- a genuine ReadAt failure must never be reported the same way as an unrecognized format (PR9R8-F3)", c)
+		}
+	}
+}
+
 // reviewerScenarioZipFixture builds the SMALLEST possible upload that
 // reproduces codex's round-2 review scenario end-to-end through the real
 // HTTP handler: a PK\x03\x04 local-file-header signature (so
@@ -1229,6 +1321,91 @@ func TestInspectSlowBodyDoesNotHoldConcurrencySlot(t *testing.T) {
 	status, body := doInspect(t, srv, "legit.png", pngBytesFixture())
 	if status != http.StatusOK {
 		t.Fatalf("legit request status = %d, want 200 -- must not be blocked by %d slow-body clients holding no slot; body=%s", status, slowClients, body)
+	}
+}
+
+// inspectIntakeConcurrencyResult carries one slow-body request's own outcome
+// back to the main goroutine through a channel -- rec.Code is read in the
+// SAME goroutine that just wrote it (immediately after ServeHTTP returns),
+// then handed off via the channel send/receive itself, which is what
+// establishes the happens-before edge -race requires; reading rec.Code
+// directly from the test goroutine after a bare time.Sleep, with no such
+// edge, would be a genuine data race against the handler goroutine's own
+// write inside http.ResponseWriter.WriteHeader.
+type inspectIntakeConcurrencyResult struct {
+	idx  int
+	code int
+}
+
+// TestInspectIntakeConcurrencyIsBounded is PR9R8-F1-INTAKE-BOUND's central
+// proof: MORE concurrent slow-body clients than inspectIntakeMaxConcurrent
+// must NOT all be admitted into ParseMultipartForm -- exactly the excess
+// beyond that constant must be rejected immediately with 429 inspect_busy,
+// WITHOUT ever reading a byte of their own body (a saturated intake stage
+// is not a queue). Before this fix, every one of them would have entered
+// ParseMultipartForm unconditionally, each buffering up to
+// multipartInMemoryBudget bytes in the process heap with nothing to stop
+// arbitrarily many from doing so at once -- the exact scenario the finding
+// names (roughly 30 concurrent requests times 32 MiB against the pod's own
+// 1 GiB memory limit).
+func TestInspectIntakeConcurrencyIsBounded(t *testing.T) {
+	resolver := newFakeResolver()
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{})
+
+	const overflow = 3 // exceeds inspectIntakeMaxConcurrent by this many
+	total := inspectIntakeMaxConcurrent + overflow
+
+	var wg sync.WaitGroup
+	blockers := make([]chan struct{}, total)
+	results := make(chan inspectIntakeConcurrencyResult, total)
+	for i := 0; i < total; i++ {
+		blockers[i] = make(chan struct{})
+		prefix, boundary := incompleteMultipartPrefix(t, "in.png", pngBytesFixture())
+		body := &blockingReader{prefix: prefix, block: blockers[i]}
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/inspect", body))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+		wg.Add(1)
+		go func(i int, req *http.Request) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			results <- inspectIntakeConcurrencyResult{idx: i, code: rec.Code}
+		}(i, req)
+	}
+	t.Cleanup(func() {
+		for _, ch := range blockers {
+			close(ch)
+		}
+		wg.Wait()
+	})
+
+	// Only the `overflow` requests rejected for being over
+	// inspectIntakeMaxConcurrent can possibly finish before their own
+	// blockers are closed -- the accepted ones are, by construction, stuck
+	// inside ParseMultipartForm reading blockingReader, which never returns
+	// until t.Cleanup runs. A bounded wait, not a fixed sleep, drains
+	// exactly the results that arrive.
+	rejected := 0
+	deadline := time.After(2 * time.Second)
+drain:
+	for range total {
+		select {
+		case res := <-results:
+			if res.code != http.StatusTooManyRequests {
+				t.Fatalf("request %d completed with status %d before its blocker was closed -- want either 429 (rejected at intake) or no completion at all yet", res.idx, res.code)
+			}
+			rejected++
+		case <-time.After(300 * time.Millisecond):
+			// No further result arrived within this window -- the
+			// remaining requests are (as expected) still blocked inside
+			// ParseMultipartForm, holding an intake slot each.
+			break drain
+		case <-deadline:
+			t.Fatalf("timed out waiting for the %d expected intake rejections; got %d so far", overflow, rejected)
+		}
+	}
+	if rejected != overflow {
+		t.Fatalf("rejected = %d, want exactly %d -- concurrent buffering must be bounded to inspectIntakeMaxConcurrent (%d), not admitted unconditionally", rejected, overflow, inspectIntakeMaxConcurrent)
 	}
 }
 

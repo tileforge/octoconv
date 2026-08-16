@@ -229,6 +229,15 @@ type Server struct {
 	// Never nil after NewServer -- newInspectSemaphore applies its own
 	// documented default for a non-positive input.
 	inspectSem *inspectSemaphore
+	// inspectIntakeSem bounds concurrent http.Request.ParseMultipartForm
+	// calls -- the buffering step BEFORE inspectSem above is even requested
+	// (PR9R8-F1-INTAKE-BOUND, internal/api/inspect_handlers.go). Deliberately
+	// a fixed-capacity channel, not something Config sizes: see
+	// inspectIntakeMaxConcurrent's own doc comment (inspect_handlers.go) for
+	// why this bound protects a deployment-topology fact (the pod's own
+	// resources.limits.memory), not a per-environment tuning knob. Never nil
+	// after NewServer.
+	inspectIntakeSem chan struct{}
 	// inspectRateRPM mirrors Config.InspectRateLimitRPM (D-06 mechanism 4).
 	inspectRateRPM int
 	// engineTimeouts mirrors Config.EngineTimeouts (INSP-04, Plan 58-07):
@@ -538,6 +547,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		inspectMaxWorkBytes:          cfg.InspectMaxWorkBytes,
 		inspectMaxWorkDuration:       cfg.InspectMaxWorkDuration,
 		inspectSem:                   newInspectSemaphore(cfg.InspectMaxConcurrent),
+		inspectIntakeSem:             make(chan struct{}, inspectIntakeMaxConcurrent),
 		inspectRateRPM:               cfg.InspectRateLimitRPM,
 		engineTimeouts:               cfg.EngineTimeouts,
 	}
