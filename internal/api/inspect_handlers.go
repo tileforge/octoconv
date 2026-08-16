@@ -517,14 +517,18 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 			// costs at most 64 KiB of ReadAt and zero decompression; a
 			// check placed AFTER zip.NewReader would only bound work that
 			// has already been paid for.
-			if exceeds, readFailed, _, _ := zipDirectoryExceedsStructuralBound(file, size); exceeds {
-				// PR9R11: the refusal stands either way, but the two say
-				// opposite things about whose fault it is. Reporting an
-				// unreadable upload as zip_directory_too_large claims a
-				// ceiling was exceeded when nothing was ever measured.
-				if readFailed {
+			if outcome, _, _ := zipDirectoryExceedsStructuralBound(file, size); outcome.exceeds() {
+				// The refusal stands in all three cases; only the reason
+				// differs, and reporting one as another is a false statement
+				// about a file the client may be able to fix (PR9R11 for the
+				// read failure, PR9R12 for the malformed case: a tiny corrupt
+				// archive crosses no configured ceiling at all).
+				switch outcome {
+				case zipBoundReadFailed:
 					detected = inspectZipReadFailedFormat
-				} else {
+				case zipBoundMalformed:
+					detected = inspectZipMalformedFormat
+				default:
 					detected = inspectZipTooLargeFormat
 				}
 			} else if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
@@ -731,9 +735,9 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 // bytes (which locateZipEOCDInBlock's mirrored rule guarantees), it never
 // reaches the per-record walk that round 4/5 exist to bound in the first
 // place.
-func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool, readFailed bool, entries uint16, dirBytes uint32) {
+func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (outcome zipBoundOutcome, entries uint16, dirBytes uint32) {
 	if size < zipEOCDFixedLen {
-		return false, false, 0, 0
+		return zipBoundOK, 0, 0
 	}
 	tailLen := int64(zipEOCDRecordMaxLen)
 	if tailLen > size {
@@ -743,13 +747,13 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 	buf := make([]byte, tailLen)
 	n, err := r.ReadAt(buf, tailOffset)
 	if err != nil && err != io.EOF {
-		return false, false, 0, 0
+		return zipBoundOK, 0, 0
 	}
 	buf = buf[:n]
 
 	i, found := locateZipEOCDInBlock(buf)
 	if !found {
-		return false, false, 0, 0
+		return zipBoundOK, 0, 0
 	}
 	eocdOffset := tailOffset + int64(i)
 	// entries and dirBytes are read here and RETURNED for the caller's
@@ -760,8 +764,7 @@ func zipDirectoryExceedsStructuralBound(r io.ReaderAt, size int64) (exceeds bool
 	dirBytes = binary.LittleEndian.Uint32(buf[i+12 : i+16])
 	dirOffsetField := binary.LittleEndian.Uint32(buf[i+16 : i+20])
 
-	exceeds, readFailed = zipCentralDirectoryExceedsBound(r, size, eocdOffset, dirOffsetField, dirBytes, entries)
-	return exceeds, readFailed, entries, dirBytes
+	return zipCentralDirectoryExceedsBound(r, size, eocdOffset, dirOffsetField, dirBytes, entries), entries, dirBytes
 }
 
 // locateZipEOCDInBlock finds the EOCD signature within buf using the EXACT
@@ -806,6 +809,48 @@ func locateZipEOCDInBlock(buf []byte) (i int, ok bool) {
 // dirOffsetField/dirBytes/entriesField are read directly from the EOCD's own
 // bytes and are, individually, exactly as untrustworthy as everything else
 // in a ZIP's metadata.
+// zipBoundOutcome is what this bound concluded. It replaces the pair of
+// bools PR9R11 introduced, because the question turned out to have THREE
+// answers, not two, and two bools describe eight states of which five are
+// meaningless -- the sort of shape that invites the next round to find the
+// state nobody enumerated (PR9R12, inspect_handlers.go:912).
+//
+// The refusal is identical in every non-clean case; only the reason differs,
+// and the reason is the whole point: "this directory is bigger than we will
+// parse" blames the upload's size, "these bytes are not a directory" blames
+// its structure, and "we could not read it" blames this service. Reporting
+// any of the three as another is a false statement about a file the client
+// may well be able to fix.
+type zipBoundOutcome int
+
+const (
+	// zipBoundOK: the directory was walked to its real end, under ceiling.
+	zipBoundOK zipBoundOutcome = iota
+	// zipBoundExceedsCeiling: a real ceiling this service chose was crossed
+	// (record count, or a window we declined to grow) -> work_ceiling_bytes.
+	zipBoundExceedsCeiling
+	// zipBoundMalformed: we READ directory bytes and they are not a
+	// directory -- a record signature that is not one. A tiny corrupt
+	// archive crosses no ceiling at all (PR9R12) -> malformed_input.
+	//
+	// The line between this and zipBoundExceedsCeiling is "did we conclude
+	// from work we actually did, or refuse to do the work". Every EOCD-level
+	// inconsistency above is decided BEFORE any directory byte is read, so
+	// it stays a ceiling: reporting those as malformed would let an archive
+	// we never parsed be published with COMPLETE coverage, which is the
+	// false-completeness class rounds 2, 4 and 5 each closed here. Only a
+	// contradiction found inside bytes we did read earns a verdict about the
+	// file's structure.
+	zipBoundMalformed
+	// zipBoundReadFailed: a non-EOF ReadAt error. Nothing was measured, so
+	// nothing about the archive was learned (PR9R11) -> read_failed.
+	zipBoundReadFailed
+)
+
+// exceeds reports whether this outcome refuses the upload. Every outcome
+// except zipBoundOK does; the classification only decides WHY.
+func (o zipBoundOutcome) exceeds() bool { return o != zipBoundOK }
+
 // readFailed, returned alongside exceeds, is PR9R11 (inspect_handlers.go:871):
 // this function refuses in BOTH cases, but the two say opposite things about
 // whose fault it is. "The directory is larger than we will parse" is a fact
@@ -813,7 +858,7 @@ func locateZipEOCDInBlock(buf []byte) (i int, ok bool) {
 // service, and reporting the second as work_ceiling_bytes claims a ceiling
 // was exceeded when nothing was ever measured. The refusal is unchanged --
 // only the reason travels now.
-func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirOffsetField, dirBytes uint32, entriesField uint16) (exceeds bool, readFailed bool) {
+func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirOffsetField, dirBytes uint32, entriesField uint16) zipBoundOutcome {
 	// ZIP64 "look elsewhere" sentinels -- explicit, not merely large
 	// numbers. Go's own trigger (reader.go:608) is
 	// directoryRecords==0xffff || directorySize==0xffff ||
@@ -823,7 +868,9 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	// refusing on EITHER value only ever makes this function MORE cautious
 	// than Go, never less, so keeping both is safe.
 	if dirBytes == 0xFFFFFFFF || dirBytes == 0xFFFF || dirOffsetField == 0xFFFFFFFF || entriesField == 0xFFFF {
-		return true, false
+		// ZIP64 is a shape this service declines to follow, not a defect in
+		// the archive -- our ceiling, not its structure.
+		return zipBoundExceedsCeiling
 	}
 	// A central directory cannot legitimately be larger than the whole
 	// upload -- size is ground truth (the real number of bytes this
@@ -834,7 +881,11 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	// like this one, so this alone does not, and is not meant to, close
 	// round 4 -- the walk below does that.
 	if uint64(dirBytes) > uint64(size) {
-		return true, false
+		// A directory larger than the whole upload cannot exist -- but this
+		// is a REFUSAL TO SPEND WORK, decided before a single directory byte
+		// was read, so it keeps the ceiling classification. See the walk's
+		// own signature check below for where the line actually falls.
+		return zipBoundExceedsCeiling
 	}
 
 	// Round 5's own fix (divergence row #1): mirror archive/zip's own
@@ -853,7 +904,10 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	// sharply nonzero baseOffset, caught here before any walk begins.
 	baseOffset := eocdOffset - int64(dirBytes) - int64(dirOffsetField)
 	if baseOffset != 0 {
-		return true, false
+		// The EOCD's own fields are inconsistent with where it was located.
+		// Still a refusal decided before reading any directory content --
+		// ceiling, not a verdict about structure we examined.
+		return zipBoundExceedsCeiling
 	}
 
 	// directoryOffset is now provably <= eocdOffset given baseOffset==0
@@ -864,11 +918,12 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	directoryOffset := int64(dirOffsetField)
 	if directoryOffset > eocdOffset {
 		// The directory claims to start after its own terminator --
-		// structurally impossible. Fail closed.
-		return true, false
+		// structurally impossible. Fail closed, and again before reading any
+		// directory content: ceiling.
+		return zipBoundExceedsCeiling
 	}
 	if directoryOffset == eocdOffset {
-		return false, false // Zero real bytes of directory content: an empty archive.
+		return zipBoundOK // Zero real bytes of directory content: an empty archive.
 	}
 
 	windowLen := eocdOffset - directoryOffset
@@ -884,7 +939,7 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	n, rerr := r.ReadAt(window, directoryOffset)
 	if rerr != nil && rerr != io.EOF {
 		// Still a refusal (nothing here was verified), but an I/O one.
-		return true, true
+		return zipBoundReadFailed
 	}
 	window = window[:n]
 
@@ -895,21 +950,22 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 			// The walk reached the REAL (located, not declared) end of the
 			// directory with the record count staying under the ceiling
 			// the whole way -- a legitimate, fully-verified directory.
-			return false, false
+			return zipBoundOK
 		}
 		if pos+zipCentralDirMinRecordLen > int64(len(window)) {
 			// The window ran out before the walk reached eocdOffset. This
 			// function does not know what the remaining (unread) bytes
 			// contain -- possibly thousands more real records, exactly
 			// like round 4's own reviewer scenario. Not knowing means not
-			// letting it through.
-			return true, false
+			// letting it through. Our window, our ceiling.
+			return zipBoundExceedsCeiling
 		}
 		if window[pos] != 'P' || window[pos+1] != 'K' || window[pos+2] != 0x01 || window[pos+3] != 0x02 {
 			// Not a real central-directory record where the walk expected
 			// one -- directoryOffset (or a prior record's declared length)
-			// is inconsistent with the actual bytes present. Fail closed.
-			return true, false
+			// is inconsistent with the actual bytes present. A tiny corrupt
+			// archive crosses no ceiling at all (PR9R12).
+			return zipBoundMalformed
 		}
 		nameLen := int64(binary.LittleEndian.Uint16(window[pos+28 : pos+30]))
 		extraLen := int64(binary.LittleEndian.Uint16(window[pos+30 : pos+32]))
@@ -917,7 +973,7 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 		pos += int64(zipCentralDirMinRecordLen) + nameLen + extraLen + commentLen
 		count++
 		if count > inspectMaxZipDirEntries {
-			return true, false
+			return zipBoundExceedsCeiling
 		}
 	}
 }

@@ -1114,6 +1114,18 @@ func TestAnalyzeContainerSheetCountRecognizesEveryLegalSerialization(t *testing.
 			2,
 		},
 		{
+			// PR9R12: extension markup in a foreign namespace is not a
+			// worksheet declaration, however its elements are named.
+			"foreign-namespace extension sheets must not count",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets><ext xmlns:e="urn:example:vendor-extension"><e:sheets><e:sheet name="ghost"/></e:sheets></ext></workbook>`,
+			1,
+		},
+		{
+			"OOXML strict namespace",
+			`<workbook xmlns="http://purl.oclc.org/ooxml/spreadsheetml/main"><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`,
+			2,
+		},
+		{
 			"the literal text <sheet inside an XML comment must not count",
 			`<workbook><!-- <sheet name="ghost"/> --><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
 			1,

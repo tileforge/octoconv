@@ -834,6 +834,28 @@ func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, cei
 // (encoding/xml resolves that on its own) and is bounded by the same
 // maxRelsPartBytes ceiling the caller already enforces, so no new work is
 // introduced -- only the same bytes, read as XML rather than as text.
+// spreadsheetMLNamespaces are the resolved namespace URIs a <sheet> element
+// must live in to be a worksheet declaration: OOXML transitional (the one
+// every mainstream producer emits) and OOXML strict (ISO/IEC 29500-4).
+//
+// PR9R12 finding (container.go:853), verbatim: "matching only Name.Local
+// also accepts foreign-namespace extension markup. For example, a workbook
+// with one real <sheets><sheet/></sheets> list and an extension containing
+// <e:sheets><e:sheet/></e:sheets> is parsed successfully and publishes
+// sheet_count: 2 with complete coverage."
+//
+// The empty namespace is accepted alongside them, and that is a deliberate
+// judgement rather than an oversight: a part that declares no namespace at
+// all has no foreign markup to be confused WITH -- extension markup is
+// namespaced by construction, which is the entire mechanism by which it
+// extends anything. Rejecting the empty case would drop the count for a
+// minimal or hand-written workbook while closing nothing.
+var spreadsheetMLNamespaces = map[string]bool{
+	"": true,
+	"http://schemas.openxmlformats.org/spreadsheetml/2006/main": true,
+	"http://purl.oclc.org/ooxml/spreadsheetml/main":             true,
+}
+
 func countSheetElements(data []byte) (count int, ok bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	inSheets := false
@@ -847,6 +869,9 @@ func countSheetElements(data []byte) (count int, ok bool) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if !spreadsheetMLNamespaces[t.Name.Space] {
+				continue
+			}
 			switch t.Name.Local {
 			case "sheets":
 				inSheets = true
@@ -860,7 +885,7 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				}
 			}
 		case xml.EndElement:
-			if t.Name.Local == "sheets" {
+			if spreadsheetMLNamespaces[t.Name.Space] && t.Name.Local == "sheets" {
 				inSheets = false
 			}
 		}
