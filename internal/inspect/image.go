@@ -436,6 +436,14 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 				return imageMetadataStatus{location: "PNG iTXt XMP"}
 			}
 		case "IEND":
+			// PNG's IEND carries no data (PR9R18, image.go:447). A nonzero
+			// declared length here is not a terminator with a payload -- no
+			// such thing exists in the format -- so advancing over that
+			// payload and calling the result clean accepts arbitrary bytes
+			// as if they had been accounted for.
+			if length != 0 {
+				return imageMetadataStatus{malformed: true}
+			}
 			// IEND does not merely occur, it TERMINATES (PR9R17,
 			// image.go:439). Recording it and walking on -- which is what
 			// the previous fix did -- still reported clean for a file with

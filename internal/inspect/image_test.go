@@ -727,3 +727,24 @@ func TestAnalyzeImagePNGChunkAfterIENDIsNotClean(t *testing.T) {
 		t.Fatalf("Check(metadata_present) = %+v, want a non-clean status -- IEND is the final chunk, so a file continuing past it was never fully accounted for", c)
 	}
 }
+
+// TestAnalyzeImagePNGNonEmptyIENDIsNotClean is PR9R18 (image.go:447): PNG's
+// IEND carries no data, so a terminator declaring a payload is malformed --
+// and accepting it meant arbitrary trailing bytes were walked over and
+// reported as accounted for.
+func TestAnalyzeImagePNGNonEmptyIENDIsNotClean(t *testing.T) {
+	data := pngFixture(10, 10)
+	// Rewrite the terminal IEND to declare a 4-byte payload, and supply it.
+	iend := len(data) - 12
+	binary.BigEndian.PutUint32(data[iend:iend+4], 4)
+	data = append(data, 0xDE, 0xAD, 0xBE, 0xEF)
+
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	c, ok := checkFor(res, CodeMetadataPresent)
+	if !ok {
+		t.Fatal("no Check for CodeMetadataPresent")
+	}
+	if c.Status == StatusClean {
+		t.Fatalf("Check(metadata_present) = %+v, want a non-clean status -- IEND carries no data, so a terminator with a declared payload is malformed and its bytes were never accounted for", c)
+	}
+}
