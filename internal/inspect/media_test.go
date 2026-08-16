@@ -557,6 +557,52 @@ func TestAnalyzeMediaRejectsEmptyMvhdTrakDecoyForRealMoov(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMediaRejectsFakeMoovPlantedInsideMdatPayloadForGenuineTailMoov
+// is the PR9R8 finding at media.go:498, verbatim: "an mdat payload can
+// contain a self-consistent fake moov with only a parseable 20-byte mvhd
+// carrying attacker-chosen timescale/duration fields before the genuine
+// tail moov. This branch accepts it immediately, so the analyzer publishes
+// the fake duration, reports the missing dimensions/codec as malformed, and
+// never examines the real metadata. Successful consumer parsing does not
+// establish that bytes found by substring search are a top-level box;
+// validate the candidate's placement in the file's top-level box
+// sequence." Unlike every earlier decoy in this file (round 4: doesn't
+// parse as a box; round 5: parses but empty; round 6: children present but
+// empty), this one clears round 6's own consumer-collapsed bar cleanly --
+// its mvhd is real, minimal, and genuinely decodes via parseMVHD. Only a
+// placement proof, not a content check, can reject it.
+func TestAnalyzeMediaRejectsFakeMoovPlantedInsideMdatPayloadForGenuineTailMoov(t *testing.T) {
+	fakeMvhdPayload := make([]byte, 20)                     // the finding's own "20-byte mvhd"
+	binary.BigEndian.PutUint32(fakeMvhdPayload[12:16], 1)   // attacker-chosen timescale
+	binary.BigEndian.PutUint32(fakeMvhdPayload[16:20], 999) // attacker-chosen duration -> 999.0s if ever published
+	fakeMvhd := isobmffBox("mvhd", fakeMvhdPayload)
+	if _, ok, _ := parseMVHD(fakeMvhdPayload); !ok {
+		t.Fatal("fixture bug: the fake mvhd itself must genuinely parse via parseMVHD, or this fixture no longer matches the finding's own worked example")
+	}
+	fakeMoov := isobmffBox("moov", fakeMvhd) // self-consistent, and its mvhd genuinely decodes -- clears every prior round's own bar
+
+	mdatPayload := append(make([]byte, 6000), fakeMoov...)
+	mdat := isobmffBox("mdat", mdatPayload)
+
+	mvhd := mvhdBoxV0(1000, 5000) // genuine duration = 5.0s
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moov := moovBox(mvhd, trak)
+
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 4096 // smaller than mdat's own declared size (head cannot skip it as one box), same shape as the round 4/5/6 fixtures above
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- a fake moov PLANTED INSIDE mdat's own declared payload, whose mvhd genuinely parses with attacker-chosen fields, must never be accepted just because it successfully extracts a value; only the candidate whose PLACEMENT in the real top-level box chain is proven may be accepted, and that is the genuine moov that follows mdat's own declared end", res.Characteristics["duration_seconds"])
+	}
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640 -- the fake moov's own empty structure (no trak) must not have been accepted in its place", res.Characteristics["width"])
+	}
+}
+
 // TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes proves the
 // plan's own explicit requirement: exhausting maxMoovTailCandidatesScanned
 // on candidates that DO parse as self-consistent "moov" box headers -- but
@@ -948,16 +994,56 @@ func TestAnalyzeMediaM4ADuration(t *testing.T) {
 }
 
 // TestAnalyzeMediaNeverReadsBeyondBudget proves the mp4 tail search is
-// bounded by maxBytes and mp4TailWindow, not by the actual file size.
+// bounded by maxBytes, not by maxBytes+mp4TailWindow.
+//
+// PR9R8 finding (media.go:255), verbatim: "the analyzer first reads
+// maxBytes bytes... and then performs this additional tail read of up to
+// min(mp4TailWindow, maxBytes). The caller subsequently charges only
+// maxBytes to the tracker, so a small configured ceiling can be exceeded
+// by nearly 2x." This test's own bound was ORIGINALLY maxBytes+
+// mp4TailWindow -- documenting, not disproving, the bug the finding
+// names. Tightening it to maxBytes alone is the fix's own acceptance
+// test, not a round 4/5/6 regression: this test predates round 4 (it is
+// part of the original 58-05 plan baseline, never named by any of the
+// three earlier findings) and is not in this round's list of tests that
+// must stay green without edits.
 func TestAnalyzeMediaNeverReadsBeyondBudget(t *testing.T) {
 	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
 	cr := &countingReaderAt{data: data}
 	const maxBytes = 2048
 	_ = AnalyzeMedia("mp4", cr, int64(len(data)), maxBytes, nil)
 
-	limit := int64(maxBytes) + mp4TailWindow
-	if cr.totalRequested > limit {
-		t.Fatalf("read %d bytes, want <= %d (maxBytes + mp4TailWindow)", cr.totalRequested, limit)
+	if cr.totalRequested > maxBytes {
+		t.Fatalf("read %d bytes, want <= %d (maxBytes alone -- PR9R8 finding, media.go:255: the tail read must no longer add a SEPARATE mp4TailWindow-or-maxBytes-sized read on top of the head read)", cr.totalRequested, int64(maxBytes))
+	}
+}
+
+// TestAnalyzeMediaTailSearchNeverExceedsSharedTrackerBudget is the same
+// PR9R8 finding (media.go:255) proven THROUGH THE TRACKER itself, not
+// merely a counting io.ReaderAt: a Tracker configured with MaxBytes equal
+// to the SAME maxBytes passed to AnalyzeMedia must never observe itself
+// exhausted by this single family's own head+tail reads, and consumeActual
+// must never push Remaining() negative -- both would happen under the
+// pre-fix "head reads maxBytes, tail reads ANOTHER maxBytes" behavior,
+// since two Consume(maxBytes)-sized reports against a maxBytes-sized
+// budget exhausts it on the second call (budget.go's own Consume: first-
+// reason-wins, byte ceiling checked strictly).
+func TestAnalyzeMediaTailSearchNeverExceedsSharedTrackerBudget(t *testing.T) {
+	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
+	const maxBytes = 2048
+	tr := NewTracker(Budget{MaxBytes: maxBytes, MaxDuration: time.Minute})
+
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- the tail-anchored real moov must still be found under the reserved-budget windows", res.Characteristics["duration_seconds"])
+	}
+	if tr.Exhausted() {
+		t.Fatalf("Tracker(MaxBytes=%d) reports exhausted after analyzing a single mp4 whose own head+tail reads were sized to fit that SAME budget -- charging nearly 2x maxBytes across the two windows is exactly the PR9R8 finding (media.go:255)", int64(maxBytes))
+	}
+	if remaining := tr.Remaining(); remaining < 0 {
+		t.Fatalf("Remaining() = %d, want >= 0 -- consumeActual reported more than the issued MaxBytes budget", remaining)
 	}
 }
 

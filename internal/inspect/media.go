@@ -207,12 +207,83 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // (ReasonMalformedInput). These are two different facts and must not be
 // collapsed into one (D-02a's whole point, applied here to media instead
 // of PDF).
+//
+// PR9R8 finding (media.go:498), verbatim: "an mdat payload can contain a
+// self-consistent fake moov with only a parseable 20-byte mvhd carrying
+// attacker-chosen timescale/duration fields before the genuine tail moov.
+// This branch accepts it immediately... Successful consumer parsing does
+// not establish that bytes found by substring search are a top-level
+// box; validate the candidate's placement in the file's top-level box
+// sequence." This is the FOURTH defeat of the same acceptance bar (round
+// 4: substring; round 5: parses as a box; round 6: children present;
+// round 8: consumer extraction succeeds) -- every one of those criteria
+// asked "is what we found any good", never "is what we found actually
+// WHERE a top-level box would be". When the file is larger than maxBytes
+// (oversizedFile below) and moov is not in the head, this function now
+// FIRST tries to PROVE a tail-anchored position via
+// headBoxChainProvenEnd: walk the REAL top-level box chain from file
+// offset 0 -- exactly like a conformant parser would, never looking
+// inside any box's own payload -- until a box is found whose declared
+// size runs past the head window; THAT box's own declared END, computed
+// from its header alone (never its payload), is a FACT about the file's
+// structure, not a guess. A box planted inside e.g. `mdat`'s own opaque
+// payload can never produce this proof, because reaching it would
+// require looking INSIDE the preceding box's payload, which a genuine
+// top-level walk never does -- it only ever hops FORWARD by a box's own
+// declared size, skipping `mdat`'s entire declared payload (fake `moov`
+// included) in one hop. Only when this proof is unavailable (no box in
+// head exceeds the window, the position it proves falls outside the tail
+// window's own coverage, or nothing named "moov" follows it before the
+// tail window runs out) does the search fall back to findMoovInTail's
+// substring scan below, completely unchanged -- every existing
+// candidate/ceiling test this file already had before round 8 exercises
+// files that fit within either window on their own (oversizedFile below
+// is false for them) and is therefore untouched by this addition.
+//
+// PR9R8 finding (media.go:255), verbatim: "For an MP4/MOV larger than
+// maxBytes whose moov is not found in the head, the analyzer first reads
+// maxBytes bytes... and then performs this additional tail read of up to
+// min(mp4TailWindow, maxBytes). The caller subsequently charges only
+// maxBytes to the tracker, so a small configured ceiling can be exceeded
+// by nearly 2x." When size > maxBytes (oversizedFile, the exact case
+// that finding describes), a SHARE of maxBytes is now reserved for the
+// tail window up front and deducted from what the head window may read,
+// so the two windows together never spend more than the SAME maxBytes
+// ceiling the caller charges once (internal/api/inspect_handlers.go's own
+// "charge the full allowance" accounting comment -- out of this round's
+// write scope, so this function must not rely on that caller changing).
+// When the whole file already fits within maxBytes there is nothing to
+// reserve: both windows simply cover the file, exactly as before, and
+// their combined read is bounded by size itself, never by maxBytes at
+// all -- unchanged from round 0. Every actual byte read is ALSO reported
+// to tr directly via consumeActual, so a Tracker configured with its own
+// tight Budget.MaxBytes -- not just the maxBytes parameter this function
+// receives -- observes the SAME true total, provable independently of
+// whatever any caller does with its own return value.
 func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDims bool, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
 	}
 
+	// oversizedFile gates BOTH round-8 fixes: below this line, "the file
+	// exceeds maxBytes" is the ONE condition that makes a SEPARATE tail
+	// budget reservation necessary (a file that already fits within
+	// maxBytes never needs to spend more than size on either window, see
+	// this function's own doc comment) and the ONE condition under which
+	// findMoovInTail's substring scan is not already provably safe on its
+	// own (a head window covering the WHOLE file is already a complete,
+	// genuine top-level walk -- see headBoxChainProvenEnd's own doc
+	// comment for why that makes the extra proof step redundant there).
+	oversizedFile := size > maxBytes
 	headLen := maxBytes
+	var tailReserve int64
+	if oversizedFile {
+		tailReserve = maxBytes / 4
+		if tailReserve > mp4TailWindow {
+			tailReserve = mp4TailWindow
+		}
+		headLen = maxBytes - tailReserve
+	}
 	if headLen > size {
 		headLen = size
 	}
@@ -222,11 +293,13 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	if headOK {
 		headActual = int64(len(headWin))
 		if payload, ok, ceilingHit := firstChildBox(headWin, "moov", tr); ok {
+			consumeActual(tr, headActual)
 			return payload, ""
 		} else {
 			headCeilingHit = ceilingHit
 		}
 	}
+	consumeActual(tr, headActual)
 
 	// STEP 2: moov not in the head window -- try the tail. The tail window
 	// starts mid-file, so the bytes at its own offset 0 are the MIDDLE of
@@ -239,9 +312,14 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	// file must not "just walk from offset 0" like every other box walk in
 	// this package, and it is easy to lose on a future refactor if this
 	// comment is removed.
-	tailLen := int64(mp4TailWindow)
-	if tailLen > maxBytes {
-		tailLen = maxBytes
+	var tailLen int64
+	if oversizedFile {
+		tailLen = tailReserve
+	} else {
+		tailLen = int64(mp4TailWindow)
+		if tailLen > maxBytes {
+			tailLen = maxBytes
+		}
 	}
 	if tailLen > size {
 		tailLen = size
@@ -255,11 +333,33 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	tailWin, tailOK := readWindow(r, tailOff, tailLen, size)
 	if tailOK {
 		tailActual = int64(len(tailWin))
+		consumeActual(tr, tailActual)
+
+		if oversizedFile {
+			if nextOff, ok := headBoxChainProvenEnd(headWin, tr); ok && nextOff >= tailOff && nextOff < size {
+				rel := nextOff - tailOff
+				if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
+					return payload, ""
+				} else if ceilingHit {
+					return nil, ReasonWorkCeilingBytes
+				}
+				// The proven position was reachable but no box named
+				// "moov" followed it before tailWin ran out -- fall
+				// through to the substring scan below rather than
+				// concluding "absent" here: tailWin's own coverage is
+				// now clamped by tailReserve, not the old maxBytes-sized
+				// window, so a chain that runs past tailWin's own end is
+				// not yet proof that no moov exists past this point.
+			}
+		}
+
 		if payload, found, ceilingHit := findMoovInTail(tailWin, wantHandler, includeDims, tr); found {
 			return payload, ""
 		} else {
 			tailCeilingHit = ceilingHit
 		}
+	} else {
+		consumeActual(tr, tailActual)
 	}
 
 	if headActual+tailActual >= size && !headCeilingHit && !tailCeilingHit {
@@ -274,6 +374,83 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 		return nil, ReasonMalformedInput
 	}
 	return nil, ReasonWorkCeilingBytes
+}
+
+// consumeActual reports n ACTUALLY-read bytes to tr, closing the PR9R8
+// budget finding (media.go:255, see findMoov's own doc comment): the
+// return value is deliberately ignored here -- window sizing already
+// gates how much findMoov may read, so a tight tr, if the caller supplied
+// one, is a separate, additional signal this specific read does not need
+// to react to mid-flight, only report to honestly. tr.Consume, unlike
+// tr.MarkCeilingHit, has no built-in nil-receiver safety (budget.go), so
+// every call site in this file guards it here rather than repeating the
+// nil check inline.
+func consumeActual(tr *Tracker, n int64) {
+	if tr != nil {
+		tr.Consume(n)
+	}
+}
+
+// headBoxChainProvenEnd walks REAL top-level boxes within headWin (which
+// begins at absolute file offset 0) using the same size64/headerLen
+// header parsing walkTopLevelBoxes already uses, but instead of matching
+// a specific box type, it looks for the FIRST box whose declared size
+// extends past headWin's own buffered length -- the box walkTopLevelBoxes
+// itself cannot examine further, because only its header (never its
+// payload) is in hand. That box's own declared END, computed purely from
+// its header (its own start position plus its own declared size64), is a
+// PROVEN absolute file offset: the file's own structure says so, and this
+// function never reads or trusts a single byte of that box's payload to
+// reach it.
+//
+// This is what closes PR9R8's finding (media.go:498): a box planted
+// inside another box's own declared payload (e.g. a fake `moov` hidden
+// inside `mdat`) can never produce this proof, because reaching it would
+// require looking INSIDE the preceding box's payload -- which this walk,
+// by construction, never does; it only ever hops forward by a box's own
+// declared size, the same discipline walkTopLevelBoxes already applies
+// when the whole box (header AND payload) is in hand.
+//
+// ok is false when: headWin is too short to reach such a box, a box's
+// own header is malformed (declared size smaller than its own header),
+// a box's declared size extends to EOF (size64==0, never expected within
+// a bounded window), or maxISOBMFFBoxes was exhausted first (ceilingHit
+// is marked on tr in that case, the same convention walkTopLevelBoxes
+// itself already uses). Callers must fall back to the existing tail
+// substring search in every one of these cases, exactly as if this
+// function did not exist.
+func headBoxChainProvenEnd(headWin []byte, tr *Tracker) (nextOffset int64, ok bool) {
+	i := 0
+	for count := 0; i+8 <= len(headWin); count++ {
+		if count >= maxISOBMFFBoxes {
+			tr.MarkCeilingHit()
+			return 0, false
+		}
+		size64 := uint64(binary.BigEndian.Uint32(headWin[i : i+4]))
+		headerLen := 8
+		switch size64 {
+		case 1:
+			if i+16 > len(headWin) {
+				return 0, false
+			}
+			size64 = binary.BigEndian.Uint64(headWin[i+8 : i+16])
+			headerLen = 16
+		case 0:
+			return 0, false // "extends to EOF": no further box to prove a position from
+		}
+		if size64 < uint64(headerLen) {
+			return 0, false // malformed: never a valid jump point
+		}
+		if size64 > uint64(len(headWin)-i) {
+			// This box's own header IS fully buffered (the loop condition
+			// plus the 64-bit branch above both already guarantee that);
+			// only its PAYLOAD runs past headWin. Its declared end is a
+			// proven absolute file offset -- headWin[0] is file offset 0.
+			return int64(i) + int64(size64), true
+		}
+		i += int(size64)
+	}
+	return 0, false
 }
 
 // maxMoovTailCandidatesScanned bounds how many candidate positions of the
