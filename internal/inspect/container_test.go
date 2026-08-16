@@ -1166,3 +1166,24 @@ func TestAnalyzeContainerUnparseableWorkbookPublishesNoSheetCount(t *testing.T) 
 		t.Errorf("sheet_count = %v, want absent or nil -- the part was read in full and did not parse; publishing 0 would assert the workbook has no sheets", got)
 	}
 }
+
+// TestAnalyzeContainerEmptyWorkbookPublishesNoSheetCount is PR9R14
+// (container.go:881): a workbook part that is empty, or holds nothing but
+// whitespace and an XML declaration, is not a workbook declaring zero
+// sheets -- it is not a workbook. Publishing sheet_count: 0 for it states
+// something the part cannot support.
+func TestAnalyzeContainerEmptyWorkbookPublishesNoSheetCount(t *testing.T) {
+	for _, tc := range []struct{ name, workbook string }{
+		{"entirely empty", ""},
+		{"whitespace only", "   \n\t  "},
+		{"declaration only", `<?xml version="1.0" encoding="UTF-8"?>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := xlsxFixtureWithWorkbook(t, tc.workbook)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
+				t.Errorf("sheet_count = %v, want absent or nil -- this part has no workbook root at all, so 0 would assert a fact it cannot support", got)
+			}
+		})
+	}
+}

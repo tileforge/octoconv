@@ -1924,3 +1924,29 @@ func TestInspectZipCorruptDirectorySignatureIsMalformedNotTooLarge(t *testing.T)
 		t.Fatalf("outcome = %v, want zipBoundMalformed -- this archive is a few hundred bytes and crosses no ceiling this service configured; its problem is its own structure", outcome)
 	}
 }
+
+// TestInspectZipRecordOvershootIsMalformedNotTooLarge is PR9R14
+// (inspect_handlers.go:968): a central-directory record whose declared
+// name/extra/comment lengths carry the walk PAST the located EOCD claims to
+// extend beyond the directory containing it. Every byte proving that was
+// already read, and no ceiling increase repairs it.
+func TestInspectZipRecordOvershootIsMalformedNotTooLarge(t *testing.T) {
+	data := docxFixture(t)
+	idx := bytes.Index(data, []byte{'P', 'K', 0x01, 0x02})
+	if idx < 0 {
+		t.Fatal("fixture has no central-directory record to corrupt")
+	}
+	corrupt := append([]byte{}, data...)
+	// Inflate the first record's declared extra-field length so the walk
+	// steps clean over the EOCD. The signature stays valid, so this is a
+	// different path from the corrupt-signature case.
+	binary.LittleEndian.PutUint16(corrupt[idx+30:idx+32], 0xFFF0)
+
+	outcome, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(corrupt), int64(len(corrupt)))
+	if !outcome.exceeds() {
+		t.Fatal("outcome = zipBoundOK -- a record that overruns its own directory was never verified and must be refused")
+	}
+	if outcome != zipBoundMalformed {
+		t.Fatalf("outcome = %v, want zipBoundMalformed -- this archive is a few hundred bytes; raising any ceiling cannot make a record fit inside a directory it overruns", outcome)
+	}
+}

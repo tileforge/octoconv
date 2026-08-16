@@ -953,6 +953,21 @@ func zipCentralDirectoryExceedsBound(r io.ReaderAt, size, eocdOffset int64, dirO
 	pos := int64(0)
 	count := 0
 	for {
+		if directoryOffset+pos > eocdOffset {
+			// PR9R14 (inspect_handlers.go:968): the previous record's own
+			// declared name/extra/comment lengths carried the walk PAST the
+			// located EOCD -- a record claiming to extend beyond the
+			// directory that contains it. Every byte needed to see this was
+			// already read, and no ceiling increase can repair it, so this
+			// is a verdict about the archive, not about our budget.
+			//
+			// An earlier round noticed this overshoot and reasoned it was
+			// harmless because pos only increases, so the walk could never
+			// land on eocdOffset again and would refuse anyway. True, and it
+			// refused for the wrong stated reason -- which is precisely the
+			// distinction rounds 11 through 13 spent their time on.
+			return zipBoundMalformed
+		}
 		if directoryOffset+pos == eocdOffset {
 			// The walk reached the REAL (located, not declared) end of the
 			// directory with the record count staying under the ceiling

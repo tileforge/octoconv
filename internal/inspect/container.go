@@ -878,7 +878,14 @@ func countSheetElements(data []byte) (count int, ok bool) {
 		tok, err := dec.Token()
 		if err != nil {
 			if err == io.EOF {
-				return count, true
+				// PR9R14 (container.go:881): reaching EOF without ever
+				// seeing a root element means this part was empty, or held
+				// nothing but whitespace and an XML declaration. That is not
+				// a workbook that happens to declare no sheets -- it is not
+				// a workbook at all, and returning ok=true here published
+				// sheet_count: 0 with complete coverage for it. "Zero
+				// sheets" is a claim; this part supports no claims.
+				return count, haveRoot
 			}
 			return 0, false
 		}
