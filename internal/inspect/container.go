@@ -799,28 +799,70 @@ func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, cei
 			tr.MarkCeilingHit()
 			return 0, false, true
 		}
-		return countSheetElements(data), true, false
+		n, ok := countSheetElements(data)
+		if !ok {
+			// The part was read in full and still did not parse as XML.
+			// That is a fact about the FILE, and it must not be published
+			// as a count -- least of all as zero, which reads as "this
+			// workbook has no sheets" (PR9R11, container.go:812).
+			return 0, false, false
+		}
+		return n, true, false
 	}
 	return 0, false, false
 }
 
-func countSheetElements(data []byte) int {
-	count := 0
-	pos := 0
-	marker := []byte("<sheet")
+// countSheetElements counts <sheet> elements in an xlsx workbook part by
+// PARSING it, and reports ok=false if the part does not parse at all.
+//
+// PR9R11 finding (container.go:812), verbatim: "For a valid workbook that
+// binds the spreadsheet namespace to a prefix and serializes sheets as
+// `<x:sheet>`, this raw `<sheet` search finds none and publishes
+// `sheet_count: 0` with complete coverage. Raw matching can also count the
+// same text inside XML comments; use the XML decoder and count actual sheet
+// start elements by namespace/local name instead of treating the
+// serialization as opaque bytes."
+//
+// This is the FIFTH appearance of one class in this review -- PDF hex-
+// escaped names, OOXML TargetMode, ODF xlink:href, the undeclared xlink
+// prefix, and now this -- and the one that stings, because round 5's own
+// class sweep was declared complete across this package while this call
+// site sat in that sweep's own grep output and never made it into its
+// table. A sweep that drops one of its own hits is not a sweep.
+//
+// Counting by local name deliberately ignores which prefix a workbook bound
+// (encoding/xml resolves that on its own) and is bounded by the same
+// maxRelsPartBytes ceiling the caller already enforces, so no new work is
+// introduced -- only the same bytes, read as XML rather than as text.
+func countSheetElements(data []byte) (count int, ok bool) {
+	dec := xml.NewDecoder(bytes.NewReader(data))
+	inSheets := false
 	for {
-		idx := bytes.Index(data[pos:], marker)
-		if idx < 0 {
-			return count
+		tok, err := dec.Token()
+		if err != nil {
+			if err == io.EOF {
+				return count, true
+			}
+			return 0, false
 		}
-		abs := pos + idx
-		next := abs + len(marker)
-		if next < len(data) {
-			switch data[next] {
-			case ' ', '/', '>':
-				count++
+		switch t := tok.(type) {
+		case xml.StartElement:
+			switch t.Name.Local {
+			case "sheets":
+				inSheets = true
+			case "sheet":
+				// Only the <sheets> list declares worksheets. Scoping to it
+				// keeps an unrelated element that happens to be named
+				// "sheet" elsewhere in the part from inflating the count,
+				// which the previous byte scan could not distinguish at all.
+				if inSheets {
+					count++
+				}
+			}
+		case xml.EndElement:
+			if t.Name.Local == "sheets" {
+				inSheets = false
 			}
 		}
-		pos = next
 	}
 }

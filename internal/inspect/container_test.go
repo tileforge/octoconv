@@ -1077,3 +1077,71 @@ type erroringReaderAtC struct{}
 func (erroringReaderAtC) ReadAt([]byte, int64) (int, error) {
 	return 0, errors.New("simulated disk read failure")
 }
+
+// xlsxFixtureWithWorkbook builds a minimal xlsx whose xl/workbook.xml is
+// exactly workbookXML -- lets a test vary the SERIALIZATION of the sheets
+// list independently of its content.
+func xlsxFixtureWithWorkbook(t *testing.T, workbookXML string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "xl/workbook.xml", workbookXML)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestAnalyzeContainerSheetCountRecognizesEveryLegalSerialization is PR9R11
+// (container.go:812). A raw "<sheet" byte scan sees only one spelling of a
+// structured format; a workbook that binds the spreadsheet namespace to a
+// prefix is just as valid and used to publish sheet_count: 0 with COMPLETE
+// coverage -- a fabricated value, not a missing one.
+func TestAnalyzeContainerSheetCountRecognizesEveryLegalSerialization(t *testing.T) {
+	cases := []struct {
+		name     string
+		workbook string
+		want     int
+	}{
+		{
+			"unprefixed (the original serialization)",
+			`<workbook><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`,
+			2,
+		},
+		{
+			"spreadsheet namespace bound to a prefix",
+			`<x:workbook xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><x:sheets><x:sheet name="A" sheetId="1"/><x:sheet name="B" sheetId="2"/></x:sheets></x:workbook>`,
+			2,
+		},
+		{
+			"the literal text <sheet inside an XML comment must not count",
+			`<workbook><!-- <sheet name="ghost"/> --><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
+			1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := xlsxFixtureWithWorkbook(t, tc.workbook)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			got, ok := res.Characteristics["sheet_count"]
+			if !ok {
+				t.Fatalf("no sheet_count characteristic at all; got %+v", res.Characteristics)
+			}
+			if got != tc.want {
+				t.Errorf("sheet_count = %v, want %d -- this serialization is as valid as any other and must never publish a fabricated count", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnalyzeContainerUnparseableWorkbookPublishesNoSheetCount pins the
+// other half: a workbook part read in full that does not parse must not
+// publish a count at all, least of all zero, which reads as "this workbook
+// has no sheets".
+func TestAnalyzeContainerUnparseableWorkbookPublishesNoSheetCount(t *testing.T) {
+	data := xlsxFixtureWithWorkbook(t, `<workbook><sheets><sheet name="A"`) // truncated mid-tag
+	res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
+		t.Errorf("sheet_count = %v, want absent or nil -- the part was read in full and did not parse; publishing 0 would assert the workbook has no sheets", got)
+	}
+}

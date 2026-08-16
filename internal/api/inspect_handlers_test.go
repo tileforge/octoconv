@@ -827,7 +827,7 @@ func TestInspectZipDirectoryWithinBoundUnaffected(t *testing.T) {
 func TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive(t *testing.T) {
 	small := docxFixture(t)
 	r := bytes.NewReader(small)
-	if exceeds, _, _ := zipDirectoryExceedsStructuralBound(r, int64(len(small))); exceeds {
+	if exceeds, _, _, _ := zipDirectoryExceedsStructuralBound(r, int64(len(small))); exceeds {
 		t.Errorf("small docx fixture: exceeds = true, want false")
 	}
 
@@ -835,7 +835,7 @@ func TestZipDirectoryExceedsStructuralBoundNeverParsesOversizedArchive(t *testin
 	wantEntries := junkEntries + 1 // +1 for the fixture's own word/document.xml root part
 	big := manyEntriesDocxFixture(t, junkEntries)
 	r2 := bytes.NewReader(big)
-	exceeds, entries, dirBytes := zipDirectoryExceedsStructuralBound(r2, int64(len(big)))
+	exceeds, _, entries, dirBytes := zipDirectoryExceedsStructuralBound(r2, int64(len(big)))
 	if !exceeds {
 		t.Fatalf("exceeds = false, want true for %d entries (bound is %d)", wantEntries, inspectMaxZipDirEntries)
 	}
@@ -905,7 +905,7 @@ func TestZipDirectoryExceedsStructuralBoundIgnoresWrappedEntryCount(t *testing.T
 	binary.LittleEndian.PutUint32(eocd[12:16], trueDirBytes)
 	// comment length (offset 20:22) left at zero.
 
-	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	exceeds, _, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
 	if gotEntries != wrappedEntries {
 		t.Fatalf("entries = %d, want %d (the wrapped value the reviewer's scenario declares)", gotEntries, wrappedEntries)
 	}
@@ -930,7 +930,7 @@ func TestZipDirectoryExceedsStructuralBoundTreatsZip64SentinelAsExceeding(t *tes
 	eocd[10], eocd[11] = 1, 0 // entries = 1
 	eocd[12], eocd[13], eocd[14], eocd[15] = 0xFF, 0xFF, 0xFF, 0xFF
 
-	exceeds, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	exceeds, _, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
 	if dirBytes != 0xFFFFFFFF {
 		t.Fatalf("dirBytes = %#x, want 0xffffffff", dirBytes)
 	}
@@ -995,7 +995,7 @@ func round4RealDirectoryZipFixture() []byte {
 // catches it.
 func TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize(t *testing.T) {
 	data := round4RealDirectoryZipFixture()
-	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	exceeds, _, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 	if gotEntries != 1 {
 		t.Fatalf("entries = %d, want 1 (65537 mod 65536, read verbatim from the EOCD's own field)", gotEntries)
 	}
@@ -1056,7 +1056,7 @@ func TestZipDirectoryExceedsStructuralBoundWindowExhaustionIsExceeding(t *testin
 	recordLen := uint32(zipCentralDirMinRecordLen + nameLen)
 	data := realZipCentralDirectoryFixture(n, nameLen, uint16(n), uint32(n)*recordLen)
 
-	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	exceeds, _, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 	if gotEntries != n || gotDirBytes != uint32(n)*recordLen {
 		t.Fatalf("entries/dirBytes = %d/%d, want %d/%d -- this test's own EOCD is completely honest", gotEntries, gotDirBytes, n, uint32(n)*recordLen)
 	}
@@ -1140,7 +1140,7 @@ func (v *virtualHostileZipReader) ReadAt(p []byte, off int64) (int, error) {
 // record-counting window), both fixed package constants.
 func TestZipDirectoryExceedsStructuralBoundReadVolumeBoundedByConstant(t *testing.T) {
 	v := &virtualHostileZipReader{size: 1 << 40, directoryOffset: 4} // 1 TiB, never actually allocated
-	exceeds, _, _ := zipDirectoryExceedsStructuralBound(v, v.size)
+	exceeds, _, _, _ := zipDirectoryExceedsStructuralBound(v, v.size)
 	if !exceeds {
 		t.Fatalf("exceeds = false, want true -- a directory this large can never be verified within a bounded window")
 	}
@@ -1241,7 +1241,7 @@ func TestZipDirectoryExceedsStructuralBoundRound5ScenarioCatchesNegativeBaseOffs
 		t.Fatalf("archive/zip.NewReader parsed %d records, want > %d -- this fixture must reproduce archive/zip walking the FULL 65,537-record directory via its own baseOffset correction, not the short suffix directoryOffset points at directly", len(zr.File), inspectMaxZipDirEntries)
 	}
 
-	exceeds, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	exceeds, _, gotEntries, gotDirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 	if gotEntries != 1 {
 		t.Fatalf("entries = %d, want 1 (65537 mod 65536, read verbatim from the EOCD's own field)", gotEntries)
 	}
@@ -1313,7 +1313,7 @@ func TestZipDirectoryExceedsStructuralBoundTruncatedCommentDoesNotBypassOverCeil
 		t.Fatalf("archive/zip.NewReader parsed %d records, want > %d", len(zr.File), inspectMaxZipDirEntries)
 	}
 
-	exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+	exceeds, _, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 	if !exceeds {
 		t.Fatalf("exceeds = false, want true -- an EOCD whose comment ends before the file's own end must not let an over-ceiling real directory through just because an exact-match-to-file-end locator would have scanned past it looking for another signature")
 	}
@@ -1331,7 +1331,7 @@ func TestZipDirectoryExceedsStructuralBoundDirBytesFFFFTreatedAsZip64Sentinel(t 
 	eocd[10], eocd[11] = 1, 0 // entries = 1
 	binary.LittleEndian.PutUint32(eocd[12:16], 0xFFFF)
 
-	exceeds, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
+	exceeds, _, _, dirBytes := zipDirectoryExceedsStructuralBound(bytes.NewReader(eocd), int64(len(eocd)))
 	if dirBytes != 0xFFFF {
 		t.Fatalf("dirBytes = %#x, want 0xffff", dirBytes)
 	}
@@ -1459,7 +1459,7 @@ func TestZipDirectoryExceedsStructuralBoundDifferentialAgainstArchiveZip(t *test
 				realCount = len(zr.File)
 			}
 
-			exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+			exceeds, _, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 
 			if realCount > inspectMaxZipDirEntries && !exceeds {
 				t.Fatalf("FORBIDDEN COMBINATION on corpus case %q: archive/zip.NewReader parsed %d real records (> ceiling %d) but zipDirectoryExceedsStructuralBound said exceeds=false.\nInput: %s", tc.name, realCount, inspectMaxZipDirEntries, tc.describe)
@@ -1527,7 +1527,7 @@ func FuzzZipDirectoryGateNeverUnderestimates(f *testing.F) {
 			realCount = len(zr.File)
 		}
 
-		exceeds, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
+		exceeds, _, _, _ := zipDirectoryExceedsStructuralBound(bytes.NewReader(data), int64(len(data)))
 
 		if realCount > inspectMaxZipDirEntries && !exceeds {
 			t.Fatalf("FORBIDDEN COMBINATION: archive/zip.NewReader parsed %d real records (> ceiling %d) but zipDirectoryExceedsStructuralBound said exceeds=false.\nInput (%d bytes, hex): %x", realCount, inspectMaxZipDirEntries, len(data), data)
@@ -1844,5 +1844,43 @@ func TestDispatchInspectFamiliesMarksTheTrackerItWasGiven(t *testing.T) {
 
 	if !tr.Exhausted() {
 		t.Fatal("dispatchInspectFamilies returned without marking the Tracker it was given -- an analyzer hit its own internal ceiling (xl/workbook.xml over maxRelsPartBytes) and that fact did not reach the tracker, so BuildReport would report complete coverage over an analysis that stopped early. The usual cause is a dispatch site passing nil instead of tr.")
+	}
+}
+
+// failAfterNthReadAt serves the first allow ReadAt calls from inner and
+// fails every one after that with a real, non-EOF error. The EOCD tail scan
+// is the first read this bound performs and the central-directory window is
+// the next, so allow=1 puts the failure exactly where PR9R11 describes it:
+// the EOCD is readable, the directory behind it is not.
+type failAfterNthReadAt struct {
+	inner *bytes.Reader
+	allow int
+	seen  int
+}
+
+func (f *failAfterNthReadAt) ReadAt(p []byte, off int64) (int, error) {
+	f.seen++
+	if f.seen > f.allow {
+		return 0, errors.New("simulated disk read failure")
+	}
+	return f.inner.ReadAt(p, off)
+}
+
+// TestInspectZipCentralDirectoryReadFailureIsReadFailedNotTooLarge is
+// PR9R11 (inspect_handlers.go:871). The structural bound refuses in both
+// cases and should -- but "the directory is bigger than we will parse" and
+// "we could not read the bytes" say opposite things about whose fault it
+// is, and reporting the second as work_ceiling_bytes claims a ceiling was
+// exceeded when nothing was ever measured.
+func TestInspectZipCentralDirectoryReadFailureIsReadFailedNotTooLarge(t *testing.T) {
+	data := docxFixture(t)
+	r := &failAfterNthReadAt{inner: bytes.NewReader(data), allow: 1}
+
+	exceeds, readFailed, _, _ := zipDirectoryExceedsStructuralBound(r, int64(len(data)))
+	if !exceeds {
+		t.Fatal("exceeds = false -- an unreadable central directory must still be refused; nothing about it was verified")
+	}
+	if !readFailed {
+		t.Fatal("readFailed = false, want true -- the refusal came from a non-EOF ReadAt error, not from any ceiling this archive exceeded")
 	}
 }
