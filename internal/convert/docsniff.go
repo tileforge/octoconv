@@ -137,6 +137,9 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 
 	var res ContainerResult
 	nameCount := map[string]int{}
+	// mimetypeErr carries the ODF/EPUB mimetype entry's own read error, if
+	// any, to the single classification point after this loop.
+	var mimetypeErr error
 
 	for i, f := range zr.File {
 		// Saturating add: UncompressedSize64 comes from the central
@@ -162,18 +165,34 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 		}
 
 		if i == 0 && f.Name == "mimetype" && f.Method == zip.Store {
-			// rerr, on failure, is NOT classified here -- see the rr.failed
-			// check below, at this function's own return decision, for why
-			// (PR9R9 finding, docsniff.go:120). f.Open()/the returned
-			// io.ReadCloser's Read calls decompress through rr, the SAME
-			// readerAtRecorder zip.NewReader itself used above, so any
-			// non-EOF ReadAt failure this read hits is recorded on rr
-			// exactly like every other read this function performs.
+			// This read has TWO independent failure modes and the previous
+			// two rounds each closed only one of them:
+			//
+			//   - an I/O failure, recorded on rr (the same readerAtRecorder
+			//     zip.NewReader used above) and classified at this
+			//     function's own return decision (PR9R9, docsniff.go:120);
+			//   - a STRUCTURAL failure -- a corrupt local header or a bad
+			//     checksum on the entry -- where every ReadAt succeeded, so
+			//     rr never fails and the recorder check cannot see it
+			//     (PR9R10, docsniff.go:172).
+			//
+			// The round-9 comment that stood here asserted rerr needed no
+			// classification because "any non-EOF ReadAt failure this read
+			// hits is recorded on rr". True, and beside the point: a
+			// structural error is not a ReadAt failure at all. Discarding
+			// rerr therefore returned a nil error with an empty format, and
+			// the inspect endpoint reported format_unrecognized for an
+			// archive it had in fact found to be broken.
+			//
+			// rerr is kept and classified after the loop, where rr.failed
+			// is already consulted, so the two modes are decided in one
+			// place with an explicit precedence rather than at two call
+			// sites that can drift.
 			payload, rerr := readBounded(f, 128)
-			if rerr == nil {
-				if odfFmt, ok := odfMimetypes[string(payload)]; ok {
-					res.Format = odfFmt
-				}
+			if rerr != nil {
+				mimetypeErr = rerr
+			} else if odfFmt, ok := odfMimetypes[string(payload)]; ok {
+				res.Format = odfFmt
 			}
 		}
 	}
@@ -205,6 +224,27 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 	// with no further change needed on that side.
 	if rr.failed {
 		return ContainerResult{}, fmt.Errorf("read zip container: %w", rr.err)
+	}
+	// PR9R10 finding (docsniff.go:172), verbatim: "For an ODF/EPUB-shaped
+	// ZIP whose first stored mimetype entry has a corrupt local header or
+	// checksum, readBounded returns a structural ZIP error without causing
+	// readerAtRecorder.failed to be set, because all underlying ReadAt calls
+	// may have succeeded. Ignoring rerr here therefore bypasses the new
+	// final recorder check: SniffContainer returns a nil error with an empty
+	// format, and the inspect endpoint reports format_unrecognized instead
+	// of malformed_input."
+	//
+	// The precedence is deliberate and is the whole reason both checks live
+	// here rather than at their own call sites: rr.failed is tested FIRST,
+	// because when the reader itself failed we cannot know whether the entry
+	// is also structurally broken -- "we could not read it" outranks any
+	// conclusion about its contents. Only once every ReadAt is known to have
+	// succeeded does a non-nil mimetypeErr become a statement about the
+	// ARCHIVE, and ErrNotAZip is how this package says that: detectInspect-
+	// Format maps errors.Is(cerr, ErrNotAZip) to malformed_input, which is
+	// exactly the verdict this archive has earned.
+	if mimetypeErr != nil {
+		return ContainerResult{}, fmt.Errorf("%w: mimetype entry: %w", ErrNotAZip, mimetypeErr)
 	}
 	return res, nil
 }

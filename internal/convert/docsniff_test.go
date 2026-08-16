@@ -632,3 +632,74 @@ func TestReaderAtRecorder_ObservesOnlyRealReadFailures(t *testing.T) {
 		}
 	})
 }
+
+// corruptMimetypeLocalHeader takes an ODF-shaped zip built by odfZipFixture
+// and breaks the FIRST local file header's signature, leaving the central
+// directory (which zip.NewReader parses) completely intact.
+//
+// That combination is the point: the archive's directory reads cleanly, so
+// SniffContainer gets as far as opening the mimetype entry, and every
+// underlying ReadAt succeeds -- readerAtRecorder never fires. The failure is
+// structural, discovered only when archive/zip validates the entry's own
+// local header. PR9R10's finding is that this case used to be discarded.
+func corruptMimetypeLocalHeader(t *testing.T, data []byte) []byte {
+	t.Helper()
+	out := append([]byte{}, data...)
+	if len(out) < 4 || out[0] != 'P' || out[1] != 'K' || out[2] != 0x03 || out[3] != 0x04 {
+		t.Fatalf("fixture does not begin with a local file header: % x", out[:4])
+	}
+	out[2], out[3] = 0x07, 0x07 // no longer PK\x03\x04
+	return out
+}
+
+// TestSniffContainerStructuralMimetypeErrorIsNotAZip is PR9R10
+// (docsniff.go:172): a structurally broken mimetype entry must NOT be
+// reported as a successful sniff with an unrecognized format, because the
+// inspect endpoint then says format_unrecognized about an archive this
+// function already found to be broken.
+func TestSniffContainerStructuralMimetypeErrorIsNotAZip(t *testing.T) {
+	data := corruptMimetypeLocalHeader(t, odfZipFixture(t, "application/vnd.oasis.opendocument.text"))
+
+	_, err := SniffContainer(bytes.NewReader(data), int64(len(data)))
+	if err == nil {
+		t.Fatal("err = nil -- a mimetype entry whose local header does not parse must not be reported as a successful sniff with an empty format; the inspect path would call that format_unrecognized")
+	}
+	if !errors.Is(err, ErrNotAZip) {
+		t.Fatalf("err = %v, want errors.Is(err, ErrNotAZip) -- every ReadAt succeeded, so this is a fact about the ARCHIVE (malformed_input on the inspect path), not about our ability to read it", err)
+	}
+}
+
+// TestSniffContainerIOFailureOutranksStructuralMimetypeError pins the
+// precedence the two checks were deliberately given: when the reader itself
+// failed, we cannot know whether the entry is ALSO structurally broken, so
+// "we could not read it" must win over any conclusion about its contents.
+func TestSniffContainerIOFailureOutranksStructuralMimetypeError(t *testing.T) {
+	data := corruptMimetypeLocalHeader(t, odfZipFixture(t, "application/vnd.oasis.opendocument.text"))
+	// Fail every ReadAt that lands beyond the central directory's own tail
+	// read, so zip.NewReader still succeeds but the entry read does not.
+	r := &failAfterNReaderAt{inner: bytes.NewReader(data), allow: 2}
+
+	_, err := SniffContainer(r, int64(len(data)))
+	if err == nil {
+		t.Fatal("err = nil, want a read failure")
+	}
+	if errors.Is(err, ErrNotAZip) {
+		t.Fatalf("err = %v, want a read failure (NOT ErrNotAZip) -- an observed I/O failure must outrank the structural verdict, since a reader that failed cannot establish anything about the entry's own bytes", err)
+	}
+}
+
+// failAfterNReaderAt serves the first allow ReadAt calls from inner and
+// fails every one after that with a real, non-EOF error.
+type failAfterNReaderAt struct {
+	inner *bytes.Reader
+	allow int
+	seen  int
+}
+
+func (f *failAfterNReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	f.seen++
+	if f.seen > f.allow {
+		return 0, errors.New("simulated disk read failure")
+	}
+	return f.inner.ReadAt(p, off)
+}
