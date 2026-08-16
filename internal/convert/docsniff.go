@@ -162,6 +162,13 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 		}
 
 		if i == 0 && f.Name == "mimetype" && f.Method == zip.Store {
+			// rerr, on failure, is NOT classified here -- see the rr.failed
+			// check below, at this function's own return decision, for why
+			// (PR9R9 finding, docsniff.go:120). f.Open()/the returned
+			// io.ReadCloser's Read calls decompress through rr, the SAME
+			// readerAtRecorder zip.NewReader itself used above, so any
+			// non-EOF ReadAt failure this read hits is recorded on rr
+			// exactly like every other read this function performs.
 			payload, rerr := readBounded(f, 128)
 			if rerr == nil {
 				if odfFmt, ok := odfMimetypes[string(payload)]; ok {
@@ -175,6 +182,29 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 		if c > 1 {
 			res.DuplicateRootPart = true
 		}
+	}
+
+	// PR9R9 finding (docsniff.go:120), verbatim: "If zip.NewReader reads the
+	// central directory successfully but the later readBounded call for an
+	// ODF/EPUB mimetype entry encounters a non-EOF ReadAt failure, this
+	// recorder sets rr.failed only after the sole check at lines 121-135 has
+	// passed. The error from readBounded is ignored at lines 165-170 and
+	// rr.failed is never checked again, so SniffContainer returns a nil
+	// error with an empty format and the inspect path reports
+	// format_unrecognized rather than read_failed." Checking rr.failed HERE,
+	// at the actual return decision -- rather than only once, immediately
+	// after zip.NewReader -- closes it: rr.failed is set as a side effect of
+	// ANY ReadAt this function performs through rr, and the mimetype read
+	// above is the only additional one beyond zip.NewReader's own central-
+	// directory read, so this check is scoped tightly to that one path. On
+	// an observed I/O failure, this returns the SAME shape (empty result,
+	// wrapped error) the zip.NewReader failure branch above already returns
+	// for an operational read failure -- detectInspectFormat's own
+	// errors.Is(cerr, convert.ErrNotAZip) check already classifies this
+	// correctly as read_failed, not malformed_input or format_unrecognized,
+	// with no further change needed on that side.
+	if rr.failed {
+		return ContainerResult{}, fmt.Errorf("read zip container: %w", rr.err)
 	}
 	return res, nil
 }

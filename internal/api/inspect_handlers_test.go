@@ -589,6 +589,152 @@ func TestInspectSniffReadFailureIsObservableAsReadFailed(t *testing.T) {
 	}
 }
 
+// rangeFailContainerFile implements multipart.File (Read, ReadAt, Seek,
+// Close): a ReadAt call fails with failErr when its offset falls inside
+// [failFrom, failTo) AND its requested length exceeds passThroughMaxLen --
+// every other call (outside the offset range, OR inside it but short
+// enough) delegates to the real underlying bytes. The multipart.File-shaped
+// sibling of internal/convert/docsniff_test.go's own
+// failingWithinRangeReaderAt, duplicated here for the identical
+// cross-package reason failingAfterPrefixContainerFile above already
+// states: this test exercises detectInspectFormat/dispatchInspectFamilies
+// directly, since Go's real multipart.File offers no portable way to
+// script a genuine mid-read i/o failure confined to one byte range through
+// an actual net/http request.
+//
+// The length threshold exists because detectInspectFormat's OWN magic-byte
+// detection already reads small prefixes AT OFFSET 0 -- convert.Sniff's own
+// 12-byte peek, then a 4-byte PK\x03\x04 prefix check -- the SAME offset
+// archive/zip's own local-header read for the "mimetype" entry (index 0,
+// no leading bytes before it) ALSO starts at, since it is the file's first
+// entry. Offset alone cannot distinguish "detection peek" from "the read
+// this finding is actually about" -- but LENGTH can: Go's own fileHeaderLen
+// is a fixed 30 bytes (reader.go), comfortably above both detection peeks
+// and below passThroughMaxLen's own margin.
+type rangeFailContainerFile struct {
+	data              []byte
+	failFrom, failTo  int64
+	passThroughMaxLen int
+	failErr           error
+}
+
+func (f *rangeFailContainerFile) ReadAt(p []byte, off int64) (int, error) {
+	if off >= f.failFrom && off < f.failTo && len(p) > f.passThroughMaxLen {
+		return 0, f.failErr
+	}
+	if off < 0 || off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+func (f *rangeFailContainerFile) Read(p []byte) (int, error)     { return 0, f.failErr }
+func (f *rangeFailContainerFile) Seek(int64, int) (int64, error) { return 0, f.failErr }
+func (f *rangeFailContainerFile) Close() error                   { return nil }
+
+// odfZipFixtureWithFiller mirrors internal/convert/docsniff_test.go's own
+// helper of the same name (duplicated here for the same reason
+// rangeFailContainerFile above is): mimetype-first ODF shape, plus n
+// Deflate-compressed filler entries, solely to push the central directory
+// past 1024 bytes -- see that helper's own doc comment (docsniff_test.go)
+// for why this matters: archive/zip's own EOCD-search read (reader.go)
+// reads the last 1024 bytes of the file FIRST, which starts at offset 0 for
+// any file smaller than that, making it impossible to fail ONLY the
+// mimetype entry's own read by offset range alone.
+func odfZipFixtureWithFiller(t testing.TB, mimetype string, n int) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	fw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatalf("CreateHeader(mimetype): %v", err)
+	}
+	if _, err := fw.Write([]byte(mimetype)); err != nil {
+		t.Fatalf("Write(mimetype): %v", err)
+	}
+	for i := 0; i < n; i++ {
+		mustWriteZipEntry(t, zw, fmt.Sprintf("filler/%05d.txt", i), "x")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestInspectMimetypeReadFailureIsObservableAsReadFailed is PR9R9 task 2's
+// own end-to-end proof, through the SAME production functions handleInspect
+// itself calls (detectInspectFormat -> dispatchInspectFamilies ->
+// inspect.BuildReport): a ReadAt failure confined to the "mimetype" entry's
+// own local header+data -- AFTER convert.SniffContainer's own zip.NewReader
+// call has already read the central directory successfully -- must surface
+// as unknown/read_failed, never unknown/format_unrecognized. Before this
+// fix, SniffContainer silently discarded readBounded's own error and
+// returned (ContainerResult{}, nil): detected stayed "" (no ODF match,
+// Format=="", cerr==nil), so detectInspectFormat's own zip branch fell all
+// the way through to "leaves detected empty intentionally" -- the SAME
+// outcome a genuinely unrecognized, fully-read upload produces.
+func TestInspectMimetypeReadFailureIsObservableAsReadFailed(t *testing.T) {
+	const failTo = 512
+	data := odfZipFixtureWithFiller(t, "application/vnd.oasis.opendocument.text", 40)
+	if int64(len(data)) <= 1024 {
+		t.Fatalf("test fixture assumption broken: fixture is %d bytes, want > 1024 so archive/zip's own EOCD search window (last 1024 bytes) never reaches offset 0", len(data))
+	}
+	if searchStart := int64(len(data)) - 1024; searchStart < failTo {
+		t.Fatalf("test fixture assumption broken: archive/zip's own EOCD-search read would start at offset %d, INSIDE this test's own failFrom..failTo=[0,%d) range -- add more filler entries", searchStart, failTo)
+	}
+	file := &rangeFailContainerFile{data: data, failFrom: 0, failTo: failTo, passThroughMaxLen: 20, failErr: errors.New("simulated disk read failure")}
+
+	detected, sniffed := detectInspectFormat(file, int64(len(data)), "odt")
+	if detected != inspectZipReadFailedFormat {
+		t.Fatalf("detected = %q, want %q -- a mimetype-entry read failure, observed AFTER the central directory itself was read successfully, must not be silently folded into an unrecognized/empty format", detected, inspectZipReadFailedFormat)
+	}
+	if sniffed != nil {
+		t.Fatalf("sniffed = %+v, want nil -- SniffContainer never returned a usable result", sniffed)
+	}
+
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
+	families := dispatchInspectFamilies(detected, sniffed, file, int64(len(data)), tr)
+	families = append(families, extensionMismatchFamilyResult(detected, "odt"))
+	report := inspect.BuildReport(detected, "odt", int64(len(data)), tr, families...)
+
+	if err := inspect.ValidateReport(report.Findings, report.Checks); err != nil {
+		t.Fatalf("ValidateReport: %v", err)
+	}
+
+	wantReadFailed := map[inspect.Code]bool{
+		inspect.CodeOOXMLMacro:        true,
+		inspect.CodeZipBombShape:      true,
+		inspect.CodeExternalReference: true,
+		inspect.CodeExtensionMismatch: true,
+	}
+	seen := map[inspect.Code]bool{}
+	for _, c := range report.Checks {
+		if !wantReadFailed[c.Code] {
+			continue
+		}
+		seen[c.Code] = true
+		if c.Status != inspect.StatusUnknown || c.Reason != inspect.ReasonReadFailed {
+			t.Errorf("check %s = %+v, want status=unknown reason=read_failed", c.Code, c)
+		}
+	}
+	for code := range wantReadFailed {
+		if !seen[code] {
+			t.Errorf("check %s missing from report.Checks entirely", code)
+		}
+	}
+	// The defect this test closes: BEFORE this fix, this identical scenario
+	// produced format_unrecognized everywhere -- indistinguishable from a
+	// genuinely unrecognized upload this handler never even tried to read.
+	for _, c := range report.Checks {
+		if c.Reason == inspect.ReasonFormatUnrecognized {
+			t.Errorf("check %+v carries format_unrecognized -- a genuine mimetype-entry read failure must never be reported the same way as an unrecognized format (PR9R9)", c)
+		}
+	}
+}
+
 // reviewerScenarioZipFixture builds the SMALLEST possible upload that
 // reproduces codex's round-2 review scenario end-to-end through the real
 // HTTP handler: a PK\x03\x04 local-file-header signature (so

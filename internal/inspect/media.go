@@ -388,9 +388,22 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		// SUCCESS-case regime instead of the fallback one. So the outcome
 		// here is decided by the head walk's own result alone -- no
 		// substring scan is ever consulted for a value in this branch:
-		//   - !headOK or headCeilingHit: our own inability to conclude
-		//     (a genuine read failure, or maxISOBMFFBoxes exhausted before
-		//     the walk could finish) -- ReasonWorkCeilingBytes.
+		//   - !headOK: readWindow's own ReadAt call failed. headLen == size
+		//     in this branch by construction (see the clamp above), and
+		//     size > 0 / maxBytes > 0 are already guaranteed by this
+		//     function's own top-of-function guard, so readWindow's other
+		//     two !ok causes (n<=0, off>=size) can never fire here -- the
+		//     window WAS sized to cover the file IN FULL. A full-coverage
+		//     window that still fails to read is an operational inability
+		//     to read the upload at all, never a fact about the file's
+		//     structure and never THIS scan's own byte ceiling (raising
+		//     maxBytes would not fix it) -- ReasonReadFailed (PR9R9 finding,
+		//     media.go:382), the SAME rule wavCharacteristics and
+		//     scanImageMetadata already apply to their own identically-
+		//     shaped "full window, still failed" branch.
+		//   - headCeilingHit (headOK true, but maxISOBMFFBoxes exhausted
+		//     before the walk could finish): OUR OWN resource limit, not a
+		//     read failure and not a fact about the file -- ReasonWorkCeilingBytes.
 		//   - otherwise: the walk covered every top-level box in the file,
 		//     either reaching the natural end cleanly or stopping at a
 		//     malformed/truncated box along the way (walkTopLevelBoxes
@@ -406,7 +419,10 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		//     rescued box from a planted decoy, since neither has proven
 		//     placement; that is precisely the trade this analyzer refuses
 		//     to make (D-01/D-03).
-		if !headOK || headCeilingHit {
+		if !headOK {
+			return nil, ReasonReadFailed
+		}
+		if headCeilingHit {
 			return nil, ReasonWorkCeilingBytes
 		}
 		return nil, ReasonMalformedInput
@@ -428,6 +444,22 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	if !tailOK {
 		// No tail window to prove anything against at all -- our own
 		// inability to read, never a fact about the file's structure.
+		//
+		// Audited against the SAME "full coverage still failed ->
+		// ReasonReadFailed" rule findMoov's own head-window branch above
+		// now applies (PR9R9 sweep, this function's own doc comment): unlike
+		// that branch, tailLen == tailReserve here is ALWAYS strictly less
+		// than size in the oversizedFile path this STEP belongs to (size >
+		// maxBytes >= tailReserve by construction), so this window can never
+		// be sized to cover the file in full -- it is unconditionally
+		// truncated, exactly like wavCharacteristics's own windowTruncated
+		// branch. WAV's rule keeps ReasonWorkCeilingBytes for EVERY miss on
+		// a truncated window, real ReadAt failure or degenerate (n<=0)
+		// alike, because a genuinely undersized window cannot be told apart
+		// from an operational failure without first proving the window
+		// SHOULD have been big enough -- it should not have been, here, by
+		// design. No behavior change; this comment records that this site
+		// was checked, not skipped.
 		return nil, ReasonWorkCeilingBytes
 	}
 
@@ -912,6 +944,23 @@ const (
 // in the OTHER direction: a small, fully-buffered, genuinely malformed mkv
 // would always mark the whole report selective even though nothing was
 // actually left unexamined.
+//
+// PR9R9 sweep (task 2's own instruction to walk EVERY readWindow-failure
+// site in this file, not only the two named findings): this function's own
+// readWindow call below had the identical class of defect findMoov's head
+// window carried before this same round's fix -- ok==false was reported as
+// ReasonWorkCeilingBytes UNCONDITIONALLY, even when windowCoversWholeFile
+// was true (winLen sized to cover the file in full, readWindow's own
+// ReadAt call genuinely failing). That is not this scan's own budget --
+// raising maxBytes would not fix an operational read failure -- the SAME
+// distinction wavCharacteristics and findMoov's head-window branch both
+// apply. Brought to the one rule those two already establish: a failure on
+// a full-coverage window is ReasonReadFailed, a failure on a genuinely
+// truncated window stays ReasonWorkCeilingBytes, and a degenerate window
+// (winLen<=0: size<=0 or maxBytes<=0, no read even attempted) is
+// ReasonMalformedInput -- mirroring wavCharacteristics's own three-way
+// switch exactly, so a fourth family never has to rediscover this rule from
+// scratch in a later round.
 func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
@@ -926,10 +975,25 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Chara
 
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
+		// PR9R9 sweep (see this function's own doc comment): the same
+		// three-way split wavCharacteristics already applies to its own
+		// readWindow failure, brought here.
+		reason := ReasonMalformedInput // degenerate window (winLen<=0): no read was even attempted, not an operational failure
+		switch {
+		case !windowCoversWholeFile:
+			reason = ReasonWorkCeilingBytes
+		case winLen > 0:
+			// windowCoversWholeFile and winLen>0: this window was sized to
+			// cover the file IN FULL, so readWindow's failure here is
+			// readWindow's own io.ReaderAt.ReadAt call failing on bytes this
+			// scan otherwise intended to examine in full -- never this
+			// scan's own ceiling and never a fact about the file.
+			reason = ReasonReadFailed
+		}
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
+		c["duration_seconds_reason"] = string(reason)
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ReasonWorkCeilingBytes)
+		c["declared_codec_reason"] = string(reason)
 		return c
 	}
 
