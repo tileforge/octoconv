@@ -374,6 +374,37 @@ for img_kind in api worker; do
 	echo "PASS: image $img_ref present locally"
 done
 
+# IMAGE-vs-SOURCE FRESHNESS. Passing the validated tag to helm (STEP 2) only
+# guarantees that the image this script CHECKED is the image it RUNS. It says
+# nothing about whether that image was built from the code under review, and
+# this gate's whole output is a claim about that code.
+#
+# Run 20260815T235101Z passed and its evidence happened to be sound -- the
+# image was built six minutes AFTER the last Go commit. Nobody verified that
+# at the time; it was luck, discovered afterwards while answering a review
+# finding. An assertion whose truth depends on the operator remembering the
+# order in which they did two things is not an assertion.
+#
+# Two facts make it checkable: the image must not predate any Go source, and
+# the tree must not carry uncommitted Go changes the image cannot contain.
+IMAGE_BUILT_EPOCH=$(docker image inspect "octoconv-api:${APP_IMAGE_TAG}" --format '{{.Created}}' 2>/dev/null | { read -r ts; date -j -f "%Y-%m-%dT%H:%M:%S" "${ts%%.*}" +%s 2>/dev/null || date -d "$ts" +%s 2>/dev/null; })
+NEWEST_GO_FILE=$(find ./cmd ./internal -name '*.go' -type f -print0 2>/dev/null | xargs -0 stat -f '%m %N' 2>/dev/null | sort -rn | head -1)
+NEWEST_GO_EPOCH=${NEWEST_GO_FILE%% *}
+NEWEST_GO_PATH=${NEWEST_GO_FILE#* }
+if [ -n "${IMAGE_BUILT_EPOCH:-}" ] && [ -n "${NEWEST_GO_EPOCH:-}" ] && [ "$IMAGE_BUILT_EPOCH" -lt "$NEWEST_GO_EPOCH" ]; then
+	echo "FAIL: octoconv-api:${APP_IMAGE_TAG} was built at $(date -r "$IMAGE_BUILT_EPOCH" -u +%Y-%m-%dT%H:%M:%SZ), BEFORE the newest Go source ${NEWEST_GO_PATH} changed at $(date -r "$NEWEST_GO_EPOCH" -u +%Y-%m-%dT%H:%M:%SZ). Any evidence this run produced would describe a build that does not contain that code. Rebuild both images and re-run." >&2
+	exit 1
+fi
+echo "PASS: octoconv-api:${APP_IMAGE_TAG} is at least as new as every Go source file"
+
+UNCOMMITTED_GO=$(git status --porcelain -- '*.go' 2>/dev/null | head -20)
+if [ -n "$UNCOMMITTED_GO" ]; then
+	echo "FAIL: the working tree carries uncommitted Go changes, which the built image cannot contain -- this run's evidence would not describe the code as it stands:" >&2
+	echo "$UNCOMMITTED_GO" >&2
+	exit 1
+fi
+echo "PASS: no uncommitted Go changes -- the image can correspond to the committed tree"
+
 if ! docker image inspect "$BURST_IMAGE" >/dev/null 2>&1; then
 	if ! docker pull "$BURST_IMAGE" >/dev/null 2>&1; then
 		echo "FAIL: burst/poll image '$BURST_IMAGE' not present locally and could not be pulled" >&2
@@ -394,8 +425,22 @@ mkdir -p "$EVIDENCE_DIR"
 # ---------------------------------------------------------------------------
 log "STEP 2: helm install/upgrade (single-phase, api.replicas pinned to 1)"
 
-helm upgrade --install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -f "$VALUES_INSPECT_GATE" -n "$NAMESPACE" --create-namespace
-echo "PASS: helm upgrade --install complete"
+# --set global.imageTag is NOT decoration: without it this command deployed
+# whatever the chart defaults to while STEP 1 had validated
+# octoconv-api:$APP_IMAGE_TAG, so a pinned tag could be checked and a
+# different image run (codex PR #9 round 8, inspect-burst-liveproof.sh:397).
+helm upgrade --install octoconv "$CHART_DIR" -f "$VALUES_LOCAL" -f "$VALUES_INSPECT_GATE" \
+	--set global.imageTag="$APP_IMAGE_TAG" -n "$NAMESPACE" --create-namespace
+echo "PASS: helm upgrade --install complete (global.imageTag=$APP_IMAGE_TAG)"
+
+# The deployed pod template must actually carry the validated tag. Passing
+# --set and trusting it is the same posture that let the mismatch exist.
+DEPLOYED_API_IMAGE=$(kubectl get deployment api -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+if [ "$DEPLOYED_API_IMAGE" != "octoconv-api:${APP_IMAGE_TAG}" ]; then
+	echo "FAIL: the api Deployment renders image [$DEPLOYED_API_IMAGE], not the octoconv-api:${APP_IMAGE_TAG} that STEP 1 validated. Evidence from this run would describe a different build than the one checked." >&2
+	exit 1
+fi
+echo "PASS: deployed api image matches the validated tag == $DEPLOYED_API_IMAGE"
 
 for d in postgres redis minio api worker; do
 	kubectl wait --for=condition=Available "deployment/$d" -n "$NAMESPACE" --timeout=300s
