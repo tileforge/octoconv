@@ -1187,3 +1187,23 @@ func TestAnalyzeContainerEmptyWorkbookPublishesNoSheetCount(t *testing.T) {
 		})
 	}
 }
+
+// TestAnalyzeContainerNonWorkbookRootPublishesNoSheetCount is PR9R15
+// (container.go:896): the previous fix read the root's NAMESPACE and never
+// its NAME, so any part whose root happened to contain a <sheets> list
+// published a count as a successfully parsed characteristic.
+func TestAnalyzeContainerNonWorkbookRootPublishesNoSheetCount(t *testing.T) {
+	for _, tc := range []struct{ name, workbook string }{
+		{"unnamespaced non-workbook root with a sheets list", `<notWorkbook><sheets><sheet name="ghost"/></sheets></notWorkbook>`},
+		{"SpreadsheetML namespace but the wrong root element", `<chartsheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="ghost"/></sheets></chartsheet>`},
+		{"arbitrary unnamespaced root, no sheets at all", `<something><other/></something>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := xlsxFixtureWithWorkbook(t, tc.workbook)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
+				t.Errorf("sheet_count = %v, want absent or nil -- this part's root is not a workbook, so it supports no statement about a workbook's sheets; zero would be an answer where there is none", got)
+			}
+		})
+	}
+}

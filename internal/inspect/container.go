@@ -894,12 +894,25 @@ func countSheetElements(data []byte) (count int, ok bool) {
 			if !haveRoot {
 				haveRoot = true
 				workbookNS = t.Name.Space
-				// A root outside SpreadsheetML is not a workbook part at
-				// all; the only namespace accepted without being one of the
-				// two known URIs is the empty one, i.e. a wholly
+				// The root must be a workbook, by NAME as well as by
+				// namespace (PR9R14 took the namespace and left the name
+				// unchecked, so <notWorkbook><sheets><sheet/></sheets>
+				// published sheet_count: 1 as a parsed characteristic).
+				//
+				// ok=false rather than a zero count: this part is not a
+				// workbook, so it supports no statement about how many
+				// sheets a workbook has -- the same reasoning as the empty
+				// part above, and the reason zero is never the safe
+				// fallback here. Zero is an answer; "not a workbook" is the
+				// absence of one.
+				if t.Name.Local != "workbook" {
+					return 0, false
+				}
+				// The only namespace accepted without being one of the two
+				// known SpreadsheetML URIs is the empty one, i.e. a wholly
 				// unnamespaced (minimal or hand-written) workbook.
 				if workbookNS != "" && !spreadsheetMLNamespaces[workbookNS] {
-					return 0, true
+					return 0, false
 				}
 			}
 			if t.Name.Space != workbookNS {
