@@ -293,11 +293,43 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // When the whole file already fits within maxBytes there is nothing to
 // reserve: both windows simply cover the file, exactly as before, and
 // their combined read is bounded by size itself, never by maxBytes at
-// all -- unchanged from round 0. Every actual byte read is ALSO reported
-// to tr directly via consumeActual, so a Tracker configured with its own
-// tight Budget.MaxBytes -- not just the maxBytes parameter this function
+// all -- unchanged from round 0.
+//
+// PR9R9 finding #3 (double charge, media.go:337, a coordinator review of
+// the round-8 fix above): round 8's own closing sentence here used to
+// read "every actual byte read is ALSO reported to tr directly via
+// consumeActual, so a Tracker configured with its own tight
+// Budget.MaxBytes -- not just the maxBytes parameter this function
 // receives -- observes the SAME true total, provable independently of
-// whatever any caller does with its own return value.
+// whatever any caller does with its own return value." That defense
+// assumed a caller whose OWN charge could legitimately diverge from tr's
+// real remaining budget -- but the ONE production caller,
+// dispatchInspectFamilies (internal/api/inspect_handlers.go), captures
+// maxBytes := tr.Remaining() ONCE, before dispatch, and unconditionally
+// charges tr.Consume(maxBytes) with that SAME captured value afterward,
+// regardless of what any family analyzer actually read -- the identical
+// convention every OTHER family (PDF, container, image) already relies
+// on exclusively; none of them ever call tr.Consume themselves. Given
+// that, findMoov's own direct tr.Consume call (via the now-deleted
+// consumeActual helper) was never observing a genuinely SEPARATE budget
+// -- it was charging the SAME shared Tracker a second time, on top of
+// the dispatcher's own full-allowance charge, for every ISOBMFF file
+// whose head window read any bytes at all. A file that reads even ONE
+// actual byte here pushed the Tracker's total consumed past whatever
+// tr.Remaining() was at dispatch time, tripping ReasonWorkCeilingBytes
+// unconditionally -- reproduced live, against the real HTTP handler:
+// `coverage.complete=false reason="work_ceiling_bytes"` for a small,
+// fully-parsed, valid MP4. The window-sizing fix above
+// (headLen+tailReserve <= maxBytes) is what actually closes PR9R8's own
+// "nearly 2x" finding -- it bounds what THIS function may ever read,
+// independent of any accounting -- so the redundant direct charge added
+// nothing but the double count. dispatchInspectFamilies remains the SOLE
+// owner of tr's byte/time budget for this (and every other) family
+// analyzer; findMoov still reports local iteration ceilings via
+// tr.MarkCeilingHit() exactly as before (a SEPARATE receptacle from
+// Consume's own byte/time accounting -- see budget.go's own doc
+// comment), but it never calls tr.Consume itself, matching every other
+// family analyzer in this package.
 func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
@@ -328,19 +360,15 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	if headLen > size {
 		headLen = size
 	}
-	var headActual int64
 	var headCeilingHit bool
 	headWin, headOK := readWindow(r, 0, headLen, size)
 	if headOK {
-		headActual = int64(len(headWin))
 		if payload, ok, ceilingHit := firstChildBox(headWin, "moov", tr); ok {
-			consumeActual(tr, headActual)
 			return payload, ""
 		} else {
 			headCeilingHit = ceilingHit
 		}
 	}
-	consumeActual(tr, headActual)
 
 	if !oversizedFile {
 		// PR9R9 follow-up (coordinator review of the round-8 fix): when the
@@ -360,9 +388,22 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		// SUCCESS-case regime instead of the fallback one. So the outcome
 		// here is decided by the head walk's own result alone -- no
 		// substring scan is ever consulted for a value in this branch:
-		//   - !headOK or headCeilingHit: our own inability to conclude
-		//     (a genuine read failure, or maxISOBMFFBoxes exhausted before
-		//     the walk could finish) -- ReasonWorkCeilingBytes.
+		//   - !headOK: readWindow's own ReadAt call failed. headLen == size
+		//     in this branch by construction (see the clamp above), and
+		//     size > 0 / maxBytes > 0 are already guaranteed by this
+		//     function's own top-of-function guard, so readWindow's other
+		//     two !ok causes (n<=0, off>=size) can never fire here -- the
+		//     window WAS sized to cover the file IN FULL. A full-coverage
+		//     window that still fails to read is an operational inability
+		//     to read the upload at all, never a fact about the file's
+		//     structure and never THIS scan's own byte ceiling (raising
+		//     maxBytes would not fix it) -- ReasonReadFailed (PR9R9 finding,
+		//     media.go:382), the SAME rule wavCharacteristics and
+		//     scanImageMetadata already apply to their own identically-
+		//     shaped "full window, still failed" branch.
+		//   - headCeilingHit (headOK true, but maxISOBMFFBoxes exhausted
+		//     before the walk could finish): OUR OWN resource limit, not a
+		//     read failure and not a fact about the file -- ReasonWorkCeilingBytes.
 		//   - otherwise: the walk covered every top-level box in the file,
 		//     either reaching the natural end cleanly or stopping at a
 		//     malformed/truncated box along the way (walkTopLevelBoxes
@@ -378,7 +419,10 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		//     rescued box from a planted decoy, since neither has proven
 		//     placement; that is precisely the trade this analyzer refuses
 		//     to make (D-01/D-03).
-		if !headOK || headCeilingHit {
+		if !headOK {
+			return nil, ReasonReadFailed
+		}
+		if headCeilingHit {
 			return nil, ReasonWorkCeilingBytes
 		}
 		return nil, ReasonMalformedInput
@@ -400,9 +444,24 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	if !tailOK {
 		// No tail window to prove anything against at all -- our own
 		// inability to read, never a fact about the file's structure.
+		//
+		// Audited against the SAME "full coverage still failed ->
+		// ReasonReadFailed" rule findMoov's own head-window branch above
+		// now applies (PR9R9 sweep, this function's own doc comment): unlike
+		// that branch, tailLen == tailReserve here is ALWAYS strictly less
+		// than size in the oversizedFile path this STEP belongs to (size >
+		// maxBytes >= tailReserve by construction), so this window can never
+		// be sized to cover the file in full -- it is unconditionally
+		// truncated, exactly like wavCharacteristics's own windowTruncated
+		// branch. WAV's rule keeps ReasonWorkCeilingBytes for EVERY miss on
+		// a truncated window, real ReadAt failure or degenerate (n<=0)
+		// alike, because a genuinely undersized window cannot be told apart
+		// from an operational failure without first proving the window
+		// SHOULD have been big enough -- it should not have been, here, by
+		// design. No behavior change; this comment records that this site
+		// was checked, not skipped.
 		return nil, ReasonWorkCeilingBytes
 	}
-	consumeActual(tr, int64(len(tailWin)))
 
 	// PR9R9 fix: PROVE, never scan. See this function's own doc comment for
 	// why findMoovInTail (substring scan) must not run at all in this
@@ -452,21 +511,6 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	// moov is proven absent from the file, not merely unreached by this
 	// scan.
 	return nil, ReasonMalformedInput
-}
-
-// consumeActual reports n ACTUALLY-read bytes to tr, closing the PR9R8
-// budget finding (media.go:255, see findMoov's own doc comment): the
-// return value is deliberately ignored here -- window sizing already
-// gates how much findMoov may read, so a tight tr, if the caller supplied
-// one, is a separate, additional signal this specific read does not need
-// to react to mid-flight, only report to honestly. tr.Consume, unlike
-// tr.MarkCeilingHit, has no built-in nil-receiver safety (budget.go), so
-// every call site in this file guards it here rather than repeating the
-// nil check inline.
-func consumeActual(tr *Tracker, n int64) {
-	if tr != nil {
-		tr.Consume(n)
-	}
 }
 
 // headBoxChainProvenEnd walks REAL top-level boxes within headWin (which
@@ -900,6 +944,23 @@ const (
 // in the OTHER direction: a small, fully-buffered, genuinely malformed mkv
 // would always mark the whole report selective even though nothing was
 // actually left unexamined.
+//
+// PR9R9 sweep (task 2's own instruction to walk EVERY readWindow-failure
+// site in this file, not only the two named findings): this function's own
+// readWindow call below had the identical class of defect findMoov's head
+// window carried before this same round's fix -- ok==false was reported as
+// ReasonWorkCeilingBytes UNCONDITIONALLY, even when windowCoversWholeFile
+// was true (winLen sized to cover the file in full, readWindow's own
+// ReadAt call genuinely failing). That is not this scan's own budget --
+// raising maxBytes would not fix an operational read failure -- the SAME
+// distinction wavCharacteristics and findMoov's head-window branch both
+// apply. Brought to the one rule those two already establish: a failure on
+// a full-coverage window is ReasonReadFailed, a failure on a genuinely
+// truncated window stays ReasonWorkCeilingBytes, and a degenerate window
+// (winLen<=0: size<=0 or maxBytes<=0, no read even attempted) is
+// ReasonMalformedInput -- mirroring wavCharacteristics's own three-way
+// switch exactly, so a fourth family never has to rediscover this rule from
+// scratch in a later round.
 func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Characteristics {
 	c := Characteristics{}
 
@@ -914,10 +975,25 @@ func ebmlCharacteristics(r io.ReaderAt, size, maxBytes int64, tr *Tracker) Chara
 
 	buf, ok := readWindow(r, 0, winLen, size)
 	if !ok {
+		// PR9R9 sweep (see this function's own doc comment): the same
+		// three-way split wavCharacteristics already applies to its own
+		// readWindow failure, brought here.
+		reason := ReasonMalformedInput // degenerate window (winLen<=0): no read was even attempted, not an operational failure
+		switch {
+		case !windowCoversWholeFile:
+			reason = ReasonWorkCeilingBytes
+		case winLen > 0:
+			// windowCoversWholeFile and winLen>0: this window was sized to
+			// cover the file IN FULL, so readWindow's failure here is
+			// readWindow's own io.ReaderAt.ReadAt call failing on bytes this
+			// scan otherwise intended to examine in full -- never this
+			// scan's own ceiling and never a fact about the file.
+			reason = ReasonReadFailed
+		}
 		c["duration_seconds"] = nil
-		c["duration_seconds_reason"] = string(ReasonWorkCeilingBytes)
+		c["duration_seconds_reason"] = string(reason)
 		c["declared_codec"] = nil
-		c["declared_codec_reason"] = string(ReasonWorkCeilingBytes)
+		c["declared_codec_reason"] = string(reason)
 		return c
 	}
 

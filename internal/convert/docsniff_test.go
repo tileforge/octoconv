@@ -477,6 +477,105 @@ func TestSniffContainer_InconsistentEOCDCommentLengthIsStructuralNotReadFailure(
 	}
 }
 
+// failingWithinRangeReaderAt wraps r, delegating every ReadAt call whose
+// offset falls OUTSIDE [failFrom, failTo) unchanged, but returning failErr
+// for any call whose offset falls INSIDE that range -- unlike
+// failingAfterOffsetReaderAt above (which fails everything past a single
+// threshold, modeling a failure that starts partway through a stream and
+// never recovers), this models a failure CONFINED to one region of the
+// file: specifically, the "mimetype" entry's own local file header + stored
+// data, which archive/zip only reads lazily via f.Open() -- well separated,
+// in a real zip, from the CENTRAL DIRECTORY near the file's own end that
+// zip.NewReader itself reads to build zr.File.
+type failingWithinRangeReaderAt struct {
+	r                io.ReaderAt
+	failFrom, failTo int64
+	failErr          error
+}
+
+func (f *failingWithinRangeReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off >= f.failFrom && off < f.failTo {
+		return 0, f.failErr
+	}
+	return f.r.ReadAt(p, off)
+}
+
+// odfZipFixtureWithFiller builds odfZipFixture's own mimetype-first shape,
+// plus n additional tiny Deflate-compressed filler entries AFTER it --
+// solely to inflate the CENTRAL DIRECTORY well past 1024 bytes. This
+// matters for TestSniffContainer_MimetypeReadFailureIsObservableNotSilentlyDiscarded
+// below: archive/zip's own readDirectoryEnd (reader.go) searches for the
+// EOCD signature in the LAST 1024 bytes of the file first, reading
+// r.ReadAt(buf, size-1024) -- for a FILE SMALLER than 1024 bytes total,
+// size-1024 clamps to 0, meaning that search read starts at THE SAME
+// offset 0 the mimetype entry's own local header lives at, making it
+// impossible to fail ONLY the mimetype read by offset range alone. Once the
+// central directory (all entries' records combined) exceeds 1024 bytes,
+// that search read starts at size-1024, which is PAST the central
+// directory's own start (dirStart) -- confirmed, not merely assumed, by
+// this test's own precondition check.
+func odfZipFixtureWithFiller(t *testing.T, mimetype string, n int) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	fw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatalf("CreateHeader(mimetype): %v", err)
+	}
+	if _, err := fw.Write([]byte(mimetype)); err != nil {
+		t.Fatalf("Write(mimetype): %v", err)
+	}
+	for i := 0; i < n; i++ {
+		mustWriteEntry(t, zw, fmt.Sprintf("filler/%05d.txt", i), "x")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestSniffContainer_MimetypeReadFailureIsObservableNotSilentlyDiscarded is
+// PR9R9's own finding (docsniff.go:120), verbatim: "If zip.NewReader reads
+// the central directory successfully but the later readBounded call for an
+// ODF/EPUB mimetype entry encounters a non-EOF ReadAt failure, this
+// recorder sets rr.failed only after the sole check at lines 121-135 has
+// passed. The error from readBounded is ignored at lines 165-170 and
+// rr.failed is never checked again, so SniffContainer returns a nil error
+// with an empty format and the inspect path reports format_unrecognized
+// rather than read_failed."
+//
+// failTo=512 covers the mimetype entry's own local header (30 fixed bytes +
+// "mimetype", 8 bytes = 38) plus its stored payload (40 bytes) many times
+// over, with comfortable headroom against archive/zip's own internal read
+// buffer chunking -- and the precondition check below PROVES, for this
+// exact fixture, that Go's own EOCD-search read (r.ReadAt(buf, size-1024),
+// reader.go) starts at an offset >= failTo, so it is genuinely untouched by
+// this failure range, not merely assumed to be.
+func TestSniffContainer_MimetypeReadFailureIsObservableNotSilentlyDiscarded(t *testing.T) {
+	const failTo = 512
+	data := odfZipFixtureWithFiller(t, "application/vnd.oasis.opendocument.text", 40)
+	if int64(len(data)) <= 1024 {
+		t.Fatalf("test fixture assumption broken: fixture is %d bytes, want > 1024 so archive/zip's own EOCD search window (last 1024 bytes) never reaches offset 0", len(data))
+	}
+	if searchStart := int64(len(data)) - 1024; searchStart < failTo {
+		t.Fatalf("test fixture assumption broken: archive/zip's own EOCD-search read would start at offset %d, INSIDE this test's own failFrom..failTo=[0,%d) range -- add more filler entries", searchStart, failTo)
+	}
+
+	failErr := errors.New("simulated disk read failure")
+	r := &failingWithinRangeReaderAt{r: bytes.NewReader(data), failFrom: 0, failTo: failTo, failErr: failErr}
+
+	res, err := SniffContainer(r, int64(len(data)))
+	if err == nil {
+		t.Fatalf("err = nil, res = %+v, want a read-failure error -- a genuine ReadAt failure while decoding the mimetype entry must not be silently discarded as \"no match, otherwise normal\"", res)
+	}
+	if errors.Is(err, ErrNotAZip) {
+		t.Fatalf("err = %v classified as ErrNotAZip (structural), want an operational read failure -- every ReadAt this run needed for the central directory itself succeeded (confirmed by this test's own precondition check above); only the mimetype entry's own read, within [0,%d), was made to fail -- a read failure must never be reported as a property of the file (PR9R8-F4's own discipline, applied to this NEW call site)", err, failTo)
+	}
+	if !errors.Is(err, failErr) {
+		t.Fatalf("err = %v does not wrap the original failErr -- the underlying cause must stay diagnosable", err)
+	}
+}
+
 // TestReaderAtRecorder_ObservesOnlyRealReadFailures is PR9R8-F4's own most
 // direct proof, exercising docsniff.go's own readerAtRecorder in isolation
 // from archive/zip entirely -- the reviewer's own suggested landmark for

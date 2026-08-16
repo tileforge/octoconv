@@ -333,6 +333,35 @@ func TestAnalyzeMediaMoovNotFoundWithinCoverageIsMalformed(t *testing.T) {
 	}
 }
 
+// TestAnalyzeMediaMP4HeadReadFailureWithFullWindowIsReadFailedNotWorkCeiling
+// is PR9R9's own finding, verbatim (media.go:382): "For an MP4/MOV/M4A
+// whose backing multipart file returns a non-EOF error during a full head
+// read (size <= maxBytes), readWindow returns headOK=false, but this
+// branch reports work_ceiling_bytes. No byte or iteration ceiling caused
+// that failure -- the service could not read the upload -- and the same
+// repository already maps this scenario to ReasonReadFailed for WAV and
+// image analysis." readFailureReaderAt (image_test.go) always fails with a
+// non-EOF error, independent of size -- maxBytes == size here selects
+// findMoov's own !oversizedFile branch, whose head window is, by
+// construction, always sized to cover the file in full (see findMoov's own
+// doc comment), isolating this to the read-failure path, never the
+// iteration-ceiling one.
+func TestAnalyzeMediaMP4HeadReadFailureWithFullWindowIsReadFailedNotWorkCeiling(t *testing.T) {
+	r := &readFailureReaderAt{err: errSimulatedDiskFailure}
+	const size = 1024
+	res := AnalyzeMedia("mp4", r, size, size, nil) // maxBytes == size: !oversizedFile
+
+	for _, key := range []string{"duration_seconds", "width", "height", "declared_codec"} {
+		if res.Characteristics[key] != nil {
+			t.Errorf("%s = %#v, want nil -- readFailureReaderAt never returns real bytes", key, res.Characteristics[key])
+		}
+		reason, _ := res.Characteristics[key+"_reason"].(string)
+		if reason != string(ReasonReadFailed) {
+			t.Errorf("%s_reason = %q, want %q -- a read failure with a full-coverage head window (size<=maxBytes) is neither a fact about the file's structure (malformed_input) nor this scan's own byte ceiling (work_ceiling_bytes); the SAME rule wavCharacteristics and scanImageMetadata already apply to their own identically-shaped branch (PR9R9 finding, media.go:382)", key, reason, ReasonReadFailed)
+		}
+	}
+}
+
 func TestAnalyzeMediaMoovNotFoundBeyondCoverageIsWorkCeiling(t *testing.T) {
 	filler := make([]byte, 20000)
 	data := append(append([]byte{}, minimalFtyp()...), filler...)
@@ -1149,6 +1178,32 @@ func TestAnalyzeMediaMKVDurationWithinHeadWindow(t *testing.T) {
 	codec, _ := res.Characteristics["declared_codec"].(string)
 	if codec != "V_MPEG4/ISO/AVC" {
 		t.Fatalf("declared_codec = %q, want %q", codec, "V_MPEG4/ISO/AVC")
+	}
+}
+
+// TestAnalyzeMediaEBMLReadFailureWithFullWindowIsReadFailedNotWorkCeiling is
+// PR9R9 task 2's own sweep (not a named finding by itself, but the SAME
+// defect class media.go:382 named for MP4, found by walking every
+// readWindow-failure site in this file per that task's own instruction):
+// ebmlCharacteristics's readWindow call had the identical shape --
+// windowCoversWholeFile true (size <= maxBytes, and small enough to fit
+// inside ebmlInfoWindow too) but the underlying read still fails -- and,
+// before this fix, unconditionally reported work_ceiling_bytes regardless.
+// readFailureReaderAt (image_test.go) isolates this to the read-failure
+// path.
+func TestAnalyzeMediaEBMLReadFailureWithFullWindowIsReadFailedNotWorkCeiling(t *testing.T) {
+	r := &readFailureReaderAt{err: errSimulatedDiskFailure}
+	const size = 1024                              // well within ebmlInfoWindow (256 KiB)
+	res := AnalyzeMedia("mkv", r, size, size, nil) // maxBytes == size: windowCoversWholeFile
+
+	for _, key := range []string{"duration_seconds", "declared_codec"} {
+		if res.Characteristics[key] != nil {
+			t.Errorf("%s = %#v, want nil -- readFailureReaderAt never returns real bytes", key, res.Characteristics[key])
+		}
+		reason, _ := res.Characteristics[key+"_reason"].(string)
+		if reason != string(ReasonReadFailed) {
+			t.Errorf("%s_reason = %q, want %q -- a read failure with a full-coverage window is neither a fact about the file's structure (malformed_input) nor this scan's own byte ceiling (work_ceiling_bytes); the SAME rule wavCharacteristics and findMoov's own head-window branch already apply (PR9R9 sweep, ebmlCharacteristics's own doc comment)", key, reason, ReasonReadFailed)
+		}
 	}
 }
 

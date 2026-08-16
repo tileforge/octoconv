@@ -995,6 +995,24 @@ func zipMalformedFamilyResult() inspect.FamilyResult {
 // back Complete:true for an operation where some scanner gave up early --
 // regardless of whether the specific Check/characteristic Reason wiring
 // this file never sees got it right.
+//
+// dispatchInspectFamilies is the SOLE owner of tr's shared byte/time budget
+// (PR9R9 finding #3, media.go:337): the single tr.Consume(maxBytes) call
+// below is the ONLY place in the whole inspect path that charges Consume,
+// full stop -- no family analyzer (pdf.go, container.go, image.go, and, as
+// of this fix, media.go too) ever calls tr.Consume itself. This was already
+// true for three of the four families before this fix; media.go's own
+// findMoov was the one outlier, charging tr a SECOND time (via a now-
+// deleted consumeActual helper) with the bytes it actually read, on top of
+// this function's own unconditional full-allowance charge -- a resource
+// with two owners, which is what let a small, fully-parsed, valid MP4
+// report a lying `coverage.complete=false reason="work_ceiling_bytes"` in
+// production. Naming this function as the single owner is not merely
+// "delete the other charge": every family analyzer's own local iteration/
+// box/entry ceilings still report through tr.MarkCeilingHit() (a SEPARATE
+// receptacle from Consume's own byte/time accounting, budget.go), so an
+// analyzer that gives up early still marks the shared Tracker exhausted --
+// it simply never calls Consume to do so.
 func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, file multipart.File, size int64, tr *inspect.Tracker) []inspect.FamilyResult {
 	maxBytes := tr.Remaining()
 	var families []inspect.FamilyResult
