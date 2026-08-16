@@ -26,7 +26,7 @@ The passing run is the last of eleven. The ten before it are the reason this
 directory is worth reading: five of them were harness defects wearing a
 verdict, and one of those was a PASS.
 
-## What run 20260815T235101Z proves
+## What run 20260816T021758Z proves
 
 | Claim | Observed |
 |---|---|
@@ -59,10 +59,10 @@ verdict, and one of those was a PASS.
   node, and leaving them in made the measurement about node CPU rather
   than about inspection.
 
-## The nine runs before it
+## The ten runs before it
 
 Recorded because a gate's credibility is its failure history, and because
-four separate defects here were in the *harness*, not the service.
+five separate defects here were in the *harness*, not the service.
 
 | Run | Outcome | What it actually was |
 |---|---|---|
@@ -75,6 +75,7 @@ four separate defects here were in the *harness*, not the service.
 | `20260815T230358Z` | hung at round 32 | see below |
 | `20260815T234459Z` | FAIL at round 21 | watchdog fired; diagnostics ruled out OOM and eviction |
 | `20260815T234900Z` | FAIL | 75 rounds clean, window 36.1 s < 60 s |
+| `20260815T235101Z` | PASS, superseded | sound, but against the pre-round-8 binary; provenance unverified at the time |
 
 ### The PASS that proved nothing
 
@@ -120,10 +121,10 @@ eviction, which is how the race became findable at all.
 ## Files
 
 - `inspect-burst-20260816T021758Z-{burst,poll}.tsv` + `-transcript.log` —
-  the passing run.
-- `inspect-burst-20260815T235101Z-{burst,poll}.tsv` + `-transcript.log` —
-  the superseded pass, against the pre-round-8 binary. Every assertion in the transcript is re-derivable from
+  the passing run. Every assertion in the transcript is re-derivable from
   the two TSVs by a reader who never watched the run.
+- `inspect-burst-20260815T235101Z-{burst,poll}.tsv` + `-transcript.log` —
+  the superseded pass, against the pre-round-8 binary.
 - `inspect-burst-20260815T234900Z-{burst,poll}.tsv` — 75 rounds clean,
   failed only the window assertion. Kept because it is the clearest record
   of that assertion doing its job.
