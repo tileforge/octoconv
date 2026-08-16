@@ -557,12 +557,281 @@ func TestAnalyzeMediaRejectsEmptyMvhdTrakDecoyForRealMoov(t *testing.T) {
 	}
 }
 
-// TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes proves the
-// plan's own explicit requirement: exhausting maxMoovTailCandidatesScanned
-// on candidates that DO parse as self-consistent "moov" box headers -- but
-// never yield a USABLE moov structure (every one of them is the same
-// incidental empty box from the test above, repeated) -- still reports
-// unknown/work_ceiling_bytes, never "not found", and marks the Tracker.
+// TestAnalyzeMediaRejectsFakeMoovPlantedInsideMdatPayloadForGenuineTailMoov
+// is the PR9R8 finding at media.go:498, verbatim: "an mdat payload can
+// contain a self-consistent fake moov with only a parseable 20-byte mvhd
+// carrying attacker-chosen timescale/duration fields before the genuine
+// tail moov. This branch accepts it immediately, so the analyzer publishes
+// the fake duration, reports the missing dimensions/codec as malformed, and
+// never examines the real metadata. Successful consumer parsing does not
+// establish that bytes found by substring search are a top-level box;
+// validate the candidate's placement in the file's top-level box
+// sequence." Unlike every earlier decoy in this file (round 4: doesn't
+// parse as a box; round 5: parses but empty; round 6: children present but
+// empty), this one clears round 6's own consumer-collapsed bar cleanly --
+// its mvhd is real, minimal, and genuinely decodes via parseMVHD. Only a
+// placement proof, not a content check, can reject it.
+func TestAnalyzeMediaRejectsFakeMoovPlantedInsideMdatPayloadForGenuineTailMoov(t *testing.T) {
+	fakeMvhdPayload := make([]byte, 20)                     // the finding's own "20-byte mvhd"
+	binary.BigEndian.PutUint32(fakeMvhdPayload[12:16], 1)   // attacker-chosen timescale
+	binary.BigEndian.PutUint32(fakeMvhdPayload[16:20], 999) // attacker-chosen duration -> 999.0s if ever published
+	fakeMvhd := isobmffBox("mvhd", fakeMvhdPayload)
+	if _, ok, _ := parseMVHD(fakeMvhdPayload); !ok {
+		t.Fatal("fixture bug: the fake mvhd itself must genuinely parse via parseMVHD, or this fixture no longer matches the finding's own worked example")
+	}
+	fakeMoov := isobmffBox("moov", fakeMvhd) // self-consistent, and its mvhd genuinely decodes -- clears every prior round's own bar
+
+	mdatPayload := append(make([]byte, 6000), fakeMoov...)
+	mdat := isobmffBox("mdat", mdatPayload)
+
+	mvhd := mvhdBoxV0(1000, 5000) // genuine duration = 5.0s
+	trak := trakBox(tkhdBoxV0(640, 480), stsdBox("avc1"), isobmffHandlerVideo)
+	moov := moovBox(mvhd, trak)
+
+	data := append(append(append([]byte{}, minimalFtyp()...), mdat...), moov...)
+
+	const maxBytes = 4096 // smaller than mdat's own declared size (head cannot skip it as one box), same shape as the round 4/5/6 fixtures above
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- a fake moov PLANTED INSIDE mdat's own declared payload, whose mvhd genuinely parses with attacker-chosen fields, must never be accepted just because it successfully extracts a value; only the candidate whose PLACEMENT in the real top-level box chain is proven may be accepted, and that is the genuine moov that follows mdat's own declared end", res.Characteristics["duration_seconds"])
+	}
+	w, ok := res.Characteristics["width"].(uint32)
+	if !ok || w != 640 {
+		t.Fatalf("width = %#v, want 640 -- the fake moov's own empty structure (no trak) must not have been accepted in its place", res.Characteristics["width"])
+	}
+}
+
+// ===== PR9R9: headBoxChainProvenEnd's own fallback paths, previously
+// untested and previously falling through to the exact substring scan the
+// finding is about (coordinator review of the round-8 fix) =====
+
+// fakeMoovWith999sDuration builds a self-consistent "moov" box wrapping a
+// genuinely-parseable 20-byte mvhd carrying attacker-chosen
+// timescale=1/duration=999 -- the same worked example as
+// TestAnalyzeMediaRejectsFakeMoovPlantedInsideMdatPayloadForGenuineTailMoov,
+// factored out so every "does the fallback still let this decoy's fake
+// 999.0s through" test below builds the identical decoy.
+func fakeMoovWith999sDuration() []byte {
+	fakeMvhdPayload := make([]byte, 20)
+	binary.BigEndian.PutUint32(fakeMvhdPayload[12:16], 1)   // attacker-chosen timescale
+	binary.BigEndian.PutUint32(fakeMvhdPayload[16:20], 999) // attacker-chosen duration -> 999.0s if ever published
+	return isobmffBox("moov", isobmffBox("mvhd", fakeMvhdPayload))
+}
+
+// TestAnalyzeMediaProvenPlacementSizeZeroDoesNotFallBackToDecoy is the
+// coordinator's first named fallback shape: the top-level box right after
+// ftyp declares size==0 ("extends to EOF" -- ISOBMFF only permits this for
+// a file's FINAL box, never mid-head). headBoxChainProvenEnd refuses to
+// treat this as a valid jump point (case 0 in its own switch) and reports
+// !ok. Before this fix, !ok fell through to findMoovInTail's substring
+// scan, which would find and accept the decoy planted right after this
+// box exactly as it did before round 8's own fix.
+func TestAnalyzeMediaProvenPlacementSizeZeroDoesNotFallBackToDecoy(t *testing.T) {
+	sizeZeroHeader := make([]byte, 8) // size bytes stay zero
+	copy(sizeZeroHeader[4:8], "mdat")
+
+	// The decoy is placed near the file's own END (behind 6000 bytes of
+	// filler), inside where the TAIL window would land -- not immediately
+	// after the malformed header -- so an inversion that restores the old
+	// "fall through to findMoovInTail" behavior would actually be ABLE to
+	// reach and accept it (a decoy sitting only in the HEAD portion would
+	// make the inversion inconclusive: it would stay unreachable by the
+	// substring scan regardless of whether the fallback ran at all).
+	decoy := fakeMoovWith999sDuration()
+	data := append(append([]byte{}, minimalFtyp()...), sizeZeroHeader...)
+	data = append(data, make([]byte, 6000)...)
+	data = append(data, decoy...)
+
+	const maxBytes = 4096
+	if int64(len(data)) <= maxBytes {
+		t.Fatal("fixture bug: this test requires size > maxBytes (oversizedFile) to exercise the proof path at all")
+	}
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- a box declaring size=0 mid-head must never let the fallback scan through to the decoy's 999.0s", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- placement could not be proven; that is an honest unknown, not grounds to scan for the decoy", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaProvenPlacementMalformedSizeDoesNotFallBackToDecoy is the
+// coordinator's second named fallback shape: the box right after ftyp
+// declares a size SMALLER than its own 8-byte header -- structurally
+// malformed, and headBoxChainProvenEnd refuses to trust it as a jump
+// point.
+func TestAnalyzeMediaProvenPlacementMalformedSizeDoesNotFallBackToDecoy(t *testing.T) {
+	malformedHeader := make([]byte, 8)
+	binary.BigEndian.PutUint32(malformedHeader[0:4], 4) // declared size(4) < header length(8): malformed
+	copy(malformedHeader[4:8], "mdat")
+
+	// See TestAnalyzeMediaProvenPlacementSizeZeroDoesNotFallBackToDecoy's own
+	// comment for why the decoy sits behind filler, near the file's end,
+	// within where the tail window would land.
+	decoy := fakeMoovWith999sDuration()
+	data := append(append([]byte{}, minimalFtyp()...), malformedHeader...)
+	data = append(data, make([]byte, 6000)...)
+	data = append(data, decoy...)
+
+	const maxBytes = 4096
+	if int64(len(data)) <= maxBytes {
+		t.Fatal("fixture bug: this test requires size > maxBytes (oversizedFile) to exercise the proof path at all")
+	}
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- a box whose declared size is smaller than its own header must never let the fallback scan through to the decoy's 999.0s", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaProvenPlacementTruncated64BitSizeDoesNotFallBackToDecoy is
+// the coordinator's third named fallback shape: a box declares the 64-bit
+// size marker (size64==1) right at the head window's own edge, so its
+// TYPE is fully buffered but the 8-byte real size field that would follow
+// is not. headBoxChainProvenEnd refuses to trust a jump point it cannot
+// fully read the size of.
+func TestAnalyzeMediaProvenPlacementTruncated64BitSizeDoesNotFallBackToDecoy(t *testing.T) {
+	const maxBytes = 4096
+	tailReserve := int64(maxBytes) / 4
+	headLen := int64(maxBytes) - tailReserve // mirrors findMoov's own reservation arithmetic exactly
+
+	ftyp := minimalFtyp()
+	marker := make([]byte, 8) // size64 marker (==1) + type; its own real 8-byte size field is what gets truncated
+	binary.BigEndian.PutUint32(marker[0:4], 1)
+	copy(marker[4:8], "mdat")
+
+	// Pad with one real, fully-buffered "free" box so `marker` starts
+	// exactly `headLen` bytes from file offset 0 -- i.e. its own type is
+	// the LAST 4 bytes headBoxChainProvenEnd's loop condition (i+8<=len)
+	// still admits, and the 8-byte real size field that should follow it
+	// is entirely unbuffered.
+	padPayloadLen := int(headLen) - len(ftyp) - 8 - 8 // -8 for the pad box's own header, -8 for marker
+	if padPayloadLen < 0 {
+		t.Fatalf("fixture bug: headLen=%d too small for this layout", headLen)
+	}
+	pad := isobmffBox("free", make([]byte, padPayloadLen))
+
+	// See TestAnalyzeMediaProvenPlacementSizeZeroDoesNotFallBackToDecoy's own
+	// comment for why the decoy sits behind filler, near the file's end,
+	// within where the tail window would land, rather than immediately
+	// after `marker`.
+	decoy := fakeMoovWith999sDuration()
+	data := append(append([]byte{}, ftyp...), pad...)
+	if int64(len(data)+len(marker)) != headLen {
+		t.Fatalf("fixture bug: marker would start at %d, want exactly headLen=%d", len(data), headLen)
+	}
+	data = append(data, marker...)
+	data = append(data, make([]byte, 6000)...)
+	data = append(data, decoy...)
+
+	if int64(len(data)) <= maxBytes {
+		t.Fatal("fixture bug: this test requires size > maxBytes (oversizedFile) to exercise the proof path at all")
+	}
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- a 64-bit size field truncated at the head window's own edge must never let the fallback scan through to the decoy's 999.0s", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
+		t.Fatalf("duration_seconds_reason = %q, want %q", reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// TestAnalyzeMediaProvenPositionNotMoovAndNothingFollowsIsMalformed is the
+// coordinator's fourth named case: the proven position IS reachable, but
+// the box actually there is not "moov", and nothing else follows it
+// either. The comment this round-8 fix originally carried ("fall through
+// to the substring scan... rather than concluding absent here") treated
+// this as a reason to keep scanning; it no longer does. tailWin's own end
+// is the file's true end, so walking cleanly from the proven position to
+// there without finding "moov" and without hitting a ceiling is COMPLETE
+// proof moov does not exist -- malformed_input, not a scan for a decoy
+// that (in this fixture) does not even exist.
+func TestAnalyzeMediaProvenPositionNotMoovAndNothingFollowsIsMalformed(t *testing.T) {
+	const mdatSize = 6000
+	mdat := isobmffBox("mdat", make([]byte, mdatSize))
+	trailer := isobmffBox("free", []byte{}) // a REAL top-level box, but never "moov" -- and nothing follows it
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+	data = append(data, trailer...)
+
+	const maxBytes = 4096
+	if int64(len(data)) <= maxBytes {
+		t.Fatal("fixture bug: this test requires size > maxBytes (oversizedFile) to exercise the proof path at all")
+	}
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- no moov exists anywhere in this file", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the ENTIRE top-level chain was proven and walked cleanly (head chain up to mdat's true end, tail chain from there to the file's true end), and moov genuinely does not exist -- a proven fact about the file, not our own limit", reason, ReasonMalformedInput)
+	}
+}
+
+// TestAnalyzeMediaFitsWithinBudgetRejectsDecoyMoovInMdatPayload is the
+// coordinator's explicit follow-up requirement: a file AT OR BELOW
+// maxBytes, containing a decoy "moov" (a genuinely parseable mvhd,
+// distinctive attacker-chosen duration) inside an mdat payload, with NO
+// genuine top-level moov anywhere in the file. Coordinator's own reasoning,
+// verbatim: "headLen is clamped to size, so headWin is the entire file...
+// firstChildBox... does not find moov... any bytes spelling moov anywhere
+// in this file are inside some box's payload, by construction... [the old
+// fallback] can accept one and publish its mvhd duration... every
+// candidate it can possibly find is a decoy. It cannot rescue a genuine
+// top-level box, because [the head walk] already proved there isn't one."
+// This must not publish the decoy's duration.
+func TestAnalyzeMediaFitsWithinBudgetRejectsDecoyMoovInMdatPayload(t *testing.T) {
+	decoy := fakeMoovWith999sDuration()
+	mdatPayload := append(make([]byte, 100), decoy...)
+	mdat := isobmffBox("mdat", mdatPayload)
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+	// No genuine trailing moov -- this file genuinely has none at the top
+	// level; the ONLY "moov"-shaped bytes anywhere are the decoy, buried
+	// inside mdat's own declared payload.
+
+	maxBytes := int64(len(data)) // the WHOLE file fits within maxBytes -- !oversizedFile, the branch this test targets
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- a decoy moov inside mdat's own payload, with no genuine top-level moov anywhere in the file, must never publish the decoy's attacker-chosen 999.0s", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the whole file fits within maxBytes, so the head walk alone proves, completely, that no top-level moov exists", reason, ReasonMalformedInput)
+	}
+}
+
+// TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes originally
+// proved that exhausting findMoovInTail's own candidate cap
+// (maxMoovTailCandidatesScanned) on candidates that parse as self-
+// consistent "moov" headers but are never USABLE (every one of them is the
+// same incidental empty box, repeated) reported unknown/work_ceiling_bytes,
+// never "not found".
+//
+// PR9R9 (coordinator follow-up to the round-8 fix, see maxMoovTailCandidatesScanned's
+// own doc comment for the full history): findMoovInTail and the substring
+// scan it performed are DELETED -- a substring scan can never distinguish
+// a genuinely rescued top-level box from a decoy planted inside another
+// box's own payload, because neither has proven placement, and accepting
+// an unproven candidate is exactly the class this whole file has now
+// closed four times over. This fixture's own file fits entirely within
+// maxBytes, so findMoov's initial firstChildBox walk already covers the
+// WHOLE FILE as a genuine top-level box chain: it examines ftyp and mdat
+// (mdat's own honestly-declared size fully covers all 84 embedded decoys
+// as ITS payload, never as top-level boxes) and finds no "moov" among
+// them. That is now a PROVEN, complete fact about the file's structure
+// (malformed_input) -- not an inconclusive candidate-cap exhaustion
+// (work_ceiling_bytes). The new mechanism is STRICTLY more precise, never
+// weaker: it can tell "we genuinely examined everything and moov is
+// absent" apart from "we gave up after N tries", where the deleted
+// mechanism could only ever report the latter. tr.Exhausted() is
+// correspondingly false -- no ceiling fired, because completing the proof
+// never needed one.
 func TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes(t *testing.T) {
 	const n = maxMoovTailCandidatesScanned + 20
 	fakeEmptyMoov := isobmffBox("moov", []byte{})
@@ -573,18 +842,18 @@ func TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes(t *testing.T
 	mdat := isobmffBox("mdat", payload)
 	data := append(append([]byte{}, minimalFtyp()...), mdat...)
 
-	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- both windows cover the whole tiny file, isolating the candidate cap as the ONLY thing that can produce a ceiling result here
+	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- the whole file fits within the head window
 	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
 
 	if res.Characteristics["duration_seconds"] != nil {
-		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a self-consistent but EMPTY moov box (no mvhd), never a usable structure", res.Characteristics["duration_seconds"])
+		t.Fatalf("duration_seconds = %#v, want nil -- every one of these self-consistent but EMPTY moov boxes lives inside mdat's own declared payload, never at the top level", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly, well within every bound (only 2 top-level boxes: ftyp, mdat)")
 	}
 }
 
@@ -625,20 +894,24 @@ func TestFindMoovInTailUsabilityCheckOwnCeilingIsWorkCeilingBytes(t *testing.T) 
 	}
 }
 
-// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded is round 6's
-// own DoS threat disposition (T-R6C-02): isUsableMoovCandidate's validation
-// now costs more per candidate than round 5's "children present" check did
-// (see isUsableMoovCandidate's own doc comment for the exact bound), and
-// that higher per-candidate cost is paid up to maxMoovTailCandidatesScanned
-// times. This constructs an adversarial tail window shaped to make EVERY
-// occurrence do real, non-ceiling-shortcut work: each decoy moov box carries
-// a present-but-empty mvhd (so parseMVHD is attempted and fails) plus
-// several non-matching trak siblings (so findTrackByHandler must walk all of
-// them, opening each one's own mdia/hdlr, before concluding "no match" --
-// comfortably under maxTrakCandidatesScanned so the rejection is genuine,
-// never a shortcut via that cap's own ceilingHit). The whole scan must still
-// complete in well under a second, proving the fix did not reopen the
-// unbounded-work class round 3 of this review already closed.
+// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded originally
+// proved round 6's own DoS threat disposition (T-R6C-02): isUsableMoovCandidate's
+// per-candidate validation, run up to maxMoovTailCandidatesScanned times
+// against an adversarial tail window (64 decoy moov boxes x 20 non-matching
+// trak siblings each), still completed in well under a second.
+//
+// PR9R9 (coordinator follow-up, see maxMoovTailCandidatesScanned's own doc
+// comment): findMoovInTail and isUsableMoovCandidate are deleted -- a
+// substring scan can never distinguish a rescued genuine box from a
+// planted decoy, so it is never consulted for a value. This SAME
+// adversarial fixture (unchanged) now proves an even STRONGER timing bound:
+// findMoov's initial firstChildBox walk covers the whole file (it fits
+// within maxBytes) as a genuine top-level chain and skips ALL 64 decoys x
+// 20 trak siblings each in ONE hop, as mdat's own single opaque payload --
+// never descending into a single one of them, unlike the deleted
+// mechanism's own per-candidate mvhd/trak descent. The walk proves no
+// top-level moov exists (malformed_input), and does so essentially
+// instantly.
 func TestFindMoovInTailWorstCaseCandidateValidationStaysBounded(t *testing.T) {
 	nonMatchingTrak := trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio) // handler_type="soun", never matches wantHandler="vide" below
 	const traksPerDecoy = 20                                                          // real, non-ceiling-hitting work per candidate -- comfortably under maxTrakCandidatesScanned (64) so every decoy is rejected on genuine absence, never on its own ceiling
@@ -665,16 +938,16 @@ func TestFindMoovInTailWorstCaseCandidateValidationStaysBounded(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if elapsed > 2*time.Second {
-		t.Fatalf("AnalyzeMedia took %v against %d adversarial candidates x %d non-matching trak siblings each -- want comfortably under 2s; the fix's own cost bound (isUsableMoovCandidate's doc comment, T-R6C-02) is broken", elapsed, n, traksPerDecoy)
+		t.Fatalf("AnalyzeMedia took %v against %d adversarial decoys x %d non-matching trak siblings each -- want comfortably under 2s; the top-level walk must skip mdat's ENTIRE declared payload in one hop, never descending into a single decoy", elapsed, n, traksPerDecoy)
 	}
 	if res.Characteristics["duration_seconds"] != nil {
-		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a decoy with an empty mvhd and only non-matching trak siblings", res.Characteristics["duration_seconds"])
+		t.Fatalf("duration_seconds = %#v, want nil -- every decoy here lives inside mdat's own declared payload, never at the top level", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- the candidate cap, not any single candidate's own ceiling, must be what exhausts here", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly (only 2 top-level boxes: ftyp, mdat), never touching any of the 64 decoys")
 	}
 }
 
@@ -708,12 +981,24 @@ func TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	}
 }
 
-// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes proves
+// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes originally proved
 // findMoovInTail's own candidate cap (maxMoovTailCandidatesScanned,
 // T-R4B-02): more incidental "moov" substring occurrences in the tail
-// window than the cap allows, none of which validate as a real box, must
-// report unknown/work_ceiling_bytes -- never malformed_input -- and must
-// mark the Tracker it was given.
+// window than the cap allowed, none of which validated as a real box,
+// reported unknown/work_ceiling_bytes -- never malformed_input.
+//
+// PR9R9 (coordinator follow-up, see maxMoovTailCandidatesScanned's own doc
+// comment): findMoovInTail is deleted -- a substring scan over these
+// incidental "moov" occurrences could never prove any of them was a
+// genuine top-level box, so it is never consulted. This fixture's file
+// fits within maxBytes, so findMoov's initial firstChildBox walk covers
+// the WHOLE FILE: it sees ftyp and ONE mdat box whose own honestly-
+// declared size fully covers all of this garbage payload (the 'Y'-padded
+// "moov" occurrences are never valid box headers at all, let alone
+// top-level ones), and finds no "moov" among the genuine top-level boxes.
+// That is now PROVEN (malformed_input), not merely uncertain after a
+// candidate cap ran out (work_ceiling_bytes) -- exactly the sharper
+// distinction this fixture's own name predates.
 func TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	const n = maxMoovTailCandidatesScanned + 20
 	var payload []byte
@@ -735,11 +1020,11 @@ func TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil -- no real moov box exists in this fixture at all", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly (only 2 top-level boxes: ftyp, mdat)")
 	}
 }
 
@@ -948,16 +1233,56 @@ func TestAnalyzeMediaM4ADuration(t *testing.T) {
 }
 
 // TestAnalyzeMediaNeverReadsBeyondBudget proves the mp4 tail search is
-// bounded by maxBytes and mp4TailWindow, not by the actual file size.
+// bounded by maxBytes, not by maxBytes+mp4TailWindow.
+//
+// PR9R8 finding (media.go:255), verbatim: "the analyzer first reads
+// maxBytes bytes... and then performs this additional tail read of up to
+// min(mp4TailWindow, maxBytes). The caller subsequently charges only
+// maxBytes to the tracker, so a small configured ceiling can be exceeded
+// by nearly 2x." This test's own bound was ORIGINALLY maxBytes+
+// mp4TailWindow -- documenting, not disproving, the bug the finding
+// names. Tightening it to maxBytes alone is the fix's own acceptance
+// test, not a round 4/5/6 regression: this test predates round 4 (it is
+// part of the original 58-05 plan baseline, never named by any of the
+// three earlier findings) and is not in this round's list of tests that
+// must stay green without edits.
 func TestAnalyzeMediaNeverReadsBeyondBudget(t *testing.T) {
 	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
 	cr := &countingReaderAt{data: data}
 	const maxBytes = 2048
 	_ = AnalyzeMedia("mp4", cr, int64(len(data)), maxBytes, nil)
 
-	limit := int64(maxBytes) + mp4TailWindow
-	if cr.totalRequested > limit {
-		t.Fatalf("read %d bytes, want <= %d (maxBytes + mp4TailWindow)", cr.totalRequested, limit)
+	if cr.totalRequested > maxBytes {
+		t.Fatalf("read %d bytes, want <= %d (maxBytes alone -- PR9R8 finding, media.go:255: the tail read must no longer add a SEPARATE mp4TailWindow-or-maxBytes-sized read on top of the head read)", cr.totalRequested, int64(maxBytes))
+	}
+}
+
+// TestAnalyzeMediaTailSearchNeverExceedsSharedTrackerBudget is the same
+// PR9R8 finding (media.go:255) proven THROUGH THE TRACKER itself, not
+// merely a counting io.ReaderAt: a Tracker configured with MaxBytes equal
+// to the SAME maxBytes passed to AnalyzeMedia must never observe itself
+// exhausted by this single family's own head+tail reads, and consumeActual
+// must never push Remaining() negative -- both would happen under the
+// pre-fix "head reads maxBytes, tail reads ANOTHER maxBytes" behavior,
+// since two Consume(maxBytes)-sized reports against a maxBytes-sized
+// budget exhausts it on the second call (budget.go's own Consume: first-
+// reason-wins, byte ceiling checked strictly).
+func TestAnalyzeMediaTailSearchNeverExceedsSharedTrackerBudget(t *testing.T) {
+	data := tailMoovMP4Fixture(1000, 5000, 640, 480, "avc1", isobmffHandlerVideo, 9000)
+	const maxBytes = 2048
+	tr := NewTracker(Budget{MaxBytes: maxBytes, MaxDuration: time.Minute})
+
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
+
+	dur, ok := res.Characteristics["duration_seconds"].(float64)
+	if !ok || dur != 5.0 {
+		t.Fatalf("duration_seconds = %#v, want 5.0 -- the tail-anchored real moov must still be found under the reserved-budget windows", res.Characteristics["duration_seconds"])
+	}
+	if tr.Exhausted() {
+		t.Fatalf("Tracker(MaxBytes=%d) reports exhausted after analyzing a single mp4 whose own head+tail reads were sized to fit that SAME budget -- charging nearly 2x maxBytes across the two windows is exactly the PR9R8 finding (media.go:255)", int64(maxBytes))
+	}
+	if remaining := tr.Remaining(); remaining < 0 {
+		t.Fatalf("Remaining() = %d, want >= 0 -- consumeActual reported more than the issued MaxBytes budget", remaining)
 	}
 }
 
