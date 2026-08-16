@@ -6,6 +6,7 @@ package inspect
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 
 	"github.com/apaderin/octoconv/internal/convert"
@@ -36,17 +37,27 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 	// that needs to be handed further downstream.
 	width, height, _, err := convert.Dimensions(format, io.NewSectionReader(r, 0, size))
 	dimsKnown := err == nil
+	// Both outcomes are an honest "we don't know", never a rejection --
+	// inspect only ever reports (D-03) -- but they do not say the same thing
+	// about WHOSE fault it is, and this branch used to state one of them for
+	// both (PR9R16, image.go:39). convert.ErrDimensionsUnknown means the
+	// bounded peek read the bytes and found no declared dimensions: a fact
+	// about the image. Any other error came from the reader underneath us:
+	// a fact about this service, which the metadata scan of the SAME reader
+	// already reports as read_failed. Blaming the upload for our own disk
+	// is the same misattribution rounds 9 through 15 kept finding, here in
+	// the one path that still had it.
+	dimsReason := Reason(ReasonMalformedInput)
+	if !dimsKnown && !errors.Is(err, convert.ErrDimensionsUnknown) {
+		dimsReason = ReasonReadFailed
+	}
 	if !dimsKnown {
-		// convert.ErrDimensionsUnknown (bounded peek did not find declared
-		// dimensions) and any other error from the underlying reader are
-		// both an honest "we don't know", never a rejection -- inspect only
-		// ever reports (D-03).
 		c["width"] = nil
-		c["width_reason"] = string(ReasonMalformedInput)
+		c["width_reason"] = string(dimsReason)
 		c["height"] = nil
-		c["height_reason"] = string(ReasonMalformedInput)
+		c["height_reason"] = string(dimsReason)
 		c["pixels"] = nil
-		c["pixels_reason"] = string(ReasonMalformedInput)
+		c["pixels_reason"] = string(dimsReason)
 	} else {
 		c["width"] = width
 		c["height"] = height
@@ -70,7 +81,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		// defect class INSP-03 exists to prevent, and it is the one place
 		// in this analyzer where getting it backwards produces a false
 		// sense of safety rather than merely an incomplete report.
-		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusUnknown, Reason: ReasonMalformedInput})
+		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusUnknown, Reason: dimsReason})
 	case uint64(width)*uint64(height) > pixelBombThreshold:
 		sev, _ := SeverityOf(CodeImagePixelBombShape)
 		findings = append(findings, Finding{Code: CodeImagePixelBombShape, Severity: sev})
@@ -399,6 +410,13 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 		return imageMetadataStatus{malformed: true}
 	}
 	pos := 8
+	// sawIEND records whether the walk passed PNG's mandatory terminal
+	// chunk. Consuming the buffer exactly is NOT the format's natural end on
+	// its own (PR9R16, image.go:426): a PNG truncated immediately after any
+	// complete chunk -- an IHDR-only file, for instance -- also lands on
+	// pos == len(b), and used to be reported metadata_present: clean. The
+	// spec's end is IEND, not "we ran out of bytes at a tidy boundary".
+	sawIEND := false
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
 			tr.MarkCeilingHit()
@@ -417,13 +435,21 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 			if bytes.Contains(b[dataStart:dataStart+length], []byte("XML:com.adobe.xmp")) {
 				return imageMetadataStatus{location: "PNG iTXt XMP"}
 			}
+		case "IEND":
+			sawIEND = true
 		}
 		pos = dataStart + length + 4 // +4 for the trailing CRC
 	}
-	if pos == len(b) {
-		// The chunk walk consumed the buffer exactly, with nothing left
-		// over: PNG's own natural end for this walk (see doc comment).
+	if pos == len(b) && sawIEND {
+		// The chunk walk consumed the buffer exactly AND passed IEND: PNG's
+		// own natural end for this walk (see doc comment). Either half alone
+		// is not it.
 		return imageMetadataStatus{}
+	}
+	if pos == len(b) {
+		// Tidy boundary, no IEND: the file stops mid-stream at a chunk edge,
+		// so nothing was proven absent from the chunks it never carried.
+		return imageMetadataStatus{malformed: true}
 	}
 	// Leftover bytes remain that do not form a full chunk header: this walk
 	// did not reach the buffer's end cleanly, so a miss here is not proof

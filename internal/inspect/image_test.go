@@ -9,10 +9,16 @@ import (
 
 // ===== fixture builders =====
 
-// pngFixture builds a minimal PNG signature + IHDR chunk declaring width x
-// height (mirrors internal/convert/dimensions_test.go's pngFixture -- kept
-// as a deliberate, local copy since that helper is unexported by its own
-// package's test file and cannot be imported across a package boundary).
+// pngFixture builds a minimal but STRUCTURALLY COMPLETE PNG: signature +
+// IHDR declaring width x height + the mandatory terminal IEND chunk.
+//
+// The IEND was added in PR9R16 (image.go:426). Until then this helper
+// produced an IHDR-only file -- a PNG truncated mid-stream at a tidy chunk
+// boundary -- and the analyzer reported metadata_present: clean for it,
+// because "the chunk walk consumed the buffer exactly" was mistaken for the
+// format's own end. It is not; IEND is. Tests that want a CLEAN png must
+// therefore hand it a complete one, and the truncation cases below build
+// their own deliberately incomplete inputs by slicing this.
 func pngFixture(width, height uint32) []byte {
 	data := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 	data = append(data, 0x00, 0x00, 0x00, 0x0D)
@@ -20,6 +26,9 @@ func pngFixture(width, height uint32) []byte {
 	data = append(data, byte(width>>24), byte(width>>16), byte(width>>8), byte(width))
 	data = append(data, byte(height>>24), byte(height>>16), byte(height>>8), byte(height))
 	data = append(data, 0x08, 0x02, 0x00, 0x00, 0x00)
+	data = append(data, 0x00, 0x00, 0x00, 0x00) // CRC placeholder, not validated
+	data = append(data, 0x00, 0x00, 0x00, 0x00) // IEND length: zero
+	data = append(data, []byte("IEND")...)
 	data = append(data, 0x00, 0x00, 0x00, 0x00) // CRC placeholder, not validated
 	return data
 }
@@ -622,4 +631,51 @@ func TestAnalyzeImageReadFailureWithTruncatedWindowStillReportsCeiling(t *testin
 func TestAnalyzeImageEmptyFileStaysCleanNotReadFailed(t *testing.T) {
 	res := AnalyzeImage("png", bytes.NewReader(nil), 0, 4096, 1<<30, nil)
 	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// TestAnalyzeImagePNGTruncatedAtChunkBoundaryIsNotClean is PR9R16
+// (image.go:426): a PNG cut immediately after a complete chunk lands on
+// pos == len(b), which the walk used to accept as the format's natural end.
+// It is not -- PNG's end is IEND -- and reporting clean there asserts that
+// no metadata exists in chunks the file never carried.
+func TestAnalyzeImagePNGTruncatedAtChunkBoundaryIsNotClean(t *testing.T) {
+	full := pngFixture(10, 10)
+	// Drop the trailing IEND chunk (12 bytes: length + type + CRC), leaving
+	// a file that ends exactly at IHDR's own boundary.
+	truncated := full[:len(full)-12]
+
+	res := AnalyzeImage("png", bytes.NewReader(truncated), int64(len(truncated)), int64(len(truncated)), 1<<40, nil)
+	c, ok := checkFor(res, CodeMetadataPresent)
+	if !ok {
+		t.Fatal("no Check for CodeMetadataPresent")
+	}
+	if c.Status == StatusClean {
+		t.Fatalf("Check(metadata_present) = %+v, want a non-clean status -- this file stops mid-stream at a chunk edge with no IEND, so nothing was proven absent from the chunks it never carried", c)
+	}
+}
+
+// TestAnalyzeImageDimensionReadFailureIsReadFailed is PR9R16 (image.go:39):
+// an I/O failure during the dimension peek used to report malformed_input,
+// blaming the uploaded image for this service's own disk -- while the
+// metadata scan of the very same reader already reported read_failed.
+func TestAnalyzeImageDimensionReadFailureIsReadFailed(t *testing.T) {
+	res := AnalyzeImage("png", erroringReaderAtImg{}, 1024, 1024, 1<<40, nil)
+
+	if got, _ := res.Characteristics["width_reason"].(string); got != string(ReasonReadFailed) {
+		t.Errorf("width_reason = %q, want %q -- the reader failed; the image did not", got, ReasonReadFailed)
+	}
+	c, ok := checkFor(res, CodeImagePixelBombShape)
+	if !ok {
+		t.Fatal("no Check for CodeImagePixelBombShape")
+	}
+	if c.Status != StatusUnknown || c.Reason != ReasonReadFailed {
+		t.Errorf("Check(image_pixel_bomb_shape) = %+v, want unknown/read_failed", c)
+	}
+}
+
+// erroringReaderAtImg always fails with a real, non-EOF error.
+type erroringReaderAtImg struct{}
+
+func (erroringReaderAtImg) ReadAt([]byte, int64) (int, error) {
+	return 0, errors.New("simulated disk read failure")
 }
