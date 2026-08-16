@@ -1232,6 +1232,91 @@ func TestInspectSlowBodyDoesNotHoldConcurrencySlot(t *testing.T) {
 	}
 }
 
+// inspectIntakeConcurrencyResult carries one slow-body request's own outcome
+// back to the main goroutine through a channel -- rec.Code is read in the
+// SAME goroutine that just wrote it (immediately after ServeHTTP returns),
+// then handed off via the channel send/receive itself, which is what
+// establishes the happens-before edge -race requires; reading rec.Code
+// directly from the test goroutine after a bare time.Sleep, with no such
+// edge, would be a genuine data race against the handler goroutine's own
+// write inside http.ResponseWriter.WriteHeader.
+type inspectIntakeConcurrencyResult struct {
+	idx  int
+	code int
+}
+
+// TestInspectIntakeConcurrencyIsBounded is PR9R8-F1-INTAKE-BOUND's central
+// proof: MORE concurrent slow-body clients than inspectIntakeMaxConcurrent
+// must NOT all be admitted into ParseMultipartForm -- exactly the excess
+// beyond that constant must be rejected immediately with 429 inspect_busy,
+// WITHOUT ever reading a byte of their own body (a saturated intake stage
+// is not a queue). Before this fix, every one of them would have entered
+// ParseMultipartForm unconditionally, each buffering up to
+// multipartInMemoryBudget bytes in the process heap with nothing to stop
+// arbitrarily many from doing so at once -- the exact scenario the finding
+// names (roughly 30 concurrent requests times 32 MiB against the pod's own
+// 1 GiB memory limit).
+func TestInspectIntakeConcurrencyIsBounded(t *testing.T) {
+	resolver := newFakeResolver()
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{})
+
+	const overflow = 3 // exceeds inspectIntakeMaxConcurrent by this many
+	total := inspectIntakeMaxConcurrent + overflow
+
+	var wg sync.WaitGroup
+	blockers := make([]chan struct{}, total)
+	results := make(chan inspectIntakeConcurrencyResult, total)
+	for i := 0; i < total; i++ {
+		blockers[i] = make(chan struct{})
+		prefix, boundary := incompleteMultipartPrefix(t, "in.png", pngBytesFixture())
+		body := &blockingReader{prefix: prefix, block: blockers[i]}
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/inspect", body))
+		req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+		wg.Add(1)
+		go func(i int, req *http.Request) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+			results <- inspectIntakeConcurrencyResult{idx: i, code: rec.Code}
+		}(i, req)
+	}
+	t.Cleanup(func() {
+		for _, ch := range blockers {
+			close(ch)
+		}
+		wg.Wait()
+	})
+
+	// Only the `overflow` requests rejected for being over
+	// inspectIntakeMaxConcurrent can possibly finish before their own
+	// blockers are closed -- the accepted ones are, by construction, stuck
+	// inside ParseMultipartForm reading blockingReader, which never returns
+	// until t.Cleanup runs. A bounded wait, not a fixed sleep, drains
+	// exactly the results that arrive.
+	rejected := 0
+	deadline := time.After(2 * time.Second)
+drain:
+	for range total {
+		select {
+		case res := <-results:
+			if res.code != http.StatusTooManyRequests {
+				t.Fatalf("request %d completed with status %d before its blocker was closed -- want either 429 (rejected at intake) or no completion at all yet", res.idx, res.code)
+			}
+			rejected++
+		case <-time.After(300 * time.Millisecond):
+			// No further result arrived within this window -- the
+			// remaining requests are (as expected) still blocked inside
+			// ParseMultipartForm, holding an intake slot each.
+			break drain
+		case <-deadline:
+			t.Fatalf("timed out waiting for the %d expected intake rejections; got %d so far", overflow, rejected)
+		}
+	}
+	if rejected != overflow {
+		t.Fatalf("rejected = %d, want exactly %d -- concurrent buffering must be bounded to inspectIntakeMaxConcurrent (%d), not admitted unconditionally", rejected, overflow, inspectIntakeMaxConcurrent)
+	}
+}
+
 // fakeContextAwarePreAdmitRepo mimics a property a REAL jobs.Repo.PreAdmit
 // has (a DB call made with an ALREADY-EXPIRED context fails immediately,
 // exactly like pgx would) that fakeRepo's own PreAdmit does not: fakeRepo
