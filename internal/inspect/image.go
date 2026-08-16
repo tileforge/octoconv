@@ -410,13 +410,13 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 		return imageMetadataStatus{malformed: true}
 	}
 	pos := 8
-	// sawIEND records whether the walk passed PNG's mandatory terminal
-	// chunk. Consuming the buffer exactly is NOT the format's natural end on
-	// its own (PR9R16, image.go:426): a PNG truncated immediately after any
-	// complete chunk -- an IHDR-only file, for instance -- also lands on
-	// pos == len(b), and used to be reported metadata_present: clean. The
-	// spec's end is IEND, not "we ran out of bytes at a tidy boundary".
-	sawIEND := false
+	// This walk has exactly one clean exit, and it is inside the loop: the
+	// IEND case. Consuming the buffer to a tidy chunk boundary is NOT the
+	// format's end (PR9R16, image.go:426) -- an IHDR-only file lands there
+	// too -- and neither is merely HAVING seen an IEND somewhere (PR9R17,
+	// image.go:439): IEND terminates, so anything after it is not a PNG the
+	// spec describes. Every exit below the loop is therefore a miss without
+	// a proven end.
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
 			tr.MarkCeilingHit()
@@ -436,21 +436,27 @@ func scanPNGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 				return imageMetadataStatus{location: "PNG iTXt XMP"}
 			}
 		case "IEND":
-			sawIEND = true
+			// IEND does not merely occur, it TERMINATES (PR9R17,
+			// image.go:439). Recording it and walking on -- which is what
+			// the previous fix did -- still reported clean for a file with
+			// chunks after IEND, which is not a PNG the spec describes.
+			// Stop here and decide on what follows, rather than letting the
+			// loop's own exit conditions decide.
+			pos = dataStart + length + 4
+			if pos == len(b) {
+				return imageMetadataStatus{}
+			}
+			// Anything at all after IEND makes this structurally invalid,
+			// and the walk stopped before reading it -- so no claim about
+			// metadata in those bytes is available either way.
+			return imageMetadataStatus{malformed: true}
 		}
 		pos = dataStart + length + 4 // +4 for the trailing CRC
 	}
-	if pos == len(b) && sawIEND {
-		// The chunk walk consumed the buffer exactly AND passed IEND: PNG's
-		// own natural end for this walk (see doc comment). Either half alone
-		// is not it.
-		return imageMetadataStatus{}
-	}
-	if pos == len(b) {
-		// Tidy boundary, no IEND: the file stops mid-stream at a chunk edge,
-		// so nothing was proven absent from the chunks it never carried.
-		return imageMetadataStatus{malformed: true}
-	}
+	// Reaching here means the loop ended without ever reaching IEND (that
+	// case returns in both of its outcomes), so the file stopped mid-stream
+	// -- whether at a tidy chunk boundary or on a partial header -- and
+	// nothing was proven absent from the chunks it never carried.
 	// Leftover bytes remain that do not form a full chunk header: this walk
 	// did not reach the buffer's end cleanly, so a miss here is not proof
 	// metadata is absent from whatever those leftover/unaccounted bytes (or

@@ -33,14 +33,35 @@ func pngFixture(width, height uint32) []byte {
 	return data
 }
 
+// pngAppendChunk inserts a chunk BEFORE the terminal IEND when data already
+// carries one, and plain-appends otherwise.
+//
+// The insertion is PR9R17 (image.go:439). Once pngFixture started emitting
+// IEND, a plain append put every metadata chunk AFTER the terminator --
+// which no PNG the spec describes ever does, so these tests were building
+// structurally invalid files and passing only because the walk did not yet
+// enforce IEND's finality. Appending after IEND is now a way to construct a
+// deliberately broken fixture, not the way to add a chunk to a good one.
 func pngAppendChunk(data []byte, chunkType string, chunkData []byte) []byte {
+	chunk := make([]byte, 0, 12+len(chunkData))
 	length := make([]byte, 4)
 	binary.BigEndian.PutUint32(length, uint32(len(chunkData)))
-	data = append(data, length...)
-	data = append(data, []byte(chunkType)...)
-	data = append(data, chunkData...)
-	data = append(data, 0, 0, 0, 0) // CRC placeholder, not validated
-	return data
+	chunk = append(chunk, length...)
+	chunk = append(chunk, []byte(chunkType)...)
+	chunk = append(chunk, chunkData...)
+	chunk = append(chunk, 0, 0, 0, 0) // CRC placeholder, not validated
+
+	const iendChunkLen = 12 // length(4) + "IEND"(4) + CRC(4)
+	if len(data) >= iendChunkLen && string(data[len(data)-8:len(data)-4]) == "IEND" {
+		head := data[:len(data)-iendChunkLen]
+		tail := data[len(data)-iendChunkLen:]
+		out := make([]byte, 0, len(data)+len(chunk))
+		out = append(out, head...)
+		out = append(out, chunk...)
+		out = append(out, tail...)
+		return out
+	}
+	return append(data, chunk...)
 }
 
 func jpegSegment(marker byte, payload []byte) []byte {
@@ -428,8 +449,10 @@ func TestAnalyzeImageJPEGTruncatedMarkerHeaderIsMalformedNotClean(t *testing.T) 
 // stream ending exactly at the buffer's end) with no metadata is genuinely
 // clean.
 func TestAnalyzeImagePNGWithIENDIsCleanNaturalEnd(t *testing.T) {
+	// pngFixture emits IEND itself since PR9R16; appending a second one --
+	// which this test did while the fixture was IHDR-only -- now builds a
+	// PNG with a chunk after its terminator, which PR9R17 correctly refuses.
 	data := pngFixture(10, 10)
-	data = pngAppendChunk(data, "IEND", []byte{})
 	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
 }
@@ -678,4 +701,29 @@ type erroringReaderAtImg struct{}
 
 func (erroringReaderAtImg) ReadAt([]byte, int64) (int, error) {
 	return 0, errors.New("simulated disk read failure")
+}
+
+// TestAnalyzeImagePNGChunkAfterIENDIsNotClean is PR9R17 (image.go:439):
+// IEND does not merely occur, it terminates. A file carrying any chunk
+// after IEND is not a PNG the spec describes, and reporting it clean claims
+// the walk accounted for bytes it never should have reached.
+func TestAnalyzeImagePNGChunkAfterIENDIsNotClean(t *testing.T) {
+	// Deliberately append AFTER the terminator, which is what pngAppendChunk
+	// no longer does for well-formed fixtures -- so this constructs the
+	// broken shape explicitly rather than by accident.
+	data := pngFixture(10, 10)
+	tail := make([]byte, 0, 12)
+	tail = append(tail, 0, 0, 0, 0)
+	tail = append(tail, []byte("tEXt")...)
+	tail = append(tail, 0, 0, 0, 0)
+	data = append(data, tail...)
+
+	res := AnalyzeImage("png", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	c, ok := checkFor(res, CodeMetadataPresent)
+	if !ok {
+		t.Fatal("no Check for CodeMetadataPresent")
+	}
+	if c.Status == StatusClean {
+		t.Fatalf("Check(metadata_present) = %+v, want a non-clean status -- IEND is the final chunk, so a file continuing past it was never fully accounted for", c)
+	}
 }
