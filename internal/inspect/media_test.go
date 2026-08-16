@@ -774,12 +774,64 @@ func TestAnalyzeMediaProvenPositionNotMoovAndNothingFollowsIsMalformed(t *testin
 	}
 }
 
-// TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes proves the
-// plan's own explicit requirement: exhausting maxMoovTailCandidatesScanned
-// on candidates that DO parse as self-consistent "moov" box headers -- but
-// never yield a USABLE moov structure (every one of them is the same
-// incidental empty box from the test above, repeated) -- still reports
-// unknown/work_ceiling_bytes, never "not found", and marks the Tracker.
+// TestAnalyzeMediaFitsWithinBudgetRejectsDecoyMoovInMdatPayload is the
+// coordinator's explicit follow-up requirement: a file AT OR BELOW
+// maxBytes, containing a decoy "moov" (a genuinely parseable mvhd,
+// distinctive attacker-chosen duration) inside an mdat payload, with NO
+// genuine top-level moov anywhere in the file. Coordinator's own reasoning,
+// verbatim: "headLen is clamped to size, so headWin is the entire file...
+// firstChildBox... does not find moov... any bytes spelling moov anywhere
+// in this file are inside some box's payload, by construction... [the old
+// fallback] can accept one and publish its mvhd duration... every
+// candidate it can possibly find is a decoy. It cannot rescue a genuine
+// top-level box, because [the head walk] already proved there isn't one."
+// This must not publish the decoy's duration.
+func TestAnalyzeMediaFitsWithinBudgetRejectsDecoyMoovInMdatPayload(t *testing.T) {
+	decoy := fakeMoovWith999sDuration()
+	mdatPayload := append(make([]byte, 100), decoy...)
+	mdat := isobmffBox("mdat", mdatPayload)
+	data := append(append([]byte{}, minimalFtyp()...), mdat...)
+	// No genuine trailing moov -- this file genuinely has none at the top
+	// level; the ONLY "moov"-shaped bytes anywhere are the decoy, buried
+	// inside mdat's own declared payload.
+
+	maxBytes := int64(len(data)) // the WHOLE file fits within maxBytes -- !oversizedFile, the branch this test targets
+	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, nil)
+
+	if res.Characteristics["duration_seconds"] != nil {
+		t.Fatalf("duration_seconds = %#v, want nil -- a decoy moov inside mdat's own payload, with no genuine top-level moov anywhere in the file, must never publish the decoy's attacker-chosen 999.0s", res.Characteristics["duration_seconds"])
+	}
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- the whole file fits within maxBytes, so the head walk alone proves, completely, that no top-level moov exists", reason, ReasonMalformedInput)
+	}
+}
+
+// TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes originally
+// proved that exhausting findMoovInTail's own candidate cap
+// (maxMoovTailCandidatesScanned) on candidates that parse as self-
+// consistent "moov" headers but are never USABLE (every one of them is the
+// same incidental empty box, repeated) reported unknown/work_ceiling_bytes,
+// never "not found".
+//
+// PR9R9 (coordinator follow-up to the round-8 fix, see maxMoovTailCandidatesScanned's
+// own doc comment for the full history): findMoovInTail and the substring
+// scan it performed are DELETED -- a substring scan can never distinguish
+// a genuinely rescued top-level box from a decoy planted inside another
+// box's own payload, because neither has proven placement, and accepting
+// an unproven candidate is exactly the class this whole file has now
+// closed four times over. This fixture's own file fits entirely within
+// maxBytes, so findMoov's initial firstChildBox walk already covers the
+// WHOLE FILE as a genuine top-level box chain: it examines ftyp and mdat
+// (mdat's own honestly-declared size fully covers all 84 embedded decoys
+// as ITS payload, never as top-level boxes) and finds no "moov" among
+// them. That is now a PROVEN, complete fact about the file's structure
+// (malformed_input) -- not an inconclusive candidate-cap exhaustion
+// (work_ceiling_bytes). The new mechanism is STRICTLY more precise, never
+// weaker: it can tell "we genuinely examined everything and moov is
+// absent" apart from "we gave up after N tries", where the deleted
+// mechanism could only ever report the latter. tr.Exhausted() is
+// correspondingly false -- no ceiling fired, because completing the proof
+// never needed one.
 func TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes(t *testing.T) {
 	const n = maxMoovTailCandidatesScanned + 20
 	fakeEmptyMoov := isobmffBox("moov", []byte{})
@@ -790,18 +842,18 @@ func TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes(t *testing.T
 	mdat := isobmffBox("mdat", payload)
 	data := append(append([]byte{}, minimalFtyp()...), mdat...)
 
-	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- both windows cover the whole tiny file, isolating the candidate cap as the ONLY thing that can produce a ceiling result here
+	const maxBytes = 1 << 20 // generous relative to this fixture's own size -- the whole file fits within the head window
 	tr := NewTracker(Budget{MaxBytes: int64(len(data)) * 4, MaxDuration: time.Minute})
 	res := AnalyzeMedia("mp4", bytes.NewReader(data), int64(len(data)), maxBytes, tr)
 
 	if res.Characteristics["duration_seconds"] != nil {
-		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a self-consistent but EMPTY moov box (no mvhd), never a usable structure", res.Characteristics["duration_seconds"])
+		t.Fatalf("duration_seconds = %#v, want nil -- every one of these self-consistent but EMPTY moov boxes lives inside mdat's own declared payload, never at the top level", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly, well within every bound (only 2 top-level boxes: ftyp, mdat)")
 	}
 }
 
@@ -842,20 +894,24 @@ func TestFindMoovInTailUsabilityCheckOwnCeilingIsWorkCeilingBytes(t *testing.T) 
 	}
 }
 
-// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded is round 6's
-// own DoS threat disposition (T-R6C-02): isUsableMoovCandidate's validation
-// now costs more per candidate than round 5's "children present" check did
-// (see isUsableMoovCandidate's own doc comment for the exact bound), and
-// that higher per-candidate cost is paid up to maxMoovTailCandidatesScanned
-// times. This constructs an adversarial tail window shaped to make EVERY
-// occurrence do real, non-ceiling-shortcut work: each decoy moov box carries
-// a present-but-empty mvhd (so parseMVHD is attempted and fails) plus
-// several non-matching trak siblings (so findTrackByHandler must walk all of
-// them, opening each one's own mdia/hdlr, before concluding "no match" --
-// comfortably under maxTrakCandidatesScanned so the rejection is genuine,
-// never a shortcut via that cap's own ceilingHit). The whole scan must still
-// complete in well under a second, proving the fix did not reopen the
-// unbounded-work class round 3 of this review already closed.
+// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded originally
+// proved round 6's own DoS threat disposition (T-R6C-02): isUsableMoovCandidate's
+// per-candidate validation, run up to maxMoovTailCandidatesScanned times
+// against an adversarial tail window (64 decoy moov boxes x 20 non-matching
+// trak siblings each), still completed in well under a second.
+//
+// PR9R9 (coordinator follow-up, see maxMoovTailCandidatesScanned's own doc
+// comment): findMoovInTail and isUsableMoovCandidate are deleted -- a
+// substring scan can never distinguish a rescued genuine box from a
+// planted decoy, so it is never consulted for a value. This SAME
+// adversarial fixture (unchanged) now proves an even STRONGER timing bound:
+// findMoov's initial firstChildBox walk covers the whole file (it fits
+// within maxBytes) as a genuine top-level chain and skips ALL 64 decoys x
+// 20 trak siblings each in ONE hop, as mdat's own single opaque payload --
+// never descending into a single one of them, unlike the deleted
+// mechanism's own per-candidate mvhd/trak descent. The walk proves no
+// top-level moov exists (malformed_input), and does so essentially
+// instantly.
 func TestFindMoovInTailWorstCaseCandidateValidationStaysBounded(t *testing.T) {
 	nonMatchingTrak := trakBox(tkhdBoxV0(0, 0), stsdBox("mp4a"), isobmffHandlerAudio) // handler_type="soun", never matches wantHandler="vide" below
 	const traksPerDecoy = 20                                                          // real, non-ceiling-hitting work per candidate -- comfortably under maxTrakCandidatesScanned (64) so every decoy is rejected on genuine absence, never on its own ceiling
@@ -882,16 +938,16 @@ func TestFindMoovInTailWorstCaseCandidateValidationStaysBounded(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if elapsed > 2*time.Second {
-		t.Fatalf("AnalyzeMedia took %v against %d adversarial candidates x %d non-matching trak siblings each -- want comfortably under 2s; the fix's own cost bound (isUsableMoovCandidate's doc comment, T-R6C-02) is broken", elapsed, n, traksPerDecoy)
+		t.Fatalf("AnalyzeMedia took %v against %d adversarial decoys x %d non-matching trak siblings each -- want comfortably under 2s; the top-level walk must skip mdat's ENTIRE declared payload in one hop, never descending into a single decoy", elapsed, n, traksPerDecoy)
 	}
 	if res.Characteristics["duration_seconds"] != nil {
-		t.Fatalf("duration_seconds = %#v, want nil -- every candidate here is a decoy with an empty mvhd and only non-matching trak siblings", res.Characteristics["duration_seconds"])
+		t.Fatalf("duration_seconds = %#v, want nil -- every decoy here lives inside mdat's own declared payload, never at the top level", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- the candidate cap, not any single candidate's own ceiling, must be what exhausts here", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly (only 2 top-level boxes: ftyp, mdat), never touching any of the 64 decoys")
 	}
 }
 
@@ -925,12 +981,24 @@ func TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	}
 }
 
-// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes proves
+// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes originally proved
 // findMoovInTail's own candidate cap (maxMoovTailCandidatesScanned,
 // T-R4B-02): more incidental "moov" substring occurrences in the tail
-// window than the cap allows, none of which validate as a real box, must
-// report unknown/work_ceiling_bytes -- never malformed_input -- and must
-// mark the Tracker it was given.
+// window than the cap allowed, none of which validated as a real box,
+// reported unknown/work_ceiling_bytes -- never malformed_input.
+//
+// PR9R9 (coordinator follow-up, see maxMoovTailCandidatesScanned's own doc
+// comment): findMoovInTail is deleted -- a substring scan over these
+// incidental "moov" occurrences could never prove any of them was a
+// genuine top-level box, so it is never consulted. This fixture's file
+// fits within maxBytes, so findMoov's initial firstChildBox walk covers
+// the WHOLE FILE: it sees ftyp and ONE mdat box whose own honestly-
+// declared size fully covers all of this garbage payload (the 'Y'-padded
+// "moov" occurrences are never valid box headers at all, let alone
+// top-level ones), and finds no "moov" among the genuine top-level boxes.
+// That is now PROVEN (malformed_input), not merely uncertain after a
+// candidate cap ran out (work_ceiling_bytes) -- exactly the sharper
+// distinction this fixture's own name predates.
 func TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	const n = maxMoovTailCandidatesScanned + 20
 	var payload []byte
@@ -952,11 +1020,11 @@ func TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes(t *testing.T) {
 	if res.Characteristics["duration_seconds"] != nil {
 		t.Fatalf("duration_seconds = %#v, want nil -- no real moov box exists in this fixture at all", res.Characteristics["duration_seconds"])
 	}
-	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonWorkCeilingBytes) {
-		t.Fatalf("duration_seconds_reason = %q, want %q -- OUR OWN tail candidate cap, not the file's structure, decided this miss", reason, ReasonWorkCeilingBytes)
+	if reason, _ := res.Characteristics["duration_seconds_reason"].(string); reason != string(ReasonMalformedInput) {
+		t.Fatalf("duration_seconds_reason = %q, want %q -- a genuine top-level walk of the WHOLE file proved no moov box exists (PR9R9)", reason, ReasonMalformedInput)
 	}
-	if !tr.Exhausted() {
-		t.Fatal("Tracker was never marked -- findMoovInTail's own candidate-cap exhaustion must reach the Tracker it was given")
+	if tr.Exhausted() {
+		t.Fatal("Tracker reports exhausted, but no ceiling should have fired -- the top-level walk completed cleanly (only 2 top-level boxes: ftyp, mdat)")
 	}
 }
 

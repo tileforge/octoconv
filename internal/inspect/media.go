@@ -17,7 +17,6 @@
 package inspect
 
 import (
-	"bytes"
 	"encoding/binary"
 	"io"
 	"math"
@@ -118,17 +117,17 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 	// own doc comment (PR9R4 finding, media.go:275) for why "the first
 	// trak" is no longer an acceptable selection for either.
 	//
-	// Resolved HERE, before findMoov, not after (round 6, T-R6C-01):
-	// isUsableMoovCandidate needs to know which extraction
-	// isobmffCharacteristics will actually perform on a TAIL-anchored
-	// candidate while it is still deciding whether that candidate IS the
-	// real moov box -- not merely after one has already been accepted.
+	// findMoov no longer takes wantHandler/includeDims at all (PR9R9: it
+	// proves placement from the box chain alone, never from what a
+	// candidate's content extracts -- see findMoov's own doc comment). Both
+	// are resolved here purely for findTrackDimensions/findDeclaredCodec
+	// below, once a moov has already been found.
 	wantHandler := isobmffHandlerAudio
 	if includeDims {
 		wantHandler = isobmffHandlerVideo
 	}
 
-	moovPayload, reason := findMoov(r, size, maxBytes, wantHandler, includeDims, tr)
+	moovPayload, reason := findMoov(r, size, maxBytes, tr)
 	if moovPayload == nil {
 		c["duration_seconds"] = nil
 		c["duration_seconds_reason"] = string(reason)
@@ -232,27 +231,52 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // by a box's own declared size, skipping `mdat`'s entire declared payload
 // (fake `moov` included) in one hop.
 //
-// PR9R9 finding (media.go:498, the round-8 fix itself): "headBoxChainProvenEnd
-// returning !ok is trivially attacker-controlled [size==0, a header
-// declaring less than its own length, a 64-bit size field truncated at the
-// window edge]. In every one of those, control falls straight through to
-// findMoovInTail, the exact substring scan the finding is about, and the
-// decoy in mdat wins precisely as it did before." Falling through to the
-// substring scan whenever placement could not be proven reopened exactly
-// the hole the proof exists to close -- an attacker picks the head box
-// shape, so the file shapes that defeat headBoxChainProvenEnd's proof are
-// exactly the ones an attacker would choose. When oversizedFile is true,
-// findMoovInTail (the substring scan) is therefore NEVER invoked anymore:
-// either the proof succeeds and the candidate it names is trusted
-// directly, or it does not, and the outcome is an HONEST unknown or a
-// PROVEN absence -- never a guess. An unnecessary unknown costs a missing
-// characteristic; an unproven accept costs a wrong value presented as
-// fact, and D-01/D-03 both forbid the latter. Every existing
-// candidate/ceiling test this file already had before round 8 exercises
-// files that fit within either window on their own (oversizedFile below
-// is false for them, where the existing complete head walk already makes
-// the substring scan harmless -- see headBoxChainProvenEnd's own doc
-// comment) and is therefore untouched by this change.
+// PR9R9 finding #1 (coordinator review of the round-8 fix, media.go:498):
+// "headBoxChainProvenEnd returning !ok is trivially attacker-controlled
+// [size==0, a header declaring less than its own length, a 64-bit size
+// field truncated at the window edge]. In every one of those, control
+// falls straight through to findMoovInTail, the exact substring scan the
+// finding is about, and the decoy in mdat wins precisely as it did
+// before." Falling through to the substring scan whenever placement could
+// not be proven reopened exactly the hole the proof exists to close -- an
+// attacker picks the head box shape, so the file shapes that defeat
+// headBoxChainProvenEnd's proof are exactly the ones an attacker would
+// choose. When oversizedFile is true, the substring scan is therefore
+// NEVER invoked anymore: either the proof succeeds and the candidate it
+// names is trusted directly, or it does not, and the outcome is an HONEST
+// unknown or a PROVEN absence -- never a guess.
+//
+// PR9R9 finding #2 (a SECOND coordinator review, of finding #1's own
+// fix): the fix above only closed the oversizedFile branch. A second look
+// caught a call this file's own comment had defended as merely
+// "redundant" when the file fits within maxBytes (!oversizedFile) --
+// coordinator's own correction, verbatim: "Complete coverage makes the
+// substring scan unnecessary -- it does not make it harmless, and those
+// are different properties... in the one situation where that call runs,
+// every candidate it can possibly find is a decoy. It cannot rescue a
+// genuine top-level box, because [the head walk] already proved there
+// isn't one." When !oversizedFile, headWin already covers the ENTIRE
+// file, and the initial firstChildBox(headWin, "moov", tr) call above
+// already performed a complete, genuine top-level walk before this
+// function ever reaches the code below -- if that walk did not find
+// "moov", no genuine top-level moov exists anywhere in the file, full
+// stop. A substring scan run afterward, over the SAME bytes, could
+// therefore only ever find and accept a decoy (bytes spelling "moov"
+// inside some OTHER box's own payload), publishing a fake value exactly
+// like the original finding describes -- just reached through the
+// SUCCESS-case regime instead of the fallback one. So the substring scan
+// is not consulted here either; see the !oversizedFile branch below for
+// the exact reasoning per outcome.
+//
+// Both PR9R9 fixes together mean the substring scan this whole file used
+// to depend on (findMoovInTail, and the acceptance criterion it ran,
+// isUsableMoovCandidate) has NO reachable caller left at all and has been
+// deleted -- see maxMoovTailCandidatesScanned's own doc comment for what
+// replaced it and why the round 4/5/6 tests that once exercised it still
+// pass, with updated expectations, against the new mechanism. An
+// unnecessary unknown costs a missing characteristic; an unproven accept
+// costs a wrong value presented as fact, and D-01/D-03 both forbid the
+// latter.
 //
 // PR9R8 finding (media.go:255), verbatim: "For an MP4/MOV larger than
 // maxBytes whose moov is not found in the head, the analyzer first reads
@@ -274,20 +298,23 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // tight Budget.MaxBytes -- not just the maxBytes parameter this function
 // receives -- observes the SAME true total, provable independently of
 // whatever any caller does with its own return value.
-func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDims bool, tr *Tracker) ([]byte, Reason) {
+func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
 	}
 
-	// oversizedFile gates BOTH round-8 fixes: below this line, "the file
-	// exceeds maxBytes" is the ONE condition that makes a SEPARATE tail
+	// oversizedFile gates every fix in this function's own doc comment: "the
+	// file exceeds maxBytes" is the ONE condition that makes a SEPARATE tail
 	// budget reservation necessary (a file that already fits within
-	// maxBytes never needs to spend more than size on either window, see
-	// this function's own doc comment) and the ONE condition under which
-	// findMoovInTail's substring scan is not already provably safe on its
-	// own (a head window covering the WHOLE file is already a complete,
-	// genuine top-level walk -- see headBoxChainProvenEnd's own doc
-	// comment for why that makes the extra proof step redundant there).
+	// maxBytes never needs to spend more than size on either window) and
+	// the ONE condition that requires a SEPARATE, explicit proof step
+	// (headBoxChainProvenEnd) at all -- a head window covering the WHOLE
+	// file, below, is already a complete, genuine top-level walk on its
+	// own, with no substring scan of any kind ever consulted either way
+	// (see this function's own doc comment, PR9R9 finding #2, for why
+	// "complete" and "harmless" are not the same property, and why the
+	// !oversizedFile branch below still needs its own explicit reasoning
+	// rather than silently doing nothing).
 	oversizedFile := size > maxBytes
 	headLen := maxBytes
 	var tailReserve int64
@@ -315,26 +342,53 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	}
 	consumeActual(tr, headActual)
 
-	// STEP 2: moov not in the head window -- try the tail. The tail window
-	// starts mid-file, so the bytes at its own offset 0 are the MIDDLE of
-	// whatever box precedes moov (very likely `mdat`), not a box header at
-	// all. Walking from the tail window's own offset 0 would misparse that
-	// middle-of-box garbage as a bogus box header. Instead: find the
-	// literal 4-byte "moov" type field as a substring, step back 4 bytes to
-	// what should be that box's own size field, and start the (bounded,
-	// bounds-checked) box walk from THERE -- this is the one place this
-	// file must not "just walk from offset 0" like every other box walk in
-	// this package, and it is easy to lose on a future refactor if this
-	// comment is removed.
-	var tailLen int64
-	if oversizedFile {
-		tailLen = tailReserve
-	} else {
-		tailLen = int64(mp4TailWindow)
-		if tailLen > maxBytes {
-			tailLen = maxBytes
+	if !oversizedFile {
+		// PR9R9 follow-up (coordinator review of the round-8 fix): when the
+		// file fits within maxBytes, headLen == size, so headWin above IS
+		// the entire file, and the firstChildBox call just above already
+		// walked its REAL top-level box chain in full, looking for "moov"
+		// among every genuine top-level box. It did not find one -- or we
+		// would already have returned. That means any occurrence of the
+		// literal bytes "moov" ANYWHERE else in this file is necessarily
+		// INSIDE some other box's own payload (a decoy), never a genuine
+		// top-level box: complete coverage makes a substring scan
+		// UNNECESSARY, but a coordinator review correctly pointed out that
+		// is a different property from HARMLESS -- handing those bytes to
+		// findMoovInTail could still find and ACCEPT a decoy (parseable
+		// mvhd, real-looking values), publishing a fake duration exactly
+		// like the PR9R8 finding describes, just reached through the
+		// SUCCESS-case regime instead of the fallback one. So the outcome
+		// here is decided by the head walk's own result alone -- no
+		// substring scan is ever consulted for a value in this branch:
+		//   - !headOK or headCeilingHit: our own inability to conclude
+		//     (a genuine read failure, or maxISOBMFFBoxes exhausted before
+		//     the walk could finish) -- ReasonWorkCeilingBytes.
+		//   - otherwise: the walk covered every top-level box in the file,
+		//     either reaching the natural end cleanly or stopping at a
+		//     malformed/truncated box along the way (walkTopLevelBoxes
+		//     itself does not distinguish those two exits -- both return
+		//     found=false, ceilingHit=false) -- and "moov" was not among
+		//     them. A malformed/truncated box is itself a structural fact
+		//     about this file (ReasonMalformedInput's own definition:
+		//     "structure is present but did not parse"), so both exits are
+		//     the SAME honest answer: moov is not a genuine top-level box
+		//     in this file, full stop -- ReasonMalformedInput. The
+		//     alternative -- letting a substring scan try to "rescue" a
+		//     moov past a broken chain -- cannot distinguish a genuinely
+		//     rescued box from a planted decoy, since neither has proven
+		//     placement; that is precisely the trade this analyzer refuses
+		//     to make (D-01/D-03).
+		if !headOK || headCeilingHit {
+			return nil, ReasonWorkCeilingBytes
 		}
+		return nil, ReasonMalformedInput
 	}
+
+	// STEP 2 (oversizedFile only): try the tail. The tail window starts
+	// mid-file, so the bytes at its own offset 0 are the MIDDLE of
+	// whatever box precedes moov (very likely `mdat`), not a box header at
+	// all.
+	tailLen := tailReserve
 	if tailLen > size {
 		tailLen = size
 	}
@@ -342,92 +396,62 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, wantHandler string, includeDi
 	if tailOff < 0 {
 		tailOff = 0
 	}
-	var tailActual int64
-	var tailCeilingHit bool
 	tailWin, tailOK := readWindow(r, tailOff, tailLen, size)
 	if !tailOK {
-		consumeActual(tr, tailActual)
-		if oversizedFile {
-			// No tail window to prove anything against at all -- our own
-			// inability to read, never a fact about the file's structure.
-			return nil, ReasonWorkCeilingBytes
-		}
-	} else {
-		tailActual = int64(len(tailWin))
-		consumeActual(tr, tailActual)
-
-		if oversizedFile {
-			// PR9R9 fix: PROVE, never scan. See this function's own doc
-			// comment for why findMoovInTail (substring scan) must not run
-			// at all in this branch.
-			nextOff, ok := headBoxChainProvenEnd(headWin, tr)
-			if !ok {
-				// headBoxChainProvenEnd could not establish ANY proven
-				// top-level boundary -- whether because its own
-				// maxISOBMFFBoxes ceiling fired, or because the box it was
-				// examining was malformed/declared size 0/had a 64-bit
-				// size field truncated at the window edge. Every one of
-				// these is OUR OWN inability to prove a position, never a
-				// fact about the file (an attacker chooses these shapes
-				// specifically to defeat the proof, so treating any of
-				// them as "genuinely absent" would hand the decoy right
-				// back its opening).
-				return nil, ReasonWorkCeilingBytes
-			}
-			if nextOff < tailOff {
-				// The proven boundary exists but falls in the gap between
-				// what the head and tail windows actually cover -- we
-				// genuinely do not know what is there.
-				return nil, ReasonWorkCeilingBytes
-			}
-			if nextOff >= size {
-				// The proven boundary is AT or PAST the file's actual end:
-				// either nothing more can follow within the real file
-				// (declaring more would be dishonest), or this box's own
-				// declared size already claims more bytes than the file
-				// has. Combined with the [0, nextOff) chain
-				// headBoxChainProvenEnd already walked box-by-box (and the
-				// prior firstChildBox(headWin, "moov", ...) call already
-				// ruled "moov" out among all of those), this is COMPLETE,
-				// proven coverage of the file's entire top-level
-				// structure: moov genuinely does not exist.
-				return nil, ReasonMalformedInput
-			}
-			rel := nextOff - tailOff
-			if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
-				return payload, ""
-			} else if ceilingHit {
-				return nil, ReasonWorkCeilingBytes
-			}
-			// tailWin's own end IS the file's true end (tailOff+tailLen ==
-			// size by construction), so a walk from the PROVEN nextOff all
-			// the way to len(tailWin) that neither found "moov" nor hit a
-			// ceiling has just walked the ENTIRE remainder of the file as
-			// a real top-level chain, cleanly. Combined with the equally
-			// proven [0, nextOff) head chain, moov is proven absent from
-			// the file, not merely unreached by this scan.
-			return nil, ReasonMalformedInput
-		}
-
-		if payload, found, ceilingHit := findMoovInTail(tailWin, wantHandler, includeDims, tr); found {
-			return payload, ""
-		} else {
-			tailCeilingHit = ceilingHit
-		}
+		// No tail window to prove anything against at all -- our own
+		// inability to read, never a fact about the file's structure.
+		return nil, ReasonWorkCeilingBytes
 	}
+	consumeActual(tr, int64(len(tailWin)))
 
-	if headActual+tailActual >= size && !headCeilingHit && !tailCeilingHit {
-		// Both windows together covered the entire file (accounting for
-		// possible overlap on small files), NEITHER window's own iteration
-		// ceiling fired while looking for moov there, and moov still never
-		// appeared -- this is a fact about the FILE, not about our own
-		// resource limits. If either ceiling fired, its own window DID
-		// cover its bytes but an iteration cap -- not the file's structure
-		// -- decided the miss, so this must not collapse into
-		// ReasonMalformedInput either (media.go's own audit finding).
+	// PR9R9 fix: PROVE, never scan. See this function's own doc comment for
+	// why findMoovInTail (substring scan) must not run at all in this
+	// branch.
+	nextOff, ok := headBoxChainProvenEnd(headWin, tr)
+	if !ok {
+		// headBoxChainProvenEnd could not establish ANY proven top-level
+		// boundary -- whether because its own maxISOBMFFBoxes ceiling
+		// fired, or because the box it was examining was malformed/
+		// declared size 0/had a 64-bit size field truncated at the window
+		// edge. Every one of these is OUR OWN inability to prove a
+		// position, never a fact about the file (an attacker chooses these
+		// shapes specifically to defeat the proof, so treating any of them
+		// as "genuinely absent" would hand the decoy right back its
+		// opening).
+		return nil, ReasonWorkCeilingBytes
+	}
+	if nextOff < tailOff {
+		// The proven boundary exists but falls in the gap between what the
+		// head and tail windows actually cover -- we genuinely do not know
+		// what is there.
+		return nil, ReasonWorkCeilingBytes
+	}
+	if nextOff >= size {
+		// The proven boundary is AT or PAST the file's actual end: either
+		// nothing more can follow within the real file (declaring more
+		// would be dishonest), or this box's own declared size already
+		// claims more bytes than the file has. Combined with the
+		// [0, nextOff) chain headBoxChainProvenEnd already walked
+		// box-by-box (and the prior firstChildBox(headWin, "moov", ...)
+		// call already ruled "moov" out among all of those), this is
+		// COMPLETE, proven coverage of the file's entire top-level
+		// structure: moov genuinely does not exist.
 		return nil, ReasonMalformedInput
 	}
-	return nil, ReasonWorkCeilingBytes
+	rel := nextOff - tailOff
+	if payload, found, ceilingHit := firstChildBox(tailWin[rel:], "moov", tr); found {
+		return payload, ""
+	} else if ceilingHit {
+		return nil, ReasonWorkCeilingBytes
+	}
+	// tailWin's own end IS the file's true end (tailOff+tailLen == size by
+	// construction), so a walk from the PROVEN nextOff all the way to
+	// len(tailWin) that neither found "moov" nor hit a ceiling has just
+	// walked the ENTIRE remainder of the file as a real top-level chain,
+	// cleanly. Combined with the equally proven [0, nextOff) head chain,
+	// moov is proven absent from the file, not merely unreached by this
+	// scan.
+	return nil, ReasonMalformedInput
 }
 
 // consumeActual reports n ACTUALLY-read bytes to tr, closing the PR9R8
@@ -518,140 +542,45 @@ func headBoxChainProvenEnd(headWin []byte, tr *Tracker) (nextOffset int64, ok bo
 	return 0, false
 }
 
-// maxMoovTailCandidatesScanned bounds how many candidate positions of the
-// literal 4-byte "moov" substring within the tail window findMoovInTail will
-// try as a real, USABLE box before giving up (T-R4B-02).
+// maxMoovTailCandidatesScanned is now a FIXTURE-SIZING constant only,
+// retained solely because three tests in media_test.go still reference it
+// directly by name (TestFindMoovInTailUsabilityCeilingExhaustionIsWorkCeilingBytes,
+// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded,
+// TestFindMoovInTailCandidateCeilingIsWorkCeilingBytes) -- it no longer
+// bounds any live search algorithm; the algorithm it once bounded
+// (findMoovInTail, T-R4B-02) has been deleted.
 //
-// PR9R4 finding (media.go:239), verbatim: "When the tail window contains
-// the bytes `moov` inside media payload before the real `moov` box,
-// bytes.Index selects that incidental first occurrence. If its preceding
-// four bytes do not form a valid box size, the single validation attempt
-// fails and the later real box is never considered, so a valid file loses
-// all MP4 characteristics." The fix is the same shape as the trak-selection
-// fix below it in this file: the first match is not necessarily the only
-// candidate, so the search must walk forward past a failed candidate
-// instead of giving up -- and that walk must itself be bounded, or fixing
-// this correctness bug would reopen the unbounded-work class round 3 of
-// this same review already closed elsewhere in this package.
+// History, for a future reader wondering why the fixtures those tests
+// build still exist: rounds 4, 5, and 6 each raised the acceptance bar for
+// a tail-anchored "moov" candidate found by literal substring search --
+// "substring present" (PR9R4, defeated by an incidental occurrence);
+// "parses as a self-consistent box" (PR9R5, defeated by a valid, empty
+// box); "mvhd/trak children present" (PR9R6, defeated by children that
+// were present but themselves empty) -- and round 8 (PR9R8) defeated the
+// fourth bar in turn ("the candidate's own consumer extraction succeeds"):
+// a self-consistent fake moov with a genuinely parseable mvhd, planted
+// inside mdat's own payload, cleared every one of those bars while never
+// being a genuine top-level box at all.
 //
-// PR9R5 finding (media.go:321), verbatim: "If media payload contains
-// \x00\x00\x00\x08moov before the real tail moov, this local walk accepts
-// the incidental bytes as a valid empty box and immediately returns its
-// empty payload. The analyzer then reports malformed characteristics and
-// never examines the genuine later box, even though the MP4 itself is
-// valid." Round 4 raised the acceptance bar from "the literal substring
-// moov was found somewhere" to "parses as a self-consistent box" -- but a
-// bare, empty box header parses exactly as cleanly as a real one, so the
-// winning criterion never actually distinguished a genuine moov from a
-// decoy shaped like one. Round 5 raised the bar again, to "mvhd and trak
-// children are PRESENT" -- and that bar fell too:
-//
-// PR9R6 finding (media.go:382), verbatim: "Fresh evidence after the prior
-// `moov` comment: a tail payload containing a locally valid 24-byte decoy
-// (`moov` with empty 8-byte `mvhd` and `trak` children) now passes this
-// usability check, so `findMoovInTail` still selects it and ignores the
-// genuine later `moov`; downstream parsing then reports malformed or
-// missing characteristics for an otherwise valid MP4/MOV. Validate that
-// `mvhd` parses and that a suitable track has the structure consumed
-// downstream before accepting the candidate."
-//
-// Three rounds, three separately-chosen thresholds, three decoys built one
-// step past each: "substring present" (defeated by an incidental
-// occurrence); "parses as a box" (defeated by a valid, empty box); "children
-// present" (defeated by children that are present but themselves empty).
-// Every threshold of THIS shape can be defeated by a decoy built to clear
-// it without carrying a single real, consumable field. isUsableMoovCandidate
-// no longer chooses its own threshold at all: it runs the SAME extraction
-// isobmffCharacteristics performs when a candidate is actually accepted
-// (parseMVHD's own duration fields; a track selected by handler_type whose
-// tkhd or stsd genuinely decodes) and accepts a candidate only if that
-// extraction yields a real answer. A decoy that clears THIS bar is no
-// longer a decoy -- it is real, consumable data, and isobmffCharacteristics'
-// own tests (parseMVHD, parseTKHD, parseSTSDCodec, ...) already cover
-// whether that data is trustworthy. See isUsableMoovCandidate's own doc
-// comment for the full reasoning and the DoS cost analysis this criterion
-// change requires (T-R6C-02).
+// The PR9R9 coordinator follow-up that closed the round-8 finding closed
+// the SEARCH MECHANISM itself, not just the acceptance bar it kept
+// re-raising: a substring scan can never distinguish a genuinely rescued
+// top-level box from a planted decoy, because neither has proven
+// placement -- findMoov now decides every outcome from a genuine top-level
+// box-chain walk alone (see findMoov's own doc comment), in BOTH the
+// oversized-file branch (headBoxChainProvenEnd) and the
+// fits-within-budget branch (the initial firstChildBox walk over the
+// whole file). findMoovInTail and isUsableMoovCandidate are deleted.
 const maxMoovTailCandidatesScanned = 64
 
-// findMoovInTail searches tailWin for a REAL, USABLE moov box, trying every
-// literal "moov" substring occurrence in order (bounded by
-// maxMoovTailCandidatesScanned) rather than only the first. A candidate is
-// first validated by attempting to parse it as one self-consistent
-// top-level box via walkTopLevelBoxes (its own declared size must fit
-// within the bounded buffer AND its type must genuinely be "moov"); a
-// candidate that DOES parse that way is validated FURTHER, against
-// isUsableMoovCandidate -- only a candidate whose ACTUAL consumer
-// extraction (mvhd's duration fields, or the wantHandler track's
-// dimensions/codec) yields a real answer is accepted. Any other candidate,
-// parseable or not, causes the search to continue to the NEXT occurrence
-// rather than giving up or accepting an unusable box. wantHandler and
-// includeDims are threaded through from isobmffCharacteristics unchanged --
-// see isUsableMoovCandidate's own doc comment for why the criterion needs
-// them.
-func findMoovInTail(tailWin []byte, wantHandler string, includeDims bool, tr *Tracker) (payload []byte, found bool, ceilingHit bool) {
-	searchFrom := 0
-	for candidates := 0; candidates < maxMoovTailCandidatesScanned; candidates++ {
-		rel := bytes.Index(tailWin[searchFrom:], []byte("moov"))
-		if rel < 0 {
-			return nil, false, false
-		}
-		idx := searchFrom + rel
-		searchFrom = idx + 1 // resume one byte later so overlapping occurrences are still found
-		if idx < 4 {
-			continue
-		}
-		boxStart := idx - 4
-		var candidatePayload []byte
-		matchedType := false
-		walkTopLevelBoxes(tailWin[boxStart:], tr, func(t string, p []byte) bool {
-			if t == "moov" {
-				candidatePayload, matchedType = p, true
-			}
-			return false // only the box located at boxStart is meaningful for this candidate
-		})
-		if !matchedType {
-			continue
-		}
-		usable, usabilityCeilingHit := isUsableMoovCandidate(candidatePayload, wantHandler, includeDims, tr)
-		if usable {
-			return candidatePayload, true, false
-		}
-		if usabilityCeilingHit {
-			// This candidate's OWN usability check could not reach an
-			// answer within maxISOBMFFBoxes (directly, or via
-			// findTrackByHandler's own maxTrakCandidatesScanned) -- OUR OWN
-			// resource limit, not proof this candidate is unusable.
-			// Silently treating an inconclusive check as "reject and keep
-			// going" would risk eventually reporting "not found" for a file
-			// whose real moov this scan never actually ruled out -- abort
-			// the whole search with a ceiling result instead, exactly like
-			// every other ceilingHit branch in this package.
-			return nil, false, true
-		}
-		// This candidate parsed as a self-consistent "moov" box header, but
-		// neither its mvhd nor its wantHandler-selected track actually
-		// yields a real value this analyzer would publish -- PR9R5's own
-		// incidental "\x00\x00\x00\x08moov" case, PR9R6's own 24-byte
-		// empty-children decoy, and any other empty/truncated/garbage
-		// payload shaped the same way. A box that merely PARSES, or merely
-		// carries present-but-empty children, is not proof it is the
-		// file's real moov; keep searching.
-	}
-	// The candidate cap was exhausted without validating a USABLE moov box --
-	// OUR OWN resource limit, not proof the file lacks one.
-	tr.MarkCeilingHit()
-	return nil, false, true
-}
-
 // codecFromTrak descends an ALREADY-SELECTED trakPayload -> mdia -> minf ->
-// stbl -> stsd and reads the first sample entry's fourCC -- the shared tail
-// of findDeclaredCodec (moov -> trak -> ...) and isUsableMoovCandidate's own
-// codec-extraction attempt (round 6, T-R6C-01). Factored out so both
-// callers run the IDENTICAL descent from a trak already in hand: duplicating
-// this chain inline in isUsableMoovCandidate would mean validating a
-// candidate against one extraction and later publishing a value computed by
-// a subtly different one, exactly the kind of drift this round's whole fix
-// exists to make structurally impossible rather than merely unlikely.
+// stbl -> stsd and reads the first sample entry's fourCC -- factored out of
+// findDeclaredCodec (moov -> trak -> ...) so that descent has exactly one
+// implementation (round 6, T-R6C-01). It previously had a second caller,
+// isUsableMoovCandidate's own codec-extraction attempt, run as part of
+// validating a tail-anchored substring-search candidate; that caller and
+// the whole substring-scan mechanism it belonged to were deleted (PR9R9 --
+// see findMoov's own doc comment and maxMoovTailCandidatesScanned's).
 func codecFromTrak(trakPayload []byte, tr *Tracker) (codec string, ok bool, ceilingHit bool) {
 	mdiaPayload, ok1, c1 := firstChildBox(trakPayload, "mdia", tr)
 	if !ok1 {
@@ -671,101 +600,6 @@ func codecFromTrak(trakPayload []byte, tr *Tracker) (codec string, ok bool, ceil
 	}
 	codec, ok5 := parseSTSDCodec(stsdPayload)
 	return codec, ok5, c1 || c2 || c3 || c4
-}
-
-// isUsableMoovCandidate reports whether payload -- already validated as a
-// self-consistent top-level box of type "moov" -- is USABLE in the one
-// sense that actually matters: does the extraction isobmffCharacteristics
-// will ACTUALLY perform against it yield at least one real answer? This
-// replaces round 4's and round 5's own criteria in turn ("parses as a
-// self-consistent box header"; "carries mvhd+trak children, present but
-// possibly empty") -- both were a bar SEPARATE from what the consumer
-// extracts, and a separate bar can always be defeated by a decoy built to
-// clear it without carrying anything real (see maxMoovTailCandidatesScanned's
-// own doc comment for the three-round history). A candidate is accepted
-// here the instant EITHER of the two extractions isobmffCharacteristics
-// performs succeeds:
-//
-//   - mvhd's own duration fields decode (parseMVHD) -- mvhd is mandatory in
-//     a well-formed moov, and a moov whose duration alone is real (even one
-//     with no matching track, e.g. an mp4 with only an audio track) is
-//     still THIS file's genuine moov, never a decoy (this is also why an
-//     MP4 with no video track still reports a real duration and only
-//     width/height/declared_codec become unknown -- the plan's own explicit
-//     requirement).
-//   - OR the wantHandler-selected track's tkhd (when includeDims) or its
-//     stsd sample entry actually decodes -- the SAME descent
-//     findTrackDimensions/findDeclaredCodec perform, via the shared
-//     codecFromTrak helper for the codec half.
-//
-// Defeating this criterion would require a candidate that satisfies
-// isobmffCharacteristics's OWN consumer code (parseMVHD, parseTKHD,
-// parseSTSDCodec) -- and that code already has its own tests
-// (TestAnalyzeMediaMVHDVersion1SixtyFourBit,
-// TestAnalyzeMediaTkhdDimensionsAreFixedPointDecoded, ...), so a "decoy"
-// that clears this bar is, by construction, no longer a decoy: it IS real,
-// consumable data.
-//
-// ceilingHit is true if ANY of the lookups below (mvhd; findTrackByHandler,
-// including its own maxTrakCandidatesScanned cap; tkhd; codecFromTrak's own
-// chain) exhausted firstChildBox's own maxISOBMFFBoxes cap before an answer
-// was reached along EVERY attempted extraction -- an inconclusive check,
-// never proof of unusability (D-02a, applied one level down from every
-// other ceilingHit in this file). The caller aborts the whole tail search
-// on ceilingHit, exactly as it already did.
-//
-// Cost (T-R6C-02, round 6's own DoS threat disposition): this candidate
-// check now costs up to one mvhd descent (bounded by the EXISTING
-// maxISOBMFFBoxes cap) plus one findTrackByHandler search (bounded by the
-// EXISTING maxISOBMFFBoxes cap for the outer walk and the EXISTING
-// maxTrakCandidatesScanned cap for how many trak siblings it opens) plus,
-// only for the ONE track handler-selected (never more than one), up to five
-// more bounded descents (tkhd; mdia/minf/stbl/stsd via codecFromTrak) --
-// every one of those bounds is an EXISTING, already-enforced constant, none
-// of them grows because of this fix. That fixed, input-independent ceiling
-// is paid at most maxMoovTailCandidatesScanned times per findMoov call, and
-// findMoovInTail aborts the ENTIRE candidate scan the instant any single
-// candidate's own lookup is inconclusive (ceilingHit above) rather than
-// paying this cost speculatively on every remaining candidate too -- so the
-// worst-case total work this correctness fix can ever add is a compile-time
-// constant, never a function of attacker-controlled file content beyond the
-// windows already bounded elsewhere in this file. See
-// TestFindMoovInTailWorstCaseCandidateValidationStaysBounded for a
-// wall-clock proof this stays cheap even under an adversarial shape.
-func isUsableMoovCandidate(payload []byte, wantHandler string, includeDims bool, tr *Tracker) (usable bool, ceilingHit bool) {
-	var anyCeiling bool
-
-	if mvhdPayload, found, c := firstChildBox(payload, "mvhd", tr); found {
-		if _, ok, _ := parseMVHD(mvhdPayload); ok {
-			return true, false
-		}
-	} else if c {
-		anyCeiling = true
-	}
-
-	trakPayload, foundTrak, c := findTrackByHandler(payload, wantHandler, tr)
-	anyCeiling = anyCeiling || c
-	if !foundTrak {
-		return false, anyCeiling
-	}
-
-	if includeDims {
-		if tkhdPayload, ok, c2 := firstChildBox(trakPayload, "tkhd", tr); ok {
-			if _, _, ok2 := parseTKHD(tkhdPayload); ok2 {
-				return true, false
-			}
-		} else if c2 {
-			anyCeiling = true
-		}
-	}
-
-	if _, ok, c2 := codecFromTrak(trakPayload, tr); ok {
-		return true, false
-	} else if c2 {
-		anyCeiling = true
-	}
-
-	return false, anyCeiling
 }
 
 // findTrackDimensions descends moov -> trak (first) -> tkhd and decodes
@@ -797,9 +631,8 @@ func findTrackDimensions(moovPayload []byte, wantHandler string, tr *Tracker) (w
 
 // findDeclaredCodec descends moov -> trak (selected by wantHandler, see
 // findTrackByHandler) -> mdia -> minf -> stbl -> stsd and reads the first
-// sample entry's fourCC, via the shared codecFromTrak descent (also reused
-// by isUsableMoovCandidate, round 6, T-R6C-01). ceilingHit is the same
-// signal as findTrackDimensions's own.
+// sample entry's fourCC, via the shared codecFromTrak descent (round 6,
+// T-R6C-01). ceilingHit is the same signal as findTrackDimensions's own.
 //
 // Selecting by handler here, not merely by the same trak
 // findTrackDimensions resolves, is deliberate consistency (not a separate
