@@ -293,11 +293,43 @@ func isobmffCharacteristics(r io.ReaderAt, size, maxBytes int64, includeDims boo
 // When the whole file already fits within maxBytes there is nothing to
 // reserve: both windows simply cover the file, exactly as before, and
 // their combined read is bounded by size itself, never by maxBytes at
-// all -- unchanged from round 0. Every actual byte read is ALSO reported
-// to tr directly via consumeActual, so a Tracker configured with its own
-// tight Budget.MaxBytes -- not just the maxBytes parameter this function
+// all -- unchanged from round 0.
+//
+// PR9R9 finding #3 (double charge, media.go:337, a coordinator review of
+// the round-8 fix above): round 8's own closing sentence here used to
+// read "every actual byte read is ALSO reported to tr directly via
+// consumeActual, so a Tracker configured with its own tight
+// Budget.MaxBytes -- not just the maxBytes parameter this function
 // receives -- observes the SAME true total, provable independently of
-// whatever any caller does with its own return value.
+// whatever any caller does with its own return value." That defense
+// assumed a caller whose OWN charge could legitimately diverge from tr's
+// real remaining budget -- but the ONE production caller,
+// dispatchInspectFamilies (internal/api/inspect_handlers.go), captures
+// maxBytes := tr.Remaining() ONCE, before dispatch, and unconditionally
+// charges tr.Consume(maxBytes) with that SAME captured value afterward,
+// regardless of what any family analyzer actually read -- the identical
+// convention every OTHER family (PDF, container, image) already relies
+// on exclusively; none of them ever call tr.Consume themselves. Given
+// that, findMoov's own direct tr.Consume call (via the now-deleted
+// consumeActual helper) was never observing a genuinely SEPARATE budget
+// -- it was charging the SAME shared Tracker a second time, on top of
+// the dispatcher's own full-allowance charge, for every ISOBMFF file
+// whose head window read any bytes at all. A file that reads even ONE
+// actual byte here pushed the Tracker's total consumed past whatever
+// tr.Remaining() was at dispatch time, tripping ReasonWorkCeilingBytes
+// unconditionally -- reproduced live, against the real HTTP handler:
+// `coverage.complete=false reason="work_ceiling_bytes"` for a small,
+// fully-parsed, valid MP4. The window-sizing fix above
+// (headLen+tailReserve <= maxBytes) is what actually closes PR9R8's own
+// "nearly 2x" finding -- it bounds what THIS function may ever read,
+// independent of any accounting -- so the redundant direct charge added
+// nothing but the double count. dispatchInspectFamilies remains the SOLE
+// owner of tr's byte/time budget for this (and every other) family
+// analyzer; findMoov still reports local iteration ceilings via
+// tr.MarkCeilingHit() exactly as before (a SEPARATE receptacle from
+// Consume's own byte/time accounting -- see budget.go's own doc
+// comment), but it never calls tr.Consume itself, matching every other
+// family analyzer in this package.
 func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason) {
 	if size <= 0 || maxBytes <= 0 {
 		return nil, ReasonMalformedInput
@@ -328,19 +360,15 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	if headLen > size {
 		headLen = size
 	}
-	var headActual int64
 	var headCeilingHit bool
 	headWin, headOK := readWindow(r, 0, headLen, size)
 	if headOK {
-		headActual = int64(len(headWin))
 		if payload, ok, ceilingHit := firstChildBox(headWin, "moov", tr); ok {
-			consumeActual(tr, headActual)
 			return payload, ""
 		} else {
 			headCeilingHit = ceilingHit
 		}
 	}
-	consumeActual(tr, headActual)
 
 	if !oversizedFile {
 		// PR9R9 follow-up (coordinator review of the round-8 fix): when the
@@ -402,7 +430,6 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 		// inability to read, never a fact about the file's structure.
 		return nil, ReasonWorkCeilingBytes
 	}
-	consumeActual(tr, int64(len(tailWin)))
 
 	// PR9R9 fix: PROVE, never scan. See this function's own doc comment for
 	// why findMoovInTail (substring scan) must not run at all in this
@@ -452,21 +479,6 @@ func findMoov(r io.ReaderAt, size, maxBytes int64, tr *Tracker) ([]byte, Reason)
 	// moov is proven absent from the file, not merely unreached by this
 	// scan.
 	return nil, ReasonMalformedInput
-}
-
-// consumeActual reports n ACTUALLY-read bytes to tr, closing the PR9R8
-// budget finding (media.go:255, see findMoov's own doc comment): the
-// return value is deliberately ignored here -- window sizing already
-// gates how much findMoov may read, so a tight tr, if the caller supplied
-// one, is a separate, additional signal this specific read does not need
-// to react to mid-flight, only report to honestly. tr.Consume, unlike
-// tr.MarkCeilingHit, has no built-in nil-receiver safety (budget.go), so
-// every call site in this file guards it here rather than repeating the
-// nil check inline.
-func consumeActual(tr *Tracker, n int64) {
-	if tr != nil {
-		tr.Consume(n)
-	}
 }
 
 // headBoxChainProvenEnd walks REAL top-level boxes within headWin (which

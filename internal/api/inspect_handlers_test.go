@@ -56,6 +56,159 @@ func doInspect(t *testing.T, srv *Server, filename string, data []byte) (int, []
 	return rec.Code, rec.Body.Bytes()
 }
 
+// isobmffTestBox is a size-accurate ISOBMFF box builder (size(4)+type(4)+
+// payload), mirroring internal/inspect/media_test.go's own isobmffBox
+// helper -- unexported to that package, so duplicated here rather than
+// imported, the same cross-package-boundary discipline window.go's own doc
+// comment already applies to readWindow. Accurate sizes matter here in a way
+// mp4BytesFixture (handlers_test.go, Sniff-only) does not need: findMoov
+// performs a REAL top-level box walk over these bytes during analysis, which
+// validates every declared size against the buffer and fails closed on a
+// mismatch -- unlike convert.Sniff's own fixed 16-byte magic-prefix peek.
+func isobmffTestBox(boxType string, payload []byte) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint32(b[0:4], uint32(8+len(payload)))
+	copy(b[4:8], boxType)
+	return append(b, payload...)
+}
+
+// minimalValidMP4Fixture is a small, genuinely valid, fully-parseable MP4:
+// ftyp (major brand "isom", matching convert.Sniff's own mp4VideoBrands) +
+// moov{mvhd} (a real, well-formed mvhd v0 box declaring timescale=1000,
+// duration=5000 -> 5.0s) + a small mdat. No trak/tkhd/stsd is included --
+// width/height/declared_codec fall back to an honest malformed_input, which
+// is irrelevant to what this fixture exists to prove (Coverage.Complete).
+// This is PR9R9's own reproduction fixture: a moov placed directly after
+// ftyp (head window covers it in ONE read), well within any default byte
+// budget -- the exact shape the orchestrator used to reproduce
+// `coverage.complete=false reason="work_ceiling_bytes"` against the real
+// HTTP handler before this quick task's fix.
+func minimalValidMP4Fixture() []byte {
+	mvhdPayload := make([]byte, 20)
+	binary.BigEndian.PutUint32(mvhdPayload[12:16], 1000) // timescale
+	binary.BigEndian.PutUint32(mvhdPayload[16:20], 5000) // duration -> 5.0s
+	mvhd := isobmffTestBox("mvhd", mvhdPayload)
+	moov := isobmffTestBox("moov", mvhd)
+	ftyp := isobmffTestBox("ftyp", []byte("isom\x00\x00\x02\x00isomiso2avc1mp41"))
+	mdat := isobmffTestBox("mdat", make([]byte, 32))
+
+	out := append([]byte{}, ftyp...)
+	out = append(out, moov...)
+	out = append(out, mdat...)
+	return out
+}
+
+// wavBytesFixture is a small, genuinely valid, fully-parseable WAV: RIFF/
+// WAVE header, a real 16-byte "fmt " chunk (PCM, 44.1kHz, mono, 16-bit), and
+// a "data" chunk -- mirrors internal/inspect/media_test.go's own
+// minimalWAVFixture (unexported to that package, duplicated here for the
+// same reason isobmffTestBox above is).
+func wavBytesFixture() []byte {
+	const sampleRate, channels, bitsPerSample, dataSize = 44100, 1, 16, 4410 // 0.1s
+	byteRate := sampleRate * channels * bitsPerSample / 8
+	blockAlign := channels * bitsPerSample / 8
+
+	fmtChunk := make([]byte, 16)
+	binary.LittleEndian.PutUint16(fmtChunk[0:2], 1) // PCM
+	binary.LittleEndian.PutUint16(fmtChunk[2:4], channels)
+	binary.LittleEndian.PutUint32(fmtChunk[4:8], sampleRate)
+	binary.LittleEndian.PutUint32(fmtChunk[8:12], uint32(byteRate))
+	binary.LittleEndian.PutUint16(fmtChunk[12:14], uint16(blockAlign))
+	binary.LittleEndian.PutUint16(fmtChunk[14:16], bitsPerSample)
+
+	buf := []byte("RIFF")
+	buf = append(buf, 0, 0, 0, 0) // RIFF size, unused by the analyzer
+	buf = append(buf, []byte("WAVE")...)
+	buf = append(buf, []byte("fmt ")...)
+	fmtLen := make([]byte, 4)
+	binary.LittleEndian.PutUint32(fmtLen, uint32(len(fmtChunk)))
+	buf = append(buf, fmtLen...)
+	buf = append(buf, fmtChunk...)
+	buf = append(buf, []byte("data")...)
+	dataLen := make([]byte, 4)
+	binary.LittleEndian.PutUint32(dataLen, dataSize)
+	buf = append(buf, dataLen...)
+	buf = append(buf, make([]byte, dataSize)...)
+	return buf
+}
+
+// TestInspectValidFilesWithinBudgetReportCompleteCoverage is PR9R9 task 1's
+// central regression proof, through the SAME production path the
+// orchestrator used to reproduce the defect (POST /v1/inspect, not
+// AnalyzeMedia/BuildReport called directly): a small, genuinely valid,
+// fully-parseable upload of EVERY family this endpoint dispatches to --
+// mp4 (media, the family that actually regressed), pdf, docx (container),
+// png (image), wav (media, the sibling audio path through the SAME
+// findMoov-free wavCharacteristics code, included to prove the fix is not
+// merely mp4-shaped) -- must report Coverage.Complete==true within the
+// default work-ceiling budget. Before this fix, the mp4 case alone failed
+// with the exact literal orchestrator reproduction:
+// `coverage.complete=false reason="work_ceiling_bytes"`. The other four
+// families were never affected by media.go's own double-charge (only
+// findMoov ever called tr.Consume directly), but pinning them here closes
+// the SAME class of regression for every family at once, per this task's
+// own requirement not to prove this only for MP4.
+func TestInspectValidFilesWithinBudgetReportCompleteCoverage(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		data     []byte
+	}{
+		{"mp4", "in.mp4", minimalValidMP4Fixture()},
+		{"wav", "in.wav", wavBytesFixture()},
+		{"pdf", "in.pdf", pdfBytesFixture()},
+		{"docx", "in.docx", docxFixture(t)},
+		{"png", "in.png", pngBytesFixture()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+			status, body := doInspect(t, srv, tc.filename, tc.data)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body=%s", status, body)
+			}
+			var resp inspectResponse
+			if err := json.Unmarshal(body, &resp); err != nil {
+				t.Fatalf("decode body: %v; body=%s", err, body)
+			}
+			if !resp.Coverage.Complete {
+				t.Errorf("Coverage.Complete = false (reason=%q), want true -- a small, valid, fully-parsed %s upload well within the default work-ceiling budget must never report selective coverage; REPRODUCED (before this fix, mp4 case): coverage.complete=false reason=%q", resp.Coverage.Reason, tc.name, inspect.ReasonWorkCeilingBytes)
+			}
+			if resp.Coverage.Reason != "" {
+				t.Errorf("Coverage.Reason = %q, want empty alongside Coverage.Complete=true", resp.Coverage.Reason)
+			}
+		})
+	}
+}
+
+// TestDispatchInspectFamiliesChargesMediaBudgetExactlyOnce is PR9R9 task 1's
+// own tracker-level proof (not merely reasoning, per this task's own
+// acceptance criteria) that the shared byte budget is spent EXACTLY ONCE,
+// by dispatchInspectFamilies alone, for a media (mp4) dispatch. budget is
+// sized generously relative to the tiny fixture but tight enough that a
+// SECOND charge -- media.go's own former findMoov->consumeActual call, on
+// top of dispatchInspectFamilies's own tr.Consume(maxBytes) -- would push
+// consumed past budget and flip the Tracker to exhausted. Remaining() == 0
+// afterward additionally pins dispatchInspectFamilies's own documented
+// "charge the full allowance" contract: exactly one Consume call, for the
+// entire captured maxBytes, no more and no less.
+func TestDispatchInspectFamiliesChargesMediaBudgetExactlyOnce(t *testing.T) {
+	data := minimalValidMP4Fixture()
+	f := memMultipartFile{bytes.NewReader(data)}
+
+	const budget = 1 << 16 // 64 KiB
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: budget, MaxDuration: time.Minute})
+
+	_ = dispatchInspectFamilies("mp4", nil, f, int64(len(data)), tr)
+
+	if tr.Exhausted() {
+		t.Fatalf("Tracker(MaxBytes=%d) exhausted after dispatching a %d-byte valid mp4 -- the shared budget was charged more than once (media.go's own findMoov reporting actual bytes read directly to tr, ON TOP OF dispatchInspectFamilies's own tr.Consume(maxBytes) charge); this is PR9R9's own live reproduction mechanism: coverage.complete=false reason=%q for a small valid mp4", int64(budget), len(data), inspect.ReasonWorkCeilingBytes)
+	}
+	if remaining := tr.Remaining(); remaining != 0 {
+		t.Fatalf("Remaining() = %d, want 0 -- dispatchInspectFamilies always charges its FULL maxBytes allowance (tr.Remaining() at call time) exactly once, by design; any other value means a charge was skipped or made more than once", remaining)
+	}
+}
+
 // TestInspectDetectsByMagicBytesNotExtension proves SC1: a PNG uploaded
 // under a .jpg filename is reported as format=png (magic bytes), carries
 // declared_format=jpg, and produces an extension_mismatch finding.
