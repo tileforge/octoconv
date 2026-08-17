@@ -4,8 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -1218,6 +1220,160 @@ func TestAnalyzeContainerNonWorkbookRootPublishesNoSheetCount(t *testing.T) {
 			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
 			if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
 				t.Errorf("sheet_count = %v, want absent or nil -- this part's root is not a workbook, so it supports no statement about a workbook's sheets; zero would be an answer where there is none", got)
+			}
+		})
+	}
+}
+
+// TestEncodingXMLLenienceOnMultipleRoots is the differential half of PR9R20
+// and the reason countSheetElements counts document roots ITSELF rather than
+// asking the stdlib to reject them. Every previous round of this same finding
+// was lost to reasoning ABOUT encoding/xml instead of measuring it, so the
+// measurement lives here as a test: if a future Go release starts rejecting
+// these documents, this test fails and says so, rather than the fix quietly
+// becoming redundant (or, worse, the assumption being re-adopted elsewhere).
+func TestEncodingXMLLenienceOnMultipleRoots(t *testing.T) {
+	const twoRoots = `<workbook><sheets><sheet/></sheets></workbook><ext><sheets><sheet/></sheets></ext>`
+
+	// A bare Token() loop -- countSheetElements's own shape -- walks straight
+	// through the second root and ends in a clean io.EOF.
+	dec := xml.NewDecoder(strings.NewReader(twoRoots))
+	topLevel, depth := 0, 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Token() returned %v -- this document is expected to be ACCEPTED by the token stream; the premise of the fix is that the stdlib does not reject it", err)
+		}
+		switch tok.(type) {
+		case xml.StartElement:
+			if depth == 0 {
+				topLevel++
+			}
+			depth++
+		case xml.EndElement:
+			depth--
+		}
+	}
+	if topLevel != 2 {
+		t.Errorf("top-level start elements = %d, want 2 -- measured behavior of encoding/xml changed; re-derive countSheetElements's root check against the new behavior instead of trusting this comment", topLevel)
+	}
+
+	// And xml.Unmarshal is no oracle either: it accepts the same document, so
+	// "let the stdlib decide well-formedness" is not an option that exists.
+	var v struct{}
+	if err := xml.Unmarshal([]byte(twoRoots), &v); err != nil {
+		t.Errorf("xml.Unmarshal returned %v, want nil -- if Unmarshal now rejects multiple roots it could serve as the oracle, and countSheetElements's hand-rolled root check should be reconsidered", err)
+	}
+}
+
+// TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount is PR9R20
+// (container.go:894), verbatim: "When a fully read part contains a second
+// top-level element, encoding/xml.Decoder accepts it as another element in
+// the token stream rather than rejecting it as a second document root, and
+// this EOF path still returns ok=true... publishes sheet_count: 2 with
+// complete coverage even though the workbook XML is not well-formed."
+//
+// The cases below are the CLASS, not just the reported instance: anything
+// outside a single document root -- another element or bare character data,
+// before the root as well as after it -- makes the part not well-formed XML,
+// and a count read out of a document that is not XML is a fabricated value.
+// Text before the root is included deliberately: it is the one shape the
+// stdlib accepts even under Decode-then-require-EOF, so nothing but this
+// function will ever catch it.
+func TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount(t *testing.T) {
+	for _, tc := range []struct{ name, workbook string }{
+		{
+			"the reported instance: a second root reusing SpreadsheetML names",
+			`<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook><ext><sheets><sheet name="ghost"/></sheets></ext>`,
+		},
+		{
+			"a second root in the SpreadsheetML namespace proper",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets></workbook><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="ghost"/></sheets></workbook>`,
+		},
+		{
+			"three top-level elements",
+			`<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook><a/><b/>`,
+		},
+		{
+			"a second root separated by whitespace",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook>\n<ext/>",
+		},
+		{
+			"non-whitespace character data after the root",
+			`<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>trailing`,
+		},
+		{
+			"CDATA after the root",
+			`<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook><![CDATA[stuff]]>`,
+		},
+		{
+			"non-whitespace character data before the root",
+			`leading<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := xlsxFixtureWithWorkbook(t, tc.workbook)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
+				t.Errorf("sheet_count = %v, want absent or nil -- this part is not well-formed XML, so no count read out of it is a fact about a workbook", got)
+			}
+			// Absent-or-nil is only half the goal. What a client reads is the
+			// REASON, and the reason has to blame the file (malformed_input),
+			// not our own budget (work_ceiling_bytes): this part was read in
+			// full, and no ceiling increase could ever make it well-formed.
+			if got := res.Characteristics["sheet_count_reason"]; got != string(ReasonMalformedInput) {
+				t.Errorf("sheet_count_reason = %v, want %q -- the part was read in full, so a ceiling reason would send the client chasing a limit that is not the problem", got, ReasonMalformedInput)
+			}
+		})
+	}
+}
+
+// TestAnalyzeContainerSingleRootWithLegalSurroundingsStillCounts is the
+// over-rejection guard on the test above. The XML prolog, a DOCTYPE, and
+// comments, PIs and whitespace on either side of the root are all legal
+// around a single document root, and every one of them reaches the token
+// stream -- so a root check written against "the first token is the root" or
+// "nothing follows the root" would break real workbooks. These counts must
+// still be published.
+func TestAnalyzeContainerSingleRootWithLegalSurroundingsStillCounts(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		workbook string
+		want     int
+	}{
+		{
+			"XML declaration before the root",
+			`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
+			1,
+		},
+		{
+			"comment and PI before the root",
+			`<?xml version="1.0"?><!-- generated --><?custom pi?><workbook><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`,
+			2,
+		},
+		{
+			"DOCTYPE before the root",
+			`<!DOCTYPE workbook><workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
+			1,
+		},
+		{
+			"whitespace, comment and PI after the root",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook>\n<!-- done -->\n<?custom pi?>\n",
+			1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := xlsxFixtureWithWorkbook(t, tc.workbook)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			got, ok := res.Characteristics["sheet_count"]
+			if !ok {
+				t.Fatalf("no sheet_count characteristic at all; got %+v -- this document has exactly one root and is well-formed", res.Characteristics)
+			}
+			if got != tc.want {
+				t.Errorf("sheet_count = %v, want %d -- the root check must reject extra ROOTS, not the prolog/comments/PIs/whitespace that legally surround one", got, tc.want)
 			}
 		})
 	}

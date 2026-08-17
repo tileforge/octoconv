@@ -880,6 +880,20 @@ func countSheetElements(data []byte) (count int, ok bool) {
 	// sheets" flag.
 	depth := 0
 	sheetsDepth := 0
+	// rootClosed records that the document's single root element has ended.
+	// PR9R20 (container.go:894): encoding/xml's token stream does NOT treat a
+	// second top-level element as a second document root -- it hands it over
+	// like any other element and still ends in a clean io.EOF, so
+	// <workbook>...</workbook><ext><sheets><sheet/></sheets></ext> published
+	// sheet_count: 2 with complete coverage for XML that is not well-formed.
+	//
+	// Measured before being fixed, not reasoned about (every earlier round of
+	// this finding was lost to the latter): xml.Unmarshal accepts the same
+	// document, so there is no stdlib oracle to delegate to -- the root count
+	// belongs to this function. See TestEncodingXMLLenienceOnMultipleRoots,
+	// which pins that measurement so a future Go release changing it fails
+	// loudly instead of silently.
+	rootClosed := false
 	for {
 		tok, err := dec.Token()
 		if err != nil {
@@ -897,6 +911,14 @@ func countSheetElements(data []byte) (count int, ok bool) {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if rootClosed {
+				// A second document root. ok=false rather than the count
+				// gathered so far: the caller turns that into
+				// malformed_input, which is what this part is -- publishing
+				// the tally instead would state a fact about a workbook
+				// read out of something that is not an XML document.
+				return 0, false
+			}
 			depth++
 			if !haveRoot {
 				haveRoot = true
@@ -948,6 +970,22 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				sheetsDepth = 0
 			}
 			depth--
+			if depth == 0 {
+				rootClosed = true
+			}
+		case xml.CharData:
+			// Character data outside the root element -- before it as well as
+			// after it -- is not well-formed XML either, and it is the ONE
+			// shape of this class no stdlib path rejects: a Decode-then-
+			// require-EOF oracle catches trailing text but accepts leading
+			// text, and Unmarshal accepts both (both measured). So this check
+			// exists here or nowhere. Whitespace is legal on either side of
+			// the root and must stay legal, along with the prolog, DOCTYPE,
+			// comments and PIs that reach this loop as their own token types
+			// and are correctly ignored.
+			if depth == 0 && len(bytes.TrimSpace(t)) > 0 {
+				return 0, false
+			}
 		}
 	}
 }
