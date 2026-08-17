@@ -105,6 +105,33 @@ func odtFixtureWithContent(t *testing.T, contentXML string) []byte {
 	return buf.Bytes()
 }
 
+// epubFixture builds a minimal, realistically shaped epub: the stored
+// mimetype entry that identifies the format, META-INF/container.xml, an OPF
+// package with a manifest, and one XHTML chapter carrying chapterXHTML
+// verbatim. Deliberately NOT an ODF shape -- an epub has no content.xml or
+// styles.xml, which is the whole point of PR9R22.
+func epubFixture(t *testing.T, chapterXHTML string) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mw, err := zw.CreateHeader(&zip.FileHeader{Name: "mimetype", Method: zip.Store})
+	if err != nil {
+		t.Fatalf("CreateHeader(mimetype): %v", err)
+	}
+	if _, err := mw.Write([]byte("application/epub+zip")); err != nil {
+		t.Fatalf("Write(mimetype): %v", err)
+	}
+	mustWriteZipEntry(t, zw, "META-INF/container.xml",
+		`<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`)
+	mustWriteZipEntry(t, zw, "OEBPS/content.opf",
+		`<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="c1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>`)
+	mustWriteZipEntry(t, zw, "OEBPS/chapter1.xhtml", chapterXHTML)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func duplicateRootPartDocxFixture(t *testing.T) []byte {
 	t.Helper()
 	buf := new(bytes.Buffer)
@@ -1223,6 +1250,72 @@ func TestAnalyzeContainerNonWorkbookRootPublishesNoSheetCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnalyzeContainerEPUBExternalReferenceIsUnknownNotClean is PR9R22
+// (container.go:473), verbatim: "For detected EPUB files, this only considers
+// the ODF-specific content.xml and styles.xml names, whereas EPUB external
+// links and resources normally appear in manifest-listed XHTML/SVG/CSS/package
+// parts and commonly use ordinary href attributes. Consequently an EPUB
+// chapter containing an external https: link has no candidate parts opened and
+// receives external_reference: clean."
+//
+// The false direction is what makes this worth a named test: the scan opened
+// NOTHING and published a clean bill of health. Until an epub-shaped scan
+// exists (deferred), the honest label is parser_unavailable -- D-01's own rule,
+// already applied to ODS sheet counts and mp3/ogg durations.
+func TestAnalyzeContainerEPUBExternalReferenceIsUnknownNotClean(t *testing.T) {
+	for _, tc := range []struct{ name, chapter string }{
+		{
+			"external https link in a manifest-listed chapter",
+			`<html xmlns="http://www.w3.org/1999/xhtml"><body><a href="https://example.com/tracker">x</a></body></html>`,
+		},
+		{
+			"external image src in a manifest-listed chapter",
+			`<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="http://example.com/pixel.gif"/></body></html>`,
+		},
+		{
+			"no external reference at all",
+			`<html xmlns="http://www.w3.org/1999/xhtml"><body><p>plain text</p></body></html>`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := epubFixture(t, tc.chapter)
+			res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			if _, ok := findingFor(res, CodeExternalReference); ok {
+				t.Errorf("got a Finding for external_reference -- no epub-shaped scan exists yet, so no finding can be claimed either way")
+			}
+			c, ok := checkFor(res, CodeExternalReference)
+			if !ok {
+				t.Fatal("no Check for CodeExternalReference")
+			}
+			if c.Status != StatusUnknown || c.Reason != ReasonParserUnavailable {
+				t.Errorf("Check(CodeExternalReference) = %+v, want unknown/parser_unavailable -- this scan opened no epub part at all, and a scan that examined nothing must never publish clean", c)
+			}
+		})
+	}
+}
+
+// TestAnalyzeContainerODFExternalReferenceStillScansAfterEPUBSplit is the
+// collateral-damage guard on the test above: dropping epub out of the ODF
+// candidate branch must not stop odt/ods/odp from being scanned.
+func TestAnalyzeContainerODFExternalReferenceStillScansAfterEPUBSplit(t *testing.T) {
+	t.Run("external href is still found", func(t *testing.T) {
+		data := odtFixtureWithContent(t, `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><office:body><text:a xmlns:text="urn:t" xlink:href="https://example.com/x">x</text:a></office:body></office:document-content>`)
+		res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		assertFinding(t, res, CodeExternalReference)
+	})
+	t.Run("no external href is still clean", func(t *testing.T) {
+		data := odtFixtureWithContent(t, `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><office:body><text:p xmlns:text="urn:t">plain</text:p></office:body></office:document-content>`)
+		res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		c, ok := checkFor(res, CodeExternalReference)
+		if !ok {
+			t.Fatal("no Check for CodeExternalReference")
+		}
+		if c.Status != StatusClean {
+			t.Errorf("Check(CodeExternalReference) = %+v, want clean -- odt still has content.xml as its candidate part and it carries no external href", c)
+		}
+	})
 }
 
 // TestEncodingXMLLenienceOnMultipleRoots is the differential half of PR9R20

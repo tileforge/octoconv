@@ -271,6 +271,32 @@ func appendBombResult(res *FamilyResult, totalUncompressed, bombThreshold uint64
 // the question, and continuing to scan after that would only spend more of
 // maxBytes' budget for an answer already known.
 func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, maxBytes int64, tr *Tracker) {
+	if format == "epub" {
+		// PR9R22 (container.go:473), verbatim: "For detected EPUB files, this
+		// only considers the ODF-specific content.xml and styles.xml names,
+		// whereas EPUB external links and resources normally appear in
+		// manifest-listed XHTML/SVG/CSS/package parts and commonly use
+		// ordinary href attributes. Consequently an EPUB chapter containing an
+		// external https: link has no candidate parts opened and receives
+		// external_reference: clean."
+		//
+		// Correct, and the direction matters: epub was carried along in the
+		// ODF branch of isExternalRefCandidate, so the scan looked for parts
+		// an epub does not contain, found no candidates, and called that a
+		// clean bill of health. A scan that examined nothing must never
+		// publish clean.
+		//
+		// Finding an epub's real external references needs a different scan
+		// from the one this function performs -- META-INF/container.xml to the
+		// OPF path, the OPF manifest to the XHTML/CSS/SVG parts, then ordinary
+		// href/src attributes rather than xlink -- with its own part and byte
+		// ceilings. That parser is not written, and D-01 already settled how
+		// this project labels that: an honest unknown, exactly like ODS sheet
+		// counts and mp3/ogg durations. Deferred as an item on this phase
+		// rather than improvised in a review round.
+		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: ReasonParserUnavailable})
+		return
+	}
 	st := scanExternalReferences(zr, format, maxBytes, tr)
 	switch {
 	case st.location != "":
@@ -469,7 +495,12 @@ func isExternalRefCandidate(name, format string) bool {
 	switch format {
 	case "docx", "xlsx", "pptx":
 		return strings.HasSuffix(name, ".rels") && strings.Contains(name, "_rels/")
-	case "odt", "ods", "odp", "epub":
+	case "odt", "ods", "odp":
+		// epub deliberately NOT in this list (PR9R22, container.go:473): these
+		// are ODF part names, an epub has neither, and pretending otherwise
+		// produced a candidate-free scan that published clean.
+		// appendExternalReferenceResult returns parser_unavailable for epub
+		// before this function is ever reached.
 		return name == "content.xml" || name == "styles.xml"
 	default:
 		return false
