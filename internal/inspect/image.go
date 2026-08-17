@@ -35,7 +35,42 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 	// findings. The `rest` reader that function returns is deliberately
 	// discarded here: AnalyzeImage operates on an io.ReaderAt, not a stream
 	// that needs to be handed further downstream.
-	width, height, _, err := convert.Dimensions(format, io.NewSectionReader(r, 0, size))
+	// PR9R23 (image.go:38), verbatim: "For an image larger than the inspection
+	// work allowance, convert.Dimensions reads up to its independent 64 KiB
+	// peek here, and scanImageMetadata then reads the full maxBytes allowance
+	// again; the dispatcher nevertheless records only maxBytes. This lets every
+	// such image exceed the advertised operation-wide byte ceiling."
+	//
+	// The fix is not to deduct one read from the other: the two windows OVERLAP
+	// (both start at offset 0), so deducting would double-charge the same bytes
+	// and, for any file smaller than the peek, leave the metadata scan a
+	// zero-byte window over bytes already in memory. This function now reads
+	// the window ONCE and uses it twice -- one bounded read, one charge, and
+	// the dimension parser can no longer help itself to 64 KiB the caller's
+	// ceiling never approved. The MP4 head/tail split in media.go stays a
+	// split precisely because those two windows are DISJOINT; these are not.
+	buf, windowTruncated, readFailed, noBytes := readImageWindow(r, size, maxBytes)
+
+	// The peek convert.Dimensions would have taken for itself, had it been
+	// handed the whole file. When the shared window is shorter than that, a
+	// parse failure is OUR ceiling rather than a fact about the image -- the
+	// PR9R16 misattribution, which naively clamping the peek would have
+	// reintroduced (a short peek fails as ErrDimensionsUnknown, and that is
+	// otherwise read as malformed_input).
+	dimPeek := int64(convert.DimensionPeekBytes)
+	if dimPeek > size {
+		dimPeek = size
+	}
+	dimWindowShort := int64(len(buf)) < dimPeek
+
+	var width, height uint32
+	err := error(convert.ErrDimensionsUnknown)
+	if !readFailed && len(buf) > 0 {
+		// bytes.Reader over the window this function already read, instead of a
+		// second SectionReader over the file: same parser, same answer for any
+		// input it was ever going to answer for, zero additional bytes.
+		width, height, _, err = convert.Dimensions(format, bytes.NewReader(buf))
+	}
 	dimsKnown := err == nil
 	// Both outcomes are an honest "we don't know", never a rejection --
 	// inspect only ever reports (D-03) -- but they do not say the same thing
@@ -50,6 +85,18 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 	dimsReason := Reason(ReasonMalformedInput)
 	if !dimsKnown && !errors.Is(err, convert.ErrDimensionsUnknown) {
 		dimsReason = ReasonReadFailed
+	}
+	switch {
+	case !dimsKnown && readFailed:
+		// The window read itself failed on bytes this scan meant to examine in
+		// full -- our disk, not the image (PR9R6 finding 2, now decided once
+		// here for BOTH answers instead of separately inside each).
+		dimsReason = ReasonReadFailed
+	case !dimsKnown && dimWindowShort && !noBytes:
+		// The parser was handed less than the peek it would have taken on its
+		// own, so its failure says nothing about the image: our ceiling did.
+		dimsReason = ReasonWorkCeilingBytes
+		tr.MarkCeilingHit()
 	}
 	if !dimsKnown {
 		c["width"] = nil
@@ -89,7 +136,9 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 		checks = append(checks, Check{Code: CodeImagePixelBombShape, Status: StatusClean})
 	}
 
-	loc, found, ceilingHit, malformedHit, readFailed := scanImageMetadata(format, r, size, maxBytes, tr)
+	// The SAME window the dimension parser just used -- no second read, so
+	// nothing to deduct (PR9R23).
+	loc, found, ceilingHit, malformedHit := scanImageMetadataIn(format, buf, windowTruncated, noBytes, tr)
 	switch {
 	case found:
 		sev, _ := SeverityOf(CodeMetadataPresent)
@@ -191,61 +240,72 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 // be returned directly from the readWindow call below -- once buf is in
 // hand, every per-format scanner operates on bytes that were genuinely
 // read, so none of them can produce it.
-func scanImageMetadata(format string, r io.ReaderAt, size, maxBytes int64, tr *Tracker) (location string, found bool, ceilingHit bool, malformedHit bool, readFailed bool) {
+// readImageWindow performs the ONE bounded read AnalyzeImage is allowed, and
+// classifies a failure to perform it. Both the dimension parser and the
+// metadata scan work from the buffer it returns, so the operation-wide byte
+// ceiling bounds one read rather than being spent once per consumer (PR9R23,
+// image.go:38).
+//
+//   - readFailed: the window was sized to cover the file IN FULL and the read
+//     still failed -- a real, non-EOF io.ReaderAt error, or a truthful empty
+//     read. Neither a fact about the file nor a preset budget: no bytes were
+//     examined at all (PR9R6 finding 2).
+//   - noBytes: there was nothing to read (size <= 0), so no read was even
+//     attempted -- a degenerate-input fact, not a failure and not a ceiling.
+//   - windowTruncated: the window did not cover the whole file, which is the
+//     byte-window half of "ceilingHit" (codex PR9 finding 3 / T-SLE-03). A
+//     non-positive maxBytes lands here too, and correctly so: refusing to read
+//     is our own budget decision, never the file's fault.
+func readImageWindow(r io.ReaderAt, size, maxBytes int64) (buf []byte, windowTruncated, readFailed, noBytes bool) {
 	winLen := maxBytes
 	if winLen > size {
 		winLen = size
 	}
-	// windowTruncated is the byte-window half of "ceilingHit" (codex PR9
-	// finding 3 / T-SLE-03, round 1): the bounded read itself did not cover
-	// the whole file.
-	windowTruncated := winLen < size
+	windowTruncated = winLen < size
 	buf, ok := readWindow(r, 0, winLen, size)
-	if !ok {
+	if ok {
+		return buf, windowTruncated, false, false
+	}
+	switch {
+	case windowTruncated:
+		return nil, true, false, false
+	case winLen <= 0:
+		return nil, false, false, true
+	default:
+		return nil, false, true, false
+	}
+}
+
+// scanImageMetadataIn is the per-format half of the old scanImageMetadata: it
+// classifies bytes ALREADY read (see readImageWindow) and never reads any of
+// its own, which is what keeps this family's byte accounting to a single
+// charge.
+func scanImageMetadataIn(format string, buf []byte, windowTruncated, noBytes bool, tr *Tracker) (location string, found bool, ceilingHit bool, malformedHit bool) {
+	if len(buf) == 0 {
 		switch {
 		case windowTruncated:
-			// OUR OWN byte window (winLen < size, which also covers a
-			// non-positive maxBytes) is why nothing was read -- the
-			// pre-existing ceiling classification, unchanged.
-			return "", false, true, false, false
-		case winLen <= 0:
-			// size <= 0: there is no file (or a non-positive size claim)
-			// to read at all. readWindow's own off>=size guard fires
-			// before it ever calls ReadAt, so no read was even attempted
-			// -- this is a degenerate-input fact, not an operational read
-			// failure and not this scan's own ceiling. Deliberately
-			// preserves this scan's prior behavior for a genuinely empty
-			// upload rather than mislabeling it as a read failure that
-			// never actually happened.
-			return "", false, false, false, false
-		default:
-			// winLen > 0 and NOT windowTruncated: this window was sized to
-			// cover the WHOLE file, so readWindow's failure here is
-			// neither our own ceiling nor a degenerate zero-size input --
-			// it is readWindow's own io.ReaderAt.ReadAt call failing (a
-			// real, non-EOF error, or a truthful empty read) on bytes this
-			// scan otherwise intended to examine in full.
-			return "", false, false, false, true
+			return "", false, true, false
+		case noBytes:
+			// Preserves this scan's long-standing behavior for a genuinely
+			// empty upload rather than mislabeling it as a read failure that
+			// never happened.
+			return "", false, false, false
 		}
 	}
 	switch format {
 	case "jpg", "jpeg":
-		loc, f, c, m := composeMetadataStatus(scanJPEGMetadata(buf, tr), windowTruncated)
-		return loc, f, c, m, false
+		return composeMetadataStatus(scanJPEGMetadata(buf, tr), windowTruncated)
 	case "png":
-		loc, f, c, m := composeMetadataStatus(scanPNGMetadata(buf, tr), windowTruncated)
-		return loc, f, c, m, false
+		return composeMetadataStatus(scanPNGMetadata(buf, tr), windowTruncated)
 	case "tiff":
-		loc, f, c, m := scanTIFFMetadata(buf, windowTruncated)
-		return loc, f, c, m, false
+		return scanTIFFMetadata(buf, windowTruncated)
 	case "webp":
-		loc, f, c, m := composeMetadataStatus(scanRIFFChunkMetadata(buf, tr), windowTruncated)
-		return loc, f, c, m, false
+		return composeMetadataStatus(scanRIFFChunkMetadata(buf, tr), windowTruncated)
 	case "heic":
 		loc, ok := scanISOBMFFMetadataTokens(buf)
-		return loc, ok, windowTruncated, false, false
+		return loc, ok, windowTruncated, false
 	default:
-		return "", false, windowTruncated, false, false
+		return "", false, windowTruncated, false
 	}
 }
 

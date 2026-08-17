@@ -1950,3 +1950,57 @@ func TestInspectZipRecordOvershootIsMalformedNotTooLarge(t *testing.T) {
 		t.Fatalf("outcome = %v, want zipBoundMalformed -- this archive is a few hundred bytes; raising any ceiling cannot make a record fit inside a directory it overruns", outcome)
 	}
 }
+
+// TestInspectCFBWalkStaysInsideTheWorkAllowance is the largest instance of
+// PR9R23's class and the one the finding did not name: convert.ClassifyCFB
+// takes no byte allowance of its own and its bounded directory walk can read up
+// to ~16 MiB (cfbMaxDirSectors x a 4096-byte sector), while
+// dispatchInspectFamilies charges the operation's allowance -- 8 MiB by default
+// -- and reports it as enforced.
+//
+// With the allowance set below one sector, the walk cannot complete, and the
+// point of the test is WHICH answer that produces: not an ole_cfb_unclassified
+// finding (a structural verdict about bytes nobody read), but all three codes
+// unknown with work_ceiling_bytes, and a report whose coverage says partial.
+func TestInspectCFBWalkStaysInsideTheWorkAllowance(t *testing.T) {
+	resolver := newFakeResolver()
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		InspectMaxWorkBytes: 64, // far below one 512-byte CFB sector
+	})
+
+	cfb := append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, make([]byte, 4096)...)
+	status, body := doInspect(t, srv, "legacy.doc", cfb)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v; body=%s", err, body)
+	}
+
+	for _, f := range resp.Findings {
+		switch f.Code {
+		case inspect.CodeOLECFBLegacy, inspect.CodeOLECFBEncrypted, inspect.CodeOLECFBUnclassified:
+			t.Errorf("got Finding %+v -- the directory walk was cut short by our own byte ceiling, so no CFB class was established; publishing one states a conclusion drawn from bytes that were never read", f)
+		}
+	}
+	for _, code := range []inspect.Code{inspect.CodeOLECFBLegacy, inspect.CodeOLECFBEncrypted, inspect.CodeOLECFBUnclassified} {
+		var found *inspect.Check
+		for i := range resp.Checks {
+			if resp.Checks[i].Code == code {
+				found = &resp.Checks[i]
+			}
+		}
+		if found == nil {
+			t.Errorf("no Check for %s", code)
+			continue
+		}
+		if found.Status != inspect.StatusUnknown || found.Reason != inspect.ReasonWorkCeilingBytes {
+			t.Errorf("Check(%s) = %+v, want unknown/work_ceiling_bytes", code, *found)
+		}
+	}
+	if resp.Coverage.Complete {
+		t.Error("Coverage.Complete = true -- the CFB walk was truncated by our ceiling, so this inspection is not complete")
+	}
+}

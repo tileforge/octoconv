@@ -1162,7 +1162,17 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 	case inspectImageFormats[detected]:
 		families = append(families, inspect.AnalyzeImage(detected, file, size, maxBytes, inspectPixelBombFindingThreshold, tr))
 	case detected == inspectOLECFBFormat:
-		families = append(families, cfbFamilyResult(convert.ClassifyCFB(file, size)))
+		// convert.ClassifyCFB takes no byte allowance of its own -- it is
+		// shared with the conversion path, where there is none -- and its
+		// bounded directory walk can read up to ~16 MiB (cfbMaxDirSectors x a
+		// 4096-byte sector), well past this operation's 8 MiB default ceiling
+		// that tr.Consume below then reports as enforced. PR9R23 named this
+		// class in pdf.go and image.go; this was the largest instance of it and
+		// was not in the finding. Bounding the reader from the outside keeps
+		// ClassifyCFB's own signature honest for both of its callers.
+		budgeted := inspect.NewBudgetedReaderAt(file, maxBytes)
+		class := convert.ClassifyCFB(budgeted, size)
+		families = append(families, cfbFamilyResult(class, budgeted.Exceeded(), tr))
 	default:
 		return families
 	}
@@ -1180,7 +1190,24 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 // IS exactly one of the three classes, never more than one -- the other two
 // report not_applicable, not unknown, because there is nothing ambiguous
 // about which class this file was classified into.
-func cfbFamilyResult(class convert.CFBClass) inspect.FamilyResult {
+//
+// budgetExceeded is the one case where that last sentence does not hold: the
+// walk was cut short by this operation's byte ceiling, so the file was NOT
+// classified -- it merely was not finished. Publishing CFBUnclassified as a
+// Finding there would state a structural conclusion drawn from bytes nobody
+// read, which is the whole class PR9R23 belongs to; all three codes report
+// unknown/work_ceiling_bytes instead, and the tracker is marked so the
+// report's coverage says partial.
+func cfbFamilyResult(class convert.CFBClass, budgetExceeded bool, tr *inspect.Tracker) inspect.FamilyResult {
+	if budgetExceeded {
+		tr.MarkCeilingHit()
+		res := inspect.FamilyResult{}
+		for _, code := range []inspect.Code{inspect.CodeOLECFBLegacy, inspect.CodeOLECFBEncrypted, inspect.CodeOLECFBUnclassified} {
+			res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes})
+		}
+		return res
+	}
+
 	var findingCode inspect.Code
 	switch class {
 	case convert.CFBLegacy:

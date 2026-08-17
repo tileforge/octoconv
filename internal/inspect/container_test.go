@@ -1551,3 +1551,36 @@ func TestAnalyzeContainerSingleRootWithLegalSurroundingsStillCounts(t *testing.T
 		})
 	}
 }
+
+// TestAnalyzeContainerSheetCountSharesOneByteBudget is PR9R23's class in this
+// file, which the finding did not name: the external-reference scan honored
+// maxBytes while extractXLSXSheetCount read up to another maxRelsPartBytes
+// (256 KiB) that nothing accounted for, so an xlsx could cost maxBytes + 256 KiB
+// while dispatchInspectFamilies charged maxBytes.
+//
+// Byte-counting the reader is not the instrument here (archive/zip's own
+// central-directory reads are outside this allowance by design), so the property
+// is pinned where it is observable: with the allowance already spent, the sheet
+// count must report OUR ceiling rather than a number read on credit.
+func TestAnalyzeContainerSheetCountSharesOneByteBudget(t *testing.T) {
+	workbook := `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/><sheet name="B" sheetId="2"/></sheets></workbook>`
+	data := xlsxFixtureWithWorkbook(t, workbook)
+
+	t.Run("an allowance smaller than the workbook part is a ceiling", func(t *testing.T) {
+		// 8 bytes: a real allowance, far below the workbook part.
+		res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), 8, 1<<30, nil)
+		if got, ok := res.Characteristics["sheet_count"]; ok && got != nil {
+			t.Errorf("sheet_count = %v, want absent or nil -- the part could not be read inside the allowance, so any count would have been read on credit", got)
+		}
+		if got := res.Characteristics["sheet_count_reason"]; got != string(ReasonWorkCeilingBytes) {
+			t.Errorf("sheet_count_reason = %v, want %q -- the workbook is fine; our budget is what stopped us", got, ReasonWorkCeilingBytes)
+		}
+	})
+
+	t.Run("a sufficient allowance still publishes the real count", func(t *testing.T) {
+		res := AnalyzeContainer(bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		if got := res.Characteristics["sheet_count"]; got != 2 {
+			t.Errorf("sheet_count = %v, want 2 -- sharing the budget must not cost a correct count when the budget is there", got)
+		}
+	})
+}

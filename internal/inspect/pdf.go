@@ -115,10 +115,25 @@ var pdfRiskTokens = []pdfRiskToken{
 
 // AnalyzePDF inspects r (size bytes long) for the closed set of PDF-domain
 // finding codes plus the page_count/pdf_version/uses_compressed_object_streams
-// characteristics, spending at most maxBytes reading the head of the file
-// plus, when the file is larger than maxBytes, one additional
-// defaultTailWindow-sized read of the tail (the trailer is conventionally
-// there). It never returns an error: any parse failure is expressed as an
+// characteristics, spending at most maxBytes IN TOTAL: for a file larger than
+// maxBytes the allowance is SPLIT between a head window and one tail window
+// (the trailer is conventionally at the tail), never spent twice.
+//
+// PR9R23 (pdf.go:172), verbatim: "For any PDF larger than maxBytes, the head
+// read has already consumed the full allowance, but this performs another tail
+// read of up to 64 KiB. dispatchInspectFamilies subsequently charges only
+// maxBytes, so the operation can exceed its configured shared byte ceiling
+// while accounting still reports that ceiling as enforced; with a small custom
+// ceiling, the overshoot can be many times the configured limit."
+//
+// The split mirrors media.go's own findMoov fix for the identical defect,
+// including the ratio: at most a quarter of the allowance is reserved for the
+// tail, so the head -- where a PDF's header, and most of its risk tokens, live
+// -- keeps the bulk of it. The caller charges maxBytes exactly once
+// (dispatchInspectFamilies), and after this split that charge is the truth
+// rather than an underestimate.
+//
+// It never returns an error: any parse failure is expressed as an
 // unknown-status Check, not a Go error -- D-01's "unknown is a correct
 // answer, not a failure" applies here exactly as it does everywhere else in
 // this package.
@@ -139,7 +154,20 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		return malformedPDFResult(res)
 	}
 
+	// The allowance is carved up BEFORE the first read, so no window can be
+	// sized against bytes another window has already spent (PR9R23).
+	// tailReserve is zero unless a tail read will actually happen, i.e. unless
+	// the file is larger than the allowance -- when it fits, the head window
+	// covers it end to end and the tail would only re-read bytes in hand.
 	headLen := maxBytes
+	var tailReserve int64
+	if size > maxBytes {
+		tailReserve = maxBytes / 4
+		if tailReserve > defaultTailWindow {
+			tailReserve = defaultTailWindow
+		}
+		headLen = maxBytes - tailReserve
+	}
 	if size < headLen {
 		headLen = size
 	}
@@ -164,12 +192,16 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	var tail []byte
 	var tailOK bool
 	var tailOff int64
-	if truncated {
-		tailOff = size - defaultTailWindow
+	if truncated && tailReserve > 0 {
+		// tailReserve, not defaultTailWindow: the window this read is allowed
+		// is what was carved out for it above, which is the whole point of the
+		// split. A tiny configured ceiling therefore yields a tiny tail window
+		// rather than a 64 KiB read the budget never accounted for.
+		tailOff = size - tailReserve
 		if tailOff < 0 {
 			tailOff = 0
 		}
-		tail, tailOK = readWindow(r, tailOff, defaultTailWindow, size)
+		tail, tailOK = readWindow(r, tailOff, tailReserve, size)
 	}
 
 	// STEP 1 (D-02a) -- the compression-signal detector runs FIRST, before

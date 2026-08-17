@@ -175,8 +175,25 @@ func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64,
 
 	appendMacroResult(&res, zr, cr.HasMacro)
 	appendBombResult(&res, cr.TotalUncompressed, bombThreshold)
-	appendExternalReferenceResult(&res, zr, cr.Format, maxBytes, tr)
-	setSheetAndPageCharacteristics(&res, zr, cr.Format, tr)
+	// ONE budget, shared by both readers below, decremented in place as parts
+	// are read. PR9R23 found this class in pdf.go and image.go; this file had
+	// it too, unreported: the external-reference scan honored maxBytes while
+	// extractXLSXSheetCount read up to another maxRelsPartBytes (256 KiB) that
+	// nothing accounted for, so an xlsx could cost maxBytes + 256 KiB while
+	// dispatchInspectFamilies charged maxBytes. A pointer rather than two
+	// separate allowances because "how much may this operation read" is one
+	// question with one answer, and the second reader has to see what the
+	// first one spent.
+	budget := maxBytes
+	if budget <= 0 {
+		// A caller passing maxBytes<=0 still gets ONE part's worth, never
+		// zero -- zero would make every container's checks spuriously report a
+		// ceiling hit. Normalized HERE, once, so both readers share the same
+		// floor (it used to live inside scanExternalReferences alone).
+		budget = maxRelsPartBytes
+	}
+	appendExternalReferenceResult(&res, zr, cr.Format, &budget, tr)
+	setSheetAndPageCharacteristics(&res, zr, cr.Format, &budget, tr)
 
 	return res
 }
@@ -270,7 +287,7 @@ func appendBombResult(res *FamilyResult, totalUncompressed, bombThreshold uint64
 // match found stops the scan immediately: one finding is enough to answer
 // the question, and continuing to scan after that would only spend more of
 // maxBytes' budget for an answer already known.
-func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, maxBytes int64, tr *Tracker) {
+func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format string, budget *int64, tr *Tracker) {
 	if format == "epub" {
 		// PR9R22 (container.go:473), verbatim: "For detected EPUB files, this
 		// only considers the ODF-specific content.xml and styles.xml names,
@@ -297,7 +314,7 @@ func appendExternalReferenceResult(res *FamilyResult, zr *zip.Reader, format str
 		res.Checks = append(res.Checks, Check{Code: CodeExternalReference, Status: StatusUnknown, Reason: ReasonParserUnavailable})
 		return
 	}
-	st := scanExternalReferences(zr, format, maxBytes, tr)
+	st := scanExternalReferences(zr, format, budget, tr)
 	switch {
 	case st.location != "":
 		sev, _ := SeverityOf(CodeExternalReference)
@@ -373,12 +390,8 @@ type externalRefStatus struct {
 // io.LimitReader boundary trap) is an artifact of that truncation, not new
 // information about the file -- truncatedAnyPart already accounts for it,
 // and takes priority over malformedAnyPart below for exactly that reason.
-func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *Tracker) externalRefStatus {
+func scanExternalReferences(zr *zip.Reader, format string, budget *int64, tr *Tracker) externalRefStatus {
 	partsOpened := 0
-	budgetLeft := maxBytes
-	if budgetLeft <= 0 {
-		budgetLeft = maxRelsPartBytes // a caller passing maxBytes<=0 still gets ONE part's worth of budget, never zero -- zero would make every container's external-reference check spuriously "ceiling hit".
-	}
 	truncatedAnyPart := false
 	malformedAnyPart := false
 
@@ -422,14 +435,14 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *T
 			tr.MarkCeilingHit()
 			continue
 		}
-		if budgetLeft <= 0 {
+		if *budget <= 0 {
 			tr.MarkCeilingHit()
 			return externalRefStatus{ceiling: true}
 		}
 
 		limit := int64(maxRelsPartBytes)
-		if budgetLeft < limit {
-			limit = budgetLeft
+		if *budget < limit {
+			limit = *budget
 		}
 
 		rc, operr := f.Open()
@@ -448,7 +461,7 @@ func scanExternalReferences(zr *zip.Reader, format string, maxBytes int64, tr *T
 		}
 		data, readErr := io.ReadAll(io.LimitReader(rc, limit))
 		rc.Close()
-		budgetLeft -= int64(len(data))
+		*budget -= int64(len(data))
 
 		switch containsExternalReference(data, format) {
 		case xmlScanFound:
@@ -741,10 +754,10 @@ func hrefAttrIsExternal(attr xml.Attr) bool {
 // container). Reporting an honest nil here is not laziness, it is the same
 // discipline PROG-V2-02 already applies elsewhere in this project: a
 // guessed number is worse than an admitted unknown.
-func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format string, tr *Tracker) {
+func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format string, budget *int64, tr *Tracker) {
 	switch format {
 	case "xlsx":
-		if n, ok, ceilingHit := extractXLSXSheetCount(zr, tr); ok {
+		if n, ok, ceilingHit := extractXLSXSheetCount(zr, budget, tr); ok {
 			res.Characteristics["sheet_count"] = n
 		} else {
 			// codex PR9 round 2 audit finding (container.go, found applying
@@ -801,12 +814,25 @@ func setSheetAndPageCharacteristics(res *FamilyResult, zr *zip.Reader, format st
 // truncated prefix would have silently omitted trailing sheets, exactly the
 // finding's own worked example ("a ZIP entry declaring exactly
 // maxRelsPartBytes but decompressing to more data").
-func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, ceilingHit bool) {
+func extractXLSXSheetCount(zr *zip.Reader, budget *int64, tr *Tracker) (count int, ok bool, ceilingHit bool) {
 	for _, f := range zr.File {
 		if f.Name != "xl/workbook.xml" {
 			continue
 		}
-		if f.UncompressedSize64 > uint64(maxRelsPartBytes) {
+		// PR9R23's class, in this file: this read used to be bounded ONLY by
+		// maxRelsPartBytes, so it spent up to 256 KiB that the operation-wide
+		// allowance never accounted for. It now draws from the same budget the
+		// external-reference scan drew from, and an exhausted budget is a
+		// ceiling -- our own limit, never a claim about the workbook.
+		if *budget <= 0 {
+			tr.MarkCeilingHit()
+			return 0, false, true
+		}
+		partLimit := int64(maxRelsPartBytes)
+		if *budget < partLimit {
+			partLimit = *budget
+		}
+		if f.UncompressedSize64 > uint64(partLimit) {
 			tr.MarkCeilingHit()
 			return 0, false, true
 		}
@@ -815,13 +841,14 @@ func extractXLSXSheetCount(zr *zip.Reader, tr *Tracker) (count int, ok bool, cei
 			tr.MarkCeilingHit()
 			return 0, false, true
 		}
-		data, readErr := io.ReadAll(io.LimitReader(rc, maxRelsPartBytes+1))
+		data, readErr := io.ReadAll(io.LimitReader(rc, partLimit+1))
 		rc.Close()
+		*budget -= int64(len(data))
 		if readErr != nil {
 			tr.MarkCeilingHit()
 			return 0, false, true
 		}
-		if int64(len(data)) > maxRelsPartBytes {
+		if int64(len(data)) > partLimit {
 			// The extra byte came back: this part's real content runs past
 			// what this scan is willing to read. A count computed from the
 			// maxRelsPartBytes-byte prefix could silently omit sheets
