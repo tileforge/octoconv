@@ -403,6 +403,101 @@ func TestAnalyzeImageJPEGReachingEOIWithNoMetadataIsClean(t *testing.T) {
 	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
 }
 
+// jpegScan builds one SOS segment plus entropy-coded data, including a
+// stuffed 0xFF00 pair and a restart marker -- the two byte sequences inside a
+// scan that look like markers and are not. A walk that resumes marker
+// processing after a scan has to step over both.
+func jpegScan() []byte {
+	out := jpegSegment(0xDA, []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00})
+	out = append(out, 0x12, 0x34, 0xFF, 0x00, 0x56) // 0xFF00: a literal 0xFF in the compressed stream
+	out = append(out, 0xFF, 0xD2, 0x78, 0x9A)       // RST2: a restart marker belonging to the scan
+	return out
+}
+
+// TestAnalyzeImageJPEGMetadataAfterScanIsFound is PR9R22 (image.go:355),
+// verbatim: "For a multi-scan JPEG, or any JPEG with an APP1 segment between
+// an entropy-coded scan and EOI, returning at the first SOS reports
+// metadata_present: clean without examining the later APP1 Exif/XMP marker."
+//
+// Both shapes the finding names are covered, plus the two in-scan sequences
+// that must not be mistaken for markers (stuffed 0xFF00 and RSTn, in
+// jpegScan above): SOS ends the current header walk, not the file.
+func TestAnalyzeImageJPEGMetadataAfterScanIsFound(t *testing.T) {
+	exif := append([]byte("Exif\x00\x00"), []byte{0x4D, 0x4D, 0, 0}...)
+	xmp := append([]byte("http://ns.adobe.com/xap/1.0/\x00"), []byte("<x:xmpmeta/>")...)
+
+	for _, tc := range []struct {
+		name  string
+		build func() []byte
+	}{
+		{
+			"Exif APP1 between the scan and EOI",
+			func() []byte {
+				d := []byte{0xFF, 0xD8}
+				d = append(d, jpegScan()...)
+				d = append(d, jpegSegment(0xE1, exif)...)
+				return append(d, 0xFF, 0xD9)
+			},
+		},
+		{
+			"XMP APP1 after the second scan of a progressive JPEG",
+			func() []byte {
+				d := []byte{0xFF, 0xD8}
+				d = append(d, jpegScan()...)
+				d = append(d, jpegScan()...)
+				d = append(d, jpegSegment(0xE1, xmp)...)
+				return append(d, 0xFF, 0xD9)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.build()
+			res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+			assertFinding(t, res, CodeMetadataPresent)
+		})
+	}
+}
+
+// TestAnalyzeImageJPEGScanThenEOIWithNoMetadataIsStillClean is the
+// over-rejection guard on the test above: stepping over a scan must not turn
+// an ordinary metadata-free photograph into unknown. It also pins the
+// CEILING behavior that made the IndexByte skip necessary -- entropy-coded
+// data is charged to the marker walk as one segment, not one iteration per
+// compressed byte, so a scan larger than maxMetadataMarkerScanIterations
+// bytes still reports clean rather than work_ceiling_bytes.
+func TestAnalyzeImageJPEGScanThenEOIWithNoMetadataIsStillClean(t *testing.T) {
+	data := []byte{0xFF, 0xD8}
+	data = append(data, jpegSegment(0xDA, []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00})...)
+	// Compressed data far longer than the iteration ceiling, with stuffed
+	// 0xFF bytes sprinkled through it.
+	for i := 0; i < maxMetadataMarkerScanIterations*4; i++ {
+		if i%64 == 0 {
+			data = append(data, 0xFF, 0x00)
+			continue
+		}
+		data = append(data, byte(i))
+	}
+	data = append(data, 0xFF, 0xD9) // EOI
+
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusClean)
+}
+
+// TestAnalyzeImageJPEGScanRunningPastBufferIsMalformedNotClean pins the other
+// half: entropy-coded data that runs to the end of the buffer with no marker
+// behind it means EOI was never reached, which is the same
+// "never reached the format's own natural end" verdict every other structural
+// exit in this scanner returns -- never clean.
+func TestAnalyzeImageJPEGScanRunningPastBufferIsMalformedNotClean(t *testing.T) {
+	data := []byte{0xFF, 0xD8}
+	data = append(data, jpegSegment(0xDA, []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00})...)
+	data = append(data, 0x11, 0x22, 0x33, 0x44) // compressed data, then nothing: no EOI
+
+	res := AnalyzeImage("jpg", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+}
+
 // TestAnalyzeImageJPEGMissingSOIIsMalformedNotClean is the defect's own
 // worked example applied to JPEG's magic bytes: a buffer that never even
 // starts with a valid SOI marker must not be reported the same way a

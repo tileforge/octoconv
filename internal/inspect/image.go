@@ -174,7 +174,7 @@ func AnalyzeImage(format string, r io.ReaderAt, size int64, maxBytes int64, pixe
 //     operational inability to read at all.
 //   - malformedHit: a per-format scanner read every byte it was given,
 //     within every one of ITS OWN local ceilings, and STILL could not reach
-//     the format's own natural end (JPEG's EOI/SOS; PNG's and WebP's chunk
+//     the format's own natural end (JPEG's EOI; PNG's and WebP's chunk
 //     walk consuming the buffer exactly; TIFF's byte-order header check) --
 //     a declared length/size running past the buffer, a header that fails
 //     its own structural check, or leftover bytes too short to form
@@ -300,8 +300,14 @@ func composeMetadataStatus(st imageMetadataStatus, windowTruncated bool) (locati
 // because APP1 can appear before or after other APPn segments.
 //
 // Every exit below is classified against JPEG's own natural end -- EOI
-// (0xD9) or SOS (0xDA), the only two markers that legitimately end the
-// marker-segment stream this walk understands (quick/260811-r5p task 4,
+// (0xD9), the ONE marker that legitimately ends the marker-segment stream
+// this walk understands. SOS (0xDA) was treated as a second natural end
+// until PR9R22 (image.go:355) pointed out that it ends only the current
+// header walk: decoders resume marker processing after each scan, so a
+// progressive JPEG's later scans, and any APP1 segment between a scan and
+// EOI, sat entirely unexamined behind a `clean` verdict. The walk now steps
+// over each scan's entropy-coded data (skipEntropyCodedData) and keeps going
+// (quick/260811-r5p task 4,
 // PR9R5-SWEEP-CLASSES(б), applying the exact rule task 2 already applied to
 // container.go's XML parsing: only a walk that reaches the FORMAT'S OWN
 // natural end may report clean):
@@ -310,19 +316,59 @@ func composeMetadataStatus(st imageMetadataStatus, windowTruncated bool) (locati
 //     declared segment length running past b are all a STRUCTURAL problem
 //     with the bytes this scan was given, not a "scanned everything, found
 //     nothing" miss -- each now reports malformed, never the same
-//     zero-value a genuine EOI/SOS-terminated miss reports.
-//   - Running out of buffer without ever hitting EOI/SOS (the loop
-//     condition failing, with no earlier explicit return) is the SAME
-//     class: a real, complete JPEG always reaches SOS before its
-//     entropy-coded data and EOI at the very end, so falling off the end of
-//     b without seeing either means this walk never reached the format's
-//     own end -- also malformed.
-//   - ceilingHit (maxMetadataMarkerScanIterations firing before EOI/SOS) is
+//     zero-value a genuine EOI-terminated miss reports.
+//   - Running out of buffer without ever hitting EOI (the loop condition
+//     failing, with no earlier explicit return) is the SAME class: a real,
+//     complete JPEG ends with EOI, so falling off the end of b without
+//     seeing it means this walk never reached the format's own end -- also
+//     malformed. Entropy-coded data that runs to the end of the buffer with
+//     no marker behind it is the same verdict, reached one level down in
+//     skipEntropyCodedData.
+//   - ceilingHit (maxMetadataMarkerScanIterations firing before EOI) is
 //     kept as its OWN, separate outcome from malformed for exactly the
 //     reason container.go's ceiling/malformed split exists: a fully-
 //     buffered JPEG can place 4096+ harmless marker segments before an
 //     APP1 Exif/XMP segment, and that is THIS scan's own resource limit,
 //     never a fact about the file (codex PR9 round 2, image.go:209).
+//
+// skipEntropyCodedData advances past one JPEG scan's entropy-coded data,
+// starting at from (the first byte after the SOS header), and returns the
+// offset of the next real marker's 0xFF byte.
+//
+// Inside a scan a 0xFF byte is always followed by 0x00 (a stuffed byte,
+// escaping a literal 0xFF in the compressed stream), by RSTn (0xD0-0xD7, a
+// restart marker belonging to the scan), or by 0xFF as fill; anything else
+// begins a real marker and ends the scan. ok=false means the buffer ran out
+// with no such marker, i.e. this scan is the last thing in b and EOI was
+// never reached.
+//
+// Skipping with IndexByte rather than one byte per outer-loop iteration is
+// what keeps the marker-segment ceiling meaningful: charging one iteration per
+// compressed byte would turn every ordinary photograph into
+// work_ceiling_bytes. The offset only ever moves forward, so the whole scan
+// stays a single linear pass over b.
+func skipEntropyCodedData(b []byte, from int) (next int, ok bool) {
+	for j := from; j >= 0 && j < len(b); {
+		k := bytes.IndexByte(b[j:], 0xFF)
+		if k < 0 {
+			return 0, false
+		}
+		j += k
+		if j+1 >= len(b) {
+			return 0, false
+		}
+		switch nxt := b[j+1]; {
+		case nxt == 0x00, nxt >= 0xD0 && nxt <= 0xD7:
+			j += 2 // stuffed byte, or a restart marker inside the scan
+		case nxt == 0xFF:
+			j++ // fill byte before the next marker
+		default:
+			return j, true
+		}
+	}
+	return 0, false
+}
+
 func scanJPEGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	if len(b) < 4 || b[0] != 0xFF || b[1] != 0xD8 {
 		// Not even a parseable SOI marker within the bytes this scan
@@ -349,9 +395,9 @@ func scanJPEGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 			i += 2 // standalone markers: TEM, RSTn, stray SOI -- no length field
 			continue
 		}
-		if marker == 0xD9 || marker == 0xDA {
-			// EOI or SOS reached: JPEG's own natural end, genuinely clean
-			// if no metadata marker was seen before this point.
+		if marker == 0xD9 {
+			// EOI: JPEG's own natural end, genuinely clean if no metadata
+			// marker was seen before this point.
 			return imageMetadataStatus{}
 		}
 		if i+4 > len(b) {
@@ -370,9 +416,47 @@ func scanJPEGMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 				return imageMetadataStatus{location: "JPEG APP1 XMP"}
 			}
 		}
+		if marker == 0xDA { // SOS
+			// PR9R22 (image.go:355), verbatim: "For a multi-scan JPEG, or any
+			// JPEG with an APP1 segment between an entropy-coded scan and EOI,
+			// returning at the first SOS reports metadata_present: clean
+			// without examining the later APP1 Exif/XMP marker. JPEG decoders
+			// resume marker processing after each scan, so SOS ends only the
+			// current header walk, not the file's possible metadata."
+			//
+			// Correct, and the doc comment above was wrong in the same words:
+			// SOS is not one of JPEG's natural ends. EOI is the only one. So
+			// the walk now steps OVER the entropy-coded data instead of
+			// stopping at it, and keeps looking for markers -- progressive
+			// JPEGs have several scans, and an APP1 segment may legally sit
+			// between any two of them or between the last scan and EOI.
+			//
+			// Inside entropy-coded data a 0xFF byte is always followed by
+			// 0x00 (a stuffed byte, not a marker), by RSTn (0xD0-0xD7, a
+			// restart marker inside the scan), or by 0xFF as fill; anything
+			// else is a real marker and ends the scan. Bytes are skipped with
+			// IndexByte rather than one at a time by the outer loop's resync
+			// branch, which matters for the CEILING as much as for speed: the
+			// ceiling counts marker segments, and charging it one iteration
+			// per compressed byte would turn every ordinary photo into
+			// work_ceiling_bytes. j only ever moves forward, so the whole
+			// function stays a single linear pass over b.
+			next, ok := skipEntropyCodedData(b, i+2+segLen)
+			if !ok {
+				// Entropy-coded data ran to the end of the buffer with no
+				// marker after it, so this walk never reached EOI -- the same
+				// "never reached the format's own natural end" verdict every
+				// other structural exit here returns. A window that merely
+				// stopped short is composeMetadataStatus's ceiling, which is
+				// checked ahead of malformed.
+				return imageMetadataStatus{malformed: true}
+			}
+			i = next
+			continue
+		}
 		i += 2 + segLen
 	}
-	// Ran out of buffer without ever reaching EOI/SOS: never JPEG's own
+	// Ran out of buffer without ever reaching EOI: never JPEG's own
 	// natural end, so this miss cannot be reported clean (see doc comment
 	// above).
 	return imageMetadataStatus{malformed: true}
