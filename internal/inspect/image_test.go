@@ -522,6 +522,77 @@ func TestAnalyzeImageWebPDeclaredSizePastBufferIsMalformedNotClean(t *testing.T)
 	assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
 }
 
+// TestAnalyzeImageWebPRIFFSizeDisagreeingWithFileIsMalformedNotClean is
+// PR9R21 (image.go:519), verbatim: "For a fully buffered WebP whose RIFF size
+// field declares more bytes than the file actually contains, a complete
+// present chunk such as VP8X can leave pos == len(b) and this branch reports
+// metadata_present: clean."
+//
+// Both directions are pinned. A short file with a larger declared size is the
+// reported case; a file with bytes BEYOND the declared container end is the
+// same defect mirrored, and it is worse than cosmetic -- the walk would read
+// those outside bytes as chunks, so an EXIF chunk that is not part of the RIFF
+// container at all could be published as this file's metadata.
+func TestAnalyzeImageWebPRIFFSizeDisagreeingWithFileIsMalformedNotClean(t *testing.T) {
+	// A complete VP8X chunk that ends exactly at the buffer's end, so the
+	// chunk walk alone sees a textbook natural end -- only the container's own
+	// size field says otherwise.
+	body := func() []byte {
+		d := []byte("RIFF\x00\x00\x00\x00WEBP")
+		return append(d, riffChunk("VP8X", []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0})...)
+	}
+
+	t.Run("declared size larger than the file (truncation)", func(t *testing.T) {
+		data := body()
+		binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8+64)) // 64 bytes that do not exist
+		res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+		assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+	})
+
+	t.Run("declared size at the uint32 ceiling does not overflow into acceptance", func(t *testing.T) {
+		data := body()
+		binary.LittleEndian.PutUint32(data[4:8], 0xFFFFFFFF)
+		res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+		assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+	})
+
+	t.Run("EXIF chunk sitting beyond the declared container end is not this file's metadata", func(t *testing.T) {
+		data := body()
+		declared := uint32(len(data) - 8)
+		data = append(data, riffChunk("EXIF", []byte{1, 2, 3, 4})...)
+		binary.LittleEndian.PutUint32(data[4:8], declared) // container ends before the EXIF chunk
+		res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), int64(len(data)), 1<<30, nil)
+		if _, ok := findingFor(res, CodeMetadataPresent); ok {
+			t.Error("got a Finding for metadata_present -- the EXIF chunk lies outside the RIFF container's declared end and is not this file's metadata")
+		}
+		assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+		assertCheckReason(t, res, CodeMetadataPresent, ReasonMalformedInput)
+	})
+}
+
+// TestAnalyzeImageWebPRIFFSizeMismatchUnderTruncatedWindowIsCeilingNotMalformed
+// is the guard on the check above: when OUR byte window did not cover the
+// file, a declared size larger than the buffer is the expected consequence of
+// our own ceiling, not a fact about the file. composeMetadataStatus's
+// precedence is what keeps that straight, and this test is what would notice
+// if the new container check were ever moved somewhere that bypasses it --
+// the exact failure mode the phase-55 gate recorded: blaming the file for a
+// limit we imposed.
+func TestAnalyzeImageWebPRIFFSizeMismatchUnderTruncatedWindowIsCeilingNotMalformed(t *testing.T) {
+	data := []byte("RIFF\x00\x00\x00\x00WEBP")
+	data = append(data, riffChunk("VP8X", make([]byte, 64))...)
+	binary.LittleEndian.PutUint32(data[4:8], uint32(len(data)-8)) // honest header
+
+	// maxBytes below the real size: the scan sees a prefix whose length cannot
+	// match the (correct) declared size.
+	res := AnalyzeImage("webp", bytes.NewReader(data), int64(len(data)), 32, 1<<30, nil)
+
+	assertCheckStatus(t, res, CodeMetadataPresent, StatusUnknown)
+	assertCheckReason(t, res, CodeMetadataPresent, ReasonWorkCeilingBytes)
+}
+
 // TestAnalyzeImageWebPLeftoverBytesAreMalformedNotClean mirrors
 // TestAnalyzeImagePNGLeftoverBytesAreMalformedNotClean for WebP's RIFF
 // chunk walk.

@@ -489,6 +489,41 @@ func scanRIFFChunkMetadata(b []byte, tr *Tracker) imageMetadataStatus {
 	if len(b) < 12 {
 		return imageMetadataStatus{malformed: true}
 	}
+	// PR9R21 (image.go:519), verbatim: "For a fully buffered WebP whose RIFF
+	// size field declares more bytes than the file actually contains, a
+	// complete present chunk such as VP8X can leave pos == len(b) and this
+	// branch reports metadata_present: clean."
+	//
+	// The per-chunk guard below checks each chunk against len(b) and never
+	// checked the CONTAINER's own declared length, so "the walk consumed the
+	// buffer exactly" was read as RIFF's natural end even when the RIFF
+	// header said the file should have gone on. b[4:8] is the byte count
+	// following those first 8 bytes, so a conformant file has
+	// declaredEnd == len(b) exactly, and both inequalities are structural:
+	//
+	//   - declaredEnd > len(b): the container claims bytes the file does not
+	//     have -- truncation, the reported case;
+	//   - declaredEnd < len(b): bytes sit beyond the container's own end, and
+	//     the walk would go on reading them as chunks, so an EXIF chunk
+	//     OUTSIDE the RIFF container could be reported as this file's
+	//     metadata. Rejecting it mirrors the rule this same file already
+	//     applies to PNG, where nothing may follow IEND.
+	//
+	// A truncated read WINDOW is not this branch's concern: composeMetadataStatus
+	// checks windowTruncated BEFORE malformed, so a partial window over a
+	// large file stays a ceiling (our budget) and never becomes a verdict
+	// about the file. uint64 throughout because the declared size is
+	// attacker-controlled and 0xFFFFFFFF+8 overflows an int32.
+	//
+	// convert's WebP dimension parser is deliberately left alone: it reads
+	// the VP8X/VP8/VP8L header, and for a truncated file those bytes are
+	// present and their answer is true, so the report carrying real
+	// dimensions beside a malformed metadata verdict is honest. Changing that
+	// parser would also change the conversion path, which this review round
+	// has no evidence about.
+	if uint64(binary.LittleEndian.Uint32(b[4:8]))+8 != uint64(len(b)) {
+		return imageMetadataStatus{malformed: true}
+	}
 	pos := 12
 	for iter := 0; pos+8 <= len(b); iter++ {
 		if iter >= maxMetadataMarkerScanIterations {
