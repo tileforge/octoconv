@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -85,6 +88,146 @@ func TestAvailableOperations(t *testing.T) {
 		}
 		if o.Quota.Reason != "" {
 			t.Errorf("offer %+v: expected empty Quota.Reason on allowed verdict", o)
+		}
+	}
+}
+
+// TestAvailableOperationsAgreesWithCreateJobEngineSizeGate is PR9R22
+// (estimate.go:265), verbatim: "When an inspected file fits
+// INSPECT_MAX_UPLOAD_BYTES but exceeds its selected engine's s.maxEngineBytes
+// limit, this unconditionally adds the conversion to operations and can report
+// quota.allowed: true, although handleCreateJob deterministically rejects the
+// same file at its engine-size gate."
+//
+// The test is deliberately written against the GOAL rather than the field:
+// what matters is not that an `available` flag exists, but that /v1/inspect and
+// POST /v1/jobs cannot disagree about the same file. So it exercises both paths
+// on ONE server with ONE size and requires the offer's verdict and the eventual
+// HTTP status to match, carrying the same machine-readable code.
+func TestAvailableOperationsAgreesWithCreateJobEngineSizeGate(t *testing.T) {
+	const engineLimit = 100
+
+	repo := newFakeEngineQuotaRepo()
+	resolver := newFakeResolver()
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		MaxUploadBytes: 10 << 20,
+		MaxEngineBytes: map[string]int64{convert.EngineImage: engineLimit},
+	})
+	client, err := resolver.ResolveClient(context.Background(), testClientKey)
+	if err != nil {
+		t.Fatalf("ResolveClient: %v", err)
+	}
+
+	// The inspect side, for a file five times the engine's ceiling.
+	oversized := paddedPNGFixture(engineLimit * 5)
+	offers := srv.availableOperations(context.Background(), client.ID, "png", int64(len(oversized)))
+	if len(offers) == 0 {
+		t.Fatal("no offers for png: test assumption broken")
+	}
+	sawImageEngine := false
+	for _, o := range offers {
+		if o.Engine != convert.EngineImage {
+			continue
+		}
+		sawImageEngine = true
+		if o.Available {
+			t.Errorf("offer %+v: Available = true for a file of %d bytes against an engine ceiling of %d -- POST /v1/jobs rejects it deterministically, so inspect must not call it available", o, len(oversized), engineLimit)
+		}
+		if o.UnavailableReason != errcode.PayloadTooLarge {
+			t.Errorf("offer %+v: UnavailableReason = %q, want %q -- the offer and the eventual 413 must speak one vocabulary", o, o.UnavailableReason, errcode.PayloadTooLarge)
+		}
+		if o.MaxBytes != engineLimit {
+			t.Errorf("offer %+v: MaxBytes = %d, want %d -- a client that knows the ceiling can split its input instead of guessing", o, o.MaxBytes, engineLimit)
+		}
+		// The quota verdict is a SEPARATE axis and must not be overwritten by
+		// the size gate: this client is within quota, and saying otherwise
+		// would send it looking for a quota problem it does not have.
+		if o.Quota.Allowed == nil || !*o.Quota.Allowed {
+			t.Errorf("offer %+v: Quota.Allowed must stay true -- deterministic unavailability is not a quota fact", o)
+		}
+	}
+	if !sawImageEngine {
+		t.Fatal("no png offer served by the image engine: test assumption broken")
+	}
+
+	// The create-job side, same server, same bytes: the offer's verdict has to
+	// be what actually happens.
+	body, ct := multipartBody(t, "in.png", "webp", oversized)
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /v1/jobs status = %d, want 413 -- the whole point of the offer's available:false is that this request is deterministically refused; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.PayloadTooLarge)
+}
+
+// TestAvailableOperationsEngineSizeBoundaryMatchesCreateJob pins the boundary
+// in the same direction handleCreateJob's own check pins it: the gate is `>`,
+// so a file exactly AT the ceiling is accepted by both paths. An off-by-one
+// here would make inspect refuse work the service would actually do.
+func TestAvailableOperationsEngineSizeBoundaryMatchesCreateJob(t *testing.T) {
+	const engineLimit = 4096
+
+	repo := newFakeEngineQuotaRepo()
+	resolver := newFakeResolver()
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		MaxUploadBytes: 10 << 20,
+		MaxEngineBytes: map[string]int64{convert.EngineImage: engineLimit},
+	})
+	client, _ := resolver.ResolveClient(context.Background(), testClientKey)
+
+	for _, tc := range []struct {
+		name          string
+		size          int64
+		wantAvailable bool
+	}{
+		{"one byte below the ceiling", engineLimit - 1, true},
+		{"exactly at the ceiling", engineLimit, true},
+		{"one byte above the ceiling", engineLimit + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, o := range srv.availableOperations(context.Background(), client.ID, "png", tc.size) {
+				if o.Engine != convert.EngineImage {
+					continue
+				}
+				if o.Available != tc.wantAvailable {
+					t.Errorf("size %d: Available = %v, want %v (engine ceiling %d, gate is `>`)", tc.size, o.Available, tc.wantAvailable, engineLimit)
+				}
+			}
+		})
+	}
+}
+
+// TestAvailableOperationsUngatedEngineStaysAvailable pins the other half of
+// s.maxEngineBytes' own documented behavior -- "the map gates known engines, it
+// does not allowlist": an engine absent from the map has no ceiling to exceed,
+// so its offers stay available and publish no max_bytes rather than defaulting
+// to unavailable.
+func TestAvailableOperationsUngatedEngineStaysAvailable(t *testing.T) {
+	repo := newFakeEngineQuotaRepo()
+	resolver := newFakeResolver()
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{
+		MaxUploadBytes: 10 << 20,
+		MaxEngineBytes: map[string]int64{}, // gates nothing
+	})
+	client, _ := resolver.ResolveClient(context.Background(), testClientKey)
+
+	offers := srv.availableOperations(context.Background(), client.ID, "png", 1<<30)
+	if len(offers) == 0 {
+		t.Fatal("no offers for png: test assumption broken")
+	}
+	for _, o := range offers {
+		if !o.Available {
+			t.Errorf("offer %+v: Available = false for an engine the map does not gate", o)
+		}
+		if o.UnavailableReason != "" {
+			t.Errorf("offer %+v: UnavailableReason = %q, want empty", o, o.UnavailableReason)
+		}
+		if o.MaxBytes != 0 {
+			t.Errorf("offer %+v: MaxBytes = %d, want 0 (absent) for an ungated engine", o, o.MaxBytes)
 		}
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -167,6 +168,34 @@ type operationOffer struct {
 	EstimatedMaxSeconds int            `json:"estimated_max_seconds"`
 	EstimateSource      EstimateSource `json:"estimate_source"`
 	Quota               quotaOffer     `json:"quota"`
+	// Available is the DETERMINISTIC half of "could I actually submit this",
+	// deliberately separate from Quota: it is computed locally from this
+	// file's size against the engine's own post-detection ceiling
+	// (s.maxEngineBytes, D-07), so unlike a quota verdict it is never
+	// "as of this request" and never unknown -- which is exactly why it is a
+	// plain bool while quotaOffer.Allowed is a pointer.
+	//
+	// PR9R22 (estimate.go:265), verbatim: "When an inspected file fits
+	// INSPECT_MAX_UPLOAD_BYTES but exceeds its selected engine's
+	// s.maxEngineBytes limit, this unconditionally adds the conversion to
+	// operations and can report quota.allowed: true, although handleCreateJob
+	// deterministically rejects the same file at its engine-size gate."
+	//
+	// available:false does NOT fold in the quota verdict: a client must be
+	// able to tell "this service will refuse this file at any quota" from
+	// "your quota is exhausted right now". Both can appear on one offer.
+	Available bool `json:"available"`
+	// UnavailableReason is empty when Available is true, and otherwise carries
+	// the SAME machine-readable code the POST /v1/jobs rejection would carry
+	// (errcode.PayloadTooLarge) -- so an agent reading this offer and an agent
+	// reading the eventual 413 are looking at one vocabulary, not two.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
+	// MaxBytes is the engine's own post-detection ceiling when it has one,
+	// present whether or not this file fits it: a client that knows the limit
+	// can split or downscale its input instead of guessing. Absent for an
+	// engine s.maxEngineBytes does not gate (the map gates known engines, it
+	// does not allowlist).
+	MaxBytes int64 `json:"max_bytes,omitempty"`
 }
 
 // quotaOffer is the live, read-only quota verdict for one engine, "as of
@@ -281,10 +310,30 @@ func (s *Server) availableOperations(ctx context.Context, clientID uuid.UUID, de
 
 	for _, p := range pending {
 		secs := engineTimeoutSeconds(s.engineTimeouts[p.engine])
+		// The engine-size gate, read from the SAME map handleCreateJob's own
+		// D-07 check reads (api.go's maxEngineBytes, handlers.go around line
+		// 470) rather than from a second copy of the rule -- one declaration,
+		// two readers, the same discipline D-03 applies to the finding
+		// vocabulary. The comparison is `>` here because it is `>` there:
+		// a file exactly at the limit is accepted by both.
+		limit, gated := s.maxEngineBytes[p.engine]
+		available := true
+		unavailableReason := ""
+		if gated && sizeBytes > limit {
+			available = false
+			unavailableReason = errcode.PayloadTooLarge
+		}
+		maxBytes := int64(0)
+		if gated {
+			maxBytes = limit
+		}
 		offers = append(offers, operationOffer{
 			Operation:           p.operation,
 			Target:              p.target,
 			Engine:              p.engine,
+			Available:           available,
+			UnavailableReason:   unavailableReason,
+			MaxBytes:            maxBytes,
 			EstimatedMaxSeconds: secs,
 			// estimateSourceFor (not the fixed engineEstimateSource table
 			// directly) is D-11's own 2026-08-10 correction: it downgrades

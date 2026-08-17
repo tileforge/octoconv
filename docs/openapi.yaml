@@ -391,12 +391,22 @@ components:
     InspectOperation:
       type: object
       description: >-
-        One (operation, target) triple available for the detected format
+        One (operation, target) triple offered for the detected format
         (INSP-04, Phase 58): the engine that would serve it, an honest
-        UPPER-BOUND duration estimate with its own provenance, and a live,
-        read-only quota verdict "as of this request" -- never a guarantee
-        the eventual POST /v1/jobs will succeed (Repo.PreAdmit is not
-        linearizable under a concurrent burst).
+        UPPER-BOUND duration estimate with its own provenance, a
+        DETERMINISTIC availability verdict for a file of this size, and a
+        live, read-only quota verdict "as of this request" -- never a
+        guarantee the eventual POST /v1/jobs will succeed (Repo.PreAdmit is
+        not linearizable under a concurrent burst).
+
+        The two verdicts answer different questions and neither subsumes the
+        other. `available` is computed locally and cannot be unknown: false
+        means POST /v1/jobs refuses a file of this size for this engine
+        every time. `quota.allowed` is a live check that can be true, false,
+        or null. An offer appears in the list either way -- being told
+        "this conversion exists but your file is too large for it, and the
+        ceiling is N bytes" is the reason to call /v1/inspect before
+        queueing anything.
       properties:
         operation:
           type: string
@@ -404,6 +414,32 @@ components:
           type: string
         engine:
           type: string
+        available:
+          type: boolean
+          description: >-
+            Whether this service would accept a file of the inspected size
+            for this (operation, target, engine) triple. false means the
+            request is refused DETERMINISTICALLY -- the size exceeds the
+            engine's own post-detection ceiling, so POST /v1/jobs answers
+            413 payload_too_large no matter what the quota says. This axis
+            is deliberately separate from `quota`: a client must be able to
+            tell "this service will never take this file" from "your quota
+            is exhausted right now", and both can be true on one offer.
+        unavailable_reason:
+          type: string
+          enum: [payload_too_large]
+          description: >-
+            Present only when available is false, carrying the SAME code
+            the eventual POST /v1/jobs rejection carries, so one vocabulary
+            covers the offer and the error.
+        max_bytes:
+          type: integer
+          format: int64
+          description: >-
+            The engine's own post-detection size ceiling, present whether
+            or not this file fits it -- a client that knows the limit can
+            split or downscale instead of guessing. Absent for an engine
+            this deployment does not gate by size.
         estimated_max_seconds:
           type: integer
           description: >-
@@ -434,7 +470,7 @@ components:
               type: string
               description: Present when allowed is false or null (null pairs with reason "unknown").
           required: [allowed]
-      required: [operation, target, engine, estimated_max_seconds, estimate_source, quota]
+      required: [operation, target, engine, available, estimated_max_seconds, estimate_source, quota]
 
     InspectReport:
       type: object
