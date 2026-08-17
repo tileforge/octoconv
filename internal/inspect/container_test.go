@@ -1269,6 +1269,60 @@ func TestEncodingXMLLenienceOnMultipleRoots(t *testing.T) {
 	}
 }
 
+// TestEncodingXMLTreatsNonXMLSpaceAsCharData is the measurement behind
+// countSheetElements trimming XML's S production rather than calling
+// bytes.TrimSpace (PR9R21). Every rune here is Unicode whitespace that XML
+// does NOT permit outside the document element, and encoding/xml hands each
+// one through as CharData rather than rejecting it -- so a Unicode-aware trim
+// silently erased them and let the malformed padding pass. If a future Go
+// release starts rejecting these documents itself, this test says so.
+func TestEncodingXMLTreatsNonXMLSpaceAsCharData(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  string
+	}{
+		{"NBSP U+00A0 before the root", " <workbook/>"},
+		{"NBSP U+00A0 after the root", "<workbook/> "},
+		{"NEL U+0085 after the root", "<workbook/>"},
+		{"line separator U+2028 after the root", "<workbook/> "},
+		{"ideographic space U+3000 after the root", "<workbook/>　"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := xml.NewDecoder(strings.NewReader(tc.doc))
+			depth := 0
+			sawOutside := false
+			for {
+				tok, err := dec.Token()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatalf("Token() returned %v -- this rune is expected to be ACCEPTED as CharData; if encoding/xml now rejects it, countSheetElements's XML-S trim can be reconsidered", err)
+				}
+				switch t2 := tok.(type) {
+				case xml.StartElement:
+					depth++
+				case xml.EndElement:
+					depth--
+				case xml.CharData:
+					if depth == 0 && len(t2) > 0 {
+						sawOutside = true
+						if len(bytes.Trim(t2, xmlSpaceChars)) == 0 {
+							t.Errorf("trimXMLSpace erased %q -- it must trim ONLY (#x20|#x9|#xD|#xA), or malformed padding passes as legal whitespace", string(t2))
+						}
+						if len(bytes.TrimSpace(t2)) != 0 {
+							t.Errorf("bytes.TrimSpace kept %q -- the premise of this test is that TrimSpace (Unicode-aware) erases it while XML's S production does not", string(t2))
+						}
+					}
+				}
+			}
+			if !sawOutside {
+				t.Errorf("no CharData reached the walk outside the root -- encoding/xml's tokenization changed, so re-derive the padding rule against the new behavior")
+			}
+		})
+	}
+}
+
 // TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount is PR9R20
 // (container.go:894), verbatim: "When a fully read part contains a second
 // top-level element, encoding/xml.Decoder accepts it as another element in
@@ -1312,6 +1366,32 @@ func TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount(t *testing.
 		{
 			"non-whitespace character data before the root",
 			`leading<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
+		},
+		// PR9R21: XML's S production is (#x20 | #x9 | #xD | #xA) and nothing
+		// else, so every rune below is ordinary character data outside the
+		// root -- and encoding/xml hands all four through (measured), while
+		// bytes.TrimSpace erases all four. The first version of the check
+		// above used TrimSpace and therefore accepted exactly what it was
+		// written to reject.
+		{
+			"NBSP (U+00A0) before the root is not XML whitespace",
+			" <workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook>",
+		},
+		{
+			"NBSP (U+00A0) after the root is not XML whitespace",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook> ",
+		},
+		{
+			"NEL (U+0085) after the root is not XML whitespace",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook>",
+		},
+		{
+			"line separator (U+2028) after the root is not XML whitespace",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook> ",
+		},
+		{
+			"ideographic space (U+3000) after the root is not XML whitespace",
+			"<workbook><sheets><sheet name=\"A\" sheetId=\"1\"/></sheets></workbook>　",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

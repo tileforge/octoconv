@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: executing
-stopped_at: Phase 58 planned (8 plans, 5 waves)
-last_updated: "2026-08-10T00:49:40.080Z"
-last_activity: 2026-08-10 -- Phase 58 execution started
+stopped_at: Phase 58 executing (8 plans executed; PR #9 open, codex rounds being closed; wave 5 live gate pending)
+last_updated: "2026-08-17T10:47:04.874Z"
+last_activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
 progress:
   total_phases: 6
   completed_phases: 2
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 ## Current Position
 
 Phase: 58 (synchronous-inspection) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 58
-Last activity: 2026-08-10 -- Phase 58 execution started
+Plan: 8 of 8 (58-01..58-07 SUMMARY written; 58-08 harness summary written)
+Status: Executing Phase 58 — PR #9 open, codex review rounds being closed; wave 5 live gate pending
+Last activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
 
 ## Performance Metrics
 
@@ -147,6 +147,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260802-9zc | Устранён последний экземпляр PR#2 finding-2: LooksLikeHTML держал собственную копию логики sniff-префикса и потому не получил фикс обрезки неполной UTF-8-руны — HTML-файлы >1 MiB с руной на границе кэпа отклонялись ложно. Копия заменена вызовом общего readSniffPrefix | 2026-08-02 | fff79da | [260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i](./quick/260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i/) |
 | 260802-asr | Три фронтенд-бага из ревью PR#2: терминальный SSE-кадр отбрасывал финальный GET и готовая конверсия оставалась без ссылки Download (job?.status убран из deps эффекта, запись гейтится по identity джобы); finalize получил bounded retry (3 попытки, backoff 400/1200мс, только 5xx/429/408/сеть); селектор таргетов фильтруется по формату выбранного файла с зеркалом NormalizeFormat (jpeg/tif/htm/tex) вместо глобального объединения, дававшего избегаемые 422. Добавлен vitest, 23 теста | 2026-08-02 | d41593d | [260802-asr-fix-three-frontend-bugs-found-in-pr-2-re](./quick/260802-asr-fix-three-frontend-bugs-found-in-pr-2-re/) |
 | 260809-ul4 | Четыре замечания codex из ревью PR#7. Функциональные: (1) `HandleWebhookDeliver` презайнил `outs[0]` — тот же дефект, что ROLE-02 закрыл для `GET /v1/jobs/{id}`, но callback-путь не входил в букву требования, поэтому верификатор фазы 57 его пропустил; литерал `"primary"` поднят в `jobs.OutputRolePrimary` как единственное объявление на `api` и `worker`; (2) `mcpserver.FormatsResponse` терял ключ `operations` при декодировании, хотя `tools.go` в jsonschema отсылал агентов именно к нему. Контрактные: (3) `docs/openapi.yaml` не объявлял `operation` при `additionalProperties: false` (SDK не мог отправить поле), `operations` и `outputs`; (4) спека утверждала «code is never added to any non-429 response», что стало ложью после фазы 56 — `Error.code` теперь required с enum по закрытому словарю, `QuotaError` удалён как избыточный, а `internal/errcode/openapi_sync_test.go` механически стережёт спеку от дрейфа (раньше `TestErrorCodeDocSync` стерёг только ERROR-CODES.md). Инверсия вебхук-фикса воспроизведена независимо | 2026-08-09 | 032cc78 | [260809-ul4-4-codex-pr-7-role-driven-download-url-op](./quick/260809-ul4-4-codex-pr-7-role-driven-download-url-op/) |
+| 260817-j58 | Закрыта находка codex из ревью PR#9 (`container.go:894`): `countSheetElements` принимал XML с несколькими top-level элементами — `encoding/xml` не считает второй корень ошибкой и отдаёт его как обычный элемент, поэтому `<workbook>…</workbook><ext><sheets><sheet/></sheets></ext>` публиковал `sheet_count: 2` с полным покрытием для не-well-formed XML. Поведение stdlib сначала **измерено**, а не предположено: `xml.Unmarshal` принимает то же самое (оракула для делегирования нет), а текст ДО корня не отвергает вообще ничто в stdlib — поэтому чинится класс целиком: ровно один корень + запрет непробельных CharData по обе стороны от него. Три теста: 7 случаев класса с проверкой причины `malformed_input` (не потолка), гард от чрезмерного отклонения (пролог/DOCTYPE/комментарии/PI/whitespace вокруг единственного корня), и тест-пин измеренной снисходительности `encoding/xml` | 2026-08-17 | aeb0768 | [260817-j58-close-codex-pr9-finding-xlsxsheetcount-a](./quick/260817-j58-close-codex-pr9-finding-xlsxsheetcount-a/) |
 
 | 260809-fast | codex, второй круг ревью PR#7: `mcpserver.JobStatus` не объявлял `Outputs`, поэтому массив `outputs` из `GET /v1/jobs/{id}` молча терялся у обоих MCP-серверов. `JobStatus` служит типом вывода `get_job_status`, а `download_result` отдаёт только primary-URL — значит вторичный артефакт (отчёт sanitize) был недостижим через MCP вообще. Тот же класс, что находка №2 про `FormatsResponse`: соседний DTO в том же файле, который узкая правка не подмела. Латентно до фазы 60. Тег-инверсия (`outputs`→`output`) доказывает, что тест ловит потерю данных, а не только отсутствие поля | 2026-08-09 | 23bf611 | — |
 

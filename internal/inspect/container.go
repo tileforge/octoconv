@@ -864,6 +864,17 @@ var spreadsheetMLNamespaces = map[string]bool{
 	"http://purl.oclc.org/ooxml/spreadsheetml/main":             true,
 }
 
+// xmlSpaceChars is XML 1.0's S production in full -- (#x20 | #x9 | #xD | #xA)
+// and NOTHING else. Every other Unicode space, NBSP included, is ordinary
+// character data to XML, which is why bytes.TrimSpace (Unicode-aware, and
+// therefore wrong here) cannot stand in for it.
+const xmlSpaceChars = "\x20\x09\x0d\x0a"
+
+// trimXMLSpace strips only XML S from both ends of b.
+func trimXMLSpace(b []byte) []byte {
+	return bytes.Trim(b, xmlSpaceChars)
+}
+
 func countSheetElements(data []byte) (count int, ok bool) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	// workbookNS is the namespace the ROOT element declared, and every
@@ -983,7 +994,17 @@ func countSheetElements(data []byte) (count int, ok bool) {
 			// the root and must stay legal, along with the prolog, DOCTYPE,
 			// comments and PIs that reach this loop as their own token types
 			// and are correctly ignored.
-			if depth == 0 && len(bytes.TrimSpace(t)) > 0 {
+			//
+			// PR9R21 (container.go:986): the trim MUST be XML's own S
+			// production, not bytes.TrimSpace, which trims Unicode
+			// whitespace. Measured per rune: encoding/xml passes NBSP
+			// (U+00A0), NEL (U+0085), U+2028 and U+3000 through as CharData
+			// outside the root, and TrimSpace erases all four -- so the first
+			// version of this check accepted exactly the leading garbage it
+			// was written to reject. (encoding/xml rejects U+000B and U+000C
+			// on its own, so those never reach here; trimXMLSpace keeps them
+			// regardless rather than depending on that.)
+			if depth == 0 && len(trimXMLSpace(t)) > 0 {
 				return 0, false
 			}
 		}
