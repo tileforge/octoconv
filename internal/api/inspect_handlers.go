@@ -569,6 +569,18 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 	// suppressing a detection they DO make would trade one false report for
 	// another. It decides the outcome only if the whole chain below comes up
 	// empty (PR9R25).
+	//
+	// PR9R27 (inspect_handlers.go:657): it accumulates across EVERY sniffer in
+	// the chain that can report a read failure, not just the first one. Round
+	// 25 fixed the initial peek and left its own siblings -- SniffVideo and
+	// SniffAudio, whose errors were discarded exactly as this one used to be --
+	// so a temp file that failed mid-chain still reported format_unrecognized.
+	// Fixing the named site and not its neighbours is how the previous six
+	// rounds of this class kept recurring.
+	//
+	// All three sniffers share one contract that makes this safe: an
+	// unrecognized upload is ("", rest, nil), so a non-nil error is ALWAYS a
+	// genuine read failure, never a verdict about the bytes.
 	sniffReadFailed := err != nil
 	if err != nil {
 		detected = ""
@@ -647,18 +659,26 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 		detected = inspectOLECFBFormat
 	}
 	if detected == "" {
-		if videoDetected, _, verr := convert.SniffVideo(fresh()); verr == nil && videoDetected != "" {
+		videoDetected, _, verr := convert.SniffVideo(fresh())
+		switch {
+		case verr != nil:
+			sniffReadFailed = true
+		case videoDetected != "":
 			detected = videoDetected
 		}
 	}
 	if detected == "" {
-		if audioDetected, _, aerr := convert.SniffAudio(fresh()); aerr == nil && audioDetected != "" {
+		audioDetected, _, aerr := convert.SniffAudio(fresh())
+		switch {
+		case aerr != nil:
+			sniffReadFailed = true
+		case audioDetected != "":
 			detected = audioDetected
 		}
 	}
 	if detected == "" && sniffReadFailed {
-		// Nothing in the chain recognized the upload, and the first read of it
-		// failed. "We could not read your file" and "we do not recognize your
+		// Nothing in the chain recognized the upload, and at least one read of
+		// it failed. "We could not read your file" and "we do not recognize your
 		// file" are different facts about different subjects -- this service
 		// and the upload -- and reporting the first as the second is the exact
 		// conflation PR9R8-F3 closed for the zip path and PR9R25 found still
@@ -1386,9 +1406,28 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
 		}}
-	case detected == "" || declaredFormat == "":
-		// Nothing to compare: an unrecognized upload, or a filename with no
-		// extension at all, leaves this check with nothing to check.
+	case detected == "":
+		// PR9R27 (inspect_handlers.go:1393): an UNRECOGNIZED upload is not the
+		// same as an inapplicable check. not_applicable is the claim "there was
+		// nothing here to look for", and making it requires knowing what the
+		// file IS -- which is exactly the reasoning buildChecks already applies
+		// to every OTHER code when format is empty (codex finding 6 /
+		// T-SLE-06). This code escaped that rule only because it is claimed
+		// explicitly here rather than left to the fallback, so it alone said
+		// "irrelevant" while the rest of the vocabulary said "unknown".
+		//
+		// The client-visible difference is the point: not_applicable invites a
+		// reader to conclude the extension is fine, when in truth nothing was
+		// ever compared against it.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonFormatUnrecognized},
+		}}
+	case declaredFormat == "":
+		// A filename with no extension at all is the genuinely inapplicable
+		// case, and it stays that way: there is no declared extension for a
+		// mismatch to exist between, whatever the detected format turned out
+		// to be. Nothing is unknown here -- both sides were established, and
+		// one of them is absent.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusNotApplicable, Reason: inspect.ReasonFormatNotApplicable},
 		}}

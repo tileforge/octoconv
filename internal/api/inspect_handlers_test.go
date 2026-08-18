@@ -2111,3 +2111,114 @@ func (f *failingStreamOnlyFile) Seek(int64, int) (int64, error) {
 	return 0, errors.New("simulated seek failure")
 }
 func (f *failingStreamOnlyFile) Close() error { return nil }
+
+// failAfterNthReadAtFile serves the first failAt positional reads normally and
+// fails every one after that -- a temp file that goes away mid-detection.
+//
+// ReadAt, not Read, is the axis that matters: detectInspectFormat hands every
+// sniffer a fresh io.NewSectionReader over the file, so the whole chain reads
+// positionally. With failAt=1 the initial magic peek succeeds and every later
+// sniffer fails, which isolates exactly what this test is about -- the LATER
+// sniffers' discarded errors.
+type failAfterNthReadAtFile struct {
+	data    []byte
+	off     int64
+	reads   int
+	failAt  int
+	failErr error
+}
+
+func (f *failAfterNthReadAtFile) ReadAt(p []byte, off int64) (int, error) {
+	f.reads++
+	if f.reads > f.failAt {
+		return 0, f.failErr
+	}
+	if off < 0 || off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *failAfterNthReadAtFile) Read(p []byte) (int, error) {
+	n, err := f.ReadAt(p, f.off)
+	f.off += int64(n)
+	return n, err
+}
+
+func (f *failAfterNthReadAtFile) Seek(off int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		f.off = off
+	case io.SeekCurrent:
+		f.off += off
+	case io.SeekEnd:
+		f.off = int64(len(f.data)) + off
+	}
+	return f.off, nil
+}
+func (f *failAfterNthReadAtFile) Close() error { return nil }
+
+// TestInspectLaterSnifferReadFailureIsReadFailedNotUnrecognized is PR9R27
+// (inspect_handlers.go:657), verbatim: "When the initial 12-byte sniff succeeds
+// without recognizing the file, but a later range of the multipart temp file
+// returns a non-EOF I/O error, this branch discards `aerr` and leaves `detected`
+// empty; the video branch immediately above does the same with `verr`."
+//
+// This is the previous round's own fix left half-applied: the initial peek was
+// taught to carry its failure and its two siblings were not. All three share
+// one contract -- an unrecognized upload is ("", rest, nil) -- so a non-nil
+// error from any of them is always a read failure, never a verdict.
+func TestInspectLaterSnifferReadFailureIsReadFailedNotUnrecognized(t *testing.T) {
+	// Bytes no detector recognizes, so the chain runs all the way to the audio
+	// sniffer. The first streaming read (convert.Sniff's peek) succeeds; the
+	// later ones fail.
+	unrecognized := bytes.Repeat([]byte{0x7A}, 4096)
+	file := &failAfterNthReadAtFile{
+		data:    unrecognized,
+		failAt:  1, // the initial magic peek succeeds; everything after it fails
+		failErr: errors.New("simulated mid-detection temp-file failure"),
+	}
+
+	detected, _, _ := detectInspectFormat(file, int64(len(unrecognized)), "bin")
+	if detected != inspectSniffReadFailedFormat {
+		t.Fatalf("detected = %q, want %q -- a sniffer that failed to READ must not be reported as one that did not RECOGNIZE", detected, inspectSniffReadFailedFormat)
+	}
+}
+
+// TestExtensionMismatchUnrecognizedUploadIsUnknownNotNotApplicable is PR9R27
+// (inspect_handlers.go:1393): for an unrecognized upload carrying a filename
+// extension, this check alone said not_applicable while every other code in the
+// vocabulary said unknown/format_unrecognized. not_applicable claims "there was
+// nothing here to look for", which requires knowing what the file IS -- and a
+// client reading it would conclude the extension is fine when nothing was ever
+// compared against it.
+func TestExtensionMismatchUnrecognizedUploadIsUnknownNotNotApplicable(t *testing.T) {
+	t.Run("unrecognized upload with an extension", func(t *testing.T) {
+		res := extensionMismatchFamilyResult("", "png")
+		if len(res.Checks) != 1 {
+			t.Fatalf("checks = %+v, want exactly one", res.Checks)
+		}
+		c := res.Checks[0]
+		if c.Status != inspect.StatusUnknown || c.Reason != inspect.ReasonFormatUnrecognized {
+			t.Errorf("check = %+v, want unknown/format_unrecognized -- applicability was never established, so calling the check irrelevant overclaims", c)
+		}
+	})
+
+	t.Run("a filename with no extension stays not_applicable", func(t *testing.T) {
+		// The genuinely inapplicable case, and the over-rejection guard on the
+		// change above: both sides were established here and one of them is
+		// simply absent, so nothing is unknown.
+		res := extensionMismatchFamilyResult("png", "")
+		if len(res.Checks) != 1 {
+			t.Fatalf("checks = %+v, want exactly one", res.Checks)
+		}
+		c := res.Checks[0]
+		if c.Status != inspect.StatusNotApplicable || c.Reason != inspect.ReasonFormatNotApplicable {
+			t.Errorf("check = %+v, want not_applicable/format_not_applicable", c)
+		}
+	})
+}
