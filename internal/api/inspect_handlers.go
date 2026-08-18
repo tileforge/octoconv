@@ -17,6 +17,7 @@
 package api
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -428,7 +429,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// endpoints of this service never disagree about what one file IS --
 	// unlike handleCreateJob, unrecognized content here is a normal 200
 	// (D-03): inspect only ever reports, it never rejects.
-	detected, sniffedContainer := detectInspectFormat(file, header.Size, declaredFormat)
+	detected, sniffedContainer, sniffedZip := detectInspectFormat(file, header.Size, declaredFormat)
 
 	// 3. Bound + dispatch. One Tracker for the whole operation (D-06
 	// mechanism 1), shared across every family analyzer this dispatch
@@ -436,7 +437,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	// detected format maps to exactly one family), so "shared" mainly
 	// documents intent for a future format that might need more than one.
 	tr := inspect.NewTracker(inspect.Budget{MaxBytes: s.inspectMaxWorkBytes, MaxDuration: s.inspectMaxWorkDuration})
-	families := dispatchInspectFamilies(detected, sniffedContainer, file, header.Size, tr)
+	families := dispatchInspectFamilies(detected, sniffedContainer, sniffedZip, file, header.Size, tr)
 	families = append(families, extensionMismatchFamilyResult(detected, declaredFormat))
 
 	report := inspect.BuildReport(detected, declaredFormat, header.Size, tr, families...)
@@ -493,9 +494,14 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 // ZIP-shaped upload, if any, so dispatchInspectFamilies can reuse it instead
 // of walking the same attacker-controlled central directory a second time
 // (codex PR #9 finding 5). nil for every non-container upload.
-func detectInspectFormat(file multipart.File, size int64, declaredFormat string) (string, *convert.ContainerResult) {
+func detectInspectFormat(file multipart.File, size int64, declaredFormat string) (string, *convert.ContainerResult, *zip.Reader) {
 	fresh := func() io.Reader { return io.NewSectionReader(file, 0, size) }
 	var sniffed *convert.ContainerResult
+	// PR9R24 (container.go:157): the archive this sniff parses is handed on to
+	// the container analyzer, so the central directory is walked ONCE per
+	// request -- SniffContainer's own long-standing rule, which the analyzer
+	// could not honor while it was given the verdict without the reader.
+	var sniffedZip *zip.Reader
 
 	detected, _, err := convert.Sniff(fresh())
 	if err != nil {
@@ -531,9 +537,10 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 				default:
 					detected = inspectZipTooLargeFormat
 				}
-			} else if cr, cerr := convert.SniffContainer(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
+			} else if cr, zr, cerr := convert.SniffContainerReader(file, size); cerr == nil && cr.Format != "" && !cr.DuplicateRootPart {
 				detected = cr.Format
 				sniffed = &cr
+				sniffedZip = zr
 			} else if cerr != nil {
 				// PR9R8-F2/F3 (finding at inspect_handlers.go:371, quoted
 				// verbatim in this quick task's PLAN.md): the PREVIOUS
@@ -583,7 +590,7 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 			detected = audioDetected
 		}
 	}
-	return detected, sniffed
+	return detected, sniffed, sniffedZip
 }
 
 // zipDirectoryExceedsStructuralBound reports whether the ZIP EOCD record
@@ -1107,7 +1114,7 @@ func zipMalformedFamilyResult() inspect.FamilyResult {
 // receptacle from Consume's own byte/time accounting, budget.go), so an
 // analyzer that gives up early still marks the shared Tracker exhausted --
 // it simply never calls Consume to do so.
-func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, file multipart.File, size int64, tr *inspect.Tracker) []inspect.FamilyResult {
+func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, sniffedZip *zip.Reader, file multipart.File, size int64, tr *inspect.Tracker) []inspect.FamilyResult {
 	maxBytes := tr.Remaining()
 	var families []inspect.FamilyResult
 
@@ -1153,7 +1160,7 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// detectInspectFormat can only have reached BY sniffing; the nil
 		// branch stays as a correctness fallback rather than an assumption.
 		if sniffed != nil {
-			families = append(families, inspect.AnalyzeContainerWith(*sniffed, file, size, maxBytes, inspectZipBombFindingThreshold, tr))
+			families = append(families, inspect.AnalyzeContainerWith(*sniffed, sniffedZip, file, size, maxBytes, inspectZipBombFindingThreshold, tr))
 		} else {
 			families = append(families, inspect.AnalyzeContainer(file, size, maxBytes, inspectZipBombFindingThreshold, tr))
 		}

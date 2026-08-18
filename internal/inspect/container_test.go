@@ -1045,11 +1045,11 @@ func TestAnalyzeContainerWithMatchesAnalyzeContainer(t *testing.T) {
 
 			viaSniff := AnalyzeContainer(r, size, size, 1<<30, nil)
 
-			cr, err := convert.SniffContainer(r, size)
+			cr, zr, err := convert.SniffContainerReader(r, size)
 			if err != nil {
 				t.Fatalf("SniffContainer: %v", err)
 			}
-			viaHandoff := AnalyzeContainerWith(cr, r, size, size, 1<<30, nil)
+			viaHandoff := AnalyzeContainerWith(cr, zr, r, size, size, 1<<30, nil)
 
 			if !reflect.DeepEqual(viaSniff, viaHandoff) {
 				t.Fatalf("AnalyzeContainer and AnalyzeContainerWith disagree on identical bytes -- the deduplicated API path would report something different from the self-sniffing path\nAnalyzeContainer:     %+v\nAnalyzeContainerWith: %+v", viaSniff, viaHandoff)
@@ -1583,4 +1583,68 @@ func TestAnalyzeContainerSheetCountSharesOneByteBudget(t *testing.T) {
 			t.Errorf("sheet_count = %v, want 2 -- sharing the budget must not cost a correct count when the budget is there", got)
 		}
 	})
+}
+
+// manyEntriesDocxFixture builds a docx whose central directory is large enough
+// that parsing it twice is measurable -- the whole point of PR9R24.
+func manyEntriesDocxFixture(t *testing.T, n int) []byte {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	mustWriteZipEntry(t, zw, "word/document.xml", "root part content")
+	mustWriteZipEntry(t, zw, "word/_rels/document.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`)
+	for i := 0; i < n; i++ {
+		mustWriteZipEntry(t, zw, fmt.Sprintf("junk/%05d.bin", i), "x")
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestAnalyzeContainerReusesTheSniffedZipReader is PR9R24 (container.go:157),
+// verbatim: "For an accepted OOXML/ODF archive whose central directory is larger
+// than the configured work allowance, this zip.NewReader performs another
+// complete central-directory read after detectInspectFormat already parsed it
+// via SniffContainer."
+//
+// The measurement is differential and uses the code's own fallback as the
+// control: passing a nil reader makes AnalyzeContainerWith parse the directory
+// itself, which is exactly what every caller used to force. Handing over the
+// sniff's reader must cost measurably less -- by about a directory's worth of
+// bytes, which is the cost that used to be charged to nobody.
+func TestAnalyzeContainerReusesTheSniffedZipReader(t *testing.T) {
+	data := manyEntriesDocxFixture(t, 2000)
+	size := int64(len(data))
+
+	r := &countingReaderAt{data: data}
+	cr, zr, err := convert.SniffContainerReader(r, size)
+	if err != nil {
+		t.Fatalf("SniffContainerReader: %v", err)
+	}
+	if zr == nil {
+		t.Fatal("SniffContainerReader returned a nil *zip.Reader on success -- the handoff this test measures does not exist")
+	}
+	sniffCost := r.totalRequested
+
+	r.totalRequested = 0
+	withHandoff := AnalyzeContainerWith(cr, zr, r, size, size, 1<<30, nil)
+	handoffCost := r.totalRequested
+
+	r.totalRequested = 0
+	withReparse := AnalyzeContainerWith(cr, nil, r, size, size, 1<<30, nil)
+	reparseCost := r.totalRequested
+
+	if handoffCost >= reparseCost {
+		t.Errorf("analysis requested %d bytes with the sniffed reader and %d bytes when it parsed the directory itself -- the handoff must remove that second parse, not merely rename it", handoffCost, reparseCost)
+	}
+	// The gap is the directory parse. Requiring it to be a real fraction of the
+	// sniff's own cost keeps this test honest if the fixture ever shrinks to the
+	// point where the difference is noise.
+	if gap := reparseCost - handoffCost; gap < sniffCost/2 {
+		t.Errorf("the saving is %d bytes against a %d-byte sniff -- too small to be the directory parse this fix removes; check the fixture still has a large central directory", gap, sniffCost)
+	}
+	if !reflect.DeepEqual(withHandoff, withReparse) {
+		t.Errorf("the two paths disagree about the same archive:\nhandoff: %+v\nreparse: %+v -- reuse must change the cost, never the verdict", withHandoff, withReparse)
+	}
 }

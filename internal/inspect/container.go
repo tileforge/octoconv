@@ -102,7 +102,7 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 	// ENTIRE decision of "is this even a zip, and if so what
 	// format/macro/size does it declare" -- called exactly once, here, and
 	// never re-implemented.
-	cr, err := convert.SniffContainer(r, size)
+	cr, zr, err := convert.SniffContainerReader(r, size)
 	if err != nil {
 		// convert.ErrNotAZip is a genuine answer about the upload: it is not
 		// a zip container, so the container-domain codes do not apply to it.
@@ -116,7 +116,7 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 		}
 		return unknownContainerResult(res, ReasonReadFailed)
 	}
-	return AnalyzeContainerWith(cr, r, size, maxBytes, bombThreshold, tr)
+	return AnalyzeContainerWith(cr, zr, r, size, maxBytes, bombThreshold, tr)
 }
 
 // AnalyzeContainerWith is AnalyzeContainer for a caller that has ALREADY
@@ -133,7 +133,7 @@ func AnalyzeContainer(r io.ReaderAt, size int64, maxBytes int64, bombThreshold u
 //
 // Callers that have no ContainerResult in hand should keep using
 // AnalyzeContainer, which sniffs and delegates here.
-func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64, tr *Tracker) FamilyResult {
+func AnalyzeContainerWith(cr convert.ContainerResult, zr *zip.Reader, r io.ReaderAt, size int64, maxBytes int64, bombThreshold uint64, tr *Tracker) FamilyResult {
 	res := FamilyResult{Characteristics: Characteristics{}}
 
 	if cr.DuplicateRootPart {
@@ -154,23 +154,51 @@ func AnalyzeContainerWith(cr convert.ContainerResult, r io.ReaderAt, size int64,
 	res.Characteristics["declared_uncompressed_bytes"] = cr.TotalUncompressed
 	res.Characteristics["has_macro"] = cr.HasMacro
 
-	zr, zerr := zip.NewReader(r, size)
-	if zerr != nil {
-		// SniffContainer just parsed these exact bytes as a zip successfully
-		// -- reaching here would mean archive/zip disagrees with itself
-		// between two of its own entry points, which should not happen in
-		// practice. Fail closed rather than trusting a partially-computed
-		// result -- but fail closed with the RIGHT reason: round 6's own
-		// neighbour audit found this site reporting ReasonMalformedInput
-		// unconditionally, which turns "we could not read the upload" into a
-		// claim about the upload's structure. archive/zip's own sentinel
-		// errors say which of the two it is; anything that is not one of
-		// them reached here through the io.ReaderAt, so it is a read
-		// failure.
-		if errors.Is(zerr, zip.ErrFormat) || errors.Is(zerr, zip.ErrAlgorithm) || errors.Is(zerr, zip.ErrChecksum) {
-			return malformedContainerResult(res)
+	// PR9R24 (container.go:157), verbatim: "For an accepted OOXML/ODF archive
+	// whose central directory is larger than the configured work allowance,
+	// this zip.NewReader performs another complete central-directory read
+	// after detectInspectFormat already parsed it via SniffContainer... a
+	// directory of up to the structural bound (about 184 KiB) plus part reads
+	// can exceed a small allowance by many times."
+	//
+	// Correct, and it broke a rule this project had already written down:
+	// SniffContainer's own doc comment says "never re-parse the central
+	// directory more than once per upload". An earlier round deduplicated the
+	// SNIFF and stopped one step short -- handing over the sniff's RESULT
+	// while leaving its reader behind meant the second caller had no way to
+	// honor the rule it was given. The reader now comes with the result, and
+	// the parse that used to be charged to nobody simply does not happen.
+	//
+	// Reuse rather than accounting was the choice on offer, and it is the
+	// better one twice over: the work disappears instead of being budgeted for,
+	// and one parse cannot disagree with another about the same archive --
+	// the same reasoning that put AnalyzeContainerWith in this file to begin
+	// with.
+	//
+	// zr is nil only for a caller that had none to hand over -- there is no
+	// such production path today (both AnalyzeContainer and the API sniff
+	// first), and the parse below stays as the correctness fallback rather
+	// than as an assumption about callers.
+	if zr == nil {
+		parsed, zerr := zip.NewReader(r, size)
+		if zerr != nil {
+			// SniffContainer just parsed these exact bytes as a zip
+			// successfully -- reaching here would mean archive/zip disagrees
+			// with itself between two of its own entry points, which should
+			// not happen in practice. Fail closed rather than trusting a
+			// partially-computed result -- but fail closed with the RIGHT
+			// reason: round 6's own neighbour audit found this site reporting
+			// ReasonMalformedInput unconditionally, which turns "we could not
+			// read the upload" into a claim about the upload's structure.
+			// archive/zip's own sentinel errors say which of the two it is;
+			// anything that is not one of them reached here through the
+			// io.ReaderAt, so it is a read failure.
+			if errors.Is(zerr, zip.ErrFormat) || errors.Is(zerr, zip.ErrAlgorithm) || errors.Is(zerr, zip.ErrChecksum) {
+				return malformedContainerResult(res)
+			}
+			return unknownContainerResult(res, ReasonReadFailed)
 		}
-		return unknownContainerResult(res, ReasonReadFailed)
+		zr = parsed
 	}
 
 	appendMacroResult(&res, zr, cr.HasMacro)

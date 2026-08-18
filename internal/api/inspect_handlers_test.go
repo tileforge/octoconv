@@ -199,7 +199,7 @@ func TestDispatchInspectFamiliesChargesMediaBudgetExactlyOnce(t *testing.T) {
 	const budget = 1 << 16 // 64 KiB
 	tr := inspect.NewTracker(inspect.Budget{MaxBytes: budget, MaxDuration: time.Minute})
 
-	_ = dispatchInspectFamilies("mp4", nil, f, int64(len(data)), tr)
+	_ = dispatchInspectFamilies("mp4", nil, nil, f, int64(len(data)), tr)
 
 	if tr.Exhausted() {
 		t.Fatalf("Tracker(MaxBytes=%d) exhausted after dispatching a %d-byte valid mp4 -- the shared budget was charged more than once (media.go's own findMoov reporting actual bytes read directly to tr, ON TOP OF dispatchInspectFamilies's own tr.Consume(maxBytes) charge); this is PR9R9's own live reproduction mechanism: coverage.complete=false reason=%q for a small valid mp4", int64(budget), len(data), inspect.ReasonWorkCeilingBytes)
@@ -541,7 +541,7 @@ func TestInspectSniffReadFailureIsObservableAsReadFailed(t *testing.T) {
 	data := macroDocxFixture(t) // real docx-shaped bytes; only the PK prefix is ever actually read through the failing wrapper below
 	file := &failingAfterPrefixContainerFile{data: data, failErr: errors.New("simulated disk read failure")}
 
-	detected, sniffed := detectInspectFormat(file, int64(len(data)), "docx")
+	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "docx")
 	if detected != inspectZipReadFailedFormat {
 		t.Fatalf("detected = %q, want %q", detected, inspectZipReadFailedFormat)
 	}
@@ -550,7 +550,7 @@ func TestInspectSniffReadFailureIsObservableAsReadFailed(t *testing.T) {
 	}
 
 	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
-	families := dispatchInspectFamilies(detected, sniffed, file, int64(len(data)), tr)
+	families := dispatchInspectFamilies(detected, sniffed, sniffedZip, file, int64(len(data)), tr)
 	families = append(families, extensionMismatchFamilyResult(detected, "docx"))
 	report := inspect.BuildReport(detected, "docx", int64(len(data)), tr, families...)
 
@@ -687,7 +687,7 @@ func TestInspectMimetypeReadFailureIsObservableAsReadFailed(t *testing.T) {
 	}
 	file := &rangeFailContainerFile{data: data, failFrom: 0, failTo: failTo, passThroughMaxLen: 20, failErr: errors.New("simulated disk read failure")}
 
-	detected, sniffed := detectInspectFormat(file, int64(len(data)), "odt")
+	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "odt")
 	if detected != inspectZipReadFailedFormat {
 		t.Fatalf("detected = %q, want %q -- a mimetype-entry read failure, observed AFTER the central directory itself was read successfully, must not be silently folded into an unrecognized/empty format", detected, inspectZipReadFailedFormat)
 	}
@@ -696,7 +696,7 @@ func TestInspectMimetypeReadFailureIsObservableAsReadFailed(t *testing.T) {
 	}
 
 	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
-	families := dispatchInspectFamilies(detected, sniffed, file, int64(len(data)), tr)
+	families := dispatchInspectFamilies(detected, sniffed, sniffedZip, file, int64(len(data)), tr)
 	families = append(families, extensionMismatchFamilyResult(detected, "odt"))
 	report := inspect.BuildReport(detected, "odt", int64(len(data)), tr, families...)
 
@@ -1852,7 +1852,7 @@ func TestDispatchInspectFamiliesMarksTheTrackerItWasGiven(t *testing.T) {
 		t.Fatal("precondition: a fresh Tracker with a generous budget must not start exhausted")
 	}
 
-	_ = dispatchInspectFamilies("xlsx", nil, f, int64(len(data)), tr)
+	_ = dispatchInspectFamilies("xlsx", nil, nil, f, int64(len(data)), tr)
 
 	if !tr.Exhausted() {
 		t.Fatal("dispatchInspectFamilies returned without marking the Tracker it was given -- an analyzer hit its own internal ceiling (xl/workbook.xml over maxRelsPartBytes) and that fact did not reach the tracker, so BuildReport would report complete coverage over an analysis that stopped early. The usual cause is a dispatch site passing nil instead of tr.")

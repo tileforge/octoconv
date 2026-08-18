@@ -106,7 +106,15 @@ func (rr *readerAtRecorder) ReadAt(p []byte, off int64) (int, error) {
 	return n, err
 }
 
-// SniffContainer inspects a ZIP-shaped upload's central directory to
+// SniffContainer is SniffContainerReader for a caller that has no use for the
+// parsed archive itself -- the conversion path, which only ever needs the
+// verdict.
+func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
+	res, _, err := SniffContainerReader(r, size)
+	return res, err
+}
+
+// SniffContainerReader inspects a ZIP-shaped upload's central directory to
 // disambiguate the six supported office formats plus epub (D-01, T-47-05c),
 // sum declared uncompressed size across every entry for the zip-bomb guard
 // (D-02/D-03),
@@ -115,7 +123,17 @@ func (rr *readerAtRecorder) ReadAt(p []byte, off int64) (int, error) {
 // the central directory more than once per upload). r must be the original,
 // unconsumed upload source (e.g. multipart.File), not a re-stitched
 // io.Reader -- the archive/zip package requires positional access.
-func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
+//
+// It also RETURNS the *zip.Reader it built, so a caller that goes on to read
+// entries from the same archive does not pay for a second parse of the same
+// attacker-controlled central directory (PR9R24, container.go:157). That
+// sentence above -- "never re-parse the central directory more than once per
+// upload" -- was this function's own stated rule from the start, and
+// inspect's container analyzer was breaking it: handing over the RESULT of the
+// sniff without the reader left the second caller no way to honor it.
+//
+// The returned reader is nil on every error path, and non-nil on success.
+func SniffContainerReader(r io.ReaderAt, size int64) (ContainerResult, *zip.Reader, error) {
 	rr := &readerAtRecorder{r: r}
 	zr, err := zip.NewReader(rr, size)
 	if err != nil {
@@ -130,9 +148,9 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 		// comment), never an operational read failure, regardless of
 		// whether this exact error shape has ever been seen before.
 		if rr.failed {
-			return ContainerResult{}, fmt.Errorf("read zip container: %w", rr.err)
+			return ContainerResult{}, nil, fmt.Errorf("read zip container: %w", rr.err)
 		}
-		return ContainerResult{}, fmt.Errorf("%w: %w", ErrNotAZip, err)
+		return ContainerResult{}, nil, fmt.Errorf("%w: %w", ErrNotAZip, err)
 	}
 
 	var res ContainerResult
@@ -223,7 +241,7 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 	// correctly as read_failed, not malformed_input or format_unrecognized,
 	// with no further change needed on that side.
 	if rr.failed {
-		return ContainerResult{}, fmt.Errorf("read zip container: %w", rr.err)
+		return ContainerResult{}, nil, fmt.Errorf("read zip container: %w", rr.err)
 	}
 	// PR9R10 finding (docsniff.go:172), verbatim: "For an ODF/EPUB-shaped
 	// ZIP whose first stored mimetype entry has a corrupt local header or
@@ -244,9 +262,9 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 	// Format maps errors.Is(cerr, ErrNotAZip) to malformed_input, which is
 	// exactly the verdict this archive has earned.
 	if mimetypeErr != nil {
-		return ContainerResult{}, fmt.Errorf("%w: mimetype entry: %w", ErrNotAZip, mimetypeErr)
+		return ContainerResult{}, nil, fmt.Errorf("%w: mimetype entry: %w", ErrNotAZip, mimetypeErr)
 	}
-	return res, nil
+	return res, zr, nil
 }
 
 // hasBasicPrefix reports whether name lives under ODF's "Basic/" macro-
