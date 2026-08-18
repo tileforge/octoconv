@@ -1460,6 +1460,22 @@ func TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount(t *testing.
 			"non-whitespace character data before the root",
 			`leading<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
 		},
+		// PR9R26: the same invariant in the other direction. A workbook
+		// with NO direct <sheets> list is not a workbook declaring zero
+		// sheets -- it is not a valid workbook, and zero is a count of a
+		// list that was never inspected.
+		{
+			"a workbook with no sheets list at all",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>`,
+		},
+		{
+			"a workbook whose only child is not a sheets list",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><bookViews/></workbook>`,
+		},
+		{
+			"a sheets list nested below another element is still no list",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><ext><sheets><sheet name="ghost"/></sheets></ext></workbook>`,
+		},
 		// PR9R25: a workbook has exactly one <sheets> list. A second one is
 		// not a list to skip -- it is a structurally invalid workbook, and
 		// the old position-only state (sheetsDepth, reset when the first

@@ -486,7 +486,26 @@ components:
           description: >-
             Magic-byte-detected format (never the filename extension).
             Empty when nothing recognized the content at all -- this is a
-            normal, complete report, never a rejection.
+            normal, complete report, never a rejection. An upload this
+            service could not READ also reports an empty format: nothing
+            about it was recognized, and the accompanying checks carry
+            read_failed rather than format_unrecognized so a client can tell
+            "I do not handle this file" from "I could not read it".
+
+            Three values are NOT real formats but sentinels for a
+            ZIP-shaped upload this service recognized as a container and
+            then declined, or failed, to parse -- reported here because
+            "this is a zip we did not finish parsing" is more than an empty
+            format would say:
+
+            * `zip_directory_too_large` -- the declared central directory
+              crosses this service's own structural ceiling, so it was never
+              walked (checks carry work_ceiling_bytes).
+            * `zip_read_failed` -- the PK prefix was readable but a later
+              read of the archive failed (checks carry read_failed).
+            * `zip_malformed` -- every byte needed was read and the central
+              directory itself does not parse (checks carry
+              malformed_input).
         declared_format:
           type: string
           description: >-

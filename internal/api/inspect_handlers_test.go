@@ -2044,7 +2044,13 @@ func TestInspectInitialSniffReadFailureIsReadFailedNotUnrecognized(t *testing.T)
 	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
 	families := dispatchInspectFamilies(detected, sniffed, sniffedZip, file, file.size, tr)
 	families = append(families, extensionMismatchFamilyResult(detected, "png"))
-	report := inspect.BuildReport(detected, "png", file.size, tr, families...)
+	// reportFormat, exactly as handleInspect does it: the sentinel routes the
+	// dispatch above and must not survive into the response (PR9R26).
+	report := inspect.BuildReport(reportFormat(detected), "png", file.size, tr, families...)
+
+	if report.Format != "" {
+		t.Errorf("report.Format = %q, want empty -- nothing about this upload was recognized, and the contract says an unrecognized upload reports an empty format; publishing an internal routing sentinel invents a format that does not exist", report.Format)
+	}
 
 	if err := inspect.ValidateReport(report.Findings, report.Checks); err != nil {
 		t.Fatalf("ValidateReport: %v", err)

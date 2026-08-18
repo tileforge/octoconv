@@ -150,6 +150,43 @@ const (
 	inspectSniffReadFailedFormat = "sniff_read_failed"
 )
 
+// inspectPublicSentinelFormats are the Detected-format sentinels that DO reach
+// the wire as Report.Format. Each one says something true about the upload that
+// an empty format would lose: this IS a zip, and here is why this service did
+// not finish parsing it. docs/openapi.yaml documents them, and
+// TestInspectSentinelFormatsMatchTheContract keeps the two lists in step.
+var inspectPublicSentinelFormats = []string{
+	inspectZipTooLargeFormat,
+	inspectZipReadFailedFormat,
+	inspectZipMalformedFormat,
+}
+
+// inspectInternalOnlyFormats are sentinels that must NEVER reach the wire.
+//
+// PR9R26 (inspect_handlers.go:626): inspectSniffReadFailedFormat leaked into
+// the response as "format":"sniff_read_failed". Unlike the public sentinels
+// above it describes no upload: the failure happened before any signature
+// matched, so nothing about this file was recognized -- which is exactly the
+// case the contract already covers ("Empty when nothing recognized the content
+// at all"). The sentinel earns its keep by routing the dispatch to read_failed
+// checks; it has nothing to say in a field that names formats.
+var inspectInternalOnlyFormats = []string{
+	inspectSniffReadFailedFormat,
+}
+
+// reportFormat maps a detected format to the value the public report carries,
+// blanking the internal-only sentinels. Called once, at the report boundary,
+// so every consumer BEFORE it (dispatch, extension-mismatch) still sees which
+// sentinel it was.
+func reportFormat(detected string) string {
+	for _, internal := range inspectInternalOnlyFormats {
+		if detected == internal {
+			return ""
+		}
+	}
+	return detected
+}
+
 const (
 	// inspectIntakeMaxConcurrent bounds how many requests may be inside
 	// http.Request.ParseMultipartForm -- buffering an untrusted upload into
@@ -460,7 +497,10 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	families := dispatchInspectFamilies(detected, sniffedContainer, sniffedZip, file, header.Size, tr)
 	families = append(families, extensionMismatchFamilyResult(detected, declaredFormat))
 
-	report := inspect.BuildReport(detected, declaredFormat, header.Size, tr, families...)
+	// reportFormat, not detected: an internal routing sentinel must not be
+	// published as though it were a format this service detected (PR9R26).
+	// Every consumer above still sees the sentinel itself.
+	report := inspect.BuildReport(reportFormat(detected), declaredFormat, header.Size, tr, families...)
 
 	// 4. Assemble. availableOperations (Task 2) reads convert.Default's own
 	// registry and calls the SAME Repo.PreAdmit the job-creation path uses,

@@ -1006,7 +1006,17 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// a workbook at all, and returning ok=true here published
 				// sheet_count: 0 with complete coverage for it. "Zero
 				// sheets" is a claim; this part supports no claims.
-				return count, haveRoot
+				//
+				// PR9R26 (container.go:1009): haveRoot alone was too weak
+				// once the previous round established that a workbook has
+				// exactly ONE direct <sheets> list. <workbook/> and
+				// <workbook><bookViews/></workbook> have a root and no such
+				// list, so they reached here and published sheet_count: 0
+				// with complete coverage -- a count of a list that was never
+				// inspected, from a part that is not a valid workbook. The
+				// invariant has to hold in both directions: not more than one
+				// list, and not fewer.
+				return count, haveRoot && sheetsSeen
 			}
 			return 0, false
 		}

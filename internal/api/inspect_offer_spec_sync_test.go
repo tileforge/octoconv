@@ -159,3 +159,36 @@ func parseInlineEnum(line string) []string {
 	}
 	return out
 }
+
+// TestInspectSentinelFormatsMatchTheContract keeps the two halves of PR9R26's
+// fix from drifting apart: a sentinel that reaches the wire must be documented,
+// and a sentinel that must not reach the wire must actually not.
+//
+// The failure this guards against is not hypothetical -- it is what the round
+// found: a fourth sentinel was added for routing and silently became a public
+// "format" value the contract does not describe.
+func TestInspectSentinelFormatsMatchTheContract(t *testing.T) {
+	raw, err := os.ReadFile(inspectOfferSpecPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", inspectOfferSpecPath, err)
+	}
+	spec := string(raw)
+
+	for _, public := range inspectPublicSentinelFormats {
+		if !strings.Contains(spec, public) {
+			t.Errorf("sentinel %q reaches Report.Format but docs/openapi.yaml never mentions it -- a client cannot handle a value the contract does not describe", public)
+		}
+		if got := reportFormat(public); got != public {
+			t.Errorf("reportFormat(%q) = %q, want it unchanged -- this sentinel is documented as a public value", public, got)
+		}
+	}
+
+	for _, internal := range inspectInternalOnlyFormats {
+		if got := reportFormat(internal); got != "" {
+			t.Errorf("reportFormat(%q) = %q, want \"\" -- an internal routing sentinel must never be published as a detected format", internal, got)
+		}
+		if strings.Contains(spec, internal) {
+			t.Errorf("sentinel %q is internal-only, yet docs/openapi.yaml mentions it -- either it is public (move it to inspectPublicSentinelFormats) or the doc is wrong", internal)
+		}
+	}
+}
