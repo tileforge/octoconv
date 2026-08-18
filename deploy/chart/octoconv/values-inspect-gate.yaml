@@ -1,0 +1,151 @@
+# Inspect-burst live-gate overlay — layered ON TOP of values-local.yaml,
+# NEVER standalone (same convention as values-e2e.yaml/values-multireplica.yaml):
+#
+#   helm upgrade --install octoconv deploy/chart/octoconv \
+#     -f deploy/chart/octoconv/values-local.yaml \
+#     -f deploy/chart/octoconv/values-inspect-gate.yaml \
+#     -n octoconv --create-namespace
+#
+# Backs scripts/inspect-burst-liveproof.sh (Phase 58, INSP-06/SC6): a
+# pathological burst of POST /v1/inspect against a live OrbStack Kubernetes
+# api Deployment must never cause GET /healthz to fail six consecutive
+# liveness probes (deployment-api.yaml's own periodSeconds:10/
+# failureThreshold:6, unchanged by this phase — see that template's own
+# comment for why).
+
+api:
+  # api.replicas: 1 -- EXPLICIT, not inherited from values.yaml's own
+  # default of 1. This is the SC6 gate's own load-bearing precondition, not
+  # decoration: internal/ratelimit's in-process rate budget (D-07,
+  # 58-RESEARCH.md Pitfall 5) and the inspect concurrency semaphore
+  # (internal/api/inspectgate.go) are BOTH per-process state, never shared
+  # across replicas. A gate run at api.replicas > 1 would silently divide
+  # the effective inspect budget across N processes and prove a WEAKER
+  # property than SC6 claims — scripts/inspect-burst-liveproof.sh asserts
+  # this value explicitly and fails loudly, by name, if it is ever anything
+  # other than 1 (grep this file's own value, not a hardcoded literal, so
+  # the two can never silently drift apart).
+  replicas: 1
+
+  # Four inspect boundaries, restated here explicitly (not merely inherited
+  # from the ConfigMap's own INSPECT_MAX_* defaults) so an operator
+  # recalibrating this gate has ONE place to change every knob the burst
+  # depends on, without editing deploy/chart/octoconv/templates/configmap.yaml
+  # itself (extraEnv's `env:` entries take precedence over envFrom-sourced
+  # ConfigMap values for the same key — deployment-api.yaml's own comment).
+  extraEnv:
+    # LOWERED from the ConfigMap's 8 MiB default to 1 MiB. This is the knob
+    # that makes "fixture above the work ceiling, below the upload
+    # ceiling, and only a few committed megabytes" simultaneously
+    # achievable — at the 8 MiB default, satisfying "above the work
+    # ceiling" alone would require committing tens of megabytes of fixture
+    # per format. See scripts/fixtures/README.md for the exact arithmetic
+    # this value was chosen against, and for every fixture's own measured
+    # size relative to it.
+    INSPECT_MAX_WORK_BYTES: "1048576"
+    # UNCHANGED from the ConfigMap's own 100 MiB default — restated
+    # explicitly, not because this gate needs a different value, but so
+    # this overlay is a complete, self-describing record of every boundary
+    # the burst depends on, per this file's own header comment.
+    INSPECT_MAX_UPLOAD_BYTES: "104857600"
+    # UNCHANGED — a courtesy outer bound, not the mechanism this gate
+    # exercises (internal/inspect/budget.go's own doc comment: a context
+    # deadline alone cannot interrupt a CPU-bound parsing loop that never
+    # checks it). Restated here for the same completeness reason as above.
+    INSPECT_MAX_WORK_DURATION: "2s"
+    # UNCHANGED — D-06a ties this to DB_MAX_CONNS (the api pod's Postgres
+    # pool sizing, .env.example) with a fixed 4-inspect/6-headroom split;
+    # raising it here without raising DB_MAX_CONNS to match would reopen
+    # the pool-contention path Plan 58-03 closed (58-RESEARCH.md Pitfall 1).
+    # This gate deliberately does not touch that arithmetic.
+    INSPECT_MAX_CONCURRENT: "4"
+    # ALL THREE rate limiters are lifted for this run, and the reason there
+    # are three is worth stating, because getting it wrong already cost this
+    # gate a run: routes.go mounts ratelimit.ByIP -> auth.Middleware ->
+    # ratelimit.PerClient on the whole /v1 group, and only THEN inspect's own
+    # budget on its sub-group. A request must clear every one of them before
+    # a single byte is parsed.
+    #
+    # The first real run sent 90 requests in ten seconds and 60 came back
+    # rate_limited; only 27 were ever inspected and just 3 ever reached the
+    # concurrency semaphore this gate is named after. Raising
+    # RATE_LIMIT_INSPECT_RPM alone did not fix it -- the second run sent 675
+    # requests and 615 were STILL shed, because the binding constraint was
+    # never the inspect budget at all: the burst driver is a single pod, so
+    # every request shares one client IP, and RATE_LIMIT_IP_RPM's 60/minute
+    # was doing the shedding. Both limiters return the same rate_limited
+    # code, which is exactly why the first diagnosis looked confirmed and
+    # was not.
+    #
+    # Lifting them is not a weakening. Each is a SEPARATE defense with its
+    # own unit tests (internal/ratelimit), and all three sit in FRONT of the
+    # path under test -- leaving them at their production values means this
+    # gate proves the limiters work, which nobody doubted, instead of proving
+    # the api survives sustained inspection load, which is the claim.
+    # INSPECT_MAX_CONCURRENT stays at 4, so the concurrency semaphore -- the
+    # defense that IS under test -- is untouched and now actually saturated.
+    RATE_LIMIT_IP_RPM: "1000000"
+    RATE_LIMIT_CLIENT_RPM: "1000000"
+    RATE_LIMIT_INSPECT_RPM: "1000000"
+
+# ---------------------------------------------------------------------------
+# Engine classes that play NO part in SC6's own claim are pinned to zero
+# replicas, and mcp-http is switched off outright.
+#
+# This is a narrowing of the RUN, not of the claim, and it was forced by a
+# measurement problem rather than by convenience. SC6 asserts that a
+# pathological burst of synchronous POST /v1/inspect requests leaves GET
+# /healthz inside kubelet's real liveness contract, and that the api
+# container's own restartCount never moves. Nothing in that sentence involves
+# the audio/av/chromium/document/ocr/pandoc/webhook worker classes or the MCP
+# HTTP bridge: an inspect request is answered entirely inside the api process
+# and never enqueues a job, so those Deployments contribute exactly zero
+# traffic to the path under test.
+#
+# What they DO contribute is CPU requests. The first real run of this gate
+# against the full values-local topology on a single OrbStack node failed with
+# `0/1 nodes are available: 1 Insufficient cpu` -- deployment/worker never
+# became Available because fourteen Deployments' requests do not fit one node.
+# Leaving them in would not have made this gate stricter; it would have made
+# it measure the wrong thing, because any /healthz latency observed while
+# seven engine classes compete for the same node's CPU is a fact about node
+# capacity, not about the inspect path. The api pod keeps its own real
+# resources block (values-local.yaml), its own real probes, and its own real
+# kubelet -- everything the claim actually rests on.
+#
+# The Deployments themselves are still RENDERED, exactly as production defines
+# them; only their replica counts are zero. deployment/worker stays at 1
+# because the gate's own STEP 2 waits for it, and it is the only worker class
+# whose image the gate's preflight requires.
+#
+# keda.enabled is switched off for this run, and that is load-bearing rather
+# than incidental: every deployment-*-worker.yaml template OMITS spec.replicas
+# entirely while `keda.enabled and prometheus.enabled` holds (WR-02, Phase 28
+# D-10 -- rendering a fixed value there would make every helm upgrade fight
+# the HPA by resetting a scaled-to-zero class). With KEDA on, the replica
+# pins above are silently no-ops and the engine classes come up at one replica
+# each, which is exactly what the first attempt at this narrowing did. SC6's
+# claim says nothing about autoscaling, so the ScaledObjects and the KEDA
+# operator are noise for this particular measurement -- and scripts/keda-*.sh
+# is where autoscaling behavior is actually proven, against its own gates.
+#
+# This is the same discipline as api.replicas above: pin what the claim needs,
+# state why in writing, and leave the rest out of the measurement.
+keda:
+  enabled: false
+documentWorker:
+  replicas: 0
+audioWorker:
+  replicas: 0
+avWorker:
+  replicas: 0
+ocrWorker:
+  replicas: 0
+pandocWorker:
+  replicas: 0
+chromiumWorker:
+  replicas: 0
+webhookWorker:
+  replicas: 0
+mcpHttp:
+  enabled: false

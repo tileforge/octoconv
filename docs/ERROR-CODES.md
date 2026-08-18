@@ -77,7 +77,7 @@ either side — that would split one code space into two for no client-visible b
 
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Fifteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Sixteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
@@ -97,6 +97,7 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 | `unauthorized` | 401 | Missing/malformed `Authorization` header, or the supplied API key is invalid | Supply a valid `Authorization: ApiKey <key>` header |
 | `quota_exceeded` | 429 | v1.12 admission-gate quota rejection — this exact string is already on the wire and frozen (ERRC-V2-01 predates this phase) | Respect the accompanying `Retry-After` header; this is distinct from `rate_limited` and never a client bug |
 | `rate_limited` | 429 | `internal/ratelimit` per-client or pre-auth IP rate limit — this exact string is already on the wire and frozen | Respect the accompanying `Retry-After` header; back off and retry later |
+| `inspect_busy` | 429 | The service has exhausted its bounded concurrency budget for synchronous `inspect` parsing right now and refuses to accept another one immediately — the request is neither queued nor parsed (58-CONTEXT.md D-06, mechanism 2); distinct from `rate_limited` (own request rate) and `quota_exceeded` (own daily/concurrent job budget) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — do not reduce file size or alter the request, this is not a property of the request |
 | `internal_error` | 5xx | Anything the client cannot act on (unexpected server-side failure) | Retry later or escalate; do not attempt to parse `message` for a remediation |
 
 ## Asynchronous job-failure codes (`error_code`)

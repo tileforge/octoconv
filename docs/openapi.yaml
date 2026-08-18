@@ -28,6 +28,10 @@ tags:
     description: Create and poll asynchronous conversion jobs.
   - name: Formats
     description: Discover supported (source, target) conversion pairs.
+  - name: Inspect
+    description: >-
+      Synchronously report the truth about an uploaded file's content --
+      never a write path, never a rejection on content (Phase 58).
   - name: Presets
     description: Caller-owned (scope=user) named conversion presets.
   - name: System
@@ -98,6 +102,7 @@ components:
             - unauthorized
             - quota_exceeded
             - rate_limited
+            - inspect_busy
             - internal_error
       required: [error, code]
 
@@ -279,6 +284,268 @@ components:
           format: date-time
       required: [name, version, scope, operation, target_format, is_active, created_at, updated_at]
 
+    InspectFinding:
+      type: object
+      description: >-
+        One occurrence of a finding code detected inside a file's content
+        (INSP-02, Phase 58). code is an OPEN, string-typed identifier from
+        the closed Go vocabulary declared in internal/inspect/findings.go
+        and documented in docs/FINDINGS.md -- deliberately NOT modeled as a
+        closed schema enum here: a future phase may ADD a new code (the Go
+        vocabulary is additive-only -- a code, once shipped, is never
+        renamed or repurposed, per findings.go's own doc comment), and a
+        closed enum in this contract would make that addition a breaking
+        change for every existing client, which this vocabulary's own
+        stability guarantee forbids. severity is likewise described in
+        prose rather than as a schema enum, so this whole object's
+        openness reads as one deliberate choice rather than two
+        inconsistent ones -- its three actual values (info, warning,
+        critical) are declared, closed, and exhaustive in
+        internal/inspect/findings.go's own Severity type; see
+        docs/FINDINGS.md for the current, authoritative list.
+      properties:
+        code:
+          type: string
+          description: See docs/FINDINGS.md for the full, versioned list of finding codes and what each one means.
+        severity:
+          type: string
+          description: >-
+            One of "info" (structural fact, no risk by itself), "warning"
+            (a passive risk requiring further recipient action to matter),
+            or "critical" (can execute or take effect with no further
+            recipient action).
+        location:
+          type: string
+          description: >-
+            Best-effort, human-facing location -- its SHAPE depends on the
+            source that produced it (a zip entry path, a decimal byte
+            offset, or absent for a whole-file structural fact). Clients
+            MUST treat this as an opaque, human-facing string, never a
+            stable machine-readable field.
+      required: [code, severity]
+
+    InspectCheck:
+      type: object
+      description: >-
+        The three-value outcome of one named check against one finding
+        code that did NOT produce an InspectFinding (INSP-03, Phase 58).
+        Every code in the closed vocabulary (docs/FINDINGS.md) appears
+        EXACTLY ONCE across one InspectReport's findings and checks
+        combined -- never in both, never in neither.
+      properties:
+        code:
+          type: string
+          description: See docs/FINDINGS.md.
+        status:
+          type: string
+          description: >-
+            A CLOSED, three-value classification. A consumer MUST carry
+            three branches, not two: "unknown" is NEITHER a synonym for
+            "clean" NOR for "not_applicable" -- collapsing any two of
+            these into one branch (e.g. `if status != "clean"`) is exactly
+            the defect this three-value scale exists to prevent. "clean"
+            means the check applies to this format, ran to completion, and
+            found nothing. "not_applicable" means the check does not apply
+            to this format at all (NOT "we looked and found nothing").
+            "unknown" means the check applies but its result could not be
+            determined.
+          enum:
+            - clean
+            - not_applicable
+            - unknown
+        reason:
+          type: string
+          description: >-
+            Present when status is not "clean". A closed, machine-readable
+            explanation (internal/inspect/status.go's Reason type), e.g.
+            "compressed_object_streams" (structural blindness about the
+            FILE), "parser_unavailable", "malformed_input",
+            "work_ceiling_bytes"/"work_ceiling_time" (THIS SERVICE's own
+            resource ceiling -- the only two reasons that ever mark
+            InspectCoverage.complete false).
+      required: [code, status]
+
+    InspectCoverage:
+      type: object
+      description: >-
+        The REPORT-WIDE completeness claim (INSP-03, Phase 58) -- a
+        SEPARATE claim from any one InspectCheck's own status. A
+        structurally-unknown check (parser blind, format inapplicable,
+        malformed input) never makes the report itself incomplete; ONLY
+        exhausting this service's OWN byte/time work ceiling does.
+      properties:
+        complete:
+          type: boolean
+        reason:
+          type: string
+          description: Present when complete is false.
+        truncated_checks:
+          type: array
+          items:
+            type: string
+          description: >-
+            The finding codes whose own check was cut short by the
+            exhausted ceiling. Present when complete is false.
+      required: [complete]
+
+    InspectOperation:
+      type: object
+      description: >-
+        One (operation, target) triple offered for the detected format
+        (INSP-04, Phase 58): the engine that would serve it, an honest
+        UPPER-BOUND duration estimate with its own provenance, a
+        DETERMINISTIC availability verdict for a file of this size, and a
+        live, read-only quota verdict "as of this request" -- never a
+        guarantee the eventual POST /v1/jobs will succeed (Repo.PreAdmit is
+        not linearizable under a concurrent burst).
+
+        The two verdicts answer different questions and neither subsumes the
+        other. `available` is computed locally and cannot be unknown: false
+        means POST /v1/jobs refuses a file of this size for this engine
+        every time. `quota.allowed` is a live check that can be true, false,
+        or null. An offer appears in the list either way -- being told
+        "this conversion exists but your file is too large for it, and the
+        ceiling is N bytes" is the reason to call /v1/inspect before
+        queueing anything.
+      properties:
+        operation:
+          type: string
+        target:
+          type: string
+        engine:
+          type: string
+        available:
+          type: boolean
+          description: >-
+            Whether this service would accept a file of the inspected size
+            for this (operation, target, engine) triple. false means the
+            request is refused DETERMINISTICALLY -- the size exceeds the
+            engine's own post-detection ceiling, so POST /v1/jobs answers
+            413 payload_too_large no matter what the quota says. This axis
+            is deliberately separate from `quota`: a client must be able to
+            tell "this service will never take this file" from "your quota
+            is exhausted right now", and both can be true on one offer.
+        unavailable_reason:
+          type: string
+          enum: [payload_too_large]
+          description: >-
+            Present only when available is false, carrying the SAME code
+            the eventual POST /v1/jobs rejection carries, so one vocabulary
+            covers the offer and the error.
+        max_bytes:
+          type: integer
+          format: int64
+          description: >-
+            The engine's own post-detection size ceiling, present whether
+            or not this file fits it -- a client that knows the limit can
+            split or downscale instead of guessing. Absent for an engine
+            this deployment does not gate by size.
+        estimated_max_seconds:
+          type: integer
+          description: >-
+            An upper bound derived from the per-engine timeout this
+            service already enforces on itself -- never a real estimate;
+            this project has no historical duration data to derive one
+            from.
+        estimate_source:
+          type: string
+          enum: [measured, unmeasured]
+          description: >-
+            "measured" means the underlying per-engine timeout was derived
+            from a real RTF (real-time-factor) measurement against the
+            actual worker image. "unmeasured" means it is a starting point
+            -- an inherited placeholder or an expectation -- with no
+            measurement behind it yet; this flag makes that calibration
+            debt visible on the wire instead of letting an unmeasured
+            number masquerade as a measured one.
+        quota:
+          type: object
+          properties:
+            allowed:
+              type: [boolean, "null"]
+              description: >-
+                null when the pre-admission check itself could not run --
+                NEVER true in that case; unknowing is never permission.
+            reason:
+              type: string
+              description: Present when allowed is false or null (null pairs with reason "unknown").
+          required: [allowed]
+      required: [operation, target, engine, available, estimated_max_seconds, estimate_source, quota]
+
+    InspectReport:
+      type: object
+      description: >-
+        Response body for POST /v1/inspect (INSP-01..INSP-06, Phase 58).
+        Returned synchronously, in the same round trip as the upload --
+        this endpoint never writes to S3 or Postgres and never pins
+        anything a later POST /v1/jobs could use to skip its own
+        fail-closed validation (D-09).
+      properties:
+        format:
+          type: string
+          description: >-
+            Magic-byte-detected format (never the filename extension).
+            Empty when nothing recognized the content at all -- this is a
+            normal, complete report, never a rejection. An upload this
+            service could not READ also reports an empty format: nothing
+            about it was recognized, and the accompanying checks carry
+            read_failed rather than format_unrecognized so a client can tell
+            "I do not handle this file" from "I could not read it".
+
+            Three values are NOT real formats but sentinels for a
+            ZIP-shaped upload this service recognized as a container and
+            then declined, or failed, to parse -- reported here because
+            "this is a zip we did not finish parsing" is more than an empty
+            format would say:
+
+            * `zip_directory_too_large` -- the declared central directory
+              crosses this service's own structural ceiling, so it was never
+              walked (checks carry work_ceiling_bytes).
+            * `zip_read_failed` -- the PK prefix was readable but a later
+              read of the archive failed (checks carry read_failed).
+            * `zip_malformed` -- every byte needed was read and the central
+              directory itself does not parse (checks carry
+              malformed_input).
+        declared_format:
+          type: string
+          description: >-
+            Normalized filename-extension-derived format. NEVER selects
+            which characteristics/findings are computed for this file.
+        size_bytes:
+          type: integer
+          format: int64
+        characteristics:
+          type: object
+          additionalProperties: true
+          description: >-
+            Only keys APPLICABLE to the detected format are present
+            (INSP-01). A key whose VALUE is unknown is present with a JSON
+            null (an honest "we don't know"); a key that does not apply to
+            this format is simply absent.
+        findings:
+          type: array
+          items:
+            $ref: "#/components/schemas/InspectFinding"
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/InspectCheck"
+        coverage:
+          $ref: "#/components/schemas/InspectCoverage"
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/InspectOperation"
+      required:
+        - format
+        - declared_format
+        - size_bytes
+        - characteristics
+        - findings
+        - checks
+        - coverage
+        - operations
+
     Health:
       type: object
       description: Per-dependency reachability probe result.
@@ -348,7 +615,20 @@ paths:
       tags: [Health]
       operationId: getHealth
       summary: Liveness and dependency reachability probe
-      description: Read-only ping of Postgres, Redis, and S3/MinIO. Public — no API key required.
+      description: >-
+        Read-only ping of Postgres, Redis, and S3/MinIO. Public — no API key
+        required. Served on TWO listeners as of Phase 58 (D-06/D-08):
+        API_ADDR (the same address /v1/* answers on, kept for existing
+        operational consumers) and a dedicated HEALTH_ADDR. The response
+        body is byte-identical on both — this is a second accept path for
+        the exact same handler, not a second endpoint. The Helm chart's
+        liveness/readiness probes target HEALTH_ADDR specifically, so a
+        burst against API_ADDR cannot delay the probe's own accept path;
+        see internal/api/routes.go's HealthRoutes doc comment for what this
+        additionally does and does not isolate (the Postgres ping itself
+        uses a separate connection pool from the one INSP-04's quota check
+        uses, closed independently — HTTP-listener isolation and
+        Postgres-pool isolation are two different guarantees).
       security: []
       responses:
         "200":
@@ -483,6 +763,90 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/inspect:
+    post:
+      tags: [Inspect]
+      operationId: inspectFile
+      summary: Synchronously report the truth about a file's content
+      description: >-
+        Uploads a file and returns, in the SAME round trip, the format
+        detected by magic bytes (never by filename extension), the
+        characteristics applicable to that format, a typed findings/checks
+        report over a closed vocabulary (docs/FINDINGS.md), and the
+        (operation, target) triples available for it with an upper-bound
+        duration estimate and a live quota check. This endpoint NEVER
+        writes to S3 or Postgres and NEVER rejects on content -- an
+        unrecognized upload is a normal 200 with an empty format and
+        honest "unknown" statuses, not a 422. It also pins nothing a
+        subsequent POST /v1/jobs could use to skip its own fail-closed
+        validation: inspecting a file has no effect whatsoever on a later
+        job-creation request, even for the identical bytes.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to inspect.
+              required: [file]
+              additionalProperties: false
+      responses:
+        "200":
+          description: >-
+            The file was parsed (or, for unrecognized content, honestly
+            reported as such). Always 200 -- this endpoint reports, it
+            never rejects on content.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InspectReport"
+        "400":
+          description: Invalid multipart form / missing file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          description: >-
+            Body exceeds this endpoint's OWN upload ceiling
+            (INSPECT_MAX_UPLOAD_BYTES) -- separate from and smaller than
+            POST /v1/jobs' own MAX_UPLOAD_BYTES, since this endpoint never
+            writes the body to S3.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: file exceeds size limit
+                code: payload_too_large
+        "429":
+          description: >-
+            One of THREE independent 429 producers rejected this request,
+            distinguished by the body's code field: the per-IP/per-client
+            rate limiter (rate_limited), this endpoint's OWN, independent
+            per-client rate budget (also rate_limited, a smaller RPM than
+            the general limit), or the concurrency semaphore bounding how
+            many inspect requests may be parsing bytes at once
+            (inspect_busy) -- a THIRD, distinct class from both
+            rate_limited and quota_exceeded: the service as a whole is at
+            its parallel-parsing ceiling, not the caller's own budget.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 

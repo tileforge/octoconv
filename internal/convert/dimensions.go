@@ -18,7 +18,15 @@ import (
 // for larger multi-item files). Any format whose fields aren't found within
 // this window fails closed (ErrDimensionsUnknown) rather than growing the
 // buffer or seeking further — D-07's explicit fail-closed guidance.
-const dimPeekLen = 64 * 1024
+const dimPeekLen = DimensionPeekBytes
+
+// DimensionPeekBytes is dimPeekLen, exported because a CALLER has to be able
+// to account for this read. internal/inspect's image analyzer shares one byte
+// ceiling across every read it makes for a single inspect operation, and this
+// peek is one of them (PR9R23, image.go:38): deducting it requires knowing its
+// size, and a caller-side copy of the number would be free to drift from the
+// real one.
+const DimensionPeekBytes = 64 * 1024
 
 // ErrDimensionsUnknown is returned when a registered format's declared
 // pixel dimensions could not be located within the bounded peek window —

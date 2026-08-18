@@ -215,3 +215,40 @@ spike answers that; committing a phase before it would be guessing.
   the harvest. A harvester must add the accepted-text-path test alongside it
   rather than delete the coverage — the fixture already exists and pins the
   exact case this seed changes.
+
+---
+
+## Update 2026-08-10 — candidate for BDPD-01, still not adopted
+
+Revisited during Phase 58 (synchronous inspection), while PR #9 was open.
+Status stays `dormant` — this records where it now fits, not a decision to
+harvest it.
+
+**Where it fits now.** `BDPD-01` (Phase 59) asks the inspect report to say
+whether a PDF has a usable text layer, with honest partiality per INSP-03.
+That is exactly Opportunity 2's classification bit, reduced to one boolean —
+which is both the good news and the caution: the seed's value here is a
+single bit, while `pdf-inspector` brings a whole Markdown converter with it.
+Weigh that before adopting it for BDPD-01 alone.
+
+**A second possible host exists now.** When this seed was planted the only
+candidate home was the OCR worker image. Phase 60 adds `cmd/probe-worker`
+(SANI-06) — its own container, its own measured timeout, its own cgroup
+limits. A Rust binary is as legitimate there as in the OCR worker, and the
+choice between the two hosts is now a real question rather than a foregone
+conclusion. "The binary, never the crate" is unchanged by this and remains
+the load-bearing constraint.
+
+**What it explicitly does NOT solve.** Phase 58's problem is typed security
+findings — `/JavaScript`, `/OpenAction`, `/AA`, `/EmbeddedFile`, encryption,
+and the compressed-object-stream blindness that forces `unknown`.
+`pdf-inspector` detects none of those; its scope is text-vs-scanned
+classification and extraction. Phase 60's `pdfcpu` covers the findings side
+(D-02a). Do not reach for this seed to close a findings gap.
+
+**Not a route to relocating inspect.** Adopting this in a worker is about
+where a *binary* runs. It is not a step toward moving `POST /v1/inspect`
+itself off the synchronous path — that was considered and rejected in Phase
+58 discussion and is recorded as a non-goal in STATE.md, because a queued
+inspect is just a job and the whole point is answering before a job is
+queued.

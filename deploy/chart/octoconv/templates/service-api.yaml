@@ -25,3 +25,12 @@ spec:
     - name: metrics
       port: 9090
       targetPort: 9090
+    # health (Phase 58, D-06/D-08): NOT for kubelet's own readiness/liveness
+    # probes -- those hit the pod's containerPort directly and never go
+    # through a Service. This port exists so an IN-CLUSTER driver (the live
+    # gate, 58-08/SC6) can poll GET /healthz through the same Service
+    # address every other in-namespace caller uses, during a pathological
+    # inspect burst, without needing to know which pod backs it.
+    - name: health
+      port: 8091
+      targetPort: 8091

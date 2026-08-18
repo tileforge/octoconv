@@ -13,7 +13,7 @@ package errcode
 // Sync error codes, one per class of 4xx/429 rejection (D-02). Granularity is
 // by failure CLASS, not by call site — do not add a new constant per
 // writeError message string; only per distinguishable client-actionable
-// class. The list is closed at fifteen codes.
+// class. The list is closed at sixteen codes.
 const (
 	InvalidRequest        = "invalid_request"        // generic request/form validation: missing target, preset+target conflict, unrecognized source format, invalid callback_url, bad job id, invalid status/engine filter, invalid client_id, invalid period filter, invalid JSON body, invalid preset name
 	UnsupportedConversion = "unsupported_conversion" // the (source,target) pair is not served by any engine
@@ -38,7 +38,20 @@ const (
 	Unauthorized         = "unauthorized"        // 401: missing/malformed Authorization header, or invalid api key
 	QuotaExceeded        = "quota_exceeded"      // 429: v1.12 quota gate — value already on the wire, must not change
 	RateLimited          = "rate_limited"        // 429: internal/ratelimit — value already on the wire, must not change
-	InternalError        = "internal_error"      // 5xx: anything the client cannot act on
+	// InspectBusy is a THIRD, distinct 429 class (58-CONTEXT.md D-06,
+	// mechanism 2): the service has exhausted its bounded concurrency budget
+	// for synchronous inspect parsing right now and refuses to accept
+	// another one IMMEDIATELY — it neither queues the request nor begins
+	// parsing. This is a different client-actionable class than either
+	// neighboring 429: RateLimited means "you exceeded your own request
+	// rate"; QuotaExceeded means "you exhausted your own daily/concurrent
+	// job budget"; InspectBusy means "the service as a whole is at its
+	// parallel-parsing ceiling right now — your budget is not the issue at
+	// all." Declared directly after RateLimited so the three 429 codes read
+	// together in one place.
+	InspectBusy = "inspect_busy"
+
+	InternalError = "internal_error" // 5xx: anything the client cannot act on
 )
 
 // all is the single place this vocabulary is enumerated; All() and IsKnown()
@@ -58,6 +71,7 @@ var all = []string{
 	Unauthorized,
 	QuotaExceeded,
 	RateLimited,
+	InspectBusy,
 	InternalError,
 }
 

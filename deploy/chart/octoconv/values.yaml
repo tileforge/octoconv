@@ -38,6 +38,21 @@ api:
   # QUOT-04/D-13: global quota kill-switch; only "true" disables enforcement
   # service-wide (Phase 52 Plan 04).
   quotaEnforcementDisabled: "false"
+  # D-06b (Phase 58): api's FIRST resources.limits ever -- mirrors worker's
+  # own cpu/memory shape above verbatim. These are STARTING values, not
+  # measured ones: this phase introduces the api process's first untrusted-
+  # byte parsing (POST /v1/inspect), and the live gate (58-08) is what
+  # actually calibrates this pair against a pathological-burst run, the
+  # same way audioWorker/avWorker/ocrWorker's limits below were calibrated
+  # by their own RTF-measurement scripts, not assigned upfront. api ALSO
+  # carries the self-migration on startup (db.Migrate, cmd/api/main.go) that
+  # no worker carries -- do not lower memory below this starting point
+  # without re-running the live gate; a migration failing mid-startup under
+  # memory pressure is a worse failure mode than a worker OOM.
+  resources:
+    limits:
+      cpu: "2"
+      memory: "1Gi"
 
 worker:
   image:

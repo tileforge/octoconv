@@ -23,6 +23,7 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/cancel"
 	"github.com/apaderin/octoconv/internal/clients"
+	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/envcfg"
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -55,6 +56,21 @@ func main() {
 	if err := db.Migrate(ctx, pool); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}
+
+	// D-06a (Phase 58): a dedicated, deliberately tiny pool used for
+	// exactly one thing -- the Postgres ping inside GET /healthz -- so a
+	// burst of concurrent POST /v1/inspect requests exhausting pool above
+	// (through Repo.PreAdmit, INSP-04) cannot delay or fail that ping.
+	// Mirrors the redisPinger precedent below (a dedicated connection
+	// purely for /healthz), applied to Postgres instead of Redis. See
+	// db.ConnectHealth's own doc comment for why the second /healthz
+	// listener (internal/api/routes.go HealthRoutes) does NOT make this
+	// pool redundant.
+	healthPool, err := db.ConnectHealth(ctx)
+	if err != nil {
+		log.Fatalf("postgres (health pool): %v", err)
+	}
+	defer healthPool.Close()
 
 	store, err := storage.New(ctx)
 	if err != nil {
@@ -162,10 +178,23 @@ func main() {
 	}
 
 	health := api.HealthDeps{
-		Postgres: pool,
+		// D-06a: healthPool, NEVER pool. pool is the same pool
+		// Repo.PreAdmit reads through on every synchronous inspect request
+		// (INSP-04); pointing this field back at pool re-opens exactly the
+		// pool-contention path healthPool exists to close, and the second
+		// /healthz listener (internal/api/routes.go HealthRoutes) does not
+		// catch that regression -- HTTP-accept isolation and Postgres-pool
+		// isolation are independent claims. Proven mechanically by
+		// cmd/api/wiring_test.go, not just asserted in this comment.
+		Postgres: healthPool,
 		Redis:    redisPinger{client: rdb},
 		S3:       store,
 	}
+	// jobsRepo is built from pool (the MAIN pool), never healthPool -- the
+	// jobs repository, and therefore Repo.PreAdmit, must stay on the pool
+	// sized for ordinary + inspect traffic (D-06a); healthPool is sized
+	// (MaxConns=2) for exactly one caller, the health ping, and would starve
+	// immediately if anything else were routed through it.
 	jobsRepo := jobs.NewRepo(pool)
 	// jobsRepo appears twice deliberately -- once as the jobs Repo and once
 	// as the UsageRepo -- because the two interfaces are narrow views of the
@@ -212,6 +241,32 @@ func main() {
 		// diverge, or GET /v1/system/usage would report an enforcement
 		// posture the admission gate does not actually have.
 		QuotaEnforcementDisabled: quotaDisabled,
+		// Five inspect boundaries (58-CONTEXT.md D-06, Plan 58-06 Task 3):
+		// api.NewServer applies its own documented defaults (100 MiB / 8
+		// MiB / 2s / 4 / 30) when any of these are left at zero -- an
+		// absent env var is never a behaviour change, same defaulting
+		// discipline as every other Config field above. See api.Config's
+		// own doc comments for what each one bounds and why the two byte
+		// ceilings (upload vs. work) are separate fields.
+		InspectMaxUploadBytes:  envInt64("INSPECT_MAX_UPLOAD_BYTES", 0),
+		InspectMaxWorkBytes:    envInt64("INSPECT_MAX_WORK_BYTES", 0),
+		InspectMaxWorkDuration: envDuration("INSPECT_MAX_WORK_DURATION", 0),
+		InspectMaxConcurrent:   int(envInt64("INSPECT_MAX_CONCURRENT", 0)),
+		InspectRateLimitRPM:    int(envInt64("RATE_LIMIT_INSPECT_RPM", 0)),
+		// INSP-04 (Plan 58-07): the SAME seven per-engine timeout env vars
+		// every worker process already reads at its own startup, now ALSO
+		// read here so POST /v1/inspect can report each engine's upper
+		// bound -- no new env var name, envDuration is the same helper
+		// already used above for SSE_*/INSPECT_MAX_WORK_DURATION.
+		EngineTimeouts: map[string]time.Duration{
+			convert.EngineImage:    envDuration("ENGINE_TIMEOUT", 120*time.Second),
+			convert.EngineDocument: envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second),
+			convert.EngineHTML:     envDuration("HTML_ENGINE_TIMEOUT", 60*time.Second),
+			convert.EngineAudio:    envDuration("AUDIO_ENGINE_TIMEOUT", 742*time.Second),
+			convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
+			convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
+			convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
+		},
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher
@@ -282,9 +337,46 @@ func main() {
 		}
 	}()
 
+	// GET /healthz gets its OWN listener on HEALTH_ADDR (Phase 58 Task 2,
+	// D-06/D-08): a burst against API_ADDR (in particular POST /v1/inspect,
+	// INSP-05) saturates httpSrv's accept queue and goroutines without
+	// taking a single accept-path resource away from THIS http.Server --
+	// they are two separate net.Listeners. This closes the HTTP-accept half
+	// of the liveness risk; the DEPENDENCY half (the Postgres ping inside
+	// handleHealth) is closed separately by healthPool above (D-06a) --
+	// see internal/api/routes.go's HealthRoutes doc comment for why the two
+	// are independent fixes, not one. srv.Routes() (API_ADDR) keeps serving
+	// /healthz too (D-08) for the three existing consumers that already
+	// probe it there.
+	healthAddr := os.Getenv("HEALTH_ADDR")
+	if healthAddr == "" {
+		healthAddr = ":8091"
+	}
+	healthSrv := &http.Server{
+		Addr:              healthAddr,
+		Handler:           srv.HealthRoutes(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		log.Printf("🩺 health listening on %s", healthAddr)
+		if err := healthSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("health listen: %v", err)
+		}
+	}()
+
 	<-ctx.Done()
 	log.Println("🛑 shutting down API...")
 
+	// Shutdown order is deliberate, not incidental (Phase 58 Task 2): httpSrv
+	// first (stop accepting new /v1 work, including inspect), then
+	// metricsSrv, and healthSrv LAST. During a rolling deploy's drain
+	// window, the liveness probe must keep answering as long as possible --
+	// shutting healthSrv down first would make kubelet see a dead probe
+	// while httpSrv is still gracefully draining in-flight /v1 requests,
+	// which is exactly the false-restart risk this ordering avoids. All
+	// three Shutdown calls share shutdownCtx, mirroring the pre-existing
+	// httpSrv/metricsSrv pair this extends.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
@@ -292,6 +384,9 @@ func main() {
 	}
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("metrics graceful shutdown failed: %v", err)
+	}
+	if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("health graceful shutdown failed: %v", err)
 	}
 	log.Println("bye 👋")
 }

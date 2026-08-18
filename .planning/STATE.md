@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: executing
-stopped_at: Phase 57 complete, verified 9/9; PR #7 open with codex review addressed
-last_updated: "2026-08-09T19:30:00.000Z"
-last_activity: 2026-08-09 -- Phase 57 complete; codex review fixes landed
+stopped_at: Phase 58 executing (8 plans executed; PR #9 open, codex rounds being closed; wave 5 live gate pending)
+last_updated: "2026-08-17T10:47:04.874Z"
+last_activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
 progress:
   total_phases: 6
-  completed_phases: 1
-  total_plans: 7
-  completed_plans: 7
-  percent: 17
+  completed_phases: 2
+  total_plans: 22
+  completed_plans: 14
+  percent: 33
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 57 — operation-dimension-output-roles
+**Current focus:** Phase 58 — synchronous-inspection
 
 ## Current Position
 
-Phase: 57 (operation-dimension-output-roles) — COMPLETE (verified 9/9, no gaps)
-Plan: 7 of 7
-Status: PR #7 open (phases 54-57), codex review received and addressed
-Last activity: 2026-08-09 - Completed quick task 260809-ul4 (codex PR #7 review fixes)
+Phase: 58 (synchronous-inspection) — EXECUTING
+Plan: 8 of 8 (58-01..58-07 SUMMARY written; 58-08 harness summary written)
+Status: Executing Phase 58 — PR #9 open, codex review rounds being closed; wave 5 live gate pending
+Last activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
 
 ## Performance Metrics
 
@@ -147,6 +147,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260802-9zc | Устранён последний экземпляр PR#2 finding-2: LooksLikeHTML держал собственную копию логики sniff-префикса и потому не получил фикс обрезки неполной UTF-8-руны — HTML-файлы >1 MiB с руной на границе кэпа отклонялись ложно. Копия заменена вызовом общего readSniffPrefix | 2026-08-02 | fff79da | [260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i](./quick/260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i/) |
 | 260802-asr | Три фронтенд-бага из ревью PR#2: терминальный SSE-кадр отбрасывал финальный GET и готовая конверсия оставалась без ссылки Download (job?.status убран из deps эффекта, запись гейтится по identity джобы); finalize получил bounded retry (3 попытки, backoff 400/1200мс, только 5xx/429/408/сеть); селектор таргетов фильтруется по формату выбранного файла с зеркалом NormalizeFormat (jpeg/tif/htm/tex) вместо глобального объединения, дававшего избегаемые 422. Добавлен vitest, 23 теста | 2026-08-02 | d41593d | [260802-asr-fix-three-frontend-bugs-found-in-pr-2-re](./quick/260802-asr-fix-three-frontend-bugs-found-in-pr-2-re/) |
 | 260809-ul4 | Четыре замечания codex из ревью PR#7. Функциональные: (1) `HandleWebhookDeliver` презайнил `outs[0]` — тот же дефект, что ROLE-02 закрыл для `GET /v1/jobs/{id}`, но callback-путь не входил в букву требования, поэтому верификатор фазы 57 его пропустил; литерал `"primary"` поднят в `jobs.OutputRolePrimary` как единственное объявление на `api` и `worker`; (2) `mcpserver.FormatsResponse` терял ключ `operations` при декодировании, хотя `tools.go` в jsonschema отсылал агентов именно к нему. Контрактные: (3) `docs/openapi.yaml` не объявлял `operation` при `additionalProperties: false` (SDK не мог отправить поле), `operations` и `outputs`; (4) спека утверждала «code is never added to any non-429 response», что стало ложью после фазы 56 — `Error.code` теперь required с enum по закрытому словарю, `QuotaError` удалён как избыточный, а `internal/errcode/openapi_sync_test.go` механически стережёт спеку от дрейфа (раньше `TestErrorCodeDocSync` стерёг только ERROR-CODES.md). Инверсия вебхук-фикса воспроизведена независимо | 2026-08-09 | 032cc78 | [260809-ul4-4-codex-pr-7-role-driven-download-url-op](./quick/260809-ul4-4-codex-pr-7-role-driven-download-url-op/) |
+| 260817-j58 | Закрыта находка codex из ревью PR#9 (`container.go:894`): `countSheetElements` принимал XML с несколькими top-level элементами — `encoding/xml` не считает второй корень ошибкой и отдаёт его как обычный элемент, поэтому `<workbook>…</workbook><ext><sheets><sheet/></sheets></ext>` публиковал `sheet_count: 2` с полным покрытием для не-well-formed XML. Поведение stdlib сначала **измерено**, а не предположено: `xml.Unmarshal` принимает то же самое (оракула для делегирования нет), а текст ДО корня не отвергает вообще ничто в stdlib — поэтому чинится класс целиком: ровно один корень + запрет непробельных CharData по обе стороны от него. Три теста: 7 случаев класса с проверкой причины `malformed_input` (не потолка), гард от чрезмерного отклонения (пролог/DOCTYPE/комментарии/PI/whitespace вокруг единственного корня), и тест-пин измеренной снисходительности `encoding/xml` | 2026-08-17 | aeb0768 | [260817-j58-close-codex-pr9-finding-xlsxsheetcount-a](./quick/260817-j58-close-codex-pr9-finding-xlsxsheetcount-a/) |
 
 | 260809-fast | codex, второй круг ревью PR#7: `mcpserver.JobStatus` не объявлял `Outputs`, поэтому массив `outputs` из `GET /v1/jobs/{id}` молча терялся у обоих MCP-серверов. `JobStatus` служит типом вывода `get_job_status`, а `download_result` отдаёт только primary-URL — значит вторичный артефакт (отчёт sanitize) был недостижим через MCP вообще. Тот же класс, что находка №2 про `FormatsResponse`: соседний DTO в том же файле, который узкая правка не подмела. Латентно до фазы 60. Тег-инверсия (`outputs`→`output`) доказывает, что тест ловит потерю данных, а не только отсутствие поля | 2026-08-09 | 23bf611 | — |
 
@@ -167,6 +168,7 @@ None currently blocking. **v1.13 sequencing and risks carried into the roadmap:*
 - **Two design decisions deliberately left open for Phase 60 planning** (research could not close them honestly): blacklist-removal vs reconstruct-from-trusted-content, and the independent verification parser choice. Both must be written decisions before code lands.
 - **Operator-gated phases:** 58 (live process-isolation proof) and 60 (measured `probe` engine timeout on its own corpus — copying a sibling's timeout is a documented project anti-pattern; every class has a distinct value: 65s pandoc, 742s audio, 744s ocr, 753s av).
 - **Explicit non-goals for v1.13 (do not resurface):** SEED-010 dynamic capability registry (third rejection), SEED-021 Opportunity 2 (per-page Mixed-PDF routing — unresolved merging contract), rasterize-and-rebuild sanitize, poppler/qpdf/mutool/ffprobe/exiftool in `Dockerfile.api`, renaming any existing queue, SEED-017/SEED-018.
+- **Вынос `inspect` в отдельный воркер — закрытый вопрос, не поднимать заново (решено 2026-08-10).** Вариант рассматривался явно на обсуждении фазы 58 и отвергнут: он снимает риск для `/healthz` полностью, но ломает то единственное свойство, ради которого фаза существует — ответ за один синхронный round-trip ДО постановки дорогой джобы. Inspect, ушедший в очередь, — это уже джоба. Соблазн будет возвращаться каждый раз, когда синхронный путь окажется чем-то ограничен (потолком работы, семафором, честным `unknown` вместо ответа): правильная реакция — уточнять границы, а не переносить путь. Отдельный воркер `cmd/probe-worker` в планах есть (SANI-06, фаза 60), но он про sanitize — ПИШУЩУЮ половину; читающая половина на том же движке отложена в v2 как SANI-V2-02 с записанной причиной (гранулярность `client_usage_daily` — `(client_id, engine, day, status)` без операции, две probe-операции стали бы неразличимы в учёте).
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record) — relevant again for Phase 58's and Phase 60's live runs.
 
 Carried from v1.12:
@@ -273,9 +275,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-08-08T18:29:50.308Z
-Stopped at: Phase 57 context gathered
-Resume file: .planning/phases/57-operation-dimension-output-roles/57-CONTEXT.md
+Last session: 2026-08-10T00:49:01.187Z
+Stopped at: Phase 58 planned (8 plans, 5 waves)
+Resume file: None
 
 ## Operator Next Steps
 

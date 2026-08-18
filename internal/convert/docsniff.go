@@ -3,6 +3,7 @@ package convert
 import (
 	"archive/zip"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 )
@@ -20,6 +21,17 @@ type ContainerResult struct {
 // ErrNotAZip is returned when SniffContainer's input cannot be parsed as a
 // ZIP central directory at all (as opposed to being a valid-but-unrecognized
 // zip, which returns ContainerResult{} with Format=="" and a nil error).
+//
+// It reports a fact about the INPUT. A failure to read the input at all --
+// a non-EOF io.ReaderAt error -- is deliberately NOT reported as this
+// sentinel, because "this is not a zip" is a conclusion and an unreadable
+// upload gives no grounds for one. Callers that need the distinction test
+// with errors.Is; callers that only care whether the sniff succeeded keep
+// working unchanged, since both cases are still non-nil errors. This split
+// exists because internal/inspect must choose between reporting
+// not_applicable and read_failed, and it could not while every failure
+// arrived here wearing the same sentinel (codex PR #9, round 6 neighbour
+// audit).
 var ErrNotAZip = errors.New("not a valid zip container")
 
 // ooxmlRootParts is the closed set of OOXML root-part paths this project
@@ -57,7 +69,52 @@ var ooxmlMacroParts = map[string]bool{
 	"ppt/vbaProject.bin":  true,
 }
 
-// SniffContainer inspects a ZIP-shaped upload's central directory to
+// readerAtRecorder wraps an io.ReaderAt and remembers whether ITS OWN
+// underlying ReadAt call ever returned a real (non-EOF) error -- codex PR #9
+// round 8's own finding (docsniff.go:93, PR9R8-F4-STRUCTURAL-VS-IO): the
+// previous approach classified a zip.NewReader error as "operational" by
+// checking whether it matched one of three known sentinels
+// (zip.ErrFormat/zip.ErrAlgorithm/zip.ErrChecksum) and defaulting
+// everything else to "operational read failure" -- which broke on the very
+// next error archive/zip returns that was never enumerated
+// (io.ErrUnexpectedEOF for a truncated central-directory header,
+// "zip: invalid comment length" for an inconsistent EOCD -- neither
+// originates in ReadAt, both are properties of the bytes themselves). The
+// only reliable way to know whether a failure originated in the READER
+// (this handler's own inability to get bytes at all) rather than in the
+// PARSER's interpretation of bytes it successfully received is to be told
+// so by the reader itself -- not to infer origin from the shape of
+// whatever error the parser built on top of it happens to return. A caller
+// that reads failed AFTER zip.NewReader has already returned gets an
+// OBSERVED fact, not a guess.
+type readerAtRecorder struct {
+	r      io.ReaderAt
+	failed bool
+	err    error
+}
+
+// ReadAt delegates to the wrapped reader and records the FIRST real
+// (non-EOF) failure it observes -- later calls after a recorded failure
+// still delegate (archive/zip may retry at a different offset after a
+// short read elsewhere), but do not overwrite the first recorded cause.
+func (rr *readerAtRecorder) ReadAt(p []byte, off int64) (int, error) {
+	n, err := rr.r.ReadAt(p, off)
+	if err != nil && err != io.EOF && !rr.failed {
+		rr.failed = true
+		rr.err = err
+	}
+	return n, err
+}
+
+// SniffContainer is SniffContainerReader for a caller that has no use for the
+// parsed archive itself -- the conversion path, which only ever needs the
+// verdict.
+func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
+	res, _, err := SniffContainerReader(r, size)
+	return res, err
+}
+
+// SniffContainerReader inspects a ZIP-shaped upload's central directory to
 // disambiguate the six supported office formats plus epub (D-01, T-47-05c),
 // sum declared uncompressed size across every entry for the zip-bomb guard
 // (D-02/D-03),
@@ -66,14 +123,41 @@ var ooxmlMacroParts = map[string]bool{
 // the central directory more than once per upload). r must be the original,
 // unconsumed upload source (e.g. multipart.File), not a re-stitched
 // io.Reader -- the archive/zip package requires positional access.
-func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
-	zr, err := zip.NewReader(r, size)
+//
+// It also RETURNS the *zip.Reader it built, so a caller that goes on to read
+// entries from the same archive does not pay for a second parse of the same
+// attacker-controlled central directory (PR9R24, container.go:157). That
+// sentence above -- "never re-parse the central directory more than once per
+// upload" -- was this function's own stated rule from the start, and
+// inspect's container analyzer was breaking it: handing over the RESULT of the
+// sniff without the reader left the second caller no way to honor it.
+//
+// The returned reader is nil on every error path, and non-nil on success.
+func SniffContainerReader(r io.ReaderAt, size int64) (ContainerResult, *zip.Reader, error) {
+	rr := &readerAtRecorder{r: r}
+	zr, err := zip.NewReader(rr, size)
 	if err != nil {
-		return ContainerResult{}, ErrNotAZip
+		// PR9R8-F4-STRUCTURAL-VS-IO: classify by what rr actually OBSERVED
+		// about the underlying reader (see readerAtRecorder's own doc
+		// comment), never by matching err against a closed list of known
+		// archive/zip sentinels. rr.failed is set if, and only if, the
+		// wrapped io.ReaderAt itself returned a genuine (non-EOF) error --
+		// every OTHER zip.NewReader failure, whatever Go error type it
+		// happens to be, describes bytes this function DID successfully
+		// read, so it is always ErrNotAZip (see that sentinel's own doc
+		// comment), never an operational read failure, regardless of
+		// whether this exact error shape has ever been seen before.
+		if rr.failed {
+			return ContainerResult{}, nil, fmt.Errorf("read zip container: %w", rr.err)
+		}
+		return ContainerResult{}, nil, fmt.Errorf("%w: %w", ErrNotAZip, err)
 	}
 
 	var res ContainerResult
 	nameCount := map[string]int{}
+	// mimetypeErr carries the ODF/EPUB mimetype entry's own read error, if
+	// any, to the single classification point after this loop.
+	var mimetypeErr error
 
 	for i, f := range zr.File {
 		// Saturating add: UncompressedSize64 comes from the central
@@ -99,11 +183,34 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 		}
 
 		if i == 0 && f.Name == "mimetype" && f.Method == zip.Store {
+			// This read has TWO independent failure modes and the previous
+			// two rounds each closed only one of them:
+			//
+			//   - an I/O failure, recorded on rr (the same readerAtRecorder
+			//     zip.NewReader used above) and classified at this
+			//     function's own return decision (PR9R9, docsniff.go:120);
+			//   - a STRUCTURAL failure -- a corrupt local header or a bad
+			//     checksum on the entry -- where every ReadAt succeeded, so
+			//     rr never fails and the recorder check cannot see it
+			//     (PR9R10, docsniff.go:172).
+			//
+			// The round-9 comment that stood here asserted rerr needed no
+			// classification because "any non-EOF ReadAt failure this read
+			// hits is recorded on rr". True, and beside the point: a
+			// structural error is not a ReadAt failure at all. Discarding
+			// rerr therefore returned a nil error with an empty format, and
+			// the inspect endpoint reported format_unrecognized for an
+			// archive it had in fact found to be broken.
+			//
+			// rerr is kept and classified after the loop, where rr.failed
+			// is already consulted, so the two modes are decided in one
+			// place with an explicit precedence rather than at two call
+			// sites that can drift.
 			payload, rerr := readBounded(f, 128)
-			if rerr == nil {
-				if odfFmt, ok := odfMimetypes[string(payload)]; ok {
-					res.Format = odfFmt
-				}
+			if rerr != nil {
+				mimetypeErr = rerr
+			} else if odfFmt, ok := odfMimetypes[string(payload)]; ok {
+				res.Format = odfFmt
 			}
 		}
 	}
@@ -113,7 +220,51 @@ func SniffContainer(r io.ReaderAt, size int64) (ContainerResult, error) {
 			res.DuplicateRootPart = true
 		}
 	}
-	return res, nil
+
+	// PR9R9 finding (docsniff.go:120), verbatim: "If zip.NewReader reads the
+	// central directory successfully but the later readBounded call for an
+	// ODF/EPUB mimetype entry encounters a non-EOF ReadAt failure, this
+	// recorder sets rr.failed only after the sole check at lines 121-135 has
+	// passed. The error from readBounded is ignored at lines 165-170 and
+	// rr.failed is never checked again, so SniffContainer returns a nil
+	// error with an empty format and the inspect path reports
+	// format_unrecognized rather than read_failed." Checking rr.failed HERE,
+	// at the actual return decision -- rather than only once, immediately
+	// after zip.NewReader -- closes it: rr.failed is set as a side effect of
+	// ANY ReadAt this function performs through rr, and the mimetype read
+	// above is the only additional one beyond zip.NewReader's own central-
+	// directory read, so this check is scoped tightly to that one path. On
+	// an observed I/O failure, this returns the SAME shape (empty result,
+	// wrapped error) the zip.NewReader failure branch above already returns
+	// for an operational read failure -- detectInspectFormat's own
+	// errors.Is(cerr, convert.ErrNotAZip) check already classifies this
+	// correctly as read_failed, not malformed_input or format_unrecognized,
+	// with no further change needed on that side.
+	if rr.failed {
+		return ContainerResult{}, nil, fmt.Errorf("read zip container: %w", rr.err)
+	}
+	// PR9R10 finding (docsniff.go:172), verbatim: "For an ODF/EPUB-shaped
+	// ZIP whose first stored mimetype entry has a corrupt local header or
+	// checksum, readBounded returns a structural ZIP error without causing
+	// readerAtRecorder.failed to be set, because all underlying ReadAt calls
+	// may have succeeded. Ignoring rerr here therefore bypasses the new
+	// final recorder check: SniffContainer returns a nil error with an empty
+	// format, and the inspect endpoint reports format_unrecognized instead
+	// of malformed_input."
+	//
+	// The precedence is deliberate and is the whole reason both checks live
+	// here rather than at their own call sites: rr.failed is tested FIRST,
+	// because when the reader itself failed we cannot know whether the entry
+	// is also structurally broken -- "we could not read it" outranks any
+	// conclusion about its contents. Only once every ReadAt is known to have
+	// succeeded does a non-nil mimetypeErr become a statement about the
+	// ARCHIVE, and ErrNotAZip is how this package says that: detectInspect-
+	// Format maps errors.Is(cerr, ErrNotAZip) to malformed_input, which is
+	// exactly the verdict this archive has earned.
+	if mimetypeErr != nil {
+		return ContainerResult{}, nil, fmt.Errorf("%w: mimetype entry: %w", ErrNotAZip, mimetypeErr)
+	}
+	return res, zr, nil
 }
 
 // hasBasicPrefix reports whether name lives under ODF's "Basic/" macro-
