@@ -38,8 +38,13 @@ REPO_ROOT="$(pwd)"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 COMMIT="$(git rev-parse --short HEAD)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# Only TRACKED modifications weaken the claim "this transcript describes that
+# commit"; untracked scratch files do not. Both are reported, separately, so a
+# reader can judge rather than take a one-word label on trust.
+TRACKED_DIRT="$(git status --porcelain --untracked-files=no 2>/dev/null)"
+UNTRACKED_DIRT="$(git ls-files --others --exclude-standard 2>/dev/null)"
 DIRTY=""
-[ -n "$(git status --porcelain -- ':!.planning' 2>/dev/null)" ] && DIRTY=" (WORKING TREE DIRTY)"
+[ -n "$TRACKED_DIRT" ] && DIRTY=" (TRACKED CHANGES NOT IN THIS COMMIT)"
 
 EVIDENCE_DIR="${CI_LOCAL_EVIDENCE_DIR:-.planning/ci-local}"
 mkdir -p "$EVIDENCE_DIR"
@@ -60,6 +65,15 @@ echo "go:       $(go version 2>/dev/null | awk '{print $3, $4}')"
 echo "helm:     $(helm version --short 2>/dev/null)"
 echo "docker:   $(docker info --format '{{.ServerVersion}} ({{.Name}})' 2>/dev/null)"
 echo "tiers:    ${TIERS[*]}"
+if [ -n "$TRACKED_DIRT" ]; then
+  echo "WARNING:  tracked files differ from $COMMIT -- this transcript does NOT"
+  echo "          describe that commit as pushed:"
+  echo "$TRACKED_DIRT" | sed 's/^/            /'
+fi
+if [ -n "$UNTRACKED_DIRT" ]; then
+  echo "untracked (present but not part of the build):"
+  echo "$UNTRACKED_DIRT" | sed 's/^/            /'
+fi
 echo "note:     stand-in for GitHub Actions, unavailable until billing is"
 echo "          restored (end of August 2026). Host-arch images; see this"
 echo "          script's own header for what this evidence does NOT cover."
