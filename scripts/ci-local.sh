@@ -74,6 +74,19 @@ if [ -n "$UNTRACKED_DIRT" ]; then
   echo "untracked (present but not part of the build):"
   echo "$UNTRACKED_DIRT" | sed 's/^/            /'
 fi
+# The workflow PINS helm (its own comment explains why: an unpinned action
+# installs whatever "latest" is that day, and chart render behavior can change
+# with no commit to this repo). A local run on a different version is therefore
+# evidence about a different renderer -- say so rather than let a green helm
+# tier imply CI would agree.
+PINNED_HELM="$(sed -n 's/^ *version: \(v[0-9][^ ]*\)$/\1/p' .github/workflows/ci.yml | head -1)"
+LOCAL_HELM="$(helm version --short 2>/dev/null | sed 's/+.*//')"
+if [ -n "$PINNED_HELM" ] && [ -n "$LOCAL_HELM" ] && [ "$PINNED_HELM" != "$LOCAL_HELM" ]; then
+  echo "WARNING:  helm $LOCAL_HELM locally vs $PINNED_HELM pinned in ci.yml --"
+  echo "          the helm tier below proves the chart against a DIFFERENT"
+  echo "          renderer than CI uses. Install the pinned version to close"
+  echo "          this gap, or read a green helm tier accordingly."
+fi
 echo "note:     stand-in for GitHub Actions, unavailable until billing is"
 echo "          restored (end of August 2026). Host-arch images; see this"
 echo "          script's own header for what this evidence does NOT cover."
