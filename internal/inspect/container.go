@@ -977,6 +977,10 @@ func countSheetElements(data []byte) (count int, ok bool) {
 	// sheets" flag.
 	depth := 0
 	sheetsDepth := 0
+	// sheetsSeen is HISTORY, not position: sheetsDepth returns to zero when
+	// the workbook's own <sheets> list closes, which is what let a second
+	// top-level list be counted as though it were the first (PR9R25).
+	sheetsSeen := false
 	// rootClosed records that the document's single root element has ended.
 	// PR9R20 (container.go:894): encoding/xml's token stream does NOT treat a
 	// second top-level element as a second document root -- it hands it over
@@ -1051,8 +1055,29 @@ func countSheetElements(data []byte) (count int, ok bool) {
 				// could not tell that from <workbook><ext><sheets>...,
 				// which is extension markup reusing SpreadsheetML names
 				// and declares no worksheets at all (PR9R19,
-				// container.go:923). Only the first such list counts.
-				if depth == 2 && sheetsDepth == 0 {
+				// container.go:923).
+				//
+				// PR9R25 (container.go:1056), verbatim: "When workbook.xml
+				// contains two direct <sheets> children, closing the first
+				// resets sheetsDepth to zero, so this condition accepts the
+				// second list and adds its <sheet> elements to the published
+				// count." Correct, and the comment that stood here said
+				// "only the FIRST such list counts" while the code counted
+				// every one of them: sheetsDepth is a POSITION (am I inside
+				// the list right now), and position cannot answer a question
+				// about history (have I already seen one). sheetsSeen is the
+				// history, kept separately for exactly that reason.
+				//
+				// A workbook has exactly one <sheets>; a second one is not a
+				// list to skip but a structurally invalid workbook, so this
+				// returns ok=false and publishes no count at all rather than
+				// silently reporting the first list's total for a document
+				// that has two.
+				if depth == 2 {
+					if sheetsSeen {
+						return 0, false
+					}
+					sheetsSeen = true
 					sheetsDepth = depth
 				}
 			case "sheet":

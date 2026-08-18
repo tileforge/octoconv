@@ -1460,6 +1460,22 @@ func TestAnalyzeContainerMultipleTopLevelElementsPublishNoSheetCount(t *testing.
 			"non-whitespace character data before the root",
 			`leading<workbook><sheets><sheet name="A" sheetId="1"/></sheets></workbook>`,
 		},
+		// PR9R25: a workbook has exactly one <sheets> list. A second one is
+		// not a list to skip -- it is a structurally invalid workbook, and
+		// the old position-only state (sheetsDepth, reset when the first
+		// list closed) happily counted its sheets into the same total.
+		{
+			"two sibling sheets lists produce no count, not their sum",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets><sheets><sheet name="B" sheetId="2"/><sheet name="C" sheetId="3"/></sheets></workbook>`,
+		},
+		{
+			"an empty second sheets list is still a second list",
+			`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="A" sheetId="1"/></sheets><sheets/></workbook>`,
+		},
+		{
+			"two sibling sheets lists, unnamespaced workbook",
+			`<workbook><sheets><sheet name="A" sheetId="1"/></sheets><sheets><sheet name="B" sheetId="2"/></sheets></workbook>`,
+		},
 		// PR9R21: XML's S production is (#x20 | #x9 | #xD | #xA) and nothing
 		// else, so every rune below is ordinary character data outside the
 		// root -- and encoding/xml hands all four through (measured), while

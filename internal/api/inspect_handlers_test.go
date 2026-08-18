@@ -2004,3 +2004,104 @@ func TestInspectCFBWalkStaysInsideTheWorkAllowance(t *testing.T) {
 		t.Error("Coverage.Complete = true -- the CFB walk was truncated by our ceiling, so this inspection is not complete")
 	}
 }
+
+// alwaysFailingFile is a multipart.File whose every read fails -- the
+// disk-backed temp file that has gone away, or a device error. Unlike
+// failingAfterPrefixContainerFile above it does not even deliver a magic
+// prefix, so nothing in the detector chain can recognize it.
+type alwaysFailingFile struct {
+	size    int64
+	failErr error
+}
+
+func (f *alwaysFailingFile) ReadAt([]byte, int64) (int, error) { return 0, f.failErr }
+func (f *alwaysFailingFile) Read([]byte) (int, error)          { return 0, f.failErr }
+func (f *alwaysFailingFile) Seek(int64, int) (int64, error)    { return 0, f.failErr }
+func (f *alwaysFailingFile) Close() error                      { return nil }
+
+// TestInspectInitialSniffReadFailureIsReadFailedNotUnrecognized is PR9R25
+// (inspect_handlers.go:509), verbatim: "When a disk-backed multipart file
+// returns a non-EOF error during the initial 12-byte magic sniff, this branch
+// discards the error and continues as though no signature matched... the
+// response consequently reports an empty format with format_unrecognized checks
+// instead of read_failed, conflating an operational temp-file failure with
+// genuinely unknown content."
+//
+// The two answers are about different subjects -- this service, and the upload
+// -- and a client acts on them differently: format_unrecognized says "your file
+// is something I do not handle" (do not retry), read_failed says "I could not
+// read it" (retry is reasonable). PR9R8-F3 closed this for the ZIP sniff; the
+// read that runs BEFORE it still had it. Measured on the pre-fix code, this
+// exact input reported detected="" with every check unknown/format_unrecognized.
+func TestInspectInitialSniffReadFailureIsReadFailedNotUnrecognized(t *testing.T) {
+	file := &alwaysFailingFile{size: 4096, failErr: errors.New("simulated temp-file read failure")}
+
+	detected, sniffed, sniffedZip := detectInspectFormat(file, file.size, "png")
+	if detected != inspectSniffReadFailedFormat {
+		t.Fatalf("detected = %q, want %q -- an unreadable upload is not an unrecognized one", detected, inspectSniffReadFailedFormat)
+	}
+
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 1 << 20, MaxDuration: time.Minute})
+	families := dispatchInspectFamilies(detected, sniffed, sniffedZip, file, file.size, tr)
+	families = append(families, extensionMismatchFamilyResult(detected, "png"))
+	report := inspect.BuildReport(detected, "png", file.size, tr, families...)
+
+	if err := inspect.ValidateReport(report.Findings, report.Checks); err != nil {
+		t.Fatalf("ValidateReport: %v", err)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("findings = %+v, want none -- nothing was read, so nothing can be claimed", report.Findings)
+	}
+	// EVERY code, not just the container three: the failure predates any format
+	// claim, so no code may be called not_applicable to a format we never
+	// established, and none may say format_unrecognized either.
+	for _, c := range report.Checks {
+		if c.Status != inspect.StatusUnknown || c.Reason != inspect.ReasonReadFailed {
+			t.Errorf("check %s = %+v, want unknown/read_failed -- reporting our own read failure as a fact about the upload is the conflation this closes", c.Code, c)
+		}
+	}
+	if len(report.Checks) != len(inspect.AllCodes()) {
+		t.Errorf("report carries %d checks, want %d (the whole closed vocabulary)", len(report.Checks), len(inspect.AllCodes()))
+	}
+}
+
+// TestInspectSniffReadFailureDoesNotSuppressALaterDetection is the
+// over-rejection guard on the fix above: a failed magic peek does not prove the
+// later detectors will fail too, so the sentinel must only decide the outcome
+// when the whole chain came up empty. Trading a false format_unrecognized for a
+// false read_failed would be no improvement.
+func TestInspectSniffReadFailureDoesNotSuppressALaterDetection(t *testing.T) {
+	data := macroDocxFixture(t)
+	// Streaming reads (convert.Sniff's own path) fail; positional reads, which
+	// the ZIP detector uses, succeed.
+	file := &failingStreamOnlyFile{data: data}
+
+	detected, _, _ := detectInspectFormat(file, int64(len(data)), "docx")
+	if detected != "docx" {
+		t.Errorf("detected = %q, want docx -- the ZIP detector succeeded on this upload, and a failed magic peek must not override a detection that actually happened", detected)
+	}
+}
+
+// failingStreamOnlyFile fails every streaming Read (so convert.Sniff's peek
+// errors) while serving positional ReadAt calls normally.
+type failingStreamOnlyFile struct {
+	data []byte
+}
+
+func (f *failingStreamOnlyFile) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 || off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+func (f *failingStreamOnlyFile) Read([]byte) (int, error) {
+	return 0, errors.New("simulated streaming read failure")
+}
+func (f *failingStreamOnlyFile) Seek(int64, int) (int64, error) {
+	return 0, errors.New("simulated seek failure")
+}
+func (f *failingStreamOnlyFile) Close() error { return nil }

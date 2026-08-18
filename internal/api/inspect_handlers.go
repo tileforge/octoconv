@@ -128,6 +128,26 @@ const (
 	// closes. Never a real registered format, and never matched by
 	// inspectContainerFormats.
 	inspectZipMalformedFormat = "zip_malformed"
+	// inspectSniffReadFailedFormat is the Detected-format sentinel for an
+	// upload whose very first read -- convert.Sniff's 12-byte magic peek --
+	// failed operationally, and which no later detector managed to recognize
+	// either.
+	//
+	// PR9R25 (inspect_handlers.go:509), verbatim: "When a disk-backed
+	// multipart file returns a non-EOF error during the initial 12-byte magic
+	// sniff, this branch discards the error and continues as though no
+	// signature matched... the response consequently reports an empty format
+	// with format_unrecognized checks instead of read_failed, conflating an
+	// operational temp-file failure with genuinely unknown content."
+	//
+	// convert.Sniff returns a non-nil error ONLY for a genuine read failure
+	// (an unrecognized upload is ("", rest, nil)), so this signal is
+	// unambiguous at the source -- it was simply thrown away one line later.
+	// Unlike its zip-shaped siblings above, this sentinel says nothing about
+	// WHAT the upload is: the failure happened before any signature matched,
+	// so every code in the vocabulary reports read_failed rather than only
+	// the container-domain three.
+	inspectSniffReadFailedFormat = "sniff_read_failed"
 )
 
 const (
@@ -504,6 +524,12 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 	var sniffedZip *zip.Reader
 
 	detected, _, err := convert.Sniff(fresh())
+	// sniffReadFailed is remembered rather than acted on immediately: a failed
+	// magic peek does not prove the later detectors will fail too, and
+	// suppressing a detection they DO make would trade one false report for
+	// another. It decides the outcome only if the whole chain below comes up
+	// empty (PR9R25).
+	sniffReadFailed := err != nil
 	if err != nil {
 		detected = ""
 	}
@@ -589,6 +615,15 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 		if audioDetected, _, aerr := convert.SniffAudio(fresh()); aerr == nil && audioDetected != "" {
 			detected = audioDetected
 		}
+	}
+	if detected == "" && sniffReadFailed {
+		// Nothing in the chain recognized the upload, and the first read of it
+		// failed. "We could not read your file" and "we do not recognize your
+		// file" are different facts about different subjects -- this service
+		// and the upload -- and reporting the first as the second is the exact
+		// conflation PR9R8-F3 closed for the zip path and PR9R25 found still
+		// open on the path that runs before it.
+		detected = inspectSniffReadFailedFormat
 	}
 	return detected, sniffed, sniffedZip
 }
@@ -1047,6 +1082,24 @@ func zipReadFailedFamilyResult() inspect.FamilyResult {
 	return res
 }
 
+// sniffReadFailedFamilyResult is the FamilyResult for an upload whose first
+// read failed and which no detector recognized (PR9R25,
+// inspect_handlers.go:509). Unlike zipReadFailedFamilyResult below it claims
+// EVERY code except CodeExtensionMismatch -- which
+// extensionMismatchFamilyResult owns and answers with the same reason -- because
+// the failure happened before any format was established: there is no family
+// this upload is known to belong to, so no code can be called not_applicable.
+func sniffReadFailedFamilyResult() inspect.FamilyResult {
+	var res inspect.FamilyResult
+	for _, code := range inspect.AllCodes() {
+		if code == inspect.CodeExtensionMismatch {
+			continue
+		}
+		res.Checks = append(res.Checks, inspect.Check{Code: code, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed})
+	}
+	return res
+}
+
 // zipMalformedFamilyResult is the FamilyResult reached when
 // convert.SniffContainer's own zip.NewReader call fails STRUCTURALLY
 // (errors.Is(cerr, convert.ErrNotAZip)) -- docsniff.go's own
@@ -1128,6 +1181,14 @@ func dispatchInspectFamilies(detected string, sniffed *convert.ContainerResult, 
 		// dishonest accounting, and this path never reads or allocates
 		// based on this upload's own declared size at all.
 		return append(families, zipDirectoryCeilingFamilyResult())
+	case detected == inspectSniffReadFailedFormat:
+		// Nothing was parsed and nothing CAN be: the failure predates any
+		// format claim, so every code in the vocabulary is unknown for the
+		// same operational reason. tr.Consume is deliberately skipped, exactly
+		// as in the inspectZipTooLargeFormat case above -- charging a byte
+		// budget for a parse that never happened would be dishonest
+		// accounting.
+		return append(families, sniffReadFailedFamilyResult())
 	case detected == inspectZipReadFailedFormat:
 		// PR9R8-F3: unlike inspectZipTooLargeFormat above, SniffContainer
 		// DID run (and DID spend the read work this attempt cost) before
@@ -1261,6 +1322,14 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		// the three container-domain codes.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonWorkCeilingBytes},
+		}}
+	case detected == inspectSniffReadFailedFormat:
+		// PR9R25: the first read of this upload failed, so there is no
+		// detected format to compare a declared extension against -- and
+		// saying "not applicable" would imply we looked and found the question
+		// irrelevant, when in fact we never got to ask it.
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonReadFailed},
 		}}
 	case detected == inspectZipReadFailedFormat:
 		// PR9R8-F3: same reasoning as inspectZipTooLargeFormat above --
