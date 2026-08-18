@@ -146,3 +146,88 @@ ROUNDS=200 ./scripts/inspect-burst-liveproof.sh   # refuses if the image predate
 The script tears the k8s install down on exit, pass or fail. `ROUNDS` must
 stay high enough that the run outlasts the liveness window — the gate
 refuses to pass otherwise, and says by how much it fell short.
+
+---
+
+## Run 20260818T013247Z — SC6 PASSED
+
+The gate's first passing run. 230 checks, exit 0, on `octoconv-api:dev` built
+from `337add1` (STEP 1 refuses to run an image older than any `.go` file, and
+separately refuses when the Go tree has uncommitted changes — both passed).
+
+| assertion | observed |
+|---|---|
+| api `restartCount` before → after | **3 → 3, unchanged** (the gate's main ground truth) |
+| max consecutive `/healthz` poll failures | **0**, against `failureThreshold: 6` |
+| observation window | **89473 ms ≥ 60000 ms** required by `periodSeconds:10 × failureThreshold:6` |
+| burst responses | 1800 rows (200 rounds × 9), **0 × 5xx**, 0 with a status outside 200/429, 0 hung |
+| genuine accepts | **1593 × 200** |
+| rejects | every 429 carried `inspect_busy` or `rate_limited` |
+
+Poll evidence: `inspect-burst-20260818T013247Z-poll.tsv`.
+Burst evidence: `inspect-burst-20260818T013247Z-burst.tsv`.
+
+### What this run proves, stated narrowly
+
+A pathological burst against a live api pod, driven from an in-cluster pod
+through the Service ClusterIP, left `/healthz` answering for a window that
+outlasts the restart contract by 50%, and the container never restarted.
+
+### What it does NOT prove, and the numbers that say so
+
+- **The load is bursty, not continuous.** Mean request duration was 37.8 ms
+  (max 77 ms) while a round took ~486 ms, so the round pacing is dominated by
+  `kubectl exec` overhead, not by the api. The api gets idle gaps between
+  rounds. "Answered throughout a 90-second burst" is true; "answered under 90
+  seconds of continuous saturation" is not what was measured.
+- **Requests are cheap by construction.** `values-inspect-gate.yaml` sets
+  `INSPECT_MAX_WORK_BYTES: 1048576`, so every analyzer stops at 1 MiB. The
+  37.8 ms mean is a consequence of that ceiling, not evidence that inspection
+  is cheap on arbitrary input.
+- **The concurrency semaphore did engage**: 207 of 1800 responses were 429,
+  all `inspect_busy` (`INSPECT_MAX_CONCURRENT: 4` against 9 concurrent
+  requests per round). Unlike the 2026-08-15 run, nothing was shed by the rate
+  limiter — this overlay sets every `RATE_LIMIT_*_RPM` to 1000000 precisely so
+  the burst reaches the inspect path.
+
+### Why `restartCount` starts at 2 or 3, not 0
+
+Recorded because a non-zero baseline in the numbers above would otherwise look
+like unexplained damage. It is not burst-related: **the api container
+crash-loops at every fresh install until postgres accepts connections**,
+reproduced deliberately on 2026-08-18 —
+
+```
+api-788b6f9d8d-7qpht  0/1  CrashLoopBackOff  1 (10s ago)
+api-788b6f9d8d-7qpht  1/1  Running           2 (13s ago)
+```
+
+with the previous container's own log:
+
+```
+postgres: ping postgres: failed to connect to `user=octo database=octo_db`:
+  dial tcp 192.168.194.210:5432: connect: connection refused
+```
+
+`cmd/api/main.go` uses `log.Fatalf` for startup dependency failures, so the
+process exits(1) and kubelet restarts it until the dependency is up. The gate
+is unaffected — it asserts the DELTA across the burst, not the absolute count
+— but the behavior is real and is recorded as its own todo
+(`.planning/todos/pending/2026-08-18-api-startup-crashloop-until-postgres.md`).
+
+### Two refused runs preceded this one, and both refusals were correct
+
+| run | ROUNDS | window | verdict |
+|---|---|---|---|
+| 20260818T012818Z | 10 | 10234 ms | refused: window < 60000 ms |
+| 20260818T013007Z | 90 | 43738 ms | refused: window < 60000 ms |
+| 20260818T013247Z | 200 | 89473 ms | **passed** |
+
+Both refusals came from the anti-vacuity check added after the 2026-08-15 run
+passed vacuously over a 10-second window. In the first of them, 36 assertions
+were already green — including `restartCount` unchanged and zero `/healthz`
+failures — and the gate still refused, correctly: a clean record over a window
+shorter than the contract cannot distinguish "the api survived" from "the burst
+ended first". The script's default `ROUNDS` was 10 at the time, i.e. a default
+that could never pass; it is now 200, with the measured pacing recorded beside
+it.

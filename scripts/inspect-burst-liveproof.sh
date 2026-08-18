@@ -119,7 +119,22 @@ BURST_N="${BURST_N:-9}"
 # ROUNDS: repeated bursts, so a single lucky (or unlucky) round cannot
 # stand in for the whole gate -- mirrors every sibling live gate's own
 # multi-round design.
-ROUNDS="${ROUNDS:-10}"
+#
+# The default is 200 because anything much lower CANNOT PASS: STEP 12 requires
+# the observation window to outlast this deployment's own liveness contract
+# (periodSeconds:10 x failureThreshold:6 = 60s), and a round costs roughly half
+# a second. Measured on this gate's own reference stand, 2026-08-18:
+#
+#   ROUNDS=10  -> window 10234ms  -> refused (needs 60000ms)
+#   ROUNDS=90  -> window 43738ms  -> refused
+#   ROUNDS=200 -> window 89473ms  -> passed
+#
+# The old default of 10 was a trap: an operator running the script as
+# documented in --help got a refusal that reads like a product defect and is
+# actually a parameter that could never have worked. Note the pacing is not
+# linear -- the first rounds are the slowest (1023ms/round at 10 rounds versus
+# 486ms at 90), so scale from the SLOW end when raising it further.
+ROUNDS="${ROUNDS:-200}"
 # BURST_ROUND_TIMEOUT_S bounds ONE round's kubectl exec. A round is BURST_N
 # concurrent requests each bounded by the api's own INSPECT_MAX_WORK_DURATION
 # (2s in values-inspect-gate.yaml) behind a semaphore of INSPECT_MAX_CONCURRENT
