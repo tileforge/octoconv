@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: executing
-stopped_at: Phase 58 complete and merged (main 514b86b); next unstarted phase is 59
-last_updated: "2026-08-18T01:45:00.000Z"
-last_activity: 2026-08-18 -- Phase 58 merged to main (514b86b) after the INSP-06 live gate passed; three open items carried in .planning/todos/pending/
+status: planning
+stopped_at: Phase 59 context gathered
+last_updated: "2026-08-19T08:33:15.266Z"
+last_activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
 progress:
   total_phases: 6
   completed_phases: 3
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 58 — synchronous-inspection
+**Current focus:** Phase 59 — born-digital-pdf-routing
 
 ## Current Position
 
-Phase: 58 (synchronous-inspection) — COMPLETE (merged 2026-08-18, main 514b86b)
-Plan: 8 of 8 executed; wave 5 live gate PASSED (RUN_ID 20260818T013247Z)
-Status: Phase 58 closed. SC6 proven live (window 89473ms >= 60000ms contract, restartCount unchanged, 0x5xx across 1800 responses). CI unavailable since 2026-08-16 (Actions billing, restored end of August) — equivalent jobs run locally on b68c9da via scripts/ci-local.sh; re-verify with the real pipeline when it returns.
-Last activity: 2026-08-18 -- Phase 58 merged to main (514b86b) after the INSP-06 live gate passed; three open items carried in .planning/todos/pending/
+Phase: 59 (born-digital-pdf-routing) — CONTEXT GATHERED
+Plan: 0 of TBD — ready to plan
+Status: Phase 59 context gathered (12 decisions across 4 gray areas); ready to plan. Two items of the inspect honest-reporting todo folded in. CI still unavailable since 2026-08-16 (Actions billing, back end of August) — local stand-in is scripts/ci-local.sh; run the real pipeline against main once it returns.
+Last activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
 
 ## Performance Metrics
 
@@ -277,9 +277,9 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 
 ## Session Continuity
 
-Last session: 2026-08-10T00:49:01.187Z
-Stopped at: Phase 58 planned (8 plans, 5 waves)
-Resume file: None
+Last session: 2026-08-19T08:32:01.504Z
+Stopped at: Phase 59 context gathered
+Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
 
