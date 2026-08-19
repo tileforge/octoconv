@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: executing
-stopped_at: Phase 58 executing (8 plans executed; PR #9 open, codex rounds being closed; wave 5 live gate pending)
-last_updated: "2026-08-17T10:47:04.874Z"
-last_activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
+stopped_at: Phase 58 complete and merged (main 514b86b); next unstarted phase is 59
+last_updated: "2026-08-18T01:45:00.000Z"
+last_activity: 2026-08-18 -- Phase 58 merged to main (514b86b) after the INSP-06 live gate passed; three open items carried in .planning/todos/pending/
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 22
-  completed_plans: 14
-  percent: 33
+  completed_plans: 22
+  percent: 50
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 58 (synchronous-inspection) — EXECUTING
-Plan: 8 of 8 (58-01..58-07 SUMMARY written; 58-08 harness summary written)
-Status: Executing Phase 58 — PR #9 open, codex review rounds being closed; wave 5 live gate pending
-Last activity: 2026-08-17 -- Completed quick task 260817-j58: closed codex PR#9 finding on multi-root workbook XML
+Phase: 58 (synchronous-inspection) — COMPLETE (merged 2026-08-18, main 514b86b)
+Plan: 8 of 8 executed; wave 5 live gate PASSED (RUN_ID 20260818T013247Z)
+Status: Phase 58 closed. SC6 proven live (window 89473ms >= 60000ms contract, restartCount unchanged, 0x5xx across 1800 responses). CI unavailable since 2026-08-16 (Actions billing, restored end of August) — equivalent jobs run locally on b68c9da via scripts/ci-local.sh; re-verify with the real pipeline when it returns.
+Last activity: 2026-08-18 -- Phase 58 merged to main (514b86b) after the INSP-06 live gate passed; three open items carried in .planning/todos/pending/
 
 ## Performance Metrics
 
@@ -153,6 +153,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
+- api container crash-loops at every fresh k8s install until postgres accepts connections (`log.Fatalf` as the dependency-wait mechanism; restartCount reaches 2-3 before Ready). Observed while running the INSP-06 gate. See `.planning/todos/pending/2026-08-18-api-startup-crashloop-until-postgres.md`.
+- Inspect honest-reporting: three open items from the PR #9 review loop (coverage-vs-read_failed contract; bool-returning detectors that cannot report a read failure; CI never run since 2026-08-16 due to GitHub Actions billing). See `.planning/todos/pending/2026-08-18-inspect-honest-reporting-open-items.md`. Rounds 20-27 are all closed in code; these three are contract/API/account decisions, not review-round patches.
 - Plan and execute Phase 53 (Operator Usage Visibility: OPSV-01/02) — reads Phase 51's rollup table, sequenced after Phase 52's quota mechanism so "usage vs. limit" is meaningful.
 - Fix Retry-After midnight race in daily quota rejection — `quotaRejection` can advertise ~86400s when the daily quota already reset; needs a sentinel-error contract change, deliberately deferred out of PR #5. See `.planning/todos/pending/2026-08-04-fix-retry-after-midnight-race.md`.
 

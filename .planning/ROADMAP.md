@@ -298,7 +298,7 @@ Plans:
 
 **Risk note**: это первый в проекте request-path, разбирающий недоверенные байты **инлайн**, в том же процессе, что обслуживает `/healthz`, в сервисе, вся модель безопасности которого построена на воркер-изоляции с измеренными таймаутами. Патологический залп валит liveness-пробу и каскадит рестарт всего флота, а не тормозит одного клиента.
 
-**Plans:** 7/8 plans executed
+**Plans:** 8/8 plans executed
 
 Plans:
 - [x] 58-01-PLAN.md — доказательная база D-15: пиннинг до-фазовых тел /healthz, /v1/formats и десяти content-validation отказов + код отказа inspect_busy
@@ -308,7 +308,7 @@ Plans:
 - [x] 58-05-PLAN.md — медиа (mp4/mov хвостовой moov, mkv/webm, wav) и изображения (размеры, пиксельная бомба, EXIF/XMP)
 - [x] 58-06-PLAN.md — потолок работы, семафор с немедленным 429 inspect_busy и собственный rate-бюджет с оговоркой D-07
 - [x] 58-07-PLAN.md — эндпоинт POST /v1/inspect: отчёт, доступные (operation, target) с оценкой и квотой, openapi, доказательство TOCTOU
-- [ ] 58-08-PLAN.md — живой операторский гейт SC6: залп из кластера, независимый опрос /healthz, evidence
+- [x] 58-08-PLAN.md — живой операторский гейт SC6: залп из кластера, независимый опрос /healthz, evidence
 
 **Autonomous**: false (SC6 — операторский живой гейт)
 
@@ -428,7 +428,7 @@ Plans:
 | 55. Live Gate — Multi-Replica Quota Correctness | v1.12 | 7/7 | Complete    | 2026-08-07 |
 | 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
 | 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
-| 58. Synchronous Inspection | v1.13 | 7/8 | In Progress|  |
+| 58. Synchronous Inspection | v1.13 | 8/8 | Complete   | 2026-08-18 |
 | 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
 | 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
 | 61. v1.12 Debt Tail | v1.13 | 0/TBD | Not started | — |
