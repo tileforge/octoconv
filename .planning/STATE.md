@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: planning
-stopped_at: Phase 59 context gathered
-last_updated: "2026-08-19T08:33:15.266Z"
-last_activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
+status: executing
+stopped_at: Phase 59 planned — 7 plans ready to execute
+last_updated: "2026-08-30T01:51:18.177Z"
+last_activity: 2026-08-30 -- Phase 59 researched (d2becc8, d8aff45) and planned (65d40c1)
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 22
+  total_plans: 29
   completed_plans: 22
   percent: 50
 ---
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 59 (born-digital-pdf-routing) — CONTEXT GATHERED
-Plan: 0 of TBD — ready to plan
-Status: Phase 59 context gathered (12 decisions across 4 gray areas); ready to plan. Two items of the inspect honest-reporting todo folded in. CI still unavailable since 2026-08-16 (Actions billing, back end of August) — local stand-in is scripts/ci-local.sh; run the real pipeline against main once it returns.
-Last activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
+Phase: 59 (born-digital-pdf-routing) — PLANNED
+Plan: 0 of 7 — ready to execute
+Status: Phase 59 planned — 7 plans across 4 waves, ready to execute. Research prototyped the detector against pdftotext on six PDFs and caught an x19 overcount in our own scanner before a line of production code was written.
+Last activity: 2026-08-30 -- Phase 59 researched (d2becc8, d8aff45) and planned (65d40c1)
 
 ## Performance Metrics
 
@@ -278,7 +278,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 59 context gathered
+Stopped at: Phase 59 planned — 7 plans ready to execute
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
