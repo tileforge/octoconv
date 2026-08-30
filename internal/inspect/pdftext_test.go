@@ -636,7 +636,7 @@ func TestValidatedStreamScannerBoundaries(t *testing.T) {
 		{"a real stream after a decoy literal", "(>>stream decoy endstream)\n<< /Length 4 >>\nstream\nbody\nendstream\n", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ranges, _ := scanValidatedStreamRanges([]byte(tc.buf), nil)
+			ranges, _, _ := scanValidatedStreamRanges([]byte(tc.buf), nil)
 			if len(ranges) != tc.wantN {
 				t.Fatalf("scanValidatedStreamRanges found %d stream(s), want %d -- ranges=%v", len(ranges), tc.wantN, ranges)
 			}
@@ -716,4 +716,99 @@ func TestSkipMarkersMatchCompleteNameTokens(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestScannerAdversarialProbes is a corpus of shapes built to attack
+// scanValidatedStreamRanges, which after codex's second review is the single
+// thing deciding what counts as page content. A gap in it is a gap in
+// everything downstream, so it gets attacked directly rather than only through
+// whole-file fixtures.
+//
+// One of these found a real defect. `(unterminated << /Length 30 >> stream …`
+// yielded zero streams, FULL coverage, and `text_layer: absent` — the scanner
+// had examined none of the document and claimed there was no text in it. It
+// arrived through the path that looked most like a safe default: an
+// unterminated literal swallows the rest of the buffer, which is fail-closed
+// against a false `present` and says nothing at all about the absence claim.
+//
+// Each case states the verdict it must NOT produce, rather than pinning an
+// exact one, so the table survives honest changes in how a shape degrades while
+// still catching a wrong answer.
+func TestScannerAdversarialProbes(t *testing.T) {
+	const text = "BT (abcdefghijklmnopq) Tj ET"
+
+	for _, tc := range []struct {
+		name       string
+		buf        string
+		forbid     any
+		wantRanges int
+	}{
+		{
+			// The bytes of the hex string decode to ">>stream", but a hex
+			// string's CONTENT is hex digits, so nothing here is syntax.
+			name:       "hex string whose decoded bytes spell the keyword",
+			buf:        "<3E3E73747265616D>\n<< /Length 4 >>\nstream\nbody\nendstream\n",
+			forbid:     TextLayerPresent,
+			wantRanges: 1,
+		},
+		{
+			name:       "escaped paren does not close the literal early",
+			buf:        "(a\\(b >>stream " + text + " endstream)\n",
+			forbid:     TextLayerPresent,
+			wantRanges: 0,
+		},
+		{
+			name:       "endstream inside a literal after the real stream",
+			buf:        "<< /Length 4 >>\nstream\nAAAA\nendstream\n(endstream)\n",
+			forbid:     TextLayerPresent,
+			wantRanges: 1,
+		},
+		{
+			name:       "dictionary close inside a comment",
+			buf:        "% >>stream fake endstream\n<< /Length 4 >>\nstream\nbody\nendstream\n",
+			forbid:     TextLayerPresent,
+			wantRanges: 1,
+		},
+		{
+			// REPRODUCED before the fix: absent, with full coverage, for a
+			// document the scanner never looked at.
+			name:       "unterminated literal swallows the rest of the window",
+			buf:        "(unterminated << /Length 30 >>\nstream\n" + text + "\nendstream\n",
+			forbid:     TextLayerAbsent,
+			wantRanges: 0,
+		},
+		{
+			name:       "several comments between the dictionary and the keyword",
+			buf:        "<< /Length 30 >>%c1\n%c2\n%c3\nstream\n" + text + "\nendstream\n",
+			forbid:     TextLayerAbsent,
+			wantRanges: 1,
+		},
+		{
+			// Classic-Mac line endings are legal PDF EOLs.
+			name:       "CR-only line endings",
+			buf:        "<< /Length 30 >>\rstream\r" + text + "\rendstream\r",
+			forbid:     TextLayerAbsent,
+			wantRanges: 1,
+		},
+		{
+			name:       "two real streams back to back",
+			buf:        "<< /Length 30 >>\nstream\n" + text + "\nendstream\n<< /Length 4 >>\nstream\nbody\nendstream\n",
+			forbid:     TextLayerAbsent,
+			wantRanges: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ranges, _, _ := scanValidatedStreamRanges([]byte(tc.buf), nil)
+			if len(ranges) != tc.wantRanges {
+				t.Fatalf("found %d stream range(s), want %d", len(ranges), tc.wantRanges)
+			}
+
+			state := scanPDFTextLayer([]byte(tc.buf), 1<<20, nil)
+			value, reason := pdfTextLayerVerdict(state, false, false)
+			if value == tc.forbid {
+				t.Fatalf("text_layer = %v, which this shape must never produce (count %d, covered %v, reason %q)",
+					value, state.nonWhitespace, state.covered, reason)
+			}
+		})
+	}
 }

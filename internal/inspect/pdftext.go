@@ -303,7 +303,13 @@ type pdfTextScanState struct {
 func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState {
 	state := pdfTextScanState{covered: true, remaining: allowance}
 
-	ranges, ceilingHit := scanValidatedStreamRanges(buf, tr)
+	ranges, ceilingHit, lexComplete := scanValidatedStreamRanges(buf, tr)
+	if !lexComplete {
+		// An unterminated literal string swallowed part of the window. See
+		// skipPDFLiteral for why silence here would be the dangerous choice.
+		state.covered = false
+		state.parserLimit = true
+	}
 	if ceilingHit {
 		// The range scan gave up on its own iteration cap, so the stream SET
 		// is incomplete -- there may be streams past the last one found. Same
@@ -379,17 +385,25 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 // ceilingHit mirrors scanPDFStreamRanges's own contract: it reports that the
 // iteration cap, not the buffer's content, decided when the walk stopped, and
 // it marks the shared receptacle at that point.
-func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool, complete bool) {
+	complete = true
 	i := 0
 	for iter := 0; i < len(buf); iter++ {
 		if iter >= maxTokenScanIterations {
 			tr.MarkCeilingHit()
-			return ranges, true
+			return ranges, true, complete
 		}
 
 		switch buf[i] {
 		case '(':
-			i = skipPDFLiteral(buf, i)
+			next, terminated := skipPDFLiteral(buf, i)
+			if !terminated {
+				// Everything from here to the end of the window was swallowed
+				// by a string that never closed. Those bytes are unexamined,
+				// and the report may no longer claim absence.
+				complete = false
+			}
+			i = next
 			continue
 		case '%':
 			i = skipPDFComment(buf, i)
@@ -413,7 +427,7 @@ func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange
 				// there; the caller charges it and the truncation is already
 				// visible through its own window accounting.
 				ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)})
-				return ranges, false
+				return ranges, false, complete
 			}
 			bodyEnd := bodyStart + endIdx
 			ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})
@@ -424,14 +438,26 @@ func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange
 			i++
 		}
 	}
-	return ranges, false
+	return ranges, false, complete
 }
 
 // skipPDFLiteral returns the index just past the literal string starting at
-// open, honouring backslash escapes and nesting. An unterminated literal
-// consumes the rest of the buffer, which is the fail-closed direction: nothing
-// after it is mistaken for syntax.
-func skipPDFLiteral(buf []byte, open int) int {
+// open, honouring backslash escapes and nesting, and reports whether the
+// literal was actually TERMINATED.
+//
+// The second return value matters more than it looks. An unterminated literal
+// consumes the rest of the buffer, so nothing after it is mistaken for syntax
+// -- fail-closed against a false `present`. But silence about it produces the
+// opposite defect, and an adversarial probe written while awaiting review found
+// it: `(unterminated << /Length 30 >> stream … endstream` yielded zero streams,
+// full coverage, and `text_layer: absent`. The scanner had examined none of the
+// document and claimed there was no text in it -- exactly the D-09 violation
+// this whole file exists to prevent, arriving through the one path that looked
+// like a safe default.
+//
+// So an unterminated literal costs coverage. `absent` becomes unreachable;
+// `present` is unaffected, since anything already counted really was seen.
+func skipPDFLiteral(buf []byte, open int) (next int, terminated bool) {
 	depth := 1
 	for i := open + 1; i < len(buf); i++ {
 		switch buf[i] {
@@ -442,11 +468,11 @@ func skipPDFLiteral(buf []byte, open int) int {
 		case ')':
 			depth--
 			if depth == 0 {
-				return i + 1
+				return i + 1, true
 			}
 		}
 	}
-	return len(buf)
+	return len(buf), false
 }
 
 // skipPDFComment returns the index just past the end-of-line that terminates
