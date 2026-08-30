@@ -1,6 +1,14 @@
 name: ci
 
-on: [push, pull_request]
+# Автоматические триггеры выключены 2026-08-30: лимиты GitHub Actions на
+# исходе, а этот воркфлоу срабатывал дважды за цикл (на пуш ветки и на
+# открытие PR). Гейты прогоняются локально:
+#   go build ./... && go vet ./... && go test ./...
+# Откат — раскомментировать следующую строку и убрать `on: workflow_dispatch`
+# под ней. Ключ `on:` обязателен, поэтому он не удалён, а заменён: без него
+# GitHub считает файл невалидным воркфлоу.
+# on: [push, pull_request]
+on: workflow_dispatch
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
