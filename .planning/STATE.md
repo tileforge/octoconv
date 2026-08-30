@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: Phase 60 context gathered; ready to plan
-last_updated: "2026-08-30T20:43:39.589Z"
-last_activity: 2026-08-30 -- Phase 60 context gathered (1264501)
+stopped_at: Phase 60 planned; 6 plans across 5 waves; ready to execute wave 1
+last_updated: "2026-08-31T00:00:00.000Z"
+last_activity: 2026-08-31 -- Phase 60 planned (455ae15)
 progress:
   total_phases: 6
   completed_phases: 5
@@ -21,14 +21,18 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 59 — born-digital-pdf-routing
+**Current focus:** Phase 60 — sanitize-eighth-engine-class
 
 ## Current Position
 
-Phase: 60 (sanitize-eighth-engine-class) — CONTEXT GATHERED
-Plan: 0 of TBD — ready to plan
-Status: Phase 60 context gathered: 8 decisions across 4 gray areas, both roadmap-deferred design decisions closed. Ready to plan. Note: SC5 still needs an operator-measured timeout on your own corpus — that number cannot come from planning.
-Last activity: 2026-08-30 -- Phase 60 context gathered (1264501)
+Phase: 60 (sanitize-eighth-engine-class) — PLANNED
+Plan: 0 of 6 — ready to execute wave 1
+Status: Phase 60 planned: 6 plans, 5 waves, 9 decisions (D-09 added during planning: XMP stripped whole via -dOmitXMP, since "no xpacket in the output bytes" cannot be subtly wrong while "all fields empty" requires enumerating fields we did not anticipate).
+
+The plan-check caught two of my own defects: SC5's prior-revision clause was in no plan (a PDF carrying its original as an incremental update passes every byte-absence test while still carrying the marker), and the helm chart path was invented rather than looked up. Both fixed in 455ae15.
+
+Wave 6 blocks on you: SC5 needs a timeout measured on your own corpus. Roadmap names copying 65s/742s/744s/753s an anti-pattern of this project by name, so that number cannot come from planning.
+Last activity: 2026-08-31 -- Phase 60 planned (455ae15)
 
 ## Performance Metrics
 
