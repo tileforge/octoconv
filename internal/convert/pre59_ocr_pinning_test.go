@@ -29,7 +29,6 @@ package convert
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,9 +117,14 @@ func TestPre59PDFToHOCRIsNotRefusedForHavingATextLayer(t *testing.T) {
 	defer cancel()
 
 	err := (OCRConverter{}).Convert(ctx, pre59BornDigitalFixture(), outPath, nil)
-	if errors.Is(err, ErrOCRBornDigital) {
-		t.Fatalf("Convert(pdf -> hocr) = ErrOCRBornDigital -- a text layer must no longer refuse a box-producing " +
-			"target, since OCR is the only thing that can produce boxes (D-06)")
+	// Checked by message rather than by sentinel: Plan 59-06 deleted
+	// ErrOCRBornDigital outright, so the identifier no longer exists to compare
+	// against. That deletion is the stronger guarantee -- the compiler now
+	// enforces it -- and this remains as the behavioral half, since a refusal
+	// reintroduced under a NEW sentinel would still be caught here.
+	if err != nil && strings.Contains(err.Error(), "already has an extractable text layer") {
+		t.Fatalf("Convert(pdf -> hocr) = %v -- a text layer must no longer refuse a box-producing target, since OCR "+
+			"is the only thing that can produce boxes (D-06)", err)
 	}
 	if err == nil || !strings.Contains(err.Error(), "pdftoppm") {
 		t.Fatalf("Convert(pdf -> hocr) = %v, want a pdftoppm failure -- with PATH restricted the render cannot "+

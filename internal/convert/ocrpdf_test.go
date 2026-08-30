@@ -212,34 +212,45 @@ func TestOCRPDFPageBox(t *testing.T) {
 	}
 }
 
-// TestBornDigitalSentinelIsUnreachable is the PROOF Plan 59-06 will cite when
-// it removes born_digital from the active failure-code vocabulary and deletes
-// a row from internal/worker's pinning suite.
+// TestBornDigitalHasNoRefusalPath is the behavioral half of the proof Plan
+// 59-06 cites when it retires the born_digital error code and removes a row
+// from internal/worker's pinning suite.
 //
-// That suite's own header declares any change to an assertion a protocol
-// violation requiring explicit justification. "The code is unreachable" is a
-// claim; this test is what turns it into a fact. It runs a born-digital PDF
-// through ALL THREE targets and requires that none of them produces
-// ErrOCRBornDigital -- not the two that changed behavior, all of them, because
-// a proof of unreachability that skips a route proves nothing about that route.
+// Its earlier form (TestBornDigitalSentinelIsUnreachable, Plan 59-04) asserted
+// errors.Is(err, ErrOCRBornDigital) was never true. That form could not
+// survive its own success: 59-06 deleted the sentinel, and a test naming a
+// deleted identifier does not compile. The deletion is now the STRONGER proof
+// -- unreachability enforced by the compiler rather than by a passing test --
+// and what remains here is the property the sentinel used to stand for.
+//
+// So this checks the message, not the type. That is deliberately weaker on its
+// own, and it is the right weaker check: were a refusal reintroduced under a
+// NEW sentinel, an errors.Is test against the old one would not have caught it
+// either, while this does.
+//
+// All THREE targets, not only the two whose behavior changed: a proof of
+// unreachability that skips a route proves nothing about that route.
 //
 // PATH is restricted to pdfinfo+pdftotext, so the box targets fail at the
-// renderer. That failure is expected and is not what is being asserted: the
-// assertion is on the sentinel's absence, which holds regardless of how the
-// render itself ends.
-func TestBornDigitalSentinelIsUnreachable(t *testing.T) {
+// renderer. That failure is expected and is not the assertion -- the assertion
+// is that no route refuses this file for HAVING a text layer.
+func TestBornDigitalHasNoRefusalPath(t *testing.T) {
 	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// The exact wording the retired sentinel carried.
+	const retiredRefusal = "already has an extractable text layer"
+
 	for _, target := range []string{"txt", "hocr", "alto"} {
 		t.Run(target, func(t *testing.T) {
 			outPath := filepath.Join(t.TempDir(), "out."+target)
 			err := OCRConverter{}.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
-			if errors.Is(err, ErrOCRBornDigital) {
-				t.Fatalf("Convert(pdf -> %s) produced ErrOCRBornDigital -- the sentinel must be unreachable on every "+
-					"route before Plan 59-06 may retire the born_digital error code", target)
+			if err != nil && strings.Contains(err.Error(), retiredRefusal) {
+				t.Fatalf("Convert(pdf -> %s) refused a PDF for having a text layer: %v -- that refusal was retired in "+
+					"Phase 59, and worker.CodeBornDigital was moved to the historical vocabulary on the strength of "+
+					"this test", target, err)
 			}
 		})
 	}

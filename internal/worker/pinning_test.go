@@ -11,6 +11,47 @@ package worker
 // this file during that refactor is a protocol violation requiring
 // explicit justification (PITFALLS.md Pitfall 14: "the test suite proves
 // the runner's shape, not the seven engines' pre-existing behavior").
+//
+// --- Phase 59: one row removed, with justification ------------------------
+//
+// Removed from pinFailureCodeCases:
+//
+//	{"ocr", "born digital", fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital), "born_digital"},
+//
+// The protocol above is scoped to plan 56-04's refactor, so this edit is not
+// literally a violation of it. That scoping is exactly why the justification is
+// written here rather than treated as permission: "out of scope by design" is
+// itself a claim, and a suite from which rows can be removed on the strength of
+// an unstated claim has stopped being a defence.
+//
+// Why the row could not stay. It pinned a mapping from a sentinel to an error
+// code, and Phase 59 (D-05/D-06) removed the sentinel's producer:
+// convert.ocrPDFGuardStage no longer refuses a PDF for having a text layer --
+// a txt target receives the extracted layer, and hocr/alto go on to a real
+// render because pdftotext produces no word or line boxes. Keeping the row
+// would have meant keeping an unreachable sentinel alive solely so a test could
+// hand it to a mapping function that no production path can ever call: a pin on
+// behavior that no longer exists, which is a different thing from a pin on
+// behavior that must not change.
+//
+// What makes this a fact and not an assertion:
+// convert.TestBornDigitalHasNoRefusalPath (internal/convert/ocrpdf_test.go)
+// runs a born-digital PDF through ALL THREE targets -- txt, hocr, alto -- and
+// requires that none of them refuses the file for having a text layer. All
+// three, not only the two whose behavior changed: a proof of unreachability
+// that skips a route proves nothing about that route.
+//
+// Stronger still, the sentinel itself is gone: this phase deleted
+// convert.ErrOCRBornDigital, so its unreachability is now enforced by the
+// compiler rather than by a passing assertion. The test remains as the
+// behavioral half, catching a refusal reintroduced under some new name.
+//
+// What did NOT happen: the code was not deleted from the contract.
+// worker.CodeBornDigital survives as a historical code (descriptors.go) and
+// keeps its row in docs/ERROR-CODES.md, because jobs.error_code is persisted
+// and GET /v1/jobs/{id} still serves it for jobs that failed before this phase.
+//
+// No other row in this file was touched.
 
 import (
 	"context"
@@ -441,7 +482,6 @@ var pinFailureCodeCases = []pinFailureCodeCase{
 	{"av", "generic engine failure", fmt.Errorf("convert: %w", convert.ErrAVTranscodeFailed), "engine_error"},
 
 	// ocr: TestOCRFailureCode.
-	{"ocr", "born digital", fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital), "born_digital"},
 	{"ocr", "too many pages", fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages), "too_many_pages"},
 	{"ocr", "page box too large", convert.ErrOCRPageBoxTooLarge, "page_too_large"},
 	{"ocr", "image too large", fmt.Errorf("ocr: %w", convert.ErrOCRImageTooLarge), "image_too_large"},

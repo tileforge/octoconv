@@ -636,7 +636,6 @@ func TestIsOCRTerminal(t *testing.T) {
 	// Deterministic input/client-fault guard rejections -> terminal,
 	// regardless of stage.
 	deterministicCases := []error{
-		fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital),
 		fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages),
 		fmt.Errorf("%w: declared page box 1000x1000 pts at 300 DPI rasterizes to 1e9 pixels, exceeds bound 1e8", convert.ErrOCRPageBoxTooLarge),
 		fmt.Errorf("ocr: %w", convert.ErrOCRImageTooLarge),
@@ -697,11 +696,6 @@ func TestOCRFailureCode(t *testing.T) {
 		err      error
 		wantCode string
 	}{
-		{
-			name:     "born digital",
-			err:      fmt.Errorf("ocr: %w", convert.ErrOCRBornDigital),
-			wantCode: "born_digital",
-		},
 		{
 			name:     "too many pages",
 			err:      fmt.Errorf("%w: declared page count 50 exceeds bound 20", convert.ErrOCRTooManyPages),

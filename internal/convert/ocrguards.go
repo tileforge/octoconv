@@ -207,28 +207,6 @@ func enforceImagePixelBound(inPath string, maxPixels uint64) error {
 // be measured at all.
 const ocrUsableTextLayerThreshold = 16
 
-// ErrOCRBornDigital is UNREACHABLE as of Phase 59 (D-05/D-06) and is kept
-// alive only until Plan 59-06 removes it together with its consumers.
-//
-// It used to mean "this PDF already has an extractable text layer, so refuse
-// the job". Since Plan 59-04 nothing returns it: a txt target now receives
-// that text layer as its result, and an hocr/alto target goes on to a real
-// render because pdftotext produces no word or line boxes and OCR is their
-// only source.
-//
-// It is deliberately NOT deleted here. internal/worker still references it in
-// three places (isOCRTerminal, ocrFailureCode, and a pinning-suite row), and
-// unwinding those -- including retiring the born_digital error code from the
-// active vocabulary while keeping it documented for jobs that already failed
-// with it -- is Plan 59-06's whole subject. Deleting it in this plan would
-// break the build across packages to save one commit.
-//
-// Unreachability is not asserted here, it is PROVEN:
-// TestBornDigitalSentinelIsUnreachable (ocrpdf_test.go) runs a born-digital
-// PDF through all three targets and requires that none of them produces it.
-// Plan 59-06 cites that test as its justification for editing a pinning suite.
-var ErrOCRBornDigital = errors.New("ocr: pdf already has an extractable text layer")
-
 // ocrTextLayerArgs builds pdftotext's argv to extract pdfPath's text layer
 // to stdout ("-" as the output path, mirroring runCommand's "some engines
 // write their machine-readable result to stdout" contract, exec.go).
