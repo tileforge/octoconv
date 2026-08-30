@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: completed
-stopped_at: Phase 59 complete; nothing pushed yet
-last_updated: "2026-08-30T08:11:43.909Z"
-last_activity: "2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)"
+status: "Phase 59 merged to main via PR #10. Next in v1.13: Phase 60 (Sanitize, SANI-01..06, Autonomous false) and Phase 61 (v1.12 debt tail, DEBT-09/10/11, no dependencies)."
+stopped_at: "Phase 59 merged to main (PR #10, f45a941)"
+last_updated: "2026-08-30T08:14:12.668Z"
+last_activity: "2026-08-30 -- Phase 59 merged via PR #10 (f45a941); 8 review findings closed across 3 rounds"
 progress:
   total_phases: 6
   completed_phases: 4
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 59 (born-digital-pdf-routing) — COMPLETE
-Plan: 7 of 7 — all executed and verified
-Status: Phase 59 complete: BDPD-01 and BDPD-02 both satisfied with live evidence, 7 plans executed. Next in v1.13: Phase 60 (Sanitize) and Phase 61 (v1.12 debt tail).
-Last activity: 2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)
+Phase: 60 (sanitize) — not started
+Plan: 0 of TBD — ready to discuss
+Status: Phase 59 merged to main via PR #10. Next in v1.13: Phase 60 (Sanitize, SANI-01..06, Autonomous false) and Phase 61 (v1.12 debt tail, DEBT-09/10/11, no dependencies).
+Last activity: 2026-08-30 -- Phase 59 merged via PR #10 (f45a941); 8 review findings closed across 3 rounds
 
 ## Performance Metrics
 
@@ -280,7 +280,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 59 complete; nothing pushed yet
+Stopped at: Phase 59 merged to main (PR #10, f45a941)
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
