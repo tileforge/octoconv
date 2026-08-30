@@ -8,6 +8,7 @@
       "characteristics": {
         "page_count": 1,
         "pdf_version": "1.4",
+        "text_layer": "present",
         "uses_compressed_object_streams": false
       },
       "findings": [
@@ -130,6 +131,7 @@
         "page_count": null,
         "page_count_reason": "compressed_object_streams",
         "pdf_version": "1.7",
+        "text_layer": "present",
         "uses_compressed_object_streams": true
       },
       "findings": null,
@@ -257,6 +259,7 @@
         "page_count": null,
         "page_count_reason": "compressed_object_streams",
         "pdf_version": "1.5",
+        "text_layer": "present",
         "uses_compressed_object_streams": true
       },
       "findings": [
@@ -384,6 +387,7 @@
       "characteristics": {
         "page_count": 1,
         "pdf_version": "1.4",
+        "text_layer": "present",
         "uses_compressed_object_streams": false
       },
       "findings": null,

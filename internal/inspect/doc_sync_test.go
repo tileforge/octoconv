@@ -151,6 +151,31 @@ const reasonTableHeader = "## Report coverage is a separate claim"
 // existed: unenforced text drifts.
 const selectiveReasonsPhrase = "Exactly three reasons may set `coverage.complete: false`: `work_ceiling_bytes`,\n`work_ceiling_time`, and `read_failed`."
 
+// textLayerAsymmetryPhrase is the sentence docs/FINDINGS.md must carry about
+// the text_layer characteristic (Phase 59, BDPD-01/D-09).
+//
+// Of everything that section says, this is the half a client can get wrong in a
+// way that matters: reading "absent" as "no text" rather than as "no text, and
+// we saw all of it". A consumer that treats a null the same as an absent will
+// skip OCR for a document it never examined. The asymmetry is therefore pinned
+// as prose, exactly as the coverage rule above is.
+const textLayerAsymmetryPhrase = "**The two directions are not symmetric, and the asymmetry is the point.**"
+
+// TestDocDeclaresTextLayerAsymmetry keeps that sentence in the document.
+func TestDocDeclaresTextLayerAsymmetry(t *testing.T) {
+	doc := readDoc(t)
+	if !strings.Contains(doc, textLayerAsymmetryPhrase) {
+		t.Fatalf("docs/FINDINGS.md does not contain the required phrase %q -- a client reading only the value table "+
+			"would take \"absent\" and null as the same kind of answer, and skip OCR for a document nobody examined",
+			textLayerAsymmetryPhrase)
+	}
+	for _, value := range []string{"`\"present\"`", "`\"absent\"`", "`text_layer_reason`"} {
+		if !strings.Contains(doc, value) {
+			t.Errorf("docs/FINDINGS.md does not document %s", value)
+		}
+	}
+}
+
 // TestDocDeclaresSelectiveReasons pins that the document states the rule, in
 // so many words, rather than leaving a reader to infer it from a column of
 // Yes/No cells.

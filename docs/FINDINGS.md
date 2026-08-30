@@ -168,6 +168,42 @@ information.
 failed read. It is empty when the loss of coverage came from a characteristic rather than a check
 (a characteristic key names no code).
 
+## The `text_layer` characteristic (BDPD-01, Phase 59)
+
+For an uploaded PDF the report carries a `text_layer` characteristic and, when the answer is not
+known, a paired `text_layer_reason`. The key is **absent** for every other format — it does not
+apply, and an inapplicable characteristic is omitted rather than reported as null (INSP-01).
+
+| `text_layer` | Meaning |
+|---|---|
+| `"present"` | A usable text layer was found. This PDF can be converted to text without OCR. |
+| `"absent"` | No usable text layer, **and everything that could hold one was examined**. |
+| `null` | Not determined. `text_layer_reason` says why. |
+
+"Usable" is a threshold, not a boolean: the non-whitespace characters inside the string arguments
+of PDF's text-showing operators, compared against the same threshold the OCR worker's own guard
+uses. Sharing that unit is deliberate — it is what lets the two answers be compared at all.
+
+**The two directions are not symmetric, and the asymmetry is the point.** `"present"` is a positive
+observation and is reported whenever enough text was actually seen, even if the rest of the scan was
+blind. `"absent"` is a claim about the *whole file* and is reported only when the scan covered
+everything: an exhausted work ceiling, a truncated window, an undecodable stream, or an encrypted
+document all yield `null` instead. A report will tell you it does not know far more readily than it
+will tell you a PDF has no text.
+
+**This is the one check a compressed object stream does not blind.** Everywhere else, `/ObjStm`
+forces `unknown` because objects can hide inside it. ISO 32000 §7.5.7 forbids stream objects from
+living there, and a text layer lives in content streams — so a report can legitimately say
+`uses_compressed_object_streams: true`, mark every risk check `unknown/compressed_object_streams`,
+and still answer this one. Those three facts appearing together in one body is correct, not a
+contradiction.
+
+**It is advisory.** This report is produced by a bounded in-process scanner; the worker decides at
+job time using a different tool (`pdftotext`) reading the whole file, and the two can disagree.
+Nothing here pins anything: a `text_layer` verdict never lets a later job skip a check of its own,
+and between this report and that job the bytes may not even be the same ones. Plan 59-07 measures
+how far apart the two answers actually fall.
+
 ## Binding to existing job-creation rejections (D-04)
 
 `handleCreateJob` (`internal/api/handlers.go`) already rejects thirteen classes of

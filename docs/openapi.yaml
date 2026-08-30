@@ -534,6 +534,17 @@ components:
             (INSP-01). A key whose VALUE is unknown is present with a JSON
             null (an honest "we don't know"); a key that does not apply to
             this format is simply absent.
+
+            PDF uploads additionally carry `text_layer` ("present", "absent",
+            or null) and, when it is null, `text_layer_reason` -- whether the
+            file already has a usable text layer, so a client can tell a
+            born-digital PDF from a scan before submitting a job. The two
+            values are NOT symmetric: "present" is reported whenever enough
+            text was actually seen, while "absent" requires that everything
+            able to hold text was examined, so a truncated or partly
+            undecodable scan reports null rather than claiming absence. It is
+            advisory -- the worker decides at job time with a different tool,
+            and may reach a different answer. See docs/FINDINGS.md.
         findings:
           type: array
           items:

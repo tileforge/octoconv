@@ -159,6 +159,41 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	// tailReserve is zero unless a tail read will actually happen, i.e. unless
 	// the file is larger than the allowance -- when it fits, the head window
 	// covers it end to end and the tail would only re-read bytes in hand.
+	// inflateAllowance bounds the total DECOMPRESSED bytes the Phase 59
+	// text-layer detector may produce. It is derived from maxBytes so that an
+	// operator lowering the operation's ceiling lowers this with it, and it is
+	// spent locally by the scan -- never through tr.Consume, which
+	// dispatchInspectFamilies owns for this analyzer.
+	//
+	// State plainly what this costs, because it is a real cost: worst-case
+	// memory for one inspect operation rises from maxBytes to 1.25 * maxBytes.
+	// maxBytes has always meant "bytes READ" (Budget's own doc comment), and
+	// decompression output is not a read -- so this is a genuinely additional
+	// resource, and pretending otherwise would make the documented ceiling a
+	// half-truth.
+	//
+	// Two cheaper-looking alternatives were tried and both were worse:
+	//
+	//   - Deriving it as a LEFTOVER (maxBytes minus the windows actually
+	//     read): when a file fits entirely inside maxBytes the head window
+	//     covers all of it and the leftover is zero, so the detector could
+	//     never decompress anything and every such PDF reported a ceiling it
+	//     had not hit. Two existing tests caught it.
+	//   - CARVING it out before sizing the head window, mirroring tailReserve:
+	//     arithmetically tidy -- the total stays inside maxBytes -- but it
+	//     shrinks the risk-token window by a quarter, and three existing tests
+	//     immediately showed /JavaScript, /OpenAction and friends going
+	//     undetected on files whose size approaches the allowance. Trading
+	//     detection of executable content for accounting neatness is the wrong
+	//     trade at any exchange rate.
+	//
+	// So the risk-token windows keep their full allowance, and decompression
+	// gets a bounded, derived, separately-spent quarter on top. D-03's
+	// objection was to two places that CHARGE (two places to forget); this is
+	// one charge site and one bound, which is the same shape as
+	// pdfMaxInflatedStreamBytes already has per stream.
+	inflateAllowance := maxBytes / 4
+
 	headLen := maxBytes
 	var tailReserve int64
 	if size > maxBytes {
@@ -254,6 +289,15 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		tailOpaque, tailOpaqueCeilingHit = scanPDFOpaqueRanges(tail, tr)
 	}
 
+	// encrypted is recorded by the loop below when /Encrypt is actually FOUND
+	// (a Finding, not merely an unknown Check), and is read by the text-layer
+	// detector in step 5. In an encrypted PDF the stream bodies are encrypted
+	// too, so a failed inflate proves nothing about whether text exists -- the
+	// detector must not read "could not decompress" as "no text here". Taken
+	// from this loop rather than from a second /Encrypt scan of its own: one
+	// observation, one place.
+	encrypted := false
+
 	// STEP 2/3/4: token-scan every risk code, then apply the single verdict
 	// rule (verdictForCode) uniformly to every one of them.
 	for _, rt := range pdfRiskTokens {
@@ -296,6 +340,9 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 				// to close.
 				res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: ReasonWorkCeilingBytes})
 				continue
+			}
+			if rt.code == CodePDFEncrypted {
+				encrypted = true
 			}
 			sev, _ := SeverityOf(rt.code)
 			res.Findings = append(res.Findings, Finding{
@@ -356,6 +403,36 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 			Status: verdictStatus(compressed, truncated, hexEscape, opaqueRangesCeilingHit),
 			Reason: verdictReason(compressed, truncated, hexEscape, opaqueRangesCeilingHit),
 		})
+	}
+
+	// STEP 5 (Phase 59, BDPD-01) -- the text-layer detector runs LAST, after
+	// every risk-token scan above, and the order is a load-bearing choice
+	// rather than a matter of reading flow.
+	//
+	// This is by far the most expensive consumer of the shared budget in this
+	// function: it inflates stream bodies, while everything above only walks
+	// bytes already in hand. Tracker.Consume latches the FIRST exhaustion
+	// reason and then short-circuits every later caller (budget.go), so a
+	// detector placed first would be able to blind the security-relevant
+	// checks -- /JavaScript, /OpenAction, /Launch -- on a file whose content
+	// streams happen to be large. Those checks are cheaper and matter more.
+	// Do not move this call up.
+	//
+	// It also runs on the HEAD window only, deliberately. The tail window
+	// exists for the trailer (where /Encrypt lives) and re-scanning it would
+	// double-count streams that straddle both.
+	textLayer, textLayerReason := pdfTextLayerVerdict(
+		scanPDFTextLayer(head, inflateAllowance, tr),
+		truncated,
+		encrypted,
+	)
+	res.Characteristics["text_layer"] = textLayer
+	if textLayerReason != "" {
+		// The "_reason" suffix is load-bearing naming, not decoration:
+		// report.go's buildCoverage walks every characteristic key ending in
+		// it, so a ceiling or a read failure recorded here reaches the
+		// report-wide Coverage claim with no wiring in this file at all.
+		res.Characteristics["text_layer_reason"] = string(textLayerReason)
 	}
 
 	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, tr)
@@ -437,6 +514,12 @@ func unknownPDFResult(res FamilyResult, reason Reason) FamilyResult {
 	res.Characteristics["uses_compressed_object_streams"] = false
 	res.Characteristics["page_count"] = nil
 	res.Characteristics["page_count_reason"] = string(reason)
+	// text_layer follows page_count exactly: present-but-null with a reason,
+	// never absent. On these paths not a single byte was examined, and
+	// "absent" is a claim about a file nobody read -- the defect D-09 exists
+	// to prevent, in its purest form.
+	res.Characteristics["text_layer"] = nil
+	res.Characteristics["text_layer_reason"] = string(reason)
 	for _, rt := range pdfRiskTokens {
 		res.Checks = append(res.Checks, Check{Code: rt.code, Status: StatusUnknown, Reason: reason})
 	}
