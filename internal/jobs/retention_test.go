@@ -524,17 +524,28 @@ func TestRetentionTakesItsClockFromPostgres(t *testing.T) {
 	}
 }
 
-// TestPurgeBoundariesUnchangedByTheClockFix is the other half, and it exists
-// because the clock fix had a way to be right and wrong at once.
+// TestPurgeBoundariesUnchangedByTheClockFix pins that moving the cutoff into
+// SQL did not move the cutoff.
 //
-// Moving the boundary into SQL invites writing it as `::date - interval`, which
-// reads better than keeping the time-of-day component — and silently shifts the
-// cutoff by up to a full day, because a DATE promotes to midnight when compared
-// against a timestamp. A correctness fix that also changes what gets deleted is
-// two changes, and only one of them was asked for.
+// Its first version covered PurgeJobs only, and that gap let a real defect
+// through: PurgeUsage's boundary DID move, by a full day, and the review caught
+// what this test did not. The two functions need OPPOSITE expressions and the
+// reasoning that fits one is wrong for the other —
 //
-// So this pins the boundary itself: a row exactly inside the window survives, a
-// row just outside it does not, for both purges.
+//	jobs.created_at is timestamptz. `created_at < $1` binds the parameter as a
+//	timestamptz, so the clock time matters and the SQL form must keep it.
+//
+//	client_usage_daily.day is a DATE. In `day < $1` PostgreSQL infers the
+//	parameter type from the `day` operand, so pgx encoded the time.Time AS A
+//	DATE and the clock time was discarded before the comparison. Keeping a
+//	time-of-day component in SQL therefore ADDS one that was never there, and
+//	the cutoff day — which used to survive — starts being deleted.
+//
+// Measured on PostgreSQL 18 with a cutoff of 2026-06-01 08:14 and rows on that
+// day: old form survives, timestamp form deletes, ::date form survives.
+//
+// Hence a subtest per function. A shared one would have been the same blind
+// spot in a new shape.
 func TestPurgeBoundariesUnchangedByTheClockFix(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
@@ -542,18 +553,73 @@ func TestPurgeBoundariesUnchangedByTheClockFix(t *testing.T) {
 
 	const window = 90 * 24 * time.Hour
 
-	// One job a minute INSIDE the window, one a minute outside it.
-	inside := createAgedJob(t, r, clientID, StatusDone, window-time.Minute)
-	outside := createAgedJob(t, r, clientID, StatusDone, window+time.Minute)
+	t.Run("jobs: a timestamptz boundary keeps its clock time", func(t *testing.T) {
+		inside := createAgedJob(t, r, clientID, StatusDone, window-time.Minute)
+		outside := createAgedJob(t, r, clientID, StatusDone, window+time.Minute)
 
-	if _, err := r.PurgeJobs(ctx, window, 100); err != nil {
-		t.Fatalf("PurgeJobs: %v", err)
-	}
+		if _, err := r.PurgeJobs(ctx, window, 100); err != nil {
+			t.Fatalf("PurgeJobs: %v", err)
+		}
 
-	if _, err := r.Get(ctx, inside); err != nil {
-		t.Errorf("a job one minute INSIDE the retention window was deleted (%v) -- the boundary moved", err)
-	}
-	if _, err := r.Get(ctx, outside); !errors.Is(err, ErrNotFound) {
-		t.Errorf("a job one minute OUTSIDE the retention window survived (err=%v) -- the boundary moved", err)
-	}
+		if _, err := r.Get(ctx, inside); err != nil {
+			t.Errorf("a job one minute INSIDE the retention window was deleted (%v) -- the boundary moved", err)
+		}
+		if _, err := r.Get(ctx, outside); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a job one minute OUTSIDE the retention window survived (err=%v) -- the boundary moved", err)
+		}
+	})
+
+	t.Run("usage: the cutoff DAY itself must survive", func(t *testing.T) {
+		// This is the case the first version of this test did not cover, and
+		// the one that was broken. The cutoff day is `today - window`; under
+		// the old code it survived, and a timestamp-valued boundary deletes it.
+		//
+		// The day is computed by Postgres for the same reason the boundary is:
+		// asking the host what "today" is would compare the fix against the
+		// wrong clock and could pass on a machine where the code is wrong.
+		var today time.Time
+		if err := r.pool.QueryRow(ctx, `SELECT (now() AT TIME ZONE 'utc')::date`).Scan(&today); err != nil {
+			t.Fatalf("read today from Postgres: %v", err)
+		}
+
+		const usageWindow = 400 * 24 * time.Hour
+		cutoffDay := today.AddDate(0, 0, -400)
+		dayBefore := cutoffDay.AddDate(0, 0, -1)
+		dayAfter := cutoffDay.AddDate(0, 0, 1)
+
+		insertUsageRow(t, r, clientID, dayBefore)
+		insertUsageRow(t, r, clientID, cutoffDay)
+		insertUsageRow(t, r, clientID, dayAfter)
+
+		if _, err := r.PurgeUsage(ctx, usageWindow, 100); err != nil {
+			t.Fatalf("PurgeUsage: %v", err)
+		}
+
+		for _, tc := range []struct {
+			name     string
+			day      time.Time
+			wantGone bool
+		}{
+			{"the day before the cutoff", dayBefore, true},
+			{"the cutoff day itself", cutoffDay, false},
+			{"the day after the cutoff", dayAfter, false},
+		} {
+			var n int
+			if err := r.pool.QueryRow(ctx,
+				`SELECT count(*) FROM client_usage_daily WHERE client_id = $1 AND day = $2`,
+				clientID, tc.day).Scan(&n); err != nil {
+				t.Fatalf("count usage rows for %s: %v", tc.name, err)
+			}
+			gone := n == 0
+			if gone != tc.wantGone {
+				verb := "survived"
+				if gone {
+					verb = "was deleted"
+				}
+				t.Errorf("%s (%s) %s, want the opposite -- the usage cutoff moved, and every day it moves by is a "+
+					"day of a client's rollup destroyed irreversibly",
+					tc.name, tc.day.Format("2006-01-02"), verb)
+			}
+		}
+	})
 }

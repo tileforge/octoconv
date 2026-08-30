@@ -155,14 +155,32 @@ func (r *Repo) PurgeUsage(ctx context.Context, olderThan time.Duration, batch in
 	// seconds off across midnight deletes, or spares, a whole day of a client's
 	// usage rollup — the rows the daily quota is computed from.
 	//
-	// The time-of-day component is preserved for the same reason as above:
-	// (now() AT TIME ZONE 'utc') - interval, not ::date - interval. The latter
-	// reads better and moves the boundary a full day, because a date promotes
-	// to midnight when compared against a timestamp.
+	// The boundary is cast back to DATE, and this is the opposite of what the
+	// sibling above needs -- a difference that cost a review round to find.
+	//
+	// The reasoning that produced the first version was right about PurgeJobs
+	// and exactly wrong here. It argued that keeping the time-of-day component
+	// preserves the old boundary, because dropping it "moves the boundary a
+	// full day". For a timestamptz column that holds. For `day`, which is a
+	// DATE, the old expression never had a time-of-day component to preserve:
+	// in `WHERE day < $1`, PostgreSQL infers the parameter type from the `day`
+	// operand, so pgx encoded the Go time.Time AS A DATE and its clock time was
+	// discarded before the comparison ever happened.
+	//
+	// Measured against a live PostgreSQL 18, for a cutoff of 2026-06-01 08:14
+	// and rows on that day:
+	//
+	//	old    `day < $1` (pgx-bound time.Time) -> cutoff day SURVIVES
+	//	first  `day < timestamp`                -> cutoff day DELETED
+	//	this   `day < timestamp::date`          -> cutoff day SURVIVES
+	//
+	// So the first version silently deleted one extra day of every client's
+	// usage rollup -- irreversibly, and in the name of not moving the boundary.
+	// The cast restores the old cutoff exactly.
 	tag, err := r.pool.Exec(ctx, `
 		DELETE FROM client_usage_daily WHERE ctid IN (
 			SELECT ctid FROM client_usage_daily
-			WHERE day < ((now() AT TIME ZONE 'utc') - $1::interval)
+			WHERE day < (((now() AT TIME ZONE 'utc') - $1::interval)::date)
 			LIMIT $2
 		)`, olderThan, batch)
 	if err != nil {
