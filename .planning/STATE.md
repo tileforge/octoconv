@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: "Phase 61 merged (PR #11, a267f67); only phase 60 remains"
-last_updated: "2026-08-30T20:15:29.072Z"
-last_activity: "2026-08-30 -- Phase 61 merged via PR #11 (a267f67)"
+stopped_at: Phase 60 context gathered; ready to plan
+last_updated: "2026-08-30T20:43:39.589Z"
+last_activity: 2026-08-30 -- Phase 60 context gathered (1264501)
 progress:
   total_phases: 6
   completed_phases: 5
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 61 (v1-12-debt-tail) — COMPLETE; phase 60 remains, needs operator input
-Plan: 3 of 3 — all executed
-Status: Phase 61 merged. Only Phase 60 (Sanitize) remains in v1.13, and it needs the operator: Autonomous false, SC5 wants a timeout measured on your own corpus, and two design decisions are deferred to planning.
-Last activity: 2026-08-30 -- Phase 61 merged via PR #11 (a267f67)
+Phase: 60 (sanitize-eighth-engine-class) — CONTEXT GATHERED
+Plan: 0 of TBD — ready to plan
+Status: Phase 60 context gathered: 8 decisions across 4 gray areas, both roadmap-deferred design decisions closed. Ready to plan. Note: SC5 still needs an operator-measured timeout on your own corpus — that number cannot come from planning.
+Last activity: 2026-08-30 -- Phase 60 context gathered (1264501)
 
 ## Performance Metrics
 
@@ -280,7 +280,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 61 merged (PR #11, a267f67); only phase 60 remains
+Stopped at: Phase 60 context gathered; ready to plan
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
