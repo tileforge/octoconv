@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2409,5 +2411,83 @@ func TestInspectSniffWindowIsChargedToTheBudget(t *testing.T) {
 	if spent := before - after; spent != int64(len(data)) {
 		t.Fatalf("Tracker spent %d bytes on detection, want %d (the window actually read) -- "+
 			"detection's reads must land in the operation's budget, not beside it", spent, len(data))
+	}
+}
+
+// TestInspectBornDigitalPDFOffersTextExtraction is the join between the phase's
+// two requirements, and no other test in the phase asserts it.
+//
+// BDPD-01 and BDPD-02 were built and verified separately -- one plan proved the
+// report can say a PDF has a text layer, another proved a job can return that
+// layer. Each proved its own half. But the two are only useful to a client
+// TOGETHER: a report saying "this PDF has text" is worth little if the same
+// body does not also say which operation will hand that text over.
+//
+// The fixture is deliberately the /ObjStm one, so the claim is tested in its
+// hardest form: a file where every other PDF check is blind.
+func TestInspectBornDigitalPDFOffersTextExtraction(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "inspect", "testdata", "pdf", "objstm_born_digital.pdf"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	status, body := doInspect(t, srv, "objstm_born_digital.pdf", data)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+
+	// 1. The report answers the question (BDPD-01).
+	if got := resp.Characteristics["text_layer"]; got != inspect.TextLayerPresent {
+		t.Errorf("characteristics.text_layer = %v, want %q", got, inspect.TextLayerPresent)
+	}
+
+	// 2. The same body offers the operation that will hand that text over
+	//    (BDPD-02). Before this phase this entry was ALSO present -- and the
+	//    job it advertised failed terminally. What changed is that the offer
+	//    is now true.
+	offered := false
+	for _, op := range resp.Operations {
+		if op.Target == "txt" && op.Engine == convert.EngineOCR {
+			offered = true
+			if !op.Available {
+				t.Errorf("pdf->txt is listed but available=false (reason %q)", op.UnavailableReason)
+			}
+		}
+	}
+	if !offered {
+		t.Error("operations does not list a txt target on the ocr engine -- the report tells a client this PDF has a " +
+			"text layer while offering no way to obtain it")
+	}
+
+	// 3. And the rest of the report stays honest in the same breath. This is
+	//    the part that makes the fixture choice load-bearing: /ObjStm blinds
+	//    the PDF-interior checks, and the text-layer answer above must NOT
+	//    have quietly relaxed that.
+	//
+	//    Scoped to the pdf_ codes deliberately. A first draft asserted that NO
+	//    check may be clean, and extension_mismatch failed it -- correctly.
+	//    That check compares the declared extension against the detected
+	//    format, both "pdf" here; it is a claim about the FILENAME, and an
+	//    object stream cannot hide a filename. Broadening a blindness rule to
+	//    a check the blindness does not reach would have been the same kind of
+	//    over-claim this phase spent its time removing.
+	sawBlind := false
+	for _, c := range resp.Checks {
+		if c.Reason == inspect.ReasonCompressedObjectStreams {
+			sawBlind = true
+		}
+		if strings.HasPrefix(string(c.Code), "pdf_") && c.Status == inspect.StatusClean {
+			t.Errorf("check %s = clean on a PDF with compressed object streams -- the text-layer exception is one "+
+				"characteristic, not a general licence to answer confidently about the file's interior", c.Code)
+		}
+	}
+	if !sawBlind {
+		t.Error("no check reported compressed_object_streams -- the /ObjStm downgrade stopped firing")
 	}
 }

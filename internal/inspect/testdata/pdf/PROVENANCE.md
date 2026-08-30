@@ -102,18 +102,92 @@ detector's own worst measured defect stops being detectable.
 
 ---
 
+## `lzw_filtered.pdf` — 736 bytes, reference: **56**
+
+Hand-built (Plan 59-07, Task 1). A minimal one-page PDF whose content stream is
+`/Filter /ASCII85Decode` — a filter this build does not decode — wrapping
+`BT /F1 18 Tf 72 700 Td (…) Tj ET`. Text:
+`ASCII85 filtered content stream carrying real extractable text.`
+
+ASCII85 rather than LZW because base85 is unambiguous to produce with the
+standard library, and the branch under test is "declares a filter we did not
+decode", which does not care which filter.
+
+**Proves (59-RESEARCH.md R1, branch 3):** an undecodable stream is OPAQUE, not
+empty. inspect must report `unknown`, never `absent`, while `pdftotext` answers
+normally. In DIVERGENCE.md this is a `go_unknown` row — a declared limit of this
+build, not a defect.
+
+Checks: `grep -ac ASCII85Decode` = 1, and the reference number above.
+
+---
+
+## `encrypted_owner.pdf` — reference: **82**
+
+```
+gs -q -dNOPAUSE -dBATCH -sDEVICE=pdfwrite -sOwnerPassword=octoconv \
+   -dEncryptionR=3 -dKeyLength=128 -dPermissions=-4 \
+   -sOutputFile=internal/inspect/testdata/pdf/encrypted_owner.pdf \
+   internal/convert/testdata/ocr/born_digital.pdf
+```
+
+Encrypted with an owner password and an EMPTY user password, which is what makes
+it interesting: `pdftotext` opens it and extracts the full text, while the Go
+scanner cannot decrypt the stream bodies at all.
+
+**Proves (D-08, third named divergence source):** encryption is one of the three
+structural reasons the two detectors can disagree. Another `go_unknown` row.
+
+Checks: `strings … | grep -c /Encrypt` > 0, and the reference number above.
+
+---
+
+## `cid_identity_h.pdf` — 1088 bytes, reference: **10**
+
+Hand-built (Plan 59-07, Task 1), because no available tool would produce one.
+Ghostscript was tried on four paths — a Type1 base font, an embedded TrueType
+subset, and two CJK system fonts — and every one produced a simple encoding.
+The file therefore declares the structure directly: `/Subtype /Type0`,
+`/Encoding /Identity-H`, a `CIDFontType2` descendant, and **no `/ToUnicode`
+map**. The content stream shows one hex string, `<0048 0065 …>` — eleven
+two-byte glyph ids spelling `Hello World`.
+
+**Proves (D-08's primary predicted divergence) — and it earned its place
+immediately.** On its first differential run, inspect counted **44** (the raw
+hex digits) where `pdftotext` counted **10**, and 10 is BELOW the shared
+threshold while 44 is above it. The over-count did not exaggerate a verdict, it
+manufactured one: `present` for a document the worker would send to OCR. That
+was a `go_wrong_present` row and it failed the suite.
+
+The fix was to DECODE the hex string rather than count its digits. The two now
+agree exactly at 10, and the arithmetic explains why that is not luck:
+Identity-H writes one glyph as two bytes, the high byte is `0x00` for the BMP,
+and the counter already excludes NUL and space — so decoded-and-counted lands on
+the glyph count, which for a text document is the character count.
+
+Checks: `strings … | grep -c Identity-H` > 0, `grep -c ToUnicode` = 0, and the
+reference number above.
+
+**If replaced:** the phase loses the only fixture that provoked a dangerous
+divergence, and the hex-decode rule loses the evidence that it is required
+rather than tidy.
+
+---
+
 ## What this corpus does NOT yet cover
 
 Named here rather than omitted, because a corpus listing only what it covers
-reads as complete (59-07 Task 1 closes these):
+reads as complete:
 
-- **Non-Flate filter on a content stream** (LZW / ASCII85) — branch 3 of the
-  classification: Go must answer `unknown`, `pdftotext` will answer with text.
-  A legitimate divergence that belongs in the table as such.
-- **Encrypted PDF with an empty owner password** — `pdftotext` reads it, the Go
-  scanner cannot.
-- **CID/Identity-H font** — the one divergence source D-08 predicts and
-  59-RESEARCH.md could not measure: ghostscript produced simple encodings on
-  both attempted paths, and Go agreed with `pdftotext` 42/42 on the TrueType
-  subset above. Embedding a font is evidently *not* the trigger; a multi-byte
-  encoding is.
+- **A production-scale scan.** Every image-bearing fixture here is three pages.
+  The image-skip defence is measured instead of exercised at scale
+  (2406 bytes of decompression with the skip, 182406 without — ×76), and
+  59-RESEARCH.md R2 measured a single image stream at 3217 → 540000 bytes. A
+  50-page scan would be another two orders of magnitude, and nothing here
+  reaches that.
+- **LZW specifically.** `lzw_filtered.pdf` uses ASCII85 for the same branch. If
+  LZW ever gains a decoder, the branch needs a fixture that is genuinely LZW.
+- **A CID font WITH a `/ToUnicode` map.** The committed CID fixture deliberately
+  omits it, which is the harder case. A file carrying one would let `pdftotext`
+  map glyphs to characters through a route inspect still cannot follow, and the
+  two might diverge again in a way this corpus would not show.

@@ -495,3 +495,36 @@ func TestOCRSingleImageNullProgress(t *testing.T) {
 		t.Fatalf("expected zero SourceDuration calls for a single-image job, got %d", sink.durationCalls)
 	}
 }
+
+// TestPDFToTxtJobSucceedsOnTheObjStmFixture is the conversion half of the join
+// asserted from the API side by
+// api.TestInspectBornDigitalPDFOffersTextExtraction.
+//
+// It duplicates 59-04's route test deliberately, on a DIFFERENT file: that one
+// runs on born_digital.pdf, this one on the /ObjStm rewrite of the same
+// document. Two representations of one document, and the answers must match --
+// which is itself informative, since compressed object streams are exactly what
+// makes every other check on this file report unknown.
+func TestPDFToTxtJobSucceedsOnTheObjStmFixture(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
+
+	fixture := filepath.Join("..", "inspect", "testdata", "pdf", "objstm_born_digital.pdf")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Fatalf("fixture missing: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	outPath := filepath.Join(t.TempDir(), "out.txt")
+
+	if err := (OCRConverter{}).Convert(ctx, fixture, outPath, nil); err != nil {
+		t.Fatalf("Convert(pdf -> txt) on the /ObjStm fixture = %v, want success", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if !strings.Contains(string(got), "born-digital PDF") {
+		t.Fatalf("output does not carry the document's own text; got %q", got)
+	}
+}

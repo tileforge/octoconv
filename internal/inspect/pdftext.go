@@ -445,24 +445,76 @@ func readPDFLiteralString(buf []byte, open int) (content []byte, next int) {
 	return out, len(buf)
 }
 
-// readPDFHexString reads a <…> hex string starting at open and returns its
-// RAW inner bytes plus the index just past the '>'.
+// readPDFHexString reads a <…> hex string starting at open, DECODES it, and
+// returns the decoded bytes plus the index just past the '>'.
 //
-// The hex digits are not decoded to their byte values, and that is deliberate:
-// this function feeds a non-whitespace COUNT, and the count of hex digits is a
-// consistent over-estimate of the count of characters they encode (two digits
-// per byte). Over-estimating the size of a text layer that demonstrably exists
-// is harmless -- it can only push a present verdict further past a threshold
-// it already cleared. Under-estimating could turn a real text layer into a
-// false "absent", which is the direction that is never acceptable.
+// The decode is not a nicety. An earlier version returned the raw hex digits
+// and this comment argued the over-count was harmless -- "it can only push a
+// present verdict further past a threshold it already cleared". The
+// differential run against pdftotext disproved that on the first fixture built
+// to provoke it (cid_identity_h.pdf): raw digits counted 44 where pdftotext
+// counts 10, and 10 is BELOW the shared threshold while 44 is above it. The
+// over-count did not exaggerate a verdict, it manufactured one -- inspect
+// reported a usable text layer for a document the worker would send to OCR,
+// steering a client away from the OCR they need.
+//
+// Decoding makes the two agree exactly, and the arithmetic shows why it is not
+// a coincidence. Identity-H writes one glyph as two bytes, and for the BMP the
+// high byte is 0x00 -- which countNonWhitespaceBytes already excludes, along
+// with 0x20 for a space. So decoded-and-counted lands on the glyph count, which
+// for a text-bearing document IS the character count. The raw-digit form was
+// off by exactly the factor the encoding introduces.
+//
+// ISO 32000 §7.3.4.3 details handled: whitespace between digits is legal and
+// ignored, an odd final digit is padded with 0, and a non-hex byte ends the
+// useful content. An unterminated string yields what was read -- malformed
+// input is not this function's claim to make.
 func readPDFHexString(buf []byte, open int) (content []byte, next int) {
+	var out []byte
+	var hi byte
+	haveHi := false
+
 	i := open + 1
 	for ; i < len(buf); i++ {
-		if buf[i] == '>' {
-			return buf[open+1 : i], i + 1
+		c := buf[i]
+		if c == '>' {
+			if haveHi {
+				out = append(out, hi<<4) // odd digit count: pad with 0
+			}
+			return out, i + 1
 		}
+		v, ok := hexDigitValue(c)
+		if !ok {
+			// Whitespace is legal between digits; anything else is malformed,
+			// and skipping it is the lenient direction -- consistent with the
+			// rest of this package, which never rejects a file for being odd.
+			continue
+		}
+		if haveHi {
+			out = append(out, hi<<4|v)
+			haveHi = false
+			continue
+		}
+		hi = v
+		haveHi = true
 	}
-	return buf[open+1:], len(buf)
+	if haveHi {
+		out = append(out, hi<<4)
+	}
+	return out, len(buf)
+}
+
+// hexDigitValue returns the numeric value of one ASCII hex digit.
+func hexDigitValue(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // operatorFollows reports whether the next real token at or after i is one of

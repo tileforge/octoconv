@@ -281,3 +281,32 @@ func TestHasUsableTextLayerThreshold(t *testing.T) {
 		}
 	}
 }
+
+// TestTextLayerArgvIsStable pins the pdftotext invocation from THIS side of the
+// package boundary.
+//
+// internal/inspect's differential suite (D-10) compares this package's answer
+// against its own, and it has to build the same command line to do so -- but it
+// may not import internal/convert (findings.go's layering note) and
+// ocrTextLayerArgs is unexported anyway. So the argv exists in two places, and
+// this test is what stops them drifting: if the worker ever gains a flag here,
+// this fails, and whoever adds it learns that a suite elsewhere is measuring
+// against the old form.
+//
+// A duplicated constant is acceptable when a test holds the copies equal, and
+// unacceptable when nothing does. The same reasoning applies to the shared
+// text-layer threshold, pinned by inspect.TestTextLayerThresholdMatchesConverter.
+func TestTextLayerArgvIsStable(t *testing.T) {
+	got := ocrTextLayerArgs("/tmp/example.pdf")
+	want := []string{"/tmp/example.pdf", "-"}
+
+	if len(got) != len(want) {
+		t.Fatalf("ocrTextLayerArgs = %q, want %q -- internal/inspect/differential_test.go duplicates this argv and is "+
+			"now measuring a different invocation than the worker runs", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ocrTextLayerArgs = %q, want %q", got, want)
+		}
+	}
+}

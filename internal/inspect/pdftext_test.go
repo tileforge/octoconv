@@ -277,7 +277,9 @@ func TestCountTextOperatorArgBytesRequiresARealOperatorToken(t *testing.T) {
 		{"literal then TJ array", "[(ab) -250 (cd)] TJ", 4},
 		{"literal then quote operator", "(line) '", 4},
 		{"literal then dquote operator", "1 2 (line) \"", 4},
-		{"hex string then Tj", "<48656C6C6F> Tj", 10},
+		{"hex string then Tj", "<48656C6C6F> Tj", 5}, // decoded to "Hello", not 10 raw digits
+		{"hex string with an odd digit", "<48656C6C6> Tj", 5},
+		{"hex string with whitespace between digits", "<48 65 6C 6C 6F> Tj", 5},
 		{"operator-like prefix of a longer token", "(hello) Tjunk", 0},
 		{"string with no operator at all", "(hello) 5 0 obj", 0},
 		{"apostrophe far away inside payload", "(hello) \x00\x01\x02 zzzz '", 0},
