@@ -26,24 +26,75 @@ var (
 	latexBeginMarker         = []byte(`\begin{`)
 )
 
+// SniffWindowBytes is how much of an upload the four content matchers in
+// this package are allowed to look at, and it is ONE number on purpose.
+// LooksLikeHTML, LooksLikeLaTeX and LooksLikeText already shared it as the
+// unexported htmlSniffCap; exporting it lets a caller that needs several
+// matchers read that window ONCE instead of once per matcher.
+//
+// Keeping it single-valued is not tidiness. Two endpoints of this service
+// must never call one file two different formats (see detectInspectFormat's
+// own doc comment, internal/api/inspect_handlers.go), and a per-matcher cap
+// would mean the matchers disagreed about which bytes of a large upload they
+// were even judging.
+const SniffWindowBytes = htmlSniffCap
+
+// ValidateSniffPrefix applies this package's fail-closed envelope to bytes a
+// caller has ALREADY read: it rejects empty input, a NUL byte, or invalid
+// UTF-8, and trims a trailing rune the window cap severed.
+//
+// size is the file's FULL size, not len(raw), and both are needed: the
+// mid-rune trim may only happen when the cap actually did the severing --
+// size > SniffWindowBytes AND the read really reached the cap. A file that
+// fits entirely inside the window is judged unchanged, because a dangling
+// lead byte THERE is genuinely invalid UTF-8 rather than truncation, and
+// still fails closed. Dropping either half of that condition reintroduces
+// PR#2 finding-2 (a valid file rejected merely for being larger than the
+// cap) or its mirror image (an invalid file accepted).
+//
+// ok == false means "not a text-shaped upload", never "reading failed" --
+// this function never touches I/O. A caller that must distinguish those two
+// outcomes has to learn the read's own error before calling here; that
+// separation is the entire point of splitting this out (Phase 59, D-12).
+func ValidateSniffPrefix(raw []byte, size int64) ([]byte, bool) {
+	buf := raw
+	if len(buf) == 0 {
+		return nil, false
+	}
+	// Both halves matter: size > cap means more bytes genuinely exist beyond
+	// this prefix, and len(buf) >= cap means the read really did stop at the
+	// cap rather than at a short read from a client that overstated size.
+	if size > SniffWindowBytes && int64(len(buf)) >= SniffWindowBytes {
+		buf = trimPartialTrailingRune(buf)
+		if len(buf) == 0 {
+			return nil, false
+		}
+	}
+	if bytes.IndexByte(buf, 0) != -1 {
+		return nil, false
+	}
+	if !utf8.Valid(buf) {
+		return nil, false
+	}
+	return buf, true
+}
+
 // readSniffPrefix is the shared fail-closed envelope LooksLikeHTML,
 // LooksLikeLaTeX, and LooksLikeText all build on: it bounds how much of r is
 // read into memory via ReadAt (never a full buffer for an oversized claimed
 // size, mirroring SniffContainer's "never buffer the whole upload"
-// discipline), then rejects (ok==false) on empty input, a NUL byte, or
-// invalid UTF-8. r's io.ReaderAt short-read contract (a partial read
-// alongside a non-EOF error) is honored identically for every caller --
-// none of them may panic on a short or oversized-claimed input.
+// discipline), then hands the bytes to ValidateSniffPrefix.
 //
-// PR#2 finding-2: when size exceeds cap, the cap can fall inside a
-// multi-byte UTF-8 rune, leaving a dangling lead byte at the end of buf.
-// Validating THAT byte as-is makes utf8.Valid reject an otherwise-perfectly-
-// valid file merely for being larger than the cap. So the prefix is cut on
-// a rune boundary before validation -- trimPartialTrailingRune removes a
-// trailing rune the cap severed -- but ONLY when the cap actually did the
-// severing (size > cap && the read really did reach cap). A file that fits
-// entirely within cap is judged unchanged: a dangling lead byte there is
-// genuinely invalid UTF-8, not truncation, and still fails closed.
+// Since Phase 59 (D-12) this function is only the READ half; every rule
+// about what makes a prefix acceptable lives in ValidateSniffPrefix, so the
+// conversion path (which calls the io.ReaderAt matchers below) and the
+// inspect path (which reads its own window once and calls the *FromPrefix
+// matchers) are provably applying the same rules rather than two similar
+// sets of them.
+//
+// r's io.ReaderAt short-read contract (a partial read alongside a non-EOF
+// error) is honored identically for every caller -- none of them may panic
+// on a short or oversized-claimed input.
 func readSniffPrefix(r io.ReaderAt, size int64, cap int64) ([]byte, bool) {
 	if size <= 0 {
 		return nil, false
@@ -57,26 +108,7 @@ func readSniffPrefix(r io.ReaderAt, size int64, cap int64) ([]byte, bool) {
 	if err != nil && err != io.EOF {
 		return nil, false
 	}
-	buf = buf[:read]
-	if len(buf) == 0 {
-		return nil, false
-	}
-	// Both halves matter: size > cap means more bytes genuinely exist beyond
-	// this prefix, and read >= cap means the read really did stop at the cap
-	// rather than at a short read from a client that overstated size.
-	if size > cap && int64(read) >= cap {
-		buf = trimPartialTrailingRune(buf)
-		if len(buf) == 0 {
-			return nil, false
-		}
-	}
-	if bytes.IndexByte(buf, 0) != -1 {
-		return nil, false
-	}
-	if !utf8.Valid(buf) {
-		return nil, false
-	}
-	return buf, true
+	return ValidateSniffPrefix(buf[:read], size)
 }
 
 // trimPartialTrailingRune removes a trailing PARTIAL multi-byte UTF-8 rune
@@ -159,8 +191,15 @@ func LooksLikeLaTeX(r io.ReaderAt, size int64) bool {
 	if !ok {
 		return false
 	}
+	return LooksLikeLaTeXFromPrefix(buf)
+}
 
-	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
+// LooksLikeLaTeXFromPrefix is LooksLikeLaTeX's decision over an
+// already-read, already-validated prefix -- see LooksLikeHTMLFromPrefix
+// (htmlsniff.go) for why the split exists and why the io.ReaderAt form
+// delegates here rather than keeping a second copy of the rules.
+func LooksLikeLaTeXFromPrefix(prefix []byte) bool {
+	buf := bytes.TrimPrefix(prefix, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
 	buf = skipLaTeXLeadingComments(buf)
 	if len(buf) == 0 {
 		return false
@@ -253,7 +292,17 @@ func LooksLikeText(r io.ReaderAt, size int64) bool {
 	if !ok {
 		return false
 	}
-	return !hasDisallowedControlByte(buf)
+	return LooksLikeTextFromPrefix(buf)
+}
+
+// LooksLikeTextFromPrefix is LooksLikeText's decision over an already-read,
+// already-validated prefix -- see LooksLikeHTMLFromPrefix (htmlsniff.go) for
+// why the split exists. Note how little is left here once the envelope is
+// factored out: for plaintext, ValidateSniffPrefix's own UTF-8/NUL gate does
+// nearly all the work, and this function only adds the disallowed-control-byte
+// check. That is a property of the format, not an omission.
+func LooksLikeTextFromPrefix(prefix []byte) bool {
+	return !hasDisallowedControlByte(prefix)
 }
 
 // ErrPandocInputTooLarge is returned when an input file's size exceeds the

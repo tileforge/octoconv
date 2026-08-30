@@ -482,18 +482,27 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 
 	client, _ := auth.ClientFromContext(r.Context())
 
-	// 2. Detect. Same detector order handleCreateJob uses, so the two
+	// 2. Bound, THEN detect. One Tracker for the whole operation (D-06
+	// mechanism 1), shared across every family analyzer this dispatch could
+	// invoke -- today, at most one analyzer runs per call (each detected
+	// format maps to exactly one family), so "shared" mainly documents
+	// intent for a future format that might need more than one.
+	//
+	// It is constructed BEFORE detection since Phase 59 (D-12). It used to
+	// come after, which meant detection's own reads -- the content-matcher
+	// window, up to convert.SniffWindowBytes -- were spent outside any
+	// budget at all: the gap this package's round-23 sweep found. Moving the
+	// construction up is the whole fix; nothing about the budget's size or
+	// its semantics changes.
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: s.inspectMaxWorkBytes, MaxDuration: s.inspectMaxWorkDuration})
+
+	// 3. Detect. Same detector order handleCreateJob uses, so the two
 	// endpoints of this service never disagree about what one file IS --
 	// unlike handleCreateJob, unrecognized content here is a normal 200
 	// (D-03): inspect only ever reports, it never rejects.
-	detected, sniffedContainer, sniffedZip := detectInspectFormat(file, header.Size, declaredFormat)
+	detected, sniffedContainer, sniffedZip := detectInspectFormat(file, header.Size, declaredFormat, tr)
 
-	// 3. Bound + dispatch. One Tracker for the whole operation (D-06
-	// mechanism 1), shared across every family analyzer this dispatch
-	// could invoke -- today, at most one analyzer runs per call (each
-	// detected format maps to exactly one family), so "shared" mainly
-	// documents intent for a future format that might need more than one.
-	tr := inspect.NewTracker(inspect.Budget{MaxBytes: s.inspectMaxWorkBytes, MaxDuration: s.inspectMaxWorkDuration})
+	// 4. Dispatch.
 	families := dispatchInspectFamilies(detected, sniffedContainer, sniffedZip, file, header.Size, tr)
 	families = append(families, extensionMismatchFamilyResult(detected, declaredFormat))
 
@@ -534,6 +543,46 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, inspectResponse{Report: report, Operations: operations})
 }
 
+// readSniffWindow reads the single window the four content matchers share,
+// and is the ONE place a read failure among them becomes visible (Phase 59,
+// D-12).
+//
+// It returns a distinguishable error for a genuine, non-EOF ReadAt failure,
+// and (bytes, nil) otherwise -- INCLUDING for a short read or a zero-length
+// result. Those are not failures: io.EOF is the ordinary end of input, and a
+// caller that treated a legitimately-empty upload as an I/O error would have
+// invented the mirror image of the bug this function exists to fix.
+//
+// The window is min(size, convert.SniffWindowBytes), allocated at exactly
+// that length and never at a length taken from the file's own content --
+// the same rule readWindow (internal/inspect/window.go) states for its side
+// of the service.
+//
+// Why the matchers cannot do this themselves: LooksLikeHTML, LooksLikeLaTeX,
+// LooksLikeText and IsOLECFB all return a bare bool, so a read failure
+// inside any of them is indistinguishable from "not this format". Widening
+// those four signatures to (bool, error) was considered and rejected (D-12):
+// they are shared with the conversion path (internal/api/handlers.go,
+// internal/convert/pandoc.go), where the caller genuinely wants only a bool,
+// and adding error plumbing to fail-closed conversion code to serve
+// inspect's reporting needs is a bad trade. Reading once out here costs those
+// callers nothing.
+func readSniffWindow(r io.ReaderAt, size int64) ([]byte, error) {
+	if size <= 0 {
+		return nil, nil
+	}
+	n := size
+	if n > convert.SniffWindowBytes {
+		n = convert.SniffWindowBytes
+	}
+	buf := make([]byte, n)
+	read, err := r.ReadAt(buf, 0)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return buf[:read], nil
+}
+
 // detectInspectFormat determines format by magic bytes only (SC1), in the
 // EXACT SAME detector order handleCreateJob uses (internal/api/handlers.go)
 // -- a comment there and here both name the reason: two endpoints of one
@@ -554,7 +603,7 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 // ZIP-shaped upload, if any, so dispatchInspectFamilies can reuse it instead
 // of walking the same attacker-controlled central directory a second time
 // (codex PR #9 finding 5). nil for every non-container upload.
-func detectInspectFormat(file multipart.File, size int64, declaredFormat string) (string, *convert.ContainerResult, *zip.Reader) {
+func detectInspectFormat(file multipart.File, size int64, declaredFormat string, tr *inspect.Tracker) (string, *convert.ContainerResult, *zip.Reader) {
 	fresh := func() io.Reader { return io.NewSectionReader(file, 0, size) }
 	var sniffed *convert.ContainerResult
 	// PR9R24 (container.go:157): the archive this sniff parses is handed on to
@@ -646,17 +695,90 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string)
 			// detected empty intentionally, mirroring handleCreateJob.
 		}
 	}
-	if detected == "" && declaredFormat == "html" && convert.LooksLikeHTML(file, size) {
-		detected = "html"
-	}
-	if detected == "" && declaredFormat == "latex" && convert.LooksLikeLaTeX(file, size) {
-		detected = "latex"
-	}
-	if detected == "" && (declaredFormat == "md" || declaredFormat == "rst" || declaredFormat == "org") && convert.LooksLikeText(file, size) {
-		detected = declaredFormat
-	}
-	if detected == "" && convert.IsOLECFB(file) {
-		detected = inspectOLECFBFormat
+	// ONE window for all four content matchers below (Phase 59, D-12).
+	//
+	// Each of them used to do its own ReadAt, so a read that failed inside
+	// any of them was indistinguishable from "not this format" -- they
+	// return a bare bool. An upload whose temp file died on exactly these
+	// reads was reported to the client as format_unrecognized: a claim about
+	// the FILE, made on the strength of our own inability to read it. That
+	// is the same class as PR9R25/PR9R27 above, one layer down.
+	//
+	// Three outcomes, and all three must stay distinguishable:
+	//
+	//   - read error   -> sniffReadFailed, and the matchers do not run at all
+	//   - bytes read, envelope rejects them (NUL, invalid UTF-8, empty)
+	//                  -> genuinely "not a text-shaped upload"; the chain
+	//                     continues, and this is NOT a read failure: a binary
+	//                     file reads perfectly well
+	//   - bytes read and accepted -> the three text matchers judge them
+	//
+	// Collapsing the middle case into the first would be a new lie in the
+	// opposite direction, so it is kept separate rather than folded in.
+	//
+	// The bytes are charged to the operation's budget here, which they never
+	// were before -- the gap this package's own round-23 sweep found. Without
+	// it a client could make this handler read SniffWindowBytes for detection
+	// AND the full configured allowance for analysis, exceeding the ceiling
+	// the service reports as enforced.
+	//
+	// Consume's RESULT is deliberately not a gate, and this is the subtle
+	// part. The bytes have already been read by the time it is called;
+	// refusing to LOOK at bytes already paid for buys nothing and costs
+	// something real -- detection would fall through to an empty format, and
+	// the client would be told format_unrecognized, which is a claim about
+	// the FILE made on the strength of OUR budget. That is the exact
+	// substitution this phase removes elsewhere. What the call is for is the
+	// accounting and the exhaustion latch: once tr is exhausted,
+	// dispatchInspectFamilies hands the family analyzer tr.Remaining() == 0
+	// and every check honestly reports work_ceiling_bytes.
+	//
+	// On the PR9R9 "sole owner" invariant: that finding was about media.go
+	// charging tr a SECOND time for THE SAME bytes dispatchInspectFamilies
+	// had already charged -- one resource, two owners, double-counted. This
+	// call charges a DIFFERENT read (the detection window) exactly once, and
+	// dispatch continues to charge its own allowance exactly once from
+	// whatever remains. Two distinct reads, two distinct charges, no byte
+	// counted twice. dispatchInspectFamilies's own doc comment is updated to
+	// say so rather than left claiming an exclusivity that no longer holds.
+	if detected == "" {
+		window, windowErr := readSniffWindow(file, size)
+		switch {
+		case windowErr != nil:
+			sniffReadFailed = true
+		default:
+			tr.Consume(int64(len(window)))
+
+			// Matcher ORDER is preserved exactly as it was before this
+			// refactor -- the three text matchers, then OLE-CFB. The two
+			// groups cannot both match one file (the OLE-CFB signature
+			// starts 0xD0 0xCF, which is neither valid UTF-8 nor free of
+			// NUL, so the text envelope rejects it), which means the order
+			// is unobservable today. It is kept anyway: this change is
+			// supposed to move where bytes are read, not what the chain
+			// decides, and an unobservable reordering is still a second
+			// change riding along inside the first.
+			//
+			// ValidateSniffPrefix's rejection here means "not a text-shaped
+			// upload", never "the read failed" -- it does no I/O at all.
+			if prefix, textShaped := convert.ValidateSniffPrefix(window, size); textShaped {
+				switch {
+				case declaredFormat == "html" && convert.LooksLikeHTMLFromPrefix(prefix):
+					detected = "html"
+				case declaredFormat == "latex" && convert.LooksLikeLaTeXFromPrefix(prefix):
+					detected = "latex"
+				case (declaredFormat == "md" || declaredFormat == "rst" || declaredFormat == "org") && convert.LooksLikeTextFromPrefix(prefix):
+					detected = declaredFormat
+				}
+			}
+			// IsOLECFB works on RAW bytes, deliberately not on the validated
+			// prefix: the signature is binary throughout, so the text
+			// envelope would (correctly, for its own purpose) reject it
+			// outright. One read, two views of it.
+			if detected == "" && convert.IsOLECFBFromPrefix(window) {
+				detected = inspectOLECFBFormat
+			}
+		}
 	}
 	if detected == "" {
 		videoDetected, _, verr := convert.SniffVideo(fresh())
@@ -1210,11 +1332,24 @@ func zipMalformedFamilyResult() inspect.FamilyResult {
 // regardless of whether the specific Check/characteristic Reason wiring
 // this file never sees got it right.
 //
-// dispatchInspectFamilies is the SOLE owner of tr's shared byte/time budget
-// (PR9R9 finding #3, media.go:337): the single tr.Consume(maxBytes) call
-// below is the ONLY place in the whole inspect path that charges Consume,
-// full stop -- no family analyzer (pdf.go, container.go, image.go, and, as
-// of this fix, media.go too) ever calls tr.Consume itself. This was already
+// dispatchInspectFamilies is the sole owner of tr's shared byte/time budget
+// FOR THE ANALYSIS PHASE (PR9R9 finding #3, media.go:337): the single
+// tr.Consume(maxBytes) call below is the only place any family analyzer's
+// bytes are charged -- no family analyzer (pdf.go, container.go, image.go,
+// and, as of that fix, media.go too) ever calls tr.Consume itself.
+//
+// Since Phase 59 (D-12) it is no longer the only Consume call in the inspect
+// path: detectInspectFormat charges its own content-sniff window before this
+// function is reached. That is not a return of the PR9R9 defect and the
+// difference is worth stating precisely, because the two look alike. PR9R9
+// was DOUBLE-COUNTING -- media.go charged the very same bytes this function
+// had already charged, so one read had two owners. Detection's window is a
+// SEPARATE read, charged once by the code that performs it; this function
+// then charges tr.Remaining(), so nothing is counted twice and the total
+// stays inside the configured ceiling. The invariant that actually matters
+// -- one charge per read -- is intact; only the sentence "the only Consume
+// call" stopped being true, and leaving it standing would have been the kind
+// of comment that quietly becomes a lie. This was already
 // true for three of the four families before this fix; media.go's own
 // findMoov was the one outlier, charging tr a SECOND time (via a now-
 // deleted consumeActual helper) with the bytes it actually read, on top of

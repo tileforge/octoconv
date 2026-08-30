@@ -24,5 +24,23 @@ var oleCFBMagic = []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
 func IsOLECFB(r io.ReaderAt) bool {
 	buf := make([]byte, len(oleCFBMagic))
 	n, _ := r.ReadAt(buf, 0)
-	return n == len(oleCFBMagic) && bytes.Equal(buf, oleCFBMagic)
+	return IsOLECFBFromPrefix(buf[:n])
+}
+
+// IsOLECFBFromPrefix is IsOLECFB's decision over bytes the caller has already
+// read from offset 0, so a caller needing several matchers can read ONE window
+// instead of one per matcher (Phase 59, D-12).
+//
+// It takes RAW bytes, deliberately NOT the output of ValidateSniffPrefix. That
+// envelope rejects NUL bytes and invalid UTF-8, which is right for text-shaped
+// formats and exactly wrong here: oleCFBMagic's very first byte is 0xD0 and the
+// signature is binary throughout, so a validated prefix would always be empty
+// for the one input this function is supposed to recognize. A caller that needs
+// both kinds of matcher therefore holds the raw window AND the validated prefix
+// derived from it -- one read, two views.
+//
+// A prefix shorter than the signature is false, not a panic: the eight bytes
+// simply were not there.
+func IsOLECFBFromPrefix(prefix []byte) bool {
+	return len(prefix) >= len(oleCFBMagic) && bytes.Equal(prefix[:len(oleCFBMagic)], oleCFBMagic)
 }

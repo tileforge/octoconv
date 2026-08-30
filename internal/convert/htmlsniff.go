@@ -53,8 +53,21 @@ func LooksLikeHTML(r io.ReaderAt, size int64) bool {
 	if !ok {
 		return false
 	}
+	return LooksLikeHTMLFromPrefix(buf)
+}
 
-	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
+// LooksLikeHTMLFromPrefix is LooksLikeHTML's decision, taken over a prefix
+// the caller has already read and passed through ValidateSniffPrefix.
+//
+// It exists so a caller needing several matchers can read ONE window instead
+// of one per matcher (Phase 59, D-12) -- and, more importantly, so that
+// caller runs THIS code rather than a copy of it. LooksLikeHTML above is now
+// read-then-delegate, which is what makes "the conversion path and the
+// inspect path reach the same verdict" a property of the code instead of a
+// claim about it. A copy here would be the same defect ocrPDFGuardStage was
+// factored out to remove.
+func LooksLikeHTMLFromPrefix(prefix []byte) bool {
+	buf := bytes.TrimPrefix(prefix, []byte{0xEF, 0xBB, 0xBF}) // leading UTF-8 BOM
 	buf = bytes.TrimLeft(buf, " \t\r\n\f\v")
 
 	lower := bytes.ToLower(buf)
