@@ -3,6 +3,8 @@ package jobs
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -481,5 +483,77 @@ func TestPurgeJobsAdvancesPastBlockedRoots(t *testing.T) {
 	}
 	if _, err := r.Get(ctx, liveChildID); err != nil {
 		t.Fatalf("live child must still survive: %v", err)
+	}
+}
+
+// TestRetentionTakesItsClockFromPostgres is DEBT-11's regression guard, and it
+// reads the source rather than exercising behaviour because the defect is
+// invisible to behaviour on a correctly-synchronised machine.
+//
+// Both purges used to derive their cutoff from this process's clock and compare
+// it against columns Postgres wrote. On any host whose clock agrees with the
+// database — every development machine, and CI — the two produce identical
+// results, so no behavioural test would fail. The defect only appears where it
+// cannot be reproduced on demand: a container drifted from the database.
+//
+// PurgeUsage was the sharper of the two. client_usage_daily.day is a DATE, so a
+// few seconds of skew across midnight does not shift a boundary, it moves a
+// whole day of a client's usage rollup — the rows the daily quota is computed
+// from — into or out of the purge.
+//
+// Same shape as internal/inspect's TestAllReasonsCoversEveryDeclaredConstant:
+// assert a property of the code that no call can reveal.
+func TestRetentionTakesItsClockFromPostgres(t *testing.T) {
+	src, err := os.ReadFile("retention.go")
+	if err != nil {
+		t.Fatalf("read retention.go: %v", err)
+	}
+
+	for _, forbidden := range []string{"time.Now()", "time.Since("} {
+		if strings.Contains(string(src), forbidden) {
+			t.Errorf("internal/jobs/retention.go contains %q.\n\n"+
+				"Retention boundaries must be computed by Postgres, because the columns they are compared against — "+
+				"jobs.created_at and client_usage_daily.day — are written by Postgres. Mixing the two clocks measures "+
+				"one timeline against another: a host running behind keeps rows past their retention, one running "+
+				"ahead deletes them early, and for the DATE column the error is a whole day rather than the size of "+
+				"the skew. evaluate(), recordUsage and UTCToday already take their clock from the database; these two "+
+				"functions were the last that did not.\n\n"+
+				"If this fired because a COMMENT mentions the call, reword it: the forbidden form is deliberately "+
+				"never written out in that file.", forbidden)
+		}
+	}
+}
+
+// TestPurgeBoundariesUnchangedByTheClockFix is the other half, and it exists
+// because the clock fix had a way to be right and wrong at once.
+//
+// Moving the boundary into SQL invites writing it as `::date - interval`, which
+// reads better than keeping the time-of-day component — and silently shifts the
+// cutoff by up to a full day, because a DATE promotes to midnight when compared
+// against a timestamp. A correctness fix that also changes what gets deleted is
+// two changes, and only one of them was asked for.
+//
+// So this pins the boundary itself: a row exactly inside the window survives, a
+// row just outside it does not, for both purges.
+func TestPurgeBoundariesUnchangedByTheClockFix(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	clientID := createTestClient(t, r)
+
+	const window = 90 * 24 * time.Hour
+
+	// One job a minute INSIDE the window, one a minute outside it.
+	inside := createAgedJob(t, r, clientID, StatusDone, window-time.Minute)
+	outside := createAgedJob(t, r, clientID, StatusDone, window+time.Minute)
+
+	if _, err := r.PurgeJobs(ctx, window, 100); err != nil {
+		t.Fatalf("PurgeJobs: %v", err)
+	}
+
+	if _, err := r.Get(ctx, inside); err != nil {
+		t.Errorf("a job one minute INSIDE the retention window was deleted (%v) -- the boundary moved", err)
+	}
+	if _, err := r.Get(ctx, outside); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a job one minute OUTSIDE the retention window survived (err=%v) -- the boundary moved", err)
 	}
 }
