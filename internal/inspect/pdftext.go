@@ -149,13 +149,25 @@ const pdfMaxInflatedStreamBytes = 1 << 20 // 1 MiB
 // nested, by value, inside a text-bearing Form XObject's own /Resources. The
 // rule is not "these markers are more specific" but "these markers cannot
 // appear in a dictionary describing something else".
+// Also here: stream types that exist in a PDF but cannot contribute PAGE text.
+// An /EmbeddedFile attachment may contain literally anything, including bytes
+// that read as `BT (…) Tj` -- codex's review of PR #10 supplied that case, and
+// before this list it counted as page content and reported present for a
+// document pdftotext exposes no such text for. /Metadata, /ObjStm and /XRef are
+// the same class: real streams, no page text.
+//
+// The §7.3.8.1 argument covers these exactly as it covers /Subtype /Image --
+// they are /Type keys OF a stream dictionary, and a stream is always an
+// indirect object, so they cannot be describing something nested.
 var pdfProvenSkipMarkers = [][]byte{
-	[]byte("/Subtype /Image"),
-	[]byte("/Subtype/Image"),
+	[]byte("/Image"),
 	[]byte("/Length1"),
-	[]byte("/Subtype /Type1C"),
-	[]byte("/Subtype/Type1C"),
+	[]byte("/Type1C"),
 	[]byte("/CIDFontType0C"),
+	[]byte("/EmbeddedFile"),
+	[]byte("/Metadata"),
+	[]byte("/ObjStm"),
+	[]byte("/XRef"),
 }
 
 // pdfAmbiguousSkipMarkers name keys a dictionary may merely REFERENCE while
@@ -178,6 +190,37 @@ var pdfProvenSkipMarkers = [][]byte{
 // the old comment had promised all along.
 var pdfAmbiguousSkipMarkers = [][]byte{
 	[]byte("/FontFile"),
+	[]byte("/FontFile2"),
+	[]byte("/FontFile3"),
+}
+
+// containsPDFNameToken reports whether name occurs in buf as a COMPLETE PDF
+// name token, i.e. not as a prefix of a longer one.
+//
+// A plain substring test is not sufficient, and the failure is not theoretical:
+// codex's review of PR #10 pointed out that a dictionary carrying an unrelated
+// `/Length10` key matched the `/Length1` marker, so a text-bearing stream was
+// classified as a proven-skippable font program, coverage was preserved, and the
+// report answered `text_layer: absent` for a document full of text -- the one
+// direction D-09 forbids outright.
+//
+// This is the same defect the risk-token scanner in pdf.go already closes for
+// its own table ("/JS inside /JScript is not a match"), using the same
+// isPDFNameByte boundary rule from ISO 32000 §7.3.5. Reusing that rule rather
+// than restating it is the point: one definition of where a name ends.
+func containsPDFNameToken(buf, name []byte) bool {
+	from := 0
+	for {
+		idx := bytes.Index(buf[from:], name)
+		if idx < 0 {
+			return false
+		}
+		end := from + idx + len(name)
+		if end >= len(buf) || !isPDFNameByte(buf[end]) {
+			return true
+		}
+		from = from + idx + 1
+	}
 }
 
 // pdfStreamClass is what the lookback dictionary plus a decode attempt say
@@ -260,7 +303,7 @@ type pdfTextScanState struct {
 func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState {
 	state := pdfTextScanState{covered: true, remaining: allowance}
 
-	ranges, ceilingHit := scanPDFStreamRanges(buf, tr)
+	ranges, ceilingHit := scanValidatedStreamRanges(buf, tr)
 	if ceilingHit {
 		// The range scan gave up on its own iteration cap, so the stream SET
 		// is incomplete -- there may be streams past the last one found. Same
@@ -294,51 +337,146 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 	return state
 }
 
-// hasStreamKeywordSyntax reports whether the "stream" keyword at streamStart is
-// preceded by the end of a dictionary, which is what ISO 32000 §7.3.8.1
-// requires of a real stream object.
+// scanValidatedStreamRanges returns the bodies of streams that are REAL stream
+// objects, by walking the buffer once with a state machine that understands the
+// three lexical contexts a "stream" keyword can appear in.
 //
-// scanPDFStreamRanges (pdf.go) is deliberately LEXICAL: it treats every bare
-// "stream" substring as an opener, because its own caller builds the
-// opaque-range filter, where over-matching is the safe direction -- a range
-// wrongly marked opaque only suppresses a finding, never invents one.
+// This replaces the earlier approach of reusing pdf.go's scanPDFStreamRanges and
+// adding a predicate on top, and the replacement was forced by evidence rather
+// than chosen for elegance. codex's review of PR #10 defeated two successive
+// versions of the layered check:
 //
-// This detector needs the opposite guarantee, and the difference is not
-// theoretical. codex's review of PR #10 supplied the case: a non-content object
-// holding a literal string such as `(stream BT (abc…) Tj)`, followed later by a
-// genuine `endstream`, was scanned as though the text inside that string were
-// page content. It counted 26 and reported `text_layer: present` for a document
-// pdftotext exposes no page text for at all -- steering a client away from the
-// OCR they need.
+//  1. The original used scanPDFStreamRanges directly. That scanner is
+//     deliberately lexical -- every bare "stream" substring opens a range --
+//     because its OTHER callers build the opaque-range filter, where
+//     over-matching is the safe direction. A literal string containing the word
+//     `stream` was therefore scanned as page content.
+//  2. The first fix required the keyword to be preceded by `>>`. A literal
+//     string can contain `>>` too: `(>>stream BT (abc) Tj endstream)` passed the
+//     predicate and reported present all the same.
 //
-// The check lives HERE rather than inside scanPDFStreamRanges because that
-// scanner has two other callers whose correctness depends on its current,
-// wider behaviour. Narrowing a shared primitive to suit one consumer would have
-// traded this false positive for a false negative in the risk-token filter,
-// which is a worse trade.
+// The lesson is that no amount of LOOKING BACKWARD from a candidate can tell you
+// whether that candidate is inside a string, because the answer depends on
+// everything before it. Only a forward pass that has tracked the context can.
+// Two bypasses of one bound is the point at which adding a third clever
+// comparison is the wrong move.
 //
-// A known, accepted gap: PDF permits a "%" comment wherever whitespace is
-// allowed, so `<< … >> % note\nstream` is legal and this check rejects it. The
-// rejection is safe -- such a range becomes opaque, costing coverage, which can
-// only turn an answer into "unknown" and never into a wrong verdict in either
-// direction. Recorded rather than fixed because tolerating comments here means
-// re-implementing PDF whitespace rules in a function whose entire value is that
-// it is trivially auditable.
-func hasStreamKeywordSyntax(buf []byte, streamStart int) bool {
-	// streamStart points just past the keyword; step back over it.
-	i := streamStart - len("stream")
-	if i < 0 {
-		return false
-	}
-	for i > 0 {
-		switch buf[i-1] {
-		case ' ', '\t', '\r', '\n', '\f', 0:
-			i--
-			continue
+// What the pass understands, and nothing more:
+//
+//   - literal strings (…), with backslash escapes and nesting, so neither a
+//     `stream` keyword nor a `>>` inside one is ever seen as syntax;
+//   - comments %…EOL, which PDF treats as whitespace between tokens -- this is
+//     also what lets a legal `>> % note` + EOL + `stream` be recognized, a form
+//     the previous backward walk rejected and thereby degraded a perfectly
+//     readable document to unknown;
+//   - stream bodies themselves, which are skipped wholesale to `endstream` so
+//     their arbitrary binary content cannot open a spurious string or comment.
+//
+// It does NOT parse dictionaries, resolve objects, or validate /Length. The
+// question it answers is exactly "is this keyword real", and its value is that
+// it is small enough to audit.
+//
+// ceilingHit mirrors scanPDFStreamRanges's own contract: it reports that the
+// iteration cap, not the buffer's content, decided when the walk stopped, and
+// it marks the shared receptacle at that point.
+func scanValidatedStreamRanges(buf []byte, tr *Tracker) (ranges []pdfOpaqueRange, ceilingHit bool) {
+	i := 0
+	for iter := 0; i < len(buf); iter++ {
+		if iter >= maxTokenScanIterations {
+			tr.MarkCeilingHit()
+			return ranges, true
 		}
-		break
+
+		switch buf[i] {
+		case '(':
+			i = skipPDFLiteral(buf, i)
+			continue
+		case '%':
+			i = skipPDFComment(buf, i)
+			continue
+		case '>':
+			if i+1 >= len(buf) || buf[i+1] != '>' {
+				i++
+				continue
+			}
+			// Candidate: a dictionary just closed. Everything between it and
+			// the keyword must be whitespace or comments.
+			k := skipPDFWhitespaceAndComments(buf, i+2)
+			if !bytes.HasPrefix(buf[k:], []byte("stream")) {
+				i += 2
+				continue
+			}
+			bodyStart := k + len("stream")
+			endIdx := bytes.Index(buf[bodyStart:], []byte("endstream"))
+			if endIdx < 0 {
+				// The body runs past the end of this window. Report what is
+				// there; the caller charges it and the truncation is already
+				// visible through its own window accounting.
+				ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: len(buf)})
+				return ranges, false
+			}
+			bodyEnd := bodyStart + endIdx
+			ranges = append(ranges, pdfOpaqueRange{start: bodyStart, end: bodyEnd})
+			// Resume AFTER the body, so its binary content is never lexed.
+			i = bodyEnd + len("endstream")
+			continue
+		default:
+			i++
+		}
 	}
-	return i >= 2 && buf[i-2] == '>' && buf[i-1] == '>'
+	return ranges, false
+}
+
+// skipPDFLiteral returns the index just past the literal string starting at
+// open, honouring backslash escapes and nesting. An unterminated literal
+// consumes the rest of the buffer, which is the fail-closed direction: nothing
+// after it is mistaken for syntax.
+func skipPDFLiteral(buf []byte, open int) int {
+	depth := 1
+	for i := open + 1; i < len(buf); i++ {
+		switch buf[i] {
+		case '\\':
+			i++ // skip the escaped byte, whatever it is
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return len(buf)
+}
+
+// skipPDFComment returns the index just past the end-of-line that terminates
+// the comment starting at pct.
+func skipPDFComment(buf []byte, pct int) int {
+	for i := pct; i < len(buf); i++ {
+		if buf[i] == '\n' || buf[i] == '\r' {
+			return i + 1
+		}
+	}
+	return len(buf)
+}
+
+// skipPDFWhitespaceAndComments advances past any run of whitespace and comments
+// starting at i. PDF treats a comment as whitespace between tokens (ISO 32000
+// §7.2.4), which is why `>> % producer note` followed by an EOL and `stream` is
+// a legal stream object -- a form the earlier backward walk rejected, degrading
+// a fully readable document from absent to unknown for no gain.
+func skipPDFWhitespaceAndComments(buf []byte, i int) int {
+	for i < len(buf) {
+		switch buf[i] {
+		case ' ', '\t', '\r', '\n', '\f', 0:
+			i++
+		case '%':
+			i = skipPDFComment(buf, i)
+		default:
+			return i
+		}
+	}
+	return i
 }
 
 // decodePDFStream classifies one stream and, when it is scannable, returns its
@@ -349,24 +487,15 @@ func hasStreamKeywordSyntax(buf []byte, streamStart int) bool {
 // decompression is what keeps a scanned document affordable; doing it the
 // other way round would mean inflating half a megabyte to then discard it.
 func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfTextScanState) ([]byte, pdfStreamClass) {
-	if !hasStreamKeywordSyntax(buf, rng.start) {
-		// A "stream" that is not preceded by a dictionary is not a stream
-		// object. It is returned as OPAQUE rather than skipped: these bytes
-		// were never examined as content, so the report must not go on to
-		// claim absence on their behalf. Trading a false "present" for a
-		// false "absent" would be no improvement at all.
-		return nil, pdfStreamOpaque
-	}
-
 	dict := pdfStreamDictWindow(buf, rng.start)
 
 	for _, marker := range pdfProvenSkipMarkers {
-		if bytes.Contains(dict, marker) {
+		if containsPDFNameToken(dict, marker) {
 			return nil, pdfStreamSkipped
 		}
 	}
 	for _, marker := range pdfAmbiguousSkipMarkers {
-		if bytes.Contains(dict, marker) {
+		if containsPDFNameToken(dict, marker) {
 			return nil, pdfStreamOpaque
 		}
 	}

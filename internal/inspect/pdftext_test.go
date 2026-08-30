@@ -489,36 +489,57 @@ func TestOctalEscapesAreDecodedNotCounted(t *testing.T) {
 	}
 }
 
-// TestLexicalStreamKeywordCannotEstablishPresence closes the second finding.
-//
-// scanPDFStreamRanges is deliberately lexical -- every bare "stream" substring
-// opens a range -- because its other callers build the opaque-range filter,
-// where over-matching is the SAFE direction. This detector needs the opposite,
-// so it checks the syntax itself rather than narrowing a shared primitive.
+// TestLexicalStreamKeywordCannotEstablishPresence closes the second finding,
+// and its expectation CHANGED once the fix became a real one.
 //
 // REPRODUCED: a non-content object holding `(stream BT (abc…) Tj)`, followed
 // later by a genuine endstream, was scanned as page content. It counted 26 and
 // reported present for a document pdftotext exposes no page text for at all.
 //
-// The result must be unknown, NOT absent: those bytes were never examined as
-// content, and trading a false present for a false absent is no improvement.
+// The first fix rejected such a range and marked it OPAQUE, and this test then
+// required `unknown` -- on the reasoning that the bytes had not been examined,
+// so absence could not be claimed. That reasoning was right about that
+// implementation and wrong about the problem. codex then showed the predicate
+// was bypassable by putting `>>` inside the literal too, and the replacement is
+// a forward scanner that tracks lexical context: the fake keyword is now
+// recognized as ordinary string content and never becomes a candidate at all.
+//
+// So nothing is unexamined, and `absent` is the honest answer here -- the
+// document really does have no page text. The earlier expectation was costing
+// coverage for a file we can in fact read completely, which is a smaller sin
+// than a false verdict but a sin nonetheless.
+//
+// What the test still forbids absolutely is `present`.
 func TestLexicalStreamKeywordCannotEstablishPresence(t *testing.T) {
-	buf := []byte("5 0 obj\n(stream BT (abcdefghijklmnopqrstuvwxyz) Tj)\nendobj\n" +
-		"6 0 obj\n<< /Length 5 >>\nstream\nxxxxx\nendstream\nendobj\n")
+	for _, tc := range []struct {
+		name string
+		buf  string
+	}{
+		{
+			"keyword inside a literal string",
+			"5 0 obj\n(stream BT (abcdefghijklmnopqrstuvwxyz) Tj)\nendobj\n" +
+				"6 0 obj\n<< /Length 5 >>\nstream\nxxxxx\nendstream\nendobj\n",
+		},
+		{
+			// The bypass of the first fix: `>>` supplied from inside the
+			// literal, so a backward look-behind saw exactly what it wanted.
+			"dictionary close supplied from inside the literal too",
+			"5 0 obj\n(>>stream BT (abcdefghijklmnopqrstuvwxyz) Tj endstream)\nendobj\n" +
+				"6 0 obj\n<< /Length 5 >>\nstream\nxxxxx\nendstream\nendobj\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := scanPDFTextLayer([]byte(tc.buf), 1<<20, nil)
+			value, _ := pdfTextLayerVerdict(state, false, false)
 
-	state := scanPDFTextLayer(buf, 1<<20, nil)
-	value, reason := pdfTextLayerVerdict(state, false, false)
-
-	if value == TextLayerPresent {
-		t.Fatalf("text_layer = present (count %d) for text living inside a literal string -- a bare \"stream\" "+
-			"substring is not a stream object, and page content is the only thing that may establish presence", state.nonWhitespace)
-	}
-	if value == TextLayerAbsent {
-		t.Fatalf("text_layer = absent -- those bytes were never examined as content; degrading to unknown is the " +
-			"honest answer, and swapping one false verdict for the opposite one is not a fix")
-	}
-	if reason == "" {
-		t.Fatal("a null verdict must carry a reason")
+			if value == TextLayerPresent {
+				t.Fatalf("text_layer = present (count %d) for text living inside a literal string -- string content is "+
+					"not page content, and only page content may establish presence", state.nonWhitespace)
+			}
+			if state.nonWhitespace != 0 {
+				t.Fatalf("counted %d bytes from inside a literal string, want 0", state.nonWhitespace)
+			}
+		})
 	}
 }
 
@@ -584,35 +605,115 @@ func TestProvenSkipMarkersStillSkip(t *testing.T) {
 	}
 }
 
-// TestStreamKeywordSyntaxBoundaries pins hasStreamKeywordSyntax's accepted and
-// rejected forms, including the one legal form it knowingly rejects.
+// TestValidatedStreamScannerBoundaries pins which candidates the forward
+// scanner accepts as real stream objects.
 //
-// The rejection of a comment between the dictionary and the keyword is a
-// recorded gap, not an oversight: it is safe in the only sense that matters
-// here, because a rejected range becomes opaque and can only produce "unknown",
-// never a wrong verdict in either direction. Pinning it means a future reader
-// finds the decision rather than rediscovering the behaviour.
-func TestStreamKeywordSyntaxBoundaries(t *testing.T) {
+// It replaces TestStreamKeywordSyntaxBoundaries, which pinned a BACKWARD walk
+// from each candidate. That approach was defeated twice by codex's review, and
+// the second bypass showed why it could not be patched: whether a keyword sits
+// inside a literal string depends on everything BEFORE it, so no amount of
+// looking backward a fixed distance can decide it.
+//
+// The comment case is now accepted rather than recorded as a known gap. PDF
+// treats a comment as whitespace between tokens, so `>> % note` + EOL + stream
+// is a legal stream object, and rejecting it degraded a perfectly readable
+// document from absent to unknown.
+func TestValidatedStreamScannerBoundaries(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		before string
-		want   bool
+		name  string
+		buf   string
+		wantN int
 	}{
-		{"newline between dict and keyword", "<< /Length 5 >>\n", true},
-		{"no whitespace at all", "<< /Length 5 >>", true},
-		{"CRLF", "<< /Length 5 >>\r\n", true},
-		{"spaces and tabs", "<< /Length 5 >> \t ", true},
-		{"inside a literal string", "(some text ", false},
-		{"after a bare keyword", "endobj\n", false},
-		{"dictionary not closed", "<< /Length 5 ", false},
-		{"comment between dict and keyword (known accepted gap)", "<< /Length 5 >> % note\n", false},
+		{"newline between dict and keyword", "<< /Length 4 >>\nstream\nbody\nendstream\n", 1},
+		{"no whitespace at all", "<< /Length 4 >>stream\nbody\nendstream\n", 1},
+		{"comment between dict and keyword", "<< /Length 4 >> % producer note\nstream\nbody\nendstream\n", 1},
+		{"several comments and blank lines", "<< /Length 4 >>\n% one\n\n% two\nstream\nbody\nendstream\n", 1},
+		{"keyword inside a literal string", "(stream body endstream)\n", 0},
+		{"dict-close inside a literal string too", "(>>stream body endstream)\n", 0},
+		{"keyword inside a comment", "% stream body endstream\n", 0},
+		{"bare keyword with no dictionary", "endobj\nstream\nbody\nendstream\n", 0},
+		{"escaped paren does not end the string early", "(a\\)>>stream x endstream)\n", 0},
+		{"a real stream after a decoy literal", "(>>stream decoy endstream)\n<< /Length 4 >>\nstream\nbody\nendstream\n", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			buf := []byte(tc.before + "stream\nbody\nendstream")
-			at := len(tc.before) + len("stream")
-			if got := hasStreamKeywordSyntax(buf, at); got != tc.want {
-				t.Fatalf("hasStreamKeywordSyntax(%q) = %v, want %v", tc.before+"stream", got, tc.want)
+			ranges, _ := scanValidatedStreamRanges([]byte(tc.buf), nil)
+			if len(ranges) != tc.wantN {
+				t.Fatalf("scanValidatedStreamRanges found %d stream(s), want %d -- ranges=%v", len(ranges), tc.wantN, ranges)
 			}
 		})
 	}
+}
+
+// TestNonContentStreamTypesCannotEstablishPresence closes codex's second-round
+// finding: every syntactically valid stream was counted, including ones that
+// cannot contribute to an outer document's page text.
+//
+// REPRODUCED: a legal `/Type /EmbeddedFile` attachment whose bytes happen to
+// read as `BT (abcdefghijklmnopq) Tj` counted 17 and reported present, although
+// pdftotext on the outer PDF exposes none of it.
+func TestNonContentStreamTypesCannotEstablishPresence(t *testing.T) {
+	for _, typ := range []string{"/EmbeddedFile", "/Metadata", "/ObjStm", "/XRef"} {
+		t.Run(typ, func(t *testing.T) {
+			buf := []byte("7 0 obj\n<< /Type " + typ + " /Length 30 >>\nstream\nBT (abcdefghijklmnopq) Tj ET\nendstream\nendobj\n")
+			state := scanPDFTextLayer(buf, 1<<20, nil)
+			if state.nonWhitespace != 0 {
+				t.Fatalf("counted %d bytes from a %s stream -- it carries no PAGE text, whatever its bytes look like",
+					state.nonWhitespace, typ)
+			}
+			if !state.covered {
+				t.Fatalf("skipping a %s stream cost coverage -- these types provably cannot carry page text, so not "+
+					"examining one forfeits nothing", typ)
+			}
+		})
+	}
+}
+
+// TestSkipMarkersMatchCompleteNameTokens closes the fourth finding, which
+// produced a false ABSENT — the direction D-09 forbids outright.
+//
+// REPRODUCED: a dictionary carrying an unrelated `/Length10` key matched the
+// `/Length1` marker by substring, so a text-bearing stream was classified as a
+// proven-skippable font program, coverage survived, and the report answered
+// absent for a document full of text.
+//
+// This is the defect the risk-token scanner in pdf.go already closes for its own
+// table ("/JS inside /JScript is not a match"). Reusing isPDFNameByte rather
+// than restating the boundary rule is the point: one definition of where a PDF
+// name ends.
+func TestSkipMarkersMatchCompleteNameTokens(t *testing.T) {
+	t.Run("a longer name does not match a shorter marker", func(t *testing.T) {
+		buf := []byte("9 0 obj\n<< /Length10 900 /Length 30 >>\nstream\nBT (abcdefghijklmnopq) Tj ET\nendstream\nendobj\n")
+		state := scanPDFTextLayer(buf, 1<<20, nil)
+		if state.nonWhitespace == 0 {
+			t.Fatal("/Length10 was taken for /Length1, so a text-bearing stream was skipped as a font program and " +
+				"coverage survived -- that combination is exactly how a false `absent` is produced")
+		}
+	})
+
+	t.Run("the marker itself still matches", func(t *testing.T) {
+		buf := []byte("9 0 obj\n<< /Length1 900 /Length 30 >>\nstream\nBT (abcdefghijklmnopq) Tj ET\nendstream\nendobj\n")
+		state := scanPDFTextLayer(buf, 1<<20, nil)
+		if state.nonWhitespace != 0 {
+			t.Fatalf("counted %d bytes from a font-program stream -- tightening the match must not stop it matching",
+				state.nonWhitespace)
+		}
+	})
+
+	t.Run("containsPDFNameToken boundaries", func(t *testing.T) {
+		for _, tc := range []struct {
+			buf, name string
+			want      bool
+		}{
+			{"<< /Length1 900 >>", "/Length1", true},
+			{"<< /Length10 900 >>", "/Length1", false},
+			{"<< /Subtype /Image >>", "/Image", true},
+			{"<< /Subtype /ImageMask >>", "/Image", false},
+			{"<< /Type /Metadata>>", "/Metadata", true},
+			{"<< /Type /MetadataExt >>", "/Metadata", false},
+		} {
+			if got := containsPDFNameToken([]byte(tc.buf), []byte(tc.name)); got != tc.want {
+				t.Errorf("containsPDFNameToken(%q, %q) = %v, want %v", tc.buf, tc.name, got, tc.want)
+			}
+		}
+	})
 }
