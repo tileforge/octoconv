@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: Phase 61 complete; phase 60 awaits operator input
-last_updated: "2026-08-30T18:30:26.082Z"
-last_activity: 2026-08-30 -- Phase 61 executed (3 plans) and closed
+stopped_at: "Phase 61 merged (PR #11, a267f67); only phase 60 remains"
+last_updated: "2026-08-30T20:15:29.072Z"
+last_activity: "2026-08-30 -- Phase 61 merged via PR #11 (a267f67)"
 progress:
   total_phases: 6
   completed_phases: 5
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 Phase: 61 (v1-12-debt-tail) — COMPLETE; phase 60 remains, needs operator input
 Plan: 3 of 3 — all executed
-Status: Phase 61 complete: DEBT-09/10/11 all satisfied. Only Phase 60 (Sanitize) remains in v1.13, and it needs the operator: Autonomous false, SC5 wants a timeout measured on your own corpus, and two design decisions are deferred to planning.
-Last activity: 2026-08-30 -- Phase 61 executed (3 plans) and closed
+Status: Phase 61 merged. Only Phase 60 (Sanitize) remains in v1.13, and it needs the operator: Autonomous false, SC5 wants a timeout measured on your own corpus, and two design decisions are deferred to planning.
+Last activity: 2026-08-30 -- Phase 61 merged via PR #11 (a267f67)
 
 ## Performance Metrics
 
@@ -280,7 +280,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 61 complete; phase 60 awaits operator input
+Stopped at: Phase 61 merged (PR #11, a267f67); only phase 60 remains
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
