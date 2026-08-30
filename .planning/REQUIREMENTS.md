@@ -65,9 +65,9 @@
 
 ### v1.12 debt tail (DEBT)
 
-- [ ] **DEBT-09**: Оператор может снять застрявшую in-flight джобу штатным средством, а не сырым SQL, и связка «доступность квот ↔ здоровье `cmd/webhook-worker`» задокументирована (52 WR-01 — самый весомый перенос v1.12: навсегда застрявшая джоба блокирует суточный бюджет клиента каждый следующий UTC-день)
-- [ ] **DEBT-10**: Секция квот в README непротиворечива, и список engine-классов выводится из `convert.AllEngines()`, а не хардкодится числом (52 WR-09)
-- [ ] **DEBT-11**: `PurgeUsage` берёт cutoff из часов Postgres, как `evaluate()`, `recordUsage` и `UTCToday`, а не из `time.Now()` хоста (`internal/jobs/retention.go:126`)
+- [x] **DEBT-09**: Оператор может снять застрявшую in-flight джобу штатным средством, а не сырым SQL, и связка «доступность квот ↔ здоровье `cmd/webhook-worker`» задокументирована (52 WR-01 — самый весомый перенос v1.12: навсегда застрявшая джоба блокирует суточный бюджет клиента каждый следующий UTC-день)
+- [x] **DEBT-10**: Секция квот в README непротиворечива, и список engine-классов выводится из `convert.AllEngines()`, а не хардкодится числом (52 WR-09)
+- [x] **DEBT-11**: `PurgeUsage` берёт cutoff из часов Postgres, как `evaluate()`, `recordUsage` и `UTCToday`, а не из `time.Now()` хоста (`internal/jobs/retention.go:126`)
 
 ## v2 Requirements
 
@@ -146,9 +146,9 @@
 | SANI-04 | Phase 60 | Pending |
 | SANI-05 | Phase 60 | Pending |
 | SANI-06 | Phase 60 | Pending |
-| DEBT-09 | Phase 61 | Pending |
-| DEBT-10 | Phase 61 | Pending |
-| DEBT-11 | Phase 61 | Pending |
+| DEBT-09 | Phase 61 | Complete |
+| DEBT-10 | Phase 61 | Complete |
+| DEBT-11 | Phase 61 | Complete |
 
 **Coverage:**
 - v1 requirements: 28 total

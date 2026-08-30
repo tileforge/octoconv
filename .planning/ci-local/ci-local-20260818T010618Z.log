@@ -1,0 +1,57 @@
+=== ci-local 20260818T010618Z ===
+commit:   b68c9da (WORKING TREE DIRTY)
+branch:   phase-58-synchronous-inspection
+host:     Darwin arm64
+go:       go1.26.5 darwin/arm64
+helm:     v4.2.4+g3900f43
+docker:   29.4.0 (orbstack)
+tiers:    race
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: race (started 01:06:19 UTC)
+--------------------------------------------------------------
+ok  	github.com/apaderin/octoconv/cmd/api	2.686s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	3.226s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	3.740s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	2.619s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	4.109s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	(cached)
+ok  	github.com/apaderin/octoconv/internal/auth	4.239s
+ok  	github.com/apaderin/octoconv/internal/cancel	4.679s
+ok  	github.com/apaderin/octoconv/internal/clients	5.579s
+ok  	github.com/apaderin/octoconv/internal/convert	(cached)
+ok  	github.com/apaderin/octoconv/internal/db	5.313s
+ok  	github.com/apaderin/octoconv/internal/e2e	5.478s
+ok  	github.com/apaderin/octoconv/internal/envcfg	5.514s
+ok  	github.com/apaderin/octoconv/internal/errcode	4.531s
+ok  	github.com/apaderin/octoconv/internal/inspect	(cached)
+ok  	github.com/apaderin/octoconv/internal/jobs	4.908s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	5.612s
+ok  	github.com/apaderin/octoconv/internal/metrics	4.997s
+ok  	github.com/apaderin/octoconv/internal/presets	5.065s
+ok  	github.com/apaderin/octoconv/internal/queue	5.523s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	5.826s
+ok  	github.com/apaderin/octoconv/internal/reconciler	5.339s
+ok  	github.com/apaderin/octoconv/internal/storage	5.143s
+ok  	github.com/apaderin/octoconv/internal/webhook	5.553s
+ok  	github.com/apaderin/octoconv/internal/worker	8.988s
+### tier race: PASS
+
+==============================================================
+ci-local 20260818T010618Z summary   commit b68c9da (WORKING TREE DIRTY)
+  PASS  race
+  ALL REQUESTED TIERS PASSED
+transcript: /Users/apaderin/dev/octoconv/.planning/ci-local/ci-local-20260818T010618Z.log
+==============================================================

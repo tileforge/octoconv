@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: "Phase 59 merged to main via PR #10. Next in v1.13: Phase 60 (Sanitize, SANI-01..06, Autonomous false) and Phase 61 (v1.12 debt tail, DEBT-09/10/11, no dependencies)."
-stopped_at: "Phase 59 merged to main (PR #10, f45a941)"
-last_updated: "2026-08-30T08:14:12.668Z"
-last_activity: "2026-08-30 -- Phase 59 merged via PR #10 (f45a941); 8 review findings closed across 3 rounds"
+status: planning
+stopped_at: Phase 61 complete; phase 60 awaits operator input
+last_updated: "2026-08-30T18:30:26.082Z"
+last_activity: 2026-08-30 -- Phase 61 executed (3 plans) and closed
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 29
-  completed_plans: 29
-  percent: 67
+  completed_phases: 5
+  total_plans: 32
+  completed_plans: 32
+  percent: 83
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 60 (sanitize) — not started
-Plan: 0 of TBD — ready to discuss
-Status: Phase 59 merged to main via PR #10. Next in v1.13: Phase 60 (Sanitize, SANI-01..06, Autonomous false) and Phase 61 (v1.12 debt tail, DEBT-09/10/11, no dependencies).
-Last activity: 2026-08-30 -- Phase 59 merged via PR #10 (f45a941); 8 review findings closed across 3 rounds
+Phase: 61 (v1-12-debt-tail) — COMPLETE; phase 60 remains, needs operator input
+Plan: 3 of 3 — all executed
+Status: Phase 61 complete: DEBT-09/10/11 all satisfied. Only Phase 60 (Sanitize) remains in v1.13, and it needs the operator: Autonomous false, SC5 wants a timeout measured on your own corpus, and two design decisions are deferred to planning.
+Last activity: 2026-08-30 -- Phase 61 executed (3 plans) and closed
 
 ## Performance Metrics
 
@@ -280,7 +280,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 59 merged to main (PR #10, f45a941)
+Stopped at: Phase 61 complete; phase 60 awaits operator input
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps

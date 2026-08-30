@@ -297,6 +297,94 @@ func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
 	})
 }
 
+// InFlightJob is one job currently occupying a client's quota, as reported to
+// an operator by cmd/manage-clients list-inflight.
+//
+// Age is computed by POSTGRES, not by the caller, and that is the point of
+// having it here rather than deriving it in the CLI from CreatedAt: the
+// quota gate this listing exists to explain reads its own "today" from the
+// database (usage_query.go's UTCToday and its doc comment on why Go never
+// touches the value). An operator shown an age measured by the CLI host's
+// clock would be reasoning about a different timeline than the one that
+// actually decides whether the job still consumes budget.
+type InFlightJob struct {
+	ID        uuid.UUID
+	ClientID  uuid.UUID
+	Engine    string
+	Status    string
+	CreatedAt time.Time
+	StartedAt *time.Time
+	Age       time.Duration
+}
+
+// FindInFlight returns the jobs currently occupying quota — the same
+// {queued, active} set the admission gate counts — newest first, optionally
+// narrowed to one client and to jobs older than a threshold.
+//
+// It exists because 52 WR-01 has two halves, and a remedy without a way to
+// FIND the subject is only half a remedy: an in-flight job charges the daily
+// cap with no time bound, so one permanently stuck job locks out a client's
+// daily budget every subsequent UTC day, and an operator cannot cancel what
+// they cannot enumerate.
+//
+// The in-flight definition comes from quotaInFlightStatuses (admission.go),
+// the SAME slice evaluate() counts against max_concurrent. That sharing is
+// deliberate rather than tidy: a second literal list here could drift, and a
+// listing that disagreed with the gate would send an operator to cancel jobs
+// that were not the ones holding the budget — which is worse than no listing,
+// because it looks like it worked.
+//
+// olderThan <= 0 means no age filter. A nil clientID means every client.
+func (r *Repo) FindInFlight(ctx context.Context, clientID *uuid.UUID, olderThan time.Duration) ([]InFlightJob, error) {
+	// The age threshold is applied by Postgres against Postgres-written
+	// timestamps, so the CLI host's clock never enters the comparison. This
+	// is the same rule DEBT-11 applies to retention, adopted here at the
+	// point of writing rather than left to be found later.
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, client_id, engine, status, created_at, started_at,
+		       now() - created_at AS age
+		FROM jobs
+		WHERE status = ANY($1)
+		  AND ($2::uuid IS NULL OR client_id = $2::uuid)
+		  AND ($3::interval IS NULL OR now() - created_at >= $3::interval)
+		ORDER BY created_at ASC`,
+		quotaInFlightStatuses, clientID, nullableInterval(olderThan),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query in-flight jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InFlightJob
+	for rows.Next() {
+		var j InFlightJob
+		if err := rows.Scan(&j.ID, &j.ClientID, &j.Engine, &j.Status, &j.CreatedAt, &j.StartedAt, &j.Age); err != nil {
+			return nil, fmt.Errorf("scan in-flight job: %w", err)
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// nullableInterval renders a non-positive duration as SQL NULL, which the
+// query above reads as "no age filter". Returning a zero interval instead
+// would filter on `age >= 0`, which is true for every row and therefore looks
+// identical -- until a clock adjustment makes a freshly created row's age
+// briefly negative and it silently disappears from an operator's listing
+// during an incident.
+//
+// A sub-microsecond duration is NOT rejected and behaves as no filter at all:
+// PostgreSQL's interval type has microsecond resolution, so anything smaller
+// rounds to zero. Measured, not assumed. It is left alone rather than guarded
+// because the operator-facing form of this argument is a duration string like
+// "2h", and a guard for an input nobody can produce is a branch nobody tests.
+func nullableInterval(d time.Duration) any {
+	if d <= 0 {
+		return nil
+	}
+	return d
+}
+
 // RequeueStale requeues a job stranded in queued (lost enqueue) or active
 // (crashed worker / exhausted asynq retry budget) back to queued, via the
 // same guarded, row-locked transition every other status change goes through

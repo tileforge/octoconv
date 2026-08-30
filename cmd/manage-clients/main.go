@@ -9,16 +9,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/clients"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/db"
+	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/google/uuid"
 )
 
@@ -201,6 +205,99 @@ func main() {
 				"max-daily-jobs:", formatOptionalInt64(l.MaxDailyJobs))
 		}
 
+	case "list-inflight":
+		// manage-clients list-inflight [<client-id>] [<older-than>]
+		//
+		// The half of 52 WR-01 that is easy to forget: a remedy you cannot
+		// aim is not a remedy. An in-flight job charges the daily cap with no
+		// time bound, so an operator whose client "has no quota left" needs to
+		// see WHICH jobs are holding it and for how long, before deciding
+		// whether any of them is genuinely stuck.
+		var (
+			filterClient *uuid.UUID
+			olderThan    time.Duration
+		)
+		for _, arg := range os.Args[2:] {
+			if d, derr := time.ParseDuration(arg); derr == nil {
+				olderThan = d
+				continue
+			}
+			id, perr := uuid.Parse(arg)
+			if perr != nil {
+				log.Fatalf("argument %q is neither a client id nor a duration (e.g. 2h)", arg)
+			}
+			filterClient = &id
+		}
+
+		found, err := jobs.NewRepo(pool).FindInFlight(ctx, filterClient, olderThan)
+		if err != nil {
+			log.Fatalf("list in-flight: %v", err)
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "JOB ID\tCLIENT ID\tENGINE\tSTATUS\tAGE\tCREATED AT")
+		for _, j := range found {
+			// Age comes from Postgres (jobs.FindInFlight) rather than being
+			// derived here from CreatedAt: the quota gate reads its own clock
+			// from the database, and an operator must be shown the same
+			// timeline that decides whether the job still consumes budget.
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				j.ID, j.ClientID, j.Engine, j.Status,
+				j.Age.Round(time.Second), j.CreatedAt.UTC().Format(time.RFC3339))
+		}
+		if err := w.Flush(); err != nil {
+			log.Fatalf("write table: %v", err)
+		}
+		fmt.Printf("%d in-flight job(s)\n", len(found))
+
+	case "cancel-job":
+		// manage-clients cancel-job <job-id>
+		//
+		// A thin wrapper over jobs.Repo.Cancel, and thin ON PURPOSE. Cancel
+		// runs the guarded transition every status change goes through: it
+		// locks the row, checks the current status against the {queued,
+		// active} allow-list, appends a job_events row, and performs the
+		// usage rollup IN THE SAME TRANSACTION.
+		//
+		// The hand-written status update an operator resorts to without this
+		// command skips recordUsage entirely. The job stops being in-flight,
+		// so the concurrency slot frees — and its contribution to the daily
+		// rollup is never booked. That fixes the quota and silently breaks its
+		// accounting, which is a worse state than the stuck job it cured.
+		//
+		// TestCLIIssuesNoDirectJobMutation (main_test.go) greps THIS FILE for
+		// the SQL verbs that would reintroduce that. The statement it forbids
+		// is therefore deliberately not spelled out anywhere in this file,
+		// including in prose: a comment quoting it would trip the gate and
+		// push someone to weaken the test instead of the code. This project
+		// has already paid for that collision once (v1.9 milestone record).
+		if len(os.Args) != 3 {
+			usage()
+		}
+		jobID, err := uuid.Parse(os.Args[2])
+		if err != nil {
+			log.Fatalf("invalid job id: %v", err)
+		}
+
+		jobRepo := jobs.NewRepo(pool)
+		before, err := jobRepo.Get(ctx, jobID)
+		if err != nil {
+			if errors.Is(err, jobs.ErrNotFound) {
+				log.Fatalf("job %s does not exist", jobID)
+			}
+			log.Fatalf("read job %s: %v", jobID, err)
+		}
+
+		if err := jobRepo.Cancel(ctx, jobID); err != nil {
+			// transition returns a plain error for an illegal transition, so
+			// a terminal job lands here. Reporting it as anything other than a
+			// failure would send the operator away believing the budget was
+			// released.
+			log.Fatalf("cancel job %s (status %s): %v", jobID, before.Status, err)
+		}
+
+		fmt.Printf("canceled job %s (was %s); its daily usage contribution is recorded\n", jobID, before.Status)
+
 	case "set-mode":
 		if len(os.Args) != 4 {
 			usage()
@@ -229,7 +326,8 @@ func usage() {
 	engines := strings.Join(convert.AllEngines(), "|")
 	log.Fatal("usage: manage-clients <create <name>|add-key <client-id>|revoke <client-id> <primary|secondary>|" +
 		"set-limit <client-id> <" + engines + "> <max-concurrent|-> <max-daily-bytes|-> <max-daily-jobs|->|" +
-		"clear-limit <client-id> <engine>|show-limits <client-id>|set-mode <client-id> <observe|enforce>>")
+		"clear-limit <client-id> <engine>|show-limits <client-id>|set-mode <client-id> <observe|enforce>|" +
+		"list-inflight [<client-id>] [<older-than>]|cancel-job <job-id>>")
 }
 
 // validateEngine reports an error unless engine is exactly one of

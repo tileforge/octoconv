@@ -238,9 +238,13 @@ Optionally, skip polling and get a signed webhook push on completion by adding
 
 ## Quotas and fairness
 
-Per-client, per-engine limits (QUOT-01..04, FAIR-01) sit in front of `POST /v1/jobs` —
-enforced fail-closed before the upload touches storage. `NULL`/absent means unlimited; an
-explicit `max-concurrent 0` means the engine is denied to that client entirely.
+Per-client, per-engine limits (QUOT-01..04, FAIR-01) sit in front of `POST /v1/jobs`. A
+pre-upload check rejects a request that is already over its limit, and an authoritative
+check under a per-(client, engine) lock decides admission after the body has arrived — so
+the guarantee is **no over-admission**, not "nothing is uploaded". See *What can still
+overshoot* below for the residual, which is measured rather than assumed. `NULL`/absent
+means unlimited; an explicit `max-concurrent 0` means the engine is denied to that client
+entirely.
 
 - **What can be capped, per client and per engine class:** concurrent (queued+active) jobs,
   daily bytes uploaded, and daily job count.
@@ -252,11 +256,20 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
   go run ./cmd/manage-clients clear-limit <client-id> <engine>
   go run ./cmd/manage-clients show-limits <client-id>
   go run ./cmd/manage-clients set-mode <client-id> <observe|enforce>
+  go run ./cmd/manage-clients list-inflight [<client-id>] [<older-than>]
+  go run ./cmd/manage-clients cancel-job <job-id>
   ```
 
-  `set-limit` rejects an `<engine>` token that isn't one of the seven known engine classes
-  and prints the valid set, so a typo fails loudly instead of writing a limit that never
-  matches any job. `clear-limit` and `show-limits` deliberately do not validate the engine —
+  `set-limit` rejects an `<engine>` token that isn't one of the known engine classes and
+  prints the valid set, so a typo fails loudly instead of writing a limit that never
+  matches any job. The classes are:
+
+  <!-- engine-classes: kept equal to convert.AllEngines() by
+       internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
+       the count is deliberately not written out, so a new engine cannot make this
+       paragraph false from a commit that never touches the README. -->
+  `image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`
+ `clear-limit` and `show-limits` deliberately do not validate the engine —
   a row written before this check existed must still be listable and removable through the
   CLI.
 
@@ -291,6 +304,33 @@ explicit `max-concurrent 0` means the engine is denied to that client entirely.
   so a terminal transition that begins just before midnight and commits just after it books
   the job to the previous day and stops contributing to the new day's total. This is a known,
   accepted narrow window, not a refund path.
+- **Why a stuck job can exhaust a client's budget, and what to do about it.** The daily cap
+  counts **in-flight** jobs — `queued` and `active` — alongside the day's completed work,
+  because a job that has been admitted is already consuming the allowance it was admitted
+  against. A job leaves that count only on a terminal transition. A job that never reaches
+  one therefore holds part of its client's budget with no time bound, and holds it again
+  every subsequent UTC day.
+
+  This is correct behaviour and the price of the daily cap being real, not a defect — but it
+  has an operational consequence worth knowing before an incident rather than during one.
+  Stuck jobs normally clear themselves through the reconciler's sweeper, and that sweeper
+  runs inside **`cmd/webhook-worker`** under a fleet-wide advisory lock. **With every
+  webhook-worker down, stranded jobs stop being recovered**, so "clients are running out of
+  quota" can be a symptom of a stopped webhook-worker rather than of client traffic.
+
+  ```
+  go run ./cmd/manage-clients list-inflight                       # everything holding budget
+  go run ./cmd/manage-clients list-inflight <client-id> 2h        # one client, stuck 2h+
+  go run ./cmd/manage-clients cancel-job <job-id>
+  ```
+
+  Cancel through this command, never with a hand-written status update. `cancel-job` goes
+  through the same guarded transition the client-facing cancel uses, which records the job's
+  contribution to the daily rollup in the same transaction that frees its slot. A direct
+  update frees the slot and never books the contribution — it repairs the quota and breaks
+  its accounting at once, which is a worse state than the stuck job, because nothing looks
+  wrong afterwards.
+
 - **What can still overshoot:** because the pre-upload gate is unlocked by design, a burst of
   simultaneous requests from one client can upload before the authoritative check rejects
   them — wasted uploads, never over-admission — and that residual is measured by the phase's
