@@ -136,6 +136,19 @@ const pdfMaxInflatedStreamBytes = 1 << 20 // 1 MiB
 // text operators -- which produced a x19 overcount before the operator match was
 // tightened (R6). The token rule closes that on its own; skipping removes the
 // surface rather than merely surviving it.
+//
+// WHY these are provably safe and /FontFile* is not, rather than merely feeling
+// safer. ISO 32000 §7.3.8.1 requires a stream to be an INDIRECT object, so a
+// stream dictionary can never be nested inside another stream's dictionary --
+// a Form XObject that draws an image references it (/Im0 9 0 R) and cannot
+// contain it. Therefore /Subtype /Image and /Length1, which are keys OF a
+// stream dictionary, can only ever describe the stream they precede.
+//
+// /FontFile* is the opposite case and that is the whole distinction: it is a
+// key of a font DESCRIPTOR, an ordinary dictionary that may legitimately be
+// nested, by value, inside a text-bearing Form XObject's own /Resources. The
+// rule is not "these markers are more specific" but "these markers cannot
+// appear in a dictionary describing something else".
 var pdfProvenSkipMarkers = [][]byte{
 	[]byte("/Subtype /Image"),
 	[]byte("/Subtype/Image"),
@@ -303,6 +316,14 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 // wider behaviour. Narrowing a shared primitive to suit one consumer would have
 // traded this false positive for a false negative in the risk-token filter,
 // which is a worse trade.
+//
+// A known, accepted gap: PDF permits a "%" comment wherever whitespace is
+// allowed, so `<< … >> % note\nstream` is legal and this check rejects it. The
+// rejection is safe -- such a range becomes opaque, costing coverage, which can
+// only turn an answer into "unknown" and never into a wrong verdict in either
+// direction. Recorded rather than fixed because tolerating comments here means
+// re-implementing PDF whitespace rules in a function whose entire value is that
+// it is trivially auditable.
 func hasStreamKeywordSyntax(buf []byte, streamStart int) bool {
 	// streamStart points just past the keyword; step back over it.
 	i := streamStart - len("stream")

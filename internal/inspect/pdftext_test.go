@@ -583,3 +583,36 @@ func TestProvenSkipMarkersStillSkip(t *testing.T) {
 		})
 	}
 }
+
+// TestStreamKeywordSyntaxBoundaries pins hasStreamKeywordSyntax's accepted and
+// rejected forms, including the one legal form it knowingly rejects.
+//
+// The rejection of a comment between the dictionary and the keyword is a
+// recorded gap, not an oversight: it is safe in the only sense that matters
+// here, because a rejected range becomes opaque and can only produce "unknown",
+// never a wrong verdict in either direction. Pinning it means a future reader
+// finds the decision rather than rediscovering the behaviour.
+func TestStreamKeywordSyntaxBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before string
+		want   bool
+	}{
+		{"newline between dict and keyword", "<< /Length 5 >>\n", true},
+		{"no whitespace at all", "<< /Length 5 >>", true},
+		{"CRLF", "<< /Length 5 >>\r\n", true},
+		{"spaces and tabs", "<< /Length 5 >> \t ", true},
+		{"inside a literal string", "(some text ", false},
+		{"after a bare keyword", "endobj\n", false},
+		{"dictionary not closed", "<< /Length 5 ", false},
+		{"comment between dict and keyword (known accepted gap)", "<< /Length 5 >> % note\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := []byte(tc.before + "stream\nbody\nendstream")
+			at := len(tc.before) + len("stream")
+			if got := hasStreamKeywordSyntax(buf, at); got != tc.want {
+				t.Fatalf("hasStreamKeywordSyntax(%q) = %v, want %v", tc.before+"stream", got, tc.want)
+			}
+		})
+	}
+}
