@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: executing
-stopped_at: Phase 59 planned — 7 plans ready to execute
-last_updated: "2026-08-30T02:04:40.689Z"
-last_activity: "2026-08-30 -- Quick 260830-6zr: CI auto-triggers off (manual workflow_dispatch only); phase 59 planned (65d40c1)"
+status: completed
+stopped_at: Phase 59 complete; nothing pushed yet
+last_updated: "2026-08-30T05:21:45.770Z"
+last_activity: 2026-08-30 -- Phase 59 executed (7 plans) and verified (6055a56)
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 29
-  completed_plans: 22
-  percent: 50
+  completed_plans: 29
+  percent: 67
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 59 (born-digital-pdf-routing) — PLANNED
-Plan: 0 of 7 — ready to execute
-Status: Phase 59 planned — 7 plans across 4 waves, ready to execute. Research prototyped the detector against pdftotext on six PDFs and caught an x19 overcount in our own scanner before a line of production code was written.
-Last activity: 2026-08-30 -- Quick 260830-6zr: CI auto-triggers off (manual workflow_dispatch only); phase 59 planned (65d40c1)
+Phase: 59 (born-digital-pdf-routing) — COMPLETE
+Plan: 7 of 7 — all executed and verified
+Status: Phase 59 complete: BDPD-01 and BDPD-02 both satisfied with live evidence, 7 plans executed. Next in v1.13: Phase 60 (Sanitize) and Phase 61 (v1.12 debt tail).
+Last activity: 2026-08-30 -- Phase 59 executed (7 plans) and verified (6055a56)
 
 ## Performance Metrics
 
@@ -279,7 +279,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 59 planned — 7 plans ready to execute
+Stopped at: Phase 59 complete; nothing pushed yet
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
