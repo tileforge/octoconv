@@ -136,10 +136,20 @@ func TestTextLayerDegradesRatherThanClaimingAbsence(t *testing.T) {
 	}{
 		{"budget exhausted", pdfTextScanState{covered: true, budgetHit: true}, false, false, ReasonWorkCeilingBytes},
 		{"window truncated", pdfTextScanState{covered: true}, true, false, ReasonWorkCeilingBytes},
-		{"stream not decodable", pdfTextScanState{covered: false}, false, false, ReasonMalformedInput},
-		{"encrypted", pdfTextScanState{covered: true}, false, true, ReasonMalformedInput},
-		{"encrypted outranks a lost coverage", pdfTextScanState{covered: false}, false, true, ReasonMalformedInput},
-		{"budget outranks a lost coverage", pdfTextScanState{covered: false, budgetHit: true}, false, false, ReasonWorkCeilingBytes},
+
+		// The two undecodable causes carry DIFFERENT reasons, and this is the
+		// distinction the whole phase enforces: "this build has no decoder"
+		// is a limit of ours, "the bytes are broken" is a claim about the
+		// file. Reporting the first as the second tells a client their
+		// document is corrupt when it merely uses a feature we skipped.
+		{"filter this build cannot decode", pdfTextScanState{covered: false, parserLimit: true}, false, false, ReasonParserUnavailable},
+		{"body corrupt part-way through a decoder we have", pdfTextScanState{covered: false, malformed: true}, false, false, ReasonMalformedInput},
+		{"coverage lost with no specific cause", pdfTextScanState{covered: false}, false, false, ReasonParserUnavailable},
+
+		{"encrypted", pdfTextScanState{covered: true}, false, true, ReasonParserUnavailable},
+		{"encrypted outranks a lost coverage", pdfTextScanState{covered: false}, false, true, ReasonParserUnavailable},
+		{"budget outranks a lost coverage", pdfTextScanState{covered: false, parserLimit: true, budgetHit: true}, false, false, ReasonWorkCeilingBytes},
+		{"a real corruption outranks a mere build limit", pdfTextScanState{covered: false, parserLimit: true, malformed: true}, false, false, ReasonMalformedInput},
 	}
 
 	for _, tc := range cases {

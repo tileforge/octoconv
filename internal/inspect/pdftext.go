@@ -155,12 +155,23 @@ const (
 	// pdfStreamSkipped: an image or font program. Cannot carry a text layer,
 	// so not examining it costs the report nothing.
 	pdfStreamSkipped
-	// pdfStreamOpaque: could not be decoded (an unsupported filter, an
-	// encrypted body, an illegible dictionary, or a stream past the
-	// single-stream inflate ceiling). This is the branch that must never be
-	// confused with pdfStreamSkipped: an opaque stream MIGHT have carried
-	// text, so after one of these the report may no longer say "absent".
+	// pdfStreamOpaque: could not be decoded because THIS BUILD has no decoder
+	// for it -- an unsupported filter, an encrypted body, an illegible
+	// dictionary, or a stream past the single-stream inflate ceiling. This is
+	// the branch that must never be confused with pdfStreamSkipped: an opaque
+	// stream MIGHT have carried text, so after one of these the report may no
+	// longer say "absent".
 	pdfStreamOpaque
+	// pdfStreamMalformed: the stream declared a filter this build DOES decode
+	// and the decode then failed part-way -- a corrupt or truncated body.
+	//
+	// Separate from pdfStreamOpaque because the two lead to different REASONS,
+	// and the difference is the distinction this whole phase enforces:
+	// "no decoder here" is a limit of this build (parser_unavailable), while
+	// "the bytes are broken" is a claim about the FILE (malformed_input).
+	// Reporting the first as the second tells a client their file is corrupt
+	// when it is merely using a feature we did not implement.
+	pdfStreamMalformed
 )
 
 // pdfTextScanState accumulates what a whole-buffer scan learned.
@@ -175,6 +186,11 @@ type pdfTextScanState struct {
 	nonWhitespace int
 	covered       bool
 	budgetHit     bool
+	// parserLimit: at least one stream was undecodable by THIS BUILD.
+	parserLimit bool
+	// malformed: at least one stream declared a filter we do decode, and the
+	// decode failed part-way.
+	malformed bool
 	// remaining is the LOCAL inflate allowance, counted down as stream bodies
 	// are decoded. It is not the shared Tracker.
 	//
@@ -230,6 +246,11 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 			continue
 		case pdfStreamOpaque:
 			state.covered = false
+			state.parserLimit = true
+			continue
+		case pdfStreamMalformed:
+			state.covered = false
+			state.malformed = true
 			continue
 		}
 		state.nonWhitespace += countTextOperatorArgBytes(data)
@@ -294,9 +315,10 @@ func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfText
 		return nil, pdfStreamOpaque
 	}
 	if readErr != nil && readErr != io.EOF {
-		// A corrupt or truncated Flate body. The bytes exist and we could not
-		// read them -- opaque, not empty.
-		return nil, pdfStreamOpaque
+		// zlib accepted the header and then failed: the body really is corrupt
+		// or truncated. That IS a claim about the file, unlike everything else
+		// on this path, so it gets its own class.
+		return nil, pdfStreamMalformed
 	}
 	if !chargeInflatedBytes(tr, len(out), state) {
 		return nil, pdfStreamOpaque
@@ -636,19 +658,32 @@ func pdfTextLayerVerdict(state pdfTextScanState, truncated, encrypted bool) (val
 	}
 	switch {
 	case encrypted:
-		// Stream bodies are encrypted, so an inflate failure says nothing
-		// about whether text exists. malformed_input rather than a ceiling
-		// reason: this is a property of the FILE, and no budget would change
-		// it (status.go's own vocabulary note).
-		return nil, ReasonMalformedInput
+		// Stream bodies are encrypted and this build does not decrypt them, so
+		// an inflate failure says nothing about whether text exists. NOT
+		// malformed_input: the file is not broken, we simply cannot open it --
+		// and telling a client their document is corrupt when it is merely
+		// password-protected is the kind of claim-about-the-file-made-from-our-
+		// own-limits this phase exists to remove. Not a ceiling reason either:
+		// no budget would change it (status.go's own vocabulary note).
+		return nil, ReasonParserUnavailable
 	case state.budgetHit:
 		return nil, ReasonWorkCeilingBytes
 	case truncated:
 		return nil, ReasonWorkCeilingBytes
-	case !state.covered:
-		// Some stream could not be decoded -- an unsupported filter, a corrupt
-		// body, or an unreadable dictionary. It might have carried text.
+	case state.malformed:
+		// A decoder we DO have failed part-way through a body. Checked before
+		// parserLimit because a genuinely corrupt file is the more specific and
+		// more actionable finding when both are true.
 		return nil, ReasonMalformedInput
+	case state.parserLimit:
+		// A filter, or an encrypted body, or a stream too large to inflate --
+		// all limits of THIS BUILD, honestly declared.
+		return nil, ReasonParserUnavailable
+	case !state.covered:
+		// Coverage was lost without either specific cause being recorded --
+		// today only the truncated stream-range scan reaches here. Report the
+		// build's own limit rather than inventing a fact about the file.
+		return nil, ReasonParserUnavailable
 	}
 	return TextLayerAbsent, ""
 }

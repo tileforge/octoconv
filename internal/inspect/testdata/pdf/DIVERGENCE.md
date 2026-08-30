@@ -28,7 +28,7 @@ encoding the two are simply different quantities.
 | `multipage_text.pdf` | absent | 0 | absent | 0 | `agree` |
 | `cid_identity_h.pdf` | absent | 10 | absent | 10 | `agree` |
 | `embedded_font.pdf` | present | 42 | present | 42 | `agree` |
-| `encrypted_owner.pdf` | unknown (`malformed_input`) | 0 | present | 82 | `go_unknown` |
-| `lzw_filtered.pdf` | unknown (`malformed_input`) | 0 | present | 56 | `go_unknown` |
+| `encrypted_owner.pdf` | unknown (`parser_unavailable`) | 0 | present | 82 | `go_unknown` |
+| `lzw_filtered.pdf` | unknown (`parser_unavailable`) | 0 | present | 56 | `go_unknown` |
 | `objstm_born_digital.pdf` | present | 82 | present | 82 | `agree` |
 | `uncompressed_text.pdf` | present | 53 | present | 53 | `agree` |
