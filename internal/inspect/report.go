@@ -180,16 +180,28 @@ func buildChecks(format string, families []FamilyResult, findings []Finding) []C
 //
 // The per-Check loop below is the PRIMARY mechanism and is intentionally
 // narrow: it marks Coverage incomplete for EXACTLY the codes whose own
-// Check carries one of the two ceiling reasons (ReasonWorkCeilingBytes/
-// ReasonWorkCeilingTime) -- never for a code that is merely unknown for a
-// structural reason (ReasonCompressedObjectStreams, ReasonParserUnavailable,
+// Check carries a reason status.go's makesReportIncomplete admits -- never
+// for a code that is merely unknown for a structural reason
+// (ReasonCompressedObjectStreams, ReasonParserUnavailable,
 // ReasonMalformedInput) or genuinely not applicable
 // (ReasonFormatNotApplicable). This is D-02a's central distinction, applied
 // mechanically: structural blindness about the FILE never makes the REPORT
-// selective; only exhausting THIS SERVICE'S OWN byte/time budget does.
+// selective; input this service never actually examined does.
+//
+// The membership test is DELEGATED, not repeated here (Phase 59, D-11). An
+// earlier version of this loop compared against ReasonWorkCeilingBytes and
+// ReasonWorkCeilingTime inline, so the set was declared in three places --
+// here, in MarkTruncated, and in MarkTruncatedByCharacteristic -- and
+// widening it meant remembering all three. The two Mark* methods gate
+// themselves anyway; this filter exists only to avoid calling them for
+// reasons that are obviously not candidates, and it must therefore use the
+// SAME predicate they do or it becomes a second, quieter gate.
 //
 // The characteristics loop below it closes codex PR9 finding 5 / T-SLE-05:
-// a Check is not the only place a ceiling reason can appear. A media
+// a Check is not the only place a coverage-losing reason can appear. Since
+// Phase 59 this is also the path by which pdf.go's own text_layer_reason
+// characteristic (Plan 59-05) reaches Coverage -- the "_reason" suffix is
+// load-bearing naming, not decoration. A media
 // analyzer can report a characteristic-level "<name>_reason" key (e.g.
 // duration_seconds_reason) carrying ReasonWorkCeilingBytes/
 // ReasonWorkCeilingTime with NO accompanying Check at all -- the per-Check
@@ -220,7 +232,7 @@ func buildChecks(format string, families []FamilyResult, findings []Finding) []C
 func buildCoverage(merged Characteristics, checks []Check, tr *Tracker) Coverage {
 	coverage := Coverage{Complete: true}
 	for _, c := range checks {
-		if c.Reason == ReasonWorkCeilingBytes || c.Reason == ReasonWorkCeilingTime {
+		if c.Reason.makesReportIncomplete() {
 			coverage.MarkTruncated(c.Reason, c.Code)
 		}
 	}

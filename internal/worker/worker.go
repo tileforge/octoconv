@@ -412,9 +412,9 @@ var terminalOCRSignatures = []string{
 // NOT a copy of isDocumentTerminal's/isHTMLTerminal's blanket
 // timeout-is-terminal shape, and NOT a copy of isAudioTerminal's/
 // isAVTerminal's non-timeout-default-to-shared-isTerminal shape either.
-// Deterministic input/client-fault guard rejections (ErrOCRBornDigital,
-// ErrOCRTooManyPages, ErrOCRPageBoxTooLarge, ErrOCRImageTooLarge, an unknown-
-// language rejection, or an unsupported-target rejection) are ALWAYS
+// Deterministic input/client-fault guard rejections (ErrOCRTooManyPages,
+// ErrOCRPageBoxTooLarge, ErrOCRImageTooLarge, an unknown-language rejection,
+// or an unsupported-target rejection) are ALWAYS
 // terminal — a retry can never help a rejection that is deterministic on the
 // input. A wrapped context.DeadlineExceeded (an OCR_ENGINE_TIMEOUT expiry) is
 // the single divergence from isDocumentTerminal/isHTMLTerminal: it classifies
@@ -432,8 +432,7 @@ func isOCRTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, convert.ErrOCRBornDigital) ||
-		errors.Is(err, convert.ErrOCRTooManyPages) ||
+	if errors.Is(err, convert.ErrOCRTooManyPages) ||
 		errors.Is(err, convert.ErrOCRPageBoxTooLarge) ||
 		errors.Is(err, convert.ErrOCRImageTooLarge) {
 		return true
@@ -470,9 +469,6 @@ func isOCRTerminal(err error) bool {
 // function so the mapping itself is unit-testable without a live Postgres/S3
 // Handler. Order matters: the more specific sentinels are checked before the
 // generic default.
-//   - ErrOCRBornDigital -> "born_digital": the PDF already has an extractable
-//     text layer -- OCR was never needed and will never succeed as an OCR
-//     job.
 //   - ErrOCRTooManyPages -> "too_many_pages".
 //   - ErrOCRPageBoxTooLarge -> "page_too_large".
 //   - ErrOCRImageTooLarge -> "image_too_large".
@@ -480,9 +476,11 @@ func isOCRTerminal(err error) bool {
 //   - an unsupported-target rejection -> "unsupported_target".
 //   - default -> "engine_error", mirroring every other engine's fallback.
 func ocrFailureCode(err error) (code, message string) {
+	// Phase 59 removed a born-digital branch from the head of this switch:
+	// convert no longer refuses a PDF for having a text layer, so no error
+	// reaching here can carry that meaning. CodeBornDigital survives as a
+	// historical code (descriptors.go) for jobs that failed before the change.
 	switch {
-	case errors.Is(err, convert.ErrOCRBornDigital):
-		return CodeBornDigital, "pdf already has an extractable text layer"
 	case errors.Is(err, convert.ErrOCRTooManyPages):
 		return CodeTooManyPages, "pdf page count exceeds the configured maximum"
 	case errors.Is(err, convert.ErrOCRPageBoxTooLarge):

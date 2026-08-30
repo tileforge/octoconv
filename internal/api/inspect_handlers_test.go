@@ -13,12 +13,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/inspect"
 )
 
@@ -541,7 +544,7 @@ func TestInspectSniffReadFailureIsObservableAsReadFailed(t *testing.T) {
 	data := macroDocxFixture(t) // real docx-shaped bytes; only the PK prefix is ever actually read through the failing wrapper below
 	file := &failingAfterPrefixContainerFile{data: data, failErr: errors.New("simulated disk read failure")}
 
-	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "docx")
+	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "docx", inspect.NewTracker(inspect.Budget{}))
 	if detected != inspectZipReadFailedFormat {
 		t.Fatalf("detected = %q, want %q", detected, inspectZipReadFailedFormat)
 	}
@@ -687,7 +690,7 @@ func TestInspectMimetypeReadFailureIsObservableAsReadFailed(t *testing.T) {
 	}
 	file := &rangeFailContainerFile{data: data, failFrom: 0, failTo: failTo, passThroughMaxLen: 20, failErr: errors.New("simulated disk read failure")}
 
-	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "odt")
+	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "odt", inspect.NewTracker(inspect.Budget{}))
 	if detected != inspectZipReadFailedFormat {
 		t.Fatalf("detected = %q, want %q -- a mimetype-entry read failure, observed AFTER the central directory itself was read successfully, must not be silently folded into an unrecognized/empty format", detected, inspectZipReadFailedFormat)
 	}
@@ -2036,7 +2039,7 @@ func (f *alwaysFailingFile) Close() error                      { return nil }
 func TestInspectInitialSniffReadFailureIsReadFailedNotUnrecognized(t *testing.T) {
 	file := &alwaysFailingFile{size: 4096, failErr: errors.New("simulated temp-file read failure")}
 
-	detected, sniffed, sniffedZip := detectInspectFormat(file, file.size, "png")
+	detected, sniffed, sniffedZip := detectInspectFormat(file, file.size, "png", inspect.NewTracker(inspect.Budget{}))
 	if detected != inspectSniffReadFailedFormat {
 		t.Fatalf("detected = %q, want %q -- an unreadable upload is not an unrecognized one", detected, inspectSniffReadFailedFormat)
 	}
@@ -2082,7 +2085,7 @@ func TestInspectSniffReadFailureDoesNotSuppressALaterDetection(t *testing.T) {
 	// the ZIP detector uses, succeed.
 	file := &failingStreamOnlyFile{data: data}
 
-	detected, _, _ := detectInspectFormat(file, int64(len(data)), "docx")
+	detected, _, _ := detectInspectFormat(file, int64(len(data)), "docx", inspect.NewTracker(inspect.Budget{}))
 	if detected != "docx" {
 		t.Errorf("detected = %q, want docx -- the ZIP detector succeeded on this upload, and a failed magic peek must not override a detection that actually happened", detected)
 	}
@@ -2183,7 +2186,7 @@ func TestInspectLaterSnifferReadFailureIsReadFailedNotUnrecognized(t *testing.T)
 		failErr: errors.New("simulated mid-detection temp-file failure"),
 	}
 
-	detected, _, _ := detectInspectFormat(file, int64(len(unrecognized)), "bin")
+	detected, _, _ := detectInspectFormat(file, int64(len(unrecognized)), "bin", inspect.NewTracker(inspect.Budget{}))
 	if detected != inspectSniffReadFailedFormat {
 		t.Fatalf("detected = %q, want %q -- a sniffer that failed to READ must not be reported as one that did not RECOGNIZE", detected, inspectSniffReadFailedFormat)
 	}
@@ -2221,4 +2224,270 @@ func TestExtensionMismatchUnrecognizedUploadIsUnknownNotNotApplicable(t *testing
 			t.Errorf("check = %+v, want not_applicable/format_not_applicable", c)
 		}
 	})
+}
+
+// --- Phase 59, D-12: one sniff window, three distinguishable outcomes -------
+
+// TestInspectContentMatcherReadFailureIsReadFailedNotUnrecognized is the
+// defect this plan exists for, one layer below PR9R25/PR9R27.
+//
+// LooksLikeHTML, LooksLikeLaTeX, LooksLikeText and IsOLECFB all return a bare
+// bool, so a read failure INSIDE any of them was indistinguishable from "not
+// this format". An upload whose temp file died on exactly those reads was
+// therefore reported as format_unrecognized -- a claim about the FILE, made on
+// the strength of our own inability to read it.
+//
+// REPRODUCED before the fix: this exact input reported detected="" and a
+// vocabulary of unknown/format_unrecognized checks.
+//
+// The fake fails exactly the ONE read that asks for the content-matcher
+// window, and serves every other read normally. That precision is the whole
+// point of the test, and it took two corrections to get right.
+//
+// A first draft used failAfterNthReadAtFile (fail read N and everything after)
+// and passed against the OLD code too -- because the later video/audio
+// sniffers also failed, and PR9R27 had already taught THOSE to report
+// read_failed. It was green for a reason that had nothing to do with the
+// content matchers.
+//
+// A second draft failed read #2 by index, which was a guess. The read order
+// was then MEASURED rather than reasoned about: 12 bytes (convert.Sniff's
+// magic peek), 4 bytes (the PK/zip prefix check), then the window. Read #2 is
+// the PK peek, whose error is discarded by design -- so that draft was
+// targeting a read this test has no opinion about.
+//
+// Targeting by SIZE instead of index survives both mistakes: in the old code
+// the window is LooksLikeHTML's own readSniffPrefix read, in the new code it
+// is the shared window, and BOTH ask for exactly min(size, SniffWindowBytes)
+// bytes. The fake asserts that it matched exactly once, so if the read sizes
+// ever change, this test fails loudly instead of quietly disarming itself.
+//
+// The differential: with only this read failing, the old code reaches the end
+// of the sniffer chain with detected=="" and sniffReadFailed==false and
+// reports format_unrecognized. Verified by running against a deliberately
+// reverted implementation.
+func TestInspectContentMatcherReadFailureIsReadFailedNotUnrecognized(t *testing.T) {
+	// Content no magic-byte sniffer recognizes, declared as html so the
+	// content-matcher branch is the one that would have run.
+	//
+	// The file is deliberately LARGER than convert.SniffWindowBytes so the
+	// window read asks for exactly that many bytes -- a length no other read
+	// in this chain uses. With a small file every later sniffer reads the
+	// whole thing too, the sizes collide, and the fake would fire three
+	// times; the matched==1 assertion below caught precisely that while this
+	// test was being written.
+	data := append([]byte("<!doctype html>\n<p>hello</p>\n"), bytes.Repeat([]byte("x"), convert.SniffWindowBytes)...)
+	file := &failOnReadOfSizeFile{
+		data:     data,
+		failSize: convert.SniffWindowBytes,
+		failErr:  errors.New("simulated temp-file failure during the content-matcher window"),
+	}
+
+	detected, _, _ := detectInspectFormat(file, int64(len(data)), "html", inspect.NewTracker(inspect.Budget{}))
+
+	if file.matched != 1 {
+		t.Fatalf("the fake failed %d reads of %d bytes, want exactly 1 -- the read sizes in this chain changed and this "+
+			"test is no longer targeting the content-matcher window", file.matched, file.failSize)
+	}
+	if detected != inspectSniffReadFailedFormat {
+		t.Fatalf("detected = %q, want %q -- a window that failed to READ must not be reported as content that was not "+
+			"RECOGNIZED; every other read in this chain succeeded, so nothing else can carry the failure",
+			detected, inspectSniffReadFailedFormat)
+	}
+}
+
+// failOnReadOfSizeFile fails every ReadAt asking for exactly failSize bytes and
+// serves all others normally, counting the matches so a test can assert it hit
+// what it aimed at.
+//
+// Distinct from failAfterNthReadAtFile (fail read N and all that follow) for a
+// reason worth stating: with a cascading fake, a test can pass because some
+// LATER stage caught the failure, which proves nothing about the stage under
+// test. Isolating one read turns "read_failed is reported" into "read_failed
+// is reported BY THIS STAGE".
+type failOnReadOfSizeFile struct {
+	data     []byte
+	off      int64
+	failSize int
+	matched  int
+	failErr  error
+}
+
+func (f *failOnReadOfSizeFile) ReadAt(p []byte, off int64) (int, error) {
+	if len(p) == f.failSize {
+		f.matched++
+		return 0, f.failErr
+	}
+	if off < 0 || off >= int64(len(f.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, f.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (f *failOnReadOfSizeFile) Read(p []byte) (int, error) {
+	n, err := f.ReadAt(p, f.off)
+	f.off += int64(n)
+	return n, err
+}
+
+func (f *failOnReadOfSizeFile) Seek(off int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		f.off = off
+	case io.SeekCurrent:
+		f.off += off
+	case io.SeekEnd:
+		f.off = int64(len(f.data)) + off
+	}
+	return f.off, nil
+}
+func (f *failOnReadOfSizeFile) Close() error { return nil }
+
+// TestInspectBinaryContentIsUnrecognizedNotReadFailed is the other half, and
+// it is the one that keeps the fix above from overshooting.
+//
+// A binary upload reads perfectly well; the content envelope rejects it
+// because it is not text-shaped. Reporting THAT as read_failed would be a new
+// lie in the opposite direction -- so the two outcomes are kept apart in
+// detectInspectFormat rather than folded into one "the matchers said no" path.
+func TestInspectBinaryContentIsUnrecognizedNotReadFailed(t *testing.T) {
+	// NUL bytes: readable, valid, and definitively not a text document.
+	data := append([]byte{0x01, 0x00, 0x02, 0x00}, bytes.Repeat([]byte{0x00, 0xFF}, 512)...)
+
+	detected, _, _ := detectInspectFormat(&memMultipartFile{bytes.NewReader(data)}, int64(len(data)), "md", inspect.NewTracker(inspect.Budget{}))
+	if detected == inspectSniffReadFailedFormat {
+		t.Fatal("detected = sniff-read-failed for an upload that read without error -- " +
+			"a binary file is unrecognized content, not an I/O failure")
+	}
+	if detected != "" {
+		t.Fatalf("detected = %q, want empty (unrecognized)", detected)
+	}
+}
+
+// TestInspectContentMatcherStillDetectsHTML pins that the window refactor did
+// not cost the matchers their actual job.
+func TestInspectContentMatcherStillDetectsHTML(t *testing.T) {
+	for _, tc := range []struct {
+		declared string
+		data     []byte
+		want     string
+	}{
+		{"html", []byte("<!doctype html>\n<p>hi</p>"), "html"},
+		{"latex", []byte(`\documentclass{article}` + "\n"), "latex"},
+		{"md", []byte("# heading\n\nsome text\n"), "md"},
+		{"doc", append([]byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}, bytes.Repeat([]byte{0}, 512)...), inspectOLECFBFormat},
+	} {
+		t.Run(tc.declared, func(t *testing.T) {
+			detected, _, _ := detectInspectFormat(&memMultipartFile{bytes.NewReader(tc.data)}, int64(len(tc.data)), tc.declared, inspect.NewTracker(inspect.Budget{}))
+			if detected != tc.want {
+				t.Fatalf("detected = %q, want %q", detected, tc.want)
+			}
+		})
+	}
+}
+
+// TestInspectSniffWindowIsChargedToTheBudget pins the round-23 sweep gap:
+// before this plan the content-matcher reads were spent outside any budget, so
+// a client could make this handler read SniffWindowBytes for detection AND the
+// full configured allowance for analysis -- exceeding the ceiling the service
+// reports as enforced.
+//
+// The assertion is on the Tracker rather than on the response body because
+// that is where the fact lives: Remaining() must have dropped by exactly the
+// window that was read.
+func TestInspectSniffWindowIsChargedToTheBudget(t *testing.T) {
+	data := []byte("# a small markdown document\n")
+	const budget = 1 << 16
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: budget, MaxDuration: time.Minute})
+
+	before := tr.Remaining()
+	detectInspectFormat(&memMultipartFile{bytes.NewReader(data)}, int64(len(data)), "md", tr)
+	after := tr.Remaining()
+
+	if spent := before - after; spent != int64(len(data)) {
+		t.Fatalf("Tracker spent %d bytes on detection, want %d (the window actually read) -- "+
+			"detection's reads must land in the operation's budget, not beside it", spent, len(data))
+	}
+}
+
+// TestInspectBornDigitalPDFOffersTextExtraction is the join between the phase's
+// two requirements, and no other test in the phase asserts it.
+//
+// BDPD-01 and BDPD-02 were built and verified separately -- one plan proved the
+// report can say a PDF has a text layer, another proved a job can return that
+// layer. Each proved its own half. But the two are only useful to a client
+// TOGETHER: a report saying "this PDF has text" is worth little if the same
+// body does not also say which operation will hand that text over.
+//
+// The fixture is deliberately the /ObjStm one, so the claim is tested in its
+// hardest form: a file where every other PDF check is blind.
+func TestInspectBornDigitalPDFOffersTextExtraction(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "inspect", "testdata", "pdf", "objstm_born_digital.pdf"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	status, body := doInspect(t, srv, "objstm_born_digital.pdf", data)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+
+	var resp inspectResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+
+	// 1. The report answers the question (BDPD-01).
+	if got := resp.Characteristics["text_layer"]; got != inspect.TextLayerPresent {
+		t.Errorf("characteristics.text_layer = %v, want %q", got, inspect.TextLayerPresent)
+	}
+
+	// 2. The same body offers the operation that will hand that text over
+	//    (BDPD-02). Before this phase this entry was ALSO present -- and the
+	//    job it advertised failed terminally. What changed is that the offer
+	//    is now true.
+	offered := false
+	for _, op := range resp.Operations {
+		if op.Target == "txt" && op.Engine == convert.EngineOCR {
+			offered = true
+			if !op.Available {
+				t.Errorf("pdf->txt is listed but available=false (reason %q)", op.UnavailableReason)
+			}
+		}
+	}
+	if !offered {
+		t.Error("operations does not list a txt target on the ocr engine -- the report tells a client this PDF has a " +
+			"text layer while offering no way to obtain it")
+	}
+
+	// 3. And the rest of the report stays honest in the same breath. This is
+	//    the part that makes the fixture choice load-bearing: /ObjStm blinds
+	//    the PDF-interior checks, and the text-layer answer above must NOT
+	//    have quietly relaxed that.
+	//
+	//    Scoped to the pdf_ codes deliberately. A first draft asserted that NO
+	//    check may be clean, and extension_mismatch failed it -- correctly.
+	//    That check compares the declared extension against the detected
+	//    format, both "pdf" here; it is a claim about the FILENAME, and an
+	//    object stream cannot hide a filename. Broadening a blindness rule to
+	//    a check the blindness does not reach would have been the same kind of
+	//    over-claim this phase spent its time removing.
+	sawBlind := false
+	for _, c := range resp.Checks {
+		if c.Reason == inspect.ReasonCompressedObjectStreams {
+			sawBlind = true
+		}
+		if strings.HasPrefix(string(c.Code), "pdf_") && c.Status == inspect.StatusClean {
+			t.Errorf("check %s = clean on a PDF with compressed object streams -- the text-layer exception is one "+
+				"characteristic, not a general licence to answer confidently about the file's interior", c.Code)
+		}
+	}
+	if !sawBlind {
+		t.Error("no check reported compressed_object_streams -- the /ObjStm downgrade stopped firing")
+	}
 }

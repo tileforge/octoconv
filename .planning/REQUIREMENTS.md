@@ -51,8 +51,8 @@
 
 ### Born-digital PDF routing (BDPD)
 
-- [ ] **BDPD-01**: Отчёт inspect сообщает, содержит ли PDF пригодный текстовый слой, с честной пометкой выборочности по INSP-03
-- [ ] **BDPD-02**: Born-digital PDF перестаёт быть тупиком: клиент получает осмысленный маршрут вместо слепого прогона через Tesseract или отказа, и вводящий в заблуждение комментарий `internal/convert/ocrguards.go:227-228` (советующий движок, который pdf на вход не принимает) исправлен
+- [x] **BDPD-01**: Отчёт inspect сообщает, содержит ли PDF пригодный текстовый слой, с честной пометкой выборочности по INSP-03
+- [x] **BDPD-02**: Born-digital PDF перестаёт быть тупиком: клиент получает осмысленный маршрут вместо слепого прогона через Tesseract или отказа, и вводящий в заблуждение комментарий `internal/convert/ocrguards.go:227-228` (советующий движок, который pdf на вход не принимает) исправлен
 
 ### Sanitize (SANI)
 
@@ -138,8 +138,8 @@
 | INSP-04 | Phase 58 | Complete |
 | INSP-05 | Phase 58 | Complete |
 | INSP-06 | Phase 58 | Complete |
-| BDPD-01 | Phase 59 | Pending |
-| BDPD-02 | Phase 59 | Pending |
+| BDPD-01 | Phase 59 | Complete |
+| BDPD-02 | Phase 59 | Complete |
 | SANI-01 | Phase 60 | Pending |
 | SANI-02 | Phase 60 | Pending |
 | SANI-03 | Phase 60 | Pending |

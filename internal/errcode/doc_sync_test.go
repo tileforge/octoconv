@@ -44,6 +44,15 @@ const unknownCodeFallbackPhrase = "MUST treat an unrecognized code as a generic 
 const (
 	syncSectionHeader  = "## Synchronous error codes"
 	asyncSectionHeader = "## Asynchronous job-failure codes"
+	// historicalSectionHeader delimits the codes this build can no longer
+	// produce but which clients may still receive (Phase 59).
+	//
+	// extractTableCodes stops at the next "## " line, so this section is
+	// invisible to the async check above BY CONSTRUCTION rather than by
+	// careful placement -- a property worth stating, because the alternative
+	// (a shared table with a "retired" column) would have required teaching
+	// that parser about a column it has no notion of.
+	historicalSectionHeader = "## Historical job-failure codes"
 )
 
 // codeRowPattern matches a markdown table row whose first (code) column is
@@ -153,6 +162,80 @@ func TestErrorCodesDocMatchesGoConstants(t *testing.T) {
 	}
 	if missing, extra := diffSets(goAsync, docAsync); len(missing) > 0 || len(extra) > 0 {
 		t.Errorf("async table drift between worker.AllFailureCodes() and docs/ERROR-CODES.md -- missing from the document: %v; present in the document but not declared by worker.AllFailureCodes(): %v", missing, extra)
+	}
+}
+
+// TestHistoricalCodesDocMatchesGoConstants extends this file's contract to the
+// retired vocabulary.
+//
+// Without it the historical section would be prose: a place to write codes down
+// with nothing checking that the list is right, which is exactly the state the
+// two active tables were in before Phase 56 added the test above. An unenforced
+// table drifts -- that is not a prediction, it is what happened here.
+func TestHistoricalCodesDocMatchesGoConstants(t *testing.T) {
+	doc := readDoc(t)
+
+	docHistorical := extractTableCodes(doc, historicalSectionHeader)
+	if len(docHistorical) == 0 {
+		t.Fatal("extracted zero codes from the historical table -- the section header or table format in " +
+			"docs/ERROR-CODES.md changed in a way this parser no longer understands, or the section was deleted; " +
+			"a retired code removed from the document becomes a value the API returns and the contract denies")
+	}
+
+	if missing, extra := diffSets(worker.HistoricalFailureCodes(), docHistorical); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("historical table drift between worker.HistoricalFailureCodes() and docs/ERROR-CODES.md -- missing "+
+			"from the document: %v; present in the document but not declared in Go: %v", missing, extra)
+	}
+}
+
+// TestActiveAndHistoricalFailureCodesAreDisjoint is the invariant that makes
+// retirement a MOVE rather than a copy.
+//
+// A code in both lists would have the document promising two incompatible
+// things at once: that a job can still fail this way, and that nothing can
+// produce it. It would also let a careless retirement half-happen -- added to
+// the historical list, never removed from the active one -- and pass every
+// other check in this file.
+func TestActiveAndHistoricalFailureCodesAreDisjoint(t *testing.T) {
+	active := make(map[string]bool, len(worker.AllFailureCodes()))
+	for _, c := range worker.AllFailureCodes() {
+		active[c] = true
+	}
+	for _, c := range worker.HistoricalFailureCodes() {
+		if active[c] {
+			t.Errorf("%q is in BOTH worker.AllFailureCodes() and worker.HistoricalFailureCodes() -- retiring a code "+
+				"is a move between the two lists, never a copy into the second", c)
+		}
+	}
+}
+
+// TestBornDigitalIsRetiredNotDeleted pins Phase 59's specific decision, so it
+// can fail on its own rather than only as part of the general machinery above.
+//
+// The decision was not obvious and is worth a test of its own: the code became
+// unproducible when the OCR guard stopped refusing born-digital PDFs, but
+// jobs.error_code is persisted and GET /v1/jobs/{id} still serves it, so
+// deleting it from the contract would have made the contract wrong about jobs
+// that already exist.
+func TestBornDigitalIsRetiredNotDeleted(t *testing.T) {
+	const code = "born_digital"
+
+	for _, c := range worker.AllFailureCodes() {
+		if c == code {
+			t.Fatalf("%q is still in the active vocabulary -- nothing can produce it since Phase 59 (see "+
+				"convert.TestBornDigitalHasNoRefusalPath)", code)
+		}
+	}
+
+	found := false
+	for _, c := range worker.HistoricalFailureCodes() {
+		if c == code {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("%q is in neither vocabulary -- it must stay documented as historical, because clients reading a job "+
+			"that failed before Phase 59 still receive it", code)
 	}
 }
 

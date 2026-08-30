@@ -371,21 +371,33 @@ components:
         The REPORT-WIDE completeness claim (INSP-03, Phase 58) -- a
         SEPARATE claim from any one InspectCheck's own status. A
         structurally-unknown check (parser blind, format inapplicable,
-        malformed input) never makes the report itself incomplete; ONLY
-        exhausting this service's OWN byte/time work ceiling does.
+        malformed input) never makes the report itself incomplete. What does
+        is any reason meaning part of the upload was never examined:
+        work_ceiling_bytes, work_ceiling_time, and read_failed. See
+        docs/FINDINGS.md for the full table and for why malformed_input is
+        deliberately NOT among them -- "this file is broken" is a finished
+        answer about a file that was actually looked at.
       properties:
         complete:
           type: boolean
         reason:
           type: string
-          description: Present when complete is false.
+          description: >-
+            Present when complete is false. One of work_ceiling_bytes,
+            work_ceiling_time, or read_failed -- reported verbatim, never
+            re-labelled (a failed read is never presented as an exhausted
+            ceiling). When several causes apply, the first one observed is
+            reported.
         truncated_checks:
           type: array
           items:
             type: string
           description: >-
-            The finding codes whose own check was cut short by the
-            exhausted ceiling. Present when complete is false.
+            The finding codes whose own check was cut short -- by an
+            exhausted ceiling or by a failed read. Present when complete is
+            false, EXCEPT when the loss of coverage came from a
+            characteristic rather than a check, in which case it is absent:
+            a characteristic key names no finding code.
       required: [complete]
 
     InspectOperation:
@@ -522,6 +534,17 @@ components:
             (INSP-01). A key whose VALUE is unknown is present with a JSON
             null (an honest "we don't know"); a key that does not apply to
             this format is simply absent.
+
+            PDF uploads additionally carry `text_layer` ("present", "absent",
+            or null) and, when it is null, `text_layer_reason` -- whether the
+            file already has a usable text layer, so a client can tell a
+            born-digital PDF from a scan before submitting a job. The two
+            values are NOT symmetric: "present" is reported whenever enough
+            text was actually seen, while "absent" requires that everything
+            able to hold text was examined, so a truncated or partly
+            undecodable scan reports null rather than claiming absence. It is
+            advisory -- the worker decides at job time with a different tool,
+            and may reach a different answer. See docs/FINDINGS.md.
         findings:
           type: array
           items:

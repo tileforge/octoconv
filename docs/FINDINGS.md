@@ -109,7 +109,7 @@ individual check's status, and the two are never folded into one field (`interna
 | `pdf_stream_body_token` | the file's structure (the token was seen only inside a stream body or comment) | No |
 | `parser_unavailable` | this build | No |
 | `malformed_input` | the file | No |
-| `read_failed` | an operational I/O failure (independent of the file's structure and of this service's own byte/time budget) | No |
+| `read_failed` | an operational I/O failure (independent of the file's structure and of this service's own byte/time budget) | **Yes** |
 | `work_ceiling_bytes` | **this service's own load** | **Yes** |
 | `work_ceiling_time` | **this service's own load** | **Yes** |
 
@@ -131,16 +131,101 @@ bytes were expected) proves nothing about the file's own structure -- the bytes 
 examined at all -- so calling it `malformed_input` would be a false claim about the file. It is
 also independent of how large `maxBytes`/the time budget are, so it is not one of the two ceiling
 reasons either: raising either budget would not fix a read that is failing for an unrelated
-operational reason. It sits alongside `malformed_input` in the table above rather than with the
-two ceiling reasons for the same reason `parser_unavailable` does not mark the report selective --
-this is a still-open design question this document does not resolve further today.
+operational reason. It therefore keeps its own name in the `reason` field and is never re-labelled
+as a ceiling on its way to you.
 
-Only the last two reasons may ever mark a report `coverage.complete: false`. A structurally
-`unknown` check (parser blindness, an inapplicable format, a malformed file) does not, by itself,
-make the report incomplete — the checker did everything it could and is honestly reporting what
-it couldn't determine. This is the actual denial-of-service-relevant distinction Phase 58 exists
-to make honest: "we don't know" about one file property is not the same claim as "we stopped
-looking early because we were busy."
+### Which reasons make a report selective
+
+**Exactly three reasons may set `coverage.complete: false`: `work_ceiling_bytes`,
+`work_ceiling_time`, and `read_failed`.** What unites them is not fault but *evidence*: in all
+three, some part of the upload was never examined. The two ceilings mean this service chose to
+stop inside a budget it could have kept spending; `read_failed` means the bytes could not be
+obtained at all. A larger budget would fix the first two and not the third, but the coverage claim
+does not ask what would have fixed it — it asks whether anything went unlooked-at.
+
+Before Phase 59, `read_failed` sat with the reasons below, and a report in which *every* check
+said `unknown/read_failed` still shipped `coverage.complete: true` — telling you it had examined
+in full an upload it had not been able to read at all.
+
+**`malformed_input` is the sharpest exclusion, and it is not an oversight.** "This file is broken"
+is a finished, complete answer *about the file*: the analyzer looked, and saw. Nothing further
+would be learned by looking again. Compare `read_failed`, where nothing was seen at all. The two
+sound similar and are opposite in exactly the way this field cares about.
+
+The remaining reasons stay out on their own terms: `compressed_object_streams`, `pdf_name_escape`,
+`pdf_stream_body_token` and `parser_unavailable` are declared limits of *this build*, honestly
+stated; `format_not_applicable` and `format_unrecognized` describe applicability rather than
+coverage. A structurally `unknown` check does not, by itself, make the report incomplete — the
+checker did everything it could and is honestly reporting what it couldn't determine.
+
+This is the actual denial-of-service-relevant distinction Phase 58 exists to make honest: "we
+don't know" about one file property is not the same claim as "we stopped looking early because we
+were busy." Widening the selective set further would erode it: report `complete: false` for the
+common case of a PDF whose objects merely live in an `/ObjStm`, and the word stops carrying
+information.
+
+`truncated_checks` lists the codes whose own check was cut short — by an exhausted ceiling or by a
+failed read. It is empty when the loss of coverage came from a characteristic rather than a check
+(a characteristic key names no code).
+
+## The `text_layer` characteristic (BDPD-01, Phase 59)
+
+For an uploaded PDF the report carries a `text_layer` characteristic and, when the answer is not
+known, a paired `text_layer_reason`. The key is **absent** for every other format — it does not
+apply, and an inapplicable characteristic is omitted rather than reported as null (INSP-01).
+
+| `text_layer` | Meaning |
+|---|---|
+| `"present"` | A usable text layer was found. This PDF can be converted to text without OCR. |
+| `"absent"` | No usable text layer, **and everything that could hold one was examined**. |
+| `null` | Not determined. `text_layer_reason` says why. |
+
+"Usable" is a threshold, not a boolean: the non-whitespace characters inside the string arguments
+of PDF's text-showing operators, compared against the same threshold the OCR worker's own guard
+uses. Sharing that unit is deliberate — it is what lets the two answers be compared at all.
+
+**The two directions are not symmetric, and the asymmetry is the point.** `"present"` is a positive
+observation and is reported whenever enough text was actually seen, even if the rest of the scan was
+blind. `"absent"` is a claim about the *whole file* and is reported only when the scan covered
+everything: an exhausted work ceiling, a truncated window, an undecodable stream, or an encrypted
+document all yield `null` instead. A report will tell you it does not know far more readily than it
+will tell you a PDF has no text.
+
+**This is the one check a compressed object stream does not blind.** Everywhere else, `/ObjStm`
+forces `unknown` because objects can hide inside it. ISO 32000 §7.5.7 forbids stream objects from
+living there, and a text layer lives in content streams — so a report can legitimately say
+`uses_compressed_object_streams: true`, mark every risk check `unknown/compressed_object_streams`,
+and still answer this one. Those three facts appearing together in one body is correct, not a
+contradiction.
+
+### `text_layer` is advisory, and here is how far it can be wrong
+
+The decision that matters is made by the **worker**, at job time, running `pdftotext` over the
+whole file. This report is produced by a bounded scanner inside a request, over a byte window,
+without decoding every filter. The report says what it saw; the worker decides.
+
+Nothing here pins anything. A `text_layer` verdict never entitles a later job to skip a check of
+its own, and between this report and that job the bytes may not even be the same ones.
+
+The two can disagree, and the disagreement is **structural rather than random** — three named
+sources:
+
+1. **Font encoding.** This scanner counts bytes inside text-operator string arguments;
+   `pdftotext` applies the font's encoding and any `/ToUnicode` map and yields characters. For a
+   multi-byte encoding those are different quantities.
+2. **The byte ceiling.** The scanner works inside a per-request budget; `pdftotext` reads the file.
+3. **Encryption.** A PDF encrypted with an empty user password opens for `pdftotext` and not for
+   this scanner.
+
+The magnitude is measured, not estimated: `internal/inspect/testdata/pdf/DIVERGENCE.md` records
+both detectors' answers over a committed corpus, regenerated by a test. On that corpus today, seven
+of nine fixtures agree exactly and two report `null` from this side — the undecodable-filter and
+encrypted cases above. **No fixture produces a wrong answer in either direction**, and the suite
+fails if one ever does.
+
+What the corpus does not yet cover is listed in the same directory's `PROVENANCE.md`: a
+production-scale scan, LZW specifically, and a CID font carrying a `/ToUnicode` map. Those are gaps
+in the measurement, not established agreement.
 
 ## Binding to existing job-creation rejections (D-04)
 

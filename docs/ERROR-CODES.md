@@ -116,7 +116,6 @@ Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Sourc
 | `timecode_out_of_range` | AV | An explicit thumbnail timecode requested via `opts` exceeds the source's actual duration — a client fault, deliberately not clamped |
 | `resolution_exceeded` | AV | Declared video resolution exceeds the configured maximum |
 | `no_video_stream` | AV | No video stream found in an input misrouted to the AV engine (e.g. an audio-only ISOBMFF container) |
-| `born_digital` | OCR | The source PDF already has an extractable text layer — OCR was never needed and will not succeed as an OCR job on this input |
 | `too_many_pages` | OCR | PDF page count exceeds the configured maximum |
 | `page_too_large` | OCR | A PDF page would rasterize beyond the configured pixel bound |
 | `image_too_large` | OCR | Image dimensions exceed the configured maximum |
@@ -124,6 +123,26 @@ Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Sourc
 | `unsupported_target` | OCR, pandoc | The requested target format/conversion is not supported by that engine |
 | `input_too_large` | pandoc | Input exceeds the configured `PANDOC_MAX_INPUT_BYTES` cap, rejected before the subprocess runs |
 | `reconciler_exhausted` | `internal/reconciler` (NOT an engine worker) | The reconciler's stale-job recovery exhausted its retry budget for this job; the job is marked `failed` by the reconciler itself rather than by any engine's `process()` |
+
+## Historical job-failure codes (no longer produced)
+
+Codes this build **cannot emit** but which you may still receive.
+
+`jobs.error_code` is a persisted column, and `GET /v1/jobs/{id}` serves whatever was written when
+the job failed. Retiring a code therefore removes it from the list of *possible outcomes* without
+removing it from the set of values the API *returns* — a job that failed last month still carries
+it. Deleting such a code from this document would fix one inaccuracy by creating another.
+
+A consumer that INTERPRETS a code must handle these alongside the active table above. A consumer
+that ENUMERATES what a job might fail with should use the active table only.
+
+| Code | Engine | Retired in | Meaning |
+|---|---|---|---|
+| `born_digital` | OCR | Phase 59 | The source PDF already had an extractable text layer, so the OCR job was refused. Phase 59 replaced that refusal with a route: a `txt` target now returns the extracted text layer, and `hocr`/`alto` proceed to a real OCR render because `pdftotext` produces no word or line bounding boxes. Nothing can produce this code any more; jobs created before Phase 59 still carry it. |
+
+This section is held equal to `worker.HistoricalFailureCodes()` by the same mechanical test that
+guards the two active tables, and a second test asserts the active and historical vocabularies are
+disjoint — a code cannot be both producible and retired.
 
 ## Not in scope for this phase
 

@@ -1,0 +1,501 @@
+{
+  "born_digital": {
+    "status": 200,
+    "body": {
+      "format": "pdf",
+      "declared_format": "pdf",
+      "size_bytes": 3336,
+      "characteristics": {
+        "page_count": 1,
+        "pdf_version": "1.4",
+        "text_layer": "present",
+        "uses_compressed_object_streams": false
+      },
+      "findings": [
+        {
+          "code": "metadata_present",
+          "severity": "info",
+          "location": "751"
+        }
+      ],
+      "checks": [
+        {
+          "code": "ooxml_macro",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "zip_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "image_pixel_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_legacy",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_encrypted",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_unclassified",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "extension_mismatch",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_javascript",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_action_dict",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_launch_action",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_embedded_file",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_encrypted",
+          "status": "clean"
+        },
+        {
+          "code": "external_reference",
+          "status": "clean"
+        }
+      ],
+      "coverage": {
+        "complete": true
+      },
+      "operations": [
+        {
+          "operation": "convert",
+          "target": "alto",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "hocr",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "txt",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        }
+      ]
+    }
+  },
+  "embedded_font": {
+    "status": 200,
+    "body": {
+      "format": "pdf",
+      "declared_format": "pdf",
+      "size_bytes": 36542,
+      "characteristics": {
+        "page_count": null,
+        "page_count_reason": "compressed_object_streams",
+        "pdf_version": "1.7",
+        "text_layer": "present",
+        "uses_compressed_object_streams": true
+      },
+      "findings": null,
+      "checks": [
+        {
+          "code": "ooxml_macro",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "zip_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "image_pixel_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_legacy",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_encrypted",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_unclassified",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "extension_mismatch",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_javascript",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_action_dict",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_launch_action",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_embedded_file",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_encrypted",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "external_reference",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "metadata_present",
+          "status": "unknown",
+          "reason": "pdf_stream_body_token"
+        }
+      ],
+      "coverage": {
+        "complete": true
+      },
+      "operations": [
+        {
+          "operation": "convert",
+          "target": "alto",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "hocr",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "txt",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        }
+      ]
+    }
+  },
+  "objstm_born_digital": {
+    "status": 200,
+    "body": {
+      "format": "pdf",
+      "declared_format": "pdf",
+      "size_bytes": 3128,
+      "characteristics": {
+        "page_count": null,
+        "page_count_reason": "compressed_object_streams",
+        "pdf_version": "1.5",
+        "text_layer": "present",
+        "uses_compressed_object_streams": true
+      },
+      "findings": [
+        {
+          "code": "metadata_present",
+          "severity": "info",
+          "location": "579"
+        }
+      ],
+      "checks": [
+        {
+          "code": "ooxml_macro",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "zip_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "image_pixel_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_legacy",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_encrypted",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_unclassified",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "extension_mismatch",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_javascript",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_action_dict",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_launch_action",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_embedded_file",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "pdf_encrypted",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        },
+        {
+          "code": "external_reference",
+          "status": "unknown",
+          "reason": "compressed_object_streams"
+        }
+      ],
+      "coverage": {
+        "complete": true
+      },
+      "operations": [
+        {
+          "operation": "convert",
+          "target": "alto",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "hocr",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "txt",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        }
+      ]
+    }
+  },
+  "uncompressed_text": {
+    "status": 200,
+    "body": {
+      "format": "pdf",
+      "declared_format": "pdf",
+      "size_bytes": 681,
+      "characteristics": {
+        "page_count": 1,
+        "pdf_version": "1.4",
+        "text_layer": "present",
+        "uses_compressed_object_streams": false
+      },
+      "findings": null,
+      "checks": [
+        {
+          "code": "ooxml_macro",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "zip_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "image_pixel_bomb_shape",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_legacy",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_encrypted",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "ole_cfb_unclassified",
+          "status": "not_applicable",
+          "reason": "format_not_applicable"
+        },
+        {
+          "code": "extension_mismatch",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_javascript",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_action_dict",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_launch_action",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_embedded_file",
+          "status": "clean"
+        },
+        {
+          "code": "pdf_encrypted",
+          "status": "clean"
+        },
+        {
+          "code": "external_reference",
+          "status": "clean"
+        },
+        {
+          "code": "metadata_present",
+          "status": "clean"
+        }
+      ],
+      "coverage": {
+        "complete": true
+      },
+      "operations": [
+        {
+          "operation": "convert",
+          "target": "alto",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "hocr",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        },
+        {
+          "operation": "convert",
+          "target": "txt",
+          "engine": "ocr",
+          "estimated_max_seconds": 744,
+          "estimate_source": "measured",
+          "quota": {
+            "allowed": true
+          },
+          "available": true,
+          "max_bytes": 104857600
+        }
+      ]
+    }
+  }
+}

@@ -429,7 +429,7 @@ Plans:
 | 56. JobRunner Consolidation & Structured Error Codes | v1.13 | 7/7 | Complete    | 2026-08-08 |
 | 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
 | 58. Synchronous Inspection | v1.13 | 8/8 | Complete   | 2026-08-18 |
-| 59. Born-Digital PDF Routing | v1.13 | 0/TBD | Not started | — |
+| 59. Born-Digital PDF Routing | v1.13 | 7/7 | Complete   | 2026-08-30 |
 | 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
 | 61. v1.12 Debt Tail | v1.13 | 0/TBD | Not started | — |
 

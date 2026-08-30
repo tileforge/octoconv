@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: planning
-stopped_at: Phase 59 context gathered
-last_updated: "2026-08-19T08:33:15.266Z"
-last_activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
+status: completed
+stopped_at: Phase 59 complete; nothing pushed yet
+last_updated: "2026-08-30T08:11:43.909Z"
+last_activity: "2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)"
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 22
-  completed_plans: 22
-  percent: 50
+  completed_phases: 4
+  total_plans: 29
+  completed_plans: 29
+  percent: 67
 ---
 
 # Project State
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 59 (born-digital-pdf-routing) — CONTEXT GATHERED
-Plan: 0 of TBD — ready to plan
-Status: Phase 59 context gathered (12 decisions across 4 gray areas); ready to plan. Two items of the inspect honest-reporting todo folded in. CI still unavailable since 2026-08-16 (Actions billing, back end of August) — local stand-in is scripts/ci-local.sh; run the real pipeline against main once it returns.
-Last activity: 2026-08-19 -- Phase 59 context gathered (d8e35fa); phase 58 planning records closed on main (06a1a25)
+Phase: 59 (born-digital-pdf-routing) — COMPLETE
+Plan: 7 of 7 — all executed and verified
+Status: Phase 59 complete: BDPD-01 and BDPD-02 both satisfied with live evidence, 7 plans executed. Next in v1.13: Phase 60 (Sanitize) and Phase 61 (v1.12 debt tail).
+Last activity: 2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)
 
 ## Performance Metrics
 
@@ -150,6 +150,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260817-j58 | Закрыта находка codex из ревью PR#9 (`container.go:894`): `countSheetElements` принимал XML с несколькими top-level элементами — `encoding/xml` не считает второй корень ошибкой и отдаёт его как обычный элемент, поэтому `<workbook>…</workbook><ext><sheets><sheet/></sheets></ext>` публиковал `sheet_count: 2` с полным покрытием для не-well-formed XML. Поведение stdlib сначала **измерено**, а не предположено: `xml.Unmarshal` принимает то же самое (оракула для делегирования нет), а текст ДО корня не отвергает вообще ничто в stdlib — поэтому чинится класс целиком: ровно один корень + запрет непробельных CharData по обе стороны от него. Три теста: 7 случаев класса с проверкой причины `malformed_input` (не потолка), гард от чрезмерного отклонения (пролог/DOCTYPE/комментарии/PI/whitespace вокруг единственного корня), и тест-пин измеренной снисходительности `encoding/xml` | 2026-08-17 | aeb0768 | [260817-j58-close-codex-pr9-finding-xlsxsheetcount-a](./quick/260817-j58-close-codex-pr9-finding-xlsxsheetcount-a/) |
 
 | 260809-fast | codex, второй круг ревью PR#7: `mcpserver.JobStatus` не объявлял `Outputs`, поэтому массив `outputs` из `GET /v1/jobs/{id}` молча терялся у обоих MCP-серверов. `JobStatus` служит типом вывода `get_job_status`, а `download_result` отдаёт только primary-URL — значит вторичный артефакт (отчёт sanitize) был недостижим через MCP вообще. Тот же класс, что находка №2 про `FormatsResponse`: соседний DTO в том же файле, который узкая правка не подмела. Латентно до фазы 60. Тег-инверсия (`outputs`→`output`) доказывает, что тест ловит потерю данных, а не только отсутствие поля | 2026-08-09 | 23bf611 | — |
+| 260830-6zr | Автотриггеры `on: [push, pull_request]` в `.github/workflows/ci.yml` закомментированы, заменены на `on: workflow_dispatch` — лимиты GitHub Actions на исходе, а воркфлоу срабатывал дважды за цикл (пуш ветки + открытие PR). Ключ `on:` не удалён намеренно: он обязателен, и файл без него GitHub считает невалидным воркфлоу, что вдобавок лишает ручного запуска. Все пять job'ов на месте, откат — одна строка. Заодно найдено и починено: планы 59-02/59-05 в шагах verify звали `python3 -c "import yaml"`, а pyyaml на этой машине нет — переведены на `yq` v4 — он стоит в проекте и им же пользуются рабочие процессы GSD; `yq '.on'` вдобавок не спотыкается о YAML 1.1, где голое `on:` разбирается как булев true, а поскольку он умеет запрашивать, критерии приёмки усилены с «файл парсится» до проверки значений | 2026-08-30 | a13e67b | [260830-6zr-ci-workflow-dispatch](./quick/260830-6zr-ci-workflow-dispatch/) |
+| 260830-dmg | Восемь находок ревью PR #10 за три круга (3 codex + 4 codex + 1 своя), все — ложный вердикт, все три воспроизведены до принятия: октальные escape'ы считались как литеральные цифры (18 против истинных 6 при пороге 16 — вердикт не преувеличен, а сфабрикован; тот же класс, что уже был опровергнут замером для hex и оставлен в соседней функции), голое слово `stream` внутри литеральной строки открывало диапазон и давало ложный `present` (проверка синтаксиса добавлена в детектор, а не в общий `scanPDFStreamRanges`, чья широта корректна для двух других вызывающих), и неоднозначный маркер `/FontFile*` пропускал текстонесущий Form XObject, сохраняя покрытие — ложный `absent`, направление, запрещённое D-09. Второй круг codex обошёл первое исправление (`>>` можно положить внутрь литерала — два обхода одной границы), поэтому слоёный предикат заменён однопроходным сканером, отслеживающим лексический контекст. Третью находку нашёл сам, атакуя этот сканер: незакрытый литерал проглатывал остаток окна и давал `absent` о неосмотренном. Ни один вердикт корпуса не сдвинулся ни разу, DIVERGENCE.md побайтово идентичен | 2026-08-30 | 06a6bd4 | [260830-dmg-close-three-codex-findings-from-pr-10-re](./quick/260830-dmg-close-three-codex-findings-from-pr-10-re/) |
 
 ### Pending Todos
 
@@ -278,7 +280,7 @@ Items acknowledged and carried forward at milestone closes (see `.planning/miles
 ## Session Continuity
 
 Last session: 2026-08-19T08:32:01.504Z
-Stopped at: Phase 59 context gathered
+Stopped at: Phase 59 complete; nothing pushed yet
 Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps

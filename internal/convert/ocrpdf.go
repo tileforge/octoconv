@@ -115,25 +115,86 @@ func ocrPDFPageSizeForPage(ctx context.Context, pdfPath string, page int) (width
 	return w, h, nil
 }
 
-// ocrPDFGuardStage runs the two fail-closed checks that must fire BEFORE
-// any render (OCRE-02/OCRE-03, T-43-01/T-43-06): the pdfinfo page-count cap
-// (Plan 02's ocrPDFPageCount/enforceMaxPages) and the pdftotext born-digital
-// detector (Plan 02's detectBornDigitalPDF). Shared by Convert's PDF branch
-// (via convertPDF) and ConvertWithProgress so both entry points make the
-// PROVABLY identical accept/reject decision on the same bytes (mirrors
-// av.go's avPrepareConversion sharing discipline).
-func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, pdfPath string) (totalPages int, err error) {
-	totalPages, err = ocrPDFPageCount(ctx, pdfPath)
+// ocrPDFGuardResult is what ocrPDFGuardStage hands back to convertPDF: the
+// page count it established, and -- when the answer is already in hand -- the
+// finished output.
+//
+// The `done` flag exists so the CALLER never has to re-derive the routing
+// decision. convertPDF must not look at targetFormat to work out whether to
+// render; if it did, the target-dependence would live in two places and the
+// two could disagree, which is exactly the property ocrPDFGuardStage was
+// factored out to prevent for Convert and ConvertWithProgress.
+type ocrPDFGuardResult struct {
+	totalPages int
+	// text is the extracted text layer, set only when done is true.
+	text []byte
+	// done reports that no render is needed: text below IS the conversion
+	// result and the caller should write it out.
+	done bool
+}
+
+// ocrPDFGuardStage runs the fail-closed checks that must fire BEFORE any
+// render, and -- new in Phase 59 (D-05/D-06) -- decides which of the two
+// routes a PDF takes. It is shared by Convert's PDF branch (via convertPDF)
+// and by ConvertWithProgress, so both entry points make the PROVABLY
+// identical decision on the same bytes (mirrors av.go's avPrepareConversion
+// sharing discipline).
+//
+// The page-count cap (ocrPDFPageCount + enforceMaxPages) runs FIRST and on
+// EVERY route, extraction included. It bounds the size of the work, not the
+// method: a ten-thousand-page document is refused whether or not it has a text
+// layer.
+//
+// Then the target decides, and this is what Phase 59 changed:
+//
+//   - txt, with a usable text layer -> the extracted text IS the result. No
+//     rasterize, no tesseract. Before this phase the same pdftotext output was
+//     computed, counted, thrown away, and the job failed terminally with
+//     born_digital -- while GET /v1/formats and POST /v1/inspect both went on
+//     advertising pdf->txt as an available operation. The route did not need
+//     building; it needed to stop being discarded.
+//
+//   - txt, without a usable text layer -> a scan. The ordinary per-page OCR
+//     loop, exactly as before.
+//
+//   - hocr / alto -> the per-page OCR loop, ALWAYS, and pdftotext is not
+//     invoked at all. These targets ask for word and line bounding boxes;
+//     pdftotext does not produce them in any form, so an existing text layer
+//     cannot answer the request and its presence tells us nothing worth
+//     spending a subprocess on. Refusing these was refusing the only route
+//     that could ever satisfy them.
+//
+// Cost is already bounded for the render routes by enforceMaxPages and the
+// per-page enforcePageBoxBound; D-06 adds no new limit because none is needed.
+func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, pdfPath, targetFormat string) (ocrPDFGuardResult, error) {
+	totalPages, err := ocrPDFPageCount(ctx, pdfPath)
 	if err != nil {
-		return 0, fmt.Errorf("ocr: %w", err)
+		return ocrPDFGuardResult{}, fmt.Errorf("ocr: %w", err)
 	}
 	if err := enforceMaxPages(totalPages, c.MaxPages); err != nil {
-		return 0, fmt.Errorf("ocr: %w", err)
+		return ocrPDFGuardResult{}, fmt.Errorf("ocr: %w", err)
 	}
-	if err := detectBornDigitalPDF(ctx, pdfPath); err != nil {
-		return 0, fmt.Errorf("ocr: %w", err)
+
+	if targetFormat != "txt" {
+		// hocr/alto: OCR is the only source of the boxes these targets are
+		// defined by. Not calling pdftotext here is deliberate -- a probe
+		// whose answer cannot change the outcome is a subprocess spent for
+		// nothing, and TestOCRPDFBoxTargetsSkipTextExtraction proves it is
+		// not spent by running with pdftotext absent from PATH entirely.
+		return ocrPDFGuardResult{totalPages: totalPages}, nil
 	}
-	return totalPages, nil
+
+	text, nonWhitespace, err := extractPDFTextLayer(ctx, pdfPath)
+	if err != nil {
+		return ocrPDFGuardResult{}, fmt.Errorf("ocr: %w", err)
+	}
+	if hasUsableTextLayer(nonWhitespace) {
+		// The SAME bytes the count was taken from (<specifics>): one
+		// pdftotext invocation decides and delivers, so the count that chose
+		// this route and the text returned by it can never disagree.
+		return ocrPDFGuardResult{totalPages: totalPages, text: text, done: true}, nil
+	}
+	return ocrPDFGuardResult{totalPages: totalPages}, nil
 }
 
 // ocrPDFPage renders and OCRs exactly ONE page of pdfPath: bound the page's
@@ -188,10 +249,21 @@ func (c OCRConverter) ocrPDFPage(ctx context.Context, pdfPath, tmpDir string, pa
 // and is removed unconditionally on every return path -- temp paths are
 // never client-controlled.
 func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFormat, configfile string, o OCROpts, onPage func(page, total int, elapsed time.Duration)) error {
-	totalPages, err := c.ocrPDFGuardStage(ctx, inPath)
+	guard, err := c.ocrPDFGuardStage(ctx, inPath, targetFormat)
 	if err != nil {
 		return err
 	}
+	if guard.done {
+		// The extraction route. Deliberately the SAME completion path the OCR
+		// route uses below -- write outPath, then validateOCROutput -- rather
+		// than a special case: an empty result is valid for both, and a second
+		// completion path is a second place for the two to drift.
+		if err := os.WriteFile(outPath, guard.text, 0o644); err != nil {
+			return fmt.Errorf("ocr: write output: %w", err)
+		}
+		return validateOCROutput(outPath)
+	}
+	totalPages := guard.totalPages
 
 	tmpDir, err := os.MkdirTemp("", "octoconv-ocr-pdf-*")
 	if err != nil {
@@ -289,6 +361,13 @@ func ocrPrepareConversion(outPath string, opts map[string]any) (o OCROpts, targe
 // ConvertWithProgress contract): a mid-stream error simply leaves sink's
 // last-reported value in place, never throttling on its own (the sink owns
 // throttling, D-03).
+//
+// Phase 59 adds a SECOND zero-Update case alongside the single-image one, and
+// it is named here so it does not read as an oversight: a born-digital PDF
+// converted to txt is answered from its existing text layer, so there is no
+// per-page loop at all and onPage is never called. The worker's existing "a
+// converter that reports nothing maps to null->100" rule (OCR-04) covers it
+// unchanged -- the same rule, reached by a new route.
 func (c OCRConverter) ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, sink ProgressSink) error {
 	o, targetFormat, configfile, err := ocrPrepareConversion(outPath, opts)
 	if err != nil {

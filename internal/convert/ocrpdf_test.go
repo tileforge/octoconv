@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -211,20 +212,119 @@ func TestOCRPDFPageBox(t *testing.T) {
 	}
 }
 
-// TestOCRPDFBornDigital proves the born-digital detector fires BEFORE any
-// render: PATH restricted to pdfinfo+pdftotext (no pdftoppm/tesseract).
-func TestOCRPDFBornDigital(t *testing.T) {
+// TestBornDigitalHasNoRefusalPath is the behavioral half of the proof Plan
+// 59-06 cites when it retires the born_digital error code and removes a row
+// from internal/worker's pinning suite.
+//
+// Its earlier form (TestBornDigitalSentinelIsUnreachable, Plan 59-04) asserted
+// errors.Is(err, ErrOCRBornDigital) was never true. That form could not
+// survive its own success: 59-06 deleted the sentinel, and a test naming a
+// deleted identifier does not compile. The deletion is now the STRONGER proof
+// -- unreachability enforced by the compiler rather than by a passing test --
+// and what remains here is the property the sentinel used to stand for.
+//
+// So this checks the message, not the type. That is deliberately weaker on its
+// own, and it is the right weaker check: were a refusal reintroduced under a
+// NEW sentinel, an errors.Is test against the old one would not have caught it
+// either, while this does.
+//
+// All THREE targets, not only the two whose behavior changed: a proof of
+// unreachability that skips a route proves nothing about that route.
+//
+// PATH is restricted to pdfinfo+pdftotext, so the box targets fail at the
+// renderer. That failure is expected and is not the assertion -- the assertion
+// is that no route refuses this file for HAVING a text layer.
+func TestBornDigitalHasNoRefusalPath(t *testing.T) {
 	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
 
-	dir := t.TempDir()
-	outPath := filepath.Join(dir, "out.txt")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// The exact wording the retired sentinel carried.
+	const retiredRefusal = "already has an extractable text layer"
+
+	for _, target := range []string{"txt", "hocr", "alto"} {
+		t.Run(target, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "out."+target)
+			err := OCRConverter{}.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
+			if err != nil && strings.Contains(err.Error(), retiredRefusal) {
+				t.Fatalf("Convert(pdf -> %s) refused a PDF for having a text layer: %v -- that refusal was retired in "+
+					"Phase 59, and worker.CodeBornDigital was moved to the historical vocabulary on the strength of "+
+					"this test", target, err)
+			}
+		})
+	}
+}
+
+// TestPDFToTxtRouteExists is the test named BY NAME in ocrguards.go's own doc
+// comment, so that the comment's claim -- that a born-digital PDF has a route
+// -- cannot silently become false again.
+//
+// The comment it replaces said the client was being "steered to the document
+// engine instead", and that engine did not exist: pdf is a SOURCE format in
+// exactly one place in the repository (ocr.go), and every other engine only
+// produces PDFs. The claim had been wrong since it was written. Tying the
+// replacement to a test is the only thing that stops the same drift recurring.
+//
+// Two halves, and both are needed: the pair must be advertised, AND converting
+// over it must actually produce something. Either alone is the state Phase 59
+// found the code in.
+func TestPDFToTxtRouteExists(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
+
+	advertised := false
+	for _, p := range (OCRConverter{}).Pairs() {
+		if p == (Pair{From: "pdf", To: "txt"}) {
+			advertised = true
+		}
+	}
+	if !advertised {
+		t.Fatal("OCRConverter.Pairs() no longer advertises pdf -> txt")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	outPath := filepath.Join(t.TempDir(), "out.txt")
+	if err := (OCRConverter{}).Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil); err != nil {
+		t.Fatalf("the advertised pdf -> txt pair failed to convert: %v -- an advertised route that refuses every "+
+			"request is the exact contradiction BDPD-02 closed", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if countNonWhitespace(got) == 0 {
+		t.Fatal("the advertised pdf -> txt pair produced empty output for a PDF with a real text layer")
+	}
+}
+
+// TestOCRPDFBoxTargetsSkipTextExtraction is the test named in
+// ocrPDFGuardStage's own doc comment: for hocr/alto, pdftotext is not invoked
+// at all.
+//
+// Proven by ABSENCE rather than by inspection: PATH carries pdfinfo and
+// pdftoppm but NOT pdftotext, so an implementation that still probed the text
+// layer would fail with a missing-pdftotext exec error. Reaching pdftoppm is
+// therefore positive evidence that the probe was skipped -- a claim a code
+// review could only have asserted.
+func TestOCRPDFBoxTargetsSkipTextExtraction(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftoppm"))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c := OCRConverter{}
-	err := c.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
-	if !errors.Is(err, ErrOCRBornDigital) {
-		t.Fatalf("Convert on a born-digital PDF (pdftoppm/tesseract unavailable to prove pre-render ordering) = %v, want ErrOCRBornDigital", err)
+	for _, target := range []string{"hocr", "alto"} {
+		t.Run(target, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "out."+target)
+			err := OCRConverter{}.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
+			if err == nil {
+				return // tesseract happened to be reachable; nothing to prove here
+			}
+			if strings.Contains(err.Error(), "pdftotext") {
+				t.Fatalf("Convert(pdf -> %s) tried to run pdftotext: %v -- a box target's outcome cannot depend on "+
+					"the text layer, so probing for it spends a subprocess for nothing", target, err)
+			}
+		})
 	}
 }
 
@@ -393,5 +493,38 @@ func TestOCRSingleImageNullProgress(t *testing.T) {
 	}
 	if sink.durationCalls != 0 {
 		t.Fatalf("expected zero SourceDuration calls for a single-image job, got %d", sink.durationCalls)
+	}
+}
+
+// TestPDFToTxtJobSucceedsOnTheObjStmFixture is the conversion half of the join
+// asserted from the API side by
+// api.TestInspectBornDigitalPDFOffersTextExtraction.
+//
+// It duplicates 59-04's route test deliberately, on a DIFFERENT file: that one
+// runs on born_digital.pdf, this one on the /ObjStm rewrite of the same
+// document. Two representations of one document, and the answers must match --
+// which is itself informative, since compressed object streams are exactly what
+// makes every other check on this file report unknown.
+func TestPDFToTxtJobSucceedsOnTheObjStmFixture(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
+
+	fixture := filepath.Join("..", "inspect", "testdata", "pdf", "objstm_born_digital.pdf")
+	if _, err := os.Stat(fixture); err != nil {
+		t.Fatalf("fixture missing: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	outPath := filepath.Join(t.TempDir(), "out.txt")
+
+	if err := (OCRConverter{}).Convert(ctx, fixture, outPath, nil); err != nil {
+		t.Fatalf("Convert(pdf -> txt) on the /ObjStm fixture = %v, want success", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if !strings.Contains(string(got), "born-digital PDF") {
+		t.Fatalf("output does not carry the document's own text; got %q", got)
 	}
 }

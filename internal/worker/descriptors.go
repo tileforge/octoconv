@@ -7,17 +7,24 @@ import (
 	"github.com/apaderin/octoconv/internal/queue"
 )
 
-// Frozen async job-failure error codes (jobs.error_code) — D-04/D-05
-// (56-CONTEXT.md): this phase closes ERRC-02's metrics gap and
-// consolidates seven handlers into one Runner, but it does NOT rename or
-// rationalize any of these fourteen values; every one carries the exact
-// string it already had before this refactor. CodeEngineError is a
-// deliberate catch-all SHARED by all seven engines' default fallback
-// (D-05 explicitly freezes it against renaming). CodeReconcilerExhausted
-// is the one code emitted OUTSIDE this package — its sole producer is
-// internal/reconciler/reconciler.go, which plan 56-05 (not this plan) is
-// responsible for updating to reference this constant; this plan does not
-// touch internal/reconciler.
+// Async job-failure error codes (jobs.error_code).
+//
+// Phase 56 (D-04/D-05) froze these strings against renaming: every one carries
+// the exact value it had before that refactor, and CodeEngineError is a
+// deliberate catch-all shared by every engine's default fallback.
+// CodeReconcilerExhausted is the one code emitted OUTSIDE this package -- its
+// sole producer is internal/reconciler/reconciler.go.
+//
+// Phase 59 introduced a distinction this vocabulary did not previously need:
+// a code can stop being PRODUCIBLE without ceasing to EXIST. jobs.error_code is
+// a persisted column (internal/db/migrations/0001_init.sql) served back on
+// GET /v1/jobs/{id}, so a code no current code path can emit is still returned
+// to clients reading old rows. Deleting such a code would make the contract
+// wrong about the past.
+//
+// Hence two lists below. allFailureCodes is what this build can still produce.
+// historicalFailureCodes is what it cannot, but clients may still receive.
+// Both are documented; only the first is a list of possible outcomes.
 const (
 	CodeEngineError         = "engine_error"
 	CodeInvalidOptions      = "invalid_options"
@@ -25,7 +32,6 @@ const (
 	CodeTimecodeOutOfRange  = "timecode_out_of_range"
 	CodeResolutionExceeded  = "resolution_exceeded"
 	CodeNoVideoStream       = "no_video_stream"
-	CodeBornDigital         = "born_digital"
 	CodeTooManyPages        = "too_many_pages"
 	CodePageTooLarge        = "page_too_large"
 	CodeImageTooLarge       = "image_too_large"
@@ -35,9 +41,15 @@ const (
 	CodeReconcilerExhausted = "reconciler_exhausted"
 )
 
-// allFailureCodes is the single place this frozen fourteen-code vocabulary
-// is enumerated — AllFailureCodes() is built from it, for plan 56-06's
-// Go-to-doc sync test.
+// allFailureCodes enumerates every code this build can still produce.
+// AllFailureCodes() is built from it, and the doc-sync test
+// (internal/errcode/doc_sync_test.go) holds it equal to the asynchronous table
+// in docs/ERROR-CODES.md.
+//
+// A code removed from here MUST be added to historicalFailureCodes below --
+// removing it from both would delete from the contract a value clients can
+// still be served from the database. TestActiveAndHistoricalFailureCodesAreDisjoint
+// and the historical-section doc test enforce both halves.
 var allFailureCodes = []string{
 	CodeEngineError,
 	CodeInvalidOptions,
@@ -45,7 +57,6 @@ var allFailureCodes = []string{
 	CodeTimecodeOutOfRange,
 	CodeResolutionExceeded,
 	CodeNoVideoStream,
-	CodeBornDigital,
 	CodeTooManyPages,
 	CodePageTooLarge,
 	CodeImageTooLarge,
@@ -55,13 +66,57 @@ var allFailureCodes = []string{
 	CodeReconcilerExhausted,
 }
 
-// AllFailureCodes returns every declared async job-failure code exactly
-// once, in declaration order. The returned slice is a fresh copy on every
-// call, so callers cannot mutate the package's closed vocabulary through
-// it.
+// CodeBornDigital is HISTORICAL as of Phase 59 and is not in allFailureCodes.
+//
+// It meant "this PDF already has an extractable text layer, so the OCR job was
+// refused". Phase 59 (D-05/D-06) replaced that refusal with a route: a txt
+// target now receives the extracted text layer, and hocr/alto go on to a real
+// render because pdftotext produces no word or line boxes. No code path can
+// produce this value any more -- proven, not asserted, by
+// convert.TestBornDigitalHasNoRefusalPath, which runs a born-digital PDF through
+// all three targets -- and, more strongly, by the sentinel no longer existing
+// at all: Phase 59 deleted it, so the compiler now enforces what that test
+// used to check.
+//
+// It is kept declared, and kept in docs/ERROR-CODES.md's historical section,
+// because jobs created before Phase 59 still carry it in the database and
+// GET /v1/jobs/{id} still serves it. A client that received it yesterday must
+// still be able to look it up today.
+const CodeBornDigital = "born_digital"
+
+// historicalFailureCodes enumerates codes this build can no longer produce but
+// which clients may still receive for jobs that failed before the change.
+//
+// The distinction exists because deleting a retired code from the documentation
+// would create a NEW inaccuracy while removing an old one: the contract would
+// stop describing values the API demonstrably still returns. Retiring a code is
+// therefore a move between two lists, never a deletion -- and the doc-sync test
+// checks both lists and their disjointness, so neither half can be skipped.
+var historicalFailureCodes = []string{
+	CodeBornDigital,
+}
+
+// AllFailureCodes returns every async job-failure code this build can still
+// PRODUCE, exactly once, in declaration order. The returned slice is a fresh
+// copy on every call, so callers cannot mutate the package's closed vocabulary
+// through it.
+//
+// Deliberately excludes historical codes: this is the list of possible
+// outcomes, and a consumer enumerating what a job might fail with should not be
+// shown values nothing can emit. Consumers that must INTERPRET a code received
+// from the API need HistoricalFailureCodes() as well.
 func AllFailureCodes() []string {
 	out := make([]string, len(allFailureCodes))
 	copy(out, allFailureCodes)
+	return out
+}
+
+// HistoricalFailureCodes returns codes no longer producible by this build but
+// still reachable by a client reading an old job. Same fresh-copy contract as
+// AllFailureCodes.
+func HistoricalFailureCodes() []string {
+	out := make([]string, len(historicalFailureCodes))
+	copy(out, historicalFailureCodes)
 	return out
 }
 
