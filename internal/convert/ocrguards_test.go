@@ -224,23 +224,60 @@ func TestCountNonWhitespace(t *testing.T) {
 	}
 }
 
-func TestDetectBornDigitalPDF_RealBinary(t *testing.T) {
+// TestExtractPDFTextLayer_RealBinary is the Phase 59 replacement for
+// TestDetectBornDigitalPDF_RealBinary. Same two fixtures, same threshold, but
+// it asserts what the function now does: extract and count, without deciding.
+//
+// The born-digital case additionally checks that the returned BYTES and the
+// returned COUNT come from one another -- the single-invocation requirement
+// from 59-CONTEXT.md <specifics>. Its predecessor could not check this,
+// because it discarded the bytes.
+func TestExtractPDFTextLayer_RealBinary(t *testing.T) {
 	if _, err := exec.LookPath("pdftotext"); err != nil {
 		t.Skip("pdftotext not installed, skipping real-binary test")
 	}
 	ctx := context.Background()
 
-	t.Run("born-digital PDF is rejected", func(t *testing.T) {
-		err := detectBornDigitalPDF(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"))
-		if !errors.Is(err, ErrOCRBornDigital) {
-			t.Fatalf("got %v, want ErrOCRBornDigital", err)
+	t.Run("born-digital PDF yields a usable layer", func(t *testing.T) {
+		text, n, err := extractPDFTextLayer(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"))
+		if err != nil {
+			t.Fatalf("extractPDFTextLayer = %v, want nil", err)
+		}
+		if !hasUsableTextLayer(n) {
+			t.Fatalf("hasUsableTextLayer(%d) = false, want true (threshold %d)", n, ocrUsableTextLayerThreshold)
+		}
+		if got := countNonWhitespace(text); got != n {
+			t.Fatalf("returned text has %d non-whitespace chars but the returned count is %d -- the bytes and the "+
+				"count must come from ONE pdftotext invocation, or the answer that chose the route and the answer "+
+				"returned to the client can disagree", got, n)
 		}
 	})
 
-	t.Run("image-only PDF passes (no extractable text layer)", func(t *testing.T) {
-		err := detectBornDigitalPDF(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
+	t.Run("image-only PDF yields no usable layer", func(t *testing.T) {
+		_, n, err := extractPDFTextLayer(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
 		if err != nil {
-			t.Fatalf("got %v, want nil for an image-only PDF", err)
+			t.Fatalf("extractPDFTextLayer = %v, want nil", err)
+		}
+		if hasUsableTextLayer(n) {
+			t.Fatalf("hasUsableTextLayer(%d) = true for an image-only PDF, want false", n)
 		}
 	})
+}
+
+// TestHasUsableTextLayerThreshold pins the boundary without spawning a
+// process -- the threshold is a pure decision and is tested as one.
+func TestHasUsableTextLayerThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		want bool
+	}{
+		{0, false},
+		{ocrUsableTextLayerThreshold - 1, false},
+		{ocrUsableTextLayerThreshold, false}, // strictly greater, matching Phase 43
+		{ocrUsableTextLayerThreshold + 1, true},
+	} {
+		if got := hasUsableTextLayer(tc.n); got != tc.want {
+			t.Errorf("hasUsableTextLayer(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
 }

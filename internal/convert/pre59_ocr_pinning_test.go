@@ -1,59 +1,67 @@
 package convert
 
-// This suite is the deliberate opposite of internal/api/pre59_pinning_test.go:
-// that one freezes behavior Phase 59 must PRESERVE, this one freezes behavior
-// Phase 59 must BREAK.
+// REPLACED by Plan 59-04, in the same commit as the guard change, per the
+// protocol the pre-phase version of this file carried.
 //
-// It pins TODAY's (pre-Phase-59) outcome of a born-digital PDF submitted for
-// conversion: a terminal rejection with ErrOCRBornDigital, for EVERY target,
-// because ocrPDFGuardStage (ocrpdf.go) does not look at the target at all. The
-// point of writing it down is to make the break visible as its own commit
-// rather than dissolved into Plan 59-04's diff.
+// What it used to pin (committed by Plan 59-01, commit b9127a9): a born-digital
+// PDF was refused terminally with ErrOCRBornDigital for EVERY target, because
+// ocrPDFGuardStage did not look at the target at all. That snapshot existed so
+// the break would be visible as its own commit rather than dissolved into a
+// diff, and so "the targets now diverge" would rest on a recorded baseline
+// rather than on memory of what hocr used to do.
 //
-// REPLACEMENT PROTOCOL (59-01-PLAN.md Task 3, 59-04-PLAN.md Task 3).
-// Plan 59-04 is REQUIRED to replace the assertions below. That is the goal, not
-// a violation. What the protocol forbids is doing it quietly:
+// What it pins now, after D-05/D-06:
 //
-//   - the replacement must land in the SAME commit as the guard change;
-//   - that commit message must say the suite was replaced and why;
-//   - this header must be rewritten to describe post-phase behavior;
-//   - deleting the file, or weakening an assertion so it passes both before and
-//     after, is not a replacement -- it is the loss of the evidence.
+//   - pdf -> txt on a born-digital PDF SUCCEEDS and returns the extracted text
+//     layer. The same pdftotext output the old guard computed, counted, and
+//     threw away.
+//   - pdf -> hocr on the same file is NOT refused for having a text layer; it
+//     proceeds to a render, because pdftotext produces no word or line boxes
+//     and OCR is their only source.
+//   - Pairs() still advertises pdf -> txt. That assertion is unchanged from the
+//     pre-phase version and is the half that survives -- it has simply stopped
+//     being a contradiction.
 //
-// The measured basis for the rejection, from 59-RESEARCH.md and reproduced by
-// the tests below: `pdftotext testdata/ocr/born_digital.pdf -` yields 82
-// non-whitespace characters against ocrBornDigitalCharThreshold = 16. The
-// rejection therefore fires with a wide margin and does not depend on the exact
-// threshold value -- these tests would still pin the same outcome if the
-// constant moved anywhere below 82.
+// The replacement is the goal, not a violation. What the protocol forbade was
+// doing it quietly: deleting the file, or weakening an assertion until it
+// passed both before and after. Neither happened -- the assertions are
+// inverted, and the commit message says so.
 
 import (
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 // pre59BornDigitalFixture is the one input this suite is about: a real
 // born-digital PDF with a genuine text layer, committed since Phase 43 and
-// already used by the guard's own tests.
+// already used by the guard's own tests. `pdftotext <it> -` yields 82
+// non-whitespace characters against ocrUsableTextLayerThreshold = 16, so the
+// routing decision has a wide margin and does not depend on the exact
+// threshold value.
 func pre59BornDigitalFixture() string {
 	return filepath.Join("testdata", "ocr", "born_digital.pdf")
 }
 
-// TestPre59PDFToTxtRejectsToday pins the txt target's pre-Phase-59 outcome:
-// a terminal ErrOCRBornDigital, and NO output file written.
+// TestPre59PDFToTxtReturnsTheTextLayer is the inverted assertion: what used to
+// be a terminal rejection is now the answer.
 //
-// PATH is restricted to pdfinfo+pdftotext (restrictedPATH, ocrpdf_test.go) so
-// the rejection is proven to happen BEFORE any render: if the guard had let
-// this through, the failure would be a missing-pdftoppm exec error, which is a
-// distinguishable error and not the sentinel asserted here.
+// PATH is restricted to pdfinfo+pdftotext, which does double duty. It proves
+// the decision still happens BEFORE any render (an implementation that fell
+// through to rasterizing would fail with a missing-pdftoppm exec error, which
+// is distinguishable from success), and it proves the extraction route needs
+// nothing beyond the two binaries the old rejection route already used --
+// D-05's "no new binary, no new container" claim, checked rather than asserted.
 //
-// This is the assertion Plan 59-04 inverts: after that plan, the same call must
-// SUCCEED and write the extracted text layer.
-func TestPre59PDFToTxtRejectsToday(t *testing.T) {
+// The expected content is compared against a LIVE pdftotext run rather than
+// against the literal 82: a test pinned to the constant would break if the
+// fixture were ever replaced, while this one keeps checking the property that
+// actually matters -- that we return exactly what we extracted.
+func TestPre59PDFToTxtReturnsTheTextLayer(t *testing.T) {
 	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
 
 	dir := t.TempDir()
@@ -61,24 +69,47 @@ func TestPre59PDFToTxtRejectsToday(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := OCRConverter{}.Convert(ctx, pre59BornDigitalFixture(), outPath, nil)
-	if !errors.Is(err, ErrOCRBornDigital) {
-		t.Fatalf("Convert(pdf -> txt) on a born-digital PDF = %v, want ErrOCRBornDigital (pre-Phase-59 behavior)", err)
+	if err := (OCRConverter{}).Convert(ctx, pre59BornDigitalFixture(), outPath, nil); err != nil {
+		t.Fatalf("Convert(pdf -> txt) on a born-digital PDF = %v, want success -- the extracted text layer IS the result (D-05)", err)
 	}
-	if _, statErr := os.Stat(outPath); statErr == nil {
-		t.Fatalf("%s exists -- today's rejection path must write no output at all", outPath)
+
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if countNonWhitespace(got) == 0 {
+		t.Fatalf("output is empty -- the route returned nothing where the text layer should be; got %q", got)
+	}
+	if !strings.Contains(string(got), "born-digital PDF") {
+		t.Fatalf("output does not contain the fixture's own text; got %q", got)
+	}
+
+	// The count that chose this route and the bytes that were written must be
+	// the same pdftotext answer (<specifics>).
+	_, want, err := extractPDFTextLayer(ctx, pre59BornDigitalFixture())
+	if err != nil {
+		t.Fatalf("reference extraction failed: %v", err)
+	}
+	if n := countNonWhitespace(got); n != want {
+		t.Fatalf("written output has %d non-whitespace characters, a live pdftotext run yields %d -- these must be "+
+			"the same invocation's answer, not two", n, want)
 	}
 }
 
-// TestPre59PDFToHOCRRejectsToday pins the hocr target's pre-Phase-59 outcome,
-// and it is the more important of the two.
+// TestPre59PDFToHOCRIsNotRefusedForHavingATextLayer is the more important
+// inversion of the two.
 //
-// Today the guard ignores the target, so hocr is refused for exactly the same
-// reason txt is. Plan 59-04 (D-06) splits these two outcomes apart: txt gets
-// the extracted layer, hocr goes on to a real render because pdftotext produces
-// no word or line boxes and OCR is their only source. Without this snapshot,
-// "the two targets now diverge" would rest on memory of what hocr used to do.
-func TestPre59PDFToHOCRRejectsToday(t *testing.T) {
+// Before this phase, hocr was refused for exactly the same reason txt was --
+// the guard never looked at the target. D-06 splits them: a client asking for
+// hocr wants word and line bounding boxes, pdftotext does not produce them in
+// any form, and refusing the request was refusing the only route that could
+// satisfy it.
+//
+// The assertion is deliberately on the SENTINEL, not on success: with PATH
+// restricted, pdftoppm is absent and the render cannot complete. What must be
+// true is that the failure is a missing-renderer failure -- proof the guard
+// let it through -- and never ErrOCRBornDigital.
+func TestPre59PDFToHOCRIsNotRefusedForHavingATextLayer(t *testing.T) {
 	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
 
 	dir := t.TempDir()
@@ -86,20 +117,21 @@ func TestPre59PDFToHOCRRejectsToday(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := OCRConverter{}.Convert(ctx, pre59BornDigitalFixture(), outPath, nil)
-	if !errors.Is(err, ErrOCRBornDigital) {
-		t.Fatalf("Convert(pdf -> hocr) on a born-digital PDF = %v, want ErrOCRBornDigital -- today the guard does not look at the target, and that is precisely what Plan 59-04 changes", err)
+	err := (OCRConverter{}).Convert(ctx, pre59BornDigitalFixture(), outPath, nil)
+	if errors.Is(err, ErrOCRBornDigital) {
+		t.Fatalf("Convert(pdf -> hocr) = ErrOCRBornDigital -- a text layer must no longer refuse a box-producing " +
+			"target, since OCR is the only thing that can produce boxes (D-06)")
+	}
+	if err == nil || !strings.Contains(err.Error(), "pdftoppm") {
+		t.Fatalf("Convert(pdf -> hocr) = %v, want a pdftoppm failure -- with PATH restricted the render cannot "+
+			"complete, and reaching pdftoppm at all is the proof the guard let this target through to a render", err)
 	}
 }
 
-// TestPre59PairAdvertisedToday pins the contradiction BDPD-02 exists to close:
-// the pdf->txt pair is advertised by the registry (and therefore offered by
-// GET /v1/formats and by POST /v1/inspect's operations block) while the two
-// tests above show the worker refusing that exact job terminally.
-//
-// After Phase 59 this assertion must STILL hold -- but it will have stopped
-// being a contradiction. That is why it is pinned as its own case rather than
-// folded into the rejection tests: it is the half that survives.
+// TestPre59PairAdvertisedToday is UNCHANGED from the pre-phase version, and
+// that is the point. It was pinned as its own case precisely because it is the
+// half that survives the phase: pdf -> txt was always advertised. Before, that
+// sat beside a terminal refusal and was a contradiction. Now it does not.
 func TestPre59PairAdvertisedToday(t *testing.T) {
 	want := Pair{From: "pdf", To: "txt"}
 	for _, p := range (OCRConverter{}).Pairs() {
@@ -107,5 +139,5 @@ func TestPre59PairAdvertisedToday(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("OCRConverter.Pairs() does not contain %+v -- the whole premise of BDPD-02 is that this pair is already advertised while being refused", want)
+	t.Fatalf("OCRConverter.Pairs() does not contain %+v -- the whole premise of BDPD-02 is that this pair is advertised", want)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -211,20 +212,108 @@ func TestOCRPDFPageBox(t *testing.T) {
 	}
 }
 
-// TestOCRPDFBornDigital proves the born-digital detector fires BEFORE any
-// render: PATH restricted to pdfinfo+pdftotext (no pdftoppm/tesseract).
-func TestOCRPDFBornDigital(t *testing.T) {
+// TestBornDigitalSentinelIsUnreachable is the PROOF Plan 59-06 will cite when
+// it removes born_digital from the active failure-code vocabulary and deletes
+// a row from internal/worker's pinning suite.
+//
+// That suite's own header declares any change to an assertion a protocol
+// violation requiring explicit justification. "The code is unreachable" is a
+// claim; this test is what turns it into a fact. It runs a born-digital PDF
+// through ALL THREE targets and requires that none of them produces
+// ErrOCRBornDigital -- not the two that changed behavior, all of them, because
+// a proof of unreachability that skips a route proves nothing about that route.
+//
+// PATH is restricted to pdfinfo+pdftotext, so the box targets fail at the
+// renderer. That failure is expected and is not what is being asserted: the
+// assertion is on the sentinel's absence, which holds regardless of how the
+// render itself ends.
+func TestBornDigitalSentinelIsUnreachable(t *testing.T) {
 	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
 
-	dir := t.TempDir()
-	outPath := filepath.Join(dir, "out.txt")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	for _, target := range []string{"txt", "hocr", "alto"} {
+		t.Run(target, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "out."+target)
+			err := OCRConverter{}.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
+			if errors.Is(err, ErrOCRBornDigital) {
+				t.Fatalf("Convert(pdf -> %s) produced ErrOCRBornDigital -- the sentinel must be unreachable on every "+
+					"route before Plan 59-06 may retire the born_digital error code", target)
+			}
+		})
+	}
+}
+
+// TestPDFToTxtRouteExists is the test named BY NAME in ocrguards.go's own doc
+// comment, so that the comment's claim -- that a born-digital PDF has a route
+// -- cannot silently become false again.
+//
+// The comment it replaces said the client was being "steered to the document
+// engine instead", and that engine did not exist: pdf is a SOURCE format in
+// exactly one place in the repository (ocr.go), and every other engine only
+// produces PDFs. The claim had been wrong since it was written. Tying the
+// replacement to a test is the only thing that stops the same drift recurring.
+//
+// Two halves, and both are needed: the pair must be advertised, AND converting
+// over it must actually produce something. Either alone is the state Phase 59
+// found the code in.
+func TestPDFToTxtRouteExists(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftotext"))
+
+	advertised := false
+	for _, p := range (OCRConverter{}).Pairs() {
+		if p == (Pair{From: "pdf", To: "txt"}) {
+			advertised = true
+		}
+	}
+	if !advertised {
+		t.Fatal("OCRConverter.Pairs() no longer advertises pdf -> txt")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	outPath := filepath.Join(t.TempDir(), "out.txt")
+	if err := (OCRConverter{}).Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil); err != nil {
+		t.Fatalf("the advertised pdf -> txt pair failed to convert: %v -- an advertised route that refuses every "+
+			"request is the exact contradiction BDPD-02 closed", err)
+	}
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", outPath, err)
+	}
+	if countNonWhitespace(got) == 0 {
+		t.Fatal("the advertised pdf -> txt pair produced empty output for a PDF with a real text layer")
+	}
+}
+
+// TestOCRPDFBoxTargetsSkipTextExtraction is the test named in
+// ocrPDFGuardStage's own doc comment: for hocr/alto, pdftotext is not invoked
+// at all.
+//
+// Proven by ABSENCE rather than by inspection: PATH carries pdfinfo and
+// pdftoppm but NOT pdftotext, so an implementation that still probed the text
+// layer would fail with a missing-pdftotext exec error. Reaching pdftoppm is
+// therefore positive evidence that the probe was skipped -- a claim a code
+// review could only have asserted.
+func TestOCRPDFBoxTargetsSkipTextExtraction(t *testing.T) {
+	t.Setenv("PATH", restrictedPATH(t, "pdfinfo", "pdftoppm"))
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c := OCRConverter{}
-	err := c.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
-	if !errors.Is(err, ErrOCRBornDigital) {
-		t.Fatalf("Convert on a born-digital PDF (pdftoppm/tesseract unavailable to prove pre-render ordering) = %v, want ErrOCRBornDigital", err)
+	for _, target := range []string{"hocr", "alto"} {
+		t.Run(target, func(t *testing.T) {
+			outPath := filepath.Join(t.TempDir(), "out."+target)
+			err := OCRConverter{}.Convert(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"), outPath, nil)
+			if err == nil {
+				return // tesseract happened to be reachable; nothing to prove here
+			}
+			if strings.Contains(err.Error(), "pdftotext") {
+				t.Fatalf("Convert(pdf -> %s) tried to run pdftotext: %v -- a box target's outcome cannot depend on "+
+					"the text layer, so probing for it spends a subprocess for nothing", target, err)
+			}
+		})
 	}
 }
 
