@@ -372,6 +372,12 @@ func (r *Repo) FindInFlight(ctx context.Context, clientID *uuid.UUID, olderThan 
 // identical -- until a clock adjustment makes a freshly created row's age
 // briefly negative and it silently disappears from an operator's listing
 // during an incident.
+//
+// A sub-microsecond duration is NOT rejected and behaves as no filter at all:
+// PostgreSQL's interval type has microsecond resolution, so anything smaller
+// rounds to zero. Measured, not assumed. It is left alone rather than guarded
+// because the operator-facing form of this argument is a duration string like
+// "2h", and a guard for an input nobody can produce is a branch nobody tests.
 func nullableInterval(d time.Duration) any {
 	if d <= 0 {
 		return nil
