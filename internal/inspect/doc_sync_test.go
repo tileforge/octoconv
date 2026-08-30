@@ -136,6 +136,91 @@ func TestFindingCodesDocMatchesGoConstants(t *testing.T) {
 // Matched as a line PREFIX, like findingsTableHeader.
 const reasonTableHeader = "## Report coverage is a separate claim"
 
+// selectiveReasonsPhrase is the exact, stable sentence docs/FINDINGS.md must
+// carry to state which reasons may set coverage.complete:false (Phase 59,
+// D-11). Keeping it as a named constant here makes the coupling between this
+// test and the document's PROSE visible: if the wording changes, this
+// constant is the one place that has to change with it.
+//
+// A table-parity test alone would not catch this. The table says which
+// reasons exist and marks a Yes/No column; the sentence is what a client
+// actually reads to learn the rule, and it is exactly the kind of prose that
+// silently went stale before -- the previous version of this section said
+// "Only the last two reasons" and stayed there while the code moved. Same
+// failure mode as the reason table itself before TestReasonsDocMatchesGoConstants
+// existed: unenforced text drifts.
+const selectiveReasonsPhrase = "Exactly three reasons may set `coverage.complete: false`: `work_ceiling_bytes`,\n`work_ceiling_time`, and `read_failed`."
+
+// TestDocDeclaresSelectiveReasons pins that the document states the rule, in
+// so many words, rather than leaving a reader to infer it from a column of
+// Yes/No cells.
+func TestDocDeclaresSelectiveReasons(t *testing.T) {
+	doc := readDoc(t)
+	if !strings.Contains(doc, selectiveReasonsPhrase) {
+		t.Fatalf("docs/FINDINGS.md does not contain the required phrase %q -- the set of reasons that make a report "+
+			"selective must be stated explicitly in prose, not only implied by the table's Yes/No column", selectiveReasonsPhrase)
+	}
+}
+
+// TestDocMarksExactlyTheSelectiveReasons is the table half of the same claim:
+// every reason row must carry a Yes/No cell, and the Yes rows must be exactly
+// the three that makesReportIncomplete admits.
+//
+// The two tests are complementary and neither is redundant: the prose could be
+// updated while the table rots, or the reverse. This one reads the table; the
+// one above reads the sentence.
+func TestDocMarksExactlyTheSelectiveReasons(t *testing.T) {
+	doc := readDoc(t)
+
+	wantSelective := map[string]bool{
+		"work_ceiling_bytes": true,
+		"work_ceiling_time":  true,
+		"read_failed":        true,
+	}
+
+	inSection := false
+	seen := map[string]bool{}
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, reasonTableHeader) {
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(line, "## ") {
+			break
+		}
+		if !inSection {
+			continue
+		}
+		m := codeRowPattern.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		reason := m[1]
+		seen[reason] = true
+
+		// The final cell of the row is the "Makes the report selective?"
+		// column. A Yes is emboldened in this document; the test reads the
+		// cell rather than the emphasis so a formatting change does not
+		// silently invert the meaning.
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		last := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(cells[len(cells)-1], "*", "")))
+		gotSelective := last == "yes"
+		if last != "yes" && last != "no" {
+			t.Fatalf("reason row %q: last cell = %q, want exactly Yes or No -- an ambiguous cell makes this table "+
+				"unenforceable", reason, last)
+		}
+		if gotSelective != wantSelective[reason] {
+			t.Errorf("docs/FINDINGS.md marks %q as selective=%v, want %v", reason, gotSelective, wantSelective[reason])
+		}
+	}
+
+	for reason := range wantSelective {
+		if !seen[reason] {
+			t.Errorf("docs/FINDINGS.md reason table has no row for %q", reason)
+		}
+	}
+}
+
 // TestReasonsDocMatchesGoConstants does for the reason vocabulary exactly
 // what TestFindingCodesDocMatchesGoConstants does for the code vocabulary.
 //

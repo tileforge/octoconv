@@ -34,14 +34,22 @@ func AllStatuses() []CheckStatus {
 // clean. Only ReasonFormatNotApplicable is a legitimate reason for
 // StatusNotApplicable; the rest explain a StatusUnknown result.
 //
-// The line that matters most in this type (D-02a/INSP-03): the first eight
-// reasons below are properties of the FILE, of this BUILD, or of an
-// operational failure to read at all -- they produce an unknown status on
-// one check, but never make the report itself partial. The last two are
-// properties of THIS SERVICE'S OWN LOAD -- and ONLY those two may ever mark
-// a Coverage incomplete (see MarkTruncated). This is the actual DoS-relevant
-// distinction Phase 58 exists to make
-// honest, and it cannot be folded into a single field without losing it.
+// The line that matters most in this type (D-02a/INSP-03): most of the
+// reasons below are properties of the FILE or of this BUILD -- they produce
+// an unknown status on one check, but never make the report itself partial,
+// because the checker did everything it could and said honestly what it
+// could not determine. A smaller set describes input this service never
+// actually EXAMINED, and only those may mark a Coverage incomplete. That
+// distinction is the DoS-relevant one Phase 58 exists to make honest, and it
+// cannot be folded into a single field without losing it.
+//
+// makesReportIncomplete below is the single, closed declaration of which
+// side each reason falls on -- do not re-derive it by comparing against
+// constants at a call site (Phase 59, D-11).
+//
+// Phase 59 moved exactly one reason across that line: ReasonReadFailed. See
+// its own doc comment for why "I could not read this" belongs with "I ran
+// out of budget" and not with "this file is broken".
 type Reason string
 
 const (
@@ -100,11 +108,23 @@ const (
 	// choosing to stop within a byte/time budget it could have kept
 	// spending; a read failure is independent of budget size -- raising
 	// maxBytes or the time budget would not fix it, only a successful
-	// retry of the read would. Whether a read failure should ALSO flip a
-	// report's Coverage to incomplete is a narrower, still-open question
-	// this round deliberately leaves alone (see docs/FINDINGS.md) --
-	// today it behaves like the seven reasons above it: an honest unknown
-	// that does not, by itself, make the whole report selective.
+	// retry of the read would.
+	//
+	// Phase 59 (D-11) answers the question the previous round left open
+	// here: a read failure DOES flip a report's Coverage to incomplete.
+	// The reason it belongs there is not that it resembles a ceiling --
+	// it does not, per the paragraph above -- but that Coverage asks a
+	// narrower question than "whose fault was this": it asks whether any
+	// part of the input went unexamined. Unread bytes are unexamined
+	// bytes. The distinction from ReasonMalformedInput survives intact and
+	// is the reason both cannot be treated alike: "this file is broken" is
+	// a finished answer about a file the analyzer actually looked at.
+	//
+	// What was observable before this change: a report in which EVERY
+	// check carried unknown/read_failed still shipped
+	// coverage.complete:true -- "I examined this in full" and "I could not
+	// read it" in one body. See makesReportIncomplete for the closed set
+	// this reason now belongs to.
 	ReasonReadFailed = "read_failed"
 	// ReasonWorkCeilingBytes: parsing stopped because THIS SERVICE'S OWN
 	// byte ceiling was hit.
@@ -141,6 +161,49 @@ func AllReasons() []Reason {
 	}
 }
 
+// makesReportIncomplete is the single, closed declaration of which reasons
+// make a REPORT selective, as opposed to merely leaving one check unknown.
+// Coverage.MarkTruncated and Coverage.MarkTruncatedByCharacteristic both
+// consult it; report.go's buildCoverage filters through it too. Nothing
+// else in this package may compare a Reason against these constants
+// directly (Phase 59, D-11) -- three call sites testing the same idea
+// separately is how the previous version came to have one gate that
+// admitted a reason and another that dropped it.
+//
+// The list is ALLOW-shaped on purpose: it enumerates the reasons that DO
+// lose coverage rather than excluding the ones that do not. A list you add
+// to when introducing a reason fails safe; a list you must remember to
+// subtract from fails open, and it fails open toward claiming completeness
+// the service does not have.
+//
+// The three, and what unites them -- part of the input was never examined:
+//
+//   - ReasonWorkCeilingBytes / ReasonWorkCeilingTime: this service chose to
+//     stop inside a budget it could have kept spending. More would have been
+//     found had it kept going.
+//   - ReasonReadFailed: the bytes could not be read at all. A larger budget
+//     would not have helped, but the input was equally unexamined, and that
+//     is what the coverage claim is about.
+//
+// Everything else stays out, and the exclusions matter as much as the
+// inclusions. ReasonMalformedInput is the sharpest: "this file is broken" is
+// a finished, complete answer ABOUT the file -- the analyzer looked and saw.
+// ReasonCompressedObjectStreams, ReasonPDFNameEscape,
+// ReasonPDFStreamBodyToken and ReasonParserUnavailable are all limits of
+// THIS BUILD, honestly declared. ReasonFormatNotApplicable and
+// ReasonFormatUnrecognized describe applicability, not coverage. Admitting
+// any of those would dissolve the D-02a distinction the whole of Phase 58
+// was built to preserve, and the report would say "selective" so often that
+// the word would stop carrying information.
+func (r Reason) makesReportIncomplete() bool {
+	switch r {
+	case ReasonWorkCeilingBytes, ReasonWorkCeilingTime, ReasonReadFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Check is the three-value outcome of one named check against one Code.
 type Check struct {
 	Code   Code        `json:"code"`
@@ -152,30 +215,46 @@ type Check struct {
 // whether THIS REPORT, as a whole, is complete. A structurally unknown
 // check (parser blind, format inapplicable, malformed input) does not, by
 // itself, make a report incomplete -- the checker did everything it could
-// and honestly reported what it couldn't determine. Only exhausting the
-// service's OWN work ceiling (bytes or time) makes the report selective,
-// because that is the one case where MORE would have been found had the
-// service kept going. Folding these two different claims into one status
-// value is exactly the schema-level regression Pitfall 4 warns about.
+// and honestly reported what it couldn't determine. What DOES make the
+// report selective is any reason meaning "part of the input was never
+// examined": the two work ceilings, and a read that failed. Folding this
+// claim together with a Check's own status is exactly the schema-level
+// regression Pitfall 4 warns about.
+//
+// The full rule, and the three reasons it admits, live in
+// makesReportIncomplete -- not here, and not inlined at any call site.
 type Coverage struct {
 	Complete        bool   `json:"complete"`
 	Reason          Reason `json:"reason,omitempty"`
 	TruncatedChecks []Code `json:"truncated_checks,omitempty"`
 }
 
-// MarkTruncated records that code's check was cut short by r. Only the two
-// ceiling reasons (ReasonWorkCeilingBytes, ReasonWorkCeilingTime) are
-// accepted -- any other Reason is a fail-safe no-op that leaves Coverage
-// unchanged. This project forbids panic for control flow in internal/
-// (CLAUDE.md); the correct fail-safe here is silently refusing an invalid
-// call, never letting a structural/format reason accidentally flip
-// Complete to false.
+// MarkTruncated records that code's check was cut short by r. Only reasons
+// makesReportIncomplete admits are accepted -- any other Reason is a
+// fail-safe no-op that leaves Coverage unchanged. This project forbids panic
+// for control flow in internal/ (CLAUDE.md); the correct fail-safe here is
+// silently refusing an invalid call, never letting a structural/format
+// reason accidentally flip Complete to false.
+//
+// r is stored VERBATIM. Phase 59 (D-11) is explicit that a read failure must
+// not be re-labelled as a ceiling on its way into this field: the mechanism
+// used for malformed zips in PR9R13 -- marking the tracker -- is NOT
+// reusable here, because it would attribute an I/O failure to
+// work_ceiling_bytes, which is the exact substitution rounds 9-16 removed.
+//
+// code IS appended to TruncatedChecks for a read failure, not only for a
+// ceiling. The field names the checks that were cut short, and a check whose
+// bytes could not be read was cut short as truly as one that ran out of
+// budget; the alternative -- Complete:false beside an empty truncated_checks
+// -- would tell a client the report is selective while refusing to say about
+// what. docs/openapi.yaml's description of the field was widened to match,
+// rather than left describing only the ceiling case.
 //
 // The FIRST call's reason is kept (later calls do not overwrite it): it
-// names where the budget actually ran out, and that is the fact worth
-// keeping when several checks are truncated by the same exhausted budget.
+// names where coverage was actually lost, and that is the fact worth keeping
+// when several checks are cut short by the same cause.
 func (c *Coverage) MarkTruncated(r Reason, code Code) {
-	if r != ReasonWorkCeilingBytes && r != ReasonWorkCeilingTime {
+	if !r.makesReportIncomplete() {
 		return
 	}
 	c.Complete = false
@@ -192,17 +271,24 @@ func (c *Coverage) MarkTruncated(r Reason, code Code) {
 
 // MarkTruncatedByCharacteristic records that some CHARACTERISTIC (not a
 // Check) was cut short by r -- report.go's buildCoverage calls this when an
-// analyzer's own "<name>_reason" characteristic key carries one of the two
-// service-ceiling reasons even though no accompanying Check exists for it
+// analyzer's own "<name>_reason" characteristic key carries a
+// coverage-losing reason even though no accompanying Check exists for it
 // (codex PR9 finding 5 / T-SLE-05: e.g. media.go can report
 // duration_seconds_reason=work_ceiling_bytes with zero Checks at all, and a
 // Coverage that only ever inspected checks would stay Complete:true while
 // admitting a truncation in the very same response body). Same
-// ceiling-reason gate and first-reason-wins rule as MarkTruncated;
+// makesReportIncomplete gate and first-reason-wins rule as MarkTruncated;
 // TruncatedChecks is deliberately left untouched here, because it is a
 // Code-keyed list and a bare characteristic key does not name one.
+//
+// Both methods read the SAME predicate rather than each testing constants of
+// its own. That is the point of extracting it: the two gates drifting apart
+// would be invisible -- one path would honestly degrade the report and the
+// other would silently keep claiming completeness for the identical reason.
+// Phase 59's text_layer_reason characteristic (Plan 59-05) reaches Coverage
+// through THIS method, so its correctness is not a detail of one analyzer.
 func (c *Coverage) MarkTruncatedByCharacteristic(r Reason) {
-	if r != ReasonWorkCeilingBytes && r != ReasonWorkCeilingTime {
+	if !r.makesReportIncomplete() {
 		return
 	}
 	c.Complete = false

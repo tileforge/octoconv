@@ -371,21 +371,33 @@ components:
         The REPORT-WIDE completeness claim (INSP-03, Phase 58) -- a
         SEPARATE claim from any one InspectCheck's own status. A
         structurally-unknown check (parser blind, format inapplicable,
-        malformed input) never makes the report itself incomplete; ONLY
-        exhausting this service's OWN byte/time work ceiling does.
+        malformed input) never makes the report itself incomplete. What does
+        is any reason meaning part of the upload was never examined:
+        work_ceiling_bytes, work_ceiling_time, and read_failed. See
+        docs/FINDINGS.md for the full table and for why malformed_input is
+        deliberately NOT among them -- "this file is broken" is a finished
+        answer about a file that was actually looked at.
       properties:
         complete:
           type: boolean
         reason:
           type: string
-          description: Present when complete is false.
+          description: >-
+            Present when complete is false. One of work_ceiling_bytes,
+            work_ceiling_time, or read_failed -- reported verbatim, never
+            re-labelled (a failed read is never presented as an exhausted
+            ceiling). When several causes apply, the first one observed is
+            reported.
         truncated_checks:
           type: array
           items:
             type: string
           description: >-
-            The finding codes whose own check was cut short by the
-            exhausted ceiling. Present when complete is false.
+            The finding codes whose own check was cut short -- by an
+            exhausted ceiling or by a failed read. Present when complete is
+            false, EXCEPT when the loss of coverage came from a
+            characteristic rather than a check, in which case it is absent:
+            a characteristic key names no finding code.
       required: [complete]
 
     InspectOperation:
