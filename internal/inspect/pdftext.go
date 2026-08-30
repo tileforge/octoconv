@@ -121,28 +121,50 @@ func pdfStreamDictWindow(buf []byte, streamStart int) []byte {
 // report loses its right to claim absence, exactly like an undecodable one.
 const pdfMaxInflatedStreamBytes = 1 << 20 // 1 MiB
 
-// pdfSkipStreamMarkers name the stream kinds that cannot carry a text layer
-// and must therefore never be inflated. Both entries are load-bearing and
-// neither was obvious:
+// pdfProvenSkipMarkers name keys that describe THE STREAM ITSELF, so a stream
+// carrying one cannot hold a text layer and skipping it costs the report
+// nothing:
 //
-//   - Image XObjects: the decompression-bomb surface AND the reason the
-//     detector would otherwise go silent on scans (x168 measured, R2).
-//   - Font programs: an inflated font is binary full of ' and " bytes, and the
-//     first version of the operator match counted 817 non-whitespace bytes of
-//     it where the true answer was 42 (R6). The token-boundary rule below
-//     closes that on its own, but skipping font streams removes the surface
-//     rather than merely surviving it.
+//   - /Subtype /Image (both spellings): an image XObject. This is the
+//     decompression-bomb surface AND the reason the detector would otherwise go
+//     silent on scans -- x168 measured on one stream, 59-RESEARCH.md R2.
+//   - /Length1: present only on a font-PROGRAM stream, where it gives the
+//     uncompressed length of the embedded file.
+//   - /Subtype /Type1C and /CIDFontType0C: compact font programs, likewise.
 //
-// Matching is a plain substring test over the lookback window -- deliberately
-// not a dictionary parser. Over-matching (skipping a stream that was in fact
-// ordinary content) is safe: a skipped stream is not counted as examined, so
-// the worst outcome is an honest unknown.
-var pdfSkipStreamMarkers = [][]byte{
-	[]byte("/Image"),
-	[]byte("/FontFile"),
+// An inflated font program is binary full of ' and " bytes -- two of PDF's four
+// text operators -- which produced a x19 overcount before the operator match was
+// tightened (R6). The token rule closes that on its own; skipping removes the
+// surface rather than merely surviving it.
+var pdfProvenSkipMarkers = [][]byte{
+	[]byte("/Subtype /Image"),
+	[]byte("/Subtype/Image"),
 	[]byte("/Length1"),
-	[]byte("/Type1C"),
+	[]byte("/Subtype /Type1C"),
+	[]byte("/Subtype/Type1C"),
 	[]byte("/CIDFontType0C"),
+}
+
+// pdfAmbiguousSkipMarkers name keys a dictionary may merely REFERENCE while
+// also describing a stream that does carry text. A stream matching one of these
+// is treated as OPAQUE -- not examined, and therefore not eligible to support a
+// claim of absence.
+//
+// /FontFile, /FontFile2 and /FontFile3 are the case codex's review of PR #10
+// named, and the distinction they turn on is worth stating: a font DESCRIPTOR
+// points at a font file, it is not one. A text-bearing Form XObject may
+// legitimately carry `/Resources << /Font << … /FontFile2 9 0 R >> >> >>` in its
+// own dictionary. Under the previous rule that stream was silently skipped,
+// coverage stayed true, and the report answered `text_layer: absent` for a
+// document full of text -- the one direction D-09 forbids outright.
+//
+// The doc comment this replaces claimed over-matching was safe "because a
+// skipped stream is not counted as examined". That was simply false about the
+// code: pdfStreamSkipped never touched `covered`. The claim and the mechanism
+// disagreed, and the mechanism won. Ambiguity now costs coverage, which is what
+// the old comment had promised all along.
+var pdfAmbiguousSkipMarkers = [][]byte{
+	[]byte("/FontFile"),
 }
 
 // pdfStreamClass is what the lookback dictionary plus a decode attempt say
@@ -259,6 +281,45 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 	return state
 }
 
+// hasStreamKeywordSyntax reports whether the "stream" keyword at streamStart is
+// preceded by the end of a dictionary, which is what ISO 32000 §7.3.8.1
+// requires of a real stream object.
+//
+// scanPDFStreamRanges (pdf.go) is deliberately LEXICAL: it treats every bare
+// "stream" substring as an opener, because its own caller builds the
+// opaque-range filter, where over-matching is the safe direction -- a range
+// wrongly marked opaque only suppresses a finding, never invents one.
+//
+// This detector needs the opposite guarantee, and the difference is not
+// theoretical. codex's review of PR #10 supplied the case: a non-content object
+// holding a literal string such as `(stream BT (abc…) Tj)`, followed later by a
+// genuine `endstream`, was scanned as though the text inside that string were
+// page content. It counted 26 and reported `text_layer: present` for a document
+// pdftotext exposes no page text for at all -- steering a client away from the
+// OCR they need.
+//
+// The check lives HERE rather than inside scanPDFStreamRanges because that
+// scanner has two other callers whose correctness depends on its current,
+// wider behaviour. Narrowing a shared primitive to suit one consumer would have
+// traded this false positive for a false negative in the risk-token filter,
+// which is a worse trade.
+func hasStreamKeywordSyntax(buf []byte, streamStart int) bool {
+	// streamStart points just past the keyword; step back over it.
+	i := streamStart - len("stream")
+	if i < 0 {
+		return false
+	}
+	for i > 0 {
+		switch buf[i-1] {
+		case ' ', '\t', '\r', '\n', '\f', 0:
+			i--
+			continue
+		}
+		break
+	}
+	return i >= 2 && buf[i-2] == '>' && buf[i-1] == '>'
+}
+
 // decodePDFStream classifies one stream and, when it is scannable, returns its
 // bytes.
 //
@@ -267,11 +328,25 @@ func scanPDFTextLayer(buf []byte, allowance int64, tr *Tracker) pdfTextScanState
 // decompression is what keeps a scanned document affordable; doing it the
 // other way round would mean inflating half a megabyte to then discard it.
 func decodePDFStream(buf []byte, rng pdfOpaqueRange, tr *Tracker, state *pdfTextScanState) ([]byte, pdfStreamClass) {
+	if !hasStreamKeywordSyntax(buf, rng.start) {
+		// A "stream" that is not preceded by a dictionary is not a stream
+		// object. It is returned as OPAQUE rather than skipped: these bytes
+		// were never examined as content, so the report must not go on to
+		// claim absence on their behalf. Trading a false "present" for a
+		// false "absent" would be no improvement at all.
+		return nil, pdfStreamOpaque
+	}
+
 	dict := pdfStreamDictWindow(buf, rng.start)
 
-	for _, marker := range pdfSkipStreamMarkers {
+	for _, marker := range pdfProvenSkipMarkers {
 		if bytes.Contains(dict, marker) {
 			return nil, pdfStreamSkipped
+		}
+	}
+	for _, marker := range pdfAmbiguousSkipMarkers {
+		if bytes.Contains(dict, marker) {
+			return nil, pdfStreamOpaque
 		}
 	}
 
@@ -423,47 +498,103 @@ func countTextOperatorArgBytes(buf []byte) int {
 	return total
 }
 
-// readPDFLiteralString reads a (…) literal starting at open and returns its
-// decoded-enough content plus the index just past the closing paren.
+// readPDFLiteralString reads a (…) literal starting at open, DECODES its
+// escapes, and returns the decoded bytes plus the index just past the closing
+// paren.
 //
-// "Decoded enough" is the honest description: backslash escapes are consumed
-// so that \) does not terminate the string and \\ does not escape the next
-// byte, but octal escapes are not translated and the escaped byte is kept
-// as-is. This matters only for the COUNT, and only in one direction that is
-// safe: an octal escape contributes its literal digits rather than one
-// character, which can only over-count a genuinely text-bearing stream that is
-// already far past the threshold, never manufacture text in an empty one.
+// On decoding, and on the comment this replaces. An earlier version kept escape
+// sequences as literal digits and argued the resulting over-count was safe:
+// "an octal escape contributes its literal digits rather than one character,
+// which can only over-count a genuinely text-bearing stream that is already far
+// past the threshold, never manufacture text in an empty one."
+//
+// That was the same argument readPDFHexString made, and it was already
+// disproved for hex by measurement before this function was left alone with it.
+// codex's review of PR #10 supplied the counterexample for the other half:
+// `(\101\102\103\104\105\106) Tj` is six characters and counted eighteen,
+// and the shared threshold is sixteen. It did not exaggerate a verdict, it
+// manufactured one -- inspect reporting a usable text layer for a document the
+// worker still sends to OCR.
+//
+// The lesson is not "decode octal too". It is that fixing the named instance
+// and leaving the identical reasoning standing next to it is how a defect class
+// survives its own fix.
+//
+// ISO 32000 §7.3.4.2 escapes handled: \n \r \t \b \f \( \) \\, one to
+// three octal digits, and a backslash before an end-of-line, which is a line
+// continuation contributing nothing. A backslash before anything else drops the
+// backslash and keeps the byte, which is what the standard says.
 func readPDFLiteralString(buf []byte, open int) (content []byte, next int) {
+	var out []byte
 	depth := 1
 	i := open + 1
-	start := i
-	var out []byte
+
 	for i < len(buf) && depth > 0 {
-		switch buf[i] {
+		c := buf[i]
+		switch c {
 		case '\\':
-			out = append(out, buf[start:i]...)
 			i++
-			if i < len(buf) {
-				out = append(out, buf[i])
-				i++
+			if i >= len(buf) {
+				return out, len(buf)
 			}
-			start = i
-			continue
+			e := buf[i]
+			switch {
+			case e >= '0' && e <= '7':
+				// One to three octal digits, per the standard. Values above
+				// 255 are taken modulo 256, which is also what the standard
+				// says to do.
+				v := 0
+				n := 0
+				for n < 3 && i < len(buf) && buf[i] >= '0' && buf[i] <= '7' {
+					v = v*8 + int(buf[i]-'0')
+					i++
+					n++
+				}
+				out = append(out, byte(v))
+				continue
+			case e == 'n':
+				out = append(out, '\n')
+			case e == 'r':
+				out = append(out, '\r')
+			case e == 't':
+				out = append(out, '\t')
+			case e == 'b':
+				out = append(out, '\b')
+			case e == 'f':
+				out = append(out, '\f')
+			case e == '\n':
+				// Line continuation: contributes nothing at all.
+			case e == '\r':
+				if i+1 < len(buf) && buf[i+1] == '\n' {
+					i++
+				}
+			default:
+				// Includes \( \) \\ and any other byte: drop the backslash,
+				// keep the byte. Crucially this means an escaped paren does not
+				// change depth below.
+				out = append(out, e)
+			}
+			i++
 		case '(':
 			depth++
+			out = append(out, c)
+			i++
 		case ')':
 			depth--
 			if depth == 0 {
-				out = append(out, buf[start:i]...)
 				return out, i + 1
 			}
+			out = append(out, c)
+			i++
+		default:
+			out = append(out, c)
+			i++
 		}
-		i++
 	}
-	// Unterminated string: take what is there. An unterminated literal is
-	// malformed input, and refusing to count it would be a claim about the
-	// file this function is not the right place to make.
-	out = append(out, buf[start:min(i, len(buf))]...)
+
+	// Unterminated string: take what was decoded. An unterminated literal is
+	// malformed input, and refusing to count it would be a claim about the file
+	// this function is not the right place to make.
 	return out, len(buf)
 }
 

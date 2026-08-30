@@ -451,3 +451,135 @@ func TestTextLayerCountMatchesPdftotextOnCorpus(t *testing.T) {
 		})
 	}
 }
+
+// --- codex review of PR #10: three findings, each a FALSE VERDICT -----------
+//
+// All three were reproduced before being accepted, and each test below carries
+// its reproduction verbatim so the case cannot be quietly generalised away.
+
+// TestOctalEscapesAreDecodedNotCounted closes the sharpest of the three,
+// because it is the same defect twice.
+//
+// The phase had already fixed exactly this class for hex strings after a
+// measurement disproved the "harmless over-count" argument -- and left the
+// identical argument standing, in a comment, in the neighbouring function.
+//
+// REPRODUCED: `(\101\102\103\104\105\106) Tj` is six characters. It counted 18.
+// The shared threshold is 16, so the over-count did not exaggerate a verdict,
+// it manufactured one: text_layer present for a document the worker still
+// routes to OCR.
+func TestOctalEscapesAreDecodedNotCounted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"three-digit octal escapes", `(\101\102\103\104\105\106) Tj`, 6},
+		{"one and two digit octal", `(\7\41\101) Tj`, 3},
+		{"named escapes", `(A\nB\tC) Tj`, 3},
+		{"escaped parens do not terminate the string", `(a\(b\)c) Tj`, 5},
+		{"line continuation contributes nothing", "(ab\\\ncd) Tj", 4},
+		{"escaped backslash is one byte", `(a\\b) Tj`, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countTextOperatorArgBytes([]byte(tc.in)); got != tc.want {
+				t.Fatalf("countTextOperatorArgBytes(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLexicalStreamKeywordCannotEstablishPresence closes the second finding.
+//
+// scanPDFStreamRanges is deliberately lexical -- every bare "stream" substring
+// opens a range -- because its other callers build the opaque-range filter,
+// where over-matching is the SAFE direction. This detector needs the opposite,
+// so it checks the syntax itself rather than narrowing a shared primitive.
+//
+// REPRODUCED: a non-content object holding `(stream BT (abc…) Tj)`, followed
+// later by a genuine endstream, was scanned as page content. It counted 26 and
+// reported present for a document pdftotext exposes no page text for at all.
+//
+// The result must be unknown, NOT absent: those bytes were never examined as
+// content, and trading a false present for a false absent is no improvement.
+func TestLexicalStreamKeywordCannotEstablishPresence(t *testing.T) {
+	buf := []byte("5 0 obj\n(stream BT (abcdefghijklmnopqrstuvwxyz) Tj)\nendobj\n" +
+		"6 0 obj\n<< /Length 5 >>\nstream\nxxxxx\nendstream\nendobj\n")
+
+	state := scanPDFTextLayer(buf, 1<<20, nil)
+	value, reason := pdfTextLayerVerdict(state, false, false)
+
+	if value == TextLayerPresent {
+		t.Fatalf("text_layer = present (count %d) for text living inside a literal string -- a bare \"stream\" "+
+			"substring is not a stream object, and page content is the only thing that may establish presence", state.nonWhitespace)
+	}
+	if value == TextLayerAbsent {
+		t.Fatalf("text_layer = absent -- those bytes were never examined as content; degrading to unknown is the " +
+			"honest answer, and swapping one false verdict for the opposite one is not a fix")
+	}
+	if reason == "" {
+		t.Fatal("a null verdict must carry a reason")
+	}
+}
+
+// TestAmbiguousSkipMarkerCostsCoverage closes the third, which is the most
+// serious in kind: it produced a false ABSENT, the one direction D-09 forbids
+// outright.
+//
+// REPRODUCED: a text-bearing Form XObject whose own dictionary carries
+// `/Resources << /Font << … /FontFile2 9 0 R >> >> >>` matched the /FontFile
+// skip marker, was skipped, left coverage untouched, and the report answered
+// absent for a document full of text.
+//
+// A font descriptor POINTS at a font file; it is not one. Only a key describing
+// the stream ITSELF may skip it.
+func TestAmbiguousSkipMarkerCostsCoverage(t *testing.T) {
+	buf := []byte("7 0 obj\n<< /Type /XObject /Subtype /Form " +
+		"/Resources << /Font << /F1 << /FontDescriptor << /FontFile2 9 0 R >> >> >> >> /Length 40 >>\n" +
+		"stream\nBT /F1 12 Tf (abcdefghijklmnopqrstuvwxyz) Tj ET\nendstream\nendobj\n")
+
+	state := scanPDFTextLayer(buf, 1<<20, nil)
+	if state.covered {
+		t.Fatal("coverage survived an ambiguous /FontFile match -- a font descriptor references a font file, it is " +
+			"not one, so skipping this stream is not proof that it could carry no text")
+	}
+
+	value, _ := pdfTextLayerVerdict(state, false, false)
+	if value == TextLayerAbsent {
+		t.Fatal("text_layer = absent for a text-bearing Form XObject skipped on an ambiguous marker -- a false claim " +
+			"of ABSENCE is the one outcome D-09 forbids outright")
+	}
+}
+
+// TestProvenSkipMarkersStillSkip is the other half, and the reason the split
+// was necessary rather than simply dropping every skip.
+//
+// Making the rule stricter risks pushing the image-only fixtures off absent,
+// which would trade one false verdict for another and destroy the answer this
+// field exists to give a scanned document.
+func TestProvenSkipMarkersStillSkip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dict string
+	}{
+		{"image xobject, spaced", "<< /Subtype /Image /Filter /FlateDecode >>"},
+		{"image xobject, unspaced", "<< /Subtype/Image /Filter /FlateDecode >>"},
+		{"font program by Length1", "<< /Length1 900 >>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := []byte("1 0 obj\n" + tc.dict + "\nstream\n\x00\x01\x02\nendstream\nendobj\n")
+			ranges, _ := scanPDFStreamRanges(buf, nil)
+			if len(ranges) == 0 {
+				t.Fatal("fixture produced no stream range")
+			}
+			state := pdfTextScanState{covered: true, remaining: 1 << 20}
+			if _, got := decodePDFStream(buf, ranges[0], nil, &state); got != pdfStreamSkipped {
+				t.Fatalf("class = %v, want pdfStreamSkipped -- a key describing the stream ITSELF must still skip, or "+
+					"a scanned document's images are decompressed and the field goes silent on it", got)
+			}
+			if !state.covered {
+				t.Fatal("a proven skip must not cost coverage -- that is what makes absent reachable for a scan")
+			}
+		})
+	}
+}
