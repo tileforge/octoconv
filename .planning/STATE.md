@@ -4,8 +4,8 @@ milestone: v1.13
 milestone_name: Inspect & Operations
 status: completed
 stopped_at: Phase 59 complete; nothing pushed yet
-last_updated: "2026-08-30T06:53:15.653Z"
-last_activity: "2026-08-30 -- Quick 260830-dmg: three codex findings from PR #10 closed (04a60ae)"
+last_updated: "2026-08-30T08:11:43.909Z"
+last_activity: "2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)"
 progress:
   total_phases: 6
   completed_phases: 4
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 Phase: 59 (born-digital-pdf-routing) — COMPLETE
 Plan: 7 of 7 — all executed and verified
 Status: Phase 59 complete: BDPD-01 and BDPD-02 both satisfied with live evidence, 7 plans executed. Next in v1.13: Phase 60 (Sanitize) and Phase 61 (v1.12 debt tail).
-Last activity: 2026-08-30 -- Quick 260830-dmg: three codex findings from PR #10 closed (04a60ae)
+Last activity: 2026-08-30 -- PR #10 review rounds closed: 8 findings across 3 rounds (06a6bd4)
 
 ## Performance Metrics
 
@@ -151,7 +151,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 | 260809-fast | codex, второй круг ревью PR#7: `mcpserver.JobStatus` не объявлял `Outputs`, поэтому массив `outputs` из `GET /v1/jobs/{id}` молча терялся у обоих MCP-серверов. `JobStatus` служит типом вывода `get_job_status`, а `download_result` отдаёт только primary-URL — значит вторичный артефакт (отчёт sanitize) был недостижим через MCP вообще. Тот же класс, что находка №2 про `FormatsResponse`: соседний DTO в том же файле, который узкая правка не подмела. Латентно до фазы 60. Тег-инверсия (`outputs`→`output`) доказывает, что тест ловит потерю данных, а не только отсутствие поля | 2026-08-09 | 23bf611 | — |
 | 260830-6zr | Автотриггеры `on: [push, pull_request]` в `.github/workflows/ci.yml` закомментированы, заменены на `on: workflow_dispatch` — лимиты GitHub Actions на исходе, а воркфлоу срабатывал дважды за цикл (пуш ветки + открытие PR). Ключ `on:` не удалён намеренно: он обязателен, и файл без него GitHub считает невалидным воркфлоу, что вдобавок лишает ручного запуска. Все пять job'ов на месте, откат — одна строка. Заодно найдено и починено: планы 59-02/59-05 в шагах verify звали `python3 -c "import yaml"`, а pyyaml на этой машине нет — переведены на `yq` v4 — он стоит в проекте и им же пользуются рабочие процессы GSD; `yq '.on'` вдобавок не спотыкается о YAML 1.1, где голое `on:` разбирается как булев true, а поскольку он умеет запрашивать, критерии приёмки усилены с «файл парсится» до проверки значений | 2026-08-30 | a13e67b | [260830-6zr-ci-workflow-dispatch](./quick/260830-6zr-ci-workflow-dispatch/) |
-| 260830-dmg | Три замечания codex из ревью PR #10, все три — ложный вердикт, все три воспроизведены до принятия: октальные escape'ы считались как литеральные цифры (18 против истинных 6 при пороге 16 — вердикт не преувеличен, а сфабрикован; тот же класс, что уже был опровергнут замером для hex и оставлен в соседней функции), голое слово `stream` внутри литеральной строки открывало диапазон и давало ложный `present` (проверка синтаксиса добавлена в детектор, а не в общий `scanPDFStreamRanges`, чья широта корректна для двух других вызывающих), и неоднозначный маркер `/FontFile*` пропускал текстонесущий Form XObject, сохраняя покрытие — ложный `absent`, направление, запрещённое D-09. Ни один вердикт корпуса не сдвинулся, DIVERGENCE.md побайтово идентичен | 2026-08-30 | 04a60ae | [260830-dmg-close-three-codex-findings-from-pr-10-re](./quick/260830-dmg-close-three-codex-findings-from-pr-10-re/) |
+| 260830-dmg | Восемь находок ревью PR #10 за три круга (3 codex + 4 codex + 1 своя), все — ложный вердикт, все три воспроизведены до принятия: октальные escape'ы считались как литеральные цифры (18 против истинных 6 при пороге 16 — вердикт не преувеличен, а сфабрикован; тот же класс, что уже был опровергнут замером для hex и оставлен в соседней функции), голое слово `stream` внутри литеральной строки открывало диапазон и давало ложный `present` (проверка синтаксиса добавлена в детектор, а не в общий `scanPDFStreamRanges`, чья широта корректна для двух других вызывающих), и неоднозначный маркер `/FontFile*` пропускал текстонесущий Form XObject, сохраняя покрытие — ложный `absent`, направление, запрещённое D-09. Второй круг codex обошёл первое исправление (`>>` можно положить внутрь литерала — два обхода одной границы), поэтому слоёный предикат заменён однопроходным сканером, отслеживающим лексический контекст. Третью находку нашёл сам, атакуя этот сканер: незакрытый литерал проглатывал остаток окна и давал `absent` о неосмотренном. Ни один вердикт корпуса не сдвинулся ни разу, DIVERGENCE.md побайтово идентичен | 2026-08-30 | 06a6bd4 | [260830-dmg-close-three-codex-findings-from-pr-10-re](./quick/260830-dmg-close-three-codex-findings-from-pr-10-re/) |
 
 ### Pending Todos
 
