@@ -73,10 +73,6 @@ import (
 	"path/filepath"
 )
 
-func init() {
-	sanitizeFormats["pdf"] = sanitizePDF
-}
-
 // pdfLostCapabilities are the document features the PostScript round trip
 // destroys as a side effect. They are reported to the client as costs, not as
 // removed threats (D-02) -- a fillable form is not an attack, and a client who

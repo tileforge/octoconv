@@ -23,6 +23,15 @@ package api
 //     "text_layer_reason", inside characteristics (Plan 59-05).
 //  2. A change to the coverage object caused by Plan 59-02's widened
 //     reason set.
+//  3. (Phase 60) The appearance of operations entries whose "operation" is
+//     "sanitize". Phase 60 registers the eighth engine class and the second
+//     job operation -- locked by the roadmap on 2026-08-07 -- so every
+//     inspect report now offers sanitize alongside convert for the formats
+//     that support it. The golden bytes are NOT regenerated: it stays the
+//     record of what the response was before Phase 59, its
+//     `git rev-list --count` stays 1, and the assertion narrowed instead.
+//     Every OTHER operations entry is still compared element by element as
+//     the exact bytes it was pinned as.
 //
 // Everything else is frozen. A plan that needs a wider exception is changing
 // the contract, not the test: stop and escalate rather than editing this suite
@@ -155,5 +164,121 @@ func TestPre59GoldenInspectPDF(t *testing.T) {
 		t.Fatalf("encode snapshot: %v", err)
 	}
 
-	assertGolden59(t, "inspect_pdf.golden.json", buf.Bytes())
+	assertInspectGolden59ModuloSanitize(t, buf.Bytes())
+}
+
+// assertInspectGolden59ModuloSanitize compares the live inspect snapshot to
+// the pinned golden under permitted exception 3 at the top of this file.
+//
+// Everything is compared as raw bytes at the level it was pinned at: each
+// fixture's status, each body field other than "operations", and each
+// individual element of "operations" that is not a sanitize offer. Nothing is
+// re-encoded and nothing is compared semantically, so a formatting change
+// cannot slip through a normalization step -- the exception subtracts
+// elements, it does not relax the comparison of what remains.
+func assertInspectGolden59ModuloSanitize(t *testing.T, got []byte) {
+	t.Helper()
+	const path = "testdata/pre59_inspect_pdf.golden.json"
+
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if bytes.Equal(want, got) {
+		return
+	}
+
+	type pinned struct {
+		Status int             `json:"status"`
+		Body   json.RawMessage `json:"body"`
+	}
+	var live, golden map[string]pinned
+	if err := json.Unmarshal(got, &live); err != nil {
+		t.Fatalf("unmarshal live snapshot: %v", err)
+	}
+	if err := json.Unmarshal(want, &golden); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+
+	if len(live) != len(golden) {
+		t.Fatalf("snapshot has %d fixtures, golden has %d", len(live), len(golden))
+	}
+
+	for name, goldenEntry := range golden {
+		liveEntry, ok := live[name]
+		if !ok {
+			t.Errorf("fixture %q missing from the live snapshot", name)
+			continue
+		}
+		if liveEntry.Status != goldenEntry.Status {
+			t.Errorf("%s: status = %d, want %d", name, liveEntry.Status, goldenEntry.Status)
+		}
+
+		liveFields := map[string]json.RawMessage{}
+		goldenFields := map[string]json.RawMessage{}
+		if err := json.Unmarshal(liveEntry.Body, &liveFields); err != nil {
+			t.Fatalf("%s: unmarshal live body: %v", name, err)
+		}
+		if err := json.Unmarshal(goldenEntry.Body, &goldenFields); err != nil {
+			t.Fatalf("%s: unmarshal golden body: %v", name, err)
+		}
+
+		for field, goldenRaw := range goldenFields {
+			if field == "operations" {
+				continue
+			}
+			if !bytes.Equal(goldenRaw, liveFields[field]) {
+				t.Errorf("%s: field %q changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
+					name, field, liveFields[field], goldenRaw)
+			}
+		}
+		for field := range liveFields {
+			if _, pinnedField := goldenFields[field]; !pinnedField {
+				t.Errorf("%s: body gained unpinned field %q", name, field)
+			}
+		}
+
+		assertOperationsModuloSanitize(t, name, goldenFields["operations"], liveFields["operations"])
+	}
+}
+
+// assertOperationsModuloSanitize compares two operations arrays element by
+// element after dropping sanitize offers from the live one.
+func assertOperationsModuloSanitize(t *testing.T, fixture string, goldenRaw, liveRaw json.RawMessage) {
+	t.Helper()
+
+	var goldenOps, liveOps []json.RawMessage
+	if err := json.Unmarshal(goldenRaw, &goldenOps); err != nil {
+		t.Fatalf("%s: unmarshal golden operations: %v", fixture, err)
+	}
+	if err := json.Unmarshal(liveRaw, &liveOps); err != nil {
+		t.Fatalf("%s: unmarshal live operations: %v", fixture, err)
+	}
+
+	var kept []json.RawMessage
+	sawSanitize := false
+	for _, op := range liveOps {
+		var head struct {
+			Operation string `json:"operation"`
+		}
+		if err := json.Unmarshal(op, &head); err != nil {
+			t.Fatalf("%s: unmarshal operations entry: %v", fixture, err)
+		}
+		if head.Operation == "sanitize" {
+			sawSanitize = true
+			continue
+		}
+		kept = append(kept, op)
+	}
+
+	if len(kept) != len(goldenOps) {
+		t.Fatalf("%s: operations has %d non-sanitize entries, golden has %d "+
+			"(sanitize entries seen: %v)", fixture, len(kept), len(goldenOps), sawSanitize)
+	}
+	for i := range goldenOps {
+		if !bytes.Equal(goldenOps[i], kept[i]) {
+			t.Errorf("%s: operations[%d] changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
+				fixture, i, kept[i], goldenOps[i])
+		}
+	}
 }

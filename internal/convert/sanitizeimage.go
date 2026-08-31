@@ -36,11 +36,6 @@ import (
 	"os"
 )
 
-func init() {
-	sanitizeFormats["jpg"] = sanitizeImage
-	sanitizeFormats["png"] = sanitizeImage
-}
-
 // imageThreatClasses is what the image path removes. Metadata only: an image
 // container carries no actions, no macros and no attachments, and claiming
 // otherwise would be the same false statement pdfThreatClasses exists to

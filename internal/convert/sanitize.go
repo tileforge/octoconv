@@ -51,10 +51,36 @@ type SanitizeResult struct {
 // equals input format: sanitize is not a conversion, and a client asking for
 // a safe copy of a PDF expects a PDF back.
 //
-// Populated per-format by the plans that implement each path, so an
-// unimplemented format is a missing map entry rather than a stub that returns
-// a plausible-looking empty result.
-var sanitizeFormats = map[string]func(context.Context, string, string) (SanitizeResult, error){}
+// # WHY THIS IS A MAP LITERAL AND NOT PER-FILE init() REGISTRATION
+//
+// It was the latter, and the eighth-engine cross-check in
+// TestAllEnginesCoversEveryEngineClass caught what that cost. Go runs a
+// package's init() functions in FILE-NAME order, and converters.go sorts
+// before every sanitize*.go, so SanitizeConverter was registered with the
+// registry while this map was still empty -- its Pairs() returned nothing,
+// no triple was registered, and operation=sanitize would have kept returning
+// 422 with the whole implementation sitting right there.
+//
+// A literal has no ordering to get wrong: package-level variables are
+// initialized by dependency, not by file name. The cost is that the closed
+// set of sanitizable formats lives here rather than beside each handler,
+// which for a set this document-visible is arguably where it belongs.
+var sanitizeFormats = map[string]func(context.Context, string, string) (SanitizeResult, error){
+	"pdf": sanitizePDF,
+
+	"docm": sanitizeOOXML,
+	"docx": sanitizeOOXML,
+	"xlsm": sanitizeOOXML,
+	"xlsx": sanitizeOOXML,
+	"pptm": sanitizeOOXML,
+	"pptx": sanitizeOOXML,
+	"dotm": sanitizeOOXML,
+	"potm": sanitizeOOXML,
+	"ppsm": sanitizeOOXML,
+
+	"jpg": sanitizeImage,
+	"png": sanitizeImage,
+}
 
 // SanitizeFile sanitizes inPath into outPath, dispatching on the NORMALIZED
 // source format.

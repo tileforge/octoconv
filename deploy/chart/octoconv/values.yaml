@@ -146,6 +146,27 @@ pandocWorker:
       cpu: "2"
       memory: "1Gi"
 
+probeWorker:
+  image:
+    repository: "octoconv-probe-worker"
+  replicas: 1
+  # 190s = PROBE_ENGINE_TIMEOUT (180s, ConfigMap) + 10s asynq ShutdownTimeout
+  # margin, following pandoc's own-compose-precedent shape rather than the
+  # ENGINE_TIMEOUT+30s convention.
+  #
+  # PROVISIONAL. 180s is a PLACEHOLDER timeout, not a measured one, so this
+  # derived grace period is provisional in exactly the same way and must be
+  # re-derived in the same edit that lands the measured value.
+  terminationGracePeriodSeconds: 190
+  resources:
+    limits:
+      # 2 CPU / 1Gi: the cgroup limits phase 58 (D-02a) named as a condition
+      # for allowing pdfcpu to parse untrusted bytes in-process at all. They
+      # are not a capacity estimate -- they are the isolation the decision was
+      # conditioned on, and lowering or removing them reopens that decision.
+      cpu: "2"
+      memory: "1Gi"
+
 chromiumWorker:
   image:
     repository: "octoconv-chromium-worker"
@@ -351,3 +372,26 @@ keda:
     # applies in scaledobject-pandoc.yaml.
     scaleDownStabilizationSeconds: null
     minReplicaCount: 0   # explicit default (SEED-011/CAPA-01, D-01) — see keda.image above
+  probe:
+    # DERIVED FROM PROBE'S OWN BUDGET, not copied from pandoc even where the
+    # numbers coincide. threshold "2": sanitize jobs are seconds-scale on the
+    # measured corpus, so two queued jobs of backlog is the right hysteresis
+    # before paying a pod cold start -- the same reasoning pandoc arrived at,
+    # reached independently, and it would be wrong to record it as "same as
+    # pandoc" because the day pandoc's changes this one must not follow.
+    #
+    # PROVISIONAL, like PROBE_ENGINE_TIMEOUT itself: these values are stated
+    # against a corpus of 331 B - 11.6 KB fixtures. The operator checkpoint
+    # that supplies the measured timeout is the point at which they should be
+    # revisited against real documents.
+    threshold: "2"
+    maxReplicaCount: 2
+    pollingInterval: 10
+    cooldownPeriod: 90
+    # NULL, the FAST-engine profile: the measured jobs are sub-second and even
+    # the placeholder ceiling is 180s, well inside the k8s 300s HPA default
+    # downscale stabilization. Setting the heavy engines' 900s here would be
+    # cargo-culting a number whose justification (~742-753s jobs) does not
+    # apply.
+    scaleDownStabilizationSeconds: null
+    minReplicaCount: 0

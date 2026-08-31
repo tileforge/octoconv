@@ -72,4 +72,14 @@ func init() {
 	// goes through the new Registry.Replace, which performs this exact
 	// overwrite deliberately and without panicking.
 	Default.Register(PandocConverter{})
+	// Registered last (SANI-06, Phase 60). SanitizeConverter is the first
+	// converter to declare an operation other than "convert", so its triples
+	// live in a key space no existing registration can collide with: the
+	// registry is keyed by (operation, from, to), and every pair here is an
+	// identity pair under OperationSanitize. pdf->pdf under "sanitize" and
+	// pdf->pdf under "convert" are different keys, and the second does not
+	// exist. That is why this needs no disjointness test of the kind
+	// TestPandocPairsDisjointFromOtherEngines exists for -- the separation is
+	// structural rather than a property of the chosen format lists.
+	Default.Register(SanitizeConverter{})
 }

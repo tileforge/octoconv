@@ -1,7 +1,13 @@
 package worker
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/apaderin/octoconv/internal/jobs"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/queue"
@@ -136,7 +142,7 @@ func audioFailureCode(err error) (code, message string) {
 	return CodeEngineError, "unsupported or corrupted input format"
 }
 
-// The seven package-level engine descriptors (D-09: never a
+// The eight package-level engine descriptors (D-09: never a
 // map[string]EngineDescriptor registry — each worker binary imports its own
 // directly, matching the one-engine-per-binary deployment model every
 // cmd/*-worker/main.go already uses). OptsFromMap adapters preserve each
@@ -234,4 +240,111 @@ var PandocDescriptor = EngineDescriptor{
 	},
 	IsTerminal:  isPandocTerminal,
 	FailureCode: pandocFailureCode,
+}
+
+// ProbeDescriptor is the eighth, and the first whose task type is not a
+// convert (queue.TypeProbeSanitize).
+//
+// TERMINAL/TRANSIENT, DERIVED FOR SANITIZE RATHER THAN COPIED
+//
+// Phase 56's descriptors show that polarity is per-engine and genuinely
+// disagrees between neighbours: isAudioTerminal treats an ffmpeg-stage
+// timeout as terminal and a whisper-stage timeout as transient, and
+// isAVTerminal has the opposite shape. Copying a neighbour's classification
+// is the same antipattern as copying its timeout, so isProbeTerminal is
+// argued branch by branch:
+//
+//   - Verification failure -- TERMINAL. The verifier is deterministic on the
+//     output bytes, and the output is deterministic on the input. A retry
+//     re-runs the same sanitize on the same file and reaches the same
+//     verdict. Retrying would burn the budget to be told the same thing
+//     three times.
+//   - Ghostscript TIMEOUT -- TRANSIENT. This is the one branch that depends
+//     on something other than the input: how loaded the box is. It is the
+//     OPPOSITE of isPandocTerminal's shape, and for the stated reason --
+//     pandoc is a CPU-bound text transform, while a ghostscript rasterizing
+//     pass competes for a shared CPU budget under KEDA scale-out. Same
+//     polarity as isOCRTerminal, arrived at independently: both wrap an
+//     external renderer whose worst case is load, not content.
+//   - Ghostscript PARSE failure -- TERMINAL. A file gs cannot read now is a
+//     file gs cannot read in twenty seconds.
+//   - Options present -- TERMINAL. Sanitize takes none; a persisted Opts map
+//     with content is a corrupt column value, and D-10 already classifies
+//     that as terminal for every engine.
+//
+// Everything else falls through to isTerminal's shared storage/input
+// classification.
+var ProbeDescriptor = EngineDescriptor{
+	Engine: convert.EngineProbe,
+	Type:   queue.TypeProbeSanitize,
+	OptsFromMap: func(m map[string]any) (any, error) {
+		return convert.SanitizeOptsFromMap(m)
+	},
+	IsTerminal:  isProbeTerminal,
+	FailureCode: probeFailureCode,
+	SideOutputs: probeSideOutputs,
+}
+
+// isProbeTerminal classifies a sanitize failure. See ProbeDescriptor's doc
+// comment for the argument behind each branch; this is only the mechanism.
+func isProbeTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Verification failure: deterministic on the output, which is
+	// deterministic on the input. Both outcomes -- residue found, and could
+	// not be verified -- are terminal, and for the same reason.
+	if errors.Is(err, convert.ErrSanitizeResidue) || errors.Is(err, convert.ErrSanitizeUnverifiable) {
+		return true
+	}
+	// A ghostscript timeout is the one failure here that depends on load
+	// rather than on the file, so it stays TRANSIENT -- falling through to
+	// isTerminal, which returns false for a DeadlineExceeded. This is the
+	// explicit opposite of isPandocTerminal/isDocumentTerminal, which route
+	// through timeoutIsTerminal.
+	return isTerminal(err)
+}
+
+// probeFailureCode maps a terminal sanitize error to the client-facing pair.
+//
+// The two verification outcomes get DIFFERENT messages even though both are
+// terminal, because they call for different actions: residue means the file
+// still carries something and the service is at fault, while unverifiable
+// means the service could not check and is refusing to say the file is
+// anything. Collapsing them into one message would hide that difference at
+// the only place a client ever sees it.
+func probeFailureCode(err error) (code, message string) {
+	if errors.Is(err, convert.ErrSanitizeResidue) {
+		return CodeEngineError, "sanitized output still contained a construct that had to be removed"
+	}
+	if errors.Is(err, convert.ErrSanitizeUnverifiable) {
+		return CodeEngineError, "sanitized output could not be independently verified and was discarded"
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "takes no options") {
+		return CodeInvalidOptions, "stored conversion options are invalid"
+	}
+	return CodeEngineError, "unsupported or corrupted input format"
+}
+
+// probeSideOutputs reads back the report the sanitize converter wrote beside
+// the primary output and hands it to process() as the job's role=report
+// output.
+//
+// A missing sidecar is an ERROR, not a job without a report. The converter
+// writes it on every successful path, so its absence means either the
+// converter changed without this hook changing with it, or something removed
+// the file -- and in both cases a silent success would deliver a sanitized
+// document with no statement of what was removed from it.
+func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOutput, error) {
+	blob, err := os.ReadFile(convert.SanitizeReportPath(outPath))
+	if err != nil {
+		return nil, fmt.Errorf("sanitize report missing beside the output: %w", err)
+	}
+	return []SideOutput{{
+		Role:        jobs.OutputRoleReport,
+		Filename:    "report.json",
+		Format:      "json",
+		ContentType: "application/json",
+		Body:        blob,
+	}}, nil
 }

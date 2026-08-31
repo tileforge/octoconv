@@ -838,6 +838,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
 	case convert.EnginePandoc:
 		enqueueErr = s.queue.EnqueuePandocConvert(ctx, createdID)
+	case convert.EngineProbe:
+		enqueueErr = s.queue.EnqueueProbeSanitize(ctx, createdID)
 	default:
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a

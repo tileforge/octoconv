@@ -166,24 +166,35 @@ func TestReplaceOverwritesWithoutPanic(t *testing.T) {
 // IsKnownOperation are derived from Default's actual registrations, not a
 // hardcoded Go slice and not the jobs.operation DB CHECK constraint.
 //
-// NOTE: the moment Operations() starts returning a second value is the
-// moment Phase 60 adds Default.Register(SanitizeConverter{}) to
-// converters.go -- updating this test's exact-length assertion at that
-// point is expected, not a regression.
+// Phase 60 is the moment this returned a second value, exactly as the note
+// here predicted: converters.go now registers SanitizeConverter. The
+// assertion below moved from "one operation" to "these two, in this order"
+// rather than to "at least one" -- a length check that stops naming its
+// expected contents stops being able to fail.
 func TestOperationsDerivedFromRegistry(t *testing.T) {
 	ops := Default.Operations()
-	if len(ops) != 1 || ops[0] != "convert" {
-		t.Fatalf("Default.Operations() = %v, want [\"convert\"]", ops)
+	want := []string{OperationConvert, OperationSanitize} // Operations() sorts
+	if len(ops) != len(want) {
+		t.Fatalf("Default.Operations() = %v, want %v", ops, want)
+	}
+	for i := range want {
+		if ops[i] != want[i] {
+			t.Fatalf("Default.Operations() = %v, want %v", ops, want)
+		}
 	}
 
-	if !Default.IsKnownOperation("convert") {
-		t.Error(`Default.IsKnownOperation("convert") = false, want true`)
+	for _, good := range want {
+		if !Default.IsKnownOperation(good) {
+			t.Errorf("Default.IsKnownOperation(%q) = false, want true", good)
+		}
 	}
 
-	// Reserved-but-empty DB CHECK values, plus the not-yet-registered
-	// "sanitize" and an empty string, and a case-mismatched "Convert" that
-	// pins the no-normalization rule (OperationConvert's own doc comment).
-	for _, bad := range []string{"sanitize", "extract", "archive", "inspect", "render", "", "Convert"} {
+	// Reserved-but-empty DB CHECK values, an empty string, and a
+	// case-mismatched "Sanitize" that pins the no-normalization rule
+	// (OperationConvert's own doc comment) now that sanitize is real: a
+	// registered operation is the case where a normalization slip would
+	// actually reach jobs.operation.
+	for _, bad := range []string{"extract", "archive", "inspect", "render", "", "Convert", "Sanitize"} {
 		if Default.IsKnownOperation(bad) {
 			t.Errorf("Default.IsKnownOperation(%q) = true, want false", bad)
 		}

@@ -25,10 +25,22 @@ package api
 // suite passing WITHOUT modification.
 //
 // Разрешённые исключения (closed list of permitted exceptions):
-// Исключений нет. Ни один план фазы 58 не имеет права изменить ни Go-код
-// этой сьюты, ни байты её golden-файлов. Если исполнитель считает, что
-// исключение необходимо, это сигнал, что меняется контракт, а не тест:
-// остановиться и эскалировать, а не править сьюту.
+// Для фазы 58 -- исключений нет. Ни один план фазы 58 не имел права изменить
+// ни Go-код этой сьюты, ни байты её golden-файлов, и ни один не изменил.
+//
+// Фаза 60 добавила восьмой engine-класс (`probe`) и вторую операцию
+// (`sanitize`), что зафиксировано роадмапом 2026-08-07. Это МЕНЯЕТ контракт
+// GET /v1/formats: в ответе появляется ключ operations.sanitize. Байты
+// golden-файла при этом НЕ перегенерированы -- он остаётся записью того, чем
+// ответ был до фазы 58, и `git rev-list --count` для него по-прежнему 1.
+// Вместо этого сузилось утверждение, и ровно на одно названное исключение:
+//
+//  1. Появление ключа operations.sanitize -- и ничего больше. Поддерево
+//     operations.convert и ключ engines сравниваются с golden ПОБАЙТНО, как
+//     и раньше, так что любое другое изменение по-прежнему валит тест.
+//
+// Перегенерация golden-байт остаётся запрещённой: снимок «как было до фазы
+// 58» перестаёт быть таким снимком в момент, когда его переписывают.
 //
 // The mechanical immutability check, and its expected value, is:
 //
@@ -120,7 +132,69 @@ func TestPre58GoldenListFormats(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	assertGolden58(t, "formats.golden.json", rec.Body.Bytes())
+	assertFormatsGolden58ModuloSanitize(t, rec.Body.Bytes())
+}
+
+// assertFormatsGolden58ModuloSanitize compares the live /v1/formats body to
+// the pinned golden under the ONE exception listed at the top of this file.
+//
+// It splits both bodies at the top level only, using json.RawMessage, so the
+// subtrees it does compare are compared as the exact bytes they were pinned
+// as -- no re-encoding, no canonicalization, no chance of a formatting change
+// hiding inside a semantic comparison. Then:
+//
+//   - engines must be byte-identical. This is the load-bearing half: probe
+//     serves no convert pair, so the eighth engine class must be invisible
+//     here, and that claim is what Phase 57's Classes() filter was written to
+//     make true.
+//   - operations.convert must be byte-identical.
+//   - operations may gain "sanitize" and nothing else.
+func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
+	t.Helper()
+	const path = "testdata/pre58_formats.golden.json"
+
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if bytes.Equal(want, got) {
+		return // still identical; nothing to explain
+	}
+
+	type topLevel struct {
+		Engines    json.RawMessage            `json:"engines"`
+		Operations map[string]json.RawMessage `json:"operations"`
+	}
+	var liveTop, goldenTop topLevel
+	if err := json.Unmarshal(got, &liveTop); err != nil {
+		t.Fatalf("unmarshal live body: %v", err)
+	}
+	if err := json.Unmarshal(want, &goldenTop); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+
+	if !bytes.Equal(goldenTop.Engines, liveTop.Engines) {
+		t.Errorf("engines changed -- probe serves no convert pair and must not appear here "+
+			"(D-15 pinning violation)\ngot:  %s\nwant: %s", liveTop.Engines, goldenTop.Engines)
+	}
+	if !bytes.Equal(goldenTop.Operations["convert"], liveTop.Operations["convert"]) {
+		t.Errorf("operations.convert changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
+			liveTop.Operations["convert"], goldenTop.Operations["convert"])
+	}
+	for key := range liveTop.Operations {
+		if _, pinned := goldenTop.Operations[key]; pinned {
+			continue
+		}
+		if key != "sanitize" {
+			t.Errorf("operations gained key %q, which is outside the single permitted exception "+
+				"listed at the top of this file", key)
+		}
+	}
+	for key := range goldenTop.Operations {
+		if _, still := liveTop.Operations[key]; !still {
+			t.Errorf("operations lost pinned key %q (D-15 pinning violation)", key)
+		}
+	}
 }
 
 // doPre58CreateJob posts a multipart job-create request to srv and returns

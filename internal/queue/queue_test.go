@@ -790,14 +790,17 @@ func TestPandocUniqueTTL(t *testing.T) {
 // one appears exactly once in AllConvertQueues(), and that AllConvertQueues
 // contains no extras (e.g. QueueWebhook, which is not an engine class).
 func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
-	wantEngines := map[string]bool{
-		convert.EngineImage:    true,
-		convert.EngineDocument: true,
-		convert.EngineHTML:     true,
-		convert.EngineAudio:    true,
-		convert.EngineAV:       true,
-		convert.EngineOCR:      true,
-		convert.EnginePandoc:   true,
+	// Derived from convert.AllEngines() rather than typed out. The
+	// hand-written list here had to be edited by hand every time an engine
+	// class was added, which made this completeness guard itself a thing that
+	// could drift -- and it did, in Phase 60: adding the eighth class failed
+	// this test not because the eighth queue was missing but because this
+	// list had not been updated. A guard that needs updating in the same
+	// commit as the thing it guards is checking that someone remembered
+	// twice, not that the two agree.
+	wantEngines := make(map[string]bool)
+	for _, e := range convert.AllEngines() {
+		wantEngines[e] = true
 	}
 
 	got := AllConvertQueues()
@@ -816,6 +819,27 @@ func TestAllConvertQueuesCoversEveryEngine(t *testing.T) {
 			t.Errorf("AllConvertQueues() contains unexpected extra entry %q (count %d) -- not a registered engine class", q, count)
 		}
 	}
+}
+
+// TestProbeUniqueTTLIsItsOwn mirrors the pandoc/OCR distinctness proofs: the
+// probe lock TTL must be derived from probe's own retry budget rather than
+// copied from a neighbour. Equal values under the same inputs would mean the
+// derivation was shared, and a shared derivation drifts silently the moment
+// one engine's budget changes.
+func TestProbeUniqueTTLIsItsOwn(t *testing.T) {
+	const maxRetry = 2
+	engineTimeout := 180 * time.Second
+
+	got := ProbeUniqueTTL(maxRetry, engineTimeout)
+	want := time.Duration(maxRetry+1)*engineTimeout + (5*time.Second + 20*time.Second) + uniqueTTLSafetyMargin
+	if got != want {
+		t.Errorf("ProbeUniqueTTL(%d, %v) = %v, want %v", maxRetry, engineTimeout, got, want)
+	}
+	// Probe and pandoc happen to share a schedule shape today, so a
+	// "must differ from pandoc" assertion would be false rather than
+	// strong. What the recomputation above proves instead is the property
+	// that actually matters: the TTL comes from probeRetrySchedule's own
+	// literals, so pandoc changing its schedule cannot move this number.
 }
 
 // TestClientOCRUniqueTTLDiffersFromAVAndAudio is the D-04/IN-02

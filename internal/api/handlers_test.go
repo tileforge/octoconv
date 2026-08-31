@@ -218,6 +218,7 @@ type fakeQueue struct {
 	enqueuedAV       uuid.UUID
 	enqueuedOCR      uuid.UUID
 	enqueuedPandoc   uuid.UUID
+	enqueuedProbe    uuid.UUID
 	// enqueueCalls counts every Enqueue* invocation across all seven engine
 	// methods, so a quota test can assert "never enqueued" with an exact
 	// integer (52-04).
@@ -262,6 +263,12 @@ func (f *fakeQueue) EnqueueOCRConvert(_ context.Context, id uuid.UUID) error {
 
 func (f *fakeQueue) EnqueuePandocConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedPandoc = id
+	f.enqueueCalls++
+	return nil
+}
+
+func (f *fakeQueue) EnqueueProbeSanitize(_ context.Context, id uuid.UUID) error {
+	f.enqueuedProbe = id
 	f.enqueueCalls++
 	return nil
 }
@@ -898,12 +905,17 @@ func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
 
 // TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate is the direct
 // proof of SC3/T-57-13/T-57-14: an operation with no registered triple at
-// all -- sanitize (registered under no engine yet) and bogus (never
-// registered under any build) -- must be rejected 422 unsupported_operation
-// strictly before s.storage.Upload and s.repo.Create, and the queue must
-// stay untouched.
+// all must be rejected 422 unsupported_operation strictly before
+// s.storage.Upload and s.repo.Create, with the queue untouched.
+//
+// "sanitize" left this list in Phase 60: it now has registered triples, so
+// using it here would test the pair gate rather than the operation gate. The
+// three replacements are the values still reserved in the jobs.operation
+// CHECK constraint with no converter behind them, plus "bogus", which no
+// build will ever register -- keeping both kinds means the test still
+// distinguishes "reserved but unimplemented" from "not a value at all".
 func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
-	for _, operation := range []string{"sanitize", "bogus"} {
+	for _, operation := range []string{"extract", "archive", "render", "bogus"} {
 		t.Run(operation, func(t *testing.T) {
 			repo := &fakeRepo{}
 			store := &fakeStorage{}
@@ -934,6 +946,68 @@ func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) 
 				t.Errorf("queue enqueue called %d times, want 0", q.enqueueCalls)
 			}
 		})
+	}
+}
+
+// TestCreateJob_SanitizePassesTheOperationGateAndFailsThePairGate is the
+// other half of what Phase 60 changed, and it is the reason the test above
+// could not simply drop "sanitize" and move on.
+//
+// Lifting the 422 for sanitize must lift it at gate 1 only. A png -> webp
+// request under sanitize is still refused, and refused as
+// unsupported_conversion rather than unsupported_operation: the operation
+// exists, that pair does not, because sanitize returns the format it was
+// given. Without this, "the operation gate opened" and "every gate opened"
+// produce the same passing test suite.
+func TestCreateJob_SanitizePassesTheOperationGateAndFailsThePairGate(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "webp", "sanitize", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+	if store.uploadCalls != 0 {
+		t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+	}
+}
+
+// TestCreateJob_SanitizeIdentityPairIsAccepted is the positive half: the
+// exact request the 422 used to block now reaches the probe queue.
+func TestCreateJob_SanitizeIdentityPairIsAccepted(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	q := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, q)
+
+	body, ct := multipartBodyWithOperation(t, "in.png", "png", "sanitize", pngBytesFixture())
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil {
+		t.Fatal("repo.Create was never called")
+	}
+	if repo.created.Operation != "sanitize" {
+		t.Errorf("created.Operation = %q, want \"sanitize\"", repo.created.Operation)
+	}
+	if repo.created.Engine != convert.EngineProbe {
+		t.Errorf("created.Engine = %q, want %q", repo.created.Engine, convert.EngineProbe)
+	}
+	if q.enqueuedProbe == uuid.Nil {
+		t.Error("EnqueueProbeSanitize was never called -- the sanitize job did not reach the probe queue")
 	}
 }
 

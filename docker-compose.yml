@@ -155,6 +155,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
       # (which are IN-02 queue.NewClient() parity values), this one is read
@@ -246,6 +257,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -329,6 +351,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -402,6 +435,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -470,6 +514,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
@@ -537,6 +592,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
@@ -627,6 +693,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -742,6 +819,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
@@ -855,6 +943,17 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
@@ -979,6 +1078,17 @@ services:
       # processing.
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03-SUMMARY.md -- see comment above
       PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      PROBE_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the pandoc engine (DEBT-05).
@@ -1017,6 +1127,151 @@ services:
           # this limit (8 MiB input) is what drove PANDOC_MAX_INPUT_BYTES
           # down to 4 MiB above -- a smaller memory limit would need its
           # own re-measured input-size cap.
+          cpus: "2.0"
+          memory: 1g
+
+  # probe is the eighth engine class and the only one that converts nothing:
+  # it runs the sanitize operation. Static Go binary plus three apt packages
+  # (Dockerfile.probe-worker) -- no platform: pin needed, same posture as
+  # av/audio/chromium/ocr/pandoc.
+  #
+  # The image carries ghostscript, unzip and file, and all three are required
+  # rather than optional: verification cannot be skipped, and an output that
+  # cannot be verified is discarded rather than delivered (D-07). A missing
+  # binary stops the service instead of quietly degrading it.
+  probe-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.probe-worker
+    container_name: octoconv-probe-worker
+    restart: always
+    # cmd/probe-worker sets asynq ShutdownTimeout = PROBE_ENGINE_TIMEOUT
+    # (180s, PLACEHOLDER) + 10s = 190s. stop_grace_period = 190s + 10s Docker
+    # SIGKILL margin = 200s. PROVISIONAL in the same way the timeout is: this
+    # number is derived from a placeholder and must be re-derived in the same
+    # edit that lands the measured value.
+    stop_grace_period: 200s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://octo:octo-pass@postgres:5432/octo_db
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: octoconv
+      S3_USE_SSL: "false"
+      # 1, NOT 2: pandoc is CPU-fast but MEMORY-heavy. Measured in this exact
+      # image at --cpus 2 --memory 1g (50-REVIEW BLOCKER-1 probe, 2026-08-02),
+      # worst-case 3.04 MB dense-markup html->md: peak ANONYMOUS (unreclaimable)
+      # memory 909 MiB/1024 at concurrency 1, and 1022 MiB/1024 at concurrency 2
+      # -- i.e. ~300 MiB anon per MiB of input, and 2 parallel conversions leave
+      # 1 MiB of headroom BEFORE the Go worker's own RSS, which shares this
+      # cgroup. Concurrency 2 therefore OOMKills in production (the same failure
+      # 50-04's live gate hit at 4.09 MB). Memory, not CPU, is the binding
+      # constraint -- same reason OCR/AV/audio run 1-at-a-time. Throughput comes
+      # from KEDA scale-out, not in-pod parallelism.
+      # pandoc-worker-only, NOT read by queue.NewClient(), so no IN-02 parity.
+      # Input-size DoS guard (enforcePandocInputSize, markupsniff.go) AND
+      # this phase's Path-B lever, WHICH FIRED (49-03-SUMMARY.md): the
+      # supervised scripts/pandoc-timing-measure.sh run found the zip-out
+      # targets (docx/epub) OOM-KILL ("Killed", 0-byte output) on this
+      # service's 1g memory limit at an 8 MiB input -- cliff measured at
+      # 4 MiB=~10.2s clean -> 6.5 MiB=~40s thrash -> 8 MiB=OOM. Fired BY
+      # MEMORY, not by the 900s CAP (the CAP was never breached -- see
+      # PANDOC_ENGINE_TIMEOUT below). Lowered from the 50 MiB (50<<20)
+      # placeholder to 4 MiB (49-03), then to 3 MiB (50-04 Path-B, live
+      # SC4 evidence): a ~4.09 MB html->md conversion OOMKilled the real
+      # worker container (exit 137) at the 1Gi limit -- the Go worker +
+      # pandoc share the cgroup, which the pandoc-alone calibration could
+      # not see. (The concurrency half of that exposure was closed separately:
+      # PANDOC_WORKER_CONCURRENCY 2 -> 1, see above -- at the 3 MiB cap a
+      # single conversion already peaks at 909 MiB anon of 1024.)
+      # The worst-cell 32.318s p95 below was measured at the
+      # older 4 MiB cap (still a valid upper bound for 3 MiB inputs).
+      # PR#2 finding-1: now ALSO read by the api service (as the upload
+      # ceiling, see that service's PANDOC_MAX_INPUT_BYTES comment above) --
+      # still NOT read by queue.NewClient(), so still no IN-02 parity
+      # requirement in the uniqueTTL sense, but the two values must
+      # nonetheless match byte-for-byte or the API accepts uploads the
+      # worker will certainly reject.
+      # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
+      # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank
+      # p95, wall-sec/conversion, at the 4 MiB PANDOC_MAX_INPUT_BYTES cap
+      # above). Worst cell = html_large->md (reader-heavy HTML parsing),
+      # p95=32.318s (other large cells: md->html 25.37s, md->docx 23.34s,
+      # html->docx 15.99s, latex->html 6.06s, latex->docx 3.90s; all
+      # small/medium cells < 0.4s). PANDOC_ENGINE_TIMEOUT =
+      # ceil(worst_p95 x 2.0) = ceil(32.318 x 2.0) = 65s, 92.8% under the
+      # 900s/15m reconciler CAP -- the CAP itself was never at risk here;
+      # Path-B fired for the DISTINCT memory reason above, not to clear
+      # this CAP. NO MAX_PAGES-style multiplier (unlike OCR) -- pandoc's
+      # p95 already IS the full per-conversion cost. NEVER copied from
+      # OCR(744s)/AV(753s)/AUDIO(742s) or the 90s placeholder (PITFALLS.md
+      # Pitfall 7) -- 65s is distinct from all four. MUST be set
+      # identically in every queue.NewClient()-constructing service
+      # (IN-02, 10 services) -- pandocUniqueTTL is derived from it in each
+      # enqueuing process; a mismatch silently produces duplicate
+      # processing.
+      PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03-SUMMARY.md -- see comment above
+      PANDOC_MAX_RETRY: "2"
+      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
+      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
+      # copy of it in this file says so. It is deliberately distinct from
+      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
+      # run happens this number is a guess and the API reports it as
+      # estimate_source=unmeasured. MUST be set identically in every
+      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
+      # derived from it in each enqueuing process, and a mismatch silently
+      # produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # probe-worker-only, NOT read by queue.NewClient(), so no IN-02 parity.
+      # 1, with the OCR/AV/audio/pandoc engines: a sanitize job runs two
+      # ghostscript passes plus a pdfcpu parse, all holding the whole
+      # document, inside a 1g cgroup. REASONED, not measured -- the same
+      # status as the timeout above.
+      PROBE_WORKER_CONCURRENCY: "1"
+      PROBE_MAX_RETRY: "2"
+      # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
+      # reads every OTHER engine class's retry/timeout vars unconditionally,
+      # even though this process only runs the pandoc engine (DEBT-05).
+      IMAGE_MAX_RETRY: "4"
+      ENGINE_TIMEOUT: "120s"
+      DOCUMENT_MAX_RETRY: "3"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      HTML_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      AUDIO_MAX_RETRY: "3"
+      AUDIO_ENGINE_TIMEOUT: "742s"
+      AV_MAX_RETRY: "2"
+      AV_ENGINE_TIMEOUT: "753s"
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "744s"
+      METRICS_ADDR: "127.0.0.1:9090"
+      # PUSH-02-style (mirrors av-worker/ocr-worker): cmd/pandoc-worker
+      # signs + fires opt-in inline progress webhooks (harmless dead weight
+      # for pandoc specifically, since PandocConverter never implements
+      # convert.ProgressConverter -- kept only for wiring consistency with
+      # every other worker cmd). MUST match webhook-worker-1/-2's own
+      # WEBHOOK_SIGNING_SECRET exactly so a client verifies BOTH the
+      # throttled progress events AND the terminal done/failed event with
+      # the same key. Unset => cmd/pandoc-worker fail-opens and progress
+      # webhooks are silently disabled, so this line is what makes pandoc
+      # progress webhooks actually deliverable in the compose deployment.
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
+    deploy:
+      resources:
+        limits:
+          # NOT a capacity estimate. These are the cgroup limits phase 58's
+          # D-02a conditioned pdfcpu's admission on -- this worker parses
+          # untrusted bytes in three parsers, one of them (pdfcpu) inside its
+          # own address space. Lowering or removing them reopens that
+          # decision rather than tuning a knob.
           cpus: "2.0"
           memory: 1g
 

@@ -548,6 +548,9 @@ func (e *quotaCountingEnqueuer) EnqueueOCRConvert(_ context.Context, _ uuid.UUID
 func (e *quotaCountingEnqueuer) EnqueuePandocConvert(_ context.Context, _ uuid.UUID) error {
 	return e.inc()
 }
+func (e *quotaCountingEnqueuer) EnqueueProbeSanitize(_ context.Context, _ uuid.UUID) error {
+	return e.inc()
+}
 
 // quotaAdmissionPresetRepo implements api.PresetRepo, always reporting
 // presets.ErrNotFound -- this test never exercises preset=<name> resolution.

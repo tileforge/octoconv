@@ -25,6 +25,11 @@ const (
 	TypeAVConvert       = "av:convert"
 	TypeOCRConvert      = "ocr:convert"
 	TypePandocConvert   = "pandoc:convert"
+	// TypeProbeSanitize is the first task type whose operation half is not
+	// "convert". The naming convention is "<engine>:<operation>", and probe
+	// serves sanitize; calling it "probe:convert" for symmetry would put a
+	// false operation name into every asynq dashboard and log line.
+	TypeProbeSanitize = "probe:sanitize"
 )
 
 // Queue names. asynq routes tasks to a queue per engine class so workers and
@@ -43,6 +48,7 @@ const (
 	QueueAV       = convert.EngineAV
 	QueueOCR      = convert.EngineOCR
 	QueuePandoc   = convert.EnginePandoc
+	QueueProbe    = convert.EngineProbe
 )
 
 // ConvertPayload is the task payload. It carries only the job id — all task
@@ -481,6 +487,33 @@ func PandocRetryDelay(n int, e error, t *asynq.Task) time.Duration {
 	return pandocRetrySchedule[idx]
 }
 
+// probeRetrySchedule is the backoff schedule for sanitize retries: 5s, 20s.
+//
+// Same shape as pandocRetrySchedule and, like it, not copied from it in
+// meaning: the schedule only ever fires for the branches isProbeTerminal
+// classifies as transient, which for sanitize is a ghostscript timeout under
+// load. A load spike clears on the order of seconds, not minutes, so a short
+// schedule is right here for a reason that is about ghostscript-under-load and
+// not about pandoc.
+var probeRetrySchedule = []time.Duration{
+	5 * time.Second,
+	20 * time.Second,
+}
+
+// ProbeRetryDelay is an asynq RetryDelayFunc for the probe queue, with the
+// same clamp-index-to-schedule-length shape as PandocRetryDelay so
+// probeBackoffSum can call it deterministically.
+func ProbeRetryDelay(n int, e error, t *asynq.Task) time.Duration {
+	idx := n
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(probeRetrySchedule) {
+		idx = len(probeRetrySchedule) - 1
+	}
+	return probeRetrySchedule[idx]
+}
+
 // RetryDelayFunc dispatches to a per-queue retry delay function based on the
 // task type. It fixes the confirmed defect where every queue silently
 // inherited WebhookRetryDelay via a single server-wide
@@ -506,6 +539,8 @@ func RetryDelayFunc(n int, e error, t *asynq.Task) time.Duration {
 		return OCRRetryDelay(n, e, t)
 	case TypePandocConvert:
 		return PandocRetryDelay(n, e, t)
+	case TypeProbeSanitize:
+		return ProbeRetryDelay(n, e, t)
 	default:
 		return asynq.DefaultRetryDelayFunc(n, e, t)
 	}
@@ -798,8 +833,8 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 	return time.Duration(maxRetry+1)*engineTimeout + pandocBackoffSum(maxRetry) + uniqueTTLSafetyMargin
 }
 
-// AllConvertQueues returns the queue name for every conversion engine class
-// (image/document/html/audio/av/ocr/pandoc), deliberately excluding
+// AllConvertQueues returns the queue name for every engine class
+// (image/document/html/audio/av/ocr/pandoc/probe), deliberately excluding
 // QueueWebhook (webhook is not an engine class and is never KEDA-scaled
 // per-conversion). This is the single source of truth for cmd/api/main.go's
 // queue-depth collector arg list: metrics.NewQueueDepthCollector is
@@ -811,7 +846,42 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 // convert.go's Engine* constants (or vice versa). Plan 04 rewires
 // cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc}
+	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe}
+}
+
+// probeBackoffSum sums ProbeRetryDelay(i) for i in [0, maxRetry).
+func probeBackoffSum(maxRetry int) time.Duration {
+	var sum time.Duration
+	for i := 0; i < maxRetry; i++ {
+		sum += ProbeRetryDelay(i, nil, nil)
+	}
+	return sum
+}
+
+// ProbeUniqueTTL derives the per-job asynq.Unique lock TTL for sanitize tasks
+// from the real retry budget and the per-attempt bound, mirroring
+// PandocUniqueTTL's derivation exactly so the lock cannot drift under asynq's
+// worst case. Reuses uniqueTTLSafetyMargin verbatim -- no probe-specific
+// margin constant.
+func ProbeUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
+	return time.Duration(maxRetry+1)*engineTimeout + probeBackoffSum(maxRetry) + uniqueTTLSafetyMargin
+}
+
+// NewProbeSanitizeTask builds an asynq task for a single sanitize job, routed
+// to the probe queue, bounded to maxRetry (PROBE_MAX_RETRY, default 2) and
+// carrying a per-job asynq.Unique lock. Reuses ConvertPayload: the payload
+// still carries only the job id, and every detail is still re-read from
+// Postgres, so the operation change needs no payload of its own.
+func NewProbeSanitizeTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Duration) (*asynq.Task, error) {
+	b, err := json.Marshal(ConvertPayload{JobID: jobID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal convert payload: %w", err)
+	}
+	return asynq.NewTask(TypeProbeSanitize, b,
+		asynq.Queue(QueueProbe),
+		asynq.MaxRetry(maxRetry),
+		asynq.Unique(uniqueTTL),
+	), nil
 }
 
 // webhookJitterCeiling is WebhookRetryDelay's documented maximum +25% jitter

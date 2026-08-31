@@ -126,6 +126,7 @@ type Enqueuer interface {
 	EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -513,6 +514,11 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 			convert.EngineAV:       753 * time.Second,
 			convert.EngineOCR:      744 * time.Second,
 			convert.EnginePandoc:   65 * time.Second,
+			// PROBE_ENGINE_TIMEOUT: a PLACEHOLDER, not a measurement. See
+			// engineEstimateSource in estimate.go, which records probe as
+			// unmeasured for exactly this reason, and cmd/probe-worker for
+			// the same statement at the worker end.
+			convert.EngineProbe: 180 * time.Second,
 		}
 	}
 	operators := cfg.OperatorClientIDs

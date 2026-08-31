@@ -61,12 +61,6 @@ import (
 	"time"
 )
 
-func init() {
-	for _, f := range []string{"docm", "docx", "xlsm", "xlsx", "pptm", "pptx", "dotm", "potm", "ppsm"} {
-		sanitizeFormats[f] = sanitizeOOXML
-	}
-}
-
 // macroEnabledContentTypes maps every macro-enabled OOXML content type to its
 // macro-free equivalent.
 //

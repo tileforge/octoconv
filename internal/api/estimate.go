@@ -107,6 +107,13 @@ var engineEstimateSource = map[string]EstimateSource{
 	convert.EngineAV:       EstimateSourceMeasured,
 	convert.EngineOCR:      EstimateSourceMeasured,
 	convert.EnginePandoc:   EstimateSourceMeasured,
+	// probe (PROBE_ENGINE_TIMEOUT=180s): a PLACEHOLDER pending Phase 60's
+	// operator-run scripts/probe-timeout-measure.sh on a representative
+	// corpus -- unmeasured, and it must keep saying so until that run
+	// happens. This is the same provisional-then-measured path OCR walked
+	// (300s -> 744s) and pandoc after it (90s -> 65s); the entry flips to
+	// measured in the same commit as the number, never before.
+	convert.EngineProbe: EstimateSourceUnmeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each

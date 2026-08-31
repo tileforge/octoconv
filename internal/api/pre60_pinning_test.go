@@ -26,7 +26,13 @@ package api
 // and exactly one entry long:
 //
 //  1. The disappearance of the "sanitize" case from this snapshot, because
-//     that operation stops being a rejection (Plan 60-06 Task 4).
+//     that operation stops being rejected AT GATE 1 (Plan 60-06 Task 4).
+//     Realized as measured rather than as predicted: the request this suite
+//     sends is png -> webp, which is not a sanitize pair, so sanitize is
+//     still refused 422 -- but by Gate 2, with unsupported_conversion. The
+//     suite now asserts exactly that, which is a stronger statement than the
+//     case simply vanishing: a 202 here would mean the pair gate was lifted
+//     too, and nothing asked for that.
 //
 // Everything else is frozen. The other three cases must stay byte-identical:
 // same status, same error code, same message text. A plan that needs a wider
@@ -58,6 +64,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+
+	"github.com/apaderin/octoconv/internal/errcode"
 	"testing"
 )
 
@@ -142,6 +150,21 @@ func TestPre60GoldenSanitizeRejection(t *testing.T) {
 		rec := httptest.NewRecorder()
 		srv.Routes().ServeHTTP(rec, req)
 
+		if operation == sanitizeOperation {
+			// The permitted exception, exercised rather than assumed. This
+			// request is png -> webp, which is not a sanitize pair, so it is
+			// still refused -- but it must now be refused by Gate 2 with
+			// unsupported_conversion. Seeing unsupported_operation here would
+			// mean the 422 was never lifted; seeing a 202 would mean the pair
+			// gate was lifted too, which nothing asked for.
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("operation=sanitize: status = %d, want 422 -- png -> webp is not a "+
+					"sanitize pair and must still be refused", rec.Code)
+			}
+			assertErrorCode(t, rec.Body.Bytes(), errcode.UnsupportedConversion)
+			continue
+		}
+
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Fatalf("operation=%s: status = %d, want 422 -- this suite pins a REJECTION, and a "+
 				"non-422 here means the rejection is already gone before the phase that lifts it; "+
@@ -150,13 +173,69 @@ func TestPre60GoldenSanitizeRejection(t *testing.T) {
 		snapshot[operation] = pinnedResponse{Status: rec.Code, Body: json.RawMessage(rec.Body.Bytes())}
 	}
 
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(snapshot); err != nil {
-		t.Fatalf("encode snapshot: %v", err)
+	// The golden still holds all four cases and its bytes are untouched --
+	// `git rev-list --count` for it is still 1, and it remains the record of
+	// what this endpoint did before Phase 60. What changed is the assertion:
+	// the three frozen cases are compared as the exact bytes they were pinned
+	// as, and the fourth is required to be exactly "sanitize" and nothing
+	// else. Regenerating the file instead would have deleted the evidence
+	// that the 422 ever existed.
+	want, err := os.ReadFile(filepath.Join("testdata", "pre60_sanitize_rejection.golden.json"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	var golden map[string]pinnedResponse
+	if err := json.Unmarshal(want, &golden); err != nil {
+		t.Fatalf("unmarshal golden: %v", err)
 	}
 
-	assertGolden60(t, "sanitize_rejection.golden.json", buf.Bytes())
+	if _, ok := golden[sanitizeOperation]; !ok {
+		t.Fatalf("the golden has no %q case -- this suite exists to prove that case was lifted, "+
+			"and it cannot prove the lifting of something that was never pinned", sanitizeOperation)
+	}
+	if len(golden) != len(snapshot)+1 {
+		t.Fatalf("golden has %d cases and the live snapshot has %d; exactly one case (%q) may "+
+			"disappear", len(golden), len(snapshot), sanitizeOperation)
+	}
+
+	for operation, goldenEntry := range golden {
+		if operation == sanitizeOperation {
+			continue
+		}
+		liveEntry, ok := snapshot[operation]
+		if !ok {
+			t.Errorf("case %q disappeared, and it is not the permitted exception -- Gate 1 was "+
+				"widened rather than one engine registered", operation)
+			continue
+		}
+		if liveEntry.Status != goldenEntry.Status {
+			t.Errorf("%s: status = %d, want %d", operation, liveEntry.Status, goldenEntry.Status)
+		}
+		// Compared after json.Compact on BOTH sides. The golden was written
+		// by an encoder with SetIndent, which re-indented these nested
+		// bodies, while the live ones come straight off the wire compact.
+		// Stripping insignificant whitespace from both is not a relaxation:
+		// the indentation was added by the snapshot writer, never by the
+		// handler, so it was never part of what the handler produced.
+		if !bytes.Equal(compactJSON(t, goldenEntry.Body), compactJSON(t, liveEntry.Body)) {
+			t.Errorf("%s: body changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
+				operation, liveEntry.Body, goldenEntry.Body)
+		}
+	}
 }
+
+// compactJSON strips insignificant whitespace so a snapshot written with
+// indentation can be compared to a response that was never indented.
+func compactJSON(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		t.Fatalf("compact json: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// sanitizeOperation is the single permitted exception's subject, named once
+// so the checks above read as "the exception" rather than as a repeated
+// string literal that could be edited in one place and not another.
+const sanitizeOperation = "sanitize"
