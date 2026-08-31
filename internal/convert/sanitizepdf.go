@@ -66,6 +66,7 @@ package convert
 // with the interpreter's file and pipe operators enabled.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -129,6 +130,18 @@ func pdfwriteArgs(psPath, outPath string) []string {
 		"-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
 		"-sDEVICE=pdfwrite",
 		"-dOmitXMP",
+		// Measured, not assumed: -dOmitInfoDate drops /CreationDate and
+		// /ModDate, which otherwise record WHEN the sanitizer ran and make
+		// the output non-deterministic. Adding -dOmitID alongside it silently
+		// reverts that -- the dates come back -- so the two are not combined.
+		"-dOmitInfoDate",
+		// 1.4 predates object streams, so the sanitized output contains no
+		// /ObjStm at all. Two things follow. Our own /Info lands as a plain
+		// object, which is what makes the redaction below possible at all;
+		// and a downstream byte scanner (phase 58's, or a client's) can
+		// actually see our output, instead of being structurally blind to
+		// half of it the way it is blind to a 1.5+ file.
+		"-dCompatibilityLevel=1.4",
 		"-sOutputFile=" + outPath,
 		psPath,
 	}
@@ -189,8 +202,149 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: pdfwrite pass: %w", err)
 	}
 
+	// Ghostscript signs its own output. See redactEngineIdentity's header for
+	// what it writes, what was measured trying to stop it, and why blanking
+	// in place is safe.
+	produced, err := os.ReadFile(outPath)
+	if err != nil {
+		return SanitizeResult{}, fmt.Errorf("sanitize pdf: read output: %w", err)
+	}
+	if err := os.WriteFile(outPath, redactEngineIdentity(produced), 0o644); err != nil {
+		return SanitizeResult{}, fmt.Errorf("sanitize pdf: redact engine identity: %w", err)
+	}
+
 	return SanitizeResult{
 		Removed:          append([]ThreatClass(nil), pdfThreatClasses...),
 		LostCapabilities: append([]string(nil), pdfLostCapabilities...),
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// residual engine identity
+// ---------------------------------------------------------------------------
+
+// WHAT GHOSTSCRIPT WRITES ABOUT ITSELF, AND WHY IT HAD TO BE REDACTED
+//
+// This was not found by design. Plan 60-04's verifier -- pdfcpu, which
+// decompresses /ObjStm and so sees what a byte grep cannot -- rejected the
+// sanitized output on its very first run: /Info was present with four
+// entries. Plan 60-02's tests had grepped for the INPUT's values ("Secret
+// Internal Title", "jane.doe@corp.example"), all of which were gone, and were
+// structurally incapable of seeing what Ghostscript had added in their place:
+//
+//	/Producer     (GPL Ghostscript 10.07.1)
+//	/Creator      (GPL Ghostscript 10071 (ps2write))
+//	/CreationDate (D:20260831221239+03'00')
+//	/ModDate      (D:20260831221239+03'00')
+//
+// plus, in plaintext at the top of every output file, a `%%Invocation:` line
+// carrying our full command line and flags.
+//
+// D-09 removed the XMP packet whole and named "does not leak the producer
+// version" as one of its reasons. Leaving /Producer in place would contradict
+// that decision in the same file it was made for.
+//
+// Three ways to make Ghostscript stop were measured, and two failed:
+//
+//	-dOmitInfoDate                 -> removes the two dates. Kept.
+//	-dOmitInfoDate -dOmitID        -> the dates COME BACK. Not used.
+//	[ /Producer () /DOCINFO pdfmark -> ignored for Producer and Creator, and
+//	                                   ADDS empty /Author and /Title. Not used.
+//
+// So Ghostscript always signs its output, and the remaining two values are
+// redacted here instead.
+//
+// LENGTH-PRESERVING ON PURPOSE. Every replacement writes exactly as many bytes
+// as it removes, so the byte offsets recorded in the xref table stay correct
+// and the file needs no rewriting. Shortening `(GPL Ghostscript 10.07.1)` to
+// `()` would invalidate every offset after it; padding the difference with
+// spaces INSIDE the dictionary is legal PDF and costs nothing. This is a
+// redaction, not a PDF writer, and the distinction is the whole reason it is
+// safe to do here.
+//
+// It works only because the second pass targets PDF 1.4: at 1.5+ Ghostscript
+// packs /Info into a compressed /ObjStm where no byte-level edit is possible.
+
+var (
+	// producerKeys are the /Info entries Ghostscript writes about itself.
+	producerKeys = []string{"/Producer", "/Creator"}
+	// invocationMarker is the plaintext comment carrying our command line.
+	invocationMarker = []byte("%%Invocation:")
+)
+
+// redactEngineIdentity blanks Ghostscript's self-description in place.
+//
+// Absence of any target is not an error: a different Ghostscript build may
+// simply not write it. Corruption IS an error, and the caller does not have to
+// detect it -- Plan 60-04's verifier re-parses the result with pdfcpu, so a
+// redaction that broke the file fails the job rather than shipping it.
+func redactEngineIdentity(raw []byte) []byte {
+	out := append([]byte(nil), raw...)
+
+	for _, key := range producerKeys {
+		for i := 0; ; {
+			j := bytes.Index(out[i:], []byte(key+"("))
+			if j < 0 {
+				break
+			}
+			start := i + j + len(key) // at the '('
+			end := closingParen(out, start)
+			if end < 0 {
+				break
+			}
+			// out[start] == '(' and out[end] == ')'; write "()" then spaces.
+			out[start] = '('
+			out[start+1] = ')'
+			for k := start + 2; k <= end; k++ {
+				out[k] = ' '
+			}
+			i = end + 1
+		}
+	}
+
+	// Blank the invocation comment's payload, keeping the leading "%" so the
+	// line stays a comment and keeping every byte in place.
+	for i := 0; ; {
+		j := bytes.Index(out[i:], invocationMarker)
+		if j < 0 {
+			break
+		}
+		start := i + j
+		end := bytes.IndexByte(out[start:], '\n')
+		if end < 0 {
+			end = len(out) - start
+		}
+		for k := start + 1; k < start+end; k++ {
+			out[k] = ' '
+		}
+		i = start + end
+	}
+
+	return out
+}
+
+// closingParen finds the ')' matching the '(' at start, honouring PDF's
+// backslash escapes and nested balanced parens (ISO 32000 7.3.4.2). A naive
+// search for the next ')' would stop early on `(GPL Ghostscript 10071 \(ps2write\))`
+// and leave half the string behind -- which is exactly the shape Ghostscript
+// writes into /Creator.
+func closingParen(b []byte, start int) int {
+	if start >= len(b) || b[start] != '(' {
+		return -1
+	}
+	depth := 0
+	for i := start; i < len(b); i++ {
+		switch b[i] {
+		case '\\':
+			i++ // skip the escaped byte
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
 }

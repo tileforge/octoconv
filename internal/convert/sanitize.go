@@ -17,6 +17,7 @@ package convert
 import (
 	"context"
 	"fmt"
+	"os"
 )
 
 // SanitizeResult is what one sanitize run reports about itself.
@@ -65,11 +66,32 @@ var sanitizeFormats = map[string]func(context.Context, string, string) (Sanitize
 // handle is the worst available outcome, because the job goes green and the
 // client believes the file was disarmed.
 func SanitizeFile(ctx context.Context, format, inPath, outPath string) (SanitizeResult, error) {
-	fn, ok := sanitizeFormats[NormalizeFormat(format)]
+	norm := NormalizeFormat(format)
+	fn, ok := sanitizeFormats[norm]
 	if !ok {
 		return SanitizeResult{}, fmt.Errorf("sanitize: unsupported format %q", format)
 	}
-	return fn(ctx, inPath, outPath)
+	res, err := fn(ctx, inPath, outPath)
+	if err != nil {
+		return SanitizeResult{}, err
+	}
+
+	// Verification is INSIDE this function, not left to the caller, because a
+	// caller that forgets it produces a file that went through an operation
+	// named sanitize and was never checked -- and nothing downstream can tell
+	// that file from a verified one. There is no skip flag for the same
+	// reason (SANI-04, D-07).
+	verified, verr := VerifySanitized(ctx, norm, outPath)
+	if verr != nil {
+		// Delete the output before returning. The requirement is that
+		// nothing unverified reaches S3; the strongest form of that is that
+		// unverified bytes stop existing, rather than existing next to a
+		// promise that no one will upload them.
+		_ = os.Remove(outPath)
+		return SanitizeResult{}, verr
+	}
+	res.Verified = verified
+	return res, nil
 }
 
 // SanitizeSupports reports whether format has a registered sanitize handler.
