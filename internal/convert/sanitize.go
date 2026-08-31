@@ -40,7 +40,7 @@ type SanitizeResult struct {
 	// LostCapabilities lists document features the sanitization method
 	// destroys as a side effect -- fillable forms, bookmarks, tagged
 	// accessibility structure. Not threats; costs.
-	LostCapabilities []string
+	LostCapabilities []LostCapability
 	// Verified lists the classes an independent implementation confirmed
 	// absent from the OUTPUT bytes. Filled by Plan 60-04.
 	Verified []ThreatClass

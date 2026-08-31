@@ -121,10 +121,10 @@ var ooxmlThreatClasses = []ThreatClass{
 // ooxmlLostCapabilities are the features removal destroys. Macro
 // functionality is the obvious one and the only one a client is likely to
 // miss deliberately.
-var ooxmlLostCapabilities = []string{
-	"vba_macro_functionality",
-	"embedded_ole_objects",
-	"document_properties",
+var ooxmlLostCapabilities = []LostCapability{
+	LostVBAMacroFunctionality,
+	LostEmbeddedOLEObjects,
+	LostDocumentProperties,
 }
 
 type ctTypes struct {
@@ -368,7 +368,7 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 
 	return SanitizeResult{
 		Removed:          append([]ThreatClass(nil), ooxmlThreatClasses...),
-		LostCapabilities: append([]string(nil), ooxmlLostCapabilities...),
+		LostCapabilities: append([]LostCapability(nil), ooxmlLostCapabilities...),
 	}, nil
 }
 

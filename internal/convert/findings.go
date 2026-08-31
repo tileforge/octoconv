@@ -122,3 +122,90 @@ func IsKnownThreatClass(c ThreatClass) bool {
 	}
 	return false
 }
+
+// ---------------------------------------------------------------------------
+// lost capabilities
+// ---------------------------------------------------------------------------
+
+// LostCapability is a document feature the sanitization METHOD destroys as a
+// side effect. It is a second closed vocabulary, deliberately separate from
+// ThreatClass, and the separation is the whole point (D-02).
+//
+// A client reading "this document lost its fillable form fields" inside a list
+// of removed THREATS would reasonably conclude the form was an attack. It was
+// not. It is the price of rebuilding the document through an interpreter that
+// draws marks and has no concept of a form. One heading over both lists tells
+// the client something false about both entries.
+//
+// These were plain []string until Plan 60-05. Free text in a report is text
+// nothing can check: no doc-sync test can compare prose to prose, and the
+// first person to write "forms may not work" instead of a token would have
+// broken nothing and been caught by nothing. A code is a thing the document
+// and the vocabulary can be held equal on.
+type LostCapability string
+
+const (
+	// LostFillableForms: AcroForm fields become static marks. The document
+	// still SHOWS the form; it can no longer be filled in.
+	LostFillableForms LostCapability = "fillable_form_fields"
+
+	// LostBookmarks: the outline/bookmark tree is gone. PostScript has no
+	// notion of one, so nothing survives the round trip to rebuild it from.
+	LostBookmarks LostCapability = "bookmarks_outline"
+
+	// LostTaggedStructure: the tagged accessibility tree is gone. This is the
+	// costliest entry in the list and the one most likely to matter to a
+	// client with an accessibility obligation, which is why it is reported
+	// rather than left to be discovered.
+	LostTaggedStructure LostCapability = "tagged_accessibility_structure"
+
+	// LostDocumentAnnotations: document-level annotations -- comments, review
+	// markup, stamps -- do not survive the interpreter.
+	LostDocumentAnnotations LostCapability = "document_level_annotations"
+
+	// LostVBAMacroFunctionality: the OOXML package's macros no longer run.
+	// This is the same event as ThreatVBAMacro seen from the other side: what
+	// the sanitizer calls a removed carrier, the client's workflow calls a
+	// feature it depended on. Reporting it under both headings is not
+	// duplication -- the client needs the threat entry to understand the risk
+	// and this entry to understand what will break on Monday.
+	LostVBAMacroFunctionality LostCapability = "vba_macro_functionality"
+
+	// LostEmbeddedOLEObjects: embedded OLE objects -- charts, equations,
+	// attached workbooks -- are gone from the package.
+	LostEmbeddedOLEObjects LostCapability = "embedded_ole_objects"
+
+	// LostDocumentProperties: the OOXML core/app properties part is gone, so
+	// title, author and company no longer travel with the file.
+	LostDocumentProperties LostCapability = "document_properties"
+)
+
+// allLostCapabilities is the closed set, in the order the report presents
+// them: PDF-side losses first, then OOXML-side. docs/SANITIZE.md's second
+// table mirrors this, and Plan 60-05's doc-sync test compares membership only.
+var allLostCapabilities = []LostCapability{
+	LostFillableForms,
+	LostBookmarks,
+	LostTaggedStructure,
+	LostDocumentAnnotations,
+	LostVBAMacroFunctionality,
+	LostEmbeddedOLEObjects,
+	LostDocumentProperties,
+}
+
+// AllLostCapabilities returns a fresh copy of the closed set.
+func AllLostCapabilities() []LostCapability {
+	out := make([]LostCapability, len(allLostCapabilities))
+	copy(out, allLostCapabilities)
+	return out
+}
+
+// IsKnownLostCapability reports whether c is one of the closed set.
+func IsKnownLostCapability(c LostCapability) bool {
+	for _, known := range allLostCapabilities {
+		if c == known {
+			return true
+		}
+	}
+	return false
+}

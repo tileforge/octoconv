@@ -86,11 +86,11 @@ func init() {
 // This list is the honest price of the evidence: the same property that makes
 // removal provable -- PostScript has no notion of these structures -- is what
 // destroys them.
-var pdfLostCapabilities = []string{
-	"fillable_form_fields",
-	"bookmarks_outline",
-	"tagged_accessibility_structure",
-	"document_level_annotations",
+var pdfLostCapabilities = []LostCapability{
+	LostFillableForms,
+	LostBookmarks,
+	LostTaggedStructure,
+	LostDocumentAnnotations,
 }
 
 // pdfThreatClasses are the classes the PDF path removes -- every class in the
@@ -215,7 +215,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 
 	return SanitizeResult{
 		Removed:          append([]ThreatClass(nil), pdfThreatClasses...),
-		LostCapabilities: append([]string(nil), pdfLostCapabilities...),
+		LostCapabilities: append([]LostCapability(nil), pdfLostCapabilities...),
 	}, nil
 }
 
