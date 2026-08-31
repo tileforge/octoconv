@@ -322,7 +322,14 @@ def build_exif_jpeg() -> bytes:
     # Minimal baseline JPEG around it: SOI, APP1, DQT, SOF0, DHT, SOS, EOI.
     qt = bytes([16] * 64)
     dqt = b"\xff\xdb" + struct.pack(">H", 67) + b"\x00" + qt
-    sof0 = b"\xff\xc0" + struct.pack(">H", 11) + b"\x08" + struct.pack(">HH", 1, 1) + b"\x01\x11\x00"
+    # SOF0 payload for N components is 6 + 3*N bytes: precision, height,
+    # width, component count, then a triplet per component. The first version
+    # of this line hard-coded length 11 but emitted only 8 payload bytes -- the
+    # component-count byte was missing -- and the grep-only self-check below
+    # could not see it, because a marker it greps for is still present in a
+    # segment whose declared length is a lie. Derive the length, never type it.
+    sof0_payload = b"\x08" + struct.pack(">HH", 1, 1) + b"\x01" + b"\x01\x11\x00"
+    sof0 = b"\xff\xc0" + struct.pack(">H", len(sof0_payload) + 2) + sof0_payload
     # One trivial Huffman table (all codes length 1) for both DC and AC.
     def dht(cls_id, counts, symbols):
         payload = bytes([cls_id]) + bytes(counts) + bytes(symbols)
@@ -376,6 +383,80 @@ EXPECTED_IN_ZIP_PARTS = {
 }
 
 
+# Structural checks. The marker tables above are greps, and a grep cannot see
+# a malformed segment: the first exif_gps.jpg shipped with a SOF0 whose
+# declared length overran its payload by three bytes, carried every marker the
+# table asked for, passed this self-check, and could not be decoded by Go at
+# all. `file` called it a valid JPEG too. So a fixture is not just a bag of
+# markers -- it must also be walkable as the format it claims to be.
+
+SOF_MARKERS = set(range(0xC0, 0xD0)) - {0xC4, 0xC8, 0xCC}
+
+
+def check_jpeg_structure(blob: bytes) -> list:
+    """Walk marker-to-marker from SOI to SOS, then confirm EOI terminates it.
+
+    Every declared segment length must land exactly on the next 0xFF marker;
+    that is the invariant the broken SOF0 violated.
+    """
+    problems = []
+    if not blob.startswith(b"\xff\xd8"):
+        return ["jpeg: does not start with SOI"]
+    if not blob.endswith(b"\xff\xd9"):
+        problems.append("jpeg: does not end with EOI")
+
+    i = 2
+    saw_sos = False
+    while i < len(blob):
+        if blob[i] != 0xFF:
+            problems.append(f"jpeg: expected a marker at offset {i}, got 0x{blob[i]:02x}")
+            break
+        marker = blob[i + 1]
+        if marker == 0xDA:  # SOS: entropy-coded data follows, stop walking
+            saw_sos = True
+            break
+        if i + 4 > len(blob):
+            problems.append(f"jpeg: truncated segment header at offset {i}")
+            break
+        declared = struct.unpack(">H", blob[i + 2:i + 4])[0]
+        if declared < 2:
+            problems.append(f"jpeg: segment 0x{marker:02x} declares length {declared}")
+            break
+        if marker in SOF_MARKERS:
+            payload = blob[i + 4:i + 2 + declared]
+            if len(payload) < 6:
+                problems.append(f"jpeg: SOF 0x{marker:02x} payload too short")
+            else:
+                ncomp = payload[5]
+                want = 6 + 3 * ncomp
+                if len(payload) != want:
+                    problems.append(
+                        f"jpeg: SOF 0x{marker:02x} declares {ncomp} component(s) "
+                        f"(payload should be {want} bytes) but carries {len(payload)}")
+        i += 2 + declared
+    if not saw_sos:
+        problems.append("jpeg: no SOS segment reached")
+    return problems
+
+
+def check_pdf_structure(blob: bytes) -> list:
+    """The offset in startxref must actually land on the cross-reference table."""
+    problems = []
+    idx = blob.rfind(b"startxref")
+    if idx < 0:
+        return ["pdf: no startxref"]
+    tail = blob[idx + len(b"startxref"):].strip().split()
+    if not tail:
+        return ["pdf: startxref has no offset"]
+    try:
+        off = int(tail[0])
+    except ValueError:
+        return [f"pdf: startxref offset {tail[0]!r} is not a number"]
+    if not blob[off:off + 4] == b"xref":
+        problems.append(f"pdf: startxref points at offset {off}, which is not 'xref'")
+    return problems
+
+
 def check(out_dir: str) -> int:
     failures = []
     for name, markers in EXPECTED.items():
@@ -387,6 +468,13 @@ def check(out_dir: str) -> int:
         for m in markers:
             if m not in blob:
                 failures.append(f"{name}: marker {m!r} absent from raw bytes")
+
+    jpg = os.path.join(out_dir, "exif_gps.jpg")
+    if os.path.exists(jpg):
+        failures += ["exif_gps.jpg: " + m for m in check_jpeg_structure(open(jpg, "rb").read())]
+    pdf = os.path.join(out_dir, "threat_all_classes.pdf")
+    if os.path.exists(pdf):
+        failures += ["threat_all_classes.pdf: " + m for m in check_pdf_structure(open(pdf, "rb").read())]
 
     for name, entries in EXPECTED_IN_ZIP_PARTS.items():
         path = os.path.join(out_dir, name)

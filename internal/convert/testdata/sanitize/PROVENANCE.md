@@ -19,9 +19,14 @@ python3 scripts/sanitize-corpus.py
 
 The generator is deterministic (fixed ZIP timestamps, no randomness, no host
 paths in the output) and **self-checking**: it greps every fixture for the
-markers that fixture exists to carry and exits non-zero if any is missing. That
-check earned its place on its first run, failing on a marker its own author had
-asserted against the raw bytes of a deflate archive.
+markers that fixture exists to carry, *and* walks each one as the format it
+claims to be, exiting non-zero if either check fails. Both halves earned their
+place by failing:
+
+* the grep half, on its first run, on a marker its own author had asserted
+  against the raw bytes of a deflate archive;
+* the structural half, on the JPEG this file originally described — see the
+  correction recorded under `exif_gps.jpg` below.
 
 ## The payloads are inert
 
@@ -163,7 +168,7 @@ deletes the part while leaving `[Content_Types].xml` dangling passes.
 
 ---
 
-## `exif_gps.jpg` — 330 bytes
+## `exif_gps.jpg` — 331 bytes
 
 A 1×1 greyscale baseline JPEG whose APP1/Exif segment carries a hand-assembled
 TIFF IFD: `Make = OctoConvCam`, `Model = FixtureModel X1`, and a GPS IFD with
@@ -186,6 +191,22 @@ JPEG image data, Exif standard: [TIFF image data, big-endian, direntries=3,
 manufacturer=OctoConvCam, model=FixtureModel X1, GPS-Data], baseline,
 precision 8, 1x1, components 1
 ```
+
+**Correction (during Plan 60-03).** The first version of this fixture, pinned by
+Plan 60-01 at 330 bytes, was structurally malformed: its SOF0 segment declared
+length 11 but carried only 8 payload bytes, because the component-count byte was
+missing. Go's `image/jpeg` could not decode it at all (`bad Tq value`), and any
+segment-walking sanitizer stopped at offset 274. It nonetheless passed both
+independent checks quoted above — the generator's grep, because the markers it
+greps for were all present, and `file`, which is lenient enough to report the
+image as valid. A grep cannot see a segment whose declared length is a lie.
+
+The generator now derives the SOF0 length from its payload rather than typing
+it, and the self-check walks the marker chain from SOI to SOS asserting that
+every declared length lands exactly on the next marker, plus that each SOF's
+payload matches `6 + 3 × components`. Run against the 330-byte fixture that
+check fails with exactly the two lines above; against the 331-byte replacement
+it passes, and Go decodes the file to a 1×1 image.
 
 **If replaced:** SANI-02 for images loses its only positive fixture, and a
 metadata stripper that silently does nothing passes.
