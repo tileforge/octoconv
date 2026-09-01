@@ -77,7 +77,7 @@ var imageThreatClasses = []ThreatClass{ThreatDocumentMetadata}
 // this lossless: the compressed image is never decoded.
 func stripJPEGMetadata(src []byte) ([]byte, error) {
 	if len(src) < 2 || src[0] != 0xFF || src[1] != 0xD8 {
-		return nil, fmt.Errorf("not a JPEG (no SOI)")
+		return nil, fmt.Errorf("%w: not a JPEG (no SOI)", ErrSanitizeMalformedInput)
 	}
 
 	var out bytes.Buffer
@@ -86,7 +86,7 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 	i := 2
 	for i+1 < len(src) {
 		if src[i] != 0xFF {
-			return nil, fmt.Errorf("malformed JPEG: expected a marker at offset %d", i)
+			return nil, fmt.Errorf("%w: malformed JPEG: expected a marker at offset %d", ErrSanitizeMalformedInput, i)
 		}
 		marker := src[i+1]
 
@@ -102,11 +102,11 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 			break
 		}
 		if i+4 > len(src) {
-			return nil, fmt.Errorf("truncated JPEG segment header at offset %d", i)
+			return nil, fmt.Errorf("%w: truncated JPEG segment header at offset %d", ErrSanitizeMalformedInput, i)
 		}
 		segLen := int(binary.BigEndian.Uint16(src[i+2 : i+4]))
 		if segLen < 2 || i+2+segLen > len(src) {
-			return nil, fmt.Errorf("invalid JPEG segment length %d at offset %d", segLen, i)
+			return nil, fmt.Errorf("%w: invalid JPEG segment length %d at offset %d", ErrSanitizeMalformedInput, segLen, i)
 		}
 		segEnd := i + 2 + segLen
 
@@ -207,7 +207,7 @@ var pngMetadataChunks = map[string]bool{
 func stripPNGMetadata(src []byte) ([]byte, error) {
 	sig := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}
 	if len(src) < len(sig) || !bytes.Equal(src[:len(sig)], sig) {
-		return nil, fmt.Errorf("not a PNG (bad signature)")
+		return nil, fmt.Errorf("%w: not a PNG (bad signature)", ErrSanitizeMalformedInput)
 	}
 
 	var out bytes.Buffer
@@ -217,7 +217,7 @@ func stripPNGMetadata(src []byte) ([]byte, error) {
 	for i+8 <= len(src) {
 		length := int(binary.BigEndian.Uint32(src[i : i+4]))
 		if length < 0 || i+12+length > len(src) {
-			return nil, fmt.Errorf("invalid PNG chunk length %d at offset %d", length, i)
+			return nil, fmt.Errorf("%w: invalid PNG chunk length %d at offset %d", ErrSanitizeMalformedInput, length, i)
 		}
 		ctype := string(src[i+4 : i+8])
 		end := i + 12 + length // length + type + data + CRC
@@ -252,9 +252,16 @@ func sanitizeImage(ctx context.Context, inPath, outPath string) (SanitizeResult,
 	case len(src) >= 8 && bytes.Equal(src[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}):
 		out, err = stripPNGMetadata(src)
 	default:
-		return SanitizeResult{}, fmt.Errorf("sanitize image: unrecognized image container")
+		return SanitizeResult{}, fmt.Errorf("%w: unrecognized image container", ErrSanitizeMalformedInput)
 	}
 	if err != nil {
+		// Already carries ErrSanitizeMalformedInput where it applies -- every
+		// walker failure above is a statement about the INPUT, deterministic
+		// on it, and the worker must classify all of them terminal rather
+		// than only the ghostscript ones. Applying the sentinel to some
+		// input-parse paths and not others is the same
+		// stopped-at-the-first-instance shape review found twice already
+		// (PR #12, rounds 4 and 5).
 		return SanitizeResult{}, fmt.Errorf("sanitize image: %w", err)
 	}
 

@@ -431,4 +431,41 @@ func TestSanitizeMalformedInputIsDistinguishable(t *testing.T) {
 	if errors.Is(err, ErrSanitizeResidue) || errors.Is(err, ErrSanitizeUnverifiable) {
 		t.Error("a malformed INPUT is being reported as a verification outcome")
 	}
+
+	// EVERY input-parse path, not only the ones the sentinel reached first.
+	// It was applied to ghostscript, archive-open and XML-parse and to nothing
+	// else, so a malformed image still fell through as transient -- the same
+	// stopped-at-the-first-instance shape, one round after review named it.
+	images := []struct {
+		name string
+		blob []byte
+		why  string
+	}{
+		{"not an image at all", []byte("just text"), "unrecognized container"},
+		// This one never reaches the JPEG walker: sanitizeImage dispatches on
+		// magic bytes, and FF D9 is not SOI, so it takes the
+		// unrecognized-container branch. Named for what it actually
+		// exercises -- an inversion pass caught the original name claiming
+		// otherwise, which would have made a dead branch look covered.
+		{"bytes that match no container", []byte{0xFF, 0xD9, 0x00}, "unrecognized container"},
+		{"JPEG with a lying segment length", []byte{0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF, 0x00}, "segment overruns the file"},
+		{"PNG with a lying chunk length", append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'},
+			[]byte{0xFF, 0xFF, 0xFF, 0x00, 'I', 'H', 'D', 'R'}...), "chunk overruns the file"},
+	}
+	for _, tc := range images {
+		t.Run(tc.name, func(t *testing.T) {
+			in := filepath.Join(t.TempDir(), "in.jpg")
+			if err := os.WriteFile(in, tc.blob, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := sanitizeImage(context.Background(), in, filepath.Join(t.TempDir(), "out.jpg"))
+			if err == nil {
+				t.Fatalf("accepted a malformed image (%s)", tc.why)
+			}
+			if !errors.Is(err, ErrSanitizeMalformedInput) {
+				t.Errorf("%s is not marked malformed: %v -- the worker classifies it transient, "+
+					"exhausts its retries without MarkFailed, and leaves the job active", tc.why, err)
+			}
+		})
+	}
 }

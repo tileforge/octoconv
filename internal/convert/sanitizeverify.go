@@ -48,6 +48,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
@@ -448,6 +449,93 @@ var oleMIMETypes = []string{
 	"application/msword",
 }
 
+// WHY THIS VERIFIER PARSES RELATIONSHIPS AT ALL
+//
+// It did not, and that was the sharpest gap review found. The sanitizer drops
+// parts named by an embedded-content, properties or external relationship;
+// this verifier checked part MIME types, the OLE signature and the
+// macroEnabled content type, and then returned embedded_file,
+// external_reference AND document_metadata as CONFIRMED ABSENT. An archive
+// still carrying metadata/core.xml plus a core-properties relationship passed
+// -- the verifier could not catch the one thing on the sanitizer side it
+// exists to catch. Caught in review (PR #12, round 5), after round 4 had
+// expanded the removal and left the check where it was: the third time in this
+// review the remover moved and the checker did not.
+//
+// The tables and the parse below are written separately from
+// sanitizeooxml.go's, deliberately. They share encoding/xml, as pdfcpu and
+// ghostscript share Go, and that is unavoidable; what they do not share is the
+// struct, the type table or the traversal, so a mistake in the sanitizer's
+// relationship handling cannot travel into its own verification.
+
+// ooxmlPropertyRoots are the root elements of the OOXML properties parts,
+// matched on CONTENT so a properties part under any name is recognised.
+var ooxmlPropertyRoots = map[string]bool{
+	"coreProperties": true, // docProps/core.xml
+	"Properties":     true, // docProps/app.xml and custom.xml
+}
+
+// verifyResidualRelTypes are relationship type leaves that must not appear in
+// a sanitized package. Kept as its own table rather than imported: two lists
+// that must agree and are checked against each other by a test are worth more
+// than one list checked against nothing.
+var verifyResidualRelTypes = map[string]ThreatClass{
+	"package":             ThreatEmbeddedFile,
+	"oleObject":           ThreatEmbeddedFile,
+	"aFChunk":             ThreatEmbeddedFile,
+	"attachment":          ThreatEmbeddedFile,
+	"core-properties":     ThreatDocumentMetadata,
+	"extended-properties": ThreatDocumentMetadata,
+	"custom-properties":   ThreatDocumentMetadata,
+	"thumbnail":           ThreatDocumentMetadata,
+}
+
+// xmlRootElement returns the local name of an XML document's first element.
+func xmlRootElement(raw []byte) (string, bool) {
+	dec := xml.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		if start, ok := tok.(xml.StartElement); ok {
+			return start.Name.Local, true
+		}
+	}
+}
+
+// residualRelationship reports the first relationship in a .rels part that a
+// sanitized package must not contain.
+func residualRelationship(raw []byte) (string, bool) {
+	var doc struct {
+		Rel []struct {
+			Type       string `xml:"Type,attr"`
+			Target     string `xml:"Target,attr"`
+			TargetMode string `xml:"TargetMode,attr"`
+		} `xml:"Relationship"`
+	}
+	if err := xml.Unmarshal(raw, &doc); err != nil {
+		// Unreadable wiring is not a clean package. The caller turns this
+		// into residue rather than into "could not verify", because the
+		// sanitizer WROTE this file: if it is not parseable, the sanitizer
+		// produced something malformed.
+		return "an unparseable relationship file", true
+	}
+	for _, r := range doc.Rel {
+		if strings.EqualFold(r.TargetMode, "External") {
+			return fmt.Sprintf("an external relationship to %q (%s)", r.Target, ThreatExternalReference), true
+		}
+		leaf := r.Type
+		if i := strings.LastIndex(leaf, "/"); i >= 0 {
+			leaf = leaf[i+1:]
+		}
+		if class, bad := verifyResidualRelTypes[leaf]; bad {
+			return fmt.Sprintf("a %s relationship to %q (%s)", leaf, r.Target, class), true
+		}
+	}
+	return "", false
+}
+
 func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 	listing, err := runCommand(ctx, "unzip", "-Z1", path)
 	if err != nil {
@@ -516,6 +604,20 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 			if bytes.Contains(blob, []byte("macroEnabled")) {
 				return nil, fmt.Errorf("%w: [Content_Types].xml still declares a macro-enabled type",
 					ErrSanitizeResidue)
+			}
+		}
+
+		// A properties part identified by its ROOT ELEMENT, not by its path.
+		// The sanitizer drops these; this is the independent confirmation,
+		// and it looks at content for the same reason the OLE check does.
+		if root, ok := xmlRootElement(blob); ok && ooxmlPropertyRoots[root] {
+			return nil, fmt.Errorf("%w: part %q is a document-properties part (<%s>)",
+				ErrSanitizeResidue, part, root)
+		}
+
+		if strings.HasSuffix(strings.ToLower(part), ".rels") {
+			if found, ok := residualRelationship(blob); ok {
+				return nil, fmt.Errorf("%w: %s declares %s", ErrSanitizeResidue, part, found)
 			}
 		}
 	}

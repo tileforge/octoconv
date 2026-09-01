@@ -415,12 +415,12 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		}
 		rc, err := f.Open()
 		if err != nil {
-			return SanitizeResult{}, fmt.Errorf("sanitize ooxml: open part %s: %w", f.Name, err)
+			return SanitizeResult{}, fmt.Errorf("%w: open part %s: %v", ErrSanitizeMalformedInput, f.Name, err)
 		}
 		content, err := io.ReadAll(rc)
 		rc.Close()
 		if err != nil {
-			return SanitizeResult{}, fmt.Errorf("sanitize ooxml: read part %s: %w", f.Name, err)
+			return SanitizeResult{}, fmt.Errorf("%w: read part %s: %v", ErrSanitizeMalformedInput, f.Name, err)
 		}
 		all = append(all, part{name: f.Name, content: content})
 	}

@@ -227,10 +227,24 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 // immediately instead of burning its retry budget and then leaving it active
 // for the reconciler to exhaust.
 //
-// The deadline check comes FIRST because runCommand wraps ctx.Err(), so a
-// killed process carries context.DeadlineExceeded through the chain.
+// The context checks come FIRST because runCommand wraps ctx.Err(), so a
+// killed process carries the cause through the chain.
+//
+// CANCELLATION IS THE SECOND ONE, and leaving it out was a regression this
+// function introduced in the same change that added it. A job cancelled by the
+// client kills ghostscript, and the resulting error wraps context.Canceled.
+// Classifying that as malformed input meant the runner's isCanceled check
+// stopped recognising it: the attempt was treated as a terminal bad upload,
+// MarkFailed was attempted on a job already `canceled`, and the outcome was
+// recorded as a failure the client never caused. Caught in review (PR #12,
+// round 5).
+//
+// The %v in the malformed branch is deliberate and is why this ordering
+// matters: it flattens the cause so nothing downstream mistakes an engine
+// message for a context outcome. That flattening is exactly what destroyed the
+// cancellation signal when the check above did not cover it.
 func classifyGSFailure(stage string, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
 	}
 	return fmt.Errorf("%w: %s: %v", ErrSanitizeMalformedInput, stage, err)

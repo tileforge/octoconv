@@ -370,6 +370,21 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 			"was a timeout")
 	}
 
+	// CANCELLATION, which the first version of this function destroyed. A job
+	// cancelled by the client kills ghostscript, and the error wraps
+	// context.Canceled; classifying that as malformed input made the runner's
+	// isCanceled check stop recognising it, so a cancelled job was MarkFailed
+	// as a bad upload. The previous inversion pass missed this because no test
+	// covered it -- the same gap, one round later, in the same function.
+	canceled := classifyGSFailure("ps2write pass", fmt.Errorf("gs killed: %w", context.Canceled))
+	if errors.Is(canceled, ErrSanitizeMalformedInput) {
+		t.Error("a CANCELLED ghostscript run was classified as malformed input; the runner " +
+			"would MarkFailed a job the client had already cancelled")
+	}
+	if !errors.Is(canceled, context.Canceled) {
+		t.Error("the cancellation was lost from the error chain, so isCanceled cannot see it")
+	}
+
 	parse := classifyGSFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
 		"Error: /undefined in --get--"))
 	if !errors.Is(parse, ErrSanitizeMalformedInput) {
