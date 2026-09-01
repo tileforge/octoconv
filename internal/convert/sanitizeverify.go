@@ -121,12 +121,26 @@ var pdfActionResidue = map[string]ThreatClass{
 	"ImportData":    ThreatExternalReference,
 }
 
-// pdfByteResidue is the second view: markers greppable in the raw output.
+// pdfByteResidue is the second view: markers greppable in the raw output,
+// OUTSIDE its compressed streams.
 //
 // This is not redundancy with the parse. A parser can miss what a grep finds
 // (an object the parser drops as unreachable is still bytes on disk) and a
 // grep can miss what a parser finds (a name split across an /ObjStm boundary).
 // Two kinds of blindness, not two copies of one check.
+//
+// SCOPED TO THE NON-STREAM BYTES, and that scoping is a correction. Scanning
+// the whole file treated Flate-compressed content-stream bytes as structure:
+// a page's compressed data can contain "/AA" or "/URI" by chance, and on a
+// document with enough content eventually does. Because verification failure
+// DELETES the output (D-07), a false positive here did not mislabel a job --
+// it destroyed a correct result and failed it. Caught in review (PR #12),
+// the same class as the image verifier's whole-file scan.
+//
+// Object DICTIONARIES are never compressed in this build's output: the
+// sanitizer targets PDF 1.4, which has no object streams, so every dictionary
+// -- the only place these names can carry meaning -- lies in the plain bytes
+// this still scans. Skipping stream payloads costs no reach.
 var pdfByteResidue = map[string]ThreatClass{
 	"/JavaScript":  ThreatJavaScript,
 	"/OpenAction":  ThreatActionDict,
@@ -319,15 +333,52 @@ func sortClasses(cs []ThreatClass) []ThreatClass {
 }
 
 func scanPDFBytes(raw []byte) []ThreatClass {
+	outside := pdfNonStreamBytes(raw)
 	seen := map[ThreatClass]bool{}
 	var found []ThreatClass
 	for marker, class := range pdfByteResidue {
-		if bytes.Contains(raw, []byte(marker)) && !seen[class] {
+		if bytes.Contains(outside, []byte(marker)) && !seen[class] {
 			seen[class] = true
 			found = append(found, class)
 		}
 	}
 	return sortClasses(found)
+}
+
+// pdfNonStreamBytes returns the file with every stream payload blanked out,
+// so a scan sees dictionaries, names and trailers but not compressed content.
+//
+// Blanking rather than deleting keeps every offset where it was, which makes
+// a reported offset in a failure message still mean something. The scan is
+// deliberately crude about pathological input -- an unterminated "stream"
+// keyword blanks the rest of the file, which fails CLOSED for a grep whose
+// only job is to find things.
+func pdfNonStreamBytes(raw []byte) []byte {
+	out := append([]byte(nil), raw...)
+	i := 0
+	for {
+		j := bytes.Index(out[i:], []byte("stream"))
+		if j < 0 {
+			break
+		}
+		start := i + j + len("stream")
+		// Skip the EOL that ISO 32000 7.3.8.1 requires after the keyword.
+		for start < len(out) && (out[start] == '\r' || out[start] == '\n') {
+			start++
+		}
+		end := bytes.Index(out[start:], []byte("endstream"))
+		if end < 0 {
+			for k := start; k < len(out); k++ {
+				out[k] = ' '
+			}
+			break
+		}
+		for k := start; k < start+end; k++ {
+			out[k] = ' '
+		}
+		i = start + end + len("endstream")
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

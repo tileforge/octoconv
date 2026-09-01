@@ -354,3 +354,67 @@ func TestEscapeZipGlob(t *testing.T) {
 		}
 	}
 }
+
+// TestVerifierDoesNotScanPDFStreamPayloads is the regression proof for the
+// eleventh finding of PR #12, and the PDF twin of
+// TestVerifierDoesNotMistakePayloadForStructure.
+//
+// The output below is a real sanitized PDF with a marker sequence appended
+// inside a stream. Compressed content-stream bytes are arbitrary, so a
+// document with enough content eventually contains "/AA" or "/URI" by chance.
+// A whole-file scan called that residue, and because verification failure
+// DELETES the output, the consequence was a destroyed correct result rather
+// than a mislabelled job.
+func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
+	requireGhostscript(t)
+
+	dir := t.TempDir()
+	clean := filepath.Join(dir, "clean.pdf")
+	if _, err := SanitizeFile(context.Background(), "pdf",
+		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), clean); err != nil {
+		t.Fatalf("SanitizeFile: %v", err)
+	}
+	base, err := os.ReadFile(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Splice the markers into the FIRST stream payload of the sanitized file,
+	// in place, so nothing about the file's structure changes.
+	start := bytes.Index(base, []byte("stream"))
+	if start < 0 {
+		t.Skip("sanitized fixture has no stream to splice into")
+	}
+	start += len("stream")
+	for start < len(base) && (base[start] == '\r' || base[start] == '\n') {
+		start++
+	}
+	payload := []byte("/AA/URI/JavaScript")
+	if start+len(payload) >= len(base) {
+		t.Fatal("stream too short to splice into")
+	}
+	spliced := append([]byte(nil), base...)
+	copy(spliced[start:], payload)
+
+	withMarkers := filepath.Join(dir, "markers-in-stream.pdf")
+	if err := os.WriteFile(withMarkers, spliced, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(spliced, []byte("/JavaScript")) {
+		t.Fatal("fixture does not contain the bytes the old scan tripped on")
+	}
+
+	if got := scanPDFBytes(spliced); len(got) > 0 {
+		t.Errorf("byte scan reported %v for markers that live inside a stream payload; "+
+			"a verification failure deletes the output, so this destroys a correct result", got)
+	}
+
+	// And the scan must still SEE a marker outside any stream, or the scoping
+	// has simply switched the check off.
+	outside := append(append([]byte(nil), base...), []byte("\n% /JavaScript\n")...)
+	if got := scanPDFBytes(outside); len(got) == 0 {
+		t.Error("byte scan no longer finds a marker outside a stream -- the scoping " +
+			"disabled the check instead of narrowing it")
+	}
+	_ = withMarkers
+}

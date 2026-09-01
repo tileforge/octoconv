@@ -266,6 +266,13 @@ func main() {
 			convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
 			convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
 			convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
+			// PROBE_ENGINE_TIMEOUT is a PLACEHOLDER, not a measurement (see
+			// .env.example). It must still be passed HERE: NewServer's own
+			// default map only applies when EngineTimeouts is nil, and this
+			// call site supplies a non-nil map -- so omitting probe made the
+			// real API publish sanitize offers with estimated_max_seconds: 0
+			// while the worker used 180s. Caught in review (PR #12).
+			convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 180*time.Second),
 		},
 	})
 

@@ -90,6 +90,33 @@ var macroEnabledExtensions = map[string]string{
 	"ppsm": "ppsx",
 }
 
+// macroEnabledForBase is the inverse of macroEnabledExtensions for the three
+// base formats SniffContainer can actually report.
+//
+// It is NOT a full inverse and cannot be: SniffContainer identifies an OOXML
+// package by its root part (word/document.xml -> docx), and a .dotm has the
+// same root part as a .docm. The template variants are therefore
+// indistinguishable from their document counterparts at detection time, which
+// is why they are absent from the sanitizable set (see sanitize.go).
+var macroEnabledForBase = map[string]string{
+	"docx": "docm",
+	"xlsx": "xlsm",
+	"pptx": "pptm",
+}
+
+// MacroEnabledExtension returns the macro-enabled extension a detected base
+// format corresponds to when the package was found to carry a macro part.
+//
+// handleCreateJob needs this because SniffContainer reports a .docm as
+// "docx" -- the macro-free base -- while the client's filename says .docm.
+// Without the mapping the declared-vs-detected check rejects every
+// macro-carrying upload as a mismatch, and the sanitize path that exists to
+// remove those macros can never be reached.
+func MacroEnabledExtension(base string) (string, bool) {
+	m, ok := macroEnabledForBase[NormalizeFormat(base)]
+	return m, ok
+}
+
 // SanitizedOOXMLExtension returns the extension a sanitized copy of a file in
 // format should carry -- the macro-free equivalent when one exists, otherwise
 // the input's own extension unchanged.

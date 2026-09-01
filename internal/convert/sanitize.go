@@ -70,15 +70,24 @@ type SanitizeResult struct {
 var sanitizeFormats = map[string]func(context.Context, string, string) (SanitizeResult, error){
 	"pdf": sanitizePDF,
 
+	// The six OOXML formats the API can actually ADMIT. dotm, potm, ppsm and
+	// xltm are deliberately absent even though sanitizeOOXML handles them
+	// perfectly well: SniffContainer identifies a package by its root part,
+	// and a .dotm has the same root part as a .docm, so a .dotm upload is
+	// detected as "docm" and rejected as a declared/detected mismatch before
+	// it can reach any of this. Registering a pair the API cannot admit is a
+	// promise of something that does not happen -- the same defect class as a
+	// helper implementing a decision and never being called (PR #12).
+	//
+	// Closing that needs detection to read [Content_Types].xml's main-part
+	// override rather than the root part's name, which touches the convert
+	// path and its pinned goldens. Tracked as an open item.
 	"docm": sanitizeOOXML,
 	"docx": sanitizeOOXML,
 	"xlsm": sanitizeOOXML,
 	"xlsx": sanitizeOOXML,
 	"pptm": sanitizeOOXML,
 	"pptx": sanitizeOOXML,
-	"dotm": sanitizeOOXML,
-	"potm": sanitizeOOXML,
-	"ppsm": sanitizeOOXML,
 
 	"jpg": sanitizeImage,
 	"png": sanitizeImage,

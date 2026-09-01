@@ -4481,3 +4481,97 @@ func TestListJobs_EmptyResult(t *testing.T) {
 		t.Fatalf("body = %q, want {\"jobs\":[],\"next_cursor\":null}", got)
 	}
 }
+
+// TestCreateJob_MacroPackageReachesSanitizeButNothingElse is the regression
+// proof for the seventh finding of PR #12.
+//
+// The macro rejection in handleCreateJob was unconditional, and its stated
+// reason -- "macro code never executes as part of producing a PDF output" --
+// was written when convert was the only operation. operation=sanitize exists
+// to remove those macros, so the rejection made the entire OOXML
+// macro-removal path unreachable through the API: registered, advertised in
+// GET /v1/formats, and impossible to invoke.
+//
+// The test asserts BOTH halves, because opening the gate for sanitize is only
+// correct if it stays shut for everything else -- and that other half is
+// pinned byte-for-byte by the pre-Phase-58 golden.
+func TestCreateJob_MacroPackageReachesSanitizeButNothingElse(t *testing.T) {
+	t.Run("sanitize is admitted and routed to probe", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+
+		body, ct := multipartBodyWithOperation(t, "in.docm", "docx", "sanitize", macroDocxFixture(t))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 -- a macro-carrying package is exactly what "+
+				"sanitize exists for; body=%s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil {
+			t.Fatal("repo.Create was never called")
+		}
+		if repo.created.SourceFormat != "docm" {
+			t.Errorf("created.SourceFormat = %q, want \"docm\" -- SniffContainer reports the "+
+				"macro-free base format, and reporting that would make the declared/detected "+
+				"check reject every macro upload", repo.created.SourceFormat)
+		}
+		if repo.created.TargetFormat != "docx" {
+			t.Errorf("created.TargetFormat = %q, want \"docx\"", repo.created.TargetFormat)
+		}
+		if repo.created.Engine != convert.EngineProbe {
+			t.Errorf("created.Engine = %q, want %q", repo.created.Engine, convert.EngineProbe)
+		}
+		if q.enqueuedProbe == uuid.Nil {
+			t.Error("EnqueueProbeSanitize was never called")
+		}
+	})
+
+	t.Run("convert is still rejected", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+
+		body, ct := multipartBody(t, "in.docx", "pdf", macroDocxFixture(t))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 -- opening the gate for sanitize must not open it "+
+				"for convert; body=%s", rec.Code, rec.Body.String())
+		}
+		if store.uploadCalls != 0 {
+			t.Errorf("storage.Upload called %d times, want 0", store.uploadCalls)
+		}
+	})
+
+	t.Run("a mislabelled macro package is still a mismatch", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		q := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, q)
+
+		// Declared .docx, actually macro-carrying. The extension check must
+		// still fire: admitting macros for sanitize is not a licence to stop
+		// checking that the filename tells the truth.
+		body, ct := multipartBodyWithOperation(t, "in.docx", "docx", "sanitize", macroDocxFixture(t))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+		}
+		if !bytes.Contains(rec.Body.Bytes(), []byte("does not match detected content")) {
+			t.Errorf("body does not report a declared/detected mismatch: %s", rec.Body.String())
+		}
+	})
+}
