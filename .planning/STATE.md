@@ -5,7 +5,7 @@ milestone_name: Inspect & Operations
 status: planning
 stopped_at: Phase 60 executed 6/6; SC5 open — PROBE_ENGINE_TIMEOUT is a marked placeholder pending an operator corpus
 last_updated: "2026-09-01T00:00:00.000Z"
-last_activity: 2026-09-01 -- Phase 60 executed 6/6 (abd6f21); SC5 left open, not claimed
+last_activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39): 6 codex findings, all real; SC5 still open
 progress:
   total_phases: 6
   completed_phases: 5   # 60 executed but SC5 unmet -- see Current Position
@@ -32,7 +32,8 @@ Status: sanitize ships end to end. PDF rebuilt through PostScript, OOXML macro p
 SC5 is NOT met and is not claimed. PROBE_ENGINE_TIMEOUT=180s is a placeholder, marked as such in .env.example, all 11 compose services, the chart ConfigMap, and the API's estimate provenance (estimate_source=unmeasured). Open item: .planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md — closed by running scripts/probe-timeout-measure.sh on a corpus representative of real load.
 
 Four things the work found that planning had not: gs signs its output with /Producer and a %%Invocation line inside a compressed /ObjStm where phase 60-02's own byte grep was blind (found by the verifier on its first run); the 60-01 JPEG fixture was structurally malformed and passed a grep-only self-check; converters.go's init() runs before sanitizeFormats is populated, which would have left operation=sanitize returning 422 with the implementation in place; and the report had nothing delivering it until an out-of-plan SideOutputs hook was added.
-Last activity: 2026-09-01 -- Phase 60 executed 6/6 (abd6f21); SC5 left open, not claimed
+Review round 1 (codex, PR #12) found six real defects, all fixed in 4fa4b39. The severe one: the sanitize report was never stored with role=report, because jobs.Repo.AddOutput deliberately omits that column -- every sanitize job would have ended with two primary outputs and failed MarkDone's guard. Three of the six were tests that proved a component rather than its use, which is the lesson to carry: a test that calls the function directly cannot see that nothing else calls it.
+Last activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39); SC5 still open
 
 ## Performance Metrics
 

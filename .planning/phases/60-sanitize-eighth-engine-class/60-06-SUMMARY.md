@@ -211,3 +211,60 @@ succeeds with gs/unzip/file present and `USER nobody` · `yq -e '.'` parses
 `docker-compose.yml` and `docs/openapi.yaml`.
 
 Local only — no GitHub Actions run.
+
+---
+
+## Review round 1 (codex, PR #12) — six findings, all real
+
+Recorded here rather than folded into the sections above, because what the
+phase shipped and what review found are two different facts and merging them
+would hide the second. Fixed in `4fa4b39`, each with an inversion reproducing
+the reported failure.
+
+**The severe one: the report was never stored as `role=report`.**
+`jobs.Repo.AddOutput` omits the role column so the DB default applies; `Role`
+was set on the struct and silently discarded. Every sanitize job would have
+ended with two primary outputs and failed `MarkDone`'s D-13 guard on every
+attempt — the operation did not work at all.
+
+`AddOutput`'s doc comment had said since phase 57 that a caller writing
+`role='report'` "needs a dedicated write path for that column". The
+instruction was written for this exact moment and not read. The tests could
+not catch it: `TestProbeSideOutputsCarriesTheReport` exercised the hook in
+isolation, and nothing drove `process()` against a real repository.
+
+**Three more that a passing test suite was blind to for the same reason —
+each test checked the piece rather than its use:**
+
+* an OOXML attachment was found by folder (`*/embeddings/`) rather than by
+  relationship type, so `word/media/attached.pdf` survived while
+  `embedded_file` appeared in both `removed` and `verified`;
+* `SanitizedOOXMLExtension` implemented D-06 and was called from nowhere — its
+  own unit test stayed green throughout, because it tested the helper, not the
+  registry the worker reads;
+* colour management (`APP2`/ICC, `APP14`/Adobe) was dropped with the metadata,
+  making this phase's losslessness claim false in the sense a client means:
+  scan bytes identical, picture changed.
+
+**Two where the check itself was wrong:**
+
+* the image verifier scanned the whole file for chunk types, and compressed
+  data eventually contains any four-byte sequence — a false positive there
+  does not mislabel a job, it *deletes a correct output*;
+* a negation cue sheltered a whole sentence, so `"The output is safe and does
+  not contain macros."` passed the safety-claim ban. Third correction to that
+  matcher: the must-not-match table had made it narrow enough to survive, and
+  narrow is not the same as correct.
+
+### What this says about the phase's own machinery
+
+Five plans went into making "we checked" mechanically different from "we said
+so", and the review still found six things — three of which were tests that
+proved a component rather than its use. The pattern is specific and worth
+carrying forward: **a test that calls the function directly cannot see that
+nothing else calls it.** Two of the six were dead code paths, and one was a
+field passed to a function that ignored it.
+
+The verification the phase did build worked exactly as intended where it was
+pointed — 60-04's verifier found the ghostscript leak on its first run. It was
+never pointed at the seams between components, and that is where all six lived.
