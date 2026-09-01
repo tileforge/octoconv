@@ -47,9 +47,11 @@ type SanitizeResult struct {
 }
 
 // SanitizeFormats is the closed set of source formats the sanitize operation
-// accepts, mapped to the function that handles each. Output format always
-// equals input format: sanitize is not a conversion, and a client asking for
-// a safe copy of a PDF expects a PDF back.
+// accepts, mapped to the function that handles each. The output format is the
+// input's SANITIZED FORM -- the same format for PDF and images, and the
+// macro-free equivalent for macro-enabled OOXML (a sanitized .docm is a
+// .docx, D-06). SanitizeConverter.Pairs derives that from
+// SanitizedOOXMLExtension; this map only names what can be sanitized at all.
 //
 // # WHY THIS IS A MAP LITERAL AND NOT PER-FILE init() REGISTRATION
 //

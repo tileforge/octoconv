@@ -49,8 +49,11 @@ import "encoding/json"
 // reinvented: a report is an output of the job, and the job already knows how
 // to carry more than one.
 type SanitizeReport struct {
-	// Format is the normalized source format that was sanitized. Output
-	// format always equals it -- sanitize is not a conversion.
+	// Format is the normalized SOURCE format that was sanitized. The output
+	// carries the sanitized form of it, which differs for macro-enabled OOXML
+	// -- a sanitized .docm is reported here as "docm" and delivered as a
+	// .docx, because this field answers "what was sanitized", not "what came
+	// out". The outputs array of GET /v1/jobs/{id} answers the second.
 	Format string `json:"format"`
 
 	// Removed lists the threat classes found and removed, as codes from the

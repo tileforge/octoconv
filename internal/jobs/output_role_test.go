@@ -413,3 +413,116 @@ func TestMarkDoneAcceptsSinglePrimaryOutput(t *testing.T) {
 		t.Fatalf("MarkDone: %v", err)
 	}
 }
+
+// TestAddOutputWithRolePersistsAndUpserts is the regression proof for the
+// defect that shipped in Phase 60 and was caught in review rather than by a
+// test (PR #12).
+//
+// The sanitize report was built with Role set on the Output struct and handed
+// to AddOutput, which deliberately omits the role column so the DB default
+// applies. The report row therefore took role='primary', every sanitize job
+// ended with TWO primary outputs, and MarkDone's D-13 guard -- exactly one
+// primary -- failed the job on every attempt. Nothing noticed, because the
+// worker-side test exercised the side-output hook in isolation and never the
+// repository write beneath it.
+//
+// This test does three things the old one could not: it proves the role is
+// stored, it proves a retry does not lose it, and -- the assertion that would
+// actually have caught the defect -- it drives the real two-output shape a
+// sanitize job produces all the way through MarkDone.
+func TestAddOutputWithRolePersistsAndUpserts(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "probe")
+
+	primary := Output{
+		Ordinal:     0,
+		ObjectKey:   "results/role-test/sanitized.pdf",
+		Filename:    "out.pdf",
+		Format:      "pdf",
+		SizeBytes:   4096,
+		ContentType: "application/pdf",
+	}
+	report := Output{
+		Ordinal:     1,
+		ObjectKey:   "results/role-test/report.json",
+		Filename:    "report.json",
+		Format:      "json",
+		SizeBytes:   538,
+		ContentType: "application/json",
+		Role:        OutputRoleReport,
+	}
+
+	if err := r.AddOutput(ctx, jobID, primary); err != nil {
+		t.Fatalf("AddOutput(primary): %v", err)
+	}
+	if err := r.AddOutputWithRole(ctx, jobID, report); err != nil {
+		t.Fatalf("AddOutputWithRole(report): %v", err)
+	}
+
+	assertRoles := func(when string) {
+		t.Helper()
+		outs, err := r.Outputs(ctx, jobID)
+		if err != nil {
+			t.Fatalf("%s: Outputs: %v", when, err)
+		}
+		if len(outs) != 2 {
+			t.Fatalf("%s: len(outs) = %d, want 2", when, len(outs))
+		}
+		if outs[0].Role != OutputRolePrimary {
+			t.Errorf("%s: ordinal 0 role = %q, want %q", when, outs[0].Role, OutputRolePrimary)
+		}
+		if outs[1].Role != OutputRoleReport {
+			t.Errorf("%s: ordinal 1 role = %q, want %q -- the report was stored as a second "+
+				"primary, which is what made MarkDone fail every sanitize job",
+				when, outs[1].Role, OutputRoleReport)
+		}
+	}
+	assertRoles("after first write")
+
+	// A retried attempt re-writes both rows. The report must not lose its role,
+	// and the primary must not gain one.
+	primary.SizeBytes = 4097
+	report.SizeBytes = 540
+	if err := r.AddOutput(ctx, jobID, primary); err != nil {
+		t.Fatalf("AddOutput(primary, retry): %v", err)
+	}
+	if err := r.AddOutputWithRole(ctx, jobID, report); err != nil {
+		t.Fatalf("AddOutputWithRole(report, retry): %v", err)
+	}
+	assertRoles("after retry upsert")
+
+	// The assertion that would have caught the defect: the real shape a
+	// sanitize job produces must reach done.
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.MarkDone(ctx, jobID, time.Second); err != nil {
+		t.Fatalf("MarkDone on a primary+report job: %v -- a sanitize job cannot complete", err)
+	}
+}
+
+// TestAddOutputWithRoleRejectsAnEmptyRole pins the guard that keeps this
+// function from becoming a second way to write the DB default. A caller with
+// no role to give must use AddOutput; passing "" here would write an empty
+// string into a column whose default is the whole point.
+func TestAddOutputWithRoleRejectsAnEmptyRole(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "probe")
+
+	err := r.AddOutputWithRole(ctx, jobID, Output{
+		Ordinal:     1,
+		ObjectKey:   "results/role-test/no-role.json",
+		Filename:    "report.json",
+		Format:      "json",
+		SizeBytes:   1,
+		ContentType: "application/json",
+	})
+	if err == nil {
+		t.Fatal("AddOutputWithRole accepted an empty role")
+	}
+	if !strings.Contains(err.Error(), "empty role") {
+		t.Errorf("error %q does not name the cause", err.Error())
+	}
+}

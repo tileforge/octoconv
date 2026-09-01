@@ -1302,6 +1302,10 @@ func (r *opGateRepo) MarkDone(_ context.Context, _ uuid.UUID, _ time.Duration) e
 func (r *opGateRepo) Inputs(_ context.Context, _ uuid.UUID) ([]jobs.Input, error) {
 	return r.inputs, nil
 }
+func (r *opGateRepo) AddOutputWithRole(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
+	return nil
+}
+
 func (r *opGateRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
 	r.addOutputCalls++
 	return nil

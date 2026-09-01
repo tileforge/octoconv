@@ -53,10 +53,12 @@ const OperationConvert = "convert"
 // as OperationConvert -- read that constant's doc comment before adding any
 // normalization here.
 //
-// The target format always equals the source format under this operation.
-// Sanitize is not a conversion, and a client asking for a disarmed copy of a
-// PDF expects a PDF back; the identity pairs SanitizeConverter registers are
-// what make that a registry fact rather than a convention.
+// The target format is the source format's SANITIZED FORM, which is usually
+// the source format itself -- a client asking for a disarmed copy of a PDF
+// expects a PDF back -- but is not for macro-enabled OOXML: a sanitized .docm
+// is a .docx, because the sanitizer rewrites its content type to the
+// macro-free one (D-06). The pairs SanitizeConverter registers are what make
+// that a registry fact rather than a convention the handler has to remember.
 const OperationSanitize = "sanitize"
 
 // AllEngines returns the eight engine classes in a fixed, documented order --

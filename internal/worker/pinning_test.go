@@ -134,6 +134,10 @@ func (r *pinRepo) MarkDone(_ context.Context, _ uuid.UUID, _ time.Duration) erro
 }
 
 func (r *pinRepo) Inputs(_ context.Context, _ uuid.UUID) ([]jobs.Input, error) { return nil, nil }
+func (r *pinRepo) AddOutputWithRole(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
+	return nil
+}
+
 func (r *pinRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
 	return nil
 }

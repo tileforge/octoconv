@@ -42,13 +42,36 @@ import (
 // avoid.
 var imageThreatClasses = []ThreatClass{ThreatDocumentMetadata}
 
-// stripJPEGMetadata removes every APPn and COM segment from a JPEG, copying
-// the rest through unchanged.
+// COLOR MANAGEMENT IS KEPT; METADATA IS NOT. THE RULE IS ABOUT WHAT A
+// SEGMENT DOES, NOT ABOUT WHICH MARKER CARRIES IT.
 //
-// APP1 is where EXIF (including GPS) and XMP live; APP13 is where IPTC lives;
-// APP0 is JFIF. All of APP0..APP15 are dropped rather than only the two known
-// carriers -- an allowlist of "segments we know are safe" would let the next
-// vendor extension through, and Go's image/jpeg decoder needs none of them.
+// The first version of this dropped every APP0-APP15 segment, on the argument
+// that an allowlist of "segments we know are safe" would let the next vendor
+// extension through. That argument is right about METADATA carriers and wrong
+// about two segments that are not metadata at all:
+//
+//	APP2 with an "ICC_PROFILE\0" payload -- the colour profile. Without it a
+//	    wide-gamut image is rendered as if it were sRGB. The pixels are
+//	    unchanged; what they MEAN is not.
+//	APP14 with an "Adobe" payload -- the colour-transform flag. Without it a
+//	    CMYK or YCCK JPEG decodes with inverted or wrong channels, and some
+//	    decoders refuse it outright.
+//
+// Dropping those made this file's own losslessness claim false in the only
+// sense a client cares about: the bytes of the scan survived and the picture
+// changed. Caught in review (PR #12).
+//
+// Both are kept by CONTENT, never by marker number: APP2 is also used by
+// FlashPix (FPXR), and APP14 by other producers, so a marker-only allowlist
+// would readmit exactly the vendor extensions the original argument was
+// guarding against. Everything else in APP0-APP15, and every COM segment,
+// still goes -- APP1 is EXIF/GPS/XMP, APP13 is IPTC, APP0 is JFIF.
+//
+// WHAT THIS LEAVES ON THE TABLE, STATED RATHER THAN ELIDED: an ICC profile is
+// a structured container with vendor-defined tags, so a preserved profile can
+// carry bytes this service did not enumerate. That is a boundary of the
+// guarantee, and docs/SANITIZE.md's scope section says so; it is not a claim
+// this code quietly makes.
 //
 // The scan data after SOS is copied verbatim to the end. That is what makes
 // this lossless: the compressed image is never decoded.
@@ -89,7 +112,7 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 
 		isAPP := marker >= 0xE0 && marker <= 0xEF
 		isCOM := marker == 0xFE
-		if !isAPP && !isCOM {
+		if !isAPP && !isCOM || isKeptJPEGAppSegment(marker, src[i+4:segEnd]) {
 			out.Write(src[i:segEnd])
 		}
 
@@ -102,9 +125,31 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// jpegColourPayloadPrefixes are the payload signatures of the two APP segments
+// that carry colour management rather than metadata, keyed by their marker.
+// Matched on the payload, never on the marker alone -- see this file's header.
+var jpegColourPayloadPrefixes = map[byte][]byte{
+	0xE2: []byte("ICC_PROFILE\x00"), // APP2
+	0xEE: []byte("Adobe"),           // APP14
+}
+
+// isKeptJPEGAppSegment reports whether an APPn segment is one of the two
+// colour-management segments this sanitizer preserves.
+func isKeptJPEGAppSegment(marker byte, payload []byte) bool {
+	prefix, ok := jpegColourPayloadPrefixes[marker]
+	if !ok {
+		return false
+	}
+	return bytes.HasPrefix(payload, prefix)
+}
+
 // pngMetadataChunks is the closed set of PNG chunk types that carry metadata.
 // eXIf is the PNG container for the same EXIF block JPEG puts in APP1; the
 // text chunks carry everything from authorship to embedded XMP.
+// iCCP, sRGB, gAMA and cHRM are deliberately ABSENT: they are PNG's colour
+// management, the same role APP2/APP14 play in JPEG, and dropping them here
+// while keeping them there would make the two paths disagree about what
+// "metadata" means.
 var pngMetadataChunks = map[string]bool{
 	"tEXt": true, "iTXt": true, "zTXt": true,
 	"eXIf": true, "tIME": true,

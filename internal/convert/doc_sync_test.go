@@ -189,15 +189,50 @@ func TestSanitizeDocCarriesTheGuaranteeBoundary(t *testing.T) {
 //
 // Extend the pattern list deliberately, and add to both tables when you do.
 
-// negationCues mark a sentence as being ABOUT the claim rather than making it.
+// negationCues mark a CLAUSE as being ABOUT the claim rather than making it.
+//
+// CLAUSE, not sentence -- and that word is the third correction this matcher
+// has taken. Skipping a whole sentence on any cue anywhere in it let a mixed
+// sentence through:
+//
+//	"The output is safe and does not contain macros."
+//
+// carries the banned frame in its first clause and a negation cue in its
+// second, and the sentence-level rule discarded the whole thing. Caught in
+// review (PR #12) after the must-not-match table had already made the matcher
+// narrow enough to survive -- narrow is not the same as correct, and the
+// table could only ever prove the first.
+//
+// Splitting on clause boundaries first means a cue shelters what it actually
+// negates and nothing else.
+//
+// Note "no " carries a trailing space deliberately: without it, "nor", "none"
+// and "normalize" would all read as negations.
 var negationCues = []string{
 	"not ", "never", "no ", "cannot", "without", "forbid", "ban ", "banned",
 	"may assert", "would be", "would assert", "prohibit", "must not", "does not",
 	// "neither ... nor" is a negation this list originally missed, and
 	// docs/SANITIZE.md's own description of this very test tripped over it.
-	// Note "no " carries a trailing space deliberately: without it, "nor",
-	// "none" and "normalize" would all read as negations.
 	"neither", "nor ",
+}
+
+// clauseSeparators split a sentence into the units a negation cue governs.
+// Deliberately short: a coordinating conjunction joins two independent
+// assertions, and "and" is the one that carried the bypass above.
+var clauseSeparators = []string{" and ", " but ", " while ", " although ", "; ", ", and ", ", but "}
+
+// splitClauses breaks one sentence into clauses, longest separator first so
+// ", and " is not split twice.
+func splitClauses(sentence string) []string {
+	parts := []string{sentence}
+	for _, sep := range clauseSeparators {
+		var next []string
+		for _, p := range parts {
+			next = append(next, strings.Split(p, sep)...)
+		}
+		parts = next
+	}
+	return parts
 }
 
 // bannedAffirmativePatterns are the frames that actually assert safety.
@@ -252,21 +287,23 @@ func splitSentences(text string) []string {
 func affirmativeSafetyClaims(text string) []string {
 	var hits []string
 	for _, sentence := range splitSentences(text) {
-		lower := strings.ToLower(sentence)
-		negated := false
-		for _, cue := range negationCues {
-			if strings.Contains(lower, cue) {
-				negated = true
-				break
+		for _, clause := range splitClauses(sentence) {
+			lower := strings.ToLower(clause)
+			negated := false
+			for _, cue := range negationCues {
+				if strings.Contains(lower, cue) {
+					negated = true
+					break
+				}
 			}
-		}
-		if negated {
-			continue
-		}
-		for _, pat := range bannedAffirmativePatterns {
-			if pat.MatchString(sentence) {
-				hits = append(hits, strings.TrimSpace(sentence))
-				break
+			if negated {
+				continue
+			}
+			for _, pat := range bannedAffirmativePatterns {
+				if pat.MatchString(clause) {
+					hits = append(hits, strings.TrimSpace(clause))
+					break
+				}
 			}
 		}
 	}
@@ -286,6 +323,11 @@ func TestMatcherIsNarrowEnoughToSurvive(t *testing.T) {
 		"The sanitized output is free of malware.",
 		"All viruses were removed.",
 		"| `javascript` | the file is safe afterwards | ... |",
+		// The mixed-clause bypass (PR #12): banned frame in one clause, a
+		// negation cue in another. Sentence-level shelter let this through.
+		"The output is safe and does not contain macros.",
+		"This document is clean, but you should still scan it.",
+		"No macros remain and the file is safe to open.",
 	}
 	for _, s := range mustMatch {
 		if len(affirmativeSafetyClaims(s)) == 0 {

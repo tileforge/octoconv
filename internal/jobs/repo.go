@@ -551,6 +551,49 @@ func (r *Repo) AddOutput(ctx context.Context, jobID uuid.UUID, o Output) error {
 	return nil
 }
 
+// AddOutputWithRole is the dedicated write path AddOutput's doc comment above
+// required before any caller could store a non-primary output (D-16). It is
+// the ONLY place in this package that writes job_outputs.role.
+//
+// # WHY IT IS A SECOND FUNCTION RATHER THAN A PARAMETER ON THE FIRST
+//
+// AddOutput has ten callers across the engines, none of which has a role to
+// give. Adding role to its INSERT would make every one of them write Go's
+// zero value ("") into a column with a DB-level default, and the ON CONFLICT
+// clause would then overwrite a correct role with "" on any retry -- the exact
+// failure AddOutput's comment warned against. Two functions keep that
+// impossible by construction: a caller with no role cannot express one.
+//
+// PHASE 60 SHIPPED WITHOUT THIS AND IT WAS A REAL DEFECT, NOT A TIDINESS ONE.
+// The sanitize report was built with Role set on the struct and handed to
+// AddOutput, which silently discarded it; the row took the DB default
+// 'primary', so every sanitize job ended with TWO primary outputs and
+// MarkDone's D-13 guard -- which requires exactly one -- failed the job on
+// every attempt. Caught in review (PR #12), not by a test, because the tests
+// exercised the side-output hook in isolation and never the repository write.
+// TestAddOutputWithRolePersistsAndUpserts exists so that cannot recur.
+func (r *Repo) AddOutputWithRole(ctx context.Context, jobID uuid.UUID, o Output) error {
+	if o.Role == "" {
+		return fmt.Errorf("AddOutputWithRole called with an empty role for job %s ordinal %d: "+
+			"use AddOutput when the DB default is what you want", jobID, o.Ordinal)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (job_id, ordinal) DO UPDATE SET
+			object_key   = EXCLUDED.object_key,
+			filename     = EXCLUDED.filename,
+			format       = EXCLUDED.format,
+			size_bytes   = EXCLUDED.size_bytes,
+			content_type = EXCLUDED.content_type,
+			role         = EXCLUDED.role`,
+		jobID, o.Ordinal, o.ObjectKey, o.Filename, o.Format, o.SizeBytes, o.ContentType, o.Role)
+	if err != nil {
+		return fmt.Errorf("insert job_output with role: %w", err)
+	}
+	return nil
+}
+
 // Get loads a job by id. Returns ErrNotFound if it does not exist.
 func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	var j Job

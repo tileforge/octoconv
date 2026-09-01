@@ -9,13 +9,27 @@ package convert
 // for exactly this case and left unimplemented by all seven existing
 // converters. Nothing about them changes here.
 //
-// IDENTITY PAIRS, AND WHY THEY ARE NOT A PLACEHOLDER
+// PAIRS ARE (format -> ITS SANITIZED FORM), WHICH IS USUALLY BUT NOT ALWAYS
+// THE SAME FORMAT
 //
-// Every pair is (f, f). Sanitize is not a conversion: a client asking for a
-// disarmed copy of a PDF expects a PDF. Registering identity pairs makes that
-// a fact the registry enforces -- a request for pdf -> docx under
-// operation=sanitize fails the pair gate in handleCreateJob before it costs
-// an S3 byte -- instead of a convention the handler would have to remember.
+// For PDF and images the pair is (f, f): sanitize is not a conversion, and a
+// client asking for a disarmed copy of a PDF expects a PDF back. Registering
+// that as a pair makes it a fact the registry enforces -- pdf -> docx under
+// operation=sanitize fails the pair gate before it costs an S3 byte -- rather
+// than a convention the handler has to remember.
+//
+// For MACRO-ENABLED OOXML the pair is (docm -> docx), (xlsm -> xlsx) and so
+// on, because that is what the output IS. D-06 decided this: the sanitizer
+// rewrites [Content_Types].xml to the macro-free content type, so a file
+// still named .docm would present itself as macro-enabled while containing no
+// macros, and Office warns on or rejects that mismatch.
+//
+// The first version of this file registered identity pairs for every format,
+// which left SanitizedOOXMLExtension -- written and tested by Plan 60-03 for
+// exactly this -- called from nowhere. A helper that implements a decision
+// and is never invoked is the same defect as a comment promising a route that
+// does not exist; caught in review (PR #12), not by a test, because every
+// test called the sanitizer directly and none went through the registry.
 //
 // The pair set is derived from sanitizeFormats rather than typed out, so a
 // format added to the sanitizer becomes routable in the same edit. A typed
@@ -42,8 +56,9 @@ func (SanitizeConverter) Engine() string { return EngineProbe }
 // and out of the job-list engine filter -- both walk OperationConvert only.
 func (SanitizeConverter) Operation() string { return OperationSanitize }
 
-// Pairs returns one identity pair per sanitizable format, sorted so the
-// registry's iteration order and every derived listing stay stable.
+// Pairs returns one pair per sanitizable format, each mapping the format to
+// the form its sanitized copy actually takes, sorted so the registry's
+// iteration order and every derived listing stay stable.
 func (SanitizeConverter) Pairs() []Pair {
 	formats := make([]string, 0, len(sanitizeFormats))
 	for f := range sanitizeFormats {
@@ -53,7 +68,7 @@ func (SanitizeConverter) Pairs() []Pair {
 
 	pairs := make([]Pair, 0, len(formats))
 	for _, f := range formats {
-		pairs = append(pairs, Pair{From: f, To: f})
+		pairs = append(pairs, Pair{From: f, To: SanitizedOOXMLExtension(f)})
 	}
 	return pairs
 }

@@ -804,8 +804,18 @@ paths:
                     construct removed and produces a second output with
                     role=report describing what was removed, what the method
                     cost, and which classes an independent implementation
-                    confirmed absent (see SanitizeReport). Output format always
-                    equals input format -- sanitize is not a conversion.
+                    confirmed absent (see SanitizeReport).
+
+                    The target format is the source format's sanitized form.
+                    For PDF and images that is the same format -- sanitize is
+                    not a conversion. For macro-enabled OOXML it is the
+                    macro-free equivalent: sanitizing a .docm yields a .docx,
+                    an .xlsm yields an .xlsx, and so on, because the sanitizer
+                    rewrites the package's content type and a file still named
+                    .docm would present itself as macro-enabled while
+                    containing no macros. Request target=docx for a .docm; the
+                    registered pairs are listed under the operations key of
+                    GET /v1/formats.
 
                     Scope: the service removes the enumerated classes and
                     verifies their absence in the output. It does not determine

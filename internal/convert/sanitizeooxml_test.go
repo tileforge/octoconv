@@ -253,3 +253,82 @@ func TestSanitizedOOXMLExtensionFollowsContentType(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeOOXMLDropsEmbeddedPackageByRelationshipType is the regression
+// proof for the second finding of PR #12.
+//
+// The attachment below is a PDF at word/media/attached.pdf: not an OLE
+// container, not under */embeddings/, not named like anything suspicious. The
+// ONLY thing marking it as embedded content is the relationship type pointing
+// at it, which is exactly how OOXML defines an embedded package. Before the
+// fix it survived every predicate while `embedded_file` appeared in both the
+// report's removed and verified lists.
+func TestSanitizeOOXMLDropsEmbeddedPackageByRelationshipType(t *testing.T) {
+	const attachment = "word/media/attached.pdf"
+
+	rels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+		`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="media/attached.pdf"/>` +
+		`</Relationships>`
+
+	in := filepath.Join(t.TempDir(), "in.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range map[string][]byte{
+		"[Content_Types].xml":          []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="pdf" ContentType="application/pdf"/></Types>`),
+		"word/document.xml":            []byte(`<?xml version="1.0"?><document/>`),
+		"word/_rels/document.xml.rels": []byte(rels),
+		attachment:                     []byte("%PDF-1.4\nattached payload\n%%EOF\n"),
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.docx")
+	res, err := sanitizeOOXML(context.Background(), in, out)
+	if err != nil {
+		t.Fatalf("sanitizeOOXML: %v", err)
+	}
+
+	blob, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(blob), int64(len(blob)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		if f.Name == attachment {
+			t.Errorf("%s survived: an embedded package is identified by its relationship "+
+				"type, not by living under */embeddings/", attachment)
+		}
+	}
+
+	// And the relationship pointing at it must be gone, or the package keeps a
+	// dangling reference to the part just removed.
+	if dangling := ooxmlConsistency(t, blob); len(dangling) > 0 {
+		t.Errorf("sanitized package has dangling references: %v", dangling)
+	}
+
+	var sawEmbedded bool
+	for _, c := range res.Removed {
+		if c == ThreatEmbeddedFile {
+			sawEmbedded = true
+		}
+	}
+	if !sawEmbedded {
+		t.Error("removed does not list embedded_file after dropping an embedded package")
+	}
+}

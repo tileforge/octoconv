@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // TestListFormats_RegistryDerived verifies GET /v1/formats returns a 200
@@ -159,9 +161,17 @@ func TestListFormats_OperationsTreeDerivedFromRegistry(t *testing.T) {
 	if _, ok := resp.Engines["probe"]; ok {
 		t.Errorf(`engines unexpectedly contains "probe" -- it serves no convert pair`)
 	}
+	// Each sanitize pair maps a format to its SANITIZED FORM -- itself for
+	// PDF and images, the macro-free equivalent for macro-enabled OOXML
+	// (D-06). Asserting identity here was wrong and passed anyway, because
+	// the registry was registering identity pairs and leaving
+	// SanitizedOOXMLExtension unused (PR #12).
 	for _, pair := range sanitizeTree["probe"].Pairs {
-		if len(pair) != 2 || pair[0] != pair[1] {
-			t.Errorf("sanitize pair %v is not an identity pair -- sanitize returns the format it was given", pair)
+		if len(pair) != 2 {
+			t.Fatalf("malformed sanitize pair %v", pair)
+		}
+		if want := convert.SanitizedOOXMLExtension(pair[0]); pair[1] != want {
+			t.Errorf("sanitize pair %v: target is %q, want %q", pair, pair[1], want)
 		}
 	}
 

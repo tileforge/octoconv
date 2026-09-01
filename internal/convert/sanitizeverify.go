@@ -47,6 +47,7 @@ package convert
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -501,15 +502,98 @@ func init() {
 	verifiers["png"] = verifyImage
 }
 
-// imageMetadataResidue are byte markers whose presence in the output would
-// disprove the strip. Structural containers (APPn, tEXt) and the payload
-// signatures that live inside them are both listed: a marker can survive a
-// segment removal if the segment was mislabelled.
-var imageMetadataResidue = []string{
-	"Exif\x00\x00",
-	"http://ns.adobe.com/xap", // XMP packet header
-	"Photoshop 3.0",           // IPTC via APP13
-	"tEXt", "iTXt", "zTXt", "eXIf", "tIME",
+// WHY THIS WALKS THE CONTAINER INSTEAD OF GREPPING IT
+//
+// The first version scanned the whole output for "tEXt", "Exif\0\0" and
+// friends. Compressed image data is arbitrary bytes: a PNG's IDAT stream or a
+// JPEG's entropy-coded scan can contain any four-byte sequence, and on a large
+// enough image it eventually does. The verifier would then report residue on a
+// perfectly clean output, and because verification failure DELETES the output
+// (D-07), a false positive here does not merely mislabel a job -- it destroys
+// a correct result and fails the job. Caught in review (PR #12).
+//
+// Structure is not optional here for a second reason: a byte scan cannot tell
+// a kept APP2 colour profile from a dropped APP1 EXIF block, so once the
+// sanitizer started preserving colour management the grep had no way to
+// express the actual rule.
+//
+// The walk below is written independently of the sanitizer's, and it checks a
+// different proposition: the sanitizer asks "should I copy this segment", this
+// asks "is any segment of a forbidden class present in what was copied". Two
+// implementations of one rule, which is what SANI-04 requires; sharing a
+// walker would make this check prove only that the walker agrees with itself.
+
+// jpegAllowedAppPayloads mirrors sanitizeimage.go's colour-management
+// allowance, restated here rather than imported so the two can disagree
+// loudly. If the sanitizer starts keeping a segment this does not allow, the
+// verifier fails and someone has to reconcile them deliberately.
+var jpegAllowedAppPayloads = map[byte][]byte{
+	0xE2: []byte("ICC_PROFILE\x00"),
+	0xEE: []byte("Adobe"),
+}
+
+// jpegMetadataResidue walks a JPEG's segment chain and reports any APPn or COM
+// segment that is not one of the allowed colour-management segments.
+func jpegMetadataResidue(raw []byte) (string, bool) {
+	i := 2 // past SOI
+	for i+1 < len(raw) {
+		if raw[i] != 0xFF {
+			return "", false // malformed; the decode check above already ruled
+		}
+		marker := raw[i+1]
+		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
+			i += 2
+			continue
+		}
+		if marker == 0xD9 || marker == 0xDA {
+			// EOI, or SOS: entropy-coded data follows and carries no segments.
+			return "", false
+		}
+		if i+4 > len(raw) {
+			return "", false
+		}
+		segLen := int(binary.BigEndian.Uint16(raw[i+2 : i+4]))
+		if segLen < 2 || i+2+segLen > len(raw) {
+			return "", false
+		}
+		end := i + 2 + segLen
+
+		isAPP := marker >= 0xE0 && marker <= 0xEF
+		if isAPP || marker == 0xFE {
+			allowed := false
+			if prefix, ok := jpegAllowedAppPayloads[marker]; ok {
+				allowed = bytes.HasPrefix(raw[i+4:end], prefix)
+			}
+			if !allowed {
+				return fmt.Sprintf("APP%d/COM segment 0x%02X at offset %d", marker-0xE0, marker, i), true
+			}
+		}
+		i = end
+	}
+	return "", false
+}
+
+// pngMetadataResidue walks a PNG's chunk chain and reports any chunk whose
+// TYPE is a metadata type. A four-byte sequence inside IDAT is data, not a
+// chunk header, and this is what tells them apart.
+func pngMetadataResidue(raw []byte) (string, bool) {
+	const sigLen = 8
+	i := sigLen
+	for i+8 <= len(raw) {
+		length := int(binary.BigEndian.Uint32(raw[i : i+4]))
+		if length < 0 || i+12+length > len(raw) {
+			return "", false
+		}
+		ctype := string(raw[i+4 : i+8])
+		if pngMetadataChunks[ctype] {
+			return fmt.Sprintf("%s chunk at offset %d", ctype, i), true
+		}
+		i += 12 + length
+		if ctype == "IEND" {
+			break
+		}
+	}
+	return "", false
 }
 
 func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
@@ -540,12 +624,20 @@ func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
 			ErrSanitizeUnverifiable, mime)
 	}
 
-	// --- view 3: the markers are gone from the bytes ---
-	for _, marker := range imageMetadataResidue {
-		if bytes.Contains(raw, []byte(marker)) {
-			return nil, fmt.Errorf("%w: %q survives in the output bytes",
-				ErrSanitizeResidue, marker)
-		}
+	// --- view 3: no metadata-carrying segment or chunk survives ---
+	var found string
+	var isResidue bool
+	switch format {
+	case "jpeg":
+		found, isResidue = jpegMetadataResidue(raw)
+	case "png":
+		found, isResidue = pngMetadataResidue(raw)
+	default:
+		return nil, fmt.Errorf("%w: no structural check for decoded format %q",
+			ErrSanitizeUnverifiable, format)
+	}
+	if isResidue {
+		return nil, fmt.Errorf("%w: %s survives in the output", ErrSanitizeResidue, found)
 	}
 
 	return append([]ThreatClass(nil), imageThreatClasses...), nil

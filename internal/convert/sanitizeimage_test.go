@@ -2,6 +2,7 @@ package convert
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"hash/crc32"
@@ -204,5 +205,175 @@ func buildPNGWithMetadata(t *testing.T) []byte {
 	out.Write(chunk("tEXt", []byte("Author\x00SecretAuthor")))
 	out.Write(chunk("eXIf", []byte("MM\x00\x2a\x00\x00\x00\x08\x00\x00")))
 	out.Write(raw[at:])
+	return out.Bytes()
+}
+
+// buildJPEGWithSegments assembles a minimal JPEG carrying the given
+// pre-formed APPn segments before its tables.
+func buildJPEGWithSegments(t *testing.T, segments ...[]byte) []byte {
+	t.Helper()
+	qt := bytes.Repeat([]byte{16}, 64)
+	dqt := append([]byte{0xFF, 0xDB, 0x00, 0x43, 0x00}, qt...)
+	sof0 := []byte{0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00}
+	dht := func(cls byte) []byte {
+		payload := append([]byte{cls, 1}, bytes.Repeat([]byte{0}, 15)...)
+		payload = append(payload, 0x00)
+		out := []byte{0xFF, 0xC4, 0x00, byte(len(payload) + 2)}
+		return append(out, payload...)
+	}
+	sos := []byte{0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00}
+
+	var b bytes.Buffer
+	b.Write([]byte{0xFF, 0xD8})
+	for _, seg := range segments {
+		b.Write(seg)
+	}
+	b.Write(dqt)
+	b.Write(sof0)
+	b.Write(dht(0x00))
+	b.Write(dht(0x10))
+	b.Write(sos)
+	b.WriteByte(0x00)
+	b.Write([]byte{0xFF, 0xD9})
+	return b.Bytes()
+}
+
+func jpegSegment(marker byte, payload []byte) []byte {
+	out := []byte{0xFF, marker, byte((len(payload) + 2) >> 8), byte((len(payload) + 2) & 0xFF)}
+	return append(out, payload...)
+}
+
+// TestSanitizeImageKeepsColourManagement is the regression proof for the
+// fourth finding of PR #12.
+//
+// Dropping APP2/ICC and APP14/Adobe alongside the metadata made this path's
+// losslessness claim false in the only sense a client cares about: the scan
+// bytes survived and the rendered picture changed — a wide-gamut image
+// displayed as sRGB, and a CMYK image with inverted channels.
+//
+// Both are matched by PAYLOAD, so the FPXR segment below — also APP2 — must
+// still be dropped. A marker-number allowlist would have readmitted exactly
+// the vendor extensions the original drop-everything rule was guarding
+// against.
+func TestSanitizeImageKeepsColourManagement(t *testing.T) {
+	icc := jpegSegment(0xE2, append([]byte("ICC_PROFILE\x00"), []byte("profile-body")...))
+	adobe := jpegSegment(0xEE, append([]byte("Adobe"), []byte{0x00, 0x64, 0, 0, 0, 0, 0, 2}...))
+	fpxr := jpegSegment(0xE2, append([]byte("FPXR\x00"), []byte("flashpix-vendor-blob")...))
+	exif := jpegSegment(0xE1, append([]byte("Exif\x00\x00"), []byte("MM\x00\x2aSECRET")...))
+	comment := jpegSegment(0xFE, []byte("a comment"))
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.jpg")
+	if err := os.WriteFile(in, buildJPEGWithSegments(t, icc, adobe, fpxr, exif, comment), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out.jpg")
+	if _, err := sanitizeImage(context.Background(), in, out); err != nil {
+		t.Fatalf("sanitizeImage: %v", err)
+	}
+	blob, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, kept := range []struct{ name, marker string }{
+		{"ICC profile (APP2)", "ICC_PROFILE\x00"},
+		{"Adobe colour transform (APP14)", "Adobe"},
+	} {
+		if !bytes.Contains(blob, []byte(kept.marker)) {
+			t.Errorf("%s was dropped; the scan bytes survive but the picture does not", kept.name)
+		}
+	}
+	for _, gone := range []struct{ name, marker string }{
+		{"EXIF (APP1)", "Exif\x00\x00"},
+		{"FlashPix (APP2, matched by payload not by marker)", "FPXR\x00"},
+		{"COM comment", "a comment"},
+	} {
+		if bytes.Contains(blob, []byte(gone.marker)) {
+			t.Errorf("%s survived", gone.name)
+		}
+	}
+}
+
+// TestVerifierDoesNotMistakePayloadForStructure is the regression proof for
+// the fifth finding of PR #12.
+//
+// The PNG below is clean: it has no tEXt chunk. Its IDAT stream carries the
+// literal bytes "tEXt" as image data, which a large enough real image
+// eventually does by chance. The old whole-file byte scan reported residue —
+// and because verification failure DELETES the output, that did not merely
+// mislabel the job, it destroyed a correct result.
+func TestVerifierDoesNotMistakePayloadForStructure(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	payload := append([]byte("tEXtiTXtzTXteXIftIME"), bytes.Repeat([]byte{0}, 40)...)
+	png := buildPNGWithRawIDAT(t, payload)
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "clean.png")
+	if err := os.WriteFile(out, png, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity: the forbidden strings really are in the bytes, or this test
+	// proves nothing.
+	if !bytes.Contains(png, []byte("tEXt")) {
+		t.Fatal("fixture does not contain the literal bytes the old scan tripped on")
+	}
+
+	if _, err := VerifySanitized(context.Background(), "png", out); err != nil {
+		t.Fatalf("a clean PNG was rejected because its IMAGE DATA contained a chunk-type "+
+			"sequence: %v", err)
+	}
+}
+
+// buildPNGWithRawIDAT produces a valid PNG whose IDAT stream carries payload
+// verbatim, by using a zlib stream of STORED (uncompressed) blocks. This is
+// what makes "these four bytes appear in the file" true without any chunk of
+// that type existing -- the exact situation a whole-file byte scan cannot
+// distinguish from real residue.
+func buildPNGWithRawIDAT(t *testing.T, payload []byte) []byte {
+	t.Helper()
+
+	chunk := func(ctype string, data []byte) []byte {
+		var b bytes.Buffer
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(data)))
+		b.WriteString(ctype)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(ctype))
+		crc.Write(data)
+		_ = binary.Write(&b, binary.BigEndian, crc.Sum32())
+		return b.Bytes()
+	}
+
+	// One row per scanline: filter byte 0 followed by width grayscale bytes.
+	width := len(payload)
+	height := 1
+	scan := append([]byte{0}, payload...)
+
+	var z bytes.Buffer
+	zw, err := zlib.NewWriterLevel(&z, zlib.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(scan); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:4], uint32(width))
+	binary.BigEndian.PutUint32(ihdr[4:8], uint32(height))
+	ihdr[8] = 8 // bit depth
+	ihdr[9] = 0 // colour type: grayscale
+
+	var out bytes.Buffer
+	out.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'})
+	out.Write(chunk("IHDR", ihdr))
+	out.Write(chunk("IDAT", z.Bytes()))
+	out.Write(chunk("IEND", nil))
 	return out.Bytes()
 }

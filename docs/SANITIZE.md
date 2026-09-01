@@ -42,6 +42,12 @@ Specifically, the service:
   "not enumerated", not "not present".
 - **is not a substitute for antivirus scanning.** It performs no signature matching, no heuristic
   analysis, and no behavioural detection of any kind.
+- **preserves colour-management data in images, including its vendor-defined parts.** An ICC
+  profile (JPEG `APP2`, PNG `iCCP`) and the Adobe colour-transform marker (`APP14`) are kept,
+  because dropping them changes how the picture renders: a wide-gamut image displayed as sRGB, a
+  CMYK image with inverted channels. An ICC profile is a structured container with vendor tags, so
+  a preserved profile can carry bytes this service did not enumerate. That is a boundary of the
+  guarantee and it is stated here rather than left to be discovered.
 
 This is a description of the method rather than a legal disclaimer, and it is written that way on
 purpose. A disclaimer reads like something to skip; a description of the method reads like
@@ -66,7 +72,7 @@ it (SANI-04). A verifier blind in the same place as the sanitizer proves only it
 | `launch_action` | The document asks the reader to start an external program | `/Launch` actions | pdfcpu object walk plus a byte scan of the output |
 | `vba_macro` | A VBA project inside an OOXML package | The whole `vbaProject.bin`-class part, plus its content-type override and every relationship pointing at it | `unzip` enumerates the parts and `file`/libmagic classifies each by content; a signature check covers containers too degenerate for libmagic to name |
 | `ole_object` | An embedded OLE compound-file object inside an OOXML package | Any part whose bytes begin with the OLE compound-file signature, under any name | Same as `vba_macro` — the verifier reads content, never part names |
-| `embedded_file` | An attachment travelling inside the document | `/EmbeddedFiles` name trees and `/Filespec` entries with an `/EF` stream; OOXML parts carrying one | pdfcpu object walk plus a byte scan of the output |
+| `embedded_file` | An attachment travelling inside the document | `/EmbeddedFiles` name trees and `/Filespec` entries with an `/EF` stream; in OOXML, every part a relationship names with an embedded-content type (`package`, `oleObject`, `aFChunk`, `attachment`), wherever that part lives and whatever it is called | pdfcpu object walk plus a byte scan of the output; for OOXML, `unzip` + libmagic over the surviving parts |
 | `external_reference` | A reference to a resource outside the file, which makes the document phone home when opened | `/URI` actions; OOXML relationships with `TargetMode="External"` | pdfcpu object walk plus a byte scan of the output |
 | `document_metadata` | Who made this, when, with what, and where | PDF `/Info` values and the XMP packet whole; image EXIF, GPS and IPTC | pdfcpu reads `/Info` by value; the output is scanned for `xpacket`, for the engine's own signature, and for EXIF/XMP/IPTC markers |
 
@@ -74,6 +80,11 @@ it (SANI-04). A verifier blind in the same place as the sanitizer proves only it
 keeps benign-looking source text and hides behaviour in the compiled p-code beside it. A sanitizer
 that reads source and keeps the part is defeated by construction, so nothing here reads VBA source
 at all.
+
+**Why an OOXML attachment is found by relationship, not by folder.** Office puts embedded files
+under `*/embeddings/`, but OOXML does not require that: a part is what a relationship says it is,
+and a package relationship may target any part name. An attachment at `word/media/attached.pdf` is
+still an attachment, and is dropped as one.
 
 **Why the metadata class covers three unrelated formats.** PDF `/Info`, an XMP packet and image
 EXIF are entirely different carriers, and the client-visible fact is identical across all of them.
@@ -103,6 +114,10 @@ construction is the reason the removals can be believed, and this list is its pr
 **The image path loses nothing.** Metadata segments are removed structurally and the compressed
 image data is copied byte for byte, so the pixels that come out are the pixels that went in. Its
 `lost_capabilities` list is empty because there is no loss, not because none was measured.
+
+That claim is about the rendered picture, not only about the bytes, which is why colour management
+is preserved (see the scope section above). Dropping the ICC profile would have left the scan data
+identical and the image visibly different — a losslessness claim true in a sense no client means.
 
 A client choosing between `sanitize` and not sanitizing should make that choice knowing this
 table. That is why it is a table and not a footnote.

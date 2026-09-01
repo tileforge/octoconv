@@ -149,6 +149,68 @@ type rel struct {
 	TargetMode string `xml:"TargetMode,attr,omitempty"`
 }
 
+// embeddedContentRelTypes are the relationship types that mean "this
+// relationship points at content embedded in the package", by the LAST
+// SEGMENT of the type URI so a namespace-version change does not silently
+// blind this table.
+//
+// # WHY A PART CANNOT BE IDENTIFIED BY ITS LOCATION
+//
+// The first version of isDroppedPart caught attachments only under
+// "*/embeddings/", which is where Office happens to put them. OOXML does not
+// require that: a part is what a relationship SAYS it is, and a package
+// relationship may target any part name at all. An attachment at
+// word/media/attached.pdf therefore survived the predicate, survived
+// rewriteRels, and survived verifyOOXML -- which checks OLE signatures and
+// macro-enabled content types and would not recognise a PDF -- while
+// embedded_file appeared in both `removed` and `verified`. A false statement
+// in the report, which is the one outcome this phase exists to prevent.
+// Caught in review (PR #12).
+//
+// This is the same lesson as the OLE check one line below, applied one level
+// up: content is identified by what the container says about it, never by
+// where it sits or what it is called.
+var embeddedContentRelTypes = map[string]bool{
+	"package":    true, // a whole embedded OOXML/ODF document
+	"oleObject":  true, // an embedded OLE object, whatever its part name
+	"aFChunk":    true, // altChunk: foreign content spliced into the document
+	"attachment": true,
+}
+
+// embeddedTargetsFromRels returns the resolved part names that .rels files
+// point at with an embedded-content relationship type.
+//
+// It runs over EVERY .rels part in the package before anything is dropped,
+// because a relationship in one .rels file can name a part that another pass
+// would otherwise carry forward.
+func embeddedTargetsFromRels(relsPath string, raw []byte) (map[string]bool, error) {
+	var rs relRelationships
+	if err := xml.Unmarshal(raw, &rs); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", relsPath, err)
+	}
+	out := map[string]bool{}
+	for _, r := range rs.Rel {
+		if strings.EqualFold(r.TargetMode, "External") {
+			// External targets name no part in this package; rewriteRels
+			// drops the relationship itself as an external reference.
+			continue
+		}
+		if !embeddedContentRelTypes[relTypeLeaf(r.Type)] {
+			continue
+		}
+		out[resolveTarget(relsPath, r.Target)] = true
+	}
+	return out, nil
+}
+
+// relTypeLeaf returns the last path segment of a relationship type URI.
+func relTypeLeaf(t string) string {
+	if i := strings.LastIndex(t, "/"); i >= 0 {
+		return t[i+1:]
+	}
+	return t
+}
+
 // isDroppedPart decides whether a part is carried into the rebuilt archive.
 //
 // The OLE check reads the part's CONTENT, not its name. Macro and object
@@ -282,7 +344,7 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		name    string
 		content []byte
 	}
-	var parts []part
+	var all []part
 	dropped := map[string]bool{}
 	removedClasses := map[ThreatClass]bool{}
 
@@ -299,12 +361,38 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		if err != nil {
 			return SanitizeResult{}, fmt.Errorf("sanitize ooxml: read part %s: %w", f.Name, err)
 		}
-		if drop, class := isDroppedPart(f.Name, content); drop {
-			dropped[f.Name] = true
+		all = append(all, part{name: f.Name, content: content})
+	}
+
+	// Every .rels file is read BEFORE anything is dropped: a relationship in
+	// one .rels can name a part that a name-or-content check would carry
+	// forward, and the drop set has to be complete before the survivor list
+	// is built.
+	for _, p := range all {
+		if !strings.HasSuffix(p.name, ".rels") {
+			continue
+		}
+		targets, err := embeddedTargetsFromRels(p.name, p.content)
+		if err != nil {
+			return SanitizeResult{}, fmt.Errorf("sanitize ooxml: %w", err)
+		}
+		for t := range targets {
+			dropped[t] = true
+			removedClasses[ThreatEmbeddedFile] = true
+		}
+	}
+
+	var parts []part
+	for _, p := range all {
+		if dropped[p.name] {
+			continue
+		}
+		if drop, class := isDroppedPart(p.name, p.content); drop {
+			dropped[p.name] = true
 			removedClasses[class] = true
 			continue
 		}
-		parts = append(parts, part{name: f.Name, content: content})
+		parts = append(parts, p)
 	}
 
 	anyBinLeft := false

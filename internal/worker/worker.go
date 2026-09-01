@@ -624,6 +624,7 @@ type convertRepo interface {
 	MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error
 	Inputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Input, error)
 	AddOutput(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
+	AddOutputWithRole(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
 	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
@@ -1385,7 +1386,11 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 			if err != nil {
 				return err
 			}
-			if err := h.repo.AddOutput(attemptCtx, job.ID, jobs.Output{
+			// AddOutputWithRole, not AddOutput: the latter deliberately
+			// omits the role column so the DB default applies, which would
+			// store this report as a second PRIMARY output and make
+			// MarkDone's exactly-one-primary guard fail the job.
+			if err := h.repo.AddOutputWithRole(attemptCtx, job.ID, jobs.Output{
 				Ordinal:     ordinal,
 				ObjectKey:   key,
 				Filename:    so.Filename,
