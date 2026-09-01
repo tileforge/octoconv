@@ -1,0 +1,60 @@
+THIS RUN DID NOT SET PROBE_ENGINE_TIMEOUT. READ THIS FIRST.
+
+It is committed as the record of what WAS measured, and of what that
+measurement is not sufficient for. The corpus is the repository's own test
+fixtures: seven files, 331 bytes to 11.6 KB. Production documents are three
+orders of magnitude larger, and the phase research had already recorded that
+its own 1.9-36 KB measurements were not a basis for a production bound.
+
+Taking this run's recommendation (1s) would have produced a timeout that fires
+on the first real document. PROBE_ENGINE_TIMEOUT therefore stays at its 180s
+PLACEHOLDER, marked unmeasured everywhere it appears, with an open item at
+.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md.
+
+What this run DOES establish, and what it was worth doing for:
+
+  * the pipeline works end to end against the ghostscript the deployed image
+    actually resolves to (10.00.0), not the developer host's 10.07.1;
+  * all seven files sanitize AND verify at the deployed cgroup limits
+    (2 CPU / 1 GiB), so the measurement harness and the fail-closed corpus
+    check are both known to work before anyone points them at real documents;
+  * a floor: the pipeline's fixed overhead is ~4 ms for an image and ~100 ms
+    for a small PDF, so whatever the real number is, it is dominated by
+    document size rather than by constant cost.
+
+--------------------------------------------------------------------------
+
+PROBE_ENGINE_TIMEOUT measurement
+corpus:      /tmp/probecorpus
+files timed: 7
+measured in: container, --cpus 2.0 --memory 1g (the deployed limits)
+gs:          10.00.0
+host arch:   Darwin arm64
+
+wall-clock seconds per file (sanitize + independent verification):
+  min     0.004
+  median  0.101
+  p95     0.322   (nearest rank 7 of 7)
+  max     0.322
+
+recommendation:
+  PROBE_ENGINE_TIMEOUT = ceil(p95 x 3) = ceil(0.322 x 3) = 1s
+
+  x3, not pandoc's x2: two ghostscript passes plus a parse give this
+  pipeline a longer tail relative to its median than a single-subprocess
+  engine has. A probe timeout is classified TRANSIENT (isProbeTerminal),
+  so an over-tight bound spends retries rather than failing jobs -- but
+  it spends them on every busy minute.
+
+  This is a recommendation, not a decision. The share of timeout-driven
+  retries that is acceptable for your load is not something this script
+  can know.
+
+per-file rows:
+  born_digital.pdf,pdf,3336,4124,538,0.322,ok
+  exif_gps.jpg,jpg,331,141,201,0.004,ok
+  macro_enabled.docm,docm,1512,1349,454,0.012,ok
+  multipage_image_only.pdf,pdf,9503,6894,538,0.101,ok
+  multipage_text.pdf,pdf,11595,12812,538,0.126,ok
+  threat_all_classes.pdf,pdf,1904,3359,538,0.099,ok
+  verapdf_noncompliant.pdf,pdf,9867,9191,538,0.264,ok

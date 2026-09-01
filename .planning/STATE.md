@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: Phase 60 planned; 6 plans across 5 waves; ready to execute wave 1
-last_updated: "2026-08-31T00:00:00.000Z"
-last_activity: 2026-08-31 -- Phase 60 planned (455ae15)
+stopped_at: Phase 60 executed 6/6; SC5 open — PROBE_ENGINE_TIMEOUT is a marked placeholder pending an operator corpus
+last_updated: "2026-09-01T00:00:00.000Z"
+last_activity: 2026-09-01 -- Phase 60 executed 6/6 (abd6f21); SC5 left open, not claimed
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 5   # 60 executed but SC5 unmet -- see Current Position
   total_plans: 32
   completed_plans: 32
   percent: 83
@@ -25,14 +25,14 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 60 (sanitize-eighth-engine-class) — PLANNED
-Plan: 0 of 6 — ready to execute wave 1
-Status: Phase 60 planned: 6 plans, 5 waves, 9 decisions (D-09 added during planning: XMP stripped whole via -dOmitXMP, since "no xpacket in the output bytes" cannot be subtly wrong while "all fields empty" requires enumerating fields we did not anticipate).
+Phase: 60 (sanitize-eighth-engine-class) — EXECUTED 6/6, SC5 OPEN
+Plan: 6 of 6 — all waves done
+Status: sanitize ships end to end. PDF rebuilt through PostScript, OOXML macro parts dropped by CONTENT (a renamed vbaProject.bin is still dropped), image metadata stripped structurally with the compressed data copied byte-for-byte. Every output is re-checked by an implementation that did not do the removing — pdfcpu for PDF, unzip+libmagic for OOXML, stdlib decode for images — and an output that cannot be verified is deleted rather than delivered. The report goes back as the role=report output, built from two closed vocabularies with no verdict field, and a doc-sync test makes an affirmative safety claim fail the build.
 
-The plan-check caught two of my own defects: SC5's prior-revision clause was in no plan (a PDF carrying its original as an incremental update passes every byte-absence test while still carrying the marker), and the helm chart path was invented rather than looked up. Both fixed in 455ae15.
+SC5 is NOT met and is not claimed. PROBE_ENGINE_TIMEOUT=180s is a placeholder, marked as such in .env.example, all 11 compose services, the chart ConfigMap, and the API's estimate provenance (estimate_source=unmeasured). Open item: .planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md — closed by running scripts/probe-timeout-measure.sh on a corpus representative of real load.
 
-Wave 6 blocks on you: SC5 needs a timeout measured on your own corpus. Roadmap names copying 65s/742s/744s/753s an anti-pattern of this project by name, so that number cannot come from planning.
-Last activity: 2026-08-31 -- Phase 60 planned (455ae15)
+Four things the work found that planning had not: gs signs its output with /Producer and a %%Invocation line inside a compressed /ObjStm where phase 60-02's own byte grep was blind (found by the verifier on its first run); the 60-01 JPEG fixture was structurally malformed and passed a grep-only self-check; converters.go's init() runs before sanitizeFormats is populated, which would have left operation=sanitize returning 422 with the implementation in place; and the report had nothing delivering it until an out-of-plan SideOutputs hook was added.
+Last activity: 2026-09-01 -- Phase 60 executed 6/6 (abd6f21); SC5 left open, not claimed
 
 ## Performance Metrics
 
