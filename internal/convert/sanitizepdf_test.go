@@ -3,6 +3,7 @@ package convert
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -347,4 +348,36 @@ func buildIncrementalUpdate(t *testing.T, base []byte) []byte {
 		prev, xrefOff)
 
 	return append(append([]byte(nil), base...), body.Bytes()...)
+}
+
+// TestClassifyGSFailureKeepsTimeoutsTransient pins the one distinction that
+// makes the malformed-input sentinel safe to act on.
+//
+// Every ghostscript failure except a timeout is deterministic on the input and
+// must be terminal. A timeout is about load, and marking it terminal would
+// fail a perfectly good document because the box was busy. The two are told
+// apart here and nowhere else, so a test that builds the error by hand -- as
+// the worker's classification test does -- would not notice this function
+// getting it wrong.
+func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
+	timeout := classifyGSFailure("pdfwrite pass", fmt.Errorf("gs killed: %w", context.DeadlineExceeded))
+	if errors.Is(timeout, ErrSanitizeMalformedInput) {
+		t.Error("a ghostscript TIMEOUT was classified as malformed input; the job would be " +
+			"failed terminally because the machine was busy")
+	}
+	if !errors.Is(timeout, context.DeadlineExceeded) {
+		t.Error("the deadline was lost from the error chain, so nothing downstream can see it " +
+			"was a timeout")
+	}
+
+	parse := classifyGSFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
+		"Error: /undefined in --get--"))
+	if !errors.Is(parse, ErrSanitizeMalformedInput) {
+		t.Errorf("a ghostscript PARSE failure was not classified as malformed input: %v -- the "+
+			"worker treats it as transient, exhausts its retries without MarkFailed, and leaves "+
+			"the job active", parse)
+	}
+	if errors.Is(parse, context.DeadlineExceeded) {
+		t.Error("a parse failure carries a deadline it never had")
+	}
 }

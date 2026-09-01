@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,6 +164,17 @@ func TestProbeTerminalClassification(t *testing.T) {
 			"the verifier will reach the same verdict on retry"},
 		{"timeout", context.DeadlineExceeded, false,
 			"depends on load, not on the file -- the opposite of isPandocTerminal"},
+		{"malformed input", convert.ErrSanitizeMalformedInput, true,
+			"the engine cannot parse this file now and will not in twenty seconds"},
+		// The wrapped forms the sanitizer actually produces, because
+		// errors.Is has to reach through them.
+		{"wrapped malformed input", fmt.Errorf("sanitize pdf: %w: ps2write pass: exit 1",
+			convert.ErrSanitizeMalformedInput), true,
+			"classification must survive wrapping"},
+		{"wrapped timeout", fmt.Errorf("sanitize pdf: pdfwrite pass: %w",
+			context.DeadlineExceeded), false,
+			"a wrapped deadline stays transient -- classifyGSFailure keeps it out of the " +
+				"malformed branch"},
 	}
 	for _, tc := range cases {
 		if got := isProbeTerminal(tc.err); got != tc.terminal {
@@ -178,6 +190,11 @@ func TestProbeTerminalClassification(t *testing.T) {
 	// other says the service refuses to make a claim.
 	_, residueMsg := probeFailureCode(convert.ErrSanitizeResidue)
 	_, unverifiedMsg := probeFailureCode(convert.ErrSanitizeUnverifiable)
+	_, malformedMsg := probeFailureCode(convert.ErrSanitizeMalformedInput)
+	if malformedMsg == residueMsg || malformedMsg == unverifiedMsg {
+		t.Errorf("a malformed INPUT reports the same message as a verification outcome (%q) -- "+
+			"one says the client's file is broken, the others say ours is", malformedMsg)
+	}
 	if residueMsg == unverifiedMsg {
 		t.Errorf("both verification outcomes report the same message %q -- a client cannot tell "+
 			"\"still contained something\" from \"could not be checked\"", residueMsg)

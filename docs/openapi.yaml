@@ -596,8 +596,12 @@ components:
         format:
           type: string
           description: >-
-            Normalized source format that was sanitized. The output format
-            equals it.
+            Normalized SOURCE format that was sanitized — what went in, not
+            what came out. For a macro-enabled OOXML upload the two differ:
+            sanitizing a .docm reports format "docm" here and delivers a .docx,
+            because the sanitizer rewrites the package's content type. Read the
+            result's format from the primary output in the outputs array of
+            GET /v1/jobs/{id}; this field answers "what was sanitized".
         removed:
           type: array
           description: >-

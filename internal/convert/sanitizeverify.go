@@ -74,6 +74,24 @@ var (
 	// ErrSanitizeUnverifiable means the verifier could not parse or inspect
 	// the output at all. Fail closed: this is a job failure, not a caveat.
 	ErrSanitizeUnverifiable = errors.New("sanitize verification: output could not be verified")
+	// ErrSanitizeMalformedInput means the INPUT could not be processed: the
+	// engine refused to parse it, the archive would not open, or a part this
+	// path must rewrite is not well-formed XML.
+	//
+	// It exists so the worker can classify these as TERMINAL. They are
+	// deterministic on the input -- a file ghostscript cannot read now is a
+	// file ghostscript cannot read in twenty seconds -- and without a sentinel
+	// they fell through to the shared isTerminal, which knows nothing about
+	// sanitizer or ghostscript errors and returned false. Asynq then exhausted
+	// its retries WITHOUT MarkFailed ever running, leaving the job active
+	// until the reconciler exhausted it over repeated 15-minute cycles.
+	//
+	// ProbeDescriptor's own doc comment had claimed this classification since
+	// the class was added; the code never implemented it. Caught in review
+	// (PR #12, round 4) -- a comment describing behaviour that does not exist
+	// is precisely the defect this phase's tests were built against, and it
+	// was in this phase's own comment.
+	ErrSanitizeMalformedInput = errors.New("sanitize: input could not be processed")
 )
 
 // verifiers is the closed set of formats that have an independent verifier.

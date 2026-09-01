@@ -68,6 +68,7 @@ package convert
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -179,7 +180,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	psPath := filepath.Join(tmpDir, "intermediate.ps")
 
 	if _, err := runCommand(ctx, "gs", ps2writeArgs(inPath, psPath)...); err != nil {
-		return SanitizeResult{}, fmt.Errorf("sanitize pdf: ps2write pass: %w", err)
+		return SanitizeResult{}, classifyGSFailure("ps2write pass", err)
 	}
 
 	// A zero-byte intermediate means the first pass "succeeded" without
@@ -191,11 +192,12 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: intermediate missing: %w", err)
 	}
 	if info.Size() == 0 {
-		return SanitizeResult{}, fmt.Errorf("sanitize pdf: ps2write produced an empty intermediate")
+		return SanitizeResult{}, fmt.Errorf("%w: ps2write produced an empty intermediate",
+			ErrSanitizeMalformedInput)
 	}
 
 	if _, err := runCommand(ctx, "gs", pdfwriteArgs(psPath, outPath)...); err != nil {
-		return SanitizeResult{}, fmt.Errorf("sanitize pdf: pdfwrite pass: %w", err)
+		return SanitizeResult{}, classifyGSFailure("pdfwrite pass", err)
 	}
 
 	// Ghostscript signs its own output. See redactEngineIdentity's header for
@@ -213,6 +215,25 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 		Removed:          append([]ThreatClass(nil), pdfThreatClasses...),
 		LostCapabilities: append([]LostCapability(nil), pdfLostCapabilities...),
 	}, nil
+}
+
+// classifyGSFailure separates the ONE ghostscript failure that depends on
+// something other than the input from every other one.
+//
+// A timeout is about load: the box was busy, and the next attempt may not be.
+// Everything else -- a parse error, a refusal, a non-zero exit on a file gs
+// will not read -- is deterministic on the input and will reproduce exactly on
+// every retry. Wrapping the second kind lets the worker mark the job failed
+// immediately instead of burning its retry budget and then leaving it active
+// for the reconciler to exhaust.
+//
+// The deadline check comes FIRST because runCommand wraps ctx.Err(), so a
+// killed process carries context.DeadlineExceeded through the chain.
+func classifyGSFailure(stage string, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
+	}
+	return fmt.Errorf("%w: %s: %v", ErrSanitizeMalformedInput, stage, err)
 }
 
 // ---------------------------------------------------------------------------

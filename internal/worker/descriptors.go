@@ -297,11 +297,26 @@ func isProbeTerminal(err error) bool {
 	if errors.Is(err, convert.ErrSanitizeResidue) || errors.Is(err, convert.ErrSanitizeUnverifiable) {
 		return true
 	}
+	// Malformed input: the engine refused to parse it, or a part this path
+	// must rewrite is not well-formed. Deterministic on the input, so a retry
+	// reproduces it exactly.
+	//
+	// This branch was CLAIMED by the doc comment above from the day this
+	// descriptor was written and was not implemented until PR #12 round 4:
+	// these errors fell through to isTerminal, which knows nothing about
+	// ghostscript or the sanitizer and returned false. Asynq then exhausted
+	// its retries without MarkFailed ever running, leaving the job ACTIVE for
+	// the reconciler to exhaust over repeated 15-minute cycles -- a job that
+	// looks in-flight for an hour and never reports why it died.
+	if errors.Is(err, convert.ErrSanitizeMalformedInput) {
+		return true
+	}
 	// A ghostscript timeout is the one failure here that depends on load
 	// rather than on the file, so it stays TRANSIENT -- falling through to
 	// isTerminal, which returns false for a DeadlineExceeded. This is the
 	// explicit opposite of isPandocTerminal/isDocumentTerminal, which route
-	// through timeoutIsTerminal.
+	// through timeoutIsTerminal. classifyGSFailure (sanitizepdf.go) is what
+	// keeps a timeout out of the branch above.
 	return isTerminal(err)
 }
 
@@ -319,6 +334,9 @@ func probeFailureCode(err error) (code, message string) {
 	}
 	if errors.Is(err, convert.ErrSanitizeUnverifiable) {
 		return CodeEngineError, "sanitized output could not be independently verified and was discarded"
+	}
+	if errors.Is(err, convert.ErrSanitizeMalformedInput) {
+		return CodeEngineError, "the uploaded document could not be parsed for sanitization"
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "takes no options") {
 		return CodeInvalidOptions, "stored conversion options are invalid"

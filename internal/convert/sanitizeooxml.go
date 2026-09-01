@@ -204,28 +204,55 @@ var embeddedContentRelTypes = map[string]bool{
 	"attachment": true,
 }
 
-// embeddedTargetsFromRels returns the resolved part names that .rels files
-// point at with an embedded-content relationship type.
+// metadataRelTypes are the relationship types that mean "this relationship
+// points at document properties", by the same last-segment rule.
+//
+// THIS TABLE IS THE SECOND HALF OF A FIX THAT STOPPED AT ITS FIRST INSTANCE.
+// The embedded-content table above replaced a path check ("*/embeddings/")
+// after review pointed out that OOXML identifies a part by what a relationship
+// says it is, never by where it sits. The properties check one function below
+// had the identical weakness -- `strings.HasPrefix(name, "docProps/")` -- and
+// was left standing directly underneath the comment explaining why that shape
+// is wrong. A package storing its core properties at, say, metadata/core.xml
+// kept its author and title while the report claimed document_metadata
+// removed AND verified. Caught in review (PR #12, round 4).
+//
+// The lesson is one this project has written down before: fixing the named
+// instance is not fixing the class, and a fix that leaves its own sibling
+// in place is the clearest possible demonstration of that.
+var metadataRelTypes = map[string]bool{
+	"core-properties":     true, // package-level metadata/core-properties
+	"extended-properties": true, // app.xml: producer, company, template
+	"custom-properties":   true, // arbitrary client-defined fields
+	"thumbnail":           true, // a rendering of the document's first page
+}
+
+// relationshipDrivenDrops returns the resolved part names a .rels file points
+// at with a relationship type that means the target must go, mapped to the
+// threat class each one answers to.
 //
 // It runs over EVERY .rels part in the package before anything is dropped,
 // because a relationship in one .rels file can name a part that another pass
 // would otherwise carry forward.
-func embeddedTargetsFromRels(relsPath string, raw []byte) (map[string]bool, error) {
+func relationshipDrivenDrops(relsPath string, raw []byte) (map[string]ThreatClass, error) {
 	var rs relRelationships
 	if err := xml.Unmarshal(raw, &rs); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", relsPath, err)
+		return nil, fmt.Errorf("%w: parse %s: %v", ErrSanitizeMalformedInput, relsPath, err)
 	}
-	out := map[string]bool{}
+	out := map[string]ThreatClass{}
 	for _, r := range rs.Rel {
 		if strings.EqualFold(r.TargetMode, "External") {
 			// External targets name no part in this package; rewriteRels
 			// drops the relationship itself as an external reference.
 			continue
 		}
-		if !embeddedContentRelTypes[relTypeLeaf(r.Type)] {
-			continue
+		leaf := relTypeLeaf(r.Type)
+		switch {
+		case embeddedContentRelTypes[leaf]:
+			out[resolveTarget(relsPath, r.Target)] = ThreatEmbeddedFile
+		case metadataRelTypes[leaf]:
+			out[resolveTarget(relsPath, r.Target)] = ThreatDocumentMetadata
 		}
-		out[resolveTarget(relsPath, r.Target)] = true
 	}
 	return out, nil
 }
@@ -252,11 +279,18 @@ func isDroppedPart(name string, content []byte) (bool, ThreatClass) {
 	if IsOLECFBFromPrefix(content) {
 		return true, ThreatOLEObject
 	}
+	// docProps/ is where Office puts properties, and this prefix is kept as a
+	// BACKSTOP rather than as the rule: a package can store them anywhere and
+	// name them through a properties relationship, which
+	// relationshipDrivenDrops handles. Both are needed, and neither subsumes
+	// the other -- a part under docProps/ with no relationship pointing at it
+	// is still document metadata, and a properties part outside docProps/ is
+	// still document metadata.
 	if strings.HasPrefix(name, "docProps/") {
 		return true, ThreatDocumentMetadata
 	}
-	// Embedded objects and attachments live under */embeddings/ regardless of
-	// the individual part's name.
+	// Same shape for embedded content: */embeddings/ is where Office puts it,
+	// relationshipDrivenDrops is what actually identifies it.
 	if strings.Contains(name, "/embeddings/") {
 		return true, ThreatEmbeddedFile
 	}
@@ -282,7 +316,7 @@ func resolveTarget(relsPath, target string) string {
 func rewriteContentTypes(raw []byte, dropped map[string]bool, anyBinLeft bool) ([]byte, error) {
 	var t ctTypes
 	if err := xml.Unmarshal(raw, &t); err != nil {
-		return nil, fmt.Errorf("parse [Content_Types].xml: %w", err)
+		return nil, fmt.Errorf("%w: parse [Content_Types].xml: %v", ErrSanitizeMalformedInput, err)
 	}
 
 	var buf bytes.Buffer
@@ -359,7 +393,7 @@ func xmlAttr(s string) string {
 func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
 	zr, err := zip.OpenReader(inPath)
 	if err != nil {
-		return SanitizeResult{}, fmt.Errorf("sanitize ooxml: open: %w", err)
+		return SanitizeResult{}, fmt.Errorf("%w: open archive: %v", ErrSanitizeMalformedInput, err)
 	}
 	defer zr.Close()
 
@@ -399,13 +433,13 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		if !strings.HasSuffix(p.name, ".rels") {
 			continue
 		}
-		targets, err := embeddedTargetsFromRels(p.name, p.content)
+		targets, err := relationshipDrivenDrops(p.name, p.content)
 		if err != nil {
 			return SanitizeResult{}, fmt.Errorf("sanitize ooxml: %w", err)
 		}
-		for t := range targets {
+		for t, class := range targets {
 			dropped[t] = true
-			removedClasses[ThreatEmbeddedFile] = true
+			removedClasses[class] = true
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"os"
 	"path"
 	"path/filepath"
@@ -330,5 +331,104 @@ func TestSanitizeOOXMLDropsEmbeddedPackageByRelationshipType(t *testing.T) {
 	}
 	if !sawEmbedded {
 		t.Error("removed does not list embedded_file after dropping an embedded package")
+	}
+}
+
+// TestSanitizeOOXMLDropsPropertiesByRelationshipType is the regression proof
+// for the fourteenth finding of PR #12, and it is the same defect as
+// TestSanitizeOOXMLDropsEmbeddedPackageByRelationshipType one level over.
+//
+// That fix replaced a path check for embedded content and left the properties
+// check -- `strings.HasPrefix(name, "docProps/")` -- standing directly beneath
+// the comment explaining why a path check is the wrong shape. A package
+// storing its core properties at metadata/core.xml therefore kept its author
+// and title while the report claimed document_metadata removed AND verified.
+//
+// Fixing the named instance is not fixing the class, and a fix that leaves its
+// own sibling in place is the clearest demonstration of that available.
+func TestSanitizeOOXMLDropsPropertiesByRelationshipType(t *testing.T) {
+	const props = "metadata/core.xml"
+
+	rels := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+		`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+		`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="metadata/core.xml"/>` +
+		`<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="metadata/app.xml"/>` +
+		`</Relationships>`
+
+	in := filepath.Join(t.TempDir(), "in.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, content := range map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`),
+		"_rels/.rels":         []byte(rels),
+		"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
+		props:                 []byte(`<?xml version="1.0"?><coreProperties><creator>SecretAuthor</creator></coreProperties>`),
+		"metadata/app.xml":    []byte(`<?xml version="1.0"?><Properties><Company>SecretCompany</Company></Properties>`),
+	} {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(t.TempDir(), "out.docx")
+	res, err := sanitizeOOXML(context.Background(), in, out)
+	if err != nil {
+		t.Fatalf("sanitizeOOXML: %v", err)
+	}
+	blob, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"SecretAuthor", "SecretCompany"} {
+		if bytes.Contains(blob, []byte(gone)) {
+			t.Errorf("%q survived: properties are identified by relationship type, not by "+
+				"living under docProps/", gone)
+		}
+	}
+	if dangling := ooxmlConsistency(t, blob); len(dangling) > 0 {
+		t.Errorf("sanitized package has dangling references: %v", dangling)
+	}
+
+	var sawMetadata bool
+	for _, c := range res.Removed {
+		if c == ThreatDocumentMetadata {
+			sawMetadata = true
+		}
+	}
+	if !sawMetadata {
+		t.Error("removed does not list document_metadata after dropping the properties parts")
+	}
+}
+
+// TestSanitizeMalformedInputIsDistinguishable pins the sentinel the worker
+// classifies on. A file the engine cannot parse is deterministic on the input;
+// a timeout is not, and the two must not collapse.
+func TestSanitizeMalformedInputIsDistinguishable(t *testing.T) {
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.docx")
+	if err := os.WriteFile(in, []byte("PK\x03\x04 not really a zip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := sanitizeOOXML(context.Background(), in, filepath.Join(dir, "out.docx"))
+	if err == nil {
+		t.Fatal("a corrupt archive was accepted")
+	}
+	if !errors.Is(err, ErrSanitizeMalformedInput) {
+		t.Errorf("a corrupt archive is not marked malformed: %v -- the worker would classify "+
+			"it transient, exhaust its retries without ever calling MarkFailed, and leave the "+
+			"job active for the reconciler", err)
+	}
+	if errors.Is(err, ErrSanitizeResidue) || errors.Is(err, ErrSanitizeUnverifiable) {
+		t.Error("a malformed INPUT is being reported as a verification outcome")
 	}
 }
