@@ -52,6 +52,22 @@ ghostscript the deployed image actually resolves to (10.00.0, not the developer
 host's 10.07.1) and that the harness and its fail-closed corpus check work
 before anyone points them at real documents.
 
+## Two more reasoned-not-measured numbers landed with it
+
+Both came out of PR #12 round 2 and share this item because they share its
+cause -- no corpus:
+
+* `defaultMaxEngineBytes[EngineProbe] = 50 MiB` (`internal/api/api.go`), half
+  the ordinary document ceiling. The reasoning is the memory profile: the
+  image walkers `os.ReadFile` the input, the OOXML path buffers every
+  uncompressed part plus the rebuilt archive, and the PDF path hands the
+  result to pdfcpu, which parses it into its own address space -- inside a
+  1 GiB worker. That is an argument, not a measurement.
+* `PROBE_WORKER_CONCURRENCY=1`, on the same argument.
+
+The same corpus run that fixes the timeout should record peak RSS per input
+size, which settles both.
+
 ## Risk while it stands
 
 A probe timeout is classified **transient** (`isProbeTerminal`), so a too-tight
@@ -61,3 +77,23 @@ more than the bound fails after three attempts. A too-loose bound holds a worker
 slot for up to 180s per stuck job. 180s sits well under the 900s
 `RECONCILER_ACTIVE_STALE_AFTER` cap, so neither direction currently risks the
 reconciler.
+
+---
+
+## Related, separate: four OOXML formats the API cannot admit
+
+`dotm`, `potm`, `ppsm` and `xltm` are removed from `sanitizeFormats`
+(`internal/convert/sanitize.go`) even though `sanitizeOOXML` handles them
+correctly.
+
+`SniffContainer` identifies an OOXML package by its ROOT PART, and a `.dotm`
+has the same root part (`word/document.xml`) as a `.docm`. A `.dotm` upload is
+therefore detected as `docm` and rejected as a declared/detected mismatch
+before it can reach the sanitizer. Registering those pairs advertised
+something no request could invoke — the same defect class as a helper that
+implements a decision and is never called (both found in PR #12).
+
+Closing it needs detection to read `[Content_Types].xml`'s main-part override
+rather than the root part's name. That touches the convert path and the pinned
+`pre58_formats` golden, so it is a change with its own blast radius rather
+than a line to add here.
