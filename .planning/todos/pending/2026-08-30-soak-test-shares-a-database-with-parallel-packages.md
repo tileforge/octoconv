@@ -38,3 +38,21 @@ meant to avoid.
 test created rather than on the total call count. That keeps the test honest
 about the sweeper's real, table-wide contract instead of pretending the database
 is private to it.
+
+## Second observation, 2026-09-01 (phase 60, PR #12 review round 2)
+
+Recurred in a full `go test ./...` run against live Postgres:
+
+```
+imageCalls = [a46c70ce-… 1f0a3e42-… e39c6ff4-…], want exactly one enqueue for e39c6ff4-…
+```
+
+**Two** foreign jobs this time, not one. The package passed in isolation
+immediately afterwards, and the next full run was green — same intermittent
+shape, same cause.
+
+Worth recording rather than re-diagnosing: the failure is now confirmed across
+two separate phases and two different working sets, so it is a property of the
+test's assumption rather than of anything either phase changed. It also costs
+real time during review rounds, because a red full-suite run has to be
+investigated before it can be dismissed.

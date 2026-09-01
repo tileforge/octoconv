@@ -112,9 +112,13 @@ func (SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, op
 		return err
 	}
 
-	blob, err := MarshalSanitizeReport(BuildSanitizeReport(format, res))
+	rep, err := BuildSanitizeReport(format, res)
 	if err != nil {
-		return fmt.Errorf("sanitize: build report: %w", err)
+		return fmt.Errorf("sanitize: %w", err)
+	}
+	blob, err := MarshalSanitizeReport(rep)
+	if err != nil {
+		return fmt.Errorf("sanitize: marshal report: %w", err)
 	}
 	if err := os.WriteFile(SanitizeReportPath(outPath), blob, 0o644); err != nil {
 		return fmt.Errorf("sanitize: write report: %w", err)

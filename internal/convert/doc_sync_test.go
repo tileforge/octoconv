@@ -383,7 +383,7 @@ func TestNoAffirmativeSafetyClaims(t *testing.T) {
 // or a summary string would be the forbidden claim in structured form, and
 // structure is what an SDK generator turns into a client-visible field.
 func TestReportHasNoVerdictField(t *testing.T) {
-	rep := BuildSanitizeReport("pdf", SanitizeResult{
+	rep, err := BuildSanitizeReport("pdf", SanitizeResult{
 		Removed:          []ThreatClass{ThreatJavaScript},
 		LostCapabilities: []LostCapability{LostBookmarks},
 		Verified:         []ThreatClass{ThreatJavaScript},

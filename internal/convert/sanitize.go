@@ -132,8 +132,17 @@ func SanitizeFile(ctx context.Context, format, inPath, outPath string) (Sanitize
 }
 
 // SanitizeSupports reports whether format has a registered sanitize handler.
-// Used by the registry wiring in Plan 60-06; kept here so the closed set has
-// exactly one reader and one writer.
+//
+// Its consumer is the timing harness (probetiming_test.go), which needs to
+// skip a corpus file this build cannot sanitize before timing it. The API does
+// NOT use it: the registry answers "is this (operation, from, to) supported"
+// through EngineForOp, which is a stricter question and the one a request
+// actually asks.
+//
+// An earlier version of this comment claimed "used by the registry wiring in
+// Plan 60-06", which was never true. That is the same defect as a helper
+// implementing a decision and never being called -- a comment cannot fail, so
+// it says what is, not what was planned.
 func SanitizeSupports(format string) bool {
 	_, ok := sanitizeFormats[NormalizeFormat(format)]
 	return ok

@@ -42,7 +42,10 @@ package convert
 // refactor away from existing if the shape left room for it. The absence is
 // load-bearing.
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // SanitizeReport is the JSON body written as the job's second output, with
 // role=report. That mechanism is phase 57's and is reused rather than
@@ -89,20 +92,53 @@ type SanitizeReport struct {
 // carries the pointer.
 const guaranteeScopeRef = "docs/SANITIZE.md#scope-of-the-guarantee"
 
-// BuildSanitizeReport assembles the report from a completed SanitizeResult.
+// BuildSanitizeReport assembles the report from a completed SanitizeResult,
+// refusing any code the vocabulary does not declare.
+//
+// THE VALIDATION IS THE POINT, NOT A FORMALITY. docs/SANITIZE.md is held equal
+// to the vocabulary by a bidirectional test, which is what lets a client look
+// up any code it receives and find a documented meaning. A report carrying a
+// code outside that set breaks the guarantee at the only place it is visible
+// -- and a per-format handler's list is an ordinary Go slice that a typo can
+// reach. Nothing checked it until now: IsKnownThreatClass and
+// IsKnownLostCapability existed with no production caller at all, which made
+// them documentation of an intent rather than an enforcement of it.
+//
+// An unknown code is an ERROR rather than a filtered-out entry. Dropping it
+// silently would emit a report that is internally consistent and quietly
+// missing something the sanitizer believed it removed.
 //
 // It copies rather than aliases: the result's slices belong to the per-format
 // handler that produced them, and a report that shared them would let a
 // caller's edit reach back into the package's own declared lists.
-func BuildSanitizeReport(format string, res SanitizeResult) SanitizeReport {
-	rep := SanitizeReport{
+func BuildSanitizeReport(format string, res SanitizeResult) (SanitizeReport, error) {
+	for _, c := range res.Removed {
+		if !IsKnownThreatClass(c) {
+			return SanitizeReport{}, fmt.Errorf(
+				"sanitize report: removed carries undeclared threat class %q; "+
+					"a code with no row in docs/SANITIZE.md has no meaning to a client", c)
+		}
+	}
+	for _, c := range res.Verified {
+		if !IsKnownThreatClass(c) {
+			return SanitizeReport{}, fmt.Errorf(
+				"sanitize report: verified carries undeclared threat class %q", c)
+		}
+	}
+	for _, c := range res.LostCapabilities {
+		if !IsKnownLostCapability(c) {
+			return SanitizeReport{}, fmt.Errorf(
+				"sanitize report: lost_capabilities carries undeclared capability %q", c)
+		}
+	}
+
+	return SanitizeReport{
 		Format:           NormalizeFormat(format),
 		Removed:          append([]ThreatClass{}, res.Removed...),
 		LostCapabilities: append([]LostCapability{}, res.LostCapabilities...),
 		Verified:         append([]ThreatClass{}, res.Verified...),
 		GuaranteeScope:   guaranteeScopeRef,
-	}
-	return rep
+	}, nil
 }
 
 // MarshalSanitizeReport renders the report as the JSON bytes uploaded as the

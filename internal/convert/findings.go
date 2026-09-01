@@ -104,8 +104,22 @@ var allThreatClasses = []ThreatClass{
 }
 
 // AllThreatClasses returns a fresh copy of the closed set, so a caller
-// ranging over it cannot mutate the package's own slice -- the same defensive
-// copy inspect.AllCodes and errcode.AllFailureCodes make, for the same reason.
+// ranging over it cannot mutate the package's own slice.
+//
+// WHO ACTUALLY CALLS THIS, stated because the answer is not what the shape
+// suggests. inspect.AllCodes has eleven production call sites and errcode.All
+// has eight, because each builds a CLOSED section into its response. This
+// report deliberately has no closed section -- it lists what was removed, not
+// one entry per class -- so nothing in production ranges over the whole set.
+//
+// Its consumers are the doc-sync contract (doc_sync_test.go holds this equal
+// to docs/SANITIZE.md in both directions) and any external client validating a
+// code it received. That is a real job, and it is not the same job the two
+// older accessors do; writing "the same as inspect.AllCodes" here, as an
+// earlier version did, implied a parity that does not hold.
+//
+// The per-code predicates below ARE wired into production: BuildSanitizeReport
+// refuses a report carrying a code this vocabulary does not declare.
 func AllThreatClasses() []ThreatClass {
 	out := make([]ThreatClass, len(allThreatClasses))
 	copy(out, allThreatClasses)
@@ -193,7 +207,9 @@ var allLostCapabilities = []LostCapability{
 	LostDocumentProperties,
 }
 
-// AllLostCapabilities returns a fresh copy of the closed set.
+// AllLostCapabilities returns a fresh copy of the closed set. Same consumers
+// as AllThreatClasses above -- the doc-sync contract and external clients, not
+// production code.
 func AllLostCapabilities() []LostCapability {
 	out := make([]LostCapability, len(allLostCapabilities))
 	copy(out, allLostCapabilities)
