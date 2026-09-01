@@ -596,9 +596,27 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 			i += 2
 			continue
 		}
-		if marker == 0xD9 || marker == 0xDA {
-			// EOI, or SOS: entropy-coded data follows and carries no segments.
+		if marker == 0xD9 { // EOI
 			return "", false
+		}
+		if marker == 0xDA {
+			// SOS. The scan's compressed bytes carry no segments, but the
+			// FILE does not end here: a JPEG may hold several scans and may
+			// legally carry APP or COM segments after one. Returning here
+			// made this verifier blind in exactly the same place the
+			// sanitizer was, so a post-scan EXIF block survived AND was
+			// reported as verified -- two independent implementations sharing
+			// one wrong assumption prove nothing at all. Caught in review
+			// (PR #12, round 3).
+			if i+4 > len(raw) {
+				return "", false
+			}
+			segLen := int(binary.BigEndian.Uint16(raw[i+2 : i+4]))
+			if segLen < 2 || i+2+segLen > len(raw) {
+				return "", false
+			}
+			i = skipEntropyCodedScan(raw, i+2+segLen)
+			continue
 		}
 		if i+4 > len(raw) {
 			return "", false
@@ -624,6 +642,36 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 	return "", false
 }
 
+// skipEntropyCodedScan returns the offset of the next real marker after a
+// scan's compressed data.
+//
+// Written separately from sanitizeimage.go's endOfEntropyCodedData on purpose,
+// even though the rule is the same one: SANI-04 requires the implementation
+// that checks to differ from the one that removed, and calling the sanitizer's
+// helper here would make this check prove that the helper agrees with itself.
+// The rule itself -- FF 00 is stuffing, FF D0..D7 are restart markers, a run
+// of FF is padding -- comes from ISO/IEC 10918-1, not from the other function.
+func skipEntropyCodedScan(b []byte, from int) int {
+	i := from
+	for i+1 < len(b) {
+		if b[i] != 0xFF {
+			i++
+			continue
+		}
+		j := i
+		for j+1 < len(b) && b[j+1] == 0xFF {
+			j++
+		}
+		next := b[j+1]
+		if next == 0x00 || (next >= 0xD0 && next <= 0xD7) {
+			i = j + 2
+			continue
+		}
+		return j
+	}
+	return len(b)
+}
+
 // pngMetadataResidue walks a PNG's chunk chain and reports any chunk whose
 // TYPE is a metadata type. A four-byte sequence inside IDAT is data, not a
 // chunk header, and this is what tells them apart.
@@ -647,13 +695,31 @@ func pngMetadataResidue(raw []byte) (string, bool) {
 	return "", false
 }
 
+// verifyMaxDecodePixels bounds the full decode above. 100 megapixels is the
+// project's own documented image ceiling (MaxImagePixels, .env.example), so
+// this refuses exactly the images the API would already have refused at upload
+// and no others -- picking a smaller number here would turn a legitimate
+// upload the API accepted into a failed job at the last step.
+const verifyMaxDecodePixels = 100_000_000
+
 func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)
 	}
 
-	// --- view 1: it still decodes as an image ---
+	// --- view 1: it still decodes as an image, ALL of it ---
+	//
+	// DecodeConfig alone was not enough, and the gap it left was a false
+	// "verified": it reads only enough structure to report dimensions, so a
+	// file with an intact header and a truncated or corrupted compressed
+	// stream passed. The sanitizer copies that damaged payload through
+	// unchanged and libmagic still recognises the header, so the job finished
+	// successfully with an output no decoder can open, and the report claimed
+	// document_metadata verified. Caught in review (PR #12, round 3) and
+	// reproduced before it was fixed: removing one scan byte from the corpus
+	// fixture passes DecodeConfig and fails image.Decode with
+	// "missing 0xff00 sequence".
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("%w: the stripped image no longer decodes: %v",
@@ -661,6 +727,22 @@ func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return nil, fmt.Errorf("%w: decoded %s has no dimensions", ErrSanitizeUnverifiable, format)
+	}
+	// The full decode is bounded BEFORE it is attempted. Go's image decoders
+	// materialise the whole raster, so an image admitted at the API's pixel
+	// ceiling would allocate hundreds of megabytes inside a 1 GiB worker.
+	// Above the bound the answer is "could not verify" -- which deletes the
+	// output and fails the job -- rather than a decode that takes the worker
+	// with it. Refusing to claim is the fail-closed outcome; claiming without
+	// checking is the one D-07 rules out.
+	if px := int64(cfg.Width) * int64(cfg.Height); px > verifyMaxDecodePixels {
+		return nil, fmt.Errorf("%w: %s is %dx%d (%d pixels), above the %d-pixel bound this "+
+			"verifier will decode within the worker's memory",
+			ErrSanitizeUnverifiable, format, cfg.Width, cfg.Height, px, verifyMaxDecodePixels)
+	}
+	if _, _, err := image.Decode(bytes.NewReader(raw)); err != nil {
+		return nil, fmt.Errorf("%w: the stripped image does not fully decode: %v",
+			ErrSanitizeUnverifiable, err)
 	}
 
 	// --- view 2: libmagic, a different codebase, agrees what this is ---

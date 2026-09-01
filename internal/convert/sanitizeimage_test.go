@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"image"
 	_ "image/jpeg"
@@ -376,4 +377,157 @@ func buildPNGWithRawIDAT(t *testing.T, payload []byte) []byte {
 	out.Write(chunk("IDAT", z.Bytes()))
 	out.Write(chunk("IEND", nil))
 	return out.Bytes()
+}
+
+// buildJPEGWithPostScanSegments assembles a JPEG whose APPn/COM segments sit
+// AFTER the entropy-coded scan, which is legal and is what progressive JPEGs
+// and several camera producers do.
+func buildJPEGWithPostScanSegments(t *testing.T, scan []byte, after ...[]byte) []byte {
+	t.Helper()
+	qt := bytes.Repeat([]byte{16}, 64)
+	dqt := append([]byte{0xFF, 0xDB, 0x00, 0x43, 0x00}, qt...)
+	sof0 := []byte{0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00}
+	dht := func(cls byte) []byte {
+		payload := append([]byte{cls, 1}, bytes.Repeat([]byte{0}, 15)...)
+		payload = append(payload, 0x00)
+		return append([]byte{0xFF, 0xC4, 0x00, byte(len(payload) + 2)}, payload...)
+	}
+	sos := []byte{0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00}
+
+	var b bytes.Buffer
+	b.Write([]byte{0xFF, 0xD8})
+	b.Write(dqt)
+	b.Write(sof0)
+	b.Write(dht(0x00))
+	b.Write(dht(0x10))
+	b.Write(sos)
+	b.Write(scan)
+	for _, seg := range after {
+		b.Write(seg)
+	}
+	b.Write([]byte{0xFF, 0xD9})
+	return b.Bytes()
+}
+
+// TestSanitizeImageStripsSegmentsAfterTheScan is the regression proof for the
+// twelfth finding of PR #12, and the worst one in the set: it produced a FALSE
+// "verified".
+//
+// Both the sanitizer and the verifier treated the first SOS as the end of the
+// file. A JPEG may carry several scans, and may legally carry APP or COM
+// segments after one -- so EXIF placed there survived sanitization AND was
+// reported as document_metadata verified. Two independent implementations
+// sharing one wrong assumption prove nothing, which is why the verifier's own
+// walker was fixed separately rather than by calling the sanitizer's.
+//
+// The scan below contains FF 00 (byte stuffing) and FF D0 (a restart marker),
+// because a walker that stops at the first 0xFF would "work" on a scan without
+// them and truncate every real photograph.
+func TestSanitizeImageStripsSegmentsAfterTheScan(t *testing.T) {
+	scan := []byte{0x00, 0xFF, 0x00, 0x12, 0xFF, 0xD0, 0x34, 0xFF, 0x00}
+	exif := jpegSegment(0xE1, append([]byte("Exif\x00\x00"), []byte("MM\x00\x2aPOSTSCAN-SECRET")...))
+	comment := jpegSegment(0xFE, []byte("post-scan comment"))
+	icc := jpegSegment(0xE2, append([]byte("ICC_PROFILE\x00"), []byte("profile")...))
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.jpg")
+	raw := buildJPEGWithPostScanSegments(t, scan, exif, comment, icc)
+	if err := os.WriteFile(in, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Half one: the verifier must REFUSE this file. If it does not, its
+	// "clean" on the sanitized output says nothing.
+	if _, err := VerifySanitized(context.Background(), "jpg", in); err == nil {
+		t.Error("the verifier called a file with post-scan EXIF clean -- it is blind in the " +
+			"same place the sanitizer was, so its verdict on the output is worthless")
+	}
+
+	// Half two: the sanitizer must remove them, and keep the scan intact.
+	out := filepath.Join(dir, "out.jpg")
+	if _, err := sanitizeImage(context.Background(), in, out); err != nil {
+		t.Fatalf("sanitizeImage: %v", err)
+	}
+	blob, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{"POSTSCAN-SECRET", "post-scan comment"} {
+		if bytes.Contains(blob, []byte(gone)) {
+			t.Errorf("%q survived after the scan", gone)
+		}
+	}
+	if !bytes.Contains(blob, []byte("ICC_PROFILE\x00")) {
+		t.Error("the post-scan ICC profile was dropped; colour management is kept wherever it sits")
+	}
+	if !bytes.Contains(blob, scan) {
+		t.Error("the entropy-coded scan was altered -- stuffing or a restart marker was " +
+			"mistaken for a segment boundary")
+	}
+	if _, err := VerifySanitized(context.Background(), "jpg", out); err != nil {
+		t.Errorf("the sanitized output does not verify: %v", err)
+	}
+}
+
+// TestVerifierRequiresAFullDecode is the regression proof for the thirteenth
+// finding of PR #12.
+//
+// image.DecodeConfig reads only enough structure to report dimensions. A file
+// with an intact header and a truncated compressed stream passed it, the
+// sanitizer copied the damaged payload through unchanged, libmagic still
+// recognised the header, and the job finished successfully with an output no
+// decoder can open -- while the report claimed document_metadata verified.
+//
+// The fixture is the corpus JPEG with ONE scan byte removed: header valid,
+// dimensions readable, entropy-coded data unusable.
+func TestVerifierRequiresAFullDecode(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	raw, err := os.ReadFile(filepath.Join(sanitizeCorpusDir, "exif_gps.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.Index(raw, []byte{0xFF, 0xDA})
+	if i < 0 {
+		t.Fatal("fixture has no SOS")
+	}
+	end := i + 2 + int(raw[i+2])<<8 + int(raw[i+3])
+	broken := append(append([]byte(nil), raw[:end]...), raw[end+1:]...)
+
+	// The fixture must be exactly the awkward case: header fine, pixels not.
+	if _, _, err := image.DecodeConfig(bytes.NewReader(broken)); err != nil {
+		t.Fatalf("fixture fails DecodeConfig too, so it does not test the gap: %v", err)
+	}
+	if _, _, err := image.Decode(bytes.NewReader(broken)); err == nil {
+		t.Fatal("fixture decodes fully, so it does not test the gap")
+	}
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "broken.jpg")
+	if err := os.WriteFile(out, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifySanitized(context.Background(), "jpg", out)
+	if err == nil {
+		t.Fatal("the verifier accepted an image that cannot be decoded; the job would " +
+			"finish successfully with an unusable output and a report claiming it verified")
+	}
+	if !errors.Is(err, ErrSanitizeUnverifiable) {
+		t.Errorf("want ErrSanitizeUnverifiable for a file that does not decode, got %v", err)
+	}
+
+	// And the whole pipeline must refuse it, not merely the verifier in
+	// isolation -- SanitizeFile deletes an unverified output.
+	in := filepath.Join(dir, "in.jpg")
+	if err := os.WriteFile(in, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	produced := filepath.Join(dir, "out.jpg")
+	if _, err := SanitizeFile(context.Background(), "jpg", in, produced); err == nil {
+		t.Error("SanitizeFile succeeded on an image that cannot be decoded")
+	}
+	if _, err := os.Stat(produced); !os.IsNotExist(err) {
+		t.Errorf("the unverified output still exists (stat err = %v)", err)
+	}
 }

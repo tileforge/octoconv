@@ -268,3 +268,57 @@ field passed to a function that ignored it.
 The verification the phase did build worked exactly as intended where it was
 pointed — 60-04's verifier found the ghostscript leak on its first run. It was
 never pointed at the seams between components, and that is where all six lived.
+
+
+## Review rounds 2 and 3 (codex, PR #12)
+
+Round 2 added five findings, round 3 two more. Thirteen in total across three
+rounds, and the shape did not change: **eleven of the thirteen were seams** --
+a component that worked, with nothing connecting it, or two components that
+agreed on a wrong assumption.
+
+**Round 2, the unreachable ones.** The OOXML macro-removal path could not be
+invoked at all: `handleCreateJob` rejected every macro-carrying upload, on a
+rule written when convert was the only operation. A stranded sanitize job would
+never be recovered, because the reconciler's switch stopped at pandoc -- and
+its own default branch said "A future engine must add its own case here", the
+third instruction in this phase written for exactly this moment and not
+followed. probe had no upload ceiling, and the production API never used its
+timeout because `NewServer` filled the map only when the caller passed nil and
+`cmd/api` passes a non-nil one.
+
+**Round 3, the false claim.** Both the sanitizer and the verifier treated the
+first SOS as the end of a JPEG. A JPEG may carry several scans and may legally
+carry APP or COM segments after one, so EXIF placed there survived
+sanitization **and was reported as verified**. Two independent implementations
+sharing one wrong assumption prove nothing, which is the sharpest form of the
+lesson this phase keeps relearning -- the verifier's own scan walker was
+written separately rather than by calling the sanitizer's.
+
+Also round 3: `image.DecodeConfig` reads only enough to report dimensions, so
+an output with an intact header and a truncated compressed stream was delivered
+as verified. Reproduced by removing one scan byte from the corpus fixture.
+
+**What was found without a review round.** After round 2 the same class was
+swept for deliberately: five exported symbols in this phase had zero production
+call sites, against eleven for `inspect.AllCodes` and eight for `errcode.All`.
+`IsKnownThreatClass` and `IsKnownLostCapability` now enforce the vocabulary in
+`BuildSanitizeReport`; the two accessors that legitimately have no production
+caller say so instead of implying parity; `SanitizeSupports`'s claim about a
+caller that never existed was corrected. The CI bake matrix was missing
+probe-worker from both its enumerations.
+
+### The lesson, restated more precisely than after round 1
+
+A test that calls a function directly cannot see that nothing else calls it --
+that was round 1's version, and it accounts for the dead helpers. Rounds 2 and
+3 add the harder half: **a test that exercises two components together cannot
+see an assumption they share.** The JPEG scan defect had a sanitizer test and a
+verifier test and an end-to-end test, and all three passed, because all three
+were built on files whose segments come before the scan.
+
+The defence that works against the first half is a sweep for unreferenced
+symbols, which is mechanical. Against the second half it is writing the
+verifier's walk from the specification rather than from the sanitizer's code --
+which this phase claimed to be doing, and was, everywhere except the one place
+where the two walks were written by the same person on the same afternoon.

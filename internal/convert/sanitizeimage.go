@@ -116,9 +116,25 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 			out.Write(src[i:segEnd])
 		}
 
-		if marker == 0xDA { // SOS: entropy-coded data runs to the end
-			out.Write(src[segEnd:])
-			return out.Bytes(), nil
+		if marker == 0xDA {
+			// SOS: entropy-coded data follows. It is copied VERBATIM -- that
+			// is what makes this lossless -- but it does NOT run to the end of
+			// the file, and treating it that way was a defect.
+			//
+			// A JPEG may carry several scans (progressive encoding is the
+			// common case) and may legally carry APP or COM segments AFTER a
+			// scan. Returning here copied all of that through untouched, so
+			// EXIF placed after the first scan survived sanitization while the
+			// verifier -- which had the same early return -- reported
+			// document_metadata as VERIFIED. A false statement in the report,
+			// which is the one outcome this phase exists to prevent. Caught in
+			// review (PR #12, round 3), and reproduced before it was fixed.
+			// The SOS header itself was already copied by the branch above
+			// -- it is neither an APP nor a COM segment.
+			end := endOfEntropyCodedData(src, segEnd)
+			out.Write(src[segEnd:end])
+			i = end
+			continue
 		}
 		i = segEnd
 	}
@@ -141,6 +157,37 @@ func isKeptJPEGAppSegment(marker byte, payload []byte) bool {
 		return false
 	}
 	return bytes.HasPrefix(payload, prefix)
+}
+
+// endOfEntropyCodedData returns the offset of the next real marker at or after
+// from, skipping a JPEG scan's compressed bytes.
+//
+// Two things inside a scan look like markers and are not (ISO/IEC 10918-1):
+//
+//	FF 00      -- byte stuffing. A literal 0xFF in the compressed data is
+//	              written as FF 00 so it cannot be mistaken for a marker.
+//	FF D0..D7  -- restart markers, which punctuate the scan itself.
+//
+// Anything else after an 0xFF ends the scan. A run of padding 0xFF bytes
+// before a marker is legal and is handled by looking past it.
+func endOfEntropyCodedData(b []byte, from int) int {
+	for i := from; i+1 < len(b); i++ {
+		if b[i] != 0xFF {
+			continue
+		}
+		// Skip fill bytes: FF FF ... FF <marker>.
+		j := i
+		for j+1 < len(b) && b[j+1] == 0xFF {
+			j++
+		}
+		next := b[j+1]
+		if next == 0x00 || (next >= 0xD0 && next <= 0xD7) {
+			i = j
+			continue
+		}
+		return j
+	}
+	return len(b)
 }
 
 // pngMetadataChunks is the closed set of PNG chunk types that carry metadata.
