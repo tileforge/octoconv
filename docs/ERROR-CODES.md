@@ -63,8 +63,8 @@ exactly the trap Pitfall 12 documents.
 
 ## One code space (D-03)
 
-`invalid_options` is not a coincidence of naming — it is the SAME code, deliberately, in both
-tables below. A client sees the identical string `invalid_options` whether:
+`invalid_options` and `too_many_pages` are not coincidences of naming — each is the SAME code,
+deliberately, in both tables below. A client sees the identical string `invalid_options` whether:
 
 - it caught the failure synchronously as a `422` when creating the job (bad/malformed `opts` in
   the request body), or
@@ -75,9 +75,16 @@ This is by design: from the client's point of view, "your options were rejected"
 class regardless of when the service discovered it. Do not "disambiguate" this by renaming
 either side — that would split one code space into two for no client-visible benefit.
 
+`too_many_pages` works the same way, added by Phase 63 for the `sanitize` operation: a client
+sees the identical string whether the API refused the upload at admission (a `422`, because the
+declared page count was legible from a bounded scan of the bytes) or a worker refused it in
+`error_code` (because the accurate count was only affordable there). The two gates enforce ONE
+bound, `PROBE_MAX_PAGES`; they differ only in how they obtain the count, and the API's cheaper
+scanner is allowed to abstain, which is why the second gate exists at all.
+
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Sixteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Seventeen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
@@ -98,6 +105,7 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 | `quota_exceeded` | 429 | v1.12 admission-gate quota rejection — this exact string is already on the wire and frozen (ERRC-V2-01 predates this phase) | Respect the accompanying `Retry-After` header; this is distinct from `rate_limited` and never a client bug |
 | `rate_limited` | 429 | `internal/ratelimit` per-client or pre-auth IP rate limit — this exact string is already on the wire and frozen | Respect the accompanying `Retry-After` header; back off and retry later |
 | `inspect_busy` | 429 | The service has exhausted its bounded concurrency budget for synchronous `inspect` parsing right now and refuses to accept another one immediately — the request is neither queued nor parsed (58-CONTEXT.md D-06, mechanism 2); distinct from `rate_limited` (own request rate) and `quota_exceeded` (own daily/concurrent job budget) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — do not reduce file size or alter the request, this is not a property of the request |
+| `too_many_pages` | 422 | The uploaded PDF declares more pages than the `sanitize` operation's configured ceiling (`PROBE_MAX_PAGES`), refused at admission before any storage write. Same code string as the async `too_many_pages` below — one code space (D-03) | Split the document, or ask the operator to raise `PROBE_MAX_PAGES`; do not retry unmodified |
 | `internal_error` | 5xx | Anything the client cannot act on (unexpected server-side failure) | Retry later or escalate; do not attempt to parse `message` for a remediation |
 
 ## Asynchronous job-failure codes (`error_code`)
@@ -116,7 +124,7 @@ Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Sourc
 | `timecode_out_of_range` | AV | An explicit thumbnail timecode requested via `opts` exceeds the source's actual duration — a client fault, deliberately not clamped |
 | `resolution_exceeded` | AV | Declared video resolution exceeds the configured maximum |
 | `no_video_stream` | AV | No video stream found in an input misrouted to the AV engine (e.g. an audio-only ISOBMFF container) |
-| `too_many_pages` | OCR | PDF page count exceeds the configured maximum |
+| `too_many_pages` | OCR, probe | PDF page count exceeds the configured maximum (`OCR_MAX_PAGES` for OCR, `PROBE_MAX_PAGES` for sanitize — two engines, two bounds, one code, because the client-facing condition is the same one). Also returned synchronously at admission by the sanitize path — one code space (D-03) |
 | `page_too_large` | OCR | A PDF page would rasterize beyond the configured pixel bound |
 | `image_too_large` | OCR | Image dimensions exceed the configured maximum |
 | `unsupported_language` | OCR | The requested OCR language is not in the supported set |

@@ -261,3 +261,19 @@ func TestDocDeclaresUnknownCodeFallback(t *testing.T) {
 		t.Fatalf("docs/ERROR-CODES.md does not contain the required phrase %q -- the Pitfall-12 unknown-code consumer contract must be stated explicitly", unknownCodeFallbackPhrase)
 	}
 }
+
+// TestSyncAndAsyncShareTooManyPages pins the SECOND shared code (Phase 63,
+// 63-CONTEXT.md D-04), for the same reason TestSyncAndAsyncShareInvalidOptions
+// pins the first: two spellings for one client-facing condition is a
+// vocabulary defect, and neither package's own tests can notice a rename on
+// the other side.
+//
+// It is a separate test rather than a second assertion inside the one above so
+// a failure names WHICH code drifted. The two codes were shared for the same
+// reason but at different times and by different phases; they can break apart
+// independently.
+func TestSyncAndAsyncShareTooManyPages(t *testing.T) {
+	if errcode.TooManyPages != worker.CodeTooManyPages {
+		t.Fatalf("errcode.TooManyPages = %q, worker.CodeTooManyPages = %q -- D-03 requires these to be identical (one code space, not two)", errcode.TooManyPages, worker.CodeTooManyPages)
+	}
+}

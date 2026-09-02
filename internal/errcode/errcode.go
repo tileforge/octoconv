@@ -8,12 +8,14 @@
 // invalid_options code because the service has ONE code space (D-03) — a
 // client-actionable "your opts were rejected" failure looks the same whether
 // it happened synchronously at request time or asynchronously in a worker.
+// TooManyPages is the second such code, added by Phase 63 for the same reason
+// and pinned by the same test.
 package errcode
 
 // Sync error codes, one per class of 4xx/429 rejection (D-02). Granularity is
 // by failure CLASS, not by call site — do not add a new constant per
 // writeError message string; only per distinguishable client-actionable
-// class. The list is closed at sixteen codes.
+// class. The list is closed at seventeen codes.
 const (
 	InvalidRequest        = "invalid_request"        // generic request/form validation: missing target, preset+target conflict, unrecognized source format, invalid callback_url, bad job id, invalid status/engine filter, invalid client_id, invalid period filter, invalid JSON body, invalid preset name
 	UnsupportedConversion = "unsupported_conversion" // the (source,target) pair is not served by any engine
@@ -51,6 +53,24 @@ const (
 	// together in one place.
 	InspectBusy = "inspect_busy"
 
+	// TooManyPages is the sanitize admission ceiling (PROBE-01, 63-CONTEXT.md
+	// D-04): the uploaded PDF declares more pages than PROBE_MAX_PAGES, and
+	// the request is refused BEFORE any S3 byte is spent.
+	//
+	// Same string as the async code (D-03), exactly like InvalidOptions above
+	// and for the identical reason: a client should not have to learn that
+	// "this document has too many pages" is spelled one way when the service
+	// noticed at admission and another way when a worker noticed. The async
+	// half is worker.CodeTooManyPages, and
+	// TestSyncAndAsyncShareTooManyPages pins the two equal.
+	//
+	// Why a code of its own rather than InvalidRequest: the client action is
+	// different and specific -- split the document, or ask the operator to
+	// raise the ceiling -- where InvalidRequest's action is always "the
+	// message names the field you got wrong". Nothing about this request is
+	// malformed.
+	TooManyPages = "too_many_pages"
+
 	InternalError = "internal_error" // 5xx: anything the client cannot act on
 )
 
@@ -72,6 +92,7 @@ var all = []string{
 	QuotaExceeded,
 	RateLimited,
 	InspectBusy,
+	TooManyPages,
 	InternalError,
 }
 
