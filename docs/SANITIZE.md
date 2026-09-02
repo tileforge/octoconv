@@ -122,6 +122,18 @@ identical and the image visibly different — a losslessness claim true in a sen
 A client choosing between `sanitize` and not sanitizing should make that choice knowing this
 table. That is why it is a table and not a footnote.
 
+**A colour profile is kept whole or not at all.** A JPEG's ICC profile may be split across several
+APP2 chunks; the sanitizer decides on the complete set — every chunk present, sequence numbers
+consistent, and the assembled data matching the size the profile declares of itself. A set that
+does not hold together is dropped entirely. Half a profile is not a smaller profile: the file would
+still decode, the report would still say the profile was preserved, and the colours would be wrong,
+which is a worse outcome than an image with no profile at all.
+
+**What this operation will never return is an empty package.** If sanitizing an OOXML file would
+remove its main part — `word/document.xml`, `xl/workbook.xml` or `ppt/presentation.xml` — the job
+FAILS rather than delivering the remains. Such a package unzips cleanly and opens as nothing, and
+"every threat removed" is not a claim worth making about a file with no document in it.
+
 ## The report
 
 The job's second output, with `role=report`, carries JSON assembled only from the codes above:

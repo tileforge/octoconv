@@ -99,7 +99,13 @@ var (
 // A format that sanitizes but has no verifier must not silently skip
 // verification -- SanitizeFile turns a missing entry into an error, because
 // "nothing checked it" and "it checked out" must never share an outcome.
-var verifiers = map[string]func(context.Context, string) ([]ThreatClass, error){}
+//
+// The signature carries the FORMAT as well as the path because one verifier
+// (OOXML) cannot state its own proposition without it: "the main part is still
+// there" needs to know which part that is, and inferring it from whichever main
+// part happens to be present is the same "the check only runs when the thing is
+// there" defect SANI-09 exists to close.
+var verifiers = map[string]func(ctx context.Context, format, path string) ([]ThreatClass, error){}
 
 // VerifySanitized inspects the sanitized OUTPUT at path and reports which
 // threat classes an independent implementation confirmed absent.
@@ -113,7 +119,7 @@ func VerifySanitized(ctx context.Context, format, path string) ([]ThreatClass, e
 		return nil, fmt.Errorf("%w: no verifier registered for format %q",
 			ErrSanitizeUnverifiable, format)
 	}
-	return fn(ctx, path)
+	return fn(ctx, NormalizeFormat(format), path)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +193,7 @@ var pdfByteResidue = map[string]ThreatClass{
 	"/ObjStm": ThreatDocumentMetadata,
 }
 
-func verifyPDF(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyPDF(ctx context.Context, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)
@@ -650,6 +656,48 @@ func init() {
 	}
 }
 
+// ooxmlMainPart is the closed map from a sanitize-supported OOXML format to the
+// part without which the package is not that format.
+//
+// The same three names docsniff.go's ooxmlRootParts uses to IDENTIFY a package,
+// restated here for the opposite question -- "this format requires this part"
+// rather than "this part means this format" -- and extended to the
+// macro-enabled and template extensions the sanitize path also accepts. An
+// unlisted format returns "", which the caller turns into unverifiable rather
+// than into a pass: a verifier that does not know what to require must not
+// report success.
+func ooxmlMainPart(format string) string {
+	switch NormalizeFormat(format) {
+	case "docx", "docm", "dotm":
+		return "word/document.xml"
+	case "xlsx", "xlsm":
+		return "xl/workbook.xml"
+	case "pptx", "pptm", "potm", "ppsm":
+		return "ppt/presentation.xml"
+	default:
+		return ""
+	}
+}
+
+// contentTypeDeclares reports whether [Content_Types].xml gives the part a
+// content type, by an Override naming it or a Default covering its extension.
+//
+// Both are legal (ECMA-376 Part 2 §10.1.2); real packages use an Override for
+// the main part because its content type is format-specific, but a Default is
+// not wrong and refusing it would fail a valid package.
+func contentTypeDeclares(contentTypes []byte, part string) bool {
+	if len(contentTypes) == 0 {
+		return false
+	}
+	if bytes.Contains(contentTypes, []byte(`PartName="/`+part+`"`)) {
+		return true
+	}
+	if i := strings.LastIndexByte(part, '.'); i >= 0 {
+		return bytes.Contains(contentTypes, []byte(`Extension="`+part[i+1:]+`"`))
+	}
+	return false
+}
+
 // TOOL CHOICE FOR OOXML, AND THE MEASUREMENT THAT DECIDED IT
 //
 // The research recommended oletools/olevba and said plainly that it had not
@@ -811,7 +859,7 @@ func residualRelationship(raw []byte) (string, bool) {
 	return "", false
 }
 
-func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error) {
 	listing, err := runCommand(ctx, "unzip", "-Z1", path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: unzip could not list the output: %v",
@@ -831,6 +879,24 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 	// cannot open. A check that only runs when a part is present says nothing
 	// about a package that omits it. Caught in review (PR #12, round 6).
 	sawContentTypes := 0
+
+	// SANI-09: the package must still contain the document.
+	//
+	// relationshipDrivenDrops resolves a relationship's Target and drops that
+	// part. A .rels whose Target is the package's OWN main part therefore
+	// produces an output that unzips, carries a well-formed
+	// [Content_Types].xml, and contains no document at all -- and this
+	// verifier was satisfied by it, because it counted [Content_Types].xml and
+	// never asked whether anything else survived. Observed before the fix:
+	// SanitizeFile succeeded, reported five removed classes, and delivered a
+	// package that opens as nothing.
+	//
+	// "I removed every threat" is not the claim this service makes. It says it
+	// sanitized a document, and a package with no document in it cannot be
+	// called sanitized -- it can only be called empty.
+	mainPart := ooxmlMainPart(format)
+	sawMainPart := false
+	var contentTypesBlob []byte
 
 	dir, err := os.MkdirTemp("", "octoconv-verify-*")
 	if err != nil {
@@ -884,8 +950,13 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 				"(libmagic called it %s)", ErrSanitizeResidue, part, mime)
 		}
 
+		if mainPart != "" && strings.EqualFold(part, mainPart) {
+			sawMainPart = true
+		}
+
 		if strings.EqualFold(part, "[Content_Types].xml") {
 			sawContentTypes++
+			contentTypesBlob = append([]byte(nil), blob...)
 			for _, marker := range macroContentTypeMarkers {
 				if bytes.Contains(blob, []byte(marker)) {
 					return nil, fmt.Errorf("%w: [Content_Types].xml still declares %q",
@@ -917,6 +988,20 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 		return nil, fmt.Errorf("%w: the package has %d [Content_Types].xml parts, want exactly 1; "+
 			"without it this is not an OOXML package and nothing here describes it",
 			ErrSanitizeUnverifiable, sawContentTypes)
+	}
+
+	if mainPart == "" {
+		return nil, fmt.Errorf("%w: no main part is declared for format %q, so this verifier "+
+			"cannot say whether the document survived", ErrSanitizeUnverifiable, format)
+	}
+	if !sawMainPart {
+		return nil, fmt.Errorf("%w: the sanitized package has no %s -- the document itself is "+
+			"gone, so there is nothing here to call sanitized", ErrSanitizeUnverifiable, mainPart)
+	}
+	if !contentTypeDeclares(contentTypesBlob, mainPart) {
+		return nil, fmt.Errorf("%w: [Content_Types].xml does not declare a content type for %s; "+
+			"the part is present but nothing says what it is, and Office will not open it",
+			ErrSanitizeUnverifiable, mainPart)
 	}
 
 	return append([]ThreatClass(nil), ooxmlThreatClasses...), nil
@@ -1236,7 +1321,7 @@ func pngMetadataResidue(raw []byte) (string, bool) {
 // upload the API accepted into a failed job at the last step.
 const verifyMaxDecodePixels = 100_000_000
 
-func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyImage(ctx context.Context, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)

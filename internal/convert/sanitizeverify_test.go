@@ -295,7 +295,7 @@ func TestUnverifiedOutputIsDeleted(t *testing.T) {
 		return SanitizeResult{Removed: []ThreatClass{ThreatJavaScript}},
 			os.WriteFile(outPath, []byte("produced output"), 0o600)
 	}
-	verifiers[fakeFormat] = func(_ context.Context, _ string) ([]ThreatClass, error) {
+	verifiers[fakeFormat] = func(_ context.Context, _, _ string) ([]ThreatClass, error) {
 		return nil, ErrSanitizeUnverifiable
 	}
 
@@ -569,7 +569,14 @@ func TestVerifierAcceptsCustomXMLParts(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	parts := map[string][]byte{
-		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`),
+		// The Override is not decoration: SANI-09 requires the main part to be
+		// present AND declared, so an empty <Types/> now fails verification.
+		// This fixture used to carry one because nothing looked -- which is
+		// precisely the gap that requirement closes. What this test is about
+		// (application-defined XML parts are not residue) is unchanged.
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+			`</Types>`),
 		"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
 		"customXml/item1.xml": []byte(`<?xml version="1.0"?><Properties xmlns="urn:example:app"><Field>ordinary data</Field></Properties>`),
 		"customXml/item2.xml": []byte(`<?xml version="1.0"?><coreProperties xmlns="urn:example:other"><x/></coreProperties>`),
