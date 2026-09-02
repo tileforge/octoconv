@@ -88,6 +88,17 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 		if src[i] != 0xFF {
 			return nil, fmt.Errorf("%w: malformed JPEG: expected a marker at offset %d", ErrSanitizeMalformedInput, i)
 		}
+		// A marker may be preceded by any number of FF fill bytes (ISO/IEC
+		// 10918-1 B.1.1.2), and real encoders emit them. Skipping the run is
+		// the SAME rule endOfEntropyCodedData below already applied to the
+		// scan -- and it was applied there and not here, so a legal
+		// FF D8 FF FF DB ... file passed the API's dimension decode and then
+		// failed asynchronously as malformed input. A rule implemented in one
+		// of two places that need it is the shape review has now named three
+		// times. Caught in review (PR #12, round 6).
+		for i+2 < len(src) && src[i+1] == 0xFF {
+			i++
+		}
 		marker := src[i+1]
 
 		// Standalone markers carry no length field.

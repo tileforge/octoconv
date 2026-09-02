@@ -531,3 +531,56 @@ func TestVerifierRequiresAFullDecode(t *testing.T) {
 		t.Errorf("the unverified output still exists (stat err = %v)", err)
 	}
 }
+
+// TestSanitizeImageAcceptsMarkerFillBytes is the regression proof for the
+// eighteenth finding of PR #12.
+//
+// A marker may be preceded by any number of FF fill bytes (ISO/IEC 10918-1
+// B.1.1.2) and real encoders emit them. endOfEntropyCodedData already skipped
+// runs of FF inside the scan; the segment walker above it did not, in the same
+// file. So a legal file passed the API's dimension decode and then failed
+// asynchronously as malformed input -- an upload the service accepted and then
+// refused, for a reason that was not the client's.
+//
+// Both walkers are covered here: the verifier's had the identical gap, and a
+// verifier that stops early reports CLEAN on segments it never reached.
+func TestSanitizeImageAcceptsMarkerFillBytes(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	base := buildJPEGWithSegments(t,
+		jpegSegment(0xE1, append([]byte("Exif\x00\x00"), []byte("MM\x00\x2aFILLBYTES")...)))
+
+	// Insert a run of fill bytes before the first marker after SOI.
+	withFill := append([]byte{}, base[:2]...)
+	withFill = append(withFill, 0xFF, 0xFF, 0xFF)
+	withFill = append(withFill, base[2:]...)
+
+	if _, _, err := image.DecodeConfig(bytes.NewReader(withFill)); err != nil {
+		t.Fatalf("the fixture is not a legal JPEG, so it tests nothing: %v", err)
+	}
+
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.jpg")
+	if err := os.WriteFile(in, withFill, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out.jpg")
+	if _, err := sanitizeImage(context.Background(), in, out); err != nil {
+		t.Fatalf("a legal JPEG with marker fill bytes was refused: %v", err)
+	}
+
+	blob, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, []byte("FILLBYTES")) {
+		t.Error("the EXIF after the fill bytes survived -- the walker stopped before reaching it")
+	}
+
+	// And the verifier must have walked past the fill bytes too, or its
+	// verdict covers only what it happened to reach.
+	if found, isResidue := jpegMetadataResidue(withFill); !isResidue {
+		t.Errorf("the verifier called the UNSANITIZED file clean (found=%q); it stops at the "+
+			"fill bytes and never sees the APP1 behind them", found)
+	}
+}

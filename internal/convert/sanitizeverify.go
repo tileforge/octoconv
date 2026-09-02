@@ -469,10 +469,25 @@ var oleMIMETypes = []string{
 // relationship handling cannot travel into its own verification.
 
 // ooxmlPropertyRoots are the root elements of the OOXML properties parts,
-// matched on CONTENT so a properties part under any name is recognised.
-var ooxmlPropertyRoots = map[string]bool{
-	"coreProperties": true, // docProps/core.xml
-	"Properties":     true, // docProps/app.xml and custom.xml
+// matched on CONTENT so a properties part under any name is recognised --
+// and matched on NAMESPACE as well as local name.
+//
+// The local name alone was too broad. An OPC package may carry
+// application-defined XML parts, and <Properties xmlns="urn:example"> is an
+// ordinary one; the sanitizer keeps it, having neither a properties
+// relationship nor a docProps/ path to go on, and then this check called it
+// residue and DELETED THE OUTPUT. A false positive here does not mislabel a
+// job, it destroys a correct result -- the same consequence the whole-file
+// byte scans had, arrived at from the opposite direction: too narrow a view
+// misses residue, too broad a predicate invents it. Caught in review
+// (PR #12, round 6).
+var ooxmlPropertyRoots = map[xml.Name]bool{
+	{Space: "http://schemas.openxmlformats.org/package/2006/metadata/core-properties", Local: "coreProperties"}: true,
+	{Space: "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties", Local: "Properties"}:   true,
+	{Space: "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties", Local: "Properties"}:     true,
+	// Dublin Core is what core.xml's own elements live in; some producers
+	// write the root in it.
+	{Space: "http://purl.org/dc/elements/1.1/", Local: "coreProperties"}: true,
 }
 
 // verifyResidualRelTypes are relationship type leaves that must not appear in
@@ -490,16 +505,17 @@ var verifyResidualRelTypes = map[string]ThreatClass{
 	"thumbnail":           ThreatDocumentMetadata,
 }
 
-// xmlRootElement returns the local name of an XML document's first element.
-func xmlRootElement(raw []byte) (string, bool) {
+// xmlRootElement returns the namespace-qualified name of an XML document's
+// first element.
+func xmlRootElement(raw []byte) (xml.Name, bool) {
 	dec := xml.NewDecoder(bytes.NewReader(raw))
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			return "", false
+			return xml.Name{}, false
 		}
 		if start, ok := tok.(xml.StartElement); ok {
-			return start.Name.Local, true
+			return start.Name, true
 		}
 	}
 }
@@ -547,6 +563,15 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 		return nil, fmt.Errorf("%w: unzip listed no parts in the output",
 			ErrSanitizeUnverifiable)
 	}
+
+	// Counted rather than assumed. An upload whose zip carries
+	// word/document.xml and no [Content_Types].xml is admitted as docx by
+	// SniffContainer, the sanitizer copies the root part through, and the
+	// macro-enabled check below was simply never entered -- so every OOXML
+	// class came back verified and the job reached done with a package Office
+	// cannot open. A check that only runs when a part is present says nothing
+	// about a package that omits it. Caught in review (PR #12, round 6).
+	sawContentTypes := 0
 
 	dir, err := os.MkdirTemp("", "octoconv-verify-*")
 	if err != nil {
@@ -601,9 +626,14 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 		}
 
 		if strings.EqualFold(part, "[Content_Types].xml") {
+			sawContentTypes++
 			if bytes.Contains(blob, []byte("macroEnabled")) {
 				return nil, fmt.Errorf("%w: [Content_Types].xml still declares a macro-enabled type",
 					ErrSanitizeResidue)
+			}
+			if root, ok := xmlRootElement(blob); !ok || root.Local != "Types" {
+				return nil, fmt.Errorf("%w: [Content_Types].xml does not parse as a Types document",
+					ErrSanitizeUnverifiable)
 			}
 		}
 
@@ -611,8 +641,8 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 		// The sanitizer drops these; this is the independent confirmation,
 		// and it looks at content for the same reason the OLE check does.
 		if root, ok := xmlRootElement(blob); ok && ooxmlPropertyRoots[root] {
-			return nil, fmt.Errorf("%w: part %q is a document-properties part (<%s>)",
-				ErrSanitizeResidue, part, root)
+			return nil, fmt.Errorf("%w: part %q is a document-properties part (<%s> in %s)",
+				ErrSanitizeResidue, part, root.Local, root.Space)
 		}
 
 		if strings.HasSuffix(strings.ToLower(part), ".rels") {
@@ -620,6 +650,12 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 				return nil, fmt.Errorf("%w: %s declares %s", ErrSanitizeResidue, part, found)
 			}
 		}
+	}
+
+	if sawContentTypes != 1 {
+		return nil, fmt.Errorf("%w: the package has %d [Content_Types].xml parts, want exactly 1; "+
+			"without it this is not an OOXML package and nothing here describes it",
+			ErrSanitizeUnverifiable, sawContentTypes)
 	}
 
 	return append([]ThreatClass(nil), ooxmlThreatClasses...), nil
@@ -710,6 +746,12 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 	for i+1 < len(raw) {
 		if raw[i] != 0xFF {
 			return "", false // malformed; the decode check above already ruled
+		}
+		// Fill bytes before a marker, same rule as the sanitizer's walker and
+		// as skipEntropyCodedScan below. Without it this walker stopped early
+		// on a legal file and reported CLEAN on segments it never reached.
+		for i+2 < len(raw) && raw[i+1] == 0xFF {
+			i++
 		}
 		marker := raw[i+1]
 		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {

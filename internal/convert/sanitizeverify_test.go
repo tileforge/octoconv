@@ -479,7 +479,12 @@ func TestVerifierCatchesRelationshipResidue(t *testing.T) {
 		{
 			name: "properties part with no relationship pointing at it",
 			parts: map[string][]byte{
-				"stray/props.xml": []byte(`<?xml version="1.0"?><Properties><Company>SecretCompany</Company></Properties>`),
+				// The real extended-properties namespace. A bare <Properties>
+				// with no namespace is an ordinary application-defined XML
+				// part, which OPC packages may carry and which the verifier
+				// must NOT call residue -- rejecting it deleted a correct
+				// output (PR #12, round 6).
+				"stray/props.xml": []byte(`<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"><Company>SecretCompany</Company></Properties>`),
 			},
 			want: "document-properties part",
 		},
@@ -536,6 +541,91 @@ func TestVerifierCatchesRelationshipResidue(t *testing.T) {
 				t.Errorf("failure does not name what it found (%q): %v", tc.want, err)
 			}
 		})
+	}
+}
+
+// TestVerifierAcceptsCustomXMLParts is the other half of the property-root
+// check, and the half that was missing when it was written.
+//
+// An OPC package may carry application-defined XML parts, and <Properties> in
+// somebody else's namespace is an ordinary one. The first version matched on
+// local name alone, so it called that residue -- and because a residue verdict
+// DELETES the output, it destroyed a correct result rather than mislabelling
+// a job. Too narrow a view misses residue; too broad a predicate invents it,
+// and both cost the client a file.
+func TestVerifierAcceptsCustomXMLParts(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	path := filepath.Join(t.TempDir(), "out.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	parts := map[string][]byte{
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`),
+		"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
+		"customXml/item1.xml": []byte(`<?xml version="1.0"?><Properties xmlns="urn:example:app"><Field>ordinary data</Field></Properties>`),
+		"customXml/item2.xml": []byte(`<?xml version="1.0"?><coreProperties xmlns="urn:example:other"><x/></coreProperties>`),
+	}
+	names := make([]string, 0, len(parts))
+	for name := range parts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(parts[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := VerifySanitized(context.Background(), "docx", path); err != nil {
+		t.Errorf("a package with application-defined XML parts was rejected: %v -- the output "+
+			"is deleted on a residue verdict, so this destroys a correct result", err)
+	}
+}
+
+// TestVerifierRequiresAContentTypesPart pins the check that says nothing when
+// the part it inspects is absent.
+//
+// A zip carrying word/document.xml and no [Content_Types].xml is admitted as
+// docx by SniffContainer. The sanitizer copies the root part through, the
+// macro-enabled check never ran because there was nothing to run it on, and
+// every OOXML class came back verified -- the job reached done with a package
+// Office cannot open.
+func TestVerifierRequiresAContentTypesPart(t *testing.T) {
+	requireVerifierBinaries(t)
+
+	path := filepath.Join(t.TempDir(), "out.docx")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("word/document.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(`<?xml version="1.0"?><document/>`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = VerifySanitized(context.Background(), "docx", path)
+	if err == nil {
+		t.Fatal("a package with no [Content_Types].xml verified clean")
+	}
+	if !errors.Is(err, ErrSanitizeUnverifiable) {
+		t.Errorf("want unverifiable for a package that is not OOXML, got %v", err)
 	}
 }
 
