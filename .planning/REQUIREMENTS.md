@@ -56,11 +56,11 @@
 
 ### Sanitize (SANI)
 
-- [ ] **SANI-01**: Клиент может отправить PDF с `operation=sanitize` и получить тот же документ без JavaScript, action-словарей (`/OpenAction`, `/AA`), launch-действий, вложенных файлов и внешних URI-ссылок
-- [ ] **SANI-02**: Клиент может отправить OOXML-документ с `operation=sanitize` и получить его без VBA-макросов (включая p-код, а не только исходник — защита от VBA stomping) и встроенных OLE-объектов, с корректно приведёнными `[Content_Types].xml` и relationship-ссылками
-- [ ] **SANI-03**: EXIF/GPS/IPTC/XMP снимаются с изображений, а `/Info` и XMP — с PDF
-- [ ] **SANI-04**: Чистота результата доказана, а не заявлена: выход проверяется **независимой** реализацией разбора (не тем же кодом, что удалял), удалённое физически отсутствует в выходных байтах (полная перезапись, а не incremental update, оставляющий объект восстановимым в предыдущей ревизии), и остаток любого признака — fail closed до записи в S3
-- [ ] **SANI-05**: Клиент получает вторым выходом с `role=report` перечень того, что было найдено и удалено; формулировки описывают проверенные и удалённые классы угроз и НЕ заявляют общей свободы от вредоносного содержимого
+- [x] **SANI-01**: Клиент может отправить PDF с `operation=sanitize` и получить тот же документ без JavaScript, action-словарей (`/OpenAction`, `/AA`), launch-действий, вложенных файлов и внешних URI-ссылок
+- [x] **SANI-02**: Клиент может отправить OOXML-документ с `operation=sanitize` и получить его без VBA-макросов (включая p-код, а не только исходник — защита от VBA stomping) и встроенных OLE-объектов, с корректно приведёнными `[Content_Types].xml` и relationship-ссылками
+- [x] **SANI-03**: EXIF/GPS/IPTC/XMP снимаются с изображений, а `/Info` и XMP — с PDF
+- [x] **SANI-04**: Чистота результата доказана, а не заявлена: выход проверяется **независимой** реализацией разбора (не тем же кодом, что удалял), удалённое физически отсутствует в выходных байтах (полная перезапись, а не incremental update, оставляющий объект восстановимым в предыдущей ревизии), и остаток любого признака — fail closed до записи в S3
+- [x] **SANI-05**: Клиент получает вторым выходом с `role=report` перечень того, что было найдено и удалено; формулировки описывают проверенные и удалённые классы угроз и НЕ заявляют общей свободы от вредоносного содержимого
 - [ ] **SANI-06**: `probe` — восьмой engine-класс в полном контуре по отлаженному шаблону: своя очередь, `cmd/probe-worker`, свой контейнер, ИЗМЕРЕННЫЙ (не скопированный) таймаут, fail-closed валидация входа, transient/terminal классификация, ScaledObject — аддитивно, с нулевым диффом к существующим семи
 
 ### v1.12 debt tail (DEBT)
@@ -140,12 +140,12 @@
 | INSP-06 | Phase 58 | Complete |
 | BDPD-01 | Phase 59 | Complete |
 | BDPD-02 | Phase 59 | Complete |
-| SANI-01 | Phase 60 | Pending |
-| SANI-02 | Phase 60 | Pending |
-| SANI-03 | Phase 60 | Pending |
-| SANI-04 | Phase 60 | Pending |
-| SANI-05 | Phase 60 | Pending |
-| SANI-06 | Phase 60 | Pending |
+| SANI-01 | Phase 60 | Complete |
+| SANI-02 | Phase 60 | Complete |
+| SANI-03 | Phase 60 | Complete |
+| SANI-04 | Phase 60 | Complete |
+| SANI-05 | Phase 60 | Complete |
+| SANI-06 | Phase 60 | Partial — see note |
 | DEBT-09 | Phase 61 | Complete |
 | DEBT-10 | Phase 61 | Complete |
 | DEBT-11 | Phase 61 | Complete |
@@ -154,7 +154,33 @@
 - v1 requirements: 28 total
 - Mapped to phases: 28
 - Unmapped: 0 ✓
+- Complete: 27
+- Partial: 1 (SANI-06)
+
+**SANI-06 — what is done and what is not.** The eighth engine class ships whole:
+its own queue, `cmd/probe-worker`, its own container, fail-closed input
+validation, transient/terminal classification derived rather than copied, and
+an eighth ScaledObject that leaves the existing seven byte-identical (proven
+with a before/after `helm template`, not asserted).
+
+The requirement's own wording says **ИЗМЕРЕННЫЙ (не скопированный)** timeout.
+`PROBE_ENGINE_TIMEOUT=180s` is neither: it is a placeholder, distinct from
+65s/742s/744s/753s but with no run behind it, and it is marked as such in
+`.env.example`, all eleven compose services, the chart ConfigMap, and
+`internal/api/estimate.go` — where the API reports this engine as
+`estimate_source: unmeasured` on every sanitize offer.
+
+Closing it needs `scripts/probe-timeout-measure.sh` run against a corpus
+representative of real load. Tracked in
+`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`, which
+also carries the two other numbers the same run settles (the 50 MiB upload
+ceiling and `PROBE_WORKER_CONCURRENCY=1`, both reasoned rather than measured).
+
+This row says Partial rather than Complete because five plans of Phase 60 went
+into making "we checked" mechanically different from "we said so", and marking
+a criterion satisfied on a placeholder is the first thing that machinery exists
+to catch.
 
 ---
 *Requirements defined: 2026-08-07*
-*Last updated: 2026-08-07 after roadmap creation (Phases 56-61)*
+*Last updated: 2026-09-02 — Phase 60 merged (PR #12); SANI-01..05 complete, SANI-06 partial pending the operator timeout measurement*

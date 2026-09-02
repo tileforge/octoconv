@@ -35,7 +35,13 @@ Four things the work found that planning had not: gs signs its output with /Prod
 Review round 1 (codex, PR #12) found six real defects, all fixed in 4fa4b39. The severe one: the sanitize report was never stored with role=report, because jobs.Repo.AddOutput deliberately omits that column -- every sanitize job would have ended with two primary outputs and failed MarkDone's guard. Three of the six were tests that proved a component rather than its use, which is the lesson to carry: a test that calls the function directly cannot see that nothing else calls it.
 Eight codex review rounds produced 26 findings; 23 were fixed on the branch. Three P2s from round 8 merged unfixed by the operator's decision, recorded with fix shapes in .planning/todos/pending/2026-09-02-sanitize-round-8-findings.md -- none of them is the threat-survives-and-is-reported-verified class that made the earlier rounds blocking.
 
-All six v1.13 phases are now merged. What remains before the milestone can be closed: the PROBE_ENGINE_TIMEOUT measurement (operator-gated, SC5), the round-8 follow-ups, and milestone completion itself.
+All six v1.13 phases are now merged. Requirements bookkeeping corrected 2026-09-02: SANI-01..05 are Complete (they had been left Pending from roadmap creation), SANI-06 is Partial with the gap named in REQUIREMENTS.md.
+
+MILESTONE CLOSE IS DELIBERATELY HELD until the timeout is measured. Asked and answered on 2026-09-02: close with the gap recorded, audit first, or wait for the measurement — the operator chose to wait, so v1.13 stays open and SANI-06 stays Partial rather than being archived as a Known Gap.
+
+The pre-close artifact audit was run and its 46 open items (26 quick tasks, 15 dormant seeds, 5 todos accumulated across thirteen milestones) are to be acknowledged as deferred when the close does happen. That decision is recorded now so the close itself is one step.
+
+Critical path to closing v1.13: run scripts/probe-timeout-measure.sh on a representative corpus, land the number, then /gsd:complete-milestone.
 Last activity: 2026-09-02 -- Phase 60 merged (PR #12, 6ef1711); SC5 still open
 
 ## Performance Metrics
