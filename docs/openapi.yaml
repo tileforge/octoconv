@@ -161,6 +161,11 @@ components:
             single-output convert job's response body is unchanged from the
             pre-Phase-57 shape. role values come from job_outputs.role, with
             "primary" being the one presigned into download_url.
+
+            A sanitize job produces a second output with role="report"; its
+            body is SanitizeReport. The role is not a closed enum here on
+            purpose -- later operations may add their own, and a client that
+            hard-codes the current set breaks on the first one.
           items:
             type: object
             properties:
@@ -569,6 +574,83 @@ components:
         - coverage
         - operations
 
+    SanitizeReport:
+      type: object
+      description: >-
+        Body of the role=report output produced by operation=sanitize
+        (SANI-05, Phase 60). Downloaded like any other output, via the
+        outputs array of GET /v1/jobs/{id}; the sanitized file itself is the
+        role=primary output.
+
+        Every field carries codes from a closed vocabulary. There is no
+        summary sentence, no verdict, and no boolean, because either would
+        assert something the operation never tested: Content Disarm and
+        Reconstruction removes carriers and does not determine whether code
+        is malicious. Absence of a class from `removed` means "not
+        enumerated", never "not present".
+
+        The wording of each code lives in docs/SANITIZE.md and is held equal
+        to the Go vocabulary by a bidirectional test, so a code appearing
+        here always has a documented meaning.
+      properties:
+        format:
+          type: string
+          description: >-
+            Normalized SOURCE format that was sanitized — what went in, not
+            what came out. For a macro-enabled OOXML upload the two differ:
+            sanitizing a .docm reports format "docm" here and delivers a .docx,
+            because the sanitizer rewrites the package's content type. Read the
+            result's format from the primary output in the outputs array of
+            GET /v1/jobs/{id}; this field answers "what was sanitized".
+        removed:
+          type: array
+          description: >-
+            Threat classes found and removed. Codes only; see
+            docs/SANITIZE.md for what each one means and what exactly is
+            removed for it. Consumers MUST tolerate a code they do not
+            recognize -- later phases may add classes, and those additions
+            are non-breaking only if unknown values are already tolerated.
+            Do not generate a closed enum from this list.
+          items:
+            type: string
+            example: javascript
+        lost_capabilities:
+          type: array
+          description: >-
+            Document features the sanitization METHOD destroyed as a side
+            effect -- fillable forms, bookmarks, the tagged accessibility
+            tree, macro functionality. These are COSTS, not threats, and they
+            are a separate field for that reason: a lost form is not a found
+            attack, and a client reading one list should never meet an entry
+            of the other kind in it.
+
+            Empty for the image path, which copies the compressed image data
+            byte for byte and therefore loses nothing. Always an array, never
+            null.
+          items:
+            type: string
+            example: fillable_form_fields
+        verified:
+          type: array
+          description: >-
+            Threat classes an implementation that did NOT perform the removal
+            confirmed absent from the output bytes (SANI-04). A separate
+            field from `removed` because they are separate claims: "we
+            removed JavaScript" describes our code path, "we confirmed no
+            JavaScript is present in the output" describes the bytes you are
+            about to receive.
+          items:
+            type: string
+            example: javascript
+        guarantee_scope:
+          type: string
+          description: >-
+            Fixed pointer to the document stating what the operation does and
+            does not claim. Present so that a client reading only this JSON is
+            not left with an implied guarantee the JSON never made.
+          example: docs/SANITIZE.md#scope-of-the-guarantee
+      required: [format, removed, lost_capabilities, verified, guarantee_scope]
+
     Health:
       type: object
       description: Per-dependency reachability probe result.
@@ -721,6 +803,30 @@ paths:
                     omitted or empty; compared exactly, no trimming, no
                     case-folding. The currently available set is discoverable
                     via the operations key of GET /v1/formats.
+
+                    "sanitize" rebuilds the file with the enumerated classes of
+                    construct removed and produces a second output with
+                    role=report describing what was removed, what the method
+                    cost, and which classes an independent implementation
+                    confirmed absent (see SanitizeReport).
+
+                    The target format is the source format's sanitized form.
+                    For PDF and images that is the same format -- sanitize is
+                    not a conversion. For macro-enabled OOXML it is the
+                    macro-free equivalent: sanitizing a .docm yields a .docx,
+                    an .xlsm yields an .xlsx, and so on, because the sanitizer
+                    rewrites the package's content type and a file still named
+                    .docm would present itself as macro-enabled while
+                    containing no macros. Request target=docx for a .docm; the
+                    registered pairs are listed under the operations key of
+                    GET /v1/formats.
+
+                    Scope: the service removes the enumerated classes and
+                    verifies their absence in the output. It does not determine
+                    whether a document was malicious, does not detect malicious
+                    content outside those classes, and is not a substitute for
+                    antivirus scanning. docs/SANITIZE.md carries the full
+                    statement and the per-class wording.
               required: [file]
               additionalProperties: false
             examples:

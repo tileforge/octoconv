@@ -98,6 +98,10 @@ type Client struct {
 	// avUniqueTTL/audioUniqueTTL or any other engine class's TTL (D-03,
 	// 48-CONTEXT.md) — a mismatch here would silently duplicate processing.
 	pandocUniqueTTL time.Duration
+	// probeMaxRetry / probeUniqueTTL are the sanitize (probe queue)
+	// equivalents, derived at construction exactly like every pair above.
+	probeMaxRetry  int
+	probeUniqueTTL time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
@@ -156,6 +160,14 @@ func NewClient() (*Client, error) {
 	// fast; Phase 49 supplies the measured value and supersedes this
 	// entirely (D-03, mirroring the OCR 300s->744s precedent).
 	pandocEngineTimeout := envDuration("PANDOC_ENGINE_TIMEOUT", 90*time.Second)
+	probeMaxRetry := envInt("PROBE_MAX_RETRY", 2)
+	// PROBE_ENGINE_TIMEOUT's default is a PLACEHOLDER and is marked as such
+	// everywhere it appears, following the exact precedent of pandoc's own
+	// 90s placeholder above (superseded by Phase 49's measurement) and OCR's
+	// 300s->744s before it. Phase 60's operator checkpoint supplies the
+	// measured value; until it does, nothing in this build may describe this
+	// number as measured.
+	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 180*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,
@@ -173,6 +185,8 @@ func NewClient() (*Client, error) {
 		ocrUniqueTTL:      OCRUniqueTTL(ocrMaxRetry, ocrEngineTimeout),
 		pandocMaxRetry:    pandocMaxRetry,
 		pandocUniqueTTL:   PandocUniqueTTL(pandocMaxRetry, pandocEngineTimeout),
+		probeMaxRetry:     probeMaxRetry,
+		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
 	}, nil
 }
 
@@ -274,6 +288,18 @@ func (c *Client) EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) erro
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue pandoc convert %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// EnqueueProbeSanitize puts a sanitize job onto the probe queue.
+func (c *Client) EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error {
+	task, err := NewProbeSanitizeTask(jobID, c.probeMaxRetry, c.probeUniqueTTL)
+	if err != nil {
+		return err
+	}
+	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
+		return fmt.Errorf("enqueue probe sanitize %s: %w", jobID, err)
 	}
 	return nil
 }

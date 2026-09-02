@@ -89,6 +89,7 @@ type enqueuer interface {
 	EnqueueAVConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error
+	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
 }
 
 // Sweeper periodically scans for stale jobs and recovers or exhausts them.
@@ -372,8 +373,16 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			enqueueErr = s.enq.EnqueueOCRConvert(ctx, j.ID)
 		case convert.EnginePandoc:
 			enqueueErr = s.enq.EnqueuePandocConvert(ctx, j.ID)
+		case convert.EngineProbe:
+			// Added by Phase 60, which is the "future engine" the note below
+			// was addressed to. Without this case a queued sanitize job whose
+			// initial enqueue failed took the unroutable_engine branch on
+			// every sweep and stayed queued forever -- the job row existed,
+			// the client's quota was charged, and nothing would ever run it.
+			// Caught in review (PR #12), not by a test.
+			enqueueErr = s.enq.EnqueueProbeSanitize(ctx, j.ID)
 		default:
-			// Fail closed (T-10-03): cad/archive/probe are out of scope this
+			// Fail closed (T-10-03): cad/archive are out of scope this
 			// milestone and a corrupted/unrecognized engine value must never
 			// be guessed at. Do NOT enqueue and do NOT RequeueStale — either
 			// would risk running the job through the wrong engine's worker

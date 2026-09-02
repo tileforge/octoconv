@@ -25,6 +25,12 @@ const (
 	EngineAV       = "av"
 	EngineOCR      = "ocr"
 	EnginePandoc   = "pandoc"
+	// EngineProbe is the eighth class and the first that serves NO convert
+	// pair at all -- it exists for the sanitize operation. The name was
+	// reserved in 0001_init.sql and locked by the roadmap on 2026-08-07;
+	// reusing "extract" was rejected because sanitize extracts nothing and
+	// extract is needed for its own meaning in the next milestone.
+	EngineProbe = "probe"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one
@@ -42,9 +48,22 @@ const (
 // already rejects for engine classes. Do not add normalization here.
 const OperationConvert = "convert"
 
-// AllEngines returns the seven engine classes in a fixed, documented order --
+// OperationSanitize is the second job operation: "rebuild this file with the
+// enumerated classes of construct removed." Same exact-comparison discipline
+// as OperationConvert -- read that constant's doc comment before adding any
+// normalization here.
+//
+// The target format is the source format's SANITIZED FORM, which is usually
+// the source format itself -- a client asking for a disarmed copy of a PDF
+// expects a PDF back -- but is not for macro-enabled OOXML: a sanitized .docm
+// is a .docx, because the sanitizer rewrites its content type to the
+// macro-free one (D-06). The pairs SanitizeConverter registers are what make
+// that a registry fact rather than a convention the handler has to remember.
+const OperationSanitize = "sanitize"
+
+// AllEngines returns the eight engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
-// EnginePandoc. The order is stable because callers (cmd/manage-clients) use
+// EnginePandoc, EngineProbe. The order is stable because callers (cmd/manage-clients) use
 // it to render operator-facing error text; a fresh slice is constructed on
 // every call so a caller can never mutate the source of truth through the
 // returned slice. Adding an eighth engine class means adding it here as well
@@ -59,6 +78,7 @@ func AllEngines() []string {
 		EngineAV,
 		EngineOCR,
 		EnginePandoc,
+		EngineProbe,
 	}
 }
 

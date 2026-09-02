@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // TestListFormats_RegistryDerived verifies GET /v1/formats returns a 200
@@ -135,12 +137,42 @@ func TestListFormats_OperationsTreeDerivedFromRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	if len(resp.Operations) != 1 {
-		t.Fatalf("operations has %d keys, want exactly 1; operations=%+v", len(resp.Operations), resp.Operations)
+	// Two keys as of Phase 60: convert, and sanitize under the probe engine.
+	// Asserted by NAME rather than by count alone -- a bare length check
+	// stops being able to say which operation appeared.
+	if len(resp.Operations) != 2 {
+		t.Fatalf("operations has %d keys, want exactly 2; operations=%+v", len(resp.Operations), resp.Operations)
 	}
 	convertTree, ok := resp.Operations["convert"]
 	if !ok {
 		t.Fatalf(`operations missing "convert" key; operations=%+v`, resp.Operations)
+	}
+	sanitizeTree, ok := resp.Operations["sanitize"]
+	if !ok {
+		t.Fatalf(`operations missing "sanitize" key; operations=%+v`, resp.Operations)
+	}
+	if _, ok := sanitizeTree["probe"]; !ok {
+		t.Errorf(`operations.sanitize has no "probe" engine; sanitize=%+v`, sanitizeTree)
+	}
+	// The engines key must NOT have gained probe: it enumerates conversion
+	// classes, and sanitize converts nothing. This is the claim Phase 57's
+	// Classes() filter was written to make true, checked here now that there
+	// is finally a non-convert operation to check it against.
+	if _, ok := resp.Engines["probe"]; ok {
+		t.Errorf(`engines unexpectedly contains "probe" -- it serves no convert pair`)
+	}
+	// Each sanitize pair maps a format to its SANITIZED FORM -- itself for
+	// PDF and images, the macro-free equivalent for macro-enabled OOXML
+	// (D-06). Asserting identity here was wrong and passed anyway, because
+	// the registry was registering identity pairs and leaving
+	// SanitizedOOXMLExtension unused (PR #12).
+	for _, pair := range sanitizeTree["probe"].Pairs {
+		if len(pair) != 2 {
+			t.Fatalf("malformed sanitize pair %v", pair)
+		}
+		if want := convert.SanitizedOOXMLExtension(pair[0]); pair[1] != want {
+			t.Errorf("sanitize pair %v: target is %q, want %q", pair, pair[1], want)
+		}
 	}
 
 	if len(convertTree) != len(resp.Engines) {
@@ -211,7 +243,11 @@ func TestListFormats_NoOperationOutsideRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	for _, unregistered := range []string{"sanitize", "extract", "archive", "inspect", "render"} {
+	// "sanitize" left this list in Phase 60, when it stopped being a
+	// reserved-but-unregistered DB CHECK value and gained a converter. The
+	// remaining four are still reserved and still unregistered, and they are
+	// what keeps this test meaningful: without them it would assert nothing.
+	for _, unregistered := range []string{"extract", "archive", "inspect", "render"} {
 		if _, ok := resp.Operations[unregistered]; ok {
 			t.Errorf("operations unexpectedly contains %q, want it absent (not yet registered under any engine)", unregistered)
 		}

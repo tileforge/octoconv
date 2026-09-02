@@ -119,6 +119,20 @@ data:
   PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
   PANDOC_MAX_RETRY: "2"
+  # PROBE (sanitize, Phase 60). PROVISIONAL, NOT MEASURED: 180s is a
+  # placeholder awaiting the operator run of scripts/probe-timeout-measure.sh
+  # on a representative corpus (SC5). It is distinct from
+  # 65s/742s/744s/753s, but distinctness is not provenance -- the API reports
+  # this engine as estimate_source=unmeasured until the run lands, and
+  # probeWorker.terminationGracePeriodSeconds (190s) is derived from it and is
+  # provisional for the same reason. IN-02: read by every
+  # queue.NewClient()-constructing service for probeUniqueTTL's derivation.
+  PROBE_ENGINE_TIMEOUT: "180s"
+  PROBE_MAX_RETRY: "2"
+  # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
+  # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
+  # document inside a 1Gi cgroup. Reasoned, not measured.
+  PROBE_WORKER_CONCURRENCY: "1"
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"

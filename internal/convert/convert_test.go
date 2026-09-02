@@ -171,7 +171,7 @@ func TestRegistryClasses(t *testing.T) {
 
 // TestAllEnginesCoversEveryEngineClass is the completeness guard for
 // AllEngines/IsKnownEngine (52-07, mirroring
-// queue.TestAllConvertQueuesCoversEveryEngine): it asserts the seven
+// queue.TestAllConvertQueuesCoversEveryEngine): it asserts the eight
 // Engine* constants each appear exactly once, that there are no extras,
 // that IsKnownEngine agrees with membership, and -- the load-bearing
 // assertion -- that every key of Default.Classes() (the registry-derived
@@ -189,11 +189,12 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 		EngineAV:       true,
 		EngineOCR:      true,
 		EnginePandoc:   true,
+		EngineProbe:    true,
 	}
 
 	got := AllEngines()
-	if len(got) != 7 {
-		t.Fatalf("len(AllEngines()) = %d, want exactly 7", len(got))
+	if len(got) != 8 {
+		t.Fatalf("len(AllEngines()) = %d, want exactly 8", len(got))
 	}
 
 	seen := make(map[string]int, len(got))
@@ -232,6 +233,32 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 		if !want[class] {
 			t.Errorf("Default.Classes() has engine class %q which is missing from AllEngines()", class)
 		}
+	}
+
+	// The same cross-check over EVERY operation, not just convert.
+	//
+	// Classes() above walks OperationConvert only, so it is structurally
+	// blind to EngineProbe -- which serves no convert pair at all. Phase 57's
+	// Classes() doc comment flagged that as "a known, intentional consequence
+	// Phase 60 will revisit"; this is the revisit. Without it, the eighth
+	// class would be the first entry in AllEngines() with no registry-derived
+	// check of any kind behind it.
+	routed := make(map[string]bool)
+	for _, byClass := range Default.OperationClasses() {
+		for class := range byClass {
+			routed[class] = true
+			if !want[class] {
+				t.Errorf("OperationClasses() routes engine class %q which is missing from AllEngines()", class)
+			}
+		}
+	}
+
+	// And the other direction, for probe specifically: an engine class listed
+	// in AllEngines() that nothing routes is a limit an operator can set
+	// against a queue that will never receive a job.
+	if !routed[EngineProbe] {
+		t.Errorf("AllEngines() lists %q but no registered converter routes it -- "+
+			"an operator can set a quota against a queue nothing reaches", EngineProbe)
 	}
 }
 

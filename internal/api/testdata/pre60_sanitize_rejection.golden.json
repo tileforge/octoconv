@@ -1,0 +1,30 @@
+{
+  "bogus": {
+    "status": 422,
+    "body": {
+      "code": "unsupported_operation",
+      "error": "unsupported operation: bogus -- see GET /v1/formats for supported operations"
+    }
+  },
+  "extract": {
+    "status": 422,
+    "body": {
+      "code": "unsupported_operation",
+      "error": "unsupported operation: extract -- see GET /v1/formats for supported operations"
+    }
+  },
+  "inspect": {
+    "status": 422,
+    "body": {
+      "code": "unsupported_operation",
+      "error": "unsupported operation: inspect -- see GET /v1/formats for supported operations"
+    }
+  },
+  "sanitize": {
+    "status": 422,
+    "body": {
+      "code": "unsupported_operation",
+      "error": "unsupported operation: sanitize -- see GET /v1/formats for supported operations"
+    }
+  }
+}

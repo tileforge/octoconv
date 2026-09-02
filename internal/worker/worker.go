@@ -2,6 +2,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -623,6 +624,7 @@ type convertRepo interface {
 	MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error
 	Inputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Input, error)
 	AddOutput(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
+	AddOutputWithRole(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
 	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
@@ -693,6 +695,11 @@ type Handler struct {
 	// pre-Task-1 code path: enforceAudioGuardBeforeConvert's own
 	// engine-gate was already a pass-through for every non-audio engine.
 	preConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
+
+	// sideOutputs, when non-nil, is installed by NewRunner from the bound
+	// EngineDescriptor and produces additional outputs recorded after the
+	// primary one (Phase 60). nil for every engine but probe.
+	sideOutputs func(ctx context.Context, job *jobs.Job, outPath string) ([]SideOutput, error)
 }
 
 // SetProgressWebhook installs the D-04 opt-in inline progress-webhook
@@ -1359,6 +1366,44 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return err
 	}
 
+	// Additional outputs, if this engine declares any. Runs after the
+	// primary output is stored and recorded: a report describing a result
+	// the client cannot fetch would be a record of nothing.
+	//
+	// An error here fails the job. The alternative -- succeed with the
+	// primary output and no report -- would hand back a sanitized file with
+	// no statement of what was removed from it, which is the outcome
+	// SANI-05 exists to prevent.
+	if h.sideOutputs != nil {
+		extra, err := h.sideOutputs(attemptCtx, job, outPath)
+		if err != nil {
+			return err
+		}
+		for i, so := range extra {
+			ordinal := i + 1 // ordinal 0 is always the primary output
+			key := storage.OutputKey(job.ID, ordinal, so.Filename)
+			size, err := h.uploadBytes(attemptCtx, key, so.Body, so.ContentType)
+			if err != nil {
+				return err
+			}
+			// AddOutputWithRole, not AddOutput: the latter deliberately
+			// omits the role column so the DB default applies, which would
+			// store this report as a second PRIMARY output and make
+			// MarkDone's exactly-one-primary guard fail the job.
+			if err := h.repo.AddOutputWithRole(attemptCtx, job.ID, jobs.Output{
+				Ordinal:     ordinal,
+				ObjectKey:   key,
+				Filename:    so.Filename,
+				Format:      so.Format,
+				SizeBytes:   size,
+				ContentType: so.ContentType,
+				Role:        so.Role,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
 	return h.repo.MarkDone(attemptCtx, job.ID, time.Since(attemptStart))
 }
 
@@ -1390,6 +1435,18 @@ func (h *Handler) downloadTo(ctx context.Context, key, path string) error {
 		return fmt.Errorf("write input: %w", err)
 	}
 	return nil
+}
+
+// uploadBytes stores an in-memory artifact, for side outputs that are built
+// rather than rendered to a file. Deliberately separate from uploadFrom
+// rather than folded into it: the two have different failure modes (there is
+// no open/stat to fail here) and a merged signature would have to accept a
+// path OR a body, with a runtime check for which one is set.
+func (h *Handler) uploadBytes(ctx context.Context, key string, body []byte, contentType string) (int64, error) {
+	if err := h.store.Upload(ctx, key, bytes.NewReader(body), int64(len(body)), contentType); err != nil {
+		return 0, err
+	}
+	return int64(len(body)), nil
 }
 
 func (h *Handler) uploadFrom(ctx context.Context, key, path, contentType string) (int64, error) {

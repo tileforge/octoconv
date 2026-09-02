@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -486,6 +487,62 @@ func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 		wantMeasured := engineEstimateSource[engine] == EstimateSourceMeasured
 		if measured != wantMeasured {
 			t.Errorf("engine %s (%s): .env.example measured=%v, engineEstimateSource says measured=%v", engine, varName, measured, wantMeasured)
+		}
+	}
+}
+
+// TestEveryEngineHasADefaultCeilingAndTimeout is the completeness guard for
+// the two per-engine default maps, added after PR #12 found the eighth engine
+// missing from both.
+//
+// Neither omission could fail a test at the time: MaxEngineBytes silently left
+// probe bounded only by the 2 GiB global request limit, in front of a 1 GiB
+// worker, and EngineTimeouts silently published estimated_max_seconds 0
+// because cmd/api supplies a non-nil map that the all-or-nothing default never
+// touched. Both were found by reading, which is not a mechanism.
+//
+// Driven off convert.AllEngines() rather than a list, so a ninth class fails
+// here the moment it is declared.
+func TestEveryEngineHasADefaultCeilingAndTimeout(t *testing.T) {
+	for _, engine := range convert.AllEngines() {
+		if _, ok := defaultMaxEngineBytes[engine]; !ok {
+			t.Errorf("engine %q has no defaultMaxEngineBytes entry -- its uploads would be "+
+				"bounded only by the global request limit, in front of a worker that is not",
+				engine)
+		}
+		if _, ok := defaultEngineTimeouts[engine]; !ok {
+			t.Errorf("engine %q has no defaultEngineTimeouts entry -- POST /v1/inspect would "+
+				"publish estimated_max_seconds 0 for it", engine)
+		}
+	}
+	if len(defaultMaxEngineBytes) != len(convert.AllEngines()) {
+		t.Errorf("defaultMaxEngineBytes has %d entries, convert.AllEngines() has %d",
+			len(defaultMaxEngineBytes), len(convert.AllEngines()))
+	}
+	if len(defaultEngineTimeouts) != len(convert.AllEngines()) {
+		t.Errorf("defaultEngineTimeouts has %d entries, convert.AllEngines() has %d",
+			len(defaultEngineTimeouts), len(convert.AllEngines()))
+	}
+}
+
+// TestPartialEngineTimeoutsAreFilledIn pins the merge itself. cmd/api supplies
+// a non-nil map; a caller that forgets one engine must not silently publish a
+// zero upper bound for it.
+func TestPartialEngineTimeoutsAreFilledIn(t *testing.T) {
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{},
+		defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{},
+		newFakeResolver(), healthyDeps(), Config{
+			MaxUploadBytes: 1 << 20,
+			EngineTimeouts: map[string]time.Duration{
+				convert.EngineImage: 99 * time.Second,
+			},
+		})
+	if got := srv.engineTimeouts[convert.EngineImage]; got != 99*time.Second {
+		t.Errorf("caller's own value was overwritten: image = %v, want 99s", got)
+	}
+	for _, engine := range convert.AllEngines() {
+		if srv.engineTimeouts[engine] == 0 {
+			t.Errorf("engine %q was omitted by the caller and left at zero", engine)
 		}
 	}
 }

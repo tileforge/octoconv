@@ -174,6 +174,20 @@ func MIMEType(format string) string {
 		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 	case "pptx":
 		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	// The macro-free TEMPLATE types. Added by Phase 60: a sanitized .dotm/
+	// .xltm/.potm/.ppsm carries its macro-free equivalent's content type
+	// (D-06), so these are the extensions its output actually has. Without
+	// them the object would be stored with an empty content type, which S3
+	// serves as application/octet-stream and a browser offers as a download
+	// of unknown kind.
+	case "dotx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.template"
+	case "xltx":
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.template"
+	case "potx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.template"
+	case "ppsx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.slideshow"
 	case "odt":
 		return "application/vnd.oasis.opendocument.text"
 	case "ods":

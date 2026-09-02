@@ -79,6 +79,39 @@ type EngineDescriptor struct {
 	// Kept as a generic hook for any future engine with the same shape of
 	// need, even though no descriptor populates it today.
 	PreConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
+
+	// SideOutputs, when non-nil, is called after a successful convert and
+	// AFTER the primary output has been uploaded and recorded, and returns
+	// additional outputs to store beside it (Phase 60, SANI-05).
+	//
+	// nil for seven of the eight engines, which have nothing to report
+	// alongside their result; only probe populates it, to carry the sanitize
+	// report as the job's role=report output. The hook mirrors
+	// PreConvertGuard's shape deliberately: an optional, descriptor-declared
+	// splice into the shared process() path, so the generic pipeline gains a
+	// capability without gaining a per-engine branch.
+	//
+	// Ordering is deliberate and is the reason this runs AFTER the primary
+	// upload rather than before: a report describing an output that failed
+	// to store would be a record of something the client cannot fetch.
+	SideOutputs func(ctx context.Context, job *jobs.Job, outPath string) ([]SideOutput, error)
+}
+
+// SideOutput is one additional artifact an engine produces beside its primary
+// result. The body is carried in memory rather than as a path because every
+// current producer builds it in memory anyway, and a []byte cannot be a
+// dangling reference to a temp directory that process() has already removed.
+type SideOutput struct {
+	// Role is the job_outputs.role value -- "report" for the sanitize
+	// report. Constrained by the database CHECK, not by this struct.
+	Role string
+	// Filename is the object's name within the job's result prefix.
+	Filename string
+	// Format and ContentType describe the body.
+	Format      string
+	ContentType string
+	// Body is the artifact itself.
+	Body []byte
 }
 
 // Runner is the single descriptor-driven asynq task handler every one of
@@ -124,6 +157,7 @@ func NewRunner(h *Handler, d EngineDescriptor) *Runner {
 		// PreConvertGuard consumer and takes the case above instead).
 		h.preConvertGuard = d.PreConvertGuard
 	}
+	h.sideOutputs = d.SideOutputs
 	return &Runner{h: h, d: d}
 }
 

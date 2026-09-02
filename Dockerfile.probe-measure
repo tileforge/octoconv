@@ -1,0 +1,19 @@
+# Measurement image for scripts/probe-timeout-measure.sh.
+#
+# It exists because the host and the deployed runtime do not run the same
+# ghostscript, and a timeout measured against the wrong one measures the wrong
+# thing. Verified during Phase 60: the developer host had gs 10.07.1 while
+# Dockerfile.probe-worker's debian:bookworm-slim resolves to 10.00.0.
+#
+# Same base suite as Dockerfile.probe-worker's runtime stage and the same three
+# tools, so `apt-get install` resolves to the same versions the worker image
+# gets. The Go toolchain is here only because the pipeline under measurement is
+# Go code -- unlike pandoc/ocr, there is no single external binary to time.
+FROM golang:1.26-bookworm
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ghostscript \
+      unzip \
+      file \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

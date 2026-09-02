@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: Phase 60 context gathered; ready to plan
-last_updated: "2026-08-30T20:43:39.589Z"
-last_activity: 2026-08-30 -- Phase 60 context gathered (1264501)
+stopped_at: Phase 60 executed 6/6; SC5 open — PROBE_ENGINE_TIMEOUT is a marked placeholder pending an operator corpus
+last_updated: "2026-09-01T00:00:00.000Z"
+last_activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39): 6 codex findings, all real; SC5 still open
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 5   # 60 executed but SC5 unmet -- see Current Position
   total_plans: 32
   completed_plans: 32
   percent: 83
@@ -21,14 +21,19 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 59 — born-digital-pdf-routing
+**Current focus:** Phase 60 — sanitize-eighth-engine-class
 
 ## Current Position
 
-Phase: 60 (sanitize-eighth-engine-class) — CONTEXT GATHERED
-Plan: 0 of TBD — ready to plan
-Status: Phase 60 context gathered: 8 decisions across 4 gray areas, both roadmap-deferred design decisions closed. Ready to plan. Note: SC5 still needs an operator-measured timeout on your own corpus — that number cannot come from planning.
-Last activity: 2026-08-30 -- Phase 60 context gathered (1264501)
+Phase: 60 (sanitize-eighth-engine-class) — EXECUTED 6/6, SC5 OPEN
+Plan: 6 of 6 — all waves done
+Status: sanitize ships end to end. PDF rebuilt through PostScript, OOXML macro parts dropped by CONTENT (a renamed vbaProject.bin is still dropped), image metadata stripped structurally with the compressed data copied byte-for-byte. Every output is re-checked by an implementation that did not do the removing — pdfcpu for PDF, unzip+libmagic for OOXML, stdlib decode for images — and an output that cannot be verified is deleted rather than delivered. The report goes back as the role=report output, built from two closed vocabularies with no verdict field, and a doc-sync test makes an affirmative safety claim fail the build.
+
+SC5 is NOT met and is not claimed. PROBE_ENGINE_TIMEOUT=180s is a placeholder, marked as such in .env.example, all 11 compose services, the chart ConfigMap, and the API's estimate provenance (estimate_source=unmeasured). Open item: .planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md — closed by running scripts/probe-timeout-measure.sh on a corpus representative of real load.
+
+Four things the work found that planning had not: gs signs its output with /Producer and a %%Invocation line inside a compressed /ObjStm where phase 60-02's own byte grep was blind (found by the verifier on its first run); the 60-01 JPEG fixture was structurally malformed and passed a grep-only self-check; converters.go's init() runs before sanitizeFormats is populated, which would have left operation=sanitize returning 422 with the implementation in place; and the report had nothing delivering it until an out-of-plan SideOutputs hook was added.
+Review round 1 (codex, PR #12) found six real defects, all fixed in 4fa4b39. The severe one: the sanitize report was never stored with role=report, because jobs.Repo.AddOutput deliberately omits that column -- every sanitize job would have ended with two primary outputs and failed MarkDone's guard. Three of the six were tests that proved a component rather than its use, which is the lesson to carry: a test that calls the function directly cannot see that nothing else calls it.
+Last activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39); SC5 still open
 
 ## Performance Metrics
 

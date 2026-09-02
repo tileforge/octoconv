@@ -79,6 +79,18 @@ type Input struct {
 // finding #1).
 const OutputRolePrimary = "primary"
 
+// OutputRoleReport is the job_outputs.role value for an output that DESCRIBES
+// the job rather than being its result -- the sanitize report (Phase 60,
+// SANI-05). Declared here for the same reason OutputRolePrimary is: the
+// string is written by internal/worker and selected on by internal/api, and
+// two unexported copies of "report" in those packages is exactly the drift
+// that made OutputRolePrimary necessary.
+//
+// The database CHECK constraint in 0015_operation_and_output_roles.sql is the
+// authority on which role values are legal; this constant names one of them,
+// it does not define the set.
+const OutputRoleReport = "report"
+
 // Output is a row of the job_outputs table. Role comes from job_outputs.role;
 // its default (OutputRolePrimary) is supplied by the database (0015_operation_and_output_roles.sql,
 // D-16), never by this Go layer.

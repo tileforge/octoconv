@@ -157,6 +157,8 @@ type fakeEnqueuer struct {
 	ocrCalls           []uuid.UUID
 	enqueuePandocErr   error
 	pandocCalls        []uuid.UUID
+	enqueueProbeErr    error
+	probeCalls         []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -213,6 +215,13 @@ func (f *fakeEnqueuer) EnqueuePandocConvert(ctx context.Context, id uuid.UUID) e
 	defer f.mu.Unlock()
 	f.pandocCalls = append(f.pandocCalls, id)
 	return f.enqueuePandocErr
+}
+
+func (f *fakeEnqueuer) EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeCalls = append(f.probeCalls, id)
+	return f.enqueueProbeErr
 }
 
 // imageCallIDs returns a locked snapshot copy of imageCalls — used by the
@@ -277,6 +286,15 @@ func (f *fakeEnqueuer) ocrCallIDs() []uuid.UUID {
 	defer f.mu.Unlock()
 	out := make([]uuid.UUID, len(f.ocrCalls))
 	copy(out, f.ocrCalls)
+	return out
+}
+
+// probeCallIDs returns a locked snapshot copy of probeCalls.
+func (f *fakeEnqueuer) probeCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]uuid.UUID, len(f.probeCalls))
+	copy(out, f.probeCalls)
 	return out
 }
 
@@ -548,17 +566,38 @@ func TestSweepRoutesPandocJobsToPandocQueue(t *testing.T) {
 // omission staying invisible except for a metrics-only unroutable_engine
 // bump in production.
 func TestSweepRoutesEveryEngineConstant(t *testing.T) {
-	cases := []struct {
+	// The accessor per engine must stay explicit -- there is no way to derive
+	// "which fake counter belongs to this engine" -- but WHICH ENGINES ARE
+	// COVERED is now derived from convert.AllEngines() rather than typed out
+	// again. Phase 60 added the eighth class, and the hand-written table here
+	// would have kept passing with probe absent: the guard against a missing
+	// routing case would itself have been the thing missing a case.
+	accessors := map[string]func(*fakeEnqueuer) []uuid.UUID{
+		convert.EngineImage:    (*fakeEnqueuer).imageCallIDs,
+		convert.EngineDocument: (*fakeEnqueuer).documentCallIDs,
+		convert.EngineHTML:     (*fakeEnqueuer).htmlCallIDs,
+		convert.EngineAudio:    (*fakeEnqueuer).audioCallIDs,
+		convert.EngineAV:       (*fakeEnqueuer).avCallIDs,
+		convert.EngineOCR:      (*fakeEnqueuer).ocrCallIDs,
+		convert.EnginePandoc:   (*fakeEnqueuer).pandocCallIDs,
+		convert.EngineProbe:    (*fakeEnqueuer).probeCallIDs,
+	}
+
+	var cases []struct {
 		engine  string
 		callIDs func(*fakeEnqueuer) []uuid.UUID
-	}{
-		{convert.EngineImage, (*fakeEnqueuer).imageCallIDs},
-		{convert.EngineDocument, (*fakeEnqueuer).documentCallIDs},
-		{convert.EngineHTML, (*fakeEnqueuer).htmlCallIDs},
-		{convert.EngineAudio, (*fakeEnqueuer).audioCallIDs},
-		{convert.EngineAV, (*fakeEnqueuer).avCallIDs},
-		{convert.EngineOCR, (*fakeEnqueuer).ocrCallIDs},
-		{convert.EnginePandoc, (*fakeEnqueuer).pandocCallIDs},
+	}
+	for _, engine := range convert.AllEngines() {
+		fn, ok := accessors[engine]
+		if !ok {
+			t.Fatalf("engine %q is in convert.AllEngines() but has no fake accessor here -- "+
+				"add one, and add its case to sweep()'s switch, or a stranded job of that "+
+				"class stays queued forever on the unroutable_engine branch", engine)
+		}
+		cases = append(cases, struct {
+			engine  string
+			callIDs func(*fakeEnqueuer) []uuid.UUID
+		}{engine, fn})
 	}
 
 	for _, want := range cases {

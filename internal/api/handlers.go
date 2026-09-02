@@ -266,13 +266,36 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 						"declared uncompressed size exceeds configured limit")
 					return
 				}
-				// D-05: unconditional macro rejection, no operator opt-out —
-				// macro code never executes as part of producing a PDF output.
+				// D-05: macro rejection with ONE exception, added by Phase
+				// 60. The original rule was unconditional and its stated
+				// reason was that "macro code never executes as part of
+				// producing a PDF output" -- true, and written when convert
+				// was the only operation there was.
+				//
+				// operation=sanitize exists to REMOVE those macros. Rejecting
+				// the upload here made the entire OOXML macro-removal path
+				// unreachable through the API: the code was registered, the
+				// pairs were advertised in GET /v1/formats, and no request
+				// could ever reach it. Caught in review (PR #12).
+				//
+				// Every other operation keeps the unconditional rejection,
+				// byte-identically -- the pre-Phase-58 golden pins that body
+				// and it does not move.
 				if cr.HasMacro {
-					log.Printf("content validation rejected: client_id=%s filename=%q reason=macro_detected", client.ID, filename)
-					writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
-						"macro-carrying documents are not accepted")
-					return
+					if operation != convert.OperationSanitize {
+						log.Printf("content validation rejected: client_id=%s filename=%q reason=macro_detected", client.ID, filename)
+						writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
+							"macro-carrying documents are not accepted")
+						return
+					}
+					// SniffContainer reports the macro-free BASE format
+					// (word/document.xml -> "docx"), so a .docm would fail the
+					// declared-vs-detected check one gate later. Report what
+					// the package actually is, so the extension check stays a
+					// real check rather than being skipped for this path.
+					if macroFmt, ok := convert.MacroEnabledExtension(cr.Format); ok {
+						detected = macroFmt
+					}
 				}
 			}
 			// A DuplicateRootPart result, ErrNotAZip, or Format=="" leaves
@@ -838,6 +861,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
 	case convert.EnginePandoc:
 		enqueueErr = s.queue.EnqueuePandocConvert(ctx, createdID)
+	case convert.EngineProbe:
+		enqueueErr = s.queue.EnqueueProbeSanitize(ctx, createdID)
 	default:
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a

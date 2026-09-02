@@ -345,6 +345,36 @@ Plans:
 
 **Autonomous**: false (SC5 — операторский замер таймаута на собственном корпусе)
 
+**Plans:** 6/6 plans executed
+
+Plans:
+- [x] 60-01-PLAN.md — Корпус угроз и pre-фазовый golden-пин 422 (4824bb7, ac7ccc7)
+- [x] 60-02-PLAN.md — Санитация PDF через PostScript; второй проход доказан замером (d97efba)
+- [x] 60-03-PLAN.md — OOXML-макросы по содержимому и структурный strip метаданных изображений (002a750)
+- [x] 60-04-PLAN.md — Независимая верификация: pdfcpu / unzip+libmagic / decode (8aed57c)
+- [x] 60-05-PLAN.md — Отчёт из закрытого словаря и механический запрет обещаний безопасности (0e4b7b5)
+- [x] 60-06-PLAN.md — Восьмой engine-класс `probe` целиком (abd6f21)
+
+**Status: 5 из 6 критериев успеха закрыты. SC5 — НЕТ.**
+
+Всё остальное в SC5 сделано: своя очередь, свой бинарник и контейнер,
+fail-closed валидация, transient/terminal классификация, восьмой ScaledObject,
+оставивший семь существующих байт-неизменными. Но критерий говорит
+**ИЗМЕРЕННЫЙ** таймаут, а `PROBE_ENGINE_TIMEOUT=180s` — placeholder, и он
+помечен таковым во всех пяти местах, где появляется (включая
+`estimate_source=unmeasured` в ответе `POST /v1/inspect`).
+
+Замер на репозиторных фикстурах выполнен и закоммичен
+(`evidence/probe-timeout-20260901-repo-fixtures.txt`, N=7, 331 Б – 11.6 КБ, в
+контейнере против той gs, что реально в образе — 10.00.0, не хостовой 10.07.1):
+медиана 0.101s, p95 0.322s. Его рекомендация — 1s, что сработает на первом же
+реальном документе. Корпус на три порядка мал, и это записано, а не обойдено.
+
+Открытый пункт:
+`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`.
+Закрывается прогоном `scripts/probe-timeout-measure.sh` на корпусе,
+представительном для нагрузки.
+
 ### Phase 61: v1.12 Debt Tail
 
 **Goal**: Закрыть самый весомый перенос v1.12 — застрявшая джоба, навсегда съедающая суточный бюджет клиента без операторского средства это снять — плюс два мелких пункта с нулевым пересечением по файлам с остальным милстоуном.
@@ -430,12 +460,15 @@ Plans:
 | 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
 | 58. Synchronous Inspection | v1.13 | 8/8 | Complete   | 2026-08-18 |
 | 59. Born-Digital PDF Routing | v1.13 | 7/7 | Complete   | 2026-08-30 |
-| 60. Sanitize — Eighth Engine Class | v1.13 | 0/TBD | Not started | — |
+| 60. Sanitize — Eighth Engine Class | v1.13 | 6/6 | Executed, SC5 open | 2026-09-01 |
 | 61. v1.12 Debt Tail | v1.13 | 3/3 | Complete   | 2026-08-30 |
 
 ---
 
-*v1.13 (Inspect & Operations) started 2026-08-07, Phases 56-61 — 28/28 v1 requirements mapped, 0 orphans. Two operator-gated phases: 58 (live process-isolation proof for the synchronous inspect path) and 60 (measured `probe` engine timeout). Next: `/gsd:discuss-phase 56`.*
+*v1.13 (Inspect & Operations) started 2026-08-07, Phases 56-61 — 28/28 v1 requirements mapped, 0 orphans. Two operator-gated phases: 58 (live process-isolation proof for the synchronous inspect path) and 60 (measured `probe` engine timeout).*
+
+*Status 2026-09-02: all six phases executed. Five are merged; Phase 60 is open as PR #12, six review rounds closed. The milestone is code-complete except for SC5, which is not met and not claimed: `PROBE_ENGINE_TIMEOUT` is a marked placeholder awaiting a corpus run
+(`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`). Remaining work is the merge, that measurement, and milestone completion.*
 
 *v1.12 (Consumer Accounting & Fairness) shipped 2026-08-07, Phases 51-55 — 15/15 v1 requirements, 30 plans, milestone audit `tech_debt` (15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers, 16 non-blocking debt items recorded). One live gate: multi-replica quota correctness at `api.replicas: 2` (10/10 rounds, 167 assertions, evidence committed). Phases 52 and 53 each went through a real gaps_found → closure → re-verification cycle. Next: `/gsd:new-milestone`.*
 </content>

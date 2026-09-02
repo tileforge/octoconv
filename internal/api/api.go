@@ -126,6 +126,7 @@ type Enqueuer interface {
 	EnqueueAVConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -410,6 +411,57 @@ type Config struct {
 // usage and limits back GET /v1/system/usage (OPSV-01/OPSV-02, Plan 04) —
 // both are required positional params with no defaulting; a nil here is a
 // programming error at a call site, not a configurable state.
+
+// defaultEngineTimeouts is the code-level fallback for each engine's upper
+// bound, merged into Config.EngineTimeouts per engine by NewServer. Mirrors
+// each worker's own startup default for the same env vars
+// (ENGINE_TIMEOUT=120s, DOCUMENT_ENGINE_TIMEOUT=300s, HTML_ENGINE_TIMEOUT=60s,
+// AUDIO_ENGINE_TIMEOUT=742s, AV_ENGINE_TIMEOUT=753s, OCR_ENGINE_TIMEOUT=744s,
+// PANDOC_ENGINE_TIMEOUT=65s, PROBE_ENGINE_TIMEOUT=180s).
+//
+// PROBE_ENGINE_TIMEOUT is a PLACEHOLDER, not a measurement -- see
+// .env.example. It is here so a caller that omits it gets 180s rather than
+// zero; it is not here as a claim about how long sanitize takes.
+var defaultEngineTimeouts = map[string]time.Duration{
+	convert.EngineImage:    120 * time.Second,
+	convert.EngineDocument: 300 * time.Second,
+	convert.EngineHTML:     60 * time.Second,
+	convert.EngineAudio:    742 * time.Second,
+	convert.EngineAV:       753 * time.Second,
+	convert.EngineOCR:      744 * time.Second,
+	convert.EnginePandoc:   65 * time.Second,
+	convert.EngineProbe:    180 * time.Second,
+}
+
+// defaultMaxEngineBytes is the per-engine upload ceiling, merged into
+// Config.MaxEngineBytes per engine by NewServer.
+//
+// D-07: image/document/html/audio hold their pre-Phase-35 effective 100 MiB
+// ceiling; av alone gets the raised 2 GiB allowance video legitimately needs.
+// ocr (D-03, Phase 44) gets the same 100 MiB as image -- the actual OCR work
+// is separately bounded by the page-count/pixel caps in the worker. pandoc
+// gets the configured PANDOC_MAX_INPUT_BYTES when Config.MaxPandocInputBytes
+// is set, falling back to 100 MiB, and is additionally bounded by
+// enforcePandocInputSize inside the converter itself -- this API-side gate is
+// defence in depth, not a replacement for it.
+//
+// probe gets 50 MiB, HALF the ordinary document ceiling, and REASONED rather
+// than measured -- the same status as PROBE_ENGINE_TIMEOUT and tracked by the
+// same open item. The sanitize path holds the whole input in memory more than
+// once (the image walkers os.ReadFile it, the OOXML path buffers every
+// uncompressed part plus the rebuilt archive) and then hands the result to
+// pdfcpu, which parses it into its own address space, inside a 1 GiB worker.
+var defaultMaxEngineBytes = map[string]int64{
+	convert.EngineImage:    100 << 20,
+	convert.EngineDocument: 100 << 20,
+	convert.EngineHTML:     100 << 20,
+	convert.EngineAudio:    100 << 20,
+	convert.EngineAV:       2 << 30,
+	convert.EngineOCR:      100 << 20,
+	convert.EnginePandoc:   100 << 20,
+	convert.EngineProbe:    50 << 20,
+}
+
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {
 	if cfg.PresignTTL == 0 {
 		cfg.PresignTTL = 15 * time.Minute
@@ -423,31 +475,17 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.MaxDocumentUncompressedBytes == 0 {
 		cfg.MaxDocumentUncompressedBytes = 500 << 20 // D-04: 500 MiB default
 	}
+	// ALL-OR-NOTHING here, unlike EngineTimeouts below, and the difference is
+	// meaningful rather than an inconsistency: a caller who supplies this map
+	// and omits an engine is saying that engine is UNGATED, and
+	// availableOperations reports it that way. Merging defaults in would make
+	// "ungated" inexpressible. cmd/api/main.go leaves the field nil on
+	// purpose (see its own comment), so the defaults below are what production
+	// actually runs.
 	if cfg.MaxEngineBytes == nil {
-		// D-07: image/document/html/audio hold their pre-Phase-35 effective
-		// 100 MiB ceiling; av alone gets the raised 2 GiB allowance video
-		// legitimately needs. ocr (D-03, Phase 44) gets the same 100 MiB
-		// ceiling as image -- reasonable for images and scanned PDFs; the
-		// actual OCR work is separately bounded by the page-count/pixel caps
-		// enforced in the worker (OCRE-02, Phase 43). pandoc (PDCP-01, Phase
-		// 48, D-02) gets the configured PANDOC_MAX_INPUT_BYTES when
-		// cfg.MaxPandocInputBytes is set (PR#2 finding-1), falling back to
-		// the same generous 100 MiB ceiling when it is not -- markup text is
-		// small, so 100 MiB is a generous upload-time bound absent a
-		// configured cap. Either way the pandoc DoS posture is additionally
-		// bounded by enforcePandocInputSize inside the converter itself
-		// (markupsniff.go, Phase 47), enforced again at Convert-time once
-		// cmd/pandoc-worker (Phase 49) re-registers a configured
-		// PandocConverter -- this API-side gate is defence in depth, not a
-		// replacement for it.
-		cfg.MaxEngineBytes = map[string]int64{
-			convert.EngineImage:    100 << 20,
-			convert.EngineDocument: 100 << 20,
-			convert.EngineHTML:     100 << 20,
-			convert.EngineAudio:    100 << 20,
-			convert.EngineAV:       2 << 30,
-			convert.EngineOCR:      100 << 20,
-			convert.EnginePandoc:   100 << 20,
+		cfg.MaxEngineBytes = make(map[string]int64, len(defaultMaxEngineBytes))
+		for engine, def := range defaultMaxEngineBytes {
+			cfg.MaxEngineBytes[engine] = def
 		}
 		if cfg.MaxPandocInputBytes > 0 {
 			cfg.MaxEngineBytes[convert.EnginePandoc] = cfg.MaxPandocInputBytes
@@ -496,23 +534,21 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 	if cfg.InspectRateLimitRPM == 0 {
 		cfg.InspectRateLimitRPM = 30 // deliberately below ClientRateLimitRPM's 120
 	}
+	// MERGED PER ENGINE, unlike MaxEngineBytes above. A missing entry here is
+	// not a meaningful state -- EngineTimeouts feeds the upper bound POST
+	// /v1/inspect publishes, and zero is not an upper bound. cmd/api/main.go
+	// supplies a non-nil map, so before this merge existed, adding the eighth
+	// engine to the default map below did nothing in production: the real API
+	// published sanitize offers with estimated_max_seconds 0 while the worker
+	// used 180s. That is a defect the compiler cannot see and no test at this
+	// layer could reach, and it shipped (PR #12). Filling in what a caller
+	// omitted makes the omission harmless instead of silent.
 	if cfg.EngineTimeouts == nil {
-		// INSP-04 (Plan 58-07): mirrors each worker's own startup default for
-		// the SAME seven env vars (ENGINE_TIMEOUT=120s,
-		// DOCUMENT_ENGINE_TIMEOUT=300s, HTML_ENGINE_TIMEOUT=60s,
-		// AUDIO_ENGINE_TIMEOUT=742s, AV_ENGINE_TIMEOUT=753s,
-		// OCR_ENGINE_TIMEOUT=744s, PANDOC_ENGINE_TIMEOUT=65s) -- cmd/api/main.go
-		// overrides every entry from the actual env vars when set; this is
-		// only the code-level fallback for an unset/empty value, exactly like
-		// every other Config field's zero-triggers-default discipline above.
-		cfg.EngineTimeouts = map[string]time.Duration{
-			convert.EngineImage:    120 * time.Second,
-			convert.EngineDocument: 300 * time.Second,
-			convert.EngineHTML:     60 * time.Second,
-			convert.EngineAudio:    742 * time.Second,
-			convert.EngineAV:       753 * time.Second,
-			convert.EngineOCR:      744 * time.Second,
-			convert.EnginePandoc:   65 * time.Second,
+		cfg.EngineTimeouts = map[string]time.Duration{}
+	}
+	for engine, def := range defaultEngineTimeouts {
+		if _, ok := cfg.EngineTimeouts[engine]; !ok {
+			cfg.EngineTimeouts[engine] = def
 		}
 	}
 	operators := cfg.OperatorClientIDs
