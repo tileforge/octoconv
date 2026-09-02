@@ -295,7 +295,7 @@ func TestUnverifiedOutputIsDeleted(t *testing.T) {
 		return SanitizeResult{Removed: []ThreatClass{ThreatJavaScript}},
 			os.WriteFile(outPath, []byte("produced output"), 0o600)
 	}
-	verifiers[fakeFormat] = func(_ context.Context, _ string) ([]ThreatClass, error) {
+	verifiers[fakeFormat] = func(_ context.Context, _, _ string) ([]ThreatClass, error) {
 		return nil, ErrSanitizeUnverifiable
 	}
 
@@ -407,7 +407,11 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 		t.Fatal("fixture does not contain the bytes the old scan tripped on")
 	}
 
-	if got := scanPDFBytes(spliced); len(got) > 0 {
+	got, err := scanPDFBytes(spliced)
+	if err != nil {
+		t.Fatalf("scanPDFBytes: %v", err)
+	}
+	if len(got) > 0 {
 		t.Errorf("byte scan reported %v for markers that live inside a stream payload; "+
 			"a verification failure deletes the output, so this destroys a correct result", got)
 	}
@@ -415,7 +419,11 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 	// And the scan must still SEE a marker outside any stream, or the scoping
 	// has simply switched the check off.
 	outside := append(append([]byte(nil), base...), []byte("\n% /JavaScript\n")...)
-	if got := scanPDFBytes(outside); len(got) == 0 {
+	got, err = scanPDFBytes(outside)
+	if err != nil {
+		t.Fatalf("scanPDFBytes: %v", err)
+	}
+	if len(got) == 0 {
 		t.Error("byte scan no longer finds a marker outside a stream -- the scoping " +
 			"disabled the check instead of narrowing it")
 	}
@@ -561,7 +569,14 @@ func TestVerifierAcceptsCustomXMLParts(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 	parts := map[string][]byte{
-		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>`),
+		// The Override is not decoration: SANI-09 requires the main part to be
+		// present AND declared, so an empty <Types/> now fails verification.
+		// This fixture used to carry one because nothing looked -- which is
+		// precisely the gap that requirement closes. What this test is about
+		// (application-defined XML parts are not residue) is unchanged.
+		"[Content_Types].xml": []byte(`<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+			`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+			`</Types>`),
 		"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
 		"customXml/item1.xml": []byte(`<?xml version="1.0"?><Properties xmlns="urn:example:app"><Field>ordinary data</Field></Properties>`),
 		"customXml/item2.xml": []byte(`<?xml version="1.0"?><coreProperties xmlns="urn:example:other"><x/></coreProperties>`),
@@ -676,10 +691,13 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 	}
 	padded := append(append([]byte(nil), genuine...), []byte("Exif\x00\x00MM\x00\x2aSMUGGLED")...)
 
-	if !jpegSegmentAllowed(0xEE, genuine) {
+	// The APP14 verdict is still a property of the single segment, so the
+	// iccSetComplete argument is irrelevant to it -- passed as true so a
+	// failure here can only be about the Adobe shape check.
+	if !jpegSegmentAllowed(0xEE, genuine, true) {
 		t.Error("the verifier rejects a genuine Adobe colour-transform marker")
 	}
-	if jpegSegmentAllowed(0xEE, padded) {
+	if jpegSegmentAllowed(0xEE, padded, true) {
 		t.Error("the verifier accepts an APP14 carrying appended metadata behind the Adobe tag")
 	}
 	if !isKeptJPEGAppSegment(0xEE, genuine) {
@@ -689,8 +707,16 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 		t.Error("the sanitizer keeps an APP14 carrying appended metadata behind the Adobe tag")
 	}
 
-	// An ICC chunk whose payload exceeds the profile's own declared size is
-	// carrying something the profile does not describe.
+	// An ICC chunk set whose assembled data does not match the profile's own
+	// declared size is carrying something the profile does not describe.
+	//
+	// Asserted through jpegMetadataResidue rather than through
+	// jpegSegmentAllowed directly, because the ICC verdict is no longer a
+	// property of one segment: SANI-07 moved it to the SET, since the four
+	// bytes this used to read as a size are the size field only in chunk 1.
+	// Both original propositions are preserved -- the well-formed chunk is
+	// still accepted, the 8-declared/204-carried one is still rejected -- and
+	// they are now asserted at the entry point the verifier actually uses.
 	icc := func(declared uint32, extra int) []byte {
 		p := append([]byte("ICC_PROFILE\x00"), 0x01, 0x01)
 		size := make([]byte, 4)
@@ -698,10 +724,10 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 		p = append(p, size...)
 		return append(p, bytes.Repeat([]byte{0xAA}, extra)...)
 	}
-	if !jpegSegmentAllowed(0xE2, icc(64, 60)) {
-		t.Error("a well-formed ICC chunk was rejected")
+	if _, found := jpegMetadataResidue(buildJPEGWithSegments(t, jpegSegment(0xE2, icc(64, 60)))); found {
+		t.Error("a well-formed ICC chunk was reported as residue")
 	}
-	if jpegSegmentAllowed(0xE2, icc(8, 200)) {
+	if _, found := jpegMetadataResidue(buildJPEGWithSegments(t, jpegSegment(0xE2, icc(8, 200)))); !found {
 		t.Error("an ICC chunk carrying far more than its profile declares was accepted")
 	}
 }
@@ -726,11 +752,17 @@ func TestStreamRangesAgreeWithTheVerifier(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ranges := pdfStreamRanges(raw)
+	ranges, err := pdfStreamRanges(raw)
+	if err != nil {
+		t.Fatalf("pdfStreamRanges: %v", err)
+	}
 	if len(ranges) == 0 {
 		t.Fatal("the sanitized fixture has no streams; this test proves nothing")
 	}
-	blanked := pdfNonStreamBytes(raw)
+	blanked, err := pdfNonStreamBytes(raw)
+	if err != nil {
+		t.Fatalf("pdfNonStreamBytes: %v", err)
+	}
 	if len(blanked) != len(raw) {
 		t.Fatalf("the verifier's blanking changed the length (%d -> %d)", len(raw), len(blanked))
 	}
@@ -763,7 +795,10 @@ func TestVerifierCountsRevisionsOutsideStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ranges := pdfStreamRanges(raw)
+	ranges, err := pdfStreamRanges(raw)
+	if err != nil {
+		t.Fatalf("pdfStreamRanges: %v", err)
+	}
 	if len(ranges) == 0 {
 		t.Fatal("no streams to splice into")
 	}

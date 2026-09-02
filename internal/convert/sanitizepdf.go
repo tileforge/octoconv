@@ -207,7 +207,11 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: read output: %w", err)
 	}
-	if err := os.WriteFile(outPath, redactEngineIdentity(produced), 0o644); err != nil {
+	redacted, err := redactEngineIdentity(produced)
+	if err != nil {
+		return SanitizeResult{}, err
+	}
+	if err := os.WriteFile(outPath, redacted, 0o644); err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: redact engine identity: %w", err)
 	}
 
@@ -311,30 +315,11 @@ var (
 // redaction that broke the file fails the job rather than shipping it.
 // pdfStreamRanges returns the byte ranges of every stream payload.
 //
-// Written here rather than shared with sanitizeverify.go's own scan: the two
-// answer the same question for opposite purposes, and a single subtle byte
-// walker feeding both would put one bug in front of the redaction AND the
-// check that is supposed to catch it. TestStreamRangesAgreeWithTheVerifier
-// holds them to the same answer on real output, so divergence is loud.
-func pdfStreamRanges(b []byte) [][2]int {
-	var out [][2]int
-	i := 0
-	for {
-		j := bytes.Index(b[i:], []byte("stream"))
-		if j < 0 {
-			return out
-		}
-		start := i + j + len("stream")
-		for start < len(b) && (b[start] == '\r' || b[start] == '\n') {
-			start++
-		}
-		end := bytes.Index(b[start:], []byte("endstream"))
-		if end < 0 {
-			return append(out, [2]int{start, len(b)})
-		}
-		out = append(out, [2]int{start, start + end})
-		i = start + end + len("endstream")
-	}
+// The walking is done by pdflex.go's tokenizer; see that file's header for the
+// five defects that argued it into existence, and for why the sanitizer and the
+// verifier now share it instead of each carrying their own byte scanner.
+func pdfStreamRanges(b []byte) ([][2]int, error) {
+	return pdfStreamPayloads(b)
 }
 
 func inAnyRange(ranges [][2]int, i int) bool {
@@ -346,7 +331,7 @@ func inAnyRange(ranges [][2]int, i int) bool {
 	return false
 }
 
-func redactEngineIdentity(raw []byte) []byte {
+func redactEngineIdentity(raw []byte) ([]byte, error) {
 	out := append([]byte(nil), raw...)
 
 	// SKIP STREAM PAYLOADS. These are whole-file searches, and compressed page
@@ -358,7 +343,10 @@ func redactEngineIdentity(raw []byte) []byte {
 	// would not necessarily catch it either. Caught in review (PR #12,
 	// round 7); the same scoping the verifier's byte scan already had, applied
 	// to the second of the two places that needed it.
-	streams := pdfStreamRanges(out)
+	streams, err := pdfStreamRanges(out)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, key := range producerKeys {
 		for i := 0; ; {
@@ -407,7 +395,7 @@ func redactEngineIdentity(raw []byte) []byte {
 		i = start + end
 	}
 
-	return out
+	return out, nil
 }
 
 // closingParen finds the ')' matching the '(' at start, honouring PDF's

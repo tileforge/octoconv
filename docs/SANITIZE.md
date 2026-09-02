@@ -122,6 +122,26 @@ identical and the image visibly different — a losslessness claim true in a sen
 A client choosing between `sanitize` and not sanitizing should make that choice knowing this
 table. That is why it is a table and not a footnote.
 
+**A colour profile is kept whole or not at all.** A JPEG's ICC profile may be split across several
+APP2 chunks; the sanitizer decides on the complete set — every chunk present, sequence numbers
+consistent, and the assembled data matching the size the profile declares of itself. A set that
+does not hold together is dropped entirely. Half a profile is not a smaller profile: the file would
+still decode, the report would still say the profile was preserved, and the colours would be wrong,
+which is a worse outcome than an image with no profile at all.
+
+**A PDF whose own structure contradicts itself is refused, not guessed at.** Stream
+boundaries are taken from each stream's declared `/Length` and confirmed against the bytes
+that follow it. If a length cannot be resolved, or the file's bytes disagree with what it
+declares, the job fails with `malformed_input` rather than proceeding on a best guess — a
+guessed boundary is how a sanitizer ends up rewriting the inside of a stream while every
+cross-reference offset still lines up, which is corruption that nothing downstream looks
+wrong enough to catch.
+
+**What this operation will never return is an empty package.** If sanitizing an OOXML file would
+remove its main part — `word/document.xml`, `xl/workbook.xml` or `ppt/presentation.xml` — the job
+FAILS rather than delivering the remains. Such a package unzips cleanly and opens as nothing, and
+"every threat removed" is not a claim worth making about a file with no document in it.
+
 ## The report
 
 The job's second output, with `role=report`, carries JSON assembled only from the codes above:

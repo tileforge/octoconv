@@ -54,6 +54,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,7 +100,13 @@ var (
 // A format that sanitizes but has no verifier must not silently skip
 // verification -- SanitizeFile turns a missing entry into an error, because
 // "nothing checked it" and "it checked out" must never share an outcome.
-var verifiers = map[string]func(context.Context, string) ([]ThreatClass, error){}
+//
+// The signature carries the FORMAT as well as the path because one verifier
+// (OOXML) cannot state its own proposition without it: "the main part is still
+// there" needs to know which part that is, and inferring it from whichever main
+// part happens to be present is the same "the check only runs when the thing is
+// there" defect SANI-09 exists to close.
+var verifiers = map[string]func(ctx context.Context, format, path string) ([]ThreatClass, error){}
 
 // VerifySanitized inspects the sanitized OUTPUT at path and reports which
 // threat classes an independent implementation confirmed absent.
@@ -113,7 +120,7 @@ func VerifySanitized(ctx context.Context, format, path string) ([]ThreatClass, e
 		return nil, fmt.Errorf("%w: no verifier registered for format %q",
 			ErrSanitizeUnverifiable, format)
 	}
-	return fn(ctx, path)
+	return fn(ctx, NormalizeFormat(format), path)
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +194,7 @@ var pdfByteResidue = map[string]ThreatClass{
 	"/ObjStm": ThreatDocumentMetadata,
 }
 
-func verifyPDF(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyPDF(ctx context.Context, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)
@@ -245,7 +252,11 @@ func verifyPDF(ctx context.Context, path string) ([]ThreatClass, error) {
 	}
 
 	// --- view 2: the raw bytes ---
-	if found := scanPDFBytes(raw); len(found) > 0 {
+	found, err := scanPDFBytes(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(found) > 0 {
 		return nil, fmt.Errorf("%w: %s greppable in the output bytes",
 			ErrSanitizeResidue, joinClasses(found))
 	}
@@ -262,7 +273,10 @@ func verifySingleRevision(raw []byte) error {
 	// not applied here -- the same rule in one of two places that need it,
 	// which is the fourth time this review has named that shape. Caught in
 	// review (PR #12, round 7).
-	outside := pdfNonStreamBytes(raw)
+	outside, err := pdfNonStreamBytes(raw)
+	if err != nil {
+		return err
+	}
 	starts := bytes.Count(outside, []byte("startxref"))
 	eofs := bytes.Count(outside, []byte("%%EOF"))
 
@@ -359,8 +373,11 @@ func sortClasses(cs []ThreatClass) []ThreatClass {
 	return out
 }
 
-func scanPDFBytes(raw []byte) []ThreatClass {
-	outside := pdfNonStreamBytes(raw)
+func scanPDFBytes(raw []byte) ([]ThreatClass, error) {
+	outside, err := pdfNonStreamBytes(raw)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[ThreatClass]bool{}
 	var found []ThreatClass
 	for marker, class := range pdfByteResidue {
@@ -369,43 +386,41 @@ func scanPDFBytes(raw []byte) []ThreatClass {
 			found = append(found, class)
 		}
 	}
-	return sortClasses(found)
+	return sortClasses(found), nil
 }
 
 // pdfNonStreamBytes returns the file with every stream payload blanked out,
 // so a scan sees dictionaries, names and trailers but not compressed content.
 //
-// Blanking rather than deleting keeps every offset where it was, which makes
-// a reported offset in a failure message still mean something. The scan is
-// deliberately crude about pathological input -- an unterminated "stream"
-// keyword blanks the rest of the file, which fails CLOSED for a grep whose
-// only job is to find things.
-func pdfNonStreamBytes(raw []byte) []byte {
-	out := append([]byte(nil), raw...)
-	i := 0
-	for {
-		j := bytes.Index(out[i:], []byte("stream"))
-		if j < 0 {
-			break
-		}
-		start := i + j + len("stream")
-		// Skip the EOL that ISO 32000 7.3.8.1 requires after the keyword.
-		for start < len(out) && (out[start] == '\r' || out[start] == '\n') {
-			start++
-		}
-		end := bytes.Index(out[start:], []byte("endstream"))
-		if end < 0 {
-			for k := start; k < len(out); k++ {
-				out[k] = ' '
-			}
-			break
-		}
-		for k := start; k < start+end; k++ {
-			out[k] = ' '
-		}
-		i = start + end + len("endstream")
+// Blanking rather than deleting keeps every offset where it was, which makes a
+// reported offset in a failure message still mean something.
+//
+// The stream boundaries come from pdflex.go's tokenizer, the same one the
+// sanitizer uses. That file's header records why: this verifier and the
+// sanitizer must AGREE about where a stream's bytes are -- it is a prerequisite
+// for both propositions, not a check of either -- and three review rounds
+// showed that two hand-written walkers produced identical bugs every time while
+// costing a second place to fix and a second chance to disagree about trivia.
+//
+// What stays independent is what this file looks FOR: the sanitizer decides
+// what to remove, this decides whether it is gone.
+//
+// An unresolvable /Length is an error, not a guess. This function used to fail
+// closed by blanking the rest of the file, which is a defensible answer for a
+// grep and a strictly worse one than saying so, in a verifier whose job is to
+// refuse what it cannot confirm.
+func pdfNonStreamBytes(raw []byte) ([]byte, error) {
+	ranges, err := pdfStreamPayloads(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSanitizeUnverifiable, err)
 	}
-	return out
+	out := append([]byte(nil), raw...)
+	for _, r := range ranges {
+		for x := r[0]; x < r[1]; x++ {
+			out[x] = ' '
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +430,180 @@ func pdfNonStreamBytes(raw []byte) []byte {
 func init() {
 	for _, f := range []string{"docm", "docx", "xlsm", "xlsx", "pptm", "pptx", "dotm", "potm", "ppsm"} {
 		verifiers[f] = verifyOOXML
+	}
+}
+
+// ooxmlMainPart is the closed map from a sanitize-supported OOXML format to the
+// part without which the package is not that format.
+//
+// The same three names docsniff.go's ooxmlRootParts uses to IDENTIFY a package,
+// restated here for the opposite question -- "this format requires this part"
+// rather than "this part means this format" -- and extended to the
+// macro-enabled and template extensions the sanitize path also accepts. An
+// unlisted format returns "", which the caller turns into unverifiable rather
+// than into a pass: a verifier that does not know what to require must not
+// report success.
+func ooxmlMainPart(format string) string {
+	switch NormalizeFormat(format) {
+	case "docx", "docm", "dotm":
+		return "word/document.xml"
+	case "xlsx", "xlsm":
+		return "xl/workbook.xml"
+	case "pptx", "pptm", "potm", "ppsm":
+		return "ppt/presentation.xml"
+	default:
+		return ""
+	}
+}
+
+// opcContentTypesNS is the namespace a package's content-type declarations live
+// in (ECMA-376 Part 2 §10.1.2). An Override or Default outside it is some other
+// vocabulary's element that happens to share a local name.
+const opcContentTypesNS = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+// xmlWholeDocumentRoot returns the root element name of a document that parses
+// COMPLETELY, and reports false for one that does not.
+//
+// The distinction from xmlRootElement is the whole point: that one answers "what
+// does this start as", which is the right question for classifying a part, and
+// the wrong one for "is this a usable document".
+func xmlWholeDocumentRoot(blob []byte) (xml.Name, bool) {
+	dec := xml.NewDecoder(bytes.NewReader(blob))
+	var root xml.Name
+	seen := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return root, seen
+		}
+		if err != nil {
+			return xml.Name{}, false
+		}
+		if el, ok := tok.(xml.StartElement); ok && !seen {
+			root, seen = el.Name, true
+		}
+	}
+}
+
+// ooxmlMainRoot is the root element the main part must carry, per format. The
+// closed companion to ooxmlMainPart: knowing which part to require says nothing
+// about whether what is in it is a document.
+func ooxmlMainRoot(format string) string {
+	switch NormalizeFormat(format) {
+	case "docx", "docm", "dotm":
+		return "document"
+	case "xlsx", "xlsm":
+		return "workbook"
+	case "pptx", "pptm", "potm", "ppsm":
+		return "presentation"
+	default:
+		return ""
+	}
+}
+
+// contentTypeDeclares reports whether [Content_Types].xml gives the part a
+// content type, by an Override naming it or a Default covering its extension.
+//
+// Both are legal (ECMA-376 Part 2 §10.1.2); real packages use an Override for
+// the main part because its content type is format-specific, but a Default is
+// not wrong and refusing it would fail a valid package.
+func contentTypeDeclares(contentTypes []byte, part string) bool {
+	if len(contentTypes) == 0 {
+		return false
+	}
+
+	// The WHOLE document must parse, not just enough of it to find a match.
+	// Returning true on the matching element let a truncated file through --
+	// "<Types ...><Override .../>"" with no closing tag was accepted, because
+	// the decoder had not yet reached the error. verifyOOXML's own root check
+	// looks at the first start element only, so nothing else caught it either.
+	// Found by review on PR #14, round 3.
+	// DEPTH AND NAMESPACE, not element name alone. A cleanly parsing document
+	// can nest an Override inside something else --
+	// <Types><Wrapper><Override .../></Wrapper></Types> -- and that nested
+	// element is not a package content-type declaration. Only a DIRECT child of
+	// Types, in the OPC content-types namespace, declares anything. Found by
+	// review on PR #14, round 4.
+	dec := xml.NewDecoder(bytes.NewReader(contentTypes))
+	depth := 0
+	rootIsTypes := false
+	found := false
+	ext := ""
+	if i := strings.LastIndexByte(part, '.'); i >= 0 {
+		ext = strings.ToLower(part[i+1:])
+	}
+
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return found
+		}
+		if err != nil {
+			return false
+		}
+		if _, ok := tok.(xml.EndElement); ok {
+			depth--
+			continue
+		}
+		el, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		here := depth
+		depth++
+		if here == 0 {
+			// THE ROOT'S OWN NAMESPACE, not just its local name. A document can
+			// put a foreign <x:Types> at the root while declaring the OPC
+			// namespace as the default for its children, so the children look
+			// right and their parent is not the OPC Types element at all.
+			// Found by review on PR #14, round 5, after the depth check was
+			// added -- a check on the child said nothing about the parent.
+			rootIsTypes = el.Name.Space == opcContentTypesNS && el.Name.Local == "Types"
+			continue
+		}
+		// depth 0 is <Types> itself; its declarations are at depth 1.
+		if !rootIsTypes || here != 1 || el.Name.Space != opcContentTypesNS {
+			continue
+		}
+
+		var partName, extension, contentType string
+		for _, a := range el.Attr {
+			switch a.Name.Local {
+			case "PartName":
+				partName = a.Value
+			case "Extension":
+				extension = a.Value
+			case "ContentType":
+				contentType = a.Value
+			}
+		}
+		// An EMPTY ContentType is not a declaration. rewriteContentTypes
+		// preserves whatever the input had, so `ContentType=""` -- or the
+		// attribute missing entirely -- survived into the output, and a
+		// substring match on PartName read it as declared. The package then
+		// passed verification and was delivered with a main part nothing
+		// describes, which Office will not open: exactly the invalid output
+		// this check exists to reject. Found by review on PR #14.
+		if strings.TrimSpace(contentType) == "" {
+			continue
+		}
+
+		switch el.Name.Local {
+		case "Override":
+			if partName == "/"+part {
+				found = true
+			}
+		case "Default":
+			// ASCII-case-insensitive, because OPC extension matching is
+			// (ECMA-376 Part 2 §9.1.2.3) and rewriteContentTypes preserves
+			// the input's capitalization. A lowercase-only search rejected a
+			// valid package that wrote Extension="XML" -- and a rejection here
+			// DELETES the output, so being too strict costs a client a file
+			// exactly as surely as being too loose lets one through.
+			if ext != "" && strings.EqualFold(extension, ext) {
+				found = true
+			}
+		}
 	}
 }
 
@@ -579,7 +768,7 @@ func residualRelationship(raw []byte) (string, bool) {
 	return "", false
 }
 
-func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error) {
 	listing, err := runCommand(ctx, "unzip", "-Z1", path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: unzip could not list the output: %v",
@@ -599,6 +788,24 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 	// cannot open. A check that only runs when a part is present says nothing
 	// about a package that omits it. Caught in review (PR #12, round 6).
 	sawContentTypes := 0
+
+	// SANI-09: the package must still contain the document.
+	//
+	// relationshipDrivenDrops resolves a relationship's Target and drops that
+	// part. A .rels whose Target is the package's OWN main part therefore
+	// produces an output that unzips, carries a well-formed
+	// [Content_Types].xml, and contains no document at all -- and this
+	// verifier was satisfied by it, because it counted [Content_Types].xml and
+	// never asked whether anything else survived. Observed before the fix:
+	// SanitizeFile succeeded, reported five removed classes, and delivered a
+	// package that opens as nothing.
+	//
+	// "I removed every threat" is not the claim this service makes. It says it
+	// sanitized a document, and a package with no document in it cannot be
+	// called sanitized -- it can only be called empty.
+	mainPart := ooxmlMainPart(format)
+	sawMainPart := false
+	var contentTypesBlob []byte
 
 	dir, err := os.MkdirTemp("", "octoconv-verify-*")
 	if err != nil {
@@ -652,8 +859,44 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 				"(libmagic called it %s)", ErrSanitizeResidue, part, mime)
 		}
 
+		if mainPart != "" && strings.EqualFold(part, mainPart) {
+			// PRESENT IS NOT ENOUGH. A zero-byte or malformed word/document.xml
+			// satisfied a filename comparison while carrying no document at
+			// all: the loop's root-element check is only consulted for the
+			// property-part test, and libmagic only rules out OLE content. So
+			// a valid [Content_Types].xml was letting an empty or corrupt
+			// package through -- the very outcome SANI-09 exists to reject,
+			// one step further in. Found by review on PR #14, round 4.
+			// PARSED TO A CLEAN EOF, not just far enough to see the root.
+			// xmlRootElement returns on the first start token, so
+			// "<document><broken>" satisfied it while carrying a document that
+			// cannot be opened. Found by review on PR #14, round 5 -- the
+			// round-4 fix had moved the check to the right place and stopped
+			// one token short of making it mean anything.
+			root, ok := xmlWholeDocumentRoot(blob)
+			if !ok {
+				return nil, fmt.Errorf("%w: %s does not parse as XML to the end, so the "+
+					"package has no usable document in it", ErrSanitizeUnverifiable, part)
+			}
+			// LOCAL NAME, NOT THE FULL NAMESPACE, and that is a deliberate
+			// limit rather than an oversight. OOXML has two conformance
+			// classes with different namespaces for the same element --
+			// Transitional (schemas.openxmlformats.org/...) and Strict
+			// (purl.oclc.org/ooxml/...) -- so pinning one would refuse valid
+			// Strict packages. Rejection here DELETES the output, and this
+			// check exists to catch an empty or corrupt main part, not to
+			// referee conformance classes.
+			if want := ooxmlMainRoot(format); want != "" && root.Local != want {
+				return nil, fmt.Errorf("%w: %s has root <%s>, want <%s> -- this is not the "+
+					"document this format requires", ErrSanitizeUnverifiable, part,
+					root.Local, want)
+			}
+			sawMainPart = true
+		}
+
 		if strings.EqualFold(part, "[Content_Types].xml") {
 			sawContentTypes++
+			contentTypesBlob = append([]byte(nil), blob...)
 			for _, marker := range macroContentTypeMarkers {
 				if bytes.Contains(blob, []byte(marker)) {
 					return nil, fmt.Errorf("%w: [Content_Types].xml still declares %q",
@@ -685,6 +928,20 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 		return nil, fmt.Errorf("%w: the package has %d [Content_Types].xml parts, want exactly 1; "+
 			"without it this is not an OOXML package and nothing here describes it",
 			ErrSanitizeUnverifiable, sawContentTypes)
+	}
+
+	if mainPart == "" {
+		return nil, fmt.Errorf("%w: no main part is declared for format %q, so this verifier "+
+			"cannot say whether the document survived", ErrSanitizeUnverifiable, format)
+	}
+	if !sawMainPart {
+		return nil, fmt.Errorf("%w: the sanitized package has no %s -- the document itself is "+
+			"gone, so there is nothing here to call sanitized", ErrSanitizeUnverifiable, mainPart)
+	}
+	if !contentTypeDeclares(contentTypesBlob, mainPart) {
+		return nil, fmt.Errorf("%w: [Content_Types].xml does not declare a content type for %s; "+
+			"the part is present but nothing says what it is, and Office will not open it",
+			ErrSanitizeUnverifiable, mainPart)
 	}
 
 	return append([]ThreatClass(nil), ooxmlThreatClasses...), nil
@@ -766,25 +1023,126 @@ func init() {
 // verifier that allows any APP14 starting with "Adobe" confirms as clean the
 // exact segment the sanitizer was fixed to stop preserving. The two halves of
 // this fix are useless apart.
-func jpegSegmentAllowed(marker byte, payload []byte) bool {
+func jpegSegmentAllowed(marker byte, payload []byte, iccSetComplete bool) bool {
 	switch marker {
 	case 0xEE:
 		return len(payload) == 12 && bytes.HasPrefix(payload, []byte("Adobe"))
 	case 0xE2:
-		const iccHeader = 14
-		if !bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00")) || len(payload) < iccHeader+4 {
-			return false
-		}
-		declared := int(binary.BigEndian.Uint32(payload[iccHeader : iccHeader+4]))
-		return len(payload)-iccHeader <= declared
+		// An ICC chunk is allowed only as part of a COMPLETE set, decided by
+		// the caller's own pass (verifierICCSetComplete). The version this
+		// replaced read four bytes at a fixed offset as the profile's declared
+		// size, which is true of chunk 1 and meaningless in every continuation
+		// chunk -- so it called a legitimate chunk residue, and would have
+		// failed every multi-chunk profile the sanitizer now correctly keeps.
+		//
+		// Note the direction this errs in. Broad here means "allowed", so the
+		// bar for allowing is a complete set and nothing less; a chunk from an
+		// incomplete or inconsistent set is residue, which is the verdict that
+		// stops delivery.
+		return iccSetComplete && bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00"))
 	default:
 		return false
 	}
 }
 
+// verifierICCSetComplete decides, from the OUTPUT alone, whether its ICC chunks
+// form one complete profile.
+//
+// Written against the file rather than shared with the sanitizer's
+// iccChunkSetIsValid, for the reason this file's header gives: two
+// implementations of one rule are the point, and a shared one would prove only
+// that the walker agrees with itself. The propositions are also genuinely
+// different -- the sanitizer asks "may I keep these", this asks "is what
+// arrived a whole profile".
+func verifierICCSetComplete(raw []byte) bool {
+	const iccHeader = 14
+	tag := []byte("ICC_PROFILE\x00")
+
+	var seqs []int
+	count := -1
+	assembled := 0
+	declared := -1
+
+	i := 2
+	for i+1 < len(raw) {
+		if raw[i] != 0xFF {
+			return false
+		}
+		for i+2 < len(raw) && raw[i+1] == 0xFF {
+			i++
+		}
+		marker := raw[i+1]
+		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
+			i += 2
+			continue
+		}
+		if marker == 0xD9 {
+			break
+		}
+		if i+4 > len(raw) {
+			return false
+		}
+		segLen := int(binary.BigEndian.Uint16(raw[i+2 : i+4]))
+		if segLen < 2 || i+2+segLen > len(raw) {
+			return false
+		}
+		end := i + 2 + segLen
+		if marker == 0xDA {
+			i = skipEntropyCodedScan(raw, end)
+			continue
+		}
+		if payload := raw[i+4 : end]; marker == 0xE2 && bytes.HasPrefix(payload, tag) {
+			if len(payload) < iccHeader {
+				return false
+			}
+			seq, c := int(payload[iccHeader-2]), int(payload[iccHeader-1])
+			if count == -1 {
+				count = c
+			}
+			if c != count {
+				return false
+			}
+			seqs = append(seqs, seq)
+			data := payload[iccHeader:]
+			assembled += len(data)
+			if seq == 1 {
+				if len(data) < 4 {
+					return false
+				}
+				declared = int(binary.BigEndian.Uint32(data[:4]))
+			}
+		}
+		i = end
+	}
+
+	// No chunks at all is a complete set in the only sense that matters here:
+	// there is no ICC residue to report. The caller never reaches
+	// jpegSegmentAllowed for a segment that does not exist.
+	if count == -1 {
+		return true
+	}
+	if count < 1 || len(seqs) != count {
+		return false
+	}
+	seen := make([]bool, count+1)
+	for _, s := range seqs {
+		if s < 1 || s > count || seen[s] {
+			return false
+		}
+		seen[s] = true
+	}
+	// The profile's own size field, from chunk 1, against what actually
+	// arrived. See iccChunkSetIsValid for why this is equality and what it
+	// costs; the two are written apart on purpose and this is one of the
+	// places they must nonetheless agree.
+	return declared == assembled
+}
+
 // jpegMetadataResidue walks a JPEG's segment chain and reports any APPn or COM
 // segment that is not one of the allowed colour-management segments.
 func jpegMetadataResidue(raw []byte) (string, bool) {
+	iccSetComplete := verifierICCSetComplete(raw)
+
 	i := 2 // past SOI
 	for i+1 < len(raw) {
 		if raw[i] != 0xFF {
@@ -834,7 +1192,7 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 
 		isAPP := marker >= 0xE0 && marker <= 0xEF
 		if isAPP || marker == 0xFE {
-			if !jpegSegmentAllowed(marker, raw[i+4:end]) {
+			if !jpegSegmentAllowed(marker, raw[i+4:end], iccSetComplete) {
 				return fmt.Sprintf("APP%d/COM segment 0x%02X at offset %d", marker-0xE0, marker, i), true
 			}
 		}
@@ -903,7 +1261,7 @@ func pngMetadataResidue(raw []byte) (string, bool) {
 // upload the API accepted into a failed job at the last step.
 const verifyMaxDecodePixels = 100_000_000
 
-func verifyImage(ctx context.Context, path string) ([]ThreatClass, error) {
+func verifyImage(ctx context.Context, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)

@@ -341,6 +341,281 @@ def build_exif_jpeg() -> bytes:
     return b"\xff\xd8" + app1 + dqt + sof0 + dht_dc + dht_ac + sos + scan + b"\xff\xd9"
 
 
+
+# ---------------------------------------------------------------------------
+# icc_multichunk.jpg  (SANI-07)
+# ---------------------------------------------------------------------------
+
+# An ICC profile split across APP2 chunks carries, after the 12-byte
+# "ICC_PROFILE\0" tag, a one-byte SEQUENCE number and a one-byte COUNT -- and
+# then raw profile bytes. Those raw bytes are the profile HEADER only in chunk
+# 1, where the first four of them are the profile's own size field. In every
+# continuation chunk they are ordinary profile data.
+#
+# That is the whole finding: reading payload[14:18] as a declared size is
+# correct for chunk 1 and meaningless afterwards. This fixture makes the
+# difference observable by putting 00 00 00 04 -- a plausible-looking tiny
+# size -- at the head of chunk 2's data, so the old per-chunk check computes
+# "this chunk is bigger than the profile it claims to belong to" and drops a
+# chunk out of the middle of a valid profile.
+ICC_TAG = b"ICC_PROFILE\x00"
+ICC_CHUNK_DATA = 64          # profile bytes per chunk, small and fixed
+ICC_TOTAL_CHUNKS = 3
+ICC_TRAP_BYTES = b"\x00\x00\x00\x04"
+
+
+def build_icc_profile() -> bytes:
+    """A profile-shaped byte string whose first four bytes are its own size.
+
+    Not a real renderable ICC profile -- the sanitizer never interprets one,
+    and pretending otherwise would add an imaging dependency the corpus does
+    not have. What matters structurally is that byte 0..3 of the ASSEMBLED
+    profile is its length, because that is the field the fixed check reads.
+    """
+    total = ICC_CHUNK_DATA * ICC_TOTAL_CHUNKS
+    body = bytearray()
+    body += struct.pack(">I", total)        # profile size, per ICC.1 §7.2.2
+    body += b"OCTO"                          # preferred CMM
+    while len(body) < total:
+        body.append(len(body) & 0xFF)
+    body = body[:total]
+
+    # The trap: chunk 2's first four data bytes read as a small integer.
+    off = ICC_CHUNK_DATA
+    body[off:off + 4] = ICC_TRAP_BYTES
+    return bytes(body)
+
+
+def icc_app2_segments(profile: bytes) -> bytes:
+    out = bytearray()
+    for i in range(ICC_TOTAL_CHUNKS):
+        data = profile[i * ICC_CHUNK_DATA:(i + 1) * ICC_CHUNK_DATA]
+        payload = ICC_TAG + bytes([i + 1, ICC_TOTAL_CHUNKS]) + data
+        out += b"\xff\xe2" + struct.pack(">H", len(payload) + 2) + payload
+    return bytes(out)
+
+
+def build_icc_multichunk_jpeg() -> bytes:
+    """A JPEG whose ICC profile spans three APP2 chunks, plus an APP1 to drop.
+
+    The APP1 is here so the fixture also proves the fix did not turn into
+    "keep every APP segment": a file where nothing is dropped and nothing is
+    corrupted passes an ICC test for the wrong reason.
+    """
+    profile = build_icc_profile()
+    app2 = icc_app2_segments(profile)
+
+    exif_payload = b"Exif\x00\x00" + b"MM\x00\x2a" + struct.pack(">I", 8) + struct.pack(">H", 0) + struct.pack(">I", 0)
+    app1 = b"\xff\xe1" + struct.pack(">H", len(exif_payload) + 2) + exif_payload
+
+    dqt_payload = b"\x00" + bytes([1] * 64)
+    dqt = b"\xff\xdb" + struct.pack(">H", len(dqt_payload) + 2) + dqt_payload
+    sof0_payload = b"\x08" + struct.pack(">HH", 1, 1) + b"\x01" + b"\x01\x11\x00"
+    sof0 = b"\xff\xc0" + struct.pack(">H", len(sof0_payload) + 2) + sof0_payload
+
+    def dht(cls_id, counts, symbols):
+        payload = bytes([cls_id]) + bytes(counts) + bytes(symbols)
+        return b"\xff\xc4" + struct.pack(">H", len(payload) + 2) + payload
+
+    dht_dc = dht(0x00, [1] + [0] * 15, [0x00])
+    dht_ac = dht(0x10, [1] + [0] * 15, [0x00])
+    sos = b"\xff\xda" + struct.pack(">H", 8) + b"\x01\x01\x00\x00\x3f\x00"
+    scan = b"\x00"
+    return (b"\xff\xd8" + app1 + app2 + dqt + sof0 + dht_dc + dht_ac
+            + sos + scan + b"\xff\xd9")
+
+
+def check_icc_chunks(blob: bytes) -> list:
+    """The chunk set must be well-formed, or the fixture proves nothing.
+
+    A generator that emits two chunks claiming count=3, or repeats a sequence
+    number, would make the sanitizer drop the set for a reason that has nothing
+    to do with the finding -- and the test would still be green. This is the
+    same lesson the SOF0 length bug taught: a grep cannot see a malformed
+    structure, so the generator checks the structure it just built.
+    """
+    problems = []
+    seqs, counts, assembled = [], set(), bytearray()
+    i = 2
+    while i + 3 < len(blob):
+        if blob[i] != 0xFF:
+            break
+        marker = blob[i + 1]
+        if marker == 0xDA:
+            break
+        declared = struct.unpack(">H", blob[i + 2:i + 4])[0]
+        payload = blob[i + 4:i + 2 + declared]
+        if marker == 0xE2 and payload.startswith(ICC_TAG):
+            if len(payload) < len(ICC_TAG) + 2:
+                problems.append("icc: chunk shorter than its own header")
+            else:
+                seqs.append(payload[len(ICC_TAG)])
+                counts.add(payload[len(ICC_TAG) + 1])
+                assembled += payload[len(ICC_TAG) + 2:]
+        i += 2 + declared
+
+    if len(counts) != 1:
+        problems.append(f"icc: chunks disagree about the total count: {sorted(counts)}")
+    if seqs != list(range(1, ICC_TOTAL_CHUNKS + 1)):
+        problems.append(f"icc: sequence numbers are {seqs}, want 1..{ICC_TOTAL_CHUNKS}")
+    if counts and next(iter(counts)) != ICC_TOTAL_CHUNKS:
+        problems.append(f"icc: declared count {next(iter(counts))}, want {ICC_TOTAL_CHUNKS}")
+    if len(assembled) != ICC_CHUNK_DATA * ICC_TOTAL_CHUNKS:
+        problems.append(f"icc: assembled profile is {len(assembled)} bytes, "
+                        f"want {ICC_CHUNK_DATA * ICC_TOTAL_CHUNKS}")
+    if assembled[:4] != struct.pack(">I", ICC_CHUNK_DATA * ICC_TOTAL_CHUNKS):
+        problems.append("icc: assembled profile does not begin with its own size")
+
+    # The trap must actually be present, or this fixture is an ordinary
+    # multi-chunk profile and the finding it exists to reproduce is untested.
+    if assembled[ICC_CHUNK_DATA:ICC_CHUNK_DATA + 4] != ICC_TRAP_BYTES:
+        problems.append("icc: chunk 2 does not start with the small-integer trap bytes")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# endstream_in_stream.pdf  (SANI-08)
+# ---------------------------------------------------------------------------
+
+# The payload of this file's one stream contains, as ordinary bytes, all three
+# tokens the two byte walkers look for: "endstream", "startxref" and "%%EOF".
+# The dictionary's /Length is correct, so the file is valid -- the substring
+# scan and the dictionary simply disagree about where the stream ends, and
+# everything downstream of that disagreement is wrong:
+#
+#   * redactEngineIdentity's protected range stops early, so it may rewrite
+#     bytes INSIDE the stream;
+#   * verifySingleRevision counts startxref/%%EOF markers that are stream
+#     payload, not file structure, and reports a false multi-revision verdict.
+STREAM_TRAP = (b"binary-ish payload with endstream inside it, and startxref "
+               b"and %%EOF too\n")
+
+
+def build_endstream_in_stream_pdf() -> bytes:
+    stream_body = b"BT /F1 12 Tf 72 720 Td (visible) Tj ET\n" + STREAM_TRAP
+
+    objects = []
+    objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
+    objects.append(b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+    objects.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+                   b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>")
+    objects.append(b"<< /Length " + str(len(stream_body)).encode() + b" >>\nstream\n"
+                   + stream_body + b"endstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for n, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{n} 0 obj\n".encode() + body + b"\nendobj\n"
+
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets[1:]:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    return bytes(out)
+
+
+def check_endstream_trap(blob: bytes) -> list:
+    """The declared /Length and the first 'endstream' must actually disagree.
+
+    If they agree, this fixture is an ordinary PDF and the SANI-08 tests pass
+    without ever exercising the divergence they exist to close.
+    """
+    problems = []
+    key = b"/Length "
+    k = blob.find(key)
+    if k < 0:
+        return ["pdf: no /Length in the fixture"]
+    end = k + len(key)
+    digits = bytearray()
+    while end < len(blob) and blob[end:end + 1].isdigit():
+        digits += blob[end:end + 1]
+        end += 1
+    declared = int(digits)
+
+    s = blob.find(b"stream\n", k)
+    start = s + len(b"stream\n")
+    first = blob.find(b"endstream", start)
+    if first < 0:
+        return ["pdf: no endstream at all"]
+    if first - start >= declared:
+        problems.append(
+            f"pdf: the first 'endstream' is at +{first - start} but /Length is "
+            f"{declared} -- they do not disagree, so the fixture proves nothing")
+    for token in (b"startxref", b"%%EOF"):
+        if token not in blob[start:start + declared]:
+            problems.append(f"pdf: {token!r} is not inside the stream payload")
+    return problems
+
+
+# ---------------------------------------------------------------------------
+# ooxml_rel_targets_main.docx  (SANI-09)
+# ---------------------------------------------------------------------------
+
+# A docx whose word/_rels/document.xml.rels declares an oleObject relationship
+# whose Target is document.xml -- the package's own main part.
+# relationshipDrivenDrops resolves that target and drops it, so the sanitized
+# package unzips, carries a well-formed [Content_Types].xml, and contains no
+# document at all. Today's verifier is satisfied by that: it counts
+# [Content_Types].xml and never asks whether the document survived.
+OLE_REL_TYPE = ("http://schemas.openxmlformats.org/officeDocument/2006/"
+                "relationships/oleObject")
+
+
+def build_ooxml_rel_targets_main() -> bytes:
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        '</Types>'
+    )
+    root_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        '</Relationships>'
+    )
+    # The finding: a dropped-class relationship pointing at the main part.
+    doc_rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{OLE_REL_TYPE}" Target="document.xml"/>'
+        '</Relationships>'
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body><w:p><w:r><w:t>{BODY_TEXT}</w:t></w:r></w:p></w:body>'
+        '</w:document>'
+    )
+
+    parts = [
+        ("[Content_Types].xml", content_types.encode("utf-8")),
+        ("_rels/.rels", root_rels.encode("utf-8")),
+        ("word/document.xml", document.encode("utf-8")),
+        ("word/_rels/document.xml.rels", doc_rels.encode("utf-8")),
+    ]
+
+    import io
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in parts:
+            info = zipfile.ZipInfo(name, date_time=ZIP_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o600 << 16
+            info.create_system = 0
+            zf.writestr(info, data)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # self-check
 # ---------------------------------------------------------------------------
@@ -367,12 +642,27 @@ EXPECTED = {
     "exif_gps.jpg": [
         b"Exif\x00\x00", b"OctoConvCam", b"FixtureModel X1",
     ],
+    "icc_multichunk.jpg": [
+        ICC_TAG, b"Exif\x00\x00",
+    ],
+    "endstream_in_stream.pdf": [
+        b"endstream", b"startxref", b"%%EOF", STREAM_TRAP,
+    ],
+    "ooxml_rel_targets_main.docx": [
+        b"word/document.xml",
+    ],
 }
 
 # macro_enabled.docm is a deflate archive, so its part CONTENTS are not
 # greppable in the raw bytes -- only the central-directory names are. These
 # markers are checked against the decompressed parts instead.
 EXPECTED_IN_ZIP_PARTS = {
+    "ooxml_rel_targets_main.docx": [
+        ("word/_rels/document.xml.rels", OLE_REL_TYPE.encode()),
+        ("word/_rels/document.xml.rels", b'Target="document.xml"'),
+        ("word/document.xml", BODY_TEXT.encode()),
+        ("[Content_Types].xml", b'PartName="/word/document.xml"'),
+    ],
     "macro_enabled.docm": [
         ("word/vbaProject.bin", OLE_SIGNATURE),
         ("word/vbaProject.bin", b"_VBA_PROJECT"),
@@ -476,6 +766,18 @@ def check(out_dir: str) -> int:
     if os.path.exists(pdf):
         failures += ["threat_all_classes.pdf: " + m for m in check_pdf_structure(open(pdf, "rb").read())]
 
+    icc = os.path.join(out_dir, "icc_multichunk.jpg")
+    if os.path.exists(icc):
+        blob = open(icc, "rb").read()
+        failures += ["icc_multichunk.jpg: " + m for m in check_jpeg_structure(blob)]
+        failures += ["icc_multichunk.jpg: " + m for m in check_icc_chunks(blob)]
+
+    trap = os.path.join(out_dir, "endstream_in_stream.pdf")
+    if os.path.exists(trap):
+        blob = open(trap, "rb").read()
+        failures += ["endstream_in_stream.pdf: " + m for m in check_pdf_structure(blob)]
+        failures += ["endstream_in_stream.pdf: " + m for m in check_endstream_trap(blob)]
+
     for name, entries in EXPECTED_IN_ZIP_PARTS.items():
         path = os.path.join(out_dir, name)
         if not os.path.exists(path):
@@ -515,6 +817,9 @@ def main() -> int:
             ("threat_all_classes.pdf", build_threat_pdf()),
             ("macro_enabled.docm", build_macro_docm()),
             ("exif_gps.jpg", build_exif_jpeg()),
+            ("icc_multichunk.jpg", build_icc_multichunk_jpeg()),
+            ("endstream_in_stream.pdf", build_endstream_in_stream_pdf()),
+            ("ooxml_rel_targets_main.docx", build_ooxml_rel_targets_main()),
         ):
             with open(os.path.join(args.out_dir, name), "wb") as fh:
                 fh.write(blob)

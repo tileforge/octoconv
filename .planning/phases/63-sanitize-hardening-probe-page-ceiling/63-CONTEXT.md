@@ -144,9 +144,29 @@ run and its output recorded. SC5 is the whole of D-16 restated for this phase.
 
 ## Out of scope, said explicitly
 
-* Making `pdfStreamRanges` and `pdfNonStreamBytes` one function. Named above.
-* A general PDF object parser. The resolver indexes `N G obj` offsets and reads
-  one integer; anything more is a parser, and this phase is not writing one.
+* ~~Making `pdfStreamRanges` and `pdfNonStreamBytes` one function.~~ **ALSO
+  REVERSED, also on evidence.** The two were separate so that one subtle walker
+  could not feed both the redaction and the check meant to catch its mistakes.
+  The reasoning was sound; the outcome was not. In all three review rounds the
+  two walkers had *identical* bugs — review said so in as many words — because
+  one author wrote both from one misunderstanding. The independence paid nothing
+  on any occasion and cost a second place to fix and a second chance to diverge
+  on trivia (they disagreed about whether a form feed is whitespace, which cost a
+  valid file its output). They now share the tokenizer and keep their
+  propositions apart, which is where the independence was always load-bearing.
+* ~~A general PDF object parser. The resolver indexes `N G obj` offsets and reads
+  one integer; anything more is a parser, and this phase is not writing one.~~
+  **REVERSED during execution, on evidence.** Three rounds of review on PR #14
+  found six defects in the byte-scanning version and every one was the same
+  defect: a token recognised by its bytes without regard to the lexical context
+  it sits in (`stream` inside `endstream`; `/Length` inside `/Length1`; object
+  headers inside payloads; object headers inside comments; `stream` inside a
+  comment; `>>` inside a literal string). Patching a seventh would have been the
+  sixth clever comparison in a row against a bound that keeps getting bypassed —
+  the pattern `.planning/RETROSPECTIVE.md` already records and which was resolved
+  once before by replacing the comparison, not refining it. `internal/convert/pdflex.go`
+  models PDF's four lexical contexts and nothing more: no document, no reference
+  resolution beyond one integer, no decoding.
 * Page ceilings for engines other than probe. OCR already has its own; the rest
   have no per-page cost model, and inventing one without a measurement is the
   thing phase 60 established is not worth doing.

@@ -423,7 +423,10 @@ func TestRedactionSkipsStreamPayloads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ranges := pdfStreamRanges(raw)
+	ranges, err := pdfStreamRanges(raw)
+	if err != nil {
+		t.Fatalf("pdfStreamRanges: %v", err)
+	}
 	if len(ranges) == 0 {
 		t.Fatal("the sanitized fixture has no streams; this test proves nothing")
 	}
@@ -435,7 +438,10 @@ func TestRedactionSkipsStreamPayloads(t *testing.T) {
 	spliced := append([]byte(nil), raw...)
 	copy(spliced[at:], payload)
 
-	redacted := redactEngineIdentity(spliced)
+	redacted, err := redactEngineIdentity(spliced)
+	if err != nil {
+		t.Fatalf("redactEngineIdentity: %v", err)
+	}
 
 	if len(redacted) != len(spliced) {
 		t.Fatalf("the redaction changed the file length (%d -> %d); every xref offset after "+

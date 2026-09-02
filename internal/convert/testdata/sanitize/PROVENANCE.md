@@ -11,7 +11,7 @@ a sanitizer proves what the sanitizer already does. A fixture committed first
 proves what it must do. Phase 59 paid for that distinction twice — its corpus
 caught a 19× overcount that every pre-existing fixture was blind to.
 
-Regenerate all three with:
+Regenerate all six with:
 
 ```
 python3 scripts/sanitize-corpus.py
@@ -210,6 +210,82 @@ it passes, and Go decodes the file to a 1×1 image.
 
 **If replaced:** SANI-02 for images loses its only positive fixture, and a
 metadata stripper that silently does nothing passes.
+
+---
+
+## `icc_multichunk.jpg` — 411 bytes
+
+Added by Plan 63-01 for **SANI-07**.
+
+A JPEG whose ICC profile is split across **three** APP2 chunks (192 profile
+bytes, 64 per chunk), plus one APP1/Exif segment that must still be dropped.
+
+The trap is four bytes. After the 12-byte `ICC_PROFILE\0` tag each chunk carries
+a one-byte sequence number and a one-byte total count, and then raw profile
+bytes. Those bytes are the profile *header* only in chunk 1, where the first
+four of them are the profile's own size field. In continuation chunks they are
+ordinary profile data — so chunk 2 here begins `00 00 00 04`, a perfectly
+plausible tiny size that has nothing to do with anything.
+
+Observed on the tree before the fix: **3 chunks in, 2 out.** The sanitizer
+dropped a chunk out of the middle of a valid profile, leaving a file that still
+decodes, still reports its colour profile as preserved, and renders with the
+wrong colours.
+
+The APP1 is not decoration: a fixture where nothing is dropped would pass an ICC
+test for the wrong reason.
+
+The generator walks the chunk set it just built and refuses to emit one whose
+sequence numbers are not exactly `1..count`, whose chunks disagree about
+`count`, whose assembled profile does not begin with its own size, or whose
+chunk 2 does not carry the trap bytes. A fixture that is malformed in some other
+way would make the sanitizer drop the set for a reason unrelated to the finding,
+and the test would still be green.
+
+---
+
+## `endstream_in_stream.pdf` — 656 bytes
+
+Added by Plan 63-01 for **SANI-08**.
+
+One content stream whose payload contains, as ordinary bytes, all three tokens
+the two byte walkers look for: `endstream`, `startxref` and `%%EOF`. The
+dictionary's `/Length` is correct and the file is valid — the substring scan and
+the dictionary simply disagree about where the stream ends.
+
+Observed on the tree before the fix, and **worse than the review finding
+predicted**:
+
+* `pdfStreamRanges` returns `[274 337]` for a payload that actually runs to
+  offset 400, so the redactor's protected range excludes the last 63 bytes — it
+  may rewrite bytes inside the stream.
+* `pdfNonStreamBytes` gets it exactly **inverted**. The payload's `startxref`
+  (offset 362) and `%%EOF` (376) *survive* blanking, and the file's real trailer
+  — xref table, `startxref 473`, `%%EOF` — is blanked to spaces. The revision
+  count then reads 1 and 1 and passes, arrived at by reading the payload as
+  structure *and* the structure as payload: two errors whose totals happen to
+  agree with the right answer.
+
+The second half of that has a second cause worth naming: `bytes.Index(…,
+"stream")` matches inside `endstream`, so after the first blanking the walker
+re-enters on the tail of the keyword it just consumed.
+
+---
+
+## `ooxml_rel_targets_main.docx` — 1239 bytes
+
+Added by Plan 63-01 for **SANI-09**.
+
+A docx whose `word/_rels/document.xml.rels` declares an `oleObject`
+relationship whose `Target` is `document.xml` — the package's own main part.
+`relationshipDrivenDrops` resolves that target and drops it.
+
+Observed on the tree before the fix: `SanitizeFile` **succeeds**, reports
+`removed=[vba_macro ole_object embedded_file external_reference
+document_metadata]`, and delivers a package with **no `word/document.xml` at
+all**. It unzips, it carries a well-formed `[Content_Types].xml`, and it opens
+as nothing. The verifier counts `[Content_Types].xml` and never asks whether the
+document survived.
 
 ---
 
