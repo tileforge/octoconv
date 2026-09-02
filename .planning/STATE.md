@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
-status: planning
-stopped_at: Phase 60 merged (PR #12, 6ef1711); v1.13 code-complete; SC5 open pending an operator corpus run
-last_updated: "2026-09-01T00:00:00.000Z"
-last_activity: 2026-09-02 -- Phase 60 merged (PR #12, 6ef1711) after 8 review rounds; SC5 still open
+status: Awaiting next milestone
+stopped_at: Phase 60 context gathered; ready to plan
+last_updated: "2026-09-02T03:22:20.883Z"
+last_activity: 2026-09-02 — Milestone v1.13 completed and archived
 progress:
   total_phases: 6
-  completed_phases: 5   # 60 executed but SC5 unmet -- see Current Position
-  total_plans: 32
-  completed_plans: 32
-  percent: 83
+  completed_phases: 6
+  total_plans: 38
+  completed_plans: 38
+  percent: 100
 ---
 
 # Project State
@@ -25,24 +25,10 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 60 (sanitize-eighth-engine-class) — MERGED (PR #12, 6ef1711); v1.13 code-complete
-Plan: 6 of 6 — all waves done
-Status: sanitize ships end to end. PDF rebuilt through PostScript, OOXML macro parts dropped by CONTENT (a renamed vbaProject.bin is still dropped), image metadata stripped structurally with the compressed data copied byte-for-byte. Every output is re-checked by an implementation that did not do the removing — pdfcpu for PDF, unzip+libmagic for OOXML, stdlib decode for images — and an output that cannot be verified is deleted rather than delivered. The report goes back as the role=report output, built from two closed vocabularies with no verdict field, and a doc-sync test makes an affirmative safety claim fail the build.
-
-SC5 is NOT met and is not claimed. PROBE_ENGINE_TIMEOUT=180s is a placeholder, marked as such in .env.example, all 11 compose services, the chart ConfigMap, and the API's estimate provenance (estimate_source=unmeasured). Open item: .planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md — closed by running scripts/probe-timeout-measure.sh on a corpus representative of real load.
-
-Four things the work found that planning had not: gs signs its output with /Producer and a %%Invocation line inside a compressed /ObjStm where phase 60-02's own byte grep was blind (found by the verifier on its first run); the 60-01 JPEG fixture was structurally malformed and passed a grep-only self-check; converters.go's init() runs before sanitizeFormats is populated, which would have left operation=sanitize returning 422 with the implementation in place; and the report had nothing delivering it until an out-of-plan SideOutputs hook was added.
-Review round 1 (codex, PR #12) found six real defects, all fixed in 4fa4b39. The severe one: the sanitize report was never stored with role=report, because jobs.Repo.AddOutput deliberately omits that column -- every sanitize job would have ended with two primary outputs and failed MarkDone's guard. Three of the six were tests that proved a component rather than its use, which is the lesson to carry: a test that calls the function directly cannot see that nothing else calls it.
-Eight codex review rounds produced 26 findings; 23 were fixed on the branch. Three P2s from round 8 merged unfixed by the operator's decision, recorded with fix shapes in .planning/todos/pending/2026-09-02-sanitize-round-8-findings.md -- none of them is the threat-survives-and-is-reported-verified class that made the earlier rounds blocking.
-
-All six v1.13 phases are now merged. Requirements bookkeeping corrected 2026-09-02: SANI-01..05 are Complete (they had been left Pending from roadmap creation), SANI-06 is Partial with the gap named in REQUIREMENTS.md.
-
-MILESTONE CLOSE IS DELIBERATELY HELD until the timeout is measured. Asked and answered on 2026-09-02: close with the gap recorded, audit first, or wait for the measurement — the operator chose to wait, so v1.13 stays open and SANI-06 stays Partial rather than being archived as a Known Gap.
-
-The pre-close artifact audit was run and its 46 open items (26 quick tasks, 15 dormant seeds, 5 todos accumulated across thirteen milestones) are to be acknowledged as deferred when the close does happen. That decision is recorded now so the close itself is one step.
-
-Critical path to closing v1.13: run scripts/probe-timeout-measure.sh on a representative corpus, land the number, then /gsd:complete-milestone.
-Last activity: 2026-09-02 -- Phase 60 merged (PR #12, 6ef1711); SC5 still open
+Phase: Milestone v1.13 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-09-02 — Milestone v1.13 completed and archived
 
 ## Performance Metrics
 
@@ -200,96 +186,65 @@ Carried from v1.12:
 
 ## Deferred Items
 
-Items acknowledged and deferred at v1.12 milestone close on 2026-08-07. Milestone audit status
-`tech_debt` — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers
-(`.planning/milestones/v1.12-MILESTONE-AUDIT.md` has the itemized list):
+Acknowledged and deferred at the v1.13 milestone close on 2026-09-02: 47 items.
+
+These accumulated across thirteen milestones. The seeds are dormant by
+design — a seed exists to be dated and left until its trigger fires. The
+quick tasks are execution history whose directories were never archived.
+The todos are the live ones and are the only part of this table worth
+reading as work: the probe page ceiling, the three round-8 review
+findings, the API startup crashloop, the inspect honest-reporting items,
+and the soak test that shares a database with parallel packages.
 
 | Category | Item | Status |
 |----------|------|--------|
-| tech_debt | **52 WR-01** — an in-flight (`queued`/`active`) job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day; no operator remedy exists in `cmd/manage-clients` (raw SQL only), and the new coupling between quota availability and `cmd/webhook-worker`'s health is undocumented | Accepted, non-blocking — the unavoidable price of making the daily cap real; self-heals via the reconciler in a correctly operated deployment. **Highest-value follow-up in the milestone** |
-| tech_debt | 52 WR-09 — `README.md:242` claims enforcement happens "before the upload touches storage", contradicted by `README.md:294`; `README.md:257` hardcodes "the seven known engine classes" instead of deriving from `convert.AllEngines()` | Open — documentation accuracy only, shipped behavior is correct |
-| tech_debt | 52 WR-03/WR-04 — migration 0014 uses `DROP CONSTRAINT IF EXISTS` against repo convention with no exactly-once CHECK assertion; `recordUsage` can now abort `Repo.Cancel` via the status CHECK, which migrations 0011/0013 explicitly argued against for `engine` on the same table | Latent risks, verified non-defective at close |
-| tech_debt | 52 WR-05 — `internal/presets/repo.go` and `internal/clients/repo.go` still use bare `pgx.BeginFunc` without the `pgx.ReadCommitted` pin adopted in `internal/jobs` for the identical read-modify-write shape | Out of phase scope, pre-existing inconsistency |
-| accepted_risk | 52 — `admitLocked` runs after `s.storage.Upload`, so a concurrent burst wastes a bounded N−K uploads before the 429 | Disclosed and measured (`internal/jobs/admission.go:531-596`, `TestQuotaAdmission/ConcurrentBurstBoundedUploadWaste`) — accepted deviation from ROADMAP SC2b's literal wording, not debt to close |
-| tech_debt | 53 WR-05/WR-06/WR-08 — `GET /v1/system/usage` all-clients response is unpaginated; a mistyped `client_limits.engine` is reported as an enforceable budget the gate never applies; `api.go`'s "never nil after NewServer" contract is not panic-enforced | Informational; unpaginated response accepted per D-02 (small internal client population) |
-| tech_debt | 54 IN-04/IN-06 — the new `ci.yml` `helm` job has no `timeout-minutes`; `values.yaml:189-190` hardcodes `minioadmin` defaults (pre-existing, untouched) | CI hygiene |
-| tech_debt | 54 WR-03/WR-04 — `azure/setup-helm@v4` tag-pinned not SHA-pinned; the four pre-existing CI jobs carry no workflow-level `permissions:` | Accepted overrides with recorded rationale in 54-VERIFICATION.md frontmatter (threat model T-54-03; purely-additive `ci.yml` invariant) |
-| tech_debt | 55 Gap Note A — the live-gate harness proves the cross-replica claim with aggregate per-pod admit/reject counts, where 55-05-PLAN.md's acceptance criteria asked for a transcript line naming a specific admitted and a specific rejected request-id on different pods | Unflagged deviation, not a functional gap — the underlying claim is independently verified; recorded so a future reader does not hunt for a line that isn't there |
-| tech_debt | Cross-phase — `internal/jobs/retention.go:126` `PurgeUsage` derives its cutoff from `time.Now().UTC()` rather than Postgres's `now()`, unlike `evaluate()`/`recordUsage`/`UTCToday` | Inconsequential at a 400-day window; inconsistent with the clock discipline this milestone established |
-| infra | `internal/storage` `TestRoundTrip` fails on the shared dev host — the `octoconv-minio` volume is at 100% disk (`49G used / 256M avail`) | Host housekeeping, not application code (53-06 deferred-items.md) |
-| tooling_noise | `audit-open` reports 12 quick tasks as `missing` | False positives — all 12 have both PLAN.md and SUMMARY.md; the SDK parser expects a `status:` frontmatter field these files do not carry |
-| seeds | SEED-004..007, 010, 013..021 (14 dormant) | Dormant by design — forward-looking parking lot. SEED-011 flipped to `implemented` at this close (delivered by Phase 54 / CAPA-01); SEED-017 (PDF split/merge) is the concrete future demand the ACCT-02 multi-ordinal byte accounting was built for |
-
-Items acknowledged and deferred at v1.11 milestone close on 2026-08-02:
-
-| Category | Item | Status |
-|----------|------|--------|
-| quick_task | 4 pre-v1.11 quick tasks without SUMMARY (260712-cqg, 260719-2f5, 260724-26g, 260728-0ay) | missing/abandoned — all predate v1.11, carried forward from the v1.10 close below |
-| seeds | SEED-004..015 (12 dormant) | dormant by design; SEED-011 now in active scope as v1.12 Phase 54 |
-| tech_debt | 12 open WARNING findings in 50-REVIEW.md — live-gate harness robustness (missing jq/psql preflights, fixed /tmp fixture names, `--calibrate-only` matched only by exact `$1`, victim/survivor can collapse to one pod, `$WORKDIR` leak on error paths, attribution poller kubectl-execs into the very cgroup whose memory it measures) | Accepted — harnesses are internal gate tooling, not shipped product. Recommended: one `/gsd:quick` hardening pass |
-| tech_debt | Stale "4 MiB" prose in ~12 comment sites after the Path-B cap change | Comments only; every actual value is 3 MiB (3145728) and verified consistent across compose, chart and Go |
-| tech_debt | WR-11: `metadata.namespace` on ScaledObject | Reproduced from all six sibling ScaledObjects — fixing it is a whole-chart change, not a pandoc one |
-
-Items acknowledged and deferred at v1.10 milestone close on 2026-07-27:
-
-| Category | Item | Status |
-|----------|------|--------|
-| quick_task | 260712-cqg-fix-phase-16-verification-gaps-cr-01-wr- | missing/abandoned (v1.3-era, out of scope) |
-| quick_task | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | missing/abandoned (v1.5-era, out of scope) |
-| quick_task | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | missing/abandoned (out of scope) |
-| seeds | SEED-001..015 (12 dormant) | dormant by design — forward-looking parking lot |
-
-Acknowledged at v1.8 close (2026-07-23):
-
-| Category | Item | Status |
-|----------|------|--------|
-| seed | SEED-001: Lesson-recording analysis (tutors/language schools) | RESOLVED 2026-07-23 — the actual need (audio/video → transcript) shipped in v1.7 + v1.8; the vertical analysis-product (top-mistakes + spaced-repetition deck) was deliberately NOT pursued. Do not resurface as a backlog candidate. |
-| seed | SEED-004: Local k8s + KEDA full-stack validation | Deferred — superseded in practice by per-phase live gates (keda-gate 21/21, load-proofs Phases 28/33); revisit as CI k8s validation (K8SV2-01) |
-| tech_debt | WR-05 keda-load-proof.sh BUSY_POD jsonpath defect (kubectl v1.36.2, `deletionTimestamp==""` vs absent key) | Accepted residual (29-REVIEW), empirically confirmed live in Phase 33; forward-fix of the frozen script recommended in a future phase |
-| tech_debt | Registry cold-pull time for 682MB audio image | Unmeasurable on OrbStack shared store (Pulling→Pulled ≈0 recorded); measure in a real-registry environment before production KEDA tuning is trusted; same open question now applies to the av-worker image (AVX-02, v2 requirement) |
-| tooling_noise | audit-open flags 29-HUMAN-UAT.md (status resolved) and quick task 260712-cqg (complete, SUMMARY present) | Both artifacts closed; audit parser counts them regardless |
-| v2_scope | AVX-01: Trim/crop as validated closed-opts (start/end timecodes) | Deferred to v2 — only on confirmed demand | v1.8 requirements definition (2026-07-19) |
-| v2_scope | AVX-02: Registry cold-pull measurement for heavy images (av-worker) | Deferred to v2 — carries forward the same unmeasured-on-OrbStack gap as the audio image | v1.8 requirements definition (2026-07-19) |
-| v2_scope | PROG-V2-01: Stage-based sub-progress in the reference frontend UI | Deferred to v2 | v1.9 requirements definition (2026-07-23) |
-| v2_scope | PROG-V2-02: Coarse elapsed-vs-timeout progress heuristic for non-ffmpeg engines | Rejected for v1.9 — `null` is the honest answer; revisit only on confirmed demand | v1.9 requirements definition (2026-07-23) |
-| v2_scope | CNCL-V2-01: Batch cancel (cancel many jobs in one call) | Deferred to v2 | v1.9 requirements definition (2026-07-23) |
-| v2_scope | PUSH-V2-01: `event`-discriminated payloads for ALL webhook types | Deferred to v2 — broader webhook contract-versioning conversation, out of scope for the single new `progress` event | v1.9 requirements definition (2026-07-23) |
-| v2_scope | PDOC-V2-01: →pdf output via weasyprint/tectonic | Deferred to v2 — docx→pdf/html→pdf already covered by LibreOffice/chromium | v1.11 requirements definition (2026-07-30) |
-| v2_scope | PDOC-V2-02: Extended format allowlist (textile, mediawiki, asciidoc, ipynb, typst) | Deferred to v2 — on demand | v1.11 requirements definition (2026-07-30) |
-| v2_scope | PDOC-V2-03: Custom --lua-filter/templates/reference-doc | Deferred to v2 — needs its own sandbox/upload contract for untrusted code | v1.11 requirements definition (2026-07-30) |
-
-v1.12 requirements definition (2026-08-02) deferred the following to v2, with reasons (see REQUIREMENTS.md):
-
-| Category | Item | Status |
-|----------|------|--------|
-| v2_scope | FAIR-V2-01: Sub-queue/weighted-scheduler fairness | Evidence-gated — renames queues, breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing; revisit only if Phase 53's operator visibility shows Phase 52's admission caps are insufficient |
-| v2_scope | FAIR-V2-02: Priority tiers between clients | The only real asynq path is additional named queues per engine class, doubling ScaledObject count |
-| v2_scope | ACCT-V2-01: CPU-second (machine-time) accounting beyond wall-time | Requires worker instrumentation; only justified if inter-team capacity allocation becomes a real question |
-
-Items acknowledged and carried forward at milestone closes (see `.planning/milestones/*-MILESTONE-AUDIT.md` for full detail):
-
-| Category | Item | Status | Deferred At |
-|----------|------|--------|-------------|
-| tech_debt | docker-compose.yml audit for other stale gaps vs .env.example | Closed as DEBT-05, Phase 12 | v1.0 close (2026-07-08) |
-| tech_debt | WR-02: docker-compose.e2e.yml lacks `extra_hosts` on `api` — E2E webhook pair fails on plain-Linux docker | Closed as DEBT-01, Phase 12 | v1.2 close (2026-07-10) |
-| tech_debt | WR-03: engine-class string literals duplicated in 4 places — extract exported constants | Closed as DEBT-02, Phase 12 | v1.2 close (2026-07-10) |
-| tech_debt | WR-04: E2E HTTP clients lack per-request timeouts | Closed as DEBT-03, Phase 12 | v1.2 close (2026-07-10) |
-| tech_debt | gofmt nit in internal/queue/queue_test.go (pre-existing since Phase 9/10) | Closed as DEBT-04, Phase 12 | v1.2 close (2026-07-10) |
-| v2_scope | Full ISO 19005 (veraPDF) validation of PDF/A outputs | Closed as PDFA-01/02, Phase 23 | v1.3 requirements definition (2026-07-10) |
-| v2_scope | Legacy vs encrypted CFB distinction (directory-stream parsing) | Closed as CFB-01/02, Phase 22 | v1.3 requirements definition (2026-07-10) |
-| v2_scope | Custom fonts / extended CJK-RTL coverage for HTML→PDF | Deferred to v2 (DOCV3-03, carried) | v1.3 requirements definition (2026-07-10) |
-| accepted_risk | Active anti-DoS by document complexity (sheets/cells/unzipped size) | Accepted residual risk (DOC-V2-05, carried) | v1.2 requirements definition (2026-07-09) |
-| accepted_risk | `file://` passive subresource read inside chromium-worker (shared UID nobody) | Accepted residual risk (v1.3 Phase 15) | v1.3 close (2026-07-12) |
-| accepted_risk | Hallucination on silence/music (whisper exits 0 with structurally-valid garbage) | Accepted residual risk (Phase 30, carried); applies equally to video→transcript pairs added in v1.8 | v1.7 close (2026-07-18) |
-| seed | SEED-001: Lesson-recording analysis for tutors and language schools | Foundation in v1.7 (transcription + JSON timestamp contract); mistake-analysis/deck remains a future milestone, not v1.8 | v1.2 close (2026-07-10) |
-| seed | SEED-003: MCP-сервер для OctoConv | ✓ Implemented (v1.5 Phase 21, MCP-01..05) | v1.4 planning (2026-07-12) |
-| seed | SEED-004: OctoConv on Kubernetes + KEDA autoscaling | ✓ Delivered (v1.6 Phases 24-28) | v1.6 requirements definition (2026-07-14) |
-| infra | k8s-валидация в CI (kind/k3d) | Deferred to v2 (K8SV2-01) | v1.6 requirements definition (2026-07-14) |
-| infra | `is_operator` column vs env-allowlist for operators | Deferred to v2 (K8SV2-03) | v1.6 requirements definition (2026-07-14) |
-| tech_debt | CACHED-hit log confirmation for CI docker-build (needs gh auth) | Operator-accepted residual | v1.4 close (2026-07-13) |
-| ops | Branch-protection required-checks (gate/race/docker-build) — manual GitHub UI step | Open operational follow-up | v1.4 close (2026-07-13) |
-| tech_debt | presets D-04 single-active-version: application-transactional only, no DB backstop | Accepted residual | v1.4 close (2026-07-13) |
-| seed | SEED-002: Decouple webhook delivery from any specific engine worker binary | ✓ Implemented (v1.3 Phase 16, WEBH-01) | v1.2 close (2026-07-10) |
+| quick_tasks | 260712-cqg-fix-phase-16-verification-gaps-cr-01-wr- | missing |
+| quick_tasks | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | missing |
+| quick_tasks | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | missing |
+| quick_tasks | 260728-0ay-modernize-frontend-spa-to-api-v1-10-with | missing |
+| quick_tasks | 260802-9de-close-remaining-pr-2-review-findings-enf | missing |
+| quick_tasks | 260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i | missing |
+| quick_tasks | 260802-asr-fix-three-frontend-bugs-found-in-pr-2-re | missing |
+| quick_tasks | 260803-obt-close-codex-pr-5-findings-on-phase-52-qu | missing |
+| quick_tasks | 260803-q7u-fix-test-integrity-defects-found-by-code | missing |
+| quick_tasks | 260803-tm4-strict-boolean-env-parsing-plus-openapi- | missing |
+| quick_tasks | 260804-44i-round-retry-after-up-to-whole-seconds-fo | missing |
+| quick_tasks | 260804-47r-fix-flaky-testenforceminfreedisk-exact-b | missing |
+| quick_tasks | 260809-ul4-4-codex-pr-7-role-driven-download-url-op | missing |
+| quick_tasks | 260810-r2a-round2-eocd-bound | missing |
+| quick_tasks | 260810-r2i-round2-inspect-exit-paths | missing |
+| quick_tasks | 260810-sle-fix-six-codex-findings-in-internal-inspe | missing |
+| quick_tasks | 260810-slf-fix-four-codex-findings-in-internal-api | missing |
+| quick_tasks | 260811-r3s-exhaustion-sink | missing |
+| quick_tasks | 260811-r4b-bounded-record-count | missing |
+| quick_tasks | 260811-r5p-parser-divergence | missing |
+| quick_tasks | 260812-r6c-criterion-collapse | missing |
+| quick_tasks | 260816-r8m-intake-and-placement | missing |
+| quick_tasks | 260816-r9d-double-charge | missing |
+| quick_tasks | 260817-j58-close-codex-pr9-finding-xlsxsheetcount-a | missing |
+| quick_tasks | 260830-6zr-ci-workflow-dispatch | missing |
+| quick_tasks | 260830-dmg-close-three-codex-findings-from-pr-10-re | missing |
+| seeds | 004 | dormant |
+| seeds | 005 | dormant |
+| seeds | 006 | dormant |
+| seeds | 007 | dormant |
+| seeds | 010 | dormant |
+| seeds | 013 | dormant |
+| seeds | 014 | dormant |
+| seeds | 015 | dormant |
+| seeds | 016 | dormant |
+| seeds | 017 | dormant |
+| seeds | 018 | dormant |
+| seeds | 019 | dormant |
+| seeds | 020 | dormant |
+| seeds | 021 | dormant |
+| seeds | 022 | dormant |
+| todos |  | open |
+| todos |  | open |
+| todos |  | open |
+| todos |  | open |
+| todos |  | open |
+| todos |  | open |
 
 ## Session Continuity
 
@@ -299,10 +254,4 @@ Resume file: .planning/phases/59-born-digital-pdf-routing/59-CONTEXT.md
 
 ## Operator Next Steps
 
-- **Milestone v1.13 (Inspect & Operations) started 2026-08-07** — 6 phases (56-61), 28/28 v1 requirements mapped, 0 orphans. Research complete (`.planning/research/`, 5 files). Next: `/gsd:discuss-phase 56` then `/gsd:plan-phase 56`.
-- **Four live defects found by v1.13 research, actionable regardless of phase order:** `internal/reconciler/reconciler.go:311-312` (unguarded `RecordReconcilerAction("exhausted")` — the exact PR #4 defect class, uncaught; closed by RUNR-02), `internal/api/handlers.go:857-870` (`handleGetJob` presigns `outs[0]` with no role awareness; closed by ROLE-02), `internal/jobs/retention.go:126` (`PurgeUsage` on the Go clock; closed by DEBT-11), `internal/convert/ocrguards.go:227-228` (comment steers clients to an engine that does not accept pdf as source; closed by BDPD-02).
-- **One new Go dependency planned:** `github.com/pdfcpu/pdfcpu` v0.14.0 (Apache-2.0, pure Go, `CGO_ENABLED=0`). Largest new dependency since the MCP `go-sdk` (Phase 21) — justified specifically on `/JS`/`/OpenAction`/`/EmbeddedFile` detection inside compressed object streams, where a byte scan has a real false-negative rate. It also doubles as the sanitize verifier.
-- **Milestone v1.12 (Consumer Accounting & Fairness) closed and archived 2026-08-07** — 5 phases, 30 plans, 79 tasks, 15/15 requirements. Audit status `tech_debt`: 0 blockers, 9/9 cross-phase seams, 16 non-blocking debt items recorded (`.planning/milestones/v1.12-MILESTONE-AUDIT.md`). `.planning/REQUIREMENTS.md` is intentionally absent — `/gsd:new-milestone` creates a fresh one.
-- **Highest-value carry-forward: 52 WR-01.** An in-flight job charges the daily cap with no time bound, so a permanently stuck job locks out a client's daily budget every subsequent UTC day, with no operator remedy in `cmd/manage-clients` and no documentation of the new quota ↔ `cmd/webhook-worker` health coupling. Natural shape for a first phase of the next milestone, together with the README self-contradiction (52 WR-09).
-- Phase numbering continues from 55 — v1.13 is Phases 56-61, never restart at 1.
-- Phase directories for 51-55 were archived into `.planning/milestones/v1.12-phases/` at v1.13 milestone start (commit a2b8d5b); v1.12 research moved to `.planning/milestones/v1.12-research/`.
+- Start the next milestone with /gsd-new-milestone

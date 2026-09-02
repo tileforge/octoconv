@@ -1,5 +1,98 @@
 # Milestones
 
+## v1.13 Inspect & Operations (Shipped: 2026-09-02)
+
+**Phases:** 6 (56-61) | **Plans:** 38 | **Tasks:** 58
+**Range:** 2026-08-07 → 2026-09-02 (26 days, 45 commits)
+**Code:** +15.5k Go (non-test), +22.8k Go test — the test-to-code ratio is 1.5:1 and is not an accident; see below.
+**Requirements:** 28/28 v1 complete.
+
+### Delivered
+
+A client can now ask the service what a file *is* before paying for a job, and
+can ask for a disarmed copy of it. Two new synchronous surfaces and one new
+engine class, on top of a job pipeline that gained a second dimension.
+
+**Key accomplishments:**
+
+- **`POST /v1/inspect`** — one synchronous request returns the magic-byte
+  format, a closed 14-code findings vocabulary with severity, and the
+  (operation, target) triples available for that file with a live quota check
+  and an upper-bound duration estimate carrying its own provenance. It writes
+  nothing and pins nothing a later job could use to skip its own validation.
+  Bounded by a byte+time work ceiling, a non-blocking concurrency semaphore
+  returning `inspect_busy`, and an independent per-client rate budget.
+
+- **`operation` became a real dimension.** The converter registry re-keyed from
+  (from, to) pairs to (operation, from, to) triples; `Register` now panics on
+  collision instead of silently overwriting. Two ordered fail-closed 422 gates
+  reject garbage before any S3 or DB write. Output rows gained a closed-enum
+  `role`, and `handleGetJob` selects the download URL by role rather than by
+  ordinal — closing a live defect where a job's first-uploaded output was
+  blindly presigned as "the result".
+
+- **`operation=sanitize` on an eighth engine class (`probe`)** — the first class
+  that converts nothing. PDF is rebuilt through PostScript; OOXML macro and
+  object parts are dropped **by content and by relationship type**, never by
+  name or folder; image metadata is stripped structurally with the compressed
+  data copied byte for byte. Every output is then re-checked by an
+  implementation that did not do the removing — pdfcpu for PDF, unzip and
+  libmagic for OOXML, a full decode for images — and an output that cannot be
+  verified is deleted rather than delivered.
+
+- **The sanitize report says what was checked and refuses to say more.** Built
+  from two closed vocabularies with no verdict field and no `clean` boolean,
+  held equal to `docs/SANITIZE.md` by a bidirectional test, with a matcher that
+  fails the build on an affirmative safety claim. CDR removes carriers; it does
+  not determine whether code is malicious, and nothing in the contract now says
+  otherwise.
+
+- **Born-digital PDFs stopped being refused.** A PDF with a text layer routed
+  to `txt` now receives that layer instead of an OCR rejection, and `hocr`/
+  `alto` still render — because `pdftotext` produces no word or line boxes.
+
+- **The error-code contract closed.** 28 codes (14 sync, 14 async) frozen in
+  `docs/ERROR-CODES.md`, tied to Go by a bidirectional set-equality test, with
+  a separate historical section so a retired code stays looked-up-able for jobs
+  that already carry it.
+
+- **Operators can cancel a stuck job** with `manage-clients cancel-job` instead
+  of raw SQL — which had been repairing the quota and silently breaking its
+  accounting in one stroke.
+
+### What this milestone actually cost, and why it is worth recording
+
+Phase 60 went through **eight rounds of external review producing 26 findings**,
+23 fixed before merge. Twelve of the first fourteen were the same shape: a
+component that worked with nothing connecting it, or two components sharing one
+wrong assumption. Three named forms of it recurred —
+
+1. a test that calls a function directly cannot see that nothing else calls it;
+2. a test that exercises two components together cannot see an assumption they
+   share;
+3. a class fix that stops at its first instance leaves the second under the very
+   comment explaining why that shape is wrong.
+
+The last one repeated four times in one phase. The countermeasure that worked
+was not more tests of the same kind: it was making the independent checker
+*broader* than the thing it checks — which immediately caught two remover bugs
+that eight review rounds had not.
+
+### Known gaps at close
+
+- **probe has no page ceiling.** Measuring the timeout established that cost is
+  per page (~2.0 s/page for scans), not per byte, so a document beyond ~300
+  scanned pages fails on timeout instead of being refused at admission the way
+  OCR refuses with `too_many_pages`. Tracked in `todos/pending`.
+- **Three P2 review findings merged unfixed by decision** (round 8): multi-chunk
+  ICC profiles, `endstream` as a substring inside binary stream data, and a
+  crafted relationship that removes a package's own main part. None is the
+  threat-survives-and-is-reported-verified class. Tracked in `todos/pending`.
+- **Known deferred items at close: 46** (26 quick tasks, 15 dormant seeds,
+  5 todos, accumulated across thirteen milestones) — see STATE.md § Deferred
+  Items.
+
+
 ## v1.12 Consumer Accounting & Fairness (Shipped: 2026-08-07)
 
 Known deferred items at close: 13 entries across tech_debt / accepted_risk / infra / tooling_noise / seeds (see STATE.md Deferred Items). Milestone audit: tech_debt — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers (.planning/milestones/v1.12-MILESTONE-AUDIT.md).
@@ -17,6 +110,7 @@ Known deferred items at close: 13 entries across tech_debt / accepted_risk / inf
 - `minReplicaCount` templatized out of all 7 `scaledobject-*.yaml` into per-class Helm values through a validating helper that aborts the render on negative, over-max or non-integer input (the coercion bypass a code review caught after both SUMMARYs were written), defaulting to today's `0` for zero behavior change — closing SEED-011, and giving the chart its first CI coverage of any kind.
 - QUOT-05 closed by a live gate, not by assertion: 10 rounds of 10 concurrent requests at `api.replicas: 2` admitted exactly K=2 and rejected exactly 8 with `quota_exceeded` every round, 0 `rate_limited`, both pods serving both outcomes — 167 assertions, evidence TSVs committed. The gate has a real history of catching genuine failures (a disproven host→ClusterIP reachability assumption, a legitimate-slot-reuse ambiguity at round 4/10) and closing them structurally: a heavy fixture, a self-checking spread bound, and a per-round Postgres precondition proving no admitted job went terminal inside the burst — never by relaxing `==` to `<=`.
 - `internal/jobs/admission.go` now records the inverse of `internal/ratelimit`'s own caveat register: the quota mechanism carries NO `api.replicas: 1`-only caveat, structural argument first, live confirmation second, with the run's bounds (K=2, image engine, exactly 2 replicas) stated as bounds rather than implied as generality.
+
 ---
 
 ## v1.11 Pandoc Engine (Shipped: 2026-08-02)
