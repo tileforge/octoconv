@@ -173,6 +173,35 @@ reaching this path alone (T-54-02).
 {{- end }}
 
 {{/*
+octoconv.mcAliasPrelude — shell that sets S3_SCHEME from S3_USE_SSL, mirroring
+internal/envcfg.ParseBool exactly.
+
+Any container that reaches MinIO through `mc` must use the SAME transport the
+application will use. `s3.useSSL` is an existing public chart value; a probe
+hardcoded to http:// against a TLS-only endpoint can never succeed, and a probe
+that can never succeed in an initContainer is worse than no probe at all --
+every application pod sits in Init forever instead of starting. Found by review
+on PR #13.
+
+The parse is deliberately a mirror, not an approximation: envcfg.ParseBool
+strips a trailing "#" comment, trims, and accepts EXACTLY "true"/"false"
+(absent/empty = false), rejecting "TRUE", "1", "yes", "on" and "true anything".
+An unrecognized value exits non-zero rather than defaulting, because
+storage.New refuses to start on the same input -- so the pod would crash a
+moment later anyway, and failing here says which variable is wrong instead of
+hanging.
+*/}}
+{{- define "octoconv.mcAliasPrelude" -}}
+RAW="${S3_USE_SSL%%#*}"
+RAW="$(printf '%s' "$RAW" | tr -d '[:space:]')"
+case "$RAW" in
+  true) S3_SCHEME=https ;;
+  ""|false) S3_SCHEME=http ;;
+  *) echo "S3_USE_SSL: unrecognized value \"$S3_USE_SSL\" (expected \"true\" or \"false\")" >&2; exit 1 ;;
+esac
+{{- end }}
+
+{{/*
 octoconv.waitForDeps — initContainers that block until the two startup
 dependencies every octoconv binary treats as FATAL are actually there.
 
@@ -267,13 +296,14 @@ initContainers:
       - -c
       - |
         # Succeeds only once MinIO answers AND the bucket exists -- the two
-        # halves of the storage.New precondition, in one probe. S3_ENDPOINT
-        # and S3_BUCKET come from the same ConfigMap the app container reads,
-        # so this can never wait on a different endpoint than the one that
-        # will then be dialled.
-        until mc alias set local "http://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
+        # halves of the storage.New precondition, in one probe. S3_ENDPOINT,
+        # S3_BUCKET and S3_USE_SSL come from the same ConfigMap the app
+        # container reads, so this can never wait on a different endpoint, or a
+        # different transport, than the one that will then be dialled.
+        {{- include "octoconv.mcAliasPrelude" . | nindent 8 }}
+        until mc alias set local "$S3_SCHEME://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
           && mc ls "local/$S3_BUCKET" >/dev/null 2>&1; do
-          echo "waiting for bucket $S3_BUCKET on $S3_ENDPOINT..."
+          echo "waiting for bucket $S3_BUCKET on $S3_SCHEME://$S3_ENDPOINT..."
           sleep 2
         done
         echo "bucket $S3_BUCKET exists"

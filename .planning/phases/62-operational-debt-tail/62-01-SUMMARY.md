@@ -178,6 +178,46 @@ the interpolation back names all four occurrences with their line numbers.
 Cold install re-run after the change: api and worker both `restartCount 0`
 (`evidence/sc1-with-both-waits-after-review-fix.txt`).
 
+## Review round 2 — one P1, and it was right too
+
+The `wait-for-bucket` initContainer dialled `http://` unconditionally while
+`s3.useSSL` — an existing public chart value — says otherwise. Against a
+TLS-only endpoint that probe can never succeed, and a probe that can never
+succeed in an initContainer is strictly worse than no probe: all ten
+Deployments would sit in `Init` forever instead of crash-looping once. The
+fix's own failure mode was worse than the bug it fixed.
+
+`octoconv-createbucket` had the same literal (`http://minio:9000`, which also
+ignored `s3.endpoint` entirely). That one is pre-existing, but it is the same
+class **and** the thing every waiting pod is waiting for — fixing only the
+initContainer would have left the deadlock exactly where it was. Both now derive
+the scheme at runtime from `S3_USE_SSL` and dial `$S3_ENDPOINT`.
+
+### A second parser, so a differential test rather than a careful reading
+
+Deriving the scheme in shell means a second implementation of
+`internal/envcfg.ParseBool` — which strips a trailing `#` comment, trims, and
+accepts exactly `true`/`false`, rejecting `TRUE`, `1`, `yes`, `on` and
+`true anything`. This project has already paid for the "reason about the parser"
+version of that mistake four times over a single bound, so:
+`TestChartShellMirrorsParseBool` extracts the snippet **from the chart file**,
+refuses to run if the extraction is empty or still contains a Helm action, and
+runs it under `/bin/sh` for every row of `ParseBool`'s own documented table plus
+two hostile values. Inverted twice — accepting `TRUE`, and dropping the comment
+strip — it names the exact diverging row in each case.
+
+`ci-helm-checks.sh` additionally asserts no `mc alias set` line in the whole
+render hardcodes a scheme (12 invocations). Inverted, it names all three.
+
+### The guard I added in round 1 was itself broken by `pipefail`
+
+`if ! echo "$RENDER" | grep -q ...` — `grep -q` exits on its first match, which
+SIGPIPEs the `echo` feeding it, and under `set -o pipefail` the pipeline exits
+141. Read as "no match". It failed on a render containing **eleven** matches.
+Both greps in that guard now count with `grep -c` and compare, which reads the
+whole stream. The failure was loud, which is the only reason it cost minutes
+rather than shipping.
+
 ## Gates
 
 No Go file changed after the test run below (`git status` verified), so it

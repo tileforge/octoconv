@@ -195,18 +195,47 @@ if [ -z "$HOSTILE_CMDS" ]; then
   echo "FAIL: no initContainer commands parsed out of the hostile render -- this guard would pass vacuously"
   exit 1
 fi
-if echo "$HOSTILE_CMDS" | grep -q 'app;false'; then
+# `grep -c`, not `grep -q`: this script runs under `set -o pipefail`, and
+# `grep -q` exits on its first match, which SIGPIPEs the `echo` feeding it and
+# makes the whole pipeline exit 141. Under `if !` that reads as "no match" --
+# so the -q form failed here on a render that contained eleven matches.
+IN_PROGRAM=$(echo "$HOSTILE_CMDS" | grep -c 'app;false' || true)
+if [ "$IN_PROGRAM" -gt 0 ]; then
   echo "FAIL: a chart value reached an initContainer shell program as text:"
   echo "$HOSTILE_CMDS" | grep -n 'app;false' | sed 's/^/        /'
   echo "      Pass it through env and reference it quoted (\"\$PGUSER\") instead."
   exit 1
 fi
-if ! echo "$HOSTILE_RENDER" | grep -q 'value: "app;false"'; then
+IN_ENV=$(echo "$HOSTILE_RENDER" | grep -c 'value: "app;false"' || true)
+if [ "$IN_ENV" -eq 0 ]; then
   echo "FAIL: the hostile value did not reach the initContainer env either -- the"
   echo "      guard is testing a render that never used postgres.user at all"
   exit 1
 fi
 echo "OK: postgres.user reaches the wait initContainer as env, never as program text"
+
+echo "### no mc invocation may hardcode its transport"
+# Review found the wait-for-bucket initContainer dialling http:// unconditionally
+# while s3.useSSL -- an existing public value -- says otherwise. Against a
+# TLS-only endpoint that probe can never succeed, so every application pod sits
+# in Init forever. The createbucket Job had the same literal and would never
+# create the bucket they are all waiting for, so fixing one and not the other
+# would have left the deadlock intact. Scheme now comes from S3_USE_SSL at
+# runtime (octoconv.mcAliasPrelude, whose parse is pinned against
+# internal/envcfg.ParseBool by TestChartShellMirrorsParseBool).
+MC_LINES=$(helm template octoconv "$CHART" $SECRETS_SET 2>/dev/null | grep -n 'mc alias set' || true)
+if [ -z "$MC_LINES" ]; then
+  echo "FAIL: no 'mc alias set' lines in the render -- this guard would pass vacuously"
+  exit 1
+fi
+BAD_MC=$(echo "$MC_LINES" | grep -E 'https?://' || true)
+if [ -n "$BAD_MC" ]; then
+  echo "FAIL: an mc alias hardcodes its transport instead of deriving it from"
+  echo "      S3_USE_SSL, so it cannot match the transport storage.New will use:"
+  echo "$BAD_MC" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: every mc alias derives its scheme from S3_USE_SSL ($(echo "$MC_LINES" | wc -l | tr -d ' ') invocations)"
 
 echo "### the octoconv chart must never be installed with --wait"
 # The wait-for-bucket initContainer above depends on an install that does NOT
