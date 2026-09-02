@@ -35,6 +35,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "webhook-worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
+      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.webhookWorker.terminationGracePeriodSeconds }}
       containers:
         - name: webhook-worker

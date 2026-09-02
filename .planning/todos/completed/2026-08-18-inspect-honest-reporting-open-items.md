@@ -115,3 +115,30 @@ helm patch version, and none of CI's own caching or artifact mechanics. The
 phase's closing report must say "CI unavailable since 2026-08-16 for billing;
 equivalent jobs run locally on `<commit>`, transcript `<file>`, with these
 caveats" — never "CI green".
+
+
+---
+
+## RESOLVED 2026-09-02 — verified, not fixed
+
+Checked against the code and by running the tests before doing any work, and
+there was none to do:
+
+* **Item 1** closed by Phase 59. `ReasonReadFailed` is in
+  `makesReportIncomplete` (`internal/inspect/status.go`), and
+  `TestBuildReportAllChecksReadFailedIsNotComplete` runs exactly the scenario
+  this file describes — a report whose every check is `unknown/read_failed`
+  cannot carry `coverage.complete: true`.
+* **Item 2** closed by the `readSniffWindow` refactor
+  (`internal/api/inspect_handlers.go`): the window is read ONCE outside the
+  matchers and a genuine read failure sets `sniffReadFailed`, so it is
+  distinguishable from "not this format". Widening the four bool signatures is
+  recorded there as considered and rejected (D-12) — they are shared with the
+  conversion path, which wants only a bool.
+* **Item 3** is GitHub Actions billing. Nothing in this repository resolves it,
+  and this project runs its gates locally by operator instruction.
+
+Recorded as verified rather than deleted. The todo was accurate when written;
+it went stale because two later changes closed it without closing it here —
+which is the same bookkeeping-lag class as a status table that outlives its
+work.

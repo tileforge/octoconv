@@ -52,6 +52,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "pandoc-worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
+      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.pandocWorker.terminationGracePeriodSeconds }}
       containers:
         - name: pandoc-worker

@@ -143,6 +143,37 @@ if [ "$CHANGED_COUNT" -ne 4 ]; then
   exit 1
 fi
 echo "OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines"
+echo "### every Deployment that gets DATABASE_URL must also wait for postgres"
+# The class guard, not the instance. All ten Go entrypoints treat a startup
+# dependency failure as fatal, so any pod given DATABASE_URL before postgres is
+# up crash-loops until it is. Fixing the one deployment that was reported and
+# leaving nine identical ones is the shape the previous milestone spent eight
+# review rounds learning to stop repeating -- so this asserts the property for
+# every deployment at once, and a new one cannot be added without it.
+#
+# One yq pass emitting "<name> <hasSecretEnv> <hasInitContainer>" per Deployment.
+# The first version ran a yq invocation per deployment inside a shell loop; the
+# per-name expressions errored, the errors went to /dev/null, the counts came
+# back empty, and the guard passed on a deployment with the initContainer
+# REMOVED. Found by inverting it, which is the only reason it is not still
+# silently green.
+TRIPLES=$(yq -e '. | select(.kind=="Deployment") | .metadata.name + " " + (([.spec.template.spec.containers[].envFrom // [] | .[] | select(.secretRef.name != null)] | length) | tostring) + " " + (([.spec.template.spec.initContainers // [] | .[] | select(.name=="wait-for-postgres")] | length) | tostring)' "$DEFAULT_RENDER" | grep -v '^---$')
+
+if [ -z "$TRIPLES" ]; then
+  echo "FAIL: no Deployments parsed out of the render -- this guard would pass vacuously"
+  exit 1
+fi
+
+MISSING=$(echo "$TRIPLES" | awk '$2 > 0 && $3 == 0 { print $1 }')
+if [ -n "$MISSING" ]; then
+  echo "FAIL: these Deployments receive the app secret (DATABASE_URL) but have no"
+  echo "      wait-for-postgres initContainer, so they crash-loop on a cold install"
+  echo "      until postgres accepts connections:"
+  echo "$MISSING" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: every Deployment carrying DATABASE_URL waits for postgres ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
+
 rm -f "$DEFAULT_RENDER" "$OVERLAY_RENDER"
 
 echo "### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero"

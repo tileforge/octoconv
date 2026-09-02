@@ -39,6 +39,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
+      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       containers:
         - name: worker

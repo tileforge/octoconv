@@ -171,3 +171,48 @@ reaching this path alone (T-54-02).
 {{- define "octoconv.kedaFallbackReplicas" -}}
 {{- max 1 (int (include "octoconv.kedaMinReplicaCount" .)) -}}
 {{- end }}
+
+{{/*
+octoconv.waitForPostgres — an initContainer that blocks until postgres accepts
+connections.
+
+WHY AN INIT CONTAINER AND NOT A RETRY IN THE BINARY. Every Go entrypoint in
+this project treats a startup dependency failure as fatal, and that convention
+is worth keeping: "fatal means fatal" is what makes a non-zero restartCount a
+signal rather than noise. A bounded retry inside main() would weaken it in ten
+binaries to solve an ordering problem that belongs to the orchestrator.
+
+WHAT IT FIXES. A fresh `helm upgrade --install` brings pods up before postgres
+accepts connections; each one exits(1), kubelet restarts it, and the pod reaches
+restartCount 2-3 before it is ever Ready. That is not free: it pays
+CrashLoopBackOff's exponential delay on every cold install, and it burns the
+metric this project's own live gates read as ground truth. A restartCount that
+is routinely 2-3 for benign reasons is one nobody will trust at 4.
+
+APPLIED TO EVERY POD THAT NEEDS POSTGRES, not just api. All ten entrypoints
+have the same log.Fatalf shape; fixing the one that was reported and leaving
+nine identical instances is the defect pattern the previous milestone spent
+eight review rounds learning to stop repeating.
+
+Uses the same pinned postgres image the chart already deploys, so this adds no
+new supply-chain surface: pg_isready ships in it.
+*/}}
+{{- define "octoconv.waitForPostgres" -}}
+initContainers:
+  - name: wait-for-postgres
+    image: {{ .Values.postgres.image | quote }}
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres.{{ .Values.global.namespace }}.svc.cluster.local -p 5432 -U {{ .Values.postgres.user }} >/dev/null 2>&1; do
+          echo "waiting for postgres..."
+          sleep 2
+        done
+        echo "postgres is accepting connections"
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+{{- end }}

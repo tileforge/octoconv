@@ -28,6 +28,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "api" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
+      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
       terminationGracePeriodSeconds: 30
       containers:
         - name: api
