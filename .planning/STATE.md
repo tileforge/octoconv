@@ -24,9 +24,9 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 62 — Operational debt tail
-Plan: 62-01 (complete)
-Status: merged (PR #13) — three review rounds, all findings fixed
+Phase: 63 — Sanitize Hardening & Probe Page Ceiling
+Plan: 63-01 (complete), 63-02 (planned)
+Status: 63-01 complete, PR pending
 Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
 
 ## Performance Metrics
