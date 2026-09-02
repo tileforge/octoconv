@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
 status: in_progress
-last_updated: "2026-09-02T03:43:58.418Z"
+last_updated: "2026-09-02T16:30:00.000Z"
 last_activity: 2026-09-02
 progress:
   total_phases: 3
-  completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
-  percent: 33
+  completed_phases: 2
+  total_plans: 2
+  completed_plans: 2
+  percent: 66
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phases 63 (sanitizer gaps + probe page ceiling) and 64 (tectonic, ninth engine class) ahead.
+**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) are code-complete — 63-02 still to ship. Phase 64 (tectonic, ninth engine class) ahead.
 
 ## Current Position
 
 Phase: 63 — Sanitize Hardening & Probe Page Ceiling
-Plan: 63-01 (merged, PR #14), 63-02 (planned)
-Status: 63-01 merged after five review rounds and eighteen findings; 63-02 (probe page ceiling) next
-Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
+Plan: 63-01 (merged, PR #14), 63-02 (executed on branch phase-63-probe-page-ceiling, not yet shipped)
+Status: phase 63 code-complete; 63-02 awaiting PR + @codex review
+Last activity: 2026-09-02 — 63-02: PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02). One bound, two gates: the API refuses a known over-the-bound PDF page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with the accurate pdfcpu count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was already derived from — the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement. Five inversions recorded
 
 ## Performance Metrics
 
