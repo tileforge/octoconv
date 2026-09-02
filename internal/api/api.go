@@ -183,9 +183,20 @@ type Server struct {
 	// central-directory entry in an office document, compared against
 	// ContainerResult.TotalUncompressed (also uint64).
 	maxDocumentUncompressedBytes uint64
-	presignTTL                   time.Duration
-	ipRateRPM                    int
-	clientRateRPM                int
+	// probeMaxPages is the PROBE_MAX_PAGES ceiling the sanitize admission
+	// gate enforces (PROBE-01). Zero means "no cap configured" and the gate
+	// does not run -- the same zero-value convention
+	// convert.EnforceProbeMaxPages itself uses, so a Server built without
+	// this field behaves exactly as it did before Phase 63.
+	//
+	// The bound is enforced in TWO places, here and in cmd/probe-worker, from
+	// ONE default (convert.DefaultProbeMaxPages) through ONE comparison
+	// (convert.EnforceProbeMaxPages). See 63-CONTEXT.md D-04 for why the
+	// duplication is deliberate and what holds the two together.
+	probeMaxPages int
+	presignTTL    time.Duration
+	ipRateRPM     int
+	clientRateRPM int
 	// operators is the OPERATOR_CLIENT_IDS membership set (D-01, Phase 26):
 	// callers whose resolved client.ID is a key here may reach the
 	// /v1/system/presets subtree via requireOperator. Never nil after
@@ -270,8 +281,14 @@ func (s *Server) SetCancelPublisher(p CancelPublisher) {
 
 // Config configures a Server.
 type Config struct {
-	MaxUploadBytes               int64
-	MaxImagePixels               uint64
+	MaxUploadBytes int64
+	MaxImagePixels uint64
+	// ProbeMaxPages is the sanitize admission page ceiling (PROBE-01),
+	// PROBE_MAX_PAGES. Unlike most fields here, zero is NOT backfilled with a
+	// default by NewServer: zero means the gate is off, and cmd/api supplies
+	// convert.DefaultProbeMaxPages explicitly. Backfilling would make every
+	// test-constructed Server silently start rejecting PDFs at 200 pages.
+	ProbeMaxPages                int
 	MaxDocumentUncompressedBytes uint64
 	// MaxPandocInputBytes is the API-side mirror of the worker's
 	// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go) --
@@ -417,11 +434,14 @@ type Config struct {
 // each worker's own startup default for the same env vars
 // (ENGINE_TIMEOUT=120s, DOCUMENT_ENGINE_TIMEOUT=300s, HTML_ENGINE_TIMEOUT=60s,
 // AUDIO_ENGINE_TIMEOUT=742s, AV_ENGINE_TIMEOUT=753s, OCR_ENGINE_TIMEOUT=744s,
-// PANDOC_ENGINE_TIMEOUT=65s, PROBE_ENGINE_TIMEOUT=180s).
+// PANDOC_ENGINE_TIMEOUT=65s, PROBE_ENGINE_TIMEOUT=600s).
 //
-// PROBE_ENGINE_TIMEOUT is a PLACEHOLDER, not a measurement -- see
-// .env.example. It is here so a caller that omits it gets 180s rather than
-// zero; it is not here as a claim about how long sanitize takes.
+// PROBE_ENGINE_TIMEOUT is MEASURED as of Phase 60 -- ceil(2.0 s/page x 200
+// pages x 1.5) = 600s, see .env.example for the run and the derivation. This
+// comment said 180s and "PLACEHOLDER, not a measurement" while the value below
+// already read 600s; corrected in Phase 63, whose PROBE_MAX_PAGES ceiling is
+// derived from the same arithmetic and would otherwise cite a number this file
+// contradicts.
 var defaultEngineTimeouts = map[string]time.Duration{
 	convert.EngineImage:    120 * time.Second,
 	convert.EngineDocument: 300 * time.Second,
@@ -568,6 +588,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		maxUploadByte:                cfg.MaxUploadBytes,
 		maxEngineBytes:               cfg.MaxEngineBytes,
 		maxImagePixels:               cfg.MaxImagePixels,
+		probeMaxPages:                cfg.ProbeMaxPages,
 		maxDocumentUncompressedBytes: cfg.MaxDocumentUncompressedBytes,
 		presignTTL:                   cfg.PresignTTL,
 		ipRateRPM:                    cfg.IPRateLimitRPM,

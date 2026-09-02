@@ -72,4 +72,16 @@ var RejectBindings = map[string]RejectBinding{
 	// opts_too_large: `opts` exceeds its configured size cap. Also a
 	// property of the request's opts field.
 	"opts_too_large": {ErrCode: errcode.PayloadTooLarge},
+	// page_limit: a sanitize upload's PDF declares more pages than
+	// PROBE_MAX_PAGES (Phase 63, PROBE-01). An errcode binding, NOT a
+	// finding, and the contrast with dimension_limit above is the reason
+	// worth stating: declared pixel dimensions far past any real image ARE a
+	// decompression-bomb SHAPE -- the number itself is the risk signal, which
+	// is why that one binds to CodeImagePixelBombShape. A 300-page PDF is not
+	// suspicious in any way; it is an ordinary document that costs more than
+	// this deployment is configured to spend on it (~2.0 s/page). Reporting
+	// it as a finding would put a risk claim in an inspect report about a
+	// file that carries no risk, which is precisely the kind of false
+	// statement this vocabulary exists to prevent.
+	"page_limit": {ErrCode: errcode.TooManyPages},
 }

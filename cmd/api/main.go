@@ -213,8 +213,16 @@ func main() {
 		// one exception: it is a single scalar (not a map), read here and
 		// folded into NewServer's own default map -- it does not duplicate
 		// the map, it configures one entry in it.
-		MaxUploadBytes:               envInt64("MAX_UPLOAD_BYTES", 2<<30),
-		MaxImagePixels:               uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)),            // D-05: 100 megapixels default
+		MaxUploadBytes: envInt64("MAX_UPLOAD_BYTES", 2<<30),
+		MaxImagePixels: uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)), // D-05: 100 megapixels default
+		// PROBE_MAX_PAGES (PROBE-01). Read here AND in cmd/probe-worker,
+		// with the SAME default constant in both, because the bound is
+		// enforced in both processes and a default that lives as a literal at
+		// two call sites is exactly how this engine's OTHER bound drifted:
+		// cmd/api omitted PROBE_ENGINE_TIMEOUT and published
+		// estimated_max_seconds: 0 while the worker used its own value
+		// (caught in review, PR #12).
+		ProbeMaxPages:                int(envInt64("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)),
 		MaxDocumentUncompressedBytes: uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)), // D-04: 500 MiB default
 		// PR#2 finding-1: the API-side mirror of the worker's own
 		// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go).
@@ -266,12 +274,16 @@ func main() {
 			convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
 			convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
 			convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
-			// PROBE_ENGINE_TIMEOUT is a PLACEHOLDER, not a measurement (see
-			// .env.example). It must still be passed HERE: NewServer's own
+			// PROBE_ENGINE_TIMEOUT is MEASURED as of Phase 60 (see
+			// .env.example for the run and the ceil(2.0 s/page x 200 pages x
+			// 1.5) derivation; this comment called it a placeholder until
+			// Phase 63). It must still be passed HERE: NewServer's own
 			// default map only applies when EngineTimeouts is nil, and this
 			// call site supplies a non-nil map -- so omitting probe made the
 			// real API publish sanitize offers with estimated_max_seconds: 0
-			// while the worker used 180s. Caught in review (PR #12).
+			// while the worker used its own value. Caught in review (PR #12),
+			// and the reason PROBE_MAX_PAGES above shares ONE default constant
+			// with cmd/probe-worker rather than repeating a literal.
 			convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second),
 		},
 	})

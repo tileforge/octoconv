@@ -18,10 +18,26 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/errcode"
+	"github.com/apaderin/octoconv/internal/inspect"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/apaderin/octoconv/internal/storage"
 )
+
+// probePageCountScanBytes bounds the sanitize admission gate's page-count
+// scan (PROBE-01).
+//
+// 8 MiB, the same number internal/inspect.Budget uses as its own documented
+// default -- this is the identical kind of work (one bounded, literal byte
+// scan over an untrusted upload), so it gets the identical allowance rather
+// than a second number invented for one call site.
+//
+// It is NOT Config.InspectMaxWorkBytes. That field is POST /v1/inspect's
+// operator-tunable budget and its doc comment says the inspect handler is its
+// only reader; borrowing it here would make an operator tuning one endpoint
+// silently retune an unrelated gate on another. A constant says plainly that
+// this window is not a knob.
+const probePageCountScanBytes = 8 << 20
 
 const (
 	formFieldFile            = "file"
@@ -544,6 +560,56 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 				"declared image dimensions exceed configured limit")
 			return
+		}
+	}
+
+	// PROBE-01: refuse a sanitize upload whose PDF declares more pages than
+	// PROBE_MAX_PAGES, BEFORE any storage write. Placed here, beside the
+	// decompression-bomb guard above, because it is the same kind of gate: a
+	// declared property of the bytes, read cheaply, compared against a
+	// configured ceiling, enforced before an S3 byte is spent.
+	//
+	// THE COUNT COMES FROM file (io.ReaderAt), NOT FROM rest.
+	//
+	// The zip-bomb guard earlier in this function established the pattern and
+	// states its reason: ReadAt never disturbs Sniff's sequential cursor, so
+	// rest stays valid and the full original stream still reaches
+	// s.storage.Upload below unmodified. A peek-and-re-stitch would work too
+	// (convert.Dimensions does exactly that), but it can only be WRONG in one
+	// direction -- bytes consumed and not put back -- and that direction
+	// silently truncates the client's file. ReadAt cannot make that mistake at
+	// all, which is why it is preferred here even though the sibling gate
+	// three blocks up does it the other way.
+	//
+	// UNKNOWN ADMITS, AND THAT IS THE DESIGN, NOT A GAP.
+	//
+	// internal/inspect's scanner is bounded and literal: it cannot see into
+	// compressed object streams, does not decode hex-escaped names, and does
+	// not resolve the xref chain. Failing closed on those blind spots would
+	// reject legitimate PDFs on a heuristic's limitation. The accurate count
+	// is affordable in the worker (pdfcpu, isolated, under a measured timeout,
+	// inside a cgroup) and refuses terminally there -- so what this gate
+	// buys is the S3 write and the queue slot, never the bound itself
+	// (63-CONTEXT.md D-04). The abstention is logged so an operator can see
+	// how often the cheap gate gives up.
+	//
+	// pdfcpu is deliberately NOT called here. Phase 58 D-02a refused the
+	// project's first parser-on-untrusted-bytes in the API process, and
+	// sanitizeverify.go's own header says in as many words that its use is
+	// the exception those conditions were written for and is not a precedent.
+	if operation == convert.OperationSanitize && detected == "pdf" && s.probeMaxPages > 0 {
+		tr := inspect.NewTracker(inspect.Budget{MaxBytes: probePageCountScanBytes})
+		count, reason := inspect.PDFPageCount(file, header.Size, probePageCountScanBytes, tr)
+		switch {
+		case count == nil:
+			log.Printf("content validation abstained: client_id=%s filename=%q reason=page_count_unknown detail=%s", client.ID, filename, reason)
+		default:
+			if err := convert.EnforceProbeMaxPages(*count, s.probeMaxPages); err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=page_limit pages=%d limit=%d", client.ID, filename, *count, s.probeMaxPages)
+				writeError(w, http.StatusUnprocessableEntity, errcode.TooManyPages,
+					"document page count exceeds the configured limit for sanitize")
+				return
+			}
 		}
 	}
 

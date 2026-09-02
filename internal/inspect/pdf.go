@@ -449,6 +449,87 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	return res
 }
 
+// PDFPageCount answers ONE question about r -- how many pages does this PDF
+// declare -- spending at most maxBytes, and returns nil when it cannot answer.
+//
+// # WHY THIS EXISTS SEPARATELY FROM AnalyzePDF
+//
+// Its caller is the sanitize admission gate in internal/api (PROBE-01), which
+// needs the page count of every sanitize upload and nothing else. AnalyzePDF
+// would also run seven risk-token scans and the text-layer detector, and the
+// text-layer detector is by far the most expensive consumer of the budget --
+// it inflates stream bodies. Spending that on every sanitize upload to obtain
+// an answer nobody asked for is the cost this entry point avoids.
+//
+// It is deliberately NARROW rather than general: it does not report findings,
+// it does not build a FamilyResult, and it must not grow into a second front
+// door for PDF analysis. If a caller needs more than the page count, it needs
+// AnalyzePDF.
+//
+// # WHY IT MAY RETURN nil, AND WHY THAT IS NOT A FAILURE
+//
+// The scanner is bounded and literal: it cannot see into compressed object
+// streams, it does not decode hex-escaped names, and it does not resolve the
+// xref chain. Each of those is a blind spot extractPDFPageCount reports as
+// unknown rather than guessing at (D-01: "unknown is a correct answer, not a
+// failure"). The admission gate ADMITS on nil, deliberately -- rejecting a
+// legitimate PDF because our cheap scanner has a blind spot would be the worse
+// error, and the worker's accurate pdfcpu count is the actual bound
+// (63-CONTEXT.md D-04).
+//
+// The compression/name-escape signals are read from BOTH a head and a tail
+// window, on the same split AnalyzePDF uses and for a reason that matters
+// here specifically: an /ObjStm marker near EOF, missed because only the head
+// was read, would turn an honest "unknown" into a confident count -- and a
+// confident wrong count at this call site rejects a file the service could
+// have sanitized.
+func PDFPageCount(r io.ReaderAt, size, maxBytes int64, tr *Tracker) (*int, Reason) {
+	if size <= 0 || maxBytes <= 0 {
+		return nil, ReasonMalformedInput
+	}
+
+	// The same allowance split AnalyzePDF performs, carved BEFORE the first
+	// read so no window is sized against bytes another window already spent.
+	headLen := maxBytes
+	var tailReserve int64
+	if size > maxBytes {
+		tailReserve = maxBytes / 4
+		if tailReserve > defaultTailWindow {
+			tailReserve = defaultTailWindow
+		}
+		headLen = maxBytes - tailReserve
+	}
+	if size < headLen {
+		headLen = size
+	}
+	head, headOK := readWindow(r, 0, headLen, size)
+	if !headOK {
+		// A failure to READ the upload, not a discovery about its structure
+		// -- the two are different facts and carry different Reason values.
+		return nil, ReasonReadFailed
+	}
+
+	truncated := size > maxBytes
+	var tail []byte
+	var tailOK bool
+	if truncated && tailReserve > 0 {
+		tailOff := size - tailReserve
+		if tailOff < 0 {
+			tailOff = 0
+		}
+		tail, tailOK = readWindow(r, tailOff, tailReserve, size)
+	}
+
+	compressed := containsCompressionSignal(head) || (tailOK && containsCompressionSignal(tail))
+	hexEscape := containsPDFNameHexEscape(head) || (tailOK && containsPDFNameHexEscape(tail))
+
+	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, tr)
+	if count == nil && reason == "" {
+		reason = ReasonMalformedInput
+	}
+	return count, reason
+}
+
 // verdictStatus and verdictReason implement, together, the ONE verdict rule
 // every PDF risk code (excluding an actual Finding, handled before this is
 // ever called) is subject to:
