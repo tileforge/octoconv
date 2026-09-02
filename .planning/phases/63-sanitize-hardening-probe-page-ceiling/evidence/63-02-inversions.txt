@@ -98,3 +98,27 @@ FAIL
 === image check (recorded, not asserted from the Dockerfile) ===
 /usr/bin/pdfinfo
 pdfinfo version 22.12.0
+
+##### ROUND 3 -- codex round 2: the count is bound to its declaring dictionary #####
+
+=== INVERSION 11: the count goes back to proximity (first /Count after the marker) instead of its own dictionary ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/count_written_before_the_type_key (0.00s)
+        pdf_test.go:1154: PDFPageCount abstained ("malformed_input"), want 2 -- key order in a PDF dictionary carries no meaning, so a forward-only search steps over the dictionary's OWN count and lands on the outline's
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.116s
+FAIL
+[exit 1]
+
+=== positive run: the bound test now asserts the REASON, not the clock ===
+ok  	github.com/apaderin/octoconv/internal/inspect	0.931s
+[exit 0]
+
+=== INVERSION 12 (re-run after the test stopped relying on a clock): the dictionary-resolution budget is removed ===
+--- FAIL: TestPagesDictResolutionIsBounded (0.10s)
+    pdf_test.go:1204: PDFPageCount reason = "malformed_input", want "work_ceiling_bytes" -- the dictionary-resolution budget must be reached and REPORTED on a file built to exhaust it. Any other reason means the sum of the per-marker lookups is unbounded and the walk simply ran to completion
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.191s
+FAIL
+[exit 1]
+

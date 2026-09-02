@@ -1092,3 +1092,123 @@ func TestPDFPageCountAbstainsWhenMarkersDisagree(t *testing.T) {
 			"into the characteristic, which must keep publishing its best available answer")
 	}
 }
+
+// TestPagesDictCountBindsToItsOwnDictionary is the regression for PR #15
+// round 2, and for the two bypasses that came before it.
+//
+// The count used to be "the first /Count within 512 bytes after the marker",
+// which is proximity, not structure. Three legal documents defeat that, and
+// all three are here because each fails differently:
+func TestPagesDictCountBindsToItsOwnDictionary(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int // 0 means "must abstain"
+		why  string
+	}{
+		{
+			name: "count written before the type key",
+			body: "2 0 obj\n<< /Count 2 /Type /Pages /Kids [3 0 R 4 0 R] >>\nendobj\n" +
+				"9 0 obj\n<< /Type /Outlines /Count 300 /First 10 0 R >>\nendobj\n",
+			want: 2,
+			why: "key order in a PDF dictionary carries no meaning, so a forward-only search steps " +
+				"over the dictionary's OWN count and lands on the outline's",
+		},
+		{
+			name: "count only in a following sibling dictionary",
+			body: "2 0 obj\n<< /Type /Pages /Kids [3 0 R] >>\nendobj\n" +
+				"9 0 obj\n<< /Type /Outlines /Count 300 >>\nendobj\n",
+			want: 0,
+			why: "the page tree declares no count of its own; borrowing the neighbour's is a " +
+				"confident wrong answer, and abstaining admits the upload instead",
+		},
+		{
+			name: "count in a nested dictionary",
+			body: "2 0 obj\n<< /Type /Pages /Resources << /Count 300 >> /Kids [3 0 R] /Count 2 >>\nendobj\n",
+			want: 2,
+			why:  "a nested dictionary's key is not a key of the dictionary that contains it",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			b.WriteString("%PDF-1.4\n")
+			b.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+			b.WriteString(tc.body)
+			b.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n")
+			b.WriteString("4 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n")
+			b.WriteString("trailer\n<< /Root 1 0 R >>\nstartxref\n0\n%%EOF\n")
+			raw := b.Bytes()
+
+			count, reason := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20,
+				NewTracker(Budget{MaxBytes: 8 << 20}))
+
+			if tc.want == 0 {
+				if count != nil {
+					t.Fatalf("PDFPageCount = %d, want an abstention -- %s", *count, tc.why)
+				}
+				return
+			}
+			if count == nil {
+				t.Fatalf("PDFPageCount abstained (%q), want %d -- %s", reason, tc.want, tc.why)
+			}
+			if *count != tc.want {
+				t.Fatalf("PDFPageCount = %d, want %d -- %s", *count, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestPagesDictResolutionIsBounded pins the ceiling that binding the count to a
+// dictionary made necessary.
+//
+// Resolving a dictionary per marker turns a per-marker window into a sum over
+// however many markers a file carries -- and a file carrying thousands of them
+// is cheap to construct, which is the same construction maxTokenScanIterations
+// already exists to bound. Measured before the budget existed: this package's
+// dense-marker test went from milliseconds to 5.02s.
+//
+// The assertion is on the REASON, not on the clock. A first version timed the
+// call and allowed two seconds -- and it passed with the budget removed
+// entirely, because the marker walk's own maxTokenScanIterations cap already
+// keeps the unbudgeted worst case under that. A timing threshold loose enough
+// to be stable in CI was too loose to isolate the boundary at all, which the
+// inversion is what showed.
+//
+// The budget has a deterministic observable effect instead: exhausting it is
+// reported as ReasonWorkCeilingBytes, where an unbudgeted walk finds no
+// dictionary and reports ReasonMalformedInput. Both answers are "unknown" and
+// both are correct; only one of them proves the work was bounded. A generous
+// time bound stays as a second, weaker guard.
+func TestPagesDictResolutionIsBounded(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	// Markers with no enclosing dictionary anywhere near them: every one costs
+	// a full backward AND forward window if nothing bounds the sum.
+	for i := 0; i < 20000; i++ {
+		b.WriteString("/Type /Pages ")
+	}
+	b.WriteString("\n%%EOF\n")
+	raw := b.Bytes()
+
+	start := time.Now()
+	count, reason := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20,
+		NewTracker(Budget{MaxBytes: 8 << 20}))
+	elapsed := time.Since(start)
+
+	if count != nil {
+		t.Fatalf("PDFPageCount = %d on a file of bare markers with no dictionary at all", *count)
+	}
+	if reason != ReasonWorkCeilingBytes {
+		t.Fatalf("PDFPageCount reason = %q, want %q -- the dictionary-resolution budget must be "+
+			"reached and REPORTED on a file built to exhaust it. Any other reason means the sum of "+
+			"the per-marker lookups is unbounded and the walk simply ran to completion",
+			reason, ReasonWorkCeilingBytes)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("PDFPageCount took %v on a file of %d bare markers -- the per-marker dictionary "+
+			"lookup must be bounded in SUM, not only per marker, or a cheaply-constructed file buys "+
+			"attacker-controlled CPU", elapsed, 20000)
+	}
+}
