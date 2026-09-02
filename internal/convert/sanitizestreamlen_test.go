@@ -139,17 +139,11 @@ func TestStreamKeywordIsStructuralNotLexical(t *testing.T) {
 // to measure" is not a property to depend on.
 func TestStreamLengthResolvesAnIndirectReference(t *testing.T) {
 	body := []byte("payload that mentions endstream and startxref\n")
-	var buf bytes.Buffer
-	buf.WriteString("%PDF-1.4\n")
-	obj1 := buf.Len()
-	buf.WriteString("1 0 obj\n<< /Length 2 0 R >>\nstream\n")
-	buf.Write(body)
-	buf.WriteString("endstream\nendobj\n")
-	obj2 := buf.Len()
-	fmt.Fprintf(&buf, "2 0 obj\n%d\nendobj\n", len(body))
-	buf.WriteString("trailer\n<< /Size 3 >>\nstartxref\n0\n%%EOF\n")
-	raw := buf.Bytes()
-	_, _ = obj1, obj2
+	// Built with a real cross-reference table: a forward-referenced /Length is
+	// resolved through the xref, so a fixture without one has no answer in it.
+	raw := buildPDF(t,
+		[]byte("<< /Length 2 0 R >>\nstream\n"+string(body)+"endstream"),
+		[]byte(fmt.Sprint(len(body))))
 
 	ranges, err := pdfStreamRanges(raw)
 	if err != nil {

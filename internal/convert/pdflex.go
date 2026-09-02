@@ -92,6 +92,11 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 
 	var ints []pdfLexInt // the last two integer tokens at depth 0
 	depth := 0
+	// Arrays do not change dictionary depth, so a /Length inside "[ ... ]" was
+	// read as another key of the enclosing dictionary and overwrote the real
+	// one. "<< /Length N /Foo [/Length 5] >>" is legal and its stream is N
+	// bytes long. Found by review on PR #14, round 4.
+	arrayDepth := 0
 
 	// State for the dictionary that most recently closed at top level. A
 	// "stream" keyword is only a stream keyword when it directly follows one.
@@ -153,19 +158,41 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 			continue
 		}
 
-		if c == '/' {
-			name, next := pdfReadName(b, i)
-			i = next
-			// /Length at the OUTERMOST level of this dictionary. A /Length in a
-			// /DecodeParms sub-dictionary is not the stream's own.
-			awaitLength = depth == 1 && name == "Length"
+		if c == '[' {
+			arrayDepth++
+			i++
+			ints = nil
+			dictClosed = false
+			continue
+		}
+		if c == ']' {
+			if arrayDepth > 0 {
+				arrayDepth--
+			}
+			i++
 			ints = nil
 			dictClosed = false
 			continue
 		}
 
-		if c >= '0' && c <= '9' {
-			v, next := pdfReadUint(b, i)
+		if c == '/' {
+			name, next := pdfReadName(b, i)
+			i = next
+			// /Length as a KEY of this dictionary: at dictionary depth 1 and
+			// outside any array. A /Length in a /DecodeParms sub-dictionary or
+			// inside an array value is not the stream's own.
+			awaitLength = depth == 1 && arrayDepth == 0 && name == "Length"
+			ints = nil
+			dictClosed = false
+			continue
+		}
+
+		if c >= '0' && c <= '9' || ((c == '+' || c == '-') && i+1 < len(b) && b[i+1] >= '0' && b[i+1] <= '9') {
+			// PDF integers may carry a sign (ISO 32000-1 7.3.3). "/Length +5"
+			// is valid and was rejected outright. A NEGATIVE length is not a
+			// length, so it is read and then refused by the payload bounds
+			// check rather than silently clamped.
+			v, next := pdfReadSignedInt(b, i)
 			if awaitLength {
 				pendingValue, pendingOK = v, true
 				pendingRef = pdfLooksLikeRef(b, next)
@@ -208,7 +235,7 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 					n, ok = lengthValue, true
 				}
 			}
-			if !ok || payload+n > len(b) || !pdfEndstreamFollows(b, payload+n) {
+			if !ok || n < 0 || payload+n > len(b) || !pdfEndstreamFollows(b, payload+n) {
 				// RESYNCHRONISATION, NOT A RANGE.
 				//
 				// The length is unknown, so where the payload ends is unknown
@@ -314,6 +341,20 @@ func pdfReadKeyword(b []byte, i int) (string, int) {
 	return string(b[start:i]), i
 }
 
+// pdfReadSignedInt reads an optionally signed integer.
+func pdfReadSignedInt(b []byte, i int) (int, int) {
+	neg := false
+	if i < len(b) && (b[i] == '+' || b[i] == '-') {
+		neg = b[i] == '-'
+		i++
+	}
+	v, next := pdfReadUint(b, i)
+	if neg {
+		return -v, next
+	}
+	return v, next
+}
+
 func pdfReadUint(b []byte, i int) (int, int) {
 	v := 0
 	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
@@ -329,7 +370,42 @@ func pdfReadUint(b []byte, i int) (int, int) {
 // pdfReadIntAt reads the first integer at or after off, skipping whitespace and
 // comments. Used to read the value of an indirect /Length object.
 func pdfReadIntAt(b []byte, off int) (int, int, bool) {
-	i := off
+	i := pdfSkipTrivia(b, off)
+	if i >= len(b) {
+		return 0, i, false
+	}
+	if !(b[i] >= '0' && b[i] <= '9') && !((b[i] == '+' || b[i] == '-') && i+1 < len(b) && b[i+1] >= '0' && b[i+1] <= '9') {
+		return 0, i, false
+	}
+	v, next := pdfReadSignedInt(b, i)
+	return v, next, true
+}
+
+// pdfLooksLikeRef reports whether the tokens after an integer are "G R", making
+// that integer an object number rather than a value.
+// pdfLooksLikeRef reports whether the tokens after an integer are "G R", making
+// that integer an object number rather than a value.
+//
+// Comments count as whitespace between all three tokens: "/Length 7 % why\n0 R"
+// is valid, and a version of this that skipped only whitespace read the 7 as a
+// direct length -- so unless the stream happened to be seven bytes long, both
+// passes left it unresolved and VerifySanitized refused a valid PDF. Found by
+// review on PR #14, round 4. The main loop already treated comments as
+// whitespace; this helper is the second place that needed the same rule, which
+// is the shape this package keeps paying for.
+func pdfLooksLikeRef(b []byte, i int) bool {
+	i = pdfSkipTrivia(b, i)
+	if i >= len(b) || b[i] < '0' || b[i] > '9' {
+		return false
+	}
+	_, i = pdfReadUint(b, i)
+	i = pdfSkipTrivia(b, i)
+	return i < len(b) && b[i] == 'R'
+}
+
+// pdfSkipTrivia advances over whitespace and comments -- the two things that
+// may appear between any two tokens (ISO 32000-1 7.2.4).
+func pdfSkipTrivia(b []byte, i int) int {
 	for i < len(b) {
 		if isPDFSpace(b[i]) {
 			i++
@@ -341,29 +417,9 @@ func pdfReadIntAt(b []byte, off int) (int, int, bool) {
 			}
 			continue
 		}
-		break
+		return i
 	}
-	if i >= len(b) || b[i] < '0' || b[i] > '9' {
-		return 0, i, false
-	}
-	v, next := pdfReadUint(b, i)
-	return v, next, true
-}
-
-// pdfLooksLikeRef reports whether the tokens after an integer are "G R", making
-// that integer an object number rather than a value.
-func pdfLooksLikeRef(b []byte, i int) bool {
-	for i < len(b) && isPDFSpace(b[i]) {
-		i++
-	}
-	if i >= len(b) || b[i] < '0' || b[i] > '9' {
-		return false
-	}
-	_, i = pdfReadUint(b, i)
-	for i < len(b) && isPDFSpace(b[i]) {
-		i++
-	}
-	return i < len(b) && b[i] == 'R'
+	return i
 }
 
 func isPDFDelimiter(c byte) bool {
@@ -395,19 +451,177 @@ func isPDFSpace(c byte) bool {
 // silent fallback to "scan for endstream" is exactly the defect this file
 // replaced, and it would hide behind a passing test.
 //
-// One retry covers the legal case of a /Length object defined AFTER the stream
-// that refers to it: the second pass starts from an object index built by the
-// first, which by then knows about objects the forward scan had not reached.
+// THE RETRY IS ANCHORED IN THE CROSS-REFERENCE TABLE, NOT IN A GUESS.
+//
+// A forward pass cannot resolve "/Length 6 0 R" when object 6 is written AFTER
+// the stream -- which is exactly what Ghostscript emits. The first version
+// retried using the object index the forward pass had built, and review showed
+// why that is not good enough: the pass RESYNCHRONISES at the first "endstream"
+// it can find, so on a crafted file it resumes inside a payload and records
+// whatever object headers it finds there, while an unmatched "(" hides the
+// genuine definition. The retry then resolved the length from a decoy.
+//
+// The file already carries an authoritative answer, and round one of this review
+// said so ("build the index from actual object structure/xref data"). The
+// cross-reference table maps object numbers to offsets, and every offset is
+// checked to actually carry that object's own "N G obj" header before it is
+// believed -- so a decoy sitting somewhere else in the file is not reachable
+// through it at all.
+//
+// This is safe to depend on here because sanitizePDF forces
+// -dCompatibilityLevel=1.4, which means a classic cross-reference TABLE rather
+// than a 1.5+ cross-reference stream. An input without a usable table simply has
+// no forward references resolved, and the stream stays unresolved, which fails
+// closed.
 func pdfStreamPayloads(b []byte) ([][2]int, error) {
 	first := scanPDF(b)
 	if first.unresolved == 0 {
 		return first.streams, nil
 	}
 
-	second := scanPDFSeeded(b, first.objects)
+	second := scanPDFSeeded(b, pdfXrefObjects(b))
 	if second.unresolved > 0 {
 		return nil, fmt.Errorf("%w: %d stream(s) declare a /Length this file does not resolve",
 			ErrSanitizeMalformedInput, second.unresolved)
 	}
 	return second.streams, nil
+}
+
+// pdfXrefObjects reads the classic cross-reference table(s) and returns object
+// number -> offset just past the object's header, for every entry whose offset
+// actually carries that object's header.
+//
+// It follows /Prev so an incrementally-updated file resolves through its whole
+// chain, and it bounds that walk: a table chain that loops or is absurdly long
+// is malformed, and this returns what it has rather than following it forever.
+func pdfXrefObjects(b []byte) map[int]int {
+	out := map[int]int{}
+
+	at := bytes.LastIndex(b, []byte("startxref"))
+	if at < 0 {
+		return out
+	}
+	off, _, ok := pdfReadIntAt(b, at+len("startxref"))
+	if !ok {
+		return out
+	}
+
+	seen := map[int]bool{}
+	for hops := 0; hops < pdfXrefMaxHops; hops++ {
+		if off < 0 || off >= len(b) || seen[off] {
+			return out
+		}
+		seen[off] = true
+
+		i := pdfSkipTrivia(b, off)
+		if !bytes.HasPrefix(b[i:], []byte("xref")) {
+			// A cross-reference STREAM (PDF 1.5+), which this does not read.
+			// Not an error: the caller treats an unresolved stream as
+			// unresolved, which fails closed.
+			return out
+		}
+		i += len("xref")
+
+		for {
+			i = pdfSkipTrivia(b, i)
+			if bytes.HasPrefix(b[i:], []byte("trailer")) {
+				i += len("trailer")
+				break
+			}
+			startNum, next, ok := pdfReadIntAt(b, i)
+			if !ok {
+				return out
+			}
+			count, next2, ok := pdfReadIntAt(b, next)
+			if !ok || count < 0 || count > pdfXrefMaxEntries {
+				return out
+			}
+			i = next2
+			for n := 0; n < count; n++ {
+				entOff, e1, ok1 := pdfReadIntAt(b, i)
+				_, e2, ok2 := pdfReadIntAt(b, e1)
+				if !ok1 || !ok2 {
+					return out
+				}
+				j := pdfSkipTrivia(b, e2)
+				if j >= len(b) {
+					return out
+				}
+				kind := b[j]
+				i = j + 1
+				if kind != 'n' {
+					continue
+				}
+				num := startNum + n
+				if hdr, ok := pdfObjectHeaderAt(b, entOff, num); ok {
+					// FIRST definition wins across the /Prev chain, because the
+					// chain is walked newest-first and a newer revision's entry
+					// is the one in force.
+					if _, already := out[num]; !already {
+						out[num] = hdr
+					}
+				}
+			}
+		}
+
+		// /Prev in the trailer dictionary, if any.
+		prev, ok := pdfTrailerPrev(b, i)
+		if !ok {
+			return out
+		}
+		off = prev
+	}
+	return out
+}
+
+const (
+	// pdfXrefMaxHops bounds the /Prev chain. Incremental updates are rare in
+	// this project's own output (Ghostscript writes one revision) and a chain
+	// longer than this is describing itself badly.
+	pdfXrefMaxHops = 32
+	// pdfXrefMaxEntries bounds a single subsection's declared count so a
+	// malformed header cannot make this loop for a long time.
+	pdfXrefMaxEntries = 1 << 20
+)
+
+// pdfObjectHeaderAt reports the offset just past "num G obj" if that is what
+// sits at off. This is what makes an xref offset trustworthy: an entry pointing
+// somewhere else, or at a different object, is discarded rather than believed.
+func pdfObjectHeaderAt(b []byte, off, num int) (int, bool) {
+	if off < 0 || off >= len(b) {
+		return 0, false
+	}
+	got, next, ok := pdfReadIntAt(b, off)
+	if !ok || got != num {
+		return 0, false
+	}
+	if _, next, ok = pdfReadIntAt(b, next); !ok {
+		return 0, false
+	}
+	next = pdfSkipTrivia(b, next)
+	if !bytes.HasPrefix(b[next:], []byte("obj")) {
+		return 0, false
+	}
+	return next + len("obj"), true
+}
+
+// pdfTrailerPrev reads /Prev out of the trailer dictionary beginning at or after
+// i. Deliberately shallow: it reads one key out of one dictionary and does not
+// pretend to understand the trailer.
+func pdfTrailerPrev(b []byte, i int) (int, bool) {
+	i = pdfSkipTrivia(b, i)
+	if !bytes.HasPrefix(b[i:], []byte("<<")) {
+		return 0, false
+	}
+	end := bytes.Index(b[i:], []byte(">>"))
+	if end < 0 {
+		return 0, false
+	}
+	dict := b[i : i+end]
+	at := bytes.Index(dict, []byte("/Prev"))
+	if at < 0 {
+		return 0, false
+	}
+	v, _, ok := pdfReadIntAt(dict, at+len("/Prev"))
+	return v, ok
 }

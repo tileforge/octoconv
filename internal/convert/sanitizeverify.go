@@ -456,6 +456,27 @@ func ooxmlMainPart(format string) string {
 	}
 }
 
+// opcContentTypesNS is the namespace a package's content-type declarations live
+// in (ECMA-376 Part 2 §10.1.2). An Override or Default outside it is some other
+// vocabulary's element that happens to share a local name.
+const opcContentTypesNS = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+// ooxmlMainRoot is the root element the main part must carry, per format. The
+// closed companion to ooxmlMainPart: knowing which part to require says nothing
+// about whether what is in it is a document.
+func ooxmlMainRoot(format string) string {
+	switch NormalizeFormat(format) {
+	case "docx", "docm", "dotm":
+		return "document"
+	case "xlsx", "xlsm":
+		return "workbook"
+	case "pptx", "pptm", "potm", "ppsm":
+		return "presentation"
+	default:
+		return ""
+	}
+}
+
 // contentTypeDeclares reports whether [Content_Types].xml gives the part a
 // content type, by an Override naming it or a Default covering its extension.
 //
@@ -473,7 +494,14 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 	// the decoder had not yet reached the error. verifyOOXML's own root check
 	// looks at the first start element only, so nothing else caught it either.
 	// Found by review on PR #14, round 3.
+	// DEPTH AND NAMESPACE, not element name alone. A cleanly parsing document
+	// can nest an Override inside something else --
+	// <Types><Wrapper><Override .../></Wrapper></Types> -- and that nested
+	// element is not a package content-type declaration. Only a DIRECT child of
+	// Types, in the OPC content-types namespace, declares anything. Found by
+	// review on PR #14, round 4.
 	dec := xml.NewDecoder(bytes.NewReader(contentTypes))
+	depth := 0
 	found := false
 	ext := ""
 	if i := strings.LastIndexByte(part, '.'); i >= 0 {
@@ -488,8 +516,18 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 		if err != nil {
 			return false
 		}
+		if _, ok := tok.(xml.EndElement); ok {
+			depth--
+			continue
+		}
 		el, ok := tok.(xml.StartElement)
 		if !ok {
+			continue
+		}
+		here := depth
+		depth++
+		// depth 0 is <Types> itself; its declarations are at depth 1.
+		if here != 1 || el.Name.Space != opcContentTypesNS {
 			continue
 		}
 
@@ -787,6 +825,31 @@ func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error
 		}
 
 		if mainPart != "" && strings.EqualFold(part, mainPart) {
+			// PRESENT IS NOT ENOUGH. A zero-byte or malformed word/document.xml
+			// satisfied a filename comparison while carrying no document at
+			// all: the loop's root-element check is only consulted for the
+			// property-part test, and libmagic only rules out OLE content. So
+			// a valid [Content_Types].xml was letting an empty or corrupt
+			// package through -- the very outcome SANI-09 exists to reject,
+			// one step further in. Found by review on PR #14, round 4.
+			root, ok := xmlRootElement(blob)
+			if !ok {
+				return nil, fmt.Errorf("%w: %s does not parse as XML, so the package has no "+
+					"usable document in it", ErrSanitizeUnverifiable, part)
+			}
+			// LOCAL NAME, NOT THE FULL NAMESPACE, and that is a deliberate
+			// limit rather than an oversight. OOXML has two conformance
+			// classes with different namespaces for the same element --
+			// Transitional (schemas.openxmlformats.org/...) and Strict
+			// (purl.oclc.org/ooxml/...) -- so pinning one would refuse valid
+			// Strict packages. Rejection here DELETES the output, and this
+			// check exists to catch an empty or corrupt main part, not to
+			// referee conformance classes.
+			if want := ooxmlMainRoot(format); want != "" && root.Local != want {
+				return nil, fmt.Errorf("%w: %s has root <%s>, want <%s> -- this is not the "+
+					"document this format requires", ErrSanitizeUnverifiable, part,
+					root.Local, want)
+			}
 			sawMainPart = true
 		}
 

@@ -7,6 +7,36 @@ import (
 	"testing"
 )
 
+// buildPDF assembles objects into a file WITH a real cross-reference table.
+//
+// The table is not decoration: an indirect /Length whose object is written after
+// its stream is resolved through the xref, deliberately, because the alternative
+// -- retrying with an index scavenged from a resynchronised walk -- reads decoys
+// out of payloads. A fixture with "startxref 0" and no table is therefore not a
+// smaller version of a real PDF; it is a file with no answer in it.
+//
+// objects[i] is the BODY of object i+1, without its "N 0 obj"/"endobj" wrapper.
+func buildPDF(t *testing.T, objects ...[]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	offsets := make([]int, len(objects))
+	for n, body := range objects {
+		offsets[n] = buf.Len()
+		fmt.Fprintf(&buf, "%d 0 obj\n", n+1)
+		buf.Write(body)
+		buf.WriteString("\nendobj\n")
+	}
+	xrefAt := buf.Len()
+	fmt.Fprintf(&buf, "xref\n0 %d\n", len(objects)+1)
+	buf.WriteString("0000000000 65535 f \n")
+	for _, off := range offsets {
+		fmt.Fprintf(&buf, "%010d 00000 n \n", off)
+	}
+	fmt.Fprintf(&buf, "trailer\n<< /Size %d >>\nstartxref\n%d\n%%%%EOF\n", len(objects)+1, xrefAt)
+	return buf.Bytes()
+}
+
 // Round 3 of PR #14 found three more defects in the byte-scanning walkers, all
 // of them the same one: a token recognised by its bytes without regard to the
 // lexical context it sits in. These tests are that context, one case per
@@ -127,14 +157,9 @@ func TestDelimitersInsideStringsAreNotStructure(t *testing.T) {
 func TestLengthObjectDefinedAfterItsStream(t *testing.T) {
 	body := []byte("payload with a ( and a % and >> in it\n")
 
-	var buf bytes.Buffer
-	buf.WriteString("%PDF-1.4\n")
-	buf.WriteString("1 0 obj\n<< /Length 6 0 R >>\nstream\n")
-	buf.Write(body)
-	buf.WriteString("endstream\nendobj\n")
-	fmt.Fprintf(&buf, "6 0 obj\n%d\nendobj\n", len(body))
-	buf.WriteString("trailer\n<< /Size 7 >>\nstartxref\n0\n%%EOF\n")
-	raw := buf.Bytes()
+	raw := buildPDF(t,
+		[]byte("<< /Length 2 0 R >>\nstream\n"+string(body)+"endstream"),
+		[]byte(fmt.Sprint(len(body))))
 
 	ranges, err := pdfStreamRanges(raw)
 	if err != nil {
