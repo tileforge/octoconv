@@ -46,7 +46,15 @@ import (
 )
 
 // SanitizeConverter is the probe engine's registry entry.
-type SanitizeConverter struct{}
+//
+// MaxPages is the PROBE_MAX_PAGES ceiling (probebounds.go), zero meaning "no
+// cap configured" -- the same zero-value convention OCRConverter.MaxPages and
+// ocrguards.go's enforceMaxPages already use. converters.go registers the
+// zero value at init; cmd/probe-worker replaces it with the configured one at
+// startup, exactly as cmd/ocr-worker does for OCRConverter.
+type SanitizeConverter struct {
+	MaxPages int
+}
 
 // Engine reports the eighth engine class.
 func (SanitizeConverter) Engine() string { return EngineProbe }
@@ -101,12 +109,32 @@ func SanitizeReportPath(outPath string) string { return outPath + sanitizeReport
 // The parameter stays because the Converter interface has it, and the
 // argument is not silently dropped -- a caller passing options gets an error
 // rather than a quiet best effort.
-func (SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	if len(opts) > 0 {
 		return fmt.Errorf("sanitize takes no options, got %d", len(opts))
 	}
 
 	format := formatFromPath(inPath)
+
+	// PROBE-02: the page ceiling, enforced BEFORE SanitizeFile and therefore
+	// before the first ghostscript pass. It lives HERE rather than inside
+	// SanitizeFile for one reason: the bound is CONFIGURATION, held by this
+	// converter (the registry entry cmd/probe-worker replaces with the
+	// env-resolved value), and SanitizeFile takes no configuration at all.
+	// Threading it through would have changed that function's signature at
+	// twenty test call sites, none of which are about the ceiling.
+	//
+	// Every production path reaches the sanitizer through this method -- the
+	// worker resolves a Converter from the registry and calls Convert -- so
+	// "a caller could forget the gate" is not the same risk it is for
+	// verification, which SanitizeFile keeps inside itself precisely because
+	// its callers include this one.
+	if enforce, ok := sanitizePageCeilings[format]; ok {
+		if err := enforce(inPath, c.MaxPages); err != nil {
+			return err
+		}
+	}
+
 	res, err := SanitizeFile(ctx, format, inPath, outPath)
 	if err != nil {
 		return err
@@ -139,6 +167,24 @@ func formatFromPath(path string) string {
 		}
 	}
 	return ""
+}
+
+// sanitizePageCeilings maps a sanitizable format to the guard that enforces
+// the probe page ceiling on it, and it has exactly one entry on purpose.
+//
+// The ceiling exists because sanitize cost is per PAGE and linear -- but that
+// is a fact about GHOSTSCRIPT rasterizing a PDF (~2.0 s/page, measured in
+// phase 60), not about sanitizing in general. OOXML sanitization rewrites a
+// zip's parts and images are re-encoded once; neither has a per-page cost
+// model, and phase 60 established that inventing one without a measurement is
+// not worth doing. A format absent from this map is therefore not "forgotten",
+// it is a format whose cost this bound does not describe.
+//
+// A map rather than a switch, and a package-level literal rather than init()
+// registration, for the same reasons sanitizeFormats gives above its own
+// declaration.
+var sanitizePageCeilings = map[string]func(inPath string, max int) error{
+	"pdf": enforcePDFPageCeiling,
 }
 
 // SanitizeOptsFromMap re-parses a persisted Opts map strictly, keeping only

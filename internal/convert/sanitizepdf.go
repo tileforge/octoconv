@@ -72,6 +72,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
 // pdfLostCapabilities are the document features the PostScript round trip
@@ -170,6 +172,54 @@ func pdfwriteArgs(psPath, outPath string) []string {
 // reported. What this states is what the method removes from this format; Plan
 // 60-04's verifier is what turns it into a checked claim by confirming each
 // class is absent from the output bytes.
+// probePDFPageCount returns inPath's page count, read by pdfcpu.
+//
+// # WHY pdfcpu IS ALLOWED HERE, AND WHY THE API GATE IS NOT ALLOWED TO USE IT
+//
+// This is the project's parsing dependency pointed at untrusted bytes, and
+// phase 58 (D-02a) refused it in the API process. sanitizeverify.go's header
+// records the three conditions under which it was agreed anyway -- isolated
+// worker, measured timeout, cgroup limits -- and states in as many words that
+// its own use is the exception those conditions were written for and not a
+// precedent. All three conditions hold at THIS call site for the same reason
+// they hold there: it runs in cmd/probe-worker, inside PROBE_ENGINE_TIMEOUT,
+// under the 2 CPU / 1 GiB container limit.
+//
+// That is the whole reason the admission gate in internal/api counts pages
+// with a bounded byte scanner instead (internal/inspect.PDFPageCount) and is
+// permitted to answer "unknown". The cheap gate saves an S3 write; this one is
+// the bound. Two gates, one bound, two ways of obtaining the count -- and the
+// difference in how they count is the entire point (63-CONTEXT.md D-04).
+//
+// A count pdfcpu cannot produce is NOT treated as "no pages": it is a file the
+// sanitizer's own verifier would not be able to read either, so it is reported
+// as malformed input -- terminal, and honest about which side failed.
+func probePDFPageCount(inPath string) (int, error) {
+	n, err := api.PageCountFile(inPath)
+	if err != nil {
+		return 0, fmt.Errorf("%w: pdfcpu could not count the pages of the input: %v",
+			ErrSanitizeMalformedInput, err)
+	}
+	return n, nil
+}
+
+// enforcePDFPageCeiling refuses a PDF whose page count exceeds max BEFORE the
+// first ghostscript pass runs (PROBE-02).
+//
+// max == 0 means no ceiling is configured, and then pdfcpu is not invoked at
+// all: an unconfigured bound must cost nothing, not a parse whose only use
+// would be a comparison that cannot fail.
+func enforcePDFPageCeiling(inPath string, max int) error {
+	if max <= 0 {
+		return nil
+	}
+	count, err := probePDFPageCount(inPath)
+	if err != nil {
+		return err
+	}
+	return EnforceProbeMaxPages(count, max)
+}
+
 func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
 	tmpDir, err := os.MkdirTemp("", "octoconv-sanitize-pdf-*")
 	if err != nil {

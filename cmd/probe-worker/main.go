@@ -67,17 +67,29 @@ func main() {
 
 	repo := jobs.NewRepo(pool)
 
-	// NO CONVERTER RE-REGISTRATION HERE, and that is a difference worth
-	// stating rather than leaving as an absence.
+	// CONVERTER RE-REGISTRATION, exactly as ocr-worker/av-worker/pandoc-worker
+	// do it, and the reason this file used to say the opposite is worth
+	// keeping rather than deleting.
 	//
-	// ocr-worker, av-worker and pandoc-worker all call convert.Default.Replace
-	// at startup to install a CONFIGURED converter, because each carries a
-	// runtime ceiling (max pixels, max duration, max input bytes) that only
-	// the process env knows. SanitizeConverter has no such field: sanitize
-	// takes no options and has no per-engine ceiling of its own, so the
-	// registration converters.go performed at init is already the final one.
-	// Adding a Replace call "for symmetry" would be a no-op overwrite whose
-	// only effect is to suggest a configuration knob that does not exist.
+	// Until Phase 63 this comment read "SanitizeConverter has no such field:
+	// sanitize takes no options and has no per-engine ceiling of its own",
+	// and it was true. PROBE_MAX_PAGES is that ceiling (PROBE-01/PROBE-02):
+	// sanitize cost is per PAGE and linear (~2.0 s/page, measured in phase
+	// 60), so an over-long document otherwise burns PROBE_ENGINE_TIMEOUT and
+	// the whole PROBE_MAX_RETRY budget rediscovering the same thing.
+	//
+	// Replace, not Register: Register PANICS on a triple collision since
+	// Phase 57 D-09, and converters.go already registered the zero-value
+	// converter at init. Replace performs the identical unconditional
+	// overwrite without the occupancy check.
+	//
+	// The default is convert.DefaultProbeMaxPages, the SAME constant cmd/api
+	// passes for its own admission gate -- one default, not two literals that
+	// can drift (which is precisely what happened to PROBE_ENGINE_TIMEOUT
+	// between these two processes, caught in review on PR #12).
+	probeMaxPages := envInt("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)
+	convert.Default.Replace(buildSanitizeConverter(probeMaxPages))
+	log.Printf("📄 PROBE_MAX_PAGES=%d", probeMaxPages)
 
 	// PROBE_ENGINE_TIMEOUT.
 	//
@@ -177,6 +189,17 @@ func main() {
 		log.Printf("metrics graceful shutdown failed: %v", err)
 	}
 	log.Println("bye 👋")
+}
+
+// buildSanitizeConverter constructs a CONFIGURED convert.SanitizeConverter
+// from the resolved PROBE_MAX_PAGES value -- its own pure function rather than
+// an inline struct literal, so a unit test can assert the env value actually
+// reaches the converter's guard field without depending on the global
+// convert.Default registry side effect. Mirrors cmd/ocr-worker's
+// buildOCRConverter exactly, for the reason stated there: a bound that is
+// configured and not plumbed is a bound that does not exist.
+func buildSanitizeConverter(maxPages int) convert.SanitizeConverter {
+	return convert.SanitizeConverter{MaxPages: maxPages}
 }
 
 func envInt(key string, def int) int {
