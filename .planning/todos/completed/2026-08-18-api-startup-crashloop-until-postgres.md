@@ -7,7 +7,16 @@ files:
   - deploy/chart/octoconv/templates/deployment-api.yaml (no initContainer / startupProbe gating on postgres)
 origin: observed while running the phase 58 INSP-06 live gate, 2026-08-18
 resolves_phase: 62
+resolved: 2026-09-02
 ---
+
+> **Resolved by phase 62 (DEBT-12).** Option 1 was taken: `octoconv.waitForDeps`
+> in `_helpers.tpl` is included by all ten postgres-needing deployments, and the
+> api binary keeps its `log.Fatalf` fail-fast convention untouched. Verified by
+> rendering, not by reading the diff — `helm template` with the required secrets
+> emits `wait-for-postgres` ten times. (A bare `helm template` renders zero and
+> looks like the fix is missing; it is erroring on absent secret values, not on
+> the initContainer.)
 
 ## Observed, not inferred
 
