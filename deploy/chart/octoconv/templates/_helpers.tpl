@@ -173,8 +173,8 @@ reaching this path alone (T-54-02).
 {{- end }}
 
 {{/*
-octoconv.waitForPostgres — an initContainer that blocks until postgres accepts
-connections.
+octoconv.waitForDeps — initContainers that block until the two startup
+dependencies every octoconv binary treats as FATAL are actually there.
 
 WHY AN INIT CONTAINER AND NOT A RETRY IN THE BINARY. Every Go entrypoint in
 this project treats a startup dependency failure as fatal, and that convention
@@ -182,26 +182,56 @@ is worth keeping: "fatal means fatal" is what makes a non-zero restartCount a
 signal rather than noise. A bounded retry inside main() would weaken it in ten
 binaries to solve an ordering problem that belongs to the orchestrator.
 
-WHAT IT FIXES. A fresh `helm upgrade --install` brings pods up before postgres
-accepts connections; each one exits(1), kubelet restarts it, and the pod reaches
+WHAT IT FIXES. A fresh `helm upgrade --install` brings pods up before their
+dependencies answer; each one exits(1), kubelet restarts it, and the pod reaches
 restartCount 2-3 before it is ever Ready. That is not free: it pays
 CrashLoopBackOff's exponential delay on every cold install, and it burns the
 metric this project's own live gates read as ground truth. A restartCount that
 is routinely 2-3 for benign reasons is one nobody will trust at 4.
 
-APPLIED TO EVERY POD THAT NEEDS POSTGRES, not just api. All ten entrypoints
-have the same log.Fatalf shape; fixing the one that was reported and leaving
-nine identical instances is the defect pattern the previous milestone spent
-eight review rounds learning to stop repeating.
+TWO WAITS, NOT ONE -- and the second is the one the reported symptom hid.
+The todo named postgres, and a postgres-only wait was written, installed on a
+cold namespace, and STILL came up at restartCount 2. The initContainer had done
+its job perfectly (its log shows three "waiting for postgres..." lines then
+"postgres is accepting connections"); the remaining two restarts were:
 
-Uses the same pinned postgres image the chart already deploys, so this adds no
-new supply-chain surface: pg_isready ships in it.
+  storage: check bucket "octoconv": Get "http://minio...:9000/octoconv/?location=":
+  dial tcp 192.168.194.228:9000: connect: connection refused
+
+MinIO is a second fatal startup dependency of every binary here (storage.New
+fails closed on both an unreachable MinIO *and* an absent bucket), and the
+bucket is created by the `octoconv-createbucket` post-install HOOK -- which by
+construction cannot have run when the main-release pods first start. So on a
+cold install the api was guaranteed to crash at least once no matter how
+healthy postgres was. Waiting on `mc ls local/$S3_BUCKET` covers both halves:
+it cannot succeed until MinIO answers AND the bucket exists.
+
+Redis is deliberately NOT waited on: neither asynq.NewClient nor
+redis.NewClient dials at construction, so an unready Redis is not a startup
+fatal for any entrypoint here. Waiting on it would add delay to buy nothing.
+
+THIS REQUIRES THAT THE CHART IS NEVER INSTALLED WITH `--wait`. With --wait,
+helm would block on api becoming Ready, api blocks on the bucket, and the
+post-install hook that creates the bucket has not run yet -- a deadlock. Every
+octoconv install in scripts/ is already deliberately async ("WITHOUT --wait",
+their own words) and scripts/ci-helm-checks.sh now enforces that mechanically,
+because this is a trap that would otherwise be found once, at 5 minutes of
+timeout, by whoever adds the flag.
+
+Both images are ones the chart already deploys (postgres for pg_isready, the
+pinned mc image the createbucket Job already uses), so this adds no new
+supply-chain surface.
+
+APPLIED TO EVERY POD THAT NEEDS THEM, not just api. All ten entrypoints have
+the same log.Fatalf shape; fixing the one that was reported and leaving nine
+identical instances is the defect pattern the previous milestone spent eight
+review rounds learning to stop repeating.
 */}}
-{{- define "octoconv.waitForPostgres" -}}
+{{- define "octoconv.waitForDeps" -}}
 initContainers:
   - name: wait-for-postgres
     image: {{ .Values.postgres.image | quote }}
-    imagePullPolicy: IfNotPresent
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
     command:
       - sh
       - -c
@@ -211,6 +241,29 @@ initContainers:
           sleep 2
         done
         echo "postgres is accepting connections"
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+  - name: wait-for-bucket
+    image: {{ .Values.minio.mcImage | quote }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # Succeeds only once MinIO answers AND the bucket exists -- the two
+        # halves of the storage.New precondition, in one probe. S3_ENDPOINT
+        # and S3_BUCKET come from the same ConfigMap the app container reads,
+        # so this can never wait on a different endpoint than the one that
+        # will then be dialled.
+        until mc alias set local "http://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
+          && mc ls "local/$S3_BUCKET" >/dev/null 2>&1; do
+          echo "waiting for bucket $S3_BUCKET on $S3_ENDPOINT..."
+          sleep 2
+        done
+        echo "bucket $S3_BUCKET exists"
+    {{- include "octoconv.commonEnv" . | nindent 4 }}
     resources:
       limits:
         cpu: "100m"

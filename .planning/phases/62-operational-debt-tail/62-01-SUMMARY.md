@@ -64,10 +64,72 @@ eight review rounds learning to stop repeating. `mcp-http` and `asynqmon` are
 correctly skipped — neither takes `commonEnv`, and `mcp-http`'s template says so
 in its own header.
 
+## SC1: the live gate caught the fix being half a fix
+
+The success criterion asked for a proven cold install, not a reasoned one. The
+first run of it, on a namespace that had never existed, came back:
+
+```
+api ready after 31s (readyReplicas=1)
+api restartCount=2
+```
+
+**With the initContainer in place and working.** Its own log reads
+`waiting for postgres...` ×3 then `postgres is accepting connections`, and
+`pg_isready` exited 0. The postgres race was closed. What the api died of was
+the other one:
+
+```
+storage: check bucket "octoconv": Get "http://minio...:9000/octoconv/?location=":
+dial tcp 192.168.194.228:9000: connect: connection refused
+```
+
+MinIO is a **second** fatal startup dependency of every binary here —
+`storage.New` fails closed on an unreachable MinIO *and* on an absent bucket —
+and the bucket is created by `octoconv-createbucket`, a **post-install hook**,
+which by construction cannot have run when the main-release pods first start.
+So on a cold install the api was guaranteed to crash at least once no matter how
+healthy postgres was. The todo named postgres because postgres is what the
+operator noticed; the class is "startup dependency not yet there".
+
+The helper is now `octoconv.waitForDeps` with two initContainers: `pg_isready`,
+and `mc ls local/$S3_BUCKET` against the same `S3_ENDPOINT`/`S3_BUCKET` the app
+container reads — one probe covering both halves of the `storage.New`
+precondition. It uses the pinned `mc` image the createbucket Job already uses,
+so still no new supply-chain surface. Redis is deliberately **not** waited on:
+neither `asynq.NewClient` nor `redis.NewClient` dials at construction, so an
+unready Redis is not a startup fatal for any entrypoint here.
+
+Re-run, same procedure:
+
+```
+api ready after 22s (readyReplicas=1)     # was 40s without the waits
+api restartCount=0
+api lastState={}
+```
+
+and with `worker` scaled up alongside it, both at `restartCount 0`, 21s to
+Ready, the worker's own init log showing five `waiting for postgres...` lines.
+Both runs recorded `Readiness probe failed` events for postgres *and* minio, so
+the race was genuinely live in the run that produced the zero — not absorbed by
+a warm cluster.
+
+Evidence: `evidence/sc1-without-initcontainer.txt` (restartCount 3, the
+reported defect reproduced), `evidence/sc1-halffix-postgres-only.txt`
+(restartCount 2, the fix that looked right), `evidence/sc1-with-both-waits.txt`
+and `evidence/sc1-with-both-waits-api-and-worker.txt` (restartCount 0).
+
+**`helm install --wait` would now deadlock** — helm blocks on api Ready, api
+blocks on the bucket, the hook that creates the bucket never runs. Every
+octoconv install in `scripts/` is already deliberately async and says so in its
+own log line; that is now a mechanical property of the repo rather than a
+convention, because the deadlock costs a five-minute timeout to discover.
+
 ## The guard was silently green, and inverting it is the only reason that is known
 
 `scripts/ci-helm-checks.sh` now asserts the property for every Deployment at
-once, so a future one cannot be added without it.
+once — both waits, counted separately — so a future deployment cannot be added
+without them, and the half-fix above cannot come back silently.
 
 Its first version ran a `yq` invocation per deployment inside a shell loop. The
 per-name expressions errored, the errors went to `/dev/null`, the counts came
@@ -81,14 +143,26 @@ It then also had to move: it read `$DEFAULT_RENDER`, which the script deletes
 before the negative cases run, so it failed on a missing file rather than on the
 chart.
 
-Inverted: removing the include from `deployment-worker.yaml` now fails the gate
-with the deployment named.
+Inverted three ways, each failing distinctly:
+
+* include removed from `deployment-worker.yaml` → `worker (postgres=0 bucket=0)`
+* the bucket wait removed from the helper → all ten named as
+  `(postgres=1 bucket=0)` — the exact half-fix the live gate caught
+* `--wait` added to `keda-gate.sh`'s install → the deadlock guard fires, naming
+  file and line. It also had to learn to ignore comment/log lines: several of
+  these scripts announce "WITHOUT --wait" in their own output, and its first
+  version fired on the sentence describing the rule.
 
 ## Gates
+
+No Go file changed after the test run below (`git status` verified), so it
+still stands for this tree.
 
 `gofmt -l .` clean · `go vet ./...` clean · `go build ./...` clean ·
 `go test ./... -count=1` exit 0 against live Postgres + Redis + MinIO
 (25 packages) · `scripts/ci-helm-checks.sh` exit 0 · `yq -e '.'` parses
 `docs/openapi.yaml` and `docker-compose.yml`.
+
+Live cold-install gate on OrbStack Kubernetes: four runs, evidence above.
 
 Local only — no GitHub Actions run.

@@ -44,7 +44,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "av-worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
-      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
+      {{- include "octoconv.waitForDeps" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.avWorker.terminationGracePeriodSeconds }}
       containers:
         - name: av-worker

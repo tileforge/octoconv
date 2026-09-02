@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
-status: planning
+status: in_progress
 last_updated: "2026-09-02T03:43:58.418Z"
 last_activity: 2026-09-02
 progress:
-  total_phases: 0
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
-  percent: 0
+  total_phases: 3
+  completed_phases: 1
+  total_plans: 1
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.13 shipped. Next milestone not defined — `/gsd:new-milestone`.
+**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) complete and in review as PR #13; phases 63 (sanitizer gaps + probe page ceiling) and 64 (tectonic, ninth engine class) ahead.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-09-02 — Milestone v1.14 started
+Phase: 62 — Operational debt tail
+Plan: 62-01 (complete)
+Status: PR #13 open, @codex review requested
+Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
 
 ## Performance Metrics
 

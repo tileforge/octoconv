@@ -50,7 +50,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "ocr-worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
-      {{- include "octoconv.waitForPostgres" . | nindent 6 }}
+      {{- include "octoconv.waitForDeps" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.ocrWorker.terminationGracePeriodSeconds }}
       containers:
         - name: ocr-worker
