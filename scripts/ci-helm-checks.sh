@@ -214,28 +214,73 @@ if [ "$IN_ENV" -eq 0 ]; then
 fi
 echo "OK: postgres.user reaches the wait initContainer as env, never as program text"
 
-echo "### no mc invocation may hardcode its transport"
+echo "### every mc invocation must use the transport s3.useSSL asks for"
 # Review found the wait-for-bucket initContainer dialling http:// unconditionally
-# while s3.useSSL -- an existing public value -- says otherwise. Against a
+# while s3.useSSL -- an existing public value -- said otherwise. Against a
 # TLS-only endpoint that probe can never succeed, so every application pod sits
 # in Init forever. The createbucket Job had the same literal and would never
 # create the bucket they are all waiting for, so fixing one and not the other
-# would have left the deadlock intact. Scheme now comes from S3_USE_SSL at
-# runtime (octoconv.mcAliasPrelude, whose parse is pinned against
-# internal/envcfg.ParseBool by TestChartShellMirrorsParseBool).
-MC_LINES=$(helm template octoconv "$CHART" $SECRETS_SET 2>/dev/null | grep -n 'mc alias set' || true)
-if [ -z "$MC_LINES" ]; then
-  echo "FAIL: no 'mc alias set' lines in the render -- this guard would pass vacuously"
+# would have left the deadlock intact.
+#
+# This asserts the rendered VALUE, not the shape: a chart that ignored the flag
+# would still contain twelve well-formed `mc alias set` lines.
+# internal/envcfg.TestChartSchemeMatchesParseBool covers the same property
+# against ParseBool's full input table; this is the cheap render-level half that
+# runs with the rest of the chart gate.
+for WANT in http https; do
+  case "$WANT" in
+    http)  SSL=false ;;
+    https) SSL=true ;;
+  esac
+  SCHEMES=$(helm template octoconv "$CHART" $SECRETS_SET --set "s3.useSSL=$SSL" 2>/dev/null \
+    | grep -o 'mc alias set local "https\?://' | sort -u)
+  COUNT=$(helm template octoconv "$CHART" $SECRETS_SET --set "s3.useSSL=$SSL" 2>/dev/null \
+    | grep -c 'mc alias set local' || true)
+  if [ "$COUNT" -eq 0 ]; then
+    echo "FAIL: no 'mc alias set' lines rendered with s3.useSSL=$SSL -- this guard would pass vacuously"
+    exit 1
+  fi
+  if [ "$SCHEMES" != "mc alias set local \"$WANT://" ]; then
+    echo "FAIL: with s3.useSSL=$SSL every mc alias must use $WANT://, got:"
+    echo "$SCHEMES" | sed 's/^/        /'
+    exit 1
+  fi
+  echo "OK: s3.useSSL=$SSL renders $COUNT mc aliases, all $WANT://"
+done
+
+echo "### no extraEnv may override S3_USE_SSL"
+# The scheme is decided at RENDER time from .Values.s3.useSSL, while the
+# application reads S3_USE_SSL from the ConfigMap at RUN time. Those are the
+# same value today. A per-Deployment extraEnv entry for S3_USE_SSL would split
+# them -- the app would dial one transport and its own initContainer would have
+# probed the other -- which is the exact failure this whole guard exists to
+# prevent, reintroduced through a values file instead of a template. Named here
+# because the seam is invisible from either side alone.
+# Only four Deployments render an extraEnv block today (api, document-worker,
+# pandoc-worker, probe-worker). The vacuity check uses one of THOSE, and also
+# asserts the set is still what it was -- if a fifth grows one, the check below
+# already covers it, but this line makes the growth visible rather than silent.
+EXTRAENV_TEMPLATES=$(grep -l 'extraEnv' "$CHART"/templates/deployment-*.yaml | wc -l | tr -d ' ')
+if [ "$EXTRAENV_TEMPLATES" -eq 0 ]; then
+  echo "FAIL: no Deployment template references extraEnv -- the vacuity probe below"
+  echo "      cannot fire, so this guard would pass without testing anything"
   exit 1
 fi
-BAD_MC=$(echo "$MC_LINES" | grep -E 'https?://' || true)
-if [ -n "$BAD_MC" ]; then
-  echo "FAIL: an mc alias hardcodes its transport instead of deriving it from"
-  echo "      S3_USE_SSL, so it cannot match the transport storage.New will use:"
-  echo "$BAD_MC" | sed 's/^/        /'
+BAD_ENV=$(helm template octoconv "$CHART" $SECRETS_SET --set 'api.extraEnv.S3_USE_SSL=true' 2>/dev/null \
+  | grep -c 'name: S3_USE_SSL' || true)
+if [ "$BAD_ENV" -eq 0 ]; then
+  echo "FAIL: setting api.extraEnv.S3_USE_SSL rendered nothing -- this guard cannot"
+  echo "      detect the override it exists to forbid, so it would pass vacuously"
   exit 1
 fi
-echo "OK: every mc alias derives its scheme from S3_USE_SSL ($(echo "$MC_LINES" | wc -l | tr -d ' ') invocations)"
+LIVE_ENV=$(yq -e '. | select(.kind=="Deployment") | .metadata.name + " " + (([.spec.template.spec.containers[].env // [] | .[] | select(.name=="S3_USE_SSL")] | length) | tostring)' "$DEFAULT_RENDER" | grep -v '^---$' | awk '$2 > 0 { print $1 }')
+if [ -n "$LIVE_ENV" ]; then
+  echo "FAIL: these Deployments set S3_USE_SSL through extraEnv, which splits the"
+  echo "      transport the app dials from the one its initContainer probed:"
+  echo "$LIVE_ENV" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: no Deployment overrides S3_USE_SSL through extraEnv ($EXTRAENV_TEMPLATES templates accept one)"
 
 echo "### the octoconv chart must never be installed with --wait"
 # The wait-for-bucket initContainer above depends on an install that does NOT

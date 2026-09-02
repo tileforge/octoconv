@@ -173,32 +173,48 @@ reaching this path alone (T-54-02).
 {{- end }}
 
 {{/*
-octoconv.mcAliasPrelude — shell that sets S3_SCHEME from S3_USE_SSL, mirroring
-internal/envcfg.ParseBool exactly.
+octoconv.s3Scheme — renders "http" or "https" from s3.useSSL.
 
 Any container that reaches MinIO through `mc` must use the SAME transport the
 application will use. `s3.useSSL` is an existing public chart value; a probe
 hardcoded to http:// against a TLS-only endpoint can never succeed, and a probe
 that can never succeed in an initContainer is worse than no probe at all --
-every application pod sits in Init forever instead of starting. Found by review
-on PR #13.
+every application pod sits in Init forever instead of starting.
 
-The parse is deliberately a mirror, not an approximation: envcfg.ParseBool
-strips a trailing "#" comment, trims, and accepts EXACTLY "true"/"false"
-(absent/empty = false), rejecting "TRUE", "1", "yes", "on" and "true anything".
-An unrecognized value exits non-zero rather than defaulting, because
-storage.New refuses to start on the same input -- so the pod would crash a
-moment later anyway, and failing here says which variable is wrong instead of
-hanging.
+WHY THIS IS A HELM TEMPLATE AND NOT A SHELL SNIPPET. The first two versions of
+this were POSIX sh reimplementations of internal/envcfg.ParseBool, and review
+found a divergence in each: the first squeezed out ALL whitespace rather than
+trimming the ends, so "t r u e" became `true` in the shell while Go rejected it.
+Widening the differential table then exposed two more (embedded newlines, U+0085
+NEL) and a locale dependency in `[[:space:]]` that made the test's verdict
+differ between macOS and the container. A parser that must agree with another
+parser byte-for-byte is a losing shape; the fix is to stop having two.
+
+`trim` here is sprig's, which IS strings.TrimSpace -- the same function
+ParseBool calls -- and `splitList "#" | first` is the same leading-segment cut
+as ParseBool's IndexByte('#'). Same language, same runtime, same functions, so
+there is nothing left to diverge.
+
+An unrecognized value fails at `helm template` rather than in a pod. That is a
+narrowing of what the chart accepts, deliberately: storage.New refuses to start
+on the same input, so the only thing the old behaviour bought was discovering it
+one layer later and less clearly. The chart already fails renders this way for
+keda.*.minReplicaCount.
+
+NOTE the one seam: this is decided at render time from .Values.s3.useSSL, while
+the application reads S3_USE_SSL from the ConfigMap at runtime. A per-Deployment
+extraEnv override of S3_USE_SSL would separate them again, so
+scripts/ci-helm-checks.sh forbids exactly that.
 */}}
-{{- define "octoconv.mcAliasPrelude" -}}
-RAW="${S3_USE_SSL%%#*}"
-RAW="$(printf '%s' "$RAW" | tr -d '[:space:]')"
-case "$RAW" in
-  true) S3_SCHEME=https ;;
-  ""|false) S3_SCHEME=http ;;
-  *) echo "S3_USE_SSL: unrecognized value \"$S3_USE_SSL\" (expected \"true\" or \"false\")" >&2; exit 1 ;;
-esac
+{{- define "octoconv.s3Scheme" -}}
+{{- $raw := trim (first (splitList "#" (toString .Values.s3.useSSL))) -}}
+{{- if eq $raw "true" -}}
+https
+{{- else if or (eq $raw "false") (eq $raw "") -}}
+http
+{{- else -}}
+{{- fail (printf "s3.useSSL: unrecognized value %#v -- internal/envcfg.ParseBool accepts exactly \"true\" or \"false\" (optionally followed by a # comment, optionally surrounded by whitespace), and storage.New refuses to start on anything else, so a pod built from this render could never come up" .Values.s3.useSSL) -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -296,14 +312,14 @@ initContainers:
       - -c
       - |
         # Succeeds only once MinIO answers AND the bucket exists -- the two
-        # halves of the storage.New precondition, in one probe. S3_ENDPOINT,
-        # S3_BUCKET and S3_USE_SSL come from the same ConfigMap the app
-        # container reads, so this can never wait on a different endpoint, or a
-        # different transport, than the one that will then be dialled.
-        {{- include "octoconv.mcAliasPrelude" . | nindent 8 }}
-        until mc alias set local "$S3_SCHEME://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
+        # halves of the storage.New precondition, in one probe. S3_ENDPOINT and
+        # S3_BUCKET come from the same ConfigMap the app container reads, and
+        # the scheme is rendered from the same s3.useSSL that fills S3_USE_SSL
+        # in it, so this can never wait on a different endpoint, or a different
+        # transport, than the one that will then be dialled.
+        until mc alias set local "{{ include "octoconv.s3Scheme" . }}://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
           && mc ls "local/$S3_BUCKET" >/dev/null 2>&1; do
-          echo "waiting for bucket $S3_BUCKET on $S3_SCHEME://$S3_ENDPOINT..."
+          echo "waiting for bucket $S3_BUCKET on $S3_ENDPOINT..."
           sleep 2
         done
         echo "bucket $S3_BUCKET exists"

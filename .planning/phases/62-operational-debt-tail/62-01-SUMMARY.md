@@ -193,21 +193,49 @@ class **and** the thing every waiting pod is waiting for — fixing only the
 initContainer would have left the deadlock exactly where it was. Both now derive
 the scheme at runtime from `S3_USE_SSL` and dial `$S3_ENDPOINT`.
 
-### A second parser, so a differential test rather than a careful reading
+### Round 3 killed the second parser instead of patching it a third time
 
-Deriving the scheme in shell means a second implementation of
-`internal/envcfg.ParseBool` — which strips a trailing `#` comment, trims, and
-accepts exactly `true`/`false`, rejecting `TRUE`, `1`, `yes`, `on` and
-`true anything`. This project has already paid for the "reason about the parser"
-version of that mistake four times over a single bound, so:
-`TestChartShellMirrorsParseBool` extracts the snippet **from the chart file**,
-refuses to run if the extraction is empty or still contains a Helm action, and
-runs it under `/bin/sh` for every row of `ParseBool`'s own documented table plus
-two hostile values. Inverted twice — accepting `TRUE`, and dropping the comment
-strip — it names the exact diverging row in each case.
+Deriving the scheme in shell meant reimplementing `internal/envcfg.ParseBool` in
+POSIX sh. Review found a divergence in the first version — `tr -d '[:space:]'`
+squeezed out **internal** whitespace, so `"t r u e"` became `true` in the shell
+while Go rejected it — and codex spelled out the consequence: on an HTTP
+endpoint the containers retry HTTPS **forever** instead of reporting the invalid
+value. Init-forever again, from the opposite direction.
 
-`ci-helm-checks.sh` additionally asserts no `mc alias set` line in the whole
-render hardcodes a scheme (12 invocations). Inverted, it names all three.
+Switching to a proper end-trim then failed the widened table twice more
+(embedded newlines; `U+0085` NEL, which `unicode.IsSpace` covers and a POSIX
+`[[:space:]]` class in the C locale does not) — and the NBSP rows *passed* only
+because BSD sed in a UTF-8 locale happens to match them, which means the test's
+verdict differed between this laptop and the container it was describing.
+
+A parser that must agree with another parser byte-for-byte is a losing shape.
+`octoconv.s3Scheme` now decides at render time using sprig's `trim` — which
+**is** `strings.TrimSpace`, the same function `ParseBool` calls — and the same
+leading-segment cut on `#`. Same language, same runtime, same functions; there
+is nothing left to diverge. An unrecognized value now fails `helm template` with
+a message naming the value, which is where `recognized == false` belongs once
+the value is known at template time; `storage.New` refuses to start on the same
+input, so the old behaviour only bought discovering it one layer later and less
+clearly. The chart already fails renders this way for `keda.*.minReplicaCount`.
+
+`TestChartSchemeMatchesParseBool` renders the chart once per input and compares
+every `mc alias set` against `ParseBool` — ParseBool's documented table **plus
+the rows the doc comment does not list**. That distinction is the finding: the
+previous test used the documented table verbatim and passed while the shell was
+mis-trimming, because a table copied from the thing under test only proves the
+author read the same doc twice. Inverted twice — dropping the `#` cut, and
+accepting anything non-`false` — it names the exact diverging row.
+
+### The seam that design opened, named and closed
+
+Deciding at render time from `.Values.s3.useSSL` while the app reads
+`S3_USE_SSL` from the ConfigMap at runtime leaves one way to split them again: a
+per-Deployment `extraEnv` override. Four templates accept an `extraEnv` block,
+so `ci-helm-checks.sh` forbids that key — with a vacuity probe that first proves
+the override *would* render, and inverted it names `probe-worker`. The gate also
+asserts the rendered scheme by value (`s3.useSSL=false` → twelve `http://`,
+`true` → twelve `https://`), because a chart ignoring the flag entirely would
+still emit twelve well-formed alias lines.
 
 ### The guard I added in round 1 was itself broken by `pipefail`
 
@@ -220,18 +248,14 @@ rather than shipping.
 
 ## Gates
 
-No Go file changed after the test run below (`git status` verified), so it
-still stands for this tree.
-
 `gofmt -l .` clean · `go vet ./...` clean · `go build ./...` clean ·
 `go test ./... -count=1` exit 0 against live Postgres + Redis + MinIO
-(25 packages) · `scripts/ci-helm-checks.sh` exit 0 (three new guards, each inverted) ·
+(25 packages) · `scripts/ci-helm-checks.sh` exit 0 (five new guards, each inverted) ·
 `yq -e '.'` parses
 `docs/openapi.yaml` and `docker-compose.yml`.
 
 Live cold-install gate on OrbStack Kubernetes: five runs, evidence above --
-the last one (`evidence/sc1-final-after-round2.txt`) taken after both review
-rounds, api and worker at `restartCount 0`, 25s to Ready, with a
+the last one (`evidence/sc1-final-after-round2.txt`) taken after review round 2, api and worker at `restartCount 0`, 25s to Ready, with a
 `Readiness probe failed` event for postgres in the same run so the race was
 live rather than absorbed.
 
@@ -243,5 +267,10 @@ concurrently wedged the OrbStack daemon, and six packages "failed" at exactly
 once the daemon came back. A wall of identical-duration timeouts is a fact about
 the machine, not about the code, and is worth checking `docker ps` before
 believing.
+
+Round 3 changed only the chart, the gate script and one test file — no runtime
+Go code — so the cold-install result above still describes this tree; the chart
+change it does touch is covered by the rendered-value assertions and by
+`TestChartSchemeMatchesParseBool`, which renders the real chart.
 
 Local only — no GitHub Actions run.
