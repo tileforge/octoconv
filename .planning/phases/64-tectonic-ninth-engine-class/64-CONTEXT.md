@@ -67,11 +67,37 @@ on it:
 **Decision:** ship a small, closed, declared set and a written extension
 procedure, rather than a broad inherited one.
 
-Starting set: `amsmath`, `amssymb`, `graphicx`, `hyperref`, `geometry`,
-`babel`, `biblatex` + `biber`, `booktabs`, `listings` — plus whatever the base
-LaTeX format requires to compile `article`/`report` at all, which is not a
-choice but a floor. The plan states the floor explicitly after checking it
-against a real build; it is not guessed here.
+Starting set, grouped by what it is for. Everything below the floor line is a
+choice; the floor is not:
+
+* **Floor** — whatever the base LaTeX format needs to compile `article`/`report`
+  at all. Stated explicitly in the plan after checking against a real build, not
+  guessed here.
+* **Math** — `amsmath`, `amssymb`, `amsthm`
+* **Graphics and colour** — `graphicx`, `xcolor`, `colortbl`
+* **Layout and styling** — `geometry`, `titlesec`, `fancyhdr`, `enumitem`,
+  `caption`, `booktabs`, `tcolorbox` (and therefore `pgf`/`tikz`)
+* **Links** — `hyperref`
+* **Code listings** — `listings`
+* **Language** — `babel` with the language data the consumers actually write in
+* **Bibliography** — `biblatex` with `backend=bibtex`, plus `natbib` as the
+  plain alternative. NOT `biber` — see D-07.
+
+**Colour and styling are in the set because the operator asked for them by
+name**, not because they looked reasonable. The first draft of this list had
+neither `xcolor` nor any styling package in it, which would have made coloured
+text, coloured tables and the ordinary `hyperref` link-colour setup all fail on
+day one.
+
+**`tcolorbox` pulls in `pgf`/`tikz`, and that is a real size cost** — TikZ is
+among the largest things in TeXLive. It is in anyway: a document set described
+as needing "colours and styling" that cannot draw a box or a diagram would
+generate a TEX-06 extension request in its first week, and extending the bundle
+is the expensive operation. The plan reports the bundle size with and without
+it, so the cost is a measured number rather than this paragraph's assertion.
+
+**`fontspec` is deliberately OUT.** It is the gateway to user-supplied fonts,
+which is TEX-07 and deferred.
 
 **Rejected — a ready TeXLive profile (`scheme-small`).** Broader coverage and
 fewer decisions, but the set becomes *inherited* rather than *declared*, and
@@ -216,6 +242,62 @@ published checksum page — `Dockerfile.pandoc-worker`'s own comment records tha
 rule ("never trust an unverified published checksum page alone") and it applies
 to an artifact we publish ourselves just as much.
 
+## D-07 — `biber` is not in the image, and that is a security decision
+
+**Decision:** ship no `biber` binary. `biblatex` runs with `backend=bibtex`,
+which tectonic executes **inside its own process** (BibTeX is embedded; the
+`--pass bibtex_first` flag drives it).
+
+**What the research found, and why it changed this.** Tectonic launches an
+EXTERNAL `biber` — added in 0.7.0, detected by the appearance of a `.bcf` file,
+and since 0.15.0 preferring a `tectonic-biber` executable over `biber`. That is
+not mentioned in `.planning/research/TECTONIC.md`, which answered the shell-
+escape question and stopped there.
+
+Reading `driver.rs`, the shell-escape path is gated on
+`shell_escape_mode != Disabled` while the external-tool pass appears **not** to
+consult the security settings at all, and the argv it launches is taken from the
+`.run.xml` file rather than being a fixed constant:
+
+```rust
+let mut argv = match s {
+    (true, Ok(text)) if !text.trim().is_empty() =>
+        text.split_whitespace().map(|x| x.to_owned()).collect(),
+    _ => vec!["biber".to_owned()],
+};
+```
+
+**This is NOT recorded as a finding, because it was not run.** It is one file
+read through a summarizer; where `text` comes from and how far `.run.xml`'s
+contents are document-controlled were not established. Asserting a
+vulnerability on unexamined input is the same error as asserting safety on
+unexamined input, in the other direction, and this project has a record of the
+second one it does not need to extend with the first.
+
+**The decision makes the question moot rather than answering it.** With no
+`biber` in the image there is nothing for that path to launch: the guarantee
+becomes structural — the same class as `--untrusted` itself, and the same class
+as "PostScript has no name trees" in the sanitizer — rather than behavioural. It
+also removes the biber↔biblatex version coupling, which is a *recorded*
+recurring failure in this ecosystem (tectonic issues #893, #1267) and would have
+been a second one-rule-two-places axis on top of D-01's.
+
+**Stated cost, because it is real.** Bibliography styles that only biber can
+produce — much of `biblatex`'s sorting, localisation and advanced styles — are
+unavailable. TEX-01 says "с библиографией" and that is still satisfied:
+`backend=bibtex` and `natbib` cover ordinary citation and reference lists. The
+limitation is DECLARED in `docs/TYPESETTING.md` alongside the package set, the
+same idiom as the closed set itself.
+
+**The operator was asked and chose this**, after being shown that the
+alternative is a second pinned binary plus an obligation to settle the
+`.run.xml` question by running a hostile document. What was wanted from
+"styles" was document styling, not bibliography styling.
+
+**If biber is ever added**, the `.run.xml` question stops being moot and must be
+answered by running before the binary ships — recorded here so a later phase
+inherits the obligation rather than the conclusion.
+
 ## D-06 — every new bound is proven by inversion
 
 The house rule, restated for this phase because it applies to more than one
@@ -234,7 +316,10 @@ phase's `evidence/`.
   artifact) and does not ship a request workflow.
 * **TEX-07 — custom fonts.** Backlog. The reduced bundle's font set is whatever
   the declared packages need; user-supplied fonts are a separate intake and
-  storage question.
+  storage question. `fontspec` is kept out of the package set for the same
+  reason — it is that feature's entry point.
+* **`biber`-backed biblatex styles.** D-07. Declared as unavailable rather than
+  silently absent.
 * **Page/size ceilings for the tex engine.** Probe got one because a per-page
   cost model was *measured* first. This engine's cost model is per-pass and is
   measured in this phase — inventing an input bound before that measurement is
