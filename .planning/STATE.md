@@ -20,13 +20,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) complete and in review as PR #13; phases 63 (sanitizer gaps + probe page ceiling) and 64 (tectonic, ninth engine class) ahead.
+**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phases 63 (sanitizer gaps + probe page ceiling) and 64 (tectonic, ninth engine class) ahead.
 
 ## Current Position
 
 Phase: 62 — Operational debt tail
 Plan: 62-01 (complete)
-Status: PR #13 open, @codex review requested
+Status: merged (PR #13) — three review rounds, all findings fixed
 Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
 
 ## Performance Metrics
