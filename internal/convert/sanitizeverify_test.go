@@ -787,3 +787,43 @@ func TestVerifierCountsRevisionsOutsideStreams(t *testing.T) {
 		t.Error("a real second trailer was not counted -- the scoping disabled the check")
 	}
 }
+
+// TestVerifierCatchesEveryMacroContentType holds the verifier's substring list
+// to the sanitizer's content-type table.
+//
+// The verifier looked for "macroEnabled" alone. Every main macro content type
+// contains it, so the gap was narrow -- but the vbaProject type does not, and
+// the sanitizer removes its Default declaration when no .bin part survives. A
+// package that kept that declaration would have verified clean while the
+// sanitizer had not finished its own job.
+//
+// Found by sweeping for the shape rather than by review: a rule the remover
+// applies more broadly than the checker, which is the pattern review named
+// four separate times in this PR.
+func TestVerifierCatchesEveryMacroContentType(t *testing.T) {
+	for ct := range macroEnabledContentTypes {
+		matched := false
+		for _, marker := range macroContentTypeMarkers {
+			if strings.Contains(ct, marker) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Errorf("the sanitizer rewrites content type %q and no verifier marker matches it; "+
+				"a package keeping it would verify clean", ct)
+		}
+	}
+
+	// The vbaProject Default the sanitizer drops alongside the part.
+	const vba = "application/vnd.ms-office.vbaProject"
+	matched := false
+	for _, marker := range macroContentTypeMarkers {
+		if strings.Contains(vba, marker) {
+			matched = true
+		}
+	}
+	if !matched {
+		t.Errorf("no verifier marker matches %q", vba)
+	}
+}

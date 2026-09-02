@@ -313,7 +313,22 @@ func resolveTarget(relsPath, target string) string {
 	return path.Clean(path.Join(base, target))
 }
 
-func rewriteContentTypes(raw []byte, dropped map[string]bool, anyBinLeft bool) ([]byte, error) {
+// rewriteContentTypes rebuilds [Content_Types].xml against the SURVIVOR set,
+// not against the drop set.
+//
+// The difference is not cosmetic. Dropping only the overrides for parts this
+// run removed leaves an override for a part that was never in the package at
+// all -- and a fixture whose macro part had been RENAMED kept exactly that: an
+// Override for /word/vbaProject.bin declaring the vbaProject content type,
+// pointing at nothing. The macro was gone and the package still announced one.
+//
+// Found by the verifier, after its macro check was broadened past
+// "macroEnabled" -- which is the arrangement working as intended for once: the
+// checker was made stronger than the remover, and it immediately caught the
+// remover. Neither the sanitizer's own tests nor seven rounds of review had
+// reached it, because the consistency test ran on the un-renamed fixture where
+// the override IS in the drop set.
+func rewriteContentTypes(raw []byte, dropped map[string]bool, survivors map[string]bool, anyBinLeft bool) ([]byte, error) {
 	var t ctTypes
 	if err := xml.Unmarshal(raw, &t); err != nil {
 		return nil, fmt.Errorf("%w: parse [Content_Types].xml: %v", ErrSanitizeMalformedInput, err)
@@ -334,7 +349,8 @@ func rewriteContentTypes(raw []byte, dropped map[string]bool, anyBinLeft bool) (
 			xmlAttr(d.Extension), xmlAttr(d.ContentType))
 	}
 	for _, o := range t.Override {
-		if dropped[strings.TrimPrefix(o.PartName, "/")] {
+		part := strings.TrimPrefix(o.PartName, "/")
+		if dropped[part] || !survivors[part] {
 			continue
 		}
 		ct := o.ContentType
@@ -348,7 +364,17 @@ func rewriteContentTypes(raw []byte, dropped map[string]bool, anyBinLeft bool) (
 	return buf.Bytes(), nil
 }
 
-func rewriteRels(relsPath string, raw []byte, dropped map[string]bool) ([]byte, bool, error) {
+// rewriteRels rebuilds a .rels file against the SURVIVOR set, for the same
+// reason rewriteContentTypes does: a relationship whose target is simply not
+// in the package is as dangling as one whose target this run removed.
+//
+// Applied to both in one change, because fixing only the content-types half
+// would have been the fifth instance of the shape this review named four
+// times. The renamed-macro package carried both -- an Override and a
+// Relationship, each pointing at a /word/vbaProject.bin that had never been
+// there -- and the second only surfaced after the first was fixed and the
+// consistency check was finally run on that fixture.
+func rewriteRels(relsPath string, raw []byte, dropped map[string]bool, survivors map[string]bool) ([]byte, bool, error) {
 	var rs relRelationships
 	if err := xml.Unmarshal(raw, &rs); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w", relsPath, err)
@@ -366,7 +392,8 @@ func rewriteRels(relsPath string, raw []byte, dropped map[string]bool) ([]byte, 
 			removedExternal = true
 			continue
 		}
-		if dropped[resolveTarget(relsPath, r.Target)] {
+		target := resolveTarget(relsPath, r.Target)
+		if dropped[target] || !survivors[target] {
 			continue
 		}
 		fmt.Fprintf(&buf, `<Relationship Id="%s" Type="%s" Target="%s"/>`,
@@ -456,6 +483,11 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		parts = append(parts, p)
 	}
 
+	survivors := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		survivors[p.name] = true
+	}
+
 	anyBinLeft := false
 	for _, p := range parts {
 		if strings.EqualFold(path.Ext(p.name), ".bin") {
@@ -471,13 +503,13 @@ func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult,
 		content := p.content
 		switch {
 		case p.name == "[Content_Types].xml":
-			content, err = rewriteContentTypes(p.content, dropped, anyBinLeft)
+			content, err = rewriteContentTypes(p.content, dropped, survivors, anyBinLeft)
 			if err != nil {
 				return SanitizeResult{}, fmt.Errorf("sanitize ooxml: %w", err)
 			}
 		case strings.HasSuffix(p.name, ".rels"):
 			var external bool
-			content, external, err = rewriteRels(p.name, p.content, dropped)
+			content, external, err = rewriteRels(p.name, p.content, dropped, survivors)
 			if err != nil {
 				return SanitizeResult{}, fmt.Errorf("sanitize ooxml: %w", err)
 			}

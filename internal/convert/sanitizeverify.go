@@ -476,6 +476,25 @@ var oleMIMETypes = []string{
 // struct, the type table or the traversal, so a mistake in the sanitizer's
 // relationship handling cannot travel into its own verification.
 
+// macroContentTypeMarkers are the substrings that identify a macro-carrying
+// declaration in [Content_Types].xml.
+//
+// "macroEnabled" alone was not enough, and I found this one rather than review
+// did -- by sweeping for the shape review had already named four times: a rule
+// the remover applies more broadly than the checker. All seven main content
+// types in macroEnabledContentTypes contain "macroEnabled", so those were
+// covered; the vbaProject type does NOT, and the sanitizer removes its
+// Default declaration when no .bin part survives. A package keeping that
+// declaration would have passed verification while the sanitizer had failed
+// to finish its own job.
+//
+// TestVerifierCatchesEveryMacroContentType holds this to the sanitizer's
+// table, so a type added there and not here fails loudly.
+var macroContentTypeMarkers = []string{
+	"macroEnabled",
+	"vbaProject",
+}
+
 // ooxmlPropertyRoots are the root elements of the OOXML properties parts,
 // matched on CONTENT so a properties part under any name is recognised --
 // and matched on NAMESPACE as well as local name.
@@ -635,9 +654,11 @@ func verifyOOXML(ctx context.Context, path string) ([]ThreatClass, error) {
 
 		if strings.EqualFold(part, "[Content_Types].xml") {
 			sawContentTypes++
-			if bytes.Contains(blob, []byte("macroEnabled")) {
-				return nil, fmt.Errorf("%w: [Content_Types].xml still declares a macro-enabled type",
-					ErrSanitizeResidue)
+			for _, marker := range macroContentTypeMarkers {
+				if bytes.Contains(blob, []byte(marker)) {
+					return nil, fmt.Errorf("%w: [Content_Types].xml still declares %q",
+						ErrSanitizeResidue, marker)
+				}
 			}
 			if root, ok := xmlRootElement(blob); !ok || root.Local != "Types" {
 				return nil, fmt.Errorf("%w: [Content_Types].xml does not parse as a Types document",

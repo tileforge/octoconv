@@ -179,6 +179,12 @@ func TestSanitizeOOXMLStaysConsistent(t *testing.T) {
 //
 // A checker that drops "word/vbaProject.bin" by name catches only an opponent
 // who left the default name in place.
+// TestSanitizeOOXMLDropsRenamedMacroPart also covers the dangling-override
+// case that the survivor-set rewrite fixed: the renamed package's
+// [Content_Types].xml still declares an Override for /word/vbaProject.bin,
+// a part that does not exist in it at all. Dropping only the overrides for
+// parts THIS RUN removed left that declaration standing, so the macro was
+// gone and the package still announced one.
 func TestSanitizeOOXMLDropsRenamedMacroPart(t *testing.T) {
 	src, err := os.ReadFile(sanitizeDocmFixture(t))
 	if err != nil {
@@ -227,6 +233,17 @@ func TestSanitizeOOXMLDropsRenamedMacroPart(t *testing.T) {
 	out := filepath.Join(dir, "clean.docx")
 	if _, err := SanitizeFile(context.Background(), "docm", in, out); err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
+	}
+
+	// Every Override must name a part that is actually present. A declaration
+	// pointing at nothing is the dangling reference this whole file exists to
+	// avoid, and it carried the vbaProject content type here.
+	produced, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dangling := ooxmlConsistency(t, produced); len(dangling) > 0 {
+		t.Errorf("renamed-macro package has dangling declarations: %v", dangling)
 	}
 	got, err := os.ReadFile(out)
 	if err != nil {
