@@ -142,11 +142,88 @@ each left every test green, because each of those cases was *also* caught by the
 other boundary. Two cases were rewritten to isolate one boundary apiece. Found by
 inverting, not by reading.
 
+## What review made of it: four rounds, fifteen findings, and two reversed decisions
+
+Every finding was correct. They are recorded here by **class**, because the
+classes are the useful part — the individual bugs are not.
+
+### Class 1 — a token recognised by its bytes, without its lexical context (9)
+
+| Round | Finding |
+|---|---|
+| 1 | `/Length` matched inside `/Length1` (found by a real corpus file, not by review) |
+| 1 | object headers read out of stream payloads |
+| 2 | object headers read out of *indirect-length* payloads — the residual round 1 named and left |
+| 2 | `>> %comment\nstream` not recognised as a stream at all |
+| 3 | object headers read out of **comments**, which sit outside every payload |
+| 3 | `stream` recognised **inside** a comment |
+| 3 | `>>` inside a literal string counted as a dictionary close |
+| 4 | `/Length` inside an array `[...]` read as a dictionary key |
+| 4 | comments not skipped between the three tokens of `7 0 R` |
+
+Six of those had already landed before the pattern was named. Patching a seventh
+would have been the sixth clever comparison in a row against a bound that keeps
+being bypassed — which `.planning/RETROSPECTIVE.md` already records, and which
+was resolved once before by *replacing* the comparison rather than refining it.
+
+**`internal/convert/pdflex.go` is that replacement.** PDF has four lexical
+contexts — whitespace, comment, literal string with escapes and nesting, hex
+string — plus tokens. Code that does not model those four keeps finding new ways
+to be wrong. It is a tokenizer, not an object model: no document, no reference
+resolution beyond one integer, no decoding.
+
+### Class 2 — a check satisfied by the shape of a thing rather than the thing (4)
+
+* an empty `ContentType=""` counted as a declaration (round 2);
+* a truncated `[Content_Types].xml` was accepted because the decoder had not yet
+  reached the error (round 3);
+* an `Override` nested inside another element, or from a foreign namespace,
+  counted as a declaration (round 4);
+* a zero-byte `word/document.xml` satisfied the *presence* half of SANI-09 while
+  carrying no document (round 4) — the outcome this requirement exists to
+  reject, one step further in.
+
+### Class 3 — an answer derived from a guess (2)
+
+Round 2 showed my fixed-point iteration **converges to the lie**: with a decoy
+outside the short poisoned range, that range is self-consistent and never moves
+again. Round 4 showed the replacement still seeded its retry from a walk that
+resynchronises through payloads. The answer was in round 1's own text — *build
+the index from the cross-reference table* — and it took three more rounds to
+take it.
+
+### Two decisions reversed, both recorded in 63-CONTEXT.md
+
+* **"this phase is not writing a parser."** Reversed by the nine findings above.
+* **"two walkers stay two walkers."** Reversed by the observation that in every
+  round the two had *identical* bugs, because one author wrote both from one
+  misunderstanding. The independence paid nothing on any occasion and cost a
+  second place to fix plus a second chance to disagree about trivia — they
+  disagreed about whether a form feed is whitespace, and that cost a valid file
+  its output. They now share the walk and keep their **propositions** apart,
+  which is where the independence was always real.
+
+### Three times, inverting found the test rather than the code
+
+Worth its own line, because it is the most reusable thing in this plan:
+
+1. Two ICC boundaries each masked by the other — removing either left everything
+   green.
+2. The object-index fixture wrote the real `7 0 obj` last, so a map overwrite
+   gave the right answer by accident.
+3. The forward jump turned out **not to be independently observable** at all,
+   because the retry repairs what a non-jumping pass gets wrong. Recorded as a
+   negative result instead of dressed up as proven — an inversion that does not
+   fire is not evidence, and neither is a comment claiming it would.
+
 ## Gates
 
 `gofmt -l .` clean · `go vet ./...` clean · `go build ./...` clean ·
 `go test ./... -count=1` exit 0 against live Postgres + Redis + MinIO
 (25 packages). Local only.
+
+Inversions across the whole plan: 10 for the original three requirements, then
+4 + 4 + 4 + 7 for the review rounds. Every one run, every one recorded.
 
 `docs/SANITIZE.md` gains the two client-visible statements this makes true: a
 colour profile is kept whole or not at all, and this operation will never return
