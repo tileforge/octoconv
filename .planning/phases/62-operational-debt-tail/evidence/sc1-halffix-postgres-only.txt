@@ -1,0 +1,18 @@
+=== WITH initContainer (phase 62 chart) ===
+helm install returned at t+22s
+api ready after 31s (readyReplicas=1)
+--- pods ---
+NAME                        READY   RESTARTS   STATUS
+api-757545b565-hqt5z        true    2          Running
+minio-79b469cc8f-fgbrg      true    0          Running
+postgres-6784bd96cb-tvw4h   true    0          Running
+redis-b7c7cdf98-rkz6b       true    0          Running
+--- api restartCount ---
+pod=api-757545b565-hqt5z
+api restartCount=2
+--- api container waiting/terminated reasons ---
+api lastState={"terminated":{"containerID":"docker://0cfc75198becd08f06c89f5e5e1a6ae9eba690a5ea8bcea4e81014e9db521add","exitCode":1,"finishedAt":"2026-09-02T04:16:43Z","reason":"Error","startedAt":"2026-09-02T04:16:42Z"}}
+--- events (BackOff/Failed/Unhealthy) ---
+25s         Warning   Unhealthy               pod/postgres-6784bd96cb-tvw4h         Readiness probe failed: /var/run/postgresql:5432 - no response
+10s         Warning   BackOff                 pod/api-757545b565-hqt5z              Back-off restarting failed container api in pod api-757545b565-hqt5z_octoconv(9dda4a98-3c04-40c2-b222-8f13b8912f7c)
+=== end WITH initContainer (phase 62 chart) ===
