@@ -88,9 +88,10 @@ if [[ "$LOCAL" == "1" ]]; then
   echo "gs:       $GS_VERSION"
   echo
   set +e
-  OCTOCONV_PROBE_CORPUS="$CORPUS" \
-    go test ./internal/convert/ -run TestProbeTimingHarness -count=1 -v -timeout 60m >"$RAW" 2>&1
-  HARNESS_STATUS=$?
+  OCTOCONV_PROBE_CORPUS="$CORPUS" OCTOCONV_PROBE_BUDGET="${OCTOCONV_PROBE_BUDGET:-5m}" \
+    go test ./internal/convert/ -run TestProbeTimingHarness -count=1 -v -timeout 120m 2>&1 \
+    | tee "$RAW" | grep --line-buffered -E '^(ROW|SKIP|BUDGET|SUMMARY),' || true
+  HARNESS_STATUS=${PIPESTATUS[0]}
   set -e
 else
   if ! command -v docker >/dev/null 2>&1; then
@@ -109,21 +110,37 @@ else
   echo
 
   set +e
+  # tee, not plain redirection: the first version of this script wrote the
+  # whole run to a temp file and grepped it only at the end, so a corpus whose
+  # worst file takes half an hour produced NOTHING on screen for that whole
+  # time -- indistinguishable from a hang. An operator cannot be asked to run
+  # a gate that goes silent. Rows now appear as each file completes.
   docker run --rm \
     --cpus 2.0 --memory 1g \
     -v "$REPO_ROOT:/src:ro" \
     -v "$CORPUS:/corpus:ro" \
     -e OCTOCONV_PROBE_CORPUS=/corpus \
+    -e OCTOCONV_PROBE_BUDGET="${OCTOCONV_PROBE_BUDGET:-5m}" \
     -e GOFLAGS=-mod=mod \
     -e GOCACHE=/tmp/gocache \
     -e GOMODCACHE=/tmp/gomodcache \
     octoconv-probe-measure:dev \
-    go test ./internal/convert/ -run TestProbeTimingHarness -count=1 -v -timeout 60m >"$RAW" 2>&1
-  HARNESS_STATUS=$?
+    go test ./internal/convert/ -run TestProbeTimingHarness -count=1 -v -timeout 120m 2>&1 \
+    | tee "$RAW" | grep --line-buffered -E '^(ROW|SKIP|BUDGET|SUMMARY),' || true
+  HARNESS_STATUS=${PIPESTATUS[0]}
   set -e
 fi
 
-grep -E '^(ROW|SKIP|SUMMARY),' "$RAW" || true
+EXCEEDED=$(grep -cE '^ROW,.*,exceeded-budget$' "$RAW" || true)
+if [[ "${EXCEEDED:-0}" -gt 0 ]]; then
+  echo
+  echo "NOTE: $EXCEEDED file(s) did not finish inside the per-file budget"
+  echo "(OCTOCONV_PROBE_BUDGET, default 5m). They are listed with status"
+  echo "exceeded-budget and are EXCLUDED from the distribution below -- a file"
+  echo "that does not finish has no time to contribute. They are the cases the"
+  echo "engine timeout exists to cut off, and they are worth looking at:"
+  grep -E '^ROW,.*,exceeded-budget$' "$RAW" | sed 's/^ROW,/  /'
+fi
 
 if [[ $HARNESS_STATUS -ne 0 ]]; then
   echo
@@ -140,7 +157,7 @@ fi
 # Nearest-rank p95, the same definition every other timing script in this
 # repository uses (audio/av/ocr/pandoc), so the four numbers stay comparable.
 
-TIMES="$(grep -E '^ROW,' "$RAW" | awk -F, '{print $7}' | sort -n)"
+TIMES="$(grep -E '^ROW,' "$RAW" | awk -F, '$8=="ok"{print $7}' | sort -n)"
 N="$(printf '%s\n' "$TIMES" | grep -c . || true)"
 
 if [[ "$N" -eq 0 ]]; then

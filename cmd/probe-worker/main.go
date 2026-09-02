@@ -92,7 +92,7 @@ func main() {
 	// This MUST read the same env var, with the same default, that
 	// internal/queue/client.go's NewClient reads for ProbeUniqueTTL's
 	// derivation (IN-02): a mismatch silently produces duplicate processing.
-	engineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 180*time.Second)
+	engineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
 
 	progressMinInterval := envDurationSeconds("PROGRESS_MIN_INTERVAL_SECONDS", 2*time.Second)
 	progressMinDeltaPct := envInt("PROGRESS_MIN_DELTA_PCT", 1)

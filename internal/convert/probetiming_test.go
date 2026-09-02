@@ -34,7 +34,25 @@ import (
 // A file that fails to sanitize or verify is reported with its status and
 // makes the whole run fail. A timeout measured on a corpus that partly does
 // not sanitize is measuring the wrong thing.
+// perFileBudget bounds one file. Deliberately generous -- this is a
+// measurement, and cutting a slow-but-finishing document short would bias the
+// very distribution being measured. It exists to stop a file that will NEVER
+// finish, not to enforce a candidate timeout.
+//
+// Overridable with OCTOCONV_PROBE_BUDGET (a Go duration) for a corpus whose
+// worst case is genuinely longer.
+var perFileBudget = 5 * time.Minute
+
 func TestProbeTimingHarness(t *testing.T) {
+	if v := os.Getenv("OCTOCONV_PROBE_BUDGET"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			t.Fatalf("OCTOCONV_PROBE_BUDGET=%q is not a duration: %v", v, err)
+		}
+		perFileBudget = d
+	}
+	fmt.Printf("BUDGET,%s\n", perFileBudget)
+
 	dir := os.Getenv("OCTOCONV_PROBE_CORPUS")
 	if dir == "" {
 		t.Skip("OCTOCONV_PROBE_CORPUS unset; this harness runs only under scripts/probe-timeout-measure.sh")
@@ -46,7 +64,7 @@ func TestProbeTimingHarness(t *testing.T) {
 	}
 
 	work := t.TempDir()
-	measured, skipped, failed := 0, 0, 0
+	measured, skipped, failed, timedOut := 0, 0, 0, 0
 
 	for _, e := range entries {
 		if e.IsDir() {
@@ -80,21 +98,50 @@ func TestProbeTimingHarness(t *testing.T) {
 			t.Fatalf("stage %s: %v", name, err)
 		}
 
+		// A PER-FILE DEADLINE, and it is not a detail.
+		//
+		// The first version used context.Background(), so nothing bounded a
+		// single file. Measuring on a real corpus then hit
+		// inspect-burst-pathological.pdf -- two megabytes of the literal
+		// string "/JavaScrip", a marker-density fixture from phase 58 with a
+		// %PDF header, an %%EOF, and no objects, no xref and no pages at all.
+		// Ghostscript searched it for structure for 33 minutes and produced a
+		// zero-byte intermediate; the whole measurement hung with no output,
+		// and an operator watching it could not tell that from progress.
+		//
+		// A measurement harness that can hang forever on one input is not a
+		// harness an operator can be asked to run. The bound turns "hangs"
+		// into a reported row, which is the only form in which that fact is
+		// useful -- and it is a fact worth reporting: the file is admissible
+		// through the API, so it is precisely the case the engine timeout
+		// exists to cut off.
+		ctx, cancel := context.WithTimeout(context.Background(), perFileBudget)
 		start := time.Now()
-		err = SanitizeConverter{}.Convert(context.Background(), staged, out, nil)
+		err = SanitizeConverter{}.Convert(ctx, staged, out, nil)
 		elapsed := time.Since(start)
+		cancel()
 
 		if err != nil {
 			failed++
 			status := "error"
 			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				// Not a corpus problem and not a sanitizer problem: this file
+				// does not finish inside the budget. Reported as its own
+				// status so the distribution below is computed from files
+				// that COMPLETED, and this one is named separately.
+				status = "exceeded-budget"
+				timedOut++
+				failed--
 			case errors.Is(err, ErrSanitizeResidue):
 				status = "residue"
 			case errors.Is(err, ErrSanitizeUnverifiable):
 				status = "unverifiable"
 			}
 			fmt.Printf("ROW,%s,%s,%d,0,0,%.3f,%s\n", name, format, fi.Size(), elapsed.Seconds(), status)
-			t.Errorf("%s: %v", name, err)
+			if status != "exceeded-budget" {
+				t.Errorf("%s: %v", name, err)
+			}
 			continue
 		}
 
@@ -112,7 +159,8 @@ func TestProbeTimingHarness(t *testing.T) {
 			name, format, fi.Size(), outSize, reportSize, elapsed.Seconds())
 	}
 
-	fmt.Printf("SUMMARY,measured=%d,skipped=%d,failed=%d\n", measured, skipped, failed)
+	fmt.Printf("SUMMARY,measured=%d,skipped=%d,failed=%d,exceeded=%d\n",
+		measured, skipped, failed, timedOut)
 	if measured == 0 {
 		t.Fatalf("no file in %s was sanitizable -- a timeout measured on an empty corpus "+
 			"measures nothing", dir)

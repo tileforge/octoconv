@@ -430,7 +430,7 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	convert.EngineAV:       753 * time.Second,
 	convert.EngineOCR:      744 * time.Second,
 	convert.EnginePandoc:   65 * time.Second,
-	convert.EngineProbe:    180 * time.Second,
+	convert.EngineProbe:    600 * time.Second,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into

@@ -119,15 +119,16 @@ data:
   PANDOC_MAX_INPUT_BYTES: "3145728"
   PANDOC_ENGINE_TIMEOUT: "65s"
   PANDOC_MAX_RETRY: "2"
-  # PROBE (sanitize, Phase 60). PROVISIONAL, NOT MEASURED: 180s is a
-  # placeholder awaiting the operator run of scripts/probe-timeout-measure.sh
-  # on a representative corpus (SC5). It is distinct from
-  # 65s/742s/744s/753s, but distinctness is not provenance -- the API reports
-  # this engine as estimate_source=unmeasured until the run lands, and
-  # probeWorker.terminationGracePeriodSeconds (190s) is derived from it and is
-  # provisional for the same reason. IN-02: read by every
-  # queue.NewClient()-constructing service for probeUniqueTTL's derivation.
-  PROBE_ENGINE_TIMEOUT: "180s"
+  # PROBE (sanitize, Phase 60). MEASURED 2026-09-02
+  # (scripts/probe-timeout-measure.sh; derivation and full output at
+  # .planning/phases/60-sanitize-eighth-engine-class/evidence/
+  # probe-timeout-20260902-measured.txt). Cost is per PAGE, not per byte:
+  # 1.99-2.01 s/page across three points, in the container at 2 CPU / 1 GiB
+  # against gs 10.00.0. ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33% under
+  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (610s)
+  # is derived from it. IN-02: read by every queue.NewClient()-constructing
+  # service for probeUniqueTTL's derivation.
+  PROBE_ENGINE_TIMEOUT: "600s"
   PROBE_MAX_RETRY: "2"
   # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole

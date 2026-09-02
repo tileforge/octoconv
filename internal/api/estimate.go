@@ -107,13 +107,16 @@ var engineEstimateSource = map[string]EstimateSource{
 	convert.EngineAV:       EstimateSourceMeasured,
 	convert.EngineOCR:      EstimateSourceMeasured,
 	convert.EnginePandoc:   EstimateSourceMeasured,
-	// probe (PROBE_ENGINE_TIMEOUT=180s): a PLACEHOLDER pending Phase 60's
-	// operator-run scripts/probe-timeout-measure.sh on a representative
-	// corpus -- unmeasured, and it must keep saying so until that run
-	// happens. This is the same provisional-then-measured path OCR walked
-	// (300s -> 744s) and pandoc after it (90s -> 65s); the entry flips to
-	// measured in the same commit as the number, never before.
-	convert.EngineProbe: EstimateSourceUnmeasured,
+	// probe (PROBE_ENGINE_TIMEOUT=600s): MEASURED 2026-09-02
+	// (scripts/probe-timeout-measure.sh, evidence committed under Phase 60).
+	// Cost is per PAGE, not per byte -- 1.99-2.01 s/page across 20/100/240
+	// page points in the container at 2 CPU / 1 GiB against gs 10.00.0 --
+	// so the bound is ceil(2.0 s/page x 200 pages x 1.5) = 600s rather than a
+	// wall-clock percentile, which with page-driven cost would have measured
+	// the corpus rather than the engine. Same provisional-then-measured path
+	// OCR walked (300s -> 744s) and pandoc after it (90s -> 65s); this entry
+	// flipped in the same commit as the number, never before.
+	convert.EngineProbe: EstimateSourceMeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each
@@ -136,6 +139,7 @@ var engineMeasuredDefaultSeconds = map[string]int{
 	convert.EngineAV:     753, // AV_ENGINE_TIMEOUT=753s (.env.example): Phase 36 Plan 04, RTF-measured
 	convert.EngineOCR:    744, // OCR_ENGINE_TIMEOUT=744s (.env.example): Phase 45 Plan 03, measured
 	convert.EnginePandoc: 65,  // PANDOC_ENGINE_TIMEOUT=65s (.env.example): Phase 49 Plan 03, measured
+	convert.EngineProbe:  600, // PROBE_ENGINE_TIMEOUT=600s (.env.example): Phase 60, measured 2026-09-02
 }
 
 // estimateSourceFor is the provenance THIS SPECIFIC offer carries -- not

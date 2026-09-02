@@ -272,7 +272,7 @@ func main() {
 			// call site supplies a non-nil map -- so omitting probe made the
 			// real API publish sanitize offers with estimated_max_seconds: 0
 			// while the worker used 180s. Caught in review (PR #12).
-			convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 180*time.Second),
+			convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second),
 		},
 	})
 

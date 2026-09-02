@@ -358,6 +358,7 @@ var envExampleEngineVar = map[string]string{
 	convert.EngineAV:       "AV_ENGINE_TIMEOUT",
 	convert.EngineOCR:      "OCR_ENGINE_TIMEOUT",
 	convert.EnginePandoc:   "PANDOC_ENGINE_TIMEOUT",
+	convert.EngineProbe:    "PROBE_ENGINE_TIMEOUT",
 }
 
 // envExampleBlockContaining returns the blank-line-delimited paragraph of

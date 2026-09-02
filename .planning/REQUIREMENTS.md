@@ -61,7 +61,7 @@
 - [x] **SANI-03**: EXIF/GPS/IPTC/XMP снимаются с изображений, а `/Info` и XMP — с PDF
 - [x] **SANI-04**: Чистота результата доказана, а не заявлена: выход проверяется **независимой** реализацией разбора (не тем же кодом, что удалял), удалённое физически отсутствует в выходных байтах (полная перезапись, а не incremental update, оставляющий объект восстановимым в предыдущей ревизии), и остаток любого признака — fail closed до записи в S3
 - [x] **SANI-05**: Клиент получает вторым выходом с `role=report` перечень того, что было найдено и удалено; формулировки описывают проверенные и удалённые классы угроз и НЕ заявляют общей свободы от вредоносного содержимого
-- [ ] **SANI-06**: `probe` — восьмой engine-класс в полном контуре по отлаженному шаблону: своя очередь, `cmd/probe-worker`, свой контейнер, ИЗМЕРЕННЫЙ (не скопированный) таймаут, fail-closed валидация входа, transient/terminal классификация, ScaledObject — аддитивно, с нулевым диффом к существующим семи
+- [x] **SANI-06**: `probe` — восьмой engine-класс в полном контуре по отлаженному шаблону: своя очередь, `cmd/probe-worker`, свой контейнер, ИЗМЕРЕННЫЙ (не скопированный) таймаут, fail-closed валидация входа, transient/terminal классификация, ScaledObject — аддитивно, с нулевым диффом к существующим семи
 
 ### v1.12 debt tail (DEBT)
 
@@ -145,7 +145,7 @@
 | SANI-03 | Phase 60 | Complete |
 | SANI-04 | Phase 60 | Complete |
 | SANI-05 | Phase 60 | Complete |
-| SANI-06 | Phase 60 | Partial — see note |
+| SANI-06 | Phase 60 | Complete |
 | DEBT-09 | Phase 61 | Complete |
 | DEBT-10 | Phase 61 | Complete |
 | DEBT-11 | Phase 61 | Complete |
@@ -154,33 +154,34 @@
 - v1 requirements: 28 total
 - Mapped to phases: 28
 - Unmapped: 0 ✓
-- Complete: 27
-- Partial: 1 (SANI-06)
+- Complete: 28
+- Partial: 0
 
-**SANI-06 — what is done and what is not.** The eighth engine class ships whole:
-its own queue, `cmd/probe-worker`, its own container, fail-closed input
-validation, transient/terminal classification derived rather than copied, and
-an eighth ScaledObject that leaves the existing seven byte-identical (proven
-with a before/after `helm template`, not asserted).
+**SANI-06 — closed 2026-09-02.** The eighth engine class ships whole, and the
+timeout is now MEASURED rather than placed:
+`scripts/probe-timeout-measure.sh` run in the measurement container at
+2 CPU / 1 GiB against gs 10.00.0 — the version the worker image actually
+resolves to — on eleven files from 331 B to 2.2 MB, all sanitizing and
+verifying. Output and derivation committed at
+`.planning/phases/60-sanitize-eighth-engine-class/evidence/probe-timeout-20260902-measured.txt`.
 
-The requirement's own wording says **ИЗМЕРЕННЫЙ (не скопированный)** timeout.
-`PROBE_ENGINE_TIMEOUT=180s` is neither: it is a placeholder, distinct from
-65s/742s/744s/753s but with no run behind it, and it is marked as such in
-`.env.example`, all eleven compose services, the chart ConfigMap, and
-`internal/api/estimate.go` — where the API reports this engine as
-`estimate_source: unmeasured` on every sanitize offer.
+The measurement's own finding shaped the number. Cost is per PAGE, not per
+byte — 1.99–2.01 s/page across 20/100/240-page points, while a 219 KB document
+took 481s and a 2.2 MB one took 39.7s. A wall-clock p95 would therefore have
+measured the corpus rather than the engine, so the bound follows OCR's shape
+instead: `ceil(2.0 s/page × 200 pages × 1.5) = 600s`, 33% under the 900s
+reconciler cap. Distinct from 65s/742s/744s/753s and derived, not picked.
 
-Closing it needs `scripts/probe-timeout-measure.sh` run against a corpus
-representative of real load. Tracked in
-`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`, which
-also carries the two other numbers the same run settles (the 50 MiB upload
-ceiling and `PROBE_WORKER_CONCURRENCY=1`, both reasoned rather than measured).
+Two things the measurement changed beyond the number: probe's KEDA downscale
+stabilization moved from null to 900s (the placeholder had made it look like a
+fast engine; a 200-page scan costs 400s), and the absence of a page ceiling
+became visible — tracked at
+`.planning/todos/pending/2026-09-02-probe-has-no-page-ceiling.md`.
 
-This row says Partial rather than Complete because five plans of Phase 60 went
-into making "we checked" mechanically different from "we said so", and marking
-a criterion satisfied on a placeholder is the first thing that machinery exists
-to catch.
+Marked Complete only once the run existed. Five plans of Phase 60 went into
+making "we checked" mechanically different from "we said so"; this row was
+Partial for as long as the number was a placeholder, which is the point.
 
 ---
 *Requirements defined: 2026-08-07*
-*Last updated: 2026-09-02 — Phase 60 merged (PR #12); SANI-01..05 complete, SANI-06 partial pending the operator timeout measurement*
+*Last updated: 2026-09-02 — all 28 v1 requirements complete; PROBE_ENGINE_TIMEOUT measured at 600s*

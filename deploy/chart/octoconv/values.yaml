@@ -150,14 +150,11 @@ probeWorker:
   image:
     repository: "octoconv-probe-worker"
   replicas: 1
-  # 190s = PROBE_ENGINE_TIMEOUT (180s, ConfigMap) + 10s asynq ShutdownTimeout
-  # margin, following pandoc's own-compose-precedent shape rather than the
-  # ENGINE_TIMEOUT+30s convention.
-  #
-  # PROVISIONAL. 180s is a PLACEHOLDER timeout, not a measured one, so this
-  # derived grace period is provisional in exactly the same way and must be
-  # re-derived in the same edit that lands the measured value.
-  terminationGracePeriodSeconds: 190
+  # 610s = PROBE_ENGINE_TIMEOUT (600s, ConfigMap, MEASURED) + 10s asynq
+  # ShutdownTimeout margin, following pandoc's own-compose-precedent shape
+  # rather than the ENGINE_TIMEOUT+30s convention. Re-derived in the same edit
+  # that landed the measured timeout.
+  terminationGracePeriodSeconds: 610
   resources:
     limits:
       # 2 CPU / 1Gi: the cgroup limits phase 58 (D-02a) named as a condition
@@ -380,18 +377,18 @@ keda:
     # reached independently, and it would be wrong to record it as "same as
     # pandoc" because the day pandoc's changes this one must not follow.
     #
-    # PROVISIONAL, like PROBE_ENGINE_TIMEOUT itself: these values are stated
-    # against a corpus of 331 B - 11.6 KB fixtures. The operator checkpoint
-    # that supplies the measured timeout is the point at which they should be
-    # revisited against real documents.
+    # Revisited 2026-09-02 against the measured corpus (331 B - 2.2 MB, up to
+    # 240 pages): threshold and cooldown hold, but the downscale
+    # stabilization did not -- see scaleDownStabilizationSeconds below.
     threshold: "2"
     maxReplicaCount: 2
     pollingInterval: 10
     cooldownPeriod: 90
-    # NULL, the FAST-engine profile: the measured jobs are sub-second and even
-    # the placeholder ceiling is 180s, well inside the k8s 300s HPA default
-    # downscale stabilization. Setting the heavy engines' 900s here would be
-    # cargo-culting a number whose justification (~742-753s jobs) does not
-    # apply.
-    scaleDownStabilizationSeconds: null
+    # 900s, the HEAVY-engine profile -- and this changed when the timeout was
+    # measured. The placeholder made probe look like a fast engine; the
+    # measurement showed a 200-page scan costs 400s and the bound is 600s,
+    # which is the same order as audio/av/ocr (742-753s) and well past the
+    # k8s 300s HPA default downscale stabilization. A pod mid-sanitize would
+    # otherwise be a candidate for removal 300s in, with 300s of work left.
+    scaleDownStabilizationSeconds: 900
     minReplicaCount: 0

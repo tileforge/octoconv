@@ -167,7 +167,7 @@ func NewClient() (*Client, error) {
 	// 300s->744s before it. Phase 60's operator checkpoint supplies the
 	// measured value; until it does, nothing in this build may describe this
 	// number as measured.
-	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 180*time.Second)
+	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,

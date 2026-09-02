@@ -155,16 +155,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
@@ -257,16 +260,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -351,16 +357,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -435,16 +444,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -514,16 +526,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
@@ -592,16 +607,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -693,16 +711,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -819,16 +840,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
@@ -943,16 +967,19 @@ services:
       # under the 900s reconciler CAP -- see the pandoc-worker service
       # comment below for the full derivation.
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
@@ -1078,16 +1105,19 @@ services:
       # processing.
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03-SUMMARY.md -- see comment above
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
@@ -1146,11 +1176,10 @@ services:
     container_name: octoconv-probe-worker
     restart: always
     # cmd/probe-worker sets asynq ShutdownTimeout = PROBE_ENGINE_TIMEOUT
-    # (180s, PLACEHOLDER) + 10s = 190s. stop_grace_period = 190s + 10s Docker
-    # SIGKILL margin = 200s. PROVISIONAL in the same way the timeout is: this
-    # number is derived from a placeholder and must be re-derived in the same
-    # edit that lands the measured value.
-    stop_grace_period: 200s
+    # (600s, MEASURED) + 10s = 610s. stop_grace_period = 610s + 10s Docker
+    # SIGKILL margin = 620s, re-derived in the same edit that landed the
+    # measured value.
+    stop_grace_period: 620s
     depends_on:
       postgres:
         condition: service_healthy
@@ -1220,16 +1249,19 @@ services:
       # processing.
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03-SUMMARY.md -- see comment above
       PANDOC_MAX_RETRY: "2"
-      # PROVISIONAL, NOT MEASURED. 180s is a placeholder awaiting the operator
-      # measurement (scripts/probe-timeout-measure.sh, Phase 60 SC5); every
-      # copy of it in this file says so. It is deliberately distinct from
-      # 65s/742s/744s/753s, but distinctness is not provenance -- until the
-      # run happens this number is a guess and the API reports it as
-      # estimate_source=unmeasured. MUST be set identically in every
-      # queue.NewClient()-constructing service (IN-02): probeUniqueTTL is
-      # derived from it in each enqueuing process, and a mismatch silently
-      # produces duplicate processing.
-      PROBE_ENGINE_TIMEOUT: "180s" # PLACEHOLDER -- see comment above
+      # MEASURED 2026-09-02 (scripts/probe-timeout-measure.sh; output and
+      # derivation at .planning/phases/60-sanitize-eighth-engine-class/
+      # evidence/probe-timeout-20260902-measured.txt). Cost is per PAGE, not
+      # per byte: 1.99-2.01 s/page across 20/100/240-page points, measured in
+      # the container at --cpus 2.0 --memory 1g against gs 10.00.0.
+      # PROBE_ENGINE_TIMEOUT = ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33%
+      # under the 900s reconciler cap. NOT a p95 -- with cost set by page count
+      # a wall-clock percentile measures the corpus, not the engine. NEVER
+      # copied from OCR(744s)/AV(753s)/AUDIO(742s)/PANDOC(65s). MUST be set
+      # identically in every queue.NewClient()-constructing service (IN-02):
+      # probeUniqueTTL is derived from it in each enqueuing process, and a
+      # mismatch silently produces duplicate processing.
+      PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       # probe-worker-only, NOT read by queue.NewClient(), so no IN-02 parity.
       # 1, with the OCR/AV/audio/pandoc engines: a sanitize job runs two
       # ghostscript passes plus a pdfcpu parse, all holding the whole
