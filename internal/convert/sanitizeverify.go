@@ -461,6 +461,30 @@ func ooxmlMainPart(format string) string {
 // vocabulary's element that happens to share a local name.
 const opcContentTypesNS = "http://schemas.openxmlformats.org/package/2006/content-types"
 
+// xmlWholeDocumentRoot returns the root element name of a document that parses
+// COMPLETELY, and reports false for one that does not.
+//
+// The distinction from xmlRootElement is the whole point: that one answers "what
+// does this start as", which is the right question for classifying a part, and
+// the wrong one for "is this a usable document".
+func xmlWholeDocumentRoot(blob []byte) (xml.Name, bool) {
+	dec := xml.NewDecoder(bytes.NewReader(blob))
+	var root xml.Name
+	seen := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return root, seen
+		}
+		if err != nil {
+			return xml.Name{}, false
+		}
+		if el, ok := tok.(xml.StartElement); ok && !seen {
+			root, seen = el.Name, true
+		}
+	}
+}
+
 // ooxmlMainRoot is the root element the main part must carry, per format. The
 // closed companion to ooxmlMainPart: knowing which part to require says nothing
 // about whether what is in it is a document.
@@ -502,6 +526,7 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 	// review on PR #14, round 4.
 	dec := xml.NewDecoder(bytes.NewReader(contentTypes))
 	depth := 0
+	rootIsTypes := false
 	found := false
 	ext := ""
 	if i := strings.LastIndexByte(part, '.'); i >= 0 {
@@ -526,8 +551,18 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 		}
 		here := depth
 		depth++
+		if here == 0 {
+			// THE ROOT'S OWN NAMESPACE, not just its local name. A document can
+			// put a foreign <x:Types> at the root while declaring the OPC
+			// namespace as the default for its children, so the children look
+			// right and their parent is not the OPC Types element at all.
+			// Found by review on PR #14, round 5, after the depth check was
+			// added -- a check on the child said nothing about the parent.
+			rootIsTypes = el.Name.Space == opcContentTypesNS && el.Name.Local == "Types"
+			continue
+		}
 		// depth 0 is <Types> itself; its declarations are at depth 1.
-		if here != 1 || el.Name.Space != opcContentTypesNS {
+		if !rootIsTypes || here != 1 || el.Name.Space != opcContentTypesNS {
 			continue
 		}
 
@@ -832,10 +867,16 @@ func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error
 			// a valid [Content_Types].xml was letting an empty or corrupt
 			// package through -- the very outcome SANI-09 exists to reject,
 			// one step further in. Found by review on PR #14, round 4.
-			root, ok := xmlRootElement(blob)
+			// PARSED TO A CLEAN EOF, not just far enough to see the root.
+			// xmlRootElement returns on the first start token, so
+			// "<document><broken>" satisfied it while carrying a document that
+			// cannot be opened. Found by review on PR #14, round 5 -- the
+			// round-4 fix had moved the check to the right place and stopped
+			// one token short of making it mean anything.
+			root, ok := xmlWholeDocumentRoot(blob)
 			if !ok {
-				return nil, fmt.Errorf("%w: %s does not parse as XML, so the package has no "+
-					"usable document in it", ErrSanitizeUnverifiable, part)
+				return nil, fmt.Errorf("%w: %s does not parse as XML to the end, so the "+
+					"package has no usable document in it", ErrSanitizeUnverifiable, part)
 			}
 			// LOCAL NAME, NOT THE FULL NAMESPACE, and that is a deliberate
 			// limit rather than an oversight. OOXML has two conformance

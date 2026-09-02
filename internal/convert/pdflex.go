@@ -318,14 +318,44 @@ func pdfSkipHexString(b []byte, i int) int {
 	return i
 }
 
-// pdfReadName reads a "/Name" token and returns its text without the slash.
+// pdfReadName reads a "/Name" token and returns its DECODED text without the
+// slash.
+//
+// PDF names escape bytes as "#xx" (ISO 32000-1 7.3.5), so "/Len#67th" IS
+// "/Length" and a dictionary may spell it that way. Comparing the raw bytes
+// left such a stream unresolved -- and the lexical walker this replaced never
+// required a literal spelling, so the tokenizer had introduced a rejection of
+// valid input, which deletes the client's output. Found by review on PR #14,
+// round 5.
 func pdfReadName(b []byte, i int) (string, int) {
 	i++ // past '/'
-	start := i
+	var out []byte
 	for i < len(b) && !isPDFSpace(b[i]) && !isPDFDelimiter(b[i]) {
+		if b[i] == '#' && i+2 < len(b) {
+			hi, ok1 := pdfHexDigit(b[i+1])
+			lo, ok2 := pdfHexDigit(b[i+2])
+			if ok1 && ok2 {
+				out = append(out, hi<<4|lo)
+				i += 3
+				continue
+			}
+		}
+		out = append(out, b[i])
 		i++
 	}
-	return string(b[start:i]), i
+	return string(out), i
+}
+
+func pdfHexDigit(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // pdfReadKeyword reads a run of regular characters. A single delimiter that is
