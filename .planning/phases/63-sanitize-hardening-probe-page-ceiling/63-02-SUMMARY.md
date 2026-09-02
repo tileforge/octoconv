@@ -244,6 +244,64 @@ nothing.
 Round-2 inversions (6, 7, 8) recorded in `evidence/63-02-inversions.txt`.
 Fixed in `4d11d50`.
 
+## Self-probe between rounds — the fix for P1 introduced two misattributions
+
+Run on the standing rule that a fix is not evidence, before the next review
+round arrived. The pdfinfo counter wrapped every `runCommand` error as
+`ErrSanitizeMalformedInput`, so two failures that are **ours** became terminal
+failures blamed on the client's document: a cancelled or timed-out count (the
+exact opposite of the polarity `ProbeDescriptor` argues for a timeout — and the
+existing "a deadline stays transient" test injects at `processFn`, so this new
+path ran straight past it), and a missing `pdfinfo` binary.
+
+Fixed by routing through the classifier that already existed rather than the
+second one the counter had grown. `classifyGSFailure` → `classifyEngineFailure`:
+nothing in the rule was ever ghostscript-specific, and a second copy of a
+classification rule is how P1 got in. It gained a could-not-start branch, the
+same distinction `internal/inspect` draws between `ReasonReadFailed` and
+`ReasonMalformedInput`. `pdfinfo`'s presence in the image is now recorded from
+the built image (`/usr/bin/pdfinfo`, poppler 22.12.0), not inferred from the
+Dockerfile line. Fixed in `9fd7cb6`; codex independently reported the same
+defect minutes later.
+
+## Review round 2 (codex) — the bound was replaced, not patched
+
+`findCountAfter` took the first `/Count` within 512 bytes after the marker. That
+is proximity, not structure, and it had now been bypassed twice: by a stream
+payload (round 1) and by `<< /Count 2 /Type /Pages ... >>` followed by an
+`/Outlines` dictionary carrying its own `/Count` — key order in a PDF dictionary
+is arbitrary, so the forward search stepped over the page tree's own count.
+Measured: a valid two-page PDF reported as 300.
+
+`RETROSPECTIVE.md` records the rule from a different bound in this repo that
+took four bypasses to learn. `pagesDictCount` now finds the dictionary the
+marker is a direct key of and accepts a `/Count` only at that depth.
+
+**Binding to a dictionary needed a ceiling of its own.** Resolving one per
+marker turns a per-marker window into a sum over however many markers a file
+carries; measured 0.02s → 5.02s on the package's dense-marker test. Two bounds
+because they are two resources: `pdfDictScanWindow` for one lookup,
+`pdfDictScanBudget` for their sum, with exhaustion reported as
+`work_ceiling_bytes` like every other ceiling here. Package tests: 2.8s before
+the phase, 35s at the first version of this fix, 1.03s now. Fixed in `f8b1768`.
+
+## Two inversions proved nothing until they were fixed
+
+Worth recording separately, because in both cases the test was wrong rather than
+the code:
+
+- **Inversion 10** failed to COMPILE instead of failing its test (orphaned
+  imports). Redone with the imports dropped.
+- **Inversion 12** passed with the budget removed: it timed the call and allowed
+  two seconds, and the marker walk's own iteration cap keeps the unbudgeted
+  worst case under that. A threshold loose enough to be stable in CI was too
+  loose to isolate the boundary. It now asserts the reason
+  (`work_ceiling_bytes` vs `malformed_input`), which is deterministic.
+
+Together with round 1's inversion 7 — which passed because the test accepted an
+abstention as success while two mechanisms masked each other — that is three
+inadequate tests found by inverting rather than by reading.
+
 ## Issues Encountered
 
 None outstanding.
