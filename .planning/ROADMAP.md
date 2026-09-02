@@ -460,15 +460,15 @@ fail-closed валидация, transient/terminal классификация, �
 | 57. Operation Dimension & Output Roles | v1.13 | 7/7 | Complete   | 2026-08-09 |
 | 58. Synchronous Inspection | v1.13 | 8/8 | Complete   | 2026-08-18 |
 | 59. Born-Digital PDF Routing | v1.13 | 7/7 | Complete   | 2026-08-30 |
-| 60. Sanitize — Eighth Engine Class | v1.13 | 6/6 | Executed, SC5 open | 2026-09-01 |
+| 60. Sanitize — Eighth Engine Class | v1.13 | 6/6 | Merged, SC5 open | 2026-09-02 |
 | 61. v1.12 Debt Tail | v1.13 | 3/3 | Complete   | 2026-08-30 |
 
 ---
 
 *v1.13 (Inspect & Operations) started 2026-08-07, Phases 56-61 — 28/28 v1 requirements mapped, 0 orphans. Two operator-gated phases: 58 (live process-isolation proof for the synchronous inspect path) and 60 (measured `probe` engine timeout).*
 
-*Status 2026-09-02: all six phases executed. Five are merged; Phase 60 is open as PR #12, six review rounds closed. The milestone is code-complete except for SC5, which is not met and not claimed: `PROBE_ENGINE_TIMEOUT` is a marked placeholder awaiting a corpus run
-(`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`). Remaining work is the merge, that measurement, and milestone completion.*
+*Status 2026-09-02: all six phases merged — Phase 60 landed as PR #12 (6ef1711) after eight review rounds. The milestone is code-complete except for SC5, which is not met and not claimed: `PROBE_ENGINE_TIMEOUT` is a marked placeholder awaiting a corpus run
+(`.planning/todos/pending/2026-09-01-probe-engine-timeout-unmeasured.md`). Remaining work is that measurement, the three round-8 follow-ups, and milestone completion.*
 
 *v1.12 (Consumer Accounting & Fairness) shipped 2026-08-07, Phases 51-55 — 15/15 v1 requirements, 30 plans, milestone audit `tech_debt` (15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers, 16 non-blocking debt items recorded). One live gate: multi-replica quota correctness at `api.replicas: 2` (10/10 rounds, 167 assertions, evidence committed). Phases 52 and 53 each went through a real gaps_found → closure → re-verification cycle. Next: `/gsd:new-milestone`.*
 </content>

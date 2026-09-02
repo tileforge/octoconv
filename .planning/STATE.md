@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: planning
-stopped_at: Phase 60 executed 6/6; SC5 open — PROBE_ENGINE_TIMEOUT is a marked placeholder pending an operator corpus
+stopped_at: Phase 60 merged (PR #12, 6ef1711); v1.13 code-complete; SC5 open pending an operator corpus run
 last_updated: "2026-09-01T00:00:00.000Z"
-last_activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39): 6 codex findings, all real; SC5 still open
+last_activity: 2026-09-02 -- Phase 60 merged (PR #12, 6ef1711) after 8 review rounds; SC5 still open
 progress:
   total_phases: 6
   completed_phases: 5   # 60 executed but SC5 unmet -- see Current Position
@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 60 (sanitize-eighth-engine-class) — EXECUTED 6/6, SC5 OPEN
+Phase: 60 (sanitize-eighth-engine-class) — MERGED (PR #12, 6ef1711); v1.13 code-complete
 Plan: 6 of 6 — all waves done
 Status: sanitize ships end to end. PDF rebuilt through PostScript, OOXML macro parts dropped by CONTENT (a renamed vbaProject.bin is still dropped), image metadata stripped structurally with the compressed data copied byte-for-byte. Every output is re-checked by an implementation that did not do the removing — pdfcpu for PDF, unzip+libmagic for OOXML, stdlib decode for images — and an output that cannot be verified is deleted rather than delivered. The report goes back as the role=report output, built from two closed vocabularies with no verdict field, and a doc-sync test makes an affirmative safety claim fail the build.
 
@@ -33,7 +33,10 @@ SC5 is NOT met and is not claimed. PROBE_ENGINE_TIMEOUT=180s is a placeholder, m
 
 Four things the work found that planning had not: gs signs its output with /Producer and a %%Invocation line inside a compressed /ObjStm where phase 60-02's own byte grep was blind (found by the verifier on its first run); the 60-01 JPEG fixture was structurally malformed and passed a grep-only self-check; converters.go's init() runs before sanitizeFormats is populated, which would have left operation=sanitize returning 422 with the implementation in place; and the report had nothing delivering it until an out-of-plan SideOutputs hook was added.
 Review round 1 (codex, PR #12) found six real defects, all fixed in 4fa4b39. The severe one: the sanitize report was never stored with role=report, because jobs.Repo.AddOutput deliberately omits that column -- every sanitize job would have ended with two primary outputs and failed MarkDone's guard. Three of the six were tests that proved a component rather than its use, which is the lesson to carry: a test that calls the function directly cannot see that nothing else calls it.
-Last activity: 2026-09-01 -- Phase 60 review round 1 closed (4fa4b39); SC5 still open
+Eight codex review rounds produced 26 findings; 23 were fixed on the branch. Three P2s from round 8 merged unfixed by the operator's decision, recorded with fix shapes in .planning/todos/pending/2026-09-02-sanitize-round-8-findings.md -- none of them is the threat-survives-and-is-reported-verified class that made the earlier rounds blocking.
+
+All six v1.13 phases are now merged. What remains before the milestone can be closed: the PROBE_ENGINE_TIMEOUT measurement (operator-gated, SC5), the round-8 follow-ups, and milestone completion itself.
+Last activity: 2026-09-02 -- Phase 60 merged (PR #12, 6ef1711); SC5 still open
 
 ## Performance Metrics
 
