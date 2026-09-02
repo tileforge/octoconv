@@ -20,13 +20,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phases 63 (sanitizer gaps + probe page ceiling) and 64 (tectonic, ninth engine class) ahead.
+**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phase 63 (sanitizer gaps + probe page ceiling) awaiting merge of PR #15; phase 64 (tectonic, ninth engine class) planned and ready to execute.
 
 ## Current Position
 
-Phase: 63 — Sanitize Hardening & Probe Page Ceiling
-Plan: 63-01 (merged, PR #14), 63-02 (planned)
-Status: 63-01 merged after five review rounds and eighteen findings; 63-02 (probe page ceiling) next
+Phase: 63 — Sanitize Hardening & Probe Page Ceiling (63-02 executed on branch, PR #15) | 64 — Tectonic, Ninth Engine Class (PLANNED)
+Plan: 63-01 (merged, PR #14), 63-02 (PR #15, in review); 64-01..64-05 planned
+Status: 63-02's own STATE update travels with PR #15, not with this line — this file on main deliberately does not claim work that has not merged. Phase 64 has CONTEXT + RESEARCH + five plans here on main; its EXECUTION waits for #15, because a ninth engine class touches the same files 63-02 changed (descriptors.go, cmd/api/main.go, api.go, docker-compose.yml, the ConfigMap, ERROR-CODES.md, openapi.yaml)
 Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
 
 ## Performance Metrics
