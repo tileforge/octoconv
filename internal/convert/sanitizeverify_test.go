@@ -676,10 +676,13 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 	}
 	padded := append(append([]byte(nil), genuine...), []byte("Exif\x00\x00MM\x00\x2aSMUGGLED")...)
 
-	if !jpegSegmentAllowed(0xEE, genuine) {
+	// The APP14 verdict is still a property of the single segment, so the
+	// iccSetComplete argument is irrelevant to it -- passed as true so a
+	// failure here can only be about the Adobe shape check.
+	if !jpegSegmentAllowed(0xEE, genuine, true) {
 		t.Error("the verifier rejects a genuine Adobe colour-transform marker")
 	}
-	if jpegSegmentAllowed(0xEE, padded) {
+	if jpegSegmentAllowed(0xEE, padded, true) {
 		t.Error("the verifier accepts an APP14 carrying appended metadata behind the Adobe tag")
 	}
 	if !isKeptJPEGAppSegment(0xEE, genuine) {
@@ -689,8 +692,16 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 		t.Error("the sanitizer keeps an APP14 carrying appended metadata behind the Adobe tag")
 	}
 
-	// An ICC chunk whose payload exceeds the profile's own declared size is
-	// carrying something the profile does not describe.
+	// An ICC chunk set whose assembled data does not match the profile's own
+	// declared size is carrying something the profile does not describe.
+	//
+	// Asserted through jpegMetadataResidue rather than through
+	// jpegSegmentAllowed directly, because the ICC verdict is no longer a
+	// property of one segment: SANI-07 moved it to the SET, since the four
+	// bytes this used to read as a size are the size field only in chunk 1.
+	// Both original propositions are preserved -- the well-formed chunk is
+	// still accepted, the 8-declared/204-carried one is still rejected -- and
+	// they are now asserted at the entry point the verifier actually uses.
 	icc := func(declared uint32, extra int) []byte {
 		p := append([]byte("ICC_PROFILE\x00"), 0x01, 0x01)
 		size := make([]byte, 4)
@@ -698,10 +709,10 @@ func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
 		p = append(p, size...)
 		return append(p, bytes.Repeat([]byte{0xAA}, extra)...)
 	}
-	if !jpegSegmentAllowed(0xE2, icc(64, 60)) {
-		t.Error("a well-formed ICC chunk was rejected")
+	if _, found := jpegMetadataResidue(buildJPEGWithSegments(t, jpegSegment(0xE2, icc(64, 60)))); found {
+		t.Error("a well-formed ICC chunk was reported as residue")
 	}
-	if jpegSegmentAllowed(0xE2, icc(8, 200)) {
+	if _, found := jpegMetadataResidue(buildJPEGWithSegments(t, jpegSegment(0xE2, icc(8, 200)))); !found {
 		t.Error("an ICC chunk carrying far more than its profile declares was accepted")
 	}
 }

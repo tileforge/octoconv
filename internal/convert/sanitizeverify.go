@@ -766,25 +766,126 @@ func init() {
 // verifier that allows any APP14 starting with "Adobe" confirms as clean the
 // exact segment the sanitizer was fixed to stop preserving. The two halves of
 // this fix are useless apart.
-func jpegSegmentAllowed(marker byte, payload []byte) bool {
+func jpegSegmentAllowed(marker byte, payload []byte, iccSetComplete bool) bool {
 	switch marker {
 	case 0xEE:
 		return len(payload) == 12 && bytes.HasPrefix(payload, []byte("Adobe"))
 	case 0xE2:
-		const iccHeader = 14
-		if !bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00")) || len(payload) < iccHeader+4 {
-			return false
-		}
-		declared := int(binary.BigEndian.Uint32(payload[iccHeader : iccHeader+4]))
-		return len(payload)-iccHeader <= declared
+		// An ICC chunk is allowed only as part of a COMPLETE set, decided by
+		// the caller's own pass (verifierICCSetComplete). The version this
+		// replaced read four bytes at a fixed offset as the profile's declared
+		// size, which is true of chunk 1 and meaningless in every continuation
+		// chunk -- so it called a legitimate chunk residue, and would have
+		// failed every multi-chunk profile the sanitizer now correctly keeps.
+		//
+		// Note the direction this errs in. Broad here means "allowed", so the
+		// bar for allowing is a complete set and nothing less; a chunk from an
+		// incomplete or inconsistent set is residue, which is the verdict that
+		// stops delivery.
+		return iccSetComplete && bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00"))
 	default:
 		return false
 	}
 }
 
+// verifierICCSetComplete decides, from the OUTPUT alone, whether its ICC chunks
+// form one complete profile.
+//
+// Written against the file rather than shared with the sanitizer's
+// iccChunkSetIsValid, for the reason this file's header gives: two
+// implementations of one rule are the point, and a shared one would prove only
+// that the walker agrees with itself. The propositions are also genuinely
+// different -- the sanitizer asks "may I keep these", this asks "is what
+// arrived a whole profile".
+func verifierICCSetComplete(raw []byte) bool {
+	const iccHeader = 14
+	tag := []byte("ICC_PROFILE\x00")
+
+	var seqs []int
+	count := -1
+	assembled := 0
+	declared := -1
+
+	i := 2
+	for i+1 < len(raw) {
+		if raw[i] != 0xFF {
+			return false
+		}
+		for i+2 < len(raw) && raw[i+1] == 0xFF {
+			i++
+		}
+		marker := raw[i+1]
+		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
+			i += 2
+			continue
+		}
+		if marker == 0xD9 {
+			break
+		}
+		if i+4 > len(raw) {
+			return false
+		}
+		segLen := int(binary.BigEndian.Uint16(raw[i+2 : i+4]))
+		if segLen < 2 || i+2+segLen > len(raw) {
+			return false
+		}
+		end := i + 2 + segLen
+		if marker == 0xDA {
+			i = skipEntropyCodedScan(raw, end)
+			continue
+		}
+		if payload := raw[i+4 : end]; marker == 0xE2 && bytes.HasPrefix(payload, tag) {
+			if len(payload) < iccHeader {
+				return false
+			}
+			seq, c := int(payload[iccHeader-2]), int(payload[iccHeader-1])
+			if count == -1 {
+				count = c
+			}
+			if c != count {
+				return false
+			}
+			seqs = append(seqs, seq)
+			data := payload[iccHeader:]
+			assembled += len(data)
+			if seq == 1 {
+				if len(data) < 4 {
+					return false
+				}
+				declared = int(binary.BigEndian.Uint32(data[:4]))
+			}
+		}
+		i = end
+	}
+
+	// No chunks at all is a complete set in the only sense that matters here:
+	// there is no ICC residue to report. The caller never reaches
+	// jpegSegmentAllowed for a segment that does not exist.
+	if count == -1 {
+		return true
+	}
+	if count < 1 || len(seqs) != count {
+		return false
+	}
+	seen := make([]bool, count+1)
+	for _, s := range seqs {
+		if s < 1 || s > count || seen[s] {
+			return false
+		}
+		seen[s] = true
+	}
+	// The profile's own size field, from chunk 1, against what actually
+	// arrived. See iccChunkSetIsValid for why this is equality and what it
+	// costs; the two are written apart on purpose and this is one of the
+	// places they must nonetheless agree.
+	return declared == assembled
+}
+
 // jpegMetadataResidue walks a JPEG's segment chain and reports any APPn or COM
 // segment that is not one of the allowed colour-management segments.
 func jpegMetadataResidue(raw []byte) (string, bool) {
+	iccSetComplete := verifierICCSetComplete(raw)
+
 	i := 2 // past SOI
 	for i+1 < len(raw) {
 		if raw[i] != 0xFF {
@@ -834,7 +935,7 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 
 		isAPP := marker >= 0xE0 && marker <= 0xEF
 		if isAPP || marker == 0xFE {
-			if !jpegSegmentAllowed(marker, raw[i+4:end]) {
+			if !jpegSegmentAllowed(marker, raw[i+4:end], iccSetComplete) {
 				return fmt.Sprintf("APP%d/COM segment 0x%02X at offset %d", marker-0xE0, marker, i), true
 			}
 		}

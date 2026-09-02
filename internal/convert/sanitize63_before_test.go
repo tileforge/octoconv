@@ -8,6 +8,9 @@ import (
 	"testing"
 )
 
+// The ICC entry was removed when SANI-07 landed; its transcript is in that
+// commit message and in testdata/sanitize/PROVENANCE.md.
+
 // The "before" transcript for phase 63. Each test here asserts what the code
 // does TODAY with the three new fixtures, so the after-state has something to
 // be compared against. Two of the three findings were reported by review and
@@ -16,28 +19,6 @@ import (
 //
 // This file is deleted by the commit that lands the fixes. It exists to be run
 // once, on the tree before them.
-
-func TestBefore63ICCMultichunkLosesAChunk(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join(sanitizeCorpusDir, "icc_multichunk.jpg"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := bytes.Count(raw, []byte("ICC_PROFILE\x00"))
-	if before != 3 {
-		t.Fatalf("fixture carries %d ICC chunks, want 3", before)
-	}
-
-	out, err := stripJPEGMetadata(raw)
-	if err != nil {
-		t.Fatalf("stripJPEGMetadata: %v", err)
-	}
-	after := bytes.Count(out, []byte("ICC_PROFILE\x00"))
-	t.Logf("BEFORE: ICC chunks in = %d, out = %d", before, after)
-	if after == before {
-		t.Errorf("all %d chunks survived; the per-chunk size check did not drop one, "+
-			"so this fixture does not reproduce the finding", before)
-	}
-}
 
 func TestBefore63StreamRangeStopsAtTheSubstring(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(sanitizeCorpusDir, "endstream_in_stream.pdf"))

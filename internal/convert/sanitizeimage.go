@@ -80,13 +80,73 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: not a JPEG (no SOI)", ErrSanitizeMalformedInput)
 	}
 
+	// TWO PASSES OVER ONE WALKER, not two walkers.
+	//
+	// The APP2/ICC decision cannot be made segment by segment (see
+	// iccChunkSetIsValid), so the file has to be read once before anything is
+	// written. Doing that with a second, simpler scanner is the shape this
+	// package has already been burned by three times -- a rule implemented in
+	// two places drifts, and here the two places would be "which segments are
+	// ICC chunks" for the decision and for the emission. So the walk itself is
+	// factored out and run twice.
+	keepICC, err := iccChunkSetIsValid(src)
+	if err != nil {
+		return nil, err
+	}
+
 	var out bytes.Buffer
 	out.Write(src[:2]) // SOI
 
+	err = walkJPEGSegments(src, func(seg jpegMarkerSegment) {
+		isAPP := seg.marker >= 0xE0 && seg.marker <= 0xEF
+		isCOM := seg.marker == 0xFE
+		switch {
+		case !isAPP && !isCOM:
+			out.Write(seg.raw)
+		case isJPEGICCChunk(seg.marker, seg.payload):
+			// Kept or dropped as a SET. A partially-preserved profile is
+			// worse than none: the file still decodes, the report still says
+			// the colour profile was preserved, and the colours are wrong.
+			if keepICC {
+				out.Write(seg.raw)
+			}
+		case isKeptJPEGAppSegment(seg.marker, seg.payload):
+			out.Write(seg.raw)
+		}
+		out.Write(seg.scan)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+// jpegMarkerSegment is one marker segment as the walker sees it.
+//
+// raw is the whole segment including its marker and length, so a caller that
+// keeps a segment writes exactly the bytes that were there. scan is the
+// entropy-coded data that follows an SOS and is empty for every other marker;
+// it is carried on the segment rather than visited separately so a caller
+// cannot keep a scan while dropping its SOS, or the reverse.
+type jpegMarkerSegment struct {
+	marker  byte
+	payload []byte
+	raw     []byte
+	scan    []byte
+}
+
+// walkJPEGSegments visits every segment from SOI to EOI, resolving segment
+// lengths, marker fill bytes and entropy-coded scan data.
+//
+// This is the ONE place any of that is decided. It was inlined in
+// stripJPEGMetadata until Plan 63-01 needed to read the file before writing
+// it; extracting it was the alternative to writing a second scanner that would
+// have had to agree with this one about every rule below.
+func walkJPEGSegments(src []byte, visit func(jpegMarkerSegment)) error {
 	i := 2
 	for i+1 < len(src) {
 		if src[i] != 0xFF {
-			return nil, fmt.Errorf("%w: malformed JPEG: expected a marker at offset %d", ErrSanitizeMalformedInput, i)
+			return fmt.Errorf("%w: malformed JPEG: expected a marker at offset %d", ErrSanitizeMalformedInput, i)
 		}
 		// A marker may be preceded by any number of FF fill bytes (ISO/IEC
 		// 10918-1 B.1.1.2), and real encoders emit them. Skipping the run is
@@ -103,29 +163,24 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 
 		// Standalone markers carry no length field.
 		if marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
-			out.Write(src[i : i+2])
+			visit(jpegMarkerSegment{marker: marker, raw: src[i : i+2]})
 			i += 2
 			continue
 		}
 		if marker == 0xD9 { // EOI
-			out.Write(src[i : i+2])
-			i += 2
-			break
+			visit(jpegMarkerSegment{marker: marker, raw: src[i : i+2]})
+			return nil
 		}
 		if i+4 > len(src) {
-			return nil, fmt.Errorf("%w: truncated JPEG segment header at offset %d", ErrSanitizeMalformedInput, i)
+			return fmt.Errorf("%w: truncated JPEG segment header at offset %d", ErrSanitizeMalformedInput, i)
 		}
 		segLen := int(binary.BigEndian.Uint16(src[i+2 : i+4]))
 		if segLen < 2 || i+2+segLen > len(src) {
-			return nil, fmt.Errorf("%w: invalid JPEG segment length %d at offset %d", ErrSanitizeMalformedInput, segLen, i)
+			return fmt.Errorf("%w: invalid JPEG segment length %d at offset %d", ErrSanitizeMalformedInput, segLen, i)
 		}
 		segEnd := i + 2 + segLen
 
-		isAPP := marker >= 0xE0 && marker <= 0xEF
-		isCOM := marker == 0xFE
-		if !isAPP && !isCOM || isKeptJPEGAppSegment(marker, src[i+4:segEnd]) {
-			out.Write(src[i:segEnd])
-		}
+		seg := jpegMarkerSegment{marker: marker, payload: src[i+4 : segEnd], raw: src[i:segEnd]}
 
 		if marker == 0xDA {
 			// SOS: entropy-coded data follows. It is copied VERBATIM -- that
@@ -140,16 +195,18 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 			// document_metadata as VERIFIED. A false statement in the report,
 			// which is the one outcome this phase exists to prevent. Caught in
 			// review (PR #12, round 3), and reproduced before it was fixed.
-			// The SOS header itself was already copied by the branch above
-			// -- it is neither an APP nor a COM segment.
+			// The SOS header is not an APP or COM segment, so every caller
+			// keeps it, and its scan travels with it.
 			end := endOfEntropyCodedData(src, segEnd)
-			out.Write(src[segEnd:end])
+			seg.scan = src[segEnd:end]
+			visit(seg)
 			i = end
 			continue
 		}
+		visit(seg)
 		i = segEnd
 	}
-	return out.Bytes(), nil
+	return nil
 }
 
 // The two APP segments this sanitizer preserves, recognised by their payload
@@ -176,6 +233,17 @@ const (
 	jpegAdobePayloadLen = 12
 	jpegICCTag          = "ICC_PROFILE\x00"
 	jpegICCHeaderLen    = 14 // tag + sequence number + total count
+
+	// iccMaxChunks is 255 because the chunk count is ONE BYTE. This is not a
+	// policy number -- a larger count is unrepresentable in the format.
+	iccMaxChunks = 255
+
+	// iccMaxProfileBytes bounds the ASSEMBLED profile. ICC.1:2010 §7.1.2 caps
+	// a profile's own size field at 2^32-1, which is not a useful bound for a
+	// sanitizer, so this is the project's own ceiling: 16 MiB is far above any
+	// real profile (a large CMYK output profile is single-digit MiB) and far
+	// below anything that could be used to make this function allocate.
+	iccMaxProfileBytes = 16 << 20
 )
 
 // isKeptJPEGAppSegment reports whether an APPn segment is one of the two
@@ -185,15 +253,126 @@ func isKeptJPEGAppSegment(marker byte, payload []byte) bool {
 	case 0xEE: // APP14, Adobe colour transform
 		return len(payload) == jpegAdobePayloadLen &&
 			bytes.HasPrefix(payload, []byte(jpegAdobeTag))
-	case 0xE2: // APP2, ICC profile chunk
-		if !bytes.HasPrefix(payload, []byte(jpegICCTag)) || len(payload) < jpegICCHeaderLen+4 {
-			return false
-		}
-		declared := int(binary.BigEndian.Uint32(payload[jpegICCHeaderLen : jpegICCHeaderLen+4]))
-		return len(payload)-jpegICCHeaderLen <= declared
 	default:
+		// APP2/ICC is deliberately NOT handled here. It cannot be: the
+		// decision is about the chunk SET, not the chunk. See
+		// iccChunkSetIsValid, and isJPEGICCChunk for the recognizer this
+		// function's caller uses to route APP2 segments there instead.
 		return false
 	}
+}
+
+// isJPEGICCChunk reports whether a segment is an APP2 ICC profile chunk, by
+// its tag alone. Whether it is KEPT is a question about the whole set.
+func isJPEGICCChunk(marker byte, payload []byte) bool {
+	return marker == 0xE2 && bytes.HasPrefix(payload, []byte(jpegICCTag))
+}
+
+// iccChunkSetIsValid reports whether the file's ICC chunks form one complete,
+// consistent profile.
+//
+// WHY THIS IS NOT A PER-CHUNK CHECK, WHICH IS THE WHOLE FINDING.
+//
+// The previous version read payload[14:18] as the profile's declared size and
+// kept a chunk when its own length fit inside that number. Those four bytes ARE
+// the size field -- in CHUNK 1, where what follows the 14-byte header is the
+// start of the ICC profile header (ICC.1:2010 §7.2.2). In every continuation
+// chunk they are ordinary profile data, so the comparison was against a number
+// that means nothing, and a chunk whose data happened to begin with a small
+// big-endian integer was dropped out of the middle of a valid profile.
+//
+// That failure is quiet in the worst way: the file still decodes, the report
+// still says the colour profile was preserved, and the image renders with the
+// wrong colours. Observed on icc_multichunk.jpg before this fix -- three chunks
+// in, two out.
+//
+// So the unit of the decision is the SET. It is valid when the chunks agree
+// with each other and with the profile they claim to carry:
+//
+//   - at least one chunk, and every chunk carries the tag;
+//   - every chunk declares the same total count, which is >= 1;
+//   - every sequence number is in 1..count, and none repeats;
+//   - every sequence in 1..count is present, so there are no gaps;
+//   - the assembled profile fits iccMaxProfileBytes;
+//   - the assembled profile's own size field agrees with what was assembled.
+//
+// Anything else drops the whole set. Half a profile is not a smaller profile.
+func iccChunkSetIsValid(src []byte) (bool, error) {
+	type chunk struct {
+		seq, count int
+		dataLen    int
+	}
+	var chunks []chunk
+	total := 0
+	var firstChunkHead []byte
+
+	err := walkJPEGSegments(src, func(seg jpegMarkerSegment) {
+		if !isJPEGICCChunk(seg.marker, seg.payload) {
+			return
+		}
+		if len(seg.payload) < jpegICCHeaderLen {
+			// Tagged but too short to carry its own sequence/count. Recorded
+			// as a chunk with an impossible sequence so the set fails rather
+			// than being silently skipped -- skipping it here would let a
+			// malformed chunk sit inside an otherwise "complete" set.
+			chunks = append(chunks, chunk{seq: 0})
+			return
+		}
+		c := chunk{
+			seq:     int(seg.payload[jpegICCHeaderLen-2]),
+			count:   int(seg.payload[jpegICCHeaderLen-1]),
+			dataLen: len(seg.payload) - jpegICCHeaderLen,
+		}
+		if c.seq == 1 {
+			firstChunkHead = seg.payload[jpegICCHeaderLen:]
+		}
+		chunks = append(chunks, c)
+		total += c.dataLen
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(chunks) == 0 {
+		return false, nil
+	}
+	if total > iccMaxProfileBytes {
+		return false, nil
+	}
+
+	want := chunks[0].count
+	if want < 1 || want > iccMaxChunks || len(chunks) != want {
+		return false, nil
+	}
+	seen := make([]bool, want+1)
+	for _, c := range chunks {
+		if c.count != want || c.seq < 1 || c.seq > want || seen[c.seq] {
+			return false, nil
+		}
+		seen[c.seq] = true
+	}
+
+	// The size check the old per-chunk version was REACHING for, applied where
+	// it is actually meaningful. The first four bytes of chunk 1's data are the
+	// profile's own size field (ICC.1:2010 §7.2.2), and that field is the exact
+	// size of the profile -- so the assembled data must equal it.
+	//
+	// Equality, not "<=": the old comparison allowed an assembled profile
+	// SHORTER than declared, which is a truncated profile, and it is the
+	// direction that matters least. What it did catch, and this keeps, is a
+	// chunk carrying far more than the profile describes -- 200 bytes behind a
+	// declared size of 8 is 192 bytes the profile says nothing about.
+	//
+	// Stated as a risk rather than hidden: an encoder that pads the final chunk
+	// beyond the profile would fail this and lose its colour profile. No such
+	// file is in the corpus and none is known; if one appears, the fix is a
+	// measured allowance, not a loosening to "<=".
+	if len(firstChunkHead) < 4 {
+		return false, nil
+	}
+	if int(binary.BigEndian.Uint32(firstChunkHead[:4])) != total {
+		return false, nil
+	}
+	return true, nil
 }
 
 // endOfEntropyCodedData returns the offset of the next real marker at or after

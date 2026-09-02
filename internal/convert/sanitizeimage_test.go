@@ -239,6 +239,20 @@ func buildJPEGWithSegments(t *testing.T, segments ...[]byte) []byte {
 	return b.Bytes()
 }
 
+// iccChunk builds one APP2 ICC payload: the tag, a sequence number, a total
+// count, and profile data whose first four bytes are the profile's own size
+// (ICC.1:2010 §7.2.2). Written as a helper because getting that size field
+// right is the difference between a fixture that tests the ICC path and one
+// that tests the malformed-input path -- the earlier version of this file used
+// tag+"profile", whose bytes 12 and 13 are 'p' and 'r', so it declared itself
+// chunk 112 of 114 and only survived because the check it faced was broken.
+func iccChunk(seq, count byte, data []byte) []byte {
+	body := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(body[:4], uint32(4+len(data)))
+	copy(body[4:], data)
+	return append(append([]byte("ICC_PROFILE\x00"), seq, count), body...)
+}
+
 func jpegSegment(marker byte, payload []byte) []byte {
 	out := []byte{0xFF, marker, byte((len(payload) + 2) >> 8), byte((len(payload) + 2) & 0xFF)}
 	return append(out, payload...)
@@ -434,7 +448,16 @@ func TestSanitizeImageStripsSegmentsAfterTheScan(t *testing.T) {
 	scan := []byte{0x00, 0xFF, 0x00, 0x12, 0xFF, 0xD0, 0x34, 0xFF, 0x00}
 	exif := jpegSegment(0xE1, append([]byte("Exif\x00\x00"), []byte("MM\x00\x2aPOSTSCAN-SECRET")...))
 	comment := jpegSegment(0xFE, []byte("post-scan comment"))
-	icc := jpegSegment(0xE2, append([]byte("ICC_PROFILE\x00"), []byte("profile")...))
+	// A REAL single-chunk ICC segment: tag, sequence 1, count 1, then profile
+	// bytes. It used to be tag+"profile", which is not an ICC chunk at all --
+	// bytes 12 and 13 there are 'p' and 'r', so it declared itself chunk 112
+	// of 114. The old per-chunk check kept it anyway (it only compared lengths
+	// against four bytes it read as a size), so this test passed while
+	// asserting that a malformed chunk survives. Corrected with the SANI-07
+	// fix: what the test means -- colour management is kept wherever it sits --
+	// is unchanged, and now it is asserted about something that is actually a
+	// colour profile.
+	icc := jpegSegment(0xE2, iccChunk(1, 1, []byte("profile")))
 
 	dir := t.TempDir()
 	in := filepath.Join(dir, "in.jpg")
