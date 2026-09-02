@@ -130,6 +130,26 @@ data:
   # service for probeUniqueTTL's derivation.
   PROBE_ENGINE_TIMEOUT: "600s"
   PROBE_MAX_RETRY: "2"
+  # PROBE_MAX_PAGES (Phase 63, PROBE-01/PROBE-02) is the ceiling the timeout
+  # above was already derived FROM -- the 200 in ceil(2.0 s/page x 200 pages
+  # x 1.5). Until this phase the engine did not have it, so the timeout was
+  # the only bound on the input and an over-long document failed LATE (ten
+  # minutes of CPU), RETRIED (a probe timeout is TRANSIENT, correctly) and
+  # OPAQUE (engine_error). Setting it to anything other than the number the
+  # timeout assumes makes the two disagree about what this service sanitizes.
+  #
+  # PROVISIONAL, in the narrow sense the value's own doc comment states
+  # (internal/convert/probebounds.go): 2.0 s/page is measured, but "200 pages
+  # is a generous document bound" is reasoned from a hand-chosen corpus. The
+  # hard ceiling nothing may exceed is the reconciler's: 900s at 2.0 s/page
+  # is 450 pages.
+  #
+  # Read by BOTH cmd/api (admission gate, refuses before the S3 write) and
+  # cmd/probe-worker (accurate pdfcpu count, refuses terminally before
+  # ghostscript). NOT an IN-02 uniqueTTL input -- but the two readers must see
+  # the same value, or the API admits documents the worker will certainly
+  # refuse. The shared ConfigMap is what guarantees that here.
+  PROBE_MAX_PAGES: "200"
   # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
   # document inside a 1Gi cgroup. Reasoned, not measured.

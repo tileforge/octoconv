@@ -1,0 +1,45 @@
+=== INVERSION 1: page-ceiling gate moved BELOW s.storage.Upload ===
+2026/09/02 19:04:49 [АндрейП�/54S1LGTuKa-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 000 0B in 495.291µs
+--- FAIL: TestCreateJobSanitizeRejectsOverPageCeilingBeforeStorage (0.00s)
+    handlers_test.go:4627: storage.Upload was called with key "uploads/499ff3fc-367d-47e9-9d6f-30d291c6a7b2/0-in.pdf" -- the page-ceiling rejection must happen STRICTLY BEFORE the storage write (PROBE-01); a 422 that arrives after the upload has already spent the byte it was meant to save
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.235s
+FAIL
+[exit 1]
+
+=== INVERSION 2: ErrProbeTooManyPages branch removed from isProbeTerminal ===
+--- FAIL: TestPinnedProbePageCeilingAndTimeoutAreOpposites (0.00s)
+    --- FAIL: TestPinnedProbePageCeilingAndTimeoutAreOpposites/page_ceiling_is_terminal (0.00s)
+        pinning_test.go:1096: err = convert: probe: pdf page count exceeds bound: declared page count 3000 exceeds bound 200, want errors.Is(err, asynq.SkipRetry) -- a document that is too long is too long on every attempt; retrying spends PROBE_ENGINE_TIMEOUT to be told the same thing
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/worker	1.217s
+FAIL
+[exit 1]
+
+=== INVERSION 3: page-ceiling call removed from SanitizeConverter.Convert ===
+--- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript (0.69s)
+    --- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript/over_the_bound_is_refused_and_nothing_is_produced (0.24s)
+        probebounds_test.go:250: Convert = <nil>, want an error wrapping ErrProbeTooManyPages
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.556s
+FAIL
+[exit 1]
+
+=== INVERSION 4: cmd/api resolves its own default literal instead of the shared constant ===
+--- FAIL: TestProbeMaxPagesHasOneDefault (0.08s)
+    probebounds_test.go:161: cmd/api/main.go reads PROBE_MAX_PAGES but does not resolve its default through DefaultProbeMaxPages -- a second default literal is how PROBE_ENGINE_TIMEOUT drifted between these same two processes
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.575s
+FAIL
+[exit 1]
+
+=== INVERSION 5: API gate made fail-closed on an unknown page count ===
+2026/09/02 19:05:18 content validation abstained: client_id=a4af448e-a0d1-44c3-b7c3-6a2701e7bb19 filename="in.pdf" reason=page_count_unknown detail=compressed_object_streams
+2026/09/02 19:05:18 [АндрейП�/WtVrzDvmAb-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 422 64B in 800.625µs
+--- FAIL: TestCreateJobSanitizeAdmitsUnknownPageCount (0.00s)
+    handlers_test.go:4701: status = 422, want 202 -- an unknown count ADMITS, and the worker's accurate count is the bound; body={"code":"too_many_pages","error":"cannot determine page count"}
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.150s
+FAIL
+[exit 1]
+
