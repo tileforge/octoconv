@@ -20,13 +20,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) are code-complete — 63-02 still to ship. Phase 64 (tectonic, ninth engine class) ahead.
+**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) are code-complete — 63-02 in review on PR #15. Phase 64 (tectonic, ninth engine class) ahead.
 
 ## Current Position
 
 Phase: 63 — Sanitize Hardening & Probe Page Ceiling
-Plan: 63-01 (merged, PR #14), 63-02 (executed on branch phase-63-probe-page-ceiling, not yet shipped)
-Status: phase 63 code-complete; 63-02 awaiting PR + @codex review
+Plan: 63-01 (merged, PR #14), 63-02 (PR #15 open, @codex review requested)
+Status: phase 63 code-complete; 63-02 in review on PR #15
 Last activity: 2026-09-02 — 63-02: PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02). One bound, two gates: the API refuses a known over-the-bound PDF page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with the accurate pdfcpu count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was already derived from — the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement. Five inversions recorded
 
 ## Performance Metrics
