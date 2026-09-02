@@ -54,6 +54,7 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,53 +392,28 @@ func scanPDFBytes(raw []byte) ([]ThreatClass, error) {
 // pdfNonStreamBytes returns the file with every stream payload blanked out,
 // so a scan sees dictionaries, names and trailers but not compressed content.
 //
-// Blanking rather than deleting keeps every offset where it was, which makes
-// a reported offset in a failure message still mean something.
+// Blanking rather than deleting keeps every offset where it was, which makes a
+// reported offset in a failure message still mean something.
 //
-// STREAM BOUNDARIES COME FROM /Length, WHICH IS SANI-08.
+// The stream boundaries come from pdflex.go's tokenizer, the same one the
+// sanitizer uses. That file's header records why: this verifier and the
+// sanitizer must AGREE about where a stream's bytes are -- it is a prerequisite
+// for both propositions, not a check of either -- and three review rounds
+// showed that two hand-written walkers produced identical bugs every time while
+// costing a second place to fix and a second chance to disagree about trivia.
 //
-// The previous version found a stream's end with bytes.Index(out, "endstream")
-// and its start with bytes.Index(out, "stream"). Both are lexical, and a stream
-// payload is arbitrary bytes. On endstream_in_stream.pdf the result was exactly
-// INVERTED: the payload's own "startxref" and "%%EOF" survived blanking while
-// the file's real trailer -- xref table, startxref, %%EOF -- was blanked to
-// spaces. verifySingleRevision then counted 1 and 1 and passed, by reading the
-// payload as structure and the structure as payload; two errors whose totals
-// happen to agree with the right answer.
+// What stays independent is what this file looks FOR: the sanitizer decides
+// what to remove, this decides whether it is gone.
 //
-// The second half of that has its own cause: "stream" is a substring of
-// "endstream", so after blanking a range the walker re-entered on the tail of
-// the keyword it had just consumed. Requiring the keyword to follow the ">>"
-// that closes its own dictionary is what makes it structural instead.
-//
-// Written independently of sanitizepdf.go's pdfStreamRanges, per this file's
-// header: the sanitizer asks "which bytes must I not rewrite", this asks "which
-// bytes must I not read as structure". TestStreamRangesAgreeWithTheVerifier
-// holds the two to the same answer, so a divergence is loud rather than silent.
-//
-// An unresolvable /Length returns an error. This function used to fail CLOSED
-// by blanking the rest of the file, which is a defensible answer for a grep --
-// but it is a strictly worse one than saying so, and the caller is a verifier
-// whose whole job is to refuse what it cannot confirm.
+// An unresolvable /Length is an error, not a guess. This function used to fail
+// closed by blanking the rest of the file, which is a defensible answer for a
+// grep and a strictly worse one than saying so, in a verifier whose job is to
+// refuse what it cannot confirm.
 func pdfNonStreamBytes(raw []byte) ([]byte, error) {
-	// ONE FORWARD PASS, INDEXING AS IT GOES AND NEVER READING A PAYLOAD. See
-	// sanitizepdf.go's pdfStreamRanges for the two earlier attempts this
-	// replaced and why each failed -- the second one CONVERGED, to a range that
-	// was perfectly self-consistent and wrong. What breaks the circle is order:
-	// a stream's /Length is resolved from objects seen before it, and its
-	// payload is then jumped over whole.
-	//
-	// Written independently of the sanitizer's walk, per this file's header,
-	// including the retry for a length object defined after its stream.
-	ranges, unresolved := verifierForwardPass(raw)
-	if unresolved > 0 {
-		var err error
-		ranges, err = verifierStreamPayloads(raw, verifierObjectOffsets(raw, ranges))
-		if err != nil {
-			return nil, err
-		}
+	ranges, err := pdfStreamPayloads(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSanitizeUnverifiable, err)
 	}
-
 	out := append([]byte(nil), raw...)
 	for _, r := range ranges {
 		for x := r[0]; x < r[1]; x++ {
@@ -445,350 +421,6 @@ func pdfNonStreamBytes(raw []byte) ([]byte, error) {
 		}
 	}
 	return out, nil
-}
-
-// verifierForwardPass walks the file once, indexing object headers as it passes
-// them and jumping over every payload it can resolve.
-func verifierForwardPass(b []byte) ([][2]int, int) {
-	objects := make(map[int]int)
-	var out [][2]int
-	unresolved := 0
-
-	i := 0
-	for i < len(b) {
-		objAt := bytes.Index(b[i:], []byte(" obj"))
-		kwAt := bytes.Index(b[i:], []byte("stream"))
-		if objAt < 0 && kwAt < 0 {
-			return out, unresolved
-		}
-		if objAt >= 0 && (kwAt < 0 || objAt < kwAt) {
-			at := i + objAt
-			if num, ok := verifierObjectNumberBefore(b, at); ok {
-				objects[num] = at + 4
-			}
-			i = at + 4
-			continue
-		}
-
-		kw := i + kwAt
-		dictEnd, ok := verifierDictClosesBefore(b, kw)
-		if !ok {
-			i = kw + 1
-			continue
-		}
-		start := kw + len("stream")
-		if start < len(b) && b[start] == '\r' {
-			start++
-		}
-		if start < len(b) && b[start] == '\n' {
-			start++
-		}
-		n, err := verifierStreamLength(b, dictEnd, kw, objects)
-		if err != nil || start+n > len(b) {
-			unresolved++
-			i = kw + len("stream")
-			continue
-		}
-		k := start + n
-		for k < len(b) && verifierIsSpace(b[k]) {
-			k++
-		}
-		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
-			unresolved++
-			i = kw + len("stream")
-			continue
-		}
-		out = append(out, [2]int{start, start + n})
-		i = start + n
-	}
-	return out, unresolved
-}
-
-// verifierObjectNumberBefore reads the "N G" of an "N G obj" header ending at
-// at, and reports the object number.
-func verifierObjectNumberBefore(b []byte, at int) (int, bool) {
-	k := at
-	for k > 0 && verifierIsSpace(b[k-1]) {
-		k--
-	}
-	genEnd := k
-	for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
-		k--
-	}
-	if k == genEnd {
-		return 0, false
-	}
-	for k > 0 && verifierIsSpace(b[k-1]) {
-		k--
-	}
-	numEnd := k
-	for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
-		k--
-	}
-	if k == numEnd {
-		return 0, false
-	}
-	num := 0
-	for _, c := range b[k:numEnd] {
-		num = num*10 + int(c-'0')
-		if num > 1<<30 {
-			return 0, false
-		}
-	}
-	return num, true
-}
-
-// verifierStreamPayloadsTolerant is the same walk as verifierStreamPayloads
-// with every rejection turned into a skip. It exists only to feed the next
-// round's index.
-
-// verifierStreamPayloads returns every stream payload range, using the object
-// index it is given to resolve indirect lengths.
-func verifierStreamPayloads(b []byte, objects map[int]int) ([][2]int, error) {
-	var out [][2]int
-	i := 0
-	for {
-		j := bytes.Index(b[i:], []byte("stream"))
-		if j < 0 {
-			return out, nil
-		}
-		kw := i + j
-		dictEnd, ok := verifierDictClosesBefore(b, kw)
-		if !ok {
-			i = kw + 1
-			continue
-		}
-		start := kw + len("stream")
-		// Skip the EOL that ISO 32000 7.3.8.1 requires after the keyword.
-		if start < len(b) && b[start] == '\r' {
-			start++
-		}
-		if start < len(b) && b[start] == '\n' {
-			start++
-		}
-
-		n, err := verifierStreamLength(b, dictEnd, kw, objects)
-		if err != nil {
-			return nil, err
-		}
-		if start+n > len(b) {
-			return nil, fmt.Errorf("%w: stream at offset %d declares a length that runs past the end of the file",
-				ErrSanitizeUnverifiable, kw)
-		}
-		// verifierIsSpace, not a hand-listed subset. PDF's whitespace set
-		// (ISO 32000-1 Table 1) also includes form feed and NUL, and the
-		// sanitizer's pdfEndstreamFollows already accepted them -- so a valid
-		// "\f\nendstream" was rejected HERE and accepted THERE. Two
-		// independent walkers are supposed to disagree about verdicts, not
-		// about what a space is. Found by review on PR #14.
-		k := start + n
-		for k < len(b) && verifierIsSpace(b[k]) {
-			k++
-		}
-		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
-			return nil, fmt.Errorf("%w: stream at offset %d declares a length its bytes do not agree with",
-				ErrSanitizeUnverifiable, kw)
-		}
-		out = append(out, [2]int{start, start + n})
-		i = start + n
-	}
-}
-
-// verifierObjectOffsets indexes object headers for indirect-length resolution.
-// Deliberately a second implementation of the same index sanitizepdf.go builds;
-// see this file's header for why the two walkers are not shared.
-//
-// STREAM PAYLOADS ARE EXCLUDED. The first version scanned the whole file, so a
-// payload containing "7 0 obj\n5" overwrote the real object 7's offset and a
-// later "/Length 7 0 R" resolved from attacker-controlled bytes. Found by review
-// on PR #14 in the sanitizer's copy, and named there as repeated here -- which
-// it was. Two independent implementations of one rule share its bugs when the
-// bug is in the rule, and that is worth writing down rather than quietly fixing
-// twice. Round two of the same review then showed that skipping only
-// direct-length payloads still left an indirect-length stream able to poison
-// the object its own length referred to, so the caller now iterates and passes
-// in everything known so far.
-func verifierObjectOffsets(b []byte, skip [][2]int) map[int]int {
-	offsets := make(map[int]int)
-	for i := 0; ; {
-		j := bytes.Index(b[i:], []byte(" obj"))
-		if j < 0 {
-			return offsets
-		}
-		at := i + j
-		if verifierInAnyRange(skip, at) {
-			i = at + 4
-			continue
-		}
-		if num, ok := verifierObjectNumberBefore(b, at); ok {
-			offsets[num] = at + 4
-		}
-		i = at + 4
-	}
-}
-
-func verifierInAnyRange(ranges [][2]int, i int) bool {
-	for _, r := range ranges {
-		if i >= r[0] && i < r[1] {
-			return true
-		}
-	}
-	return false
-}
-
-// verifierIsIndirectRef reports whether what follows an integer is "G R".
-func verifierIsIndirectRef(after []byte) bool {
-	_, gn, ok := verifierReadInt(after)
-	if !ok {
-		return false
-	}
-	rest := after[gn:]
-	k := 0
-	for k < len(rest) && verifierIsSpace(rest[k]) {
-		k++
-	}
-	return k < len(rest) && rest[k] == 'R'
-}
-
-func verifierIsSpace(c byte) bool {
-	return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == 0
-}
-
-// verifierDictClosesBefore reports the offset of the "<<" opening the
-// dictionary that ends immediately before kw. Its absence is what tells this
-// walker that the "stream" it found is the tail of an "endstream".
-func verifierDictClosesBefore(b []byte, kw int) (int, bool) {
-	i := verifierSkipBackTrivia(b, kw)
-	if i < 2 || b[i-1] != '>' || b[i-2] != '>' {
-		return 0, false
-	}
-	depth := 0
-	for i >= 2 {
-		switch {
-		case b[i-1] == '>' && b[i-2] == '>':
-			depth++
-			i -= 2
-		case b[i-1] == '<' && b[i-2] == '<':
-			depth--
-			if depth == 0 {
-				return i - 2, true
-			}
-			i -= 2
-		default:
-			i--
-		}
-	}
-	return 0, false
-}
-
-// verifierSkipBackTrivia walks backwards over whitespace and comments. A
-// comment may appear anywhere whitespace may (ISO 32000-1 7.2.4), so
-// ">> %comment\nstream" is a valid stream header, and skipping only whitespace
-// made this walker miss such a stream entirely -- reading its payload as file
-// structure. Found by review on PR #14.
-func verifierSkipBackTrivia(b []byte, at int) int {
-	i := at
-	for {
-		for i > 0 && verifierIsSpace(b[i-1]) {
-			i--
-		}
-		lineStart := i
-		for lineStart > 0 && b[lineStart-1] != '\n' && b[lineStart-1] != '\r' {
-			lineStart--
-		}
-		pct := bytes.IndexByte(b[lineStart:i], '%')
-		if pct < 0 {
-			return i
-		}
-		i = lineStart + pct
-	}
-}
-
-// verifierStreamLength reads /Length from the dictionary spanning [dict, kw),
-// resolving one level of indirection.
-func verifierStreamLength(b []byte, dict, kw int, objects map[int]int) (int, error) {
-	d := b[dict:kw]
-	depth := 0
-	at := -1
-	for i := 0; i+1 < len(d); i++ {
-		if d[i] == '<' && d[i+1] == '<' {
-			depth++
-			i++
-			continue
-		}
-		if d[i] == '>' && d[i+1] == '>' {
-			depth--
-			i++
-			continue
-		}
-		if depth == 1 && bytes.HasPrefix(d[i:], []byte("/Length")) && verifierNameEnds(d, i+len("/Length")) {
-			at = i
-			break
-		}
-	}
-	if at < 0 {
-		return 0, fmt.Errorf("%w: stream at offset %d has no /Length in its dictionary",
-			ErrSanitizeUnverifiable, kw)
-	}
-
-	rest := d[at+len("/Length"):]
-	num, n, ok := verifierReadInt(rest)
-	if !ok {
-		return 0, fmt.Errorf("%w: stream at offset %d has a /Length that is not a number",
-			ErrSanitizeUnverifiable, kw)
-	}
-	if verifierIsIndirectRef(rest[n:]) {
-		off, found := objects[num]
-		if !found {
-			return 0, fmt.Errorf("%w: stream at offset %d refers its /Length to object %d, which is not in the file",
-				ErrSanitizeUnverifiable, kw, num)
-		}
-		v, _, ok := verifierReadInt(b[off:])
-		if !ok {
-			return 0, fmt.Errorf("%w: stream at offset %d resolves its /Length to object %d, which is not an integer",
-				ErrSanitizeUnverifiable, kw, num)
-		}
-		return v, nil
-	}
-	return num, nil
-}
-
-// verifierNameEnds reports whether a PDF name token ends at i. "/Length"
-// otherwise matches the first seven bytes of "/Length1", which real Type1 font
-// streams carry, and the value read is the "1" of the key itself. Found by
-// embedded_font.pdf, on the first run of this derivation.
-func verifierNameEnds(b []byte, i int) bool {
-	if i >= len(b) {
-		return true
-	}
-	switch c := b[i]; c {
-	case '(', ')', '<', '>', '[', ']', '{', '}', '/', '%':
-		return true
-	default:
-		return verifierIsSpace(c)
-	}
-}
-
-func verifierReadInt(b []byte) (int, int, bool) {
-	i := 0
-	for i < len(b) && verifierIsSpace(b[i]) {
-		i++
-	}
-	start := i
-	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
-		i++
-	}
-	if i == start {
-		return 0, 0, false
-	}
-	v := 0
-	for _, c := range b[start:i] {
-		v = v*10 + int(c-'0')
-		if v > 1<<30 {
-			return 0, 0, false
-		}
-	}
-	return v, i, true
 }
 
 // ---------------------------------------------------------------------------
@@ -835,7 +467,14 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 		return false
 	}
 
+	// The WHOLE document must parse, not just enough of it to find a match.
+	// Returning true on the matching element let a truncated file through --
+	// "<Types ...><Override .../>"" with no closing tag was accepted, because
+	// the decoder had not yet reached the error. verifyOOXML's own root check
+	// looks at the first start element only, so nothing else caught it either.
+	// Found by review on PR #14, round 3.
 	dec := xml.NewDecoder(bytes.NewReader(contentTypes))
+	found := false
 	ext := ""
 	if i := strings.LastIndexByte(part, '.'); i >= 0 {
 		ext = strings.ToLower(part[i+1:])
@@ -843,6 +482,9 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 
 	for {
 		tok, err := dec.Token()
+		if err == io.EOF {
+			return found
+		}
 		if err != nil {
 			return false
 		}
@@ -876,7 +518,7 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 		switch el.Name.Local {
 		case "Override":
 			if partName == "/"+part {
-				return true
+				found = true
 			}
 		case "Default":
 			// ASCII-case-insensitive, because OPC extension matching is
@@ -886,7 +528,7 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 			// DELETES the output, so being too strict costs a client a file
 			// exactly as surely as being too loose lets one through.
 			if ext != "" && strings.EqualFold(extension, ext) {
-				return true
+				found = true
 			}
 		}
 	}
