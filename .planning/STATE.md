@@ -3,7 +3,7 @@ gsd_state_version: 1.0
 milestone: v1.13
 milestone_name: Inspect & Operations
 status: Awaiting next milestone
-stopped_at: Phase 60 context gathered; ready to plan
+stopped_at: v1.13 shipped and archived 2026-09-02; next milestone not defined
 last_updated: "2026-09-02T03:22:20.883Z"
 last_activity: 2026-09-02 — Milestone v1.13 completed and archived
 progress:
@@ -21,14 +21,29 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 60 — sanitize-eighth-engine-class
+**Current focus:** v1.13 shipped. Next milestone not defined — `/gsd:new-milestone`.
 
 ## Current Position
 
-Phase: Milestone v1.13 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-09-02 — Milestone v1.13 completed and archived
+Milestone: v1.13 Inspect & Operations — SHIPPED 2026-09-02
+Phase: none in progress
+Status: 6 phases, 38 plans, 28/28 v1 requirements complete. Archived to
+.planning/milestones/v1.13-{ROADMAP,REQUIREMENTS}.md; summary in MILESTONES.md;
+retrospective appended.
+
+PROBE_ENGINE_TIMEOUT was measured on the last day rather than placed: cost turned
+out to be per page (1.99-2.01 s/page across three points), not per byte, so the
+600s bound is ceil(2.0 s/page x 200 pages x 1.5) -- OCR's own shape -- rather than
+a wall-clock p95, which with page-driven cost would have measured the corpus
+instead of the engine.
+
+Carried forward, none blocking: probe has no page ceiling (the measurement made
+that visible); three P2 findings from PR #12 round 8 merged unfixed by decision;
+the API startup crashloop; the inspect honest-reporting items; the soak test that
+shares a database with parallel packages. 46 open artifacts acknowledged as
+deferred -- see Deferred Items below.
+
+Last activity: 2026-09-02 -- v1.13 shipped
 
 ## Performance Metrics
 

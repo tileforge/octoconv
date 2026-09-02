@@ -356,6 +356,98 @@ The first milestone that adds no engine. Per-client consumption accounting writt
 - Assumptions recorded in RESEARCH.md are still assumptions. A1 was written down, reviewed, and wrong; the cost was a failed live calibration and a harness rewrite. Recording an assumption is not the same as cheaply testing it first.
 - When a live gate fails ambiguously, the fix is a discriminator, not a looser bound. Round 4/10's `expected [2], got [3]` was most likely legitimate slot reuse — and the only honest way to keep asserting `==` was to make the premise checkable.
 
+## Milestone: v1.13 — Inspect & Operations
+
+**Shipped:** 2026-09-02
+**Phases:** 6 (56–61) | **Plans:** 38 | **Tasks:** 58 | **Commits:** 45 over 26 days
+**Code:** +15.5k Go non-test, +22.8k Go test
+
+### What Was Built
+
+Two synchronous surfaces and one engine class on top of a job pipeline that
+gained a second dimension: `POST /v1/inspect`, `operation` as a validated
+end-to-end dimension with output roles, and `operation=sanitize` on the eighth
+engine class. Plus the closed 28-code error contract, born-digital PDF routing,
+and operator job cancellation.
+
+### What Worked
+
+**Pinning the pre-phase behaviour in the phase's FIRST commit.** Four phases did
+this (56, 57, 58, 60). It converted "we changed nothing else" from an assertion
+into a byte comparison, and it caught real drift — Phase 60's own golden work
+found that `pdfwrite` *creates* an XMP packet carrying the metadata it was
+invoked to remove.
+
+**Proof by inversion.** Every defence was broken on purpose and observed to fail
+distinctly. This found things review did not: in three separate rounds the
+inversion pass reddened nothing, which each time meant the defence had no test
+at all rather than that it worked.
+
+**Deriving numbers instead of copying them.** `PROBE_ENGINE_TIMEOUT` measurement
+produced a better artifact than a number: the discovery that cost is per page,
+not per byte, which changed the derivation, the KEDA downscale profile, and
+surfaced a missing page ceiling nobody had asked about.
+
+### What Was Inefficient
+
+**Eight review rounds on one phase.** 26 findings, and the shape barely changed
+between rounds: a component that worked with nothing connecting it. Rounds 4–7
+were largely consequences of rounds 3–6's own fixes, because each fix addressed
+the reported instance rather than the class. That is the single most expensive
+pattern of this milestone.
+
+**Tests that proved a component rather than its use.** Two dead code paths and
+one field passed to a function that ignored it, all with green tests. A helper
+implementing a decision (`SanitizedOOXMLExtension`) had its own passing unit
+test while nothing in production called it.
+
+**Comments that outlived their code.** `ProbeDescriptor` documented a terminal
+classification the code never implemented; `SanitizeSupports` named a caller
+that never existed; migration 0015's "intentional divergence" survived its own
+closure. This is the same defect Phase 59 found in `ocrguards.go`, reproduced
+inside the phase built to prevent it.
+
+### Patterns Established
+
+- **Make the independent checker BROADER than the thing it checks.** Late in
+  Phase 60 the verifier's macro check was widened past what the sanitizer
+  removes — and it immediately caught two sanitizer bugs that eight review
+  rounds had missed. This is the countermeasure that worked; more tests of the
+  same kind was not.
+- **A rule needed in two places must land in both in one change.** Named four
+  times in one review: `docProps/` beside the relationship fix, a sentinel on
+  three paths of five, a JPEG spec rule applied to the scan and not the
+  segments, stream scoping applied to one scan and not its two neighbours.
+- **Derive completeness guards from the source of truth.** Three hand-written
+  tables (queue coverage, reconciler routing, per-engine defaults) each failed
+  when the eighth engine arrived — not because the engine was missing, but
+  because the guard was. All three now derive from `convert.AllEngines()`.
+- **A closed vocabulary needs a production consumer.** `inspect.AllCodes` has
+  eleven; Phase 60's had zero until the predicates were wired into report
+  construction. An unused accessor documents an intent rather than enforcing it.
+
+### Key Lessons
+
+1. A test that calls a function directly cannot see that nothing else calls it.
+2. A test that exercises two components together cannot see an assumption they
+   share. The JPEG post-scan defect had three passing tests, all built on files
+   whose segments come before the scan.
+3. A class fix that stops at its first instance leaves the second under the very
+   comment explaining why that shape is wrong.
+4. Measuring a bound often teaches more than the bound. Per-page cost, the
+   wrong-statistic finding about p95, the missing page ceiling, and three
+   harness defects all came out of one measurement run.
+5. A measurement harness that can hang silently is not one an operator can be
+   asked to run — found by running it and watching an hour of nothing at 100%
+   CPU.
+
+### Cost Observations
+
+- Eight external review rounds on one phase; 23 of 26 findings fixed pre-merge.
+- Three of the phase's own inversion passes found gaps in themselves.
+- One diagnosis in-session was wrong (a garbage fixture blamed for a hang that
+  a 3000-page synthetic caused) and was corrected from the completed run.
+
 ## Cross-Milestone Trends
 
 ### Process Evolution
