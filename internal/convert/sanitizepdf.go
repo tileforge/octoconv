@@ -394,7 +394,27 @@ func pdfStreamRanges(b []byte) ([][2]int, error) {
 // pdfObjectOffsets indexes "N G obj" headers so an indirect /Length can be
 // resolved. It is an index, not a parser: it records where each object starts
 // and nothing about what is in it.
+//
+// STREAM PAYLOADS ARE EXCLUDED, WHICH IS THE WHOLE REASON THIS IS TWO PASSES.
+//
+// The first version scanned the entire file for " obj". A stream payload is
+// arbitrary bytes, so a payload containing "7 0 obj\n5" overwrote the real
+// object 7's offset -- and a later "/Length 7 0 R" then resolved its length
+// from attacker-controlled bytes. That either rejects valid output or, if an
+// in-payload "endstream" lines up with the bogus length, protects only a prefix
+// and lets redactEngineIdentity rewrite the rest of a real stream. Which is
+// exactly the corruption this whole change exists to prevent, reintroduced
+// through its own helper. Found by review on PR #14.
+//
+// The two passes break the circularity: pass one skips every stream whose
+// /Length is DIRECT, which is all of them in Ghostscript's output (measured: 4
+// of 4), and pass two indexes what is left. A payload can therefore only poison
+// the index if it sits inside a stream whose own length is indirect -- and if
+// that stream's resolved length disagrees with its bytes, pdfStreamRanges
+// errors rather than guessing.
 func pdfObjectOffsets(b []byte) map[int]int {
+	skip := pdfDirectLengthPayloads(b)
+
 	offsets := make(map[int]int)
 	for i := 0; ; {
 		j := bytes.Index(b[i:], []byte(" obj"))
@@ -402,7 +422,10 @@ func pdfObjectOffsets(b []byte) map[int]int {
 			return offsets
 		}
 		at := i + j
-		// Walk back over "G" and "N".
+		if inAnyRange(skip, at) {
+			i = at + len(" obj")
+			continue
+		}
 		k := at
 		gen, ok := pdfIntBefore(b, k)
 		if ok {
@@ -413,6 +436,69 @@ func pdfObjectOffsets(b []byte) map[int]int {
 		}
 		i = at + len(" obj")
 	}
+}
+
+// pdfDirectLengthPayloads returns the payload ranges of every stream whose
+// /Length is a direct integer, so the object index above can skip them.
+//
+// Deliberately partial and deliberately silent about failure: this is not the
+// authoritative stream walk, it is the "do not read structure out of this"
+// hint that lets the authoritative walk exist. Anything it cannot resolve is
+// simply not skipped, and pdfStreamRanges then reports the real error.
+func pdfDirectLengthPayloads(b []byte) [][2]int {
+	var out [][2]int
+	for i := 0; ; {
+		j := bytes.Index(b[i:], []byte("stream"))
+		if j < 0 {
+			return out
+		}
+		kw := i + j
+		dict, ok := pdfDictBefore(b, kw)
+		if !ok {
+			i = kw + 1
+			continue
+		}
+		start := kw + len("stream")
+		if start < len(b) && b[start] == '\r' {
+			start++
+		}
+		if start < len(b) && b[start] == '\n' {
+			start++
+		}
+
+		at := pdfTopLevelKey(b[dict:kw], "/Length")
+		if at < 0 {
+			i = kw + len("stream")
+			continue
+		}
+		rest := b[dict:kw][at+len("/Length"):]
+		n, consumed, ok := pdfReadInt(rest)
+		if !ok || pdfIsIndirectRef(rest[consumed:]) || start+n > len(b) {
+			i = kw + len("stream")
+			continue
+		}
+		if !pdfEndstreamFollows(b, start+n) {
+			i = kw + len("stream")
+			continue
+		}
+		out = append(out, [2]int{start, start + n})
+		i = start + n
+	}
+}
+
+// pdfIsIndirectRef reports whether what follows an integer is "G R", making the
+// integer an object number rather than a value.
+func pdfIsIndirectRef(after []byte) bool {
+	_, gn, ok := pdfReadInt(after)
+	if !ok {
+		return false
+	}
+	rest := after[gn:]
+	k := 0
+	for k < len(rest) && isPDFSpace(rest[k]) {
+		k++
+	}
+	return k < len(rest) && rest[k] == 'R'
 }
 
 type pdfInt struct {
@@ -499,27 +585,18 @@ func pdfLengthAt(b []byte, dict, kw int, objects map[int]int) (int, error) {
 			ErrSanitizeMalformedInput, kw)
 	}
 	// Direct value, unless what follows is "G R".
-	tail := rest[n:]
-	if gen, gn, ok := pdfReadInt(tail); ok {
-		_ = gen
-		after := tail[gn:]
-		k := 0
-		for k < len(after) && isPDFSpace(after[k]) {
-			k++
+	if pdfIsIndirectRef(rest[n:]) {
+		off, found := objects[num]
+		if !found {
+			return 0, fmt.Errorf("%w: stream at offset %d has /Length %d 0 R and object %d is not in the file",
+				ErrSanitizeMalformedInput, kw, num, num)
 		}
-		if k < len(after) && after[k] == 'R' {
-			off, found := objects[num]
-			if !found {
-				return 0, fmt.Errorf("%w: stream at offset %d has /Length %d 0 R and object %d is not in the file",
-					ErrSanitizeMalformedInput, kw, num, num)
-			}
-			v, _, ok := pdfReadInt(b[off:])
-			if !ok {
-				return 0, fmt.Errorf("%w: stream at offset %d resolves /Length to object %d, which is not an integer",
-					ErrSanitizeMalformedInput, kw, num)
-			}
-			return v, nil
+		v, _, ok := pdfReadInt(b[off:])
+		if !ok {
+			return 0, fmt.Errorf("%w: stream at offset %d resolves /Length to object %d, which is not an integer",
+				ErrSanitizeMalformedInput, kw, num)
 		}
+		return v, nil
 	}
 	return num, nil
 }

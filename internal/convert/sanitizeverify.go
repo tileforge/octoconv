@@ -452,8 +452,14 @@ func pdfNonStreamBytes(raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("%w: stream at offset %d declares a length that runs past the end of the file",
 				ErrSanitizeUnverifiable, kw)
 		}
+		// verifierIsSpace, not a hand-listed subset. PDF's whitespace set
+		// (ISO 32000-1 Table 1) also includes form feed and NUL, and the
+		// sanitizer's pdfEndstreamFollows already accepted them -- so a valid
+		// "\f\nendstream" was rejected HERE and accepted THERE. Two
+		// independent walkers are supposed to disagree about verdicts, not
+		// about what a space is. Found by review on PR #14.
 		k := start + n
-		for k < len(out) && (out[k] == ' ' || out[k] == '\n' || out[k] == '\r' || out[k] == '\t') {
+		for k < len(out) && verifierIsSpace(out[k]) {
 			k++
 		}
 		if !bytes.HasPrefix(out[k:], []byte("endstream")) {
@@ -470,7 +476,17 @@ func pdfNonStreamBytes(raw []byte) ([]byte, error) {
 // verifierObjectOffsets indexes object headers for indirect-length resolution.
 // Deliberately a second implementation of the same index sanitizepdf.go builds;
 // see this file's header for why the two walkers are not shared.
+//
+// STREAM PAYLOADS ARE EXCLUDED. The first version scanned the whole file, so a
+// payload containing "7 0 obj\n5" overwrote the real object 7's offset and a
+// later "/Length 7 0 R" resolved from attacker-controlled bytes. Found by review
+// on PR #14 in the sanitizer's copy, and named there as repeated here -- which
+// it was. Two independent implementations of one rule share its bugs when the
+// bug is in the rule, and that is worth writing down rather than quietly fixing
+// twice.
 func verifierObjectOffsets(b []byte) map[int]int {
+	skip := verifierDirectLengthPayloads(b)
+
 	offsets := make(map[int]int)
 	for i := 0; ; {
 		j := bytes.Index(b[i:], []byte(" obj"))
@@ -478,6 +494,10 @@ func verifierObjectOffsets(b []byte) map[int]int {
 			return offsets
 		}
 		at := i + j
+		if verifierInAnyRange(skip, at) {
+			i = at + 4
+			continue
+		}
 		k := at
 		for k > 0 && verifierIsSpace(b[k-1]) {
 			k--
@@ -515,6 +535,97 @@ func verifierObjectOffsets(b []byte) map[int]int {
 		}
 		i = at + 4
 	}
+}
+
+func verifierInAnyRange(ranges [][2]int, i int) bool {
+	for _, r := range ranges {
+		if i >= r[0] && i < r[1] {
+			return true
+		}
+	}
+	return false
+}
+
+// verifierDirectLengthPayloads returns the payload ranges of every stream whose
+// /Length is a direct integer, so the object index can skip them. Partial and
+// silent about failure on purpose: it is the "do not read structure out of
+// this" hint that lets the authoritative walk exist, and anything it cannot
+// resolve is simply not skipped.
+func verifierDirectLengthPayloads(b []byte) [][2]int {
+	var out [][2]int
+	for i := 0; ; {
+		j := bytes.Index(b[i:], []byte("stream"))
+		if j < 0 {
+			return out
+		}
+		kw := i + j
+		dict, ok := verifierDictClosesBefore(b, kw)
+		if !ok {
+			i = kw + 1
+			continue
+		}
+		start := kw + len("stream")
+		if start < len(b) && b[start] == '\r' {
+			start++
+		}
+		if start < len(b) && b[start] == '\n' {
+			start++
+		}
+
+		d := b[dict:kw]
+		at := -1
+		depth := 0
+		for x := 0; x+1 < len(d); x++ {
+			if d[x] == '<' && d[x+1] == '<' {
+				depth++
+				x++
+				continue
+			}
+			if d[x] == '>' && d[x+1] == '>' {
+				depth--
+				x++
+				continue
+			}
+			if depth == 1 && bytes.HasPrefix(d[x:], []byte("/Length")) && verifierNameEnds(d, x+len("/Length")) {
+				at = x
+				break
+			}
+		}
+		if at < 0 {
+			i = kw + len("stream")
+			continue
+		}
+		rest := d[at+len("/Length"):]
+		n, consumed, ok := verifierReadInt(rest)
+		if !ok || verifierIsIndirectRef(rest[consumed:]) || start+n > len(b) {
+			i = kw + len("stream")
+			continue
+		}
+		k := start + n
+		for k < len(b) && verifierIsSpace(b[k]) {
+			k++
+		}
+		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
+			i = kw + len("stream")
+			continue
+		}
+		out = append(out, [2]int{start, start + n})
+		i = start + n
+	}
+}
+
+// verifierIsIndirectRef reports whether what follows an integer is "G R".
+func verifierIsIndirectRef(after []byte) bool {
+	_, gn, ok := verifierReadInt(after)
+	if !ok {
+		return false
+	}
+	rest := after[gn:]
+	k := 0
+	for k < len(rest) && verifierIsSpace(rest[k]) {
+		k++
+	}
+	return k < len(rest) && rest[k] == 'R'
 }
 
 func verifierIsSpace(c byte) bool {
@@ -584,26 +695,18 @@ func verifierStreamLength(b []byte, dict, kw int, objects map[int]int) (int, err
 		return 0, fmt.Errorf("%w: stream at offset %d has a /Length that is not a number",
 			ErrSanitizeUnverifiable, kw)
 	}
-	tail := rest[n:]
-	if _, gn, ok := verifierReadInt(tail); ok {
-		after := tail[gn:]
-		k := 0
-		for k < len(after) && verifierIsSpace(after[k]) {
-			k++
+	if verifierIsIndirectRef(rest[n:]) {
+		off, found := objects[num]
+		if !found {
+			return 0, fmt.Errorf("%w: stream at offset %d refers its /Length to object %d, which is not in the file",
+				ErrSanitizeUnverifiable, kw, num)
 		}
-		if k < len(after) && after[k] == 'R' {
-			off, found := objects[num]
-			if !found {
-				return 0, fmt.Errorf("%w: stream at offset %d refers its /Length to object %d, which is not in the file",
-					ErrSanitizeUnverifiable, kw, num)
-			}
-			v, _, ok := verifierReadInt(b[off:])
-			if !ok {
-				return 0, fmt.Errorf("%w: stream at offset %d resolves its /Length to object %d, which is not an integer",
-					ErrSanitizeUnverifiable, kw, num)
-			}
-			return v, nil
+		v, _, ok := verifierReadInt(b[off:])
+		if !ok {
+			return 0, fmt.Errorf("%w: stream at offset %d resolves its /Length to object %d, which is not an integer",
+				ErrSanitizeUnverifiable, kw, num)
 		}
+		return v, nil
 	}
 	return num, nil
 }
@@ -692,8 +795,34 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 	if bytes.Contains(contentTypes, []byte(`PartName="/`+part+`"`)) {
 		return true
 	}
-	if i := strings.LastIndexByte(part, '.'); i >= 0 {
-		return bytes.Contains(contentTypes, []byte(`Extension="`+part[i+1:]+`"`))
+	i := strings.LastIndexByte(part, '.')
+	if i < 0 {
+		return false
+	}
+	// ASCII-case-insensitive, because OPC extension matching is (ECMA-376
+	// Part 2 §9.1.2.3) and rewriteContentTypes preserves whatever
+	// capitalization the input used. A lowercase-only search rejected a valid
+	// package that wrote `Extension="XML"` -- and a rejection here DELETES the
+	// output, so being too strict costs a client a file exactly as surely as
+	// being too loose lets one through. Found by review on PR #14.
+	want := strings.ToLower(part[i+1:])
+	for _, attr := range []string{`Extension="`, `Extension='`} {
+		for at := 0; ; {
+			j := bytes.Index(contentTypes[at:], []byte(attr))
+			if j < 0 {
+				break
+			}
+			valStart := at + j + len(attr)
+			quote := attr[len(attr)-1]
+			valEnd := bytes.IndexByte(contentTypes[valStart:], quote)
+			if valEnd < 0 {
+				break
+			}
+			if strings.EqualFold(string(contentTypes[valStart:valStart+valEnd]), want) {
+				return true
+			}
+			at = valStart + valEnd
+		}
 	}
 	return false
 }
