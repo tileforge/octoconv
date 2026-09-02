@@ -229,6 +229,19 @@ still stands for this tree.
 `yq -e '.'` parses
 `docs/openapi.yaml` and `docker-compose.yml`.
 
-Live cold-install gate on OrbStack Kubernetes: four runs, evidence above.
+Live cold-install gate on OrbStack Kubernetes: five runs, evidence above --
+the last one (`evidence/sc1-final-after-round2.txt`) taken after both review
+rounds, api and worker at `restartCount 0`, 25s to Ready, with a
+`Readiness probe failed` event for postgres in the same run so the race was
+live rather than absorbed.
+
+One earlier attempt at these two gates was invalidated by the environment, not
+by the code: running the k8s cold install and the compose-backed live suite
+concurrently wedged the OrbStack daemon, and six packages "failed" at exactly
+480s because Postgres and Redis had become unreachable mid-run. `orbctl stop` +
+`start` reported success without restoring it. Both gates were re-run serially
+once the daemon came back. A wall of identical-duration timeouts is a fact about
+the machine, not about the code, and is worth checking `docker ps` before
+believing.
 
 Local only — no GitHub Actions run.
