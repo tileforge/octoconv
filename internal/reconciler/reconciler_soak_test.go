@@ -261,9 +261,32 @@ func TestSoakStaleRecoveryCountsUsageExactlyOnce(t *testing.T) {
 	if j.Status != jobs.StatusQueued {
 		t.Fatalf("status after sweep = %q, want %q (recovered)", j.Status, jobs.StatusQueued)
 	}
-	imageCalls := enq.imageCallIDs()
-	if len(imageCalls) != 1 || imageCalls[0] != jobID {
-		t.Fatalf("imageCalls = %+v, want exactly one enqueue for job %s", imageCalls, jobID)
+	// COUNTED FOR THIS JOB, not for the table.
+	//
+	// The assertion used to be len(imageCalls) == 1. Sweeper.sweep() reaches
+	// every stale job through jobs.Repo.FindStale, which takes no client
+	// scope and sweeps the WHOLE jobs table -- so any in-flight job another
+	// package left behind was swept too and the count included it. `go test
+	// ./...` runs packages in parallel against one database, so this failed
+	// intermittently and depended on which packages happened to overlap:
+	// observed once in phase 61 with one foreign job, once in phase 60 with
+	// two.
+	//
+	// The table-wide sweep is CORRECT -- the reconciler is supposed to
+	// recover every stranded job, not one client's -- so the test's
+	// assumption was the thing that was wrong, not the code under test. What
+	// this test is actually about is exactly-once for the job it created,
+	// and that is now what it says.
+	var own []uuid.UUID
+	for _, id := range enq.imageCallIDs() {
+		if id == jobID {
+			own = append(own, id)
+		}
+	}
+	if len(own) != 1 {
+		t.Fatalf("job %s was enqueued %d times, want exactly 1 (all image enqueues this "+
+			"sweep: %+v -- entries for other jobs are other packages sharing this database "+
+			"and are not this test's business)", jobID, len(own), enq.imageCallIDs())
 	}
 
 	// Step 3: the ORIGINAL zombie worker, unaware it was recovered, tries to

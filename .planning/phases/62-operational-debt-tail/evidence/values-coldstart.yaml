@@ -1,0 +1,21 @@
+# Cold-install proof overlay (Phase 62, DEBT-12 SC1).
+#
+# Everything except api and its postgres/redis/minio dependencies is scaled to
+# zero. The point of the run is the START-ORDER RACE between api and postgres on
+# a namespace that has never existed, not throughput -- and the other nine
+# workers would each need their own :dev image built to reach Ready, which
+# proves nothing extra about the race.
+worker: {replicas: 0}
+documentWorker: {replicas: 0}
+audioWorker: {replicas: 0}
+avWorker: {replicas: 0}
+ocrWorker: {replicas: 0}
+pandocWorker: {replicas: 0}
+chromiumWorker: {replicas: 0}
+probeWorker: {replicas: 0}
+webhookWorker: {replicas: 0}
+mcpHttp: {enabled: false}
+asynqmon: {enabled: false}
+prometheus: {enabled: false}
+keda: {enabled: false}
+e2e: {enabled: false}

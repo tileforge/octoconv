@@ -171,3 +171,161 @@ reaching this path alone (T-54-02).
 {{- define "octoconv.kedaFallbackReplicas" -}}
 {{- max 1 (int (include "octoconv.kedaMinReplicaCount" .)) -}}
 {{- end }}
+
+{{/*
+octoconv.s3Scheme — renders "http" or "https" from s3.useSSL.
+
+Any container that reaches MinIO through `mc` must use the SAME transport the
+application will use. `s3.useSSL` is an existing public chart value; a probe
+hardcoded to http:// against a TLS-only endpoint can never succeed, and a probe
+that can never succeed in an initContainer is worse than no probe at all --
+every application pod sits in Init forever instead of starting.
+
+WHY THIS IS A HELM TEMPLATE AND NOT A SHELL SNIPPET. The first two versions of
+this were POSIX sh reimplementations of internal/envcfg.ParseBool, and review
+found a divergence in each: the first squeezed out ALL whitespace rather than
+trimming the ends, so "t r u e" became `true` in the shell while Go rejected it.
+Widening the differential table then exposed two more (embedded newlines, U+0085
+NEL) and a locale dependency in `[[:space:]]` that made the test's verdict
+differ between macOS and the container. A parser that must agree with another
+parser byte-for-byte is a losing shape; the fix is to stop having two.
+
+`trim` here is sprig's, which IS strings.TrimSpace -- the same function
+ParseBool calls -- and `splitList "#" | first` is the same leading-segment cut
+as ParseBool's IndexByte('#'). Same language, same runtime, same functions, so
+there is nothing left to diverge.
+
+An unrecognized value fails at `helm template` rather than in a pod. That is a
+narrowing of what the chart accepts, deliberately: storage.New refuses to start
+on the same input, so the only thing the old behaviour bought was discovering it
+one layer later and less clearly. The chart already fails renders this way for
+keda.*.minReplicaCount.
+
+NOTE the one seam: this is decided at render time from .Values.s3.useSSL, while
+the application reads S3_USE_SSL from the ConfigMap at runtime. A per-Deployment
+extraEnv override of S3_USE_SSL would separate them again, so
+scripts/ci-helm-checks.sh forbids exactly that.
+*/}}
+{{- define "octoconv.s3Scheme" -}}
+{{- $raw := trim (first (splitList "#" (toString .Values.s3.useSSL))) -}}
+{{- if eq $raw "true" -}}
+https
+{{- else if or (eq $raw "false") (eq $raw "") -}}
+http
+{{- else -}}
+{{- fail (printf "s3.useSSL: unrecognized value %#v -- internal/envcfg.ParseBool accepts exactly \"true\" or \"false\" (optionally followed by a # comment, optionally surrounded by whitespace), and storage.New refuses to start on anything else, so a pod built from this render could never come up" .Values.s3.useSSL) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+octoconv.waitForDeps — initContainers that block until the two startup
+dependencies every octoconv binary treats as FATAL are actually there.
+
+WHY AN INIT CONTAINER AND NOT A RETRY IN THE BINARY. Every Go entrypoint in
+this project treats a startup dependency failure as fatal, and that convention
+is worth keeping: "fatal means fatal" is what makes a non-zero restartCount a
+signal rather than noise. A bounded retry inside main() would weaken it in ten
+binaries to solve an ordering problem that belongs to the orchestrator.
+
+WHAT IT FIXES. A fresh `helm upgrade --install` brings pods up before their
+dependencies answer; each one exits(1), kubelet restarts it, and the pod reaches
+restartCount 2-3 before it is ever Ready. That is not free: it pays
+CrashLoopBackOff's exponential delay on every cold install, and it burns the
+metric this project's own live gates read as ground truth. A restartCount that
+is routinely 2-3 for benign reasons is one nobody will trust at 4.
+
+TWO WAITS, NOT ONE -- and the second is the one the reported symptom hid.
+The todo named postgres, and a postgres-only wait was written, installed on a
+cold namespace, and STILL came up at restartCount 2. The initContainer had done
+its job perfectly (its log shows three "waiting for postgres..." lines then
+"postgres is accepting connections"); the remaining two restarts were:
+
+  storage: check bucket "octoconv": Get "http://minio...:9000/octoconv/?location=":
+  dial tcp 192.168.194.228:9000: connect: connection refused
+
+MinIO is a second fatal startup dependency of every binary here (storage.New
+fails closed on both an unreachable MinIO *and* an absent bucket), and the
+bucket is created by the `octoconv-createbucket` post-install HOOK -- which by
+construction cannot have run when the main-release pods first start. So on a
+cold install the api was guaranteed to crash at least once no matter how
+healthy postgres was. Waiting on `mc ls local/$S3_BUCKET` covers both halves:
+it cannot succeed until MinIO answers AND the bucket exists.
+
+Redis is deliberately NOT waited on: neither asynq.NewClient nor
+redis.NewClient dials at construction, so an unready Redis is not a startup
+fatal for any entrypoint here. Waiting on it would add delay to buy nothing.
+
+THIS REQUIRES THAT THE CHART IS NEVER INSTALLED WITH `--wait`. With --wait,
+helm would block on api becoming Ready, api blocks on the bucket, and the
+post-install hook that creates the bucket has not run yet -- a deadlock. Every
+octoconv install in scripts/ is already deliberately async ("WITHOUT --wait",
+their own words) and scripts/ci-helm-checks.sh now enforces that mechanically,
+because this is a trap that would otherwise be found once, at 5 minutes of
+timeout, by whoever adds the flag.
+
+Both images are ones the chart already deploys (postgres for pg_isready, the
+pinned mc image the createbucket Job already uses), so this adds no new
+supply-chain surface.
+
+APPLIED TO EVERY POD THAT NEEDS THEM, not just api. All ten entrypoints have
+the same log.Fatalf shape; fixing the one that was reported and leaving nine
+identical instances is the defect pattern the previous milestone spent eight
+review rounds learning to stop repeating.
+*/}}
+{{- define "octoconv.waitForDeps" -}}
+initContainers:
+  - name: wait-for-postgres
+    image: {{ .Values.postgres.image | quote }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Host and user travel as ENV, never as text spliced into the shell
+    # program. A chart value interpolated into `sh -c` is a value that can
+    # inject: `postgres.user: "app;false"` is a legal PostgreSQL role name and
+    # a legal URI userinfo, and as program text it would make the `until`
+    # condition never succeed -- leaving every application pod in Init forever
+    # while Postgres sits there perfectly healthy. Values are operator-supplied
+    # here, so this is a contract-narrowing bug rather than an attack path, but
+    # the chart should not silently acquire a "no shell metacharacters" rule on
+    # a value that never had one. Found by review on this PR.
+    env:
+      - name: PGHOST
+        value: {{ printf "postgres.%s.svc.cluster.local" .Values.global.namespace | quote }}
+      - name: PGUSER
+        value: {{ .Values.postgres.user | quote }}
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h "$PGHOST" -p 5432 -U "$PGUSER" >/dev/null 2>&1; do
+          echo "waiting for postgres..."
+          sleep 2
+        done
+        echo "postgres is accepting connections"
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+  - name: wait-for-bucket
+    image: {{ .Values.minio.mcImage | quote }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        # Succeeds only once MinIO answers AND the bucket exists -- the two
+        # halves of the storage.New precondition, in one probe. S3_ENDPOINT and
+        # S3_BUCKET come from the same ConfigMap the app container reads, and
+        # the scheme is rendered from the same s3.useSSL that fills S3_USE_SSL
+        # in it, so this can never wait on a different endpoint, or a different
+        # transport, than the one that will then be dialled.
+        until mc alias set local "{{ include "octoconv.s3Scheme" . }}://$S3_ENDPOINT" "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 \
+          && mc ls "local/$S3_BUCKET" >/dev/null 2>&1; do
+          echo "waiting for bucket $S3_BUCKET on $S3_ENDPOINT..."
+          sleep 2
+        done
+        echo "bucket $S3_BUCKET exists"
+    {{- include "octoconv.commonEnv" . | nindent 4 }}
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "64Mi"
+{{- end }}

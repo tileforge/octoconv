@@ -1,11 +1,15 @@
 ---
 id: SEED-020
-status: dormant
+status: implemented
 planted: 2026-08-03
 planted_during: post-Phase-51 (reconciling the Notion architecture review against the code)
 trigger_when: opens v1.13, immediately after v1.12 ships — this is scheduled work, not a speculative idea
 scope: Large
 ---
+
+> **Harvested in v1.13 Phase 56** (JobRunner consolidation & structured error codes).
+> Status corrected 2026-09-02: it had stayed `dormant` through the milestone that
+> implemented it.
 
 # SEED-020: Consolidate the seven engine handlers behind a common JobRunner
 

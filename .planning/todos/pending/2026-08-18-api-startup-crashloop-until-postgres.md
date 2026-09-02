@@ -6,6 +6,7 @@ files:
   - cmd/api/main.go (log.Fatalf on startup dependency failures)
   - deploy/chart/octoconv/templates/deployment-api.yaml (no initContainer / startupProbe gating on postgres)
 origin: observed while running the phase 58 INSP-06 live gate, 2026-08-18
+resolves_phase: 62
 ---
 
 ## Observed, not inferred

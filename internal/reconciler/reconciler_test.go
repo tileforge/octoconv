@@ -1097,3 +1097,53 @@ func TestReconcilerExhaustedCodeMatchesFrozenRegistry(t *testing.T) {
 		t.Fatalf("%q not found in worker.AllFailureCodes()", reconcilerLiteral)
 	}
 }
+
+// TestSweepCountsAreNotAboutOneJob is the regression proof for the assumption
+// TestSoakStaleRecoveryCountsUsageExactlyOnce used to make.
+//
+// Sweeper.sweep reaches every stale job through FindStale, which takes no
+// client scope and sweeps the whole jobs table. That is correct — the
+// reconciler recovers every stranded job, not one client's — so a test that
+// counts TOTAL enqueues is asserting something about the database rather than
+// about its own job. `go test ./...` runs packages in parallel against one
+// database, so that assertion failed intermittently depending on which
+// packages overlapped: once in phase 61 with one foreign job, once in phase 60
+// with two.
+//
+// This pins the property the soak test actually cares about, with a foreign
+// job present on purpose.
+func TestSweepCountsAreNotAboutOneJob(t *testing.T) {
+	own := uuid.New()
+	foreign := uuid.New()
+	store := &fakeStore{
+		stale: []jobs.StaleJob{
+			{ID: foreign, Status: jobs.StatusActive, Engine: "image"},
+			{ID: own, Status: jobs.StatusActive, Engine: "image"},
+		},
+		recoveryCount: map[uuid.UUID]int{own: 0, foreign: 0},
+	}
+	enq := &fakeEnqueuer{}
+	NewSweeper(store, enq, testConfig()).sweep(context.Background())
+
+	all := enq.imageCallIDs()
+	if len(all) != 2 {
+		t.Fatalf("the sweep should have touched both stale jobs; got %+v", all)
+	}
+
+	var mine int
+	for _, id := range all {
+		if id == own {
+			mine++
+		}
+	}
+	if mine != 1 {
+		t.Errorf("own job enqueued %d times, want exactly 1", mine)
+	}
+
+	// And the shape that used to be asserted is shown to be wrong here: a
+	// total count of 1 is simply false in the presence of any other stale job,
+	// which is the normal state of a shared test database.
+	if len(all) == 1 {
+		t.Error("this fixture has two stale jobs; a total-count assertion cannot hold")
+	}
+}

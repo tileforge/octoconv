@@ -1,0 +1,20 @@
+api+worker ready after 25s (api=1 worker=1)
+--- restart counts (app containers) ---
+NAME                        RESTARTS   READY
+api-fffcc47b4-w9q8b         0          true
+minio-79b469cc8f-5q9tl      0          true
+postgres-6784bd96cb-8kbfc   0          true
+redis-b7c7cdf98-txpk8       0          true
+worker-766bd4c9b7-xjvzs     0          true
+--- init container logs, worker pod ---
+[wait-for-postgres]
+waiting for postgres...
+waiting for postgres...
+waiting for postgres...
+waiting for postgres...
+waiting for postgres...
+postgres is accepting connections
+[wait-for-bucket]
+bucket octoconv exists
+--- unhealthy events (proof the deps really were not ready) ---
+16s         Warning   Unhealthy               pod/postgres-6784bd96cb-8kbfc         Readiness probe failed: /var/run/postgresql:5432 - no response

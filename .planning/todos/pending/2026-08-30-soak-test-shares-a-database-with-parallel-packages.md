@@ -2,6 +2,7 @@
 created: 2026-08-30
 area: testing
 severity: low
+resolves_phase: 62
 ---
 
 # The reconciler soak test can be broken by another package's in-flight job

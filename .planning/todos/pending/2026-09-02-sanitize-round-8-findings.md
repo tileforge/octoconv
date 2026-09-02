@@ -2,6 +2,7 @@
 created: 2026-09-02
 area: sanitize
 severity: medium
+resolves_phase: 63
 ---
 
 # Three sanitize findings merged unfixed (PR #12, review round 8)

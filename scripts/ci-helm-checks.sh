@@ -143,6 +143,168 @@ if [ "$CHANGED_COUNT" -ne 4 ]; then
   exit 1
 fi
 echo "OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines"
+echo "### every Deployment that gets the app secret must wait for BOTH startup deps"
+# The class guard, not the instance. All ten Go entrypoints treat a startup
+# dependency failure as fatal, so any pod started before its dependencies answer
+# crash-loops until they do. Fixing the one deployment that was reported and
+# leaving nine identical ones is the shape the previous milestone spent eight
+# review rounds learning to stop repeating -- so this asserts the property for
+# every deployment at once, and a new one cannot be added without it.
+#
+# BOTH waits are required, and the second is the one the reported symptom hid.
+# A postgres-only wait was written, installed on a cold namespace, and the api
+# still came up at restartCount 2 -- because storage.New fails closed on an
+# unreachable MinIO *and* on an absent bucket, and the bucket is created by a
+# post-install HOOK that cannot have run when the main-release pods start. So
+# the guard counts wait-for-postgres AND wait-for-bucket; passing on one of the
+# two is exactly the half-fix the live gate caught.
+#
+# One yq pass emitting "<name> <hasSecretEnv> <hasInitContainer>" per Deployment.
+# The first version ran a yq invocation per deployment inside a shell loop; the
+# per-name expressions errored, the errors went to /dev/null, the counts came
+# back empty, and the guard passed on a deployment with the initContainer
+# REMOVED. Found by inverting it, which is the only reason it is not still
+# silently green.
+TRIPLES=$(yq -e '. | select(.kind=="Deployment") | .metadata.name + " " + (([.spec.template.spec.containers[].envFrom // [] | .[] | select(.secretRef.name != null)] | length) | tostring) + " " + (([.spec.template.spec.initContainers // [] | .[] | select(.name=="wait-for-postgres")] | length) | tostring) + " " + (([.spec.template.spec.initContainers // [] | .[] | select(.name=="wait-for-bucket")] | length) | tostring)' "$DEFAULT_RENDER" | grep -v '^---$')
+
+if [ -z "$TRIPLES" ]; then
+  echo "FAIL: no Deployments parsed out of the render -- this guard would pass vacuously"
+  exit 1
+fi
+
+MISSING=$(echo "$TRIPLES" | awk '$2 > 0 && ($3 == 0 || $4 == 0) { print $1 " (postgres=" $3 " bucket=" $4 ")" }')
+if [ -n "$MISSING" ]; then
+  echo "FAIL: these Deployments receive the app secret (so they will dial postgres"
+  echo "      AND MinIO at startup, both fatal on failure) but are missing one or"
+  echo "      both wait initContainers, so they crash-loop on a cold install:"
+  echo "$MISSING" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: every Deployment carrying the app secret waits for postgres and the bucket ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
+
+echo "### no chart value may be spliced into an initContainer shell program"
+# Regression test for the review finding on PR #13. `postgres.user: "app;false"`
+# is a legal PostgreSQL role name and legal URI userinfo; interpolated into
+# `sh -c` it made the `until` condition literally `false`, so every application
+# pod would sit in Init forever while Postgres was perfectly healthy. Rendering
+# with a hostile value and asserting it does NOT appear in the program text is
+# the only version of this check that cannot pass by inspection.
+HOSTILE_RENDER=$(helm template octoconv "$CHART" $SECRETS_SET --set 'postgres.user=app;false' 2>&1)
+HOSTILE_CMDS=$(echo "$HOSTILE_RENDER" | yq -e '. | select(.kind=="Deployment") | (.spec.template.spec.initContainers // [])[].command[]' 2>/dev/null)
+if [ -z "$HOSTILE_CMDS" ]; then
+  echo "FAIL: no initContainer commands parsed out of the hostile render -- this guard would pass vacuously"
+  exit 1
+fi
+# `grep -c`, not `grep -q`: this script runs under `set -o pipefail`, and
+# `grep -q` exits on its first match, which SIGPIPEs the `echo` feeding it and
+# makes the whole pipeline exit 141. Under `if !` that reads as "no match" --
+# so the -q form failed here on a render that contained eleven matches.
+IN_PROGRAM=$(echo "$HOSTILE_CMDS" | grep -c 'app;false' || true)
+if [ "$IN_PROGRAM" -gt 0 ]; then
+  echo "FAIL: a chart value reached an initContainer shell program as text:"
+  echo "$HOSTILE_CMDS" | grep -n 'app;false' | sed 's/^/        /'
+  echo "      Pass it through env and reference it quoted (\"\$PGUSER\") instead."
+  exit 1
+fi
+IN_ENV=$(echo "$HOSTILE_RENDER" | grep -c 'value: "app;false"' || true)
+if [ "$IN_ENV" -eq 0 ]; then
+  echo "FAIL: the hostile value did not reach the initContainer env either -- the"
+  echo "      guard is testing a render that never used postgres.user at all"
+  exit 1
+fi
+echo "OK: postgres.user reaches the wait initContainer as env, never as program text"
+
+echo "### every mc invocation must use the transport s3.useSSL asks for"
+# Review found the wait-for-bucket initContainer dialling http:// unconditionally
+# while s3.useSSL -- an existing public value -- said otherwise. Against a
+# TLS-only endpoint that probe can never succeed, so every application pod sits
+# in Init forever. The createbucket Job had the same literal and would never
+# create the bucket they are all waiting for, so fixing one and not the other
+# would have left the deadlock intact.
+#
+# This asserts the rendered VALUE, not the shape: a chart that ignored the flag
+# would still contain twelve well-formed `mc alias set` lines.
+# internal/envcfg.TestChartSchemeMatchesParseBool covers the same property
+# against ParseBool's full input table; this is the cheap render-level half that
+# runs with the rest of the chart gate.
+for WANT in http https; do
+  case "$WANT" in
+    http)  SSL=false ;;
+    https) SSL=true ;;
+  esac
+  SCHEMES=$(helm template octoconv "$CHART" $SECRETS_SET --set "s3.useSSL=$SSL" 2>/dev/null \
+    | grep -o 'mc alias set local "https\?://' | sort -u)
+  COUNT=$(helm template octoconv "$CHART" $SECRETS_SET --set "s3.useSSL=$SSL" 2>/dev/null \
+    | grep -c 'mc alias set local' || true)
+  if [ "$COUNT" -eq 0 ]; then
+    echo "FAIL: no 'mc alias set' lines rendered with s3.useSSL=$SSL -- this guard would pass vacuously"
+    exit 1
+  fi
+  if [ "$SCHEMES" != "mc alias set local \"$WANT://" ]; then
+    echo "FAIL: with s3.useSSL=$SSL every mc alias must use $WANT://, got:"
+    echo "$SCHEMES" | sed 's/^/        /'
+    exit 1
+  fi
+  echo "OK: s3.useSSL=$SSL renders $COUNT mc aliases, all $WANT://"
+done
+
+echo "### no extraEnv may override S3_USE_SSL"
+# The scheme is decided at RENDER time from .Values.s3.useSSL, while the
+# application reads S3_USE_SSL from the ConfigMap at RUN time. Those are the
+# same value today. A per-Deployment extraEnv entry for S3_USE_SSL would split
+# them -- the app would dial one transport and its own initContainer would have
+# probed the other -- which is the exact failure this whole guard exists to
+# prevent, reintroduced through a values file instead of a template. Named here
+# because the seam is invisible from either side alone.
+# Only four Deployments render an extraEnv block today (api, document-worker,
+# pandoc-worker, probe-worker). The vacuity check uses one of THOSE, and also
+# asserts the set is still what it was -- if a fifth grows one, the check below
+# already covers it, but this line makes the growth visible rather than silent.
+EXTRAENV_TEMPLATES=$(grep -l 'extraEnv' "$CHART"/templates/deployment-*.yaml | wc -l | tr -d ' ')
+if [ "$EXTRAENV_TEMPLATES" -eq 0 ]; then
+  echo "FAIL: no Deployment template references extraEnv -- the vacuity probe below"
+  echo "      cannot fire, so this guard would pass without testing anything"
+  exit 1
+fi
+BAD_ENV=$(helm template octoconv "$CHART" $SECRETS_SET --set 'api.extraEnv.S3_USE_SSL=true' 2>/dev/null \
+  | grep -c 'name: S3_USE_SSL' || true)
+if [ "$BAD_ENV" -eq 0 ]; then
+  echo "FAIL: setting api.extraEnv.S3_USE_SSL rendered nothing -- this guard cannot"
+  echo "      detect the override it exists to forbid, so it would pass vacuously"
+  exit 1
+fi
+LIVE_ENV=$(yq -e '. | select(.kind=="Deployment") | .metadata.name + " " + (([.spec.template.spec.containers[].env // [] | .[] | select(.name=="S3_USE_SSL")] | length) | tostring)' "$DEFAULT_RENDER" | grep -v '^---$' | awk '$2 > 0 { print $1 }')
+if [ -n "$LIVE_ENV" ]; then
+  echo "FAIL: these Deployments set S3_USE_SSL through extraEnv, which splits the"
+  echo "      transport the app dials from the one its initContainer probed:"
+  echo "$LIVE_ENV" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: no Deployment overrides S3_USE_SSL through extraEnv ($EXTRAENV_TEMPLATES templates accept one)"
+
+echo "### the octoconv chart must never be installed with --wait"
+# The wait-for-bucket initContainer above depends on an install that does NOT
+# block on readiness: the bucket is created by the octoconv-createbucket
+# post-install hook, so `helm install --wait` would block on api becoming Ready,
+# api would block on the bucket, and the hook that creates it would never run.
+# Every install in scripts/ is already deliberately async and says so in its own
+# log line -- this makes that a property of the repo rather than a convention,
+# because the deadlock costs a five-minute timeout to discover.
+# Comment/log/echo lines are stripped: several of these scripts announce
+# "WITHOUT --wait" in their own progress output, and a guard that fires on the
+# sentence describing the rule rather than on a violation of it is noise.
+BADWAIT=$(grep -rn 'helm \(install\|upgrade\)[^|]*octoconv' scripts/ --include='*.sh' \
+  | grep -Ev ':[0-9]+:[[:space:]]*(#|log |echo )' \
+  | grep -- '--wait' || true)
+if [ -n "$BADWAIT" ]; then
+  echo "FAIL: an octoconv chart install uses --wait, which deadlocks against the"
+  echo "      wait-for-bucket initContainer (the bucket is created by a post-install"
+  echo "      hook that --wait would never reach):"
+  echo "$BADWAIT" | sed 's/^/        /'
+  exit 1
+fi
+echo "OK: no octoconv chart install uses --wait"
+
 rm -f "$DEFAULT_RENDER" "$OVERLAY_RENDER"
 
 echo "### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero"

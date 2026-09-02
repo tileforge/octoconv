@@ -41,6 +41,7 @@ spec:
         {{- include "octoconv.selectorLabels" (dict "component" "chromium-worker" "root" $) | nindent 8 }}
         octoconv.io/tier: app
     spec:
+      {{- include "octoconv.waitForDeps" . | nindent 6 }}
       terminationGracePeriodSeconds: {{ .Values.chromiumWorker.terminationGracePeriodSeconds }}
       containers:
         - name: chromium-worker

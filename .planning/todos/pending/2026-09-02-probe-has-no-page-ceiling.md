@@ -2,6 +2,7 @@
 created: 2026-09-02
 area: sanitize
 severity: medium
+resolves_phase: 63
 ---
 
 # The probe engine has no page ceiling, so its timeout is the only bound

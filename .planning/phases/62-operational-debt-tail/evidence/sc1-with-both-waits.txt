@@ -1,0 +1,18 @@
+=== WITH both waits (phase 62 chart, second attempt) ===
+helm install returned at t+17s
+api ready after 22s (readyReplicas=1)
+--- pods ---
+NAME                        READY   RESTARTS   STATUS
+api-784d7db56c-mxz95        true    0          Running
+minio-79b469cc8f-m297q      true    0          Running
+postgres-6784bd96cb-n57zv   true    0          Running
+redis-b7c7cdf98-ndl65       true    0          Running
+--- api restartCount ---
+pod=api-784d7db56c-mxz95
+api restartCount=0
+--- api container waiting/terminated reasons ---
+api lastState={}
+--- events (BackOff/Failed/Unhealthy) ---
+16s         Warning   Unhealthy               pod/minio-79b469cc8f-m297q            Readiness probe failed: Get "http://192.168.194.45:9000/minio/health/ready": dial tcp 192.168.194.45:9000: connect: connection refused
+15s         Warning   Unhealthy               pod/postgres-6784bd96cb-n57zv         Readiness probe failed: /var/run/postgresql:5432 - no response
+=== end WITH both waits (phase 62 chart, second attempt) ===

@@ -2,6 +2,7 @@
 created: 2026-09-01
 area: config
 severity: medium
+resolved: 2026-09-02
 ---
 
 # PROBE_ENGINE_TIMEOUT is a placeholder, not a measurement
@@ -97,3 +98,25 @@ Closing it needs detection to read `[Content_Types].xml`'s main-part override
 rather than the root part's name. That touches the convert path and the pinned
 `pre58_formats` golden, so it is a change with its own blast radius rather
 than a line to add here.
+
+
+---
+
+## RESOLVED 2026-09-02
+
+Measured: `PROBE_ENGINE_TIMEOUT=600s`, derived as
+`ceil(2.0 s/page × 200 pages × 1.5)` from a run in the measurement container at
+2 CPU / 1 GiB against gs 10.00.0. Evidence at
+`.planning/milestones/v1.13-phases/60-sanitize-eighth-engine-class/evidence/probe-timeout-20260902-measured.txt`.
+
+The two companion numbers this item also tracked did NOT close with it:
+
+* the 50 MiB upload ceiling stays reasoned rather than measured — the run
+  recorded wall time, not peak RSS per input size;
+* `PROBE_WORKER_CONCURRENCY=1` likewise.
+
+Neither is urgent: memory was never the binding constraint in the run (84 MiB
+of 1 GiB while pinned at 99.9% of 2 CPUs — this engine is CPU-bound). Recorded
+here rather than reopened, because the finding the measurement DID produce —
+that there is no page ceiling at all — is the one that mattered and became
+PROBE-01/02 in v1.14.
