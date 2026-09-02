@@ -420,35 +420,158 @@ func scanPDFBytes(raw []byte) ([]ThreatClass, error) {
 // but it is a strictly worse one than saying so, and the caller is a verifier
 // whose whole job is to refuse what it cannot confirm.
 func pdfNonStreamBytes(raw []byte) ([]byte, error) {
-	objects := verifierObjectOffsets(raw)
+	// ONE FORWARD PASS, INDEXING AS IT GOES AND NEVER READING A PAYLOAD. See
+	// sanitizepdf.go's pdfStreamRanges for the two earlier attempts this
+	// replaced and why each failed -- the second one CONVERGED, to a range that
+	// was perfectly self-consistent and wrong. What breaks the circle is order:
+	// a stream's /Length is resolved from objects seen before it, and its
+	// payload is then jumped over whole.
+	//
+	// Written independently of the sanitizer's walk, per this file's header,
+	// including the retry for a length object defined after its stream.
+	ranges, unresolved := verifierForwardPass(raw)
+	if unresolved > 0 {
+		var err error
+		ranges, err = verifierStreamPayloads(raw, verifierObjectOffsets(raw, ranges))
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	out := append([]byte(nil), raw...)
+	for _, r := range ranges {
+		for x := r[0]; x < r[1]; x++ {
+			out[x] = ' '
+		}
+	}
+	return out, nil
+}
+
+// verifierForwardPass walks the file once, indexing object headers as it passes
+// them and jumping over every payload it can resolve.
+func verifierForwardPass(b []byte) ([][2]int, int) {
+	objects := make(map[int]int)
+	var out [][2]int
+	unresolved := 0
+
+	i := 0
+	for i < len(b) {
+		objAt := bytes.Index(b[i:], []byte(" obj"))
+		kwAt := bytes.Index(b[i:], []byte("stream"))
+		if objAt < 0 && kwAt < 0 {
+			return out, unresolved
+		}
+		if objAt >= 0 && (kwAt < 0 || objAt < kwAt) {
+			at := i + objAt
+			if num, ok := verifierObjectNumberBefore(b, at); ok {
+				objects[num] = at + 4
+			}
+			i = at + 4
+			continue
+		}
+
+		kw := i + kwAt
+		dictEnd, ok := verifierDictClosesBefore(b, kw)
+		if !ok {
+			i = kw + 1
+			continue
+		}
+		start := kw + len("stream")
+		if start < len(b) && b[start] == '\r' {
+			start++
+		}
+		if start < len(b) && b[start] == '\n' {
+			start++
+		}
+		n, err := verifierStreamLength(b, dictEnd, kw, objects)
+		if err != nil || start+n > len(b) {
+			unresolved++
+			i = kw + len("stream")
+			continue
+		}
+		k := start + n
+		for k < len(b) && verifierIsSpace(b[k]) {
+			k++
+		}
+		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
+			unresolved++
+			i = kw + len("stream")
+			continue
+		}
+		out = append(out, [2]int{start, start + n})
+		i = start + n
+	}
+	return out, unresolved
+}
+
+// verifierObjectNumberBefore reads the "N G" of an "N G obj" header ending at
+// at, and reports the object number.
+func verifierObjectNumberBefore(b []byte, at int) (int, bool) {
+	k := at
+	for k > 0 && verifierIsSpace(b[k-1]) {
+		k--
+	}
+	genEnd := k
+	for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
+		k--
+	}
+	if k == genEnd {
+		return 0, false
+	}
+	for k > 0 && verifierIsSpace(b[k-1]) {
+		k--
+	}
+	numEnd := k
+	for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
+		k--
+	}
+	if k == numEnd {
+		return 0, false
+	}
+	num := 0
+	for _, c := range b[k:numEnd] {
+		num = num*10 + int(c-'0')
+		if num > 1<<30 {
+			return 0, false
+		}
+	}
+	return num, true
+}
+
+// verifierStreamPayloadsTolerant is the same walk as verifierStreamPayloads
+// with every rejection turned into a skip. It exists only to feed the next
+// round's index.
+
+// verifierStreamPayloads returns every stream payload range, using the object
+// index it is given to resolve indirect lengths.
+func verifierStreamPayloads(b []byte, objects map[int]int) ([][2]int, error) {
+	var out [][2]int
 	i := 0
 	for {
-		j := bytes.Index(out[i:], []byte("stream"))
+		j := bytes.Index(b[i:], []byte("stream"))
 		if j < 0 {
 			return out, nil
 		}
 		kw := i + j
-		dictEnd, ok := verifierDictClosesBefore(out, kw)
+		dictEnd, ok := verifierDictClosesBefore(b, kw)
 		if !ok {
 			i = kw + 1
 			continue
 		}
 		start := kw + len("stream")
 		// Skip the EOL that ISO 32000 7.3.8.1 requires after the keyword.
-		if start < len(out) && out[start] == '\r' {
+		if start < len(b) && b[start] == '\r' {
 			start++
 		}
-		if start < len(out) && out[start] == '\n' {
+		if start < len(b) && b[start] == '\n' {
 			start++
 		}
 
-		n, err := verifierStreamLength(out, dictEnd, kw, objects)
+		n, err := verifierStreamLength(b, dictEnd, kw, objects)
 		if err != nil {
 			return nil, err
 		}
-		if start+n > len(out) {
+		if start+n > len(b) {
 			return nil, fmt.Errorf("%w: stream at offset %d declares a length that runs past the end of the file",
 				ErrSanitizeUnverifiable, kw)
 		}
@@ -459,16 +582,14 @@ func pdfNonStreamBytes(raw []byte) ([]byte, error) {
 		// independent walkers are supposed to disagree about verdicts, not
 		// about what a space is. Found by review on PR #14.
 		k := start + n
-		for k < len(out) && verifierIsSpace(out[k]) {
+		for k < len(b) && verifierIsSpace(b[k]) {
 			k++
 		}
-		if !bytes.HasPrefix(out[k:], []byte("endstream")) {
+		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
 			return nil, fmt.Errorf("%w: stream at offset %d declares a length its bytes do not agree with",
 				ErrSanitizeUnverifiable, kw)
 		}
-		for x := start; x < start+n; x++ {
-			out[x] = ' '
-		}
+		out = append(out, [2]int{start, start + n})
 		i = start + n
 	}
 }
@@ -483,10 +604,11 @@ func pdfNonStreamBytes(raw []byte) ([]byte, error) {
 // on PR #14 in the sanitizer's copy, and named there as repeated here -- which
 // it was. Two independent implementations of one rule share its bugs when the
 // bug is in the rule, and that is worth writing down rather than quietly fixing
-// twice.
-func verifierObjectOffsets(b []byte) map[int]int {
-	skip := verifierDirectLengthPayloads(b)
-
+// twice. Round two of the same review then showed that skipping only
+// direct-length payloads still left an indirect-length stream able to poison
+// the object its own length referred to, so the caller now iterates and passes
+// in everything known so far.
+func verifierObjectOffsets(b []byte, skip [][2]int) map[int]int {
 	offsets := make(map[int]int)
 	for i := 0; ; {
 		j := bytes.Index(b[i:], []byte(" obj"))
@@ -498,39 +620,7 @@ func verifierObjectOffsets(b []byte) map[int]int {
 			i = at + 4
 			continue
 		}
-		k := at
-		for k > 0 && verifierIsSpace(b[k-1]) {
-			k--
-		}
-		genEnd := k
-		for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
-			k--
-		}
-		if k == genEnd {
-			i = at + 4
-			continue
-		}
-		for k > 0 && verifierIsSpace(b[k-1]) {
-			k--
-		}
-		numEnd := k
-		for k > 0 && b[k-1] >= '0' && b[k-1] <= '9' {
-			k--
-		}
-		if k == numEnd {
-			i = at + 4
-			continue
-		}
-		num := 0
-		bad := false
-		for _, c := range b[k:numEnd] {
-			num = num*10 + int(c-'0')
-			if num > 1<<30 {
-				bad = true
-				break
-			}
-		}
-		if !bad {
+		if num, ok := verifierObjectNumberBefore(b, at); ok {
 			offsets[num] = at + 4
 		}
 		i = at + 4
@@ -544,74 +634,6 @@ func verifierInAnyRange(ranges [][2]int, i int) bool {
 		}
 	}
 	return false
-}
-
-// verifierDirectLengthPayloads returns the payload ranges of every stream whose
-// /Length is a direct integer, so the object index can skip them. Partial and
-// silent about failure on purpose: it is the "do not read structure out of
-// this" hint that lets the authoritative walk exist, and anything it cannot
-// resolve is simply not skipped.
-func verifierDirectLengthPayloads(b []byte) [][2]int {
-	var out [][2]int
-	for i := 0; ; {
-		j := bytes.Index(b[i:], []byte("stream"))
-		if j < 0 {
-			return out
-		}
-		kw := i + j
-		dict, ok := verifierDictClosesBefore(b, kw)
-		if !ok {
-			i = kw + 1
-			continue
-		}
-		start := kw + len("stream")
-		if start < len(b) && b[start] == '\r' {
-			start++
-		}
-		if start < len(b) && b[start] == '\n' {
-			start++
-		}
-
-		d := b[dict:kw]
-		at := -1
-		depth := 0
-		for x := 0; x+1 < len(d); x++ {
-			if d[x] == '<' && d[x+1] == '<' {
-				depth++
-				x++
-				continue
-			}
-			if d[x] == '>' && d[x+1] == '>' {
-				depth--
-				x++
-				continue
-			}
-			if depth == 1 && bytes.HasPrefix(d[x:], []byte("/Length")) && verifierNameEnds(d, x+len("/Length")) {
-				at = x
-				break
-			}
-		}
-		if at < 0 {
-			i = kw + len("stream")
-			continue
-		}
-		rest := d[at+len("/Length"):]
-		n, consumed, ok := verifierReadInt(rest)
-		if !ok || verifierIsIndirectRef(rest[consumed:]) || start+n > len(b) {
-			i = kw + len("stream")
-			continue
-		}
-		k := start + n
-		for k < len(b) && verifierIsSpace(b[k]) {
-			k++
-		}
-		if !bytes.HasPrefix(b[k:], []byte("endstream")) {
-			i = kw + len("stream")
-			continue
-		}
-		out = append(out, [2]int{start, start + n})
-		i = start + n
-	}
 }
 
 // verifierIsIndirectRef reports whether what follows an integer is "G R".
@@ -636,10 +658,7 @@ func verifierIsSpace(c byte) bool {
 // dictionary that ends immediately before kw. Its absence is what tells this
 // walker that the "stream" it found is the tail of an "endstream".
 func verifierDictClosesBefore(b []byte, kw int) (int, bool) {
-	i := kw
-	for i > 0 && verifierIsSpace(b[i-1]) {
-		i--
-	}
+	i := verifierSkipBackTrivia(b, kw)
 	if i < 2 || b[i-1] != '>' || b[i-2] != '>' {
 		return 0, false
 	}
@@ -660,6 +679,29 @@ func verifierDictClosesBefore(b []byte, kw int) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// verifierSkipBackTrivia walks backwards over whitespace and comments. A
+// comment may appear anywhere whitespace may (ISO 32000-1 7.2.4), so
+// ">> %comment\nstream" is a valid stream header, and skipping only whitespace
+// made this walker miss such a stream entirely -- reading its payload as file
+// structure. Found by review on PR #14.
+func verifierSkipBackTrivia(b []byte, at int) int {
+	i := at
+	for {
+		for i > 0 && verifierIsSpace(b[i-1]) {
+			i--
+		}
+		lineStart := i
+		for lineStart > 0 && b[lineStart-1] != '\n' && b[lineStart-1] != '\r' {
+			lineStart--
+		}
+		pct := bytes.IndexByte(b[lineStart:i], '%')
+		if pct < 0 {
+			return i
+		}
+		i = lineStart + pct
+	}
 }
 
 // verifierStreamLength reads /Length from the dictionary spanning [dict, kw),
@@ -792,39 +834,62 @@ func contentTypeDeclares(contentTypes []byte, part string) bool {
 	if len(contentTypes) == 0 {
 		return false
 	}
-	if bytes.Contains(contentTypes, []byte(`PartName="/`+part+`"`)) {
-		return true
+
+	dec := xml.NewDecoder(bytes.NewReader(contentTypes))
+	ext := ""
+	if i := strings.LastIndexByte(part, '.'); i >= 0 {
+		ext = strings.ToLower(part[i+1:])
 	}
-	i := strings.LastIndexByte(part, '.')
-	if i < 0 {
-		return false
-	}
-	// ASCII-case-insensitive, because OPC extension matching is (ECMA-376
-	// Part 2 §9.1.2.3) and rewriteContentTypes preserves whatever
-	// capitalization the input used. A lowercase-only search rejected a valid
-	// package that wrote `Extension="XML"` -- and a rejection here DELETES the
-	// output, so being too strict costs a client a file exactly as surely as
-	// being too loose lets one through. Found by review on PR #14.
-	want := strings.ToLower(part[i+1:])
-	for _, attr := range []string{`Extension="`, `Extension='`} {
-		for at := 0; ; {
-			j := bytes.Index(contentTypes[at:], []byte(attr))
-			if j < 0 {
-				break
+
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		el, ok := tok.(xml.StartElement)
+		if !ok {
+			continue
+		}
+
+		var partName, extension, contentType string
+		for _, a := range el.Attr {
+			switch a.Name.Local {
+			case "PartName":
+				partName = a.Value
+			case "Extension":
+				extension = a.Value
+			case "ContentType":
+				contentType = a.Value
 			}
-			valStart := at + j + len(attr)
-			quote := attr[len(attr)-1]
-			valEnd := bytes.IndexByte(contentTypes[valStart:], quote)
-			if valEnd < 0 {
-				break
-			}
-			if strings.EqualFold(string(contentTypes[valStart:valStart+valEnd]), want) {
+		}
+		// An EMPTY ContentType is not a declaration. rewriteContentTypes
+		// preserves whatever the input had, so `ContentType=""` -- or the
+		// attribute missing entirely -- survived into the output, and a
+		// substring match on PartName read it as declared. The package then
+		// passed verification and was delivered with a main part nothing
+		// describes, which Office will not open: exactly the invalid output
+		// this check exists to reject. Found by review on PR #14.
+		if strings.TrimSpace(contentType) == "" {
+			continue
+		}
+
+		switch el.Name.Local {
+		case "Override":
+			if partName == "/"+part {
 				return true
 			}
-			at = valStart + valEnd
+		case "Default":
+			// ASCII-case-insensitive, because OPC extension matching is
+			// (ECMA-376 Part 2 §9.1.2.3) and rewriteContentTypes preserves
+			// the input's capitalization. A lowercase-only search rejected a
+			// valid package that wrote Extension="XML" -- and a rejection here
+			// DELETES the output, so being too strict costs a client a file
+			// exactly as surely as being too loose lets one through.
+			if ext != "" && strings.EqualFold(extension, ext) {
+				return true
+			}
 		}
 	}
-	return false
 }
 
 // TOOL CHOICE FOR OOXML, AND THE MEASUREMENT THAT DECIDED IT

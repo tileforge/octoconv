@@ -346,8 +346,110 @@ var (
 // scan. A silent fallback would put the defect back exactly where it was and
 // hide it behind a passing test (D-07 fail-closed).
 func pdfStreamRanges(b []byte) ([][2]int, error) {
-	objects := pdfObjectOffsets(b)
+	// ONE FORWARD PASS, INDEXING AS IT GOES AND NEVER READING A PAYLOAD.
+	//
+	// The index must exclude stream payloads, and finding the payloads needs
+	// the index -- for indirect lengths. Two earlier attempts broke that circle
+	// badly enough to be worth recording, because both looked right:
+	//
+	//   1. Exclude only DIRECT-length payloads when building the index. Review
+	//      built an indirect-length stream whose payload carried an aligned
+	//      "endstream" and a decoy naming the very object its own length
+	//      referred to, and it still poisoned the index.
+	//   2. Iterate to a fixed point, rebuilding the index from every payload
+	//      found so far. It converges -- and converges to the LIE: with the
+	//      decoy sitting outside the short poisoned range, that range is
+	//      perfectly self-consistent and never moves again. A fixed point is
+	//      only as good as the thing it is a fixed point of.
+	//
+	// What actually breaks the circle is ORDER. A stream's /Length is resolved
+	// using only the objects seen BEFORE it, and its payload is then jumped
+	// over whole, so no byte inside a payload is ever read as an object header.
+	// A decoy cannot poison a lookup that happened before the decoy was
+	// reached, and cannot be reached at all once its payload is skipped.
+	//
+	// The one case order cannot serve is a length object defined AFTER the
+	// stream that refers to it. Those are collected and retried in a second
+	// pass over an index built from the first pass's ranges, and the retry
+	// still refuses anything that does not check out.
+	//
+	// THE RESIDUAL, STATED RATHER THAN CLAIMED CLOSED. The retry's index
+	// excludes every payload the forward pass RESOLVED. A decoy can therefore
+	// still be read if it sits inside a stream that itself failed to resolve --
+	// two crafted streams, one deliberately broken. Every version of that this
+	// author could construct ends in an error rather than a short range,
+	// because the decoy's value has to coincide with an "endstream" inside the
+	// other stream's payload to produce one. It is not proven impossible, only
+	// unconstructed, and the file being walked here is Ghostscript's own output
+	// rather than the client's upload.
+	//
+	// A note on the forward JUMP specifically: it is the primary mechanism, but
+	// it is not independently observable, because the retry recomputes the
+	// index from the resolved ranges and repairs what a non-jumping pass would
+	// have gotten wrong. Inverting it alone therefore fails no test. Recorded
+	// instead of dressed up as proven -- an inversion that does not fire is not
+	// evidence, and neither is a comment claiming it would.
+	ranges, unresolved := pdfForwardPass(b)
+	if unresolved == 0 {
+		return ranges, nil
+	}
+	return pdfStreamRangesWith(b, pdfObjectOffsets(b, ranges))
+}
 
+// pdfForwardPass walks the file once, left to right, indexing object headers as
+// it passes them and jumping over every payload it can resolve. It returns the
+// ranges it resolved and how many streams it could not.
+func pdfForwardPass(b []byte) ([][2]int, int) {
+	objects := make(map[int]int)
+	var out [][2]int
+	unresolved := 0
+
+	i := 0
+	for i < len(b) {
+		objAt := bytes.Index(b[i:], []byte(" obj"))
+		kwAt := bytes.Index(b[i:], []byte("stream"))
+		if objAt < 0 && kwAt < 0 {
+			return out, unresolved
+		}
+		// Whichever comes first, so the index is always current for the stream
+		// being resolved.
+		if objAt >= 0 && (kwAt < 0 || objAt < kwAt) {
+			at := i + objAt
+			if gen, ok := pdfIntBefore(b, at); ok {
+				if num, ok2 := pdfIntBefore(b, gen.start); ok2 {
+					objects[num.value] = at + len(" obj")
+				}
+			}
+			i = at + len(" obj")
+			continue
+		}
+
+		kw := i + kwAt
+		dict, ok := pdfDictBefore(b, kw)
+		if !ok {
+			i = kw + 1
+			continue
+		}
+		start := kw + len("stream")
+		if start < len(b) && b[start] == '\r' {
+			start++
+		}
+		if start < len(b) && b[start] == '\n' {
+			start++
+		}
+		length, err := pdfLengthAt(b, dict, kw, objects)
+		if err != nil || start+length > len(b) || !pdfEndstreamFollows(b, start+length) {
+			unresolved++
+			i = kw + len("stream")
+			continue
+		}
+		out = append(out, [2]int{start, start + length})
+		i = start + length
+	}
+	return out, unresolved
+}
+
+func pdfStreamRangesWith(b []byte, objects map[int]int) ([][2]int, error) {
 	var out [][2]int
 	i := 0
 	for {
@@ -395,7 +497,7 @@ func pdfStreamRanges(b []byte) ([][2]int, error) {
 // resolved. It is an index, not a parser: it records where each object starts
 // and nothing about what is in it.
 //
-// STREAM PAYLOADS ARE EXCLUDED, WHICH IS THE WHOLE REASON THIS IS TWO PASSES.
+// STREAM PAYLOADS ARE EXCLUDED, WHICH IS WHY IT TAKES THEM AS AN ARGUMENT.
 //
 // The first version scanned the entire file for " obj". A stream payload is
 // arbitrary bytes, so a payload containing "7 0 obj\n5" overwrote the real
@@ -406,15 +508,12 @@ func pdfStreamRanges(b []byte) ([][2]int, error) {
 // exactly the corruption this whole change exists to prevent, reintroduced
 // through its own helper. Found by review on PR #14.
 //
-// The two passes break the circularity: pass one skips every stream whose
-// /Length is DIRECT, which is all of them in Ghostscript's output (measured: 4
-// of 4), and pass two indexes what is left. A payload can therefore only poison
-// the index if it sits inside a stream whose own length is indirect -- and if
-// that stream's resolved length disagrees with its bytes, pdfStreamRanges
-// errors rather than guessing.
-func pdfObjectOffsets(b []byte) map[int]int {
-	skip := pdfDirectLengthPayloads(b)
-
+// The second version skipped only DIRECT-length payloads, and review showed
+// that residual was exploitable too -- an indirect-length stream's payload
+// could still poison the offset of the very object its own length referred to.
+// The caller now iterates to a fixed point and passes in every payload known so
+// far, so the exclusion grows until it stops growing.
+func pdfObjectOffsets(b []byte, skip [][2]int) map[int]int {
 	offsets := make(map[int]int)
 	for i := 0; ; {
 		j := bytes.Index(b[i:], []byte(" obj"))
@@ -435,54 +534,6 @@ func pdfObjectOffsets(b []byte) map[int]int {
 			}
 		}
 		i = at + len(" obj")
-	}
-}
-
-// pdfDirectLengthPayloads returns the payload ranges of every stream whose
-// /Length is a direct integer, so the object index above can skip them.
-//
-// Deliberately partial and deliberately silent about failure: this is not the
-// authoritative stream walk, it is the "do not read structure out of this"
-// hint that lets the authoritative walk exist. Anything it cannot resolve is
-// simply not skipped, and pdfStreamRanges then reports the real error.
-func pdfDirectLengthPayloads(b []byte) [][2]int {
-	var out [][2]int
-	for i := 0; ; {
-		j := bytes.Index(b[i:], []byte("stream"))
-		if j < 0 {
-			return out
-		}
-		kw := i + j
-		dict, ok := pdfDictBefore(b, kw)
-		if !ok {
-			i = kw + 1
-			continue
-		}
-		start := kw + len("stream")
-		if start < len(b) && b[start] == '\r' {
-			start++
-		}
-		if start < len(b) && b[start] == '\n' {
-			start++
-		}
-
-		at := pdfTopLevelKey(b[dict:kw], "/Length")
-		if at < 0 {
-			i = kw + len("stream")
-			continue
-		}
-		rest := b[dict:kw][at+len("/Length"):]
-		n, consumed, ok := pdfReadInt(rest)
-		if !ok || pdfIsIndirectRef(rest[consumed:]) || start+n > len(b) {
-			i = kw + len("stream")
-			continue
-		}
-		if !pdfEndstreamFollows(b, start+n) {
-			i = kw + len("stream")
-			continue
-		}
-		out = append(out, [2]int{start, start + n})
-		i = start + n
 	}
 }
 
@@ -542,10 +593,7 @@ func isPDFSpace(c byte) bool {
 // the start of a stream. Nesting is balanced, so a /Filter or /DecodeParms
 // sub-dictionary does not end the search early.
 func pdfDictBefore(b []byte, kw int) (int, bool) {
-	i := kw
-	for i > 0 && isPDFSpace(b[i-1]) {
-		i--
-	}
+	i := pdfSkipBackTrivia(b, kw)
 	if i < 2 || b[i-1] != '>' || b[i-2] != '>' {
 		return 0, false
 	}
@@ -570,6 +618,37 @@ func pdfDictBefore(b []byte, kw int) (int, bool) {
 
 // pdfLengthAt reads the /Length entry of the dictionary starting at dict,
 // resolving one level of indirection.
+// pdfSkipBackTrivia walks backwards over whitespace AND comments.
+//
+// ISO 32000-1 7.2.4 lets a comment appear anywhere whitespace may, so
+// ">> %generated by something\nstream" is a valid stream header. Skipping only
+// whitespace bytes made this walker fail to recognise such a stream at all --
+// its payload was then exposed to the redaction and read as file structure by
+// the verifier. The lexical version it replaced did recognise these files, so
+// this was a regression the new structural rule introduced. Found by review on
+// PR #14.
+//
+// Between a dictionary's ">>" and the "stream" keyword only whitespace and
+// comments are legal, so a "%" seen here starts a comment; there is no string
+// or name context in which it could mean anything else.
+func pdfSkipBackTrivia(b []byte, at int) int {
+	i := at
+	for {
+		for i > 0 && isPDFSpace(b[i-1]) {
+			i--
+		}
+		lineStart := i
+		for lineStart > 0 && b[lineStart-1] != '\n' && b[lineStart-1] != '\r' {
+			lineStart--
+		}
+		pct := bytes.IndexByte(b[lineStart:i], '%')
+		if pct < 0 {
+			return i
+		}
+		i = lineStart + pct
+	}
+}
+
 func pdfLengthAt(b []byte, dict, kw int, objects map[int]int) (int, error) {
 	d := b[dict:kw]
 	at := pdfTopLevelKey(d, "/Length")
