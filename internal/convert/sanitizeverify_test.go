@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -654,5 +655,135 @@ func TestVerifierAndSanitizerAgreeOnRelationshipTypes(t *testing.T) {
 			t.Errorf("the verifier rejects %q but the sanitizer never drops it -- every "+
 				"sanitized package would fail verification", leaf)
 		}
+	}
+}
+
+// TestVerifierRejectsPaddedAdobeMarker is the regression proof for the
+// nineteenth finding of PR #12.
+//
+// The colour-management allowance matched APP14 on the five bytes "Adobe"
+// alone, so a payload of "Adobe" followed by appended EXIF survived the
+// sanitizer AND was confirmed clean by the verifier. The file still decoded
+// and the job still reached done, with the metadata still in it.
+//
+// The Adobe marker has a fixed shape -- twelve bytes -- so it is checkable,
+// and both halves must check it: a verifier that accepts any "Adobe" prefix
+// confirms as clean the exact segment the sanitizer was fixed to stop keeping.
+func TestVerifierRejectsPaddedAdobeMarker(t *testing.T) {
+	genuine := append([]byte("Adobe"), []byte{0x00, 0x64, 0, 0, 0, 0, 2}...)
+	if len(genuine) != 12 {
+		t.Fatalf("the genuine Adobe payload is %d bytes, not 12; the fixture is wrong", len(genuine))
+	}
+	padded := append(append([]byte(nil), genuine...), []byte("Exif\x00\x00MM\x00\x2aSMUGGLED")...)
+
+	if !jpegSegmentAllowed(0xEE, genuine) {
+		t.Error("the verifier rejects a genuine Adobe colour-transform marker")
+	}
+	if jpegSegmentAllowed(0xEE, padded) {
+		t.Error("the verifier accepts an APP14 carrying appended metadata behind the Adobe tag")
+	}
+	if !isKeptJPEGAppSegment(0xEE, genuine) {
+		t.Error("the sanitizer drops a genuine Adobe colour-transform marker")
+	}
+	if isKeptJPEGAppSegment(0xEE, padded) {
+		t.Error("the sanitizer keeps an APP14 carrying appended metadata behind the Adobe tag")
+	}
+
+	// An ICC chunk whose payload exceeds the profile's own declared size is
+	// carrying something the profile does not describe.
+	icc := func(declared uint32, extra int) []byte {
+		p := append([]byte("ICC_PROFILE\x00"), 0x01, 0x01)
+		size := make([]byte, 4)
+		binary.BigEndian.PutUint32(size, declared)
+		p = append(p, size...)
+		return append(p, bytes.Repeat([]byte{0xAA}, extra)...)
+	}
+	if !jpegSegmentAllowed(0xE2, icc(64, 60)) {
+		t.Error("a well-formed ICC chunk was rejected")
+	}
+	if jpegSegmentAllowed(0xE2, icc(8, 200)) {
+		t.Error("an ICC chunk carrying far more than its profile declares was accepted")
+	}
+}
+
+// TestStreamRangesAgreeWithTheVerifier holds the two independently written
+// stream walkers to the same answer.
+//
+// They are separate so one subtle bug cannot sit in front of both the
+// redaction and the check meant to catch its mistakes. Separate is only worth
+// anything if divergence is loud, which is what this asserts -- on real
+// sanitizer output rather than a synthetic string.
+func TestStreamRangesAgreeWithTheVerifier(t *testing.T) {
+	requireGhostscript(t)
+
+	out := filepath.Join(t.TempDir(), "out.pdf")
+	if _, err := SanitizeFile(context.Background(), "pdf",
+		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
+		t.Fatalf("SanitizeFile: %v", err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ranges := pdfStreamRanges(raw)
+	if len(ranges) == 0 {
+		t.Fatal("the sanitized fixture has no streams; this test proves nothing")
+	}
+	blanked := pdfNonStreamBytes(raw)
+	if len(blanked) != len(raw) {
+		t.Fatalf("the verifier's blanking changed the length (%d -> %d)", len(raw), len(blanked))
+	}
+	for _, r := range ranges {
+		for i := r[0]; i < r[1]; i++ {
+			if blanked[i] != ' ' {
+				t.Fatalf("byte %d is inside a stream by one walker and outside by the other", i)
+			}
+		}
+	}
+	for i := range raw {
+		if !inAnyRange(ranges, i) && blanked[i] != raw[i] {
+			t.Fatalf("byte %d is outside a stream by one walker and inside by the other", i)
+		}
+	}
+}
+
+// TestVerifierCountsRevisionsOutsideStreams pins the scoping on the one check
+// where a false positive costs a valid output.
+func TestVerifierCountsRevisionsOutsideStreams(t *testing.T) {
+	requireGhostscript(t)
+
+	out := filepath.Join(t.TempDir(), "out.pdf")
+	if _, err := SanitizeFile(context.Background(), "pdf",
+		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
+		t.Fatalf("SanitizeFile: %v", err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ranges := pdfStreamRanges(raw)
+	if len(ranges) == 0 {
+		t.Fatal("no streams to splice into")
+	}
+	// Splice trailer-looking bytes into a stream payload, in place.
+	spliced := append([]byte(nil), raw...)
+	payload := []byte("%%EOF\nstartxref\n")
+	at := ranges[0][0]
+	if at+len(payload) >= ranges[0][1] {
+		t.Skip("first stream is too short to splice into")
+	}
+	copy(spliced[at:], payload)
+
+	if err := verifySingleRevision(spliced); err != nil {
+		t.Errorf("trailer markers inside a stream were counted as a second revision: %v -- "+
+			"this verdict deletes a valid output", err)
+	}
+
+	// And a genuine second revision must still be caught.
+	twoRevisions := append(append([]byte(nil), raw...), []byte("\nstartxref\n0\n%%EOF\n")...)
+	if err := verifySingleRevision(twoRevisions); err == nil {
+		t.Error("a real second trailer was not counted -- the scoping disabled the check")
 	}
 }

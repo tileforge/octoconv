@@ -257,8 +257,15 @@ func jpegSegment(marker byte, payload []byte) []byte {
 // the vendor extensions the original drop-everything rule was guarding
 // against.
 func TestSanitizeImageKeepsColourManagement(t *testing.T) {
-	icc := jpegSegment(0xE2, append([]byte("ICC_PROFILE\x00"), []byte("profile-body")...))
-	adobe := jpegSegment(0xEE, append([]byte("Adobe"), []byte{0x00, 0x64, 0, 0, 0, 0, 0, 2}...))
+	// A real ICC chunk shape: tag, sequence number, chunk count, then a
+	// profile whose first four bytes are its own declared size. The first
+	// version of this fixture appended arbitrary text, so the size check read
+	// garbage as the declared length and passed by accident -- a fixture that
+	// satisfies a rule for the wrong reason tests nothing about it.
+	iccProfile := make([]byte, 64)
+	binary.BigEndian.PutUint32(iccProfile[0:4], uint32(len(iccProfile)))
+	icc := jpegSegment(0xE2, append(append([]byte("ICC_PROFILE\x00"), 0x01, 0x01), iccProfile...))
+	adobe := jpegSegment(0xEE, append([]byte("Adobe"), []byte{0x00, 0x64, 0, 0, 0, 0, 2}...))
 	fpxr := jpegSegment(0xE2, append([]byte("FPXR\x00"), []byte("flashpix-vendor-blob")...))
 	exif := jpegSegment(0xE1, append([]byte("Exif\x00\x00"), []byte("MM\x00\x2aSECRET")...))
 	comment := jpegSegment(0xFE, []byte("a comment"))

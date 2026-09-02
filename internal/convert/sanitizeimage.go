@@ -152,22 +152,48 @@ func stripJPEGMetadata(src []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// jpegColourPayloadPrefixes are the payload signatures of the two APP segments
-// that carry colour management rather than metadata, keyed by their marker.
-// Matched on the payload, never on the marker alone -- see this file's header.
-var jpegColourPayloadPrefixes = map[byte][]byte{
-	0xE2: []byte("ICC_PROFILE\x00"), // APP2
-	0xEE: []byte("Adobe"),           // APP14
-}
+// The two APP segments this sanitizer preserves, recognised by their payload
+// and -- for APP14 -- by its exact SHAPE.
+//
+// A PREFIX IS NOT A STRUCTURE. Matching APP14 on the five bytes "Adobe" alone
+// preserved any segment that happened to start that way, so a payload of
+// "Adobe" followed by appended EXIF or XMP survived intact while the report
+// claimed document_metadata verified. The segment still decoded, the job
+// reached done, and the metadata was still in the file. Caught in review
+// (PR #12, round 7).
+//
+// The Adobe marker has a fixed shape and therefore a checkable one: the
+// five-byte tag, a two-byte version, two two-byte flag words and a one-byte
+// transform -- twelve bytes, no more. Anything longer carries something the
+// marker does not define.
+//
+// APP2/ICC cannot be pinned the same way: a colour profile is legitimately
+// variable-length, and that is exactly why docs/SANITIZE.md's scope section
+// says a preserved profile can carry vendor-defined bytes. What CAN be
+// required is that the chunk does not exceed the profile's own declared size.
+const (
+	jpegAdobeTag        = "Adobe"
+	jpegAdobePayloadLen = 12
+	jpegICCTag          = "ICC_PROFILE\x00"
+	jpegICCHeaderLen    = 14 // tag + sequence number + total count
+)
 
 // isKeptJPEGAppSegment reports whether an APPn segment is one of the two
 // colour-management segments this sanitizer preserves.
 func isKeptJPEGAppSegment(marker byte, payload []byte) bool {
-	prefix, ok := jpegColourPayloadPrefixes[marker]
-	if !ok {
+	switch marker {
+	case 0xEE: // APP14, Adobe colour transform
+		return len(payload) == jpegAdobePayloadLen &&
+			bytes.HasPrefix(payload, []byte(jpegAdobeTag))
+	case 0xE2: // APP2, ICC profile chunk
+		if !bytes.HasPrefix(payload, []byte(jpegICCTag)) || len(payload) < jpegICCHeaderLen+4 {
+			return false
+		}
+		declared := int(binary.BigEndian.Uint32(payload[jpegICCHeaderLen : jpegICCHeaderLen+4]))
+		return len(payload)-jpegICCHeaderLen <= declared
+	default:
 		return false
 	}
-	return bytes.HasPrefix(payload, prefix)
 }
 
 // endOfEntropyCodedData returns the offset of the next real marker at or after

@@ -396,3 +396,60 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 		t.Error("a parse failure carries a deadline it never had")
 	}
 }
+
+// TestRedactionSkipsStreamPayloads is the regression proof for the
+// twenty-first finding of PR #12.
+//
+// redactEngineIdentity searches the whole file for "/Producer(", "/Creator("
+// and "%%Invocation:". Compressed page and image data can contain those bytes
+// by chance, and the redaction is LENGTH-PRESERVING -- so rewriting them
+// inside a stream keeps every xref offset valid while destroying the stream
+// they point at. That is the worst available shape of corruption, because
+// nothing structural looks wrong afterwards and the verifier's object walk
+// does not decode every page stream.
+//
+// The test asserts both directions, since scoping a search and switching it
+// off are indistinguishable from one side.
+func TestRedactionSkipsStreamPayloads(t *testing.T) {
+	requireGhostscript(t)
+
+	out := filepath.Join(t.TempDir(), "out.pdf")
+	if _, err := SanitizeFile(context.Background(), "pdf",
+		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
+		t.Fatalf("SanitizeFile: %v", err)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ranges := pdfStreamRanges(raw)
+	if len(ranges) == 0 {
+		t.Fatal("the sanitized fixture has no streams; this test proves nothing")
+	}
+	payload := []byte("/Producer(compressed-bytes-that-look-like-metadata)")
+	at := ranges[0][0]
+	if at+len(payload) >= ranges[0][1] {
+		t.Skip("first stream is too short to splice into")
+	}
+	spliced := append([]byte(nil), raw...)
+	copy(spliced[at:], payload)
+
+	redacted := redactEngineIdentity(spliced)
+
+	if len(redacted) != len(spliced) {
+		t.Fatalf("the redaction changed the file length (%d -> %d); every xref offset after "+
+			"the edit is now wrong", len(spliced), len(redacted))
+	}
+	if !bytes.Equal(redacted[ranges[0][0]:ranges[0][1]], spliced[ranges[0][0]:ranges[0][1]]) {
+		t.Error("the redaction rewrote bytes inside a stream payload; the offsets still line up " +
+			"and the stream they point at is destroyed")
+	}
+
+	// The real /Info must still be emptied, or the scoping disabled the
+	// redaction rather than narrowing it.
+	if bytes.Contains(redacted, []byte("Ghostscript")) {
+		t.Error("the engine signature survived outside the streams -- the scoping switched the " +
+			"redaction off instead of narrowing it")
+	}
+}

@@ -255,8 +255,16 @@ func verifyPDF(ctx context.Context, path string) ([]ThreatClass, error) {
 
 // verifySingleRevision requires exactly one startxref and one %%EOF.
 func verifySingleRevision(raw []byte) error {
-	starts := bytes.Count(raw, []byte("startxref"))
-	eofs := bytes.Count(raw, []byte("%%EOF"))
+	// Counted OUTSIDE stream payloads, for the reason scanPDFBytes already
+	// counted its markers there: compressed and image data can contain
+	// "%%EOF" or "startxref" by chance, and a false multi-revision verdict
+	// DELETES a valid output. The scoping existed one function away and was
+	// not applied here -- the same rule in one of two places that need it,
+	// which is the fourth time this review has named that shape. Caught in
+	// review (PR #12, round 7).
+	outside := pdfNonStreamBytes(raw)
+	starts := bytes.Count(outside, []byte("startxref"))
+	eofs := bytes.Count(outside, []byte("%%EOF"))
 
 	// Zero of either is not "too many revisions" -- it is "this does not have
 	// the structure of a PDF", which is the unverifiable outcome, not the
@@ -730,13 +738,27 @@ func init() {
 // implementations of one rule, which is what SANI-04 requires; sharing a
 // walker would make this check prove only that the walker agrees with itself.
 
-// jpegAllowedAppPayloads mirrors sanitizeimage.go's colour-management
-// allowance, restated here rather than imported so the two can disagree
-// loudly. If the sanitizer starts keeping a segment this does not allow, the
-// verifier fails and someone has to reconcile them deliberately.
-var jpegAllowedAppPayloads = map[byte][]byte{
-	0xE2: []byte("ICC_PROFILE\x00"),
-	0xEE: []byte("Adobe"),
+// jpegSegmentAllowed mirrors sanitizeimage.go's colour-management allowance,
+// restated here rather than imported so the two can disagree loudly.
+//
+// Restated INCLUDING THE SHAPE CHECK, which the prefix-only version lacked: a
+// verifier that allows any APP14 starting with "Adobe" confirms as clean the
+// exact segment the sanitizer was fixed to stop preserving. The two halves of
+// this fix are useless apart.
+func jpegSegmentAllowed(marker byte, payload []byte) bool {
+	switch marker {
+	case 0xEE:
+		return len(payload) == 12 && bytes.HasPrefix(payload, []byte("Adobe"))
+	case 0xE2:
+		const iccHeader = 14
+		if !bytes.HasPrefix(payload, []byte("ICC_PROFILE\x00")) || len(payload) < iccHeader+4 {
+			return false
+		}
+		declared := int(binary.BigEndian.Uint32(payload[iccHeader : iccHeader+4]))
+		return len(payload)-iccHeader <= declared
+	default:
+		return false
+	}
 }
 
 // jpegMetadataResidue walks a JPEG's segment chain and reports any APPn or COM
@@ -791,11 +813,7 @@ func jpegMetadataResidue(raw []byte) (string, bool) {
 
 		isAPP := marker >= 0xE0 && marker <= 0xEF
 		if isAPP || marker == 0xFE {
-			allowed := false
-			if prefix, ok := jpegAllowedAppPayloads[marker]; ok {
-				allowed = bytes.HasPrefix(raw[i+4:end], prefix)
-			}
-			if !allowed {
+			if !jpegSegmentAllowed(marker, raw[i+4:end]) {
 				return fmt.Sprintf("APP%d/COM segment 0x%02X at offset %d", marker-0xE0, marker, i), true
 			}
 		}

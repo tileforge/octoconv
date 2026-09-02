@@ -309,8 +309,56 @@ var (
 // simply not write it. Corruption IS an error, and the caller does not have to
 // detect it -- Plan 60-04's verifier re-parses the result with pdfcpu, so a
 // redaction that broke the file fails the job rather than shipping it.
+// pdfStreamRanges returns the byte ranges of every stream payload.
+//
+// Written here rather than shared with sanitizeverify.go's own scan: the two
+// answer the same question for opposite purposes, and a single subtle byte
+// walker feeding both would put one bug in front of the redaction AND the
+// check that is supposed to catch it. TestStreamRangesAgreeWithTheVerifier
+// holds them to the same answer on real output, so divergence is loud.
+func pdfStreamRanges(b []byte) [][2]int {
+	var out [][2]int
+	i := 0
+	for {
+		j := bytes.Index(b[i:], []byte("stream"))
+		if j < 0 {
+			return out
+		}
+		start := i + j + len("stream")
+		for start < len(b) && (b[start] == '\r' || b[start] == '\n') {
+			start++
+		}
+		end := bytes.Index(b[start:], []byte("endstream"))
+		if end < 0 {
+			return append(out, [2]int{start, len(b)})
+		}
+		out = append(out, [2]int{start, start + end})
+		i = start + end + len("endstream")
+	}
+}
+
+func inAnyRange(ranges [][2]int, i int) bool {
+	for _, r := range ranges {
+		if i >= r[0] && i < r[1] {
+			return true
+		}
+	}
+	return false
+}
+
 func redactEngineIdentity(raw []byte) []byte {
 	out := append([]byte(nil), raw...)
+
+	// SKIP STREAM PAYLOADS. These are whole-file searches, and compressed page
+	// or image data can contain "/Producer(" or "%%Invocation:" by chance. The
+	// redaction would then rewrite compressed bytes -- preserving every xref
+	// offset while destroying the stream they point at, which is the worst
+	// available shape of corruption because nothing structural looks wrong.
+	// The verifier's object walk does not decode every page stream, so it
+	// would not necessarily catch it either. Caught in review (PR #12,
+	// round 7); the same scoping the verifier's byte scan already had, applied
+	// to the second of the two places that needed it.
+	streams := pdfStreamRanges(out)
 
 	for _, key := range producerKeys {
 		for i := 0; ; {
@@ -319,6 +367,10 @@ func redactEngineIdentity(raw []byte) []byte {
 				break
 			}
 			start := i + j + len(key) // at the '('
+			if inAnyRange(streams, start) {
+				i = start + 1
+				continue
+			}
 			end := closingParen(out, start)
 			if end < 0 {
 				break
@@ -341,6 +393,10 @@ func redactEngineIdentity(raw []byte) []byte {
 			break
 		}
 		start := i + j
+		if inAnyRange(streams, start) {
+			i = start + 1
+			continue
+		}
 		end := bytes.IndexByte(out[start:], '\n')
 		if end < 0 {
 			end = len(out) - start
