@@ -43,3 +43,32 @@ FAIL	github.com/apaderin/octoconv/internal/api	1.150s
 FAIL
 [exit 1]
 
+
+##### ROUND 2 -- inversions for the three fixes from PR #15 codex review #####
+
+=== INVERSION 6: worker counts pages through pdfcpu's VALIDATING api.PageCountFile again (the P1 defect) ===
+--- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript (0.00s)
+    --- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript/a_threat-carrying_PDF_is_not_refused_by_the_counter (0.00s)
+        probebounds_test.go:303: Convert(threat_all_classes.pdf, MaxPages=200) = sanitize: input could not be processed: page count: page count: validation error (obj#:12): document catalog: catalog AA: additional action rootDict.AA: action O not allowed for source root -- the page counter must not refuse a document for carrying the very constructs sanitize removes
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.406s
+FAIL
+[exit 1]
+
+=== positive run: the payload test now requires a DEFINITE 2 ===
+ok  	github.com/apaderin/octoconv/internal/inspect	1.009s
+[exit 0]
+
+=== INVERSION 7 (re-run after the test was strengthened): the walk stops filtering through the opaque ranges ===
+--- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict (0.00s)
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/content_stream_payload (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a stream body is payload; the bytes inside it are not structure. An abstention here means the payload was still seen as a second, disagreeing marker
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/comment (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a comment is not a dictionary, however it reads. An abstention here means the payload was still seen as a second, disagreeing marker
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/literal_string (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a literal string is data, even one that spells a marker. An abstention here means the payload was still seen as a second, disagreeing marker
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.082s
+FAIL
+[exit 1]
+

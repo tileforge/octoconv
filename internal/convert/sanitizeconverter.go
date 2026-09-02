@@ -130,7 +130,7 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// verification, which SanitizeFile keeps inside itself precisely because
 	// its callers include this one.
 	if enforce, ok := sanitizePageCeilings[format]; ok {
-		if err := enforce(inPath, c.MaxPages); err != nil {
+		if err := enforce(ctx, inPath, c.MaxPages); err != nil {
 			return err
 		}
 	}
@@ -183,7 +183,7 @@ func formatFromPath(path string) string {
 // A map rather than a switch, and a package-level literal rather than init()
 // registration, for the same reasons sanitizeFormats gives above its own
 // declaration.
-var sanitizePageCeilings = map[string]func(inPath string, max int) error{
+var sanitizePageCeilings = map[string]func(ctx context.Context, inPath string, max int) error{
 	"pdf": enforcePDFPageCeiling,
 }
 

@@ -72,8 +72,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/pdfcpu/pdfcpu/pkg/api"
 )
 
 // pdfLostCapabilities are the document features the PostScript round trip
@@ -172,33 +170,60 @@ func pdfwriteArgs(psPath, outPath string) []string {
 // reported. What this states is what the method removes from this format; Plan
 // 60-04's verifier is what turns it into a checked claim by confirming each
 // class is absent from the output bytes.
-// probePDFPageCount returns inPath's page count, read by pdfcpu.
+// probePDFPageCount returns inPath's page count, read by pdfinfo through the
+// hardened runCommand.
 //
-// # WHY pdfcpu IS ALLOWED HERE, AND WHY THE API GATE IS NOT ALLOWED TO USE IT
+// # WHY NOT pdfcpu, WHICH THIS PACKAGE ALREADY IMPORTS
 //
-// This is the project's parsing dependency pointed at untrusted bytes, and
-// phase 58 (D-02a) refused it in the API process. sanitizeverify.go's header
-// records the three conditions under which it was agreed anyway -- isolated
-// worker, measured timeout, cgroup limits -- and states in as many words that
-// its own use is the exception those conditions were written for and not a
-// precedent. All three conditions hold at THIS call site for the same reason
-// they hold there: it runs in cmd/probe-worker, inside PROBE_ENGINE_TIMEOUT,
-// under the 2 CPU / 1 GiB container limit.
+// It was pdfcpu, via api.PageCountFile, and that was wrong in a way worth
+// keeping written down because the mistake looked like reuse.
 //
-// That is the whole reason the admission gate in internal/api counts pages
-// with a bounded byte scanner instead (internal/inspect.PDFPageCount) and is
-// permitted to answer "unknown". The cheap gate saves an S3 write; this one is
-// the bound. Two gates, one bound, two ways of obtaining the count -- and the
-// difference in how they count is the entire point (63-CONTEXT.md D-04).
+// api.PageCountFile performs FULL VALIDATION, and pdfcpu's validator rejects
+// several of the exact constructs this operation exists to remove. Measured on
+// this repository's own threat fixture:
 //
-// A count pdfcpu cannot produce is NOT treated as "no pages": it is a file the
-// sanitizer's own verifier would not be able to read either, so it is reported
+//	probePDFPageCount(testdata/sanitize/threat_all_classes.pdf)
+//	  -> validation error (obj#:12): document catalog: catalog AA:
+//	     additional action rootDict.AA: action O not allowed for source root
+//
+// With a configured ceiling, every threat-carrying PDF -- the documents
+// sanitize is FOR -- would have failed terminally as malformed input instead
+// of being disarmed. The ceiling would have broken precisely the case it was
+// added alongside. Found in review (PR #15), not by a test: the gate lives in
+// SanitizeConverter.Convert while nearly every sanitize test calls SanitizeFile
+// directly, so the whole suite stayed green.
+//
+// It was also NOT CANCELLABLE. api.PageCountFile takes no context, so an
+// adversarial file that made pdfcpu spin would run past PROBE_ENGINE_TIMEOUT
+// and past job cancellation, holding the worker at concurrency 1 after its
+// own deadline had expired -- while the comment here claimed the timeout
+// bounded it. Also found in review.
+//
+// # WHY pdfinfo, AND WHY IT IS NOT A NEW DEPENDENCY ON THE QUESTION
+//
+// pdfinfo reports the page count of the same fixture as 1, because reading a
+// page tree is not validating a document. It runs through runCommand, which
+// puts the child in its own process group and kills the whole group on context
+// cancellation -- so the count is bounded by the same deadline as the
+// ghostscript passes, which is what the previous comment only asserted.
+//
+// It is also the SAME mechanism the OCR engine already counts pages with
+// (ocrPDFPageCount, ocrguards.go), reusing that file's parsePdfinfoPages
+// parser. Two engines answering one question two different ways is how the
+// pdfcpu defect got in; there is now one answer to "how many pages does this
+// PDF declare" in this package.
+//
+// A count pdfinfo cannot produce is NOT treated as "no pages": it is reported
 // as malformed input -- terminal, and honest about which side failed.
-func probePDFPageCount(inPath string) (int, error) {
-	n, err := api.PageCountFile(inPath)
+func probePDFPageCount(ctx context.Context, inPath string) (int, error) {
+	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(inPath)...)
 	if err != nil {
-		return 0, fmt.Errorf("%w: pdfcpu could not count the pages of the input: %v",
+		return 0, fmt.Errorf("%w: pdfinfo could not read the input: %v",
 			ErrSanitizeMalformedInput, err)
+	}
+	n, err := parsePdfinfoPages(out)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrSanitizeMalformedInput, err)
 	}
 	return n, nil
 }
@@ -206,14 +231,14 @@ func probePDFPageCount(inPath string) (int, error) {
 // enforcePDFPageCeiling refuses a PDF whose page count exceeds max BEFORE the
 // first ghostscript pass runs (PROBE-02).
 //
-// max == 0 means no ceiling is configured, and then pdfcpu is not invoked at
-// all: an unconfigured bound must cost nothing, not a parse whose only use
+// max == 0 means no ceiling is configured, and then pdfinfo is not invoked at
+// all: an unconfigured bound must cost nothing, not a subprocess whose only use
 // would be a comparison that cannot fail.
-func enforcePDFPageCeiling(inPath string, max int) error {
+func enforcePDFPageCeiling(ctx context.Context, inPath string, max int) error {
 	if max <= 0 {
 		return nil
 	}
-	count, err := probePDFPageCount(inPath)
+	count, err := probePDFPageCount(ctx, inPath)
 	if err != nil {
 		return err
 	}

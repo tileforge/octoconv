@@ -6,11 +6,23 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/probe-worker ./cmd/probe-worker
 
-# Runtime stage: the sanitize pipeline needs three external tools, and every
+# Runtime stage: the sanitize pipeline needs four external tools, and every
 # one of them is load-bearing rather than convenient.
 #
 #   ghostscript  -- the two-pass PDF rebuild (ps2write then pdfwrite). Without
 #                   it every PDF sanitize fails.
+#   poppler-utils-- pdfinfo, which counts pages for the PROBE_MAX_PAGES ceiling
+#                   (Phase 63). NOT pdfcpu, even though this binary already
+#                   links it for verification: api.PageCountFile VALIDATES, and
+#                   pdfcpu's validator REFUSES several of the constructs this
+#                   operation exists to remove -- measured on our own
+#                   threat_all_classes.pdf fixture, which it rejects for its
+#                   /AA action. Counting through a validator would have made the
+#                   ceiling break exactly the documents sanitize is for.
+#                   pdfinfo also runs as a subprocess, so runCommand's
+#                   process-group kill actually bounds it by
+#                   PROBE_ENGINE_TIMEOUT; an in-process parse did not.
+#                   Same tool ocr-worker already counts pages with.
 #   unzip        -- enumerates and extracts OOXML parts for verification. It is
 #                   deliberately NOT our own archive/zip: SANI-04 requires the
 #                   implementation that checks to differ from the one that
@@ -36,6 +48,7 @@ RUN apt-get update \
       ca-certificates \
       tini \
       ghostscript \
+      poppler-utils \
       unzip \
       file \
  && rm -rf /var/lib/apt/lists/*

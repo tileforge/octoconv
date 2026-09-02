@@ -278,11 +278,41 @@ func TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript(t *testing.T) {
 		}
 	})
 
+	// --- the test whose absence let PR #15's P1 through ---
+	//
+	// The ceiling used to count pages with pdfcpu's api.PageCountFile, which
+	// VALIDATES. pdfcpu's validator refuses several of the constructs this
+	// operation exists to remove, so with a configured ceiling every
+	// threat-carrying PDF failed terminally as malformed input instead of
+	// being disarmed -- the ceiling breaking precisely the case it shipped
+	// alongside.
+	//
+	// The whole suite stayed green because the gate lives in
+	// SanitizeConverter.Convert while nearly every sanitize test calls
+	// SanitizeFile directly, which bypasses it. So this test is deliberately
+	// driven through Convert, with a NONZERO ceiling, on the repository's own
+	// threat fixture. Those three properties together are the regression; drop
+	// any one and it stops covering anything.
+	t.Run("a threat-carrying PDF is not refused by the counter", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out.pdf")
+
+		err := SanitizeConverter{MaxPages: 200}.Convert(context.Background(),
+			"testdata/sanitize/threat_all_classes.pdf", out, nil)
+
+		if err != nil {
+			t.Fatalf("Convert(threat_all_classes.pdf, MaxPages=200) = %v -- the page counter must not "+
+				"refuse a document for carrying the very constructs sanitize removes", err)
+		}
+		if _, statErr := os.Stat(out); statErr != nil {
+			t.Fatalf("no output produced: %v", statErr)
+		}
+	})
+
 	t.Run("an unconfigured bound does not parse the input at all", func(t *testing.T) {
 		dir := t.TempDir()
 		in := filepath.Join(dir, "in.pdf")
-		// Not a PDF pdfcpu can read. With MaxPages == 0 the ceiling must not
-		// invoke the parser, so this must NOT come back as the parse failure
+		// Not a PDF pdfinfo can read. With MaxPages == 0 the ceiling must not
+		// invoke the counter at all, so this must NOT come back as the failure
 		// probePDFPageCount would report -- it must reach ghostscript and fail
 		// (or not) on its own terms.
 		if err := os.WriteFile(in, []byte("%PDF-1.4\nnot really a pdf\n"), 0o644); err != nil {
@@ -294,7 +324,7 @@ func TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript(t *testing.T) {
 		if errors.Is(err, ErrProbeTooManyPages) {
 			t.Fatalf("Convert = %v -- max == 0 means no cap configured, never a rejection", err)
 		}
-		if err != nil && strings.Contains(err.Error(), "pdfcpu could not count the pages") {
+		if err != nil && strings.Contains(err.Error(), "pdfinfo could not read the input") {
 			t.Fatalf("Convert = %v -- an unconfigured bound must cost nothing, not a parse whose "+
 				"only use would be a comparison that cannot fail", err)
 		}
@@ -314,7 +344,28 @@ func TestProbePDFPageCountReportsMalformedInput(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if _, err := probePDFPageCount(bad); !errors.Is(err, ErrSanitizeMalformedInput) {
+	if _, err := probePDFPageCount(context.Background(), bad); !errors.Is(err, ErrSanitizeMalformedInput) {
 		t.Fatalf("probePDFPageCount(unreadable) = %v, want an error wrapping ErrSanitizeMalformedInput", err)
+	}
+}
+
+// TestProbePDFPageCountIsBoundByContext pins the SECOND defect PR #15's review
+// found: the page count used api.PageCountFile, which takes no context, so an
+// adversarial file that made the parser spin ran past PROBE_ENGINE_TIMEOUT and
+// past job cancellation -- while the comment beside it claimed the timeout
+// bounded it, and with probe concurrency at 1 that means the worker is held
+// after its own deadline expired.
+//
+// Counting through runCommand fixes it structurally: the child is in its own
+// process group and the group is killed on cancellation. This test asserts the
+// property rather than the mechanism -- an already-cancelled context must not
+// produce a successful count.
+func TestProbePDFPageCountIsBoundByContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := probePDFPageCount(ctx, "testdata/sanitize/threat_all_classes.pdf"); err == nil {
+		t.Fatal("probePDFPageCount succeeded under an already-cancelled context -- the count must be " +
+			"bounded by the same deadline as the ghostscript passes, not merely documented as if it were")
 	}
 }

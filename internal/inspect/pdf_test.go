@@ -3,6 +3,7 @@ package inspect
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -904,7 +905,7 @@ func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T)
 	buf.WriteString("/Count 99 ") // ONE further occurrence past the cap, with a DIFFERENT count
 	head := buf.Bytes()
 
-	count, reason := extractPDFPageCount(head, false, false, false, nil)
+	count, reason := extractPDFPageCount(head, false, false, false, nil, false, nil)
 	if count != nil {
 		t.Fatalf("page_count = %d, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative", *count)
 	}
@@ -980,5 +981,114 @@ func TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding(t *testi
 	}
 	if c.Reason != ReasonWorkCeilingBytes {
 		t.Fatalf("Check(pdf_javascript).Reason = %s, want %s", c.Reason, ReasonWorkCeilingBytes)
+	}
+}
+
+// --- PR #15 review: the admission gate must not reject on payload ---------
+
+// buildPDFWithPagesMarker assembles a PDF whose real page tree declares
+// realCount, optionally embedding extra bytes (a content stream payload, a
+// comment, a second revision) that a substring scan would also read as a Pages
+// dictionary.
+func buildPDFWithPagesMarker(t *testing.T, realCount int, extra string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	b.WriteString("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+	b.WriteString(fmt.Sprintf("2 0 obj\n<< /Type /Pages /Count %d /Kids [3 0 R] >>\nendobj\n", realCount))
+	b.WriteString("3 0 obj\n<< /Type /Page /Parent 2 0 R >>\nendobj\n")
+	if extra != "" {
+		b.WriteString(extra)
+	}
+	b.WriteString("trailer\n<< /Root 1 0 R >>\nstartxref\n0\n%%EOF\n")
+	return b.Bytes()
+}
+
+// TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict is the regression for the
+// false-rejection finding on PR #15.
+//
+// While page_count was only ever REPORTED, a marker found inside a content
+// stream was a cosmetic inaccuracy. Feeding an admission gate that returns 422,
+// it became a valid document refused: measured at 300 pages for a file whose
+// page tree declares 2, because the walk -- unlike the risk-token scan beside
+// it -- did not filter its matches through the opaque-range set.
+func TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict(t *testing.T) {
+	payload := "BT (/Type /Pages /Count 300) Tj ET\n"
+	stream := fmt.Sprintf("5 0 obj\n<< /Length %d >>\nstream\n%sendstream\nendobj\n", len(payload), payload)
+
+	cases := []struct {
+		name  string
+		extra string
+		why   string
+	}{
+		{"content stream payload", stream,
+			"a stream body is payload; the bytes inside it are not structure"},
+		{"comment", "% /Type /Pages /Count 300\n",
+			"a comment is not a dictionary, however it reads"},
+		{"literal string", "6 0 obj\n(/Type /Pages /Count 300)\nendobj\n",
+			"a literal string is data, even one that spells a marker"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := buildPDFWithPagesMarker(t, 2, tc.extra)
+			tr := NewTracker(Budget{MaxBytes: 8 << 20})
+
+			count, reason := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20, tr)
+
+			// EXACTLY 2 -- not "2 or an abstention", and the difference is what
+			// makes this test able to fail at all.
+			//
+			// The first version accepted an abstention as "at least it did not
+			// reject", and it passed with the opaque filtering ripped out
+			// entirely: without filtering the walk finds BOTH 2 and 300, they
+			// disagree, the gate's unambiguity rule abstains, and the test took
+			// that for success. Two independent mechanisms were masking each
+			// other and neither was under test. Found by running the inversion,
+			// not by reading the test.
+			//
+			// Requiring the definite answer isolates the filtering: only a walk
+			// that discards the payload sees ONE marker and can say 2. It is
+			// also the behaviour the gate actually needs -- if every PDF with a
+			// text-drawing stream abstained, the admission gate would refuse
+			// nothing and the S3 write it exists to save would always be spent.
+			if count == nil {
+				t.Fatalf("PDFPageCount abstained (reason %q), want a definite 2 -- %s. An abstention here "+
+					"means the payload was still seen as a second, disagreeing marker", reason, tc.why)
+			}
+			if *count != 2 {
+				t.Fatalf("PDFPageCount = %d, want 2 -- %s. A gate that rejects on this number turns a "+
+					"valid document into a 422", *count, tc.why)
+			}
+		})
+	}
+}
+
+// TestPDFPageCountAbstainsWhenMarkersDisagree pins the gate's own stricter
+// rule, which is deliberately NOT AnalyzePDF's.
+//
+// AnalyzePDF publishes the last count it saw: for a characteristic, the
+// revision closest to EOF is the best available answer. The admission gate
+// refuses that tie-break, because "several structurally-plausible answers, we
+// took the last" is not a basis on which to reject a client's upload.
+func TestPDFPageCountAbstainsWhenMarkersDisagree(t *testing.T) {
+	// A second, disagreeing Pages dict OUTSIDE any opaque range -- the shape an
+	// incremental update produces.
+	raw := buildPDFWithPagesMarker(t, 2, "7 0 obj\n<< /Type /Pages /Count 900 /Kids [] >>\nendobj\n")
+	tr := NewTracker(Budget{MaxBytes: 8 << 20})
+
+	count, _ := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20, tr)
+	if count != nil {
+		t.Fatalf("PDFPageCount = %d on a file with two disagreeing Pages dictionaries -- the gate must "+
+			"abstain rather than pick one and refuse an upload on it", *count)
+	}
+
+	// And the characteristic path still answers, because it is answering a
+	// different question. If this half ever starts abstaining too, inspect's
+	// page_count silently became null for every incrementally-updated PDF.
+	res := AnalyzePDF(bytes.NewReader(raw), int64(len(raw)), 8<<20, NewTracker(Budget{MaxBytes: 8 << 20}))
+	if res.Characteristics["page_count"] == nil {
+		t.Error("AnalyzePDF now abstains on a multi-revision file too -- the gate's stricter rule leaked " +
+			"into the characteristic, which must keep publishing its best available answer")
 	}
 }
