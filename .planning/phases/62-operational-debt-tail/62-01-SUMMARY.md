@@ -153,6 +153,31 @@ Inverted three ways, each failing distinctly:
   these scripts announce "WITHOUT --wait" in their own output, and its first
   version fired on the sentence describing the rule.
 
+## Review round 1 — one P2, and it was right
+
+`postgres.user` was interpolated straight into the `sh -c` program. It is a
+legal PostgreSQL role name and legal URI userinfo, so `app;false` renders as:
+
+```
+until pg_isready -h postgres.octoconv.svc.cluster.local -p 5432 -U app;false >/dev/null 2>&1; do
+```
+
+— an `until false` loop that never exits, leaving **every** application pod in
+`Init` forever while Postgres sits there perfectly healthy. Operator-supplied
+values, so this is a contract narrowing rather than an attack path: the chart
+would have silently acquired a "no shell metacharacters" rule on a value that
+never had one.
+
+Host and user now travel as `env` (`PGHOST`, `PGUSER`) and are referenced
+quoted. `scripts/ci-helm-checks.sh` renders the chart with
+`--set 'postgres.user=app;false'` and asserts the string does **not** appear in
+any initContainer command — plus that it *does* appear in the env, so the guard
+cannot pass by rendering something that never used the value. Inverted: putting
+the interpolation back names all four occurrences with their line numbers.
+
+Cold install re-run after the change: api and worker both `restartCount 0`
+(`evidence/sc1-with-both-waits-after-review-fix.txt`).
+
 ## Gates
 
 No Go file changed after the test run below (`git status` verified), so it
@@ -160,7 +185,8 @@ still stands for this tree.
 
 `gofmt -l .` clean · `go vet ./...` clean · `go build ./...` clean ·
 `go test ./... -count=1` exit 0 against live Postgres + Redis + MinIO
-(25 packages) · `scripts/ci-helm-checks.sh` exit 0 · `yq -e '.'` parses
+(25 packages) · `scripts/ci-helm-checks.sh` exit 0 (three new guards, each inverted) ·
+`yq -e '.'` parses
 `docs/openapi.yaml` and `docker-compose.yml`.
 
 Live cold-install gate on OrbStack Kubernetes: four runs, evidence above.

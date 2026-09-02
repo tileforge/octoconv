@@ -182,6 +182,32 @@ if [ -n "$MISSING" ]; then
 fi
 echo "OK: every Deployment carrying the app secret waits for postgres and the bucket ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
 
+echo "### no chart value may be spliced into an initContainer shell program"
+# Regression test for the review finding on PR #13. `postgres.user: "app;false"`
+# is a legal PostgreSQL role name and legal URI userinfo; interpolated into
+# `sh -c` it made the `until` condition literally `false`, so every application
+# pod would sit in Init forever while Postgres was perfectly healthy. Rendering
+# with a hostile value and asserting it does NOT appear in the program text is
+# the only version of this check that cannot pass by inspection.
+HOSTILE_RENDER=$(helm template octoconv "$CHART" $SECRETS_SET --set 'postgres.user=app;false' 2>&1)
+HOSTILE_CMDS=$(echo "$HOSTILE_RENDER" | yq -e '. | select(.kind=="Deployment") | (.spec.template.spec.initContainers // [])[].command[]' 2>/dev/null)
+if [ -z "$HOSTILE_CMDS" ]; then
+  echo "FAIL: no initContainer commands parsed out of the hostile render -- this guard would pass vacuously"
+  exit 1
+fi
+if echo "$HOSTILE_CMDS" | grep -q 'app;false'; then
+  echo "FAIL: a chart value reached an initContainer shell program as text:"
+  echo "$HOSTILE_CMDS" | grep -n 'app;false' | sed 's/^/        /'
+  echo "      Pass it through env and reference it quoted (\"\$PGUSER\") instead."
+  exit 1
+fi
+if ! echo "$HOSTILE_RENDER" | grep -q 'value: "app;false"'; then
+  echo "FAIL: the hostile value did not reach the initContainer env either -- the"
+  echo "      guard is testing a render that never used postgres.user at all"
+  exit 1
+fi
+echo "OK: postgres.user reaches the wait initContainer as env, never as program text"
+
 echo "### the octoconv chart must never be installed with --wait"
 # The wait-for-bucket initContainer above depends on an install that does NOT
 # block on readiness: the bucket is created by the octoconv-createbucket

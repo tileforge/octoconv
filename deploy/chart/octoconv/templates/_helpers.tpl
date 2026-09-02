@@ -232,11 +232,25 @@ initContainers:
   - name: wait-for-postgres
     image: {{ .Values.postgres.image | quote }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
+    # Host and user travel as ENV, never as text spliced into the shell
+    # program. A chart value interpolated into `sh -c` is a value that can
+    # inject: `postgres.user: "app;false"` is a legal PostgreSQL role name and
+    # a legal URI userinfo, and as program text it would make the `until`
+    # condition never succeed -- leaving every application pod in Init forever
+    # while Postgres sits there perfectly healthy. Values are operator-supplied
+    # here, so this is a contract-narrowing bug rather than an attack path, but
+    # the chart should not silently acquire a "no shell metacharacters" rule on
+    # a value that never had one. Found by review on this PR.
+    env:
+      - name: PGHOST
+        value: {{ printf "postgres.%s.svc.cluster.local" .Values.global.namespace | quote }}
+      - name: PGUSER
+        value: {{ .Values.postgres.user | quote }}
     command:
       - sh
       - -c
       - |
-        until pg_isready -h postgres.{{ .Values.global.namespace }}.svc.cluster.local -p 5432 -U {{ .Values.postgres.user }} >/dev/null 2>&1; do
+        until pg_isready -h "$PGHOST" -p 5432 -U "$PGUSER" >/dev/null 2>&1; do
           echo "waiting for postgres..."
           sleep 2
         done
