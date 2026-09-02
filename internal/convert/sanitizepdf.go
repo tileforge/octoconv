@@ -207,7 +207,11 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: read output: %w", err)
 	}
-	if err := os.WriteFile(outPath, redactEngineIdentity(produced), 0o644); err != nil {
+	redacted, err := redactEngineIdentity(produced)
+	if err != nil {
+		return SanitizeResult{}, err
+	}
+	if err := os.WriteFile(outPath, redacted, 0o644); err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: redact engine identity: %w", err)
 	}
 
@@ -309,32 +313,293 @@ var (
 // simply not write it. Corruption IS an error, and the caller does not have to
 // detect it -- Plan 60-04's verifier re-parses the result with pdfcpu, so a
 // redaction that broke the file fails the job rather than shipping it.
-// pdfStreamRanges returns the byte ranges of every stream payload.
+// pdfStreamRanges returns the byte ranges of every stream payload, derived
+// from each stream's own /Length.
 //
 // Written here rather than shared with sanitizeverify.go's own scan: the two
 // answer the same question for opposite purposes, and a single subtle byte
 // walker feeding both would put one bug in front of the redaction AND the
 // check that is supposed to catch it. TestStreamRangesAgreeWithTheVerifier
 // holds them to the same answer on real output, so divergence is loud.
-func pdfStreamRanges(b []byte) [][2]int {
+//
+// WHY /Length AND NOT bytes.Index(b, "endstream"), WHICH IS SANI-08.
+//
+// A stream payload is arbitrary bytes. It may contain "endstream" -- and then
+// the substring scan ends the range early, so this function reports a
+// protected range that stops in the middle of a stream and the redaction above
+// happily rewrites the rest of it.
+//
+// The keyword search had a second defect underneath that one: "stream" is a
+// substring of "endstream", so after ending a range the walker re-entered on
+// the tail of the keyword it had just consumed. On endstream_in_stream.pdf that
+// made the file's REAL trailer look like stream payload. The fix for that is
+// not a longer search string but a structural one: a stream keyword is only a
+// stream keyword when it follows the ">>" that closes its own dictionary.
+//
+// Measured before it was written: Ghostscript emits only DIRECT /Length values
+// on this project's corpus (4 streams across two files, 4 direct, 0 indirect).
+// The indirect resolver below is therefore exercised by a hand-built fixture
+// rather than by real output -- which is exactly why it exists, since "the gs
+// build we happened to measure" is not a property to depend on.
+//
+// An unresolvable /Length is an error, never a fall back to the substring
+// scan. A silent fallback would put the defect back exactly where it was and
+// hide it behind a passing test (D-07 fail-closed).
+func pdfStreamRanges(b []byte) ([][2]int, error) {
+	objects := pdfObjectOffsets(b)
+
 	var out [][2]int
 	i := 0
 	for {
 		j := bytes.Index(b[i:], []byte("stream"))
 		if j < 0 {
-			return out
+			return out, nil
 		}
-		start := i + j + len("stream")
-		for start < len(b) && (b[start] == '\r' || b[start] == '\n') {
+		kw := i + j
+		dict, ok := pdfDictBefore(b, kw)
+		if !ok {
+			// Not a stream keyword: either the tail of "endstream" or the
+			// word appearing inside content this scan has no business
+			// interpreting. Step past it and keep looking.
+			i = kw + 1
+			continue
+		}
+		start := kw + len("stream")
+		// ISO 32000-1 7.3.8.1: the keyword is followed by CRLF or LF.
+		if start < len(b) && b[start] == '\r' {
 			start++
 		}
-		end := bytes.Index(b[start:], []byte("endstream"))
-		if end < 0 {
-			return append(out, [2]int{start, len(b)})
+		if start < len(b) && b[start] == '\n' {
+			start++
 		}
-		out = append(out, [2]int{start, start + end})
-		i = start + end + len("endstream")
+
+		length, err := pdfLengthAt(b, dict, kw, objects)
+		if err != nil {
+			return nil, err
+		}
+		end := start + length
+		if end > len(b) {
+			return nil, fmt.Errorf("%w: stream at offset %d declares /Length %d, which runs past the end of the file",
+				ErrSanitizeMalformedInput, kw, length)
+		}
+		if !pdfEndstreamFollows(b, end) {
+			return nil, fmt.Errorf("%w: stream at offset %d declares /Length %d but no endstream follows it",
+				ErrSanitizeMalformedInput, kw, length)
+		}
+		out = append(out, [2]int{start, end})
+		i = end
 	}
+}
+
+// pdfObjectOffsets indexes "N G obj" headers so an indirect /Length can be
+// resolved. It is an index, not a parser: it records where each object starts
+// and nothing about what is in it.
+func pdfObjectOffsets(b []byte) map[int]int {
+	offsets := make(map[int]int)
+	for i := 0; ; {
+		j := bytes.Index(b[i:], []byte(" obj"))
+		if j < 0 {
+			return offsets
+		}
+		at := i + j
+		// Walk back over "G" and "N".
+		k := at
+		gen, ok := pdfIntBefore(b, k)
+		if ok {
+			k = gen.start
+			if num, ok2 := pdfIntBefore(b, k); ok2 {
+				offsets[num.value] = at + len(" obj")
+			}
+		}
+		i = at + len(" obj")
+	}
+}
+
+type pdfInt struct {
+	value int
+	start int
+}
+
+// pdfIntBefore reads the integer immediately preceding at, skipping one run of
+// whitespace.
+func pdfIntBefore(b []byte, at int) (pdfInt, bool) {
+	i := at
+	for i > 0 && isPDFSpace(b[i-1]) {
+		i--
+	}
+	end := i
+	for i > 0 && b[i-1] >= '0' && b[i-1] <= '9' {
+		i--
+	}
+	if i == end {
+		return pdfInt{}, false
+	}
+	v := 0
+	for _, c := range b[i:end] {
+		v = v*10 + int(c-'0')
+		if v > 1<<30 {
+			return pdfInt{}, false
+		}
+	}
+	return pdfInt{value: v, start: i}, true
+}
+
+func isPDFSpace(c byte) bool {
+	return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == 0
+}
+
+// pdfDictBefore returns the offset of the "<<" that opens the dictionary
+// immediately preceding the stream keyword at kw, and whether there is one.
+//
+// This is what makes a stream keyword structural rather than lexical: the tail
+// of "endstream" is not preceded by a closing ">>", so it is not mistaken for
+// the start of a stream. Nesting is balanced, so a /Filter or /DecodeParms
+// sub-dictionary does not end the search early.
+func pdfDictBefore(b []byte, kw int) (int, bool) {
+	i := kw
+	for i > 0 && isPDFSpace(b[i-1]) {
+		i--
+	}
+	if i < 2 || b[i-1] != '>' || b[i-2] != '>' {
+		return 0, false
+	}
+	depth := 0
+	for i >= 2 {
+		switch {
+		case b[i-1] == '>' && b[i-2] == '>':
+			depth++
+			i -= 2
+		case b[i-1] == '<' && b[i-2] == '<':
+			depth--
+			if depth == 0 {
+				return i - 2, true
+			}
+			i -= 2
+		default:
+			i--
+		}
+	}
+	return 0, false
+}
+
+// pdfLengthAt reads the /Length entry of the dictionary starting at dict,
+// resolving one level of indirection.
+func pdfLengthAt(b []byte, dict, kw int, objects map[int]int) (int, error) {
+	d := b[dict:kw]
+	at := pdfTopLevelKey(d, "/Length")
+	if at < 0 {
+		return 0, fmt.Errorf("%w: stream at offset %d has no /Length in its dictionary",
+			ErrSanitizeMalformedInput, kw)
+	}
+	rest := d[at+len("/Length"):]
+
+	num, n, ok := pdfReadInt(rest)
+	if !ok {
+		return 0, fmt.Errorf("%w: stream at offset %d has a /Length that is not a number",
+			ErrSanitizeMalformedInput, kw)
+	}
+	// Direct value, unless what follows is "G R".
+	tail := rest[n:]
+	if gen, gn, ok := pdfReadInt(tail); ok {
+		_ = gen
+		after := tail[gn:]
+		k := 0
+		for k < len(after) && isPDFSpace(after[k]) {
+			k++
+		}
+		if k < len(after) && after[k] == 'R' {
+			off, found := objects[num]
+			if !found {
+				return 0, fmt.Errorf("%w: stream at offset %d has /Length %d 0 R and object %d is not in the file",
+					ErrSanitizeMalformedInput, kw, num, num)
+			}
+			v, _, ok := pdfReadInt(b[off:])
+			if !ok {
+				return 0, fmt.Errorf("%w: stream at offset %d resolves /Length to object %d, which is not an integer",
+					ErrSanitizeMalformedInput, kw, num)
+			}
+			return v, nil
+		}
+	}
+	return num, nil
+}
+
+// pdfTopLevelKey finds a key at nesting depth 1 of a dictionary slice, so a
+// /Length inside a /DecodeParms sub-dictionary is not mistaken for the
+// stream's own.
+func pdfTopLevelKey(dict []byte, key string) int {
+	depth := 0
+	for i := 0; i+1 < len(dict); i++ {
+		if dict[i] == '<' && dict[i+1] == '<' {
+			depth++
+			i++
+			continue
+		}
+		if dict[i] == '>' && dict[i+1] == '>' {
+			depth--
+			i++
+			continue
+		}
+		if depth == 1 && bytes.HasPrefix(dict[i:], []byte(key)) && pdfNameEndsAt(dict, i+len(key)) {
+			return i
+		}
+	}
+	return -1
+}
+
+// pdfNameEndsAt reports whether a PDF name token ends at i -- that is, whether
+// the byte there is a delimiter or whitespace rather than another name
+// character.
+//
+// Without this, "/Length" matches the first seven bytes of "/Length1", a key
+// real Type1 font streams carry, and the value read is the "1" of the KEY. Found
+// by embedded_font.pdf in this project's own corpus on the first run of the
+// /Length derivation: "stream at offset 1607 declares /Length 1 but no
+// endstream follows it". A name is a token, not a prefix -- the same distinction
+// this phase is fixing three times over in other places.
+func pdfNameEndsAt(b []byte, i int) bool {
+	if i >= len(b) {
+		return true
+	}
+	switch c := b[i]; c {
+	case '(', ')', '<', '>', '[', ']', '{', '}', '/', '%':
+		return true
+	default:
+		return isPDFSpace(c)
+	}
+}
+
+func pdfReadInt(b []byte) (int, int, bool) {
+	i := 0
+	for i < len(b) && isPDFSpace(b[i]) {
+		i++
+	}
+	start := i
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		i++
+	}
+	if i == start {
+		return 0, 0, false
+	}
+	v := 0
+	for _, c := range b[start:i] {
+		v = v*10 + int(c-'0')
+		if v > 1<<30 {
+			return 0, 0, false
+		}
+	}
+	return v, i, true
+}
+
+// pdfEndstreamFollows confirms the dictionary and the bytes agree: "endstream"
+// must appear after at most a short run of whitespace. Disagreement is
+// malformed input, not something to guess at.
+func pdfEndstreamFollows(b []byte, end int) bool {
+	i := end
+	for i < len(b) && isPDFSpace(b[i]) {
+		i++
+	}
+	return bytes.HasPrefix(b[i:], []byte("endstream"))
 }
 
 func inAnyRange(ranges [][2]int, i int) bool {
@@ -346,7 +611,7 @@ func inAnyRange(ranges [][2]int, i int) bool {
 	return false
 }
 
-func redactEngineIdentity(raw []byte) []byte {
+func redactEngineIdentity(raw []byte) ([]byte, error) {
 	out := append([]byte(nil), raw...)
 
 	// SKIP STREAM PAYLOADS. These are whole-file searches, and compressed page
@@ -358,7 +623,10 @@ func redactEngineIdentity(raw []byte) []byte {
 	// would not necessarily catch it either. Caught in review (PR #12,
 	// round 7); the same scoping the verifier's byte scan already had, applied
 	// to the second of the two places that needed it.
-	streams := pdfStreamRanges(out)
+	streams, err := pdfStreamRanges(out)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, key := range producerKeys {
 		for i := 0; ; {
@@ -407,7 +675,7 @@ func redactEngineIdentity(raw []byte) []byte {
 		i = start + end
 	}
 
-	return out
+	return out, nil
 }
 
 // closingParen finds the ')' matching the '(' at start, honouring PDF's

@@ -407,7 +407,11 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 		t.Fatal("fixture does not contain the bytes the old scan tripped on")
 	}
 
-	if got := scanPDFBytes(spliced); len(got) > 0 {
+	got, err := scanPDFBytes(spliced)
+	if err != nil {
+		t.Fatalf("scanPDFBytes: %v", err)
+	}
+	if len(got) > 0 {
 		t.Errorf("byte scan reported %v for markers that live inside a stream payload; "+
 			"a verification failure deletes the output, so this destroys a correct result", got)
 	}
@@ -415,7 +419,11 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 	// And the scan must still SEE a marker outside any stream, or the scoping
 	// has simply switched the check off.
 	outside := append(append([]byte(nil), base...), []byte("\n% /JavaScript\n")...)
-	if got := scanPDFBytes(outside); len(got) == 0 {
+	got, err = scanPDFBytes(outside)
+	if err != nil {
+		t.Fatalf("scanPDFBytes: %v", err)
+	}
+	if len(got) == 0 {
 		t.Error("byte scan no longer finds a marker outside a stream -- the scoping " +
 			"disabled the check instead of narrowing it")
 	}
@@ -737,11 +745,17 @@ func TestStreamRangesAgreeWithTheVerifier(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ranges := pdfStreamRanges(raw)
+	ranges, err := pdfStreamRanges(raw)
+	if err != nil {
+		t.Fatalf("pdfStreamRanges: %v", err)
+	}
 	if len(ranges) == 0 {
 		t.Fatal("the sanitized fixture has no streams; this test proves nothing")
 	}
-	blanked := pdfNonStreamBytes(raw)
+	blanked, err := pdfNonStreamBytes(raw)
+	if err != nil {
+		t.Fatalf("pdfNonStreamBytes: %v", err)
+	}
 	if len(blanked) != len(raw) {
 		t.Fatalf("the verifier's blanking changed the length (%d -> %d)", len(raw), len(blanked))
 	}
@@ -774,7 +788,10 @@ func TestVerifierCountsRevisionsOutsideStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ranges := pdfStreamRanges(raw)
+	ranges, err := pdfStreamRanges(raw)
+	if err != nil {
+		t.Fatalf("pdfStreamRanges: %v", err)
+	}
 	if len(ranges) == 0 {
 		t.Fatal("no streams to splice into")
 	}
