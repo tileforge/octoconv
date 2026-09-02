@@ -247,16 +247,23 @@ func TestRecordUsageSkipsOrphanedClient(t *testing.T) {
 		t.Fatalf("MarkActive on orphaned-client job: %v", err)
 	}
 
-	before, err := r.pool.Query(ctx, `SELECT count(*) FROM client_usage_daily`)
-	if err != nil {
-		t.Fatalf("count before: %v", err)
+	// Scoped to THIS test's client, not the whole table. A table-wide
+	// count(*) is a property of the shared database, and `go test ./...` runs
+	// packages in parallel against one: any other package finishing a job
+	// between these two reads moves the number and fails this test for a
+	// reason that has nothing to do with orphaned clients. That is exactly the
+	// defect DEBT-13 fixed in the reconciler soak test, found again here by
+	// the phase's own gate run -- one instance fixed, a second one live.
+	countUsageRows := func(what string) int64 {
+		var n int64
+		if err := r.pool.QueryRow(ctx,
+			`SELECT count(*) FROM client_usage_daily WHERE client_id = $1`, clientID,
+		).Scan(&n); err != nil {
+			t.Fatalf("count usage rows %s: %v", what, err)
+		}
+		return n
 	}
-	var countBefore int64
-	before.Next()
-	if err := before.Scan(&countBefore); err != nil {
-		t.Fatalf("scan count before: %v", err)
-	}
-	before.Close()
+	countBefore := countUsageRows("before")
 
 	addPrimaryOutput(t, r, id)
 	if err := r.MarkDone(ctx, id, 0); err != nil {
@@ -271,19 +278,80 @@ func TestRecordUsageSkipsOrphanedClient(t *testing.T) {
 		t.Fatalf("status = %q, want done", got.Status)
 	}
 
-	after, err := r.pool.Query(ctx, `SELECT count(*) FROM client_usage_daily`)
-	if err != nil {
-		t.Fatalf("count after: %v", err)
-	}
-	var countAfter int64
-	after.Next()
-	if err := after.Scan(&countAfter); err != nil {
-		t.Fatalf("scan count after: %v", err)
-	}
-	after.Close()
+	countAfter := countUsageRows("after")
 
 	if countAfter != countBefore {
-		t.Fatalf("client_usage_daily row count changed from %d to %d — an orphaned-client job must write no usage row", countBefore, countAfter)
+		t.Fatalf("client_usage_daily rows for this test's client changed from %d to %d — an orphaned-client job must write no usage row", countBefore, countAfter)
+	}
+}
+
+// TestUsageCountsAreNotAboutTheWholeTable is the permanent version of the bug
+// TestRecordUsageSkipsOrphanedClient shipped with.
+//
+// That test read `SELECT count(*) FROM client_usage_daily` before and after its
+// own MarkDone and asserted the two matched -- a property of the SHARED table,
+// not of its own client. `go test ./...` runs packages in parallel against one
+// database, so any other package finishing a job in that window moved the
+// number and failed a test about orphaned clients for a reason that had nothing
+// to do with orphaned clients. It failed exactly that way on this phase's own
+// gate run (2554 -> 2555), which is the same defect DEBT-13 had just fixed one
+// package over.
+//
+// This pins the corrected shape: a foreign client's job is driven to done --
+// which DOES write a usage row -- in the middle of the window, and the
+// scoped count must not move. Written against the fix, then checked against the
+// old query: the table-wide form fails here, which is the only reason the
+// scoping is known to be load-bearing rather than decorative.
+func TestUsageCountsAreNotAboutTheWholeTable(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	mine := createTestClient(t, r)
+
+	countMine := func() int64 {
+		var n int64
+		if err := r.pool.QueryRow(ctx,
+			`SELECT count(*) FROM client_usage_daily WHERE client_id = $1`, mine,
+		).Scan(&n); err != nil {
+			t.Fatalf("count usage rows: %v", err)
+		}
+		return n
+	}
+	countTable := func() int64 {
+		var n int64
+		if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM client_usage_daily`).Scan(&n); err != nil {
+			t.Fatalf("count table: %v", err)
+		}
+		return n
+	}
+
+	mineBefore, tableBefore := countMine(), countTable()
+
+	// A foreign client's job, driven to done. This is what a parallel package
+	// does to the table while an unscoped assertion is mid-window.
+	other := createTestClient(t, r)
+	otherJob, err := r.Create(ctx, CreateParams{
+		ClientID: other, Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/foreign/0-in.png", Filename: "in.png", Format: "png", SizeBytes: 10},
+	})
+	if err != nil {
+		t.Fatalf("create foreign job: %v", err)
+	}
+	if err := r.MarkActive(ctx, otherJob); err != nil {
+		t.Fatalf("MarkActive foreign job: %v", err)
+	}
+	addPrimaryOutput(t, r, otherJob)
+	if err := r.MarkDone(ctx, otherJob, 0); err != nil {
+		t.Fatalf("MarkDone foreign job: %v", err)
+	}
+
+	if got := countMine(); got != mineBefore {
+		t.Errorf("scoped count moved from %d to %d because ANOTHER client finished a job", mineBefore, got)
+	}
+
+	// The other half: without this, the test above would also pass against a
+	// database where nothing was written at all, and would prove nothing.
+	if got := countTable(); got == tableBefore {
+		t.Fatalf("table-wide count did not move (%d) — the foreign job wrote no usage row, so this test never exercised the interference it exists to rule out", tableBefore)
 	}
 }
 
