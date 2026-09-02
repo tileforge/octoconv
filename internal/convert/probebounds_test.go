@@ -369,3 +369,77 @@ func TestProbePDFPageCountIsBoundByContext(t *testing.T) {
 			"bounded by the same deadline as the ghostscript passes, not merely documented as if it were")
 	}
 }
+
+// --- who is to blame when the COUNT fails ---------------------------------
+
+// TestPageCountFailuresAreAttributedCorrectly pins the distinction the first
+// version of the pdfinfo counter lost, and it is the same distinction
+// internal/inspect draws between ReasonReadFailed and ReasonMalformedInput: a
+// failure to RUN the counter is not a discovery about the document.
+//
+// Both rows below were CONFIRMED broken by running before this test existed.
+// Both were introduced by the fix for PR #15's P1 finding, which is the point
+// worth keeping: a fix is not evidence, and this one needed probing exactly
+// like the code it replaced.
+func TestPageCountFailuresAreAttributedCorrectly(t *testing.T) {
+	fixture := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		in := filepath.Join(dir, "in.pdf")
+		if err := os.WriteFile(in, multiPagePDFFixture(3), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		return in
+	}
+
+	t.Run("a cancelled context is not the document's fault", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := enforcePDFPageCeiling(ctx, fixture(t), 200)
+
+		if errors.Is(err, ErrSanitizeMalformedInput) {
+			t.Fatalf("enforcePDFPageCeiling under a cancelled context = %v, wrapping "+
+				"ErrSanitizeMalformedInput -- that is TERMINAL, the exact opposite of the polarity "+
+				"ProbeDescriptor argues for a timeout, and the job would never retry", err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("enforcePDFPageCeiling under a cancelled context = %v, want an error carrying "+
+				"context.Canceled -- the runner's own cancellation check reads it through this chain", err)
+		}
+	})
+
+	t.Run("a missing binary is not the document's fault either", func(t *testing.T) {
+		// PATH pointed at an empty directory: the counter cannot be started at
+		// all. That is our image being wrong, not the client's file.
+		t.Setenv("PATH", t.TempDir())
+
+		err := enforcePDFPageCeiling(context.Background(), fixture(t), 200)
+
+		if err == nil {
+			t.Fatal("enforcePDFPageCeiling = nil with no pdfinfo on PATH -- an unavailable counter must " +
+				"not silently admit an unbounded document")
+		}
+		if errors.Is(err, ErrSanitizeMalformedInput) {
+			t.Fatalf("enforcePDFPageCeiling with no pdfinfo on PATH = %v, wrapping "+
+				"ErrSanitizeMalformedInput -- the client is told their document could not be parsed "+
+				"when the document is fine and the image is broken, and TERMINAL means it will not "+
+				"retry after the image is fixed", err)
+		}
+	})
+
+	t.Run("pdfinfo running and producing no page count IS the document's fault", func(t *testing.T) {
+		dir := t.TempDir()
+		bad := filepath.Join(dir, "bad.pdf")
+		if err := os.WriteFile(bad, []byte("not a pdf at all"), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+
+		err := enforcePDFPageCeiling(context.Background(), bad, 200)
+
+		if !errors.Is(err, ErrSanitizeMalformedInput) {
+			t.Fatalf("enforcePDFPageCeiling on an unreadable file = %v, want ErrSanitizeMalformedInput "+
+				"-- this half must stay terminal, or the two directions collapse into one", err)
+		}
+	})
+}

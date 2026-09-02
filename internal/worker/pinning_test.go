@@ -1110,7 +1110,7 @@ func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
 		calls := []string{}
 		repo := &pinRepo{job: job, calls: &calls}
 		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
-		// The wrapped form classifyGSFailure produces for a gs timeout,
+		// The wrapped form classifyEngineFailure produces for a gs timeout,
 		// copied from TestProbeTerminalClassification's own row.
 		h.processFn = func(context.Context, *jobs.Job) error {
 			return fmt.Errorf("sanitize pdf: pdfwrite pass: %w", context.DeadlineExceeded)

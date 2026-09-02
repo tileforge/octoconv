@@ -330,7 +330,7 @@ func isProbeTerminal(err error) bool {
 	// rather than on the file, so it stays TRANSIENT -- falling through to
 	// isTerminal, which returns false for a DeadlineExceeded. This is the
 	// explicit opposite of isPandocTerminal/isDocumentTerminal, which route
-	// through timeoutIsTerminal. classifyGSFailure (sanitizepdf.go) is what
+	// through timeoutIsTerminal. classifyEngineFailure (sanitizepdf.go) is what
 	// keeps a timeout out of the branch above.
 	return isTerminal(err)
 }

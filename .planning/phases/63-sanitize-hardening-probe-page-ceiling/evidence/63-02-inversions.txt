@@ -72,3 +72,29 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	1.082s
 FAIL
 [exit 1]
 
+
+##### ROUND 2b -- self-probe of the round-2 fix (a fix is not evidence) #####
+
+=== INVERSION 9: the page count writes its OWN classification instead of using classifyEngineFailure ===
+--- FAIL: TestPageCountFailuresAreAttributedCorrectly (0.06s)
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_cancelled_context_is_not_the_document's_fault (0.01s)
+        probebounds_test.go:402: enforcePDFPageCeiling under a cancelled context = sanitize: input could not be processed: page count: pdfinfo killed: context canceled, wrapping ErrSanitizeMalformedInput -- that is TERMINAL, the exact opposite of the polarity ProbeDescriptor argues for a timeout, and the job would never retry
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_missing_binary_is_not_the_document's_fault_either (0.00s)
+        probebounds_test.go:424: enforcePDFPageCeiling with no pdfinfo on PATH = sanitize: input could not be processed: page count: start pdfinfo: exec: "pdfinfo": executable file not found in $PATH, wrapping ErrSanitizeMalformedInput -- the client is told their document could not be parsed when the document is fine and the image is broken, and TERMINAL means it will not retry after the image is fixed
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.188s
+FAIL
+[exit 1]
+
+=== INVERSION 10: classifyEngineFailure loses the could-not-start branch (imports dropped so it still compiles) ===
+--- FAIL: TestPageCountFailuresAreAttributedCorrectly (0.00s)
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_missing_binary_is_not_the_document's_fault_either (0.00s)
+        probebounds_test.go:424: enforcePDFPageCeiling with no pdfinfo on PATH = sanitize: input could not be processed: page count: start pdfinfo: exec: "pdfinfo": executable file not found in $PATH, wrapping ErrSanitizeMalformedInput -- the client is told their document could not be parsed when the document is fine and the image is broken, and TERMINAL means it will not retry after the image is fixed
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.293s
+FAIL
+[exit 1]
+
+=== image check (recorded, not asserted from the Dockerfile) ===
+/usr/bin/pdfinfo
+pdfinfo version 22.12.0

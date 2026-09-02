@@ -70,7 +70,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -218,12 +220,17 @@ func pdfwriteArgs(psPath, outPath string) []string {
 func probePDFPageCount(ctx context.Context, inPath string) (int, error) {
 	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(inPath)...)
 	if err != nil {
-		return 0, fmt.Errorf("%w: pdfinfo could not read the input: %v",
-			ErrSanitizeMalformedInput, err)
+		// Through the SAME classifier the ghostscript passes use. Writing a
+		// second one here is what the first version did, and it put a
+		// cancelled context and a missing binary in the malformed-input
+		// bucket -- terminal, and blamed on the client's file.
+		return 0, classifyEngineFailure("page count", err)
 	}
 	n, err := parsePdfinfoPages(out)
 	if err != nil {
-		return 0, fmt.Errorf("%w: %v", ErrSanitizeMalformedInput, err)
+		// pdfinfo RAN and its output has no legible Pages line. That is a
+		// statement about the file, so it stays malformed input.
+		return 0, fmt.Errorf("%w: page count: %v", ErrSanitizeMalformedInput, err)
 	}
 	return n, nil
 }
@@ -255,7 +262,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	psPath := filepath.Join(tmpDir, "intermediate.ps")
 
 	if _, err := runCommand(ctx, "gs", ps2writeArgs(inPath, psPath)...); err != nil {
-		return SanitizeResult{}, classifyGSFailure("ps2write pass", err)
+		return SanitizeResult{}, classifyEngineFailure("ps2write pass", err)
 	}
 
 	// A zero-byte intermediate means the first pass "succeeded" without
@@ -272,7 +279,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	}
 
 	if _, err := runCommand(ctx, "gs", pdfwriteArgs(psPath, outPath)...); err != nil {
-		return SanitizeResult{}, classifyGSFailure("pdfwrite pass", err)
+		return SanitizeResult{}, classifyEngineFailure("pdfwrite pass", err)
 	}
 
 	// Ghostscript signs its own output. See redactEngineIdentity's header for
@@ -296,8 +303,14 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	}, nil
 }
 
-// classifyGSFailure separates the ONE ghostscript failure that depends on
-// something other than the input from every other one.
+// classifyEngineFailure separates the failures that depend on something other
+// than the input from every other one.
+//
+// It was classifyGSFailure, and was renamed when the page counter became the
+// third caller: nothing in the rule is specific to ghostscript, and a second
+// copy of a classification rule is how this phase's P1 defect got in (two
+// engines answering one question two different ways). One rule, three call
+// sites -- both ghostscript passes and the pdfinfo page count.
 //
 // A timeout is about load: the box was busy, and the next attempt may not be.
 // Everything else -- a parse error, a refusal, a non-zero exit on a file gs
@@ -318,13 +331,26 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 // recorded as a failure the client never caused. Caught in review (PR #12,
 // round 5).
 //
+// COULD-NOT-START IS THE THIRD ONE, and it was a regression the page counter
+// introduced. When the engine binary is absent from the image, os/exec fails
+// with exec.ErrNotFound and the old code wrapped that as malformed input:
+// TERMINAL, and reported to the client as "the uploaded document could not be
+// parsed for sanitization". The document is fine; our image is broken. It is
+// the same distinction internal/inspect draws between ReasonReadFailed and
+// ReasonMalformedInput -- a failure to READ is not a discovery about the file
+// -- and it matters twice over, because terminal means the job will not retry
+// after the image is fixed.
+//
 // The %v in the malformed branch is deliberate and is why this ordering
 // matters: it flattens the cause so nothing downstream mistakes an engine
 // message for a context outcome. That flattening is exactly what destroyed the
 // cancellation signal when the check above did not cover it.
-func classifyGSFailure(stage string, err error) error {
+func classifyEngineFailure(stage string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("sanitize pdf: %s: engine binary is not available in this image: %w", stage, err)
 	}
 	return fmt.Errorf("%w: %s: %v", ErrSanitizeMalformedInput, stage, err)
 }

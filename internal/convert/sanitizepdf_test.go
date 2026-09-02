@@ -360,7 +360,7 @@ func buildIncrementalUpdate(t *testing.T, base []byte) []byte {
 // the worker's classification test does -- would not notice this function
 // getting it wrong.
 func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
-	timeout := classifyGSFailure("pdfwrite pass", fmt.Errorf("gs killed: %w", context.DeadlineExceeded))
+	timeout := classifyEngineFailure("pdfwrite pass", fmt.Errorf("gs killed: %w", context.DeadlineExceeded))
 	if errors.Is(timeout, ErrSanitizeMalformedInput) {
 		t.Error("a ghostscript TIMEOUT was classified as malformed input; the job would be " +
 			"failed terminally because the machine was busy")
@@ -376,7 +376,7 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 	// isCanceled check stop recognising it, so a cancelled job was MarkFailed
 	// as a bad upload. The previous inversion pass missed this because no test
 	// covered it -- the same gap, one round later, in the same function.
-	canceled := classifyGSFailure("ps2write pass", fmt.Errorf("gs killed: %w", context.Canceled))
+	canceled := classifyEngineFailure("ps2write pass", fmt.Errorf("gs killed: %w", context.Canceled))
 	if errors.Is(canceled, ErrSanitizeMalformedInput) {
 		t.Error("a CANCELLED ghostscript run was classified as malformed input; the runner " +
 			"would MarkFailed a job the client had already cancelled")
@@ -385,7 +385,7 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 		t.Error("the cancellation was lost from the error chain, so isCanceled cannot see it")
 	}
 
-	parse := classifyGSFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
+	parse := classifyEngineFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
 		"Error: /undefined in --get--"))
 	if !errors.Is(parse, ErrSanitizeMalformedInput) {
 		t.Errorf("a ghostscript PARSE failure was not classified as malformed input: %v -- the "+

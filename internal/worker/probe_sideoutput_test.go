@@ -173,7 +173,7 @@ func TestProbeTerminalClassification(t *testing.T) {
 			"classification must survive wrapping"},
 		{"wrapped timeout", fmt.Errorf("sanitize pdf: pdfwrite pass: %w",
 			context.DeadlineExceeded), false,
-			"a wrapped deadline stays transient -- classifyGSFailure keeps it out of the " +
+			"a wrapped deadline stays transient -- classifyEngineFailure keeps it out of the " +
 				"malformed branch"},
 	}
 	for _, tc := range cases {
