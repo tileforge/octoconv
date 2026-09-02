@@ -201,6 +201,49 @@ non-optional. Two tests hold it, from the two directions it can break:
   handler and `convert.EnforceProbeMaxPages` over `max-1, max, max+1, 3000` and
   fails if they ever disagree at the boundary.
 
+## Review round 1 (PR #15, codex) — three findings, all confirmed by running
+
+**P1 — the ceiling refused the documents sanitize exists for.** The worker
+counted pages with `api.PageCountFile`, which performs full pdfcpu validation,
+and pdfcpu's validator rejects several of the constructs this operation removes.
+Measured on the repository's own `threat_all_classes.pdf`: `validation error
+(obj#:12): document catalog: catalog AA: additional action rootDict.AA: action O
+not allowed for source root`. With `PROBE_MAX_PAGES` set, every threat-carrying
+PDF would have failed terminally as malformed instead of being disarmed.
+
+**The suite stayed green because of this plan's own deviation.** The gate lives
+in `SanitizeConverter.Convert` (deviation 3 above), while nearly every sanitize
+test calls `SanitizeFile` directly and bypasses it. The placement is still the
+right call for the reasons given — but it moved the tests off the path, and
+nothing here noticed.
+
+**P2 — and the count was not cancellable.** `api.PageCountFile` takes no
+context, so the comment claiming `PROBE_ENGINE_TIMEOUT` bounded it was false; at
+concurrency 1 the worker is held past its own deadline.
+
+Both fixed by one change: count with `pdfinfo` through `runCommand`. It reports
+the same fixture as 1 page, it is a subprocess so the process-group kill applies,
+and it is the mechanism `ocr-worker` already uses — two engines answering one
+question two ways is how this got in.
+
+**P3 — the admission gate could reject on payload.** The risk-token scan always
+filtered through the opaque-range set; the page-count walk did not. A two-page
+PDF with `/Type /Pages /Count 300` in a content stream measured as 300 and would
+have been refused. Fixed structurally (both the marker and the `/Count` position
+are range-checked, and a ceiling-hit range scan abstains), plus the gate now
+refuses the last-wins tie-break `AnalyzePDF` takes.
+
+**The inversions then found a bad test rather than bad code.** Inversion 7 passed
+with the opaque filtering removed entirely: the test accepted an abstention as
+success, and without filtering the walk sees both counts, they disagree, and the
+unambiguity rule abstains — two mechanisms masking each other with neither under
+test. Requiring a definite 2 isolates the filtering, and is also what the gate
+needs: if every PDF with a text-drawing stream abstained, it would refuse
+nothing.
+
+Round-2 inversions (6, 7, 8) recorded in `evidence/63-02-inversions.txt`.
+Fixed in `4d11d50`.
+
 ## Issues Encountered
 
 None outstanding.
