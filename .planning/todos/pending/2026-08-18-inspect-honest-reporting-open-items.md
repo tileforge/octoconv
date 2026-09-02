@@ -9,6 +9,7 @@ files:
   - internal/convert/markupsniff.go, internal/convert/olecfb.go (LooksLike*/IsOLECFB signatures)
   - docs/openapi.yaml (InspectReport.coverage description)
 origin: codex review rounds 20-27 on PR #9 (phase 58)
+resolves_phase: 62
 ---
 
 ## Why this file exists
