@@ -439,6 +439,46 @@ Together with round 1's inversion 7 — which passed because the test accepted a
 abstention as success while two mechanisms masked each other — that is three
 inadequate tests found by inverting rather than by reading.
 
+## Review round 6, and the reversal it forced
+
+Two of round 6's five findings were more of the same (an unbounded xref-derived
+index, unbounded dictionary nesting: 313 MB for a 2 MiB input). One was a false
+claim in a test I had written to be honest — the differential table said "every
+committed PDF" while its roots omitted `internal/convert/testdata`.
+
+The fifth ended the gate. **A PDF's page tree is a tree.** A 300-page document
+with two 150-page children declares three different counts, all correct, and the
+unambiguity rule abstained on all of them. Verified by running: the gate
+answered confidently only for single-node trees — short documents, where the
+ceiling does not apply. It could not refuse the documents it existed to refuse.
+
+Making it able means resolving the catalog's `/Pages` reference — a document
+graph in the API process, which phase 58 D-02a refused. The operator was shown
+the tally and chose to remove the gate (option C, offered twice and declined
+once before the evidence was this complete).
+
+**What went, what stayed.** Gone: the handler gate and its tests,
+`Config.ProbeMaxPages`, `inspect.PDFPageCount`, `convert.PDFTypedDictUints`, the
+`page_limit` binding, and `errcode.TooManyPages` (the sync half, now
+unproducible — the async code is untouched). Stayed: everything worker-side, and
+the anti-drift guard, rewritten to assert exactly ONE reader so a second one
+reappearing fails loudly.
+
+**Not lost, filed.** `2026-09-03-pdf-page-count-tokenizer.md` carries the four
+`internal/inspect` defects the tokenizer fixed, the two P1 resource findings
+still open against it, and the commits to restore it from.
+
+## What this plan actually measured
+
+The asymmetry, which is worth more than either gate:
+
+| | derived the answer | asked pdfinfo |
+|---|---|---|
+| review rounds | 6 | 1 |
+| valid documents it would have refused | 7 | 0 |
+| resource defects | 3 (2 self-inflicted) | 0 |
+| works on the documents it was built for | **no** | yes |
+
 ## Issues Encountered
 
 None outstanding.
