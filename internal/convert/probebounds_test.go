@@ -91,25 +91,27 @@ func TestProbeSentinelIsNotTheOCRSentinel(t *testing.T) {
 	}
 }
 
-// TestProbeMaxPagesHasOneDefault is the anti-drift guard 63-CONTEXT.md D-04
-// requires, aimed at the half that has actually broken before.
+// TestProbeMaxPagesHasExactlyOneReader pins what is left of D-04 after the
+// admission gate was removed.
 //
-// This phase deliberately enforces ONE rule in TWO processes. The failure mode
-// is not that one of them forgets the comparison -- that is loud. It is that
-// each grows its own default literal and the two diverge, which is silent, and
-// which is exactly what happened to this same engine's OTHER bound: cmd/api
-// omitted PROBE_ENGINE_TIMEOUT entirely and published estimated_max_seconds: 0
-// while the worker ran with its own number. Nothing failed until a human read
-// the diff (PR #12).
+// The guard was written when the ceiling was enforced in TWO processes, and it
+// asserted that both resolved their default through DefaultProbeMaxPages --
+// aimed at the failure that had already happened to this engine's other bound,
+// where cmd/api omitted PROBE_ENGINE_TIMEOUT and published
+// estimated_max_seconds: 0 while the worker used its own value.
 //
-// So: every non-test Go file that READS PROBE_MAX_PAGES must resolve its
-// default through DefaultProbeMaxPages, never through a literal of its own.
-func TestProbeMaxPagesHasOneDefault(t *testing.T) {
-	// The QUOTED form, not the bare name. A bare-name scan matches every
-	// doc comment that mentions the ceiling -- and this phase wrote several,
-	// deliberately, because the two gates are supposed to explain themselves.
-	// A Go string literal is what a READER of the variable has, and nothing
-	// else in this tree spells it that way.
+// There is now ONE reader, because the API-side gate was removed after six
+// review rounds (63-CONTEXT.md D-04, reversed). So the proposition changes with
+// the design rather than being deleted with it: exactly one process reads this
+// env var, and it resolves its default through the shared constant. A SECOND
+// reader appearing is now the thing worth failing on -- it would mean the
+// admission gate, or something like it, came back without the decision being
+// revisited.
+func TestProbeMaxPagesHasExactlyOneReader(t *testing.T) {
+	// The QUOTED form, not the bare name. A bare-name scan matches every doc
+	// comment that mentions the ceiling -- and several files explain at length
+	// why the API no longer reads it. A Go string literal is what a READER of
+	// the variable has.
 	const envLiteral = `"PROBE_MAX_PAGES"`
 
 	readers := map[string]string{}
@@ -141,27 +143,22 @@ func TestProbeMaxPagesHasOneDefault(t *testing.T) {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 
-	if len(readers) == 0 {
-		t.Fatal("no non-test Go source reads PROBE_MAX_PAGES -- either the env var was renamed or " +
-			"this scan no longer reaches the source tree, and in both cases the anti-drift guarantee is gone")
-	}
 	names := make([]string, 0, len(readers))
 	for k := range readers {
 		names = append(names, k)
 	}
 	sort.Strings(names)
 
-	if len(readers) < 2 {
-		t.Errorf("PROBE_MAX_PAGES is read in %d place(s): %v -- the ceiling is enforced in BOTH cmd/api "+
-			"and cmd/probe-worker (D-04), so a single reader means one of the two gates lost its bound",
-			len(readers), names)
+	if len(names) != 1 {
+		t.Fatalf("PROBE_MAX_PAGES is read in %d place(s): %v -- want exactly one. The sanitize page "+
+			"ceiling is enforced in cmd/probe-worker alone; an admission gate that reads it was built "+
+			"and removed after six review rounds, and a second reader reappearing means that decision "+
+			"was reversed without being revisited (63-CONTEXT.md D-04)", len(names), names)
 	}
-	for _, name := range names {
-		if !strings.Contains(readers[name], "DefaultProbeMaxPages") {
-			t.Errorf("%s reads PROBE_MAX_PAGES but does not resolve its default through "+
-				"DefaultProbeMaxPages -- a second default literal is how PROBE_ENGINE_TIMEOUT drifted "+
-				"between these same two processes", name)
-		}
+	if !strings.Contains(readers[names[0]], "DefaultProbeMaxPages") {
+		t.Errorf("%s reads PROBE_MAX_PAGES but does not resolve its default through "+
+			"DefaultProbeMaxPages -- the constant is where the derivation lives, and a literal here "+
+			"separates the number from the reasoning that produced it", names[0])
 	}
 }
 

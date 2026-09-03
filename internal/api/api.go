@@ -183,20 +183,9 @@ type Server struct {
 	// central-directory entry in an office document, compared against
 	// ContainerResult.TotalUncompressed (also uint64).
 	maxDocumentUncompressedBytes uint64
-	// probeMaxPages is the PROBE_MAX_PAGES ceiling the sanitize admission
-	// gate enforces (PROBE-01). Zero means "no cap configured" and the gate
-	// does not run -- the same zero-value convention
-	// convert.EnforceProbeMaxPages itself uses, so a Server built without
-	// this field behaves exactly as it did before Phase 63.
-	//
-	// The bound is enforced in TWO places, here and in cmd/probe-worker, from
-	// ONE default (convert.DefaultProbeMaxPages) through ONE comparison
-	// (convert.EnforceProbeMaxPages). See 63-CONTEXT.md D-04 for why the
-	// duplication is deliberate and what holds the two together.
-	probeMaxPages int
-	presignTTL    time.Duration
-	ipRateRPM     int
-	clientRateRPM int
+	presignTTL                   time.Duration
+	ipRateRPM                    int
+	clientRateRPM                int
 	// operators is the OPERATOR_CLIENT_IDS membership set (D-01, Phase 26):
 	// callers whose resolved client.ID is a key here may reach the
 	// /v1/system/presets subtree via requireOperator. Never nil after
@@ -281,14 +270,8 @@ func (s *Server) SetCancelPublisher(p CancelPublisher) {
 
 // Config configures a Server.
 type Config struct {
-	MaxUploadBytes int64
-	MaxImagePixels uint64
-	// ProbeMaxPages is the sanitize admission page ceiling (PROBE-01),
-	// PROBE_MAX_PAGES. Unlike most fields here, zero is NOT backfilled with a
-	// default by NewServer: zero means the gate is off, and cmd/api supplies
-	// convert.DefaultProbeMaxPages explicitly. Backfilling would make every
-	// test-constructed Server silently start rejecting PDFs at 200 pages.
-	ProbeMaxPages                int
+	MaxUploadBytes               int64
+	MaxImagePixels               uint64
 	MaxDocumentUncompressedBytes uint64
 	// MaxPandocInputBytes is the API-side mirror of the worker's
 	// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go) --
@@ -588,7 +571,6 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		maxUploadByte:                cfg.MaxUploadBytes,
 		maxEngineBytes:               cfg.MaxEngineBytes,
 		maxImagePixels:               cfg.MaxImagePixels,
-		probeMaxPages:                cfg.ProbeMaxPages,
 		maxDocumentUncompressedBytes: cfg.MaxDocumentUncompressedBytes,
 		presignTTL:                   cfg.PresignTTL,
 		ipRateRPM:                    cfg.IPRateLimitRPM,

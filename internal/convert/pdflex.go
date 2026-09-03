@@ -61,10 +61,6 @@ type pdfScan struct {
 	// pass -- for example one whose /Length object is defined later in the
 	// file.
 	unresolved int
-	// objectsCapped reports that the walk stopped indexing objects because it
-	// reached the caller's limit, so `objects` is INCOMPLETE. Only set for
-	// callers that pass a limit; the sanitize paths pass none and never see it.
-	objectsCapped bool
 }
 
 // pdfLexInt is an integer token and where it started, so "N G obj" can be read
@@ -83,27 +79,12 @@ type pdfLexInt struct {
 // decoy planted in a payload unable to poison the lookup that precedes it.
 func scanPDF(b []byte) pdfScan { return scanPDFSeeded(b, nil) }
 
-// scanPDFLimited is scanPDFSeeded with a cap on how many object headers it will
-// index, after which it stops recording and sets objectsCapped.
-//
-// The cap exists for callers that run on an UNBOUNDED, attacker-supplied window
-// in a process with a memory limit: an 8 MiB body of unique "N 0 obj" records
-// made the unbounded index allocate 40 MB, and POST /v1/jobs holds no
-// concurrency semaphore (PR #15 round 5). maxObjects <= 0 means no cap, which
-// is what the sanitize worker passes -- it runs on one file it has already
-// downloaded, inside a cgroup, under a measured timeout.
-func scanPDFLimited(b []byte, seed map[int]int, maxObjects int) pdfScan {
-	return scanPDFImpl(b, seed, maxObjects)
-}
-
 // scanPDFSeeded is scanPDF with an object index from an earlier pass already in
 // hand, so a /Length object defined AFTER the stream that refers to it can be
 // resolved on the second look. Seeding is the only thing that makes the retry
 // different from the first pass; everything else about the walk is identical,
 // which is why there is one implementation and not two.
-func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, seed, 0) }
-
-func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
+func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 	res := pdfScan{objects: map[int]int{}}
 	for k, v := range seed {
 		res.objects[k] = v
@@ -230,15 +211,6 @@ func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
 		word, next := pdfReadKeyword(b, i)
 		switch {
 		case word == "obj" && depth == 0 && len(ints) == 2:
-			if maxObjects > 0 && len(res.objects) >= maxObjects {
-				// STOP, do not merely stop recording. The caller that passes a
-				// cap abstains on objectsCapped, so every byte walked after
-				// this point is work done for an answer that will not be given
-				// -- and the walk itself allocates per token. Continuing to the
-				// end of an 8 MiB body still cost 58 MB with the index capped.
-				res.objectsCapped = true
-				return res
-			}
 			res.objects[ints[0].value] = next
 			i = next
 			ints = nil

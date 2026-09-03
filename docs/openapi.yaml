@@ -103,7 +103,6 @@ components:
             - quota_exceeded
             - rate_limited
             - inspect_busy
-            - too_many_pages
             - internal_error
       required: [error, code]
 
@@ -886,10 +885,7 @@ paths:
             format mismatch, unrecognized content, invalid/inapplicable
             opts, unknown or inactive preset, macro-carrying document,
             password-protected or legacy Office file, a declared
-            size/dimension over the configured limit, or (operation=sanitize
-            only) a PDF whose declared page count exceeds PROBE_MAX_PAGES --
-            code too_many_pages, the same code the job's async error_code
-            carries when the worker refuses it instead.
+            size/dimension over the configured limit.
           content:
             application/json:
               schema:

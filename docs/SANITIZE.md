@@ -69,18 +69,20 @@ engine timeout (`PROBE_ENGINE_TIMEOUT`, 600s) was derived from that cost for a 2
 so 200 is not a second, independently chosen number — it is the same document bound, now enforced
 rather than assumed.
 
-A PDF over the ceiling is refused with the error code **`too_many_pages`**, and refused *twice*
-for two different reasons:
+A PDF over the ceiling fails with the error code **`too_many_pages`**, on the **first** attempt —
+no retries are spent, because a document that is too long is too long every time.
 
-| Where | How the count is obtained | What the client sees |
-|-------|---------------------------|----------------------|
-| At admission (`POST /v1/jobs`) | A bounded read of the uploaded bytes. It is allowed to answer "unknown" — it cannot see into compressed object streams, and it abstains rather than guess whenever the declared count is not plainly readable from the bytes in hand | `422` with `code: too_many_pages`, and **nothing is stored** |
-| In the worker, before conversion starts | An accurate count, affordable there | The job fails with `error_code: too_many_pages` on the **first** attempt — no retries are spent |
+The refusal happens in the worker, before conversion starts, and **not** at upload time. An
+earlier design also refused at admission, so that nothing was stored; it was removed because a page
+count cannot be derived reliably from untrusted bytes in the API process. A PDF's page tree is a
+tree, so a long document declares several different counts — the root's total and each subtree's —
+and a reader that does not resolve the catalog's own `/Pages` reference cannot tell which is which.
+Seven distinct ways a *valid* document could be refused were found before that one was, and the
+refusal that mattered least was the one it could actually make: it answered confidently only for
+short documents, where the ceiling does not apply.
 
-The two are one bound with two ways of counting. The admission gate exists to save the upload; it
-is not the guarantee, which is why it may abstain. A PDF whose page count the cheap scan cannot
-determine is **admitted** on purpose: refusing a legitimate document because our own bounded
-scanner has a blind spot is the worse of the two errors available.
+So an over-long document costs one upload and one queue slot before it is refused. What that buys
+is that a valid document is never refused by a guess.
 
 The value is **provisional** in one specific respect. The 2.0 s/page cost is measured; "200 pages
 is a generous document bound" is reasoned, from a corpus chosen by hand rather than from what

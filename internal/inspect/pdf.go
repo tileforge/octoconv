@@ -24,19 +24,6 @@
 // this file answer "clean" for a file whose content it structurally cannot
 // see is wrong even if every other test is green.
 //
-// ONE LATER EXCEPTION, STATED HERE SO THE PARAGRAPH ABOVE STAYS TRUE.
-//
-// pdfcpu is still not introduced in this package and the compression-signal
-// downgrade above is unchanged. But PDFPageCount -- added in Phase 63 for the
-// sanitize admission gate -- does not scan bytes for its answer either: it
-// delegates to internal/convert's pdflex tokenizer. That is not "parse
-// harder" in D-02a's sense (no document model, no decoding, no third-party
-// dependency), and it was not a preference: a byte scan of the same question
-// produced four false-rejection paths in three review rounds, each turning a
-// valid upload into a 422. The distinction the paragraph above draws is
-// between a SCANNER and a PARSER; a tokenizer sits between them, and this
-// file now uses one for exactly one question.
-//
 // The inverse matters just as much and is easy to get backwards: a
 // POSITIVE finding is never weakened by the same blindness. If /JavaScript
 // is actually found in the bounded window, that is a real observation and
@@ -49,8 +36,6 @@ import (
 	"io"
 	"sort"
 	"strconv"
-
-	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // pdfCountSearchWindow bounds how far past a "/Type/Pages" (or "/Type
@@ -450,7 +435,7 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		res.Characteristics["text_layer_reason"] = string(textLayerReason)
 	}
 
-	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape)
+	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, tr)
 	if count != nil {
 		res.Characteristics["page_count"] = *count
 	} else {
@@ -462,134 +447,6 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 	}
 
 	return res
-}
-
-// PDFPageCount answers ONE question about r -- how many pages does this PDF
-// declare -- spending at most maxBytes, and returns nil when it cannot answer.
-//
-// # WHY THIS EXISTS SEPARATELY FROM AnalyzePDF
-//
-// Its caller is the sanitize admission gate in internal/api (PROBE-01), which
-// needs the page count of every sanitize upload and nothing else. AnalyzePDF
-// would also run seven risk-token scans and the text-layer detector, and the
-// text-layer detector is by far the most expensive consumer of the budget --
-// it inflates stream bodies. Spending that on every sanitize upload to obtain
-// an answer nobody asked for is the cost this entry point avoids.
-//
-// It is deliberately NARROW rather than general: it does not report findings,
-// it does not build a FamilyResult, and it must not grow into a second front
-// door for PDF analysis. If a caller needs more than the page count, it needs
-// AnalyzePDF.
-//
-// # WHY IT MAY RETURN nil, AND WHY THAT IS NOT A FAILURE
-//
-// The walk is bounded: it cannot see into compressed object streams, it does
-// not decode hex-escaped names, and it stops at the first construct whose
-// meaning it cannot establish. Each of those is a blind spot reported as
-// unknown rather than guessed at (D-01: "unknown is a correct answer, not a
-// failure"). The admission gate ADMITS on nil, deliberately -- rejecting a
-// legitimate PDF because our cheap walk has a blind spot would be the worse
-// error, and the worker's accurate pdfinfo count is the actual bound
-// (63-CONTEXT.md D-04).
-//
-// It is no longer a byte scanner, and the difference is load-bearing rather
-// than cosmetic. It delegates to internal/convert's tokenizer, which knows
-// whole-name tokens from prefixes, array values from dictionary keys, and
-// stream payloads from structure -- four things a byte scan got wrong here in
-// three review rounds. It DOES resolve one integer through one indirect
-// reference, using an object index built from a forward pass and the xref, so
-// "does not resolve the xref chain" is no longer true of it and is not claimed.
-// It still builds no document and decodes nothing.
-//
-// The compression/name-escape signals are read from BOTH a head and a tail
-// window, on the same split AnalyzePDF uses and for a reason that matters
-// here specifically: an /ObjStm marker near EOF, missed because only the head
-// was read, would turn an honest "unknown" into a confident count -- and a
-// confident wrong count at this call site rejects a file the service could
-// have sanitized.
-func PDFPageCount(r io.ReaderAt, size, maxBytes int64, tr *Tracker) (*int, Reason) {
-	if size <= 0 || maxBytes <= 0 {
-		return nil, ReasonMalformedInput
-	}
-
-	// The same allowance split AnalyzePDF performs, carved BEFORE the first
-	// read so no window is sized against bytes another window already spent.
-	headLen := maxBytes
-	var tailReserve int64
-	if size > maxBytes {
-		tailReserve = maxBytes / 4
-		if tailReserve > defaultTailWindow {
-			tailReserve = defaultTailWindow
-		}
-		headLen = maxBytes - tailReserve
-	}
-	if size < headLen {
-		headLen = size
-	}
-	head, headOK := readWindow(r, 0, headLen, size)
-	if !headOK {
-		// A failure to READ the upload, not a discovery about its structure
-		// -- the two are different facts and carry different Reason values.
-		return nil, ReasonReadFailed
-	}
-
-	truncated := size > maxBytes
-	var tail []byte
-	var tailOK bool
-	if truncated && tailReserve > 0 {
-		tailOff := size - tailReserve
-		if tailOff < 0 {
-			tailOff = 0
-		}
-		tail, tailOK = readWindow(r, tailOff, tailReserve, size)
-	}
-
-	compressed := containsCompressionSignal(head) || (tailOK && containsCompressionSignal(tail))
-	hexEscape := containsPDFNameHexEscape(head) || (tailOK && containsPDFNameHexEscape(tail))
-
-	// NO OPAQUE-RANGE SCAN HERE, and its absence is the fix for a defect this
-	// function introduced rather than an omission.
-	//
-	// The byte scanner this walk replaced needed the range set to tell payload
-	// from structure. The tokenizer knows PDF's lexical contexts for itself, so
-	// the ranges became unused -- but the CALL was left in place for its
-	// ceiling bit, with the slice discarded. That is not free: it constructs,
-	// merges and sorts up to a million ranges. Measured on an 8 MiB
-	// comment-heavy input, this function allocated 113 MB and took 35 ms per
-	// call. The API pod is limited to 1 GiB and this route, unlike
-	// POST /v1/inspect, holds no concurrency semaphore -- so a small
-	// authenticated burst could exhaust it before a single upload was admitted.
-	// Found in review (PR #15 round 4), and the whole cost bought a signal
-	// about a scan that no longer informs this answer.
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape)
-	if len(counts) == 0 {
-		if reason == "" {
-			reason = ReasonMalformedInput
-		}
-		return nil, reason
-	}
-
-	// THE GATE REFUSES TO TAKE A TIE-BREAK.
-	//
-	// AnalyzePDF publishes the last count it saw, because the revision closest
-	// to EOF is the most likely current one and a characteristic wants the
-	// best available answer. This caller REJECTS uploads, and there the same
-	// tie-break is not good enough: several structurally-plausible markers
-	// disagreeing means an incremental update, an artefact, or something this
-	// bounded scan does not model -- and refusing a client's document on the
-	// strength of "we took the last one" is exactly the confidently-wrong
-	// rejection 63-CONTEXT.md D-04 chose to avoid.
-	//
-	// Abstaining costs one S3 write and hands the decision to the worker's
-	// accurate count, which is the designed fallback and already the answer
-	// for every other blind spot this scanner has.
-	first := counts[0]
-	for _, c := range counts[1:] {
-		if c != first {
-			return nil, ReasonMalformedInput
-		}
-	}
-	return &first, ""
 }
 
 // verdictStatus and verdictReason implement, together, the ONE verdict rule
@@ -1121,70 +978,86 @@ func scanAllOccurrences(buf, token []byte, max int, tr *Tracker, fn func(pos int
 // simply live past the read window). Returns (nil, ReasonMalformedInput)
 // when the whole (untruncated) window was searched and no Pages dict with a
 // legible /Count was ever found.
-func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool) (*int, Reason) {
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape)
-	if len(counts) == 0 {
-		return nil, reason
-	}
-	// Last wins -- the revision closest to EOF is the most likely to be the
-	// current one. See this function's doc comment above for why that is the
-	// closest an honest bounded scan gets, and PDFPageCount for why the
-	// ADMISSION GATE deliberately refuses to take that tie-break.
-	v := counts[len(counts)-1]
-	return &v, ""
-}
-
-// collectPDFPageCounts is extractPDFPageCount's walk, returning EVERY
-// plausible count it saw rather than only the last one.
-//
-// The split exists because two callers need different things from the same
-// walk, and the difference is not a preference:
-//
-//   - AnalyzePDF reports page_count as a CHARACTERISTIC. Several markers with
-//     different counts is the ordinary shape of an incrementally-updated PDF,
-//     and the newest is the right answer to publish.
-//   - PDFPageCount feeds an admission gate that REJECTS. There, "several
-//     plausible answers, we took the last" is not a basis on which to refuse a
-//     client's upload -- so it abstains and lets the worker's accurate count
-//     decide (63-CONTEXT.md D-04).
-//
-// OPAQUE RANGES ARE THE FIX FOR PR #15's FALSE-REJECTION FINDING.
-//
-// The risk-token scan has always filtered its matches through
-// scanTokenOccurrences' opaque-range argument; this walk did not, and nothing
-// noticed while its output was only ever a reported characteristic. As the
-// input to a 422 it became a defect with teeth: a valid two-page PDF whose
-// CONTENT STREAM contains the bytes "/Type /Pages /Count 300" was measured
-// reporting 300, and would have been refused at admission.
-//
-// A marker inside a stream body, a comment, or a literal/hex string is
-// payload, not structure. So is the "/Count" that follows it -- both positions
-// are checked, because a structural marker followed by a count that lives
-// inside a string is no more authoritative than the reverse.
-//
-// When the opaque-range scan itself hit its iteration ceiling the range set is
-// INCOMPLETE, and a match "outside every KNOWN opaque range" may well sit
-// inside one this scan never reached. That is the same reasoning AnalyzePDF's
-// fifth verdict gate already applies to every risk code, applied here.
-func collectPDFPageCounts(head []byte, compressed, truncated, hexEscape bool) ([]int, Reason) {
+func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr *Tracker) (*int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
 	}
 	if hexEscape {
 		return nil, ReasonPDFNameEscape
 	}
-	if truncated {
-		return nil, ReasonWorkCeilingBytes
+
+	var found *int
+	ceilingHit := false
+	for _, variant := range pdfPagesDictTokens {
+		hit := scanAllOccurrences(head, variant, maxTokenScanIterations, tr, func(pos int) bool {
+			if n, ok := findCountAfter(head, pos+len(variant)); ok {
+				v := n
+				found = &v
+			}
+			return true // keep scanning: a later occurrence may be a more current revision
+		})
+		if hit {
+			ceilingHit = true
+		}
 	}
 
-	counts, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxTokenScanIterations)
-	if ceilingHit {
+	// ceilingHit is checked BEFORE found is ever trusted (quick/260811-r3s,
+	// pdf.go:800 finding): the "keep scanning" callback above overwrites
+	// found with EVERY occurrence it visits, on the theory that the
+	// occurrence closest to EOF is the most current revision (this
+	// function's own doc comment above). When the walk is cut short by
+	// maxTokenScanIterations before reaching the file's true last
+	// occurrence, an EARLIER marker's count is left in found and would
+	// otherwise be returned as if it were authoritative -- exactly the
+	// stale-page-count defect the finding names: "A later marker can belong
+	// to the current incremental revision and carry a different count, so
+	// the response publishes a stale page_count with complete coverage even
+	// though the scan stopped early." A ceiling-truncated walk never gets to
+	// assert found's value is the final word, regardless of whether it
+	// happened to see one along the way.
+	if ceilingHit || truncated {
 		return nil, ReasonWorkCeilingBytes
 	}
-	if len(counts) == 0 {
-		return nil, ReasonMalformedInput
+	if found != nil {
+		return found, ""
 	}
-	return counts, ""
+	return nil, ReasonMalformedInput
+}
+
+// findCountAfter looks for the literal "/Count" key within
+// pdfCountSearchWindow bytes after position from in buf, and parses the
+// unsigned decimal integer immediately following it (after skipping
+// whitespace). It returns ok==false if "/Count" is not found in that window
+// or is not followed by at least one digit -- never a guessed value.
+func findCountAfter(buf []byte, from int) (int, bool) {
+	if from < 0 || from >= len(buf) {
+		return 0, false
+	}
+	end := from + pdfCountSearchWindow
+	if end > len(buf) {
+		end = len(buf)
+	}
+	window := buf[from:end]
+
+	idx := bytes.Index(window, []byte("/Count"))
+	if idx < 0 {
+		return 0, false
+	}
+	rest := window[idx+len("/Count"):]
+	rest = bytes.TrimLeft(rest, " \t\r\n")
+
+	digits := 0
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(string(rest[:digits]))
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // extractPDFVersion reads the "%PDF-1.x" (or "%PDF-2.x") header token and

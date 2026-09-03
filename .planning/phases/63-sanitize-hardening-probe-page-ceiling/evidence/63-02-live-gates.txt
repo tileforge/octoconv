@@ -44,3 +44,23 @@ Both gates fired on the SAME 201-page document in this run, by two different
 routes: refused at admission when the count was legible (over.pdf), and refused
 terminally in the worker when an appended /ObjStm made it illegible to the cheap
 walk (blind.pdf). That pair is D-04's whole design, observed rather than argued.
+
+================================================================
+RE-RUN AFTER THE REVERSAL (D-04 option C), 2026-09-03
+The admission gate is gone; the expectations are now the opposite.
+
+--- PASS: TestSanitizeCeilingIsTerminalE2E     (201 pages -> 202 -> failed too_many_pages)
+--- PASS: TestSanitizeUnderCeilingStillSanitizesE2E  (threat_all_classes.pdf -> 202 -> done -> %PDF-)
+
+The first run of this pair FAILED with 422, and the reason is worth keeping:
+a stale API process from the earlier session still held :8090, so the test
+was talking to the OLD binary. `go run` had exited with
+'bind: address already in use' and the harness never noticed, because
+something was answering on the port. A live gate that does not check WHICH
+build is answering can pass -- or fail -- for reasons that have nothing to
+do with the change under test.
+
+### API log -- no page_limit rejection appears any more, by design
+page_limit lines: 0
+2026/09/03 12:13:42 [АндрейП�/8nPFClv5K8-000001] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 40.188125ms
+2026/09/03 12:13:44 [АндрейП�/8nPFClv5K8-000004] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 28.837ms

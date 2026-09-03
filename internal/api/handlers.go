@@ -18,26 +18,10 @@ import (
 	"github.com/apaderin/octoconv/internal/auth"
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/errcode"
-	"github.com/apaderin/octoconv/internal/inspect"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/apaderin/octoconv/internal/storage"
 )
-
-// probePageCountScanBytes bounds the sanitize admission gate's page-count
-// scan (PROBE-01).
-//
-// 8 MiB, the same number internal/inspect.Budget uses as its own documented
-// default -- this is the identical kind of work (one bounded, literal byte
-// scan over an untrusted upload), so it gets the identical allowance rather
-// than a second number invented for one call site.
-//
-// It is NOT Config.InspectMaxWorkBytes. That field is POST /v1/inspect's
-// operator-tunable budget and its doc comment says the inspect handler is its
-// only reader; borrowing it here would make an operator tuning one endpoint
-// silently retune an unrelated gate on another. A constant says plainly that
-// this window is not a knob.
-const probePageCountScanBytes = 8 << 20
 
 const (
 	formFieldFile            = "file"
@@ -563,71 +547,39 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// PROBE-01: refuse a sanitize upload whose PDF declares more pages than
-	// PROBE_MAX_PAGES, BEFORE any storage write. Placed here, beside the
-	// decompression-bomb guard above, because it is the same kind of gate: a
-	// declared property of the bytes, read cheaply, compared against a
-	// configured ceiling, enforced before an S3 byte is spent.
+	// NO PAGE CEILING IS ENFORCED HERE, and the absence is a decision with
+	// evidence behind it rather than an omission.
 	//
-	// THE COUNT COMES FROM file (io.ReaderAt), NOT FROM rest.
+	// PROBE-01 originally asked for the sanitize page ceiling to refuse an
+	// over-long PDF at admission, before the S3 write. It was built, and then
+	// removed after six review rounds, because deriving a page count from
+	// untrusted bytes in this process could not be made to work:
 	//
-	// The zip-bomb guard earlier in this function established the pattern and
-	// states its reason: ReadAt never disturbs Sniff's sequential cursor, so
-	// rest stays valid and the full original stream still reaches
-	// s.storage.Upload below unmodified. A peek-and-re-stitch would work too
-	// (convert.Dimensions does exactly that), but it can only be WRONG in one
-	// direction -- bytes consumed and not put back -- and that direction
-	// silently truncates the client's file. ReadAt cannot make that mistake at
-	// all, which is why it is preferred here even though the sibling gate
-	// three blocks up does it the other way.
+	//   * seven distinct ways a VALID document was rejected with 422 -- the
+	//     marker sequence inside a content stream, a /Count from a neighbouring
+	//     /Outlines dictionary, /Count300 matched by prefix, /Count inside an
+	//     array, an indirect /Count read as the object number, a decoy object
+	//     header outranking the xref, and a name that is a value swallowing the
+	//     real /Type;
+	//   * three resource defects on this route, which holds no concurrency
+	//     semaphore: 113 MB per request from a discarded scan, 40 MB from an
+	//     unbounded object index, 313 MB from unbounded dictionary nesting;
+	//   * and finally the finding that settled it -- a page tree is a TREE, so
+	//     a 300-page document with two 150-page children declares three
+	//     different counts and the gate abstained. It answered confidently only
+	//     for single-node trees, which are short documents where the ceiling is
+	//     irrelevant. It could not refuse the documents it existed to refuse.
 	//
-	// UNKNOWN ADMITS, AND THAT IS THE DESIGN, NOT A GAP.
+	// Making it able would mean following /Root to the catalog and resolving
+	// its /Pages reference -- building a document graph in the API process,
+	// which is what phase 58 D-02a refused.
 	//
-	// internal/inspect's walk is bounded: it cannot see into compressed object
-	// streams, does not decode hex-escaped names, and abstains at the first
-	// construct whose meaning it cannot establish -- including a /Count whose
-	// indirect target lies outside the window. Failing closed on those blind
-	// spots would reject legitimate PDFs on our own limitation. The accurate
-	// count is affordable in the worker (pdfinfo, under a measured timeout,
-	// inside a cgroup) and refuses terminally there -- so what this gate buys
-	// is the S3 write and the queue slot, never the bound itself
-	// (63-CONTEXT.md D-04). The abstention is logged so an operator can see
-	// how often the cheap gate gives up.
+	// The bound is enforced where an accurate count is affordable: in
+	// cmd/probe-worker, with pdfinfo, terminally (PROBE-02). What was lost is
+	// one S3 write and one queue slot per over-long document; what was gained
+	// is that a valid document is never refused by a heuristic. See
+	// 63-CONTEXT.md D-04 for the reversal and the evidence.
 	//
-	// WHAT RUNS HERE, AND THE LINE IT CROSSES.
-	//
-	// pdfcpu is still NOT called from this process. Phase 58 D-02a refused it
-	// as the project's first parser-on-untrusted-bytes in the API, and
-	// sanitizeverify.go's header says its own use is the exception those
-	// conditions were written for, not a precedent.
-	//
-	// internal/convert's pdflex tokenizer IS reached from here, through
-	// inspect.PDFPageCount, and that is a deliberate crossing rather than an
-	// oversight. A byte scan of these bytes produced four false-rejection
-	// paths in three review rounds -- a marker in a stream payload, a count
-	// from a neighbouring dictionary, a longer name matched by prefix, a name
-	// inside an array -- every one of which turned a valid document into a
-	// 422. D-02a's subject was a large third-party dependency that builds a
-	// document model; this is a bounded tokenizer of this project's own that
-	// builds nothing and decodes nothing. The operator was shown the
-	// alternatives (patch the scan again, or drop this gate and change
-	// PROBE-01) and chose this.
-	if operation == convert.OperationSanitize && detected == "pdf" && s.probeMaxPages > 0 {
-		tr := inspect.NewTracker(inspect.Budget{MaxBytes: probePageCountScanBytes})
-		count, reason := inspect.PDFPageCount(file, header.Size, probePageCountScanBytes, tr)
-		switch {
-		case count == nil:
-			log.Printf("content validation abstained: client_id=%s filename=%q reason=page_count_unknown detail=%s", client.ID, filename, reason)
-		default:
-			if err := convert.EnforceProbeMaxPages(*count, s.probeMaxPages); err != nil {
-				log.Printf("content validation rejected: client_id=%s filename=%q reason=page_limit pages=%d limit=%d", client.ID, filename, *count, s.probeMaxPages)
-				writeError(w, http.StatusUnprocessableEntity, errcode.TooManyPages,
-					"document page count exceeds the configured limit for sanitize")
-				return
-			}
-		}
-	}
-
 	// callback_url is optional (per-job, D-02); an empty value leaves the
 	// existing polling path unchanged. When present it is SSRF-validated
 	// BEFORE writing anything to storage, same discipline as the format pair.

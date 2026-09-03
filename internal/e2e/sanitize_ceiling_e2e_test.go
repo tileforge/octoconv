@@ -1,11 +1,11 @@
-// This file proves PROBE-01 and PROBE-02 on the wire, against a running stack,
-// because everything else that proves them proves them against doubles.
+// This file proves the sanitize page ceiling on the wire, against a running
+// stack, because everything else that proves it proves it against doubles.
 //
-// 63-02's unit tests assert that s.storage.Upload is never called by using a
-// storage double that fails the test from inside Upload. That is the right test
-// and it is not the same claim: it says the handler does not call the method,
-// not that a client sending a real over-long PDF to a real API gets a 422 with
-// a code they can act on. SC4 is the second sentence.
+// PROBE-01's admission gate was removed (63-CONTEXT.md D-04, reversed), so
+// there is no 422 to assert here any more. What is left is the claim that
+// matters and always did: an over-long document is refused, terminally, with a
+// code the client can act on -- and a document UNDER the ceiling still gets
+// sanitized, which a ceiling that refused everything would also satisfy.
 package e2e
 
 import (
@@ -96,10 +96,10 @@ func postSanitize(t *testing.T, baseURL, apiKey, filename string, data []byte) (
 	return resp.StatusCode, parsed
 }
 
-// TestSanitizeCeilingRejectsAtAdmissionE2E is SC4 on the wire: a document over
-// PROBE_MAX_PAGES is refused with a machine-readable code, and no job exists to
-// poll afterwards.
-func TestSanitizeCeilingRejectsAtAdmissionE2E(t *testing.T) {
+// TestSanitizeCeilingIsTerminalE2E is the ceiling on the wire: an over-long
+// document is ADMITTED -- there is no longer an admission gate -- and then
+// refused by the worker on its FIRST attempt, with no retries spent.
+func TestSanitizeCeilingIsTerminalE2E(t *testing.T) {
 	cfg := e2eSetup(t)
 	apiKey := provisionClient(t)
 
@@ -111,22 +111,19 @@ func TestSanitizeCeilingRejectsAtAdmissionE2E(t *testing.T) {
 	}
 
 	status, body := postSanitize(t, cfg.baseURL, apiKey, "over.pdf", multiPagePDF(max+1))
+	if status != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 -- the admission gate is gone, so an over-long document is "+
+			"accepted and refused by the worker; body=%v", status, body)
+	}
+	jobID, _ := body["job_id"].(string)
+	if jobID == "" {
+		t.Fatalf("no job id in the accepted response: %v", body)
+	}
 
-	if status != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 for a %d-page document against a %d-page ceiling; body=%v",
-			status, max+1, max, body)
-	}
-	if code, _ := body["code"].(string); code != "too_many_pages" {
-		t.Fatalf("code = %q, want \"too_many_pages\" -- the client must be able to tell this apart "+
-			"from a generic rejection; body=%v", code, body)
-	}
-	// job_id, which is what the accepted response actually carries. The first
-	// version of this checked "id" and therefore asserted nothing at all: the
-	// key is never present under that name, so the branch could not fire. Caught
-	// by the sibling test below failing on the same wrong key.
-	if _, hasID := body["job_id"]; hasID {
-		t.Fatalf("the rejection carried a job id (%v) -- a refused upload must not have created a "+
-			"job row, let alone stored bytes", body["job_id"])
+	failed := pollUntilFailed(t, cfg.baseURL, apiKey, jobID, 3*time.Minute)
+	if code, _ := failed["error_code"].(string); code != "too_many_pages" {
+		t.Fatalf("error_code = %q, want \"too_many_pages\" -- the client must be able to tell this "+
+			"apart from a generic engine failure; body=%v", code, failed)
 	}
 }
 
@@ -163,45 +160,4 @@ func TestSanitizeUnderCeilingStillSanitizesE2E(t *testing.T) {
 		t.Fatalf("job %s done but download_url missing: %v", jobID, done)
 	}
 	assertDownloadIsPDF(t, downloadURL)
-}
-
-// TestSanitizeCeilingIsTerminalInTheWorkerE2E is PROBE-02 on the wire, and the
-// half no unit test can claim: a document the CHEAP gate cannot judge is
-// admitted, and the worker refuses it terminally with the same code.
-//
-// The construction is the one 63-CONTEXT.md D-04 designed for. Appending an
-// /ObjStm marker makes the API's bounded walk abstain -- an object hidden in a
-// compressed object stream is structurally invisible to it, so it cannot claim
-// the count it can see is the whole truth -- while pdfinfo in the worker reads
-// the page tree perfectly well. Same file, two gates, opposite verdicts, and
-// that difference is the entire reason the second gate exists.
-func TestSanitizeCeilingIsTerminalInTheWorkerE2E(t *testing.T) {
-	cfg := e2eSetup(t)
-	apiKey := provisionClient(t)
-
-	max := 200
-	if v := os.Getenv("PROBE_MAX_PAGES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			max = n
-		}
-	}
-
-	blind := append(multiPagePDF(max+1), []byte("\n<< /Type /ObjStm >>\n")...)
-
-	status, body := postSanitize(t, cfg.baseURL, apiKey, "blind.pdf", blind)
-	if status != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202 -- a count the cheap gate cannot establish must be ADMITTED, "+
-			"not refused on a heuristic's blind spot; body=%v", status, body)
-	}
-	jobID, _ := body["job_id"].(string)
-	if jobID == "" {
-		t.Fatalf("no job id in the accepted response: %v", body)
-	}
-
-	failed := pollUntilFailed(t, cfg.baseURL, apiKey, jobID, 3*time.Minute)
-	if code, _ := failed["error_code"].(string); code != "too_many_pages" {
-		t.Fatalf("error_code = %q, want \"too_many_pages\" -- the two gates report the SAME code for "+
-			"the same condition, which is the whole of D-04's one-code-space rule; body=%v",
-			code, failed)
-	}
 }

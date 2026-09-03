@@ -144,11 +144,13 @@ data:
   # hard ceiling nothing may exceed is the reconciler's: 900s at 2.0 s/page
   # is 450 pages.
   #
-  # Read by BOTH cmd/api (admission gate, refuses before the S3 write) and
-  # cmd/probe-worker (accurate pdfcpu count, refuses terminally before
-  # ghostscript). NOT an IN-02 uniqueTTL input -- but the two readers must see
-  # the same value, or the API admits documents the worker will certainly
-  # refuse. The shared ConfigMap is what guarantees that here.
+  # Read by cmd/probe-worker ONLY -- pdfinfo counts the pages before the first
+  # ghostscript pass and the refusal is terminal. An admission gate in cmd/api
+  # was built and removed (63-CONTEXT.md D-04, reversed): a page count cannot be
+  # derived reliably from untrusted bytes in that process, because a page tree
+  # is a tree and a long document declares several different counts. It sits in
+  # the shared ConfigMap anyway, the same posture OCR_MAX_PAGES has (DEBT-05 --
+  # every process carries the full surface even when unused).
   PROBE_MAX_PAGES: "200"
   # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole

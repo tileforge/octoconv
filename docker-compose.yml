@@ -169,16 +169,6 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
-      # PROBE_MAX_PAGES (Phase 63, PROBE-01) is the SAME 200 the timeout above
-      # is derived from. Read here by cmd/api as the sanitize ADMISSION
-      # ceiling, so a PDF whose declared page count is over the bound is
-      # refused with too_many_pages before an S3 byte is spent -- and read
-      # again by probe-worker below, where the accurate pdfcpu count is
-      # affordable and the refusal is terminal. Two gates, one bound: this
-      # value must stay byte-identical to probe-worker's own, or the API
-      # admits documents the worker will certainly refuse (the same two-tier
-      # discipline PANDOC_MAX_INPUT_BYTES states below).
-      PROBE_MAX_PAGES: "200"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
       # (which are IN-02 queue.NewClient() parity values), this one is read
@@ -1279,11 +1269,12 @@ services:
       # status as the timeout above.
       PROBE_WORKER_CONCURRENCY: "1"
       PROBE_MAX_RETRY: "2"
-      # PROBE_MAX_PAGES (Phase 63, PROBE-02): the accurate pdfcpu count runs
-      # here, before the first ghostscript pass, and its rejection is TERMINAL
-      # -- the deliberate opposite of the timeout above, which stays transient
-      # because it depends on load rather than on the file. Must stay
-      # byte-identical to the api service's own value.
+      # PROBE_MAX_PAGES (Phase 63, PROBE-02): pdfinfo counts the pages here,
+      # before the first ghostscript pass, and the rejection is TERMINAL -- the
+      # deliberate opposite of the timeout above, which stays transient because
+      # it depends on load rather than on the file. This is the ONLY service
+      # that reads it; the api-side admission gate was removed (63-CONTEXT.md
+      # D-04, reversed).
       PROBE_MAX_PAGES: "200"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,

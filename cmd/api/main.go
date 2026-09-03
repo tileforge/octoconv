@@ -215,14 +215,11 @@ func main() {
 		// the map, it configures one entry in it.
 		MaxUploadBytes: envInt64("MAX_UPLOAD_BYTES", 2<<30),
 		MaxImagePixels: uint64(envInt64("MAX_IMAGE_PIXELS", 100_000_000)), // D-05: 100 megapixels default
-		// PROBE_MAX_PAGES (PROBE-01). Read here AND in cmd/probe-worker,
-		// with the SAME default constant in both, because the bound is
-		// enforced in both processes and a default that lives as a literal at
-		// two call sites is exactly how this engine's OTHER bound drifted:
-		// cmd/api omitted PROBE_ENGINE_TIMEOUT and published
-		// estimated_max_seconds: 0 while the worker used its own value
-		// (caught in review, PR #12).
-		ProbeMaxPages:                int(envInt64("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)),
+		// PROBE_MAX_PAGES is deliberately NOT read here. The sanitize page
+		// ceiling is enforced only in cmd/probe-worker (PROBE-02); the
+		// admission gate that once read it was removed after six review
+		// rounds -- see internal/api/handlers.go's own note where it stood,
+		// and 63-CONTEXT.md D-04.
 		MaxDocumentUncompressedBytes: uint64(envInt64("MAX_DOCUMENT_UNCOMPRESSED_BYTES", 500<<20)), // D-04: 500 MiB default
 		// PR#2 finding-1: the API-side mirror of the worker's own
 		// PANDOC_MAX_INPUT_BYTES (enforcePandocInputSize, markupsniff.go).
