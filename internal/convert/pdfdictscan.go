@@ -38,6 +38,17 @@ package convert
 // distinction and chose to cross it deliberately rather than have it crossed
 // silently.
 
+// pdfMaxIndexedObjects bounds the object index built to resolve indirect
+// values, in entries.
+//
+// 65536, derived rather than picked: an 8 MiB window -- the size the sanitize
+// admission gate reads -- holds at most a few hundred thousand minimal "N 0
+// obj/endobj" records, and no real document of that size declares anywhere near
+// 65536 objects. So the cap abstains on files that are object-dense beyond any
+// legitimate shape while leaving every real one answerable, and holds the map
+// to a few MB instead of tens.
+const pdfMaxIndexedObjects = 65536
+
 // PDFTypedDictUints walks b once and returns, in file order, the value of key
 // for every dictionary that BOTH declares /Type /<typeName> and carries key as
 // a DIRECT key of its own.
@@ -75,25 +86,73 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	// So the speculative index is built first and the xref overwrites it. Found
 	// in review (PR #15 round 4), with a valid two-page PDF that this function
 	// reported as 300.
-	objects := scanPDF(b).objects
+	//
+	// AND IT IS BOUNDED, BY A LIMIT OF ITS OWN. scanPDF indexes every distinct
+	// object number it sees, which on an 8 MiB body of unique "N 0 obj" records
+	// allocated 40 MB -- attacker-controlled memory on a route with no
+	// concurrency semaphore and a 1 GiB pod (PR #15 round 5).
+	//
+	// The cap is NOT maxDicts. The first fix used it, on the reasoning that it
+	// is "the ceiling this walk already takes" -- which is true and useless:
+	// internal/inspect passes maxTokenScanIterations, which is 1<<20, so a
+	// million objects were still admitted and the measured allocation did not
+	// move. Written without looking at the number.
+	//
+	// Dictionaries and indexed objects are two resources and get two bounds,
+	// the same split pdfDictScanWindow and its budget needed earlier in this
+	// PR. Reaching this one abstains rather than answering from a half-built
+	// index: an incomplete index resolves some references and silently misses
+	// others, which is a wrong answer rather than a missing one.
+	scan := scanPDFLimited(b, nil, pdfMaxIndexedObjects)
+	if scan.objectsCapped {
+		return nil, true
+	}
+	objects := scan.objects
 	for num, off := range pdfXrefObjects(b) {
 		objects[num] = off
 	}
 
+	// A DICTIONARY IS KEY/VALUE PAIRS, NOT A BAG OF NAMES.
+	//
+	// The first version treated every name at dictionary depth as a key, and
+	// "<< /Foo /Type /Type /Pages ... >>" defeated it: the first /Type is
+	// /Foo's VALUE, but it was read as a key, which then swallowed the real
+	// /Type key as its value and lost the dictionary entirely (PR #15 round 5).
+	//
+	// So each open dictionary tracks whether the next token begins a key or is
+	// the value of the key just read. Every complete value -- a name, a number,
+	// a string, an array, a nested dictionary, a keyword -- returns the frame
+	// to expecting a key.
 	type frame struct {
-		isType  bool
-		val     int
-		haveVal bool
+		isType    bool
+		val       int
+		haveVal   bool
+		expectKey bool
+		key       string
+		// valueArrayDepth remembers the array nesting at which this frame's
+		// current VALUE began, so the frame returns to expecting a key when
+		// that array closes rather than at the first "]" of any depth.
+		valueArrayDepth int
+		// valueDictDepth is the same for a nested dictionary value.
+		valueDictDepth int
 	}
 	var stack []frame
+
+	// endValue returns the top frame to expecting a key.
+	endValue := func() {
+		if n := len(stack); n > 0 {
+			stack[n-1].key = ""
+			stack[n-1].expectKey = true
+		}
+	}
 
 	arrayDepth := 0
 	dicts := 0
 
-	// Pending states, each cleared by the next token that is not the value it
-	// was waiting for.
-	awaitType := false // "/Type" was just read, its value is the next name
-	awaitVal := false  // key was just read, its value is the next integer
+	// awaitVal is set for exactly one token: the integer that follows the key
+	// this function was asked about. Everything else about key/value position
+	// lives on the frame.
+	awaitVal := false
 
 	// dictClosed / length carry the same meaning they do in pdflex.go's scan:
 	// a "stream" keyword is only a stream keyword directly after a dictionary,
@@ -119,7 +178,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		}
 		if c == '(' {
 			i = pdfSkipLiteralString(b, i)
-			dictClosed, awaitType, awaitVal = false, false, false
+			dictClosed, awaitVal = false, false
 			continue
 		}
 		if c == '<' {
@@ -127,13 +186,17 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				if dicts++; dicts > maxDicts {
 					return nil, true
 				}
-				stack = append(stack, frame{})
+				if n := len(stack); n > 0 && !stack[n-1].expectKey {
+					// This dictionary IS the value of the key just read.
+					stack[n-1].valueDictDepth = len(stack)
+				}
+				stack = append(stack, frame{expectKey: true})
 				i += 2
-				dictClosed, awaitType, awaitVal = false, false, false
+				dictClosed, awaitVal = false, false
 				continue
 			}
 			i = pdfSkipHexString(b, i)
-			dictClosed, awaitType, awaitVal = false, false, false
+			dictClosed, awaitVal = false, false
 			continue
 		}
 		if c == '>' && i+1 < len(b) && b[i+1] == '>' {
@@ -143,6 +206,10 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				stack = stack[:n-1]
 				if f.isType && f.haveVal {
 					values = append(values, f.val)
+				}
+				if m := len(stack); m > 0 && !stack[m-1].expectKey && stack[m-1].valueDictDepth == m {
+					stack[m-1].valueDictDepth = 0
+					endValue()
 				}
 				if len(stack) == 0 {
 					dictClosed = true
@@ -157,13 +224,16 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 					pendingLength, pendingRef, pendingHave = 0, false, false
 				}
 			}
-			awaitType, awaitVal = false, false
+			awaitVal = false
 			continue
 		}
 		if c == '[' {
+			if n := len(stack); n > 0 && !stack[n-1].expectKey && stack[n-1].valueArrayDepth == 0 {
+				stack[n-1].valueArrayDepth = arrayDepth + 1
+			}
 			arrayDepth++
 			i++
-			dictClosed, awaitType, awaitVal = false, false, false
+			dictClosed, awaitVal = false, false
 			continue
 		}
 		if c == ']' {
@@ -171,7 +241,11 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				arrayDepth--
 			}
 			i++
-			dictClosed, awaitType, awaitVal = false, false, false
+			if n := len(stack); n > 0 && !stack[n-1].expectKey && stack[n-1].valueArrayDepth == arrayDepth+1 {
+				stack[n-1].valueArrayDepth = 0
+				endValue()
+			}
+			dictClosed, awaitVal = false, false
 			continue
 		}
 
@@ -181,26 +255,35 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			// finding, and it is already this tokenizer's job.
 			name, next := pdfReadName(b, i)
 			i = next
-			if awaitType {
-				if n := len(stack); n > 0 && name == typeName {
-					stack[n-1].isType = true
-				}
-				awaitType = false
-				dictClosed = false
+			dictClosed = false
+			n := len(stack)
+			if n == 0 || arrayDepth != 0 {
+				// Not a direct token of any dictionary: a name inside an array
+				// value is data, whatever it spells.
 				continue
 			}
-			// A key belongs to the dictionary on top of the stack only when we
-			// are not inside one of its array values.
-			direct := len(stack) > 0 && arrayDepth == 0
-			awaitType = direct && name == "Type"
-			awaitVal = direct && name == key
-			awaitLength = len(stack) == 1 && arrayDepth == 0 && name == "Length"
-			dictClosed = false
+			if stack[n-1].expectKey {
+				stack[n-1].key = name
+				stack[n-1].expectKey = false
+				awaitLength = n == 1 && name == "Length"
+				continue
+			}
+			// This name is the VALUE of the key just read.
+			if stack[n-1].key == "Type" && name == typeName {
+				stack[n-1].isType = true
+			}
+			awaitLength = false
+			endValue()
 			continue
 		}
 
 		if c >= '0' && c <= '9' || ((c == '+' || c == '-') && i+1 < len(b) && b[i+1] >= '0' && b[i+1] <= '9') {
 			v, next := pdfReadSignedInt(b, i)
+			isValue := false
+			if n := len(stack); n > 0 && arrayDepth == 0 && !stack[n-1].expectKey {
+				isValue = stack[n-1].key == key
+			}
+			awaitVal = isValue
 			if awaitVal {
 				// AN INDIRECT VALUE IS A REFERENCE, NOT THE VALUE.
 				//
@@ -238,7 +321,17 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 				awaitLength = false
 			}
 			i = next
-			dictClosed, awaitType = false, false
+			dictClosed = false
+			// "N G R" is one value spanning three tokens; pdfLooksLikeRef has
+			// already told us so, and the G and R are skipped by the generic
+			// token path below without ending the value early, because the
+			// value ends only here.
+			if n := len(stack); n > 0 && arrayDepth == 0 && !stack[n-1].expectKey {
+				if pdfLooksLikeRef(b, next) {
+					i = pdfSkipRefTail(b, next)
+				}
+				endValue()
+			}
 			continue
 		}
 
@@ -264,8 +357,28 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			continue
 		}
 		i = next
-		dictClosed, awaitType, awaitVal = false, false, false
+		dictClosed, awaitVal = false, false
+		if word != "" && arrayDepth == 0 {
+			if n := len(stack); n > 0 && !stack[n-1].expectKey {
+				endValue()
+			}
+		}
 	}
 
 	return values, false
+}
+
+// pdfSkipRefTail returns the offset just past the "G R" of an indirect
+// reference whose object number ended at from. pdfLooksLikeRef has already
+// established that the two tokens are there.
+func pdfSkipRefTail(b []byte, from int) int {
+	i := pdfSkipTrivia(b, from)
+	for i < len(b) && b[i] >= '0' && b[i] <= '9' {
+		i++
+	}
+	i = pdfSkipTrivia(b, i)
+	if i < len(b) && b[i] == 'R' {
+		i++
+	}
+	return i
 }

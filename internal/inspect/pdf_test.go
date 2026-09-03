@@ -1200,6 +1200,13 @@ func TestPagesDictCountBindsToItsOwnDictionary(t *testing.T) {
 				"not an answer",
 		},
 		{
+			name: "a name that is a VALUE, immediately before the real type key",
+			body: "2 0 obj\n<< /Foo /Type /Type /Pages /Count 2 /Kids [3 0 R] >>\nendobj\n",
+			want: 2,
+			why: "the first /Type is /Foo's value, not a key; treating every direct name as a key " +
+				"swallows the real /Type as that key's value and loses the page tree entirely",
+		},
+		{
 			name: "the marker sequence appears in a content stream",
 			body: "2 0 obj\n<< /Type /Pages /Count 2 /Kids [3 0 R] >>\nendobj\n" +
 				"5 0 obj\n<< /Length 35 >>\nstream\nBT (/Type /Pages /Count 300) Tj ET\nendstream\nendobj\n",
@@ -1320,5 +1327,44 @@ func TestPDFPageCountDoesNotMaterializeWhatItDiscards(t *testing.T) {
 		t.Fatalf("PDFPageCount allocated %d bytes for an %d-byte input (ceiling %d) -- something is "+
 			"being constructed and thrown away; the opaque-range set was 113 MB of exactly that",
 			allocated, len(raw), ceiling)
+	}
+}
+
+// TestPDFPageCountBoundsTheObjectIndex is the regression for the second P1 on
+// PR #15, which is the FIRST P1 one layer down.
+//
+// Removing the discarded opaque-range scan left another unbounded structure on
+// the same path: the object index the tokenizer builds to resolve indirect
+// values recorded every distinct object number in the window. Measured on an
+// 8 MiB body of unique "N 0 obj" records: 40 MB allocated and 85 ms, on a route
+// with no concurrency semaphore and a 1 GiB pod.
+//
+// The cap is the ceiling this walk already takes, and reaching it abstains
+// rather than answering from a half-built index -- an incomplete index would
+// resolve some references and silently miss others.
+func TestPDFPageCountBoundsTheObjectIndex(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	for i := 1; b.Len() < 8<<20; i++ {
+		b.WriteString(strconv.Itoa(i) + " 0 obj\n<< /K 1 >>\nendobj\n")
+	}
+	raw := b.Bytes()
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	count, _ := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20,
+		NewTracker(Budget{MaxBytes: 8 << 20}))
+	runtime.ReadMemStats(&after)
+
+	if count != nil {
+		t.Fatalf("PDFPageCount = %d on a file with no page tree at all", *count)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const ceiling = 32 << 20
+	if allocated > ceiling {
+		t.Fatalf("PDFPageCount allocated %d bytes for an %d-byte object-heavy input (ceiling %d) -- "+
+			"the object index must be capped, or a modest authenticated burst exhausts a 1 GiB pod "+
+			"on a route that holds no concurrency semaphore", allocated, len(raw), ceiling)
 	}
 }

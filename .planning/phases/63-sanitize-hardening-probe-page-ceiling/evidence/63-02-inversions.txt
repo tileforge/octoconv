@@ -187,3 +187,31 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	0.973s
 FAIL
 [exit 1]
 
+
+##### ROUND 6 -- codex round 5 #####
+
+=== INVERSION 20: the object index is unbounded again ===
+--- FAIL: TestPDFPageCountBoundsTheObjectIndex (0.19s)
+    pdf_test.go:1366: PDFPageCount allocated 58014744 bytes for an 8388608-byte object-heavy input (ceiling 33554432) -- the object index must be capped, or a modest authenticated burst exhausts a 1 GiB pod on a route that holds no concurrency semaphore
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.006s
+FAIL
+[exit 1]
+
+=== INVERSION 21: the cap is taken from the caller's iteration ceiling (1<<20) -- the first, useless fix ===
+--- FAIL: TestPDFPageCountBoundsTheObjectIndex (0.20s)
+    pdf_test.go:1366: PDFPageCount allocated 58019856 bytes for an 8388608-byte object-heavy input (ceiling 33554432) -- the object index must be capped, or a modest authenticated burst exhausts a 1 GiB pod on a route that holds no concurrency semaphore
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.023s
+FAIL
+[exit 1]
+
+=== INVERSION 19 (re-run; the first mutation was an invented semantics, not the code as it was): the one-shot awaitType flag is restored ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_name_that_is_a_VALUE,_immediately_before_the_real_type_key (0.00s)
+        pdf_test.go:1239: PDFPageCount abstained ("malformed_input"), want 2 -- the first /Type is /Foo's value, not a key; treating every direct name as a key swallows the real /Type as that key's value and loses the page tree entirely
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.219s
+FAIL
+[exit 1]
+
