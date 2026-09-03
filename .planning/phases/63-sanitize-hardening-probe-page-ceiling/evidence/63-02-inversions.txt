@@ -122,3 +122,35 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	1.191s
 FAIL
 [exit 1]
 
+
+##### ROUND 4 -- codex round 3: the walk moved to internal/convert's tokenizer #####
+
+(the first attempt at 13/14/15 all PASSED: every fixture put its trap BEFORE the real /Count, which the tokenizer then overwrote. Re-run below against rows that put the trap AFTER.)
+
+=== INVERSION 13: the key is matched by prefix instead of as a whole name ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_longer_name_that_starts_with_the_key,_AFTER_the_real_one (0.00s)
+        pdf_test.go:1219: PDFPageCount = 300, want 2 -- with a prefix compare instead of a whole-name match, /Count300 overwrites the count that was already correct
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.129s
+FAIL
+[exit 1]
+
+=== INVERSION 14: array nesting stops excluding names from being direct keys ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/count_inside_an_array_value,_AFTER_the_real_one (0.00s)
+        pdf_test.go:1219: PDFPageCount = 300, want 2 -- without array tracking the name inside [ ] overwrites the dictionary's own key
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.828s
+FAIL
+[exit 1]
+
+=== INVERSION 15: stream payloads are no longer jumped over ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_bare_dictionary_inside_a_stream_payload (0.00s)
+        pdf_test.go:1216: PDFPageCount abstained ("malformed_input"), want 2 -- payload bytes that are not wrapped in a string are read as a whole second Pages dictionary unless the payload is jumped over -- the parenthesised version below is caught by string handling instead, and so proves something else
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.812s
+FAIL
+[exit 1]
+

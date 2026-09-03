@@ -36,6 +36,8 @@ import (
 	"io"
 	"sort"
 	"strconv"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // pdfCountSearchWindow bounds how far past a "/Type/Pages" (or "/Type
@@ -44,36 +46,6 @@ import (
 // /Type, so a few hundred bytes is generous; this is a search window, not
 // an allocation, and it is clamped to the already-bounded head slice below.
 const pdfCountSearchWindow = 512
-
-// pdfDictScanWindow bounds how far pagesDictCount may walk in either direction
-// looking for the boundaries of the dictionary a marker sits in. It is larger
-// than pdfCountSearchWindow because it must span a whole page-tree dictionary
-// (which carries a /Kids array with one reference per page) rather than the
-// gap between two keys -- and it is a bound rather than an absence of one,
-// because an unterminated "<<" in a malformed file must cost a fixed amount of
-// work and then be reported as no answer.
-const pdfDictScanWindow = 8192
-
-// pdfDictScanBudget is the TOTAL number of bytes pagesDictCount may examine
-// across one window's entire walk, summed over every marker it resolves.
-//
-// pdfDictScanWindow bounds ONE marker's lookup; this bounds their sum, and the
-// two are different resources. A file can carry thousands of "/Type /Pages"
-// markers cheaply -- that is the same construction maxTokenScanIterations
-// exists to bound -- and resolving a dictionary for each one multiplies a
-// per-marker window into attacker-controlled CPU. Measured: without this the
-// package's own dense-marker test went from milliseconds to 5.02s.
-//
-// Exhausting it is reported the way every other ceiling in this file is
-// reported: as ceilingHit, which becomes ReasonWorkCeilingBytes and an unknown
-// answer. Both callers already handle "unknown" -- AnalyzePDF publishes it as
-// such, PDFPageCount abstains and admits the upload -- so a hostile file buys
-// a cheap answer rather than a slow one.
-const pdfDictScanBudget = 1 << 20
-
-// countKey is the literal this file binds to a dictionary rather than to a
-// byte offset. See pagesDictCount.
-var countKey = []byte("/Count")
 
 // pdfPagesDictTokens are the two literal spellings of the Pages-dict type
 // marker this file's fast page-count path recognizes -- "/Type/Pages" (no
@@ -465,7 +437,7 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		res.Characteristics["text_layer_reason"] = string(textLayerReason)
 	}
 
-	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, headOpaque, headOpaqueCeilingHit, tr)
+	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, headOpaqueCeilingHit)
 	if count != nil {
 		res.Characteristics["page_count"] = *count
 	} else {
@@ -553,12 +525,14 @@ func PDFPageCount(r io.ReaderAt, size, maxBytes int64, tr *Tracker) (*int, Reaso
 	compressed := containsCompressionSignal(head) || (tailOK && containsCompressionSignal(tail))
 	hexEscape := containsPDFNameHexEscape(head) || (tailOK && containsPDFNameHexEscape(tail))
 
-	// The opaque-range set the walk filters through. Without it a marker
-	// sitting in a content stream is indistinguishable from one in the page
-	// tree -- see collectPDFPageCounts for the measured case.
-	opaque, opaqueCeilingHit := scanPDFOpaqueRanges(head, tr)
+	// The opaque-range scan is kept ONLY for its ceiling signal. The tokenizer
+	// below knows PDF's lexical contexts for itself and needs no range set --
+	// but if OUR OWN scanner gave up early on this file, that is a fact about
+	// how analysable the bytes are, and it is the same fifth gate AnalyzePDF
+	// applies to every risk code.
+	_, opaqueCeilingHit := scanPDFOpaqueRanges(head, tr)
 
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaque, opaqueCeilingHit, tr)
+	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaqueCeilingHit)
 	if len(counts) == 0 {
 		if reason == "" {
 			reason = ReasonMalformedInput
@@ -1118,8 +1092,8 @@ func scanAllOccurrences(buf, token []byte, max int, tr *Tracker, fn func(pos int
 // simply live past the read window). Returns (nil, ReasonMalformedInput)
 // when the whole (untruncated) window was searched and no Pages dict with a
 // legible /Count was ever found.
-func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, opaque []pdfOpaqueRange, opaqueCeilingHit bool, tr *Tracker) (*int, Reason) {
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaque, opaqueCeilingHit, tr)
+func extractPDFPageCount(head []byte, compressed, truncated, hexEscape, opaqueCeilingHit bool) (*int, Reason) {
+	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaqueCeilingHit)
 	if len(counts) == 0 {
 		return nil, reason
 	}
@@ -1163,221 +1137,25 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, opa
 // INCOMPLETE, and a match "outside every KNOWN opaque range" may well sit
 // inside one this scan never reached. That is the same reasoning AnalyzePDF's
 // fifth verdict gate already applies to every risk code, applied here.
-func collectPDFPageCounts(head []byte, compressed, truncated, hexEscape bool, opaque []pdfOpaqueRange, opaqueCeilingHit bool, tr *Tracker) ([]int, Reason) {
+func collectPDFPageCounts(head []byte, compressed, truncated, hexEscape, opaqueCeilingHit bool) ([]int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
 	}
 	if hexEscape {
 		return nil, ReasonPDFNameEscape
 	}
-	if opaqueCeilingHit {
+	if opaqueCeilingHit || truncated {
 		return nil, ReasonWorkCeilingBytes
 	}
 
-	var counts []int
-	ceilingHit := false
-	dictBudget := pdfDictScanBudget
-	for _, variant := range pdfPagesDictTokens {
-		hit := scanAllOccurrences(head, variant, maxTokenScanIterations, tr, func(pos int) bool {
-			if opaque != nil && inOpaqueRange(pos, opaque) {
-				return true // payload that happens to spell a marker
-			}
-			n, at, ok := pagesDictCount(head, pos, opaque, &dictBudget)
-			if !ok {
-				return true
-			}
-			if opaque != nil && inOpaqueRange(at, opaque) {
-				return true
-			}
-			counts = append(counts, n)
-			return true // keep scanning: a later occurrence may be a more current revision
-		})
-		if hit {
-			ceilingHit = true
-		}
-	}
-	// The dictionary-resolution budget is a ceiling like any other in this
-	// file, and exhausting it means later markers were never resolved -- so
-	// whatever counts were collected are not the final word, exactly as a
-	// truncated token walk is not.
-	if dictBudget <= 0 {
-		ceilingHit = true
-	}
-
-	// ceilingHit is checked BEFORE any count is trusted (quick/260811-r3s,
-	// pdf.go:800 finding): the "keep scanning" callback above records EVERY
-	// occurrence it visits, on the theory that the occurrence closest to EOF
-	// is the most current revision. When the walk is cut short by
-	// maxTokenScanIterations before reaching the file's true last occurrence,
-	// an EARLIER marker's count would otherwise be returned as if it were
-	// authoritative -- exactly the stale-page-count defect the finding names.
-	// A ceiling-truncated walk never gets to assert its answer is the final
-	// word, regardless of whether it happened to see one along the way.
-	if ceilingHit || truncated {
+	counts, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxTokenScanIterations)
+	if ceilingHit {
 		return nil, ReasonWorkCeilingBytes
 	}
 	if len(counts) == 0 {
 		return nil, ReasonMalformedInput
 	}
 	return counts, ""
-}
-
-// pagesDictCount reads the /Count belonging to the Pages DICTIONARY that
-// starts at or encloses markerPos, and nothing else.
-//
-// # WHY THIS REPLACED A FORWARD BYTE WINDOW INSTEAD OF REFINING ONE
-//
-// It was findCountAfter: search forward up to pdfCountSearchWindow bytes from
-// the "/Type /Pages" marker, take the first "/Count". That bound was bypassed
-// twice, and the second time is what settled the approach:
-//
-//  1. a "/Type /Pages /Count 300" sequence inside a CONTENT STREAM was read as
-//     structure (PR #15 round 1). Closed by filtering through the opaque
-//     ranges.
-//  2. a perfectly legal Pages dictionary written "<< /Count 2 /Type /Pages ...
-//     >>" -- key order in a PDF dictionary is arbitrary -- followed by an
-//     /Outlines dictionary, which legitimately carries its own /Count. The
-//     forward search stepped over the dictionary's OWN count, which sits
-//     BEFORE the marker, and associated the outline's 300 with the page tree
-//     (PR #15 round 2). Opaque filtering does not help: both are structure.
-//
-// .planning/RETROSPECTIVE.md records the rule this project reached the hard
-// way, on a different bound, after four bypasses: a bound that keeps getting
-// bypassed is replaced, not patched, and the replacement derives from the
-// structure that DECLARES the value rather than from proximity to it. A third
-// clever comparison here would have been the fourth in this file.
-//
-// So the derivation is the enclosing dictionary. A /Count counts only when it
-// is a direct key of the same dictionary the /Type /Pages marker is a direct
-// key of -- before or after the marker, since order carries no meaning -- and
-// not when it belongs to a nested dictionary or a neighbouring one.
-//
-// # WHAT IT STILL DOES NOT DO, deliberately
-//
-// It does not resolve indirect references (`/Count 5 0 R`), does not decode
-// object streams, and does not build a document. Each of those returns "no
-// answer", which callers already handle: AnalyzePDF reports the characteristic
-// as unknown and PDFPageCount abstains, admitting the upload and leaving the
-// bound to the worker's accurate count. This is a scanner that knows where a
-// dictionary ends, not a parser.
-func pagesDictCount(buf []byte, markerPos int, opaque []pdfOpaqueRange, budget *int) (n int, at int, ok bool) {
-	start, ok := enclosingDictStart(buf, markerPos, opaque, budget)
-	if !ok {
-		return 0, 0, false
-	}
-
-	// One forward pass from just inside the opening "<<": track nesting, and
-	// accept a /Count only at depth 0 (a direct key of THIS dictionary).
-	depth := 0
-	limit := start + pdfDictScanWindow
-	if limit > len(buf) {
-		limit = len(buf)
-	}
-	for i := start + 2; i < limit; i++ {
-		if *budget <= 0 {
-			return 0, 0, false
-		}
-		*budget--
-		// The byte test comes BEFORE inOpaqueRange, and that ordering is
-		// load-bearing rather than stylistic: inOpaqueRange binary-searches the
-		// range set, and calling it for every byte of a bounded window, for
-		// every marker in a file that can cheaply carry thousands of them, is
-		// an attacker-controlled CPU amplifier -- the exact class
-		// maxTokenScanIterations exists to bound elsewhere in this file. Doing
-		// it per byte cost this package's own test suite 2s -> 35s, which is
-		// how it was noticed. Only a candidate byte can be worth locating.
-		c := buf[i]
-		if c != '<' && c != '>' && c != '/' {
-			continue
-		}
-		if inOpaqueRange(i, opaque) {
-			continue
-		}
-		if c == '<' && i+1 < limit && buf[i+1] == '<' {
-			depth++
-			i++
-			continue
-		}
-		if c == '>' && i+1 < limit && buf[i+1] == '>' {
-			if depth == 0 {
-				return 0, 0, false // dictionary closed with no /Count of its own
-			}
-			depth--
-			i++
-			continue
-		}
-		if depth != 0 || !bytes.HasPrefix(buf[i:limit], countKey) {
-			continue
-		}
-		v, vok := parseUintAfter(buf, i+len(countKey), limit)
-		if !vok {
-			return 0, 0, false
-		}
-		return v, i, true
-	}
-	// Ran out of window before the dictionary closed: the answer cannot be
-	// established, which is not the same as there being none.
-	return 0, 0, false
-}
-
-// enclosingDictStart walks backward from pos to the "<<" that opens the
-// dictionary pos sits directly inside, skipping opaque ranges and matching
-// nested dictionaries off against each other. Bounded by pdfDictScanWindow.
-func enclosingDictStart(buf []byte, pos int, opaque []pdfOpaqueRange, budget *int) (int, bool) {
-	depth := 0
-	floor := pos - pdfDictScanWindow
-	if floor < 0 {
-		floor = 0
-	}
-	for i := pos; i >= floor; i-- {
-		if *budget <= 0 {
-			return 0, false
-		}
-		*budget--
-		// Candidate byte first, then the range lookup -- see pagesDictCount's
-		// forward loop for why that ordering is a bound and not a style
-		// preference.
-		c := buf[i]
-		if c != '<' && c != '>' {
-			continue
-		}
-		if i+1 >= len(buf) || buf[i+1] != c {
-			continue
-		}
-		if inOpaqueRange(i, opaque) {
-			continue
-		}
-		if c == '>' {
-			depth++
-			continue
-		}
-		if depth == 0 {
-			return i, true
-		}
-		depth--
-	}
-	return 0, false
-}
-
-// parseUintAfter skips whitespace at from and parses the unsigned decimal
-// integer there, never a guessed value.
-func parseUintAfter(buf []byte, from, limit int) (int, bool) {
-	i := from
-	for i < limit && (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n') {
-		i++
-	}
-	digits := i
-	for digits < limit && buf[digits] >= '0' && buf[digits] <= '9' {
-		digits++
-	}
-	if digits == i {
-		return 0, false
-	}
-	v, err := strconv.Atoi(string(buf[i:digits]))
-	if err != nil {
-		return 0, false
-	}
-	return v, true
 }
 
 // extractPDFVersion reads the "%PDF-1.x" (or "%PDF-2.x") header token and

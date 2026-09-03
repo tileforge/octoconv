@@ -896,16 +896,21 @@ func TestScanAllOccurrencesNoCeilingWhenUnderCap(t *testing.T) {
 // must never publish ANY value it saw as if it were authoritative: this
 // fixture is guaranteed to sit at the ceiling boundary either way.)
 func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T) {
-	variant := []byte("/Type/Pages")
+	// The proposition is unchanged; the FIXTURE moved to the mechanism that now
+	// enforces it. It used to be bare "/Type/Pages" markers, because the walk
+	// counted markers and took the last one within a forward byte window. The
+	// walk is now a tokenizer that only reads a /Count belonging to a real
+	// dictionary, so bare markers are not candidates at all and that fixture
+	// stopped exercising a ceiling. Real dictionaries, past the cap, do.
 	var buf bytes.Buffer
-	buf.Write(variant)
-	buf.WriteString("/Count 5 ") // first occurrence's own nearby count: the stale, early answer
-	buf.Write(bytes.Repeat(variant, maxTokenScanIterations-1))
-	buf.Write(variant)
-	buf.WriteString("/Count 99 ") // ONE further occurrence past the cap, with a DIFFERENT count
+	buf.WriteString("<< /Type /Pages /Count 5 >>") // the stale, early answer
+	for i := 0; i < maxTokenScanIterations; i++ {
+		buf.WriteString("<< /Filler 1 >>")
+	}
+	buf.WriteString("<< /Type /Pages /Count 99 >>") // past the cap, a DIFFERENT count
 	head := buf.Bytes()
 
-	count, reason := extractPDFPageCount(head, false, false, false, nil, false, nil)
+	count, reason := extractPDFPageCount(head, false, false, false, false)
 	if count != nil {
 		t.Fatalf("page_count = %d, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative", *count)
 	}
@@ -1128,6 +1133,63 @@ func TestPagesDictCountBindsToItsOwnDictionary(t *testing.T) {
 			want: 2,
 			why:  "a nested dictionary's key is not a key of the dictionary that contains it",
 		},
+		// The two round-3 findings. Both are the SAME class as the two above and
+		// as the four pdflex.go's own header records -- a token recognised by
+		// its bytes without regard to what it is. They are here as rows rather
+		// than as a separate test because they are not a separate problem.
+		{
+			name: "a longer name that starts with the key",
+			body: "2 0 obj\n<< /Type /Pages /Count300 0 /Count 2 /Kids [3 0 R] >>\nendobj\n",
+			want: 2,
+			why: "/Count300 is the name Count300, which is not Count -- byte-for-byte the /Length1 " +
+				"defect pdflex.go was written for, one key name over",
+		},
+		{
+			name: "count inside an array value",
+			body: "2 0 obj\n<< /Type /Pages /Extra [ /Count 300 ] /Count 2 /Kids [3 0 R] >>\nendobj\n",
+			want: 2,
+			why: "an array is not a dictionary, so a name inside one is not a key of the dictionary " +
+				"that holds the array -- the same finding PR #14 round 4 made about /Length",
+		},
+		// ORDER MATTERS IN THESE ROWS, and the three above did not have it right.
+		//
+		// Each of them put the trap BEFORE the dictionary's real /Count, copied
+		// from how the finding was reported against the previous byte scanner --
+		// where the first match in a forward window won. The tokenizer keeps the
+		// last value it sees for a key, so a trap that precedes the real key is
+		// overwritten by it and the row passes no matter what. All three
+		// inversions confirmed exactly that: each one passed with its property
+		// removed. The rows below put the trap AFTER, which is what actually
+		// isolates the boundary.
+		{
+			name: "a longer name that starts with the key, AFTER the real one",
+			body: "2 0 obj\n<< /Type /Pages /Count 2 /Count300 300 /Kids [3 0 R] >>\nendobj\n",
+			want: 2,
+			why: "with a prefix compare instead of a whole-name match, /Count300 overwrites the " +
+				"count that was already correct",
+		},
+		{
+			name: "count inside an array value, AFTER the real one",
+			body: "2 0 obj\n<< /Type /Pages /Count 2 /Extra [ /Count 300 ] /Kids [3 0 R] >>\nendobj\n",
+			want: 2,
+			why:  "without array tracking the name inside [ ] overwrites the dictionary's own key",
+		},
+		{
+			name: "a bare dictionary inside a stream payload",
+			body: "2 0 obj\n<< /Type /Pages /Count 2 /Kids [3 0 R] >>\nendobj\n" +
+				"5 0 obj\n<< /Length 29 >>\nstream\n<< /Type /Pages /Count 300 >>\nendstream\nendobj\n",
+			want: 2,
+			why: "payload bytes that are not wrapped in a string are read as a whole second Pages " +
+				"dictionary unless the payload is jumped over -- the parenthesised version below is " +
+				"caught by string handling instead, and so proves something else",
+		},
+		{
+			name: "the marker sequence appears in a content stream",
+			body: "2 0 obj\n<< /Type /Pages /Count 2 /Kids [3 0 R] >>\nendobj\n" +
+				"5 0 obj\n<< /Length 35 >>\nstream\nBT (/Type /Pages /Count 300) Tj ET\nendstream\nendobj\n",
+			want: 2,
+			why:  "a stream payload is data; round 1's finding, now handled by the tokenizer rather than by a range filter",
+		},
 	}
 
 	for _, tc := range cases {
@@ -1160,32 +1222,23 @@ func TestPagesDictCountBindsToItsOwnDictionary(t *testing.T) {
 	}
 }
 
-// TestPagesDictResolutionIsBounded pins the ceiling that binding the count to a
-// dictionary made necessary.
+// TestPageCountWalkIsASinglePass pins that the page-count walk cannot be
+// amplified by the number of markers in a file.
 //
-// Resolving a dictionary per marker turns a per-marker window into a sum over
-// however many markers a file carries -- and a file carrying thousands of them
-// is cheap to construct, which is the same construction maxTokenScanIterations
-// already exists to bound. Measured before the budget existed: this package's
-// dense-marker test went from milliseconds to 5.02s.
+// It once could. An intermediate version of this code resolved the enclosing
+// dictionary separately for EVERY "/Type /Pages" marker, which turned a
+// per-marker window into a sum over however many markers a file carries --
+// thousands are cheap to construct. Measured at the time: this package's
+// dense-marker test went from 0.02s to 5.02s, which is attacker-controlled CPU
+// rather than a slow test. It needed an explicit byte budget on top.
 //
-// The assertion is on the REASON, not on the clock. A first version timed the
-// call and allowed two seconds -- and it passed with the budget removed
-// entirely, because the marker walk's own maxTokenScanIterations cap already
-// keeps the unbudgeted worst case under that. A timing threshold loose enough
-// to be stable in CI was too loose to isolate the boundary at all, which the
-// inversion is what showed.
-//
-// The budget has a deterministic observable effect instead: exhausting it is
-// reported as ReasonWorkCeilingBytes, where an unbudgeted walk finds no
-// dictionary and reports ReasonMalformedInput. Both answers are "unknown" and
-// both are correct; only one of them proves the work was bounded. A generous
-// time bound stays as a second, weaker guard.
-func TestPagesDictResolutionIsBounded(t *testing.T) {
+// Moving the question to internal/convert's tokenizer removed the amplifier by
+// construction: the file is walked ONCE, and a marker that is not a dictionary
+// key is not a candidate. The budget went with it. This test is what would
+// notice if a future change reintroduced per-marker work.
+func TestPageCountWalkIsASinglePass(t *testing.T) {
 	var b bytes.Buffer
 	b.WriteString("%PDF-1.4\n")
-	// Markers with no enclosing dictionary anywhere near them: every one costs
-	// a full backward AND forward window if nothing bounds the sum.
 	for i := 0; i < 20000; i++ {
 		b.WriteString("/Type /Pages ")
 	}
@@ -1198,17 +1251,17 @@ func TestPagesDictResolutionIsBounded(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if count != nil {
-		t.Fatalf("PDFPageCount = %d on a file of bare markers with no dictionary at all", *count)
+		t.Fatalf("PDFPageCount = %d on a file whose markers are not keys of any dictionary", *count)
 	}
-	if reason != ReasonWorkCeilingBytes {
-		t.Fatalf("PDFPageCount reason = %q, want %q -- the dictionary-resolution budget must be "+
-			"reached and REPORTED on a file built to exhaust it. Any other reason means the sum of "+
-			"the per-marker lookups is unbounded and the walk simply ran to completion",
-			reason, ReasonWorkCeilingBytes)
+	if reason != ReasonMalformedInput {
+		t.Fatalf("reason = %q, want %q -- bare markers are not dictionary keys, so there is nothing "+
+			"to count, and that is a fact about the file rather than a ceiling we hit", reason,
+			ReasonMalformedInput)
 	}
+	// Deliberately generous: the assertion above is the real one. This is a
+	// tripwire for a reintroduced per-marker walk, which was 250x slower.
 	if elapsed > 2*time.Second {
-		t.Fatalf("PDFPageCount took %v on a file of %d bare markers -- the per-marker dictionary "+
-			"lookup must be bounded in SUM, not only per marker, or a cheaply-constructed file buys "+
-			"attacker-controlled CPU", elapsed, 20000)
+		t.Fatalf("PDFPageCount took %v on 20000 bare markers -- per-marker work appears to be back",
+			elapsed)
 	}
 }
