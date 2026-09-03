@@ -20,14 +20,18 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) are code-complete — 63-02 in review on PR #15. Phase 64 (tectonic, ninth engine class) ahead.
+**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phase 63 (sanitizer gaps + probe page ceiling) code-complete and in review on PR #15; phase 64 (tectonic, ninth engine class) planned and ready to execute once #15 merges.
 
 ## Current Position
 
-Phase: 63 — Sanitize Hardening & Probe Page Ceiling
-Plan: 63-01 (merged, PR #14), 63-02 (PR #15 open, @codex review requested)
-Status: phase 63 code-complete; 63-02 in review on PR #15
-Last activity: 2026-09-02 — 63-02: PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02). One bound, two gates: the API refuses a known over-the-bound PDF page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with the accurate pdfcpu count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was already derived from — the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement. Five inversions recorded
+Phase: 63 — Sanitize Hardening & Probe Page Ceiling (63-02 in review, PR #15) | 64 — Tectonic, Ninth Engine Class (PLANNED)
+Plan: 63-01 (merged, PR #14), 63-02 (PR #15, five review rounds so far); 64-01..64-05 planned
+Status: 63-02 is PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02) — one bound, two gates: the API refuses a known over-the-bound page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with an accurate pdfinfo count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was derived from; the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement.
+
+Review has cost five rounds and reshaped the API half twice: the byte scanner that derived the page count was replaced by internal/convert's pdflex tokenizer after four bypasses, and the count is now bound to the dictionary that declares it. Seven distinct ways a valid PDF could have been refused with 422 were found and closed, plus three resource defects (two introduced by this plan). A differential table against poppler over every committed PDF now guards the whole thing: 8 answered and agreeing, 5 abstaining for stated reasons, 0 disagreements.
+
+Phase 64 has CONTEXT + RESEARCH + five plans on main; its EXECUTION waits for #15, because a ninth engine class touches the same files 63-02 changed (descriptors.go, cmd/api/main.go, api.go, docker-compose.yml, the ConfigMap, ERROR-CODES.md, openapi.yaml).
+Last activity: 2026-09-03 — 63-02 review rounds; phase 64 planned (CONTEXT, RESEARCH, 64-01..64-05)
 
 ## Performance Metrics
 

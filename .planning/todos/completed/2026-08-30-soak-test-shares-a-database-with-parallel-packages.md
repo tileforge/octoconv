@@ -3,7 +3,12 @@ created: 2026-08-30
 area: testing
 severity: low
 resolves_phase: 62
+resolved: 2026-09-02
 ---
+
+> **Resolved by phase 62 (DEBT-13).** The reconciler soak test now asserts about
+> the job it created, keyed by its own `jobID`, rather than about the contents of
+> a table other packages write to in parallel.
 
 # The reconciler soak test can be broken by another package's in-flight job
 

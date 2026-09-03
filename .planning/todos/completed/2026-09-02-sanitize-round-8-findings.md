@@ -3,7 +3,14 @@ created: 2026-09-02
 area: sanitize
 severity: medium
 resolves_phase: 63
+resolved: 2026-09-02
 ---
+
+> **Resolved by 63-01 (PR #14).** All three findings fixed after five review
+> rounds and eighteen findings: SANI-07 (ICC validated as a chunk set),
+> SANI-08 (stream boundaries derived from `/Length` through a lexer that models
+> PDF's four lexical contexts, `internal/convert/pdflex.go`), SANI-09 (the
+> verifier requires the main part and its content-type declaration).
 
 # Three sanitize findings merged unfixed (PR #12, review round 8)
 
