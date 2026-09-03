@@ -11,6 +11,7 @@ progress:
   total_plans: 2
   completed_plans: 2
   percent: 66
+  note: "phase 63 closed 2026-09-03 (d13e8a9); phase 64 planned, not started"
 ---
 
 # Project State
@@ -20,18 +21,19 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phase 63 (sanitizer gaps + probe page ceiling) code-complete and in review on PR #15; phase 64 (tectonic, ninth engine class) planned and ready to execute once #15 merges.
+**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) merged; phase 64 (tectonic, ninth engine class) planned and ready to execute.
 
 ## Current Position
 
-Phase: 63 — Sanitize Hardening & Probe Page Ceiling (63-02 in review, PR #15) | 64 — Tectonic, Ninth Engine Class (PLANNED)
-Plan: 63-01 (merged, PR #14), 63-02 (PR #15, five review rounds so far); 64-01..64-05 planned
-Status: 63-02 is PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02) — one bound, two gates: the API refuses a known over-the-bound page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with an accurate pdfinfo count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was derived from; the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement.
+Phase: 64 — Tectonic, Ninth Engine Class (PLANNED, ready to execute)
+Plan: 64-01..64-05 planned; phase 63 CLOSED (63-01 PR #14, 63-02 PR #15, both merged)
+Status: v1.14 is two phases of three done. Phase 63 merged as d13e8a9 after seven review rounds.
 
-Review has cost five rounds and reshaped the API half twice: the byte scanner that derived the page count was replaced by internal/convert's pdflex tokenizer after four bypasses, and the count is now bound to the dictionary that declares it. Seven distinct ways a valid PDF could have been refused with 422 were found and closed, plus three resource defects (two introduced by this plan). A differential table against poppler over every committed PDF now guards the whole thing: 8 answered and agreeing, 5 abstaining for stated reasons, 0 disagreements.
+63-02 shipped the probe page ceiling in the WORKER (PROBE_MAX_PAGES=200, pdfinfo before the first ghostscript pass, terminal). It did NOT ship PROBE-01's admission gate: that was built and removed on evidence — seven ways a valid document was rejected with 422, three resource defects on a route with no concurrency semaphore, and finally the finding that a PDF page tree is a tree, so the gate abstained on exactly the long documents it existed to refuse. PROBE-01 and ROADMAP SC4 were reworded; the removed work is carried by .planning/todos/pending/2026-09-03-pdf-page-count-tokenizer.md.
 
-Phase 64 has CONTEXT + RESEARCH + five plans on main; its EXECUTION waits for #15, because a ninth engine class touches the same files 63-02 changed (descriptors.go, cmd/api/main.go, api.go, docker-compose.yml, the ConfigMap, ERROR-CODES.md, openapi.yaml).
-Last activity: 2026-09-03 — 63-02 review rounds; phase 64 planned (CONTEXT, RESEARCH, 64-01..64-05)
+The phase's most transferable measurement is not the ceiling: twenty-two inversions were written and eight passed against deliberately broken code on the first attempt, every time because the test was wrong rather than the fix.
+
+Next: execute phase 64 (tectonic, latex → pdf). Waves 01 → 02 → (03 ‖ 04) → 05; the last is autonomous: false because TECTONIC_ENGINE_TIMEOUT is measured by the operator on a corpus decided beforehand.
 
 ## Performance Metrics
 

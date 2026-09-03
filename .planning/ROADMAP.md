@@ -11,7 +11,7 @@
 ### 🚧 v1.14 Typesetting & Debt (Phases 62–64)
 
 - [x] Phase 62: Operational Debt Tail — 1 plan, merged as PR #13
-- [ ] Phase 63: Sanitize Hardening & Probe Page Ceiling (3 plans est.)
+- [x] Phase 63: Sanitize Hardening & Probe Page Ceiling (3 plans est.)
 - [ ] Phase 64: Tectonic — Ninth Engine Class (5 plans est.)
 
 ---
