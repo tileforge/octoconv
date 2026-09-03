@@ -450,7 +450,7 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 		res.Characteristics["text_layer_reason"] = string(textLayerReason)
 	}
 
-	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape, headOpaqueCeilingHit)
+	count, reason := extractPDFPageCount(head, compressed, truncated, hexEscape)
 	if count != nil {
 		res.Characteristics["page_count"] = *count
 	} else {
@@ -547,14 +547,21 @@ func PDFPageCount(r io.ReaderAt, size, maxBytes int64, tr *Tracker) (*int, Reaso
 	compressed := containsCompressionSignal(head) || (tailOK && containsCompressionSignal(tail))
 	hexEscape := containsPDFNameHexEscape(head) || (tailOK && containsPDFNameHexEscape(tail))
 
-	// The opaque-range scan is kept ONLY for its ceiling signal. The tokenizer
-	// below knows PDF's lexical contexts for itself and needs no range set --
-	// but if OUR OWN scanner gave up early on this file, that is a fact about
-	// how analysable the bytes are, and it is the same fifth gate AnalyzePDF
-	// applies to every risk code.
-	_, opaqueCeilingHit := scanPDFOpaqueRanges(head, tr)
-
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaqueCeilingHit)
+	// NO OPAQUE-RANGE SCAN HERE, and its absence is the fix for a defect this
+	// function introduced rather than an omission.
+	//
+	// The byte scanner this walk replaced needed the range set to tell payload
+	// from structure. The tokenizer knows PDF's lexical contexts for itself, so
+	// the ranges became unused -- but the CALL was left in place for its
+	// ceiling bit, with the slice discarded. That is not free: it constructs,
+	// merges and sorts up to a million ranges. Measured on an 8 MiB
+	// comment-heavy input, this function allocated 113 MB and took 35 ms per
+	// call. The API pod is limited to 1 GiB and this route, unlike
+	// POST /v1/inspect, holds no concurrency semaphore -- so a small
+	// authenticated burst could exhaust it before a single upload was admitted.
+	// Found in review (PR #15 round 4), and the whole cost bought a signal
+	// about a scan that no longer informs this answer.
+	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape)
 	if len(counts) == 0 {
 		if reason == "" {
 			reason = ReasonMalformedInput
@@ -1114,8 +1121,8 @@ func scanAllOccurrences(buf, token []byte, max int, tr *Tracker, fn func(pos int
 // simply live past the read window). Returns (nil, ReasonMalformedInput)
 // when the whole (untruncated) window was searched and no Pages dict with a
 // legible /Count was ever found.
-func extractPDFPageCount(head []byte, compressed, truncated, hexEscape, opaqueCeilingHit bool) (*int, Reason) {
-	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape, opaqueCeilingHit)
+func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool) (*int, Reason) {
+	counts, reason := collectPDFPageCounts(head, compressed, truncated, hexEscape)
 	if len(counts) == 0 {
 		return nil, reason
 	}
@@ -1159,14 +1166,14 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape, opaqueCe
 // INCOMPLETE, and a match "outside every KNOWN opaque range" may well sit
 // inside one this scan never reached. That is the same reasoning AnalyzePDF's
 // fifth verdict gate already applies to every risk code, applied here.
-func collectPDFPageCounts(head []byte, compressed, truncated, hexEscape, opaqueCeilingHit bool) ([]int, Reason) {
+func collectPDFPageCounts(head []byte, compressed, truncated, hexEscape bool) ([]int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
 	}
 	if hexEscape {
 		return nil, ReasonPDFNameEscape
 	}
-	if opaqueCeilingHit || truncated {
+	if truncated {
 		return nil, ReasonWorkCeilingBytes
 	}
 

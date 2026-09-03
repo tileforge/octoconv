@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -910,7 +911,7 @@ func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T)
 	buf.WriteString("<< /Type /Pages /Count 99 >>") // past the cap, a DIFFERENT count
 	head := buf.Bytes()
 
-	count, reason := extractPDFPageCount(head, false, false, false, false)
+	count, reason := extractPDFPageCount(head, false, false, false)
 	if count != nil {
 		t.Fatalf("page_count = %d, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative", *count)
 	}
@@ -1278,5 +1279,46 @@ func TestPageCountWalkIsASinglePass(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Fatalf("PDFPageCount took %v on 20000 bare markers -- per-marker work appears to be back",
 			elapsed)
+	}
+}
+
+// TestPDFPageCountDoesNotMaterializeWhatItDiscards is the regression for the
+// P1 finding on PR #15 round 4, and for a defect this function introduced
+// rather than inherited.
+//
+// When the walk moved to the tokenizer it stopped needing the opaque-range set
+// -- but the CALL that builds it was left in place for its ceiling bit, with
+// the slice thrown away. Building it constructs, merges and sorts up to a
+// million ranges. Measured on this input: 113 MB allocated and 35 ms per call,
+// on a route that the API pod serves with a 1 GiB limit and, unlike
+// POST /v1/inspect, no concurrency semaphore. A small authenticated burst
+// could exhaust it before one upload was admitted.
+//
+// The assertion is on ALLOCATED BYTES rather than on time, for the reason the
+// clock-based test earlier in this file records: a threshold loose enough to
+// be stable is usually too loose to isolate anything. 8 MiB in, and the window
+// itself is 8 MiB, so anything past a small multiple means something is being
+// built and discarded.
+func TestPDFPageCountDoesNotMaterializeWhatItDiscards(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("%PDF-1.4\n")
+	for b.Len() < 8<<20 {
+		b.WriteString("%\n") // comments: one opaque range each
+	}
+	raw := b.Bytes()
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, _ = PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20,
+		NewTracker(Budget{MaxBytes: 8 << 20}))
+	runtime.ReadMemStats(&after)
+
+	allocated := after.TotalAlloc - before.TotalAlloc
+	const ceiling = 32 << 20
+	if allocated > ceiling {
+		t.Fatalf("PDFPageCount allocated %d bytes for an %d-byte input (ceiling %d) -- something is "+
+			"being constructed and thrown away; the opaque-range set was 113 MB of exactly that",
+			allocated, len(raw), ceiling)
 	}
 }

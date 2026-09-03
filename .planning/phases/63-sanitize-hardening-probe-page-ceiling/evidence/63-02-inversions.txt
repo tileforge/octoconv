@@ -166,3 +166,24 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	0.856s
 FAIL
 [exit 1]
 
+
+##### ROUND 5 -- codex round 4 #####
+
+(finding 1, indirect /Count, was already fixed in e0d8a6c by self-probe; verified against their exact shape /Count 300 0 R with object 300 = 2 -> returns 2)
+
+=== INVERSION 17: xref no longer overrides speculative first-pass object offsets ===
+--- FAIL: TestPDFTypedDictUintsXrefOverridesSpeculativeOffsets (0.00s)
+    pdfdictscan_test.go:72: PDFTypedDictUints = 300, want 2 -- the xref points object 9 at the real value; a decoy header planted in a stream payload must not outrank the file's own declared structure
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.324s
+FAIL
+[exit 1]
+
+=== INVERSION 18: the discarded opaque-range scan is put back ===
+--- FAIL: TestPDFPageCountDoesNotMaterializeWhatItDiscards (0.05s)
+    pdf_test.go:1320: PDFPageCount allocated 113208048 bytes for an 8388609-byte input (ceiling 33554432) -- something is being constructed and thrown away; the opaque-range set was 113 MB of exactly that
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.973s
+FAIL
+[exit 1]
+

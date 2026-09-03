@@ -61,11 +61,23 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	// first version gave up on it and reported a ceiling for every real PDF in
 	// the corpus. So the object index is built first, from a forward pass and
 	// from the xref, exactly as pdfStreamPayloads resolves the same problem.
+	// XREF WINS. This started as "fill in what the forward pass missed", and
+	// the precedence was backwards.
+	//
+	// scanPDF resynchronises to the next "endstream" when a stream's /Length
+	// cannot be resolved on the first pass -- pdflex.go's own comment explains
+	// why it must keep reading rather than stop. While resynchronising it can
+	// record an object header that is really PAYLOAD BYTES, and a file can put
+	// one there on purpose. Refusing to let the xref replace that offset means
+	// a decoy planted in a stream outranks the file's own declared structure,
+	// which is the opposite of how a reader resolves references.
+	//
+	// So the speculative index is built first and the xref overwrites it. Found
+	// in review (PR #15 round 4), with a valid two-page PDF that this function
+	// reported as 300.
 	objects := scanPDF(b).objects
 	for num, off := range pdfXrefObjects(b) {
-		if _, seen := objects[num]; !seen {
-			objects[num] = off
-		}
+		objects[num] = off
 	}
 
 	type frame struct {
