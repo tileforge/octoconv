@@ -285,6 +285,58 @@ because they are two resources: `pdfDictScanWindow` for one lookup,
 `work_ceiling_bytes` like every other ceiling here. Package tests: 2.8s before
 the phase, 35s at the first version of this fix, 1.03s now. Fixed in `f8b1768`.
 
+## Review round 3 (codex) — the byte scanner was deleted
+
+Two findings, both reproduced (300 instead of 2): `/Count300` matched as the key
+`/Count` by prefix, and `/Extra [ /Count 300 ]` read as a direct key.
+
+`internal/convert/pdflex.go`'s own header already lists "`/Length` matched
+inside `/Length1`" and a "`/Length` inside `[ ... ]` read as a key of the
+enclosing dictionary" (PR #14 round 4). Those are these two findings, one key
+name over. **The lesson was already written down in this repository, and the
+byte scanner in `internal/inspect` repeated it anyway** — because it had no
+model of what a token is.
+
+Four bypasses of one bound in three rounds (stream payload, neighbouring
+dictionary, prefixed name, array value), so the derivation moved rather than
+gaining a third and fourth comparison. `convert.PDFTypedDictUints` answers the
+question on the tokenizer that models PDF's four lexical contexts, whole-name
+tokens, array nesting and stream payloads. `internal/inspect` loses
+`pagesDictCount`, `enclosingDictStart`, `parseUintAfter`, both dictionary-scan
+bounds, and the opaque-range filtering for this walk; the per-marker
+amplification the budget existed for is gone by construction.
+
+**This crossed a documented line and was escalated rather than decided.** Phase
+58 D-02a refused a parser on untrusted bytes in the API process. That decision
+was about pdfcpu — a large third-party dependency that builds a document model;
+this is a bounded tokenizer of this project's own. The operator was shown the
+three options (use the tokenizer / patch twice more / drop the admission gate
+and change PROBE-01) and chose the first. Fixed in `09e85b2`.
+
+## Four rounds of inversions proved nothing until they were themselves fixed
+
+The most useful finding of this plan, and worth stating as a ratio: **eight
+inversions were written across four rounds, and five of them passed against
+deliberately broken code.** In every case the test was wrong, not the fix.
+
+- **Inversion 7** accepted an abstention as success; with the opaque filtering
+  removed, two mechanisms masked each other and neither was under test.
+- **Inversion 10** failed to COMPILE rather than failing its test (orphaned
+  imports).
+- **Inversion 12** timed the call and allowed two seconds — a threshold loose
+  enough to be stable in CI was too loose to isolate the boundary, since the
+  marker walk's own cap already kept the unbudgeted case under it.
+- **Inversions 13, 14 and 15** all passed with their property removed: every
+  fixture put its trap BEFORE the dictionary's real `/Count`, copied from how
+  the findings read against a scanner where the first forward match won. The
+  tokenizer keeps the last value, so the real key overwrote the trap and the row
+  passed regardless.
+
+A fifth near-miss belongs in the same list: the round-3 stream row was caught by
+the tokenizer's *string* handling, not by its payload jump, so it proved a
+different property than the one it named. Only a bare dictionary inside a
+payload isolates that boundary.
+
 ## Two inversions proved nothing until they were fixed
 
 Worth recording separately, because in both cases the test was wrong rather than
