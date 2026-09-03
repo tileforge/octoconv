@@ -583,20 +583,35 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	//
 	// UNKNOWN ADMITS, AND THAT IS THE DESIGN, NOT A GAP.
 	//
-	// internal/inspect's scanner is bounded and literal: it cannot see into
-	// compressed object streams, does not decode hex-escaped names, and does
-	// not resolve the xref chain. Failing closed on those blind spots would
-	// reject legitimate PDFs on a heuristic's limitation. The accurate count
-	// is affordable in the worker (pdfcpu, isolated, under a measured timeout,
-	// inside a cgroup) and refuses terminally there -- so what this gate
-	// buys is the S3 write and the queue slot, never the bound itself
+	// internal/inspect's walk is bounded: it cannot see into compressed object
+	// streams, does not decode hex-escaped names, and abstains at the first
+	// construct whose meaning it cannot establish -- including a /Count whose
+	// indirect target lies outside the window. Failing closed on those blind
+	// spots would reject legitimate PDFs on our own limitation. The accurate
+	// count is affordable in the worker (pdfinfo, under a measured timeout,
+	// inside a cgroup) and refuses terminally there -- so what this gate buys
+	// is the S3 write and the queue slot, never the bound itself
 	// (63-CONTEXT.md D-04). The abstention is logged so an operator can see
 	// how often the cheap gate gives up.
 	//
-	// pdfcpu is deliberately NOT called here. Phase 58 D-02a refused the
-	// project's first parser-on-untrusted-bytes in the API process, and
-	// sanitizeverify.go's own header says in as many words that its use is
-	// the exception those conditions were written for and is not a precedent.
+	// WHAT RUNS HERE, AND THE LINE IT CROSSES.
+	//
+	// pdfcpu is still NOT called from this process. Phase 58 D-02a refused it
+	// as the project's first parser-on-untrusted-bytes in the API, and
+	// sanitizeverify.go's header says its own use is the exception those
+	// conditions were written for, not a precedent.
+	//
+	// internal/convert's pdflex tokenizer IS reached from here, through
+	// inspect.PDFPageCount, and that is a deliberate crossing rather than an
+	// oversight. A byte scan of these bytes produced four false-rejection
+	// paths in three review rounds -- a marker in a stream payload, a count
+	// from a neighbouring dictionary, a longer name matched by prefix, a name
+	// inside an array -- every one of which turned a valid document into a
+	// 422. D-02a's subject was a large third-party dependency that builds a
+	// document model; this is a bounded tokenizer of this project's own that
+	// builds nothing and decodes nothing. The operator was shown the
+	// alternatives (patch the scan again, or drop this gate and change
+	// PROBE-01) and chose this.
 	if operation == convert.OperationSanitize && detected == "pdf" && s.probeMaxPages > 0 {
 		tr := inspect.NewTracker(inspect.Budget{MaxBytes: probePageCountScanBytes})
 		count, reason := inspect.PDFPageCount(file, header.Size, probePageCountScanBytes, tr)

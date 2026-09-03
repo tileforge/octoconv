@@ -24,6 +24,19 @@
 // this file answer "clean" for a file whose content it structurally cannot
 // see is wrong even if every other test is green.
 //
+// ONE LATER EXCEPTION, STATED HERE SO THE PARAGRAPH ABOVE STAYS TRUE.
+//
+// pdfcpu is still not introduced in this package and the compression-signal
+// downgrade above is unchanged. But PDFPageCount -- added in Phase 63 for the
+// sanitize admission gate -- does not scan bytes for its answer either: it
+// delegates to internal/convert's pdflex tokenizer. That is not "parse
+// harder" in D-02a's sense (no document model, no decoding, no third-party
+// dependency), and it was not a preference: a byte scan of the same question
+// produced four false-rejection paths in three review rounds, each turning a
+// valid upload into a 422. The distinction the paragraph above draws is
+// between a SCANNER and a PARSER; a tokenizer sits between them, and this
+// file now uses one for exactly one question.
+//
 // The inverse matters just as much and is easy to get backwards: a
 // POSITIVE finding is never weakened by the same blindness. If /JavaScript
 // is actually found in the bounded window, that is a real observation and
@@ -470,14 +483,23 @@ func AnalyzePDF(r io.ReaderAt, size int64, maxBytes int64, tr *Tracker) FamilyRe
 //
 // # WHY IT MAY RETURN nil, AND WHY THAT IS NOT A FAILURE
 //
-// The scanner is bounded and literal: it cannot see into compressed object
-// streams, it does not decode hex-escaped names, and it does not resolve the
-// xref chain. Each of those is a blind spot extractPDFPageCount reports as
-// unknown rather than guessing at (D-01: "unknown is a correct answer, not a
+// The walk is bounded: it cannot see into compressed object streams, it does
+// not decode hex-escaped names, and it stops at the first construct whose
+// meaning it cannot establish. Each of those is a blind spot reported as
+// unknown rather than guessed at (D-01: "unknown is a correct answer, not a
 // failure"). The admission gate ADMITS on nil, deliberately -- rejecting a
-// legitimate PDF because our cheap scanner has a blind spot would be the worse
-// error, and the worker's accurate pdfcpu count is the actual bound
+// legitimate PDF because our cheap walk has a blind spot would be the worse
+// error, and the worker's accurate pdfinfo count is the actual bound
 // (63-CONTEXT.md D-04).
+//
+// It is no longer a byte scanner, and the difference is load-bearing rather
+// than cosmetic. It delegates to internal/convert's tokenizer, which knows
+// whole-name tokens from prefixes, array values from dictionary keys, and
+// stream payloads from structure -- four things a byte scan got wrong here in
+// three review rounds. It DOES resolve one integer through one indirect
+// reference, using an object index built from a forward pass and the xref, so
+// "does not resolve the xref chain" is no longer true of it and is not claimed.
+// It still builds no document and decodes nothing.
 //
 // The compression/name-escape signals are read from BOTH a head and a tail
 // window, on the same split AnalyzePDF uses and for a reason that matters

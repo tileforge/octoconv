@@ -74,8 +74,8 @@ for two different reasons:
 
 | Where | How the count is obtained | What the client sees |
 |-------|---------------------------|----------------------|
-| At admission (`POST /v1/jobs`) | A bounded scan of the uploaded bytes. It is allowed to answer "unknown" — it cannot see into compressed object streams and does not resolve the cross-reference chain | `422` with `code: too_many_pages`, and **nothing is stored** |
-| In the worker, before conversion starts | An accurate parse, affordable there | The job fails with `error_code: too_many_pages` on the **first** attempt — no retries are spent |
+| At admission (`POST /v1/jobs`) | A bounded read of the uploaded bytes. It is allowed to answer "unknown" — it cannot see into compressed object streams, and it abstains rather than guess whenever the declared count is not plainly readable from the bytes in hand | `422` with `code: too_many_pages`, and **nothing is stored** |
+| In the worker, before conversion starts | An accurate count, affordable there | The job fails with `error_code: too_many_pages` on the **first** attempt — no retries are spent |
 
 The two are one bound with two ways of counting. The admission gate exists to save the upload; it
 is not the guarantee, which is why it may abstain. A PDF whose page count the cheap scan cannot
