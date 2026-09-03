@@ -1,0 +1,53 @@
+64-01 Tasks 1 and 3 -- the floor, discovered by building, and what the package
+set actually costs. Measured 2026-09-04, tectonic 0.17.0 on the host, against
+tectonic's default bundle (dev-time only; the shipped worker gets a baked-in
+reduced bundle and no network).
+
+METHOD
+  1. compile a minimal \documentclass{article} document, then enumerate
+     tectonic's file cache -> the FLOOR;
+  2. compile a document \usepackage-ing the entire declared set, enumerate
+     again -> the closure;
+  3. diff.
+
+RESULT
+                                  files      bytes
+  floor (format + article)          354    44.47 MiB
+  added by the declared set         102     2.44 MiB
+    of which pgf/tikz                55     0.91 MiB
+  set without pgf/tikz                       1.53 MiB
+
+WHAT THIS CONTRADICTS
+
+64-CONTEXT.md D-01 says: "tcolorbox pulls in pgf/tikz, and that is a real size
+cost -- TikZ is among the largest things in TeXLive. It is in anyway ... The
+plan reports the bundle size with and without it, so the cost is a measured
+number rather than this paragraph's assertion."
+
+The measurement disagrees with the paragraph. pgf/tikz is 0.91 MiB against a
+44 MiB floor -- about 2%. What dominates is FONTS: the Computer Modern family
+and the Latin Modern OTF the format build pulls, before a single package is
+loaded. The decision to include tcolorbox stands; the reason given for worrying
+about it does not.
+
+THE CAVEAT THAT MATTERS, STATED SO THE NUMBER IS NOT OVERREAD
+
+This measures what these two documents TOUCHED, not what a bundle must CONTAIN.
+Tectonic fetches files on demand, so the cache is the closure of one run. A
+bundle ships a fixed set, and a document using TikZ libraries these documents
+did not load would need files not counted here. So 0.91 MiB is a LOWER BOUND on
+tikz's contribution to the built bundle, not the bundle figure. Task 2's
+select/pack run is what produces the real number, and this file must not be
+read as having produced it already.
+
+WHAT ELSE THE RUN ESTABLISHED
+
+  * The floor is not "article.cls plus a few fonts". A minimal article pulls 354
+    files including amsmath, because building the LaTeX format does -- the floor
+    is the format's dependency closure, not the document's.
+  * The full declared set COMPILES: math, colour, colortbl, geometry, titlesec,
+    fancyhdr, enumitem, caption, booktabs, tcolorbox, hyperref, listings, babel,
+    and biblatex with backend=bibtex, in one document, exit 0.
+  * biblatex on backend=bibtex works without any biber binary present on the
+    host -- 63-CONTEXT.md D-07's decision confirmed by running rather than by
+    reading.
