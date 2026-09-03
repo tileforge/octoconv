@@ -154,3 +154,15 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	0.812s
 FAIL
 [exit 1]
 
+
+=== INVERSION 16: an indirect value is taken as the value (self-probe finding: /Count 5 0 R read as 5) ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/an_indirect_count_that_resolves (0.00s)
+        pdf_test.go:1234: PDFPageCount = 7, want 2 -- "/Count 7 0 R" means the count lives in object 7; reading the first integer would report the OBJECT NUMBER as the page count
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/an_indirect_count_whose_target_is_not_in_the_window (0.00s)
+        pdf_test.go:1226: PDFPageCount = 7, want an abstention -- the reference cannot be resolved from these bytes, and 7 is an object number, not an answer
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.856s
+FAIL
+[exit 1]
+

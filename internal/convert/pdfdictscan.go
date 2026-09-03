@@ -190,8 +190,34 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		if c >= '0' && c <= '9' || ((c == '+' || c == '-') && i+1 < len(b) && b[i+1] >= '0' && b[i+1] <= '9') {
 			v, next := pdfReadSignedInt(b, i)
 			if awaitVal {
-				if n := len(stack); n > 0 && v >= 0 {
-					stack[n-1].val, stack[n-1].haveVal = v, true
+				// AN INDIRECT VALUE IS A REFERENCE, NOT THE VALUE.
+				//
+				// "/Count 5 0 R" is legal and means "the count is in object 5".
+				// Taking the first integer would report the OBJECT NUMBER as
+				// the page count -- a confidently wrong answer, in either
+				// direction, on a valid document. Found by probing this
+				// function rather than by review: pdfLooksLikeRef was already
+				// applied to /Length here and simply had not been applied to
+				// the key's own value.
+				//
+				// Resolved from the same object index the lengths use, and
+				// abstained on when the target is outside this window. The
+				// tokenizer resolves exactly one integer through one
+				// reference; that is the limit pdflex.go states for itself and
+				// this does not widen it.
+				if n := len(stack); n > 0 {
+					val, have := v, v >= 0
+					if pdfLooksLikeRef(b, next) {
+						val, have = 0, false
+						if off, found := objects[v]; found {
+							if resolved, _, ok := pdfReadIntAt(b, off); ok && resolved >= 0 {
+								val, have = resolved, true
+							}
+						}
+					}
+					if have {
+						stack[n-1].val, stack[n-1].haveVal = val, true
+					}
 				}
 				awaitVal = false
 			}

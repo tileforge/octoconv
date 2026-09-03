@@ -1184,6 +1184,21 @@ func TestPagesDictCountBindsToItsOwnDictionary(t *testing.T) {
 				"caught by string handling instead, and so proves something else",
 		},
 		{
+			name: "an indirect count that resolves",
+			body: "2 0 obj\n<< /Type /Pages /Count 7 0 R /Kids [3 0 R] >>\nendobj\n" +
+				"7 0 obj\n2\nendobj\n",
+			want: 2,
+			why: "\"/Count 7 0 R\" means the count lives in object 7; reading the first integer " +
+				"would report the OBJECT NUMBER as the page count",
+		},
+		{
+			name: "an indirect count whose target is not in the window",
+			body: "2 0 obj\n<< /Type /Pages /Count 7 0 R /Kids [3 0 R] >>\nendobj\n",
+			want: 0,
+			why: "the reference cannot be resolved from these bytes, and 7 is an object number, " +
+				"not an answer",
+		},
+		{
 			name: "the marker sequence appears in a content stream",
 			body: "2 0 obj\n<< /Type /Pages /Count 2 /Kids [3 0 R] >>\nendobj\n" +
 				"5 0 obj\n<< /Length 35 >>\nstream\nBT (/Type /Pages /Count 300) Tj ET\nendstream\nendobj\n",
