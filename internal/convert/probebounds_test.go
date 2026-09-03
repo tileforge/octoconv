@@ -228,6 +228,9 @@ func multiPagePDFFixture(pages int) []byte {
 // rather than through sanitizePDF, because the registry face is what the worker
 // actually calls and is where the configured bound lives.
 func TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript(t *testing.T) {
+	requirePdfinfo(t)     // the ceiling counts with it
+	requireGhostscript(t) // the subtests that pass the ceiling then run gs
+
 	write := func(t *testing.T, pages int) (in, out string) {
 		t.Helper()
 		dir := t.TempDir()
@@ -335,6 +338,12 @@ func TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript(t *testing.T) {
 // either. Reporting it as ErrSanitizeMalformedInput makes it terminal and
 // makes the message name which side failed.
 func TestProbePDFPageCountReportsMalformedInput(t *testing.T) {
+	// pdfinfo must be PRESENT for this to mean anything: the proposition is
+	// that pdfinfo RAN and produced no legible Pages line. Without the binary
+	// the could-not-start branch fires instead, which is a different error on
+	// purpose.
+	requirePdfinfo(t)
+
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "bad.pdf")
 	if err := os.WriteFile(bad, []byte("not a pdf at all"), 0o644); err != nil {
@@ -358,6 +367,10 @@ func TestProbePDFPageCountReportsMalformedInput(t *testing.T) {
 // property rather than the mechanism -- an already-cancelled context must not
 // produce a successful count.
 func TestProbePDFPageCountIsBoundByContext(t *testing.T) {
+	// Without pdfinfo this would pass for the wrong reason -- the missing
+	// binary, not the cancelled context.
+	requirePdfinfo(t)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -379,6 +392,10 @@ func TestProbePDFPageCountIsBoundByContext(t *testing.T) {
 // worth keeping: a fix is not evidence, and this one needed probing exactly
 // like the code it replaced.
 func TestPageCountFailuresAreAttributedCorrectly(t *testing.T) {
+	// Two of the three rows need pdfinfo present to distinguish their cause
+	// from the missing-binary branch; the third empties PATH itself.
+	requirePdfinfo(t)
+
 	fixture := func(t *testing.T) string {
 		t.Helper()
 		dir := t.TempDir()

@@ -30,6 +30,24 @@ func requireGhostscript(t *testing.T) {
 	}
 }
 
+// requirePdfinfo is requireGhostscript's sibling for poppler's pdfinfo, which
+// the probe page ceiling counts with (probebounds.go). Same convention,
+// including OCTOCONV_REQUIRE_BINS=1 turning the skip into a failure.
+//
+// It exists because the page-ceiling tests were written without one and FAILED
+// rather than skipped on a checkout without poppler -- and failed confusingly,
+// since a missing binary is now classified as "engine binary is not available"
+// rather than as a page-count result. Found in review (PR #15 round 7).
+func requirePdfinfo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("pdfinfo"); err != nil {
+		if os.Getenv("OCTOCONV_REQUIRE_BINS") == "1" {
+			t.Fatalf("pdfinfo not on PATH and OCTOCONV_REQUIRE_BINS=1: a skipped test is not a passed test")
+		}
+		t.Skipf("pdfinfo not found on PATH, skipping real-binary test")
+	}
+}
+
 func requirePdftotext(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("pdftotext"); err != nil {

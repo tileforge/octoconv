@@ -64,3 +64,20 @@ do with the change under test.
 page_limit lines: 0
 2026/09/03 12:13:42 [АндрейП�/8nPFClv5K8-000001] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 40.188125ms
 2026/09/03 12:13:44 [АндрейП�/8nPFClv5K8-000004] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 28.837ms
+
+================================================================
+ROUND 7 -- real-binary tests must SKIP, not fail (2026-09-03)
+
+### PATH emptied (no pdfinfo, no gs)
+--- SKIP: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript
+--- SKIP: TestProbePDFPageCountReportsMalformedInput
+--- SKIP: TestProbePDFPageCountIsBoundByContext
+--- SKIP: TestPageCountFailuresAreAttributedCorrectly
+ok  github.com/apaderin/octoconv/internal/convert
+
+### PATH emptied + OCTOCONV_REQUIRE_BINS=1 -- the skip must become a failure
+    probebounds_test.go:345: pdfinfo not on PATH and OCTOCONV_REQUIRE_BINS=1: a skipped test is not a passed test
+--- FAIL: TestProbePDFPageCountReportsMalformedInput
+
+Both directions are asserted because only the pair is meaningful: a guard
+that always skips would also produce the first block.
