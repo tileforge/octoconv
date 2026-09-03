@@ -1,7 +1,11 @@
 package convert
 
-// This file (probebounds.go): the probe engine's page ceiling -- ONE bound,
-// ONE comparison, TWO enforcement points (63-CONTEXT.md D-04).
+// This file (probebounds.go): the probe engine's page ceiling.
+//
+// It was ONE bound with TWO enforcement points -- the worker, and an admission
+// gate in cmd/api. The admission gate was removed after six review rounds
+// (63-CONTEXT.md D-04, reversed); what is left is enforced in the worker alone,
+// where an accurate count is affordable.
 //
 // WHY A PAGE CEILING AT ALL, AND WHY THIS NUMBER
 //
@@ -51,26 +55,28 @@ import (
 	"fmt"
 )
 
-// DefaultProbeMaxPages is the code-level default for PROBE_MAX_PAGES, read
-// with this constant as its fallback by EVERY process that enforces the
-// ceiling (cmd/api and cmd/probe-worker).
+// DefaultProbeMaxPages is the code-level default for PROBE_MAX_PAGES.
 //
-// It is a shared constant, not a literal repeated at each call site, because
-// this project has already paid for that mistake once with this engine's OTHER
-// bound: cmd/api omitted PROBE_ENGINE_TIMEOUT entirely and published
-// estimated_max_seconds: 0 while the worker used its own default (caught in
-// review, PR #12). One default in one place cannot drift between two
-// processes; two literals can, and did.
+// ONE process reads it: cmd/probe-worker. It began as a shared constant for
+// two -- cmd/api enforced the same ceiling at admission -- and that gate was
+// removed after six review rounds (63-CONTEXT.md D-04, reversed), because a
+// page count cannot be derived reliably from untrusted bytes in that process.
+//
+// It stays a named constant rather than collapsing into a literal at the one
+// remaining call site, because this is where the derivation is written down.
+// A literal in main.go would separate the number from the arithmetic that
+// produced it, and this engine's OTHER bound has already been damaged by
+// exactly that: cmd/api omitted PROBE_ENGINE_TIMEOUT and published
+// estimated_max_seconds: 0 while the worker used its own default (PR #12).
 //
 // See this file's header for the derivation and for why it is PROVISIONAL.
 const DefaultProbeMaxPages = 200
 
 // ErrProbeTooManyPages is returned when a PDF's page count exceeds the
-// configured probe ceiling -- fail-closed BEFORE the first ghostscript pass in
-// the worker, and before the S3 write at admission.
+// configured probe ceiling -- fail-closed BEFORE the first ghostscript pass.
 var ErrProbeTooManyPages = errors.New("probe: pdf page count exceeds bound")
 
-// EnforceProbeMaxPages is the ONE comparison both enforcement points make.
+// EnforceProbeMaxPages is the comparison the sanitize path makes.
 //
 // max == 0 means "no cap configured", matching enforceMaxPages's zero-value
 // convention in ocrguards.go exactly -- a bare zero is never a fail-closed

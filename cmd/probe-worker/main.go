@@ -73,7 +73,7 @@ func main() {
 	//
 	// Until Phase 63 this comment read "SanitizeConverter has no such field:
 	// sanitize takes no options and has no per-engine ceiling of its own",
-	// and it was true. PROBE_MAX_PAGES is that ceiling (PROBE-01/PROBE-02):
+	// and it was true. PROBE_MAX_PAGES is that ceiling (PROBE-02):
 	// sanitize cost is per PAGE and linear (~2.0 s/page, measured in phase
 	// 60), so an over-long document otherwise burns PROBE_ENGINE_TIMEOUT and
 	// the whole PROBE_MAX_RETRY budget rediscovering the same thing.
@@ -83,23 +83,35 @@ func main() {
 	// converter at init. Replace performs the identical unconditional
 	// overwrite without the occupancy check.
 	//
-	// The default is convert.DefaultProbeMaxPages, the SAME constant cmd/api
-	// passes for its own admission gate -- one default, not two literals that
-	// can drift (which is precisely what happened to PROBE_ENGINE_TIMEOUT
-	// between these two processes, caught in review on PR #12).
+	// The default is convert.DefaultProbeMaxPages, where the derivation lives
+	// -- ceil(2.0 s/page x 200 pages x 1.5) is also how PROBE_ENGINE_TIMEOUT
+	// was derived, so the two describe one document bound rather than two.
+	//
+	// This is now the ONLY process that reads PROBE_MAX_PAGES. cmd/api read it
+	// too, for an admission gate that was removed after six review rounds
+	// (63-CONTEXT.md D-04, reversed): a page count cannot be derived reliably
+	// from untrusted bytes there, because a page tree is a tree and a long
+	// document declares several correct-but-different counts.
 	probeMaxPages := envInt("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)
 	convert.Default.Replace(buildSanitizeConverter(probeMaxPages))
 	log.Printf("📄 PROBE_MAX_PAGES=%d", probeMaxPages)
 
 	// PROBE_ENGINE_TIMEOUT.
 	//
-	// The default below is a PLACEHOLDER, not a measurement, and this build
-	// says so everywhere the number appears -- .env.example, the API's
-	// estimate provenance table, and here. The measured value comes from
-	// scripts/probe-timeout-measure.sh run against an operator's own corpus
-	// (Phase 60 SC5); copying 65s/742s/744s/753s from a neighbouring engine
-	// is recorded as a project antipattern (PITFALLS.md Pitfall 7) and is
-	// exactly what this placeholder must not become by being left alone.
+	// MEASURED, as of Phase 60: scripts/probe-timeout-measure.sh against a real
+	// corpus in the worker container gave 1.99-2.01 s/page across three points,
+	// and ceil(2.0 s/page x 200 pages x 1.5) = 600s. See .env.example for the
+	// run and the full derivation.
+	//
+	// This comment called it "a PLACEHOLDER, not a measurement" while the value
+	// beside it already read 600s -- the same stale sentence was corrected in
+	// internal/api/api.go and cmd/api/main.go and missed here, which is the
+	// ordinary way a comment goes false: the change that invalidates it touches
+	// three files and the sweep touches two.
+	//
+	// Never copied from 65s/742s/744s/753s -- copying a neighbour's timeout is
+	// a recorded project antipattern (PITFALLS.md Pitfall 7), and 600s is
+	// distinct from all four by measurement rather than by choice.
 	//
 	// This MUST read the same env var, with the same default, that
 	// internal/queue/client.go's NewClient reads for ProbeUniqueTTL's
