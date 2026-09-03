@@ -340,6 +340,51 @@ resume inside the payload where a fake object header can wait — and the
 precedence then refused to let the file's own declared structure replace it. The
 xref now overwrites. Fixed in `a380eff`.
 
+## Review round 5 (codex) — two findings, one of them my own previous fix
+
+**P2: `<< /Foo /Type /Type /Pages ... >>` lost the page tree.** Every direct
+name was treated as a key, so `/Foo`'s value `/Type` was read as a key and the
+one-shot await-the-type flag then consumed the REAL `/Type` as that key's value.
+Each open dictionary now tracks key/value position; every complete value returns
+it to expecting a key.
+
+**P1: the object index was the previous P1 one layer down.** `scanPDF` recorded
+every distinct object number — 40 MB and 85 ms for an 8 MiB object-heavy body.
+The first fix capped it at `maxDicts`, "the ceiling this walk already takes",
+which is true and useless: `internal/inspect` passes `maxTokenScanIterations` =
+`1<<20`, so the measured allocation did not move. Written without looking at the
+number. Two resources now have two bounds; `pdfMaxIndexedObjects` = 65536,
+derived from what an 8 MiB window can hold. Measured 49.6 MB → 10.5 MB.
+Fixed in `c05fc27`.
+
+## The running tally, because it is decision-relevant
+
+Every one of these was a valid document the **admission gate** would have
+refused with `422`:
+
+| # | Round | How a valid PDF got rejected |
+|---|-------|------------------------------|
+| 1 | 1 | the marker sequence inside a content stream |
+| 2 | 2 | `/Count` taken from a neighbouring `/Outlines` dictionary |
+| 3 | 3 | `/Count300` matched as `/Count` by prefix |
+| 4 | 3 | `/Count` inside an array value |
+| 5 | self-probe / 4 | an indirect `/Count` read as the object number |
+| 6 | 4 | a decoy header in a payload outranking the xref |
+| 7 | 5 | a name that is a value swallowing the real `/Type` |
+
+And three resource defects on the same path, two of them introduced by this
+plan: the discarded opaque-range scan (113 MB, 35 ms per request), the unbounded
+object index (40 MB, 85 ms), and, in between, per-marker dictionary resolution
+(0.02s → 5.02s).
+
+The **worker** gate produced one defect (counting through a validator) plus two
+misattributions, all in the first round, none recurring — because it asks a real
+implementation instead of deriving the answer itself.
+
+That asymmetry is the phase's most useful measurement, and it is why the
+alternative (drop PROBE-01's admission gate, keep the worker's) stays on the
+table as an operator decision rather than being closed by the fixes.
+
 ## Four rounds of inversions proved nothing until they were themselves fixed
 
 The most useful finding of this plan, and worth stating as a ratio: **eight
@@ -365,6 +410,12 @@ deliberately broken code.** In every case the test was wrong, not the fix.
   last-write-wins index then overwrote. Both passed against broken code. Only
   the decoy placed AFTER makes the two indexes disagree. Resolved by printing
   what the index actually held rather than reasoning about what it should hold.
+
+- **Inversion 19** failed differently from all the others: not a fixture that
+  could not isolate, but an inversion that did not invert the thing that was
+  there. The mutation was an invented "naive" semantics; the defect depends on
+  the one-shot flag consuming the real `/Type`, which that mutation does not
+  reproduce. Restoring the actual prior logic fails the row.
 
 A fifth near-miss belongs in the same list: the round-3 stream row was caught by
 the tokenizer's *string* handling, not by its payload jump, so it proved a
