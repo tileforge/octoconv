@@ -313,6 +313,33 @@ this is a bounded tokenizer of this project's own. The operator was shown the
 three options (use the tokenizer / patch twice more / drop the admission gate
 and change PROBE-01) and chose the first. Fixed in `09e85b2`.
 
+## Self-probe of the tokenizer — an indirect /Count read as the object number
+
+Run before the next round arrived, against the classes `pdflex.go`'s header
+enumerates. Six probes, five already correct (a comment inside the dictionary, a
+hex-string value spelling the key, `/Type` given as an array, a nested Pages
+dictionary, a stray `>>`), one real: `/Count 5 0 R` returned **5**, the object
+number. `pdfLooksLikeRef` was already applied to `/Length` in the same function
+and had not been applied to the key's own value. Fixed in `e0d8a6c`; codex
+reported the same defect in round 4.
+
+## Review round 4 (codex) — one of the three was introduced by this PR
+
+**P1: 113 MB per request for a value that was discarded.** When the walk moved
+to the tokenizer, the opaque-range set stopped being needed — and the call that
+builds it was left behind for its ceiling bit, slice thrown away. Measured on an
+8 MiB comment-heavy input: **113,202,766 B and 35 ms per call**; after removal,
+**8,388,768 B and 6.2 ms**. The API pod is limited to 1 GiB and this route holds
+no concurrency semaphore, unlike `POST /v1/inspect`. Pinned by a test asserting
+allocated bytes, not elapsed time.
+
+**P2: a payload decoy outranked the xref.** The object index was "scan first,
+fill gaps from the xref". `scanPDF` resynchronises to the next `endstream` when
+a `/Length` is unresolvable, so a payload carrying an early `endstream` makes it
+resume inside the payload where a fake object header can wait — and the
+precedence then refused to let the file's own declared structure replace it. The
+xref now overwrites. Fixed in `a380eff`.
+
 ## Four rounds of inversions proved nothing until they were themselves fixed
 
 The most useful finding of this plan, and worth stating as a ratio: **eight
@@ -331,6 +358,13 @@ deliberately broken code.** In every case the test was wrong, not the fix.
   the findings read against a scanner where the first forward match won. The
   tokenizer keeps the last value, so the real key overwrote the trap and the row
   passed regardless.
+
+- **Inversion 17** took three attempts. The first fixture had no early
+  `endstream`, so the resync jumped the payload whole and never read the decoy;
+  the second placed the decoy BEFORE the real object, which `scanPDF`'s
+  last-write-wins index then overwrote. Both passed against broken code. Only
+  the decoy placed AFTER makes the two indexes disagree. Resolved by printing
+  what the index actually held rather than reasoning about what it should hold.
 
 A fifth near-miss belongs in the same list: the round-3 stream row was caught by
 the tokenizer's *string* handling, not by its payload jump, so it proved a
