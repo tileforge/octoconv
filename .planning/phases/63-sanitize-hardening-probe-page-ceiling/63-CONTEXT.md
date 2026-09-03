@@ -101,6 +101,48 @@ part is there" bug this requirement exists to close.
 
 ## D-04 — the page ceiling is enforced twice, from one bound (PROBE-01/02)
 
+> **REVERSED 2026-09-03, on evidence, by operator decision.** The admission gate
+> below was built exactly as specified and then removed. What follows is the
+> original decision, kept because a reviewer should be able to disagree with the
+> choice rather than reconstruct it — and because the reasoning was not wrong in
+> the abstract, it was wrong about what a bounded reader can establish from PDF
+> bytes.
+>
+> **What six review rounds found.** Seven distinct ways a VALID document was
+> refused with 422: the marker sequence inside a content stream; `/Count` taken
+> from a neighbouring `/Outlines` dictionary; `/Count300` matched as `/Count` by
+> prefix; `/Count` inside an array value; an indirect `/Count` read as the object
+> number; a decoy object header in a stream payload outranking the xref; and a
+> name that is a value swallowing the real `/Type`. Plus three resource defects
+> on a route that holds no concurrency semaphore — 113 MB per request from a
+> discarded scan, 40 MB from an unbounded object index, 313 MB from unbounded
+> dictionary nesting — two of which this plan introduced while fixing the
+> others.
+>
+> **And then the finding that settled it.** A PDF's page tree is a TREE. A
+> 300-page document with two 150-page children declares three different counts,
+> all of them correct, and the gate's unambiguity rule abstained. It answered
+> confidently only for single-node trees — short documents, where the ceiling
+> does not apply. **It could not refuse the documents it existed to refuse**,
+> which was verified by running, not argued.
+>
+> Making it able means following `/Root` to the catalog and resolving its
+> `/Pages` reference: building a document graph in the API process, which is what
+> phase 58 D-02a refused. The operator was shown that, and the tally, and chose
+> to remove the gate.
+>
+> **What stands.** The worker gate (PROBE-02) is unchanged and correct: pdfinfo,
+> before the first ghostscript pass, terminal. It produced one defect in round
+> one and none since. The cost of the reversal is one S3 write and one queue slot
+> per over-long document. PROBE-01 and ROADMAP SC4 were reworded to match.
+>
+> The asymmetry is the phase's most useful measurement and is why it is recorded
+> here rather than only in the summary: the gate that ASKED a real implementation
+> was right immediately; the gate that DERIVED the answer itself was wrong seven
+> times and then useless.
+
+### The original decision, superseded
+
 SC4 asks for `too_many_pages` **before the S3 write**, which means the API. But
 the API cannot always know the page count: `internal/inspect`'s
 `extractPDFPageCount` is deliberately bounded and returns "unknown" for

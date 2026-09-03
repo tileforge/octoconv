@@ -130,6 +130,28 @@ data:
   # service for probeUniqueTTL's derivation.
   PROBE_ENGINE_TIMEOUT: "600s"
   PROBE_MAX_RETRY: "2"
+  # PROBE_MAX_PAGES (Phase 63, PROBE-01/PROBE-02) is the ceiling the timeout
+  # above was already derived FROM -- the 200 in ceil(2.0 s/page x 200 pages
+  # x 1.5). Until this phase the engine did not have it, so the timeout was
+  # the only bound on the input and an over-long document failed LATE (ten
+  # minutes of CPU), RETRIED (a probe timeout is TRANSIENT, correctly) and
+  # OPAQUE (engine_error). Setting it to anything other than the number the
+  # timeout assumes makes the two disagree about what this service sanitizes.
+  #
+  # PROVISIONAL, in the narrow sense the value's own doc comment states
+  # (internal/convert/probebounds.go): 2.0 s/page is measured, but "200 pages
+  # is a generous document bound" is reasoned from a hand-chosen corpus. The
+  # hard ceiling nothing may exceed is the reconciler's: 900s at 2.0 s/page
+  # is 450 pages.
+  #
+  # Read by cmd/probe-worker ONLY -- pdfinfo counts the pages before the first
+  # ghostscript pass and the refusal is terminal. An admission gate in cmd/api
+  # was built and removed (63-CONTEXT.md D-04, reversed): a page count cannot be
+  # derived reliably from untrusted bytes in that process, because a page tree
+  # is a tree and a long document declares several different counts. It sits in
+  # the shared ConfigMap anyway, the same posture OCR_MAX_PAGES has (DEBT-05 --
+  # every process carries the full surface even when unused).
+  PROBE_MAX_PAGES: "200"
   # probe-worker-only, not read by queue.NewClient(). 1, with the heavier
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
   # document inside a 1Gi cgroup. Reasoned, not measured.

@@ -3,7 +3,19 @@ created: 2026-09-02
 area: sanitize
 severity: medium
 resolves_phase: 63
+resolved: 2026-09-02
 ---
+
+> **Resolved by 63-02.** `PROBE_MAX_PAGES=200` — the same 200
+> `PROBE_ENGINE_TIMEOUT` was already derived from, so the ceiling and the
+> timeout now describe one document bound instead of the timeout standing in
+> for both. Enforced twice from one bound: the API refuses a known
+> over-the-bound count before the S3 write (`too_many_pages`, 422), and the
+> worker refuses it terminally before ghostscript with the accurate pdfcpu
+> count. All four points of the "Fix shape" section below were implemented as
+> written, including the fourth. Every boundary is proven by inversion; the
+> recorded output is at
+> `.planning/phases/63-sanitize-hardening-probe-page-ceiling/evidence/63-02-inversions.txt`.
 
 # The probe engine has no page ceiling, so its timeout is the only bound
 

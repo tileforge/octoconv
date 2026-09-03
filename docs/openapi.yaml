@@ -884,7 +884,7 @@ paths:
             Semantically rejected: unsupported conversion pair, declared
             format mismatch, unrecognized content, invalid/inapplicable
             opts, unknown or inactive preset, macro-carrying document,
-            password-protected or legacy Office file, or a declared
+            password-protected or legacy Office file, a declared
             size/dimension over the configured limit.
           content:
             application/json:

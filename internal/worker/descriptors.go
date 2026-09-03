@@ -271,6 +271,14 @@ var PandocDescriptor = EngineDescriptor{
 //   - Options present -- TERMINAL. Sanitize takes none; a persisted Opts map
 //     with content is a corrupt column value, and D-10 already classifies
 //     that as terminal for every engine.
+//   - Page count over PROBE_MAX_PAGES -- TERMINAL, and it is the branch worth
+//     reading next to the timeout above rather than on its own. Both refuse an
+//     over-long document; they are opposites about WHY. A timeout says the box
+//     was busy, which the next attempt may not be. A page count says the file
+//     has more pages than this service sanitizes, which is a property of the
+//     file: a retry reproduces it exactly, three times, at ten minutes each.
+//     That is the whole reason the ceiling was added (63-CONTEXT.md D-04) and
+//     the reason a test pins the two verdicts together rather than separately.
 //
 // Everything else falls through to isTerminal's shared storage/input
 // classification.
@@ -311,11 +319,18 @@ func isProbeTerminal(err error) bool {
 	if errors.Is(err, convert.ErrSanitizeMalformedInput) {
 		return true
 	}
+	// Page count over the ceiling: deterministic on the input, so a retry
+	// spends PROBE_ENGINE_TIMEOUT reproducing it. Deliberately the OPPOSITE
+	// verdict from the deadline that falls through below, on the same
+	// engine, and the difference is what the failure depends on.
+	if errors.Is(err, convert.ErrProbeTooManyPages) {
+		return true
+	}
 	// A ghostscript timeout is the one failure here that depends on load
 	// rather than on the file, so it stays TRANSIENT -- falling through to
 	// isTerminal, which returns false for a DeadlineExceeded. This is the
 	// explicit opposite of isPandocTerminal/isDocumentTerminal, which route
-	// through timeoutIsTerminal. classifyGSFailure (sanitizepdf.go) is what
+	// through timeoutIsTerminal. classifyEngineFailure (sanitizepdf.go) is what
 	// keeps a timeout out of the branch above.
 	return isTerminal(err)
 }
@@ -337,6 +352,14 @@ func probeFailureCode(err error) (code, message string) {
 	}
 	if errors.Is(err, convert.ErrSanitizeMalformedInput) {
 		return CodeEngineError, "the uploaded document could not be parsed for sanitization"
+	}
+	// The SAME code the OCR path already returns for the identical condition
+	// (ocrFailureCode, worker.go). Two codes for one condition is a vocabulary
+	// defect -- a client should not have to learn that "too many pages" is
+	// spelled one way when it was an OCR job and another way when it was a
+	// sanitize job (63-CONTEXT.md D-04).
+	if errors.Is(err, convert.ErrProbeTooManyPages) {
+		return CodeTooManyPages, "the document has more pages than this service will sanitize"
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "takes no options") {
 		return CodeInvalidOptions, "stored conversion options are invalid"

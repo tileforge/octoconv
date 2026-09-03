@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
 status: in_progress
-last_updated: "2026-09-02T03:43:58.418Z"
+last_updated: "2026-09-02T16:30:00.000Z"
 last_activity: 2026-09-02
 progress:
   total_phases: 3
-  completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
-  percent: 33
+  completed_phases: 2
+  total_plans: 2
+  completed_plans: 2
+  percent: 66
 ---
 
 # Project State
@@ -20,14 +20,18 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phase 63 (sanitizer gaps + probe page ceiling) awaiting merge of PR #15; phase 64 (tectonic, ninth engine class) planned and ready to execute.
+**Current focus:** v1.14 — Typesetting & Debt. Phase 62 (operational debt tail) merged; phase 63 (sanitizer gaps + probe page ceiling) code-complete and in review on PR #15; phase 64 (tectonic, ninth engine class) planned and ready to execute once #15 merges.
 
 ## Current Position
 
-Phase: 63 — Sanitize Hardening & Probe Page Ceiling (63-02 executed on branch, PR #15) | 64 — Tectonic, Ninth Engine Class (PLANNED)
-Plan: 63-01 (merged, PR #14), 63-02 (PR #15, in review); 64-01..64-05 planned
-Status: 63-02's own STATE update travels with PR #15, not with this line — this file on main deliberately does not claim work that has not merged. Phase 64 has CONTEXT + RESEARCH + five plans here on main; its EXECUTION waits for #15, because a ninth engine class touches the same files 63-02 changed (descriptors.go, cmd/api/main.go, api.go, docker-compose.yml, the ConfigMap, ERROR-CODES.md, openapi.yaml)
-Last activity: 2026-09-02 — DEBT-12 (wait-for-postgres initContainer on all ten postgres-needing deployments, plus a mechanical helm guard proven by inversion), DEBT-13 (soak test counts enqueues for its own job, not the shared table), DEBT-14 (verified already satisfied by phases 59 and the readSniffWindow refactor — no code written)
+Phase: 63 — Sanitize Hardening & Probe Page Ceiling (63-02 in review, PR #15) | 64 — Tectonic, Ninth Engine Class (PLANNED)
+Plan: 63-01 (merged, PR #14), 63-02 (PR #15, five review rounds so far); 64-01..64-05 planned
+Status: 63-02 is PROBE_MAX_PAGES=200 (PROBE-01/PROBE-02) — one bound, two gates: the API refuses a known over-the-bound page count with too_many_pages BEFORE the S3 write, the worker refuses it terminally with an accurate pdfinfo count before ghostscript. 200 is the same 200 PROBE_ENGINE_TIMEOUT was derived from; the plan's own arithmetic used a stale 180s timeout and was corrected against the measurement.
+
+Review has cost five rounds and reshaped the API half twice: the byte scanner that derived the page count was replaced by internal/convert's pdflex tokenizer after four bypasses, and the count is now bound to the dictionary that declares it. Seven distinct ways a valid PDF could have been refused with 422 were found and closed, plus three resource defects (two introduced by this plan). A differential table against poppler over every committed PDF now guards the whole thing: 8 answered and agreeing, 5 abstaining for stated reasons, 0 disagreements.
+
+Phase 64 has CONTEXT + RESEARCH + five plans on main; its EXECUTION waits for #15, because a ninth engine class touches the same files 63-02 changed (descriptors.go, cmd/api/main.go, api.go, docker-compose.yml, the ConfigMap, ERROR-CODES.md, openapi.yaml).
+Last activity: 2026-09-03 — 63-02 review rounds; phase 64 planned (CONTEXT, RESEARCH, 64-01..64-05)
 
 ## Performance Metrics
 

@@ -30,6 +30,24 @@ func requireGhostscript(t *testing.T) {
 	}
 }
 
+// requirePdfinfo is requireGhostscript's sibling for poppler's pdfinfo, which
+// the probe page ceiling counts with (probebounds.go). Same convention,
+// including OCTOCONV_REQUIRE_BINS=1 turning the skip into a failure.
+//
+// It exists because the page-ceiling tests were written without one and FAILED
+// rather than skipped on a checkout without poppler -- and failed confusingly,
+// since a missing binary is now classified as "engine binary is not available"
+// rather than as a page-count result. Found in review (PR #15 round 7).
+func requirePdfinfo(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("pdfinfo"); err != nil {
+		if os.Getenv("OCTOCONV_REQUIRE_BINS") == "1" {
+			t.Fatalf("pdfinfo not on PATH and OCTOCONV_REQUIRE_BINS=1: a skipped test is not a passed test")
+		}
+		t.Skipf("pdfinfo not found on PATH, skipping real-binary test")
+	}
+}
+
 func requirePdftotext(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("pdftotext"); err != nil {
@@ -360,7 +378,7 @@ func buildIncrementalUpdate(t *testing.T, base []byte) []byte {
 // the worker's classification test does -- would not notice this function
 // getting it wrong.
 func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
-	timeout := classifyGSFailure("pdfwrite pass", fmt.Errorf("gs killed: %w", context.DeadlineExceeded))
+	timeout := classifyEngineFailure("pdfwrite pass", fmt.Errorf("gs killed: %w", context.DeadlineExceeded))
 	if errors.Is(timeout, ErrSanitizeMalformedInput) {
 		t.Error("a ghostscript TIMEOUT was classified as malformed input; the job would be " +
 			"failed terminally because the machine was busy")
@@ -376,7 +394,7 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 	// isCanceled check stop recognising it, so a cancelled job was MarkFailed
 	// as a bad upload. The previous inversion pass missed this because no test
 	// covered it -- the same gap, one round later, in the same function.
-	canceled := classifyGSFailure("ps2write pass", fmt.Errorf("gs killed: %w", context.Canceled))
+	canceled := classifyEngineFailure("ps2write pass", fmt.Errorf("gs killed: %w", context.Canceled))
 	if errors.Is(canceled, ErrSanitizeMalformedInput) {
 		t.Error("a CANCELLED ghostscript run was classified as malformed input; the runner " +
 			"would MarkFailed a job the client had already cancelled")
@@ -385,7 +403,7 @@ func TestClassifyGSFailureKeepsTimeoutsTransient(t *testing.T) {
 		t.Error("the cancellation was lost from the error chain, so isCanceled cannot see it")
 	}
 
-	parse := classifyGSFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
+	parse := classifyEngineFailure("ps2write pass", fmt.Errorf("gs failed: exit status 1: %s",
 		"Error: /undefined in --get--"))
 	if !errors.Is(parse, ErrSanitizeMalformedInput) {
 		t.Errorf("a ghostscript PARSE failure was not classified as malformed input: %v -- the "+

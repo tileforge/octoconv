@@ -1269,6 +1269,13 @@ services:
       # status as the timeout above.
       PROBE_WORKER_CONCURRENCY: "1"
       PROBE_MAX_RETRY: "2"
+      # PROBE_MAX_PAGES (Phase 63, PROBE-02): pdfinfo counts the pages here,
+      # before the first ghostscript pass, and the rejection is TERMINAL -- the
+      # deliberate opposite of the timeout above, which stays transient because
+      # it depends on load rather than on the file. This is the ONLY service
+      # that reads it; the api-side admission gate was removed (63-CONTEXT.md
+      # D-04, reversed).
+      PROBE_MAX_PAGES: "200"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the pandoc engine (DEBT-05).

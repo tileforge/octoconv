@@ -57,6 +57,43 @@ something to understand — and understanding it is what lets a client decide co
 The report the operation returns carries codes and no verdict. There is no `clean` boolean and no
 summary sentence, because either would assert something the operation never tested.
 
+## Bounds on the input
+
+Sanitize refuses documents past a size the service is willing to spend time on, and the bound is
+stated here because a client hitting it needs to know it exists and is not a fault in their file.
+
+**Page ceiling (`PROBE_MAX_PAGES`, default 200).** For PDFs, sanitize cost is per *page* and
+linear — roughly 2.0 seconds per full-page scan, measured in the worker container at 2 CPU / 1 GiB.
+Byte size is close to irrelevant: a 219 KB scanned document costs more than a 2.2 MB one. The
+engine timeout (`PROBE_ENGINE_TIMEOUT`, 600s) was derived from that cost for a 200-page document,
+so 200 is not a second, independently chosen number — it is the same document bound, now enforced
+rather than assumed.
+
+A PDF over the ceiling fails with the error code **`too_many_pages`**, on the **first** attempt —
+no retries are spent, because a document that is too long is too long every time.
+
+The refusal happens in the worker, before conversion starts, and **not** at upload time. An
+earlier design also refused at admission, so that nothing was stored; it was removed because a page
+count cannot be derived reliably from untrusted bytes in the API process. A PDF's page tree is a
+tree, so a long document declares several different counts — the root's total and each subtree's —
+and a reader that does not resolve the catalog's own `/Pages` reference cannot tell which is which.
+Seven distinct ways a *valid* document could be refused were found before that one was, and the
+refusal that mattered least was the one it could actually make: it answered confidently only for
+short documents, where the ceiling does not apply.
+
+So an over-long document costs one upload and one queue slot before it is refused. What that buys
+is that a valid document is never refused by a guess.
+
+The value is **provisional** in one specific respect. The 2.0 s/page cost is measured; "200 pages
+is a generous document bound" is reasoned, from a corpus chosen by hand rather than from what
+clients submit. An operator with real traffic should set it from that. The one number it may never
+exceed is not a preference: at 2.0 s/page, the 900-second stale-job reconciler puts an absolute
+ceiling at 450 pages.
+
+Non-PDF sanitizable formats have no page ceiling, because they have no per-page cost — OOXML
+sanitization rewrites a package's parts and images are re-encoded once. A bound without a cost
+model behind it would be a number invented to look thorough.
+
 ## Threat classes removed
 
 Eight classes, closed. Source: `internal/convert/findings.go` (`AllThreatClasses()`).

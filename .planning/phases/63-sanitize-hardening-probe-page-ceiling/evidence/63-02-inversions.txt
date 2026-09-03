@@ -1,0 +1,233 @@
+=== INVERSION 1: page-ceiling gate moved BELOW s.storage.Upload ===
+2026/09/02 19:04:49 [АндрейП�/54S1LGTuKa-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 000 0B in 495.291µs
+--- FAIL: TestCreateJobSanitizeRejectsOverPageCeilingBeforeStorage (0.00s)
+    handlers_test.go:4627: storage.Upload was called with key "uploads/499ff3fc-367d-47e9-9d6f-30d291c6a7b2/0-in.pdf" -- the page-ceiling rejection must happen STRICTLY BEFORE the storage write (PROBE-01); a 422 that arrives after the upload has already spent the byte it was meant to save
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.235s
+FAIL
+[exit 1]
+
+=== INVERSION 2: ErrProbeTooManyPages branch removed from isProbeTerminal ===
+--- FAIL: TestPinnedProbePageCeilingAndTimeoutAreOpposites (0.00s)
+    --- FAIL: TestPinnedProbePageCeilingAndTimeoutAreOpposites/page_ceiling_is_terminal (0.00s)
+        pinning_test.go:1096: err = convert: probe: pdf page count exceeds bound: declared page count 3000 exceeds bound 200, want errors.Is(err, asynq.SkipRetry) -- a document that is too long is too long on every attempt; retrying spends PROBE_ENGINE_TIMEOUT to be told the same thing
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/worker	1.217s
+FAIL
+[exit 1]
+
+=== INVERSION 3: page-ceiling call removed from SanitizeConverter.Convert ===
+--- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript (0.69s)
+    --- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript/over_the_bound_is_refused_and_nothing_is_produced (0.24s)
+        probebounds_test.go:250: Convert = <nil>, want an error wrapping ErrProbeTooManyPages
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.556s
+FAIL
+[exit 1]
+
+=== INVERSION 4: cmd/api resolves its own default literal instead of the shared constant ===
+--- FAIL: TestProbeMaxPagesHasOneDefault (0.08s)
+    probebounds_test.go:161: cmd/api/main.go reads PROBE_MAX_PAGES but does not resolve its default through DefaultProbeMaxPages -- a second default literal is how PROBE_ENGINE_TIMEOUT drifted between these same two processes
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.575s
+FAIL
+[exit 1]
+
+=== INVERSION 5: API gate made fail-closed on an unknown page count ===
+2026/09/02 19:05:18 content validation abstained: client_id=a4af448e-a0d1-44c3-b7c3-6a2701e7bb19 filename="in.pdf" reason=page_count_unknown detail=compressed_object_streams
+2026/09/02 19:05:18 [АндрейП�/WtVrzDvmAb-000001] "POST http://example.com/v1/jobs HTTP/1.1" from 192.0.2.1 - 422 64B in 800.625µs
+--- FAIL: TestCreateJobSanitizeAdmitsUnknownPageCount (0.00s)
+    handlers_test.go:4701: status = 422, want 202 -- an unknown count ADMITS, and the worker's accurate count is the bound; body={"code":"too_many_pages","error":"cannot determine page count"}
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.150s
+FAIL
+[exit 1]
+
+
+##### ROUND 2 -- inversions for the three fixes from PR #15 codex review #####
+
+=== INVERSION 6: worker counts pages through pdfcpu's VALIDATING api.PageCountFile again (the P1 defect) ===
+--- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript (0.00s)
+    --- FAIL: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript/a_threat-carrying_PDF_is_not_refused_by_the_counter (0.00s)
+        probebounds_test.go:303: Convert(threat_all_classes.pdf, MaxPages=200) = sanitize: input could not be processed: page count: page count: validation error (obj#:12): document catalog: catalog AA: additional action rootDict.AA: action O not allowed for source root -- the page counter must not refuse a document for carrying the very constructs sanitize removes
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.406s
+FAIL
+[exit 1]
+
+=== positive run: the payload test now requires a DEFINITE 2 ===
+ok  	github.com/apaderin/octoconv/internal/inspect	1.009s
+[exit 0]
+
+=== INVERSION 7 (re-run after the test was strengthened): the walk stops filtering through the opaque ranges ===
+--- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict (0.00s)
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/content_stream_payload (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a stream body is payload; the bytes inside it are not structure. An abstention here means the payload was still seen as a second, disagreeing marker
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/comment (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a comment is not a dictionary, however it reads. An abstention here means the payload was still seen as a second, disagreeing marker
+    --- FAIL: TestPDFPageCountIgnoresPayloadThatSpellsAPagesDict/literal_string (0.00s)
+        pdf_test.go:1056: PDFPageCount abstained (reason "malformed_input"), want a definite 2 -- a literal string is data, even one that spells a marker. An abstention here means the payload was still seen as a second, disagreeing marker
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.082s
+FAIL
+[exit 1]
+
+
+##### ROUND 2b -- self-probe of the round-2 fix (a fix is not evidence) #####
+
+=== INVERSION 9: the page count writes its OWN classification instead of using classifyEngineFailure ===
+--- FAIL: TestPageCountFailuresAreAttributedCorrectly (0.06s)
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_cancelled_context_is_not_the_document's_fault (0.01s)
+        probebounds_test.go:402: enforcePDFPageCeiling under a cancelled context = sanitize: input could not be processed: page count: pdfinfo killed: context canceled, wrapping ErrSanitizeMalformedInput -- that is TERMINAL, the exact opposite of the polarity ProbeDescriptor argues for a timeout, and the job would never retry
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_missing_binary_is_not_the_document's_fault_either (0.00s)
+        probebounds_test.go:424: enforcePDFPageCeiling with no pdfinfo on PATH = sanitize: input could not be processed: page count: start pdfinfo: exec: "pdfinfo": executable file not found in $PATH, wrapping ErrSanitizeMalformedInput -- the client is told their document could not be parsed when the document is fine and the image is broken, and TERMINAL means it will not retry after the image is fixed
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.188s
+FAIL
+[exit 1]
+
+=== INVERSION 10: classifyEngineFailure loses the could-not-start branch (imports dropped so it still compiles) ===
+--- FAIL: TestPageCountFailuresAreAttributedCorrectly (0.00s)
+    --- FAIL: TestPageCountFailuresAreAttributedCorrectly/a_missing_binary_is_not_the_document's_fault_either (0.00s)
+        probebounds_test.go:424: enforcePDFPageCeiling with no pdfinfo on PATH = sanitize: input could not be processed: page count: start pdfinfo: exec: "pdfinfo": executable file not found in $PATH, wrapping ErrSanitizeMalformedInput -- the client is told their document could not be parsed when the document is fine and the image is broken, and TERMINAL means it will not retry after the image is fixed
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.293s
+FAIL
+[exit 1]
+
+=== image check (recorded, not asserted from the Dockerfile) ===
+/usr/bin/pdfinfo
+pdfinfo version 22.12.0
+
+##### ROUND 3 -- codex round 2: the count is bound to its declaring dictionary #####
+
+=== INVERSION 11: the count goes back to proximity (first /Count after the marker) instead of its own dictionary ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/count_written_before_the_type_key (0.00s)
+        pdf_test.go:1154: PDFPageCount abstained ("malformed_input"), want 2 -- key order in a PDF dictionary carries no meaning, so a forward-only search steps over the dictionary's OWN count and lands on the outline's
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.116s
+FAIL
+[exit 1]
+
+=== positive run: the bound test now asserts the REASON, not the clock ===
+ok  	github.com/apaderin/octoconv/internal/inspect	0.931s
+[exit 0]
+
+=== INVERSION 12 (re-run after the test stopped relying on a clock): the dictionary-resolution budget is removed ===
+--- FAIL: TestPagesDictResolutionIsBounded (0.10s)
+    pdf_test.go:1204: PDFPageCount reason = "malformed_input", want "work_ceiling_bytes" -- the dictionary-resolution budget must be reached and REPORTED on a file built to exhaust it. Any other reason means the sum of the per-marker lookups is unbounded and the walk simply ran to completion
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.191s
+FAIL
+[exit 1]
+
+
+##### ROUND 4 -- codex round 3: the walk moved to internal/convert's tokenizer #####
+
+(the first attempt at 13/14/15 all PASSED: every fixture put its trap BEFORE the real /Count, which the tokenizer then overwrote. Re-run below against rows that put the trap AFTER.)
+
+=== INVERSION 13: the key is matched by prefix instead of as a whole name ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_longer_name_that_starts_with_the_key,_AFTER_the_real_one (0.00s)
+        pdf_test.go:1219: PDFPageCount = 300, want 2 -- with a prefix compare instead of a whole-name match, /Count300 overwrites the count that was already correct
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.129s
+FAIL
+[exit 1]
+
+=== INVERSION 14: array nesting stops excluding names from being direct keys ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/count_inside_an_array_value,_AFTER_the_real_one (0.00s)
+        pdf_test.go:1219: PDFPageCount = 300, want 2 -- without array tracking the name inside [ ] overwrites the dictionary's own key
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.828s
+FAIL
+[exit 1]
+
+=== INVERSION 15: stream payloads are no longer jumped over ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_bare_dictionary_inside_a_stream_payload (0.00s)
+        pdf_test.go:1216: PDFPageCount abstained ("malformed_input"), want 2 -- payload bytes that are not wrapped in a string are read as a whole second Pages dictionary unless the payload is jumped over -- the parenthesised version below is caught by string handling instead, and so proves something else
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.812s
+FAIL
+[exit 1]
+
+
+=== INVERSION 16: an indirect value is taken as the value (self-probe finding: /Count 5 0 R read as 5) ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/an_indirect_count_that_resolves (0.00s)
+        pdf_test.go:1234: PDFPageCount = 7, want 2 -- "/Count 7 0 R" means the count lives in object 7; reading the first integer would report the OBJECT NUMBER as the page count
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/an_indirect_count_whose_target_is_not_in_the_window (0.00s)
+        pdf_test.go:1226: PDFPageCount = 7, want an abstention -- the reference cannot be resolved from these bytes, and 7 is an object number, not an answer
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.856s
+FAIL
+[exit 1]
+
+
+##### ROUND 5 -- codex round 4 #####
+
+(finding 1, indirect /Count, was already fixed in e0d8a6c by self-probe; verified against their exact shape /Count 300 0 R with object 300 = 2 -> returns 2)
+
+=== INVERSION 17: xref no longer overrides speculative first-pass object offsets ===
+--- FAIL: TestPDFTypedDictUintsXrefOverridesSpeculativeOffsets (0.00s)
+    pdfdictscan_test.go:72: PDFTypedDictUints = 300, want 2 -- the xref points object 9 at the real value; a decoy header planted in a stream payload must not outrank the file's own declared structure
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.324s
+FAIL
+[exit 1]
+
+=== INVERSION 18: the discarded opaque-range scan is put back ===
+--- FAIL: TestPDFPageCountDoesNotMaterializeWhatItDiscards (0.05s)
+    pdf_test.go:1320: PDFPageCount allocated 113208048 bytes for an 8388609-byte input (ceiling 33554432) -- something is being constructed and thrown away; the opaque-range set was 113 MB of exactly that
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	0.973s
+FAIL
+[exit 1]
+
+
+##### ROUND 6 -- codex round 5 #####
+
+=== INVERSION 20: the object index is unbounded again ===
+--- FAIL: TestPDFPageCountBoundsTheObjectIndex (0.19s)
+    pdf_test.go:1366: PDFPageCount allocated 58014744 bytes for an 8388608-byte object-heavy input (ceiling 33554432) -- the object index must be capped, or a modest authenticated burst exhausts a 1 GiB pod on a route that holds no concurrency semaphore
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.006s
+FAIL
+[exit 1]
+
+=== INVERSION 21: the cap is taken from the caller's iteration ceiling (1<<20) -- the first, useless fix ===
+--- FAIL: TestPDFPageCountBoundsTheObjectIndex (0.20s)
+    pdf_test.go:1366: PDFPageCount allocated 58019856 bytes for an 8388608-byte object-heavy input (ceiling 33554432) -- the object index must be capped, or a modest authenticated burst exhausts a 1 GiB pod on a route that holds no concurrency semaphore
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.023s
+FAIL
+[exit 1]
+
+=== INVERSION 19 (re-run; the first mutation was an invented semantics, not the code as it was): the one-shot awaitType flag is restored ===
+--- FAIL: TestPagesDictCountBindsToItsOwnDictionary (0.00s)
+    --- FAIL: TestPagesDictCountBindsToItsOwnDictionary/a_name_that_is_a_VALUE,_immediately_before_the_real_type_key (0.00s)
+        pdf_test.go:1239: PDFPageCount abstained ("malformed_input"), want 2 -- the first /Type is /Foo's value, not a key; treating every direct name as a key swallows the real /Type as that key's value and loses the page tree entirely
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.219s
+FAIL
+[exit 1]
+
+
+##### ROUND 6b -- self-probe of the round-5 key/value machine #####
+
+=== INVERSION 22: string values no longer end the value ===
+--- FAIL: TestPagesDictValueKindsAllEndTheValue (0.00s)
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/literal_string (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a literal string value before /Type -- the value must return the frame to expecting a key
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/hex_string (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a hex string value before /Type -- the value must return the frame to expecting a key
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/a_string_that_spells_a_key (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a a string that spells a key value before /Type -- the value must return the frame to expecting a key
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.233s
+FAIL
+[exit 1]
+

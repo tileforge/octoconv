@@ -547,6 +547,39 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// NO PAGE CEILING IS ENFORCED HERE, and the absence is a decision with
+	// evidence behind it rather than an omission.
+	//
+	// PROBE-01 originally asked for the sanitize page ceiling to refuse an
+	// over-long PDF at admission, before the S3 write. It was built, and then
+	// removed after six review rounds, because deriving a page count from
+	// untrusted bytes in this process could not be made to work:
+	//
+	//   * seven distinct ways a VALID document was rejected with 422 -- the
+	//     marker sequence inside a content stream, a /Count from a neighbouring
+	//     /Outlines dictionary, /Count300 matched by prefix, /Count inside an
+	//     array, an indirect /Count read as the object number, a decoy object
+	//     header outranking the xref, and a name that is a value swallowing the
+	//     real /Type;
+	//   * three resource defects on this route, which holds no concurrency
+	//     semaphore: 113 MB per request from a discarded scan, 40 MB from an
+	//     unbounded object index, 313 MB from unbounded dictionary nesting;
+	//   * and finally the finding that settled it -- a page tree is a TREE, so
+	//     a 300-page document with two 150-page children declares three
+	//     different counts and the gate abstained. It answered confidently only
+	//     for single-node trees, which are short documents where the ceiling is
+	//     irrelevant. It could not refuse the documents it existed to refuse.
+	//
+	// Making it able would mean following /Root to the catalog and resolving
+	// its /Pages reference -- building a document graph in the API process,
+	// which is what phase 58 D-02a refused.
+	//
+	// The bound is enforced where an accurate count is affordable: in
+	// cmd/probe-worker, with pdfinfo, terminally (PROBE-02). What was lost is
+	// one S3 write and one queue slot per over-long document; what was gained
+	// is that a valid document is never refused by a heuristic. See
+	// 63-CONTEXT.md D-04 for the reversal and the evidence.
+	//
 	// callback_url is optional (per-job, D-02); an empty value leaves the
 	// existing polling path unchanged. When present it is SSRF-validated
 	// BEFORE writing anything to storage, same discipline as the format pair.

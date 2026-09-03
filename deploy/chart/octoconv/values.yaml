@@ -154,6 +154,16 @@ probeWorker:
   # ShutdownTimeout margin, following pandoc's own-compose-precedent shape
   # rather than the ENGINE_TIMEOUT+30s convention. Re-derived in the same edit
   # that landed the measured timeout.
+  #
+  # The chain the 600s comes from now closes at both ends: PROBE_MAX_PAGES=200
+  # (ConfigMap, Phase 63) is the SAME 200 in ceil(2.0 s/page x 200 pages x 1.5)
+  # = 600s, so the ceiling and the timeout describe one document bound rather
+  # than two. Raising either without the other breaks that: a higher ceiling
+  # admits work the timeout will kill, a lower one refuses work the timeout was
+  # sized for. Both live in the ConfigMap template, not here -- no engine bound
+  # in this chart is a values.yaml knob (OCR_MAX_PAGES and PROBE_ENGINE_TIMEOUT
+  # are not either), because these are derived numbers with their derivations
+  # written beside them, not per-install preferences.
   terminationGracePeriodSeconds: 610
   resources:
     limits:

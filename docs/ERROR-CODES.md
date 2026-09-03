@@ -116,7 +116,7 @@ Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Sourc
 | `timecode_out_of_range` | AV | An explicit thumbnail timecode requested via `opts` exceeds the source's actual duration — a client fault, deliberately not clamped |
 | `resolution_exceeded` | AV | Declared video resolution exceeds the configured maximum |
 | `no_video_stream` | AV | No video stream found in an input misrouted to the AV engine (e.g. an audio-only ISOBMFF container) |
-| `too_many_pages` | OCR | PDF page count exceeds the configured maximum |
+| `too_many_pages` | OCR, probe | PDF page count exceeds the configured maximum (`OCR_MAX_PAGES` for OCR, `PROBE_MAX_PAGES` for sanitize — two engines, two bounds, one code, because the client-facing condition is the same one) |
 | `page_too_large` | OCR | A PDF page would rasterize beyond the configured pixel bound |
 | `image_too_large` | OCR | Image dimensions exceed the configured maximum |
 | `unsupported_language` | OCR | The requested OCR language is not in the supported set |

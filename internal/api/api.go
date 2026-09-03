@@ -417,11 +417,14 @@ type Config struct {
 // each worker's own startup default for the same env vars
 // (ENGINE_TIMEOUT=120s, DOCUMENT_ENGINE_TIMEOUT=300s, HTML_ENGINE_TIMEOUT=60s,
 // AUDIO_ENGINE_TIMEOUT=742s, AV_ENGINE_TIMEOUT=753s, OCR_ENGINE_TIMEOUT=744s,
-// PANDOC_ENGINE_TIMEOUT=65s, PROBE_ENGINE_TIMEOUT=180s).
+// PANDOC_ENGINE_TIMEOUT=65s, PROBE_ENGINE_TIMEOUT=600s).
 //
-// PROBE_ENGINE_TIMEOUT is a PLACEHOLDER, not a measurement -- see
-// .env.example. It is here so a caller that omits it gets 180s rather than
-// zero; it is not here as a claim about how long sanitize takes.
+// PROBE_ENGINE_TIMEOUT is MEASURED as of Phase 60 -- ceil(2.0 s/page x 200
+// pages x 1.5) = 600s, see .env.example for the run and the derivation. This
+// comment said 180s and "PLACEHOLDER, not a measurement" while the value below
+// already read 600s; corrected in Phase 63, whose PROBE_MAX_PAGES ceiling is
+// derived from the same arithmetic and would otherwise cite a number this file
+// contradicts.
 var defaultEngineTimeouts = map[string]time.Duration{
 	convert.EngineImage:    120 * time.Second,
 	convert.EngineDocument: 300 * time.Second,

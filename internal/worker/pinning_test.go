@@ -1049,3 +1049,82 @@ func runStageAsymmetryCases(t *testing.T, tc pinEngine, cases []stageAsymmetryCa
 		})
 	}
 }
+
+// --- TestPinnedProbePageCeilingAndTimeoutAreOpposites -------------------
+
+// TestPinnedProbePageCeilingAndTimeoutAreOpposites pins PROBE-02 through the
+// REAL probe handler -- NewRunner(h, ProbeDescriptor).Handle, the same
+// construction cmd/probe-worker registers on its mux -- rather than by calling
+// isProbeTerminal/probeFailureCode directly, so a future change that stops
+// threading the mapped code into MarkFailed's argument fails here even if the
+// pure mapping functions still return the right values.
+//
+// It asserts BOTH verdicts in one test on purpose. A page count over the
+// ceiling and a ghostscript deadline are the two ways the probe engine refuses
+// an over-long document, they arrive at the same handler, and they must be
+// classified OPPOSITELY:
+//
+//   - the page count is a property of the FILE, so a retry reproduces it
+//     exactly -- terminal, and it must reach MarkFailed on the FIRST attempt
+//     with a code the client can act on;
+//   - the deadline is a property of the BOX, so a retry may well succeed --
+//     transient, no MarkFailed at all, asynq's own backoff applies.
+//
+// Pinning only the new one would let a later change collapse them into a
+// single verdict without any test noticing: whichever direction it collapsed,
+// one of the two would silently become wrong.
+func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
+	probeHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
+		return NewRunner(h, ProbeDescriptor).Handle(ctx, task)
+	}
+
+	t.Run("page ceiling is terminal", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The wrapped form the sanitizer actually produces: the converter
+		// returns EnforceProbeMaxPages's error and process() wraps it.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("%w: declared page count 3000 exceeds bound 200",
+				convert.ErrProbeTooManyPages))
+		}
+
+		err := probeHandle(h, context.Background(), newTask(t, queue.TypeProbeSanitize, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want errors.Is(err, asynq.SkipRetry) -- a document that is too long is too "+
+				"long on every attempt; retrying spends PROBE_ENGINE_TIMEOUT to be told the same thing", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeTooManyPages {
+			t.Fatalf("MarkFailed code = %q, want %q -- the SAME code the OCR path returns for the identical "+
+				"condition (63-CONTEXT.md D-04)", got, CodeTooManyPages)
+		}
+	})
+
+	t.Run("engine deadline stays transient", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The wrapped form classifyEngineFailure produces for a gs timeout,
+		// copied from TestProbeTerminalClassification's own row.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("sanitize pdf: pdfwrite pass: %w", context.DeadlineExceeded)
+		}
+
+		err := probeHandle(h, context.Background(), newTask(t, queue.TypeProbeSanitize, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want NOT SkipRetry -- a ghostscript deadline depends on load, not on the "+
+				"file, and is the deliberate opposite of the page ceiling above", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a transient failure must leave the job for asynq to "+
+				"retry, not mark it failed", len(repo.markFailed))
+		}
+	})
+}

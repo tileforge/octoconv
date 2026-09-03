@@ -70,7 +70,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 )
 
@@ -170,6 +172,86 @@ func pdfwriteArgs(psPath, outPath string) []string {
 // reported. What this states is what the method removes from this format; Plan
 // 60-04's verifier is what turns it into a checked claim by confirming each
 // class is absent from the output bytes.
+// probePDFPageCount returns inPath's page count, read by pdfinfo through the
+// hardened runCommand.
+//
+// # WHY NOT pdfcpu, WHICH THIS PACKAGE ALREADY IMPORTS
+//
+// It was pdfcpu, via api.PageCountFile, and that was wrong in a way worth
+// keeping written down because the mistake looked like reuse.
+//
+// api.PageCountFile performs FULL VALIDATION, and pdfcpu's validator rejects
+// several of the exact constructs this operation exists to remove. Measured on
+// this repository's own threat fixture:
+//
+//	probePDFPageCount(testdata/sanitize/threat_all_classes.pdf)
+//	  -> validation error (obj#:12): document catalog: catalog AA:
+//	     additional action rootDict.AA: action O not allowed for source root
+//
+// With a configured ceiling, every threat-carrying PDF -- the documents
+// sanitize is FOR -- would have failed terminally as malformed input instead
+// of being disarmed. The ceiling would have broken precisely the case it was
+// added alongside. Found in review (PR #15), not by a test: the gate lives in
+// SanitizeConverter.Convert while nearly every sanitize test calls SanitizeFile
+// directly, so the whole suite stayed green.
+//
+// It was also NOT CANCELLABLE. api.PageCountFile takes no context, so an
+// adversarial file that made pdfcpu spin would run past PROBE_ENGINE_TIMEOUT
+// and past job cancellation, holding the worker at concurrency 1 after its
+// own deadline had expired -- while the comment here claimed the timeout
+// bounded it. Also found in review.
+//
+// # WHY pdfinfo, AND WHY IT IS NOT A NEW DEPENDENCY ON THE QUESTION
+//
+// pdfinfo reports the page count of the same fixture as 1, because reading a
+// page tree is not validating a document. It runs through runCommand, which
+// puts the child in its own process group and kills the whole group on context
+// cancellation -- so the count is bounded by the same deadline as the
+// ghostscript passes, which is what the previous comment only asserted.
+//
+// It is also the SAME mechanism the OCR engine already counts pages with
+// (ocrPDFPageCount, ocrguards.go), reusing that file's parsePdfinfoPages
+// parser. Two engines answering one question two different ways is how the
+// pdfcpu defect got in; there is now one answer to "how many pages does this
+// PDF declare" in this package.
+//
+// A count pdfinfo cannot produce is NOT treated as "no pages": it is reported
+// as malformed input -- terminal, and honest about which side failed.
+func probePDFPageCount(ctx context.Context, inPath string) (int, error) {
+	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(inPath)...)
+	if err != nil {
+		// Through the SAME classifier the ghostscript passes use. Writing a
+		// second one here is what the first version did, and it put a
+		// cancelled context and a missing binary in the malformed-input
+		// bucket -- terminal, and blamed on the client's file.
+		return 0, classifyEngineFailure("page count", err)
+	}
+	n, err := parsePdfinfoPages(out)
+	if err != nil {
+		// pdfinfo RAN and its output has no legible Pages line. That is a
+		// statement about the file, so it stays malformed input.
+		return 0, fmt.Errorf("%w: page count: %v", ErrSanitizeMalformedInput, err)
+	}
+	return n, nil
+}
+
+// enforcePDFPageCeiling refuses a PDF whose page count exceeds max BEFORE the
+// first ghostscript pass runs (PROBE-02).
+//
+// max == 0 means no ceiling is configured, and then pdfinfo is not invoked at
+// all: an unconfigured bound must cost nothing, not a subprocess whose only use
+// would be a comparison that cannot fail.
+func enforcePDFPageCeiling(ctx context.Context, inPath string, max int) error {
+	if max <= 0 {
+		return nil
+	}
+	count, err := probePDFPageCount(ctx, inPath)
+	if err != nil {
+		return err
+	}
+	return EnforceProbeMaxPages(count, max)
+}
+
 func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
 	tmpDir, err := os.MkdirTemp("", "octoconv-sanitize-pdf-*")
 	if err != nil {
@@ -180,7 +262,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	psPath := filepath.Join(tmpDir, "intermediate.ps")
 
 	if _, err := runCommand(ctx, "gs", ps2writeArgs(inPath, psPath)...); err != nil {
-		return SanitizeResult{}, classifyGSFailure("ps2write pass", err)
+		return SanitizeResult{}, classifyEngineFailure("ps2write pass", err)
 	}
 
 	// A zero-byte intermediate means the first pass "succeeded" without
@@ -197,7 +279,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	}
 
 	if _, err := runCommand(ctx, "gs", pdfwriteArgs(psPath, outPath)...); err != nil {
-		return SanitizeResult{}, classifyGSFailure("pdfwrite pass", err)
+		return SanitizeResult{}, classifyEngineFailure("pdfwrite pass", err)
 	}
 
 	// Ghostscript signs its own output. See redactEngineIdentity's header for
@@ -221,8 +303,14 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 	}, nil
 }
 
-// classifyGSFailure separates the ONE ghostscript failure that depends on
-// something other than the input from every other one.
+// classifyEngineFailure separates the failures that depend on something other
+// than the input from every other one.
+//
+// It was classifyGSFailure, and was renamed when the page counter became the
+// third caller: nothing in the rule is specific to ghostscript, and a second
+// copy of a classification rule is how this phase's P1 defect got in (two
+// engines answering one question two different ways). One rule, three call
+// sites -- both ghostscript passes and the pdfinfo page count.
 //
 // A timeout is about load: the box was busy, and the next attempt may not be.
 // Everything else -- a parse error, a refusal, a non-zero exit on a file gs
@@ -243,13 +331,26 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 // recorded as a failure the client never caused. Caught in review (PR #12,
 // round 5).
 //
+// COULD-NOT-START IS THE THIRD ONE, and it was a regression the page counter
+// introduced. When the engine binary is absent from the image, os/exec fails
+// with exec.ErrNotFound and the old code wrapped that as malformed input:
+// TERMINAL, and reported to the client as "the uploaded document could not be
+// parsed for sanitization". The document is fine; our image is broken. It is
+// the same distinction internal/inspect draws between ReasonReadFailed and
+// ReasonMalformedInput -- a failure to READ is not a discovery about the file
+// -- and it matters twice over, because terminal means the job will not retry
+// after the image is fixed.
+//
 // The %v in the malformed branch is deliberate and is why this ordering
 // matters: it flattens the cause so nothing downstream mistakes an engine
 // message for a context outcome. That flattening is exactly what destroyed the
 // cancellation signal when the check above did not cover it.
-func classifyGSFailure(stage string, err error) error {
+func classifyEngineFailure(stage string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("sanitize pdf: %s: engine binary is not available in this image: %w", stage, err)
 	}
 	return fmt.Errorf("%w: %s: %v", ErrSanitizeMalformedInput, stage, err)
 }

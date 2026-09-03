@@ -1,0 +1,83 @@
+LIVE GATES -- 63-02 (PROBE-01 / PROBE-02), run 2026-09-03
+Stack: local cmd/api + cmd/probe-worker against the compose postgres/redis/minio.
+PROBE_MAX_PAGES=200. gs 10.07.1, pdfinfo 22.12.0 (host toolchain).
+
+### go test ./internal/e2e -run 'TestSanitizeCeiling|TestSanitizeUnderCeiling'
+--- PASS: TestSanitizeCeilingRejectsAtAdmissionE2E      (201 pages -> 422 too_many_pages, no job_id)
+--- PASS: TestSanitizeUnderCeilingStillSanitizesE2E     (threat_all_classes.pdf -> 202 -> done -> %PDF-)
+--- PASS: TestSanitizeCeilingIsTerminalInTheWorkerE2E   (201 pages + /ObjStm -> 202 -> failed too_many_pages)
+
+### API log -- the admission rejection, and the abstention that admits
+2026/09/03 04:50:10 content validation rejected: client_id=865a19b2-d191-4dab-8c94-b548c0e9e91f filename="over.pdf" reason=page_limit pages=201 limit=200
+2026/09/03 04:50:10 content validation abstained: client_id=942542ce-5ae0-4830-b467-35d308892f2c filename="threat.pdf" reason=page_count_unknown detail=pdf_name_escape
+2026/09/03 04:50:44 content validation rejected: client_id=b3d94140-e538-4424-8795-f9ec2028255c filename="over.pdf" reason=page_limit pages=201 limit=200
+2026/09/03 04:50:44 content validation abstained: client_id=7df6311c-a9da-4fd7-aded-dade064862c2 filename="threat.pdf" reason=page_count_unknown detail=pdf_name_escape
+2026/09/03 04:50:46 content validation abstained: client_id=3f5aee4a-b414-455b-be30-db34750027fa filename="blind.pdf" reason=page_count_unknown detail=compressed_object_streams
+
+### API log -- the two accepted sanitize uploads
+2026/09/03 04:50:10 [АндрейП�/J8dHYwX7P9-000004] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 116.536458ms
+2026/09/03 04:50:44 [АндрейП�/J8dHYwX7P9-000007] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 422 98B in 2.805709ms
+2026/09/03 04:50:44 [АндрейП�/J8dHYwX7P9-000008] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 51.490375ms
+2026/09/03 04:50:46 [АндрейП�/J8dHYwX7P9-000011] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 20.302875ms
+
+### worker log -- the terminal refusal
+2026/09/03 04:48:48 📄 PROBE_MAX_PAGES=200
+2026/09/03 04:48:48 🐙 probe-worker starting (queue=probe)
+
+### What these three runs do NOT prove, stated so nobody reads more into them
+
+1. The under-ceiling case went through the ABSTAIN path, not the confident one.
+   threat_all_classes.pdf carries a hex-escaped PDF name, so the API's bounded
+   walk declines to claim a count (reason=pdf_name_escape above) and admits on
+   that basis. So this run proves "admitted and sanitized end to end" -- which
+   is the P1 regression on the wire -- and NOT "counted as 1 page and accepted".
+   The confident-accept path is covered elsewhere: the poppler differential
+   table answers on 8 committed PDFs with no disagreement, and
+   TestBothProbeGatesResolveOneBound pins accept-at-exactly-max.
+
+2. The worker log carries no too_many_pages line, because the worker does not
+   log per-job classifications. The terminal refusal is asserted where the
+   client actually sees it -- GET /v1/jobs/{id} reporting status=failed with
+   error_code=too_many_pages -- which is the contract, not the log line.
+
+Both gates fired on the SAME 201-page document in this run, by two different
+routes: refused at admission when the count was legible (over.pdf), and refused
+terminally in the worker when an appended /ObjStm made it illegible to the cheap
+walk (blind.pdf). That pair is D-04's whole design, observed rather than argued.
+
+================================================================
+RE-RUN AFTER THE REVERSAL (D-04 option C), 2026-09-03
+The admission gate is gone; the expectations are now the opposite.
+
+--- PASS: TestSanitizeCeilingIsTerminalE2E     (201 pages -> 202 -> failed too_many_pages)
+--- PASS: TestSanitizeUnderCeilingStillSanitizesE2E  (threat_all_classes.pdf -> 202 -> done -> %PDF-)
+
+The first run of this pair FAILED with 422, and the reason is worth keeping:
+a stale API process from the earlier session still held :8090, so the test
+was talking to the OLD binary. `go run` had exited with
+'bind: address already in use' and the harness never noticed, because
+something was answering on the port. A live gate that does not check WHICH
+build is answering can pass -- or fail -- for reasons that have nothing to
+do with the change under test.
+
+### API log -- no page_limit rejection appears any more, by design
+page_limit lines: 0
+2026/09/03 12:13:42 [АндрейП�/8nPFClv5K8-000001] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 40.188125ms
+2026/09/03 12:13:44 [АндрейП�/8nPFClv5K8-000004] "POST http://127.0.0.1:8090/v1/jobs HTTP/1.1" from 127.0.0.1 - 202 68B in 28.837ms
+
+================================================================
+ROUND 7 -- real-binary tests must SKIP, not fail (2026-09-03)
+
+### PATH emptied (no pdfinfo, no gs)
+--- SKIP: TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript
+--- SKIP: TestProbePDFPageCountReportsMalformedInput
+--- SKIP: TestProbePDFPageCountIsBoundByContext
+--- SKIP: TestPageCountFailuresAreAttributedCorrectly
+ok  github.com/apaderin/octoconv/internal/convert
+
+### PATH emptied + OCTOCONV_REQUIRE_BINS=1 -- the skip must become a failure
+    probebounds_test.go:345: pdfinfo not on PATH and OCTOCONV_REQUIRE_BINS=1: a skipped test is not a passed test
+--- FAIL: TestProbePDFPageCountReportsMalformedInput
+
+Both directions are asserted because only the pair is meaningful: a guard
+that always skips would also produce the first block.
