@@ -145,6 +145,17 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			stack[n-1].expectKey = true
 		}
 	}
+	// endValueIfDirect is endValue for tokens that are only a value when they
+	// are a direct member of the dictionary -- inside an array they are array
+	// elements and the dictionary is still waiting for the array to close.
+	endValueIfDirect := func(arrayDepth int) {
+		if arrayDepth != 0 {
+			return
+		}
+		if n := len(stack); n > 0 && !stack[n-1].expectKey {
+			endValue()
+		}
+	}
 
 	arrayDepth := 0
 	dicts := 0
@@ -179,6 +190,14 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		if c == '(' {
 			i = pdfSkipLiteralString(b, i)
 			dictClosed, awaitVal = false, false
+			// A string is a complete value. Without this the frame stayed in
+			// "expecting a value" and the NEXT name -- very often the real
+			// /Type, since /Title, /Author and /Subject precede it constantly
+			// -- was read as that value instead of as a key. Found by probing
+			// this state machine rather than by review: "<< /Title (hello)
+			// /Type /Pages /Count 2 >>" abstained, which is an ordinary
+			// dictionary and not an edge case.
+			endValueIfDirect(arrayDepth)
 			continue
 		}
 		if c == '<' {
@@ -197,6 +216,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			}
 			i = pdfSkipHexString(b, i)
 			dictClosed, awaitVal = false, false
+			endValueIfDirect(arrayDepth) // a hex string is a value too
 			continue
 		}
 		if c == '>' && i+1 < len(b) && b[i+1] == '>' {

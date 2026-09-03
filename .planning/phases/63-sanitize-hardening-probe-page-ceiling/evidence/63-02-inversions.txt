@@ -215,3 +215,19 @@ FAIL	github.com/apaderin/octoconv/internal/inspect	1.219s
 FAIL
 [exit 1]
 
+
+##### ROUND 6b -- self-probe of the round-5 key/value machine #####
+
+=== INVERSION 22: string values no longer end the value ===
+--- FAIL: TestPagesDictValueKindsAllEndTheValue (0.00s)
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/literal_string (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a literal string value before /Type -- the value must return the frame to expecting a key
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/hex_string (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a hex string value before /Type -- the value must return the frame to expecting a key
+    --- FAIL: TestPagesDictValueKindsAllEndTheValue/a_string_that_spells_a_key (0.00s)
+        pdf_test.go:1415: PDFPageCount abstained ("malformed_input") on a dictionary whose only unusual feature is a a string that spells a key value before /Type -- the value must return the frame to expecting a key
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/inspect	1.233s
+FAIL
+[exit 1]
+

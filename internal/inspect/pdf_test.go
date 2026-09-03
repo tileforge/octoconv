@@ -1368,3 +1368,57 @@ func TestPDFPageCountBoundsTheObjectIndex(t *testing.T) {
 			"on a route that holds no concurrency semaphore", allocated, len(raw), ceiling)
 	}
 }
+
+// TestPagesDictValueKindsAllEndTheValue pins that EVERY kind of PDF value
+// returns its dictionary to expecting a key.
+//
+// The key/value model added in round 5 handled names, numbers, arrays, nested
+// dictionaries, keywords and references -- and not strings. So
+// "<< /Title (hello) /Type /Pages /Count 2 >>" left the frame expecting a
+// value, read the real /Type as /Title's value, and abstained. That is an
+// ordinary dictionary, not an edge case: /Title, /Author and /Subject precede
+// /Type constantly, so the gate would have gone quiet on a large share of real
+// documents and bought nothing.
+//
+// The direction of that failure is worth naming, because it is the opposite of
+// the seven before it: abstaining ADMITS the upload, so it weakened the gate
+// rather than rejecting a valid file. It was still wrong, and a table over every
+// value kind is what stops the next one being missed the same way.
+func TestPagesDictValueKindsAllEndTheValue(t *testing.T) {
+	cases := []struct {
+		name string
+		dict string
+	}{
+		{"literal string", "<< /Title (hello) /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"hex string", "<< /Tag <48656C6C6F> /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"boolean", "<< /Flag true /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"null", "<< /Flag null /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"nested array", "<< /M [[1 2] [3 4]] /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"nested dictionary", "<< /D << /X 1 >> /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"empty dictionary", "<< /D << >> /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"indirect reference", "<< /P 9 0 R /Type /Pages /Count 2 /Kids [3 0 R] >>"},
+		{"a string that spells a key", "<< /Title (/Type /Pages /Count 300) /Type /Pages /Count 2 >>"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			b.WriteString("%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n")
+			b.WriteString(tc.dict)
+			b.WriteString("\nendobj\n3 0 obj\n<< /Type /Page >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
+			raw := b.Bytes()
+
+			count, reason := PDFPageCount(bytes.NewReader(raw), int64(len(raw)), 8<<20,
+				NewTracker(Budget{MaxBytes: 8 << 20}))
+
+			if count == nil {
+				t.Fatalf("PDFPageCount abstained (%q) on a dictionary whose only unusual feature is "+
+					"a %s value before /Type -- the value must return the frame to expecting a key",
+					reason, tc.name)
+			}
+			if *count != 2 {
+				t.Fatalf("PDFPageCount = %d, want 2", *count)
+			}
+		})
+	}
+}
