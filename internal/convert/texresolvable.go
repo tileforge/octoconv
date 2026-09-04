@@ -66,6 +66,34 @@ var texResolvable = func() map[string]struct{} {
 	return out
 }()
 
+// texDenied names packages the bundle CAN resolve but this service refuses on
+// purpose. A resolvable-set gate has exactly one hole, and this is it: the
+// bundle carries the dependency closure of the declared set, and that closure
+// can include a package whose absence is a documented promise.
+//
+// fontspec is the case, found in review (PR #16, codex P2) and confirmed by
+// running: fontspec.sty is in the bundle (pulled in by the closure, not by
+// choice), \usepackage{fontspec} compiles and produces a PDF -- while
+// docs/TYPESETTING.md says in as many words that fontspec and user-supplied
+// fonts are deliberately unavailable and deferred to TEX-07. The documented
+// boundary and the enforced one had drifted apart, in the direction where the
+// document wins.
+//
+// The deny list is checked BEFORE resolvability, so a package here is refused
+// with the same clear, named 422 as one the bundle lacks -- the client is told
+// it is unsupported either way, which is true either way.
+var texDenied = map[string]string{
+	"fontspec": "user-supplied fonts are not available on this deployment (TEX-07)",
+}
+
+// TeXPackageDenied reports whether pkg is deliberately refused despite being
+// resolvable, and why. The reason is returned rather than looked up separately
+// so the refusal can say something more useful than "no".
+func TeXPackageDenied(pkg string) (reason string, denied bool) {
+	reason, denied = texDenied[pkg]
+	return reason, denied
+}
+
 // TeXPackageResolvable reports whether the shipped bundle contains a .sty the
 // engine could load for pkg. It is the ADMISSION rule -- "can this possibly
 // typeset" -- and never the support rule; TeXPackageSupported answers that.
@@ -76,6 +104,9 @@ var texResolvable = func() map[string]struct{} {
 // then refuses, which puts the failure back where this gate exists to take it
 // from.
 func TeXPackageResolvable(pkg string) bool {
+	if _, denied := texDenied[pkg]; denied {
+		return false
+	}
 	_, ok := texResolvable[pkg]
 	return ok
 }

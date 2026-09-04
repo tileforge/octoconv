@@ -58,16 +58,66 @@ func TestResolvableSetMatchesTheManifest(t *testing.T) {
 		t.Fatalf("only %d .sty files found in %s -- the manifest or this extraction has drifted, and "+
 			"every assertion below would be vacuous", len(want), manifestPath)
 	}
-	if got := convert.TeXResolvableCount(); got != len(want) {
-		t.Errorf("the embedded admission set has %d entries, the manifest has %d .sty files -- re-run "+
-			"scripts/tectonic-bundle-build.sh, which writes internal/convert/texresolvable.txt in the "+
-			"same run that writes MANIFEST.txt", got, len(want))
-	}
+	denied := 0
 	for _, sty := range want {
 		pkg := strings.TrimSuffix(sty, ".sty")
+		if _, isDenied := convert.TeXPackageDenied(pkg); isDenied {
+			// Deliberately refused despite being present. The next test holds
+			// that list honest; here it only has to be subtracted, or this
+			// assertion would demand the gate admit what the docs promise it
+			// refuses.
+			denied++
+			continue
+		}
 		if !convert.TeXPackageResolvable(pkg) {
 			t.Errorf("%s is in the bundle but not in the embedded admission set: cmd/api would 422 a "+
 				"document the worker typesets", pkg)
+		}
+	}
+	if got := convert.TeXResolvableCount(); got != len(want) {
+		t.Errorf("the embedded admission set has %d entries, the manifest has %d .sty files -- re-run "+
+			"scripts/tectonic-bundle-build.sh", got, len(want))
+	}
+	t.Logf("%d of %d bundle packages are explicitly denied", denied, len(want))
+}
+
+// TestDeniedPackagesAreRealAndUnsupported keeps the deny list from rotting in
+// either direction.
+//
+// A deny entry for a package the bundle does not have is DEAD: it reads as an
+// enforced boundary while enforcing nothing, and the next reader would trust
+// it. A deny entry for a package the declared set PROMISES is a contradiction
+// the API resolves by refusing what the documentation offers.
+func TestDeniedPackagesAreRealAndUnsupported(t *testing.T) {
+	stys := map[string]bool{}
+	for _, sty := range styBasenames(t) {
+		stys[sty] = true
+	}
+
+	// The list is small and its members are named here on purpose: adding one
+	// is a change to the service's advertised boundary, and it should not be
+	// possible to do quietly.
+	for _, pkg := range []string{"fontspec"} {
+		reason, denied := convert.TeXPackageDenied(pkg)
+		if !denied {
+			t.Errorf("%s is no longer denied -- docs/TYPESETTING.md still says user-supplied fonts are "+
+				"unavailable, so either the deny list or the documentation is now wrong", pkg)
+			continue
+		}
+		if reason == "" {
+			t.Errorf("%s is denied with no reason: the 422 would say the package is unsupported and "+
+				"nothing about why", pkg)
+		}
+		if !stys[pkg+".sty"] {
+			t.Errorf("%s is denied but is NOT in the bundle -- the entry enforces nothing and reads as "+
+				"if it does; the plain resolvable check already refuses it", pkg)
+		}
+		if convert.TeXPackageSupported(pkg) {
+			t.Errorf("%s is BOTH declared supported and denied -- the API refuses what the "+
+				"documentation offers", pkg)
+		}
+		if convert.TeXPackageResolvable(pkg) {
+			t.Errorf("%s is denied but still admissible: the deny check does not gate admission", pkg)
 		}
 	}
 }

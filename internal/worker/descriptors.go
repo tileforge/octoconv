@@ -453,8 +453,17 @@ func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOut
 // Everything else falls through to isTerminal's shared storage/input
 // classification.
 var TectonicDescriptor = EngineDescriptor{
-	Engine:      convert.EngineTectonic,
-	Type:        queue.TypeTectonicConvert,
+	Engine: convert.EngineTectonic,
+	Type:   queue.TypeTectonicConvert,
+	// This engine takes no options, so a populated map is a corrupt column
+	// value -- D-10's terminal case, and the same strict refusal probe uses.
+	// Without it, Runner.Handle skips the read-side check and the job is marked
+	// DONE with its persisted semantics silently discarded (PR #16, codex P2).
+	// image's nil OptsFromMap is the older precedent and is pinned as an
+	// exception; probe is the one worth copying here.
+	OptsFromMap: func(m map[string]any) (any, error) {
+		return convert.TeXOptsFromMap(m)
+	},
 	IsTerminal:  isTectonicTerminal,
 	FailureCode: tectonicFailureCode,
 }
@@ -476,6 +485,12 @@ func isTectonicTerminal(err error) bool {
 	// checked explicitly rather than left to the signature list below, because
 	// this is the one failure here that names something the client can change.
 	if errors.Is(err, convert.ErrTeXUnsupportedPackage) {
+		return true
+	}
+	// Both are properties of the DOCUMENT, so both reproduce exactly: a
+	// bibliography that needs biber needs it on every attempt, and a reference
+	// that does not resolve will not resolve on a retry either.
+	if errors.Is(err, convert.ErrTeXBiberUnavailable) || errors.Is(err, convert.ErrTeXUndefinedReferences) {
 		return true
 	}
 	// A DEADLINE is terminal on this engine (see the descriptor's doc comment
@@ -536,6 +551,14 @@ func tectonicFailureCode(err error) (code, message string) {
 		// it failed to FINISH, and the usual cause is a construct that expands
 		// without bound rather than anything the engine could report.
 		return CodeEngineError, "the document did not finish typesetting within the time limit"
+	}
+	if errors.Is(err, convert.ErrTeXBiberUnavailable) {
+		// The one failure here whose remedy is a single package option, so the
+		// message says the option rather than describing the situation.
+		return CodeEngineError, "biblatex requires the option backend=bibtex on this deployment: no biber is available"
+	}
+	if errors.Is(err, convert.ErrTeXUndefinedReferences) {
+		return CodeEngineError, "the document has undefined references or citations; the PDF would show ?? in their place"
 	}
 	return CodeEngineError, "the document could not be typeset"
 }

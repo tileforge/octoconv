@@ -1225,6 +1225,38 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		}
 	})
 
+	// Persisted options on an engine that takes none. Runner.Handle applies
+	// OptsFromMap BEFORE MarkActive, so this is a refusal at the door rather
+	// than a conversion that fails -- and without the descriptor entry the job
+	// was marked DONE with its options silently ignored (PR #16, codex P2).
+	t.Run("persisted options are refused, not ignored", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		job.Opts = map[string]any{"quality": 80}
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// processFn must never run: the guard is upstream of it. If it does,
+		// the job would have been converted with options nothing validated.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			t.Fatal("process() ran for a job whose persisted options were never accepted")
+			return nil
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a corrupt options column cannot fix itself on retry "+
+				"(D-10)", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeInvalidOptions {
+			t.Fatalf("MarkFailed code = %q, want %q -- the same code every other opts-guarded engine "+
+				"returns for the identical condition", got, CodeInvalidOptions)
+		}
+	})
+
 	// The third verdict is neither of the two above and must not be told as
 	// either: no bundle is a MISCONFIGURED PROCESS. It is terminal like the
 	// compilation error (retrying a missing knob is pointless) but its message

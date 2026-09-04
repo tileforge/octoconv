@@ -30,7 +30,9 @@ package convert
 // tectonic executes inside its own process. See 64-CONTEXT.md D-07.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,12 +112,36 @@ func tectonicArgs(inPath, outDir, bundlePath string) []string {
 	}
 }
 
+// TeXOptsFromMap is the strict re-parse of a tex job's persisted options.
+//
+// This engine takes NONE, so any populated map is a corrupt column value, and
+// D-10 classifies that terminal for every engine: garbage in jobs.options can
+// never fix itself on retry. Mirrors SanitizeOptsFromMap exactly -- probe is
+// the other engine that takes no options, and it is the newer precedent.
+//
+// It exists because of a review finding (PR #16, codex P2): TectonicDescriptor
+// carried no OptsFromMap, so Runner.Handle skipped the read-side check entirely
+// and Convert below ignored the map. A job whose persisted options said
+// something -- an older producer, an operator insert, a corrupted row -- was
+// marked DONE with those semantics silently discarded, while every other
+// opts-guarded engine fails it as invalid_options.
+//
+// The API cannot currently produce such a row (a tex job with opts falls into
+// handleCreateJob's default branch, which runs ParseDocOpts and
+// ValidateApplicability and refuses). That is precisely why the worker-side
+// check matters: it guards the paths the API is not on.
+func TeXOptsFromMap(m map[string]any) (any, error) {
+	if len(m) > 0 {
+		return nil, fmt.Errorf("tex takes no options, got %d", len(m))
+	}
+	return nil, nil
+}
+
 // Convert typesets inPath into outPath.
 //
-// opts is accepted and ignored for now: this engine takes none, and the
-// parameter stays because the Converter interface has it. Unlike sanitize, a
-// populated map is NOT an error here -- 64-03 decides what tex opts mean, and
-// refusing them now would make that a breaking change rather than an addition.
+// opts is accepted and ignored here: the strict refusal lives in
+// TeXOptsFromMap, which Runner.Handle applies BEFORE the job is marked active,
+// so a corrupt map never reaches this function.
 func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, _ map[string]any) error {
 	if c.BundlePath == "" {
 		// Not a document failure. A converter with no bundle would fall back
@@ -137,6 +163,13 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		if pkg := tectonicMissingPackage(out); pkg != "" {
 			return fmt.Errorf("tectonic: %w: %s", TeXUnsupportedPackageError(pkg), tectonicTail(out))
 		}
+		if tectonicNeedsBiber(out) {
+			// The engine tried to launch biber and there is none in the image,
+			// by design (D-07). Named, because the client's remedy is one
+			// package option and the raw error ("No such file or directory")
+			// points at nothing they can see.
+			return fmt.Errorf("tectonic: %w: %s", ErrTeXBiberUnavailable, tectonicTail(out))
+		}
 		return fmt.Errorf("tectonic: %w: %s", err, tectonicTail(out))
 	}
 
@@ -151,6 +184,23 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		}
 	}
 
+	// Exit 0 is not the same as a correct document. LaTeX resolves references
+	// across passes and, when it runs out of passes or a label simply does not
+	// exist, it says so and carries on to produce a PDF full of "??".
+	//
+	// Publishing that silently is the failure this check removes: the client
+	// asked for typesetting and got a document whose cross-references are
+	// visibly broken, with a green job and no signal anywhere.
+	//
+	// The signal is LaTeX's OWN warning, not tectonic's rerun-cap message. That
+	// distinction was measured, not assumed (PR #16 review, codex P2): 64-04's
+	// end-to-end paper printed "TeX rerun seems needed, but stopping at 6
+	// passes" and every one of its references resolved. Failing on the pass cap
+	// would have failed the very document this phase ships as its proof.
+	if tectonicUndefinedReferences(out) {
+		return fmt.Errorf("tectonic: %w: %s", ErrTeXUndefinedReferences, tectonicTail(out))
+	}
+
 	// Exit 0 with no output is a green job handing the client nothing --
 	// sanitizePDF's own intermediate check exists because gs does exactly that
 	// on some inputs, and a TeX engine that typesets an empty document is the
@@ -163,6 +213,60 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		return fmt.Errorf("tectonic: engine exited 0 and produced an empty PDF")
 	}
 	return nil
+}
+
+// ErrTeXBiberUnavailable is the document asking for a program this image does
+// not ship. biblatex's DEFAULT backend is biber, and no biber binary is in the
+// image at all -- a security decision with its own argument (D-07,
+// docs/TYPESETTING.md), not an omission. Found in review: the declared set
+// promises biblatex, and an ordinary \usepackage{biblatex} therefore failed
+// with "Running external tool biber ... No such file or directory", which tells
+// the client nothing actionable.
+var ErrTeXBiberUnavailable = errors.New("tex: biblatex requires backend=bibtex on this deployment")
+
+// ErrTeXUndefinedReferences is a document that typeset successfully into a PDF
+// whose \ref/\cite markers did not resolve. The engine exits 0 for this.
+var ErrTeXUndefinedReferences = errors.New("tex: the document has undefined references")
+
+// tectonicUndefinedReferences reports whether the FINAL pass still had
+// unresolved \ref/\cite markers.
+//
+// THE PASS SCOPE IS THE WHOLE POINT. LaTeX resolves references through the
+// .aux file, which does not exist on the first pass, so "There were undefined
+// references." is emitted by EVERY multi-pass document on its early passes and
+// means nothing there. Checking the whole log made the first version of this
+// function fail 64-04's end-to-end paper and the measurement corpus's own
+// bibliography documents -- both of which resolve everything by the last pass.
+// Caught by running those two through the live API immediately after writing
+// the check, which is the only reason it is not in this PR.
+//
+// Passes are delimited by the engine's own per-invocation "Transcript written"
+// line -- the same marker scripts/tectonic-timeout-measure.sh counts -- so the
+// last segment is the last pass. If the marker is ever absent the function
+// falls back to the whole output, which is the conservative direction for a
+// check whose false NEGATIVE merely restores today's behaviour.
+func tectonicUndefinedReferences(out []byte) bool {
+	const passMarker = "Transcript written"
+	last := out
+	if i := bytes.LastIndex(out, []byte(passMarker)); i >= 0 {
+		// Everything after the second-to-last marker is the final pass; the
+		// warning is printed BEFORE the transcript line of the pass it belongs
+		// to, so the window starts at the previous marker.
+		if j := bytes.LastIndex(out[:i], []byte(passMarker)); j >= 0 {
+			last = out[j:]
+		}
+	}
+	return bytes.Contains(last, []byte("There were undefined references")) ||
+		bytes.Contains(last, []byte("There were undefined citations"))
+}
+
+// tectonicNeedsBiber reports whether the failure was the engine trying to run
+// biber. Matched on the engine's own phrasing, captured from a real run:
+//
+//	note: Running external tool biber ...
+//	error: No such file or directory (os error 2)
+func tectonicNeedsBiber(out []byte) bool {
+	return bytes.Contains(out, []byte("Running external tool biber"))
 }
 
 // tectonicTail returns the last few lines of the engine's output, which is
