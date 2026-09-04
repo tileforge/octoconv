@@ -258,31 +258,12 @@ func main() {
 		InspectMaxWorkDuration: envDuration("INSPECT_MAX_WORK_DURATION", 0),
 		InspectMaxConcurrent:   int(envInt64("INSPECT_MAX_CONCURRENT", 0)),
 		InspectRateLimitRPM:    int(envInt64("RATE_LIMIT_INSPECT_RPM", 0)),
-		// INSP-04 (Plan 58-07): the SAME seven per-engine timeout env vars
-		// every worker process already reads at its own startup, now ALSO
-		// read here so POST /v1/inspect can report each engine's upper
-		// bound -- no new env var name, envDuration is the same helper
-		// already used above for SSE_*/INSPECT_MAX_WORK_DURATION.
-		EngineTimeouts: map[string]time.Duration{
-			convert.EngineImage:    envDuration("ENGINE_TIMEOUT", 120*time.Second),
-			convert.EngineDocument: envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second),
-			convert.EngineHTML:     envDuration("HTML_ENGINE_TIMEOUT", 60*time.Second),
-			convert.EngineAudio:    envDuration("AUDIO_ENGINE_TIMEOUT", 742*time.Second),
-			convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
-			convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
-			convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
-			// PROBE_ENGINE_TIMEOUT is MEASURED as of Phase 60 (see
-			// .env.example for the run and the ceil(2.0 s/page x 200 pages x
-			// 1.5) derivation; this comment called it a placeholder until
-			// Phase 63). It must still be passed HERE: NewServer's own
-			// default map only applies when EngineTimeouts is nil, and this
-			// call site supplies a non-nil map -- so omitting probe made the
-			// real API publish sanitize offers with estimated_max_seconds: 0
-			// while the worker used its own value. Caught in review (PR #12),
-			// and the reason PROBE_MAX_PAGES above shares ONE default constant
-			// with cmd/probe-worker rather than repeating a literal.
-			convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second),
-		},
+		// INSP-04 (Plan 58-07): the SAME per-engine timeout env vars every
+		// worker process already reads at its own startup, now ALSO read here
+		// so POST /v1/inspect can report each engine's upper bound. Built by
+		// a named function rather than inline so a test can walk it -- see
+		// engineTimeoutsFromEnv.
+		EngineTimeouts: engineTimeoutsFromEnv(),
 	})
 
 	// D-03/D-04 (Plan 03): activate the speed layer -- srv's CancelPublisher
@@ -424,6 +405,46 @@ func firstField(s string) string {
 		}
 	}
 	return s
+}
+
+// engineTimeoutsFromEnv reads every engine class's own timeout env var -- the
+// SAME variable, with the SAME default, the matching worker process reads at
+// its own startup (IN-02). The result is what POST /v1/inspect publishes as
+// estimated_max_seconds.
+//
+// It is a function, not an inline map literal, because the inline form could
+// only be checked by reading it. api.NewServer merges its own defaults into
+// whatever this returns, so a missing engine no longer publishes a zero upper
+// bound (the PR #12 defect, fixed structurally in 63-02) -- but a missing
+// engine still publishes the DEFAULT while its worker uses the operator's
+// override, which is the same divergence one layer quieter. Walkable by
+// TestEngineTimeoutsFromEnvCoversEveryEngine, which fails by name on the tenth
+// engine class.
+func engineTimeoutsFromEnv() map[string]time.Duration {
+	return map[string]time.Duration{
+		convert.EngineImage:    envDuration("ENGINE_TIMEOUT", 120*time.Second),
+		convert.EngineDocument: envDuration("DOCUMENT_ENGINE_TIMEOUT", 300*time.Second),
+		convert.EngineHTML:     envDuration("HTML_ENGINE_TIMEOUT", 60*time.Second),
+		convert.EngineAudio:    envDuration("AUDIO_ENGINE_TIMEOUT", 742*time.Second),
+		convert.EngineAV:       envDuration("AV_ENGINE_TIMEOUT", 753*time.Second),
+		convert.EngineOCR:      envDuration("OCR_ENGINE_TIMEOUT", 744*time.Second),
+		convert.EnginePandoc:   envDuration("PANDOC_ENGINE_TIMEOUT", 65*time.Second),
+		// PROBE_ENGINE_TIMEOUT is MEASURED as of Phase 60 (see .env.example
+		// for the run and the ceil(2.0 s/page x 200 pages x 1.5) derivation;
+		// this comment called it a placeholder until Phase 63). It must still
+		// be passed HERE: omitting it published sanitize offers with
+		// estimated_max_seconds: 0 while the worker used its own value.
+		// Caught in review (PR #12).
+		convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second),
+		// TECTONIC_ENGINE_TIMEOUT's 300s default is a PLACEHOLDER, not a
+		// measurement, and no file in this build may say otherwise -- 64-05
+		// measures it on a corpus with cross-references and a bibliography,
+		// because cost here is per PASS and tectonic reruns until it
+		// converges. The default matches cmd/tectonic-worker's and
+		// queue.NewClient's exactly (IN-02): a mismatch would not error, it
+		// would silently produce duplicate processing.
+		convert.EngineTectonic: envDuration("TECTONIC_ENGINE_TIMEOUT", 300*time.Second),
+	}
 }
 
 func envDuration(key string, def time.Duration) time.Duration {
