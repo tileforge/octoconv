@@ -97,3 +97,18 @@ RUN 3 -- keep lists DERIVED from what tectonic resolves
   128 MB against 2.69 GiB: a 95% reduction, and inside the range the plan asked
   for. The 16 MB it costs over run 2 is the difference between a small bundle
   and a working one.
+
+================================================================
+PUBLISHED (2026-09-04)
+
+  release  tectonic-bundle-2023.1
+  asset    octoconv-tectonic-bundle-2023.1.ttb, 122 MiB
+  sha256   f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff
+
+  Re-verified by DOWNLOADING the published asset and hashing it:
+      recorded : f42d5eed...02ff
+      observed : f42d5eed...02ff   MATCH
+
+  The tag namespace is separate from the milestone tags (v1.x) on purpose: this
+  is a build artifact, not a code release, and a reader scanning tags should not
+  have to work out which is which.
