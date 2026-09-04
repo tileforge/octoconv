@@ -7,12 +7,17 @@ states, via the Prometheus scaler (D-02 — retry-inclusive, never
 scheduled/archived. Retry-state tasks are imminent work; excluding them left
 a zeroed class blind to a retry backlog until the reconciler's next sweep).
 
-Retry-inclusive matters for the same specific reason it does for probe: this
-engine's TIMEOUT is classified TRANSIENT (isTectonicTerminal —  a deadline
-depends on load, a compilation error depends on the document, and the two are
-pinned as opposites). A load spike therefore produces retry-state tasks by
-design, and a scaler blind to retry would read that spike as an empty queue at
-exactly the moment it is not.
+Retry-inclusive is kept, but NOT for probe's reason, and the difference is
+worth stating because the original text here borrowed probe's argument and that
+argument has since been retired. On this engine a timeout is TERMINAL
+(isTectonicTerminal — the input is a program, so a document that does not finish
+never will), so a load spike does NOT manufacture retry-state tex tasks the way
+it does for sanitize.
+
+What still produces them is infrastructure: a storage or database failure mid
+job is transient for every engine, and those arrive in bursts precisely when the
+cluster is under pressure. A scaler blind to retry would read such a burst as an
+empty queue at the moment the backlog is real.
 
 CO-DEPENDENCY GUARD: see scaledobject-image.yaml header — gated on BOTH
 keda.enabled AND prometheus.enabled together.

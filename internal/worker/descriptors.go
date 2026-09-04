@@ -414,13 +414,37 @@ func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOut
 //     a missing package) -- TERMINAL. Deterministic on the document. A retry
 //     re-runs the same engine over the same bytes and reaches the same verdict;
 //     spending the budget on it buys three identical failures.
-//   - Engine TIMEOUT -- TRANSIENT. The one failure here that depends on
-//     something other than the input: how loaded the box is. Same polarity as
-//     OCR and probe, arrived at independently and for the same reason -- all
-//     three wrap an external engine whose worst case is load rather than
-//     content. NOTE this is only true while the timeout is generous relative to
-//     a document's real pass count; if 64-05's measurement shows otherwise, the
-//     honest response is a bound on the input, not flipping this branch.
+//
+//   - Engine TIMEOUT -- TERMINAL, and this is the branch that CHANGED on
+//     evidence. It shipped transient, reasoned by analogy with OCR and probe:
+//     an external engine whose worst case is load rather than content. The
+//     comment carried its own falsifier -- "only true while the timeout is
+//     generous relative to a document's real pass count; if 64-05's measurement
+//     shows otherwise, the honest response is a bound on the input, not
+//     flipping this branch." Both halves of that have now happened.
+//
+//     64-05 measured the largest ADMISSIBLE document at 180.3s against a 271s
+//     bound: a 1.5x margin. A timeout therefore no longer means "the box was
+//     busy"; it means the document is doing something the measurement did not
+//     see. And the input bound the comment prescribed was added (2 MiB) and
+//     does NOT cover this case, because the cost driver is macro expansion, not
+//     source size:
+//
+//     \count255=0 \loop\advance\count255 by 1 \ifnum\count255<100000000 \repeat
+//
+//     is a few hundred bytes and runs forever -- measured, still running when
+//     killed at 60s in the worker image (PR #16 review, codex P1). Left
+//     transient, asynq spends TECTONIC_MAX_RETRY+1 = 3 attempts x 271s = 813
+//     seconds of a concurrency-1 worker on one such upload, and the class
+//     scales to two replicas.
+//
+//     So the retry budget was being spent on the one failure here that can
+//     never succeed. A legitimate document at the ceiling that times out is
+//     possible but requires the box to be 50% slower than the measurement, on
+//     a document already at the largest admissible size; that client resubmits.
+//     A document that cannot finish is refused on the first attempt instead of
+//     occupying the class for a quarter of an hour.
+//
 //   - No bundle configured -- TERMINAL, and NOT a document failure. The
 //     converter refuses rather than falling back to a network fetch, so this
 //     means the process is misconfigured. Retrying a misconfiguration is
@@ -454,10 +478,18 @@ func isTectonicTerminal(err error) bool {
 	if errors.Is(err, convert.ErrTeXUnsupportedPackage) {
 		return true
 	}
-	// A timeout depends on load rather than on the document, so it stays
-	// transient by falling through to isTerminal -- the explicit opposite of
-	// the compilation-error branch below.
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	// A DEADLINE is terminal on this engine (see the descriptor's doc comment
+	// for the measurement that changed it): the document is a program, the
+	// timeout is 1.5x the largest admissible document's measured cost, and a
+	// non-terminating document reproduces exactly on every retry.
+	//
+	// Cancellation is NOT the same thing and keeps falling through: a canceled
+	// job was canceled by a client or a shutdown, and isTerminal already knows
+	// what that means.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
 		return isTerminal(err)
 	}
 	// The engine ran and refused the document. XeTeX's own wording; captured
@@ -497,6 +529,13 @@ func tectonicFailureCode(err error) (code, message string) {
 		// and a client told "your file could not be typeset" would go looking
 		// in the wrong place.
 		return CodeEngineError, "the typesetting engine is not configured on this deployment"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// Named separately from the generic typesetting failure because the
+		// client's remedy is different: this document did not fail to compile,
+		// it failed to FINISH, and the usual cause is a construct that expands
+		// without bound rather than anything the engine could report.
+		return CodeEngineError, "the document did not finish typesetting within the time limit"
 	}
 	return CodeEngineError, "the document could not be typeset"
 }

@@ -1067,27 +1067,31 @@ const tectonicRealFailureTail = "No file badcmd.aux. | (ts1cmr.fd) | " +
 	"error: the XeTeX engine had an unrecoverable error | " +
 	"caused by: halted on potentially-recoverable error as specified"
 
-// TestPinnedTectonicCompilationAndTimeoutAreOpposites pins the ninth engine's
-// two default verdicts through the REAL handler -- NewRunner(h,
+// TestPinnedTectonicFailureVerdicts pins this engine's failure verdicts through
+// the REAL handler -- NewRunner(h,
 // TectonicDescriptor).Handle, the construction cmd/tectonic-worker registers
 // on its mux -- for the same reason the probe test above does it that way: a
 // change that stops threading the mapped code into MarkFailed's argument must
 // fail here even while isTectonicTerminal still returns the right bool.
 //
-// Both verdicts in one test, because they are opposites BY ARGUMENT
-// (TectonicDescriptor's doc comment), not by coincidence:
+// This test was called ...CompilationAndTimeoutAreOpposites, and it asserted
+// exactly that, until PR #16 review. The name is part of the record: a deadline
+// on THIS engine turned out not to be a property of the box at all, because the
+// input is a program (see TectonicDescriptor's doc comment for the two
+// measurements). Renaming rather than leaving a name that documents a verdict
+// the file no longer holds.
 //
-//   - a LaTeX compilation error is a property of the DOCUMENT. The same bytes
-//     through the same engine reach the same verdict, so three retries buy
-//     three identical failures -- terminal, MarkFailed on the first attempt;
-//   - an engine deadline is a property of the BOX. A multi-pass document under
-//     load is the one failure here that does not depend on the input --
-//     transient, no MarkFailed, asynq's backoff applies.
+// What is pinned now:
 //
-// A later change that collapsed them into one verdict would be wrong in
-// whichever direction it collapsed, and pinning only one of the two would let
-// it through.
-func TestPinnedTectonicCompilationAndTimeoutAreOpposites(t *testing.T) {
+//   - a LaTeX compilation error is TERMINAL -- the same bytes reach the same
+//     verdict on every attempt;
+//   - a DEADLINE is TERMINAL, with its own message: the document did not fail
+//     to compile, it failed to finish;
+//   - CANCELLATION is neither -- it belongs to the shared classifier, and
+//     "terminal on deadline" is one errors.Is away from "terminal on anything
+//     context-shaped";
+//   - an unsupported package is terminal AND names the package.
+func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 	tectonicHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
 		return NewRunner(h, TectonicDescriptor).Handle(ctx, task)
 	}
@@ -1121,7 +1125,22 @@ func TestPinnedTectonicCompilationAndTimeoutAreOpposites(t *testing.T) {
 		}
 	})
 
-	t.Run("engine deadline stays transient", func(t *testing.T) {
+	// CHANGED ON EVIDENCE, and this row is the record of it. It asserted the
+	// OPPOSITE until PR #16 review: a deadline was transient here, by analogy
+	// with OCR and probe. Two measurements retired that analogy.
+	//
+	// 64-05 put the largest admissible document at 180.3s against a 271s bound,
+	// so a deadline is no longer plausibly "the box was busy". And a
+	// non-terminating document -- \loop with no exit, a few hundred bytes,
+	// under every input bound this engine has -- was measured still running
+	// when killed at 60s in the worker image. Left transient, one such upload
+	// spent 3 attempts x 271s = 813 seconds of a concurrency-1 worker.
+	//
+	// The two verdicts pinned by this test are therefore no longer opposites,
+	// and the test says so rather than quietly dropping the row: what is pinned
+	// now is that BOTH are terminal, for different reasons, and that
+	// CANCELLATION is still not lumped in with either.
+	t.Run("engine deadline is terminal on this engine", func(t *testing.T) {
 		job, jobID := newPinJob("")
 		calls := []string{}
 		repo := &pinRepo{job: job, calls: &calls}
@@ -1132,13 +1151,39 @@ func TestPinnedTectonicCompilationAndTimeoutAreOpposites(t *testing.T) {
 
 		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
 
-		if errors.Is(err, asynq.SkipRetry) {
-			t.Fatalf("err = %v, want NOT SkipRetry -- a typesetting deadline depends on load, and is the "+
-				"deliberate opposite of the compilation error above", err)
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a document that does not finish does not finish on "+
+				"any attempt, and retrying spends 271s of a concurrency-1 worker to learn that again", err)
 		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].message; got != "the document did not finish typesetting within the time limit" {
+			t.Fatalf("MarkFailed message = %q -- a document that ran out of time did not fail to "+
+				"COMPILE, and telling the client it did sends them looking for a syntax error", got)
+		}
+	})
+
+	// The distinction the branch above must not swallow. A CANCELED job was
+	// canceled -- by a client or by a shutdown -- and that is neither a bad
+	// document nor a slow one. Pinned here because "terminal on deadline" is
+	// one errors.Is away from "terminal on anything context-shaped".
+	t.Run("cancellation is not a document failure", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w", context.Canceled))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
 		if len(repo.markFailed) != 0 {
-			t.Fatalf("MarkFailed calls = %d, want 0 -- a transient failure is asynq's to retry", len(repo.markFailed))
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a canceled job is not a failed document; the "+
+				"shared classifier owns this case for every engine", len(repo.markFailed))
 		}
+		_ = err
 	})
 
 	// TEX-03. The refusal that NAMES something the client can change, pinned
