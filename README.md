@@ -156,6 +156,21 @@ cp .env.example .env        # adjust ports/credentials if needed
 docker compose up -d
 ```
 
+**Building the tex worker needs one extra step.** `Dockerfile.tectonic-worker`
+copies a 122 MiB TeX bundle out of the build context, and that file is a build
+artifact published as a release asset rather than committed — so a fresh clone
+does not have it, and the build fails with
+`"/deploy/tectonic-bundle/octoconv-bundle.ttb": not found`. Fetch it once
+(needs `gh` authenticated against this repository, which is private):
+
+```bash
+scripts/tectonic-bundle-fetch.sh          # downloads and verifies the digest
+scripts/tectonic-bundle-fetch.sh --check  # verify only, no download
+```
+
+The digest is checked twice on purpose: by that script before the build starts,
+and again inside the image against the bytes that actually land there.
+
 | Service  | Image             | Host port                          | Notes                                        |
 |----------|-------------------|-------------------------------------|-----------------------------------------------|
 | postgres | `postgres:18`     | `5434`                              | `octo / octo-pass / octo_db`                  |

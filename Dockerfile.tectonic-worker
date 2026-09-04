@@ -74,9 +74,19 @@ RUN set -eu; \
 # So the artifact is fetched out of band, by a human or a job that already has
 # credentials, and placed beside this Dockerfile:
 #
-#     gh release download tectonic-bundle-2023.1 \
-#       --repo paderinandrey/octoconv --pattern '*.ttb' \
-#       --output deploy/tectonic-bundle/octoconv-bundle.ttb
+#     scripts/tectonic-bundle-fetch.sh
+#
+# That script is not a convenience wrapper -- it is the fix for what this
+# comment used to leave implicit. Until PR #16 the instruction lived only here,
+# as prose, so a fresh checkout (and CI's own bake job) failed with
+# `"/deploy/tectonic-bundle/octoconv-bundle.ttb": not found` and no hint. A
+# documented manual step that nothing runs is a step that does not happen. CI
+# now runs it before bake; `docker compose build tectonic-worker` still needs it
+# run once by hand.
+#
+# The script reads the digest below rather than carrying its own copy, and
+# verifies the download before the build starts -- so a truncated asset is
+# reported as a truncated asset, not as a checksum failure three layers in.
 #
 # The pin does not weaken: the digest is verified HERE, against the bytes that
 # actually land in the image, which is the property that matters. A URL would
