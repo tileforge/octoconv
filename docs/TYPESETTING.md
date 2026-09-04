@@ -74,8 +74,44 @@ first.
 **Custom fonts, and `fontspec`.** Deferred (TEX-07). `fontspec` is the entry
 point to user-supplied fonts, so it is not in the set.
 
-**Anything else.** A document using a package outside the table is refused with
-a message naming the package. It is not silently typeset differently.
+**Anything else.** A document that loads a package this deployment's bundle
+cannot resolve is refused with a message naming the package. It is never
+silently typeset differently, and never accepted only to fail with an
+unexplained engine error.
+
+## Supported is not the same as accepted
+
+The table above is what OctoConv **supports**: what we test, document, and will
+help you with. It is not the admission rule.
+
+What gets **accepted** is anything the shipped bundle can actually load, which
+is a strictly larger set — a bundle necessarily carries the dependency closure
+of the table above, plus everything the LaTeX format itself loads. Measured
+against the built bundle: 608 `.sty` files for eighteen declared packages.
+
+The distinction is deliberate and was measured, not assumed. Of twenty-three
+common packages compiled against the real bundle, twelve resolve and produce a
+PDF while being outside the table — including `fontenc`, `inputenc`, `lmodern`,
+`textcomp` and `microtype`, all five of which appear in **pandoc's own default
+LaTeX template**. Refusing those would mean rejecting documents this service
+typesets correctly, which is worse than not promising them.
+
+So: a package outside the table but inside the bundle is accepted and will
+almost certainly work — it is simply not something we have committed to keeping.
+A package outside the bundle is refused, by name, before the upload is stored.
+
+**The refusal can arrive at either of two moments.** `POST /v1/jobs` scans a
+bounded window of the preamble and refuses immediately with HTTP 422 and
+`code: unsupported_package`. When the preamble runs past that window — or the
+`\usepackage` is behind a macro or an `\input` — the API abstains, the job is
+accepted, and the worker refuses it with the SAME `error_code` and the same
+message. Which of the two you get depends on where `\begin{document}` falls in
+your file, so the code deliberately does not distinguish them.
+
+One case does NOT name a package: if the engine reports a missing file that is
+not a `.sty` — a font definition, a class, a config file — the job fails with
+the generic `engine_error`. That is on purpose. Naming a package for a missing
+`.fd` would send you deleting a `\usepackage` line your document does not have.
 
 ## Asking for a package
 
@@ -93,6 +129,13 @@ declared set, a reproducible build, and an artifact pinned by digest.
 A mechanical test proves the table above equals `internal/convert/texpackages.go`
 in both directions, and that every package in the Go list is present in the
 built bundle's manifest.
+
+A second test holds the ADMISSION set equal to the bundle manifest, also in both
+directions. It is written by `scripts/tectonic-bundle-build.sh` in the same run
+that writes the manifest (`internal/convert/texresolvable.txt`), so the two
+cannot come from different builds — and a third test holds the API's gate and
+the worker's classification equal to each other, since this is one rule
+deliberately implemented in two places.
 
 The manifest half is the one with teeth. Holding the table equal to the Go list
 proves this document matches what we *wrote down*; it cannot notice that what we
