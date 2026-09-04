@@ -3715,6 +3715,41 @@ func TestCreateJob_AVOptsRejectedForInapplicablePair(t *testing.T) {
 // handleCreateJob's enqueue switch fails this test (via the missing table
 // row/accessor) rather than staying invisible except for a 500 in
 // production.
+// TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() -- the one list
+// that grows with every engine class -- and asserts each value is KNOWN to
+// handleCreateJob's routing table. It exists because the table below can only
+// cover an engine someone wrote a multipart fixture for: tectonic was
+// registered in 64-02, advertised on GET /formats, and missing from the
+// enqueue switch, so every real .tex upload got a fail-closed 500 with no
+// test able to see it. This one needs no fixture, so the tenth engine cannot
+// repeat it silently.
+//
+// It asserts ROUTING only (routed == true), never the enqueue error: the
+// table below is what proves each engine reaches its OWN queue rather than
+// merely some queue.
+func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
+	engines := convert.AllEngines()
+	if len(engines) == 0 {
+		t.Fatal("convert.AllEngines() is empty -- this test would pass vacuously")
+	}
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	for _, engine := range engines {
+		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
+		if !routed {
+			t.Errorf("engine %q has no case in handleCreateJob's enqueue switch: every job for it would 500 with \"failed to enqueue job\"", engine)
+		}
+		if err != nil {
+			t.Errorf("engine %q: unexpected enqueue error from the fake queue: %v", engine, err)
+		}
+	}
+
+	// The fail-closed branch still fails closed -- otherwise the assertion
+	// above would hold for a switch that routed everything.
+	if routed, _ := srv.enqueueForEngine(context.Background(), "nonsense", uuid.New()); routed {
+		t.Error("engine \"nonsense\" was routed -- the default branch no longer fails closed")
+	}
+}
+
 func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 	type fixture struct {
 		filename string
@@ -3731,6 +3766,11 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		{convert.EngineHTML, fixture{"in.html", "pdf", func(*testing.T) []byte { return htmlFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedHTML }},
 		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
+		// The ninth engine joins the SAME table rather than getting a bespoke
+		// test of its own (64-04 Task 2): the value of this test is the
+		// negative half -- every other engine's accessor must stay uuid.Nil --
+		// and a separate test would assert only the positive half.
+		{convert.EngineTectonic, fixture{"in.tex", "pdf", func(*testing.T) []byte { return latexFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedTectonic }},
 	}
 
 	allAccessors := make(map[string]func(*fakeQueue) uuid.UUID, len(cases))

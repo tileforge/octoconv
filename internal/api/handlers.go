@@ -878,25 +878,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Route to the matching engine-class queue (mirrors reconciler.go's
 	// engine switch). The row stays in 'queued' on any enqueue failure; a
 	// reconciler will recover it.
-	var enqueueErr error
-	switch engine {
-	case convert.EngineImage:
-		enqueueErr = s.queue.EnqueueImageConvert(ctx, createdID)
-	case convert.EngineDocument:
-		enqueueErr = s.queue.EnqueueDocumentConvert(ctx, createdID)
-	case convert.EngineHTML:
-		enqueueErr = s.queue.EnqueueHTMLConvert(ctx, createdID)
-	case convert.EngineAudio:
-		enqueueErr = s.queue.EnqueueAudioConvert(ctx, createdID)
-	case convert.EngineAV:
-		enqueueErr = s.queue.EnqueueAVConvert(ctx, createdID)
-	case convert.EngineOCR:
-		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
-	case convert.EnginePandoc:
-		enqueueErr = s.queue.EnqueuePandocConvert(ctx, createdID)
-	case convert.EngineProbe:
-		enqueueErr = s.queue.EnqueueProbeSanitize(ctx, createdID)
-	default:
+	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
+	if !routed {
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a
 		// value produced by a registered Converter.Engine(), so this branch
@@ -917,6 +900,42 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		resp["opts"] = normalizedOpts
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// enqueueForEngine routes one created job to its engine-class queue. The
+// FIRST return value is false for an engine this switch does not know --
+// which the caller turns into a fail-closed 500.
+//
+// It is a METHOD rather than the inline switch it replaced for one reason:
+// a switch inside a handler can only be exercised through a full multipart
+// request, so an engine class that reached the registry but never reached
+// this routing table stayed invisible until someone happened to write a
+// fixture for it. Tectonic did exactly that -- registered in 64-02, missing
+// here, and every real .tex upload 500'd. Extracted so
+// TestEveryEngineHasAnEnqueueRoute can walk convert.AllEngines() directly
+// and fail by NAME on the tenth engine, with no fixture to invent.
+func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UUID) (routed bool, err error) {
+	switch engine {
+	case convert.EngineImage:
+		return true, s.queue.EnqueueImageConvert(ctx, id)
+	case convert.EngineDocument:
+		return true, s.queue.EnqueueDocumentConvert(ctx, id)
+	case convert.EngineHTML:
+		return true, s.queue.EnqueueHTMLConvert(ctx, id)
+	case convert.EngineAudio:
+		return true, s.queue.EnqueueAudioConvert(ctx, id)
+	case convert.EngineAV:
+		return true, s.queue.EnqueueAVConvert(ctx, id)
+	case convert.EngineOCR:
+		return true, s.queue.EnqueueOCRConvert(ctx, id)
+	case convert.EnginePandoc:
+		return true, s.queue.EnqueuePandocConvert(ctx, id)
+	case convert.EngineProbe:
+		return true, s.queue.EnqueueProbeSanitize(ctx, id)
+	case convert.EngineTectonic:
+		return true, s.queue.EnqueueTectonicConvert(ctx, id)
+	}
+	return false, nil
 }
 
 // handleGetJob returns the job status; when done, a presigned download URL for
