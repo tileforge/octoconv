@@ -1050,6 +1050,127 @@ func runStageAsymmetryCases(t *testing.T, tc pinEngine, cases []stageAsymmetryCa
 	}
 }
 
+// --- TestPinnedTectonicCompilationAndTimeoutAreOpposites ----------------
+
+// tectonicRealFailureTail is the LAST LINES tectonic 0.17.0 actually printed
+// when asked to typeset a document with an undefined control sequence, in the
+// built image (octoconv-tectonic-worker:64-02, --network none, USER nobody,
+// run 2026-09-04, exit status 1) -- the form tectonicTail joins with " | ".
+// Transcribed from that run, never composed here: this project has a recorded
+// history of predicting an engine's wording and pinning the prediction.
+// Full capture: evidence/64-04-tectonic-failure-output.txt.
+const tectonicRealFailureTail = "No file badcmd.aux. | (ts1cmr.fd) | " +
+	"error: badcmd.tex:3: Undefined control sequence | ! Undefined control sequence. | " +
+	"No pages of output. | Transcript written on badcmd.log. | " +
+	"error: something bad happened inside XeTeX, but no output was logged | " +
+	"error: the XeTeX engine had an unrecoverable error | " +
+	"caused by: halted on potentially-recoverable error as specified"
+
+// TestPinnedTectonicCompilationAndTimeoutAreOpposites pins the ninth engine's
+// two default verdicts through the REAL handler -- NewRunner(h,
+// TectonicDescriptor).Handle, the construction cmd/tectonic-worker registers
+// on its mux -- for the same reason the probe test above does it that way: a
+// change that stops threading the mapped code into MarkFailed's argument must
+// fail here even while isTectonicTerminal still returns the right bool.
+//
+// Both verdicts in one test, because they are opposites BY ARGUMENT
+// (TectonicDescriptor's doc comment), not by coincidence:
+//
+//   - a LaTeX compilation error is a property of the DOCUMENT. The same bytes
+//     through the same engine reach the same verdict, so three retries buy
+//     three identical failures -- terminal, MarkFailed on the first attempt;
+//   - an engine deadline is a property of the BOX. A multi-pass document under
+//     load is the one failure here that does not depend on the input --
+//     transient, no MarkFailed, asynq's backoff applies.
+//
+// A later change that collapsed them into one verdict would be wrong in
+// whichever direction it collapsed, and pinning only one of the two would let
+// it through.
+func TestPinnedTectonicCompilationAndTimeoutAreOpposites(t *testing.T) {
+	tectonicHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
+		return NewRunner(h, TectonicDescriptor).Handle(ctx, task)
+	}
+
+	t.Run("compilation error is terminal", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The exact shape TectonicConverter.Convert produces on a non-zero
+		// exit: `tectonic: %w: %s` over runCommand's error and the tail above.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
+				errors.New("exit status 1"), tectonicRealFailureTail))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want errors.Is(err, asynq.SkipRetry) -- a document that does not compile "+
+				"does not compile on every attempt", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeEngineError {
+			t.Fatalf("MarkFailed code = %q, want %q", got, CodeEngineError)
+		}
+		if got := repo.markFailed[0].message; got != "the document could not be typeset" {
+			t.Fatalf("MarkFailed message = %q, want the typesetting wording", got)
+		}
+	})
+
+	t.Run("engine deadline stays transient", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w", context.DeadlineExceeded))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want NOT SkipRetry -- a typesetting deadline depends on load, and is the "+
+				"deliberate opposite of the compilation error above", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a transient failure is asynq's to retry", len(repo.markFailed))
+		}
+	})
+
+	// The third verdict is neither of the two above and must not be told as
+	// either: no bundle is a MISCONFIGURED PROCESS. It is terminal like the
+	// compilation error (retrying a missing knob is pointless) but its message
+	// must not blame the client's file, or an operator's mistake sends every
+	// client hunting through their own LaTeX.
+	t.Run("missing bundle is terminal and does not blame the document", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: no bundle configured (%s unset); "+
+				"refusing to run, because without -b tectonic fetches over the network",
+				convert.TectonicBundleEnv))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- retrying a misconfiguration re-reads the same empty env", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].message; got != "the typesetting engine is not configured on this deployment" {
+			t.Fatalf("MarkFailed message = %q, want the deployment wording -- a client told their file could "+
+				"not be typeset would go looking in the wrong place", got)
+		}
+	})
+}
+
 // --- TestPinnedProbePageCeilingAndTimeoutAreOpposites -------------------
 
 // TestPinnedProbePageCeilingAndTimeoutAreOpposites pins PROBE-02 through the
