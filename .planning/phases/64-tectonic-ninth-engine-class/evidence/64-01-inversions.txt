@@ -1,0 +1,28 @@
+64-01 inversions -- each new boundary broken on purpose, output recorded.
+
+=== INVERSION 1: a declared package that the bundle does not ship ===
+--- FAIL: TestEveryDeclaredPackageIsInTheBundle (0.00s)
+    texpackages_manifest_test.go:85: nosuchpkg is declared supported but nosuchpkg.sty is not in the bundle manifest -- a client writing \usepackage{nosuchpkg} would be accepted and then fail in the worker
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.362s
+FAIL
+[exit 1]
+
+=== INVERSION 2: the Go list and the document disagree ===
+--- FAIL: TestDocTableMatchesTheDeclaredSet (0.00s)
+    texpackages_manifest_test.go:160: "booktabs" is in docs/TYPESETTING.md's table and not declared in Go -- the document promises something no gate will admit
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.118s
+FAIL
+[exit 1]
+
+=== INVERSION 3: the manifest is emptied (the check must not pass vacuously) ===
+--- FAIL: TestEveryDeclaredPackageIsInTheBundle (0.00s)
+    texpackages_manifest_test.go:70: the manifest lists no paths -- it would then satisfy every check below vacuously
+--- FAIL: TestManifestMayContainMore (0.00s)
+    texpackages_manifest_test.go:101: the manifest has 0 paths for 18 declared packages -- it is expected to be very much larger, because it carries the dependency closure, the fonts and the LaTeX format's own files. A manifest this small means the build shipped almost nothing
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	0.909s
+FAIL
+[exit 1]
+
