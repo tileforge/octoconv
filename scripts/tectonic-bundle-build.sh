@@ -175,6 +175,24 @@ say "manifest"
 } > "$REPO_ROOT/deploy/tectonic-bundle/MANIFEST.txt"
 echo "  $(grep -vc "^#" "$REPO_ROOT/deploy/tectonic-bundle/MANIFEST.txt") paths"
 
+# The ADMISSION set (TEX-03), derived from the same walk in the same run.
+#
+# It is NOT the declared/supported set. convert.TeXPackages is what OctoConv
+# documents and promises; this is what the engine can actually RESOLVE, which
+# is a strictly larger set (the dependency closure, plus everything the LaTeX
+# format itself carries). cmd/api refuses a \usepackage that is not in here,
+# because that is the one that cannot possibly typeset -- gating on the
+# declared 18 was measured against this bundle and would have refused twelve
+# packages that compile perfectly, five of them in pandoc's own default
+# template.
+#
+# Written HERE, beside the manifest, so the two cannot come from different
+# builds. convert.TestResolvableSetMatchesTheManifest holds them equal and
+# names this script when they drift.
+grep -o "[^/]*\.sty$" "$REPO_ROOT/deploy/tectonic-bundle/MANIFEST.txt" \
+  | sort -u > "$REPO_ROOT/internal/convert/texresolvable.txt"
+echo "  $(wc -l < "$REPO_ROOT/internal/convert/texresolvable.txt" | tr -d ' ') resolvable .sty files"
+
 say "artifact"
 TTB="$(find "$BUILD_DIR/out" -name "*.ttb" -print -quit)"
 if [ -n "$TTB" ]; then
