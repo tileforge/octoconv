@@ -82,9 +82,27 @@ var texResolvable = func() map[string]struct{} {
 // The deny list is checked BEFORE resolvability, so a package here is refused
 // with the same clear, named 422 as one the bundle lacks -- the client is told
 // it is unsupported either way, which is true either way.
+//
+// THE THREE NAMES ARE ONE PACKAGE. \usepackage{fontspec} loads fontspec.sty,
+// which loads fontspec-xetex.sty -- and the bundle carries all three, so
+// denying only the public name left a one-line bypass. Proven live, through
+// the running API, before this list grew:
+//
+//	\usepackage{fontspec}         ->  422 unsupported_package
+//	\usepackage{fontspec-xetex}   ->  202, then engine_error
+//	\usepackage{fontspec-luatex}  ->  202, then a finished PDF
+//
+// The message names whatever the client actually wrote, so the refusal matches
+// their file rather than the name we happen to think of as canonical.
 var texDenied = map[string]string{
-	"fontspec": "user-supplied fonts are not available on this deployment (TEX-07)",
+	"fontspec":        texDeniedFonts,
+	"fontspec-xetex":  texDeniedFonts,
+	"fontspec-luatex": texDeniedFonts,
 }
+
+// texDeniedFonts is one string because one decision (TEX-07) is behind all
+// three entries; three copies would be three things to update.
+const texDeniedFonts = "user-supplied fonts are not available on this deployment (TEX-07)"
 
 // TeXPackageDenied reports whether pkg is deliberately refused despite being
 // resolvable, and why. The reason is returned rather than looked up separately
@@ -116,3 +134,50 @@ func TeXPackageResolvable(pkg string) bool {
 // parsed to nothing would admit nothing at the API and would look, from the
 // outside, exactly like a service that refuses every LaTeX document.
 func TeXResolvableCount() int { return len(texResolvable) }
+
+// TeXUnsupportedPackageMessage is the sentence a client gets for pkg, built in
+// ONE place because two gates say it.
+//
+// cmd/api refuses before the upload when its bounded scan sees the package;
+// cmd/tectonic-worker refuses after the download when it does not. D-03 says
+// they share the error CODE, and the code was already shared -- but each side
+// formatted its own sentence, so the wording could drift while the code stayed
+// equal, and a client would still be able to tell which gate saw them.
+func TeXUnsupportedPackageMessage(pkg string) string {
+	if reason, denied := TeXPackageDenied(pkg); denied {
+		// A package the bundle CAN load but this service refuses on purpose
+		// gets its own sentence. "The bundle does not provide it" would be
+		// false, and a client who checked would find the .sty listed.
+		return "the package " + pkg + " is not supported: " + reason
+	}
+	return "this deployment's TeX bundle does not provide the package " + pkg
+}
+
+// TeXDeniedInSource reports the first deliberately-refused package visible in
+// src, which is the WHOLE input rather than the API's bounded window.
+//
+// This is the worker's half of the deny list, and it exists because the engine
+// cannot supply this verdict: a denied package is IN the bundle, so tectonic
+// loads it and succeeds. Every other refusal here is the engine's own answer
+// read back; this one is a policy the engine knows nothing about, so leaving it
+// to the engine meant not enforcing it at all.
+//
+// Found twice over, independently and then in review (PR #16, codex round 2),
+// and each time by running it: \usepackage{fontspec} preceded by 1.2 MiB of
+// comments outran the API's window and came back a finished PDF, against a
+// document naming fontspec that the docs promise is refused.
+//
+// It inherits ScanTeXPreamble's contract exactly -- it may MISS (a package
+// behind a macro or an \input is not visible to either gate) and never
+// invents. Missing is survivable here in a way it is not for the resolvable
+// set: this is a support boundary, not a safety one, and the fonts themselves
+// are not in the image.
+func TeXDeniedInSource(src []byte) string {
+	packages, _ := ScanTeXPreamble(src)
+	for _, pkg := range packages {
+		if _, denied := texDenied[pkg]; denied {
+			return pkg
+		}
+	}
+	return ""
+}

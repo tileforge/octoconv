@@ -543,16 +543,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			// it is logged quoted and reaches the response inside a fixed
 			// sentence rather than being formatted as one.
 			log.Printf("content validation rejected: client_id=%s filename=%q reason=unsupported_package package=%q", client.ID, filename, pkg)
-			// A package the bundle CAN load but this service refuses on purpose
-			// gets its own sentence. "The bundle does not provide it" would be
-			// false, and a client who checked would find the .sty listed.
-			if reason, denied := convert.TeXPackageDenied(pkg); denied {
-				writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedPackage,
-					"the package "+pkg+" is not supported: "+reason)
-				return
-			}
+			// The sentence is built in convert, not here: cmd/tectonic-worker
+			// says the same thing for the same package when this scan does not
+			// see it, and two formatters for one condition is how the wordings
+			// drift apart while the code stays equal.
 			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedPackage,
-				"this deployment's TeX bundle does not provide the package "+pkg)
+				convert.TeXUnsupportedPackageMessage(pkg))
 			return
 		}
 		if !complete {

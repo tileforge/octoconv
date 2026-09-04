@@ -537,7 +537,7 @@ func tectonicFailureCode(err error) (code, message string) {
 		// this before the upload (errcode.UnsupportedPackage). One code space,
 		// D-03: which side saw it depends only on where \begin{document} fell
 		// in the client's file, which is not something they can act on.
-		return CodeUnsupportedPackage, "this deployment's TeX bundle does not provide the package " + pkg
+		return CodeUnsupportedPackage, convert.TeXUnsupportedPackageMessage(pkg)
 	}
 	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
 		// Deliberately NOT phrased as a fault in the document: it is not one,

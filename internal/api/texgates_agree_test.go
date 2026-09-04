@@ -64,12 +64,24 @@ func apiVerdict(t *testing.T, pkg string) (refused bool, code, message string) {
 	return true, resp.Code, resp.Error
 }
 
-// workerVerdict classifies the error tectonic produces for a package the
-// bundle does not have, exactly as internal/convert wraps it.
+// workerVerdict is the OTHER gate's answer for the same document, reached the
+// way TectonicConverter.Convert reaches it.
+//
+// The two paths are not interchangeable, which is the whole point of round 2's
+// finding. For a package the bundle LACKS, the verdict is the engine's own
+// output parsed back. For a package the bundle HAS and this service refuses
+// anyway, the engine has no verdict to give -- it loads the package and
+// succeeds -- so the worker must scan the source itself.
 func workerVerdict(pkg string) (terminal bool, code, message string) {
-	err := fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
-		convert.TeXUnsupportedPackageError(pkg),
-		"! ! LaTeX Error: File `"+pkg+".sty' not found.."))
+	var err error
+	if denied := convert.TeXDeniedInSource([]byte(texDoc(pkg))); denied != "" {
+		err = fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w",
+			convert.TeXUnsupportedPackageError(denied)))
+	} else {
+		err = fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
+			convert.TeXUnsupportedPackageError(pkg),
+			"! ! LaTeX Error: File `"+pkg+".sty' not found.."))
+	}
 	code, message = worker.TectonicDescriptor.FailureCode(err)
 	return worker.TectonicDescriptor.IsTerminal(err), code, message
 }
@@ -90,6 +102,15 @@ func TestBothTeXGatesAgree(t *testing.T) {
 		{pkg: "pgfplots", wantRefused: true},
 		{pkg: "siunitx", wantRefused: true},
 		{pkg: "minted", wantRefused: true},
+		// IN the bundle and refused anyway (TEX-07). These are the cases this
+		// test did not have when the deny list was added in round 1, and their
+		// absence is why round 2 found the deny list enforced on one side only:
+		// the API refused fontspec while the worker typeset it. All three names
+		// are one package -- fontspec.sty loads fontspec-xetex.sty -- so a list
+		// naming only the public one was a one-line bypass.
+		{pkg: "fontspec", wantRefused: true},
+		{pkg: "fontspec-xetex", wantRefused: true},
+		{pkg: "fontspec-luatex", wantRefused: true},
 	}
 
 	for i := range cases {
@@ -149,12 +170,20 @@ func TestBothTeXGatesAgree(t *testing.T) {
 // different lists that happen to agree; this asserts the sources themselves.
 //
 // convert.TeXPackageResolvable is the one authority. The API calls it directly.
-// The worker does not call it at all -- it reads the ENGINE's verdict, which is
-// the same bundle answering the same question at run time, and that is the
-// stronger form: the worker cannot drift from the bundle because it IS the
-// bundle. What must not happen is either side quietly switching to
-// convert.TeXPackages, the declared/documented set, which is measurably
-// smaller.
+// For a package the bundle LACKS, the worker does not call it at all -- it
+// reads the ENGINE's verdict, which is the same bundle answering the same
+// question at run time, and that is the stronger form: the worker cannot drift
+// from the bundle because it IS the bundle.
+//
+// That sentence used to be the whole story, and round 1's deny list quietly
+// falsified it: a DENIED package is in the bundle, so the engine's verdict is
+// "loaded fine" and there is nothing to read back. The worker now scans for
+// those itself (convert.TeXDeniedInSource), which is the one place it consults
+// a list rather than the engine, and TestBothTeXGatesAgree covers all three
+// denied names.
+//
+// What must not happen is either side quietly switching to convert.TeXPackages,
+// the declared/documented set, which is measurably smaller.
 func TestBothTeXGatesReadTheSameSource(t *testing.T) {
 	// A package in the bundle but NOT declared. If either gate consulted the
 	// declared set, this is the case that breaks -- and it is not exotic:

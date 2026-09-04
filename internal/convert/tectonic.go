@@ -137,6 +137,22 @@ func TeXOptsFromMap(m map[string]any) (any, error) {
 	return nil, nil
 }
 
+// tectonicLogLimit bounds how much of the engine's output is kept in memory.
+//
+// This engine is the only one here whose input is a PROGRAM, so it is the only
+// one where the CLIENT decides how much the engine prints. Measured in the
+// shipped image, 1 GiB / 2 CPU, --network none:
+//
+//	largest ADMISSIBLE document  2 143 444 B .tex  ->  1 416 019 B of log
+//	235-byte \message loop       235 B .tex       ->  323 565 198 B in 30 s
+//
+// The bomb sustains 10.8 MB/s, which over the 271-second timeout is ~2.9 GB in
+// a 1 GiB container: the worker dies before the deadline can classify the job.
+// 8 MiB is 5.9x the largest legitimate log measured at the input ceiling and
+// 0.8% of the container, so nothing real is ever truncated and the abusive case
+// costs a fixed 8 MiB.
+const tectonicLogLimit = 8 << 20
+
 // Convert typesets inPath into outPath.
 //
 // opts is accepted and ignored here: the strict refusal lives in
@@ -154,8 +170,26 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		return fmt.Errorf("tectonic: bundle %q is not readable: %w", c.BundlePath, err)
 	}
 
+	// The deny list, enforced HERE and not only at the API. Every other refusal
+	// in this function is the engine's own verdict read back, which is the
+	// stronger form -- the worker cannot drift from the bundle because it IS
+	// the bundle. A DENIED package breaks that symmetry: it is in the bundle,
+	// tectonic loads it happily, and the engine therefore has no verdict to
+	// read. Leaving it to the API alone meant a documented refusal that a
+	// client could walk past by pushing the \usepackage beyond the sniff
+	// window -- measured, not supposed: 1.2 MiB of comments ahead of
+	// \usepackage{fontspec} returned a finished PDF.
+	//
+	// Reading the whole file is affordable precisely because the input ceiling
+	// exists: 2 MiB, enforced before this ever runs.
+	if src, err := os.ReadFile(inPath); err == nil {
+		if pkg := TeXDeniedInSource(src); pkg != "" {
+			return fmt.Errorf("tectonic: %w", TeXUnsupportedPackageError(pkg))
+		}
+	}
+
 	outDir := filepath.Dir(outPath)
-	out, err := runCommand(ctx, "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)...)
+	out, err := runCommandLimited(ctx, tectonicLogLimit, "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)...)
 	if err != nil {
 		// The engine's own chatter is the only thing that says WHY. When it
 		// names a .sty the bundle does not have, say WHICH -- that is the one
