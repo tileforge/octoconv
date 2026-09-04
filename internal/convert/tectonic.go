@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -130,9 +131,12 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	outDir := filepath.Dir(outPath)
 	out, err := runCommand(ctx, "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)...)
 	if err != nil {
-		// The engine's own chatter is the only thing that says WHY, and it is
-		// what 64-03 will parse for an unresolvable package name. Carried on
-		// the error rather than dropped.
+		// The engine's own chatter is the only thing that says WHY. When it
+		// names a .sty the bundle does not have, say WHICH -- that is the one
+		// failure here the client can act on without guessing (TEX-03).
+		if pkg := tectonicMissingPackage(out); pkg != "" {
+			return fmt.Errorf("tectonic: %w: %s", TeXUnsupportedPackageError(pkg), tectonicTail(out))
+		}
 		return fmt.Errorf("tectonic: %w: %s", err, tectonicTail(out))
 	}
 
@@ -171,4 +175,42 @@ func tectonicTail(out []byte) string {
 		lines = lines[len(lines)-keep:]
 	}
 	return strings.Join(lines, " | ")
+}
+
+// missingStyLine matches LaTeX's own report of a file it could not resolve.
+// Written against captured output, never predicted:
+// testdata/tectonic/missing-package.txt, from tectonic 0.17.0 in the built
+// image on 2026-09-04.
+//
+//	! ! LaTeX Error: File `pgfplots.sty\' not found..
+//
+// The backtick-quote pair around the filename is LaTeX's, not a shell's.
+var missingStyLine = regexp.MustCompile("File `([A-Za-z0-9_.-]+)\\.sty' not found")
+
+// tectonicMissingPackage returns the package name the engine could not
+// resolve, or "" when the output does not permit naming one.
+//
+// ONLY .sty, AND THAT IS THE POINT. LaTeX reports every unresolvable file the
+// same way, and most of them are not packages a client can remove: a missing
+// .def, .cfg, .fd or .tex is a fault in the BUNDLE or in a package's own
+// dependencies, and telling a client "remove \usepackage{ts1cmr}" for a
+// missing font-definition file would send them deleting a line that does not
+// exist in their document.
+//
+// The plan for this task allowed for the possibility that the output would not
+// permit naming the package reliably, and said the honest answer would then be
+// the generic engine error. That is what "" means here, and it is returned for
+// every non-.sty failure and for the undefined-control-sequence capture next to
+// it in testdata -- a confidently wrong package name is worse than none,
+// because the client removes the wrong line and the job fails again.
+//
+// FIRST match, not last: tectonic prints the failure once as LaTeX's `!` line
+// and again in its own `error:` summary line, and both name the same file. The
+// first is where the compilation actually stopped.
+func tectonicMissingPackage(out []byte) string {
+	m := missingStyLine.FindSubmatch(out)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
 }

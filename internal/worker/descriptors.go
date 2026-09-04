@@ -447,6 +447,13 @@ func isTectonicTerminal(err error) bool {
 	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
 		return true
 	}
+	// A package the bundle does not have (TEX-03). Terminal for the same
+	// reason a compilation error is -- it is missing on every attempt -- but
+	// checked explicitly rather than left to the signature list below, because
+	// this is the one failure here that names something the client can change.
+	if errors.Is(err, convert.ErrTeXUnsupportedPackage) {
+		return true
+	}
 	// A timeout depends on load rather than on the document, so it stays
 	// transient by falling through to isTerminal -- the explicit opposite of
 	// the compilation-error branch below.
@@ -473,6 +480,18 @@ func isTectonicTerminal(err error) bool {
 // pair. 64-03 adds the unsupported-package branch, which is the one that names
 // what the client must change.
 func tectonicFailureCode(err error) (code, message string) {
+	// Named first, because it is the only branch here whose message tells the
+	// client what to DO. The name comes from the engine's own output
+	// (convert.tectonicMissingPackage, written against a captured run), never
+	// from a guess -- and when the output does not permit naming one reliably,
+	// the parser returns "" and this branch is not reached at all.
+	if pkg := convert.TeXUnsupportedPackageName(err); pkg != "" {
+		// The SAME code cmd/api returns when its bounded preamble scan catches
+		// this before the upload (errcode.UnsupportedPackage). One code space,
+		// D-03: which side saw it depends only on where \begin{document} fell
+		// in the client's file, which is not something they can act on.
+		return CodeUnsupportedPackage, "this deployment's TeX bundle does not provide the package " + pkg
+	}
 	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
 		// Deliberately NOT phrased as a fault in the document: it is not one,
 		// and a client told "your file could not be typeset" would go looking

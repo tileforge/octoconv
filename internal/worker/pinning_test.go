@@ -59,6 +59,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -1137,6 +1138,45 @@ func TestPinnedTectonicCompilationAndTimeoutAreOpposites(t *testing.T) {
 		}
 		if len(repo.markFailed) != 0 {
 			t.Fatalf("MarkFailed calls = %d, want 0 -- a transient failure is asynq's to retry", len(repo.markFailed))
+		}
+	})
+
+	// TEX-03. The refusal that NAMES something the client can change, pinned
+	// beside the deadline above rather than in a test of its own -- because the
+	// point is that they are opposites. A missing package reproduces exactly on
+	// every attempt; a deadline does not; and the pair is what a later change
+	// could collapse.
+	t.Run("unsupported package is terminal and names the package", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The exact shape TectonicConverter.Convert produces once its parser
+		// has read the engine's own "File `pgfplots.sty' not found" line --
+		// see internal/convert/testdata/tectonic/missing-package.txt for the
+		// captured run that line is taken from.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
+				convert.TeXUnsupportedPackageError("pgfplots"),
+				"! ! LaTeX Error: File `pgfplots.sty' not found.."))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a package the bundle does not have is missing on "+
+				"every attempt", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeUnsupportedPackage {
+			t.Fatalf("MarkFailed code = %q, want %q -- the SAME string cmd/api returns when its "+
+				"bounded scan catches this first (one code space, D-03)", got, CodeUnsupportedPackage)
+		}
+		if got := repo.markFailed[0].message; !strings.Contains(got, "pgfplots") {
+			t.Fatalf("MarkFailed message = %q, does not name the package -- the client is left "+
+				"removing \\usepackage lines one job at a time", got)
 		}
 	})
 
