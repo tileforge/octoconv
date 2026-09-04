@@ -35,7 +35,12 @@ BUNDLES_REPO="${BUNDLES_REPO:-${BUILD_DIR}/tectonic-texlive-bundles}"
 # upstream bundle spec this build is derived from; the hash is verified before
 # a single byte is unpacked.
 TEXMF_URL="https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/2023/texlive-20230313-texmf.tar.xz"
-TEXMF_XZ_SHA256="${TEXMF_XZ_SHA256:-}"   # set to enforce; empty prints the observed digest
+# Observed locally on 2026-09-04 by downloading the file and running shasum
+# against it -- never copied from a published checksum page, which is
+# Dockerfile.pandoc-worker's own rule. Override the variable to build against a
+# different TeXLive; leave it and a corrupted or substituted tarball stops the
+# build before a byte is unpacked.
+TEXMF_XZ_SHA256="${TEXMF_XZ_SHA256:-4c4dc77a025acaad90fb6140db2802cdb7ca7a9a2332b5e3d66aa77c43a81253}"
 TEXMF_TAR="texlive-20230313-texmf.tar"
 TEXMF_ROOT_DIR="texlive-20230313-texmf/texmf-dist"
 
@@ -55,7 +60,14 @@ say "the declared package set, read from Go rather than restated here"
 # The allowlist has ONE home. A copy in this script would be a second list to
 # forget, which is the defect the three-way test exists to catch -- so the
 # script asks Go for it instead of carrying its own.
-mapfile -t ALLOW < <(cd "$REPO_ROOT" && go run ./scripts/cmd/texpackages)
+# A `while read` loop rather than `mapfile`: mapfile is a bash 4 builtin and
+# macOS ships bash 3.2 as /bin/bash, so the mapfile version died on the first
+# real run of this script. A build script that only works on the maintainer's
+# shell is a build script that does not reproduce.
+ALLOW=()
+while IFS= read -r line; do
+  [ -n "$line" ] && ALLOW+=("$line")
+done < <(cd "$REPO_ROOT" && go run ./scripts/cmd/texpackages)
 [ "${#ALLOW[@]}" -gt 0 ] || die "the declared package set came back empty"
 printf '  %s\n' "${ALLOW[@]}"
 
@@ -94,14 +106,40 @@ present_count=$(wc -l < "$SPEC_DIR/present.txt" | tr -d ' ')
 [ "$present_count" -gt 0 ] || die "found no tex/latex package directories in $TEXMF_TAR -- the root_dir assumption is wrong"
 echo "  package directories present in the tree: $present_count"
 
-# Keep the allowlist AND the dependency closure the format build needs. A
-# package directory that is not a package -- base, latex-bin, the kernel -- must
-# never be excluded, and the floor measurement (evidence/64-01-floor-and-tikz-cost.txt)
-# is what says which those are.
-KEEP_ALWAYS=(base latexconfig l3kernel l3packages l3backend graphics tools amsfonts amscls)
-printf '%s\n' "${ALLOW[@]}" "${KEEP_ALWAYS[@]}" | sort -u > "$SPEC_DIR/keep.txt"
+# Keep the allowlist AND the dependency closure it resolves to. The closure is
+# a MEASURED file, not a list written here.
+#
+# A hand-written keep list of nine "obviously needed" directories produced a
+# 112 MB bundle that could not typeset a single document: graphics-cfg and
+# graphics-def were absent because "graphics" was named and they are separate
+# directories. Guessing dependency directories by name is whack-a-mole;
+# deploy/tectonic-bundle/keep-packages.txt records what the declared set
+# actually resolves to -- 18 declared packages need 67 directories.
+grep -v '^#' "$REPO_ROOT/deploy/tectonic-bundle/keep-packages.txt" | grep -v '^$' > "$SPEC_DIR/keep.txt"
+[ -s "$SPEC_DIR/keep.txt" ] || die "deploy/tectonic-bundle/keep-packages.txt is empty or all comments"
+printf '%s\n' "${ALLOW[@]}" >> "$SPEC_DIR/keep.txt"
+sort -u -o "$SPEC_DIR/keep.txt" "$SPEC_DIR/keep.txt"
 comm -23 "$SPEC_DIR/present.txt" "$SPEC_DIR/keep.txt" > "$SPEC_DIR/drop.txt"
-echo "  keeping $(wc -l < "$SPEC_DIR/keep.txt" | tr -d ' '), dropping $(wc -l < "$SPEC_DIR/drop.txt" | tr -d ' ')"
+echo "  latex packages: keeping $(wc -l < "$SPEC_DIR/keep.txt" | tr -d ' '), dropping $(wc -l < "$SPEC_DIR/drop.txt" | tr -d ' ')"
+
+# FONTS ARE THE BUNDLE, AND THE FIRST VERSION OF THIS SCRIPT MISSED THAT.
+#
+# Excluding 3093 of 3116 tex/latex package directories removed 87530 files and
+# produced a 1.4 GB .ttb -- against 2.69 GiB for the full bundle. Measured on
+# the result: fonts/ was 2.6 GB of a 2.8 GB tree (93%), tex/ was 109 MB (4%).
+# The exclusion effort had been aimed at the four percent.
+#
+# The families to keep are measured, in deploy/tectonic-bundle/keep-fonts.txt,
+# for the same reason the package closure is. A hand-written four-family list
+# omitted fontmapping, and the bundle then failed with "Font mapping
+# tex-text.tec not found" on the first document it was given.
+tar -tf "$TEXMF_TAR" 2>/dev/null \
+  | sed -n "s|^${TEXMF_ROOT_DIR}/fonts/[^/]*/[^/]*/\([^/]*\)/.*|\1|p" \
+  | sort -u > "$SPEC_DIR/fonts-present.txt"
+grep -v '^#' "$REPO_ROOT/deploy/tectonic-bundle/keep-fonts.txt" | grep -v '^$' | sort -u > "$SPEC_DIR/fonts-keep.txt"
+[ -s "$SPEC_DIR/fonts-keep.txt" ] || die "deploy/tectonic-bundle/keep-fonts.txt is empty or all comments"
+comm -23 "$SPEC_DIR/fonts-present.txt" "$SPEC_DIR/fonts-keep.txt" > "$SPEC_DIR/fonts-drop.txt"
+echo "  font families: keeping $(wc -l < "$SPEC_DIR/fonts-keep.txt" | tr -d ' '), dropping $(wc -l < "$SPEC_DIR/fonts-drop.txt" | tr -d ' ')"
 
 say "bundle spec, DERIVED from upstream's rather than authored here"
 # Copying upstream's texlive2023 spec and adding our exclusions to it is
@@ -112,24 +150,28 @@ say "bundle spec, DERIVED from upstream's rather than authored here"
 rm -rf "$SPEC_DIR/spec"
 cp -R "$BUNDLES_REPO/bundles/texlive2023" "$SPEC_DIR/spec"
 ln -sf "$BUILD_DIR/$TEXMF_TAR" "$SPEC_DIR/spec/$TEXMF_TAR"
-python3 "$REPO_ROOT/scripts/tectonic-bundle-ignore.py" "$SPEC_DIR/spec/bundle.toml" "$SPEC_DIR/drop.txt"
+python3 "$REPO_ROOT/scripts/tectonic-bundle-ignore.py" "$SPEC_DIR/spec/bundle.toml" "$SPEC_DIR/drop.txt" "$SPEC_DIR/fonts-drop.txt"
 
 say "select + pack"
 (cd "$BUNDLES_REPO/builder" && cargo run --release -- --build-dir "$BUILD_DIR/out" "$SPEC_DIR/spec/bundle.toml")
 
 CONTENT="$(find "$BUILD_DIR/out" -type d -name content -print -quit)"
-[ -n "$CONTENT" ] && [ -f "$CONTENT/FILES" ] || die "select produced no content/FILES -- nothing to write a manifest from"
+[ -n "$CONTENT" ] || die "select produced no content directory -- nothing to write a manifest from"
 
 say "manifest"
 # content/FILES is the builder's own record of what the bundle CONTAINS, which
 # is the only thing the three-way test can honestly compare the Go list to.
 # Reduced to sorted paths so a hash change in an unrelated file is not a
 # manifest diff.
+# doc/output.md documents a content/FILES listing, and this builder does not
+# write one -- those docs describe the older build.sh flow. The content tree
+# itself is the record, so the manifest is a walk of it. Verified by looking
+# rather than trusting the documentation.
 {
   echo "# Generated by scripts/tectonic-bundle-build.sh -- do not edit by hand."
-  echo "# Source: content/FILES from the select job."
+  echo "# Source: a walk of the select job's content/ tree."
   echo "# Bundle content hash: $(cat "$CONTENT/SHA256SUM" 2>/dev/null || echo unknown)"
-  cut -d" " -f1 "$CONTENT/FILES" | sort
+  (cd "$CONTENT" && find . -type f | sed "s|^\./||" | sort)
 } > "$REPO_ROOT/deploy/tectonic-bundle/MANIFEST.txt"
 echo "  $(grep -vc "^#" "$REPO_ROOT/deploy/tectonic-bundle/MANIFEST.txt") paths"
 

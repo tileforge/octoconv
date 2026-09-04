@@ -51,3 +51,49 @@ WHAT ELSE THE RUN ESTABLISHED
   * biblatex on backend=bibtex works without any biber binary present on the
     host -- 63-CONTEXT.md D-07's decision confirmed by running rather than by
     reading.
+
+================================================================
+THE BUNDLE, BUILT (2026-09-04). Three runs, two of them wrong.
+
+RUN 1 -- exclusions on tex/latex only
+  3116 package directories present, keeping 27, dropping 3093
+  files ignored 87530, .ttb = 1.4 GB
+  Against 2.69 GiB for the full bundle: a 48% cut, where the plan expected
+  "tens to low hundreds of MB".
+
+  Measured on the built tree to find out why:
+      fonts/   2.6 GB   93%
+      tex/     109 MB    4%   <- everything the 3093 exclusions touched
+      other     40 MB    1%
+  The exclusion effort had been aimed at four percent of the artifact. This is
+  the same fact the floor measurement above already contained -- 44 MiB
+  dominated by fonts -- read there as "packages are cheap" instead of as
+  "fonts are the bundle".
+
+RUN 2 -- font families excluded too, keep list written by hand
+  keeping 4 font families, dropping 566; .ttb = 112 MB
+  AND IT COULD NOT TYPESET ANYTHING:
+      Font mapping `tex-text.tec' ... not found
+      Package graphics Error: No driver specified.
+  graphics-cfg and graphics-def are separate directories from graphics, and
+  fontmapping is a separate directory from any font family. A keep list written
+  by name misses exactly the directories nobody thinks to name.
+
+RUN 3 -- keep lists DERIVED from what tectonic resolves
+  Compile the declared set against the full bundle, take the 451 file names
+  tectonic actually resolved, map each to its directory in the TeXLive tree:
+      67 package directories (18 declared packages need 67)
+      13 font directories
+  keeping 71 packages / 13 font families, dropping 3070 / 561
+  files ignored 200662, total files 9701
+  .ttb = 128 MB, sha256 f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff
+
+  VERIFIED BY TYPESETTING, which is what run 2 failed:
+      minimal article           -> exit 0, 2.5K PDF
+      whole declared set        -> exit 0, 8.5K PDF
+  (--untrusted, -b <the reduced bundle>, no network reachable for missing files
+  because a bundle is a closed file set.)
+
+  128 MB against 2.69 GiB: a 95% reduction, and inside the range the plan asked
+  for. The 16 MB it costs over run 2 is the difference between a small bundle
+  and a working one.

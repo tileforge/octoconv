@@ -24,14 +24,17 @@ import sys
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: tectonic-bundle-ignore.py <bundle.toml> <drop-list>", file=sys.stderr)
+    if len(sys.argv) != 4:
+        print("usage: tectonic-bundle-ignore.py <bundle.toml> <package-drops> <font-drops>",
+              file=sys.stderr)
         return 2
 
-    toml_path, drop_path = sys.argv[1], sys.argv[2]
+    toml_path, drop_path, font_drop_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
     with open(drop_path, encoding="utf-8") as fh:
         drops = [line.strip() for line in fh if line.strip()]
+    with open(font_drop_path, encoding="utf-8") as fh:
+        font_drops = [line.strip() for line in fh if line.strip()]
     if not drops:
         print("refusing to write an empty exclusion list: the drop list is empty, which would "
               "ship the whole of TeXLive", file=sys.stderr)
@@ -71,13 +74,19 @@ def main() -> int:
     ]
     for d in drops:
         lines.append("    %stex/latex/%s/.*%s," % (quote, re.escape(d), quote))
+    # Fonts are 93% of the tree; the package exclusions above are 4% of it.
+    # The path shape is fonts/<format>/<foundry>/<family>, so the family is the
+    # third component and the two above it vary.
+    for d in font_drops:
+        lines.append("    %sfonts/[^/]*/[^/]*/%s/.*%s," % (quote, re.escape(d), quote))
     lines.append("    # --- end generated")
     lines.append("")
 
     with open(toml_path, "w", encoding="utf-8") as fh:
         fh.write(src[:insert_at] + "\n".join(lines) + src[insert_at:])
 
-    print("  wrote %d generated ignore rules" % len(drops))
+    print("  wrote %d generated ignore rules (%d package, %d font)"
+          % (len(drops) + len(font_drops), len(drops), len(font_drops)))
     return 0
 
 
