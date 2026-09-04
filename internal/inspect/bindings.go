@@ -72,4 +72,12 @@ var RejectBindings = map[string]RejectBinding{
 	// opts_too_large: `opts` exceeds its configured size cap. Also a
 	// property of the request's opts field.
 	"opts_too_large": {ErrCode: errcode.PayloadTooLarge},
+	// unsupported_package (TEX-03): the .tex preamble loads a \usepackage
+	// this deployment's TeX bundle cannot resolve. An ERRCODE binding, not a
+	// finding: nothing about the client's file is risky or malformed -- the
+	// document is valid LaTeX that some other deployment, with a fuller
+	// bundle, would typeset. It is a fact about OUR configuration, and an
+	// inspect report that listed it among a file's findings would be telling
+	// the client their document is at fault.
+	"unsupported_package": {ErrCode: errcode.UnsupportedPackage},
 }

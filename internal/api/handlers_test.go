@@ -3715,6 +3715,155 @@ func TestCreateJob_AVOptsRejectedForInapplicablePair(t *testing.T) {
 // handleCreateJob's enqueue switch fails this test (via the missing table
 // row/accessor) rather than staying invisible except for a 500 in
 // production.
+// --- TEX-03: the tex-package admission gate --------------------------------
+
+// failOnUploadStorage fails the test if Upload is called AT ALL. A boolean
+// checked afterwards would prove the same thing one step later; this proves it
+// at the moment of the call, with the stack still pointing at the line that
+// made it.
+type failOnUploadStorage struct {
+	fakeStorage
+	t *testing.T
+}
+
+func (f *failOnUploadStorage) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	f.t.Fatalf("storage.Upload(%q) was called: the tex-package gate must refuse BEFORE any object is "+
+		"written, or a document this deployment cannot typeset costs S3 bytes and a quota slot to be "+
+		"told so", key)
+	return nil
+}
+
+// texDoc builds a .tex fixture loading exactly the given packages.
+func texDoc(packages ...string) []byte {
+	src := "\\documentclass{article}\n"
+	for _, p := range packages {
+		src += "\\usepackage{" + p + "}\n"
+	}
+	return []byte(src + "\\begin{document}\nhello\n\\end{document}\n")
+}
+
+// TestCreateJob_UnresolvablePackageRejectedBeforeUpload is TEX-03's central
+// assertion: the refusal happens before the storage write, carries the shared
+// code, and NAMES the package.
+//
+// pgfplots is not a hypothetical -- it was compiled against the real bundle in
+// the container and reported `! LaTeX Error: File \`pgfplots.sty' not found.`
+// (evidence/64-03-package-resolution.txt).
+func TestCreateJob_UnresolvablePackageRejectedBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &failOnUploadStorage{t: t}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc("amsmath", "pgfplots"))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, rec.Body.String())
+	}
+	if resp.Code != errcode.UnsupportedPackage {
+		t.Errorf("code = %q, want %q", resp.Code, errcode.UnsupportedPackage)
+	}
+	if !strings.Contains(resp.Error, "pgfplots") {
+		t.Errorf("message = %q, does not name the package -- the client is left bisecting their own "+
+			"preamble, one upload per attempt", resp.Error)
+	}
+	if repo.created != nil {
+		t.Error("a job row was created for a document that was refused")
+	}
+}
+
+// TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted is the half
+// that keeps the gate honest. All five packages below are OUTSIDE
+// convert.TeXPackages and all five compile against the shipped bundle; five of
+// the twelve measured are in pandoc's default LaTeX template, and fontenc is in
+// the paper 64-04 ran end to end.
+//
+// Gating on the declared set would fail HERE, which is the point: without this
+// test, "the gate works" and "the gate refuses valid documents" look identical.
+func TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted(t *testing.T) {
+	pandocTemplatePackages := []string{"lmodern", "fontenc", "inputenc", "textcomp", "microtype"}
+	for _, pkg := range pandocTemplatePackages {
+		if convert.TeXPackageSupported(pkg) {
+			t.Fatalf("%s is now in the DECLARED set -- this test no longer proves what it claims", pkg)
+		}
+	}
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	queue := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, queue)
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc(pandocTemplatePackages...))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 -- these five packages compile against the shipped bundle; "+
+			"body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.enqueuedTectonic == uuid.Nil {
+		t.Error("the job was accepted but never reached the tex queue")
+	}
+}
+
+// TestCreateJob_PreambleBeyondTheWindowIsAdmitted pins the ABSTENTION. A
+// preamble longer than the scan window is admitted, on purpose: the scan saw
+// only part of it, so the absence of a violation says nothing, and the worker
+// is the authority. 63-02's page-count gate is the precedent, and the failure
+// it exists to avoid is refusing a document on the strength of a partial read.
+func TestCreateJob_PreambleBeyondTheWindowIsAdmitted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n")
+	// Comment lines only -- no package is named, so nothing is hidden from the
+	// scanner except the \begin{document} that would have made it complete.
+	for b.Len() < convert.SniffWindowBytes+1024 {
+		b.WriteString("% padding so the preamble runs past the sniff window\n")
+	}
+	b.WriteString("\\usepackage{pgfplots}\n\\begin{document}\nx\n\\end{document}\n")
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	queue := &fakeQueue{}
+	resolver := newFakeResolver()
+	// A document whose preamble outruns the 1 MiB sniff window is, by
+	// construction, larger than newTestServer's own 1 MiB MaxUploadBytes --
+	// which would refuse it 413 for a reason that has nothing to do with this
+	// gate. Raised here so the 202 below is the abstention and not an accident
+	// of two limits happening to be the same number.
+	srv := NewServer(repo, store, queue, defaultFakePresetRepo(), defaultFakePresetAdmin(),
+		&fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(),
+		Config{MaxUploadBytes: 8 << 20})
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", []byte(b.String()))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: the gate must ABSTAIN when the preamble runs past its window, "+
+			"not refuse on a partial read; body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.enqueuedTectonic == uuid.Nil {
+		t.Error("the abstained job never reached the tex queue, so nothing would ever refuse it")
+	}
+}
+
 // TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() -- the one list
 // that grows with every engine class -- and asserts each value is KNOWN to
 // handleCreateJob's routing table. It exists because the table below can only

@@ -32,13 +32,22 @@ import (
 // historicalFailureCodes is what it cannot, but clients may still receive.
 // Both are documented; only the first is a list of possible outcomes.
 const (
-	CodeEngineError         = "engine_error"
-	CodeInvalidOptions      = "invalid_options"
-	CodeDurationExceeded    = "duration_exceeded"
-	CodeTimecodeOutOfRange  = "timecode_out_of_range"
-	CodeResolutionExceeded  = "resolution_exceeded"
-	CodeNoVideoStream       = "no_video_stream"
-	CodeTooManyPages        = "too_many_pages"
+	CodeEngineError        = "engine_error"
+	CodeInvalidOptions     = "invalid_options"
+	CodeDurationExceeded   = "duration_exceeded"
+	CodeTimecodeOutOfRange = "timecode_out_of_range"
+	CodeResolutionExceeded = "resolution_exceeded"
+	CodeNoVideoStream      = "no_video_stream"
+	CodeTooManyPages       = "too_many_pages"
+	// CodeUnsupportedPackage: the document loads a \usepackage this
+	// deployment's bundle cannot resolve. Shares its string with
+	// errcode.UnsupportedPackage -- ONE code space (D-03), the same as
+	// CodeInvalidOptions above -- because the API's bounded preamble scan is
+	// allowed to ABSTAIN, so the identical refusal arrives here for any
+	// document whose preamble ran past that window. Two codes for one failure
+	// would make where it was caught visible to the client, which is not
+	// something they can act on.
+	CodeUnsupportedPackage  = "unsupported_package"
 	CodePageTooLarge        = "page_too_large"
 	CodeImageTooLarge       = "image_too_large"
 	CodeUnsupportedLanguage = "unsupported_language"
@@ -70,6 +79,7 @@ var allFailureCodes = []string{
 	CodeUnsupportedTarget,
 	CodeInputTooLarge,
 	CodeReconcilerExhausted,
+	CodeUnsupportedPackage,
 }
 
 // CodeBornDigital is HISTORICAL as of Phase 59 and is not in allFailureCodes.

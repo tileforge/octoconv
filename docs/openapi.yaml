@@ -103,6 +103,7 @@ components:
             - quota_exceeded
             - rate_limited
             - inspect_busy
+            - unsupported_package
             - internal_error
       required: [error, code]
 
@@ -885,7 +886,13 @@ paths:
             format mismatch, unrecognized content, invalid/inapplicable
             opts, unknown or inactive preset, macro-carrying document,
             password-protected or legacy Office file, a declared
-            size/dimension over the configured limit.
+            size/dimension over the configured limit, or a .tex preamble
+            loading a package this deployment's TeX bundle cannot resolve
+            (code unsupported_package; the message names the package).
+            That last check reads a BOUNDED window of the preamble and
+            abstains when the preamble runs past it -- such a document is
+            accepted here and fails later with the SAME code in the job's
+            error_code, which is why the two vocabularies share it.
           content:
             application/json:
               schema:

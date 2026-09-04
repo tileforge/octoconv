@@ -63,6 +63,9 @@ exactly the trap Pitfall 12 documents.
 
 ## One code space (D-03)
 
+TWO codes are deliberately shared between the two tables below: `invalid_options` and
+`unsupported_package`.
+
 `invalid_options` is not a coincidence of naming — it is the SAME code, deliberately, in both
 tables below. A client sees the identical string `invalid_options` whether:
 
@@ -75,9 +78,18 @@ This is by design: from the client's point of view, "your options were rejected"
 class regardless of when the service discovered it. Do not "disambiguate" this by renaming
 either side — that would split one code space into two for no client-visible benefit.
 
+`unsupported_package` (Phase 64, TEX-03) is shared for a sharper reason: the same document will
+routinely reach one side or the other. `POST /v1/jobs` scans a BOUNDED window of a `.tex`
+preamble and refuses a package the deployment's bundle cannot resolve before writing anything to
+storage — but when the preamble runs past that window the API ABSTAINS and admits the file, and
+`tectonic-worker` refuses it instead, reading the engine's own "File \`x.sty\' not found". Which
+of the two sees it depends only on where `\begin{document}` falls in the client's own file.
+Reporting that as two different codes would tell the client something about our scan window
+instead of about their document. Both name the offending package in `message`.
+
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Sixteen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Seventeen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
@@ -97,12 +109,13 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 | `unauthorized` | 401 | Missing/malformed `Authorization` header, or the supplied API key is invalid | Supply a valid `Authorization: ApiKey <key>` header |
 | `quota_exceeded` | 429 | v1.12 admission-gate quota rejection — this exact string is already on the wire and frozen (ERRC-V2-01 predates this phase) | Respect the accompanying `Retry-After` header; this is distinct from `rate_limited` and never a client bug |
 | `rate_limited` | 429 | `internal/ratelimit` per-client or pre-auth IP rate limit — this exact string is already on the wire and frozen | Respect the accompanying `Retry-After` header; back off and retry later |
+| `unsupported_package` | 422 | The `.tex` preamble loads a `\usepackage` this deployment's TeX bundle cannot resolve; refused before the upload is stored. Same code string as the async `unsupported_package` below — one code space (D-03). NOT `invalid_request`: the request is well-formed and the document is valid LaTeX; it is this deployment's bundle that cannot serve it | `message` names the package: remove that `\usepackage`, or ask for the bundle to be extended. Do not retry unmodified. Note the API's scan is bounded, so a package hidden past the window (or behind `\input`/a macro) is refused later, in the job's `error_code`, with this same code |
 | `inspect_busy` | 429 | The service has exhausted its bounded concurrency budget for synchronous `inspect` parsing right now and refuses to accept another one immediately — the request is neither queued nor parsed (58-CONTEXT.md D-06, mechanism 2); distinct from `rate_limited` (own request rate) and `quota_exceeded` (own daily/concurrent job budget) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — do not reduce file size or alter the request, this is not a property of the request |
 | `internal_error` | 5xx | Anything the client cannot act on (unexpected server-side failure) | Retry later or escalate; do not attempt to parse `message` for a remediation |
 
 ## Asynchronous job-failure codes (`error_code`)
 
-Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Source:
+Fifteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D-04; `unsupported_package` was added by Phase 64 for the tex engine). Source:
 `internal/worker/descriptors.go` (`AllFailureCodes()`), with per-engine mapping logic in
 `internal/worker/worker.go` (`avFailureCode`, `ocrFailureCode`, `pandocFailureCode`,
 `audioFailureCode`) and the sole non-`internal/worker` emitter in
@@ -122,6 +135,7 @@ Fourteen codes, frozen unchanged during this phase's consolidation (D-04). Sourc
 | `unsupported_language` | OCR | The requested OCR language is not in the supported set |
 | `unsupported_target` | OCR, pandoc | The requested target format/conversion is not supported by that engine |
 | `input_too_large` | pandoc | Input exceeds the configured `PANDOC_MAX_INPUT_BYTES` cap, rejected before the subprocess runs |
+| `unsupported_package` | tectonic | The document loads a `\usepackage` the shipped TeX bundle cannot resolve. Extracted from the engine's own `! LaTeX Error: File \`x.sty\' not found.` line, so the failure names the package rather than the file. TERMINAL — a missing package is missing on every attempt. Same code string as the sync `unsupported_package` above — one code space (D-03), and the API's bounded preamble scan is exactly why both sides emit it |
 | `reconciler_exhausted` | `internal/reconciler` (NOT an engine worker) | The reconciler's stale-job recovery exhausted its retry budget for this job; the job is marked `failed` by the reconciler itself rather than by any engine's `process()` |
 
 ## Historical job-failure codes (no longer produced)
