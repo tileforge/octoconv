@@ -156,6 +156,39 @@ data:
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
   # document inside a 1Gi cgroup. Reasoned, not measured.
   PROBE_WORKER_CONCURRENCY: "1"
+  # TECTONIC (tex, latex -> pdf, Phase 64). 300s is a PLACEHOLDER, NOT a
+  # measurement, and every file in this build that carries the number says so
+  # -- .env.example, docker-compose.yml, cmd/tectonic-worker, cmd/api,
+  # internal/queue/client.go and internal/api/api.go. 64-05 measures it, which
+  # is why phase 64 is autonomous: false.
+  #
+  # Why it cannot be measured by analogy with the block above: probe's cost is
+  # per PAGE and a page is counted before the work starts. Tectonic's cost is
+  # per PASS, and the number of passes is a property of the DOCUMENT -- a file
+  # with cross-references and a bibliography reruns until it converges, which
+  # is exactly the shape of document people write LaTeX for. A corpus of
+  # single-pass documents would measure the wrong thing confidently.
+  #
+  # tectonicWorker.terminationGracePeriodSeconds (310s) is derived from it and
+  # moves with it. IN-02: read by every queue.NewClient()-constructing service
+  # for tectonicUniqueTTL's derivation -- a value that reaches one process and
+  # not another does not error, it silently produces duplicate processing.
+  TECTONIC_ENGINE_TIMEOUT: "300s"
+  TECTONIC_MAX_RETRY: "2"
+  # tectonic-worker-only, not read by queue.NewClient(). 1, with the heavy
+  # engines: a TeX interpreter plus a 128 MB bundle and its compiled format
+  # inside a 1Gi cgroup. Reasoned, not measured -- and the reasoning is memory,
+  # so throughput comes from KEDA scale-out (keda.tectonic) rather than from
+  # raising this.
+  TECTONIC_WORKER_CONCURRENCY: "1"
+  # TECTONIC_BUNDLE_PATH is deliberately ABSENT from this ConfigMap. It is
+  # baked into the image (Dockerfile.tectonic-worker) beside the bundle it
+  # names, and envFrom would override that image value for every pod -- with a
+  # path only the tex image's filesystem has. cmd/tectonic-worker stats it and
+  # exits fatally at startup, so the failure would be immediate and total
+  # rather than subtle; that is not a reason to arrange for it. DEBT-05's
+  # "every process carries the full surface" applies to knobs, not to paths
+  # into one image's filesystem.
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"

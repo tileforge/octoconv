@@ -53,7 +53,7 @@ OVERLAY_RENDER=$(mktemp)
 helm template octoconv "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET > "$DEFAULT_RENDER"
 helm template octoconv "$CHART" -f "$OVERLAY" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET > "$OVERLAY_RENDER"
 
-echo "### anti-vacuity gate: exactly 8 ScaledObjects must render in BOTH files, checked before any diff or isolation claim"
+echo "### anti-vacuity gate: exactly 9 ScaledObjects must render in BOTH files, checked before any diff or isolation claim"
 # `grep -c` exits 1 on zero matches, and under `set -euo pipefail` an
 # assignment whose command substitution fails kills the script. Zero
 # matches is EXACTLY the vacuity case this gate exists to report, so
@@ -62,14 +62,14 @@ echo "### anti-vacuity gate: exactly 8 ScaledObjects must render in BOTH files, 
 # down is already guarded against).
 DEFAULT_COUNT=$(grep -c '^kind: ScaledObject' "$DEFAULT_RENDER" || true)
 OVERLAY_COUNT=$(grep -c '^kind: ScaledObject' "$OVERLAY_RENDER" || true)
-if [ "$DEFAULT_COUNT" -ne 8 ] || [ "$OVERLAY_COUNT" -ne 8 ]; then
-  echo "FAIL: expected 8 ScaledObjects in both renders, got default=$DEFAULT_COUNT overlay=$OVERLAY_COUNT"
+if [ "$DEFAULT_COUNT" -ne 9 ] || [ "$OVERLAY_COUNT" -ne 9 ]; then
+  echo "FAIL: expected 9 ScaledObjects in both renders, got default=$DEFAULT_COUNT overlay=$OVERLAY_COUNT"
   exit 1
 fi
-echo "OK: 8 ScaledObjects in both renders"
+echo "OK: 9 ScaledObjects in both renders"
 
-echo "### per-class isolation (SC2): the seven non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small"
-for class in document html audio av ocr pandoc probe; do
+echo "### per-class isolation (SC2): the eight non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small"
+for class in document html audio av ocr pandoc probe tectonic; do
   d1=$(helm template octoconv "$CHART" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET --show-only "templates/scaledobject-${class}.yaml")
   d2=$(helm template octoconv "$CHART" -f "$OVERLAY" --set keda.enabled=true --set prometheus.enabled=true $SECRETS_SET --show-only "templates/scaledobject-${class}.yaml")
   if [ "$d1" != "$d2" ]; then

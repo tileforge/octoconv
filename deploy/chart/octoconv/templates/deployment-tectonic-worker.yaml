@@ -1,0 +1,114 @@
+{{/*
+tectonic-worker Deployment — tex engine class (latex -> pdf, the ninth class).
+
+TIER LABEL: pod template carries octoconv.io/tier: app (see
+deployment-worker.yaml header for the full rationale — identical here), so the
+octoconv-app-metrics NetworkPolicy selects it automatically and no
+networkpolicy edit is needed.
+
+GRACE DERIVATION: 300s TECTONIC_ENGINE_TIMEOUT (ConfigMap) -> 310s asynq
+ShutdownTimeout (cmd/tectonic-worker adds 10s) -> 310s
+terminationGracePeriodSeconds (values.yaml). Follows pandoc's and probe's
+own-derivation shape rather than the ENGINE_TIMEOUT+30s convention used by
+worker/document/audio/av/ocr.
+
+PROVISIONAL, and this comment is the place that is most likely to go stale:
+300s is a PLACEHOLDER, not a measurement. 64-05 measures it on a corpus with
+cross-references and a bibliography, because cost here is per PASS and tectonic
+reruns until it converges. When that lands, THIS derivation moves with it —
+the probe block two files over spent a phase describing 180s while the chart
+had read 600s since the measurement.
+
+NO BUNDLE ENV HERE, deliberately. TECTONIC_BUNDLE_PATH is baked into the image
+(Dockerfile.tectonic-worker) beside the bundle it points at, and the shared
+ConfigMap does not carry it: a ConfigMap key would override the image's own
+value for a path that only that image's filesystem has, and the failure mode is
+a worker that log.Fatalf's at startup on a path that never existed. The bundle
+and the variable naming it travel together or not at all.
+
+RESOURCE LIMITS: 2 CPU / 1Gi, the same cgroup as the other heavy engines. Not
+copied for symmetry — tectonic is a TeX interpreter running a document that is
+a PROGRAM, and the 128 MB bundle plus the compiled format are resident for the
+life of a job. It is the strongest reason any worker here has for a hard limit,
+which is also why the image runs as nobody.
+
+startupProbe: the same generous startup budget every other worker uses,
+keeping this pod out of CrashLoopBackOff before the metrics listener is up. It
+matters slightly more here: this worker stats the bundle and exits fatally if
+it is missing, so a genuinely misconfigured install must fail visibly rather
+than sit unready.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tectonic-worker
+  labels:
+    {{- include "octoconv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tectonic-worker
+spec:
+  {{- if and .Values.keda.enabled .Values.prometheus.enabled }}
+  # spec.replicas intentionally omitted when KEDA/HPA owns this Deployment
+  # (WR-02, Phase 28 D-10): rendering a fixed value here would make every
+  # `helm upgrade` reset a scaled-to-zero class back to this default,
+  # fighting the HPA. Once KEDA/HPA has taken ownership it manages
+  # spec.replicas directly via the scale subresource.
+  {{- else }}
+  replicas: {{ .Values.tectonicWorker.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "octoconv.selectorLabels" (dict "component" "tectonic-worker" "root" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "octoconv.labels" . | nindent 8 }}
+        {{- include "octoconv.selectorLabels" (dict "component" "tectonic-worker" "root" $) | nindent 8 }}
+        octoconv.io/tier: app
+    spec:
+      {{- include "octoconv.waitForDeps" . | nindent 6 }}
+      terminationGracePeriodSeconds: {{ .Values.tectonicWorker.terminationGracePeriodSeconds }}
+      containers:
+        - name: tectonic-worker
+          image: "{{ .Values.tectonicWorker.image.repository }}:{{ .Values.global.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.tectonicWorker.extraEnv }}
+          # extraEnv (Phase 28 D-08, mirrors documentWorker.extraEnv):
+          # explicit `env:` entries take precedence over envFrom-sourced
+          # values for the same key, which is how a load-proof overlay pins
+          # TECTONIC_WORKER_CONCURRENCY or a candidate TECTONIC_ENGINE_TIMEOUT
+          # without editing the ConfigMap. That is exactly how 64-05's
+          # measurement run will be driven. tectonicWorker.extraEnv is
+          # intentionally absent from values.yaml so this block renders
+          # nothing in production.
+          env:
+            {{- range $k, $v := .Values.tectonicWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            limits:
+              cpu: {{ .Values.tectonicWorker.resources.limits.cpu | quote }}
+              memory: {{ .Values.tectonicWorker.resources.limits.memory | quote }}

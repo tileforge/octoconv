@@ -174,6 +174,29 @@ probeWorker:
       cpu: "2"
       memory: "1Gi"
 
+tectonicWorker:
+  image:
+    repository: "octoconv-tectonic-worker"
+  replicas: 1
+  # 310s = TECTONIC_ENGINE_TIMEOUT (300s, ConfigMap) + 10s asynq
+  # ShutdownTimeout margin, following pandoc's and probe's own-derivation shape
+  # rather than the ENGINE_TIMEOUT+30s convention.
+  #
+  # DERIVED FROM A PLACEHOLDER, and this line is the honest form of that: 300s
+  # is not a measurement, 64-05 measures it, and this number moves in the same
+  # edit. Probe's equivalent comment described 180s for a phase after the chart
+  # had moved to 600s -- the failure mode of a derived number is that the
+  # derivation is not re-run, not that it was wrong when written.
+  terminationGracePeriodSeconds: 310
+  resources:
+    limits:
+      # 2 CPU / 1Gi, the heavy-engine cgroup. Not symmetry: this worker runs a
+      # TeX interpreter over a document that is a PROGRAM, with a 128 MB bundle
+      # and a compiled format resident for the life of a job. The same reason
+      # the image runs as nobody.
+      cpu: "2"
+      memory: "1Gi"
+
 chromiumWorker:
   image:
     repository: "octoconv-chromium-worker"
@@ -401,4 +424,29 @@ keda:
     # k8s 300s HPA default downscale stabilization. A pod mid-sanitize would
     # otherwise be a candidate for removal 300s in, with 300s of work left.
     scaleDownStabilizationSeconds: 900
+    minReplicaCount: 0
+  tectonic:
+    # DERIVED FROM THIS ENGINE'S OWN SHAPE, not copied from the class above it
+    # even where the numbers coincide -- copying a neighbour's knob is the same
+    # antipattern as copying its timeout (PITFALLS.md 7).
+    #
+    # threshold "2": a tex job is a seconds-scale compile on an ordinary
+    # document, so two queued jobs is the right hysteresis before paying a pod
+    # cold start -- and the cold start here is not free, since the pod's first
+    # act is to stat a 128 MB bundle. Same number pandoc and probe reached, by
+    # a different argument; recorded as its own argument so the day one of
+    # theirs changes this one does not follow it.
+    #
+    # maxReplicaCount 2: matches the memory story, not the queue -- two
+    # concurrent 1Gi TeX pods is what the current node budget carries.
+    threshold: "2"
+    maxReplicaCount: 2
+    pollingInterval: 10
+    cooldownPeriod: 90
+    # null, the FAST-engine profile. PROVISIONAL together with the timeout it
+    # is reasoned from: at the 300s placeholder, a tex job is well inside the
+    # k8s 300s HPA default and a 900s window would be cargo-cult. If 64-05
+    # measures a bound above 300s this becomes 900s in that same edit -- which
+    # is exactly what happened to probe when its placeholder was replaced.
+    scaleDownStabilizationSeconds: null
     minReplicaCount: 0

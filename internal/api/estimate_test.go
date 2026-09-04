@@ -359,6 +359,45 @@ var envExampleEngineVar = map[string]string{
 	convert.EngineOCR:      "OCR_ENGINE_TIMEOUT",
 	convert.EnginePandoc:   "PANDOC_ENGINE_TIMEOUT",
 	convert.EngineProbe:    "PROBE_ENGINE_TIMEOUT",
+	// The ninth engine joins this map on the day it is declared, not on the
+	// day it is measured. An engine left out of it is an engine whose
+	// .env.example provenance nothing compares against -- and the check below
+	// would go on reporting success for the eight it does cover, which is the
+	// shape of "a scan of nothing is clean".
+	convert.EngineTectonic: "TECTONIC_ENGINE_TIMEOUT",
+}
+
+// envExampleClaimsMeasured decides what .env.example's own prose says about
+// varName's provenance.
+//
+// Two substrings, read at two different SCOPES, and the difference is the
+// whole content of this function:
+//
+//   - the placeholder disclaimer is read from the var's OWN assignment line.
+//     Tectonic is why it is needed: its block says the number is a PLACEHOLDER
+//     and that 64-05 MEASURES it, an honest disclaimer that a bare "measur"
+//     test reads as the exact opposite of what it says.
+//   - the measurement claim is read from the whole paragraph, because that is
+//     where audio/av/ocr/pandoc/probe write their derivations.
+//
+// Reading the disclaimer at block scope instead was tried and was WRONG: av's
+// and pandoc's paragraphs both contain the word "placeholder" describing a
+// HISTORICAL one that a measurement replaced (14400s -> 90s, 90s -> 65s), and
+// scoping the check to the block reported both engines as unmeasured. A
+// paragraph may discuss a placeholder it no longer uses; a var's own line
+// states what the var IS.
+func envExampleClaimsMeasured(block, varName string) bool {
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, varName+"=") {
+			continue
+		}
+		own := strings.ToLower(trimmed)
+		if strings.Contains(own, "placeholder") || strings.Contains(own, "not measured") {
+			return false
+		}
+	}
+	return strings.Contains(strings.ToLower(block), "measur")
 }
 
 // envExampleBlockContaining returns the blank-line-delimited paragraph of
@@ -472,6 +511,19 @@ func TestEstimateSourceForMatchesEnvExampleDefaults(t *testing.T) {
 	}
 }
 
+// TestEveryEngineHasAnEnvExampleVar keeps the map above complete. Without it,
+// an engine added to convert.AllEngines() and forgotten here is simply not
+// checked by TestEstimateSourceMatchesEnvExampleProvenance, which then reports
+// success over a strictly smaller set than it claims.
+func TestEveryEngineHasAnEnvExampleVar(t *testing.T) {
+	for _, engine := range convert.AllEngines() {
+		if _, ok := envExampleEngineVar[engine]; !ok {
+			t.Errorf("engine %q has no envExampleEngineVar entry, so its .env.example provenance is "+
+				"compared against nothing", engine)
+		}
+	}
+}
+
 func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 	content, err := os.ReadFile("../../.env.example")
 	if err != nil {
@@ -484,7 +536,7 @@ func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 		if !found {
 			t.Fatalf("var %s (engine %s) not found in .env.example", varName, engine)
 		}
-		measured := strings.Contains(strings.ToLower(block), "measur")
+		measured := envExampleClaimsMeasured(block, varName)
 		wantMeasured := engineEstimateSource[engine] == EstimateSourceMeasured
 		if measured != wantMeasured {
 			t.Errorf("engine %s (%s): .env.example measured=%v, engineEstimateSource says measured=%v", engine, varName, measured, wantMeasured)
