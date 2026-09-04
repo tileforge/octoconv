@@ -24,14 +24,18 @@ edit, and the eight existing files are byte-unchanged by this one's arrival.
 That claim is not asserted here; it is diffed, before and after (SC5).
 
 SCALE-DOWN STABILIZATION: null, the FAST-engine profile (document/pandoc/
-html), NOT probe's or audio's 900s. The reason is the current bound: 300s is
-the placeholder TECTONIC_ENGINE_TIMEOUT, which sits at the k8s 300s HPA
-default with no margin to speak of — and a typical LaTeX document is a
-seconds-scale job, not a ten-minute one. This knob is therefore PROVISIONAL in
-the same breath as the timeout: if 64-05 measures a bound above 300s, this
-becomes 900s in the same edit, for the same reason probe's did when its
-placeholder was replaced by a measurement. Copying 900s now would be
-cargo-culting a justification that does not apply yet.
+html), NOT probe's or audio's 900s — and this survived the measurement rather
+than preceding it. 64-05 measured TECTONIC_ENGINE_TIMEOUT at 271s, which sits
+just inside the k8s 300s HPA default downscale stabilization, and the corpus
+says why: an ordinary document (no bibliography) is a 1-3 second job, and even
+745 pages with a bibliography is 180s. Probe's knob went the other way when
+ITS placeholder was measured — 180s became 600s and the profile became 900s —
+so this is the same test applied to a different engine, not the same answer
+copied.
+
+Revisit if the 2 MiB input ceiling is ever raised: the timeout is derived from
+a run at that ceiling, and a bound above 300s would put a pod mid-compile in
+the HPA's removal window.
 
 FALSY-0 GUARD (HARD-03/D-06 fix #1): gated on BOTH `hasKey` AND `ne ... nil`,
 not `hasKey` alone — a bare `hasKey` is true for the production default

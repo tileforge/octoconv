@@ -88,22 +88,27 @@ func main() {
 
 	// TECTONIC_ENGINE_TIMEOUT.
 	//
-	// 300s is a PLACEHOLDER, not a measurement, and nothing in this build may
-	// describe it otherwise (internal/queue/client.go says "marked as such
-	// everywhere it appears" -- this is one of the places). Plan 64-05
-	// measures it on a corpus that includes cross-references and a
-	// bibliography: cost here is per PASS and tectonic reruns until
-	// convergence, so a single-pass corpus would measure the wrong thing.
+	// MEASURED 2026-09-04 (scripts/tectonic-timeout-measure.sh, evidence under
+	// the phase directory), in THIS image at the chart's own 2 CPU / 1 GiB:
 	//
-	// Never copied from 65s/742s/744s/753s/600s -- copying a neighbour's
-	// timeout is a recorded project antipattern (PITFALLS.md Pitfall 7). A
-	// placeholder that happens to equal a neighbour's measured value is the
-	// same mistake wearing a disclaimer.
+	//	ceil(25.76 s/pass x 7 passes x 1.5) = 271s
+	//
+	// 25.76 s/pass is measured on a 2 143 444-byte document -- 2.2% ABOVE the
+	// 2 097 152-byte input ceiling (api.defaultMaxEngineBytes) -- rather than on
+	// a smaller one scaled up, so the per-pass cost covers marginally more work
+	// than this deployment will ever admit. 7 is the ENGINE's own rerun maximum
+	// -- it stops and says "stopping at 6 passes" -- so the bound holds for any
+	// document, not for the corpus.
+	// Deliberately not a p95: with pass counts of 2, 3 and 7 for the same body
+	// text, a percentile measures the corpus's mix of classes.
+	//
+	// Never copied from 65s/600s/742s/744s/753s -- copying a neighbour's
+	// timeout is a recorded project antipattern (PITFALLS.md Pitfall 7).
 	//
 	// This MUST read the same env var, with the same default, that
 	// internal/queue/client.go's NewClient reads for TectonicUniqueTTL's
 	// derivation (IN-02): a mismatch silently produces duplicate processing.
-	engineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 300*time.Second)
+	engineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second)
 
 	progressMinInterval := envDurationSeconds("PROGRESS_MIN_INTERVAL_SECONDS", 2*time.Second)
 	progressMinDeltaPct := envInt("PROGRESS_MIN_DELTA_PCT", 1)

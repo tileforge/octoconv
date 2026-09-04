@@ -6,18 +6,22 @@ deployment-worker.yaml header for the full rationale — identical here), so the
 octoconv-app-metrics NetworkPolicy selects it automatically and no
 networkpolicy edit is needed.
 
-GRACE DERIVATION: 300s TECTONIC_ENGINE_TIMEOUT (ConfigMap) -> 310s asynq
-ShutdownTimeout (cmd/tectonic-worker adds 10s) -> 310s
+GRACE DERIVATION: 271s TECTONIC_ENGINE_TIMEOUT (ConfigMap, MEASURED) -> 281s
+asynq ShutdownTimeout (cmd/tectonic-worker adds 10s) -> 281s
 terminationGracePeriodSeconds (values.yaml). Follows pandoc's and probe's
 own-derivation shape rather than the ENGINE_TIMEOUT+30s convention used by
 worker/document/audio/av/ocr.
 
-PROVISIONAL, and this comment is the place that is most likely to go stale:
-300s is a PLACEHOLDER, not a measurement. 64-05 measures it on a corpus with
-cross-references and a bibliography, because cost here is per PASS and tectonic
-reruns until it converges. When that lands, THIS derivation moves with it —
-the probe block two files over spent a phase describing 180s while the chart
-had read 600s since the measurement.
+MEASURED as of 64-05 (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5), with 7
+the engine's own rerun maximum and the per-pass cost taken on a document 2.2%
+LARGER than the 2 MiB input ceiling. This comment said "300s is a PLACEHOLDER" until that run landed,
+and was re-derived in the same edit as the number — deliberately, because the
+probe block two files over spent a whole phase describing 180s while the chart
+had read 600s since its own measurement.
+
+The ceiling is part of the number: cost is linear in source size, so the 2 MiB
+api.defaultMaxEngineBytes[EngineTectonic] is what makes 271s a bound rather
+than an arbitrary clock.
 
 NO BUNDLE ENV HERE, deliberately. TECTONIC_BUNDLE_PATH is baked into the image
 (Dockerfile.tectonic-worker) beside the bundle it points at, and the shared
@@ -77,8 +81,8 @@ spec:
           # explicit `env:` entries take precedence over envFrom-sourced
           # values for the same key, which is how a load-proof overlay pins
           # TECTONIC_WORKER_CONCURRENCY or a candidate TECTONIC_ENGINE_TIMEOUT
-          # without editing the ConfigMap. That is exactly how 64-05's
-          # measurement run will be driven. tectonicWorker.extraEnv is
+          # without editing the ConfigMap -- the way a re-measurement is driven
+          # against a real cluster. tectonicWorker.extraEnv is
           # intentionally absent from values.yaml so this block renders
           # nothing in production.
           env:

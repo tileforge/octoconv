@@ -435,14 +435,21 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	convert.EngineOCR:      744 * time.Second,
 	convert.EnginePandoc:   65 * time.Second,
 	convert.EngineProbe:    600 * time.Second,
-	// tectonic: 300s is a PLACEHOLDER, not a measurement, and this build says
-	// so wherever the number appears. Plan 64-05 measures it, which is why
-	// phase 64 is autonomous: false. It is present rather than absent because a
-	// missing key publishes estimated_max_seconds: 0 -- the exact defect probe
-	// shipped for months (PR #12) -- and it is deliberately NOT copied from a
-	// neighbour: 65s/300s/600s/742s/744s/753s are other engines' measurements,
-	// and copying one is this project's named antipattern (PITFALLS.md 7).
-	convert.EngineTectonic: 300 * time.Second,
+	// tectonic: MEASURED 2026-09-04 (scripts/tectonic-timeout-measure.sh; the
+	// run, the derivation and the full output are in .env.example and under the
+	// phase's evidence/). ceil(25.76 s/pass x 7 passes x 1.5) = 271s, where 7 is
+	// the ENGINE's own rerun maximum, not a corpus statistic, and 25.76 s/pass
+	// comes from a 2 143 444-byte document -- 2.2% ABOVE the 2 097 152-byte
+	// ceiling below, so the cost is taken on slightly more work than the ceiling
+	// admits. Conservative by that margin, and stated rather than rounded off:
+	// the live check that found this discrepancy is the reason it is written
+	// down.
+	//
+	// The two numbers are ONE decision: cost is linear in source size, so this
+	// timeout means nothing without defaultMaxEngineBytes[EngineTectonic]
+	// holding at 2 MiB. Changing either alone breaks the pair -- exactly what
+	// PROBE_MAX_PAGES=200 and PROBE_ENGINE_TIMEOUT=600s are to each other.
+	convert.EngineTectonic: 271 * time.Second,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into
@@ -472,10 +479,29 @@ var defaultMaxEngineBytes = map[string]int64{
 	convert.EngineOCR:      100 << 20,
 	convert.EnginePandoc:   100 << 20,
 	convert.EngineProbe:    50 << 20,
-	// tectonic: a LaTeX source is text; what makes such an upload large is the
-	// images it \includegraphics. 100 MiB matches every other document-shaped
-	// engine here. Not a measurement, and it does not pretend to be one.
-	convert.EngineTectonic: 100 << 20,
+	// tectonic: 2 MiB, and this one IS load-bearing rather than a policy
+	// default. It is the other half of TECTONIC_ENGINE_TIMEOUT above, in the
+	// same sense PROBE_MAX_PAGES=200 is the other half of probe's 600s.
+	//
+	// Cost here is linear in SOURCE SIZE at a fixed 7-pass ceiling, measured
+	// 2026-09-04 in the worker container at 2 CPU / 1 GiB: 1 071 659 bytes ->
+	// 373 pages -> 90.0s, and 2 143 444 bytes -> 745 pages -> 180.3s. That
+	// second document is 2.2% LARGER than this ceiling, so the timeout is
+	// derived from marginally more work than is admissible. At the 100 MiB this engine
+	// inherited from the document-shaped engines, a dense .tex is ~36 000 pages
+	// and ~9000s -- TEN TIMES the 900s RECONCILER_ACTIVE_STALE_AFTER cap, which
+	// would have the reconciler re-enqueue jobs that are still running. A
+	// timeout without this ceiling bounds nothing at all.
+	//
+	// 2 MiB is 745 pages of dense typeset output -- past any real document --
+	// and the timeout above is derived from a run AT this number, never
+	// extrapolated to it. Raising one without re-measuring the other breaks the
+	// pair: a higher ceiling admits work the timeout will kill, a lower one
+	// refuses work the timeout was sized for.
+	//
+	// NOT about memory, unlike pandoc's 3 MiB: the 2 MiB run peaked well inside
+	// the 1 GiB cgroup. This is a bound on TIME.
+	convert.EngineTectonic: 2 << 20,
 }
 
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {

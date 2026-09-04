@@ -173,12 +173,13 @@ func NewClient() (*Client, error) {
 	// number as measured.
 	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
 	tectonicMaxRetry := envInt("TECTONIC_MAX_RETRY", 2)
-	// TECTONIC_ENGINE_TIMEOUT's default is a PLACEHOLDER, marked as such
-	// everywhere it appears. Plan 64-05 measures it on a corpus that includes
-	// cross-references and a bibliography -- cost here is per PASS and tectonic
-	// reruns until convergence, so a single-pass corpus would measure the wrong
-	// thing. Nothing in this build may describe 300s as measured.
-	tectonicEngineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 300*time.Second)
+	// TECTONIC_ENGINE_TIMEOUT is MEASURED as of Phase 64 (2026-09-04):
+	// ceil(25.76 s/pass x 7 passes x 1.5) = 271s, with 7 the engine's own rerun
+	// maximum and the per-pass cost taken just above the 2 MiB input ceiling. It is read HERE for
+	// TectonicUniqueTTL's derivation, which happens in every enqueuing process
+	// (IN-02) -- a value that reaches one process and not another does not
+	// error, it silently produces duplicate processing.
+	tectonicEngineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,

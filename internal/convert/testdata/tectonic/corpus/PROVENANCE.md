@@ -40,10 +40,15 @@ slowest.
 
 ## The ceiling document is NOT committed
 
-`bib-bound.tex` — 1280 sections, ~2 MiB, 745 pages — is the document the shipped
-number is actually derived from, because a bound extrapolated to its ceiling is
-not measured at it. It is regenerated on demand rather than committed, since two
-2 MiB files would outweigh everything else in `testdata` combined:
+`bib-bound.tex` — 1280 sections, 2 143 444 bytes, 745 pages — is the document
+the shipped number is actually derived from, because a bound extrapolated to its
+ceiling is not measured at it. Note it is 2.2% LARGER than the 2 097 152-byte
+input ceiling the API enforces, so the timeout covers slightly more work than
+the service will accept. Found by POSTing this very file to the live API after
+the ceiling shipped and watching it come back 413.
+
+It is regenerated on demand rather than committed, since two 2 MiB files would
+outweigh everything else in `testdata` combined:
 
 ```
 python3 scripts/cmd/gen-tectonic-corpus.py <dir> --bound

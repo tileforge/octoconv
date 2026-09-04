@@ -117,16 +117,21 @@ var engineEstimateSource = map[string]EstimateSource{
 	// OCR walked (300s -> 744s) and pandoc after it (90s -> 65s); this entry
 	// flipped in the same commit as the number, never before.
 	convert.EngineProbe: EstimateSourceMeasured,
-	// tectonic: UNMEASURED as of plan 64-02. The measurement is 64-05's whole
-	// content and the reason phase 64 is autonomous: false -- cost here is per
-	// PASS and tectonic reruns until convergence, so a corpus without
-	// cross-references and a bibliography would measure single-pass documents
-	// and be wrong for exactly the ones people write LaTeX for.
-	//
-	// Marked Unmeasured rather than left absent: probe once shipped a
-	// placeholder without saying so, and cmd/api published
-	// estimated_max_seconds: 0 for months because the key was simply missing.
-	convert.EngineTectonic: EstimateSourceUnmeasured,
+	// tectonic (TECTONIC_ENGINE_TIMEOUT=271s): MEASURED 2026-09-04
+	// (scripts/tectonic-timeout-measure.sh, evidence committed under Phase 64).
+	// Cost is per PASS and the pass count is a property of the DOCUMENT --
+	// tectonic reruns until its references converge -- so the corpus had to
+	// carry cross-references and a bibliography, and it does: three classes at
+	// 2, 3 and 7 passes for the same body text. The bound is
+	// ceil(25.76 s/pass x 7 passes x 1.5), where 7 is the engine's OWN rerun
+	// ceiling and the per-pass cost is taken on a document 2.2% larger than the
+	// 2 MiB input ceiling -- rather than a wall-clock percentile, which with
+	// pass-driven cost would have measured the corpus's mix of classes rather
+	// than the engine.
+	// Same provisional-then-measured path OCR walked (300s -> 744s), pandoc
+	// after it (90s -> 65s) and probe after that (180s -> 600s); this entry
+	// flipped in the same commit as the number, never before.
+	convert.EngineTectonic: EstimateSourceMeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each
@@ -150,6 +155,14 @@ var engineMeasuredDefaultSeconds = map[string]int{
 	convert.EngineOCR:    744, // OCR_ENGINE_TIMEOUT=744s (.env.example): Phase 45 Plan 03, measured
 	convert.EnginePandoc: 65,  // PANDOC_ENGINE_TIMEOUT=65s (.env.example): Phase 49 Plan 03, measured
 	convert.EngineProbe:  600, // PROBE_ENGINE_TIMEOUT=600s (.env.example): Phase 60, measured 2026-09-02
+	// TECTONIC_ENGINE_TIMEOUT=271s (.env.example): Phase 64, measured 2026-09-04.
+	// Paired with a 2 MiB input ceiling (defaultMaxEngineBytes) -- an operator
+	// who raises that ceiling without re-measuring has changed what this number
+	// means, and estimateSourceFor will still report "measured" because the
+	// TIMEOUT is unchanged. That is a known edge of this map's design (it keys
+	// on the timeout alone) and is stated here rather than left to be
+	// rediscovered.
+	convert.EngineTectonic: 271,
 }
 
 // estimateSourceFor is the provenance THIS SPECIFIC offer carries -- not

@@ -436,14 +436,15 @@ func engineTimeoutsFromEnv() map[string]time.Duration {
 		// estimated_max_seconds: 0 while the worker used its own value.
 		// Caught in review (PR #12).
 		convert.EngineProbe: envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second),
-		// TECTONIC_ENGINE_TIMEOUT's 300s default is a PLACEHOLDER, not a
-		// measurement, and no file in this build may say otherwise -- 64-05
-		// measures it on a corpus with cross-references and a bibliography,
-		// because cost here is per PASS and tectonic reruns until it
-		// converges. The default matches cmd/tectonic-worker's and
-		// queue.NewClient's exactly (IN-02): a mismatch would not error, it
-		// would silently produce duplicate processing.
-		convert.EngineTectonic: envDuration("TECTONIC_ENGINE_TIMEOUT", 300*time.Second),
+		// TECTONIC_ENGINE_TIMEOUT is MEASURED as of Phase 64 (2026-09-04):
+		// ceil(25.76 s/pass x 7 passes x 1.5) = 271s, where 7 is the engine's
+		// own rerun maximum and the per-pass cost comes from a document 2.2%
+		// LARGER than the 2 MiB input ceiling. See .env.example for the run and
+		// the full derivation.
+		// The default matches cmd/tectonic-worker's and queue.NewClient's
+		// exactly (IN-02): a mismatch would not error, it would silently
+		// produce duplicate processing.
+		convert.EngineTectonic: envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second),
 	}
 }
 

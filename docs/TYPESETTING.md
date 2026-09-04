@@ -27,6 +27,30 @@ Specifically, it:
 - **does not accept user-supplied fonts.** The bundle's fonts are whatever the
   declared packages need.
 
+### Bounds
+
+Two numbers, and they are one decision rather than two.
+
+| bound | value | why |
+|---|---|---|
+| source size | **2 MiB** (2 097 152 bytes) | 745 pages of dense typeset output on the measured corpus — past any real document. A `.tex` above it is refused with `413` before it is stored. |
+| engine timeout | **271s** | `ceil(25.76 s/pass x 7 passes x 1.5)`, measured 2026-09-04 in the worker container at 2 CPU / 1 GiB, on a document 2.2% larger than the size bound. |
+
+The seven is the **engine's** own limit: tectonic reruns until cross-references
+and citations converge, then stops and says `stopping at 6 passes`. That is why
+the timeout is derived per PASS and not from a wall-clock percentile — a typical
+document costs two passes and a document with a bibliography costs seven, so a
+percentile would report the mix of documents somebody chose to measure.
+
+The two bounds cannot move independently. Cost is linear in source size, so the
+timeout is only a bound while the input is: at the 100 MiB this engine first
+inherited, a dense `.tex` would need roughly 9000s. Raising the size bound
+without re-running `scripts/tectonic-timeout-measure.sh` admits work the timeout
+will kill.
+
+A timeout is TRANSIENT — the job is retried — while a compilation error is
+terminal and is not retried at all.
+
 ## Supported packages
 
 <!-- This table is held equal to internal/convert/texpackages.go AND to the

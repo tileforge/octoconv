@@ -3715,6 +3715,46 @@ func TestCreateJob_AVOptsRejectedForInapplicablePair(t *testing.T) {
 // handleCreateJob's enqueue switch fails this test (via the missing table
 // row/accessor) rather than staying invisible except for a 500 in
 // production.
+// TestCreateJob_TectonicInputCeilingEnforced proves the 2 MiB ceiling is
+// actually enforced at admission, not merely declared in a map.
+//
+// It is the half of 64-05's decision that is easy to lose: the timeout is
+// visible in five files and an operator would notice it changing, while the
+// ceiling is one integer in defaultMaxEngineBytes. If it silently reverted to
+// the 100 MiB this engine inherited, nothing about the timeout would look
+// wrong -- and a 40 MiB .tex would be admitted, run for ten times the
+// reconciler cap, and be re-enqueued underneath itself.
+func TestCreateJob_TectonicInputCeilingEnforced(t *testing.T) {
+	store := &failOnUploadStorage{t: t}
+	srv, _ := newTestServer(&fakeRepo{}, store, &fakeQueue{})
+
+	// Just over the ceiling, built out of a legal preamble plus padding so the
+	// rejection cannot be blamed on the content check.
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n\\begin{document}\n")
+	for b.Len() < (2<<20)+4096 {
+		b.WriteString("padding that is entirely valid LaTeX body text.\n")
+	}
+	b.WriteString("\\end{document}\n")
+
+	body, ct := multipartBody(t, "book.tex", "pdf", []byte(b.String()))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	// The server's own global cap must not be what refuses this, or the test
+	// would pass without the per-engine ceiling existing at all.
+	srv = NewServer(&fakeRepo{}, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(),
+		&fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(),
+		Config{MaxUploadBytes: 64 << 20})
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 -- a .tex above the 2 MiB tex-engine ceiling must be refused "+
+			"before the upload; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // --- TEX-03: the tex-package admission gate --------------------------------
 
 // failOnUploadStorage fails the test if Upload is called AT ALL. A boolean
