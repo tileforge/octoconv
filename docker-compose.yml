@@ -1555,6 +1555,15 @@ services:
       # raising this. tectonic-worker-only, NOT read by queue.NewClient(), so
       # no IN-02 parity requirement.
       TECTONIC_WORKER_CONCURRENCY: "1"
+      # TECTONIC_MAX_OUTPUT_BYTES bounds the PRODUCED PDF. The 2 MiB input
+      # ceiling does not: TeX ships pages out and frees the memory as it goes,
+      # so 198 bytes of source measured 6 040 163 bytes of PDF in 16 seconds --
+      # about 1/17th of what fits in the 271s timeout. The largest LEGITIMATE
+      # output measured (2 MiB source, 745 pages) is 1 914 057 bytes, so 32 MiB
+      # is 17x a real document and still bounds the abusive case.
+      # tectonic-worker-only, like PROBE_MAX_PAGES: NOT read by
+      # queue.NewClient(), so no IN-02 parity requirement.
+      TECTONIC_MAX_OUTPUT_BYTES: "33554432"
       # IN-02 (Phase 64): queue.NewClient() derives tectonicUniqueTTL from
       # these two unconditionally in EVERY process -- identical across all
       # twelve queue.NewClient()-constructing services. 271s is MEASURED

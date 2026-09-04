@@ -53,6 +53,10 @@ const (
 	CodeUnsupportedLanguage = "unsupported_language"
 	CodeUnsupportedTarget   = "unsupported_target"
 	CodeInputTooLarge       = "input_too_large"
+	// CodeOutputTooLarge: the engine succeeded and the RESULT is too big. Only
+	// the tex engine can reach it -- it is the only one whose input is a
+	// program, so the only one where output size is not bounded by input size.
+	CodeOutputTooLarge      = "output_too_large"
 	CodeReconcilerExhausted = "reconciler_exhausted"
 )
 
@@ -78,6 +82,7 @@ var allFailureCodes = []string{
 	CodeUnsupportedLanguage,
 	CodeUnsupportedTarget,
 	CodeInputTooLarge,
+	CodeOutputTooLarge,
 	CodeReconcilerExhausted,
 	CodeUnsupportedPackage,
 }
@@ -493,6 +498,12 @@ func isTectonicTerminal(err error) bool {
 	if errors.Is(err, convert.ErrTeXBiberUnavailable) || errors.Is(err, convert.ErrTeXUndefinedReferences) {
 		return true
 	}
+	// Also a property of the document: the same source ships the same pages
+	// out on every attempt, so a retry re-does 271 seconds of work to produce
+	// the same oversized PDF and refuse it again.
+	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
+		return true
+	}
 	// A DEADLINE is terminal on this engine (see the descriptor's doc comment
 	// for the measurement that changed it): the document is a program, the
 	// timeout is 1.5x the largest admissible document's measured cost, and a
@@ -556,6 +567,12 @@ func tectonicFailureCode(err error) (code, message string) {
 		// The one failure here whose remedy is a single package option, so the
 		// message says the option rather than describing the situation.
 		return CodeEngineError, "biblatex requires the option backend=bibtex on this deployment: no biber is available"
+	}
+	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
+		// Its own code rather than engine_error: nothing about the document is
+		// malformed, and "could not be typeset" would send the client looking
+		// for a mistake that is not there. The remedy is fewer pages.
+		return CodeOutputTooLarge, "the typeset PDF is larger than this deployment accepts"
 	}
 	if errors.Is(err, convert.ErrTeXUndefinedReferences) {
 		return CodeEngineError, "the document has undefined references or citations; the PDF would show ?? in their place"

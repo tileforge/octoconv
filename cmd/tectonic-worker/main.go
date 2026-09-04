@@ -83,8 +83,15 @@ func main() {
 		// failures, each of which looks like a bad document.
 		log.Fatalf("tectonic bundle: %v (set %s)", err, convert.TectonicBundleEnv)
 	}
-	convert.Default.Replace(buildTectonicConverter(bundlePath))
+	// TECTONIC_MAX_OUTPUT_BYTES bounds the PRODUCED PDF, which the 2 MiB input
+	// ceiling does not: TeX ships pages out and frees the memory, so 198 bytes
+	// of source measured 6 040 163 bytes of PDF in 16 seconds. Read HERE and
+	// nowhere else, the way PROBE_MAX_PAGES is -- a second reader is a second
+	// value that can disagree.
+	maxOutputBytes := envInt64("TECTONIC_MAX_OUTPUT_BYTES", convert.DefaultTectonicMaxOutputBytes)
+	convert.Default.Replace(buildTectonicConverter(bundlePath, maxOutputBytes))
 	log.Printf("📚 %s=%s", convert.TectonicBundleEnv, bundlePath)
+	log.Printf("📄 TECTONIC_MAX_OUTPUT_BYTES=%d", maxOutputBytes)
 
 	// TECTONIC_ENGINE_TIMEOUT.
 	//
@@ -204,8 +211,17 @@ func main() {
 // convert.Default registry side effect. Mirrors cmd/ocr-worker's
 // buildOCRConverter exactly, for the reason stated there: a bound that is
 // configured and not plumbed is a bound that does not exist.
-func buildTectonicConverter(bundlePath string) convert.TectonicConverter {
-	return convert.TectonicConverter{BundlePath: bundlePath}
+func buildTectonicConverter(bundlePath string, maxOutputBytes int64) convert.TectonicConverter {
+	return convert.TectonicConverter{BundlePath: bundlePath, MaxOutputBytes: maxOutputBytes}
+}
+
+func envInt64(key string, def int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(firstField(v), 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 func envInt(key string, def int) int {

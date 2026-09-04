@@ -136,6 +136,7 @@ Fifteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D
 | `unsupported_target` | OCR, pandoc | The requested target format/conversion is not supported by that engine |
 | `input_too_large` | pandoc | Input exceeds the configured `PANDOC_MAX_INPUT_BYTES` cap, rejected before the subprocess runs |
 | `unsupported_package` | tectonic | The document loads a `\usepackage` the shipped TeX bundle cannot resolve. Extracted from the engine's own `! LaTeX Error: File \`x.sty\' not found.` line, so the failure names the package rather than the file. TERMINAL — a missing package is missing on every attempt. Same code string as the sync `unsupported_package` above — one code space (D-03), and the API's bounded preamble scan is exactly why both sides emit it |
+| `output_too_large` | tectonic | The document typeset successfully and the resulting PDF exceeds `TECTONIC_MAX_OUTPUT_BYTES` (32 MiB by default). The input ceiling does not bound this: TeX ships pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF in 16 seconds, while the largest legitimate document measured — 2 MiB of source, 745 pages — produces 1 914 057. TERMINAL: the same source ships the same pages on every attempt |
 | `reconciler_exhausted` | `internal/reconciler` (NOT an engine worker) | The reconciler's stale-job recovery exhausted its retry budget for this job; the job is marked `failed` by the reconciler itself rather than by any engine's `process()` |
 
 ## Historical job-failure codes (no longer produced)

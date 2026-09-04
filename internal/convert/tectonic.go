@@ -60,6 +60,10 @@ const DefaultTectonicBundlePath = "/opt/tectonic/octoconv-bundle.ttb"
 // process was not configured", not "the document fetched something".
 type TectonicConverter struct {
 	BundlePath string
+
+	// MaxOutputBytes bounds the PRODUCED PDF. Zero means
+	// DefaultTectonicMaxOutputBytes; see maxOutputBytes.
+	MaxOutputBytes int64
 }
 
 // Engine reports the ninth engine class.
@@ -246,8 +250,57 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	if info.Size() == 0 {
 		return fmt.Errorf("tectonic: engine exited 0 and produced an empty PDF")
 	}
+	// ... and the other end of the same question, which had no answer at all
+	// until round 2 of PR #16's review asked it. The INPUT ceiling is 2 MiB and
+	// bounds what the client is charged for; it does not bound what they get
+	// back, because TeX ships pages out and frees the memory as it goes:
+	//
+	//	198 bytes of .tex  ->  6 040 163 bytes of PDF in 16 seconds
+	//
+	// measured in the shipped image at 20 000 \newpage iterations, which is
+	// ~1/17th of what fits in the 271-second timeout. Against that, the largest
+	// LEGITIMATE output measured -- the 2 MiB, 745-page document 64-05's
+	// timeout is derived from -- is 1 914 057 bytes.
+	//
+	// Refused here rather than in the worker's upload path so the bytes never
+	// reach S3 and the failure names the reason.
+	if max := c.maxOutputBytes(); info.Size() > max {
+		return fmt.Errorf("tectonic: %w: %d bytes against a %d-byte ceiling",
+			ErrTeXOutputTooLarge, info.Size(), max)
+	}
 	return nil
 }
+
+// maxOutputBytes resolves the configured ceiling, defaulting rather than
+// failing open: a zero value here is the registry's zero-value converter
+// (converters.go registers one at init), and treating that as "no ceiling"
+// would put the bound back where it was -- absent.
+func (c TectonicConverter) maxOutputBytes() int64 {
+	if c.MaxOutputBytes > 0 {
+		return c.MaxOutputBytes
+	}
+	return DefaultTectonicMaxOutputBytes
+}
+
+// ErrTeXOutputTooLarge is a document that typeset successfully into a PDF too
+// big to accept. Terminal: rerunning the same source produces the same size.
+var ErrTeXOutputTooLarge = errors.New("tex: the produced PDF exceeds this deployment's size ceiling")
+
+// DefaultTectonicMaxOutputBytes is the ceiling on the produced PDF.
+//
+// 32 MiB, and both ends of that are measured rather than picked:
+//
+//	largest legitimate output  1 914 057 B  (2 MiB source, 745 pages, 7 passes)
+//	tiny \newpage loop         6 040 163 B  in 16s from 198 B of source
+//
+// The loop sustains ~378 KB/s of PDF, so the 271-second timeout leaves room for
+// roughly 100 MB -- from an input the client is charged 198 bytes for. 32 MiB
+// is 17x the largest real document measured at the input ceiling and caps the
+// abusive case at something a worker's disk and the bucket can hold.
+//
+// A ceiling, not a quota: repeated jobs still add up, which is what the
+// per-client quota gate is for.
+const DefaultTectonicMaxOutputBytes int64 = 32 << 20
 
 // ErrTeXBiberUnavailable is the document asking for a program this image does
 // not ship. biblatex's DEFAULT backend is biber, and no biber binary is in the

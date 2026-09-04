@@ -183,6 +183,11 @@ data:
   # a value that reaches one process and not another does not error, it silently
   # produces duplicate processing.
   TECTONIC_ENGINE_TIMEOUT: "271s"
+  # Bounds the PRODUCED PDF, which the 2 MiB input ceiling does not: TeX ships
+  # pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF
+  # in 16 seconds against 1 914 057 for the largest legitimate document (2 MiB,
+  # 745 pages). tectonic-worker-only; not an IN-02 var.
+  TECTONIC_MAX_OUTPUT_BYTES: "33554432"
   TECTONIC_MAX_RETRY: "2"
   # tectonic-worker-only, not read by queue.NewClient(). 1, with the heavy
   # engines: a TeX interpreter plus a 128 MB bundle and its compiled format
