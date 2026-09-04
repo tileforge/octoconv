@@ -389,3 +389,85 @@ func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOut
 		Body:        blob,
 	}}, nil
 }
+
+// TectonicDescriptor is the ninth engine class.
+//
+// TERMINAL/TRANSIENT, ARGUED RATHER THAN COPIED
+//
+// Phase 56's descriptors show polarity genuinely disagrees between neighbours
+// -- isAudioTerminal treats an ffmpeg-stage timeout as terminal and a
+// whisper-stage one as transient, isAVTerminal has the opposite shape -- so
+// copying a neighbour's classification is the same antipattern as copying its
+// timeout:
+//
+//   - LaTeX compilation error (undefined control sequence, unbalanced braces,
+//     a missing package) -- TERMINAL. Deterministic on the document. A retry
+//     re-runs the same engine over the same bytes and reaches the same verdict;
+//     spending the budget on it buys three identical failures.
+//   - Engine TIMEOUT -- TRANSIENT. The one failure here that depends on
+//     something other than the input: how loaded the box is. Same polarity as
+//     OCR and probe, arrived at independently and for the same reason -- all
+//     three wrap an external engine whose worst case is load rather than
+//     content. NOTE this is only true while the timeout is generous relative to
+//     a document's real pass count; if 64-05's measurement shows otherwise, the
+//     honest response is a bound on the input, not flipping this branch.
+//   - No bundle configured -- TERMINAL, and NOT a document failure. The
+//     converter refuses rather than falling back to a network fetch, so this
+//     means the process is misconfigured. Retrying a misconfiguration is
+//     pointless, and the message says which knob.
+//
+// Everything else falls through to isTerminal's shared storage/input
+// classification.
+var TectonicDescriptor = EngineDescriptor{
+	Engine:      convert.EngineTectonic,
+	Type:        queue.TypeTectonicConvert,
+	IsTerminal:  isTectonicTerminal,
+	FailureCode: tectonicFailureCode,
+}
+
+// isTectonicTerminal classifies a typesetting failure. See TectonicDescriptor's
+// doc comment for the argument behind each branch; this is only the mechanism.
+func isTectonicTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A misconfigured process, not a bad document. Deliberately checked BEFORE
+	// the shared classifier, which knows nothing about bundles and would let
+	// this retry forever.
+	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
+		return true
+	}
+	// A timeout depends on load rather than on the document, so it stays
+	// transient by falling through to isTerminal -- the explicit opposite of
+	// the compilation-error branch below.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return isTerminal(err)
+	}
+	// The engine ran and refused the document. XeTeX's own wording; captured
+	// from real output rather than predicted (64-02 evidence).
+	msg := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"unrecoverable error",
+		"latex error",
+		"emergency stop",
+		"produced an empty pdf",
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return isTerminal(err)
+}
+
+// tectonicFailureCode maps a terminal typesetting error to the client-facing
+// pair. 64-03 adds the unsupported-package branch, which is the one that names
+// what the client must change.
+func tectonicFailureCode(err error) (code, message string) {
+	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
+		// Deliberately NOT phrased as a fault in the document: it is not one,
+		// and a client told "your file could not be typeset" would go looking
+		// in the wrong place.
+		return CodeEngineError, "the typesetting engine is not configured on this deployment"
+	}
+	return CodeEngineError, "the document could not be typeset"
+}

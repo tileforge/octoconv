@@ -30,6 +30,9 @@ const (
 	// serves sanitize; calling it "probe:convert" for symmetry would put a
 	// false operation name into every asynq dashboard and log line.
 	TypeProbeSanitize = "probe:sanitize"
+	// TypeTectonicConvert is the ninth class and back to the "<engine>:
+	// <operation>" convention probe departed from: tectonic serves convert.
+	TypeTectonicConvert = "tectonic:convert"
 )
 
 // Queue names. asynq routes tasks to a queue per engine class so workers and
@@ -49,6 +52,7 @@ const (
 	QueueOCR      = convert.EngineOCR
 	QueuePandoc   = convert.EnginePandoc
 	QueueProbe    = convert.EngineProbe
+	QueueTectonic = convert.EngineTectonic
 )
 
 // ConvertPayload is the task payload. It carries only the job id — all task
@@ -541,6 +545,8 @@ func RetryDelayFunc(n int, e error, t *asynq.Task) time.Duration {
 		return PandocRetryDelay(n, e, t)
 	case TypeProbeSanitize:
 		return ProbeRetryDelay(n, e, t)
+	case TypeTectonicConvert:
+		return TectonicRetryDelay(n, e, t)
 	default:
 		return asynq.DefaultRetryDelayFunc(n, e, t)
 	}
@@ -846,7 +852,7 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 // convert.go's Engine* constants (or vice versa). Plan 04 rewires
 // cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe}
+	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic}
 }
 
 // probeBackoffSum sums ProbeRetryDelay(i) for i in [0, maxRetry).
@@ -969,4 +975,49 @@ func RedisOpt() (asynq.RedisClientOpt, error) {
 		return asynq.RedisClientOpt{}, fmt.Errorf("REDIS_ADDR must be set")
 	}
 	return asynq.RedisClientOpt{Addr: addr}, nil
+}
+
+// TectonicRetryDelay is the tex engine's backoff. Identical in shape to
+// ProbeRetryDelay and PandocRetryDelay -- and identical is the right answer
+// here, unlike a TIMEOUT, which must never be copied between engines
+// (PITFALLS.md Pitfall 7). A backoff schedule expresses how long to wait
+// before trying again; nothing about typesetting makes that different from
+// sanitizing.
+func TectonicRetryDelay(n int, e error, t *asynq.Task) time.Duration {
+	return ProbeRetryDelay(n, e, t)
+}
+
+// tectonicBackoffSum sums TectonicRetryDelay(i) for i in [0, maxRetry).
+func tectonicBackoffSum(maxRetry int) time.Duration {
+	var sum time.Duration
+	for i := 0; i < maxRetry; i++ {
+		sum += TectonicRetryDelay(i, nil, nil)
+	}
+	return sum
+}
+
+// TectonicUniqueTTL derives the per-job asynq.Unique lock TTL from the real
+// retry budget and the per-attempt bound, mirroring ProbeUniqueTTL exactly.
+//
+// IN-02 applies: this must be computed from the SAME TECTONIC_ENGINE_TIMEOUT
+// every queue.NewClient()-constructing process reads, because the derivation
+// happens in each enqueuing process and a mismatch silently produces duplicate
+// processing rather than an error.
+func TectonicUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
+	return time.Duration(maxRetry+1)*engineTimeout + tectonicBackoffSum(maxRetry) + uniqueTTLSafetyMargin
+}
+
+// NewTectonicConvertTask builds an asynq task for a single latex->pdf job,
+// routed to the tectonic queue. Reuses ConvertPayload: the payload carries only
+// the job id and every detail is re-read from Postgres, the system of record.
+func NewTectonicConvertTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Duration) (*asynq.Task, error) {
+	b, err := json.Marshal(ConvertPayload{JobID: jobID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal convert payload: %w", err)
+	}
+	return asynq.NewTask(TypeTectonicConvert, b,
+		asynq.Queue(QueueTectonic),
+		asynq.MaxRetry(maxRetry),
+		asynq.Unique(uniqueTTL),
+	), nil
 }

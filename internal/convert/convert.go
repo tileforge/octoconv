@@ -35,17 +35,13 @@ const (
 	// the only engine whose input is a PROGRAM rather than a document -- see
 	// tectonic.go for what that costs and how it is bounded.
 	//
-	// DELIBERATELY NOT IN AllEngines() YET (plan 64-02; 64-04 adds it).
-	//
-	// AllEngines is the vocabulary a dozen contracts key off: every member must
-	// have a queue, a reconciler sweep route, a per-engine upload ceiling, a
-	// published timeout and an estimate source. Adding tectonic here before
-	// 64-04 wires the queue made nine of those fail at once -- and the failures
-	// were right. Worse than the red suite: registering the converter ALSO
-	// advertised latex -> pdf on GET /v1/formats, so a client could have posted
-	// a job that no worker consumes. That is the exact defect phase 60 shipped
-	// with sanitize -- pairs advertised and unreachable -- caught here by the
-	// contracts rather than by review.
+	// Added to AllEngines() only once the queue, the worker and the dispatch
+	// existed. Adding it earlier broke nine contracts at once -- every member
+	// of this list must have a queue, a reconciler sweep route, an upload
+	// ceiling, a published timeout and an estimate source -- and, worse,
+	// advertised latex -> pdf on GET /v1/formats with nothing to consume it.
+	// That is the defect phase 60 shipped with sanitize; here the contracts
+	// caught it in minutes.
 	EngineTectonic = "tectonic"
 )
 
@@ -77,9 +73,9 @@ const OperationConvert = "convert"
 // that a registry fact rather than a convention the handler has to remember.
 const OperationSanitize = "sanitize"
 
-// AllEngines returns the eight engine classes in a fixed, documented order --
+// AllEngines returns the nine engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
-// EnginePandoc, EngineProbe. The order is stable because callers (cmd/manage-clients) use
+// EnginePandoc, EngineProbe, EngineTectonic. The order is stable because callers (cmd/manage-clients) use
 // it to render operator-facing error text; a fresh slice is constructed on
 // every call so a caller can never mutate the source of truth through the
 // returned slice. Adding an eighth engine class means adding it here as well
@@ -95,6 +91,7 @@ func AllEngines() []string {
 		EngineOCR,
 		EnginePandoc,
 		EngineProbe,
+		EngineTectonic,
 	}
 }
 

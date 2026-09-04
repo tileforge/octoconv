@@ -219,6 +219,7 @@ type fakeQueue struct {
 	enqueuedOCR      uuid.UUID
 	enqueuedPandoc   uuid.UUID
 	enqueuedProbe    uuid.UUID
+	enqueuedTectonic uuid.UUID
 	// enqueueCalls counts every Enqueue* invocation across all seven engine
 	// methods, so a quota test can assert "never enqueued" with an exact
 	// integer (52-04).
@@ -269,6 +270,12 @@ func (f *fakeQueue) EnqueuePandocConvert(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeQueue) EnqueueProbeSanitize(_ context.Context, id uuid.UUID) error {
 	f.enqueuedProbe = id
+	f.enqueueCalls++
+	return nil
+}
+
+func (f *fakeQueue) EnqueueTectonicConvert(_ context.Context, id uuid.UUID) error {
+	f.enqueuedTectonic = id
 	f.enqueueCalls++
 	return nil
 }

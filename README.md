@@ -268,7 +268,7 @@ entirely.
        internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
        the count is deliberately not written out, so a new engine cannot make this
        paragraph false from a commit that never touches the README. -->
-  `image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`
+  `image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`
  `clear-limit` and `show-limits` deliberately do not validate the engine —
   a row written before this check existed must still be listable and removable through the
   CLI.

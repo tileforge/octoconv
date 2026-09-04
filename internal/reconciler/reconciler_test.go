@@ -159,6 +159,8 @@ type fakeEnqueuer struct {
 	pandocCalls        []uuid.UUID
 	enqueueProbeErr    error
 	probeCalls         []uuid.UUID
+	enqueueTectonicErr error
+	tectonicCalls      []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -222,6 +224,13 @@ func (f *fakeEnqueuer) EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) e
 	defer f.mu.Unlock()
 	f.probeCalls = append(f.probeCalls, id)
 	return f.enqueueProbeErr
+}
+
+func (f *fakeEnqueuer) EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tectonicCalls = append(f.tectonicCalls, id)
+	return f.enqueueTectonicErr
 }
 
 // imageCallIDs returns a locked snapshot copy of imageCalls — used by the
@@ -296,6 +305,12 @@ func (f *fakeEnqueuer) probeCallIDs() []uuid.UUID {
 	out := make([]uuid.UUID, len(f.probeCalls))
 	copy(out, f.probeCalls)
 	return out
+}
+
+func (f *fakeEnqueuer) tectonicCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uuid.UUID(nil), f.tectonicCalls...)
 }
 
 // pandocCallIDs returns a locked snapshot copy of pandocCalls.
@@ -581,6 +596,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 		convert.EngineOCR:      (*fakeEnqueuer).ocrCallIDs,
 		convert.EnginePandoc:   (*fakeEnqueuer).pandocCallIDs,
 		convert.EngineProbe:    (*fakeEnqueuer).probeCallIDs,
+		convert.EngineTectonic: (*fakeEnqueuer).tectonicCallIDs,
 	}
 
 	var cases []struct {

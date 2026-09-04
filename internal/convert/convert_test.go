@@ -190,11 +190,15 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 		EngineOCR:      true,
 		EnginePandoc:   true,
 		EngineProbe:    true,
+		EngineTectonic: true,
 	}
 
 	got := AllEngines()
-	if len(got) != 8 {
-		t.Fatalf("len(AllEngines()) = %d, want exactly 8", len(got))
+	// Spelled out rather than derived from want: deriving it would make the
+	// assertion vacuous, and the point is that adding an engine class is a
+	// decision taken in two places at once. Nine as of Phase 64 (tex).
+	if len(got) != 9 {
+		t.Fatalf("len(AllEngines()) = %d, want exactly 9", len(got))
 	}
 
 	seen := make(map[string]int, len(got))

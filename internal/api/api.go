@@ -127,6 +127,7 @@ type Enqueuer interface {
 	EnqueueOCRConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
+	EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -434,6 +435,14 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	convert.EngineOCR:      744 * time.Second,
 	convert.EnginePandoc:   65 * time.Second,
 	convert.EngineProbe:    600 * time.Second,
+	// tectonic: 300s is a PLACEHOLDER, not a measurement, and this build says
+	// so wherever the number appears. Plan 64-05 measures it, which is why
+	// phase 64 is autonomous: false. It is present rather than absent because a
+	// missing key publishes estimated_max_seconds: 0 -- the exact defect probe
+	// shipped for months (PR #12) -- and it is deliberately NOT copied from a
+	// neighbour: 65s/300s/600s/742s/744s/753s are other engines' measurements,
+	// and copying one is this project's named antipattern (PITFALLS.md 7).
+	convert.EngineTectonic: 300 * time.Second,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into
@@ -463,6 +472,10 @@ var defaultMaxEngineBytes = map[string]int64{
 	convert.EngineOCR:      100 << 20,
 	convert.EnginePandoc:   100 << 20,
 	convert.EngineProbe:    50 << 20,
+	// tectonic: a LaTeX source is text; what makes such an upload large is the
+	// images it \includegraphics. 100 MiB matches every other document-shaped
+	// engine here. Not a measurement, and it does not pretend to be one.
+	convert.EngineTectonic: 100 << 20,
 }
 
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {

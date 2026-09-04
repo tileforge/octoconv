@@ -90,6 +90,7 @@ type enqueuer interface {
 	EnqueueOCRConvert(ctx context.Context, id uuid.UUID) error
 	EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
+	EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error
 }
 
 // Sweeper periodically scans for stale jobs and recovers or exhausts them.
@@ -381,6 +382,14 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// the client's quota was charged, and nothing would ever run it.
 			// Caught in review (PR #12), not by a test.
 			enqueueErr = s.enq.EnqueueProbeSanitize(ctx, j.ID)
+		case convert.EngineTectonic:
+			// The ninth class, and the same lesson one engine over: without
+			// this case a queued latex job whose initial enqueue failed would
+			// take the unroutable_engine branch on every sweep and stay queued
+			// forever, with the row present and the quota charged. That is why
+			// TestSweepRoutesEveryEngineConstant exists -- it failed the moment
+			// tectonic joined AllEngines, which is the whole point of it.
+			enqueueErr = s.enq.EnqueueTectonicConvert(ctx, j.ID)
 		default:
 			// Fail closed (T-10-03): cad/archive are out of scope this
 			// milestone and a corrupted/unrecognized engine value must never

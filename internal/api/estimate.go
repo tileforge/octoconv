@@ -117,6 +117,16 @@ var engineEstimateSource = map[string]EstimateSource{
 	// OCR walked (300s -> 744s) and pandoc after it (90s -> 65s); this entry
 	// flipped in the same commit as the number, never before.
 	convert.EngineProbe: EstimateSourceMeasured,
+	// tectonic: UNMEASURED as of plan 64-02. The measurement is 64-05's whole
+	// content and the reason phase 64 is autonomous: false -- cost here is per
+	// PASS and tectonic reruns until convergence, so a corpus without
+	// cross-references and a bibliography would measure single-pass documents
+	// and be wrong for exactly the ones people write LaTeX for.
+	//
+	// Marked Unmeasured rather than left absent: probe once shipped a
+	// placeholder without saying so, and cmd/api published
+	// estimated_max_seconds: 0 for months because the key was simply missing.
+	convert.EngineTectonic: EstimateSourceUnmeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each
