@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
 status: in_progress
-last_updated: "2026-09-02T16:30:00.000Z"
-last_activity: 2026-09-02
+last_updated: "2026-09-04T16:00:00.000Z"
+last_activity: 2026-09-04
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 2
-  completed_plans: 2
-  percent: 66
-  note: "phase 63 closed 2026-09-03 (d13e8a9); phase 64 planned, not started"
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
+  percent: 100
+  note: "phase 64 complete (64-01..64-05); v1.14's three phases all done, nothing merged to main yet"
 ---
 
 # Project State
@@ -25,15 +25,67 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 64 — Tectonic, Ninth Engine Class (PLANNED, ready to execute)
-Plan: 64-01..64-05 planned; phase 63 CLOSED (63-01 PR #14, 63-02 PR #15, both merged)
-Status: v1.14 is two phases of three done. Phase 63 merged as d13e8a9 after seven review rounds.
+Phase: 64 — Tectonic, Ninth Engine Class (COMPLETE, 64-01..64-05)
+Plan: all five done; phases 62 and 63 merged earlier (PR #14, PR #15)
+Status: v1.14 is three phases of three. The tex engine is closed end to end on
+live infrastructure and its timeout is measured, not chosen.
 
-63-02 shipped the probe page ceiling in the WORKER (PROBE_MAX_PAGES=200, pdfinfo before the first ghostscript pass, terminal). It did NOT ship PROBE-01's admission gate: that was built and removed on evidence — seven ways a valid document was rejected with 422, three resource defects on a route with no concurrency semaphore, and finally the finding that a PDF page tree is a tree, so the gate abstained on exactly the long documents it existed to refuse. PROBE-01 and ROADMAP SC4 were reworded; the removed work is carried by .planning/todos/pending/2026-09-03-pdf-page-count-tokenizer.md.
+PR #16 is OPEN (https://github.com/paderinandrey/octoconv/pull/16), 30 commits
+off main, mergeable. Nothing from phase 64 is on main yet.
 
-The phase's most transferable measurement is not the ceiling: twenty-two inversions were written and eight passed against deliberately broken code on the first attempt, every time because the test was wrong rather than the fix.
+CODEX ROUND 1 ADDRESSED (2026-09-04): 7 findings, 2xP1. Six confirmed by
+running before any fix; one premise refuted with a real gap behind it.
 
-Next: execute phase 64 (tectonic, latex → pdf). Waves 01 → 02 → (03 ‖ 04) → 05; the last is autonomous: false because TECTONIC_ENGINE_TIMEOUT is measured by the operator on a corpus decided beforehand.
+- P1 the tex image could not be built from a fresh checkout at all (the bundle
+  is gitignored; the fetch was prose in a Dockerfile comment). Now a script CI
+  runs before bake.
+- P1 a tex timeout was retried 3x271s of a concurrency-1 worker. Now terminal:
+  the input is a program, and 64-05 measured the largest admissible document at
+  180.3s against a 271s bound. My own first probe was WRONG (a 1e8-iteration
+  loop completed in 66s and proved nothing).
+- P2 the scanner refused a document that compiles (\usepackage inside a false
+  conditional). Now abstains; the regression test then found a bug in the fix.
+- P2 fontspec was admitted though the docs promise it is unavailable.
+- P2 a bare \usepackage{biblatex} failed on the missing biber with no
+  actionable message.
+- P2 persisted opts were silently ignored on this engine alone.
+- P2 non-convergence: REFUTED. 64-04's paper prints "stopping at 6 passes" and
+  resolves everything. The real gap next to it -- undefined references
+  published silently -- is fixed, keyed on LaTeX's own warning and scoped to
+  the final pass.
+
+TEX-01..TEX-05 are all closed. Two of them were reworded or qualified on
+evidence rather than ticked:
+
+- TEX-03's gate refuses what the BUNDLE cannot resolve, not what the declared
+  set omits. Gating on the declared eighteen was measured to refuse twelve
+  packages that compile — five in pandoc's default template, one in the paper
+  64-04 itself ran. Same shape as PROBE-01's rewording in 63-02, and confirmed
+  with the operator before it was built.
+- TEX-01 is met, with a named limitation: the API is single-input, so a
+  multi-file project cannot be submitted. Carried by
+  todos/pending/2026-09-04-tex-multi-file-projects.md.
+
+64-05's measurement produced a finding rather than only a number:
+TECTONIC_ENGINE_TIMEOUT=271s means nothing without an input ceiling, because
+cost is linear in source size — at the inherited 100 MiB a dense .tex needs
+~9000s, ten times the reconciler cap. The pair (2 MiB / 271s) is now pinned by
+test, the way PROBE_MAX_PAGES and PROBE_ENGINE_TIMEOUT are.
+
+Three defects this phase found that only a mechanism could find, all now
+covered by tests that walk a list rather than restate one: the missing tectonic
+case in handleCreateJob's enqueue switch (every .tex 500'd), cmd/api not reading
+TECTONIC_ENGINE_TIMEOUT, and both webhook-workers missing four engine vars since
+Phase 32 — harmless only by coincidence, in the service that runs the
+reconciler.
+
+Next: work the PR #16 review rounds, merge, then close milestone v1.14.
+
+Open findings carried out of phase 64 (both in todos/pending/):
+
+- multi-file LaTeX projects cannot be submitted (single-input API);
+- the tex input ceiling is a heuristic — real cost is pages x passes, neither
+  knowable before the engine runs, so the timeout is the actual backstop.
 
 ## Performance Metrics
 
