@@ -504,15 +504,23 @@ func isTectonicTerminal(err error) bool {
 	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
 		return true
 	}
-	// A DEADLINE is terminal on this engine (see the descriptor's doc comment
-	// for the measurement that changed it): the document is a program, the
-	// timeout is 1.5x the largest admissible document's measured cost, and a
-	// non-terminating document reproduces exactly on every retry.
+	// The ENGINE's deadline is terminal on this engine (see the descriptor's
+	// doc comment for the measurement that changed it): the document is a
+	// program, the timeout is 1.5x the largest admissible document's measured
+	// cost, and a non-terminating document reproduces exactly on every retry.
+	//
+	// Keyed on convert's sentinel and NOT on context.DeadlineExceeded, which
+	// this would otherwise catch for the wrong reason: process() bounds the
+	// whole attempt -- download, convert, upload -- with one deadline, so a
+	// stalled S3 or Postgres call raises the identical error. Treating that as
+	// terminal reported an infrastructure stall to the client as a document
+	// that failed to typeset, and skipped the retry that would have fixed it
+	// (PR #16, codex round 2).
 	//
 	// Cancellation is NOT the same thing and keeps falling through: a canceled
 	// job was canceled by a client or a shutdown, and isTerminal already knows
 	// what that means.
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, convert.ErrTeXEngineTimeout) {
 		return true
 	}
 	if errors.Is(err, context.Canceled) {
@@ -556,11 +564,14 @@ func tectonicFailureCode(err error) (code, message string) {
 		// in the wrong place.
 		return CodeEngineError, "the typesetting engine is not configured on this deployment"
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, convert.ErrTeXEngineTimeout) {
 		// Named separately from the generic typesetting failure because the
 		// client's remedy is different: this document did not fail to compile,
 		// it failed to FINISH, and the usual cause is a construct that expands
 		// without bound rather than anything the engine could report.
+		//
+		// The sentinel, not context.DeadlineExceeded: only a deadline that
+		// fired while the engine was running says anything about the document.
 		return CodeEngineError, "the document did not finish typesetting within the time limit"
 	}
 	if errors.Is(err, convert.ErrTeXBiberUnavailable) {

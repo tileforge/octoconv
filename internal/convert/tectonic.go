@@ -195,6 +195,24 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	outDir := filepath.Dir(outPath)
 	out, err := runCommandLimited(ctx, tectonicLogLimit, "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)...)
 	if err != nil {
+		// THE ENGINE's deadline, named as such. The worker bounds the WHOLE
+		// attempt with one context -- download, convert, upload -- because the
+		// unique-lock TTL depends on the attempt never outliving it (T-03-11).
+		// So context.DeadlineExceeded reaching the classifier does not mean
+		// "this document did not finish": a stalled S3 or Postgres call
+		// produces the identical error, and this engine treats a deadline as
+		// TERMINAL. An infrastructure stall would have been reported to the
+		// client as a document that failed to typeset, and never retried.
+		//
+		// Found in review (PR #16, codex round 2). Only a deadline that fired
+		// while TECTONIC itself was running carries this sentinel; everything
+		// else keeps the plain error and stays retryable.
+		//
+		// context.Canceled is deliberately not wrapped: a canceled job was
+		// canceled by a client or a shutdown, and that has its own meaning.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("tectonic: %w: %v", ErrTeXEngineTimeout, err)
+		}
 		// The engine's own chatter is the only thing that says WHY. When it
 		// names a .sty the bundle does not have, say WHICH -- that is the one
 		// failure here the client can act on without guessing (TEX-03).
@@ -281,6 +299,12 @@ func (c TectonicConverter) maxOutputBytes() int64 {
 	}
 	return DefaultTectonicMaxOutputBytes
 }
+
+// ErrTeXEngineTimeout is the engine's own deadline: tectonic was running and
+// was killed when the attempt's context expired. Distinct from a bare
+// context.DeadlineExceeded, which the same attempt context also produces for a
+// stalled download or upload -- and those are worth retrying while this is not.
+var ErrTeXEngineTimeout = errors.New("tex: the engine did not finish within the time limit")
 
 // ErrTeXOutputTooLarge is a document that typeset successfully into a PDF too
 // big to accept. Terminal: rerunning the same source produces the same size.

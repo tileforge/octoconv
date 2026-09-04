@@ -1146,7 +1146,11 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		repo := &pinRepo{job: job, calls: &calls}
 		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
 		h.processFn = func(context.Context, *jobs.Job) error {
-			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w", context.DeadlineExceeded))
+			// What TectonicConverter.Convert returns when the ENGINE was
+			// running at the deadline -- not a bare context.DeadlineExceeded,
+			// which the subtest below pins as a different verdict.
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %v",
+				convert.ErrTeXEngineTimeout, context.DeadlineExceeded))
 		}
 
 		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
@@ -1161,6 +1165,33 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		if got := repo.markFailed[0].message; got != "the document did not finish typesetting within the time limit" {
 			t.Fatalf("MarkFailed message = %q -- a document that ran out of time did not fail to "+
 				"COMPILE, and telling the client it did sends them looking for a syntax error", got)
+		}
+	})
+
+	// The other distinction, and the one round 2 of PR #16's review found
+	// missing. process() bounds the WHOLE attempt with a single deadline --
+	// input lookup, download, convert, upload -- because the unique-lock TTL
+	// depends on no attempt outliving it (T-03-11). So a stalled S3 or Postgres
+	// call raises exactly the same context.DeadlineExceeded the engine does.
+	//
+	// Terminal-on-DeadlineExceeded therefore told a client whose upload hit a
+	// MinIO stall that their DOCUMENT failed to typeset, and skipped the retry
+	// that would have fixed it. Only the engine's own sentinel is terminal.
+	t.Run("an attempt deadline outside the engine stays retryable", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			// A stalled upload, bounded by the same attempt context.
+			return fmt.Errorf("upload %q: %w", "results/x/0-out.pdf", context.DeadlineExceeded)
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a stalled S3 transfer is not a document that "+
+				"failed to typeset, and it is the kind of failure a retry fixes", err)
 		}
 	})
 
