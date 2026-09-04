@@ -152,17 +152,34 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 		}
 
 		rest := src[i:]
+		// A TeX control word is a backslash followed by a MAXIMAL run of
+		// letters, so the comparisons below are on the whole word and never on
+		// a prefix of it. Prefix matching here was a real defect (PR #16, codex
+		// round 2), and it failed in the dangerous direction:
+		//
+		//	\iffoo\finalfoo\usepackage{pgfplots}\fi
+		//
+		// \finalfoo starts with "fi", so a prefix test closed the conditional,
+		// and the \usepackage TeX never executes was reported as executed --
+		// the API then refused, with "unsupported_package", a document that
+		// compiles. Confirmed by running the scanner before this was changed:
+		// packages=[pgfplots] complete=true.
+		//
+		// The same applies to the two directives below: \usepackagefoo{bar} is
+		// a macro named usepackagefoo, not \usepackage{bar}, and reading it as
+		// one would invent a package name out of a macro's argument.
+		word, wordLen := texControlWord(rest)
 		// \newif declares a conditional; the \if<name> that follows is not a
 		// control word this scanner can evaluate, so track the span rather
 		// than the name.
 		switch {
-		case strings.HasPrefix(rest, `\fi`):
+		case word == "fi":
 			if ifDepth > 0 {
 				ifDepth--
 			}
-			i += len(`\fi`) - 1
+			i += wordLen - 1
 			continue
-		case strings.HasPrefix(rest, `\newif`):
+		case word == "newif":
 			// \newif\ifdraft DECLARES a conditional; it does not open one, and
 			// the \ifdraft directly after it is part of the declaration.
 			//
@@ -172,7 +189,7 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 			// to zero, and every \usepackage after the declaration was skipped.
 			// An abstention rule that swallows the rest of the preamble is safe
 			// and useless -- it turns the gate off while looking like it works.
-			i += len(`\newif`) - 1
+			i += wordLen - 1
 			for i+1 < len(src) && (src[i+1] == ' ' || src[i+1] == '\t') {
 				i++
 			}
@@ -183,30 +200,42 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 				}
 			}
 			continue
-		case strings.HasPrefix(rest, `\if`):
+		case strings.HasPrefix(word, "if"):
+			// Deliberately over-inclusive, and deliberately NOT symmetrical
+			// with the close above. \ifthenelse (ifthen.sty, which IS in this
+			// bundle) is a macro rather than a TeX conditional and is never
+			// closed by an \fi, so this opens a conditional that stays open --
+			// measured, not assumed: the scan returns complete=false for the
+			// rest of the preamble and the worker decides.
+			//
+			// That is the safe direction. Over-opening costs the gate its
+			// early refusal; over-CLOSING refuses a valid document, which is
+			// the failure this whole file exists to avoid. There is no name
+			// test that separates \ifdraft (a conditional \newif made) from
+			// \ifthenelse (not one), so the asymmetry stays.
 			ifDepth++
-			i += len(`\if`) - 1
+			i += wordLen - 1
 			continue
 		}
 
-		for _, cmd := range []string{`\usepackage`, `\RequirePackage`} {
-			if !strings.HasPrefix(rest, cmd) {
+		for _, cmd := range []string{"usepackage", "RequirePackage"} {
+			if word != cmd {
 				continue
 			}
-			args, ok := takeTeXBraceGroup(skipTeXOptionGroup(rest[len(cmd):]))
+			args, ok := takeTeXBraceGroup(skipTeXOptionGroup(rest[wordLen:]))
 			if !ok {
 				// A brace group the window cut in half, or a \usepackage whose
 				// argument is a macro. Not an error and not a guess: skipped,
 				// and the scan is no longer authoritative.
 				complete = false
-				i += len(cmd) - 1
+				i += wordLen - 1
 				break
 			}
 			if braceDepth > 0 || ifDepth > 0 {
 				// Inside a macro body or a conditional. It may never execute;
 				// the engine decides.
 				complete = false
-				i += len(cmd) - 1
+				i += wordLen - 1
 				break
 			}
 			for _, name := range strings.Split(args, ",") {
@@ -219,11 +248,34 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 					complete = false
 				}
 			}
-			i += len(cmd) - 1
+			i += wordLen - 1
 			break
 		}
 	}
 	return packages, complete
+}
+
+// texControlWord returns the TeX control sequence at the start of src, which
+// must begin with a backslash, together with how many bytes it occupies.
+//
+// TeX's own rule, and the reason this exists: a control WORD is a backslash
+// followed by a maximal run of letters (\finalfoo is one token, not \fi
+// followed by text), while a control SYMBOL is a backslash and exactly one
+// non-letter (\%, \{, \\). Anything comparing with strings.HasPrefix is
+// asking a different question than TeX does, and the difference is not
+// theoretical -- see the call site.
+func texControlWord(src string) (name string, n int) {
+	if len(src) < 2 || src[0] != '\\' {
+		return "", 1
+	}
+	if !isASCIILetter(src[1]) {
+		return src[1:2], 2
+	}
+	j := 1
+	for j < len(src) && isASCIILetter(src[j]) {
+		j++
+	}
+	return src[1:j], j
 }
 
 // looksLikeTeXPackageName reports whether name could be a package at all.

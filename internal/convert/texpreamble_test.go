@@ -160,6 +160,29 @@ func TestScanTeXPreambleNeverInventsAPackage(t *testing.T) {
 			wantAbstains: true,
 		},
 		{
+			// Round 2 of the same review, and the same failure one level down:
+			// the conditional WAS tracked, but \fi was matched as a PREFIX, so
+			// \finalfoo -- a perfectly ordinary macro name that happens to
+			// begin with those two letters -- closed it. The scanner then read
+			// the skipped \usepackage as executed and the API refused a
+			// document that compiles. Confirmed by running it before the fix:
+			// packages=[pgfplots], complete=true.
+			//
+			// TeX reads a control WORD as a maximal run of letters, so the only
+			// correct comparison is on the whole word.
+			name:         "control word that merely starts with fi",
+			src:          "\\iffoo\\finalfoo\\usepackage{pgfplots}\\fi\n\\begin{document}\n",
+			wantAbstains: true,
+		},
+		{
+			// The same prefix defect on the directive itself: \usepackagefoo is
+			// a macro, and reading it as \usepackage would invent "bar" -- a
+			// package name taken out of some other macro's argument.
+			name:         "control word that merely starts with usepackage",
+			src:          "\\usepackagefoo{bar}\n\\begin{document}\n",
+			wantAbstains: false,
+		},
+		{
 			name: "input",
 			src:  "\\input{preamble}\n\\begin{document}\n",
 		},
@@ -172,7 +195,7 @@ func TestScanTeXPreambleNeverInventsAPackage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got, complete := convert.ScanTeXPreamble([]byte(tc.src))
 			for _, pkg := range got {
-				if pkg == "#1" || pkg == "pgfplots" || pkg == "preamble" {
+				if pkg == "#1" || pkg == "pgfplots" || pkg == "preamble" || pkg == "bar" {
 					t.Errorf("scanner reported %q from a construct it does not evaluate: an admission "+
 						"gate would refuse this valid document", pkg)
 				}
