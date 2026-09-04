@@ -88,23 +88,20 @@ func main() {
 
 	// TECTONIC_ENGINE_TIMEOUT.
 	//
-	// MEASURED, as of Phase 60: scripts/probe-timeout-measure.sh against a real
-	// corpus in the worker container gave 1.99-2.01 s/page across three points,
-	// and ceil(2.0 s/page x 200 pages x 1.5) = 600s. See .env.example for the
-	// run and the full derivation.
+	// 300s is a PLACEHOLDER, not a measurement, and nothing in this build may
+	// describe it otherwise (internal/queue/client.go says "marked as such
+	// everywhere it appears" -- this is one of the places). Plan 64-05
+	// measures it on a corpus that includes cross-references and a
+	// bibliography: cost here is per PASS and tectonic reruns until
+	// convergence, so a single-pass corpus would measure the wrong thing.
 	//
-	// This comment called it "a PLACEHOLDER, not a measurement" while the value
-	// beside it already read 600s -- the same stale sentence was corrected in
-	// internal/api/api.go and cmd/api/main.go and missed here, which is the
-	// ordinary way a comment goes false: the change that invalidates it touches
-	// three files and the sweep touches two.
-	//
-	// Never copied from 65s/742s/744s/753s -- copying a neighbour's timeout is
-	// a recorded project antipattern (PITFALLS.md Pitfall 7), and 600s is
-	// distinct from all four by measurement rather than by choice.
+	// Never copied from 65s/742s/744s/753s/600s -- copying a neighbour's
+	// timeout is a recorded project antipattern (PITFALLS.md Pitfall 7). A
+	// placeholder that happens to equal a neighbour's measured value is the
+	// same mistake wearing a disclaimer.
 	//
 	// This MUST read the same env var, with the same default, that
-	// internal/queue/client.go's NewClient reads for ProbeUniqueTTL's
+	// internal/queue/client.go's NewClient reads for TectonicUniqueTTL's
 	// derivation (IN-02): a mismatch silently produces duplicate processing.
 	engineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 300*time.Second)
 
