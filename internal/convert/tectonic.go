@@ -290,8 +290,26 @@ func tectonicUndefinedReferences(out []byte) bool {
 			last = out[j:]
 		}
 	}
-	return bytes.Contains(last, []byte("There were undefined references")) ||
-		bytes.Contains(last, []byte("There were undefined citations"))
+	// LaTeX's OWN wording, at the start of a line, and not merely the phrase
+	// anywhere in the output. The input is a program: \typeout{There were
+	// undefined references} makes any substring test true, and the cost of
+	// believing it is a VALID PDF thrown away. Captured from both runs rather
+	// than assumed (testdata/tectonic/{undefined,forged-undefined}-references.txt):
+	//
+	//	real    LaTeX Warning: There were undefined references.
+	//	forged  There were undefined references
+	//
+	// A document can of course print the prefixed form too -- TeX can print
+	// anything, and no reading of stdout fixes that. The asymmetry is what
+	// makes this worth doing: forging the full warning fails the FORGER's own
+	// job and nobody else's, while an unprefixed substring match fails an
+	// innocent document that merely quotes the phrase.
+	for _, line := range bytes.Split(last, []byte("\n")) {
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("LaTeX Warning: There were undefined ")) {
+			return true
+		}
+	}
+	return false
 }
 
 // tectonicNeedsBiber reports whether the failure was the engine trying to run
