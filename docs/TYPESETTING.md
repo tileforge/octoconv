@@ -87,6 +87,18 @@ in the image. `biblatex` runs with `backend=bibtex`, which tectonic executes
 inside its own process, and that covers ordinary citation and reference lists.
 Styles and sorting that only `biber` can produce are unavailable.
 
+**You must ask for that backend explicitly:**
+
+```latex
+\usepackage[backend=bibtex]{biblatex}
+```
+
+A bare `\usepackage{biblatex}` uses biber by default and the job fails with
+`biblatex requires the option backend=bibtex on this deployment: no biber is
+available`. This was found in review: the package was listed as supported while
+its default invocation did not work, so the promise was true only for people who
+already knew the answer.
+
 This is a security decision, not an oversight. Tectonic launches `biber` as an
 EXTERNAL program when a document produces a `.bcf` file, and takes the argv from
 a `.run.xml` the document's own packages write. Whether `--untrusted` gates that
@@ -136,6 +148,18 @@ One case does NOT name a package: if the engine reports a missing file that is
 not a `.sty` — a font definition, a class, a config file — the job fails with
 the generic `engine_error`. That is on purpose. Naming a package for a missing
 `.fd` would send you deleting a `\usepackage` line your document does not have.
+
+**A package the bundle contains can still be refused.** `fontspec` is in the
+bundle — the dependency closure pulled it in — and is refused anyway, because
+user-supplied fonts are deliberately out of scope (TEX-07). The refusal says so
+rather than claiming the package is missing.
+
+## Two failures that are not compilation errors
+
+| what happens | why the job fails rather than returning a PDF |
+|---|---|
+| **undefined references** | LaTeX warns `There were undefined references` and produces a PDF showing `??` where your `\ref`/`\cite` should be. Publishing that silently would hand you a document whose cross-references are visibly broken, with a green job and no signal. Checked on the FINAL pass only — the warning is normal on early passes, before the `.aux` file exists. |
+| **the document did not finish** | The engine hit `TECTONIC_ENGINE_TIMEOUT` (271s). This is **terminal, not retried**: your document is a program, and one that does not finish will not finish on a second attempt either. The usual cause is a construct that expands without bound, which no size limit can catch. |
 
 ## Asking for a package
 
