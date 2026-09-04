@@ -3726,7 +3726,6 @@ func TestCreateJob_AVOptsRejectedForInapplicablePair(t *testing.T) {
 // reconciler cap, and be re-enqueued underneath itself.
 func TestCreateJob_TectonicInputCeilingEnforced(t *testing.T) {
 	store := &failOnUploadStorage{t: t}
-	srv, _ := newTestServer(&fakeRepo{}, store, &fakeQueue{})
 
 	// Just over the ceiling, built out of a legal preamble plus padding so the
 	// rejection cannot be blamed on the content check.
@@ -3742,9 +3741,10 @@ func TestCreateJob_TectonicInputCeilingEnforced(t *testing.T) {
 	req.Header.Set("Content-Type", ct)
 	rec := httptest.NewRecorder()
 
-	// The server's own global cap must not be what refuses this, or the test
-	// would pass without the per-engine ceiling existing at all.
-	srv = NewServer(&fakeRepo{}, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(),
+	// MaxUploadBytes is raised well above the upload on purpose: the server's
+	// own global cap must not be what refuses this, or the test would pass
+	// with no per-engine ceiling existing at all.
+	srv := NewServer(&fakeRepo{}, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(),
 		&fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(),
 		Config{MaxUploadBytes: 64 << 20})
 	srv.Routes().ServeHTTP(rec, req)
