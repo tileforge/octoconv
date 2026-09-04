@@ -100,30 +100,127 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 		complete = true
 	}
 
-	for _, line := range strings.Split(src, "\n") {
-		line = stripTeXComment(line)
-		for _, cmd := range []string{`\usepackage`, `\RequirePackage`} {
-			rest := line
-			for {
-				i := strings.Index(rest, cmd)
-				if i < 0 {
-					break
-				}
-				rest = rest[i+len(cmd):]
-				args, ok := takeTeXBraceGroup(skipTeXOptionGroup(rest))
-				if !ok {
-					// A \usepackage whose brace group is split across the line
-					// break, or truncated by the window. Not an error and not
-					// a guess: skipped, and `complete` is what tells the caller
-					// the scan may be partial.
-					break
-				}
-				for _, name := range strings.Split(args, ",") {
-					if name = strings.TrimSpace(name); looksLikeTeXPackageName(name) {
-						packages = append(packages, name)
-					}
+	// Walk the preamble once, tracking two things a raw substring search
+	// cannot see: whether we are inside a BRACE GROUP (a macro definition
+	// body) and whether we are inside a CONDITIONAL (\if...\fi). A
+	// \usepackage in either place is text the engine may never execute, so
+	// reporting it is a REFUSAL OF A VALID DOCUMENT -- the one thing this
+	// scanner must never do.
+	//
+	// Found in review, and it was not hypothetical:
+	//
+	//	\newif\iffoo \foofalse
+	//	\iffoo\usepackage{pgfplots}\fi
+	//
+	// compiles cleanly (verified in the built image), and the first version of
+	// this scanner reported pgfplots for it -- so the API answered 422
+	// "does not provide the package pgfplots" to a document that does not use
+	// it. The same shape applies to \newcommand{\x}{\usepackage{y}}.
+	//
+	// Skipping is not enough on its own: silence would then mean "no
+	// violation" when it really means "there is a \usepackage here I refused
+	// to evaluate". So every skip also clears `complete`, which routes the
+	// document to the worker -- the gate abstains exactly as it does when the
+	// preamble outruns the window.
+	var (
+		braceDepth int
+		ifDepth    int
+	)
+	for i := 0; i < len(src); i++ {
+		switch src[i] {
+		case '%':
+			// A comment runs to the end of the line unless escaped.
+			if i == 0 || src[i-1] != '\\' {
+				if nl := strings.IndexByte(src[i:], '\n'); nl >= 0 {
+					i += nl
+				} else {
+					i = len(src)
 				}
 			}
+			continue
+		case '{':
+			braceDepth++
+			continue
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+			continue
+		case '\\':
+		default:
+			continue
+		}
+
+		rest := src[i:]
+		// \newif declares a conditional; the \if<name> that follows is not a
+		// control word this scanner can evaluate, so track the span rather
+		// than the name.
+		switch {
+		case strings.HasPrefix(rest, `\fi`):
+			if ifDepth > 0 {
+				ifDepth--
+			}
+			i += len(`\fi`) - 1
+			continue
+		case strings.HasPrefix(rest, `\newif`):
+			// \newif\ifdraft DECLARES a conditional; it does not open one, and
+			// the \ifdraft directly after it is part of the declaration.
+			//
+			// Consuming only the \newif was a real bug, caught by the test that
+			// asserts packages AROUND a conditional are still seen: the trailing
+			// \ifdraft was then read as an opening \if, ifDepth never returned
+			// to zero, and every \usepackage after the declaration was skipped.
+			// An abstention rule that swallows the rest of the preamble is safe
+			// and useless -- it turns the gate off while looking like it works.
+			i += len(`\newif`) - 1
+			for i+1 < len(src) && (src[i+1] == ' ' || src[i+1] == '\t') {
+				i++
+			}
+			if strings.HasPrefix(src[i+1:], `\if`) {
+				i++ // the backslash
+				for i+1 < len(src) && isASCIILetter(src[i+1]) {
+					i++
+				}
+			}
+			continue
+		case strings.HasPrefix(rest, `\if`):
+			ifDepth++
+			i += len(`\if`) - 1
+			continue
+		}
+
+		for _, cmd := range []string{`\usepackage`, `\RequirePackage`} {
+			if !strings.HasPrefix(rest, cmd) {
+				continue
+			}
+			args, ok := takeTeXBraceGroup(skipTeXOptionGroup(rest[len(cmd):]))
+			if !ok {
+				// A brace group the window cut in half, or a \usepackage whose
+				// argument is a macro. Not an error and not a guess: skipped,
+				// and the scan is no longer authoritative.
+				complete = false
+				i += len(cmd) - 1
+				break
+			}
+			if braceDepth > 0 || ifDepth > 0 {
+				// Inside a macro body or a conditional. It may never execute;
+				// the engine decides.
+				complete = false
+				i += len(cmd) - 1
+				break
+			}
+			for _, name := range strings.Split(args, ",") {
+				if name = strings.TrimSpace(name); looksLikeTeXPackageName(name) {
+					packages = append(packages, name)
+				} else if name != "" {
+					// A name that cannot be a filename (\usepackage{#1} out of
+					// a macro body, or an unexpanded control sequence). Never
+					// reported, never guessed at.
+					complete = false
+				}
+			}
+			i += len(cmd) - 1
+			break
 		}
 	}
 	return packages, complete

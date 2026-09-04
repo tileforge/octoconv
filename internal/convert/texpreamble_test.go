@@ -140,26 +140,84 @@ func TestScanTeXPreamble(t *testing.T) {
 // rather than a guess.
 func TestScanTeXPreambleNeverInventsAPackage(t *testing.T) {
 	hidden := []struct {
-		name string
-		src  string
+		name         string
+		src          string
+		wantAbstains bool
 	}{
-		{"macro definition", "\\newcommand{\\loadit}[1]{\\usepackage{#1}}\n\\loadit{pgfplots}\n\\begin{document}\n"},
-		{"input", "\\input{preamble}\n\\begin{document}\n"},
-		{"conditional", "\\ifpdf\\else\\fi\n\\begin{document}\n"},
+		{
+			name:         "macro definition body",
+			src:          "\\newcommand{\\loadit}[1]{\\usepackage{#1}}\n\\loadit{pgfplots}\n\\begin{document}\n",
+			wantAbstains: true,
+		},
+		{
+			// Found in review (PR #16), and verified against the engine first:
+			// this document COMPILES CLEANLY in the built image, because the
+			// conditional is false. The scanner used to report pgfplots for it,
+			// so the API answered 422 "does not provide the package pgfplots"
+			// to a document that does not use pgfplots at all.
+			name:         "usepackage inside a false conditional",
+			src:          "\\newif\\iffoo\n\\foofalse\n\\iffoo\\usepackage{pgfplots}\\fi\n\\begin{document}\n",
+			wantAbstains: true,
+		},
+		{
+			name: "input",
+			src:  "\\input{preamble}\n\\begin{document}\n",
+		},
+		{
+			name: "empty conditional",
+			src:  "\\ifpdf\\else\\fi\n\\begin{document}\n",
+		},
 	}
 	for _, tc := range hidden {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := convert.ScanTeXPreamble([]byte(tc.src))
+			got, complete := convert.ScanTeXPreamble([]byte(tc.src))
 			for _, pkg := range got {
-				// The macro case DOES contain the literal \usepackage{#1}; the
-				// scanner reads "#1" from it, which is a name no bundle has and
-				// would be a false refusal.
 				if pkg == "#1" || pkg == "pgfplots" || pkg == "preamble" {
 					t.Errorf("scanner reported %q from a construct it does not evaluate: an admission "+
 						"gate would refuse this valid document", pkg)
 				}
 			}
+			// Skipping silently is not enough. A skip that left complete==true
+			// would mean "no violation found" when it really means "there is a
+			// \usepackage here I refused to evaluate" -- and the worker, which
+			// is the authority, would never be told to look.
+			if tc.wantAbstains && complete {
+				t.Errorf("complete = true after skipping an unevaluated \\usepackage: the API would " +
+					"treat this scan as authoritative instead of abstaining to the worker")
+			}
 		})
+	}
+}
+
+// TestScanTeXPreambleStillSeesRealPackagesAroundConditionals is the other half
+// of the fix above. An abstention rule that gave up on any document containing
+// an \if would be safe and useless: the gate exists to catch the ordinary case,
+// and pandoc's own template ships conditionals in its preamble.
+func TestScanTeXPreambleStillSeesRealPackagesAroundConditionals(t *testing.T) {
+	src := "\\documentclass{article}\n" +
+		"\\usepackage{amsmath}\n" +
+		"\\newif\\ifdraft\\draftfalse\n" +
+		"\\ifdraft\\usepackage{pgfplots}\\fi\n" +
+		"\\usepackage{booktabs}\n" +
+		"\\begin{document}\n"
+
+	got, complete := convert.ScanTeXPreamble([]byte(src))
+
+	found := map[string]bool{}
+	for _, p := range got {
+		found[p] = true
+	}
+	for _, want := range []string{"amsmath", "booktabs"} {
+		if !found[want] {
+			t.Errorf("%s was NOT reported -- the conditional made the scanner blind to packages "+
+				"outside it, which is a gate that has stopped gating", want)
+		}
+	}
+	if found["pgfplots"] {
+		t.Error("pgfplots reported from inside a false conditional")
+	}
+	if complete {
+		t.Error("complete = true, but a \\usepackage inside the conditional was skipped")
 	}
 }
 
