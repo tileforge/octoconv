@@ -31,6 +31,22 @@ const (
 	// reusing "extract" was rejected because sanitize extracts nothing and
 	// extract is needed for its own meaning in the next milestone.
 	EngineProbe = "probe"
+	// EngineTectonic is the ninth class: real typesetting, latex -> pdf. It is
+	// the only engine whose input is a PROGRAM rather than a document -- see
+	// tectonic.go for what that costs and how it is bounded.
+	//
+	// DELIBERATELY NOT IN AllEngines() YET (plan 64-02; 64-04 adds it).
+	//
+	// AllEngines is the vocabulary a dozen contracts key off: every member must
+	// have a queue, a reconciler sweep route, a per-engine upload ceiling, a
+	// published timeout and an estimate source. Adding tectonic here before
+	// 64-04 wires the queue made nine of those fail at once -- and the failures
+	// were right. Worse than the red suite: registering the converter ALSO
+	// advertised latex -> pdf on GET /v1/formats, so a client could have posted
+	// a job that no worker consumes. That is the exact defect phase 60 shipped
+	// with sanitize -- pairs advertised and unreachable -- caught here by the
+	// contracts rather than by review.
+	EngineTectonic = "tectonic"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one

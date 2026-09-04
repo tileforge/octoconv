@@ -82,4 +82,10 @@ func init() {
 	// TestPandocPairsDisjointFromOtherEngines exists for -- the separation is
 	// structural rather than a property of the chosen format lists.
 	Default.Register(SanitizeConverter{})
+	// TectonicConverter is NOT registered here yet -- 64-04 does it, together
+	// with the queue and the worker that consumes it. Registering it in 64-02
+	// advertised latex -> pdf on GET /v1/formats with no queue behind it, which
+	// is a job a client can create and nothing will ever run: the same defect
+	// phase 60 shipped for sanitize. The converter type and its argv exist and
+	// are tested; what is missing is the loop, and that is deliberate.
 }
