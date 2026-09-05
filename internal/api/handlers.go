@@ -630,7 +630,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				"an attached file has a name this service cannot use: send a plain file name")
 			return
 		}
-		if workerOwnedName(name, detected, target) {
+		if workerOwnedName(name) {
 			// The worker does not keep the document's name: it downloads
 			// ordinal 0 to in.<source> and writes out.<target> beside it. An
 			// attachment called in.latex therefore OVERWRITES the validated

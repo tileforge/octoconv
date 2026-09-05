@@ -112,9 +112,7 @@ const maxInputParts = 32
 //
 // A client's file must not depend on which intermediates an engine happens to
 // write, so the stem is reserved rather than the extensions enumerated.
-func workerOwnedName(name, sourceFormat, targetFormat string) bool {
-	_ = sourceFormat
-	_ = targetFormat
+func workerOwnedName(name string) bool {
 	stem := name
 	if i := strings.IndexByte(name, '.'); i >= 0 {
 		stem = name[:i]

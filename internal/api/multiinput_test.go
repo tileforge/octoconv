@@ -213,3 +213,26 @@ func TestQuotaChargesEveryPart(t *testing.T) {
 			"after every part is already uploaded", repo.preAdmitBytes, want)
 	}
 }
+
+// TestTheReservedStemDoesNotSwallowOrdinaryNames is the other half of that
+// reservation, and the half a "reserve more" fix invites forgetting: refusing
+// "in.pdf" must not also refuse "input.tex". Over-refusal here is the same
+// defect as the collision, arriving as a client whose ordinary project stops
+// being accepted.
+func TestTheReservedStemDoesNotSwallowOrdinaryNames(t *testing.T) {
+	for _, name := range []string{"input.tex", "into.tex", "index.tex", "instructions.bib", "outline.tex", "output-notes.tex"} {
+		t.Run(name, func(t *testing.T) {
+			if workerOwnedName(name) {
+				t.Fatalf("%q was treated as a worker-owned name: the stem is what is reserved, and "+
+					"refusing an ordinary file is how a bound stops being one", name)
+			}
+		})
+	}
+	for _, name := range []string{"in", "in.pdf", "in.latex", "out", "out.pdf"} {
+		t.Run("reserved "+name, func(t *testing.T) {
+			if !workerOwnedName(name) {
+				t.Fatalf("%q was allowed: the worker or the engine writes it", name)
+			}
+		})
+	}
+}
