@@ -3,6 +3,23 @@ created: 2026-09-03
 area: inspect
 severity: low
 origin: PR #15 (phase 63-02), removed with the admission gate rather than kept
+resolved: 2026-09-05
+resolution: |
+  extractPDFPageCount now reads /Count through convert.PDFTypedDictUints, which
+  is restored from 28416c7 (the FINAL version, not the first -- it already
+  carried the object-index bound this file listed as open). All five reported
+  cases were reproduced against the shipped byte scan first, and are a
+  regression table now.
+
+  The nesting bound WAS genuinely missing and is added (131.4 MB on 2 MiB of
+  "<<" before it). Measuring it found a third, larger cost nobody had recorded:
+  scanPDF's "last two integers" window trimmed by re-slicing the same backing
+  array, so a long integer run -- an xref table -- grew it without bound, 48.0
+  MB on a 21 MB file, in the API process AND the sanitize worker.
+
+  pdfTrailerPrev is fixed too, and it was the item at the bottom of this file:
+  two byte searches, five ways wrong, on the path the sanitize worker uses
+  today.
 ---
 
 # internal/inspect's page_count is derived by a byte scan with four known defects
