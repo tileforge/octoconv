@@ -183,6 +183,17 @@ func TestScanTeXPreambleNeverInventsAPackage(t *testing.T) {
 			wantAbstains: false,
 		},
 		{
+			// Round 3, and the same shape a third time: a single-byte lookback
+			// standing in for tokenization. \\ is a control SYMBOL, so the
+			// percent after it starts a comment and TeX never sees the
+			// \usepackage -- but the scanner asked only whether the previous
+			// BYTE was a backslash and reported pgfplots with complete=true.
+			// Confirmed by running it before the fix.
+			name:         "percent after an escaped backslash still comments",
+			src:          "\\let\\foo\\\\% \\usepackage{pgfplots}\n\\begin{document}\n",
+			wantAbstains: false,
+		},
+		{
 			name: "input",
 			src:  "\\input{preamble}\n\\begin{document}\n",
 		},

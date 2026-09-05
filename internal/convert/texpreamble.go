@@ -129,13 +129,23 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 	for i := 0; i < len(src); i++ {
 		switch src[i] {
 		case '%':
-			// A comment runs to the end of the line unless escaped.
-			if i == 0 || src[i-1] != '\\' {
-				if nl := strings.IndexByte(src[i:], '\n'); nl >= 0 {
-					i += nl
-				} else {
-					i = len(src)
-				}
+			// A comment runs to the end of the line. No lookback for an escape:
+			// \% is a control SYMBOL and is consumed as one token below, so a
+			// percent reached HERE is always a live comment character.
+			//
+			// The lookback this replaces asked whether the previous byte was a
+			// backslash, which gets \\% wrong -- \\ is itself a control symbol,
+			// so the percent after it starts a comment. Found in review (PR #16,
+			// codex round 3) and confirmed by running the scanner:
+			//
+			//	\let\foo\\% \usepackage{pgfplots}
+			//
+			// returned packages=[pgfplots] complete=true, so the API refused a
+			// document in which TeX never loads pgfplots at all.
+			if nl := strings.IndexByte(src[i:], '\n'); nl >= 0 {
+				i += nl
+			} else {
+				i = len(src)
 			}
 			continue
 		case '{':
@@ -169,6 +179,15 @@ func ScanTeXPreamble(prefix []byte) (packages []string, complete bool) {
 		// a macro named usepackagefoo, not \usepackage{bar}, and reading it as
 		// one would invent a package name out of a macro's argument.
 		word, wordLen := texControlWord(rest)
+		// A control SYMBOL -- a backslash and one non-letter -- is a single
+		// token, and consuming it here is what makes the comment branch above
+		// safe: \% never reaches it, and \\ does not leave a trailing
+		// backslash for anything to misread. It also stops \{ and \} from
+		// moving braceDepth, which they never should have.
+		if len(word) == 1 && !isASCIILetter(word[0]) {
+			i += wordLen - 1
+			continue
+		}
 		// \newif declares a conditional; the \if<name> that follows is not a
 		// control word this scanner can evaluate, so track the span rather
 		// than the name.
