@@ -29,12 +29,14 @@ Specifically, it:
 
 ### Bounds
 
-Two numbers, and they are one decision rather than two.
+The first two are one decision rather than two; the third bounds what comes
+back rather than what goes in.
 
 | bound | value | why |
 |---|---|---|
 | source size | **2 MiB** (2 097 152 bytes) | 745 pages of dense typeset output on the measured corpus — past any real document. A `.tex` above it is refused with `413` before it is stored. |
 | engine timeout | **271s** | `ceil(25.76 s/pass x 7 passes x 1.5)`, measured 2026-09-04 in the worker container at 2 CPU / 1 GiB, on a document 2.2% larger than the size bound. |
+| output size | **32 MiB** | The source bound does not imply an output bound: TeX ships pages out as it goes, so 198 bytes of `.tex` measured 6 040 163 bytes of PDF in 16 seconds, while the largest real document above produces 1 914 057. A PDF past this fails with `output_too_large` instead of being uploaded. |
 
 The seven is the **engine's** own limit: tectonic reruns until cross-references
 and citations converge, then stops and says `stopping at 6 passes`. That is why
@@ -48,8 +50,13 @@ inherited, a dense `.tex` would need roughly 9000s. Raising the size bound
 without re-running `scripts/tectonic-timeout-measure.sh` admits work the timeout
 will kill.
 
-A timeout is TRANSIENT — the job is retried — while a compilation error is
-terminal and is not retried at all.
+A timeout is **TERMINAL** on this engine: your document is a program, and one
+that does not finish will not finish on a second attempt either. So is a
+compilation error. See "Two failures that are not compilation errors" below.
+
+The engine's own deadline is the only one treated that way. If the storage
+layer stalls, the attempt hits the same wall clock and *is* retried — that is
+an infrastructure failure, not a statement about your document.
 
 ## Supported packages
 
@@ -152,14 +159,24 @@ the generic `engine_error`. That is on purpose. Naming a package for a missing
 **A package the bundle contains can still be refused.** `fontspec` is in the
 bundle — the dependency closure pulled it in — and is refused anyway, because
 user-supplied fonts are deliberately out of scope (TEX-07). The refusal says so
-rather than claiming the package is missing.
+rather than claiming the package is missing. `fontspec-xetex` and
+`fontspec-luatex`, the implementation files `fontspec.sty` itself loads, are
+refused by the same rule: all three are one package, and refusing only the name
+you are meant to write would be a boundary in the documentation and nowhere
+else.
+
+Unlike every other refusal here, this one is not the engine's own verdict — a
+denied package IS in the bundle, so tectonic loads it happily. Both the API and
+the worker check for it explicitly, so pushing the `\usepackage` past the API's
+preamble window does not get it through.
 
 ## Two failures that are not compilation errors
 
 | what happens | why the job fails rather than returning a PDF |
 |---|---|
-| **undefined references** | LaTeX warns `There were undefined references` and produces a PDF showing `??` where your `\ref`/`\cite` should be. Publishing that silently would hand you a document whose cross-references are visibly broken, with a green job and no signal. Checked on the FINAL pass only — the warning is normal on early passes, before the `.aux` file exists. |
+| **undefined references** | LaTeX warns `LaTeX Warning: There were undefined references.` and produces a PDF showing `??` where your `\ref`/`\cite` should be. Publishing that silently would hand you a document whose cross-references are visibly broken, with a green job and no signal. Checked on the FINAL pass only — the warning is normal on early passes, before the `.aux` file exists — and matched on LaTeX's own warning line, so a document that merely `\typeout`s the phrase is not failed for it. |
 | **the document did not finish** | The engine hit `TECTONIC_ENGINE_TIMEOUT` (271s). This is **terminal, not retried**: your document is a program, and one that does not finish will not finish on a second attempt either. The usual cause is a construct that expands without bound, which no size limit can catch. |
+| **the PDF is too large** | The document typeset correctly and the result is past the 32 MiB output bound (`output_too_large`). Nothing is wrong with your source; there is simply too much of it — the remedy is fewer pages, not a fix. Also terminal: the same source ships the same pages every time. |
 
 ## Asking for a package
 

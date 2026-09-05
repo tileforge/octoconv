@@ -125,7 +125,7 @@ data:
   # probe-timeout-20260902-measured.txt). Cost is per PAGE, not per byte:
   # 1.99-2.01 s/page across three points, in the container at 2 CPU / 1 GiB
   # against gs 10.00.0. ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33% under
-  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (610s)
+  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (620s)
   # is derived from it. IN-02: read by every queue.NewClient()-constructing
   # service for probeUniqueTTL's derivation.
   PROBE_ENGINE_TIMEOUT: "600s"
@@ -177,7 +177,7 @@ data:
   # bound in this chart is), but changing it without re-measuring this value
   # breaks the pair.
   #
-  # tectonicWorker.terminationGracePeriodSeconds (281s) is derived from this and
+  # tectonicWorker.terminationGracePeriodSeconds (291s) is derived from this and
   # was re-derived in the same edit. IN-02: read by every
   # queue.NewClient()-constructing service for tectonicUniqueTTL's derivation --
   # a value that reaches one process and not another does not error, it silently

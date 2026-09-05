@@ -150,10 +150,10 @@ probeWorker:
   image:
     repository: "octoconv-probe-worker"
   replicas: 1
-  # 610s = PROBE_ENGINE_TIMEOUT (600s, ConfigMap, MEASURED) + 10s asynq
-  # ShutdownTimeout margin, following pandoc's own-compose-precedent shape
-  # rather than the ENGINE_TIMEOUT+30s convention. Re-derived in the same edit
-  # that landed the measured timeout.
+  # 620s = PROBE_ENGINE_TIMEOUT (600s, ConfigMap, MEASURED) + 10s asynq
+  # ShutdownTimeout margin + 10s Docker/k8s SIGKILL margin, following pandoc's
+  # own-compose-precedent shape rather than the ENGINE_TIMEOUT+30s convention.
+  # Re-derived in the same edit that landed the measured timeout.
   #
   # The chain the 600s comes from now closes at both ends: PROBE_MAX_PAGES=200
   # (ConfigMap, Phase 63) is the SAME 200 in ceil(2.0 s/page x 200 pages x 1.5)
@@ -164,7 +164,12 @@ probeWorker:
   # in this chart is a values.yaml knob (OCR_MAX_PAGES and PROBE_ENGINE_TIMEOUT
   # are not either), because these are derived numbers with their derivations
   # written beside them, not per-install preferences.
-  terminationGracePeriodSeconds: 610
+  # 620s = 600s + 10s asynq ShutdownTimeout margin + 10s Docker/k8s SIGKILL
+  # margin, matching docker-compose.yml's probe-worker. It was 610s -- exactly
+  # the ShutdownTimeout, with no margin at all. Same slip as tectonicWorker's,
+  # found when the fix for that one was written as a rule over every worker
+  # rather than as an edit to the one the review named.
+  terminationGracePeriodSeconds: 620
   resources:
     limits:
       # 2 CPU / 1Gi: the cgroup limits phase 58 (D-02a) named as a condition
@@ -178,9 +183,10 @@ tectonicWorker:
   image:
     repository: "octoconv-tectonic-worker"
   replicas: 1
-  # 281s = TECTONIC_ENGINE_TIMEOUT (271s, ConfigMap, MEASURED) + 10s asynq
-  # ShutdownTimeout margin, following pandoc's and probe's own-derivation shape
-  # rather than the ENGINE_TIMEOUT+30s convention.
+  # 291s = TECTONIC_ENGINE_TIMEOUT (271s, ConfigMap, MEASURED) + 10s asynq
+  # ShutdownTimeout margin + 10s Docker/k8s SIGKILL margin, following pandoc's
+  # and probe's own-derivation shape rather than the ENGINE_TIMEOUT+30s
+  # convention.
   #
   # RE-DERIVED in the same edit that landed the measured timeout, deliberately:
   # probe's equivalent comment described 180s for a full phase after the chart
@@ -193,7 +199,15 @@ tectonicWorker:
   # timeout describe ONE document bound rather than two. Raising either without
   # the other breaks it -- a higher ceiling admits work the timeout will kill, a
   # lower one refuses work the timeout was sized for.
-  terminationGracePeriodSeconds: 281
+  # 291s = 271s + 10s asynq ShutdownTimeout margin + 10s Docker/k8s SIGKILL
+  # margin -- the same derivation pandocWorker states and the same number
+  # docker-compose.yml's tectonic-worker uses. It was 281s, which is EXACTLY the
+  # ShutdownTimeout: Kubernetes would send SIGKILL at the instant asynq is still
+  # allowed to be finishing a job, leaving nothing for signal delivery, the
+  # final MarkDone or the metrics server, and abandoning the job to the
+  # reconciler. Found in review (PR #16, codex round 2); probeWorker had the
+  # same slip and is fixed in the same edit.
+  terminationGracePeriodSeconds: 291
   resources:
     limits:
       # 2 CPU / 1Gi, the heavy-engine cgroup. Not symmetry: this worker runs a

@@ -8,10 +8,16 @@ octoconv-app-metrics NetworkPolicy selects it automatically and no
 networkpolicy edit is needed.
 
 GRACE DERIVATION: 600s PROBE_ENGINE_TIMEOUT (ConfigMap) -> 610s asynq
-ShutdownTimeout (cmd/probe-worker adds 10s) -> 610s
-terminationGracePeriodSeconds (values.yaml). Follows pandoc's own-derivation
-shape rather than the ENGINE_TIMEOUT+30s convention used by
+ShutdownTimeout (cmd/probe-worker adds 10s) -> 620s
+terminationGracePeriodSeconds (values.yaml), the last step being the 10s
+Docker/k8s SIGKILL margin pandoc's derivation names. Follows pandoc's
+own-derivation shape rather than the ENGINE_TIMEOUT+30s convention used by
 worker/document/audio/av/ocr.
+
+That last step was missing here too: the chain ended at 610s, EQUAL to the
+ShutdownTimeout. Found while fixing tectonic's identical chain (PR #16, codex
+round 2) by writing the fix as a rule over every worker rather than as an edit
+to the one the review named.
 
 MEASURED, not provisional. This block said "180s is a PLACEHOLDER, not a
 measurement" and derived 190s from it, while the ConfigMap has read 600s since

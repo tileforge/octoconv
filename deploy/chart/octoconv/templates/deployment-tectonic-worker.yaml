@@ -7,10 +7,17 @@ octoconv-app-metrics NetworkPolicy selects it automatically and no
 networkpolicy edit is needed.
 
 GRACE DERIVATION: 271s TECTONIC_ENGINE_TIMEOUT (ConfigMap, MEASURED) -> 281s
-asynq ShutdownTimeout (cmd/tectonic-worker adds 10s) -> 281s
-terminationGracePeriodSeconds (values.yaml). Follows pandoc's and probe's
-own-derivation shape rather than the ENGINE_TIMEOUT+30s convention used by
-worker/document/audio/av/ocr.
+asynq ShutdownTimeout (cmd/tectonic-worker adds 10s) -> 291s
+terminationGracePeriodSeconds (values.yaml), the last step being the 10s
+Docker/k8s SIGKILL margin pandoc's derivation names. Follows pandoc's and
+probe's own-derivation shape rather than the ENGINE_TIMEOUT+30s convention used
+by worker/document/audio/av/ocr.
+
+That last step is the one this chain was missing: it ended at 281s, EQUAL to
+the ShutdownTimeout, so Kubernetes could SIGKILL at the instant asynq was still
+allowed to be finishing a job. Found in review (PR #16, codex round 2), and
+probe's identical chain was fixed in the same edit;
+internal/e2e.TestChartGraceOutlivesAsynqShutdown now checks every worker.
 
 MEASURED as of 64-05 (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5), with 7
 the engine's own rerun maximum and the per-pass cost taken on a document 2.2%
