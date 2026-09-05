@@ -37,7 +37,10 @@ import (
 //	   differs from the input only inside the returned ranges. That is the
 //	   contract the verifier's whole "structure vs payload" split depends on:
 //	   if it could differ outside a payload, a residue scan would be reading
-//	   bytes the file does not contain.
+//	   bytes the file does not contain;
+//	5. no object header was recorded at an offset inside a payload -- scanPDF's
+//	   own claim ("a resolved payload is jumped over whole"), and the one
+//	   property that decides the residual PR #14 left open.
 //
 // A failure here is a REAL finding, not a fuzzer artifact: every property is
 // one the calling code already assumes.
@@ -144,6 +147,29 @@ func FuzzPDFStreamPayloads(f *testing.F) {
 			if !insideAny(ranges, i) {
 				t.Fatalf("byte %d changed (%q -> %q) outside every stream range: a residue scan "+
 					"would be reading bytes this file does not contain", i, raw[i], out[i])
+			}
+		}
+
+		// (5) NO BYTE INSIDE A PAYLOAD WAS READ AS STRUCTURE.
+		//
+		// This is the property the residual from PR #14 is about, and the one
+		// the four above do NOT decide: "a decoy inside a stream that itself
+		// failed to resolve is reachable through the resynchronisation" was
+		// stated as open when that PR closed. A decoy that succeeds looks
+		// perfectly well-formed from outside -- its range is in bounds,
+		// ordered, and followed by an endstream it planted -- so properties
+		// 1-4 pass while the scan believes an object definition it read out of
+		// a payload.
+		//
+		// scanPDF's own doc comment makes the claim this checks: "a resolved
+		// payload is jumped over whole, so no byte inside a payload can ever
+		// be read as structure". An object offset that lands inside a returned
+		// range is that claim being false.
+		for num, off := range scanPDF(raw).objects {
+			if insideAny(ranges, off) {
+				t.Fatalf("object %d was recorded at offset %d, which is INSIDE a stream payload: "+
+					"the walk read structure out of bytes it had already accepted as opaque, which "+
+					"is how a planted /Length resolves a short range", num, off)
 			}
 		}
 	})
