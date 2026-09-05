@@ -32,6 +32,28 @@ is greater.
 
 `scripts/tectonic-bundle-build.sh` verifies this digest before unpacking a byte.
 
+## The builder, and one honest gap
+
+| | |
+|---|---|
+| repository | <https://github.com/tectonic-typesetting/tectonic-texlive-bundles> |
+| pinned revision | `4b111c1f32492ca36d8656b670d3acab8d4bc066` |
+
+The bundle's contents depend on that repository's code, its
+`bundles/texlive2023` specification, its `include/` and `patches/` trees — not
+only on the texmf tarball. The build script pins and verifies the revision:
+following the default branch means the reproduction recipe can run different
+code later and produce a different bundle while every digest here still looks
+satisfied, and it leaves an upstream compromise unchecked. Added in review
+(PR #16, codex round 2).
+
+**The gap:** the 122 MiB asset above was built on 2026-09-04 from an unpinned
+clone, and that working tree no longer exists, so the revision it used cannot be
+recovered — the pin is upstream's HEAD as of 2026-09-05. Rebuilding at the pin
+may therefore not reproduce this asset byte for byte. What ships is defined by
+the sha256 in the table, enforced inside the image build; the pin is what makes
+the NEXT build reproducible.
+
 ## How the reduction is decided
 
 The spec is **derived from upstream's** `bundles/texlive2023` rather than

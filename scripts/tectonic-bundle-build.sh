@@ -90,7 +90,24 @@ if [ ! -f "$TEXMF_TAR" ]; then
 fi
 
 say "upstream builder"
-[ -d "$BUNDLES_REPO" ] || git clone --depth 1 https://github.com/tectonic-typesetting/tectonic-texlive-bundles "$BUNDLES_REPO"
+# PINNED, for the same reason the texmf tarball above is. The bundle's contents
+# depend on this repository's builder code, its bundles/texlive2023
+# specification, its patches and its include files -- so following the default
+# branch means the advertised reproduction can execute different code next
+# month and produce a different bundle while every digest recorded here still
+# looks satisfied. It is also the supply-chain half: an upstream compromise
+# would enter this build unchecked. Found in review (PR #16, codex round 2).
+#
+# Checked out by SHA and verified after the fact, because `git clone --branch`
+# accepts only refs, and a ref can move.
+BUNDLES_REV="${BUNDLES_REV:-4b111c1f32492ca36d8656b670d3acab8d4bc066}"
+if [ ! -d "$BUNDLES_REPO" ]; then
+  git clone --filter=blob:none https://github.com/tectonic-typesetting/tectonic-texlive-bundles "$BUNDLES_REPO"
+  git -C "$BUNDLES_REPO" checkout --detach "$BUNDLES_REV"
+fi
+observed_rev="$(git -C "$BUNDLES_REPO" rev-parse HEAD)"
+[ "$observed_rev" = "$BUNDLES_REV" ] || die "upstream builder is at $observed_rev, want $BUNDLES_REV (delete $BUNDLES_REPO to re-clone)"
+echo "  pinned at $BUNDLES_REV"
 
 say "compiling the allowlist into ignore rules"
 # Enumerate what is actually in the tree, then exclude every LaTeX package
