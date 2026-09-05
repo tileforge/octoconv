@@ -1317,6 +1317,22 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return err
 	}
 
+	// EVERY OTHER INPUT LANDS BESIDE IT, UNDER ITS OWN NAME.
+	//
+	// A multi-file LaTeX project resolves its parts by name from the directory
+	// the document sits in -- \input{preamble} finds preamble.tex, and
+	// \addbibresource{refs.bib} finds refs.bib -- so the names matter here in a
+	// way the document at ordinal 0 does not: that one is deliberately renamed
+	// to in.<format>, and always was.
+	//
+	// The names were admitted by api.SafeInputFilename before the row existed.
+	// They are checked AGAIN here, because this is the code that creates files:
+	// a job row is data, and a worker that trusts the database to have been
+	// careful is one traversal away from writing outside its own directory.
+	if err := h.materializeExtraInputs(attemptCtx, job.ID, workDir); err != nil {
+		return err
+	}
+
 	// T-30-08/IN-02: the declared-duration guard MUST actually run, not just
 	// be documented — closes the gap where EnforceMaxDuration existed
 	// (Phase 30) but no caller ever invoked it. Runs AFTER download (there
@@ -1416,6 +1432,52 @@ func (h *Handler) inputKey(ctx context.Context, jobID uuid.UUID) (jobs.Input, er
 		return jobs.Input{}, fmt.Errorf("job %s has no inputs", jobID)
 	}
 	return ins[0], nil
+}
+
+// materializeExtraInputs downloads every input past ordinal 0 into dir, under
+// its recorded filename.
+//
+// It refuses a name it would have to interpret rather than repairing one: a
+// separator, a traversal, an absolute path or an empty name fails the job. The
+// API already refused those, so reaching this branch means the row did not come
+// from the API -- which is exactly when a worker should stop.
+func (h *Handler) materializeExtraInputs(ctx context.Context, jobID uuid.UUID, dir string) error {
+	ins, err := h.repo.Inputs(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, in := range ins {
+		if in.Ordinal == 0 {
+			continue
+		}
+		// THE SAME RULES THE API APPLIED, not a weaker echo of them.
+		//
+		// This layer exists to stop a row that did not come from the API, and it
+		// only refused path-shaped names -- so an attachment called in.latex
+		// passed here and was downloaded OVER the already-materialised document,
+		// and the engine compiled it (PR #20 review). A defence that enforces a
+		// subset of the rule it defends is a defence that announces which rules
+		// it does not enforce.
+		name := in.Filename
+		if _, nerr := jobs.SafeInputFilename(name); nerr != nil {
+			return fmt.Errorf("%w: input %d of job %s has an unusable filename %q",
+				asynq.SkipRetry, in.Ordinal, jobID, name)
+		}
+		if jobs.WorkerOwnedName(name) {
+			return fmt.Errorf("%w: input %d of job %s is named %q, which this worker writes itself",
+				asynq.SkipRetry, in.Ordinal, jobID, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("%w: job %s has two inputs named %q", asynq.SkipRetry, jobID, name)
+		}
+		seen[name] = true
+
+		if err := h.downloadTo(ctx, in.ObjectKey, filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *Handler) downloadTo(ctx context.Context, key, path string) error {

@@ -1,3 +1,34 @@
+---
+created: 2026-09-04
+area: tectonic
+severity: medium
+origin: phase 64 (plans 64-03 and 64-04, independently)
+resolved: 2026-09-05
+resolution: |
+  Option 2, chosen by the operator from the three costed here: several "file"
+  parts, one job, ordinals in order, and the input ceiling applied to the TOTAL
+  (as this file argued it must -- cost is linear in source size).
+
+  Proven live end to end: paper.tex + preamble.tex + refs.bib in one request
+  returned a PDF with \input resolved and the bibliography rendered. The
+  refusals were proven too: a single-input engine given extra parts -> 422,
+  duplicate names -> 400, the sum over 2 MiB -> 413, and a \usepackage{fontspec}
+  hidden in an ATTACHMENT -> unsupported_package, because the worker now scans
+  every .tex/.sty/.cls/.ltx in the job directory rather than only the document.
+
+  ONE THING THE INVESTIGATION FOUND FIRST, and it was not this: testing whether
+  the engine can read a sibling file showed it can read ANY file, by absolute
+  path, under --untrusted -- including /proc/self/environ, which held the
+  service's credentials. Fixed in PR #19 before this feature was built; the
+  read-confinement half is 2026-09-05-tex-file-reads-not-confined.md.
+
+  Also measured, and worth knowing before writing another filename check: Go's
+  mime/multipart already applies filepath.Base, so "../../etc/x" arrives as "x"
+  and never reaches our rule. What our rule actually catches is what the
+  standard library leaves -- backslashes, "..", flag-shaped names, control
+  characters -- and a test pins that division of labour.
+---
+
 # Multi-file LaTeX projects cannot be submitted
 
 **Found:** 2026-09-04, phase 64 (plans 64-04 and 64-03, independently).

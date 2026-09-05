@@ -194,6 +194,198 @@ func ValidateTectonicBundle(path string) error {
 // to prevent, and did not cover.
 var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
+// texSourceClosure returns the document plus every file it pulls in AS SOURCE,
+// transitively, resolved against the job's own directory.
+//
+// It follows the commands that make TeX read another file as source --
+// \input, \include, \InputIfFileExists, \subfile -- and resolves each name
+// the way TeX does: the name as written, then the name with .tex appended. It
+// deliberately does NOT follow data-reading commands such as
+// \lstinputlisting or \addbibresource: those files are rendered or parsed as
+// data, and their contents are not directives.
+//
+// Bounded by the job itself: at most jobs.MaxInputParts files exist in the
+// directory, and each is visited once.
+func texSourceClosure(inPath string) []string {
+	dir := filepath.Dir(inPath)
+	seen := map[string]bool{inPath: true}
+	out := []string{inPath}
+
+	// BOUNDED BY FILES, NOT BY DIRECTIVES. The first version capped the names
+	// it collected per file at 64, and a document can repeat one harmless
+	// \input 64 times before the one that matters -- the repeats resolve to a
+	// single file, so the cap was spent on nothing and the real preamble fell
+	// out of the closure while TeX still read it (PR #20 review, P1).
+	//
+	// The directory is the bound that already exists: the API admits at most
+	// jobs.MaxInputParts files, each is visited once, and a name that resolves
+	// to a file already seen costs nothing.
+	for i := 0; i < len(out) && len(out) <= maxClosureFiles; i++ {
+		src, err := os.ReadFile(out[i])
+		if err != nil {
+			continue
+		}
+		for _, inc := range texIncludedNames(src) {
+			name := inc.name
+			// The name is resolved inside the job's directory only. A name
+			// with a path in it is not followed: the API refuses such
+			// FILENAMES, and following one here would be this walk inventing a
+			// path the uploader could not have created.
+			if name == "" || strings.ContainsAny(name, `/\`) {
+				continue
+			}
+			// THE EXTENSIONS THAT DIRECTIVE WOULD TRY, not every extension.
+			//
+			// \usepackage{listings} loads listings.sty and never listings.tex,
+			// so resolving every extension for every directive pulled an
+			// attached DATA file named after a bundle package into the scan --
+			// and refused a valid job over the directive that listing was
+			// quoting. Measured; it is the same over-refusal this walk has now
+			// produced three times, each time while closing a bypass.
+			for _, cand := range inc.candidates() {
+				p := filepath.Join(dir, cand)
+				if seen[p] {
+					continue
+				}
+				if st, serr := os.Stat(p); serr != nil || st.IsDir() {
+					continue
+				}
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// maxClosureFiles bounds the walk itself. The API admits at most
+// jobs.MaxInputParts files per job, so this can only bite on a directory this
+// service did not create -- and biting means scanning fewer files, which is the
+// direction that fails closed for the WORKER's other checks and open for this
+// one. It is set above the API's own cap so a legitimate job never reaches it.
+const maxClosureFiles = 64
+
+// texIncludedNames returns the names a TeX source pulls in AS SOURCE.
+//
+// Parsed, not matched. A regexp over the raw bytes was wrong in both
+// directions, and both were measured:
+//
+//	\input nobrace     TeX reads nobrace.tex -- the braceless form is the
+//	                   PRIMITIVE's own syntax, and a brace-only pattern
+//	                   missed it, so a preamble could hide there
+//	% \input{old}      TeX reads nothing -- a commented-out include would
+//	                   have pulled a file into the scan and could refuse a
+//	                   job over a line that never executes
+//
+// So comments are skipped, and the command is matched as a whole CONTROL WORD:
+// \inputencoding is not \input, which is the same lesson this package already
+// paid for with \fi and \usepackage.
+//
+// Data-reading commands are deliberately absent: \lstinputlisting renders its
+// file verbatim and \addbibresource parses one as bibliography data. Neither
+// makes its target TeX source, and treating them as if they did refused a paper
+// for quoting the directive it was explaining.
+// texInclude is a name and the directive that named it. The directive decides
+// which files TeX would actually try, and treating them alike was a defect in
+// both directions: too few extensions missed an uploaded custom.sty, too many
+// pulled in a data file named after a bundle package.
+type texInclude struct {
+	name string
+	kind string
+}
+
+// candidates returns the filenames TeX would try for this directive, in its
+// own order. Nothing else in the directory is a candidate.
+func (i texInclude) candidates() []string {
+	switch i.kind {
+	case "usepackage", "RequirePackage":
+		return []string{i.name + ".sty"}
+	case "documentclass", "LoadClass":
+		return []string{i.name + ".cls"}
+	default:
+		// \input and friends: the name as written, then with .tex, which is
+		// what the primitive itself does.
+		return []string{i.name, i.name + ".tex", i.name + ".ltx"}
+	}
+}
+
+func texIncludedNames(src []byte) []texInclude {
+	text := string(src)
+	var names []texInclude
+
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '%':
+			// A comment runs to end of line. Escaped percents never reach
+			// here: they are consumed as control symbols below.
+			if nl := strings.IndexByte(text[i:], '\n'); nl >= 0 {
+				i += nl
+			} else {
+				i = len(text)
+			}
+			continue
+		case '\\':
+		default:
+			continue
+		}
+
+		word, wordLen := texControlWord(text[i:])
+		if len(word) == 1 && !isASCIILetter(word[0]) {
+			// A control SYMBOL (\%, \\) is one token; consuming it here is
+			// what keeps the comment branch above honest.
+			i += wordLen - 1
+			continue
+		}
+		switch word {
+		case "input", "include", "InputIfFileExists", "subfile":
+			// Source inclusion, by name.
+		case "usepackage", "RequirePackage", "documentclass", "LoadClass":
+			// ALSO source, when the name resolves to an uploaded file:
+			// \usepackage{custom} reads custom.sty from the job's own
+			// directory before it looks anywhere else. The caller resolves the
+			// extension; a name that matches nothing here is a bundle package.
+		default:
+			i += wordLen - 1
+			continue
+		}
+
+		rest := text[i+wordLen:]
+		k := 0
+		for k < len(rest) && (rest[k] == ' ' || rest[k] == '\t') {
+			k++
+		}
+		if k < len(rest) && rest[k] == '{' {
+			if end := strings.IndexByte(rest[k:], '}'); end > 0 && end <= 256 {
+				// One directive can name several: \usepackage{a,b} loads both,
+				// and a comma-separated list read as a single name would
+				// resolve to nothing and quietly skip them.
+				for _, one := range strings.Split(rest[k+1:k+end], ",") {
+					if one = strings.TrimSpace(one); one != "" {
+						names = append(names, texInclude{name: one, kind: word})
+					}
+				}
+				i += wordLen + k + end
+				continue
+			}
+			i += wordLen - 1
+			continue
+		}
+		// The braceless primitive form: the name runs to whitespace.
+		end := k
+		for end < len(rest) && !isPDFSpace(rest[end]) && rest[end] != '\\' && rest[end] != '%' &&
+			rest[end] != '{' && rest[end] != '}' {
+			end++
+		}
+		if end > k {
+			names = append(names, texInclude{name: rest[k:end], kind: word})
+			i += wordLen + end - 1
+			continue
+		}
+		i += wordLen - 1
+	}
+	return names
+}
+
 // tectonicEnv is the ONLY environment the engine gets, and the reason is a
 // measured leak rather than a precaution.
 //
@@ -270,7 +462,30 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	//
 	// Reading the whole file is affordable precisely because the input ceiling
 	// exists: 2 MiB, enforced before this ever runs.
-	if src, err := os.ReadFile(inPath); err == nil {
+	// EVERY .tex IN THE JOB'S DIRECTORY, not only the one being compiled.
+	//
+	// A multi-file project can put its preamble in a second file, so scanning
+	// the main document alone would let \usepackage{fontspec} through an
+	// \input -- and the API's own scan reads only the main part's sniff
+	// window. Two gates that both look at one file out of several is one gate.
+	// THE FILES THE DOCUMENT ACTUALLY PULLS IN AS SOURCE, not every text file.
+	//
+	// Two failures bound this, one on each side. Deciding by EXTENSION was a
+	// bypass: \input{preamble} reads a file named exactly "preamble", and an
+	// extensionless upload carrying \usepackage{fontspec} was read, loaded and
+	// typeset. Deciding by "looks like text" was the opposite failure: a
+	// project using \lstinputlisting{sample.txt} to render a source listing
+	// VERBATIM would be refused because the listing quotes the directive, and
+	// refusing valid work is the more expensive of the two (PR #20 review).
+	//
+	// So the rule is what TeX itself would do: start at the document and follow
+	// its source-inclusion commands. A file nobody \inputs is data, whatever it
+	// is called and whatever it contains.
+	for _, path := range texSourceClosure(inPath) {
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
 		if pkg := TeXDeniedInSource(src); pkg != "" {
 			return fmt.Errorf("tectonic: %w", TeXUnsupportedPackageError(pkg))
 		}

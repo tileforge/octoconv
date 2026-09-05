@@ -780,9 +780,40 @@ paths:
               type: object
               properties:
                 file:
-                  type: string
-                  format: binary
-                  description: The file to convert.
+                  oneOf:
+                    - type: string
+                      format: binary
+                    - type: array
+                      items:
+                        type: string
+                        format: binary
+                      minItems: 1
+                      maxItems: 32
+                  description: >-
+                    The file to convert, repeatable. "One or many" rather than
+                    an array, deliberately: prose about repetition does not
+                    change a schema's cardinality, so a client generated from a
+                    single-binary declaration could not send a project at all --
+                    but declaring only an array would change every existing
+                    generated single-file signature for a server that still
+                    accepts exactly what it always did. Both branches are true
+                    of this endpoint. The FIRST part is the document and decides
+                    the conversion, and any further parts
+                    are attachments stored beside it under their own names --
+                    which is how a LaTeX project's \input and \addbibresource
+                    resolve. Only the tex engine accepts more than one; every
+                    other conversion refuses extra parts with 422 rather than
+                    ignoring them. The engine size limit applies to the TOTAL of
+                    all parts, and an attachment name must be a plain file name
+                    (no path, no leading "-", no control characters), unique
+                    within the request, and must not begin with the reserved
+                    stems: any name whose part before the first dot is exactly
+                    "in" or "out" is refused, because the worker and the engine
+                    write files from those stems (in.<source>, in.pdf, in.log,
+                    out.<target>). "input.tex" and "outline.tex" are fine --
+                    the stem is what is reserved, not the prefix. At most 32
+                    parts per job. A name is refused rather than repaired: a
+                    repaired name is not the name your document \inputs.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
@@ -888,7 +919,8 @@ paths:
             format mismatch, unrecognized content, invalid/inapplicable
             opts, unknown or inactive preset, macro-carrying document,
             password-protected or legacy Office file, a declared
-            size/dimension over the configured limit, or a .tex preamble
+            size/dimension over the configured limit, extra `file` parts sent
+            to a conversion that takes a single file, or a .tex preamble
             loading a package this deployment does not accept -- one the
             TeX bundle cannot resolve, or one it CAN resolve that is
             refused on purpose, such as fontspec and the two

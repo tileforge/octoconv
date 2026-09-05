@@ -61,8 +61,33 @@ var RejectBindings = map[string]RejectBinding{
 	"dimensions_unknown": {ErrCode: errcode.InvalidRequest},
 	// engine_size_limit: the upload exceeds a configured PER-ENGINE size
 	// policy. This is a property of server configuration, not of the file's
-	// content.
+	// content. It now covers the TOTAL of a multi-part upload, for the reason
+	// the tex ceiling exists: cost is linear in source size, so a project
+	// split across parts costs what its bytes cost.
 	"engine_size_limit": {ErrCode: errcode.PayloadTooLarge},
+	// multiple_inputs: extra "file" parts were sent to a conversion that takes
+	// one file. A property of the REQUEST's shape against the engine's
+	// capability, not of any file's content -- and refused rather than ignored,
+	// because ignoring it would charge the client for bytes the job cannot read
+	// and answer 202.
+	"multiple_inputs": {ErrCode: errcode.InvalidRequest},
+	// unsafe_filename: an attachment's name cannot be used as a plain file in
+	// the job's own directory. A statement about the NAME, not the bytes: these
+	// names become files beside the document the engine compiles.
+	"unsafe_filename": {ErrCode: errcode.InvalidRequest},
+	// too_many_parts: more files in one job than this service accepts. A
+	// property of the REQUEST, and a count bound rather than a byte bound --
+	// size does not bound count, and a thousand one-byte parts cost a thousand
+	// uploads, rows and downloads while passing every byte ceiling.
+	"too_many_parts": {ErrCode: errcode.InvalidRequest},
+	// reserved_filename: an attachment is named for a file the WORKER creates
+	// (in.<source>, out.<target>). Refused because it would overwrite the
+	// document that passed every check with a part that passed none.
+	"reserved_filename": {ErrCode: errcode.InvalidRequest},
+	// duplicate_filename: two parts share a name and would overwrite each other
+	// in the job's directory, with upload order deciding which survived. Also a
+	// property of the request, not of any file's content.
+	"duplicate_filename": {ErrCode: errcode.InvalidRequest},
 	// invalid_opts: the request's `opts` field failed to parse. This is a
 	// property of the request's opts field, not of the uploaded file.
 	"invalid_opts": {ErrCode: errcode.InvalidOptions},

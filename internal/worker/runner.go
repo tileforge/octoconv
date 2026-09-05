@@ -259,7 +259,15 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 			// no-double-count comment below).
 			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
 		}
-		if r.d.IsTerminal(err) {
+		// A SkipRetry from the engine path means "no attempt can succeed", and a
+		// job that will never be attempted again must not be left ACTIVE. Before
+		// this, an error wrapping the sentinel fell to the transient branch --
+		// no MarkFailed, no metric -- while asynq read the sentinel and archived
+		// the task, so the row sat active until the reconciler noticed. That is
+		// the same shape as the recovered panic above, from the other side, and
+		// it is worth a branch of its own rather than an assumption that every
+		// engine's IsTerminal happens to recognise the sentinel (PR #20 review).
+		if errors.Is(err, asynq.SkipRetry) || r.d.IsTerminal(err) {
 			// Sanitized message only in error_message (exposed via GET
 			// /jobs/{id} and webhook payloads, T-03-03); the raw stderr
 			// (which contains local temp paths) is kept in

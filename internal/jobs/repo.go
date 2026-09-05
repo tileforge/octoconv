@@ -91,7 +91,19 @@ type CreateParams struct {
 	// name/version 0) for non-preset jobs, which stay NULL in the DB.
 	PresetName    string
 	PresetVersion int
-	Input         Input
+	// Input is the single-input form, which every caller but one uses and
+	// which the schema has always supported at ordinal 0.
+	Input Input
+	// Inputs is the MULTI-input form: one job, several uploaded files, ordinals
+	// as given. job_inputs has carried an ordinal column since Phase 01 and no
+	// code path populated more than one until tex projects needed a .tex plus
+	// its .bib and figures.
+	//
+	// Setting both is an ERROR rather than a precedence. Two fields that can
+	// each answer "what is this job's input" is the drift shape this package
+	// keeps paying for; a caller that sets both has two opinions and the
+	// database should not be asked to pick one.
+	Inputs []Input
 }
 
 // Create inserts a job (status=queued), its input row, and the initial
@@ -105,6 +117,14 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 	jobID := p.ID
 	if jobID == uuid.Nil {
 		jobID = uuid.New()
+	}
+
+	inputs := p.Inputs
+	if len(inputs) == 0 {
+		inputs = []Input{p.Input}
+	} else if p.Input != (Input{}) {
+		return uuid.Nil, fmt.Errorf("CreateParams sets both Input and Inputs: two answers to what this "+
+			"job's input is, and %s would get whichever this function preferred", jobID)
 	}
 
 	// The options column is NOT NULL (0001_init.sql:25); a nil p.Opts defaults
@@ -144,7 +164,16 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		// mode is a clean no-op plus (if the handler already wrote to S3
 		// past PreAdmit's advisory pre-check) an orphaned S3 object that
 		// TTL cleanup collects, matching the existing preset-TOCTOU path.
-		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, p.Input.SizeBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+		// THE WHOLE JOB'S BYTES, not the first input's. With Inputs populated,
+		// p.Input is the zero value, so charging p.Input.SizeBytes admitted a
+		// multi-part project as ZERO bytes and let it past max_daily_bytes
+		// (PR #20 review). The sum is computed from the same slice the rows
+		// below are written from, so the quota and the record cannot disagree.
+		var admitBytes int64
+		for _, in := range inputs {
+			admitBytes += in.SizeBytes
+		}
+		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, admitBytes, r.quotaObserver, r.quotaDisabled); err != nil {
 			return err
 		}
 
@@ -156,13 +185,14 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 			return fmt.Errorf("insert job: %w", err)
 		}
 
-		in := p.Input
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			jobID, in.Ordinal, in.ObjectKey, in.Filename, in.Format, in.SizeBytes, in.ContentType,
-		); err != nil {
-			return fmt.Errorf("insert job_input: %w", err)
+		for _, in := range inputs {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO job_inputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type)
+				VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				jobID, in.Ordinal, in.ObjectKey, in.Filename, in.Format, in.SizeBytes, in.ContentType,
+			); err != nil {
+				return fmt.Errorf("insert job_input ordinal %d: %w", in.Ordinal, err)
+			}
 		}
 
 		if _, err := tx.Exec(ctx, `
