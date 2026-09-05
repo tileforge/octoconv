@@ -96,3 +96,59 @@ function.
 Why all three names: fontspec.sty LOADS fontspec-xetex.sty. The bundle carries
 the implementation files, they load standalone, and the one that produced a PDF
 did so while the documentation promised the package was refused.
+
+WHAT THE FIXED BUILD THEN SHOWED (P1-A, second half)
+-----------------------------------------------------
+The 8 MiB cap bounds what the WORKER retains. tectonic keeps its own output
+files in memory, so the same document still drove the container to its limit --
+the cap does not touch the child. Live, through the real worker:
+
+    03:27:25 active 1002MiB / 1GiB
+    03:28:44 active 1018MiB / 1GiB
+    03:29:37 active  712MiB          <- cgroup killed the child
+    03:30:04 failed   40MiB
+
+BEFORE the second fix, that kill arrived as an ordinary non-zero exit and asynq
+RETRIED it, allocating the same way again (visible in an earlier run as
+315 -> 1006 -> 51 -> climb). AFTER: one active event, one failure.
+
+    error_code    engine_error
+    error_message the document exhausted the memory available to the
+                  typesetting engine
+    job_events    queued -> active -> failed          (ONE attempt)
+    container     status=running restarts=0           (PID 1 survives;
+                  OOMKilled=true refers to the child)
+
+P2  UNDEFINED REFERENCES, BOTH DIRECTIONS, LIVE
+-----------------------------------------------
+    \typeout{There were undefined references}   -> done, PDF returned
+    \ref{nosuchlabel} + \cite{nosuchcite}       -> failed, engine_error,
+        "the document has undefined references or citations; the PDF would
+         show ?? in their place"
+
+P1-B  THE CEILING, PROVEN BY LOWERING IT
+-----------------------------------------
+Producing >32 MiB on demand turned out to be unreliable: these runs are NOT
+linear under the container's memory pressure. 130 000 iterations produced
+64 464 pages / 19 545 890 bytes in 93s; 240 000 produced FEWER -- 43 392 pages
+/ 13 315 591 bytes in 163s. Extrapolating a rate to the timeout would therefore
+have been a number nobody measured, and the earlier "~378 KB/s -> roughly
+100 MB" comment was exactly that. It is corrected in the same commit.
+
+So the ENFORCEMENT was proven directly, with a worker started at
+TECTONIC_MAX_OUTPUT_BYTES=5242880 against the same 199-byte document:
+
+    after 93s   error_code=output_too_large
+                "the typeset PDF is larger than this deployment accepts"
+    attempts    1
+    S3          ls /data/octoconv/results/<job>/ -> No such file or directory
+
+The bytes never reach the bucket, which is the half of the fix that matters.
+
+ONE FALSE ALARM, RECORDED
+--------------------------
+The first run of the log-bomb proof came back `reconciler_exhausted` after 49
+seconds, which looks like a defect and is not one: `go test ./...` was running
+against the SAME Postgres, and internal/reconciler's tests swept the in-flight
+job. Re-run with nothing else touching the database, the verdict was the one
+above. A live proof and the test suite cannot share a database.
