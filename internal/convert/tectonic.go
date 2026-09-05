@@ -211,7 +211,16 @@ func texSourceClosure(inPath string) []string {
 	seen := map[string]bool{inPath: true}
 	out := []string{inPath}
 
-	for i := 0; i < len(out); i++ {
+	// BOUNDED BY FILES, NOT BY DIRECTIVES. The first version capped the names
+	// it collected per file at 64, and a document can repeat one harmless
+	// \input 64 times before the one that matters -- the repeats resolve to a
+	// single file, so the cap was spent on nothing and the real preamble fell
+	// out of the closure while TeX still read it (PR #20 review, P1).
+	//
+	// The directory is the bound that already exists: the API admits at most
+	// jobs.MaxInputParts files, each is visited once, and a name that resolves
+	// to a file already seen costs nothing.
+	for i := 0; i < len(out) && len(out) <= maxClosureFiles; i++ {
 		src, err := os.ReadFile(out[i])
 		if err != nil {
 			continue
@@ -224,7 +233,14 @@ func texSourceClosure(inPath string) []string {
 			if name == "" || strings.ContainsAny(name, `/\`) {
 				continue
 			}
-			for _, cand := range []string{name, name + ".tex"} {
+			// Every extension TeX would try for this name. .sty and .cls are
+			// here because \usepackage{custom} and \documentclass{custom} read
+			// an UPLOADED custom.sty or custom.cls as source -- a chain of
+			// main -> preamble -> custom.sty was how a denied package reached
+			// the engine while the closure watched only \input (same review).
+			// A name that resolves to nothing in this directory is a bundle
+			// package, and the bundle is ours.
+			for _, cand := range []string{name, name + ".tex", name + ".sty", name + ".cls", name + ".ltx"} {
 				p := filepath.Join(dir, cand)
 				if seen[p] {
 					continue
@@ -239,6 +255,13 @@ func texSourceClosure(inPath string) []string {
 	}
 	return out
 }
+
+// maxClosureFiles bounds the walk itself. The API admits at most
+// jobs.MaxInputParts files per job, so this can only bite on a directory this
+// service did not create -- and biting means scanning fewer files, which is the
+// direction that fails closed for the WORKER's other checks and open for this
+// one. It is set above the API's own cap so a legitimate job never reaches it.
+const maxClosureFiles = 64
 
 // texIncludedNames returns the names a TeX source pulls in AS SOURCE.
 //
@@ -261,11 +284,10 @@ func texSourceClosure(inPath string) []string {
 // makes its target TeX source, and treating them as if they did refused a paper
 // for quoting the directive it was explaining.
 func texIncludedNames(src []byte) []string {
-	const maxNames = 64
 	text := string(src)
 	var names []string
 
-	for i := 0; i < len(text) && len(names) < maxNames; i++ {
+	for i := 0; i < len(text); i++ {
 		switch text[i] {
 		case '%':
 			// A comment runs to end of line. Escaped percents never reach
@@ -290,6 +312,12 @@ func texIncludedNames(src []byte) []string {
 		}
 		switch word {
 		case "input", "include", "InputIfFileExists", "subfile":
+			// Source inclusion, by name.
+		case "usepackage", "RequirePackage", "documentclass", "LoadClass":
+			// ALSO source, when the name resolves to an uploaded file:
+			// \usepackage{custom} reads custom.sty from the job's own
+			// directory before it looks anywhere else. The caller resolves the
+			// extension; a name that matches nothing here is a bundle package.
 		default:
 			i += wordLen - 1
 			continue
@@ -302,7 +330,14 @@ func texIncludedNames(src []byte) []string {
 		}
 		if k < len(rest) && rest[k] == '{' {
 			if end := strings.IndexByte(rest[k:], '}'); end > 0 && end <= 256 {
-				names = append(names, strings.TrimSpace(rest[k+1:k+end]))
+				// One directive can name several: \usepackage{a,b} loads both,
+				// and a comma-separated list read as a single name would
+				// resolve to nothing and quietly skip them.
+				for _, one := range strings.Split(rest[k+1:k+end], ",") {
+					if one = strings.TrimSpace(one); one != "" {
+						names = append(names, one)
+					}
+				}
 				i += wordLen + k + end
 				continue
 			}

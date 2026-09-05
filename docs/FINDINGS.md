@@ -229,12 +229,17 @@ in the measurement, not established agreement.
 
 ## Binding to existing job-creation rejections (D-04)
 
-`handleCreateJob` (`internal/api/handlers.go`) already rejects thirteen classes of
-content-validation failure with a `422`/`413` response, predating this findings vocabulary.
-`internal/inspect/bindings.go` (`RejectBindings`) declares, for every one of those thirteen
+`handleCreateJob` (`internal/api/handlers.go`) rejects nineteen classes of
+content-validation failure with a `400`/`413`/`422` response, predating this findings vocabulary.
+`internal/inspect/bindings.go` (`RejectBindings`) declares, for every one of those
 `reason=` log tokens, whether the rejection is a statement about the FILE (a finding code from
 the table above) or a statement about the REQUEST/POLICY (an `internal/errcode` value that is not
-a finding about the file at all):
+a finding about the file at all).
+
+This table is held equal to `RejectBindings` by `TestFindingsDocListsEveryRejectBinding`. It was
+not, before that test existed: the document said "thirteen" through two milestones that added six
+more tokens, and the mechanical check compared the handler with the bindings while nobody compared
+either with the prose (PR #20 review).
 
 | Reason token | Binding |
 |---|---|
@@ -251,6 +256,12 @@ a finding about the file at all):
 | `invalid_opts` | not a finding — `errcode.invalid_options` (a property of the request's `opts` field) |
 | `opts_not_applicable` | not a finding — `errcode.opts_not_applicable` (a property of the request's `opts` field) |
 | `opts_too_large` | not a finding — `errcode.payload_too_large` (a property of the request's `opts` field) |
+| `unsupported_package` | not a finding — `errcode.unsupported_package` (a `\usepackage` this deployment's TeX bundle cannot resolve, or refuses on purpose) |
+| `multiple_inputs` | not a finding — `errcode.invalid_request` (extra `file` parts sent to a conversion that takes one file) |
+| `too_many_parts` | not a finding — `errcode.invalid_request` (more files in one job than this service accepts; a count bound, not a byte bound) |
+| `unsafe_filename` | not a finding — `errcode.invalid_request` (an attachment name that cannot be a plain file in the job's directory) |
+| `reserved_filename` | not a finding — `errcode.invalid_request` (an attachment named for a file the worker or the engine writes: the `in.*`/`out.*` stems) |
+| `duplicate_filename` | not a finding — `errcode.invalid_request` (two parts sharing a name would overwrite each other) |
 
 **Migrating `handleCreateJob` onto this vocabulary is NOT done in this phase.** This section
 declares the correspondence and proves it stays complete

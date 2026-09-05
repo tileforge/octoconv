@@ -244,16 +244,22 @@ func TestIncludedNamesAreParsedNotMatched(t *testing.T) {
 		why  string
 	}{
 		{
+			// "article" is here because \documentclass names a file TeX reads
+			// AS SOURCE when it resolves locally -- an uploaded article.cls
+			// would be read, and one carrying a denied package was how round
+			// 5's second P1 reached the engine. The CALLER resolves the name;
+			// a class the bundle provides matches no local file and costs
+			// nothing.
 			name: "the braceless primitive form",
 			src:  "\\documentclass{article}\n\\input nobrace\n\\begin{document}x\\end{document}\n",
-			want: []string{"nobrace"},
+			want: []string{"article", "nobrace"},
 			why:  "TeX reads nobrace.tex; a brace-only pattern missed it, so a preamble could hide there",
 		},
 		{
 			name: "a commented-out include",
 			src:  "\\documentclass{article}\n% \\input{old}\n\\begin{document}x\\end{document}\n",
-			want: nil,
-			why:  "TeX reads nothing, and pulling old.tex into the scan could refuse a job over a line that never executes",
+			want: []string{"article"},
+			why:  "TeX reads nothing from the comment, and pulling old.tex into the scan could refuse a job over a line that never executes",
 		},
 		{
 			name: "a longer control word that merely starts with input",
@@ -287,4 +293,85 @@ func TestIncludedNamesAreParsedNotMatched(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClosureFollowsPackagesAndIsBoundedByFiles is round 5's two P1s, which are
+// the same defect from opposite ends: what the walk follows, and what stops it.
+func TestClosureFollowsPackagesAndIsBoundedByFiles(t *testing.T) {
+	write := func(t *testing.T, dir, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan := func(main string) string {
+		for _, p := range texSourceClosure(main) {
+			src, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			if pkg := TeXDeniedInSource(src); pkg != "" {
+				return pkg
+			}
+		}
+		return ""
+	}
+
+	t.Run("an uploaded .sty is source, and reached through a preamble", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\input{preamble}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "preamble.tex", "\\usepackage{custom}\n")
+		// \usepackage{custom} reads THIS file before it looks in the bundle.
+		write(t, dir, "custom.sty", "\\RequirePackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("denied package not found (got %q): the walk followed \\input but not the package "+
+				"loaders, so an uploaded .sty was invisible to it while TeX read it", got)
+		}
+	})
+
+	t.Run("an uploaded .cls is source", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{mine}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "mine.cls", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("a local document class was not followed (got %q)", got)
+		}
+	})
+
+	t.Run("repeated directives do not exhaust the walk", func(t *testing.T) {
+		dir := t.TempDir()
+		var b strings.Builder
+		b.WriteString("\\documentclass{article}\n")
+		// Harmless repetition: 200 directives, one file.
+		for i := 0; i < 200; i++ {
+			b.WriteString("\\input{safe}\n")
+		}
+		b.WriteString("\\input{preamble}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "in.latex", b.String())
+		write(t, dir, "safe.tex", "\\newcommand{\\x}{y}\n")
+		write(t, dir, "preamble.tex", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("the walk gave up before reaching preamble.tex (got %q): it was bounded by "+
+				"DIRECTIVES, and repeating one harmless include spends that bound on a single file", got)
+		}
+	})
+
+	t.Run("a comma-separated package list names each one", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\usepackage{alpha,beta}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "beta.sty", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("the second name in a list was not followed (got %q)", got)
+		}
+	})
+
+	t.Run("a package the bundle provides is not a local file", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\usepackage{amsmath}\n\\begin{document}x\\end{document}\n")
+		// Nothing named amsmath.sty here: it resolves in the bundle, which is
+		// ours, and the walk must not invent a file for it.
+		if got := texSourceClosure(filepath.Join(dir, "in.latex")); len(got) != 1 {
+			t.Fatalf("closure = %v, want just the document: a bundle package is not an uploaded file", got)
+		}
+	})
 }
