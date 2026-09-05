@@ -901,8 +901,15 @@ func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T)
 	// about ceilings. Real dictionaries, past the cap, do.
 	var buf bytes.Buffer
 	buf.WriteString("<< /Type /Pages /Count 5 >>") // the stale, early answer
+	// MATCHING dictionaries, because matching ones are what the cap counts.
+	// The fixture has now moved twice, each time to the mechanism actually in
+	// force: bare markers when the walk counted markers, filler dictionaries
+	// when it counted every dictionary, and Pages dictionaries now that it
+	// counts only those. A fixture aimed at a bound that no longer exists
+	// passes for the wrong reason -- the filler version reported 99, an answer
+	// with no ceiling at all.
 	for i := 0; i < maxPagesDictsScanned; i++ {
-		buf.WriteString("<< /Filler 1 >>")
+		buf.WriteString("<< /Type /Pages /Count 7 >>")
 	}
 	buf.WriteString("<< /Type /Pages /Count 99 >>") // past the cap, a DIFFERENT count
 	head := buf.Bytes()

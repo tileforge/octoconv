@@ -209,6 +209,15 @@ func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
 		}
 
 		if c == '/' {
+			if depth == 0 {
+				// Outside every dictionary a name cannot be a key, and this
+				// walk reads names ONLY as keys. Skipping without decoding is
+				// what keeps a file of bare names from allocating per token.
+				i = pdfSkipName(b, i)
+				awaitLength = false
+				ints = ints[:0]
+				continue
+			}
 			name, next := pdfReadName(b, i)
 			i = next
 			// /Length as a KEY of this dictionary: at dictionary depth 1 and
@@ -389,6 +398,33 @@ func pdfReadName(b []byte, i int) (string, int) {
 	return string(out), i
 }
 
+// pdfSkipName advances past a name token without DECODING it, and it exists
+// because decoding allocates.
+//
+// pdfReadName builds the decoded name so a caller can compare it; a caller that
+// cannot use the name -- because no dictionary is open, so the token cannot be
+// a key -- pays that allocation for nothing. Measured on the shape that makes
+// it visible (PR #18 review, P1): 8 MiB of "/a" produced 8 388 629 allocations
+// totalling 64.0 MB, in the API process, on a window a client supplies.
+//
+// It must advance EXACTLY as pdfReadName does, including over "#XX" escapes, or
+// the two walks disagree about where the next token starts.
+func pdfSkipName(b []byte, i int) int {
+	i++ // past '/'
+	for i < len(b) && !isPDFSpace(b[i]) && !isPDFDelimiter(b[i]) {
+		if b[i] == '#' && i+2 < len(b) {
+			if _, ok1 := pdfHexDigit(b[i+1]); ok1 {
+				if _, ok2 := pdfHexDigit(b[i+2]); ok2 {
+					i += 3
+					continue
+				}
+			}
+		}
+		i++
+	}
+	return i
+}
+
 func pdfHexDigit(c byte) (byte, bool) {
 	switch {
 	case c >= '0' && c <= '9':
@@ -567,7 +603,19 @@ func pdfStreamPayloads(b []byte) ([][2]int, error) {
 // It follows /Prev so an incrementally-updated file resolves through its whole
 // chain, and it bounds that walk: a table chain that loops or is absurdly long
 // is malformed, and this returns what it has rather than following it forever.
-func pdfXrefObjects(b []byte) map[int]int {
+func pdfXrefObjects(b []byte) map[int]int { return pdfXrefObjectsLimited(b, 0) }
+
+// pdfXrefObjectsLimited is pdfXrefObjects with a cap on how many entries it
+// will index. maxIndexed <= 0 means no cap.
+//
+// The cap is the INSPECT window's, not the worker's, and imposing it on both
+// was a defect of its own (PR #18 review): pdfStreamPayloads verifies whole
+// sanitizer OUTPUT inside a cgroup under a measured timeout, and a silently
+// partial index there can leave a forward /Length unresolved -- so
+// VerifySanitized would reject a valid job to save memory the worker has.
+// cmd/api's inspect path runs on an 8 MiB attacker-supplied window and passes
+// a cap; the worker passes none.
+func pdfXrefObjectsLimited(b []byte, maxIndexed int) map[int]int {
 	out := map[int]int{}
 
 	at := bytes.LastIndex(b, []byte("startxref"))
@@ -626,7 +674,7 @@ func pdfXrefObjects(b []byte) map[int]int {
 					continue
 				}
 				num := startNum + n
-				if len(out) >= pdfXrefMaxIndexed {
+				if maxIndexed > 0 && len(out) >= maxIndexed {
 					// The INDEX is bounded, not just each subsection. Measured
 					// before this existed, on a file whose table declares the
 					// per-subsection maximum: a 20 971 614-byte input built a

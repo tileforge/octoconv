@@ -40,13 +40,17 @@ import (
 	"github.com/apaderin/octoconv/internal/convert"
 )
 
-// maxPagesDictsScanned bounds how many dictionaries the page-count walk will
-// visit. It is a WORK bound, not a correctness one: exceeding it reports a
-// ceiling (unknown), never a value, because a partial walk cannot know whether
-// the Pages dict it did see is the last one.
+// maxPagesDictsScanned bounds how many /Type /Pages dictionaries the walk will
+// accept -- matching ones only, which is what the byte scan it replaced bounded
+// too (occurrences of the marker). Exceeding it reports a ceiling (unknown),
+// never a value, because a partial walk cannot know whether the Pages dict it
+// did see is the last one.
 //
-// 8192 is far past any document with a page count worth reporting and is
-// reached only by a file built to reach it.
+// It deliberately does NOT count unrelated dictionaries. The first version did,
+// and a document with 9 000 annotation dictionaries ahead of its page tree --
+// an ordinary form -- lost its page_count to a work ceiling (PR #18 review).
+//
+// 8192 revisions of a page tree is far past any real document.
 const maxPagesDictsScanned = 8192
 
 // HOW THE PAGE COUNT IS DERIVED, and what this file deliberately does not do.

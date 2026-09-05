@@ -57,9 +57,14 @@ const pdfMaxIndexedObjects = 65536
 // inside an array value, and not a longer name that merely starts with key.
 //
 // ceilingHit reports that the walk could not be trusted to completion -- more
-// than maxDicts dictionaries, or a stream whose /Length this window does not
-// resolve, after which later bytes may be payload read as structure. Callers
-// must treat it as "no answer", never as "the answers so far".
+// than maxDicts dictionaries DECLARING THE REQUESTED /Type, nesting past
+// maxPDFDictDepth, or a stream whose /Length this window does not resolve,
+// after which later bytes may be payload read as structure. Callers must treat
+// it as "no answer", never as "the answers so far".
+//
+// maxDicts counts matching dictionaries, not every dictionary in the file:
+// counting all of them turned an ordinary annotated document into a work
+// ceiling before its page tree was reached.
 //
 // A window that cuts a file mid-stream is the ordinary case for
 // internal/inspect, so an unresolved length is not an error here; it is the
@@ -113,7 +118,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		return nil, true
 	}
 	objects := scan.objects
-	for num, off := range pdfXrefObjects(b) {
+	for num, off := range pdfXrefObjectsLimited(b, pdfMaxIndexedObjects) {
 		objects[num] = off
 	}
 
@@ -163,7 +168,7 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 	}
 
 	arrayDepth := 0
-	dicts := 0
+	matched := 0 // dictionaries declaring the requested /Type
 
 	// awaitVal is set for exactly one token: the integer that follows the key
 	// this function was asked about. Everything else about key/value position
@@ -207,13 +212,10 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		}
 		if c == '<' {
 			if i+1 < len(b) && b[i+1] == '<' {
-				if dicts++; dicts > maxDicts {
-					return nil, true
-				}
 				if len(stack) >= maxPDFDictDepth {
-					// DEPTH, not just count. maxDicts bounds how many
-					// dictionaries are visited; nothing bounded how deep they
-					// NEST, and the frame stack grew with the nesting.
+					// DEPTH, which no other bound covers. maxDicts counts
+					// MATCHING dictionaries and nothing bounded how deep any
+					// of them NEST, so the frame stack grew with the nesting.
 					// Measured before this existed: 2 097 169 bytes of "<<"
 					// cost 131.4 MB of allocation, and internal/inspect runs
 					// this over up to 8 MiB in the API process.
@@ -288,6 +290,17 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 		}
 
 		if c == '/' {
+			// A name is DECODED only where it can be a key: inside a
+			// dictionary and outside any array. Everywhere else the walk needs
+			// its end position and nothing more, and decoding it allocates --
+			// 8 MiB of "/a" cost 8 388 629 allocations across the two passes
+			// before this split (PR #18 review, P1), on a window a client
+			// supplies to POST /v1/inspect.
+			if len(stack) == 0 || arrayDepth != 0 {
+				i = pdfSkipName(b, i)
+				dictClosed = false
+				continue
+			}
 			// pdfReadName, not a prefix compare: "/Count300" is the name
 			// "Count300", which is not "Count". That distinction is the round-3
 			// finding, and it is already this tokenizer's job.
@@ -309,6 +322,22 @@ func PDFTypedDictUints(b []byte, typeName, key string, maxDicts int) (values []i
 			// This name is the VALUE of the key just read.
 			if stack[n-1].key == "Type" && name == typeName {
 				stack[n-1].isType = true
+				// MATCHING dictionaries are what maxDicts bounds, not every
+				// dictionary in the file. Counting all of them regressed the
+				// public page_count characteristic from an integer to null on
+				// ordinary documents: 9 000 annotation dictionaries ahead of
+				// the page tree -- a form, or any richly annotated PDF --
+				// exhausted the cap before /Type /Pages was ever reached, and
+				// reported a work ceiling for a file with nothing wrong with
+				// it (PR #18 review). Refusing valid work to bound work is the
+				// trade this project has paid for most.
+				//
+				// Total work needs no separate cap: the walk is linear in the
+				// input, the caller's window is what bounds the input, and
+				// since pdfSkipName no token allocates unless it can be a key.
+				if matched++; matched > maxDicts {
+					return nil, true
+				}
 			}
 			awaitLength = false
 			endValue()

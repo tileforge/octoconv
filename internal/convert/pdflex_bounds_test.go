@@ -112,3 +112,81 @@ func TestRealFilesStillResolveAfterTheBounds(t *testing.T) {
 		})
 	}
 }
+
+// TestNamesOutsideDictionariesAreNotDecoded is PR #18's P1, and it is about
+// allocation rather than about an answer.
+//
+// A file of bare names -- "/a/a/a..." -- never opens a dictionary, so no
+// dictionary-shaped bound applies to it, and both walks called the ALLOCATING
+// pdfReadName on every token anyway. Measured on the window POST /v1/inspect
+// actually accepts:
+//
+//	8 388 608 bytes  ->  8 388 629 allocations, 64.0 MB, 213ms
+//
+// A name is decoded only where it can be a key now: 2 allocations, 0.0 MB.
+func TestNamesOutsideDictionariesAreNotDecoded(t *testing.T) {
+	body := bytes.Repeat([]byte("/a"), (8<<20)/2)
+
+	var values []int
+	var ceiling bool
+	alloc := allocDuring(func() { values, ceiling = PDFTypedDictUints(body, "Pages", "Count", 8192) })
+
+	if len(values) != 0 || ceiling {
+		t.Fatalf("a file of bare names answered (values=%v ceiling=%v); it declares no dictionary at all",
+			values, ceiling)
+	}
+	const ceilingBytes = 1 << 20
+	if alloc > ceilingBytes {
+		t.Fatalf("walking %d bytes of bare names allocated %.1f MB: names are being decoded where they "+
+			"cannot be keys, in the API process, on a window a client supplies",
+			len(body), float64(alloc)/(1<<20))
+	}
+}
+
+// TestUnrelatedDictionariesDoNotExhaustTheLookup is PR #18's P2, and it is the
+// opposite kind of defect: a bound that refuses valid work.
+//
+// The first version of the cap counted EVERY dictionary, so an ordinary
+// annotated document -- a form, a PDF with many resources -- hit a work ceiling
+// before its page tree was reached, and the public page_count characteristic
+// went from an integer to null.
+func TestUnrelatedDictionariesDoNotExhaustTheLookup(t *testing.T) {
+	var buf bytes.Buffer
+	buf.WriteString("%PDF-1.4\n")
+	for i := 0; i < 9000; i++ {
+		buf.WriteString("<< /Annot 1 >>")
+	}
+	buf.WriteString("1 0 obj\n<< /Type /Pages /Count 42 >>\nendobj\n")
+
+	values, ceiling := PDFTypedDictUints(buf.Bytes(), "Pages", "Count", 8192)
+	if ceiling {
+		t.Fatal("9 000 unrelated dictionaries exhausted the page lookup: the cap is counting " +
+			"dictionaries that have nothing to do with what was asked for")
+	}
+	if len(values) != 1 || values[0] != 42 {
+		t.Fatalf("values = %v, want [42]", values)
+	}
+}
+
+// TestXrefIndexCapIsTheCallersChoice is PR #18's third finding. The cap was
+// derived for the 8 MiB inspect window and applied unconditionally, including
+// to pdfStreamPayloads -- which verifies whole sanitizer OUTPUT inside a
+// cgroup, under a measured timeout, on a file the service produced itself. A
+// silently partial index there can leave a forward /Length unresolved, and
+// VerifySanitized would then reject a valid job to save memory the worker has.
+func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
+	raw := readFixtureOrSkip(t, "testdata/ocr/multipage_text.pdf")
+
+	uncapped := pdfXrefObjects(raw)
+	if len(uncapped) == 0 {
+		t.Skip("this fixture has no classic xref table to index")
+	}
+	capped := pdfXrefObjectsLimited(raw, 1)
+	if len(capped) > 1 {
+		t.Fatalf("a cap of 1 indexed %d entries: the limit is not applied", len(capped))
+	}
+	if len(uncapped) <= len(capped) {
+		t.Fatalf("the uncapped index (%d) is no larger than a cap of 1 (%d) -- the worker's path is "+
+			"still taking the inspect window's limit", len(uncapped), len(capped))
+	}
+}
