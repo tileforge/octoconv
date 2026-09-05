@@ -64,6 +64,25 @@ import (
 	pdftypes "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
 )
 
+// pdfcpu writes a config.yml on first use, and PANICS if it cannot.
+//
+// model.NewDefaultConfiguration calls os.UserConfigDir, which returns
+// $HOME/.config WITHOUT an error whenever HOME is merely set -- and this worker
+// runs as nobody, whose HOME on debian is /nonexistent. So the fallback to
+// TempDir never fires, EnsureDefaultConfigAt fails, and pdfcpu calls
+// fault.Fail: a panic, inside api.ReadContextFile, on the verification path of
+// EVERY sanitize job.
+//
+// asynq recovers it, which is what made this invisible: the job is retried
+// until the budget is gone and then left ACTIVE, so a client sees a job that
+// never finishes rather than a failure. Found by running the e2e tier
+// (PR #16), where one test times out waiting for a terminal state.
+//
+// "disable" is pdfcpu's own switch for exactly this: no config file is read or
+// written and the built-in defaults are used. A sandboxed worker with no
+// writable home should not be persisting a config anywhere.
+func init() { model.ConfigPath = "disable" }
+
 // The two failure modes are separate sentinels because they mean different
 // things to an operator: residue means the sanitizer is wrong, unverifiable
 // means the verifier could not do its job. Collapsing them into one error

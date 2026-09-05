@@ -8,3 +8,5 @@ frontend/dist
 # Python bytecode from scripts/fixtures generators
 __pycache__/
 *.pyc
+deploy/tectonic-bundle/octoconv-bundle.ttb
+/tectonic-worker

@@ -58,7 +58,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -1048,6 +1051,354 @@ func runStageAsymmetryCases(t *testing.T, tc pinEngine, cases []stageAsymmetryCa
 			}
 		})
 	}
+}
+
+// --- TestPinnedTectonicCompilationAndTimeoutAreOpposites ----------------
+
+// tectonicRealFailureTail is the LAST LINES tectonic 0.17.0 actually printed
+// when asked to typeset a document with an undefined control sequence, in the
+// built image (octoconv-tectonic-worker:64-02, --network none, USER nobody,
+// run 2026-09-04, exit status 1) -- the form tectonicTail joins with " | ".
+// Transcribed from that run, never composed here: this project has a recorded
+// history of predicting an engine's wording and pinning the prediction.
+// Full capture: evidence/64-04-tectonic-failure-output.txt.
+const tectonicRealFailureTail = "No file badcmd.aux. | (ts1cmr.fd) | " +
+	"error: badcmd.tex:3: Undefined control sequence | ! Undefined control sequence. | " +
+	"No pages of output. | Transcript written on badcmd.log. | " +
+	"error: something bad happened inside XeTeX, but no output was logged | " +
+	"error: the XeTeX engine had an unrecoverable error | " +
+	"caused by: halted on potentially-recoverable error as specified"
+
+// TestPinnedTectonicFailureVerdicts pins this engine's failure verdicts through
+// the REAL handler -- NewRunner(h,
+// TectonicDescriptor).Handle, the construction cmd/tectonic-worker registers
+// on its mux -- for the same reason the probe test above does it that way: a
+// change that stops threading the mapped code into MarkFailed's argument must
+// fail here even while isTectonicTerminal still returns the right bool.
+//
+// This test was called ...CompilationAndTimeoutAreOpposites, and it asserted
+// exactly that, until PR #16 review. The name is part of the record: a deadline
+// on THIS engine turned out not to be a property of the box at all, because the
+// input is a program (see TectonicDescriptor's doc comment for the two
+// measurements). Renaming rather than leaving a name that documents a verdict
+// the file no longer holds.
+//
+// What is pinned now:
+//
+//   - a LaTeX compilation error is TERMINAL -- the same bytes reach the same
+//     verdict on every attempt;
+//   - a DEADLINE is TERMINAL, with its own message: the document did not fail
+//     to compile, it failed to finish;
+//   - CANCELLATION is neither -- it belongs to the shared classifier, and
+//     "terminal on deadline" is one errors.Is away from "terminal on anything
+//     context-shaped";
+//   - an unsupported package is terminal AND names the package.
+func TestPinnedTectonicFailureVerdicts(t *testing.T) {
+	tectonicHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
+		return NewRunner(h, TectonicDescriptor).Handle(ctx, task)
+	}
+
+	t.Run("compilation error is terminal", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The exact shape TectonicConverter.Convert produces on a non-zero
+		// exit: `tectonic: %w: %s` over runCommand's error and the tail above.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
+				errors.New("exit status 1"), tectonicRealFailureTail))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want errors.Is(err, asynq.SkipRetry) -- a document that does not compile "+
+				"does not compile on every attempt", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeEngineError {
+			t.Fatalf("MarkFailed code = %q, want %q", got, CodeEngineError)
+		}
+		if got := repo.markFailed[0].message; got != "the document could not be typeset" {
+			t.Fatalf("MarkFailed message = %q, want the typesetting wording", got)
+		}
+	})
+
+	// CHANGED ON EVIDENCE, and this row is the record of it. It asserted the
+	// OPPOSITE until PR #16 review: a deadline was transient here, by analogy
+	// with OCR and probe. Two measurements retired that analogy.
+	//
+	// 64-05 put the largest admissible document at 180.3s against a 271s bound,
+	// so a deadline is no longer plausibly "the box was busy". And a
+	// non-terminating document -- \loop with no exit, a few hundred bytes,
+	// under every input bound this engine has -- was measured still running
+	// when killed at 60s in the worker image. Left transient, one such upload
+	// spent 3 attempts x 271s = 813 seconds of a concurrency-1 worker.
+	//
+	// The two verdicts pinned by this test are therefore no longer opposites,
+	// and the test says so rather than quietly dropping the row: what is pinned
+	// now is that BOTH are terminal, for different reasons, and that
+	// CANCELLATION is still not lumped in with either.
+	t.Run("engine deadline is terminal on this engine", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			// What TectonicConverter.Convert returns when the ENGINE was
+			// running at the deadline -- not a bare context.DeadlineExceeded,
+			// which the subtest below pins as a different verdict.
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %v",
+				convert.ErrTeXEngineTimeout, context.DeadlineExceeded))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a document that does not finish does not finish on "+
+				"any attempt, and retrying spends 271s of a concurrency-1 worker to learn that again", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].message; got != "the document did not finish typesetting within the time limit" {
+			t.Fatalf("MarkFailed message = %q -- a document that ran out of time did not fail to "+
+				"COMPILE, and telling the client it did sends them looking for a syntax error", got)
+		}
+	})
+
+	// A PANIC is ours, not the client's, and it must still land the job
+	// somewhere terminal. asynq recovers panics ABOVE this frame, so before
+	// this branch existed r.finish never ran: the job row stayed `active`, no
+	// outcome metric moved, and the client watched a job that never ended.
+	//
+	// Not hypothetical -- pdfcpu panics when it cannot write its config file,
+	// which it cannot as `nobody`, and every sanitize job went round the retry
+	// loop and was then abandoned mid-flight. The engine bug is fixed; this
+	// pins the shape that hid it.
+	t.Run("a panic in the engine is terminal and blames the deployment", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			panic("config problem: mkdir /nonexistent: read-only file system")
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- the same input panics the same way every time", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 -- a recovered panic that never reaches finish "+
+				"leaves the job ACTIVE forever, which is exactly how this went unnoticed",
+				len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].message; got != "the conversion failed unexpectedly on this deployment" {
+			t.Fatalf("MarkFailed message = %q -- a panic is our bug, and telling the client their "+
+				"document is unsupported sends them to fix something that is not broken", got)
+		}
+		if got := repo.markFailed[0].code; got != CodeEngineError {
+			t.Fatalf("MarkFailed code = %q, want %q", got, CodeEngineError)
+		}
+	})
+
+	// The route round 2's log cap did NOT close, found by running the fixed
+	// build rather than by reading it. Capping what the worker RETAINS does
+	// nothing about what tectonic allocates: a 235-byte \message loop drove the
+	// container 315 -> 1006 MiB, the cgroup killed the child, and the attempt
+	// came back as an ordinary non-zero exit -- which asynq retried, allocating
+	// the same way again. Terminal for the deadline's reason: concurrency is 1,
+	// the cgroup is fixed, and the document is a program.
+	t.Run("an OOM-killed engine is terminal", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: killed",
+				convert.ErrTeXEngineKilled))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- the retry allocates exactly the same way and the "+
+				"container is the same size", err)
+		}
+		if got := repo.markFailed[0].message; got != "the document exhausted the memory available to the typesetting engine" {
+			t.Fatalf("MarkFailed message = %q -- a document that ran the engine out of memory did not "+
+				"fail to COMPILE, and saying so sends the client hunting for a syntax error", got)
+		}
+	})
+
+	// The other distinction, and the one round 2 of PR #16's review found
+	// missing. process() bounds the WHOLE attempt with a single deadline --
+	// input lookup, download, convert, upload -- because the unique-lock TTL
+	// depends on no attempt outliving it (T-03-11). So a stalled S3 or Postgres
+	// call raises exactly the same context.DeadlineExceeded the engine does.
+	//
+	// Terminal-on-DeadlineExceeded therefore told a client whose upload hit a
+	// MinIO stall that their DOCUMENT failed to typeset, and skipped the retry
+	// that would have fixed it. Only the engine's own sentinel is terminal.
+	t.Run("an attempt deadline outside the engine stays retryable", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			// A stalled upload, bounded by the same attempt context.
+			return fmt.Errorf("upload %q: %w", "results/x/0-out.pdf", context.DeadlineExceeded)
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a stalled S3 transfer is not a document that "+
+				"failed to typeset, and it is the kind of failure a retry fixes", err)
+		}
+	})
+
+	// The distinction the branch above must not swallow. A CANCELED job was
+	// canceled -- by a client or by a shutdown -- and that is neither a bad
+	// document nor a slow one. Pinned here because "terminal on deadline" is
+	// one errors.Is away from "terminal on anything context-shaped".
+	t.Run("cancellation is not a document failure", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w", context.Canceled))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a canceled job is not a failed document; the "+
+				"shared classifier owns this case for every engine", len(repo.markFailed))
+		}
+		_ = err
+	})
+
+	// TEX-03. The refusal that NAMES something the client can change, pinned
+	// beside the deadline above rather than in a test of its own -- because the
+	// point is that they are opposites. A missing package reproduces exactly on
+	// every attempt; a deadline does not; and the pair is what a later change
+	// could collapse.
+	t.Run("unsupported package is terminal and names the package", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// The exact shape TectonicConverter.Convert produces once its parser
+		// has read the engine's own "File `pgfplots.sty' not found" line --
+		// see internal/convert/testdata/tectonic/missing-package.txt for the
+		// captured run that line is taken from.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: %s",
+				convert.TeXUnsupportedPackageError("pgfplots"),
+				"! ! LaTeX Error: File `pgfplots.sty' not found.."))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a package the bundle does not have is missing on "+
+				"every attempt", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeUnsupportedPackage {
+			t.Fatalf("MarkFailed code = %q, want %q -- the SAME string cmd/api returns when its "+
+				"bounded scan catches this first (one code space, D-03)", got, CodeUnsupportedPackage)
+		}
+		if got := repo.markFailed[0].message; !strings.Contains(got, "pgfplots") {
+			t.Fatalf("MarkFailed message = %q, does not name the package -- the client is left "+
+				"removing \\usepackage lines one job at a time", got)
+		}
+	})
+
+	// Persisted options on an engine that takes none. Runner.Handle applies
+	// OptsFromMap BEFORE MarkActive, so this is a refusal at the door rather
+	// than a conversion that fails -- and without the descriptor entry the job
+	// was marked DONE with its options silently ignored (PR #16, codex P2).
+	t.Run("persisted options are refused, not ignored", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		job.Opts = map[string]any{"quality": 80}
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// processFn must never run: the guard is upstream of it. If it does,
+		// the job would have been converted with options nothing validated.
+		h.processFn = func(context.Context, *jobs.Job) error {
+			t.Fatal("process() ran for a job whose persisted options were never accepted")
+			return nil
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a corrupt options column cannot fix itself on retry "+
+				"(D-10)", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeInvalidOptions {
+			t.Fatalf("MarkFailed code = %q, want %q -- the same code every other opts-guarded engine "+
+				"returns for the identical condition", got, CodeInvalidOptions)
+		}
+	})
+
+	// The third verdict is neither of the two above and must not be told as
+	// either: no bundle is a MISCONFIGURED PROCESS. It is terminal like the
+	// compilation error (retrying a missing knob is pointless) but its message
+	// must not blame the client's file, or an operator's mistake sends every
+	// client hunting through their own LaTeX.
+	t.Run("missing bundle is terminal and does not blame the document", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		// Every way a bundle can be unusable, not just the unset one. The
+		// classifier used to look for the env var's NAME in the error text, so
+		// only the first of these matched and the rest told the client their
+		// DOCUMENT could not be typeset -- for a fault in the deployment. This
+		// test's own name says that must not happen, and it had one case.
+		for _, bundlePath := range []string{"", t.TempDir(), filepath.Join(t.TempDir(), "empty.ttb")} {
+			if bundlePath != "" && filepath.Ext(bundlePath) == ".ttb" {
+				if err := os.WriteFile(bundlePath, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			repo.markFailed = nil
+			h.processFn = func(context.Context, *jobs.Job) error {
+				return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w",
+					convert.ValidateTectonicBundle(bundlePath)))
+			}
+
+			err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("bundle %q: err = %v, want SkipRetry -- retrying a misconfiguration re-reads "+
+					"the same configuration", bundlePath, err)
+			}
+			if len(repo.markFailed) != 1 {
+				t.Fatalf("bundle %q: MarkFailed calls = %d, want 1", bundlePath, len(repo.markFailed))
+			}
+			if got := repo.markFailed[0].message; got != "the typesetting engine is not configured on this deployment" {
+				t.Fatalf("bundle %q: MarkFailed message = %q, want the deployment wording -- a client "+
+					"told their file could not be typeset would go looking in the wrong place",
+					bundlePath, got)
+			}
+		}
+	})
 }
 
 // --- TestPinnedProbePageCeilingAndTimeoutAreOpposites -------------------

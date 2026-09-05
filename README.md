@@ -156,6 +156,21 @@ cp .env.example .env        # adjust ports/credentials if needed
 docker compose up -d
 ```
 
+**Building the tex worker needs one extra step.** `Dockerfile.tectonic-worker`
+copies a 122 MiB TeX bundle out of the build context, and that file is a build
+artifact published as a release asset rather than committed — so a fresh clone
+does not have it, and the build fails with
+`"/deploy/tectonic-bundle/octoconv-bundle.ttb": not found`. Fetch it once
+(needs `gh` authenticated against this repository, which is private):
+
+```bash
+scripts/tectonic-bundle-fetch.sh          # downloads and verifies the digest
+scripts/tectonic-bundle-fetch.sh --check  # verify only, no download
+```
+
+The digest is checked twice on purpose: by that script before the build starts,
+and again inside the image against the bytes that actually land there.
+
 | Service  | Image             | Host port                          | Notes                                        |
 |----------|-------------------|-------------------------------------|-----------------------------------------------|
 | postgres | `postgres:18`     | `5434`                              | `octo / octo-pass / octo_db`                  |
@@ -268,7 +283,7 @@ entirely.
        internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
        the count is deliberately not written out, so a new engine cannot make this
        paragraph false from a commit that never touches the README. -->
-  `image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`
+  `image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`
  `clear-limit` and `show-limits` deliberately do not validate the engine —
   a row written before this check existed must still be listable and removable through the
   CLI.

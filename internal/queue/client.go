@@ -102,6 +102,10 @@ type Client struct {
 	// equivalents, derived at construction exactly like every pair above.
 	probeMaxRetry  int
 	probeUniqueTTL time.Duration
+	// tectonicMaxRetry / tectonicUniqueTTL are the typesetting (tectonic
+	// queue) equivalents.
+	tectonicMaxRetry  int
+	tectonicUniqueTTL time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
@@ -168,6 +172,14 @@ func NewClient() (*Client, error) {
 	// measured value; until it does, nothing in this build may describe this
 	// number as measured.
 	probeEngineTimeout := envDuration("PROBE_ENGINE_TIMEOUT", 600*time.Second)
+	tectonicMaxRetry := envInt("TECTONIC_MAX_RETRY", 2)
+	// TECTONIC_ENGINE_TIMEOUT is MEASURED as of Phase 64 (2026-09-04):
+	// ceil(25.76 s/pass x 7 passes x 1.5) = 271s, with 7 the engine's own rerun
+	// maximum and the per-pass cost taken just above the 2 MiB input ceiling. It is read HERE for
+	// TectonicUniqueTTL's derivation, which happens in every enqueuing process
+	// (IN-02) -- a value that reaches one process and not another does not
+	// error, it silently produces duplicate processing.
+	tectonicEngineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,
@@ -187,6 +199,8 @@ func NewClient() (*Client, error) {
 		pandocUniqueTTL:   PandocUniqueTTL(pandocMaxRetry, pandocEngineTimeout),
 		probeMaxRetry:     probeMaxRetry,
 		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
+		tectonicMaxRetry:  tectonicMaxRetry,
+		tectonicUniqueTTL: TectonicUniqueTTL(tectonicMaxRetry, tectonicEngineTimeout),
 	}, nil
 }
 
@@ -288,6 +302,18 @@ func (c *Client) EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) erro
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue pandoc convert %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// EnqueueTectonicConvert puts a latex->pdf job onto the tectonic queue.
+func (c *Client) EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error {
+	task, err := NewTectonicConvertTask(jobID, c.tectonicMaxRetry, c.tectonicUniqueTTL)
+	if err != nil {
+		return err
+	}
+	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
+		return fmt.Errorf("enqueue tectonic convert %s: %w", jobID, err)
 	}
 	return nil
 }

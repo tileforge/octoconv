@@ -1,0 +1,244 @@
+64-06 -- codex review round 2 on PR #16, ten findings, each verified by RUNNING
+==============================================================================
+
+Reviewed commit 4081283. Ten findings, 2xP1. All ten confirmed before any fix;
+three turned out to be wider than the review described, and those three are the
+reason this file exists rather than a list of diffs.
+
+Image: octoconv-tectonic-worker (Dockerfile.tectonic-worker), tectonic 0.17.0,
+bundle baked in, --network none, -u nobody, --memory 1g --cpus 2 (the chart's
+own limits). API from this working tree against live Postgres/Redis/MinIO.
+Run 2026-09-05.
+
+
+P1-A  UNBOUNDED ENGINE LOG  (internal/convert/exec.go)
+------------------------------------------------------
+235-byte document, a \message loop:
+
+    docker run --memory 1g --cpus 2 ... timeout 30 tectonic -X compile ...
+    EXIT=124
+    323 565 198 bytes of stdout in 30 seconds        = 10.8 MB/s
+
+Against the largest ADMISSIBLE document (2 143 444 B source, 745 pages, 7
+passes -- the file 64-05's timeout is derived from):
+
+    1 416 019 bytes of stdout
+
+So the cap is 8 MiB: 5.9x the largest legitimate log, 0.8% of the container.
+The TAIL is kept, because all three parsers read the end of the log (the
+missing .sty that aborted the run, the biber failure, the final pass's
+warning).
+
+WHAT THE LIVE RUN THEN SHOWED, and it is not what the finding said. With the
+Go-side buffer capped, the same document through the real worker still drove
+the CONTAINER to its limit:
+
+    315 MiB -> 586 MiB -> 947 MiB -> 999 MiB, holding at the cgroup limit
+
+The Go process holds 8 MiB. The rest is the CHILD -- tectonic keeps its output
+files (here, a .log growing at 10.8 MB/s) in its own memory and page cache.
+The container was NOT OOM-killed: status=running, restarts=0, OOMKilled=false
+throughout, because the kernel reclaims the cache.
+
+
+P1-B  NO OUTPUT CEILING  (internal/convert/tectonic.go)
+-------------------------------------------------------
+Only zero bytes was refused. The 2 MiB INPUT ceiling bounds what the client is
+charged for and says nothing about what comes back, because TeX ships pages out
+and frees the memory as it goes:
+
+    198-byte document, 20 000 \newpage iterations
+    EXIT=0  SECONDS=16   doc.pdf = 6 040 163 bytes
+
+    largest ADMISSIBLE document (2 143 444 B, 745 pages)
+    doc.pdf = 1 914 057 bytes
+
+So a tiny upload produces THREE TIMES the largest real document's output in 16
+of the 271 seconds available. At the same rate the timeout leaves room for
+roughly 100 MB, uploaded to S3 and recorded, from an input billed at 198 bytes.
+
+A 400 000-page variant was also run and did NOT finish inside 271s (EXIT=124,
+no PDF) -- the attack has to stay under the timeout to land, which is what
+bounds it at ~100 MB rather than arbitrarily.
+
+TECTONIC_MAX_OUTPUT_BYTES = 32 MiB: 17x the largest real document, refused
+before the upload, terminal, own code (output_too_large).
+
+A legitimate counterexample was also measured, to check the ceiling is not
+merely a bet on documents being small: a 2 090 036-byte TikZ-heavy document
+(19 000 pictures) does NOT reach it -- it dies at 13s on TeX's own
+"main memory size=5000000" limit. TeX bounds a page-accumulating document by
+itself; only a page-SHIPPING loop grows the PDF.
+
+
+P2  THE DENY LIST, ENFORCED IN ONE PLACE  (internal/convert/texresolvable.go)
+-----------------------------------------------------------------------------
+Found independently BEFORE the review arrived, and wider than the finding.
+Through the live API, against the worker consuming the queue:
+
+  BEFORE
+    \usepackage{fontspec}                        422 unsupported_package
+    \usepackage{fontspec} + 1.2 MiB of comments  202 -> job done, PDF returned
+    \usepackage{fontspec-xetex}                  202 -> engine_error
+    \usepackage{fontspec-luatex}                 202 -> job done, PDF returned
+
+  AFTER
+    \usepackage{fontspec-luatex}   422 "the package fontspec-luatex is not
+                                       supported: user-supplied fonts are not
+                                       available on this deployment (TEX-07)"
+    fontspec past the window       202 -> failed, error_code=unsupported_package,
+                                       error_message IDENTICAL to the API's
+
+The second AFTER line is the point of one code space: the client cannot tell
+which gate saw them, because both now say the same sentence built by the same
+function.
+
+Why all three names: fontspec.sty LOADS fontspec-xetex.sty. The bundle carries
+the implementation files, they load standalone, and the one that produced a PDF
+did so while the documentation promised the package was refused.
+
+WHAT THE FIXED BUILD THEN SHOWED (P1-A, second half)
+-----------------------------------------------------
+The 8 MiB cap bounds what the WORKER retains. tectonic keeps its own output
+files in memory, so the same document still drove the container to its limit --
+the cap does not touch the child. Live, through the real worker:
+
+    03:27:25 active 1002MiB / 1GiB
+    03:28:44 active 1018MiB / 1GiB
+    03:29:37 active  712MiB          <- cgroup killed the child
+    03:30:04 failed   40MiB
+
+BEFORE the second fix, that kill arrived as an ordinary non-zero exit and asynq
+RETRIED it, allocating the same way again (visible in an earlier run as
+315 -> 1006 -> 51 -> climb). AFTER: one active event, one failure.
+
+    error_code    engine_error
+    error_message the document exhausted the memory available to the
+                  typesetting engine
+    job_events    queued -> active -> failed          (ONE attempt)
+    container     status=running restarts=0           (PID 1 survives;
+                  OOMKilled=true refers to the child)
+
+P2  UNDEFINED REFERENCES, BOTH DIRECTIONS, LIVE
+-----------------------------------------------
+    \typeout{There were undefined references}   -> done, PDF returned
+    \ref{nosuchlabel} + \cite{nosuchcite}       -> failed, engine_error,
+        "the document has undefined references or citations; the PDF would
+         show ?? in their place"
+
+P1-B  THE CEILING, PROVEN BY LOWERING IT
+-----------------------------------------
+Producing >32 MiB on demand turned out to be unreliable: these runs are NOT
+linear under the container's memory pressure. 130 000 iterations produced
+64 464 pages / 19 545 890 bytes in 93s; 240 000 produced FEWER -- 43 392 pages
+/ 13 315 591 bytes in 163s. Extrapolating a rate to the timeout would therefore
+have been a number nobody measured, and the earlier "~378 KB/s -> roughly
+100 MB" comment was exactly that. It is corrected in the same commit.
+
+So the ENFORCEMENT was proven directly, with a worker started at
+TECTONIC_MAX_OUTPUT_BYTES=5242880 against the same 199-byte document:
+
+    after 93s   error_code=output_too_large
+                "the typeset PDF is larger than this deployment accepts"
+    attempts    1
+    S3          ls /data/octoconv/results/<job>/ -> No such file or directory
+
+The bytes never reach the bucket, which is the half of the fix that matters.
+
+ONE FALSE ALARM, RECORDED
+--------------------------
+The first run of the log-bomb proof came back `reconciler_exhausted` after 49
+seconds, which looks like a defect and is not one: `go test ./...` was running
+against the SAME Postgres, and internal/reconciler's tests swept the in-flight
+job. Re-run with nothing else touching the database, the verdict was the one
+above. A live proof and the test suite cannot share a database.
+
+THE GOLDEN PATH, RE-RUN AFTER ALL TEN FIXES
+--------------------------------------------
+Round 2 added five new ways to refuse a document (denied package scanned in the
+worker, output ceiling, OOM-killed engine, stricter undefined-reference match,
+whole-control-word scanning). None of them may touch the document this phase
+ships as its proof, so 64-04's paper was rebuilt and run through the same live
+stack:
+
+    POST /v1/jobs  file=paper.tex target=pdf   ->  done
+    27 838 bytes of PDF, read back with pdftotext:
+
+      Equation (1) appears in Section 1, and this is Section 2. A forward
+      reference to Section 3 exercises the second pass.
+      ...
+      Typesetting is discussed by Knuth [1] and Lamport [2].
+      [1] Donald E. Knuth. The TeXbook. Addison-Wesley, 1984.
+      [2] Leslie Lamport. LaTeX: A Document Preparation System. ... 1994.
+
+    occurrences of "??" in the output: 0
+
+This document prints BOTH strings the round-1 and round-2 discussions turned on
+-- biblatex's fall-back-backend warning and tectonic's "stopping at 6 passes" --
+and still passes, which is the whole reason neither is treated as a failure.
+
+And the negative half, through the same stack, to be sure the new
+memory-exhaustion branch does not swallow an ordinary compile error:
+
+    \thisdoesnotexist  ->  failed, engine_error,
+                           "the document could not be typeset", attempts=1
+
+
+ROUND 3 (2026-09-05) -- three findings, all P2, each reproduced first
+=====================================================================
+
+P2  A BYTE OF LOOKBACK IN PLACE OF TOKENIZATION  (texpreamble.go)
+------------------------------------------------------------------
+    \let\foo\\% \usepackage{pgfplots}
+
+\\ is a control SYMBOL, so the percent after it starts a comment and TeX never
+loads pgfplots. Before the fix the scanner returned:
+
+    packages=[pgfplots] complete=true
+
+which is a 422 for a document that compiles. Third instance in this PR of the
+same shape (\fi as a prefix, \usepackage as a prefix, now % by one byte of
+lookback), so the fix is the tokenization rather than a fourth special case: a
+control symbol is consumed as one token, the comment branch needs no lookback,
+and \{ / \} stop moving braceDepth.
+
+P2  os.Stat IS NOT "THE BUNDLE IS USABLE"  (cmd/tectonic-worker)
+-----------------------------------------------------------------
+Reproduced live, with TECTONIC_BUNDLE_PATH pointing at a DIRECTORY:
+
+    BEFORE  🐙 tectonic-worker starting (queue=tectonic)
+            asynq: INFO: Starting processing        status=running
+
+    AFTER   tectonic bundle: bundle "/opt/tectonic" is not a regular file
+            (mode drwxr-xr-x) (set TECTONIC_BUNDLE_PATH)
+            status=exited exit=1
+
+The check now OPENS the path, which is what proves readability under this
+process's identity -- the worker runs as nobody, and a bundle readable only by
+root stats perfectly.
+
+P2  A MEASUREMENT THAT CLAIMED THE CEILING AND MEASURED 369 KB
+---------------------------------------------------------------
+The script prints "derived from a run AT the ceiling, never extrapolated to it"
+and, run the documented way, iterated only the committed corpus.
+
+How much that mattered, from this run's own numbers:
+
+    committed corpus, worst   bib-xl     368 999 B   30.586s / 7 = 4.369 s/pass
+                              -> ceil(4.369 x 7 x 1.5) = 46s
+
+    with the ceiling staged   bib-bound 2 143 444 B  148.091s / 7 = 21.156 s/pass
+                              -> ceil(21.156 x 7 x 1.5) = 223s
+
+So a routine remeasurement would have recommended 46 SECONDS for an engine
+whose largest admissible document takes 148 -- and printed that it measured the
+ceiling while doing it.
+
+The script now stages the generated corpus when the given one falls short, and
+the staging doubles as a check nobody had: every committed file must come back
+BYTE IDENTICAL from the generator (all nine do), or corpus and generator have
+diverged and neither describes the other.
+
+The 223s here is BELOW the shipped 271s, which is the safe direction: 271s came
+from a 180.3s run of the same document on a busier machine, and a bound is
+supposed to hold on the unlucky run.

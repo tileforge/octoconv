@@ -32,18 +32,31 @@ import (
 // historicalFailureCodes is what it cannot, but clients may still receive.
 // Both are documented; only the first is a list of possible outcomes.
 const (
-	CodeEngineError         = "engine_error"
-	CodeInvalidOptions      = "invalid_options"
-	CodeDurationExceeded    = "duration_exceeded"
-	CodeTimecodeOutOfRange  = "timecode_out_of_range"
-	CodeResolutionExceeded  = "resolution_exceeded"
-	CodeNoVideoStream       = "no_video_stream"
-	CodeTooManyPages        = "too_many_pages"
+	CodeEngineError        = "engine_error"
+	CodeInvalidOptions     = "invalid_options"
+	CodeDurationExceeded   = "duration_exceeded"
+	CodeTimecodeOutOfRange = "timecode_out_of_range"
+	CodeResolutionExceeded = "resolution_exceeded"
+	CodeNoVideoStream      = "no_video_stream"
+	CodeTooManyPages       = "too_many_pages"
+	// CodeUnsupportedPackage: the document loads a \usepackage this
+	// deployment's bundle cannot resolve. Shares its string with
+	// errcode.UnsupportedPackage -- ONE code space (D-03), the same as
+	// CodeInvalidOptions above -- because the API's bounded preamble scan is
+	// allowed to ABSTAIN, so the identical refusal arrives here for any
+	// document whose preamble ran past that window. Two codes for one failure
+	// would make where it was caught visible to the client, which is not
+	// something they can act on.
+	CodeUnsupportedPackage  = "unsupported_package"
 	CodePageTooLarge        = "page_too_large"
 	CodeImageTooLarge       = "image_too_large"
 	CodeUnsupportedLanguage = "unsupported_language"
 	CodeUnsupportedTarget   = "unsupported_target"
 	CodeInputTooLarge       = "input_too_large"
+	// CodeOutputTooLarge: the engine succeeded and the RESULT is too big. Only
+	// the tex engine can reach it -- it is the only one whose input is a
+	// program, so the only one where output size is not bounded by input size.
+	CodeOutputTooLarge      = "output_too_large"
 	CodeReconcilerExhausted = "reconciler_exhausted"
 )
 
@@ -69,7 +82,9 @@ var allFailureCodes = []string{
 	CodeUnsupportedLanguage,
 	CodeUnsupportedTarget,
 	CodeInputTooLarge,
+	CodeOutputTooLarge,
 	CodeReconcilerExhausted,
+	CodeUnsupportedPackage,
 }
 
 // CodeBornDigital is HISTORICAL as of Phase 59 and is not in allFailureCodes.
@@ -388,4 +403,213 @@ func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOut
 		ContentType: "application/json",
 		Body:        blob,
 	}}, nil
+}
+
+// TectonicDescriptor is the ninth engine class.
+//
+// TERMINAL/TRANSIENT, ARGUED RATHER THAN COPIED
+//
+// Phase 56's descriptors show polarity genuinely disagrees between neighbours
+// -- isAudioTerminal treats an ffmpeg-stage timeout as terminal and a
+// whisper-stage one as transient, isAVTerminal has the opposite shape -- so
+// copying a neighbour's classification is the same antipattern as copying its
+// timeout:
+//
+//   - LaTeX compilation error (undefined control sequence, unbalanced braces,
+//     a missing package) -- TERMINAL. Deterministic on the document. A retry
+//     re-runs the same engine over the same bytes and reaches the same verdict;
+//     spending the budget on it buys three identical failures.
+//
+//   - Engine TIMEOUT -- TERMINAL, and this is the branch that CHANGED on
+//     evidence. It shipped transient, reasoned by analogy with OCR and probe:
+//     an external engine whose worst case is load rather than content. The
+//     comment carried its own falsifier -- "only true while the timeout is
+//     generous relative to a document's real pass count; if 64-05's measurement
+//     shows otherwise, the honest response is a bound on the input, not
+//     flipping this branch." Both halves of that have now happened.
+//
+//     64-05 measured the largest ADMISSIBLE document at 180.3s against a 271s
+//     bound: a 1.5x margin. A timeout therefore no longer means "the box was
+//     busy"; it means the document is doing something the measurement did not
+//     see. And the input bound the comment prescribed was added (2 MiB) and
+//     does NOT cover this case, because the cost driver is macro expansion, not
+//     source size:
+//
+//     \count255=0 \loop\advance\count255 by 1 \ifnum\count255<100000000 \repeat
+//
+//     is a few hundred bytes and runs forever -- measured, still running when
+//     killed at 60s in the worker image (PR #16 review, codex P1). Left
+//     transient, asynq spends TECTONIC_MAX_RETRY+1 = 3 attempts x 271s = 813
+//     seconds of a concurrency-1 worker on one such upload, and the class
+//     scales to two replicas.
+//
+//     So the retry budget was being spent on the one failure here that can
+//     never succeed. A legitimate document at the ceiling that times out is
+//     possible but requires the box to be 50% slower than the measurement, on
+//     a document already at the largest admissible size; that client resubmits.
+//     A document that cannot finish is refused on the first attempt instead of
+//     occupying the class for a quarter of an hour.
+//
+//   - No bundle configured -- TERMINAL, and NOT a document failure. The
+//     converter refuses rather than falling back to a network fetch, so this
+//     means the process is misconfigured. Retrying a misconfiguration is
+//     pointless, and the message says which knob.
+//
+// Everything else falls through to isTerminal's shared storage/input
+// classification.
+var TectonicDescriptor = EngineDescriptor{
+	Engine: convert.EngineTectonic,
+	Type:   queue.TypeTectonicConvert,
+	// This engine takes no options, so a populated map is a corrupt column
+	// value -- D-10's terminal case, and the same strict refusal probe uses.
+	// Without it, Runner.Handle skips the read-side check and the job is marked
+	// DONE with its persisted semantics silently discarded (PR #16, codex P2).
+	// image's nil OptsFromMap is the older precedent and is pinned as an
+	// exception; probe is the one worth copying here.
+	OptsFromMap: func(m map[string]any) (any, error) {
+		return convert.TeXOptsFromMap(m)
+	},
+	IsTerminal:  isTectonicTerminal,
+	FailureCode: tectonicFailureCode,
+}
+
+// isTectonicTerminal classifies a typesetting failure. See TectonicDescriptor's
+// doc comment for the argument behind each branch; this is only the mechanism.
+func isTectonicTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A misconfigured process, not a bad document. Deliberately checked BEFORE
+	// the shared classifier, which knows nothing about bundles and would let
+	// this retry forever.
+	if errors.Is(err, convert.ErrTeXBundleUnusable) {
+		return true
+	}
+	// A package the bundle does not have (TEX-03). Terminal for the same
+	// reason a compilation error is -- it is missing on every attempt -- but
+	// checked explicitly rather than left to the signature list below, because
+	// this is the one failure here that names something the client can change.
+	if errors.Is(err, convert.ErrTeXUnsupportedPackage) {
+		return true
+	}
+	// Both are properties of the DOCUMENT, so both reproduce exactly: a
+	// bibliography that needs biber needs it on every attempt, and a reference
+	// that does not resolve will not resolve on a retry either.
+	if errors.Is(err, convert.ErrTeXBiberUnavailable) || errors.Is(err, convert.ErrTeXUndefinedReferences) {
+		return true
+	}
+	// Also a property of the document: the same source ships the same pages
+	// out on every attempt, so a retry re-does 271 seconds of work to produce
+	// the same oversized PDF and refuse it again.
+	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
+		return true
+	}
+	// The ENGINE's deadline is terminal on this engine (see the descriptor's
+	// doc comment for the measurement that changed it): the document is a
+	// program, the timeout is 1.5x the largest admissible document's measured
+	// cost, and a non-terminating document reproduces exactly on every retry.
+	//
+	// Keyed on convert's sentinel and NOT on context.DeadlineExceeded, which
+	// this would otherwise catch for the wrong reason: process() bounds the
+	// whole attempt -- download, convert, upload -- with one deadline, so a
+	// stalled S3 or Postgres call raises the identical error. Treating that as
+	// terminal reported an infrastructure stall to the client as a document
+	// that failed to typeset, and skipped the retry that would have fixed it
+	// (PR #16, codex round 2).
+	//
+	// Cancellation is NOT the same thing and keeps falling through: a canceled
+	// job was canceled by a client or a shutdown, and isTerminal already knows
+	// what that means.
+	if errors.Is(err, convert.ErrTeXEngineTimeout) {
+		return true
+	}
+	// Killed by the cgroup's OOM killer with time still on the clock. Same
+	// argument as the deadline: concurrency is 1 and the container is fixed, so
+	// a document that exhausts it exhausts it again -- and MEASURED, because
+	// without this the retry loop is real: a 235-byte \message loop drove the
+	// worker's memory 315 -> 1006 MiB, the child was killed, and the attempt
+	// came back as a plain non-zero exit that asynq retried (PR #16, round 2).
+	if errors.Is(err, convert.ErrTeXEngineKilled) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return isTerminal(err)
+	}
+	// The engine ran and refused the document. XeTeX's own wording; captured
+	// from real output rather than predicted (64-02 evidence).
+	msg := strings.ToLower(err.Error())
+	for _, sig := range []string{
+		"unrecoverable error",
+		"latex error",
+		"emergency stop",
+		"produced an empty pdf",
+	} {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return isTerminal(err)
+}
+
+// tectonicFailureCode maps a terminal typesetting error to the client-facing
+// pair. 64-03 adds the unsupported-package branch, which is the one that names
+// what the client must change.
+func tectonicFailureCode(err error) (code, message string) {
+	// Named first, because it is the only branch here whose message tells the
+	// client what to DO. The name comes from the engine's own output
+	// (convert.tectonicMissingPackage, written against a captured run), never
+	// from a guess -- and when the output does not permit naming one reliably,
+	// the parser returns "" and this branch is not reached at all.
+	if pkg := convert.TeXUnsupportedPackageName(err); pkg != "" {
+		// The SAME code cmd/api returns when its bounded preamble scan catches
+		// this before the upload (errcode.UnsupportedPackage). One code space,
+		// D-03: which side saw it depends only on where \begin{document} fell
+		// in the client's file, which is not something they can act on.
+		return CodeUnsupportedPackage, convert.TeXUnsupportedPackageMessage(pkg)
+	}
+	if errors.Is(err, convert.ErrTeXBundleUnusable) {
+		// Deliberately NOT phrased as a fault in the document: it is not one,
+		// and a client told "your file could not be typeset" would go looking
+		// in the wrong place.
+		//
+		// Keyed on the sentinel, not on the env var's NAME appearing in the
+		// error text. That substring matched only the "unset" wording, so a
+		// bundle that was a directory, an unreadable mount or an empty file
+		// fell through to the generic message -- a deployment fault reported as
+		// a bad document, which is the exact thing this branch exists to
+		// prevent. Found in this PR's own sweep after round 3 widened the ways
+		// a bundle can be unusable.
+		return CodeEngineError, "the typesetting engine is not configured on this deployment"
+	}
+	if errors.Is(err, convert.ErrTeXEngineTimeout) {
+		// Named separately from the generic typesetting failure because the
+		// client's remedy is different: this document did not fail to compile,
+		// it failed to FINISH, and the usual cause is a construct that expands
+		// without bound rather than anything the engine could report.
+		//
+		// The sentinel, not context.DeadlineExceeded: only a deadline that
+		// fired while the engine was running says anything about the document.
+		return CodeEngineError, "the document did not finish typesetting within the time limit"
+	}
+	if errors.Is(err, convert.ErrTeXBiberUnavailable) {
+		// The one failure here whose remedy is a single package option, so the
+		// message says the option rather than describing the situation.
+		return CodeEngineError, "biblatex requires the option backend=bibtex on this deployment: no biber is available"
+	}
+	if errors.Is(err, convert.ErrTeXEngineKilled) {
+		// Says WHAT ran out, because "could not be typeset" would send the
+		// client looking for a syntax error in a document that has none. The
+		// remedy is a smaller document, not a correction.
+		return CodeEngineError, "the document exhausted the memory available to the typesetting engine"
+	}
+	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
+		// Its own code rather than engine_error: nothing about the document is
+		// malformed, and "could not be typeset" would send the client looking
+		// for a mistake that is not there. The remedy is fewer pages.
+		return CodeOutputTooLarge, "the typeset PDF is larger than this deployment accepts"
+	}
+	if errors.Is(err, convert.ErrTeXUndefinedReferences) {
+		return CodeEngineError, "the document has undefined references or citations; the PDF would show ?? in their place"
+	}
+	return CodeEngineError, "the document could not be typeset"
 }

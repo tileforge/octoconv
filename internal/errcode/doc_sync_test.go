@@ -250,6 +250,25 @@ func TestSyncAndAsyncShareInvalidOptions(t *testing.T) {
 	}
 }
 
+// TestSyncAndAsyncShareUnsupportedPackage pins the second member of the one
+// code space, and it carries more weight than the invalid_options pin above.
+//
+// invalid_options is shared because the two paths CAN both produce it. This
+// one is shared because they BOTH WILL, routinely, for the same document: the
+// API's preamble scan reads a bounded window and abstains when the preamble
+// runs past it, so which side refuses a given file depends on where the
+// \begin{document} happens to fall. A client whose code changes with the byte
+// offset of their own preamble has been told something about our internals
+// instead of about their document.
+func TestSyncAndAsyncShareUnsupportedPackage(t *testing.T) {
+	if errcode.UnsupportedPackage != worker.CodeUnsupportedPackage {
+		t.Fatalf("errcode.UnsupportedPackage = %q, worker.CodeUnsupportedPackage = %q -- D-03 requires "+
+			"these to be identical, and here the SAME document reaches one or the other depending only "+
+			"on how much of its preamble fit in the API's scan window",
+			errcode.UnsupportedPackage, worker.CodeUnsupportedPackage)
+	}
+}
+
 // TestDocDeclaresUnknownCodeFallback makes Pitfall 12's unknown-code
 // fallback requirement mechanical rather than aspirational: the document
 // must state, as a requirement rather than a suggestion, that consumers

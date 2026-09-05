@@ -82,4 +82,16 @@ func init() {
 	// TestPandocPairsDisjointFromOtherEngines exists for -- the separation is
 	// structural rather than a property of the chosen format lists.
 	Default.Register(SanitizeConverter{})
+	// The ninth class (TEX-05). Registered with an EMPTY bundle path:
+	// cmd/tectonic-worker replaces it at startup with the configured one, and a
+	// converter with no bundle REFUSES to run rather than falling back to
+	// tectonic's network default. So a process that never replaces it cannot
+	// silently violate TEX-02 -- it fails saying which knob is unset.
+	//
+	// latex is already a source format here (pandoc serves
+	// latex -> {html, docx, epub, md}); this adds latex -> pdf, a triple none
+	// of those occupy. Register PANICS on a collision (Phase 57 D-09), so if
+	// that stops being true this line fails at init rather than silently taking
+	// pandoc's route away.
+	Default.Register(TectonicConverter{})
 }

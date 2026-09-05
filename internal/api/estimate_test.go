@@ -359,6 +359,49 @@ var envExampleEngineVar = map[string]string{
 	convert.EngineOCR:      "OCR_ENGINE_TIMEOUT",
 	convert.EnginePandoc:   "PANDOC_ENGINE_TIMEOUT",
 	convert.EngineProbe:    "PROBE_ENGINE_TIMEOUT",
+	// The ninth engine joins this map on the day it is declared, not on the
+	// day it is measured. An engine left out of it is an engine whose
+	// .env.example provenance nothing compares against -- and the check below
+	// would go on reporting success for the eight it does cover, which is the
+	// shape of "a scan of nothing is clean".
+	convert.EngineTectonic: "TECTONIC_ENGINE_TIMEOUT",
+}
+
+// envExampleClaimsMeasured decides what .env.example's own prose says about
+// varName's provenance.
+//
+// Two substrings, read at two different SCOPES, and the difference is the
+// whole content of this function:
+//
+//   - the placeholder disclaimer is read from the var's OWN assignment line.
+//     Tectonic is why it exists: while 64-05 was still pending, its block said
+//     the number was a PLACEHOLDER and that 64-05 would MEASURE it -- an honest
+//     disclaimer that a bare "measur" test reads as the exact opposite of what
+//     it says. That block now records a real measurement, so no engine in
+//     .env.example currently exercises this branch; TestEnvExampleClaimsMeasured
+//     covers it directly, because a branch with no live caller and no test is a
+//     branch that has quietly stopped working.
+//   - the measurement claim is read from the whole paragraph, because that is
+//     where audio/av/ocr/pandoc/probe write their derivations.
+//
+// Reading the disclaimer at block scope instead was tried and was WRONG: av's
+// and pandoc's paragraphs both contain the word "placeholder" describing a
+// HISTORICAL one that a measurement replaced (14400s -> 90s, 90s -> 65s), and
+// scoping the check to the block reported both engines as unmeasured. A
+// paragraph may discuss a placeholder it no longer uses; a var's own line
+// states what the var IS.
+func envExampleClaimsMeasured(block, varName string) bool {
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, varName+"=") {
+			continue
+		}
+		own := strings.ToLower(trimmed)
+		if strings.Contains(own, "placeholder") || strings.Contains(own, "not measured") {
+			return false
+		}
+	}
+	return strings.Contains(strings.ToLower(block), "measur")
 }
 
 // envExampleBlockContaining returns the blank-line-delimited paragraph of
@@ -472,6 +515,68 @@ func TestEstimateSourceForMatchesEnvExampleDefaults(t *testing.T) {
 	}
 }
 
+// TestEveryEngineHasAnEnvExampleVar keeps the map above complete. Without it,
+// an engine added to convert.AllEngines() and forgotten here is simply not
+// checked by TestEstimateSourceMatchesEnvExampleProvenance, which then reports
+// success over a strictly smaller set than it claims.
+func TestEveryEngineHasAnEnvExampleVar(t *testing.T) {
+	for _, engine := range convert.AllEngines() {
+		if _, ok := envExampleEngineVar[engine]; !ok {
+			t.Errorf("engine %q has no envExampleEngineVar entry, so its .env.example provenance is "+
+				"compared against nothing", engine)
+		}
+	}
+}
+
+// TestEnvExampleClaimsMeasured covers both scopes directly. It matters because
+// no engine's real .env.example block exercises the placeholder branch today --
+// every timeout in this build is measured -- so without this the branch would
+// be dead code that looks alive, and the NEXT provisional engine would inherit
+// a helper nobody had run.
+func TestEnvExampleClaimsMeasured(t *testing.T) {
+	cases := []struct {
+		name    string
+		block   string
+		varName string
+		want    bool
+	}{
+		{
+			name:    "own line disclaims, block discusses measuring",
+			block:   "# 64-05 measures it on a real corpus.\nFOO_ENGINE_TIMEOUT=300s   # PLACEHOLDER, not measured",
+			varName: "FOO_ENGINE_TIMEOUT",
+			want:    false,
+		},
+		{
+			name:    "own line says measured",
+			block:   "# derivation above\nFOO_ENGINE_TIMEOUT=271s   # measured -- see the derivation above",
+			varName: "FOO_ENGINE_TIMEOUT",
+			want:    true,
+		},
+		{
+			// av and pandoc, exactly: their paragraphs mention a HISTORICAL
+			// placeholder that a measurement replaced. Reading the disclaimer
+			// at block scope reported both as unmeasured.
+			name:    "block mentions a historical placeholder, own line does not",
+			block:   "# lowered from the 14400s placeholder after the measured run\nFOO_ENGINE_TIMEOUT=90s   # RTF-measured",
+			varName: "FOO_ENGINE_TIMEOUT",
+			want:    true,
+		},
+		{
+			name:    "nothing claims a measurement",
+			block:   "# a starting default, tune without a recompile\nFOO_ENGINE_TIMEOUT=60s",
+			varName: "FOO_ENGINE_TIMEOUT",
+			want:    false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envExampleClaimsMeasured(tc.block, tc.varName); got != tc.want {
+				t.Fatalf("envExampleClaimsMeasured = %v, want %v for:\n%s", got, tc.want, tc.block)
+			}
+		})
+	}
+}
+
 func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 	content, err := os.ReadFile("../../.env.example")
 	if err != nil {
@@ -484,7 +589,7 @@ func TestEstimateSourceMatchesEnvExampleProvenance(t *testing.T) {
 		if !found {
 			t.Fatalf("var %s (engine %s) not found in .env.example", varName, engine)
 		}
-		measured := strings.Contains(strings.ToLower(block), "measur")
+		measured := envExampleClaimsMeasured(block, varName)
 		wantMeasured := engineEstimateSource[engine] == EstimateSourceMeasured
 		if measured != wantMeasured {
 			t.Errorf("engine %s (%s): .env.example measured=%v, engineEstimateSource says measured=%v", engine, varName, measured, wantMeasured)
@@ -523,6 +628,56 @@ func TestEveryEngineHasADefaultCeilingAndTimeout(t *testing.T) {
 	if len(defaultEngineTimeouts) != len(convert.AllEngines()) {
 		t.Errorf("defaultEngineTimeouts has %d entries, convert.AllEngines() has %d",
 			len(defaultEngineTimeouts), len(convert.AllEngines()))
+	}
+}
+
+// TestTectonicTimeoutAndInputCeilingAreOnePair pins the pair 64-05 measured.
+//
+// Every other engine's timeout stands on its own. This one does not: tectonic's
+// cost is LINEAR in source size at a fixed 7-pass ceiling (1 071 659 bytes ->
+// 373 pages -> 90.0s, 2 143 444 bytes -> 745 pages -> 180.3s, measured in the
+// worker container -- the second document being 2.2% larger than the ceiling
+// itself), so 271s is only a bound while the input is bounded at 2 MiB. At the 100 MiB this
+// engine first inherited from the document-shaped engines, a dense .tex needs
+// roughly 9000s -- ten times the 900s reconciler cap -- and the timeout would
+// bound nothing at all.
+//
+// So the two constants are one decision, exactly as PROBE_MAX_PAGES=200 and
+// PROBE_ENGINE_TIMEOUT=600s are. Moving either alone is the failure this test
+// exists to catch, and the message says what to do about it: re-measure, do not
+// re-guess.
+func TestTectonicTimeoutAndInputCeilingAreOnePair(t *testing.T) {
+	const (
+		measuredTimeout = 271 * time.Second
+		measuredCeiling = int64(2 << 20)
+	)
+
+	if got := defaultEngineTimeouts[convert.EngineTectonic]; got != measuredTimeout {
+		t.Errorf("tectonic timeout = %v, want %v -- if this moved deliberately, the 2 MiB input "+
+			"ceiling it was measured at has to move with it, and the measurement has to be re-run "+
+			"(scripts/tectonic-timeout-measure.sh)", got, measuredTimeout)
+	}
+	if got := defaultMaxEngineBytes[convert.EngineTectonic]; got != measuredCeiling {
+		t.Errorf("tectonic input ceiling = %d bytes, want %d -- cost is linear in source size, so "+
+			"raising this admits work the %v timeout will kill, and lowering it refuses work that "+
+			"timeout was sized for", got, measuredCeiling, measuredTimeout)
+	}
+
+	// The relationship itself, not just the two values: 180.3s was measured AT
+	// the ceiling and the margin is 1.5, so the timeout must be at least the
+	// measured run and comfortably under the reconciler's cap. A future edit
+	// that "rounded" the timeout down below the measured time would leave every
+	// document at the ceiling failing on the first attempt.
+	const measuredAtCeiling = 180300 * time.Millisecond
+	if measuredTimeout <= measuredAtCeiling {
+		t.Errorf("the timeout (%v) is not above the time a document AT the ceiling actually took "+
+			"(%v) -- the largest admissible document would time out on every attempt",
+			measuredTimeout, measuredAtCeiling)
+	}
+	const reconcilerCap = 900 * time.Second
+	if measuredTimeout >= reconcilerCap {
+		t.Errorf("the timeout (%v) is at or above RECONCILER_ACTIVE_STALE_AFTER (%v) -- the "+
+			"reconciler would re-enqueue jobs that are still running", measuredTimeout, reconcilerCap)
 	}
 }
 

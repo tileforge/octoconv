@@ -125,7 +125,7 @@ data:
   # probe-timeout-20260902-measured.txt). Cost is per PAGE, not per byte:
   # 1.99-2.01 s/page across three points, in the container at 2 CPU / 1 GiB
   # against gs 10.00.0. ceil(2.0 s/page x 200 pages x 1.5) = 600s, 33% under
-  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (610s)
+  # the 900s reconciler cap. probeWorker.terminationGracePeriodSeconds (620s)
   # is derived from it. IN-02: read by every queue.NewClient()-constructing
   # service for probeUniqueTTL's derivation.
   PROBE_ENGINE_TIMEOUT: "600s"
@@ -156,6 +156,53 @@ data:
   # engines: two ghostscript passes plus a pdfcpu parse all hold the whole
   # document inside a 1Gi cgroup. Reasoned, not measured.
   PROBE_WORKER_CONCURRENCY: "1"
+  # TECTONIC (tex, latex -> pdf, Phase 64). MEASURED 2026-09-04
+  # (scripts/tectonic-timeout-measure.sh; derivation in .env.example, full
+  # output and corpus provenance committed under the phase's evidence/).
+  #
+  #   ceil(25.76 s/pass x 7 passes x 1.5) = 271s
+  #
+  # Unlike probe's, this cost is per PASS, not per page: the number of passes
+  # is a property of the DOCUMENT, because tectonic reruns until its references
+  # converge. The corpus therefore carries cross-references and a bibliography
+  # (2, 3 and 7 passes for the same body text), and the ceiling in the formula
+  # is the ENGINE's own -- it stops at 6 reruns and says so -- rather than
+  # anything the corpus happened to contain.
+  #
+  # THE INPUT CEILING IS PART OF THIS NUMBER. Cost is linear in source size, so
+  # the 2 MiB api.defaultMaxEngineBytes[EngineTectonic] is what makes 271s a
+  # bound at all -- and the run it came from used a document 2.2% larger than
+  # that ceiling, so the number covers slightly more work than is admissible: at 100 MiB a dense .tex would need ~9000s, ten times the 900s
+  # RECONCILER_ACTIVE_STALE_AFTER cap. It is not a ConfigMap key (no engine
+  # bound in this chart is), but changing it without re-measuring this value
+  # breaks the pair.
+  #
+  # tectonicWorker.terminationGracePeriodSeconds (291s) is derived from this and
+  # was re-derived in the same edit. IN-02: read by every
+  # queue.NewClient()-constructing service for tectonicUniqueTTL's derivation --
+  # a value that reaches one process and not another does not error, it silently
+  # produces duplicate processing.
+  TECTONIC_ENGINE_TIMEOUT: "271s"
+  # Bounds the PRODUCED PDF, which the 2 MiB input ceiling does not: TeX ships
+  # pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF
+  # in 16 seconds against 1 914 057 for the largest legitimate document (2 MiB,
+  # 745 pages). tectonic-worker-only; not an IN-02 var.
+  TECTONIC_MAX_OUTPUT_BYTES: "33554432"
+  TECTONIC_MAX_RETRY: "2"
+  # tectonic-worker-only, not read by queue.NewClient(). 1, with the heavy
+  # engines: a TeX interpreter plus a 128 MB bundle and its compiled format
+  # inside a 1Gi cgroup. Reasoned, not measured -- and the reasoning is memory,
+  # so throughput comes from KEDA scale-out (keda.tectonic) rather than from
+  # raising this.
+  TECTONIC_WORKER_CONCURRENCY: "1"
+  # TECTONIC_BUNDLE_PATH is deliberately ABSENT from this ConfigMap. It is
+  # baked into the image (Dockerfile.tectonic-worker) beside the bundle it
+  # names, and envFrom would override that image value for every pod -- with a
+  # path only the tex image's filesystem has. cmd/tectonic-worker stats it and
+  # exits fatally at startup, so the failure would be immediate and total
+  # rather than subtle; that is not a reason to arrange for it. DEBT-05's
+  # "every process carries the full surface" applies to knobs, not to paths
+  # into one image's filesystem.
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"

@@ -241,6 +241,12 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// touches storage or Postgres (D-01/D-02/D-05). rest re-stitches the
 	// peeked prefix onto the remaining stream so the full file still reaches
 	// s3.Upload below.
+	// latexPrefix holds the validated sniff window for a declared-latex upload,
+	// read ONCE below and used twice: for the content check that sets
+	// detected == "latex", and for the tex-package admission gate after the
+	// engine is known (TEX-03). nil for every other upload.
+	var latexPrefix []byte
+
 	detected, rest, err := convert.Sniff(file)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "invalid multipart form")
@@ -315,7 +321,28 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// because the extension claims html.
 		detected = "html"
 	}
-	if detected == "" && source == "latex" && convert.LooksLikeLaTeX(file, header.Size) {
+	if detected == "" && source == "latex" {
+		// ONE READ, TWO ANSWERS (Phase 59 D-12, and TEX-03's reason for
+		// existing). The window below answers "is this really LaTeX" here and
+		// "which packages does the preamble load" at the tectonic gate further
+		// down. LooksLikeLaTeX(file, size) would have read the same bytes and
+		// thrown them away, leaving the gate to read them again -- two answers
+		// to one question about one upload, which is exactly the split D-12
+		// introduced the *FromPrefix forms to avoid.
+		//
+		// Behaviour is unchanged from the LooksLikeLaTeX call this replaced:
+		// that function IS readSniffPrefix + ValidateSniffPrefix +
+		// LooksLikeLaTeXFromPrefix, and readSniffWindow uses the same
+		// convert.SniffWindowBytes cap. A read error leaves latexPrefix nil and
+		// detected "", failing closed to the unrecognized-content 422 below --
+		// the same outcome readSniffPrefix's ok == false produced.
+		if window, werr := readSniffWindow(file, header.Size); werr == nil {
+			if prefix, textShaped := convert.ValidateSniffPrefix(window, header.Size); textShaped {
+				latexPrefix = prefix
+			}
+		}
+	}
+	if detected == "" && source == "latex" && convert.LooksLikeLaTeXFromPrefix(latexPrefix) {
 		// D-02 (48-CONTEXT.md), mirrors the source=="html" LooksLikeHTML
 		// branch above verbatim: latex has no magic bytes for Sniff's table
 		// to match, so content detection here is gated on the (still-
@@ -478,6 +505,60 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedConversion,
 			"unsupported conversion: "+detected+" -> "+target)
 		return
+	}
+
+	// TEX-03: the tex-package admission gate. Placed after the engine class is
+	// known and strictly BEFORE s.storage.Upload below, for the reason every
+	// gate in this handler is placed here -- a document this deployment cannot
+	// typeset must not spend S3 bytes, a queue slot, or a client's quota to be
+	// told so.
+	//
+	// WHAT IT REFUSES, AND WHY IT IS NOT THE DECLARED SET. The allowlist is
+	// convert.TeXPackageResolvable -- what the shipped bundle can LOAD -- and
+	// not convert.TeXPackages, which is what this service DOCUMENTS. Gating on
+	// the documented eighteen was measured against the real bundle in the
+	// container (64-03 evidence) and would have refused twelve packages that
+	// compile perfectly, five of them in pandoc's own default template and one
+	// of them in the paper this phase ran end to end. A gate is only worth
+	// having if what it refuses genuinely cannot succeed; 63-02 removed a whole
+	// admission gate for exactly this defect.
+	//
+	// IT MAY ABSTAIN, AND SAYS SO. ScanTeXPreamble reads a bounded window and
+	// does not expand macros or follow \input, so a package can be invisible
+	// to it. complete == false means the preamble ran past the window, and then
+	// the absence of a violation means nothing at all -- the document is
+	// ADMITTED and cmd/tectonic-worker refuses it instead, with the SAME error
+	// code (one code space, D-03). This is 63-02's shape, reused knowingly: a
+	// cheap gate that is allowed to give up, plus an authoritative one that is
+	// not.
+	if engine == convert.EngineTectonic && len(latexPrefix) > 0 {
+		packages, complete := convert.ScanTeXPreamble(latexPrefix)
+		for _, pkg := range packages {
+			if convert.TeXPackageResolvable(pkg) {
+				continue
+			}
+			// The package name is echoed to the client deliberately: a refusal
+			// that does not say WHICH one leaves them bisecting their own
+			// preamble, one upload per attempt. It is client-supplied text, so
+			// it is logged quoted and reaches the response inside a fixed
+			// sentence rather than being formatted as one.
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=unsupported_package package=%q", client.ID, filename, pkg)
+			// The sentence is built in convert, not here: cmd/tectonic-worker
+			// says the same thing for the same package when this scan does not
+			// see it, and two formatters for one condition is how the wordings
+			// drift apart while the code stays equal.
+			writeError(w, http.StatusUnprocessableEntity, errcode.UnsupportedPackage,
+				convert.TeXUnsupportedPackageMessage(pkg))
+			return
+		}
+		if !complete {
+			// Not a rejection: an ABSTENTION, logged at the same level so an
+			// operator can see how often the cheap gate gives up rather than
+			// inferring it from worker failures. Deliberately NOT phrased as
+			// "content validation rejected:" -- that prefix is the D-04 bound
+			// vocabulary, and nothing was rejected here.
+			log.Printf("content validation abstained: client_id=%s filename=%q check=tex_packages cause=preamble_exceeds_window window=%d", client.ID, filename, len(latexPrefix))
+		}
 	}
 
 	// D-07 (Phase 35): per-engine post-detection ceiling, checked immediately
@@ -878,25 +959,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Route to the matching engine-class queue (mirrors reconciler.go's
 	// engine switch). The row stays in 'queued' on any enqueue failure; a
 	// reconciler will recover it.
-	var enqueueErr error
-	switch engine {
-	case convert.EngineImage:
-		enqueueErr = s.queue.EnqueueImageConvert(ctx, createdID)
-	case convert.EngineDocument:
-		enqueueErr = s.queue.EnqueueDocumentConvert(ctx, createdID)
-	case convert.EngineHTML:
-		enqueueErr = s.queue.EnqueueHTMLConvert(ctx, createdID)
-	case convert.EngineAudio:
-		enqueueErr = s.queue.EnqueueAudioConvert(ctx, createdID)
-	case convert.EngineAV:
-		enqueueErr = s.queue.EnqueueAVConvert(ctx, createdID)
-	case convert.EngineOCR:
-		enqueueErr = s.queue.EnqueueOCRConvert(ctx, createdID)
-	case convert.EnginePandoc:
-		enqueueErr = s.queue.EnqueuePandocConvert(ctx, createdID)
-	case convert.EngineProbe:
-		enqueueErr = s.queue.EnqueueProbeSanitize(ctx, createdID)
-	default:
+	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
+	if !routed {
 		// Fail closed: an engine class with no known queue must never be
 		// silently dropped (T-11-02). EngineFor above only ever returns a
 		// value produced by a registered Converter.Engine(), so this branch
@@ -917,6 +981,42 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		resp["opts"] = normalizedOpts
 	}
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// enqueueForEngine routes one created job to its engine-class queue. The
+// FIRST return value is false for an engine this switch does not know --
+// which the caller turns into a fail-closed 500.
+//
+// It is a METHOD rather than the inline switch it replaced for one reason:
+// a switch inside a handler can only be exercised through a full multipart
+// request, so an engine class that reached the registry but never reached
+// this routing table stayed invisible until someone happened to write a
+// fixture for it. Tectonic did exactly that -- registered in 64-02, missing
+// here, and every real .tex upload 500'd. Extracted so
+// TestEveryEngineHasAnEnqueueRoute can walk convert.AllEngines() directly
+// and fail by NAME on the tenth engine, with no fixture to invent.
+func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UUID) (routed bool, err error) {
+	switch engine {
+	case convert.EngineImage:
+		return true, s.queue.EnqueueImageConvert(ctx, id)
+	case convert.EngineDocument:
+		return true, s.queue.EnqueueDocumentConvert(ctx, id)
+	case convert.EngineHTML:
+		return true, s.queue.EnqueueHTMLConvert(ctx, id)
+	case convert.EngineAudio:
+		return true, s.queue.EnqueueAudioConvert(ctx, id)
+	case convert.EngineAV:
+		return true, s.queue.EnqueueAVConvert(ctx, id)
+	case convert.EngineOCR:
+		return true, s.queue.EnqueueOCRConvert(ctx, id)
+	case convert.EnginePandoc:
+		return true, s.queue.EnqueuePandocConvert(ctx, id)
+	case convert.EngineProbe:
+		return true, s.queue.EnqueueProbeSanitize(ctx, id)
+	case convert.EngineTectonic:
+		return true, s.queue.EnqueueTectonicConvert(ctx, id)
+	}
+	return false, nil
 }
 
 // handleGetJob returns the job status; when done, a presigned download URL for

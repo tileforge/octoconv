@@ -13,7 +13,7 @@ package errcode
 // Sync error codes, one per class of 4xx/429 rejection (D-02). Granularity is
 // by failure CLASS, not by call site — do not add a new constant per
 // writeError message string; only per distinguishable client-actionable
-// class. The list is closed at sixteen codes.
+// class. The list is closed at seventeen codes.
 const (
 	InvalidRequest        = "invalid_request"        // generic request/form validation: missing target, preset+target conflict, unrecognized source format, invalid callback_url, bad job id, invalid status/engine filter, invalid client_id, invalid period filter, invalid JSON body, invalid preset name
 	UnsupportedConversion = "unsupported_conversion" // the (source,target) pair is not served by any engine
@@ -51,6 +51,23 @@ const (
 	// together in one place.
 	InspectBusy = "inspect_busy"
 
+	// UnsupportedPackage is its own class and not InvalidRequest, because it
+	// is the one 422 in this list a client can act on WITHOUT changing what
+	// they asked for: their LaTeX loads a package this deployment's bundle
+	// cannot resolve, and the two remedies are to drop that \usepackage or to
+	// ask for the bundle to be extended. "Your request was malformed" says
+	// neither, and the message names the package so the client does not have
+	// to bisect their own preamble one upload at a time.
+	//
+	// Shares its string with worker.CodeUnsupportedPackage: ONE code space
+	// (D-03), the same discipline InvalidOptions follows above. The same
+	// document refused at admission and refused in the worker is the same
+	// failure, and it must not look like two to a client. The API gate reads a
+	// BOUNDED window and is allowed to abstain, so a document whose preamble
+	// runs past that window reaches the worker and is refused there -- with
+	// this code either way. TestSyncAndAsyncShareUnsupportedPackage pins it.
+	UnsupportedPackage = "unsupported_package"
+
 	InternalError = "internal_error" // 5xx: anything the client cannot act on
 )
 
@@ -72,6 +89,7 @@ var all = []string{
 	QuotaExceeded,
 	RateLimited,
 	InspectBusy,
+	UnsupportedPackage,
 	InternalError,
 }
 

@@ -173,13 +173,35 @@ func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
 		t.Fatalf("unmarshal %s: %v", path, err)
 	}
 
-	if !bytes.Equal(goldenTop.Engines, liveTop.Engines) {
-		t.Errorf("engines changed -- probe serves no convert pair and must not appear here "+
-			"(D-15 pinning violation)\ngot:  %s\nwant: %s", liveTop.Engines, goldenTop.Engines)
+	// THE SECOND PERMITTED EXCEPTION: tectonic (Phase 64, TEX-05).
+	//
+	// probe was the first and needed no exception HERE, because sanitize is a
+	// different operation and the "engines" key walks convert only. tectonic
+	// serves latex -> pdf under convert, so it genuinely appears in both maps.
+	//
+	// The pin is NOT regenerated for it. Regenerating would replace the
+	// proposition "no pre-58 pair has moved" with "this is what the build emits
+	// today", which is not a pin at all. The ninth engine is removed from the
+	// LIVE body instead and the remainder must still be byte-identical, so a
+	// change to any existing engine's pairs fails exactly as before and only
+	// the addition is tolerated.
+	liveEngines := withoutEngine(t, liveTop.Engines, convert.EngineTectonic)
+	if !bytes.Equal(goldenTop.Engines, liveEngines) {
+		t.Errorf("engines changed beyond the permitted addition (D-15 pinning violation)"+
+			"\ngot:  %s\nwant: %s", liveEngines, goldenTop.Engines)
 	}
-	if !bytes.Equal(goldenTop.Operations["convert"], liveTop.Operations["convert"]) {
-		t.Errorf("operations.convert changed (D-15 pinning violation)\ngot:  %s\nwant: %s",
-			liveTop.Operations["convert"], goldenTop.Operations["convert"])
+	liveConvert := withoutEngine(t, liveTop.Operations["convert"], convert.EngineTectonic)
+	if !bytes.Equal(goldenTop.Operations["convert"], liveConvert) {
+		t.Errorf("operations.convert changed beyond the tectonic addition (D-15 pinning violation)"+
+			"\ngot:  %s\nwant: %s", liveConvert, goldenTop.Operations["convert"])
+	}
+	// The addition is ASSERTED, not merely tolerated: stripping a key that was
+	// never there would silently turn this back into the old check while
+	// looking like it still allows an exception.
+	if !bytes.Contains(liveTop.Engines, []byte(`"`+convert.EngineTectonic+`"`)) {
+		t.Errorf("the live body has no %q engine -- this comparator strips one, so its absence "+
+			"means the strip is hiding a regression rather than permitting an addition",
+			convert.EngineTectonic)
 	}
 	for key := range liveTop.Operations {
 		if _, pinned := goldenTop.Operations[key]; pinned {
@@ -369,4 +391,24 @@ func TestPre58GoldenCreateJobRejections(t *testing.T) {
 	}
 
 	assertGolden58(t, "createjob_rejections.golden.json", buf.Bytes())
+}
+
+// withoutEngine re-encodes an engine-keyed map with one key removed, in the
+// canonical form the handler emits, so what remains can be compared byte for
+// byte against the pin.
+func withoutEngine(t *testing.T, raw json.RawMessage, engine string) json.RawMessage {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal engine-keyed map: %v", err)
+	}
+	delete(m, engine)
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		t.Fatalf("re-encode engine-keyed map: %v", err)
+	}
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n"))
 }

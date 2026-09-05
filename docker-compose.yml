@@ -169,6 +169,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
       # (which are IN-02 queue.NewClient() parity values), this one is read
@@ -274,6 +288,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -327,13 +355,33 @@ services:
       JOBS_RETENTION: "2160h"
       USAGE_RETENTION: "9600h"
       RETENTION_BATCH_SIZE: "1000"
-      # IN-02: queue.NewClient() derives audioUniqueTTL from these
-      # unconditionally in EVERY process -- must be identical across all 7
-      # queue.NewClient()-constructing services (RTF-measured,
-      # 32-03-SUMMARY.md). webhook-worker previously omitted ALL
-      # engine-class MAX_RETRY/TIMEOUT vars; this phase closes the gap for
-      # AUDIO_* only (DOCUMENT_*/HTML_* omission here is pre-existing and
-      # out of scope).
+      # IN-02: queue.NewClient() derives every engine's unique-lock TTL from
+      # these unconditionally in EVERY process -- they must be identical across
+      # all eleven queue.NewClient()-constructing services (audio's own numbers
+      # are RTF-measured, 32-03-SUMMARY.md).
+      #
+      # The image/document/html four below were MISSING here until Phase 64.
+      # Phase 32 closed this gap for AUDIO_* and recorded the rest as
+      # "pre-existing and out of scope"; that note stood for eight phases,
+      # because nothing could see it. What made it invisible is that the
+      # omission is currently HARMLESS BY COINCIDENCE: compose sets
+      # ENGINE_TIMEOUT=120s / DOCUMENT_ENGINE_TIMEOUT=300s /
+      # HTML_ENGINE_TIMEOUT=60s / IMAGE_MAX_RETRY=4 / DOCUMENT_MAX_RETRY=3 /
+      # HTML_MAX_RETRY=3, which are byte-for-byte the Go defaults this process
+      # fell back to. The first operator to tune any of the six would have
+      # split the fleet's lock TTLs in half, silently, and this service is the
+      # one running the RECONCILER -- the component whose whole job is
+      # re-enqueuing jobs the fleet already has.
+      #
+      # Found by queue.TestComposeReplicatesEveryEngineVarToEveryQueueClient-
+      # Service, written for the ninth engine and immediately reporting the
+      # first eight's gap.
+      ENGINE_TIMEOUT: "120s"
+      IMAGE_MAX_RETRY: "4"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      DOCUMENT_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      HTML_MAX_RETRY: "3"
       AUDIO_MAX_RETRY: "3"
       AUDIO_ENGINE_TIMEOUT: "742s"
       # IN-02 (Phase 36): same requirement, av engine -- must be
@@ -371,6 +419,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -414,13 +476,33 @@ services:
       JOBS_RETENTION: "2160h"
       USAGE_RETENTION: "9600h"
       RETENTION_BATCH_SIZE: "1000"
-      # IN-02: queue.NewClient() derives audioUniqueTTL from these
-      # unconditionally in EVERY process -- must be identical across all 7
-      # queue.NewClient()-constructing services (RTF-measured,
-      # 32-03-SUMMARY.md). webhook-worker previously omitted ALL
-      # engine-class MAX_RETRY/TIMEOUT vars; this phase closes the gap for
-      # AUDIO_* only (DOCUMENT_*/HTML_* omission here is pre-existing and
-      # out of scope).
+      # IN-02: queue.NewClient() derives every engine's unique-lock TTL from
+      # these unconditionally in EVERY process -- they must be identical across
+      # all eleven queue.NewClient()-constructing services (audio's own numbers
+      # are RTF-measured, 32-03-SUMMARY.md).
+      #
+      # The image/document/html four below were MISSING here until Phase 64.
+      # Phase 32 closed this gap for AUDIO_* and recorded the rest as
+      # "pre-existing and out of scope"; that note stood for eight phases,
+      # because nothing could see it. What made it invisible is that the
+      # omission is currently HARMLESS BY COINCIDENCE: compose sets
+      # ENGINE_TIMEOUT=120s / DOCUMENT_ENGINE_TIMEOUT=300s /
+      # HTML_ENGINE_TIMEOUT=60s / IMAGE_MAX_RETRY=4 / DOCUMENT_MAX_RETRY=3 /
+      # HTML_MAX_RETRY=3, which are byte-for-byte the Go defaults this process
+      # fell back to. The first operator to tune any of the six would have
+      # split the fleet's lock TTLs in half, silently, and this service is the
+      # one running the RECONCILER -- the component whose whole job is
+      # re-enqueuing jobs the fleet already has.
+      #
+      # Found by queue.TestComposeReplicatesEveryEngineVarToEveryQueueClient-
+      # Service, written for the ninth engine and immediately reporting the
+      # first eight's gap.
+      ENGINE_TIMEOUT: "120s"
+      IMAGE_MAX_RETRY: "4"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      DOCUMENT_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      HTML_MAX_RETRY: "3"
       AUDIO_MAX_RETRY: "3"
       AUDIO_ENGINE_TIMEOUT: "742s"
       # IN-02 (Phase 36): same requirement, av engine -- must be
@@ -458,6 +540,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -540,6 +636,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
@@ -621,6 +731,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # /dev/shm sizing as a belt-and-suspenders compensating control
@@ -725,6 +849,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -854,6 +992,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
@@ -981,6 +1133,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
@@ -1119,6 +1285,20 @@ services:
       # mismatch silently produces duplicate processing.
       PROBE_ENGINE_TIMEOUT: "600s" # measured, see the derivation above
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the pandoc engine (DEBT-05).
@@ -1269,6 +1449,20 @@ services:
       # status as the timeout above.
       PROBE_WORKER_CONCURRENCY: "1"
       PROBE_MAX_RETRY: "2"
+      # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
+      # derives tectonicUniqueTTL from these two unconditionally in EVERY
+      # process, so they must be identical across all twelve
+      # queue.NewClient()-constructing services. A mismatch does not error; it
+      # produces two different lock TTLs for one job and the shorter one lets a
+      # duplicate through. Enforced mechanically by
+      # queue.TestComposeReplicatesEveryEngineVarToEveryQueueClientService,
+      # which infers the service set rather than listing it.
+      #
+      # 271s is MEASURED (2026-09-04): ceil(25.76 s/pass x 7 passes x 1.5),
+      # the per-pass cost taken at the 2 MiB input ceiling and 7 being the
+      # engine's own rerun maximum. Full derivation in .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
       # PROBE_MAX_PAGES (Phase 63, PROBE-02): pdfinfo counts the pages here,
       # before the first ghostscript pass, and the rejection is TERMINAL -- the
       # deliberate opposite of the timeout above, which stays transient because
@@ -1311,6 +1505,107 @@ services:
           # untrusted bytes in three parsers, one of them (pdfcpu) inside its
           # own address space. Lowering or removing them reopens that
           # decision rather than tuning a knob.
+          cpus: "2.0"
+          memory: 1g
+
+  # tectonic is the ninth engine class: real typesetting, latex -> pdf. Static
+  # Go binary plus the tectonic CLI and a REDUCED TeX bundle baked into the
+  # image (Dockerfile.tectonic-worker, ~128 MB, built by
+  # scripts/tectonic-bundle-build.sh and digest-verified at build time).
+  #
+  # The bundle is not a size optimisation, it is TEX-02: without `-b <bundle>`
+  # tectonic's DEFAULT behaviour is to fetch what the DOCUMENT asks for over
+  # the network, at compile time, from relay.fullyjustified.net. That was
+  # executed and captured, not assumed (64-02 evidence). The worker refuses to
+  # start if the bundle is missing rather than falling back.
+  #
+  # No platform: pin needed, same posture as av/audio/chromium/ocr/pandoc/probe.
+  tectonic-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.tectonic-worker
+    container_name: octoconv-tectonic-worker
+    restart: always
+    # cmd/tectonic-worker sets asynq ShutdownTimeout = TECTONIC_ENGINE_TIMEOUT
+    # (271s, MEASURED) + 10s = 281s, so an in-flight compile survives SIGTERM
+    # instead of being aborted and requeued. stop_grace_period = 281s + 10s
+    # Docker SIGKILL margin = 291s. RE-DERIVED in the same edit that landed the
+    # measured timeout -- probe's equivalent went a full phase describing 180s
+    # after its value had become 600s, which is how a derived number goes stale.
+    stop_grace_period: 291s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://octo:octo-pass@postgres:5432/octo_db
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: octoconv
+      S3_USE_SSL: "false"
+      # 1, with the heavy engines. A TeX interpreter plus a 128 MB bundle and
+      # its compiled format are resident for the life of a job, inside this
+      # service's 1g limit. Reasoned from memory, not measured -- throughput
+      # comes from KEDA scale-out (deploy/chart, keda.tectonic), not from
+      # raising this. tectonic-worker-only, NOT read by queue.NewClient(), so
+      # no IN-02 parity requirement.
+      TECTONIC_WORKER_CONCURRENCY: "1"
+      # TECTONIC_MAX_OUTPUT_BYTES bounds the PRODUCED PDF. The 2 MiB input
+      # ceiling does not: TeX ships pages out and frees the memory as it goes,
+      # so 199 bytes of source measured 19 545 890 bytes of PDF in 93 seconds
+      # through the live API -- 10x the largest LEGITIMATE output measured
+      # (2 MiB source, 745 pages, 1 914 057 bytes), in a third of the time
+      # available. 32 MiB is 17x a real document and still bounds the abuse.
+      # tectonic-worker-only, like PROBE_MAX_PAGES: NOT read by
+      # queue.NewClient(), so no IN-02 parity requirement.
+      TECTONIC_MAX_OUTPUT_BYTES: "33554432"
+      # IN-02 (Phase 64): queue.NewClient() derives tectonicUniqueTTL from
+      # these two unconditionally in EVERY process -- identical across all
+      # twelve queue.NewClient()-constructing services. 271s is MEASURED
+      # (2026-09-04), and it is inseparable from the 2 MiB input ceiling it was
+      # measured at: see .env.example.
+      TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
+      TECTONIC_MAX_RETRY: "2"
+      # queue.NewClient() (constructed by cmd/tectonic-worker/main.go) also
+      # reads every OTHER engine class's retry/timeout vars unconditionally,
+      # even though this process only runs the tex engine (DEBT-05).
+      IMAGE_MAX_RETRY: "4"
+      ENGINE_TIMEOUT: "120s"
+      DOCUMENT_MAX_RETRY: "3"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      HTML_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      AUDIO_MAX_RETRY: "3"
+      AUDIO_ENGINE_TIMEOUT: "742s"
+      AV_MAX_RETRY: "2"
+      AV_ENGINE_TIMEOUT: "753s"
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "744s"
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "65s"
+      PROBE_ENGINE_TIMEOUT: "600s"
+      PROBE_MAX_RETRY: "2"
+      METRICS_ADDR: "127.0.0.1:9090"
+      # Wiring consistency with every other worker cmd. Inert for this engine
+      # in particular: TectonicConverter cannot implement
+      # convert.ProgressConverter, because tectonic reruns until its references
+      # converge and does not know in advance how many passes a document needs
+      # -- there is no denominator to report progress against. MUST match
+      # webhook-worker-1/-2's WEBHOOK_SIGNING_SECRET so a client verifies the
+      # terminal done/failed event with the same key.
+      WEBHOOK_SIGNING_SECRET: "dev-only-change-me-in-real-deploys"
+    deploy:
+      resources:
+        limits:
+          # The strongest reason any worker here has for a hard cgroup: this
+          # one runs a TeX interpreter over a document that is a PROGRAM. The
+          # image also runs as USER nobody for the same reason. 64-05's
+          # measurement must run at exactly these limits to mean anything.
           cpus: "2.0"
           memory: 1g
 

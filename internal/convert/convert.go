@@ -31,6 +31,18 @@ const (
 	// reusing "extract" was rejected because sanitize extracts nothing and
 	// extract is needed for its own meaning in the next milestone.
 	EngineProbe = "probe"
+	// EngineTectonic is the ninth class: real typesetting, latex -> pdf. It is
+	// the only engine whose input is a PROGRAM rather than a document -- see
+	// tectonic.go for what that costs and how it is bounded.
+	//
+	// Added to AllEngines() only once the queue, the worker and the dispatch
+	// existed. Adding it earlier broke nine contracts at once -- every member
+	// of this list must have a queue, a reconciler sweep route, an upload
+	// ceiling, a published timeout and an estimate source -- and, worse,
+	// advertised latex -> pdf on GET /v1/formats with nothing to consume it.
+	// That is the defect phase 60 shipped with sanitize; here the contracts
+	// caught it in minutes.
+	EngineTectonic = "tectonic"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one
@@ -61,9 +73,9 @@ const OperationConvert = "convert"
 // that a registry fact rather than a convention the handler has to remember.
 const OperationSanitize = "sanitize"
 
-// AllEngines returns the eight engine classes in a fixed, documented order --
+// AllEngines returns the nine engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
-// EnginePandoc, EngineProbe. The order is stable because callers (cmd/manage-clients) use
+// EnginePandoc, EngineProbe, EngineTectonic. The order is stable because callers (cmd/manage-clients) use
 // it to render operator-facing error text; a fresh slice is constructed on
 // every call so a caller can never mutate the source of truth through the
 // returned slice. Adding an eighth engine class means adding it here as well
@@ -79,6 +91,7 @@ func AllEngines() []string {
 		EngineOCR,
 		EnginePandoc,
 		EngineProbe,
+		EngineTectonic,
 	}
 }
 

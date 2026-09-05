@@ -219,6 +219,7 @@ type fakeQueue struct {
 	enqueuedOCR      uuid.UUID
 	enqueuedPandoc   uuid.UUID
 	enqueuedProbe    uuid.UUID
+	enqueuedTectonic uuid.UUID
 	// enqueueCalls counts every Enqueue* invocation across all seven engine
 	// methods, so a quota test can assert "never enqueued" with an exact
 	// integer (52-04).
@@ -269,6 +270,12 @@ func (f *fakeQueue) EnqueuePandocConvert(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeQueue) EnqueueProbeSanitize(_ context.Context, id uuid.UUID) error {
 	f.enqueuedProbe = id
+	f.enqueueCalls++
+	return nil
+}
+
+func (f *fakeQueue) EnqueueTectonicConvert(_ context.Context, id uuid.UUID) error {
+	f.enqueuedTectonic = id
 	f.enqueueCalls++
 	return nil
 }
@@ -3708,6 +3715,230 @@ func TestCreateJob_AVOptsRejectedForInapplicablePair(t *testing.T) {
 // handleCreateJob's enqueue switch fails this test (via the missing table
 // row/accessor) rather than staying invisible except for a 500 in
 // production.
+// TestCreateJob_TectonicInputCeilingEnforced proves the 2 MiB ceiling is
+// actually enforced at admission, not merely declared in a map.
+//
+// It is the half of 64-05's decision that is easy to lose: the timeout is
+// visible in five files and an operator would notice it changing, while the
+// ceiling is one integer in defaultMaxEngineBytes. If it silently reverted to
+// the 100 MiB this engine inherited, nothing about the timeout would look
+// wrong -- and a 40 MiB .tex would be admitted, run for ten times the
+// reconciler cap, and be re-enqueued underneath itself.
+func TestCreateJob_TectonicInputCeilingEnforced(t *testing.T) {
+	store := &failOnUploadStorage{t: t}
+
+	// Just over the ceiling, built out of a legal preamble plus padding so the
+	// rejection cannot be blamed on the content check.
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n\\begin{document}\n")
+	for b.Len() < (2<<20)+4096 {
+		b.WriteString("padding that is entirely valid LaTeX body text.\n")
+	}
+	b.WriteString("\\end{document}\n")
+
+	body, ct := multipartBody(t, "book.tex", "pdf", []byte(b.String()))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	// MaxUploadBytes is raised well above the upload on purpose: the server's
+	// own global cap must not be what refuses this, or the test would pass
+	// with no per-engine ceiling existing at all.
+	srv := NewServer(&fakeRepo{}, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(),
+		&fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(),
+		Config{MaxUploadBytes: 64 << 20})
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 -- a .tex above the 2 MiB tex-engine ceiling must be refused "+
+			"before the upload; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- TEX-03: the tex-package admission gate --------------------------------
+
+// failOnUploadStorage fails the test if Upload is called AT ALL. A boolean
+// checked afterwards would prove the same thing one step later; this proves it
+// at the moment of the call, with the stack still pointing at the line that
+// made it.
+type failOnUploadStorage struct {
+	fakeStorage
+	t *testing.T
+}
+
+func (f *failOnUploadStorage) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	f.t.Fatalf("storage.Upload(%q) was called: the tex-package gate must refuse BEFORE any object is "+
+		"written, or a document this deployment cannot typeset costs S3 bytes and a quota slot to be "+
+		"told so", key)
+	return nil
+}
+
+// texDoc builds a .tex fixture loading exactly the given packages.
+func texDoc(packages ...string) []byte {
+	src := "\\documentclass{article}\n"
+	for _, p := range packages {
+		src += "\\usepackage{" + p + "}\n"
+	}
+	return []byte(src + "\\begin{document}\nhello\n\\end{document}\n")
+}
+
+// TestCreateJob_UnresolvablePackageRejectedBeforeUpload is TEX-03's central
+// assertion: the refusal happens before the storage write, carries the shared
+// code, and NAMES the package.
+//
+// pgfplots is not a hypothetical -- it was compiled against the real bundle in
+// the container and reported `! LaTeX Error: File \`pgfplots.sty' not found.`
+// (evidence/64-03-package-resolution.txt).
+func TestCreateJob_UnresolvablePackageRejectedBeforeUpload(t *testing.T) {
+	repo := &fakeRepo{}
+	store := &failOnUploadStorage{t: t}
+	srv, _ := newTestServer(repo, store, &fakeQueue{})
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc("amsmath", "pgfplots"))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode body: %v (%s)", err, rec.Body.String())
+	}
+	if resp.Code != errcode.UnsupportedPackage {
+		t.Errorf("code = %q, want %q", resp.Code, errcode.UnsupportedPackage)
+	}
+	if !strings.Contains(resp.Error, "pgfplots") {
+		t.Errorf("message = %q, does not name the package -- the client is left bisecting their own "+
+			"preamble, one upload per attempt", resp.Error)
+	}
+	if repo.created != nil {
+		t.Error("a job row was created for a document that was refused")
+	}
+}
+
+// TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted is the half
+// that keeps the gate honest. All five packages below are OUTSIDE
+// convert.TeXPackages and all five compile against the shipped bundle; five of
+// the twelve measured are in pandoc's default LaTeX template, and fontenc is in
+// the paper 64-04 ran end to end.
+//
+// Gating on the declared set would fail HERE, which is the point: without this
+// test, "the gate works" and "the gate refuses valid documents" look identical.
+func TestCreateJob_ResolvablePackagesOutsideTheDeclaredSetAreAdmitted(t *testing.T) {
+	pandocTemplatePackages := []string{"lmodern", "fontenc", "inputenc", "textcomp", "microtype"}
+	for _, pkg := range pandocTemplatePackages {
+		if convert.TeXPackageSupported(pkg) {
+			t.Fatalf("%s is now in the DECLARED set -- this test no longer proves what it claims", pkg)
+		}
+	}
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	queue := &fakeQueue{}
+	srv, _ := newTestServer(repo, store, queue)
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", texDoc(pandocTemplatePackages...))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 -- these five packages compile against the shipped bundle; "+
+			"body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.enqueuedTectonic == uuid.Nil {
+		t.Error("the job was accepted but never reached the tex queue")
+	}
+}
+
+// TestCreateJob_PreambleBeyondTheWindowIsAdmitted pins the ABSTENTION. A
+// preamble longer than the scan window is admitted, on purpose: the scan saw
+// only part of it, so the absence of a violation says nothing, and the worker
+// is the authority. 63-02's page-count gate is the precedent, and the failure
+// it exists to avoid is refusing a document on the strength of a partial read.
+func TestCreateJob_PreambleBeyondTheWindowIsAdmitted(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n")
+	// Comment lines only -- no package is named, so nothing is hidden from the
+	// scanner except the \begin{document} that would have made it complete.
+	for b.Len() < convert.SniffWindowBytes+1024 {
+		b.WriteString("% padding so the preamble runs past the sniff window\n")
+	}
+	b.WriteString("\\usepackage{pgfplots}\n\\begin{document}\nx\n\\end{document}\n")
+
+	repo := &fakeRepo{}
+	store := &fakeStorage{}
+	queue := &fakeQueue{}
+	resolver := newFakeResolver()
+	// A document whose preamble outruns the 1 MiB sniff window is, by
+	// construction, larger than newTestServer's own 1 MiB MaxUploadBytes --
+	// which would refuse it 413 for a reason that has nothing to do with this
+	// gate. Raised here so the 202 below is the abstention and not an accident
+	// of two limits happening to be the same number.
+	srv := NewServer(repo, store, queue, defaultFakePresetRepo(), defaultFakePresetAdmin(),
+		&fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(),
+		Config{MaxUploadBytes: 8 << 20})
+
+	body, ct := multipartBody(t, "paper.tex", "pdf", []byte(b.String()))
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+	req.Header.Set("Content-Type", ct)
+	rec := httptest.NewRecorder()
+
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: the gate must ABSTAIN when the preamble runs past its window, "+
+			"not refuse on a partial read; body=%s", rec.Code, rec.Body.String())
+	}
+	if queue.enqueuedTectonic == uuid.Nil {
+		t.Error("the abstained job never reached the tex queue, so nothing would ever refuse it")
+	}
+}
+
+// TestEveryEngineHasAnEnqueueRoute walks convert.AllEngines() -- the one list
+// that grows with every engine class -- and asserts each value is KNOWN to
+// handleCreateJob's routing table. It exists because the table below can only
+// cover an engine someone wrote a multipart fixture for: tectonic was
+// registered in 64-02, advertised on GET /formats, and missing from the
+// enqueue switch, so every real .tex upload got a fail-closed 500 with no
+// test able to see it. This one needs no fixture, so the tenth engine cannot
+// repeat it silently.
+//
+// It asserts ROUTING only (routed == true), never the enqueue error: the
+// table below is what proves each engine reaches its OWN queue rather than
+// merely some queue.
+func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
+	engines := convert.AllEngines()
+	if len(engines) == 0 {
+		t.Fatal("convert.AllEngines() is empty -- this test would pass vacuously")
+	}
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	for _, engine := range engines {
+		routed, err := srv.enqueueForEngine(context.Background(), engine, uuid.New())
+		if !routed {
+			t.Errorf("engine %q has no case in handleCreateJob's enqueue switch: every job for it would 500 with \"failed to enqueue job\"", engine)
+		}
+		if err != nil {
+			t.Errorf("engine %q: unexpected enqueue error from the fake queue: %v", engine, err)
+		}
+	}
+
+	// The fail-closed branch still fails closed -- otherwise the assertion
+	// above would hold for a switch that routed everything.
+	if routed, _ := srv.enqueueForEngine(context.Background(), "nonsense", uuid.New()); routed {
+		t.Error("engine \"nonsense\" was routed -- the default branch no longer fails closed")
+	}
+}
+
 func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 	type fixture struct {
 		filename string
@@ -3724,6 +3955,11 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		{convert.EngineHTML, fixture{"in.html", "pdf", func(*testing.T) []byte { return htmlFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedHTML }},
 		{convert.EngineAudio, fixture{"in.mp3", "txt", audioMP3Fixture}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAudio }},
 		{convert.EngineAV, fixture{"in.mp4", "mp3", func(*testing.T) []byte { return mp4BytesFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedAV }},
+		// The ninth engine joins the SAME table rather than getting a bespoke
+		// test of its own (64-04 Task 2): the value of this test is the
+		// negative half -- every other engine's accessor must stay uuid.Nil --
+		// and a separate test would assert only the positive half.
+		{convert.EngineTectonic, fixture{"in.tex", "pdf", func(*testing.T) []byte { return latexFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedTectonic }},
 	}
 
 	allAccessors := make(map[string]func(*fakeQueue) uuid.UUID, len(cases))

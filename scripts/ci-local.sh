@@ -133,7 +133,7 @@ tier_gate() {
   echo "go vet ./...: clean"
   go build ./... || return 1
   echo "go build ./...: clean"
-  go test ./... -timeout 5m || return 1
+  go test -count=1 ./... -timeout 5m || return 1
 }
 
 tier_race() {
@@ -147,9 +147,32 @@ tier_docker_build() {
   docker buildx bake -f docker-compose.yml
 }
 
+# The compose invocation is a FILE-scope array, not a function-local one: the
+# teardown below runs from a RETURN trap, which fires after the function's
+# locals are gone. It did, and the transcript's last line was
+# "compose[@]: unbound variable" -- a teardown that fails is a stack left
+# running, and the message lands where a reader is already looking for the
+# cause of the tier's failure.
+COMPOSE_E2E=(docker compose -f docker-compose.yml -f docker-compose.e2e.yml)
+
 tier_e2e() {
-  local compose=(docker compose -f docker-compose.yml -f docker-compose.e2e.yml)
+  local compose=("${COMPOSE_E2E[@]}")
   local rc=0
+
+  # Nothing else may hold the ports this tier tests THROUGH. A developer API
+  # left running from a debugging session answers /healthz exactly like the
+  # compose one, and the suite then seeds a client into compose's database and
+  # authenticates against a process with a different API_KEY_SALT -- which
+  # arrives as "401 invalid api key" on every test, a message that says nothing
+  # about the actual cause. Observed on 2026-09-05.
+  for port in 8090 9100; do
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "error: something is already listening on :$port -- this tier would test that" >&2
+      echo "       process instead of the compose stack. Stop it and re-run." >&2
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN | head -3 >&2
+      return 1
+    fi
+  done
 
   echo "--- bringing up the compose stack (with --build: no warmed cache locally) ---"
   "${compose[@]}" up -d --build || return 1
@@ -157,7 +180,7 @@ tier_e2e() {
   # shellcheck disable=SC2317  # invoked via trap
   teardown() {
     echo "--- tearing down ---"
-    "${compose[@]}" down -v >/dev/null 2>&1 || true
+    "${COMPOSE_E2E[@]}" down -v >/dev/null 2>&1 || true
   }
   trap teardown RETURN
 
@@ -172,13 +195,20 @@ tier_e2e() {
   echo "--- running migrations ---"
   DATABASE_URL='postgres://octo:octo-pass@localhost:5434/octo_db' go run ./cmd/migrate || return 1
 
+  # -count=1 defeats the TEST CACHE, and it is not a nicety here. Go caches by
+  # package inputs -- source, env, files read -- and a live E2E suite's real
+  # input is a RUNNING STACK it knows nothing about. This tier reported
+  # "ok ... (cached)" and "tier e2e: PASS" for a suite that never ran against
+  # the images just built, which is a green for work nobody did. Observed on
+  # 2026-09-05, on a run whose whole purpose was to exercise a change to the
+  # shared worker path.
   echo "--- running the E2E suite ---"
   E2E_BASE_URL=http://localhost:8090 \
   DATABASE_URL='postgres://octo:octo-pass@localhost:5434/octo_db' \
   API_KEY_SALT=dev-only-change-me-in-real-deploys \
   WEBHOOK_SIGNING_SECRET=dev-only-change-me-in-real-deploys \
   E2E_S3_DIAL_ADDR=127.0.0.1:9100 \
-    go test ./internal/e2e/... -timeout 30m || rc=1
+    go test -count=1 ./internal/e2e/... -timeout 30m || rc=1
 
   if [ "$rc" -ne 0 ]; then
     echo "--- compose logs (tail) ---"

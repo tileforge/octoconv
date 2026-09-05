@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
 status: in_progress
-last_updated: "2026-09-02T16:30:00.000Z"
-last_activity: 2026-09-02
+last_updated: "2026-09-05T00:30:00.000Z"
+last_activity: 2026-09-05
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 2
-  completed_plans: 2
-  percent: 66
-  note: "phase 63 closed 2026-09-03 (d13e8a9); phase 64 planned, not started"
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 5
+  percent: 100
+  note: "phase 64 complete (64-01..64-05); v1.14's three phases all done, nothing merged to main yet"
 ---
 
 # Project State
@@ -25,15 +25,127 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 64 — Tectonic, Ninth Engine Class (PLANNED, ready to execute)
-Plan: 64-01..64-05 planned; phase 63 CLOSED (63-01 PR #14, 63-02 PR #15, both merged)
-Status: v1.14 is two phases of three done. Phase 63 merged as d13e8a9 after seven review rounds.
+Phase: 64 — Tectonic, Ninth Engine Class (COMPLETE, 64-01..64-05)
+Plan: all five done; phases 62 and 63 merged earlier (PR #14, PR #15)
+Status: v1.14 is three phases of three. The tex engine is closed end to end on
+live infrastructure and its timeout is measured, not chosen.
 
-63-02 shipped the probe page ceiling in the WORKER (PROBE_MAX_PAGES=200, pdfinfo before the first ghostscript pass, terminal). It did NOT ship PROBE-01's admission gate: that was built and removed on evidence — seven ways a valid document was rejected with 422, three resource defects on a route with no concurrency semaphore, and finally the finding that a PDF page tree is a tree, so the gate abstained on exactly the long documents it existed to refuse. PROBE-01 and ROADMAP SC4 were reworded; the removed work is carried by .planning/todos/pending/2026-09-03-pdf-page-count-tokenizer.md.
+PR #16 is OPEN (https://github.com/paderinandrey/octoconv/pull/16), 30 commits
+off main, mergeable. Nothing from phase 64 is on main yet.
 
-The phase's most transferable measurement is not the ceiling: twenty-two inversions were written and eight passed against deliberately broken code on the first attempt, every time because the test was wrong rather than the fix.
+CODEX ROUND 3 ADDRESSED (2026-09-05): 3 findings, all P2, no P1. Each
+reproduced before being fixed.
 
-Next: execute phase 64 (tectonic, latex → pdf). Waves 01 → 02 → (03 ‖ 04) → 05; the last is autonomous: false because TECTONIC_ENGINE_TIMEOUT is measured by the operator on a corpus decided beforehand.
+- P2 the comment scanner asked whether the PREVIOUS BYTE was a backslash, so
+  \let\foo\\% \usepackage{pgfplots} reported pgfplots with complete=true and the
+  API refused a document that compiles. Third instance in this PR of a
+  byte/prefix test standing in for tokenization, so the fix is the tokenization:
+  a control SYMBOL is consumed as one token, which also stops \{ and \} moving
+  braceDepth.
+- P2 os.Stat is not "the bundle is usable". Reproduced live: with
+  TECTONIC_BUNDLE_PATH pointing at the DIRECTORY /opt/tectonic the worker
+  started, logged its bundle and consumed the queue. ValidateTectonicBundle
+  opens it, requires a regular non-empty file, and is used by BOTH the startup
+  check and Convert.
+- P2 the timeout measurement claimed the ceiling and measured 368 999 bytes by
+  default, because the 2 143 444-byte document is generated on demand. It now
+  stages the generated corpus -- which doubles as a check that every committed
+  file comes back byte-identical from the generator.
+
+Two defects in scripts/ci-local.sh found by running it: a RETURN-trap teardown
+referencing a function-local array (transcript ended in "compose[@]: unbound
+variable"), and no guard against a developer API already holding :8090 -- which
+made the whole e2e tier fail with "401 invalid api key" against the wrong
+process.
+
+CODEX ROUND 2 ADDRESSED (2026-09-05): 10 findings, 2xP1. All ten confirmed by
+running before any fix, and three of them turned out to be wider than the
+review said.
+
+- P1 unbounded engine log. MEASURED: 235 bytes of .tex -> 323 565 198 bytes of
+  stdout in 30s (10.8 MB/s), so the 271s timeout would hold ~2.9 GB in a 1 GiB
+  container. Capped at 8 MiB of TAIL, which is 5.9x the 1 416 019 bytes the
+  largest ADMISSIBLE document produces. runCommand itself unchanged -- veraPDF's
+  whole XML report is stdout and is parsed.
+- P1 no output ceiling. MEASURED: 199 bytes -> 19 545 890 bytes of PDF in 93s
+  through the live API, against 1 914 057 bytes for the largest real document.
+  TECTONIC_MAX_OUTPUT_BYTES=32 MiB, terminal, own code (output_too_large).
+- P2 deny list enforced in the API only. Independently found and proven live
+  BEFORE the review arrived, and wider: fontspec past the sniff window returned
+  a finished PDF, and fontspec-xetex/fontspec-luatex -- the implementation files
+  fontspec.sty itself loads -- were admitted outright. Worker now scans the
+  whole input; all three names denied; the class test forbids any denied package
+  having an unlisted bundle variant.
+- P2 whole-attempt deadline made infra stalls terminal. process() bounds
+  download+convert+upload with one context (T-03-11), so a stalled MinIO call
+  raised the engine's error. Only convert.ErrTeXEngineTimeout is terminal now.
+- P2 \fi matched as a prefix: \finalfoo closed a conditional and the API refused
+  a document that compiles. Whole-control-word matching; \usepackagefoo{bar} was
+  the same defect on the directive.
+- P2 undefined-references check forgeable by \typeout. Keyed on LaTeX's own
+  warning line; both forms captured from the image as fixtures. This check has
+  now been wrong in both directions inside one PR.
+- P2 E2E CI job bakes without the bundle -- the round-1 fix went into one of the
+  two jobs that bake. Test derives the rule from compose + ci.yml.
+- P2 unpinned upstream builder clone. Pinned; PROVENANCE records that the
+  SHIPPED asset cannot be attributed to a revision, since that tree is gone.
+- P2 TYPESETTING.md still called a timeout transient.
+- P2 pod grace == asynq ShutdownTimeout. Written as a rule over all nine
+  workers, which found probeWorker (phase 63) with the identical slip.
+
+CODEX ROUND 1 ADDRESSED (2026-09-04): 7 findings, 2xP1. Six confirmed by
+running before any fix; one premise refuted with a real gap behind it.
+
+- P1 the tex image could not be built from a fresh checkout at all (the bundle
+  is gitignored; the fetch was prose in a Dockerfile comment). Now a script CI
+  runs before bake.
+- P1 a tex timeout was retried 3x271s of a concurrency-1 worker. Now terminal:
+  the input is a program, and 64-05 measured the largest admissible document at
+  180.3s against a 271s bound. My own first probe was WRONG (a 1e8-iteration
+  loop completed in 66s and proved nothing).
+- P2 the scanner refused a document that compiles (\usepackage inside a false
+  conditional). Now abstains; the regression test then found a bug in the fix.
+- P2 fontspec was admitted though the docs promise it is unavailable.
+- P2 a bare \usepackage{biblatex} failed on the missing biber with no
+  actionable message.
+- P2 persisted opts were silently ignored on this engine alone.
+- P2 non-convergence: REFUTED. 64-04's paper prints "stopping at 6 passes" and
+  resolves everything. The real gap next to it -- undefined references
+  published silently -- is fixed, keyed on LaTeX's own warning and scoped to
+  the final pass.
+
+TEX-01..TEX-05 are all closed. Two of them were reworded or qualified on
+evidence rather than ticked:
+
+- TEX-03's gate refuses what the BUNDLE cannot resolve, not what the declared
+  set omits. Gating on the declared eighteen was measured to refuse twelve
+  packages that compile — five in pandoc's default template, one in the paper
+  64-04 itself ran. Same shape as PROBE-01's rewording in 63-02, and confirmed
+  with the operator before it was built.
+- TEX-01 is met, with a named limitation: the API is single-input, so a
+  multi-file project cannot be submitted. Carried by
+  todos/pending/2026-09-04-tex-multi-file-projects.md.
+
+64-05's measurement produced a finding rather than only a number:
+TECTONIC_ENGINE_TIMEOUT=271s means nothing without an input ceiling, because
+cost is linear in source size — at the inherited 100 MiB a dense .tex needs
+~9000s, ten times the reconciler cap. The pair (2 MiB / 271s) is now pinned by
+test, the way PROBE_MAX_PAGES and PROBE_ENGINE_TIMEOUT are.
+
+Three defects this phase found that only a mechanism could find, all now
+covered by tests that walk a list rather than restate one: the missing tectonic
+case in handleCreateJob's enqueue switch (every .tex 500'd), cmd/api not reading
+TECTONIC_ENGINE_TIMEOUT, and both webhook-workers missing four engine vars since
+Phase 32 — harmless only by coincidence, in the service that runs the
+reconciler.
+
+Next: work the PR #16 review rounds, merge, then close milestone v1.14.
+
+Open findings carried out of phase 64 (both in todos/pending/):
+
+- multi-file LaTeX projects cannot be submitted (single-input API);
+- the tex input ceiling is a heuristic — real cost is pages x passes, neither
+  knowable before the engine runs, so the timeout is the actual backstop.
 
 ## Performance Metrics
 
