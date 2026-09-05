@@ -61,6 +61,11 @@ type pdfScan struct {
 	// pass -- for example one whose /Length object is defined later in the
 	// file.
 	unresolved int
+	// objectsCapped reports that the walk STOPPED because it reached the
+	// caller's object cap, so neither the index nor the stream list is
+	// complete. Only scanPDFLimited's callers can see this, and they abstain
+	// on it.
+	objectsCapped bool
 }
 
 // pdfLexInt is an integer token and where it started, so "N G obj" can be read
@@ -84,13 +89,41 @@ func scanPDF(b []byte) pdfScan { return scanPDFSeeded(b, nil) }
 // resolved on the second look. Seeding is the only thing that makes the retry
 // different from the first pass; everything else about the walk is identical,
 // which is why there is one implementation and not two.
-func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
+func scanPDFSeeded(b []byte, seed map[int]int) pdfScan { return scanPDFImpl(b, seed, 0) }
+
+// scanPDFLimited is scanPDFSeeded with a cap on how many object headers it will
+// index, after which it stops and sets objectsCapped.
+//
+// The cap exists for callers that run on an UNBOUNDED, attacker-supplied window
+// in a process with a memory limit: an 8 MiB body of unique "N 0 obj" records
+// made the unbounded index allocate 40 MB, and POST /v1/jobs holds no
+// concurrency semaphore. maxObjects <= 0 means no cap, which is what the
+// sanitize worker passes -- it runs on one file it has already downloaded,
+// inside a cgroup, under a measured timeout.
+func scanPDFLimited(b []byte, seed map[int]int, maxObjects int) pdfScan {
+	return scanPDFImpl(b, seed, maxObjects)
+}
+
+func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
 	res := pdfScan{objects: map[int]int{}}
 	for k, v := range seed {
 		res.objects[k] = v
 	}
 
-	var ints []pdfLexInt // the last two integer tokens at depth 0
+	// The last two integer tokens at depth 0, and never more than two.
+	//
+	// This used to be a nil slice trimmed with ints = ints[len(ints)-2:],
+	// which keeps the SAME backing array: append then grows that array for the
+	// life of the walk, so a long run of integers -- which is exactly what a
+	// cross-reference table is -- allocated without bound. Measured before this
+	// changed: a 20 971 614-byte file whose table declares the per-subsection
+	// maximum cost 48.0 MB in scanPDF alone, ~2.3x the input, and this walk
+	// runs in the API process for every /v1/inspect as well as in the sanitize
+	// worker.
+	//
+	// A fixed capacity of two makes the trim a copy into the same array
+	// instead, so the walk allocates this once.
+	ints := make([]pdfLexInt, 0, 2)
 	depth := 0
 	// Arrays do not change dictionary depth, so a /Length inside "[ ... ]" was
 	// read as another key of the enclosing dictionary and overwrote the real
@@ -127,7 +160,7 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 		}
 		if c == '(' {
 			i = pdfSkipLiteralString(b, i)
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 			continue
 		}
@@ -136,12 +169,12 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 			if i+1 < len(b) && b[i+1] == '<' {
 				depth++
 				i += 2
-				ints = nil
+				ints = ints[:0]
 				dictClosed = false
 				continue
 			}
 			i = pdfSkipHexString(b, i)
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 			continue
 		}
@@ -154,14 +187,14 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 				lengthValue, lengthRef, haveLength = pendingValue, pendingRef, pendingOK
 				pendingValue, pendingRef, pendingOK = 0, false, false
 			}
-			ints = nil
+			ints = ints[:0]
 			continue
 		}
 
 		if c == '[' {
 			arrayDepth++
 			i++
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 			continue
 		}
@@ -170,19 +203,29 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 				arrayDepth--
 			}
 			i++
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 			continue
 		}
 
 		if c == '/' {
+			if depth == 0 {
+				// Outside every dictionary a name cannot be a key, and this
+				// walk reads names ONLY as keys. Skipping without decoding is
+				// what keeps a file of bare names from allocating per token.
+				i = pdfSkipName(b, i)
+				awaitLength = false
+				ints = ints[:0]
+				dictClosed = false
+				continue
+			}
 			name, next := pdfReadName(b, i)
 			i = next
 			// /Length as a KEY of this dictionary: at dictionary depth 1 and
 			// outside any array. A /Length in a /DecodeParms sub-dictionary or
 			// inside an array value is not the stream's own.
 			awaitLength = depth == 1 && arrayDepth == 0 && name == "Length"
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 			continue
 		}
@@ -198,10 +241,11 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 				pendingRef = pdfLooksLikeRef(b, next)
 				awaitLength = false
 			}
-			ints = append(ints, pdfLexInt{value: v, at: i})
-			if len(ints) > 2 {
-				ints = ints[len(ints)-2:]
+			if len(ints) == 2 {
+				ints[0] = ints[1]
+				ints = ints[:1]
 			}
+			ints = append(ints, pdfLexInt{value: v, at: i})
 			i = next
 			dictClosed = false
 			continue
@@ -211,9 +255,18 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 		word, next := pdfReadKeyword(b, i)
 		switch {
 		case word == "obj" && depth == 0 && len(ints) == 2:
+			if maxObjects > 0 && len(res.objects) >= maxObjects {
+				// STOP, do not merely stop recording. The caller that passes a
+				// cap abstains on objectsCapped, so every byte walked after
+				// this point is work done for an answer that will not be given
+				// -- and the walk itself allocates per token. Continuing to the
+				// end of an 8 MiB body still cost 58 MB with the index capped.
+				res.objectsCapped = true
+				return res
+			}
 			res.objects[ints[0].value] = next
 			i = next
-			ints = nil
+			ints = ints[:0]
 			dictClosed = false
 
 		case word == "stream" && dictClosed:
@@ -260,20 +313,20 @@ func scanPDFSeeded(b []byte, seed map[int]int) pdfScan {
 					i = next
 				}
 				dictClosed = false
-				ints = nil
+				ints = ints[:0]
 				haveLength = false
 				continue
 			}
 			res.streams = append(res.streams, [2]int{payload, payload + n})
 			i = payload + n
 			dictClosed = false
-			ints = nil
+			ints = ints[:0]
 			haveLength = false
 
 		default:
 			i = next
 			dictClosed = false
-			ints = nil
+			ints = ints[:0]
 		}
 	}
 	return res
@@ -344,6 +397,33 @@ func pdfReadName(b []byte, i int) (string, int) {
 		i++
 	}
 	return string(out), i
+}
+
+// pdfSkipName advances past a name token without DECODING it, and it exists
+// because decoding allocates.
+//
+// pdfReadName builds the decoded name so a caller can compare it; a caller that
+// cannot use the name -- because no dictionary is open, so the token cannot be
+// a key -- pays that allocation for nothing. Measured on the shape that makes
+// it visible (PR #18 review, P1): 8 MiB of "/a" produced 8 388 629 allocations
+// totalling 64.0 MB, in the API process, on a window a client supplies.
+//
+// It must advance EXACTLY as pdfReadName does, including over "#XX" escapes, or
+// the two walks disagree about where the next token starts.
+func pdfSkipName(b []byte, i int) int {
+	i++ // past '/'
+	for i < len(b) && !isPDFSpace(b[i]) && !isPDFDelimiter(b[i]) {
+		if b[i] == '#' && i+2 < len(b) {
+			if _, ok1 := pdfHexDigit(b[i+1]); ok1 {
+				if _, ok2 := pdfHexDigit(b[i+2]); ok2 {
+					i += 3
+					continue
+				}
+			}
+		}
+		i++
+	}
+	return i
 }
 
 func pdfHexDigit(c byte) (byte, bool) {
@@ -524,7 +604,19 @@ func pdfStreamPayloads(b []byte) ([][2]int, error) {
 // It follows /Prev so an incrementally-updated file resolves through its whole
 // chain, and it bounds that walk: a table chain that loops or is absurdly long
 // is malformed, and this returns what it has rather than following it forever.
-func pdfXrefObjects(b []byte) map[int]int {
+func pdfXrefObjects(b []byte) map[int]int { return pdfXrefObjectsLimited(b, 0) }
+
+// pdfXrefObjectsLimited is pdfXrefObjects with a cap on how many entries it
+// will index. maxIndexed <= 0 means no cap.
+//
+// The cap is the INSPECT window's, not the worker's, and imposing it on both
+// was a defect of its own (PR #18 review): pdfStreamPayloads verifies whole
+// sanitizer OUTPUT inside a cgroup under a measured timeout, and a silently
+// partial index there can leave a forward /Length unresolved -- so
+// VerifySanitized would reject a valid job to save memory the worker has.
+// cmd/api's inspect path runs on an 8 MiB attacker-supplied window and passes
+// a cap; the worker passes none.
+func pdfXrefObjectsLimited(b []byte, maxIndexed int) map[int]int {
 	out := map[int]int{}
 
 	at := bytes.LastIndex(b, []byte("startxref"))
@@ -583,6 +675,20 @@ func pdfXrefObjects(b []byte) map[int]int {
 					continue
 				}
 				num := startNum + n
+				if maxIndexed > 0 && len(out) >= maxIndexed {
+					// The INDEX is bounded, not just each subsection. Measured
+					// before this existed, on a file whose table declares the
+					// per-subsection maximum: a 20 971 614-byte input built a
+					// map costing 48 MB of allocation in 201ms. That runs in
+					// the API process for every /v1/inspect (internal/inspect
+					// reads up to its 8 MiB budget), so the cost of a table
+					// nobody has to honour was a client's to choose.
+					//
+					// Stopping is safe in the direction that matters: a stream
+					// whose /Length object is not indexed stays unresolved, and
+					// unresolved fails closed.
+					return out
+				}
 				if hdr, ok := pdfObjectHeaderAt(b, entOff, num); ok {
 					// FIRST definition wins across the /Prev chain, because the
 					// chain is walked newest-first and a newer revision's entry
@@ -612,6 +718,12 @@ const (
 	// pdfXrefMaxEntries bounds a single subsection's declared count so a
 	// malformed header cannot make this loop for a long time.
 	pdfXrefMaxEntries = 1 << 20
+	// pdfXrefMaxIndexed bounds the RESULT, which pdfXrefMaxEntries does not:
+	// a table may carry many subsections, and each one within its limit.
+	// 65 536 objects is far past any document this service converts (the
+	// largest PDF in the corpus has three figures' worth) and costs a map of
+	// bounded size instead of one the file's author picks.
+	pdfXrefMaxIndexed = 1 << 16
 )
 
 // pdfObjectHeaderAt reports the offset just past "num G obj" if that is what
@@ -643,15 +755,95 @@ func pdfTrailerPrev(b []byte, i int) (int, bool) {
 	if !bytes.HasPrefix(b[i:], []byte("<<")) {
 		return 0, false
 	}
-	end := bytes.Index(b[i:], []byte(">>"))
-	if end < 0 {
-		return 0, false
+
+	// Walked with the same primitives as the main scan, for the same reason.
+	// This function used to take the first ">>" and then the first "/Prev"
+	// substring inside it, and every way that is wrong was reproduced by
+	// running it:
+	//
+	//	<< /Note (/Prev 999) /Prev 12345 >>       followed 999
+	//	<< /Sub << /Prev 999 >> /Prev 12345 >>    followed 999
+	//	<< /PrevPage 999 /Prev 12345 >>           found nothing
+	//	<< /Note (>>) /Prev 12345 >>              found nothing
+	//	<< /Prev 5 0 R >>                         read the object number as an offset
+	//
+	// The first two follow a decoy; the next two abandon a real chain. Neither
+	// is a security hole -- pdfXrefObjects verifies that every offset carries
+	// its own object header, so a wrong chain yields FEWER objects, not wrong
+	// ones -- but "fewer" means forward /Length references go unresolved and
+	// VerifySanitized fails closed on a VALID file. That is this project's
+	// most expensive defect class, not its cheapest.
+	depth, arrayDepth := 0, 0
+	await := false
+	for i < len(b) {
+		c := b[i]
+		switch {
+		case isPDFSpace(c) || c == '%':
+			i = pdfSkipTrivia(b, i)
+			continue
+		case c == '(':
+			i = pdfSkipLiteralString(b, i)
+			await = false
+			continue
+		case c == '<' && i+1 < len(b) && b[i+1] == '<':
+			depth++
+			i += 2
+			await = false
+			continue
+		case c == '<':
+			i = pdfSkipHexString(b, i)
+			await = false
+			continue
+		case c == '>' && i+1 < len(b) && b[i+1] == '>':
+			depth--
+			i += 2
+			await = false
+			if depth <= 0 {
+				// The trailer dictionary closed without a /Prev of its own.
+				return 0, false
+			}
+			continue
+		case c == '[':
+			arrayDepth++
+			i++
+			await = false
+			continue
+		case c == ']':
+			if arrayDepth > 0 {
+				arrayDepth--
+			}
+			i++
+			await = false
+			continue
+		case c == '/':
+			name, next := pdfReadName(b, i)
+			i = next
+			// A KEY of the trailer itself: depth 1, outside any array. The
+			// name comes from pdfReadName, so "/P#72ev" is the same key and
+			// "/PrevPage" is not.
+			await = depth == 1 && arrayDepth == 0 && name == "Prev"
+			continue
+		}
+
+		if await {
+			v, next, ok := pdfReadIntAt(b, i)
+			if !ok {
+				i = next
+				await = false
+				continue
+			}
+			// "/Prev 5 0 R" is not a byte offset: the spec requires a direct
+			// integer, and reading the object NUMBER as an offset is how 5
+			// became a position in the file. pdfLooksLikeRef asks whether the
+			// tokens AFTER an integer are "G R", so it is called past the one
+			// just read -- calling it at the integer itself tests the wrong
+			// pair and silently never fires.
+			if pdfLooksLikeRef(b, next) {
+				return 0, false
+			}
+			return v, true
+		}
+		i++
 	}
-	dict := b[i : i+end]
-	at := bytes.Index(dict, []byte("/Prev"))
-	if at < 0 {
-		return 0, false
-	}
-	v, _, ok := pdfReadIntAt(dict, at+len("/Prev"))
-	return v, ok
+	return 0, false
 }
