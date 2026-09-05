@@ -182,3 +182,63 @@ memory-exhaustion branch does not swallow an ordinary compile error:
 
     \thisdoesnotexist  ->  failed, engine_error,
                            "the document could not be typeset", attempts=1
+
+
+ROUND 3 (2026-09-05) -- three findings, all P2, each reproduced first
+=====================================================================
+
+P2  A BYTE OF LOOKBACK IN PLACE OF TOKENIZATION  (texpreamble.go)
+------------------------------------------------------------------
+    \let\foo\\% \usepackage{pgfplots}
+
+\\ is a control SYMBOL, so the percent after it starts a comment and TeX never
+loads pgfplots. Before the fix the scanner returned:
+
+    packages=[pgfplots] complete=true
+
+which is a 422 for a document that compiles. Third instance in this PR of the
+same shape (\fi as a prefix, \usepackage as a prefix, now % by one byte of
+lookback), so the fix is the tokenization rather than a fourth special case: a
+control symbol is consumed as one token, the comment branch needs no lookback,
+and \{ / \} stop moving braceDepth.
+
+P2  os.Stat IS NOT "THE BUNDLE IS USABLE"  (cmd/tectonic-worker)
+-----------------------------------------------------------------
+Reproduced live, with TECTONIC_BUNDLE_PATH pointing at a DIRECTORY:
+
+    BEFORE  🐙 tectonic-worker starting (queue=tectonic)
+            asynq: INFO: Starting processing        status=running
+
+    AFTER   tectonic bundle: bundle "/opt/tectonic" is not a regular file
+            (mode drwxr-xr-x) (set TECTONIC_BUNDLE_PATH)
+            status=exited exit=1
+
+The check now OPENS the path, which is what proves readability under this
+process's identity -- the worker runs as nobody, and a bundle readable only by
+root stats perfectly.
+
+P2  A MEASUREMENT THAT CLAIMED THE CEILING AND MEASURED 369 KB
+---------------------------------------------------------------
+The script prints "derived from a run AT the ceiling, never extrapolated to it"
+and, run the documented way, iterated only the committed corpus.
+
+How much that mattered, from this run's own numbers:
+
+    committed corpus, worst   bib-xl     368 999 B   30.586s / 7 = 4.369 s/pass
+                              -> ceil(4.369 x 7 x 1.5) = 46s
+
+    with the ceiling staged   bib-bound 2 143 444 B  148.091s / 7 = 21.156 s/pass
+                              -> ceil(21.156 x 7 x 1.5) = 223s
+
+So a routine remeasurement would have recommended 46 SECONDS for an engine
+whose largest admissible document takes 148 -- and printed that it measured the
+ceiling while doing it.
+
+The script now stages the generated corpus when the given one falls short, and
+the staging doubles as a check nobody had: every committed file must come back
+BYTE IDENTICAL from the generator (all nine do), or corpus and generator have
+diverged and neither describes the other.
+
+The 223s here is BELOW the shipped 271s, which is the safe direction: 271s came
+from a 180.3s run of the same document on a busier machine, and a bound is
+supposed to hold on the unlucky run.

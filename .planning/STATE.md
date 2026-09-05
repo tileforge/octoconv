@@ -33,6 +33,31 @@ live infrastructure and its timeout is measured, not chosen.
 PR #16 is OPEN (https://github.com/paderinandrey/octoconv/pull/16), 30 commits
 off main, mergeable. Nothing from phase 64 is on main yet.
 
+CODEX ROUND 3 ADDRESSED (2026-09-05): 3 findings, all P2, no P1. Each
+reproduced before being fixed.
+
+- P2 the comment scanner asked whether the PREVIOUS BYTE was a backslash, so
+  \let\foo\\% \usepackage{pgfplots} reported pgfplots with complete=true and the
+  API refused a document that compiles. Third instance in this PR of a
+  byte/prefix test standing in for tokenization, so the fix is the tokenization:
+  a control SYMBOL is consumed as one token, which also stops \{ and \} moving
+  braceDepth.
+- P2 os.Stat is not "the bundle is usable". Reproduced live: with
+  TECTONIC_BUNDLE_PATH pointing at the DIRECTORY /opt/tectonic the worker
+  started, logged its bundle and consumed the queue. ValidateTectonicBundle
+  opens it, requires a regular non-empty file, and is used by BOTH the startup
+  check and Convert.
+- P2 the timeout measurement claimed the ceiling and measured 368 999 bytes by
+  default, because the 2 143 444-byte document is generated on demand. It now
+  stages the generated corpus -- which doubles as a check that every committed
+  file comes back byte-identical from the generator.
+
+Two defects in scripts/ci-local.sh found by running it: a RETURN-trap teardown
+referencing a function-local array (transcript ended in "compose[@]: unbound
+variable"), and no guard against a developer API already holding :8090 -- which
+made the whole e2e tier fail with "401 invalid api key" against the wrong
+process.
+
 CODEX ROUND 2 ADDRESSED (2026-09-05): 10 findings, 2xP1. All ten confirmed by
 running before any fix, and three of them turned out to be wider than the
 review said.
