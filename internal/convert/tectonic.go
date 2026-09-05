@@ -240,17 +240,87 @@ func texSourceClosure(inPath string) []string {
 	return out
 }
 
-// texIncludeRe matches the source-inclusion commands, with their braced
-// argument. Written against what TeX executes rather than against a list of
-// packages: \input and \include are the primitives every project uses, and
-// \InputIfFileExists and \subfile are the two common wrappers that also read
-// SOURCE rather than data.
-var texIncludeRe = regexp.MustCompile(`\\(?:input|include|InputIfFileExists|subfile)\s*\{([^}]{1,255})\}`)
-
+// texIncludedNames returns the names a TeX source pulls in AS SOURCE.
+//
+// Parsed, not matched. A regexp over the raw bytes was wrong in both
+// directions, and both were measured:
+//
+//	\input nobrace     TeX reads nobrace.tex -- the braceless form is the
+//	                   PRIMITIVE's own syntax, and a brace-only pattern
+//	                   missed it, so a preamble could hide there
+//	% \input{old}      TeX reads nothing -- a commented-out include would
+//	                   have pulled a file into the scan and could refuse a
+//	                   job over a line that never executes
+//
+// So comments are skipped, and the command is matched as a whole CONTROL WORD:
+// \inputencoding is not \input, which is the same lesson this package already
+// paid for with \fi and \usepackage.
+//
+// Data-reading commands are deliberately absent: \lstinputlisting renders its
+// file verbatim and \addbibresource parses one as bibliography data. Neither
+// makes its target TeX source, and treating them as if they did refused a paper
+// for quoting the directive it was explaining.
 func texIncludedNames(src []byte) []string {
+	const maxNames = 64
+	text := string(src)
 	var names []string
-	for _, m := range texIncludeRe.FindAllSubmatch(src, 64) {
-		names = append(names, strings.TrimSpace(string(m[1])))
+
+	for i := 0; i < len(text) && len(names) < maxNames; i++ {
+		switch text[i] {
+		case '%':
+			// A comment runs to end of line. Escaped percents never reach
+			// here: they are consumed as control symbols below.
+			if nl := strings.IndexByte(text[i:], '\n'); nl >= 0 {
+				i += nl
+			} else {
+				i = len(text)
+			}
+			continue
+		case '\\':
+		default:
+			continue
+		}
+
+		word, wordLen := texControlWord(text[i:])
+		if len(word) == 1 && !isASCIILetter(word[0]) {
+			// A control SYMBOL (\%, \\) is one token; consuming it here is
+			// what keeps the comment branch above honest.
+			i += wordLen - 1
+			continue
+		}
+		switch word {
+		case "input", "include", "InputIfFileExists", "subfile":
+		default:
+			i += wordLen - 1
+			continue
+		}
+
+		rest := text[i+wordLen:]
+		k := 0
+		for k < len(rest) && (rest[k] == ' ' || rest[k] == '\t') {
+			k++
+		}
+		if k < len(rest) && rest[k] == '{' {
+			if end := strings.IndexByte(rest[k:], '}'); end > 0 && end <= 256 {
+				names = append(names, strings.TrimSpace(rest[k+1:k+end]))
+				i += wordLen + k + end
+				continue
+			}
+			i += wordLen - 1
+			continue
+		}
+		// The braceless primitive form: the name runs to whitespace.
+		end := k
+		for end < len(rest) && !isPDFSpace(rest[end]) && rest[end] != '\\' && rest[end] != '%' &&
+			rest[end] != '{' && rest[end] != '}' {
+			end++
+		}
+		if end > k {
+			names = append(names, rest[k:end])
+			i += wordLen + end - 1
+			continue
+		}
+		i += wordLen - 1
 	}
 	return names
 }

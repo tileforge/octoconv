@@ -233,3 +233,58 @@ func TestDeniedPackagesFollowWhatTheDocumentIncludes(t *testing.T) {
 		}
 	})
 }
+
+// TestIncludedNamesAreParsedNotMatched covers both directions a regexp got
+// wrong, each measured against the real engine before this became a parser.
+func TestIncludedNamesAreParsedNotMatched(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []string
+		why  string
+	}{
+		{
+			name: "the braceless primitive form",
+			src:  "\\documentclass{article}\n\\input nobrace\n\\begin{document}x\\end{document}\n",
+			want: []string{"nobrace"},
+			why:  "TeX reads nobrace.tex; a brace-only pattern missed it, so a preamble could hide there",
+		},
+		{
+			name: "a commented-out include",
+			src:  "\\documentclass{article}\n% \\input{old}\n\\begin{document}x\\end{document}\n",
+			want: nil,
+			why:  "TeX reads nothing, and pulling old.tex into the scan could refuse a job over a line that never executes",
+		},
+		{
+			name: "a longer control word that merely starts with input",
+			src:  "\\inputencoding{utf8}\n",
+			want: nil,
+			why:  "\\inputencoding is not \\input -- the same lesson \\fi and \\usepackage already cost this package",
+		},
+		{
+			name: "the ordinary braced form, and \\include",
+			src:  "\\input{preamble}\n\\include{chapter1}\n",
+			want: []string{"preamble", "chapter1"},
+		},
+		{
+			name: "data-reading commands are not source",
+			src:  "\\lstinputlisting{sample.txt}\n\\addbibresource{refs.bib}\n",
+			want: nil,
+			why:  "neither makes its target TeX source, and treating them as if they did refused a paper for quoting a directive",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := texIncludedNames([]byte(tc.src))
+			if len(got) != len(tc.want) {
+				t.Fatalf("texIncludedNames = %v, want %v\n  %s", got, tc.want, tc.why)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("texIncludedNames[%d] = %q, want %q\n  %s", i, got[i], tc.want[i], tc.why)
+				}
+			}
+		})
+	}
+}
