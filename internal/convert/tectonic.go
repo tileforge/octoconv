@@ -143,6 +143,45 @@ func TeXOptsFromMap(m map[string]any) (any, error) {
 	return nil, nil
 }
 
+// ValidateTectonicBundle reports whether path is something tectonic can
+// actually load: a REGULAR file this process can OPEN.
+//
+// os.Stat is not that check, and the difference is not academic (PR #16, codex
+// round 3, confirmed by running it): with TECTONIC_BUNDLE_PATH pointing at the
+// directory /opt/tectonic, cmd/tectonic-worker started, logged its bundle, and
+// began consuming the queue -- so a configuration mistake became a stream of
+// client-visible job failures, each looking like a bad document, which is
+// exactly what the startup check exists to prevent.
+//
+// Opening it is what proves readability UNDER THIS PROCESS's identity: the
+// worker runs as nobody, and a mounted file readable by root and nobody else
+// stats perfectly.
+//
+// Used by both the startup check and Convert, because one rule in two places is
+// how they drift.
+func ValidateTectonicBundle(path string) error {
+	if path == "" {
+		return errors.New("no bundle configured")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("bundle %q cannot be opened: %w", path, err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("bundle %q cannot be stat'd: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("bundle %q is not a regular file (mode %s)", path, info.Mode())
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("bundle %q is empty", path)
+	}
+	return nil
+}
+
 // tectonicLogLimit bounds how much of the engine's output is kept in memory.
 //
 // This engine is the only one here whose input is a PROGRAM, so it is the only
@@ -172,8 +211,8 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		return fmt.Errorf("tectonic: no bundle configured (%s unset); refusing to run, because "+
 			"without -b tectonic fetches over the network", TectonicBundleEnv)
 	}
-	if _, err := os.Stat(c.BundlePath); err != nil {
-		return fmt.Errorf("tectonic: bundle %q is not readable: %w", c.BundlePath, err)
+	if err := ValidateTectonicBundle(c.BundlePath); err != nil {
+		return fmt.Errorf("tectonic: %w", err)
 	}
 
 	// The deny list, enforced HERE and not only at the API. Every other refusal

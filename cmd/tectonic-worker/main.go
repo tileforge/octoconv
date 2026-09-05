@@ -76,11 +76,18 @@ func main() {
 	if bundlePath == "" {
 		bundlePath = convert.DefaultTectonicBundlePath
 	}
-	if _, err := os.Stat(bundlePath); err != nil {
+	if err := convert.ValidateTectonicBundle(bundlePath); err != nil {
 		// Fail at STARTUP rather than per job. A worker that cannot typeset
 		// anything should not sit consuming a queue and failing every task --
 		// that turns one misconfiguration into a stream of client-visible
 		// failures, each of which looks like a bad document.
+		//
+		// os.Stat was not enough to keep that promise: pointed at the DIRECTORY
+		// /opt/tectonic this process started, logged its bundle and began
+		// consuming the queue (PR #16, codex round 3, reproduced before the
+		// fix). The check now OPENS the file, under this process's own
+		// identity -- the worker runs as nobody, and a bundle readable only by
+		// root stats perfectly.
 		log.Fatalf("tectonic bundle: %v (set %s)", err, convert.TectonicBundleEnv)
 	}
 	// TECTONIC_MAX_OUTPUT_BYTES bounds the PRODUCED PDF, which the 2 MiB input

@@ -1,6 +1,8 @@
 package convert
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -96,4 +98,64 @@ func TestTectonicTailIsBoundedInBytes(t *testing.T) {
 	if tail := tectonicTail([]byte(normal)); !strings.Contains(tail, "pgfplots.sty") {
 		t.Fatalf("normal output was damaged: %q", tail)
 	}
+}
+
+// TestValidateTectonicBundleRefusesWhatStatAccepts is the round-3 finding as an
+// invariant. os.Stat succeeds for a directory and for a file this process
+// cannot open; both make the worker start, log its bundle, and consume the
+// queue while unable to typeset anything.
+func TestValidateTectonicBundleRefusesWhatStatAccepts(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("a directory", func(t *testing.T) {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("precondition: %v", err)
+		}
+		if err := ValidateTectonicBundle(dir); err == nil {
+			t.Fatal("a directory passed validation -- os.Stat accepts it, which is the whole point")
+		}
+	})
+
+	t.Run("an empty file", func(t *testing.T) {
+		empty := filepath.Join(dir, "empty.ttb")
+		if err := os.WriteFile(empty, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateTectonicBundle(empty); err == nil {
+			t.Fatal("a zero-byte bundle passed validation")
+		}
+	})
+
+	t.Run("an unreadable file", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root; permission bits do not apply")
+		}
+		locked := filepath.Join(dir, "locked.ttb")
+		if err := os.WriteFile(locked, []byte("bundle"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(locked); err != nil {
+			t.Fatalf("precondition: stat should still succeed, got %v", err)
+		}
+		if err := ValidateTectonicBundle(locked); err == nil {
+			t.Fatal("a file this process cannot open passed validation -- the worker runs as nobody, " +
+				"and a bundle readable only by root stats perfectly")
+		}
+	})
+
+	t.Run("a real file passes", func(t *testing.T) {
+		ok := filepath.Join(dir, "ok.ttb")
+		if err := os.WriteFile(ok, []byte("bundle bytes"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateTectonicBundle(ok); err != nil {
+			t.Fatalf("a readable regular file was refused: %v", err)
+		}
+	})
+
+	t.Run("empty path", func(t *testing.T) {
+		if err := ValidateTectonicBundle(""); err == nil {
+			t.Fatal("an unset path passed validation; tectonic's fallback is a NETWORK FETCH")
+		}
+	})
 }
