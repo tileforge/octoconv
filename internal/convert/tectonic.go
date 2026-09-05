@@ -194,6 +194,41 @@ func ValidateTectonicBundle(path string) error {
 // to prevent, and did not cover.
 var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
+// tectonicEnv is the ONLY environment the engine gets, and the reason is a
+// measured leak rather than a precaution.
+//
+// --untrusted refuses \write18 -- TEX-04 proved that by running a hostile
+// document -- and it does NOT confine file reads. Measured on the shipped
+// image: a document containing
+//
+//	\newread\f \openin\f=/etc/hostname \read\f to \line ... \line
+//
+// typeset the container's hostname into the PDF the client gets back, and
+// \openin against /proc/self/environ returned this process's environment. That
+// environment holds DATABASE_URL, S3_ACCESS_KEY, S3_SECRET_KEY, API_KEY_SALT
+// and WEBHOOK_SIGNING_SECRET, so a .tex was a credential read.
+//
+// WHAT THIS FIXES AND WHAT IT DOES NOT. The engine can still read any file in
+// its own container -- /etc/passwd, the bundle, its own binary. None of those
+// are secret, and after this neither is the environment: the child is given an
+// allowlist and nothing else. Confining the reads themselves needs a mount
+// namespace per job and is recorded as a todo, not pretended here.
+//
+// The allowlist is what the engine actually uses. TECTONIC_CACHE_DIR is where
+// the image puts the precompiled format; PATH, HOME and TMPDIR are the
+// ordinary process minimum. Anything unset stays unset rather than being
+// invented.
+func tectonicEnv() []string {
+	keep := []string{"PATH", "HOME", "TMPDIR", "TECTONIC_CACHE_DIR", "SOURCE_DATE_EPOCH", "LANG", "LC_ALL"}
+	env := make([]string, 0, len(keep))
+	for _, k := range keep {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
 // tectonicLogLimit bounds how much of the engine's output is kept in memory.
 //
 // This engine is the only one here whose input is a PROGRAM, so it is the only
@@ -242,7 +277,8 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	}
 
 	outDir := filepath.Dir(outPath)
-	out, err := runCommandLimited(ctx, tectonicLogLimit, "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)...)
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(), "tectonic",
+		tectonicArgs(inPath, outDir, c.BundlePath)...)
 	if err != nil {
 		// THE ENGINE's deadline, named as such. The worker bounds the WHOLE
 		// attempt with one context -- download, convert, upload -- because the
