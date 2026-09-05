@@ -133,7 +133,7 @@ tier_gate() {
   echo "go vet ./...: clean"
   go build ./... || return 1
   echo "go build ./...: clean"
-  go test ./... -timeout 5m || return 1
+  go test -count=1 ./... -timeout 5m || return 1
 }
 
 tier_race() {
@@ -195,13 +195,20 @@ tier_e2e() {
   echo "--- running migrations ---"
   DATABASE_URL='postgres://octo:octo-pass@localhost:5434/octo_db' go run ./cmd/migrate || return 1
 
+  # -count=1 defeats the TEST CACHE, and it is not a nicety here. Go caches by
+  # package inputs -- source, env, files read -- and a live E2E suite's real
+  # input is a RUNNING STACK it knows nothing about. This tier reported
+  # "ok ... (cached)" and "tier e2e: PASS" for a suite that never ran against
+  # the images just built, which is a green for work nobody did. Observed on
+  # 2026-09-05, on a run whose whole purpose was to exercise a change to the
+  # shared worker path.
   echo "--- running the E2E suite ---"
   E2E_BASE_URL=http://localhost:8090 \
   DATABASE_URL='postgres://octo:octo-pass@localhost:5434/octo_db' \
   API_KEY_SALT=dev-only-change-me-in-real-deploys \
   WEBHOOK_SIGNING_SECRET=dev-only-change-me-in-real-deploys \
   E2E_S3_DIAL_ADDR=127.0.0.1:9100 \
-    go test ./internal/e2e/... -timeout 30m || rc=1
+    go test -count=1 ./internal/e2e/... -timeout 30m || rc=1
 
   if [ "$rc" -ne 0 ]; then
     echo "--- compose logs (tail) ---"
