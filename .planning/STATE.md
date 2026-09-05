@@ -21,29 +21,42 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 SHIPPED (2026-09-05). All three phases on main: 62 (operational debt tail), 63 (sanitizer gaps + probe page ceiling), 64 (tectonic, the ninth engine class). Next milestone not yet chosen.
+**Current focus:** none. v1.14 SHIPPED (2026-09-05) and its debt tail is worked down (PRs #17-#20). Two todos remain, both tex: confining the engine's file reads, and the page-count heuristic. Next milestone not yet chosen.
 
 ## Current Position
 
-Milestone: v1.14 — Typesetting & Debt, SHIPPED 2026-09-05.
-Phase: 64 — Tectonic, Ninth Engine Class, MERGED as e443c23 (PR #16).
+Milestone: v1.14 — Typesetting & Debt, SHIPPED 2026-09-05. No milestone open.
 
-All three phases (62, 63, 64) are on main. The tex engine is closed end to end
-on live infrastructure and its timeout is measured, not chosen. Retrospective
-and MILESTONES entries written.
+DEBT WORKED DOWN AFTER THE MILESTONE (PRs #17-#20, all merged):
 
-PR #16 took THREE codex rounds (20 findings) plus five defects found by my own
-sweeps between rounds, and a sixth found by running the local CI stand-in's e2e
-tier to completion for the first time -- every sanitize job was panicking inside
-pdfcpu, asynq recovered it, and the job was left ACTIVE forever. That one was
-live on main and belongs to phase 63; it is fixed here along with the class
-behind it (a panic anywhere in an engine now lands the job terminally through
-the single commit point).
+- #17 fuzzed the PDF tokenizer. Its first finding was in the fuzz property
+  itself, and it answered the residual PR #14 left open: the resynchronisation
+  really does record decoy object headers out of a payload (10 of them on the
+  input the fuzzer produced), and the xref-anchored retry is what makes them
+  unreachable in the answer that is used.
+- #18 moved inspect's page_count onto the tokenizer and fixed the trailer's
+  /Prev, then found the cost nobody had measured: scanPDF's integer window
+  trimmed by re-slicing the same backing array, 48 MB on a 21 MB file, in the
+  API process and the worker both.
+- #19 is the one that matters: a .tex was a CREDENTIAL READ. --untrusted stops
+  \write18 and does NOT confine file reads, so \openin on /proc/self/environ
+  returned DATABASE_URL, S3 keys and API_KEY_SALT. Found while testing whether
+  the engine can read a sibling file -- the premise multi-file projects depend
+  on. TEX-04 had proved the mechanism it named and never asked this one. The
+  engine now gets an allowlist environment; CONFINING the reads is open work
+  (todos/pending/2026-09-05-tex-file-reads-not-confined.md).
+- #20 shipped multi-file projects (operator chose repeated "file" parts over an
+  archive). Five review rounds, 16 findings, plus eight own sweeps finding seven
+  more. "What counts as TeX source" was answered four times -- by extension, by
+  text-shape, by loader list, per-directive -- because every fix closed a bypass
+  and closing a bypass means looking at more files, which is how a data file
+  gets read as a preamble. What held is the test shape: every table carries both
+  directions.
 
-Two review sources are currently unavailable: codex has hit its account
-code-review usage limit, coderabbit is rate limited. Round 4 was requested and
-could not run; the merge went ahead on three addressed rounds plus every local
-gate, uncached.
+REVIEW AVAILABILITY is now a real constraint: codex hit its account
+code-review usage limit on #17, #19 and twice on #20. Each merge went ahead on
+local gates plus an own adversarial sweep, and each PR says so rather than
+reading silence as approval.
 
 CODEX ROUND 3 ADDRESSED (2026-09-05): 3 findings, all P2, no P1. Each
 reproduced before being fixed.
