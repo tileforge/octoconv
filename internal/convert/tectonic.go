@@ -161,26 +161,38 @@ func TeXOptsFromMap(m map[string]any) (any, error) {
 // how they drift.
 func ValidateTectonicBundle(path string) error {
 	if path == "" {
-		return errors.New("no bundle configured")
+		return fmt.Errorf("%w: no bundle configured (%s unset); refusing to run, because without -b "+
+			"tectonic fetches over the network", ErrTeXBundleUnusable, TectonicBundleEnv)
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("bundle %q cannot be opened: %w", path, err)
+		return fmt.Errorf("%w: bundle %q cannot be opened: %v", ErrTeXBundleUnusable, path, err)
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return fmt.Errorf("bundle %q cannot be stat'd: %w", path, err)
+		return fmt.Errorf("%w: bundle %q cannot be stat'd: %v", ErrTeXBundleUnusable, path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("bundle %q is not a regular file (mode %s)", path, info.Mode())
+		return fmt.Errorf("%w: bundle %q is not a regular file (mode %s)", ErrTeXBundleUnusable, path, info.Mode())
 	}
 	if info.Size() == 0 {
-		return fmt.Errorf("bundle %q is empty", path)
+		return fmt.Errorf("%w: bundle %q is empty", ErrTeXBundleUnusable, path)
 	}
 	return nil
 }
+
+// ErrTeXBundleUnusable is a DEPLOYMENT fault: the engine has no bundle it can
+// load. Carried as a sentinel rather than recognised by a substring, which is
+// what the worker used to do -- it looked for the env var's NAME in the error
+// text, so only the "unset" wording matched. Every other way a bundle can be
+// unusable (a directory, an unreadable mount, an empty file) produced a message
+// without that name and was reported to the client as "the document could not
+// be typeset" -- a deployment fault blamed on their file, which is the exact
+// thing the test named "missing bundle ... does not blame the document" exists
+// to prevent, and did not cover.
+var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
 // tectonicLogLimit bounds how much of the engine's output is kept in memory.
 //
@@ -204,13 +216,9 @@ const tectonicLogLimit = 8 << 20
 // TeXOptsFromMap, which Runner.Handle applies BEFORE the job is marked active,
 // so a corrupt map never reaches this function.
 func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, _ map[string]any) error {
-	if c.BundlePath == "" {
-		// Not a document failure. A converter with no bundle would fall back
-		// to tectonic's default, which is a network fetch -- so this refuses
-		// rather than silently violating TEX-02.
-		return fmt.Errorf("tectonic: no bundle configured (%s unset); refusing to run, because "+
-			"without -b tectonic fetches over the network", TectonicBundleEnv)
-	}
+	// Not a document failure, in any of its forms. A converter with no bundle
+	// would fall back to tectonic's default, which is a network fetch -- so
+	// this refuses rather than silently violating TEX-02.
 	if err := ValidateTectonicBundle(c.BundlePath); err != nil {
 		return fmt.Errorf("tectonic: %w", err)
 	}

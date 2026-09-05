@@ -482,7 +482,7 @@ func isTectonicTerminal(err error) bool {
 	// A misconfigured process, not a bad document. Deliberately checked BEFORE
 	// the shared classifier, which knows nothing about bundles and would let
 	// this retry forever.
-	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
+	if errors.Is(err, convert.ErrTeXBundleUnusable) {
 		return true
 	}
 	// A package the bundle does not have (TEX-03). Terminal for the same
@@ -567,10 +567,18 @@ func tectonicFailureCode(err error) (code, message string) {
 		// in the client's file, which is not something they can act on.
 		return CodeUnsupportedPackage, convert.TeXUnsupportedPackageMessage(pkg)
 	}
-	if strings.Contains(err.Error(), convert.TectonicBundleEnv) {
+	if errors.Is(err, convert.ErrTeXBundleUnusable) {
 		// Deliberately NOT phrased as a fault in the document: it is not one,
 		// and a client told "your file could not be typeset" would go looking
 		// in the wrong place.
+		//
+		// Keyed on the sentinel, not on the env var's NAME appearing in the
+		// error text. That substring matched only the "unset" wording, so a
+		// bundle that was a directory, an unreadable mount or an empty file
+		// fell through to the generic message -- a deployment fault reported as
+		// a bad document, which is the exact thing this branch exists to
+		// prevent. Found in this PR's own sweep after round 3 widened the ways
+		// a bundle can be unusable.
 		return CodeEngineError, "the typesetting engine is not configured on this deployment"
 	}
 	if errors.Is(err, convert.ErrTeXEngineTimeout) {

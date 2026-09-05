@@ -58,6 +58,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -1327,23 +1329,37 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		calls := []string{}
 		repo := &pinRepo{job: job, calls: &calls}
 		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
-		h.processFn = func(context.Context, *jobs.Job) error {
-			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: no bundle configured (%s unset); "+
-				"refusing to run, because without -b tectonic fetches over the network",
-				convert.TectonicBundleEnv))
-		}
+		// Every way a bundle can be unusable, not just the unset one. The
+		// classifier used to look for the env var's NAME in the error text, so
+		// only the first of these matched and the rest told the client their
+		// DOCUMENT could not be typeset -- for a fault in the deployment. This
+		// test's own name says that must not happen, and it had one case.
+		for _, bundlePath := range []string{"", t.TempDir(), filepath.Join(t.TempDir(), "empty.ttb")} {
+			if bundlePath != "" && filepath.Ext(bundlePath) == ".ttb" {
+				if err := os.WriteFile(bundlePath, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			repo.markFailed = nil
+			h.processFn = func(context.Context, *jobs.Job) error {
+				return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w",
+					convert.ValidateTectonicBundle(bundlePath)))
+			}
 
-		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+			err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
 
-		if !errors.Is(err, asynq.SkipRetry) {
-			t.Fatalf("err = %v, want SkipRetry -- retrying a misconfiguration re-reads the same empty env", err)
-		}
-		if len(repo.markFailed) != 1 {
-			t.Fatalf("MarkFailed calls = %d, want 1", len(repo.markFailed))
-		}
-		if got := repo.markFailed[0].message; got != "the typesetting engine is not configured on this deployment" {
-			t.Fatalf("MarkFailed message = %q, want the deployment wording -- a client told their file could "+
-				"not be typeset would go looking in the wrong place", got)
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("bundle %q: err = %v, want SkipRetry -- retrying a misconfiguration re-reads "+
+					"the same configuration", bundlePath, err)
+			}
+			if len(repo.markFailed) != 1 {
+				t.Fatalf("bundle %q: MarkFailed calls = %d, want 1", bundlePath, len(repo.markFailed))
+			}
+			if got := repo.markFailed[0].message; got != "the typesetting engine is not configured on this deployment" {
+				t.Fatalf("bundle %q: MarkFailed message = %q, want the deployment wording -- a client "+
+					"told their file could not be typeset would go looking in the wrong place",
+					bundlePath, got)
+			}
 		}
 	})
 }
