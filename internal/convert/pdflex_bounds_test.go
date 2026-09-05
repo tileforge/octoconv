@@ -190,3 +190,55 @@ func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
 			"still taking the inspect window's limit", len(uncapped), len(capped))
 	}
 }
+
+// TestSkipNameAgreesWithReadName is the invariant pdfSkipName's own comment
+// claims: it must advance EXACTLY as pdfReadName does, or the two walks
+// disagree about where the next token starts -- and a disagreement about token
+// boundaries in a security walk is not a small thing.
+//
+// Asserted over the shapes that make the two implementations differ if either
+// drifts: escapes that decode, escapes that do not, delimiters, EOF.
+func TestSkipNameAgreesWithReadName(t *testing.T) {
+	for _, src := range []string{
+		"/Length", "/Length1", "/Count300", "/a", "/",
+		"/P#72ev", "/P#7", "/P#zz", "/P#7z", "/#41#42",
+		"/Name/Next", "/Name<</k 1>>", "/Name[1]", "/Name(str)", "/Name%c\n",
+		"/Name ", "/Name\t", "/Name\n", "/Name\x00",
+	} {
+		t.Run(src, func(t *testing.T) {
+			b := []byte(src)
+			_, want := pdfReadName(b, 0)
+			got := pdfSkipName(b, 0)
+			if got != want {
+				t.Fatalf("pdfSkipName ended at %d, pdfReadName at %d, for %q: the two walks would "+
+					"read the next token from different places", got, want, src)
+			}
+		})
+	}
+}
+
+// TestNameBetweenDictionaryAndStreamIsNotAStream pins a rule the fast path for
+// names silently broke, and that no existing test noticed.
+//
+// "stream" is a stream keyword only DIRECTLY after a dictionary. The walk
+// tracks that with dictClosed, which every token that is not the keyword
+// clears -- and the skip-without-decoding path added for the allocation finding
+// cleared awaitLength and the integer window but not dictClosed. The effect was
+// fail-OPEN, which is the wrong direction for a sanitizer's verifier:
+//
+//	<< /Length 20 >> /Foo stream ... endstream
+//	before the fast path   no stream (a name intervenes)
+//	with it                a 20-byte payload accepted on a malformed file
+//
+// Found by reading my own diff against the branch it replaced, after the review
+// that prompted it had already passed.
+func TestNameBetweenDictionaryAndStreamIsNotAStream(t *testing.T) {
+	src := []byte("%PDF-1.4\n1 0 obj\n<< /Length 20 >> /Foo stream\n" +
+		"AAAAAAAAAAAAAAAAAAAA\nendstream\nendobj\n")
+
+	sc := scanPDF(src)
+	if len(sc.streams) != 0 {
+		t.Fatalf("streams = %v, want none: a name sits between the dictionary and the keyword, so "+
+			"that keyword is not this dictionary's stream", sc.streams)
+	}
+}

@@ -216,6 +216,7 @@ func scanPDFImpl(b []byte, seed map[int]int, maxObjects int) pdfScan {
 				i = pdfSkipName(b, i)
 				awaitLength = false
 				ints = ints[:0]
+				dictClosed = false
 				continue
 			}
 			name, next := pdfReadName(b, i)
