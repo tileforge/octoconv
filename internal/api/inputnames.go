@@ -88,3 +88,23 @@ func SafeInputFilename(name string) (string, error) {
 	}
 	return name, nil
 }
+
+// maxInputParts bounds how many files one job may carry, document included.
+//
+// Size does not bound count: a thousand one-byte attachments pass every byte
+// ceiling while costing a thousand S3 uploads, a thousand job_inputs rows and a
+// thousand worker downloads, all charged as one small job. 32 is past any real
+// project and far below the multipart parser's own 1 000-part default.
+const maxInputParts = 32
+
+// workerOwnedName reports whether name collides with a file the worker creates
+// for itself in the job's directory.
+//
+// The worker renames the document: ordinal 0 becomes in.<source format> and the
+// engine writes out.<target format> beside it. Those two names are therefore
+// not the client's to use -- an attachment called in.latex would overwrite the
+// document that passed every check, and the engine would compile the part that
+// passed none.
+func workerOwnedName(name, sourceFormat, targetFormat string) bool {
+	return name == "in."+sourceFormat || name == "out."+targetFormat
+}

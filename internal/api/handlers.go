@@ -602,6 +602,22 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// HOW MANY, before how big. A request may carry up to Go's default 1 000
+	// multipart parts, and nothing about their SIZE bounds their COUNT: a
+	// thousand one-byte attachments are a thousand S3 uploads, a thousand rows
+	// and a thousand worker downloads, charged as one small job by every quota
+	// this service has. That amplification did not exist while a job was one
+	// file (PR #20 review).
+	//
+	// 32 is past any real project -- a paper with a bibliography, a preamble
+	// and two dozen figures -- and far below the parser's own ceiling.
+	if len(attachments)+1 > maxInputParts {
+		log.Printf("content validation rejected: client_id=%s filename=%q reason=too_many_parts parts=%d limit=%d", client.ID, filename, len(attachments)+1, maxInputParts)
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
+			"too many files in one job")
+		return
+	}
+
 	// Names first, because a refusal here costs nothing and an accepted name
 	// becomes a file on disk in the worker.
 	names := map[string]bool{filename: true}
@@ -612,6 +628,19 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 			log.Printf("content validation rejected: client_id=%s reason=unsafe_filename filename=%q", client.ID, a.Filename)
 			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
 				"an attached file has a name this service cannot use: send a plain file name")
+			return
+		}
+		if workerOwnedName(name, detected, target) {
+			// The worker does not keep the document's name: it downloads
+			// ordinal 0 to in.<source> and writes out.<target> beside it. An
+			// attachment called in.latex therefore OVERWRITES the validated
+			// document, and the engine compiles the part that passed no checks
+			// (PR #20 review). Refused rather than renamed, for the reason
+			// every other name here is: a renamed file is not the file the
+			// document \inputs.
+			log.Printf("content validation rejected: client_id=%s reason=reserved_filename filename=%q", client.ID, name)
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
+				"an attached file uses a name this service reserves for the job's own files")
 			return
 		}
 		if names[name] {
@@ -645,7 +674,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// but not a simultaneous burst from a client still below its cap -- that
 	// residual is bounded and documented at PreAdmit's own definition, and
 	// measured by plan 52-05's concurrent-burst subtest.
-	if err := s.repo.PreAdmit(ctx, client.ID, engine, header.Size); err != nil {
+	// totalBytes, not header.Size: the advisory gate must charge what the
+	// authoritative one will, or a project passes here and is refused at
+	// Create -- after every part has been uploaded, which is precisely the
+	// bandwidth this gate exists to save.
+	if err := s.repo.PreAdmit(ctx, client.ID, engine, totalBytes); err != nil {
 		if msg, retryAfter, ok := quotaRejection(err); ok {
 			log.Printf("quota rejected: client_id=%s engine=%s reason=%s stage=preupload", client.ID, engine, jobs.QuotaReason(err))
 			writeQuotaError(w, msg, retryAfter)

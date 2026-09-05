@@ -33,12 +33,15 @@ const testClientKey = "testkey"
 // --- fakes ---
 
 type fakeRepo struct {
-	created   *jobs.CreateParams
-	getJob    *jobs.Job
-	getErr    error
-	outputs   []jobs.Output
-	createdID uuid.UUID
-	createErr error
+	created *jobs.CreateParams
+	// preAdmitBytes records what the advisory quota gate was charged, so a
+	// test can hold it equal to what Create will charge.
+	preAdmitBytes int64
+	getJob        *jobs.Job
+	getErr        error
+	outputs       []jobs.Output
+	createdID     uuid.UUID
+	createErr     error
 	// cancelErr is returned by Cancel; canceled records whether Cancel was
 	// invoked at all, so tests can assert the already-terminal short-circuit
 	// (D-02) never calls Cancel.
@@ -65,7 +68,8 @@ type fakeRepo struct {
 	preAdmitCalls int
 }
 
-func (f *fakeRepo) PreAdmit(_ context.Context, _ uuid.UUID, _ string, _ int64) error {
+func (f *fakeRepo) PreAdmit(_ context.Context, _ uuid.UUID, _ string, bytes int64) error {
+	f.preAdmitBytes = bytes
 	f.preAdmitCalls++
 	return f.preAdmitErr
 }

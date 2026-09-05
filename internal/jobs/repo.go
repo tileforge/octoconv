@@ -164,7 +164,16 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		// mode is a clean no-op plus (if the handler already wrote to S3
 		// past PreAdmit's advisory pre-check) an orphaned S3 object that
 		// TTL cleanup collects, matching the existing preset-TOCTOU path.
-		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, p.Input.SizeBytes, r.quotaObserver, r.quotaDisabled); err != nil {
+		// THE WHOLE JOB'S BYTES, not the first input's. With Inputs populated,
+		// p.Input is the zero value, so charging p.Input.SizeBytes admitted a
+		// multi-part project as ZERO bytes and let it past max_daily_bytes
+		// (PR #20 review). The sum is computed from the same slice the rows
+		// below are written from, so the quota and the record cannot disagree.
+		var admitBytes int64
+		for _, in := range inputs {
+			admitBytes += in.SizeBytes
+		}
+		if err := admitLocked(ctx, tx, p.ClientID, p.Engine, admitBytes, r.quotaObserver, r.quotaDisabled); err != nil {
 			return err
 		}
 

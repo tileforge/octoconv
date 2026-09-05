@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -133,5 +134,78 @@ func TestTheCeilingAppliesToTheTotal(t *testing.T) {
 	)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// The four findings review made against the first version of this feature, each
+// reproduced before it was fixed.
+
+// TestAttachmentCannotTakeTheWorkersOwnName is the sharpest of them. The worker
+// does not keep the document's name -- it downloads ordinal 0 to in.<source>
+// and writes out.<target> beside it -- so an attachment called "in.latex"
+// overwrote the document that passed every check, and the engine compiled the
+// part that passed none.
+func TestAttachmentCannotTakeTheWorkersOwnName(t *testing.T) {
+	for _, name := range []string{"in.latex", "out.pdf"} {
+		t.Run(name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			rec := postParts(t, repo, "pdf",
+				[2]string{"paper.tex", texMain},
+				[2]string{name, "\\usepackage{fontspec}\n"},
+			)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			if repo.created != nil {
+				t.Fatalf("a job was created with an attachment named %q: it lands on the path the "+
+					"worker writes the validated document to", name)
+			}
+		})
+	}
+}
+
+// TestPartCountIsBounded: size does not bound count. A thousand one-byte
+// attachments pass every byte ceiling while costing a thousand S3 uploads,
+// rows and worker downloads, all charged as one small job.
+func TestPartCountIsBounded(t *testing.T) {
+	parts := [][2]string{{"paper.tex", texMain}}
+	for i := 0; i < maxInputParts; i++ {
+		parts = append(parts, [2]string{fmt.Sprintf("f%d.tex", i), "x"})
+	}
+	repo := &fakeRepo{}
+	rec := postParts(t, repo, "pdf", parts...)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 for %d parts; body=%s", rec.Code, len(parts), rec.Body.String())
+	}
+	if repo.created != nil {
+		t.Fatal("the job was created: every part would have been uploaded before anything refused it")
+	}
+}
+
+// TestQuotaChargesEveryPart: with Inputs populated the legacy single-input
+// field is the zero value, so charging it admitted a whole project as ZERO
+// bytes past the daily byte limit.
+func TestQuotaChargesEveryPart(t *testing.T) {
+	repo := &fakeRepo{}
+	body := strings.Repeat("x", 5000)
+	rec := postParts(t, repo, "pdf",
+		[2]string{"paper.tex", texMain},
+		[2]string{"a.tex", body},
+		[2]string{"b.tex", body},
+	)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.preAdmitBytes == 0 {
+		t.Fatal("PreAdmit was charged nothing")
+	}
+	var want int64
+	for _, in := range repo.created.Inputs {
+		want += in.SizeBytes
+	}
+	if repo.preAdmitBytes != want {
+		t.Fatalf("PreAdmit charged %d bytes, the job's inputs total %d: the advisory gate must charge "+
+			"what the authoritative one will, or a project passes here and is refused at Create -- "+
+			"after every part is already uploaded", repo.preAdmitBytes, want)
 	}
 }

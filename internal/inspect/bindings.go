@@ -75,6 +75,15 @@ var RejectBindings = map[string]RejectBinding{
 	// the job's own directory. A statement about the NAME, not the bytes: these
 	// names become files beside the document the engine compiles.
 	"unsafe_filename": {ErrCode: errcode.InvalidRequest},
+	// too_many_parts: more files in one job than this service accepts. A
+	// property of the REQUEST, and a count bound rather than a byte bound --
+	// size does not bound count, and a thousand one-byte parts cost a thousand
+	// uploads, rows and downloads while passing every byte ceiling.
+	"too_many_parts": {ErrCode: errcode.InvalidRequest},
+	// reserved_filename: an attachment is named for a file the WORKER creates
+	// (in.<source>, out.<target>). Refused because it would overwrite the
+	// document that passed every check with a part that passed none.
+	"reserved_filename": {ErrCode: errcode.InvalidRequest},
 	// duplicate_filename: two parts share a name and would overwrite each other
 	// in the job's directory, with upload order deciding which survived. Also a
 	// property of the request, not of any file's content.

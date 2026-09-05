@@ -159,3 +159,74 @@ func TestValidateTectonicBundleRefusesWhatStatAccepts(t *testing.T) {
 		}
 	})
 }
+
+// TestDeniedPackagesAreFoundWhateverTheFileIsCalled is PR #20's P1.
+//
+// The first version of the job-directory scan filtered on .tex/.sty/.cls/.ltx.
+// TeX does not: "\input{preamble}" reads a file named exactly "preamble".
+// Measured before the fix -- an extensionless upload carrying
+// \usepackage{fontspec} was read, the package loaded from the bundle, and a PDF
+// came out, defeating a refusal this deployment documents.
+func TestDeniedPackagesAreFoundWhateverTheFileIsCalled(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "in.latex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\input{noext}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No extension at all, which is exactly what \input{noext} reads.
+	if err := os.WriteFile(filepath.Join(dir, "noext"), []byte("\\usepackage{fontspec}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	found := ""
+	for _, p := range jobFilesBeside(main) {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
+			continue
+		}
+		if pkg := TeXDeniedInSource(src); pkg != "" {
+			found = pkg
+			break
+		}
+	}
+	if found != "fontspec" {
+		t.Fatalf("the denied package was not found (got %q): a name is not what makes a file TeX "+
+			"source, and deciding by extension is a bypass", found)
+	}
+}
+
+// TestBinaryAttachmentsAreNotScannedForPackages is the other half, and the one
+// that keeps the fix above from becoming the defect it replaced. A figure that
+// happens to contain the bytes of a \usepackage line must not refuse a valid
+// job -- so the scan is by what the file IS (text-shaped: no NUL, valid UTF-8),
+// which is the same rule the API's own sniffing uses.
+func TestBinaryAttachmentsAreNotScannedForPackages(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "in.latex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A "figure" whose bytes contain a denied directive AND a NUL, which is
+	// what makes it binary.
+	fig := append([]byte("%PDF-1.4\n\x00 stream \\usepackage{fontspec} endstream\n"), 0x00, 0xff)
+	if err := os.WriteFile(filepath.Join(dir, "fig.pdf"), fig, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range jobFilesBeside(main) {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
+			continue
+		}
+		if pkg := TeXDeniedInSource(src); pkg != "" {
+			t.Fatalf("a binary attachment was read as TeX source and refused the job over %q: "+
+				"refusing valid work is the failure this check must not have", pkg)
+		}
+	}
+}

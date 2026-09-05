@@ -194,12 +194,16 @@ func ValidateTectonicBundle(path string) error {
 // to prevent, and did not cover.
 var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
-// texSourcesBeside returns inPath plus every other TeX source in its directory.
+// jobFilesBeside returns inPath plus every other regular file in its directory.
+//
+// EVERY file, with no filter on the name: TeX reads what a document points it
+// at, and "\input{preamble}" reads a file named exactly "preamble". Deciding
+// what to scan by extension was a bypass, measured as one.
 //
 // Bounded by construction rather than by a cap: the directory holds exactly the
-// files this job uploaded, the API admitted their names, and their total size
-// is under the same 2 MiB ceiling the timeout is derived from.
-func texSourcesBeside(inPath string) []string {
+// files this job uploaded, the API admitted their names and their count, and
+// their total size is under the same 2 MiB ceiling the timeout is derived from.
+func jobFilesBeside(inPath string) []string {
 	out := []string{inPath}
 	dir := filepath.Dir(inPath)
 	entries, err := os.ReadDir(dir)
@@ -210,13 +214,7 @@ func texSourcesBeside(inPath string) []string {
 		if e.IsDir() {
 			continue
 		}
-		name := e.Name()
-		switch strings.ToLower(filepath.Ext(name)) {
-		case ".tex", ".sty", ".cls", ".ltx":
-		default:
-			continue
-		}
-		p := filepath.Join(dir, name)
+		p := filepath.Join(dir, e.Name())
 		if p != inPath {
 			out = append(out, p)
 		}
@@ -306,9 +304,23 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// the main document alone would let \usepackage{fontspec} through an
 	// \input -- and the API's own scan reads only the main part's sniff
 	// window. Two gates that both look at one file out of several is one gate.
-	for _, path := range texSourcesBeside(inPath) {
+	for _, path := range jobFilesBeside(inPath) {
 		src, rerr := os.ReadFile(path)
 		if rerr != nil {
+			continue
+		}
+		// BY WHAT THE FILE IS, NOT WHAT IT IS NAMED. The first version filtered
+		// on .tex/.sty/.cls/.ltx, and TeX does not: "\input{preamble}" reads a
+		// file named exactly "preamble". Measured -- an extensionless upload
+		// carrying \usepackage{fontspec} was read, the package loaded from the
+		// bundle, and a PDF came out, defeating a refusal this deployment
+		// documents (PR #20 review, P1).
+		//
+		// Text-shaped is the test, using the same rule the API's own sniffing
+		// uses: no NUL bytes, valid UTF-8. A figure or a font is skipped, so a
+		// binary that happens to contain the bytes "\usepackage{...}" cannot
+		// refuse a valid job -- which is the failure this check must not have.
+		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
 			continue
 		}
 		if pkg := TeXDeniedInSource(src); pkg != "" {

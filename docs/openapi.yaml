@@ -780,10 +780,17 @@ paths:
               type: object
               properties:
                 file:
-                  type: string
-                  format: binary
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  minItems: 1
+                  maxItems: 32
                   description: >-
-                    The file to convert. May be repeated: the FIRST part is the
+                    The file to convert, repeatable. Declared as an array
+                    because prose about repetition does not change a schema's
+                    cardinality, and a client generated from a single-binary
+                    contract cannot send a project at all. The FIRST part is the
                     document and decides the conversion, and any further parts
                     are attachments stored beside it under their own names --
                     which is how a LaTeX project's \input and \addbibresource
@@ -791,8 +798,10 @@ paths:
                     other conversion refuses extra parts with 422 rather than
                     ignoring them. The engine size limit applies to the TOTAL of
                     all parts, and an attachment name must be a plain file name
-                    (no path, no leading "-", no control characters) and unique
-                    within the request.
+                    (no path, no leading "-", no control characters), unique
+                    within the request, and not one the worker reserves for the
+                    job's own files (in.<source>, out.<target>). At most 32
+                    parts per job.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
