@@ -290,3 +290,66 @@ func TestPathBearingAttachmentNamesAreRefusedNotRepaired(t *testing.T) {
 		})
 	}
 }
+
+// TestRawNameSurvivesHostileContentDisposition probes the fallback in
+// rawPartFilename, because a fallback is where a fix goes to be bypassed: if a
+// crafted header made this package's parse fail while Go's succeeded, the code
+// would quietly go back to reading the REPAIRED name and the promise would be
+// false again.
+//
+// It is not: every shape below that Go accepts as a file part also parses here.
+// The RFC 5987 row is the one worth keeping — "filename*=UTF-8”chapters%2Fx.tex"
+// reaches FileHeader.Filename as "x.tex", so the encoded path is invisible
+// unless the raw header is read and decoded.
+func TestRawNameSurvivesHostileContentDisposition(t *testing.T) {
+	cases := []struct {
+		label      string
+		cd         string
+		isFile     bool
+		wantRaw    string
+		wantRefuse bool
+	}{
+		{"plain", `form-data; name="file"; filename="chapters/x.tex"`, true, "chapters/x.tex", true},
+		{"rfc5987 encoded path", `form-data; name="file"; filename*=UTF-8''chapters%2Fx.tex`, true, "chapters/x.tex", true},
+		{"both forms", `form-data; name="file"; filename="x.tex"; filename*=UTF-8''chapters%2Fx.tex`, true, "chapters/x.tex", true},
+		{"trailing semicolon", `form-data; name="file"; filename="chapters/x.tex";`, true, "chapters/x.tex", true},
+		{"ordinary", `form-data; name="file"; filename="refs.bib"`, true, "refs.bib", false},
+		// Go rejects these as file parts outright, so nothing reaches this
+		// package -- recorded because "it never gets here" is a claim worth
+		// holding, not assuming.
+		{"duplicate filename params", `form-data; name="file"; filename="a.tex"; filename="chapters/b.tex"`, false, "", false},
+		{"unquoted with a slash", `form-data; name="file"; filename=chapters/x.tex`, false, "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			body := "--B\r\nContent-Disposition: " + tc.cd + "\r\n\r\nx\r\n--B--\r\n"
+			form, err := multipart.NewReader(strings.NewReader(body), "B").ReadForm(1 << 20)
+			if err != nil {
+				if tc.isFile {
+					t.Fatalf("parse: %v", err)
+				}
+				return
+			}
+			fhs := form.File["file"]
+			if len(fhs) == 0 {
+				if tc.isFile {
+					t.Fatal("expected a file part, got none")
+				}
+				return
+			}
+			if !tc.isFile {
+				t.Fatalf("Go now accepts %q as a file part; this package's rules have to cover it", tc.cd)
+			}
+			raw := rawPartFilename(fhs[0])
+			if raw != tc.wantRaw {
+				t.Fatalf("rawPartFilename = %q, want %q -- the fallback to the repaired name is where "+
+					"this fix would be bypassed", raw, tc.wantRaw)
+			}
+			_, serr := jobs.SafeInputFilename(raw)
+			if refused := serr != nil; refused != tc.wantRefuse {
+				t.Fatalf("refused = %v, want %v for %q", refused, tc.wantRefuse, raw)
+			}
+		})
+	}
+}
