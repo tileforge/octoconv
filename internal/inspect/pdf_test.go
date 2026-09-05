@@ -884,27 +884,30 @@ func TestScanAllOccurrencesNoCeilingWhenUnderCap(t *testing.T) {
 // so the response publishes a stale page_count with complete coverage even
 // though the scan stopped early."
 //
-// The fixture places exactly maxTokenScanIterations+1 occurrences of
-// "/Type/Pages": the FIRST carries a legible "/Count 5", then
-// maxTokenScanIterations-1 filler occurrences with no /Count of their OWN
-// nearby, then ONE further occurrence -- past the cap, never itself
-// visited by the loop -- carrying a DIFFERENT "/Count 99". (findCountAfter's
-// own 512-byte lookahead means the LAST occurrence the loop does visit can,
-// depending on exact spacing, end up seeing either count -- what matters
-// for this test is not WHICH value leaks, but that a ceiling-truncated walk
-// must never publish ANY value it saw as if it were authoritative: this
+// The fixture places a real Pages dictionary carrying "/Count 5", then
+// maxPagesDictsScanned filler dictionaries, then ONE further Pages dictionary
+// past the cap carrying a DIFFERENT "/Count 99". What matters for this test is
+// not WHICH value the walk saw before it stopped, but that a ceiling-truncated
+// walk must never publish ANY value it saw as if it were authoritative: this
 // fixture is guaranteed to sit at the ceiling boundary either way.)
 func TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale(t *testing.T) {
-	variant := []byte("/Type/Pages")
+	// The proposition is unchanged; the FIXTURE moved to the mechanism that now
+	// enforces it. It used to be bare "/Type/Pages" markers, because the walk
+	// counted markers and took the last one within a forward byte window. The
+	// walk is now a tokenizer that only reads a /Count belonging to a real
+	// dictionary, so bare markers are not candidates at all and that fixture
+	// stopped exercising a ceiling -- it reported malformed_input, which is a
+	// true statement about a file with no dictionaries in it and proves nothing
+	// about ceilings. Real dictionaries, past the cap, do.
 	var buf bytes.Buffer
-	buf.Write(variant)
-	buf.WriteString("/Count 5 ") // first occurrence's own nearby count: the stale, early answer
-	buf.Write(bytes.Repeat(variant, maxTokenScanIterations-1))
-	buf.Write(variant)
-	buf.WriteString("/Count 99 ") // ONE further occurrence past the cap, with a DIFFERENT count
+	buf.WriteString("<< /Type /Pages /Count 5 >>") // the stale, early answer
+	for i := 0; i < maxPagesDictsScanned; i++ {
+		buf.WriteString("<< /Filler 1 >>")
+	}
+	buf.WriteString("<< /Type /Pages /Count 99 >>") // past the cap, a DIFFERENT count
 	head := buf.Bytes()
 
-	count, reason := extractPDFPageCount(head, false, false, false, nil)
+	count, reason := extractPDFPageCount(head, false, false, false, &Tracker{})
 	if count != nil {
 		t.Fatalf("page_count = %d, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative", *count)
 	}

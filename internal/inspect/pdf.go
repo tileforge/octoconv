@@ -36,21 +36,26 @@ import (
 	"io"
 	"sort"
 	"strconv"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
-// pdfCountSearchWindow bounds how far past a "/Type/Pages" (or "/Type
-// /Pages") token match extractPDFPageCount looks for an adjacent "/Count"
-// key -- real PDF writers place /Count in the same small dictionary as
-// /Type, so a few hundred bytes is generous; this is a search window, not
-// an allocation, and it is clamped to the already-bounded head slice below.
-const pdfCountSearchWindow = 512
+// maxPagesDictsScanned bounds how many dictionaries the page-count walk will
+// visit. It is a WORK bound, not a correctness one: exceeding it reports a
+// ceiling (unknown), never a value, because a partial walk cannot know whether
+// the Pages dict it did see is the last one.
+//
+// 8192 is far past any document with a page count worth reporting and is
+// reached only by a file built to reach it.
+const maxPagesDictsScanned = 8192
 
-// pdfPagesDictTokens are the two literal spellings of the Pages-dict type
-// marker this file's fast page-count path recognizes -- "/Type/Pages" (no
-// space) and "/Type /Pages" (one space). This is deliberately NOT a general
-// whitespace-tolerant matcher: two fixed literal spellings cover what real
-// PDF writers actually emit, and adding true arbitrary-whitespace tolerance
-// would only widen the surface for very little real gain.
+// HOW THE PAGE COUNT IS DERIVED, and what this file deliberately does not do.
+//
+// The value comes from convert.PDFTypedDictUints: one tokenized pass that reads
+// /Count out of the dictionaries actually declaring /Type /Pages. It used to be
+// two literal spellings of the marker ("/Type/Pages" and "/Type /Pages") and a
+// 512-byte forward window for /Count -- a matcher with no model of what a token
+// is, which is why four separate reviews found four ways to be wrong with it.
 //
 // What this file explicitly does NOT do, and why: it never counts
 // occurrences of the SINGULAR "/Type /Page" token as a page-count fallback.
@@ -63,12 +68,8 @@ const pdfCountSearchWindow = 512
 // worse than an honest nil -- the same PROG-V2-02 discipline ("null is an
 // honest answer, a guess is not") this project already applies to
 // progress_pct/eta_seconds. So: no singular-Page counting fallback exists
-// in this file at all; a Pages dict without a legible /Count nearby simply
+// in this file at all; a Pages dict with no legible /Count of its own simply
 // reports unknown.
-var pdfPagesDictTokens = [][]byte{
-	[]byte("/Type/Pages"),
-	[]byte("/Type /Pages"),
-}
 
 // pdfCompressionSignalTokens are the literal tokens whose mere PRESENCE
 // (not their content) proves this PDF uses compressed object streams and/or
@@ -951,33 +952,31 @@ func scanAllOccurrences(buf, token []byte, max int, tr *Tracker, fn func(pos int
 	return true
 }
 
-// extractPDFPageCount implements the fast path described in the file-level
-// doc comment: find a "/Type/Pages" (or "/Type /Pages") dictionary marker
-// and read the integer following a nearby "/Count" key. When several
-// occurrences exist (an incrementally-updated file can legitimately have
-// more than one Pages-dict marker across revisions), the LAST occurrence
-// with a legible /Count wins -- the revision closest to EOF is the most
-// likely to be the current, authoritative one, which is the closest this
-// bounded byte scan can honestly get to "the current page count" without
-// resolving the file's xref chain. This is deliberately NOT the forbidden
-// fallback (counting singular "/Type /Page" occurrences, see the doc
-// comment on pdfPagesDictTokens) -- it never sums or counts anything, it
-// only remembers the most recently observed of possibly several PLAUSIBLE
-// answers.
+// extractPDFPageCount reads /Count out of the dictionaries that declare
+// /Type /Pages, through convert.PDFTypedDictUints -- a tokenizer, not a byte
+// scan. When several such dictionaries exist (an incrementally-updated file
+// legitimately carries one per revision), the LAST wins: the revision closest
+// to EOF is the current one. It never sums or counts anything, and it is still
+// not the forbidden fallback of counting singular "/Type /Page" occurrences.
+//
+// The tokenizer resolves an indirect "/Count 3 0 R" through the file's own
+// object index, which the byte scan could not do -- it reported the object
+// NUMBER as a page count.
 //
 // Returns (nil, ReasonCompressedObjectStreams) unconditionally when
 // compressed is true: the Pages dict itself may be one of the objects
 // hidden inside an /ObjStm, so even a nearby /Count found via this scan
 // cannot be trusted to be the WHOLE truth (D-02a). Returns
 // (nil, ReasonPDFNameEscape) unconditionally when hexEscape is true, for the
-// identical reason applied to a different blind spot: a hex-escaped
-// "/Type#XX..." spelling of the Pages-dict marker would not be recognized
-// by pdfPagesDictTokens's literal byte match either. Returns
-// (nil, ReasonWorkCeilingBytes) when the iteration budget was exhausted or
-// when truncated is true and no match was found (the real Pages dict may
-// simply live past the read window). Returns (nil, ReasonMalformedInput)
-// when the whole (untruncated) window was searched and no Pages dict with a
-// legible /Count was ever found.
+// identical reason applied to a different blind spot: this file's earlier
+// detectors do not decode "/Type#XX..." spellings, so a document written that
+// way is one whose structure this analyzer has not fully seen -- the tokenizer
+// itself decodes name escapes, but abstaining stays the honest answer while the
+// signal that reaches here does not. Returns (nil, ReasonWorkCeilingBytes) when
+// the walk hit maxPagesDictsScanned or when truncated is true (the real Pages
+// dict may simply live past the read window). Returns
+// (nil, ReasonMalformedInput) when the whole untruncated window was walked and
+// no Pages dictionary with a legible /Count was ever found.
 func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr *Tracker) (*int, Reason) {
 	if compressed {
 		return nil, ReasonCompressedObjectStreams
@@ -986,19 +985,42 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr 
 		return nil, ReasonPDFNameEscape
 	}
 
+	// One pass, on a tokenizer, over a budget this function accounts for.
+	//
+	// The byte scan this replaces looked for a "/Type /Pages" marker and took
+	// the first "/Count" within 512 bytes after it. Four ways that is wrong
+	// were reported against it, and every one was reproduced by RUNNING the
+	// scan before it was replaced -- each returns 300 for a two-page document:
+	//
+	//	/Type /Pages /Count 300 inside a content STREAM
+	//	<< /Count 2 /Type /Pages >> followed by /Outlines /Count 300
+	//	/Count300 0                 matched as the key /Count by prefix
+	//	/Extra [ /Count 300 ]       read as a direct key of the dictionary
+	//	/Count 5 0 R                an object NUMBER read as a page count
+	//
+	// They are one class -- a token recognised by its bytes without regard to
+	// the lexical context it sits in -- and pdflex.go's own header already
+	// listed the same class one key name over. So the derivation moved instead
+	// of gaining a fifth comparison.
+	// NOT tr.Consume: dispatchInspectFamilies owns the byte budget for this
+	// analyzer, and head is already charged against it (see the note beside
+	// inflateAllowance above). What this walk costs is bounded locally, by
+	// maxPagesDictsScanned, exactly as the scan it replaces was bounded by
+	// maxTokenScanIterations.
+	values, ceilingHit := convert.PDFTypedDictUints(head, "Pages", "Count", maxPagesDictsScanned)
+	if ceilingHit {
+		// The receptacle, not a return value a caller could drop: this is what
+		// makes a ceiling reach the report-wide Coverage claim unconditionally
+		// (quick/260811-r3s, the same argument scanPDFStreamRanges records).
+		tr.MarkCeilingHit()
+	}
 	var found *int
-	ceilingHit := false
-	for _, variant := range pdfPagesDictTokens {
-		hit := scanAllOccurrences(head, variant, maxTokenScanIterations, tr, func(pos int) bool {
-			if n, ok := findCountAfter(head, pos+len(variant)); ok {
-				v := n
-				found = &v
-			}
-			return true // keep scanning: a later occurrence may be a more current revision
-		})
-		if hit {
-			ceilingHit = true
-		}
+	if n := len(values); n > 0 {
+		// The LAST one still wins, unchanged: an incrementally-updated file
+		// legitimately carries a Pages dict per revision, and the one closest
+		// to EOF is the current one.
+		v := values[n-1]
+		found = &v
 	}
 
 	// ceilingHit is checked BEFORE found is ever trusted (quick/260811-r3s,
@@ -1022,42 +1044,6 @@ func extractPDFPageCount(head []byte, compressed, truncated, hexEscape bool, tr 
 		return found, ""
 	}
 	return nil, ReasonMalformedInput
-}
-
-// findCountAfter looks for the literal "/Count" key within
-// pdfCountSearchWindow bytes after position from in buf, and parses the
-// unsigned decimal integer immediately following it (after skipping
-// whitespace). It returns ok==false if "/Count" is not found in that window
-// or is not followed by at least one digit -- never a guessed value.
-func findCountAfter(buf []byte, from int) (int, bool) {
-	if from < 0 || from >= len(buf) {
-		return 0, false
-	}
-	end := from + pdfCountSearchWindow
-	if end > len(buf) {
-		end = len(buf)
-	}
-	window := buf[from:end]
-
-	idx := bytes.Index(window, []byte("/Count"))
-	if idx < 0 {
-		return 0, false
-	}
-	rest := window[idx+len("/Count"):]
-	rest = bytes.TrimLeft(rest, " \t\r\n")
-
-	digits := 0
-	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
-		digits++
-	}
-	if digits == 0 {
-		return 0, false
-	}
-	n, err := strconv.Atoi(string(rest[:digits]))
-	if err != nil {
-		return 0, false
-	}
-	return n, true
 }
 
 // extractPDFVersion reads the "%PDF-1.x" (or "%PDF-2.x") header token and
