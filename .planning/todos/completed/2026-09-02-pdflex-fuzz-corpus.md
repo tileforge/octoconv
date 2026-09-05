@@ -1,3 +1,27 @@
+---
+created: 2026-09-02
+area: sanitize
+severity: medium
+origin: PR #14 (plan 63-01), the highest-value follow-up of five review rounds
+resolved: 2026-09-05
+resolution: |
+  FuzzPDFStreamPayloads in internal/convert/pdflex_fuzz_test.go, five
+  properties over the reviewer's own inputs plus the pinned real files. The
+  related item -- "a test that renders the flag and the xref-reading assumption
+  together" -- is TestXrefAssumptionIsPinnedToTheGhostscriptFlag.
+
+  The residual ("a decoy inside a stream that itself failed to resolve is
+  reachable through the resynchronisation") is ANSWERED rather than left open:
+  the mechanism is real and now observable -- the first pass records 10 decoy
+  object headers out of a payload on the input the fuzzer produced -- and the
+  xref-anchored retry is what makes it unreachable in the answer that is used
+  (0 inside the ranges). That input is kept as a seed.
+
+  Not closed by this: fuzzing did not find a NEW defect in the tokenizer itself
+  in ~5.5M executions. That is evidence of nothing being easily reachable, not
+  proof of correctness.
+---
+
 # Fuzz the PDF tokenizer
 
 **Raised:** 2026-09-02, closing PR #14 (plan 63-01).
