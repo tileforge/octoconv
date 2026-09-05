@@ -2,7 +2,9 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -229,7 +231,24 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 	}
 
 	start := time.Now()
-	if err := r.h.processFn(ctx, job); err != nil {
+	if err := r.runProcess(ctx, job); err != nil {
+		if errors.Is(err, ErrEnginePanic) {
+			// A panic is OURS, not the client's, and it must still leave the
+			// job in a terminal state. Placed before the descriptor's own
+			// classifier so no engine can accidentally call a panic transient
+			// and retry it: the same input panics the same way every time.
+			//
+			// This exists because it happened, invisibly. pdfcpu panics when
+			// it cannot write its config file, which it cannot as `nobody`,
+			// and asynq's own recover() sent every sanitize job around the
+			// retry loop and then left it ACTIVE -- a client watching a job
+			// that never finishes, and no failure recorded anywhere. The
+			// engine bug is fixed; the shape that hid it is fixed here.
+			_ = r.finish(ctx, job, jobs.StatusFailed, CodeEngineError,
+				"the conversion failed unexpectedly on this deployment",
+				map[string]any{"engine_stderr": err.Error()}, time.Since(start))
+			return fmt.Errorf("%w: %v", asynq.SkipRetry, err)
+		}
 		if isCanceled(err) {
 			// D-07: the attempt was killed by a job:cancel signal via the
 			// registered CancelFunc (internal/cancel) -- the job is already
@@ -261,6 +280,41 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 
 	_ = r.finish(ctx, job, jobs.StatusDone, "", "", nil, time.Since(start))
 	return nil
+}
+
+// ErrEnginePanic is a panic that escaped an engine's process function. Not a
+// client-visible category (its message says "on this deployment", because that
+// is whose fault it is), but a distinct sentinel so the branch handling it can
+// never be confused with an engine's own verdict.
+var ErrEnginePanic = errors.New("worker: the engine panicked")
+
+// runProcess calls the engine's process function and turns a PANIC into an
+// ordinary terminal error carrying the stack.
+//
+// asynq recovers panics itself, which sounds like enough and is not: its
+// recover happens ABOVE this frame, so r.finish never runs, the job row stays
+// `active`, no outcome metric moves, and the client is left watching a job that
+// never ends. Recovering HERE keeps the single terminal-commit point intact and
+// makes the failure honest.
+//
+// The stack goes into job_events.detail rather than a log line: this package
+// does not log (only cmd/*/main.go does), and a panic with no trace anywhere
+// would trade one invisible failure for another. It is bounded for the same
+// reason every other stored diagnostic in this codebase is.
+func (r *Runner) runProcess(ctx context.Context, job *jobs.Job) (err error) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		const maxStack = 4096
+		stack := debug.Stack()
+		if len(stack) > maxStack {
+			stack = stack[:maxStack]
+		}
+		err = fmt.Errorf("%w: %v\n%s", ErrEnginePanic, rec, stack)
+	}()
+	return r.h.processFn(ctx, job)
 }
 
 // finish is the SOLE terminal-outcome commit point for every one of the

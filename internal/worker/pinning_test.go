@@ -1170,6 +1170,43 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		}
 	})
 
+	// A PANIC is ours, not the client's, and it must still land the job
+	// somewhere terminal. asynq recovers panics ABOVE this frame, so before
+	// this branch existed r.finish never ran: the job row stayed `active`, no
+	// outcome metric moved, and the client watched a job that never ended.
+	//
+	// Not hypothetical -- pdfcpu panics when it cannot write its config file,
+	// which it cannot as `nobody`, and every sanitize job went round the retry
+	// loop and was then abandoned mid-flight. The engine bug is fixed; this
+	// pins the shape that hid it.
+	t.Run("a panic in the engine is terminal and blames the deployment", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			panic("config problem: mkdir /nonexistent: read-only file system")
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- the same input panics the same way every time", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1 -- a recovered panic that never reaches finish "+
+				"leaves the job ACTIVE forever, which is exactly how this went unnoticed",
+				len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].message; got != "the conversion failed unexpectedly on this deployment" {
+			t.Fatalf("MarkFailed message = %q -- a panic is our bug, and telling the client their "+
+				"document is unsupported sends them to fix something that is not broken", got)
+		}
+		if got := repo.markFailed[0].code; got != CodeEngineError {
+			t.Fatalf("MarkFailed code = %q, want %q", got, CodeEngineError)
+		}
+	})
+
 	// The route round 2's log cap did NOT close, found by running the fixed
 	// build rather than by reading it. Capping what the worker RETAINS does
 	// nothing about what tectonic allocates: a 235-byte \message loop drove the
