@@ -439,12 +439,28 @@ func tectonicNeedsBiber(out []byte) bool {
 // where its error lines are. The whole log is unbounded and attacker-influenced;
 // an error message is not the place to put it.
 func tectonicTail(out []byte) string {
-	const keep = 12
+	const (
+		keep = 12
+		// A BYTE bound as well as a line bound. Twelve lines is not a bound on
+		// its own: TeX wraps terminal output at max_print_line, but this string
+		// is written into job_events.detail for every failure, and "the engine
+		// probably wraps" is not the kind of thing a database row should rest
+		// on. Found in this PR's own self-check after round 2, which was about
+		// exactly this: what the log buffer holds was bounded, what gets STORED
+		// from it was not.
+		maxBytes = 4096
+	)
 	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 	if len(lines) > keep {
 		lines = lines[len(lines)-keep:]
 	}
-	return strings.Join(lines, " | ")
+	tail := strings.Join(lines, " | ")
+	if len(tail) > maxBytes {
+		// Keep the END: the cause is at the end of a TeX log, and this is the
+		// same reason runCommandLimited keeps a tail rather than a head.
+		tail = "..." + tail[len(tail)-maxBytes:]
+	}
+	return tail
 }
 
 // missingStyLine matches LaTeX's own report of a file it could not resolve.

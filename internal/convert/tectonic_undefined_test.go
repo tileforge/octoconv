@@ -70,3 +70,30 @@ func TestUndefinedReferencesStaysOnTheFinalPass(t *testing.T) {
 		t.Fatal("a warning from the FINAL pass was missed")
 	}
 }
+
+// TestTectonicTailIsBoundedInBytes covers the path round 2 did not: the log
+// BUFFER was capped, and the slice of it that gets written into
+// job_events.detail for every failure was still bounded only by a line count.
+// TeX wraps terminal output, so in practice twelve lines is small -- but a
+// database row should not rest on "in practice".
+func TestTectonicTailIsBoundedInBytes(t *testing.T) {
+	oneHugeLine := make([]byte, 1<<20)
+	for i := range oneHugeLine {
+		oneHugeLine[i] = 'A'
+	}
+	got := tectonicTail(oneHugeLine)
+	if len(got) > 4200 {
+		t.Fatalf("tectonicTail returned %d bytes from a single 1 MiB line: that string is persisted "+
+			"per failed job", len(got))
+	}
+	if !strings.HasSuffix(got, "AAA") {
+		t.Fatalf("the END was not kept; the cause of a TeX failure is at the end of its log")
+	}
+
+	// The ordinary case must be untouched -- a truncating tail that also
+	// mangles normal output would hide every real diagnostic.
+	normal := "! LaTeX Error: File `pgfplots.sty' not found.\nEmergency stop.\n"
+	if tail := tectonicTail([]byte(normal)); !strings.Contains(tail, "pgfplots.sty") {
+		t.Fatalf("normal output was damaged: %q", tail)
+	}
+}
