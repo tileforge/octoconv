@@ -147,9 +147,32 @@ tier_docker_build() {
   docker buildx bake -f docker-compose.yml
 }
 
+# The compose invocation is a FILE-scope array, not a function-local one: the
+# teardown below runs from a RETURN trap, which fires after the function's
+# locals are gone. It did, and the transcript's last line was
+# "compose[@]: unbound variable" -- a teardown that fails is a stack left
+# running, and the message lands where a reader is already looking for the
+# cause of the tier's failure.
+COMPOSE_E2E=(docker compose -f docker-compose.yml -f docker-compose.e2e.yml)
+
 tier_e2e() {
-  local compose=(docker compose -f docker-compose.yml -f docker-compose.e2e.yml)
+  local compose=("${COMPOSE_E2E[@]}")
   local rc=0
+
+  # Nothing else may hold the ports this tier tests THROUGH. A developer API
+  # left running from a debugging session answers /healthz exactly like the
+  # compose one, and the suite then seeds a client into compose's database and
+  # authenticates against a process with a different API_KEY_SALT -- which
+  # arrives as "401 invalid api key" on every test, a message that says nothing
+  # about the actual cause. Observed on 2026-09-05.
+  for port in 8090 9100; do
+    if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "error: something is already listening on :$port -- this tier would test that" >&2
+      echo "       process instead of the compose stack. Stop it and re-run." >&2
+      lsof -nP -iTCP:"$port" -sTCP:LISTEN | head -3 >&2
+      return 1
+    fi
+  done
 
   echo "--- bringing up the compose stack (with --build: no warmed cache locally) ---"
   "${compose[@]}" up -d --build || return 1
@@ -157,7 +180,7 @@ tier_e2e() {
   # shellcheck disable=SC2317  # invoked via trap
   teardown() {
     echo "--- tearing down ---"
-    "${compose[@]}" down -v >/dev/null 2>&1 || true
+    "${COMPOSE_E2E[@]}" down -v >/dev/null 2>&1 || true
   }
   trap teardown RETURN
 

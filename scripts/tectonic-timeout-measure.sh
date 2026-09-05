@@ -113,6 +113,58 @@ if [[ ! -d "$CORPUS" ]]; then
   echo "error: $CORPUS is not a directory" >&2
   exit 64
 fi
+
+# THE CORPUS MUST REACH THE CEILING, or this script's own conclusion is false.
+#
+# The committed corpus tops out at ~369 KB, and the number this project ships
+# comes from a 2 143 444-byte document that is generated on demand rather than
+# committed (two 2 MiB files would outweigh everything else in testdata). So the
+# DEFAULT invocation measured small documents while printing "derived from a run
+# AT the ceiling, never extrapolated to it" -- a remeasurement could silently
+# recommend a much smaller timeout and still claim the ceiling. Found in review
+# (PR #16, codex round 3).
+#
+# Rather than fail and leave the operator to remember a flag, stage the full
+# corpus with the generator that produced the committed one. That also PROVES
+# the generator still reproduces it: every committed file must come back byte
+# identical, or the corpus and its generator have diverged and neither can be
+# trusted to describe the other.
+CEILING_BYTES=$(( INPUT_CEILING_MIB * 1024 * 1024 ))
+largest=0
+for f in "$CORPUS"/*.tex; do
+  [ -e "$f" ] || continue
+  n="$(wc -c < "$f" | tr -d ' ')"
+  [ "$n" -gt "$largest" ] && largest="$n"
+done
+if [ "$largest" -lt "$CEILING_BYTES" ]; then
+  GEN="$REPO_ROOT/scripts/cmd/gen-tectonic-corpus.py"
+  [ -f "$GEN" ] || { echo "error: corpus tops out at $largest bytes, below the ${INPUT_CEILING_MIB} MiB ceiling, and $GEN is missing" >&2; exit 64; }
+  command -v python3 >/dev/null 2>&1 || { echo "error: python3 is needed to generate the ceiling document" >&2; exit 69; }
+
+  STAGED="$(mktemp -d)"
+  trap 'rm -rf "$STAGED"' EXIT
+  python3 "$GEN" "$STAGED" --bound >/dev/null
+
+  # Every committed file must be reproduced byte for byte.
+  for f in "$CORPUS"/*.tex; do
+    b="$(basename "$f")"
+    [ -f "$STAGED/$b" ] || { echo "error: the generator no longer produces $b" >&2; exit 65; }
+    cmp -s "$f" "$STAGED/$b" || { echo "error: $b differs from what the generator produces -- corpus and generator have diverged" >&2; exit 65; }
+  done
+
+  staged_largest=0
+  for f in "$STAGED"/*.tex; do
+    n="$(wc -c < "$f" | tr -d ' ')"
+    [ "$n" -gt "$staged_largest" ] && staged_largest="$n"
+  done
+  [ "$staged_largest" -ge "$CEILING_BYTES" ] || { echo "error: even the generated corpus tops out at $staged_largest bytes, below $CEILING_BYTES" >&2; exit 65; }
+
+  echo "note: committed corpus tops out at $largest bytes; staged the generated"
+  echo "      corpus (largest $staged_largest bytes) so the measurement reaches"
+  echo "      the ${INPUT_CEILING_MIB} MiB input ceiling it claims to."
+  echo
+  CORPUS="$STAGED"
+fi
 if ! command -v docker >/dev/null 2>&1; then
   echo "error: docker is required; tectonic is not installed on the host and this" >&2
   echo "       measurement is only meaningful inside the deployed image" >&2
