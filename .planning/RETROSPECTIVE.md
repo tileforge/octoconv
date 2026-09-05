@@ -488,3 +488,103 @@ inside the phase built to prevent it.
 4. Live hard gates discover bugs planning cannot — confirmed across v1.3 (chromium research corrections) and v1.4 (terminal-Close hang, CI 429 cascade); make them unconditional in every plan that touches infrastructure.
 5. Never let a piped command's masked exit code gate destructive cleanup — v1.5's dangling-commit incident; success-branch-only cleanup is now the standard merge shape.
 6. A gap closure can manufacture the next debt item — v1.12's 52-06 made the daily quota real and simultaneously made a stuck job able to lock out a client indefinitely; ship the operator remedy in the same phase as the fix that needs it.
+
+## Milestone: v1.14 — Typesetting & Debt
+
+**Shipped:** 2026-09-05
+**Phases:** 3 (62–64) | **Plans:** 7 | **Commits:** 13 on main over 4 days (phases squashed; 52 in phase 64's branch alone)
+**Code:** +3.9k Go non-test, +5.9k Go test
+
+### What Was Built
+
+A ninth engine class that typesets LaTeX offline — tectonic with a digest-pinned
+122 MiB bundle, no egress, `--untrusted`, its own queue, worker, container and
+ScaledObject — plus phase 63's sanitize hardening and probe page ceiling and
+phase 62's operational debt tail.
+
+Its timeout is the first here derived from the ENGINE's own ceiling rather than
+from a percentile: `ceil(25.76 s/pass × 7 passes × 1.5)`, where 7 is tectonic's
+rerun maximum, paired inseparably with a 2 MiB input bound because cost is
+linear in source size.
+
+### What Worked
+
+**Measuring at the bound instead of extrapolating to it.** The shipped number
+comes from a 2 143 444-byte document, not a small one scaled up. That paid three
+times: it caught that the measured document is 2.2% ABOVE the ceiling that
+refuses it (found by POSTing it and getting a 413); it caught the measurement
+SCRIPT iterating 369 KB while printing "derived from a run AT the ceiling" —
+which would have recommended 46s for work that takes 148; and when a comment
+extrapolated a rate instead of citing a measurement, the numbers turned out to
+be non-linear (240 000 loop iterations produced FEWER bytes than 130 000).
+
+**Rewording a requirement on evidence rather than meeting it as written.**
+TEX-03 asked to refuse packages outside the declared eighteen. Compiling 23
+common packages against the real bundle showed twelve resolve while outside it —
+five in pandoc's own default template, one in this phase's own end-to-end paper.
+Gating on the declared set would have refused documents the service typesets
+correctly, which is 63-02's defect exactly. Same shape as PROBE-01's rewording
+one phase earlier, and confirmed with the operator before anything was built.
+
+**Running the fixed build instead of trusting the fix.** Round 2's log cap was
+correct and did not stop the OOM — the memory was tectonic's, not the worker's,
+and only a live run said so. The same habit refuted a review premise using the
+PR's own evidence (a document that prints "stopping at 6 passes" and resolves
+everything), and caught my own first probe of the timeout defect being wrong: a
+1e8-iteration loop terminated in 66 seconds and proved nothing.
+
+**Running the gates end to end, not just the tests.** The local CI stand-in's
+e2e tier had never completed on this machine. Completing it found that EVERY
+sanitize job was panicking inside pdfcpu — asynq recovered it, retried, and left
+the job `active` forever, so the only symptom was a test timing out. That defect
+was live on `main` and invisible to every unit test in the repository.
+
+### What Was Inefficient
+
+**Fixes that addressed the named instance and left the class.** The v1.13
+retrospective's most expensive pattern, reproduced:
+
+- round 1 denied `fontspec`; round 2 found `fontspec-xetex` and
+  `fontspec-luatex` — the implementation files `fontspec.sty` itself loads —
+  admitted, one of them returning a PDF;
+- round 1 made a timeout terminal on `context.DeadlineExceeded`; round 2 found
+  the whole-attempt deadline meant a stalled MinIO call was reported to the
+  client as a document that failed to typeset;
+- round 2 fixed `\fi` matched as a prefix; round 3 found `%` decided by one byte
+  of lookback. Three instances of one shape — a byte test standing in for
+  tokenization — before it was fixed AS tokenization.
+
+The countermeasure that worked was writing each fix as a rule over every
+instance: the grace-period rule found `probeWorker` carrying the same defect
+from phase 63, the deny-list variant test forbids the next one, and the CI bake
+rule is derived from docker-compose.yml rather than listed.
+
+**Tests whose own comments asserted what a later change falsified.**
+`TestBothTeXGatesReadTheSameSource` claimed the worker "cannot drift from the
+bundle because it IS the bundle" — true until round 1 added a deny list the
+engine knows nothing about, and the test had no denied case to notice. The same
+week, a pinning test named "missing bundle ... does not blame the document"
+covered only the one wording that happened to contain the env var's name.
+
+**A test that passed for the wrong reason, caught only by inverting it.** The
+first regression test for the pdfcpu panic fed the verifier a file containing
+"not a pdf" — which is rejected before pdfcpu is ever reached. It passed with
+the fix removed.
+
+**A live proof and the test suite sharing a database.** The first log-bomb run
+came back `reconciler_exhausted` in 49 seconds and looked like a defect; it was
+`go test ./...` sweeping the same Postgres.
+
+### Patterns Established
+
+- **Bound what comes back, not only what goes in.** For an engine whose input is
+  a program, the input ceiling implies nothing about the output — and then bound
+  what gets STORED from it, which was a separate omission.
+- **A rule the engine cannot express must be enforced where the rule lives.**
+  Every other tex refusal is the engine's verdict read back; a denied package is
+  IN the bundle, so the engine has no verdict and both gates must check it.
+- **A recovered panic is an invisible failure.** asynq's recover sits above the
+  terminal-commit point, so a panic left the job `active` with no metric and no
+  error. Recovering at the right level turns it into an honest failure with the
+  stack in `job_events.detail`.
+- **Publish the measurement, never the rate.**

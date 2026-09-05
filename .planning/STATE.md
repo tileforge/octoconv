@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
-status: in_progress
-last_updated: "2026-09-05T00:30:00.000Z"
+status: complete
+last_updated: "2026-09-05T02:15:00.000Z"
 last_activity: 2026-09-05
 progress:
   total_phases: 3
@@ -11,7 +11,7 @@ progress:
   total_plans: 5
   completed_plans: 5
   percent: 100
-  note: "phase 64 complete (64-01..64-05); v1.14's three phases all done, nothing merged to main yet"
+  note: "v1.14 SHIPPED 2026-09-05: phase 64 merged as e443c23 (PR #16), all three phases on main"
 ---
 
 # Project State
@@ -21,17 +21,29 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.14 — Typesetting & Debt. Phases 62 (operational debt tail) and 63 (sanitizer gaps + probe page ceiling) merged; phase 64 (tectonic, ninth engine class) planned and ready to execute.
+**Current focus:** v1.14 SHIPPED (2026-09-05). All three phases on main: 62 (operational debt tail), 63 (sanitizer gaps + probe page ceiling), 64 (tectonic, the ninth engine class). Next milestone not yet chosen.
 
 ## Current Position
 
-Phase: 64 — Tectonic, Ninth Engine Class (COMPLETE, 64-01..64-05)
-Plan: all five done; phases 62 and 63 merged earlier (PR #14, PR #15)
-Status: v1.14 is three phases of three. The tex engine is closed end to end on
-live infrastructure and its timeout is measured, not chosen.
+Milestone: v1.14 — Typesetting & Debt, SHIPPED 2026-09-05.
+Phase: 64 — Tectonic, Ninth Engine Class, MERGED as e443c23 (PR #16).
 
-PR #16 is OPEN (https://github.com/paderinandrey/octoconv/pull/16), 30 commits
-off main, mergeable. Nothing from phase 64 is on main yet.
+All three phases (62, 63, 64) are on main. The tex engine is closed end to end
+on live infrastructure and its timeout is measured, not chosen. Retrospective
+and MILESTONES entries written.
+
+PR #16 took THREE codex rounds (20 findings) plus five defects found by my own
+sweeps between rounds, and a sixth found by running the local CI stand-in's e2e
+tier to completion for the first time -- every sanitize job was panicking inside
+pdfcpu, asynq recovered it, and the job was left ACTIVE forever. That one was
+live on main and belongs to phase 63; it is fixed here along with the class
+behind it (a panic anywhere in an engine now lands the job terminally through
+the single commit point).
+
+Two review sources are currently unavailable: codex has hit its account
+code-review usage limit, coderabbit is rate limited. Round 4 was requested and
+could not run; the merge went ahead on three addressed rounds plus every local
+gate, uncached.
 
 CODEX ROUND 3 ADDRESSED (2026-09-05): 3 findings, all P2, no P1. Each
 reproduced before being fixed.

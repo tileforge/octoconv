@@ -1,5 +1,62 @@
 # Milestones
 
+## v1.14 Typesetting & Debt (Shipped: 2026-09-05)
+
+**Phases:** 3 (62-64) | **Plans:** 7
+**Range:** 2026-09-02 → 2026-09-05 (4 days, 13 commits on main; 52 in phase 64's branch alone)
+**Code:** +3.9k Go (non-test), +5.9k Go test
+**Requirements:** TEX-01..05, SANI-09, PROBE-01/02, DEBT-14 — all closed, two
+reworded on measurement rather than ticked as written.
+
+### Delivered
+
+A ninth engine class that typesets LaTeX **offline**. A client posts a `.tex`,
+gets back a PDF with real typography — formulas, resolved cross-references
+including forward ones, and a bibliography — from an engine that has no network
+at all.
+
+**Key accomplishments:**
+
+- **tectonic as the ninth engine class**, by the established template: its own
+  queue, `cmd/tectonic-worker`, container, transient/terminal classification and
+  ScaledObject, with the other eight rendering byte-identical.
+
+- **A closed TeX distribution, baked in.** A 122 MiB reduced bundle (from 2.69
+  GiB unreduced) built by a script that derives its keep-lists from a measured
+  dependency closure rather than from names somebody thought of, digest-pinned
+  in the Dockerfile and verified again inside the image build. The worker has no
+  egress: a client's `\usepackage` cannot decide what gets downloaded.
+
+- **Shell escape is structurally impossible**, proven by running a hostile
+  document and by inverting the defence, not by citing `--untrusted`.
+
+- **A MEASURED timeout, paired with the input ceiling that makes it a bound.**
+  `ceil(25.76 s/pass × 7 passes × 1.5) = 271s`, where 7 is the engine's own
+  rerun maximum and the per-pass cost comes from a 2 143 444-byte document — the
+  largest the API accepts. The measurement's real output was a finding: cost is
+  linear in source size, so the 100 MiB ceiling this engine had inherited made
+  the timeout bound nothing. The operator chose the (2 MiB, 271s) pair from
+  three measured options before any of it was written.
+
+- **An admission gate that refuses what cannot succeed**, reworded on evidence:
+  gating on the declared eighteen packages was measured to refuse twelve that
+  compile — five of them in pandoc's own default template — so admission is
+  keyed on the bundle's 608 resolvable `.sty` files, with a small deny list for
+  what the bundle carries and this deployment refuses on purpose.
+
+- **Bounds on what comes BACK, not only on what goes in.** For the one engine
+  whose input is a program, the input ceiling implies nothing about the output:
+  199 bytes of `.tex` measured 19 545 890 bytes of PDF in 93 seconds, and a
+  235-byte `\message` loop produced 323 MB of engine log in 30. Both are now
+  bounded, and an OOM-killed or panicking engine lands the job in a terminal
+  state instead of a retry loop.
+
+- **Phase 63's sanitize hardening and probe page ceiling**, and phase 62's
+  operational debt tail: an initContainer for all ten pods, a test that had
+  stopped asserting about the database, and one requirement that was already met.
+
+---
+
 ## v1.13 Inspect & Operations (Shipped: 2026-09-02)
 
 **Phases:** 6 (56-61) | **Plans:** 38 | **Tasks:** 58
