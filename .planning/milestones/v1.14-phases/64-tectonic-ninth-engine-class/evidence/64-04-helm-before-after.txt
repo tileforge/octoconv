@@ -1,0 +1,75 @@
+64-04 T6 -- the eight ScaledObjects that must not move, DIFFED not asserted
+==========================================================================
+
+SC5 says "не утверждение" in as many words: an assertion that nothing moved is
+not evidence that nothing moved. So the render was captured before the change
+and after it, and compared.
+
+  helm       v4.2.4+g3900f43
+  before     commit b656873 (chart untouched by phase 64)
+  after      the same command, with deployment-tectonic-worker.yaml,
+             scaledobject-tectonic.yaml, the ConfigMap keys and the two
+             values.yaml blocks added
+  command    helm template octoconv deploy/chart/octoconv \
+               --set secrets.{databaseUrl,apiKeySalt,webhookSigningSecret,
+                              s3AccessKey,s3SecretKey,postgresPassword}=x \
+               --set keda.enabled=true --set prometheus.enabled=true
+
+  (both --set keda.enabled=true AND --set prometheus.enabled=true are
+  mandatory: every ScaledObject is gated on the pair, and omitting either
+  renders ZERO of them, which would make every comparison below pass
+  vacuously.)
+
+WHOLE-FILE DIFF
+---------------
+    added lines:   197
+    removed lines: 0
+
+Zero removed lines is the strong form of the claim: nothing that rendered
+before renders differently now. The 197 additions land in exactly three
+hunks -- the ConfigMap's TECTONIC_* keys, the tectonic Deployment, and the
+tectonic ScaledObject.
+
+PER-OBJECT COMPARISON (yq, document level, not text scraping)
+-------------------------------------------------------------
+Each ScaledObject extracted from the before and after renders by name and
+compared as a parsed document:
+
+    identical: worker-audio-scaledobject
+    identical: worker-av-scaledobject
+    identical: worker-document-scaledobject
+    identical: worker-html-scaledobject
+    identical: worker-image-scaledobject
+    identical: worker-ocr-scaledobject
+    identical: worker-pandoc-scaledobject
+    identical: worker-probe-scaledobject
+
+Eight of eight. ScaledObject count: 8 before, 9 after.
+
+A NOTE ON THE ONE THING THAT DID MOVE, AND WHY IT IS NOT A CHANGE
+-----------------------------------------------------------------
+A first pass compared `helm template --show-only templates/scaledobject-
+probe.yaml` before and after and reported probe as CHANGED -- by one trailing
+blank line. It is a document separator between concatenated manifests: probe's
+block was last in the render before, and is now followed by tectonic's. The
+per-object comparison above is what settles it, and it is the reason the
+comparison was redone at the YAML-document level instead of on text: a text
+diff cannot tell a manifest change from a concatenation artifact, and reporting
+either one as the other would be wrong in a different direction.
+
+The vacuity guard in that comparison earned its place immediately: yq's output
+includes `---` separators, which the first version of the loop happily treated
+as two more object names. They printed VACUOUS rather than passing silently.
+
+scripts/ci-helm-checks.sh
+-------------------------
+Updated 8 -> 9 in the anti-vacuity gate and added tectonic to the per-class
+isolation loop. Full run: exit 0.
+
+    OK: 9 ScaledObjects in both renders
+    OK: document/html/audio/av/ocr/pandoc/probe/tectonic unchanged
+    OK: image changed (expected)
+    OK: whole-chart diff is exactly the 4 expected image-ScaledObject lines
+    OK: every Deployment carrying the app secret waits for postgres and the
+        bucket (11 of them)      <- ten before this phase (DEBT-12)
+    OK: s3.useSSL=false/true render 13 mc aliases each, all on one transport

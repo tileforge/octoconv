@@ -1,0 +1,68 @@
+64-03 -- both gates, through the real API, on live infrastructure
+=================================================================
+
+Run 2026-09-04. API from this working tree (go run ./cmd/api), tectonic-worker
+rebuilt from this working tree and running in compose against the same
+Postgres/Redis/MinIO.
+
+A. THE PACKAGE IS VISIBLE TO THE API'S SCAN
+--------------------------------------------
+    \documentclass{article}
+    \usepackage{amsmath}
+    \usepackage{pgfplots}
+
+    POST /v1/jobs  ->  422
+    {
+      "code": "unsupported_package",
+      "error": "this deployment's TeX bundle does not provide the package pgfplots"
+    }
+
+    api log: content validation rejected: client_id=... filename="paper.tex"
+             reason=unsupported_package package="pgfplots"
+
+Refused before the upload. The storage double in the unit test proves the
+ordering; this proves the wording and the code on the wire.
+
+B. THE PACKAGE IS PAST THE API'S SCAN WINDOW
+---------------------------------------------
+Same \usepackage{pgfplots}, preceded by 1 MiB of comment lines so the preamble
+outruns the 1 MiB sniff window.
+
+    POST /v1/jobs  ->  202 {"status":"queued"}
+
+    api log: content validation abstained: client_id=... filename="paper.tex"
+             check=tex_packages cause=preamble_exceeds_window window=1048576
+
+    2s later, GET /v1/jobs/{id}:
+    {
+      "status": "failed",
+      "error_code": "unsupported_package",
+      "error_message": "this deployment's TeX bundle does not provide the package pgfplots"
+    }
+
+The cheap gate abstained and SAID SO; the authoritative one refused. Identical
+code, identical message. A client cannot tell which of the two saw it, which is
+the entire point of sharing the code -- the difference is a property of where
+\begin{document} falls in their file, not of their document being wrong in two
+different ways.
+
+C. A FINDING: \input NAMES A .tex, NOT A PACKAGE
+-------------------------------------------------
+    \documentclass{article}
+    \input{hidden-preamble}
+
+    POST /v1/jobs  ->  202
+    GET /v1/jobs/{id}:
+    {
+      "status": "failed",
+      "error_code": "engine_error",
+      "error_message": "the document could not be typeset"
+    }
+
+The engine reported `hidden-preamble.tex' not found -- a .tex, not a .sty -- and
+the parser DECLINED to name it as a package. That is the contract working: the
+client's document really does reference a file they did not upload, and telling
+them to remove a \usepackage would have been a confident, wrong instruction.
+
+It is also a reminder of 64-04's finding: the API is single-input, so an \input
+of a second file cannot succeed at all today.

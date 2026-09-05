@@ -1,0 +1,56 @@
+A Ninth Engine Class
+OctoConv
+September 4, 2026
+
+1
+
+Formulas
+
+Euler’s identity is eiπ + 1 = 0, and the Gaussian integral is
+∫ ∞
+√
+2
+e−x dx = π.
+
+(1)
+
+−∞
+
+2
+
+Cross-references
+
+Equation (1) appears in Section 1 on page 1, and this is Section 2. A forward
+reference to Section 3 exercises the second pass.
+
+3
+
+A table
+
+Engine
+
+Class
+
+tectonic
+
+ninth
+
+4
+
+Bibliography
+
+Typesetting is discussed by Knuth [1] and Lamport [2].
+
+References
+[1]
+
+Donald E. Knuth. The TEXbook. Addison-Wesley, 1984.
+
+[2]
+
+Leslie Lamport. LATEX: A Document Preparation System. Addison-Wesley,
+1994.
+
+1
+
+

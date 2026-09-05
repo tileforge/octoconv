@@ -1,5 +1,9 @@
 # Requirements: OctoConv v1.14 — Typesetting & Debt
 
+**Status:** SHIPPED 2026-09-05 — every requirement below is closed. This file
+stays as the current one until the next milestone defines its own; the frozen
+copy is `.planning/milestones/v1.14-REQUIREMENTS.md`.
+
 **Defined:** 2026-09-02
 **Core Value:** Внутренние сервисы компании могут безопасно и надёжно поставить задачу обработки файла и получить результат — без риска для стабильности или безопасности продакшена.
 

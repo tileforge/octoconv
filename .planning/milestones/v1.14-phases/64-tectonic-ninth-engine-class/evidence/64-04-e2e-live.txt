@@ -1,0 +1,100 @@
+64-04 T7 -- the tex engine end to end, on live infrastructure
+=============================================================
+
+Run 2026-09-04. Postgres 18 / Redis 8 / MinIO in docker compose, the API from
+this working tree (go run ./cmd/api, after killing a stale binary from
+2026-09-03 that predated the enqueue-switch fix -- a detail worth recording,
+because that stale process would have "proved" the loop against code that did
+not contain it), cmd/tectonic-worker in its own container built by
+`docker compose build tectonic-worker`.
+
+MIGRATION, ON THE LIVE DATABASE
+-------------------------------
+    jobs_engine_check | CHECK ((engine = ANY (ARRAY['image', 'document',
+      'av', 'cad', 'archive', 'probe', 'html', 'audio', 'ocr', 'pandoc',
+      'tectonic'])))
+
+THE DOCUMENT (TEX-01 asks for typography, not for magic bytes)
+--------------------------------------------------------------
+Formulas (inline + a numbered display equation), cross-references including a
+FORWARD one (which cannot resolve on a single pass), a booktabs table, and a
+biblatex bibliography on backend=bibtex (D-07: no biber in the image).
+
+THE LOOP
+--------
+    POST /v1/jobs  file=paper.tex target=pdf
+      -> {"job_id":"97315da2-...","status":"queued"}
+    t=2s  active
+    t=6s  done
+    GET /v1/jobs/{id} -> download_url (presigned, 900s)
+
+    jobs row: engine=tectonic  operation=convert  status=done  error_code=
+
+    fetched: 28438 bytes, "PDF document, version 1.5", %PDF-1.5
+
+THE OUTPUT, READ RATHER THAN COUNTED (pdftotext, poppler)
+----------------------------------------------------------
+    A Ninth Engine Class / OctoConv / September 4, 2026
+    1  Formulas
+       Euler's identity is e^{iπ} + 1 = 0, and the Gaussian integral is
+       ∫∞ e^{−x²} dx = √π.                                            (1)
+    2  Cross-references
+       Equation (1) appears in Section 1 on page 1, and this is Section 2.
+       A forward reference to Section 3 exercises the second pass.
+    3  A table
+       Engine   Class
+       tectonic ninth
+    4  Bibliography
+       Typesetting is discussed by Knuth [1] and Lamport [2].
+    References
+       [1] Donald E. Knuth. The TeXbook. Addison-Wesley, 1984.
+       [2] Leslie Lamport. LaTeX: A Document Preparation System. ... 1994.
+
+Every cross-reference resolved -- including the forward one -- and both
+citations resolved to numbered entries with a rendered bibliography. D-07's
+stated cost (biblatex on backend=bibtex, no biber) is NOT paid on this
+document: nothing was reduced or unavailable in the output.
+
+    Package biblatex Warning: Using fall-back bibtex backend:
+    (biblatex)                functionality may be reduced/unavailable.
+
+is emitted, and is the warning D-07 predicted. It describes a REDUCED FEATURE
+SET (biber-only sorting/localization features), not a failed bibliography, and
+this document does not use any of them.
+
+THE NEGATIVE HALF, ALSO END TO END
+-----------------------------------
+A document with an undefined control sequence, through the same API:
+
+    t=2s  failed
+    {"error_code":"engine_error",
+     "error_message":"the document could not be typeset"}
+    jobs row: status=failed  error_code=engine_error  attempts=1
+
+attempts=1 is the assertion that matters: the failure was TERMINAL on the
+first attempt, so the retry budget was never spent re-running a compile that
+cannot succeed. That is isTectonicTerminal's compilation-error branch,
+observed through the whole stack rather than through the classifier alone.
+
+TWO FINDINGS
+------------
+
+1. A MULTI-FILE LaTeX PROJECT CANNOT BE SUBMITTED. The API is single-input
+   (one file per job), so paper.tex + refs.bib is not expressible. The
+   bibliography above works because the .bib is embedded in the .tex with
+   `filecontents*`, which is standard LaTeX and which tectonic honours under
+   --untrusted. That is a real capability limit on TEX-01, not a defect in
+   this plan: the schema already has an `ordinal` column on job_inputs for
+   multi-input jobs and no code path populates more than one. Recorded rather
+   than worked around; a client with a separate .bib must inline it.
+
+2. THE ENGINE STOPPED AT ITS PASS CAP. The container run of the identical
+   document (same bytes, same image, same 28438-byte output) printed:
+
+       warning: TeX rerun seems needed, but stopping at 6 passes
+
+   The output is correct -- everything resolved, as read above -- so this is
+   hyperref's rerun heuristic, not an unconverged document. It matters for
+   64-05: the measured cost of this engine is bounded by SIX passes, not by
+   an unbounded rerun loop, and a corpus that never approaches the cap would
+   measure a floor rather than a bound.

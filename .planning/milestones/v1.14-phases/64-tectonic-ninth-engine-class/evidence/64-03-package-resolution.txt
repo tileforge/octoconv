@@ -1,0 +1,59 @@
+64-03 -- what the bundle actually resolves, measured before the gate was built
+==============================================================================
+
+Image: octoconv-tectonic-worker (Dockerfile.tectonic-worker), tectonic 0.17.0,
+bundle baked in, --network none, -u nobody. Run 2026-09-04.
+
+Each package compiled on its own in a minimal document:
+
+    \documentclass{article}
+    \usepackage{<pkg>}
+    \begin{document}x\end{document}
+
+RESULTS (23 packages)
+---------------------
+    RESOLVES  amsfonts        MISSING   algorithm2e
+    RESOLVES  array           MISSING   csquotes
+    RESOLVES  fontenc         MISSING   float
+    RESOLVES  inputenc        MISSING   mathtools
+    RESOLVES  lmodern         MISSING   minted
+    RESOLVES  longtable       MISSING   multirow
+    RESOLVES  microtype       MISSING   parskip
+    RESOLVES  subcaption      MISSING   pgfplots
+    RESOLVES  textcomp        MISSING   ragged2e
+    RESOLVES  tikz            MISSING   setspace
+    RESOLVES  url             MISSING   siunitx
+    RESOLVES  verbatim
+
+Every MISSING row named its own file, in LaTeX's wording:
+
+    ! LaTeX Error: File `pgfplots.sty' not found.
+
+WHAT THIS CHANGED
+-----------------
+64-03 as planned gates admission on convert.TeXPackages -- the DECLARED
+eighteen. All twelve RESOLVES rows above are outside that set. So the planned
+gate would have refused, with "package not supported", twelve documents this
+service typesets correctly today. Five of the twelve -- fontenc, inputenc,
+lmodern, microtype, textcomp -- are in pandoc's DEFAULT LaTeX template, and
+one of them (fontenc) is in the paper 64-04 ran end to end and verified.
+
+That is 63-02's defect exactly: an admission gate that refuses valid work,
+which was built, measured, and REMOVED, with PROBE-01 reworded around the
+finding.
+
+So the gate refuses what the ENGINE CANNOT RESOLVE, derived from the bundle
+that ships (608 .sty files, written by scripts/tectonic-bundle-build.sh in the
+same run that writes MANIFEST.txt, embedded as internal/convert/
+texresolvable.txt). convert.TeXPackages stays what it always was: the
+documented promise, held equal to the bundle and to docs/TYPESETTING.md by
+64-01's three-way test.
+
+TEX-03's wording ("outside the declared set") is reworded to match the goal it
+states in its own next clause -- a clear refusal NAMING the package instead of
+an unexplained engine failure. Decision confirmed with the operator before any
+of it was built.
+
+The negative half is why the gate is still a gate: pgfplots, siunitx, minted,
+csquotes and mathtools are refused at admission, before the upload, instead of
+after a queue round trip and a compile.

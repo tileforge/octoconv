@@ -1,0 +1,129 @@
+64-04 — inversions, recorded as run
+===================================
+
+T2. The dispatch defect, proven BEFORE it was fixed
+---------------------------------------------------
+handleCreateJob's enqueue switch had no tectonic case after 64-02 registered
+the converter, so latex->pdf was advertised on GET /formats and every real
+upload fell to the fail-closed default. Adding the tex row to
+TestCreateJobRoutesEveryEngineToItsQueue with the fix NOT yet applied:
+
+    2026/09/04 ... "POST /v1/jobs" ... - 500 58B
+    --- FAIL: TestCreateJobRoutesEveryEngineToItsQueue/tectonic
+        handlers_test.go:3761: engine "tectonic": status = 500, want 202;
+        body={"code":"internal_error","error":"failed to enqueue job"}
+
+That is the same class Phase 60 shipped with sanitize and 64-02's summary
+called out: a registry entry is a promise the rest of the system must keep.
+
+T2 (class, not instance). Inversion of TestEveryEngineHasAnEnqueueRoute
+-----------------------------------------------------------------------
+The table test above can only cover an engine someone wrote a multipart
+fixture for -- which is why it did not cover tectonic, ocr, pandoc or probe.
+The switch was extracted to Server.enqueueForEngine so a test can walk
+convert.AllEngines() with no fixture at all. Removing the tectonic case again,
+with the fixture row still present:
+
+    --- FAIL: TestEveryEngineHasAnEnqueueRoute
+        handlers_test.go:3739: engine "tectonic" has no case in
+        handleCreateJob's enqueue switch: every job for it would 500 with
+        "failed to enqueue job"
+
+It fails by NAME, so the tenth engine cannot repeat this silently. The same
+test asserts engine "nonsense" is still NOT routed -- an assertion that
+everything routes would pass against a switch that had stopped failing closed.
+
+
+T3. Inversions on the ninth engine's classification
+----------------------------------------------------
+Both verdicts are pinned in ONE test through NewRunner(h,
+TectonicDescriptor).Handle, and both were made to fail on purpose.
+
+(a) Removed "unrecoverable error" from isTectonicTerminal's signature list:
+
+    --- FAIL: .../compilation_error_is_terminal
+        err = convert: tectonic: exit status 1: ... error: the XeTeX engine had
+        an unrecoverable error | caused by: halted on potentially-recoverable
+        error as specified, want errors.Is(err, asynq.SkipRetry)
+
+(b) Made the deadline branch return true (terminal) instead of falling
+    through to isTerminal:
+
+    --- FAIL: .../engine_deadline_stays_transient
+        err = skip retry for the task: convert: tectonic: context deadline
+        exceeded, want NOT SkipRetry
+
+Two inversions rather than one because the point of the test is that the two
+verdicts are OPPOSITES: an inversion that only proves the terminal half would
+pass equally against a classifier that had collapsed both to terminal.
+
+
+T4. Inversion on the bundle-path plumbing
+------------------------------------------
+buildTectonicConverter changed to return convert.TectonicConverter{} --
+the exact "configured but not plumbed" defect this fleet has shipped once:
+
+    --- FAIL: TestBuildTectonicConverter
+        main_test.go:27: buildTectonicConverter("/opt/tectonic/some-other-bundle.ttb")
+        .BundlePath = "", want "/opt/tectonic/some-other-bundle.ttb"
+
+Note what the startup path would have done with that build: main() stats the
+resolved path, finds it readable, logs it, and starts consuming the queue --
+then every job refuses, because the converter it registered has no bundle.
+The failure would look like nine hundred bad documents.
+
+
+T5. Inversion on the published tex ceiling
+-------------------------------------------
+Removed convert.EngineTectonic from cmd/api's engineTimeoutsFromEnv():
+
+    --- FAIL: TestEngineTimeoutsFromEnvCoversEveryEngine
+        enginetimeouts_test.go:28: engine "tectonic" is not read by cmd/api:
+        /v1/inspect would publish api's own default for it while tectonic's
+        worker uses the operator's env value
+    --- FAIL: TestTectonicEngineTimeoutIsRead
+        enginetimeouts_test.go:55: with TECTONIC_ENGINE_TIMEOUT=900s the API
+        reads 5m0s -- the operator's ceiling never reaches the published
+        estimate
+
+Worth stating precisely, because the plan's wording is now out of date: the
+PR #12 defect it names -- estimated_max_seconds: 0 -- can no longer happen.
+63-02 made NewServer MERGE defaultEngineTimeouts into a partial map, so a
+missing key publishes 300s rather than 0. What survives is quieter and was
+NOT covered: the API publishes its own default while the worker runs on the
+operator's TECTONIC_ENGINE_TIMEOUT, and every test at the api package layer
+sees a complete map because the merge filled it in. The second assertion above
+is the one that catches that, and it lives in cmd/api because that is the only
+place the divergence is visible.
+
+
+64-03 T2. Inversion on the admission gate's POSITION
+-----------------------------------------------------
+The gate moved from before s.storage.Upload to after it. The storage double
+fails at the moment of the call rather than on a boolean checked afterwards,
+so the failure names the object that would have been written:
+
+    --- FAIL: TestCreateJob_UnresolvablePackageRejectedBeforeUpload
+        handlers_test.go:3730: storage.Upload("uploads/5b19a7c8-.../0-paper.tex")
+        was called: the tex-package gate must refuse BEFORE any object is
+        written, or a document this deployment cannot typeset costs S3 bytes
+        and a quota slot to be told so
+
+
+64-03 T3. Inversion on the worker's unsupported-package branch
+---------------------------------------------------------------
+Removed the errors.Is(ErrTeXUnsupportedPackage) branch from isTectonicTerminal
+AND the naming branch from tectonicFailureCode:
+
+    --- FAIL: .../unsupported_package_is_terminal_and_names_the_package
+        pinning_test.go:1174: MarkFailed code = "engine_error", want
+        "unsupported_package" -- the SAME string cmd/api returns when its
+        bounded scan catches this first (one code space, D-03)
+
+Note WHICH half failed. The verdict stayed TERMINAL even with its branch
+removed, because the engine's output contains "LaTeX Error" and the signature
+list catches it -- so the terminal classification is covered twice over. What
+the branch actually buys is the CODE and the MESSAGE: without it the client is
+told "the document could not be typeset" and has to find the package
+themselves. An inversion that only asserted the verdict would have reported
+success here and proved nothing.

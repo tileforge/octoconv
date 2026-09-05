@@ -1,0 +1,61 @@
+TEX-02 -- the engine cannot reach the network, proven by running
+=================================================================
+
+Image: octoconv-tectonic-worker:64-02 (Dockerfile.tectonic-worker), arm64,
+tectonic 0.17.0 musl, bundle f42d5eed...02ff (122 MiB), USER nobody.
+Run 2026-09-04.
+
+Document: seven of the eighteen declared packages (fontenc, amsmath, amssymb,
+graphicx, hyperref, booktabs, listings), math, a rule-using table, a link, a
+listing -- enough that a missing bundle entry shows up as a failure rather than
+as a document that happens not to need anything.
+
+WHY THREE CONFIGURATIONS AND NOT ONE
+
+"It typesets with --network none" alone proves nothing. It is equally
+consistent with a container whose network was never actually severed. Rows 2
+and 3 are what make row 1 mean something, the same structure TEX-04 needed:
+
+  1. -b bundle,  --network none  ->  PDF, 1 page, 14225 bytes, 2s   <- guarantee
+  2. no -b,      --network none  ->  exit 101, no PDF               <- net IS off
+  3. no -b,      network ON      ->  PDF, by downloading            <- risk IS real
+
+Row 2, verbatim:
+
+    called `Result::unwrap()` on an `Err` value: this bundle isn't cached, and
+    we couldn't get it from the internet. Error: error sending request for url
+    (https://relay.fullyjustified.net/default_bundle_v33.tar.index.gz)
+
+That names the host tectonic reaches for, and proves the sandbox denied it.
+
+Row 3, verbatim:
+
+    note: downloading tectonic-format-latex.tex
+    note: downloading xelatex.ini
+    note: downloading latex.ltx
+
+Row 3 is the decisive one. It is the threat itself, executed: with no bundle
+and a network, the engine downloads what the DOCUMENT asked for. TEX-02 is not
+a hypothetical being guarded against -- it is the default behaviour, and -b
+plus a baked bundle is what replaces it.
+
+THE DEFECT THIS PROOF FOUND
+
+Row 1 failed on the first attempt, and not for a bundle reason:
+
+    error: cannot write format file texput.fmt
+    caused by: Permission denied (os error 13)
+
+USER nobody has no home, so the format cache resolved somewhere unwritable and
+tectonic fell back to the working directory. Every job would have failed. This
+was invisible to the Go unit tests, which run as the developer.
+
+Fixed in the image: TECTONIC_CACHE_DIR=/var/cache/tectonic, owned by nobody,
+and WARMED at build time -- an unwarmed cache would rebuild the format on every
+job, putting format compilation inside the clock 64-05 measures. The build
+asserts a *.fmt exists afterwards rather than trusting the warm-up's exit code:
+
+    /var/cache/tectonic/formats/159cdec4...b4d9-latex-33.fmt   (36 MiB cache)
+
+The 2s in row 1 is with that warm cache and is not the 64-05 number: one page
+of one document says nothing about the corpus. 64-05 measures it.

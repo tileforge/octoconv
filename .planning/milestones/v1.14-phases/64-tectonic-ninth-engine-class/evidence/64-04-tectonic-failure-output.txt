@@ -1,0 +1,98 @@
+64-04 T3 -- tectonic's REAL failure output, captured before anything was pinned
+==============================================================================
+
+Image:    octoconv-tectonic-worker:64-02 (Dockerfile.tectonic-worker), arm64
+Engine:   Tectonic 0.17.0
+Run:      2026-09-04, --network none, -u nobody, bundle baked into the image
+Command:  tectonic -X compile /w/<doc>.tex --untrusted \
+              -b /opt/tectonic/octoconv-bundle.ttb -o /tmp -p
+Exit:     1 for both documents below (measured with $? on the docker run
+          itself, NOT through a pipe -- the first attempt piped into `tail`
+          and read tail's 0, which would have made "the engine exits 0 on a
+          broken document" a finding that was never true)
+
+Why capture rather than compose: the pinning test asserts on the engine's
+wording, and a predicted wording pins the prediction. Three of the four
+signatures in isTectonicTerminal appear verbatim below.
+
+=== 1. undefined control sequence (badcmd.tex) ===============================
+
+\documentclass{article}
+\begin{document}
+Hello \thisControlSequenceDoesNotExist{x}
+\end{document}
+
+note: "version 2" Tectonic command-line interface activated
+note: Running TeX ...
+(badcmd.tex
+LaTeX2e <2022-11-01> patch level 1
+L3 programming layer <2023-02-22> (article.cls
+Document Class: article 2022/07/02 v1.4n Standard LaTeX document class
+(size10.cloFontconfig error: Cannot load default config file: No such file: (null)
+)) (l3backend-xetex.def)
+No file badcmd.aux.
+(ts1cmr.fd)
+error: badcmd.tex:3: Undefined control sequence
+! Undefined control sequence.
+l.3 Hello \thisControlSequenceDoesNotExist
+                                          {x}
+No pages of output.
+Transcript written on badcmd.log.
+error: something bad happened inside XeTeX, but no output was logged
+error: the XeTeX engine had an unrecoverable error
+caused by: halted on potentially-recoverable error as specified
+
+=== 2. a package that is NOT in the bundle (pgfplots) ========================
+
+\documentclass{article}
+\usepackage{pgfplots}
+\begin{document}
+Hello
+\end{document}
+
+note: "version 2" Tectonic command-line interface activated
+note: Running TeX ...
+(missingpkg2.tex
+LaTeX2e <2022-11-01> patch level 1
+L3 programming layer <2023-02-22> (article.cls
+Document Class: article 2022/07/02 v1.4n Standard LaTeX document class
+(size10.cloFontconfig error: Cannot load default config file: No such file: (null)
+))error: missingpkg2.tex:3: ! LaTeX Error: File `pgfplots.sty' not found.
+
+! ! LaTeX Error: File `pgfplots.sty' not found..
+\@missingfileerror ...or: File `#1.#2' not found.}
+                                                  
+l.3 \begin
+          {document}
+No pages of output.
+Transcript written on missingpkg2.log.
+error: something bad happened inside XeTeX, but no output was logged
+error: the XeTeX engine had an unrecoverable error
+caused by: halted on potentially-recoverable error as specified
+
+
+WHAT THESE TWO SHOW
+-------------------
+
+1. Both end in `error: the XeTeX engine had an unrecoverable error`, which
+   isTectonicTerminal already matches -- so a missing package is ALREADY
+   classified terminal today. What it is not is DIAGNOSABLE: the client is
+   told "the document could not be typeset" and has to guess which
+   \usepackage to remove. That gap is precisely 64-03's content.
+
+2. The package name is present, in LaTeX's own wording, on its own line:
+
+       ! LaTeX Error: File `pgfplots.sty' not found.
+
+   A file name, not a package name -- `pgfplots.sty` -> `pgfplots`. Any
+   parser 64-03 writes must be tested against THIS string.
+
+3. A third document (missingpkg.tex, \usepackage{tikz}) compiled CLEANLY to
+   a 2.5 KiB PDF. tikz is in the declared set, so it must -- and it is the
+   negative control that keeps row 2 from being "the engine fails on any
+   \usepackage".
+
+4. Fontconfig prints `Cannot load default config file: No such file: (null)`
+   on every run, including the successful one. It is noise, not a failure,
+   and a parser that treats any line containing "error" as the cause would
+   report it.

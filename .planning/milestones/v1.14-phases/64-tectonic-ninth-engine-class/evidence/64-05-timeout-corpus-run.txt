@@ -1,0 +1,56 @@
+TECTONIC_ENGINE_TIMEOUT measurement
+date:        2026-09-04T11:51:04Z
+corpus:      /Users/apaderin/dev/octoconv/internal/convert/testdata/tectonic/corpus (12 files, all compiled)
+image:       octoconv-tectonic-worker
+engine:      Tectonic 0.17.0
+bundle:      f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff (127711982 bytes)
+measured in: container, --cpus 2.0 --memory 1g, --network none, USER nobody
+host arch:   Darwin arm64
+
+per-file rows (class,file,bytes,passes,pages,seconds,status),
+seconds = the SLOWEST of 3 runs:
+  bib,bib-l,101534,7,36,19.666,ok
+  bib,bib-m,34654,7,12,11.439,ok
+  bib,bib-s,4639,7,2,7.074,ok
+  bib,bib-xl,368999,7,129,44.189,ok
+  single,single-l,94275,2,30,1.053,ok
+  single,single-m,31395,2,10,0.738,ok
+  single,single-s,3160,2,1,0.643,ok
+  single,single-xl,345376,2,110,1.021,ok
+  xref,xref-l,99139,3,35,2.616,ok
+  xref,xref-m,33019,3,12,1.232,ok
+  xref,xref-s,3352,3,2,1.000,ok
+  xref,xref-xl,363686,3,127,2.851,ok
+
+pass counts are the ENGINE's, counted from its own -p output
+(one 'Transcript written' line per TeX invocation). The three classes
+exist to separate per-pass cost from per-document overhead.
+
+worst per-pass cost:
+  bib-xl: 44.189s over 7 passes = 6.313 s/pass
+  slowest file overall: bib-xl 44.189
+
+recommendation:
+  TECTONIC_ENGINE_TIMEOUT = ceil(worst s/pass x pass ceiling x margin)
+                          = ceil(6.313 x 7 x 1.5)
+                          = 67s
+
+  pass ceiling 7: the ENGINE's own maximum, not a corpus statistic.
+  Tectonic reruns until its references converge and then stops, saying
+  'stopping at 6 passes' -- seven TeX invocations is the most any
+  document can cost, whatever it contains. This is why the derivation
+  is not a p95: a percentile here would measure the corpus's mix of
+  1-pass and 7-pass documents, which is a property of the corpus.
+
+  margin 1.5: the operator's parameter. It covers the gap between
+  this host and the deployment, and the worker's own S3 download and
+  upload, which sit inside the same clock but outside this measurement.
+
+  reconciler cap: RECONCILER_ACTIVE_STALE_AFTER = 900s.
+  67s clears it: yes (margin 92.6%).
+  A value at or above the cap would have the reconciler re-enqueue jobs
+  that are still running. If a future corpus pushes the derivation past
+  it, the lever is a bound on the INPUT -- the Path-B move OCR made --
+  never a smaller margin.
+
+  This is a recommendation, not a decision.
