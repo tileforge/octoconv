@@ -137,8 +137,22 @@ func TestPurgeJobsDeletesAgedTerminalJobAndCascadesEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PurgeJobs: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("PurgeJobs rows affected = %d, want 1", n)
+	// >= 1, not == 1, and the difference is the point.
+	//
+	// PurgeJobs deletes every aged terminal job in the TABLE, so "exactly one
+	// row was affected" is an assertion about the whole database, not about
+	// this test's job. It failed exactly that way: a second aged job left by
+	// another run made rows affected = 2, and nothing about the behaviour under
+	// test had changed.
+	//
+	// This is the shape phase 62 already fixed once, for the reconciler soak
+	// test, and its lesson is written in that phase's summary: a test asserts
+	// about its own row or it asserts about whoever else is using the database.
+	// What proves the purge did the RIGHT thing is below -- this job is gone
+	// and its events cascaded -- so the count only ever needed to show that the
+	// statement ran.
+	if n < 1 {
+		t.Fatalf("PurgeJobs rows affected = %d, want at least the aged job this test created", n)
 	}
 
 	if _, err := r.Get(ctx, id); !errors.Is(err, ErrNotFound) {
