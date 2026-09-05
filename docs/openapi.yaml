@@ -782,7 +782,17 @@ paths:
                 file:
                   type: string
                   format: binary
-                  description: The file to convert.
+                  description: >-
+                    The file to convert. May be repeated: the FIRST part is the
+                    document and decides the conversion, and any further parts
+                    are attachments stored beside it under their own names --
+                    which is how a LaTeX project's \input and \addbibresource
+                    resolve. Only the tex engine accepts more than one; every
+                    other conversion refuses extra parts with 422 rather than
+                    ignoring them. The engine size limit applies to the TOTAL of
+                    all parts, and an attachment name must be a plain file name
+                    (no path, no leading "-", no control characters) and unique
+                    within the request.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.
@@ -888,7 +898,8 @@ paths:
             format mismatch, unrecognized content, invalid/inapplicable
             opts, unknown or inactive preset, macro-carrying document,
             password-protected or legacy Office file, a declared
-            size/dimension over the configured limit, or a .tex preamble
+            size/dimension over the configured limit, extra `file` parts sent
+            to a conversion that takes a single file, or a .tex preamble
             loading a package this deployment does not accept -- one the
             TeX bundle cannot resolve, or one it CAN resolve that is
             refused on purpose, such as fontspec and the two

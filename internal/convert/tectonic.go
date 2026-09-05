@@ -194,6 +194,36 @@ func ValidateTectonicBundle(path string) error {
 // to prevent, and did not cover.
 var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
+// texSourcesBeside returns inPath plus every other TeX source in its directory.
+//
+// Bounded by construction rather than by a cap: the directory holds exactly the
+// files this job uploaded, the API admitted their names, and their total size
+// is under the same 2 MiB ceiling the timeout is derived from.
+func texSourcesBeside(inPath string) []string {
+	out := []string{inPath}
+	dir := filepath.Dir(inPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".tex", ".sty", ".cls", ".ltx":
+		default:
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if p != inPath {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // tectonicEnv is the ONLY environment the engine gets, and the reason is a
 // measured leak rather than a precaution.
 //
@@ -270,7 +300,17 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	//
 	// Reading the whole file is affordable precisely because the input ceiling
 	// exists: 2 MiB, enforced before this ever runs.
-	if src, err := os.ReadFile(inPath); err == nil {
+	// EVERY .tex IN THE JOB'S DIRECTORY, not only the one being compiled.
+	//
+	// A multi-file project can put its preamble in a second file, so scanning
+	// the main document alone would let \usepackage{fontspec} through an
+	// \input -- and the API's own scan reads only the main part's sniff
+	// window. Two gates that both look at one file out of several is one gate.
+	for _, path := range texSourcesBeside(inPath) {
+		src, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
 		if pkg := TeXDeniedInSource(src); pkg != "" {
 			return fmt.Errorf("tectonic: %w", TeXUnsupportedPackageError(pkg))
 		}

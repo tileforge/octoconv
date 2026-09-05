@@ -97,6 +97,41 @@ listed here: it is the LaTeX format's own dependency closure rather than a
 choice. Measured, it is 354 files and 44.5 MiB before any package above is
 loaded — the declared set adds 2.4 MiB on top of it.
 
+## Sending a project, not just a file
+
+`POST /v1/jobs` takes **several** `file` parts. The first is the document; the
+rest land beside it in the job's directory under their own names, which is how
+`\input{preamble}` and `\addbibresource{refs.bib}` resolve:
+
+```
+POST /v1/jobs
+  file=@paper.tex      <- the document
+  file=@preamble.tex
+  file=@refs.bib
+  target=pdf
+```
+
+Three rules, each with the reason it exists:
+
+- **The size bound applies to the total.** The 271-second timeout is derived
+  from source size, so a project split across five parts costs what its bytes
+  cost. 2 MiB is the sum.
+- **Names must be plain file names.** They become files on disk beside your
+  document, so a name with a path in it, a leading `-`, or control characters is
+  refused rather than repaired — a repaired name is not the name your document
+  `\input`s.
+- **Two parts cannot share a name.** They would overwrite each other, and which
+  one survived would depend on upload order.
+
+Attachments are stored as opaque bytes: no format is claimed for them, and none
+is guessed. The document at ordinal 0 is what decides the conversion. Every
+`.tex`, `.sty`, `.cls` and `.ltx` among them is scanned for unsupported
+packages, so a `\usepackage` hidden in an included preamble is refused the same
+way one in the main file is.
+
+Only this engine takes more than one file. Sending extra parts to any other
+conversion is refused with `422` rather than ignored.
+
 ## What is deliberately unavailable
 
 Absence from a list is not a declared limitation. These are declared.

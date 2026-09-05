@@ -162,6 +162,21 @@ func operationOf(c Converter) string {
 	return OperationConvert
 }
 
+// EngineTakesMultipleInputs reports whether an engine can use more than one
+// uploaded file for a single job.
+//
+// One engine can. A LaTeX project is a .tex plus its .bib and its figures, and
+// the engine resolves them BY NAME from the directory the document sits in --
+// measured, not assumed: under --untrusted, \input{preamble} and
+// \addbibresource{refs.bib} both resolve from sibling files.
+//
+// Every other engine takes one file and produces one file. Listing them by
+// exception rather than by allowlist would mean a new engine silently inherits
+// multi-input behaviour it has no code for, so this names the one that has it.
+func EngineTakesMultipleInputs(engine string) bool {
+	return engine == EngineTectonic
+}
+
 // NormalizeFormat lowercases a format/extension and folds common aliases so the
 // registry has a single canonical key per format.
 func NormalizeFormat(f string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"path"
 	"strconv"
@@ -192,6 +193,26 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	filename := path.Base(header.Filename)
+
+	// EVERY OTHER "file" PART IS AN ATTACHMENT, in the order sent.
+	//
+	// A real LaTeX project is a .tex plus its .bib and its figures, and
+	// job_inputs has carried an ordinal column since Phase 01 with nothing
+	// populating more than one. The FIRST part stays the document: it decides
+	// the source format, the engine and every check below, exactly as it did
+	// when one part was all there was.
+	//
+	// Nothing about attachments is trusted here beyond their bytes. Their names
+	// are admitted by SafeInputFilename (they become files on disk beside the
+	// document), only engines that can use them accept them at all, and their
+	// sizes count against the same per-engine ceiling as the document.
+	var attachments []*multipart.FileHeader
+	if r.MultipartForm != nil {
+		if parts := r.MultipartForm.File[formFieldFile]; len(parts) > 1 {
+			attachments = parts[1:]
+		}
+	}
+
 	// Declared source, from the (attacker-controllable) filename extension.
 	// Still needed below for the D-01 honesty comparison against the
 	// magic-byte-detected format — it is no longer trusted on its own.
@@ -571,8 +592,45 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// their DoS posture. s.maxEngineBytes gates known engines only -- an
 	// engine absent from the map is never rejected here (the map gates, it
 	// does not allowlist).
-	if limit, ok := s.maxEngineBytes[engine]; ok && header.Size > limit {
-		log.Printf("content validation rejected: client_id=%s filename=%q reason=engine_size_limit engine=%s size=%d limit=%d", client.ID, filename, engine, header.Size, limit)
+	// ONLY ENGINES THAT CAN USE ATTACHMENTS ACCEPT THEM. Silently ignoring the
+	// extra parts would upload bytes the client is charged for, into a job that
+	// cannot read them, and return 202 -- a success for work not done.
+	if len(attachments) > 0 && !convert.EngineTakesMultipleInputs(engine) {
+		log.Printf("content validation rejected: client_id=%s filename=%q reason=multiple_inputs engine=%s parts=%d", client.ID, filename, engine, len(attachments)+1)
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
+			"this conversion accepts a single file")
+		return
+	}
+
+	// Names first, because a refusal here costs nothing and an accepted name
+	// becomes a file on disk in the worker.
+	names := map[string]bool{filename: true}
+	totalBytes := header.Size
+	for _, a := range attachments {
+		name, nerr := SafeInputFilename(a.Filename)
+		if nerr != nil {
+			log.Printf("content validation rejected: client_id=%s reason=unsafe_filename filename=%q", client.ID, a.Filename)
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
+				"an attached file has a name this service cannot use: send a plain file name")
+			return
+		}
+		if names[name] {
+			// Two parts with one name would overwrite each other in the job's
+			// directory, and which one survived would depend on upload order.
+			log.Printf("content validation rejected: client_id=%s reason=duplicate_filename filename=%q", client.ID, name)
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
+				"two attached files have the same name")
+			return
+		}
+		names[name] = true
+		totalBytes += a.Size
+	}
+
+	// The ceiling applies to the TOTAL, and it has to: the tex timeout is
+	// derived from source size (64-05), so a project split across five parts
+	// costs what its bytes cost regardless of how they arrived.
+	if limit, ok := s.maxEngineBytes[engine]; ok && totalBytes > limit {
+		log.Printf("content validation rejected: client_id=%s filename=%q reason=engine_size_limit engine=%s size=%d parts=%d limit=%d", client.ID, filename, engine, totalBytes, len(attachments)+1, limit)
 		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge,
 			"file exceeds size limit for this conversion type")
 		return
@@ -891,6 +949,50 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attachments, at ordinals 1..N in the order the client sent them.
+	//
+	// They are stored as opaque bytes: no sniffing, no format claim, no
+	// content-type guess. The document at ordinal 0 is what decides the
+	// conversion, and an attachment is data that document names -- calling a
+	// .bib "text/plain" or a figure "application/pdf" here would be a guess
+	// this service does not need to make. The stored format is empty for the
+	// same reason.
+	//
+	// A failure part-way leaves earlier objects in place for TTL cleanup and
+	// creates no job row, which is the same shape the single-input path
+	// already has for a Create failure.
+	inputs := []jobs.Input{{
+		Ordinal:     0,
+		ObjectKey:   key,
+		Filename:    filename,
+		Format:      detected,
+		SizeBytes:   header.Size,
+		ContentType: contentType,
+	}}
+	for i, a := range attachments {
+		ordinal := i + 1
+		name, _ := SafeInputFilename(a.Filename) // admitted above; re-derived, never re-decided
+		src, oerr := a.Open()
+		if oerr != nil {
+			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "could not read an attached file")
+			return
+		}
+		akey := storage.InputKey(jobID, ordinal, name)
+		uerr := s.storage.Upload(ctx, akey, src, a.Size, "application/octet-stream")
+		src.Close()
+		if uerr != nil {
+			writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to store upload")
+			return
+		}
+		inputs = append(inputs, jobs.Input{
+			Ordinal:     ordinal,
+			ObjectKey:   akey,
+			Filename:    name,
+			SizeBytes:   a.Size,
+			ContentType: "application/octet-stream",
+		})
+	}
+
 	// Pitfall 8 (TOCTOU): a preset can be deactivated or bumped to a new
 	// version in the window between the resolution above and this job-row
 	// insert. Immediately before repo.Create, re-run the SAME cheap
@@ -929,14 +1031,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		Opts:            normalizedOpts,
 		PresetName:      presetNameProv,
 		PresetVersion:   presetVerProv,
-		Input: jobs.Input{
-			Ordinal:     0,
-			ObjectKey:   key,
-			Filename:    filename,
-			Format:      detected,
-			SizeBytes:   header.Size,
-			ContentType: contentType,
-		},
+		Inputs:          inputs,
 	})
 	if err != nil {
 		// Reaching this branch means the request passed PreAdmit and then
