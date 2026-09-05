@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/apaderin/octoconv/internal/jobs"
 )
 
 // A LaTeX project is a .tex plus its .bib and its figures, and until now
@@ -173,7 +175,7 @@ func TestAttachmentCannotTakeTheWorkersOwnName(t *testing.T) {
 // rows and worker downloads, all charged as one small job.
 func TestPartCountIsBounded(t *testing.T) {
 	parts := [][2]string{{"paper.tex", texMain}}
-	for i := 0; i < maxInputParts; i++ {
+	for i := 0; i < jobs.MaxInputParts; i++ {
 		parts = append(parts, [2]string{fmt.Sprintf("f%d.tex", i), "x"})
 	}
 	repo := &fakeRepo{}
@@ -222,7 +224,7 @@ func TestQuotaChargesEveryPart(t *testing.T) {
 func TestTheReservedStemDoesNotSwallowOrdinaryNames(t *testing.T) {
 	for _, name := range []string{"input.tex", "into.tex", "index.tex", "instructions.bib", "outline.tex", "output-notes.tex"} {
 		t.Run(name, func(t *testing.T) {
-			if workerOwnedName(name) {
+			if jobs.WorkerOwnedName(name) {
 				t.Fatalf("%q was treated as a worker-owned name: the stem is what is reserved, and "+
 					"refusing an ordinary file is how a bound stops being one", name)
 			}
@@ -230,7 +232,7 @@ func TestTheReservedStemDoesNotSwallowOrdinaryNames(t *testing.T) {
 	}
 	for _, name := range []string{"in", "in.pdf", "in.latex", "out", "out.pdf"} {
 		t.Run("reserved "+name, func(t *testing.T) {
-			if !workerOwnedName(name) {
+			if !jobs.WorkerOwnedName(name) {
 				t.Fatalf("%q was allowed: the worker or the engine writes it", name)
 			}
 		})

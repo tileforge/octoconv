@@ -1446,16 +1446,33 @@ func (h *Handler) materializeExtraInputs(ctx context.Context, jobID uuid.UUID, d
 	if err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	for _, in := range ins {
 		if in.Ordinal == 0 {
 			continue
 		}
+		// THE SAME RULES THE API APPLIED, not a weaker echo of them.
+		//
+		// This layer exists to stop a row that did not come from the API, and it
+		// only refused path-shaped names -- so an attachment called in.latex
+		// passed here and was downloaded OVER the already-materialised document,
+		// and the engine compiled it (PR #20 review). A defence that enforces a
+		// subset of the rule it defends is a defence that announces which rules
+		// it does not enforce.
 		name := in.Filename
-		if name == "" || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) ||
-			name == "." || name == ".." || filepath.IsAbs(name) {
+		if _, nerr := jobs.SafeInputFilename(name); nerr != nil {
 			return fmt.Errorf("%w: input %d of job %s has an unusable filename %q",
 				asynq.SkipRetry, in.Ordinal, jobID, name)
 		}
+		if jobs.WorkerOwnedName(name) {
+			return fmt.Errorf("%w: input %d of job %s is named %q, which this worker writes itself",
+				asynq.SkipRetry, in.Ordinal, jobID, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("%w: job %s has two inputs named %q", asynq.SkipRetry, jobID, name)
+		}
+		seen[name] = true
+
 		if err := h.downloadTo(ctx, in.ObjectKey, filepath.Join(dir, name)); err != nil {
 			return err
 		}

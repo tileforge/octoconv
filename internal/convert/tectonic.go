@@ -194,32 +194,65 @@ func ValidateTectonicBundle(path string) error {
 // to prevent, and did not cover.
 var ErrTeXBundleUnusable = errors.New("tex: the engine's bundle is not usable")
 
-// jobFilesBeside returns inPath plus every other regular file in its directory.
+// texSourceClosure returns the document plus every file it pulls in AS SOURCE,
+// transitively, resolved against the job's own directory.
 //
-// EVERY file, with no filter on the name: TeX reads what a document points it
-// at, and "\input{preamble}" reads a file named exactly "preamble". Deciding
-// what to scan by extension was a bypass, measured as one.
+// It follows the commands that make TeX read another file as source --
+// \input, \include, \InputIfFileExists, \subfile -- and resolves each name
+// the way TeX does: the name as written, then the name with .tex appended. It
+// deliberately does NOT follow data-reading commands such as
+// \lstinputlisting or \addbibresource: those files are rendered or parsed as
+// data, and their contents are not directives.
 //
-// Bounded by construction rather than by a cap: the directory holds exactly the
-// files this job uploaded, the API admitted their names and their count, and
-// their total size is under the same 2 MiB ceiling the timeout is derived from.
-func jobFilesBeside(inPath string) []string {
-	out := []string{inPath}
+// Bounded by the job itself: at most jobs.MaxInputParts files exist in the
+// directory, and each is visited once.
+func texSourceClosure(inPath string) []string {
 	dir := filepath.Dir(inPath)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		if e.IsDir() {
+	seen := map[string]bool{inPath: true}
+	out := []string{inPath}
+
+	for i := 0; i < len(out); i++ {
+		src, err := os.ReadFile(out[i])
+		if err != nil {
 			continue
 		}
-		p := filepath.Join(dir, e.Name())
-		if p != inPath {
-			out = append(out, p)
+		for _, name := range texIncludedNames(src) {
+			// The name is resolved inside the job's directory only. A name
+			// with a path in it is not followed: the API refuses such
+			// FILENAMES, and following one here would be this walk inventing a
+			// path the uploader could not have created.
+			if name == "" || strings.ContainsAny(name, `/\`) {
+				continue
+			}
+			for _, cand := range []string{name, name + ".tex"} {
+				p := filepath.Join(dir, cand)
+				if seen[p] {
+					continue
+				}
+				if st, serr := os.Stat(p); serr != nil || st.IsDir() {
+					continue
+				}
+				seen[p] = true
+				out = append(out, p)
+			}
 		}
 	}
 	return out
+}
+
+// texIncludeRe matches the source-inclusion commands, with their braced
+// argument. Written against what TeX executes rather than against a list of
+// packages: \input and \include are the primitives every project uses, and
+// \InputIfFileExists and \subfile are the two common wrappers that also read
+// SOURCE rather than data.
+var texIncludeRe = regexp.MustCompile(`\\(?:input|include|InputIfFileExists|subfile)\s*\{([^}]{1,255})\}`)
+
+func texIncludedNames(src []byte) []string {
+	var names []string
+	for _, m := range texIncludeRe.FindAllSubmatch(src, 64) {
+		names = append(names, strings.TrimSpace(string(m[1])))
+	}
+	return names
 }
 
 // tectonicEnv is the ONLY environment the engine gets, and the reason is a
@@ -304,23 +337,22 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// the main document alone would let \usepackage{fontspec} through an
 	// \input -- and the API's own scan reads only the main part's sniff
 	// window. Two gates that both look at one file out of several is one gate.
-	for _, path := range jobFilesBeside(inPath) {
+	// THE FILES THE DOCUMENT ACTUALLY PULLS IN AS SOURCE, not every text file.
+	//
+	// Two failures bound this, one on each side. Deciding by EXTENSION was a
+	// bypass: \input{preamble} reads a file named exactly "preamble", and an
+	// extensionless upload carrying \usepackage{fontspec} was read, loaded and
+	// typeset. Deciding by "looks like text" was the opposite failure: a
+	// project using \lstinputlisting{sample.txt} to render a source listing
+	// VERBATIM would be refused because the listing quotes the directive, and
+	// refusing valid work is the more expensive of the two (PR #20 review).
+	//
+	// So the rule is what TeX itself would do: start at the document and follow
+	// its source-inclusion commands. A file nobody \inputs is data, whatever it
+	// is called and whatever it contains.
+	for _, path := range texSourceClosure(inPath) {
 		src, rerr := os.ReadFile(path)
 		if rerr != nil {
-			continue
-		}
-		// BY WHAT THE FILE IS, NOT WHAT IT IS NAMED. The first version filtered
-		// on .tex/.sty/.cls/.ltx, and TeX does not: "\input{preamble}" reads a
-		// file named exactly "preamble". Measured -- an extensionless upload
-		// carrying \usepackage{fontspec} was read, the package loaded from the
-		// bundle, and a PDF came out, defeating a refusal this deployment
-		// documents (PR #20 review, P1).
-		//
-		// Text-shaped is the test, using the same rule the API's own sniffing
-		// uses: no NUL bytes, valid UTF-8. A figure or a font is skipped, so a
-		// binary that happens to contain the bytes "\usepackage{...}" cannot
-		// refuse a valid job -- which is the failure this check must not have.
-		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
 			continue
 		}
 		if pkg := TeXDeniedInSource(src); pkg != "" {

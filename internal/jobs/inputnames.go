@@ -1,4 +1,4 @@
-package api
+package jobs
 
 import (
 	"errors"
@@ -89,15 +89,15 @@ func SafeInputFilename(name string) (string, error) {
 	return name, nil
 }
 
-// maxInputParts bounds how many files one job may carry, document included.
+// MaxInputParts bounds how many files one job may carry, document included.
 //
 // Size does not bound count: a thousand one-byte attachments pass every byte
 // ceiling while costing a thousand S3 uploads, a thousand job_inputs rows and a
 // thousand worker downloads, all charged as one small job. 32 is past any real
 // project and far below the multipart parser's own 1 000-part default.
-const maxInputParts = 32
+const MaxInputParts = 32
 
-// workerOwnedName reports whether name collides with a file the worker or the
+// WorkerOwnedName reports whether name collides with a file the worker or the
 // engine creates in the job's directory.
 //
 // THE WHOLE "in.*" AND "out.*" NAMESPACE, not two specific names. The worker
@@ -112,7 +112,11 @@ const maxInputParts = 32
 //
 // A client's file must not depend on which intermediates an engine happens to
 // write, so the stem is reserved rather than the extensions enumerated.
-func workerOwnedName(name string) bool {
+// WorkerOwnedName is exported because BOTH gates need it. The API refuses these
+// names before anything is stored; the worker refuses them again before it
+// creates a file, because a job row is data and a row that did not come from
+// the API is exactly when a worker should stop.
+func WorkerOwnedName(name string) bool {
 	stem := name
 	if i := strings.IndexByte(name, '.'); i >= 0 {
 		stem = name[:i]

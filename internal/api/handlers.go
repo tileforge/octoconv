@@ -611,8 +611,8 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	//
 	// 32 is past any real project -- a paper with a bibliography, a preamble
 	// and two dozen figures -- and far below the parser's own ceiling.
-	if len(attachments)+1 > maxInputParts {
-		log.Printf("content validation rejected: client_id=%s filename=%q reason=too_many_parts parts=%d limit=%d", client.ID, filename, len(attachments)+1, maxInputParts)
+	if len(attachments)+1 > jobs.MaxInputParts {
+		log.Printf("content validation rejected: client_id=%s filename=%q reason=too_many_parts parts=%d limit=%d", client.ID, filename, len(attachments)+1, jobs.MaxInputParts)
 		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
 			"too many files in one job")
 		return
@@ -623,14 +623,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	names := map[string]bool{filename: true}
 	totalBytes := header.Size
 	for _, a := range attachments {
-		name, nerr := SafeInputFilename(a.Filename)
+		name, nerr := jobs.SafeInputFilename(a.Filename)
 		if nerr != nil {
 			log.Printf("content validation rejected: client_id=%s reason=unsafe_filename filename=%q", client.ID, a.Filename)
 			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
 				"an attached file has a name this service cannot use: send a plain file name")
 			return
 		}
-		if workerOwnedName(name) {
+		if jobs.WorkerOwnedName(name) {
 			// The worker does not keep the document's name: it downloads
 			// ordinal 0 to in.<source> and writes out.<target> beside it. An
 			// attachment called in.latex therefore OVERWRITES the validated
@@ -1004,7 +1004,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}}
 	for i, a := range attachments {
 		ordinal := i + 1
-		name, _ := SafeInputFilename(a.Filename) // admitted above; re-derived, never re-decided
+		name, _ := jobs.SafeInputFilename(a.Filename) // admitted above; re-derived, never re-decided
 		src, oerr := a.Open()
 		if oerr != nil {
 			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "could not read an attached file")

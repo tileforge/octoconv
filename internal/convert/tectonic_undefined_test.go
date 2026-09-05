@@ -160,73 +160,76 @@ func TestValidateTectonicBundleRefusesWhatStatAccepts(t *testing.T) {
 	})
 }
 
-// TestDeniedPackagesAreFoundWhateverTheFileIsCalled is PR #20's P1.
+// TestDeniedPackagesFollowWhatTheDocumentIncludes covers both failures this
+// scan has had, one on each side.
 //
-// The first version of the job-directory scan filtered on .tex/.sty/.cls/.ltx.
-// TeX does not: "\input{preamble}" reads a file named exactly "preamble".
-// Measured before the fix -- an extensionless upload carrying
-// \usepackage{fontspec} was read, the package loaded from the bundle, and a PDF
-// came out, defeating a refusal this deployment documents.
-func TestDeniedPackagesAreFoundWhateverTheFileIsCalled(t *testing.T) {
-	dir := t.TempDir()
-	main := filepath.Join(dir, "in.latex")
-	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\input{noext}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
-		t.Fatal(err)
+// By EXTENSION was a bypass: \input{preamble} reads a file named exactly
+// "preamble", and an extensionless upload carrying \usepackage{fontspec} was
+// read, loaded from the bundle and typeset.
+//
+// By "looks like text" was the opposite: a project rendering a source listing
+// with \lstinputlisting{sample.txt} would be REFUSED because the listing quotes
+// the directive it is showing. Refusing valid work is the more expensive of the
+// two, and it is the one this project has paid for most.
+//
+// So the walk follows what TeX follows.
+func TestDeniedPackagesFollowWhatTheDocumentIncludes(t *testing.T) {
+	write := func(t *testing.T, dir, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// No extension at all, which is exactly what \input{noext} reads.
-	if err := os.WriteFile(filepath.Join(dir, "noext"), []byte("\\usepackage{fontspec}\n"), 0o644); err != nil {
-		t.Fatal(err)
+	scan := func(main string) string {
+		for _, p := range texSourceClosure(main) {
+			src, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			if pkg := TeXDeniedInSource(src); pkg != "" {
+				return pkg
+			}
+		}
+		return ""
 	}
 
-	found := ""
-	for _, p := range jobFilesBeside(main) {
-		src, err := os.ReadFile(p)
-		if err != nil {
-			continue
+	t.Run("an extensionless file the document inputs is source", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\input{noext}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "noext", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("denied package not found (got %q): a name is not what makes a file TeX source", got)
 		}
-		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
-			continue
-		}
-		if pkg := TeXDeniedInSource(src); pkg != "" {
-			found = pkg
-			break
-		}
-	}
-	if found != "fontspec" {
-		t.Fatalf("the denied package was not found (got %q): a name is not what makes a file TeX "+
-			"source, and deciding by extension is a bypass", found)
-	}
-}
+	})
 
-// TestBinaryAttachmentsAreNotScannedForPackages is the other half, and the one
-// that keeps the fix above from becoming the defect it replaced. A figure that
-// happens to contain the bytes of a \usepackage line must not refuse a valid
-// job -- so the scan is by what the file IS (text-shaped: no NUL, valid UTF-8),
-// which is the same rule the API's own sniffing uses.
-func TestBinaryAttachmentsAreNotScannedForPackages(t *testing.T) {
-	dir := t.TempDir()
-	main := filepath.Join(dir, "in.latex")
-	if err := os.WriteFile(main, []byte("\\documentclass{article}\\begin{document}x\\end{document}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A "figure" whose bytes contain a denied directive AND a NUL, which is
-	// what makes it binary.
-	fig := append([]byte("%PDF-1.4\n\x00 stream \\usepackage{fontspec} endstream\n"), 0x00, 0xff)
-	if err := os.WriteFile(filepath.Join(dir, "fig.pdf"), fig, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	t.Run("a listing the document renders is data", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\usepackage{listings}\n"+
+			"\\begin{document}\\lstinputlisting{sample.txt}\\end{document}\n")
+		// A perfectly ordinary thing to show in a paper about LaTeX.
+		write(t, dir, "sample.txt", "To use system fonts you would write \\usepackage{fontspec}.\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "" {
+			t.Fatalf("a rendered listing was read as a preamble and refused the job over %q: the file "+
+				"is data, and its contents are not directives", got)
+		}
+	})
 
-	for _, p := range jobFilesBeside(main) {
-		src, err := os.ReadFile(p)
-		if err != nil {
-			continue
+	t.Run("transitively, through a chain of inputs", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\input{a}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "a.tex", "\\input{b}\n")
+		write(t, dir, "b.tex", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "fontspec" {
+			t.Fatalf("the chain was not followed (got %q)", got)
 		}
-		if _, textShaped := ValidateSniffPrefix(src, int64(len(src))); !textShaped {
-			continue
+	})
+
+	t.Run("a file nobody includes is not scanned", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "orphan.tex", "\\usepackage{fontspec}\n")
+		if got := scan(filepath.Join(dir, "in.latex")); got != "" {
+			t.Fatalf("an uploaded-but-unused file refused the job over %q: TeX never reads it", got)
 		}
-		if pkg := TeXDeniedInSource(src); pkg != "" {
-			t.Fatalf("a binary attachment was read as TeX source and refused the job over %q: "+
-				"refusing valid work is the failure this check must not have", pkg)
-		}
-	}
+	})
 }
