@@ -1,3 +1,31 @@
+---
+created: 2026-09-04
+area: tectonic
+severity: low
+origin: phase 64 plan 05, while measuring TECTONIC_ENGINE_TIMEOUT
+updated: 2026-09-05
+status: partially addressed -- one recommendation REFUTED by measurement, one shipped
+progress: |
+  "A pass ceiling of our own (tectonic -r N)" does not exist. Measured against
+  the real CLI in the shipped image: -r is "rerun the TeX engine EXACTLY this
+  many times after the first" -- it forces passes rather than bounding them, so
+  a document that converges in two would pay seven (1.076s -> 2.437s for the
+  same output on single-xl). -Zhelp lists no bounding option either in 0.17.0.
+  Adopting it would have made every ordinary job pay the worst case, to gain
+  nothing: the engine already stops at seven on its own.
+
+  What shipped instead is the honest half of that idea --
+  TestEngineStopsAtSevenPasses pins the term the formula rests on. The 7 in
+  ceil(25.76 s/pass x 7 passes x 1.5) is a property of a binary we pin by digest
+  and could raise; if a future tectonic reruns further, the timeout silently
+  describes a smaller bound than it claims, and now something says so.
+
+  STILL OPEN, unchanged: per-job CPU-seconds accounting instead of wall clock,
+  and re-measuring bytes/page against real consumer documents when there are
+  any. The 2 MiB ceiling remains a heuristic and the timeout remains the real
+  backstop, which is the correct order and is documented as such.
+---
+
 # The tex engine's real cost driver is not visible at admission
 
 **Found:** 2026-09-04, phase 64 plan 05, while measuring TECTONIC_ENGINE_TIMEOUT.
