@@ -186,9 +186,11 @@ components:
         error_code:
           type: string
           description: >-
-            Machine-readable failure reason. Known value: "duration_exceeded"
-            (audio jobs whose declared duration exceeds the configured
-            maximum). Only present when status=failed.
+            Machine-readable failure reason, e.g. "duration_exceeded"
+            (audio jobs past the configured maximum) or "output_too_large"
+            (a tex job whose PDF exceeds the output ceiling). The complete
+            list, held equal to the Go constants by a test, is in
+            docs/ERROR-CODES.md. Only present when status=failed.
         error_message:
           type: string
           description: Human-readable failure detail. Only present when status=failed.
@@ -887,8 +889,11 @@ paths:
             opts, unknown or inactive preset, macro-carrying document,
             password-protected or legacy Office file, a declared
             size/dimension over the configured limit, or a .tex preamble
-            loading a package this deployment's TeX bundle cannot resolve
-            (code unsupported_package; the message names the package).
+            loading a package this deployment does not accept -- one the
+            TeX bundle cannot resolve, or one it CAN resolve that is
+            refused on purpose, such as fontspec and the two
+            implementation files it loads (code unsupported_package; the
+            message names the package and says which of the two it is).
             That last check reads a BOUNDED window of the preamble and
             abstains when the preamble runs past it -- such a document is
             accepted here and fails later with the SAME code in the job's
