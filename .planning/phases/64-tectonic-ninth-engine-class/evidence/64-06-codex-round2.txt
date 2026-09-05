@@ -152,3 +152,33 @@ seconds, which looks like a defect and is not one: `go test ./...` was running
 against the SAME Postgres, and internal/reconciler's tests swept the in-flight
 job. Re-run with nothing else touching the database, the verdict was the one
 above. A live proof and the test suite cannot share a database.
+
+THE GOLDEN PATH, RE-RUN AFTER ALL TEN FIXES
+--------------------------------------------
+Round 2 added five new ways to refuse a document (denied package scanned in the
+worker, output ceiling, OOM-killed engine, stricter undefined-reference match,
+whole-control-word scanning). None of them may touch the document this phase
+ships as its proof, so 64-04's paper was rebuilt and run through the same live
+stack:
+
+    POST /v1/jobs  file=paper.tex target=pdf   ->  done
+    27 838 bytes of PDF, read back with pdftotext:
+
+      Equation (1) appears in Section 1, and this is Section 2. A forward
+      reference to Section 3 exercises the second pass.
+      ...
+      Typesetting is discussed by Knuth [1] and Lamport [2].
+      [1] Donald E. Knuth. The TeXbook. Addison-Wesley, 1984.
+      [2] Leslie Lamport. LaTeX: A Document Preparation System. ... 1994.
+
+    occurrences of "??" in the output: 0
+
+This document prints BOTH strings the round-1 and round-2 discussions turned on
+-- biblatex's fall-back-backend warning and tectonic's "stopping at 6 passes" --
+and still passes, which is the whole reason neither is treated as a failure.
+
+And the negative half, through the same stack, to be sure the new
+memory-exhaustion branch does not swallow an ordinary compile error:
+
+    \thisdoesnotexist  ->  failed, engine_error,
+                           "the document could not be typeset", attempts=1
