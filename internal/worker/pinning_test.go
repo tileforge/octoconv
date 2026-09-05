@@ -1168,6 +1168,35 @@ func TestPinnedTectonicFailureVerdicts(t *testing.T) {
 		}
 	})
 
+	// The route round 2's log cap did NOT close, found by running the fixed
+	// build rather than by reading it. Capping what the worker RETAINS does
+	// nothing about what tectonic allocates: a 235-byte \message loop drove the
+	// container 315 -> 1006 MiB, the cgroup killed the child, and the attempt
+	// came back as an ordinary non-zero exit -- which asynq retried, allocating
+	// the same way again. Terminal for the deadline's reason: concurrency is 1,
+	// the cgroup is fixed, and the document is a program.
+	t.Run("an OOM-killed engine is terminal", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("tectonic: %w: killed",
+				convert.ErrTeXEngineKilled))
+		}
+
+		err := tectonicHandle(h, context.Background(), newTask(t, queue.TypeTectonicConvert, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- the retry allocates exactly the same way and the "+
+				"container is the same size", err)
+		}
+		if got := repo.markFailed[0].message; got != "the document exhausted the memory available to the typesetting engine" {
+			t.Fatalf("MarkFailed message = %q -- a document that ran the engine out of memory did not "+
+				"fail to COMPILE, and saying so sends the client hunting for a syntax error", got)
+		}
+	})
+
 	// The other distinction, and the one round 2 of PR #16's review found
 	// missing. process() bounds the WHOLE attempt with a single deadline --
 	// input lookup, download, convert, upload -- because the unique-lock TTL

@@ -35,9 +35,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // TectonicBundleEnv names the environment variable cmd/tectonic-worker reads
@@ -213,6 +215,31 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("tectonic: %w: %v", ErrTeXEngineTimeout, err)
 		}
+		// The engine was KILLED while its context was still alive, which on
+		// this deployment means one thing: the cgroup's OOM killer took it.
+		//
+		// Measured, and it is why capping the log above is only half the fix.
+		// The 8 MiB cap bounds what THIS process retains; tectonic keeps its
+		// own output files in memory, so a \message loop grows the CHILD.
+		// Through the real worker at the chart's 1 GiB:
+		//
+		//	315 MiB -> 586 -> 818 -> 1006 (limit) -> killed -> 51 MiB -> climb
+		//
+		// The container survives (OOMKilled fires for the child, PID 1 lives),
+		// and without this branch the failure is a plain non-zero exit: asynq
+		// retries it, and the second attempt allocates exactly the same way.
+		// That is the loop the review described, reached by a route the log cap
+		// does not close.
+		//
+		// Terminal for the same reason the deadline is: concurrency is 1, the
+		// cgroup is fixed, and the document is a program. A document that
+		// exhausts this container exhausts it again.
+		var exitErr *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exitErr) {
+			if st, ok := exitErr.Sys().(syscall.WaitStatus); ok && st.Signaled() && st.Signal() == syscall.SIGKILL {
+				return fmt.Errorf("tectonic: %w: %s", ErrTeXEngineKilled, tectonicTail(out))
+			}
+		}
 		// The engine's own chatter is the only thing that says WHY. When it
 		// names a .sty the bundle does not have, say WHICH -- that is the one
 		// failure here the client can act on without guessing (TEX-03).
@@ -275,9 +302,9 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	//
 	//	198 bytes of .tex  ->  6 040 163 bytes of PDF in 16 seconds
 	//
-	// measured in the shipped image at 20 000 \newpage iterations, which is
-	// ~1/17th of what fits in the 271-second timeout. Against that, the largest
-	// LEGITIMATE output measured -- the 2 MiB, 745-page document 64-05's
+	// measured in the shipped image, and 19 545 890 bytes in 93 seconds through
+	// the live API -- both well inside the 271-second timeout. Against that, the
+	// largest LEGITIMATE output measured -- the 2 MiB, 745-page document 64-05's
 	// timeout is derived from -- is 1 914 057 bytes.
 	//
 	// Refused here rather than in the worker's upload path so the bytes never
@@ -306,6 +333,11 @@ func (c TectonicConverter) maxOutputBytes() int64 {
 // stalled download or upload -- and those are worth retrying while this is not.
 var ErrTeXEngineTimeout = errors.New("tex: the engine did not finish within the time limit")
 
+// ErrTeXEngineKilled is the engine killed by a signal with time still on the
+// clock -- in this deployment, the container's OOM killer. The document decides
+// how much memory the engine allocates, so this is a property of the document.
+var ErrTeXEngineKilled = errors.New("tex: the engine was killed before it finished")
+
 // ErrTeXOutputTooLarge is a document that typeset successfully into a PDF too
 // big to accept. Terminal: rerunning the same source produces the same size.
 var ErrTeXOutputTooLarge = errors.New("tex: the produced PDF exceeds this deployment's size ceiling")
@@ -316,11 +348,16 @@ var ErrTeXOutputTooLarge = errors.New("tex: the produced PDF exceeds this deploy
 //
 //	largest legitimate output  1 914 057 B  (2 MiB source, 745 pages, 7 passes)
 //	tiny \newpage loop         6 040 163 B  in 16s from 198 B of source
+//	the same shape via the API 19 545 890 B in 93s from 199 B of source
 //
-// The loop sustains ~378 KB/s of PDF, so the 271-second timeout leaves room for
-// roughly 100 MB -- from an input the client is charged 198 bytes for. 32 MiB
-// is 17x the largest real document measured at the input ceiling and caps the
-// abusive case at something a worker's disk and the bucket can hold.
+// The last line is 10x the largest real document, from an upload the client is
+// charged 199 bytes for, in a third of the time available. It is measured
+// rather than extrapolated on purpose: page-loop runs are NOT linear under this
+// container's memory pressure -- a 240 000-iteration variant produced FEWER
+// pages and fewer bytes than a 130 000 one -- so any rate projected out to the
+// timeout would be a number nobody measured. 32 MiB is 17x the largest real
+// document and caps the abusive case at something a worker's disk and the
+// bucket can hold.
 //
 // A ceiling, not a quota: repeated jobs still add up, which is what the
 // per-client quota gate is for.

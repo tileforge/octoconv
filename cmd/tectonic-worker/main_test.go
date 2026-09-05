@@ -47,7 +47,7 @@ func TestBuildTectonicConverterDoesNotSubstituteADefault(t *testing.T) {
 // not plumbed" check for the bound round 2 of PR #16's review found missing.
 // The input ceiling (2 MiB) does not bound the OUTPUT -- 198 bytes of source
 // measured 6 040 163 bytes of PDF -- so this is the only thing standing between
-// a tiny upload and ~100 MB in the bucket.
+// a 199-byte upload and the 19 545 890-byte PDF it measured in 93 seconds.
 func TestBuildTectonicConverterCarriesTheOutputCeiling(t *testing.T) {
 	const ceiling = 7 << 20
 

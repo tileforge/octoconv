@@ -36,7 +36,7 @@ back rather than what goes in.
 |---|---|---|
 | source size | **2 MiB** (2 097 152 bytes) | 745 pages of dense typeset output on the measured corpus — past any real document. A `.tex` above it is refused with `413` before it is stored. |
 | engine timeout | **271s** | `ceil(25.76 s/pass x 7 passes x 1.5)`, measured 2026-09-04 in the worker container at 2 CPU / 1 GiB, on a document 2.2% larger than the size bound. |
-| output size | **32 MiB** | The source bound does not imply an output bound: TeX ships pages out as it goes, so 198 bytes of `.tex` measured 6 040 163 bytes of PDF in 16 seconds, while the largest real document above produces 1 914 057. A PDF past this fails with `output_too_large` instead of being uploaded. |
+| output size | **32 MiB** | The source bound does not imply an output bound: TeX ships pages out as it goes, so 199 bytes of `.tex` measured 19 545 890 bytes of PDF in 93 seconds through this API, while the largest real document above produces 1 914 057. A PDF past this fails with `output_too_large` instead of being uploaded. |
 
 The seven is the **engine's** own limit: tectonic reruns until cross-references
 and citations converge, then stops and says `stopping at 6 passes`. That is why

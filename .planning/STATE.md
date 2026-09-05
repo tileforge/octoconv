@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.14
 milestone_name: Typesetting & Debt
 status: in_progress
-last_updated: "2026-09-04T16:00:00.000Z"
-last_activity: 2026-09-04
+last_updated: "2026-09-05T00:30:00.000Z"
+last_activity: 2026-09-05
 progress:
   total_phases: 3
   completed_phases: 3
@@ -32,6 +32,41 @@ live infrastructure and its timeout is measured, not chosen.
 
 PR #16 is OPEN (https://github.com/paderinandrey/octoconv/pull/16), 30 commits
 off main, mergeable. Nothing from phase 64 is on main yet.
+
+CODEX ROUND 2 ADDRESSED (2026-09-05): 10 findings, 2xP1. All ten confirmed by
+running before any fix, and three of them turned out to be wider than the
+review said.
+
+- P1 unbounded engine log. MEASURED: 235 bytes of .tex -> 323 565 198 bytes of
+  stdout in 30s (10.8 MB/s), so the 271s timeout would hold ~2.9 GB in a 1 GiB
+  container. Capped at 8 MiB of TAIL, which is 5.9x the 1 416 019 bytes the
+  largest ADMISSIBLE document produces. runCommand itself unchanged -- veraPDF's
+  whole XML report is stdout and is parsed.
+- P1 no output ceiling. MEASURED: 199 bytes -> 19 545 890 bytes of PDF in 93s
+  through the live API, against 1 914 057 bytes for the largest real document.
+  TECTONIC_MAX_OUTPUT_BYTES=32 MiB, terminal, own code (output_too_large).
+- P2 deny list enforced in the API only. Independently found and proven live
+  BEFORE the review arrived, and wider: fontspec past the sniff window returned
+  a finished PDF, and fontspec-xetex/fontspec-luatex -- the implementation files
+  fontspec.sty itself loads -- were admitted outright. Worker now scans the
+  whole input; all three names denied; the class test forbids any denied package
+  having an unlisted bundle variant.
+- P2 whole-attempt deadline made infra stalls terminal. process() bounds
+  download+convert+upload with one context (T-03-11), so a stalled MinIO call
+  raised the engine's error. Only convert.ErrTeXEngineTimeout is terminal now.
+- P2 \fi matched as a prefix: \finalfoo closed a conditional and the API refused
+  a document that compiles. Whole-control-word matching; \usepackagefoo{bar} was
+  the same defect on the directive.
+- P2 undefined-references check forgeable by \typeout. Keyed on LaTeX's own
+  warning line; both forms captured from the image as fixtures. This check has
+  now been wrong in both directions inside one PR.
+- P2 E2E CI job bakes without the bundle -- the round-1 fix went into one of the
+  two jobs that bake. Test derives the rule from compose + ci.yml.
+- P2 unpinned upstream builder clone. Pinned; PROVENANCE records that the
+  SHIPPED asset cannot be attributed to a revision, since that tree is gone.
+- P2 TYPESETTING.md still called a timeout transient.
+- P2 pod grace == asynq ShutdownTimeout. Written as a rule over all nine
+  workers, which found probeWorker (phase 63) with the identical slip.
 
 CODEX ROUND 1 ADDRESSED (2026-09-04): 7 findings, 2xP1. Six confirmed by
 running before any fix; one premise refuted with a real gap behind it.

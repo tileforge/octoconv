@@ -523,6 +523,15 @@ func isTectonicTerminal(err error) bool {
 	if errors.Is(err, convert.ErrTeXEngineTimeout) {
 		return true
 	}
+	// Killed by the cgroup's OOM killer with time still on the clock. Same
+	// argument as the deadline: concurrency is 1 and the container is fixed, so
+	// a document that exhausts it exhausts it again -- and MEASURED, because
+	// without this the retry loop is real: a 235-byte \message loop drove the
+	// worker's memory 315 -> 1006 MiB, the child was killed, and the attempt
+	// came back as a plain non-zero exit that asynq retried (PR #16, round 2).
+	if errors.Is(err, convert.ErrTeXEngineKilled) {
+		return true
+	}
 	if errors.Is(err, context.Canceled) {
 		return isTerminal(err)
 	}
@@ -578,6 +587,12 @@ func tectonicFailureCode(err error) (code, message string) {
 		// The one failure here whose remedy is a single package option, so the
 		// message says the option rather than describing the situation.
 		return CodeEngineError, "biblatex requires the option backend=bibtex on this deployment: no biber is available"
+	}
+	if errors.Is(err, convert.ErrTeXEngineKilled) {
+		// Says WHAT ran out, because "could not be typeset" would send the
+		// client looking for a syntax error in a document that has none. The
+		// remedy is a smaller document, not a correction.
+		return CodeEngineError, "the document exhausted the memory available to the typesetting engine"
 	}
 	if errors.Is(err, convert.ErrTeXOutputTooLarge) {
 		// Its own code rather than engine_error: nothing about the document is
