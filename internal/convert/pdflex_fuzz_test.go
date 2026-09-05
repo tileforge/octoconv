@@ -38,9 +38,10 @@ import (
 //	   contract the verifier's whole "structure vs payload" split depends on:
 //	   if it could differ outside a payload, a residue scan would be reading
 //	   bytes the file does not contain;
-//	5. no object header was recorded at an offset inside a payload -- scanPDF's
-//	   own claim ("a resolved payload is jumped over whole"), and the one
-//	   property that decides the residual PR #14 left open.
+//	5. the pass whose ranges were returned recorded no object header inside
+//	   any of them -- scanPDF's own claim ("a resolved payload is jumped over
+//	   whole"), and the one property that decides the residual PR #14 left
+//	   open.
 //
 // A failure here is a REAL finding, not a fuzzer artifact: every property is
 // one the calling code already assumes.
@@ -165,7 +166,28 @@ func FuzzPDFStreamPayloads(f *testing.F) {
 		// payload is jumped over whole, so no byte inside a payload can ever
 		// be read as structure". An object offset that lands inside a returned
 		// range is that claim being false.
-		for num, off := range scanPDF(raw).objects {
+		//
+		// COMPARE LIKE WITH LIKE, which the first version of this property did
+		// not, and the fuzzer caught it on its own corpus within a minute. The
+		// FIRST pass cannot skip a payload whose /Length is defined later, so
+		// it necessarily walks into one and records whatever headers it finds;
+		// pdfStreamPayloads then discards that pass entirely and returns the
+		// SECOND, xref-seeded one. Measured on the input this produced
+		// (testdata/fuzz/.../404c4022b4abe12f, 9 875 bytes):
+		//
+		//	first pass   unresolved=2  streams=1  10 objects inside the ranges
+		//	second pass  unresolved=0  streams=3   0 objects inside the ranges
+		//
+		// That is PR #14's residual, visible: the resynchronisation really does
+		// record decoy headers out of a payload. What defuses it is that the
+		// retry is anchored in the cross-reference table rather than in that
+		// index -- so the pass whose answer is USED records nothing inside a
+		// payload. This asserts exactly that, on the pass that was used.
+		scan := scanPDF(raw)
+		if scan.unresolved != 0 {
+			scan = scanPDFSeeded(raw, pdfXrefObjects(raw))
+		}
+		for num, off := range scan.objects {
 			if insideAny(ranges, off) {
 				t.Fatalf("object %d was recorded at offset %d, which is INSIDE a stream payload: "+
 					"the walk read structure out of bytes it had already accepted as opaque, which "+
