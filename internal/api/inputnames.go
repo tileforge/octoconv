@@ -97,14 +97,27 @@ func SafeInputFilename(name string) (string, error) {
 // project and far below the multipart parser's own 1 000-part default.
 const maxInputParts = 32
 
-// workerOwnedName reports whether name collides with a file the worker creates
-// for itself in the job's directory.
+// workerOwnedName reports whether name collides with a file the worker or the
+// engine creates in the job's directory.
 //
-// The worker renames the document: ordinal 0 becomes in.<source format> and the
-// engine writes out.<target format> beside it. Those two names are therefore
-// not the client's to use -- an attachment called in.latex would overwrite the
-// document that passed every check, and the engine would compile the part that
-// passed none.
+// THE WHOLE "in.*" AND "out.*" NAMESPACE, not two specific names. The worker
+// renames the document to in.<source> and writes out.<target>, and the ENGINE
+// writes its own product and intermediates beside them from the same stem:
+// tectonic turns in.latex into in.pdf. Reserving only the two names the worker
+// picks left in.pdf to be silently overwritten by the engine -- measured, with
+// an attachment of that name replaced by the compiled PDF (PR #20 review):
+//
+//	before   ls -> in.latex in.pdf preamble.tex refs.bib
+//	         head in.pdf -> %PDF-1.5      (the attachment was gone)
+//
+// A client's file must not depend on which intermediates an engine happens to
+// write, so the stem is reserved rather than the extensions enumerated.
 func workerOwnedName(name, sourceFormat, targetFormat string) bool {
-	return name == "in."+sourceFormat || name == "out."+targetFormat
+	_ = sourceFormat
+	_ = targetFormat
+	stem := name
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		stem = name[:i]
+	}
+	return stem == "in" || stem == "out"
 }

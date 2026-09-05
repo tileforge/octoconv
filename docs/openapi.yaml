@@ -780,18 +780,25 @@ paths:
               type: object
               properties:
                 file:
-                  type: array
-                  items:
-                    type: string
-                    format: binary
-                  minItems: 1
-                  maxItems: 32
+                  oneOf:
+                    - type: string
+                      format: binary
+                    - type: array
+                      items:
+                        type: string
+                        format: binary
+                      minItems: 1
+                      maxItems: 32
                   description: >-
-                    The file to convert, repeatable. Declared as an array
-                    because prose about repetition does not change a schema's
-                    cardinality, and a client generated from a single-binary
-                    contract cannot send a project at all. The FIRST part is the
-                    document and decides the conversion, and any further parts
+                    The file to convert, repeatable. "One or many" rather than
+                    an array, deliberately: prose about repetition does not
+                    change a schema's cardinality, so a client generated from a
+                    single-binary declaration could not send a project at all --
+                    but declaring only an array would change every existing
+                    generated single-file signature for a server that still
+                    accepts exactly what it always did. Both branches are true
+                    of this endpoint. The FIRST part is the document and decides
+                    the conversion, and any further parts
                     are attachments stored beside it under their own names --
                     which is how a LaTeX project's \input and \addbibresource
                     resolve. Only the tex engine accepts more than one; every

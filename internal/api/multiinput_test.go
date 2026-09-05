@@ -146,7 +146,11 @@ func TestTheCeilingAppliesToTheTotal(t *testing.T) {
 // overwrote the document that passed every check, and the engine compiled the
 // part that passed none.
 func TestAttachmentCannotTakeTheWorkersOwnName(t *testing.T) {
-	for _, name := range []string{"in.latex", "out.pdf"} {
+	// The whole stem, not two names: the ENGINE writes from the same stem the
+	// worker picks, so tectonic turns in.latex into in.pdf. Reserving only
+	// in.<source> and out.<target> left in.pdf to be overwritten by the
+	// compiled output -- measured, with the attachment replaced by a PDF.
+	for _, name := range []string{"in.latex", "out.pdf", "in.pdf", "in.log", "in.aux", "out.anything"} {
 		t.Run(name, func(t *testing.T) {
 			repo := &fakeRepo{}
 			rec := postParts(t, repo, "pdf",
