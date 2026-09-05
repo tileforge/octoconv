@@ -806,9 +806,14 @@ paths:
                     ignoring them. The engine size limit applies to the TOTAL of
                     all parts, and an attachment name must be a plain file name
                     (no path, no leading "-", no control characters), unique
-                    within the request, and not one the worker reserves for the
-                    job's own files (in.<source>, out.<target>). At most 32
-                    parts per job.
+                    within the request, and must not begin with the reserved
+                    stems: any name whose part before the first dot is exactly
+                    "in" or "out" is refused, because the worker and the engine
+                    write files from those stems (in.<source>, in.pdf, in.log,
+                    out.<target>). "input.tex" and "outline.tex" are fine --
+                    the stem is what is reserved, not the prefix. At most 32
+                    parts per job. A name is refused rather than repaired: a
+                    repaired name is not the name your document \inputs.
                 target:
                   type: string
                   description: Destination format, e.g. "json", "pdf", "webp". Mutually exclusive with preset.

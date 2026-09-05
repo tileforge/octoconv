@@ -623,7 +623,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	names := map[string]bool{filename: true}
 	totalBytes := header.Size
 	for _, a := range attachments {
-		name, nerr := jobs.SafeInputFilename(a.Filename)
+		name, nerr := jobs.SafeInputFilename(rawPartFilename(a))
 		if nerr != nil {
 			log.Printf("content validation rejected: client_id=%s reason=unsafe_filename filename=%q", client.ID, a.Filename)
 			writeError(w, http.StatusBadRequest, errcode.InvalidRequest,
@@ -1004,7 +1004,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}}
 	for i, a := range attachments {
 		ordinal := i + 1
-		name, _ := jobs.SafeInputFilename(a.Filename) // admitted above; re-derived, never re-decided
+		name, _ := jobs.SafeInputFilename(rawPartFilename(a)) // admitted above; re-derived, never re-decided
 		src, oerr := a.Open()
 		if oerr != nil {
 			writeError(w, http.StatusBadRequest, errcode.InvalidRequest, "could not read an attached file")

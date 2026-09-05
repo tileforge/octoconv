@@ -6,6 +6,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strings"
 	"testing"
 
@@ -234,6 +235,57 @@ func TestTheReservedStemDoesNotSwallowOrdinaryNames(t *testing.T) {
 		t.Run("reserved "+name, func(t *testing.T) {
 			if !jobs.WorkerOwnedName(name) {
 				t.Fatalf("%q was allowed: the worker or the engine writes it", name)
+			}
+		})
+	}
+}
+
+// TestPathBearingAttachmentNamesAreRefusedNotRepaired is the promise this
+// package makes, kept where it was previously only documented.
+//
+// Go's mime/multipart applies filepath.Base while parsing, so a client naming
+// "chapters/preamble.tex" reached the rule as "preamble.tex" and was ACCEPTED.
+// The job then failed in the worker for a reason the client could not see from
+// the request: the file was materialised at the root, while their document read
+// \input{chapters/preamble}.
+//
+// The raw name survives in the part's own Content-Disposition, so the rule can
+// see what was actually sent.
+func TestPathBearingAttachmentNamesAreRefusedNotRepaired(t *testing.T) {
+	for _, sent := range []string{"chapters/preamble.tex", "../../etc/evil.bib", "/etc/evil.bib"} {
+		t.Run(sent, func(t *testing.T) {
+			var buf bytes.Buffer
+			w := multipart.NewWriter(&buf)
+			// CreateFormFile escapes the name; write the part by hand so the
+			// filename reaches the server exactly as a client would send it.
+			main, _ := w.CreateFormFile("file", "paper.tex")
+			_, _ = main.Write([]byte(texMain))
+			h := make(textproto.MIMEHeader)
+			h.Set("Content-Disposition", `form-data; name="file"; filename="`+sent+`"`)
+			h.Set("Content-Type", "application/octet-stream")
+			part, err := w.CreatePart(h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = part.Write([]byte("x"))
+			_ = w.WriteField("target", "pdf")
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			repo := &fakeRepo{}
+			srv, _ := newTestServer(repo, &fakeStorage{}, &fakeQueue{})
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &buf))
+			req.Header.Set("Content-Type", w.FormDataContentType())
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 for %q; body=%s", rec.Code, sent, rec.Body.String())
+			}
+			if repo.created != nil {
+				t.Fatalf("a job was created for %q: the parser repaired the name, and the client would "+
+					"learn about it as a conversion failure they cannot explain", sent)
 			}
 		})
 	}

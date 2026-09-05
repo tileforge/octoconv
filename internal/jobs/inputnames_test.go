@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"errors"
-	"mime/multipart"
 	"strings"
 	"testing"
 )
@@ -53,46 +52,6 @@ func TestSafeInputFilename(t *testing.T) {
 			if _, err := SafeInputFilename(tc.name); !errors.Is(err, ErrUnsafeInputFilename) {
 				t.Fatalf("SafeInputFilename(%q) was accepted; it is %s, and these bytes become a file "+
 					"on disk next to the document the engine compiles", tc.name, tc.why)
-			}
-		})
-	}
-}
-
-// TestMultipartAndOurRulesDivideTheWork pins who refuses what, because the
-// division is not what a reader would guess and a future change to either side
-// should have to notice.
-//
-// Go's mime/multipart applies filepath.Base to the parsed filename, so the
-// POSIX traversal this package looks like it refuses never reaches it. What
-// does reach it is everything the standard library leaves alone.
-func TestMultipartAndOurRulesDivideTheWork(t *testing.T) {
-	cases := []struct {
-		sent       string
-		stdlibGave string
-		weRefuse   bool
-	}{
-		{"../../etc/evil.bib", "evil.bib", false},
-		{"/etc/evil.bib", "evil.bib", false},
-		{`sub\evil.bib`, `sub\evil.bib`, true},
-		{"..", "..", true},
-		{"refs.bib", "refs.bib", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.sent, func(t *testing.T) {
-			body := "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + tc.sent +
-				"\"\r\n\r\nx\r\n--B--\r\n"
-			form, err := multipart.NewReader(strings.NewReader(body), "B").ReadForm(1 << 20)
-			if err != nil {
-				t.Fatalf("parse: %v", err)
-			}
-			got := form.File["file"][0].Filename
-			if got != tc.stdlibGave {
-				t.Fatalf("mime/multipart gave %q for %q, this file's comments say %q -- the division of "+
-					"labour changed and the comments are now wrong", got, tc.sent, tc.stdlibGave)
-			}
-			_, serr := SafeInputFilename(got)
-			if refused := serr != nil; refused != tc.weRefuse {
-				t.Fatalf("SafeInputFilename(%q) refused = %v, want %v", got, refused, tc.weRefuse)
 			}
 		})
 	}

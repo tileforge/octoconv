@@ -49,22 +49,20 @@ func SafeInputFilename(name string) (string, error) {
 	if name == "" {
 		return "", ErrUnsafeInputFilename
 	}
-	// WHAT THIS ACTUALLY CATCHES, measured rather than assumed. Go's
-	// mime/multipart already applies filepath.Base to the filename it parses,
-	// so over HTTP:
+	// WHAT THIS SEES, and why the caller has to work for it. Go's
+	// mime/multipart applies filepath.Base while parsing, so
+	// FileHeader.Filename is already repaired: "chapters/preamble.tex" arrives
+	// as "preamble.tex".
 	//
-	//	"../../etc/evil.bib"  arrives as "evil.bib"   -- never reaches here
-	//	"/etc/evil.bib"       arrives as "evil.bib"   -- never reaches here
-	//	"sub\evil.bib"        arrives unchanged        -- refused here
-	//	".."                  arrives unchanged        -- refused here
+	// Feeding this function that value made the promise below false in the way
+	// that matters -- a request naming "chapters/preamble.tex" was ACCEPTED,
+	// and the worker then materialised "preamble.tex" at the root while the
+	// document read \input{chapters/preamble} (PR #20 review). So api's caller
+	// reads the raw filename out of the part's own Content-Disposition, which
+	// the parser does not rewrite, and passes THAT here.
 	//
-	// So the POSIX traversal a reader would expect this to refuse is already
-	// gone, and a client's "dir/file.tex" DOES silently become "file.tex"
-	// before this function sees it. The rules below are still worth having --
-	// they catch what the standard library leaves (a Windows separator a later
-	// join could read, "..", flag-shaped names, control characters) and they
-	// hold for any caller that is not the HTTP parser -- but claiming they stop
-	// traversal would be crediting this code with the runtime's work.
+	// The rules below are therefore load-bearing rather than defence in depth:
+	// they see what the client sent.
 	if strings.ContainsAny(name, `/\`) {
 		return "", ErrUnsafeInputFilename
 	}

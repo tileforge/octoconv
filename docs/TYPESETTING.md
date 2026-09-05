@@ -119,7 +119,14 @@ Three rules, each with the reason it exists:
 - **Names must be plain file names.** They become files on disk beside your
   document, so a name with a path in it, a leading `-`, or control characters is
   refused rather than repaired — a repaired name is not the name your document
-  `\input`s.
+  `\input`s. The name is checked as *you sent it*, not as the HTTP parser
+  rewrote it: `chapters/preamble.tex` is refused, rather than accepted and then
+  quietly delivered as `preamble.tex` to a document asking for the other path.
+- **Two stems are reserved: `in` and `out`.** The worker renames your document
+  to `in.<format>` and the engine writes `in.pdf`, `in.log` and `out.<format>`
+  beside it, so any name whose part before the first dot is exactly `in` or
+  `out` is refused. `input.tex` and `outline.tex` are fine — it is the stem, not
+  the prefix.
 - **Two parts cannot share a name.** They would overwrite each other, and which
   one survived would depend on upload order.
 
