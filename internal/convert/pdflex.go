@@ -643,15 +643,95 @@ func pdfTrailerPrev(b []byte, i int) (int, bool) {
 	if !bytes.HasPrefix(b[i:], []byte("<<")) {
 		return 0, false
 	}
-	end := bytes.Index(b[i:], []byte(">>"))
-	if end < 0 {
-		return 0, false
+
+	// Walked with the same primitives as the main scan, for the same reason.
+	// This function used to take the first ">>" and then the first "/Prev"
+	// substring inside it, and every way that is wrong was reproduced by
+	// running it:
+	//
+	//	<< /Note (/Prev 999) /Prev 12345 >>       followed 999
+	//	<< /Sub << /Prev 999 >> /Prev 12345 >>    followed 999
+	//	<< /PrevPage 999 /Prev 12345 >>           found nothing
+	//	<< /Note (>>) /Prev 12345 >>              found nothing
+	//	<< /Prev 5 0 R >>                         read the object number as an offset
+	//
+	// The first two follow a decoy; the next two abandon a real chain. Neither
+	// is a security hole -- pdfXrefObjects verifies that every offset carries
+	// its own object header, so a wrong chain yields FEWER objects, not wrong
+	// ones -- but "fewer" means forward /Length references go unresolved and
+	// VerifySanitized fails closed on a VALID file. That is this project's
+	// most expensive defect class, not its cheapest.
+	depth, arrayDepth := 0, 0
+	await := false
+	for i < len(b) {
+		c := b[i]
+		switch {
+		case isPDFSpace(c) || c == '%':
+			i = pdfSkipTrivia(b, i)
+			continue
+		case c == '(':
+			i = pdfSkipLiteralString(b, i)
+			await = false
+			continue
+		case c == '<' && i+1 < len(b) && b[i+1] == '<':
+			depth++
+			i += 2
+			await = false
+			continue
+		case c == '<':
+			i = pdfSkipHexString(b, i)
+			await = false
+			continue
+		case c == '>' && i+1 < len(b) && b[i+1] == '>':
+			depth--
+			i += 2
+			await = false
+			if depth <= 0 {
+				// The trailer dictionary closed without a /Prev of its own.
+				return 0, false
+			}
+			continue
+		case c == '[':
+			arrayDepth++
+			i++
+			await = false
+			continue
+		case c == ']':
+			if arrayDepth > 0 {
+				arrayDepth--
+			}
+			i++
+			await = false
+			continue
+		case c == '/':
+			name, next := pdfReadName(b, i)
+			i = next
+			// A KEY of the trailer itself: depth 1, outside any array. The
+			// name comes from pdfReadName, so "/P#72ev" is the same key and
+			// "/PrevPage" is not.
+			await = depth == 1 && arrayDepth == 0 && name == "Prev"
+			continue
+		}
+
+		if await {
+			v, next, ok := pdfReadIntAt(b, i)
+			if !ok {
+				i = next
+				await = false
+				continue
+			}
+			// "/Prev 5 0 R" is not a byte offset: the spec requires a direct
+			// integer, and reading the object NUMBER as an offset is how 5
+			// became a position in the file. pdfLooksLikeRef asks whether the
+			// tokens AFTER an integer are "G R", so it is called past the one
+			// just read -- calling it at the integer itself tests the wrong
+			// pair and silently never fires.
+			if pdfLooksLikeRef(b, next) {
+				return 0, false
+			}
+			return v, true
+		}
+		i++
 	}
-	dict := b[i : i+end]
-	at := bytes.Index(dict, []byte("/Prev"))
-	if at < 0 {
-		return 0, false
-	}
-	v, _, ok := pdfReadIntAt(dict, at+len("/Prev"))
-	return v, ok
+	return 0, false
 }
