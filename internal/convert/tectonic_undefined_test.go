@@ -282,7 +282,10 @@ func TestIncludedNamesAreParsedNotMatched(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := texIncludedNames([]byte(tc.src))
+			var got []string
+			for _, inc := range texIncludedNames([]byte(tc.src)) {
+				got = append(got, inc.name)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("texIncludedNames = %v, want %v\n  %s", got, tc.want, tc.why)
 			}
@@ -372,6 +375,75 @@ func TestClosureFollowsPackagesAndIsBoundedByFiles(t *testing.T) {
 		// ours, and the walk must not invent a file for it.
 		if got := texSourceClosure(filepath.Join(dir, "in.latex")); len(got) != 1 {
 			t.Fatalf("closure = %v, want just the document: a bundle package is not an uploaded file", got)
+		}
+	})
+}
+
+// TestEachDirectiveResolvesOnlyItsOwnExtensions is the third time this walk has
+// been wrong in the over-refusal direction, and the reason it keeps happening
+// is worth stating: every fix here closes a bypass, and closing a bypass means
+// looking at MORE files, and looking at more files is how a data file gets read
+// as a preamble.
+//
+// \usepackage{listings} loads listings.sty. It never loads listings.tex -- so
+// an attached data listing named after a bundle package must not be pulled into
+// the scan, however text-shaped it is and whatever it quotes.
+func TestEachDirectiveResolvesOnlyItsOwnExtensions(t *testing.T) {
+	write := func(t *testing.T, dir, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("a data file named after a bundle package is not source", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\usepackage{listings}\n"+
+			"\\begin{document}\\lstinputlisting{listings.tex}\\end{document}\n")
+		write(t, dir, "listings.tex", "To use system fonts you would write \\usepackage{fontspec}.\n")
+
+		for _, p := range texSourceClosure(filepath.Join(dir, "in.latex")) {
+			if filepath.Base(p) == "listings.tex" {
+				t.Fatal("listings.tex was pulled into the closure by \\usepackage{listings}: that " +
+					"directive loads listings.STY, and the .tex is a listing the paper renders")
+			}
+		}
+	})
+
+	t.Run("but an uploaded .sty for that name still is", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\usepackage{custom}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "custom.sty", "\\RequirePackage{fontspec}\n")
+		found := false
+		for _, p := range texSourceClosure(filepath.Join(dir, "in.latex")) {
+			if filepath.Base(p) == "custom.sty" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("custom.sty was not followed: \\usepackage reads an uploaded .sty before the bundle")
+		}
+	})
+
+	t.Run("and \\input still tries the bare name and .tex", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "in.latex", "\\documentclass{article}\n\\input{noext}\n\\input{withext}\n\\begin{document}x\\end{document}\n")
+		write(t, dir, "noext", "x\n")
+		write(t, dir, "withext.tex", "y\n")
+		var names []string
+		for _, p := range texSourceClosure(filepath.Join(dir, "in.latex")) {
+			names = append(names, filepath.Base(p))
+		}
+		for _, want := range []string{"noext", "withext.tex"} {
+			found := false
+			for _, n := range names {
+				if n == want {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s missing from %v", want, names)
+			}
 		}
 	})
 }

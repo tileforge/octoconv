@@ -225,7 +225,8 @@ func texSourceClosure(inPath string) []string {
 		if err != nil {
 			continue
 		}
-		for _, name := range texIncludedNames(src) {
+		for _, inc := range texIncludedNames(src) {
+			name := inc.name
 			// The name is resolved inside the job's directory only. A name
 			// with a path in it is not followed: the API refuses such
 			// FILENAMES, and following one here would be this walk inventing a
@@ -233,14 +234,15 @@ func texSourceClosure(inPath string) []string {
 			if name == "" || strings.ContainsAny(name, `/\`) {
 				continue
 			}
-			// Every extension TeX would try for this name. .sty and .cls are
-			// here because \usepackage{custom} and \documentclass{custom} read
-			// an UPLOADED custom.sty or custom.cls as source -- a chain of
-			// main -> preamble -> custom.sty was how a denied package reached
-			// the engine while the closure watched only \input (same review).
-			// A name that resolves to nothing in this directory is a bundle
-			// package, and the bundle is ours.
-			for _, cand := range []string{name, name + ".tex", name + ".sty", name + ".cls", name + ".ltx"} {
+			// THE EXTENSIONS THAT DIRECTIVE WOULD TRY, not every extension.
+			//
+			// \usepackage{listings} loads listings.sty and never listings.tex,
+			// so resolving every extension for every directive pulled an
+			// attached DATA file named after a bundle package into the scan --
+			// and refused a valid job over the directive that listing was
+			// quoting. Measured; it is the same over-refusal this walk has now
+			// produced three times, each time while closing a bypass.
+			for _, cand := range inc.candidates() {
 				p := filepath.Join(dir, cand)
 				if seen[p] {
 					continue
@@ -283,9 +285,33 @@ const maxClosureFiles = 64
 // file verbatim and \addbibresource parses one as bibliography data. Neither
 // makes its target TeX source, and treating them as if they did refused a paper
 // for quoting the directive it was explaining.
-func texIncludedNames(src []byte) []string {
+// texInclude is a name and the directive that named it. The directive decides
+// which files TeX would actually try, and treating them alike was a defect in
+// both directions: too few extensions missed an uploaded custom.sty, too many
+// pulled in a data file named after a bundle package.
+type texInclude struct {
+	name string
+	kind string
+}
+
+// candidates returns the filenames TeX would try for this directive, in its
+// own order. Nothing else in the directory is a candidate.
+func (i texInclude) candidates() []string {
+	switch i.kind {
+	case "usepackage", "RequirePackage":
+		return []string{i.name + ".sty"}
+	case "documentclass", "LoadClass":
+		return []string{i.name + ".cls"}
+	default:
+		// \input and friends: the name as written, then with .tex, which is
+		// what the primitive itself does.
+		return []string{i.name, i.name + ".tex", i.name + ".ltx"}
+	}
+}
+
+func texIncludedNames(src []byte) []texInclude {
 	text := string(src)
-	var names []string
+	var names []texInclude
 
 	for i := 0; i < len(text); i++ {
 		switch text[i] {
@@ -335,7 +361,7 @@ func texIncludedNames(src []byte) []string {
 				// resolve to nothing and quietly skip them.
 				for _, one := range strings.Split(rest[k+1:k+end], ",") {
 					if one = strings.TrimSpace(one); one != "" {
-						names = append(names, one)
+						names = append(names, texInclude{name: one, kind: word})
 					}
 				}
 				i += wordLen + k + end
@@ -351,7 +377,7 @@ func texIncludedNames(src []byte) []string {
 			end++
 		}
 		if end > k {
-			names = append(names, rest[k:end])
+			names = append(names, texInclude{name: rest[k:end], kind: word})
 			i += wordLen + end - 1
 			continue
 		}
