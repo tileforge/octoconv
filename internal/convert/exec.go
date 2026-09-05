@@ -94,8 +94,35 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 // final pass. Keeping the head would drop exactly the bytes that name the
 // cause.
 func runCommandLimited(ctx context.Context, limit int, name string, args ...string) ([]byte, error) {
+	return runCommandLimitedEnv(ctx, limit, nil, name, args...)
+}
+
+// runCommandLimitedEnv is runCommandLimited with an explicit environment for
+// the child. A nil env inherits this process's, which is the default and what
+// every engine but one uses.
+//
+// # WHY AN ENGINE WOULD WANT ITS OWN ENVIRONMENT
+//
+// A conversion engine that can READ FILES can read /proc/self/environ, and this
+// process's environment carries DATABASE_URL, S3_ACCESS_KEY, S3_SECRET_KEY,
+// API_KEY_SALT and WEBHOOK_SIGNING_SECRET. Proven on the shipped tectonic image
+// rather than reasoned about: a .tex containing
+//
+//	\newread\f \openin\f=/etc/hostname \read\f to \line
+//
+// typeset the container's hostname INTO THE RETURNED PDF, and the same read
+// against /proc/self/environ returned the process environment. --untrusted
+// stops \write18; it does not confine reads to the job's directory.
+//
+// Scrubbing the child's environment does not confine the reads -- it removes
+// what they are worth. See TectonicConverter.Convert for the allowlist and for
+// what remains readable.
+func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name string, args ...string) ([]byte, error) {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if env != nil {
+		cmd.Env = env
+	}
 
 	stdout := &tailBuffer{max: limit}
 	stderr := &tailBuffer{max: limit}

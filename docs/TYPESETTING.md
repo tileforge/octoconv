@@ -23,6 +23,18 @@ Specifically, it:
 - **does not execute shell commands from document content.** `\write18` and
   `\input{|command}` are refused, and refused structurally — `--untrusted` makes
   them un-enableable regardless of any other flag on the same command line.
+- **runs with no credentials in reach.** `--untrusted` stops shell commands; it
+  does *not* stop file reads, and a document can `\openin` an absolute path.
+  Measured on the shipped image: a `.tex` reading `/etc/hostname` typeset the
+  container's hostname into the PDF it got back. So the engine is given an
+  environment of `PATH`, `HOME` and `TECTONIC_CACHE_DIR` and nothing else — the
+  service's database URL, S3 keys and signing secrets are not in the process a
+  document can read from.
+
+  **What that leaves, stated plainly:** a document can still read files inside
+  its own container — `/etc/passwd`, the TeX bundle, the engine binary. None of
+  them are secret, and there is nothing else in the image. Confining the reads
+  themselves (a mount namespace per job) is open work, not a claim made here.
 - **does not ship `biber`.** See "What is deliberately unavailable".
 - **does not accept user-supplied fonts.** The bundle's fonts are whatever the
   declared packages need.
