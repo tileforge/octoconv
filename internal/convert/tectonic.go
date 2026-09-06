@@ -285,6 +285,44 @@ func ValidateTectonicBundle(path string) error {
 	return nil
 }
 
+// TectonicCacheEnv names the directory holding the pre-compiled TeX format.
+const TectonicCacheEnv = "TECTONIC_CACHE_DIR"
+
+// ValidateTectonicCacheDir refuses a deployment whose engine would have nowhere
+// to find its compiled format.
+//
+// It only matters once the engine is SANDBOXED, and it is entirely a
+// consequence of that: unsandboxed, tectonic that finds no cache directory
+// falls back to $HOME/.cache and compiles the format itself, slowly but
+// successfully. Under Landlock $HOME is not granted, so the same fallback ends
+// as
+//
+//	error: cannot write format file texput.fmt
+//	caused by: Permission denied (os error 13)
+//
+// on EVERY job -- measured in the shipped image with the variable unset. That
+// message names the sandbox and not the missing variable, so an operator would
+// go looking in the wrong place. Checked at startup for the reason the bundle
+// is: a worker that cannot typeset anything should say so once, rather than
+// consume a queue and fail every task as though each document were at fault.
+func ValidateTectonicCacheDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("%w: no format cache configured (%s unset). The image sets this; "+
+			"without it a sandboxed engine has nowhere to write its format and every job fails "+
+			"with a permission error that names the sandbox rather than this variable",
+			ErrTeXBundleUnusable, TectonicCacheEnv)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q cannot be read: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: format cache %q is not a directory (mode %s)",
+			ErrTeXBundleUnusable, path, info.Mode())
+	}
+	return nil
+}
+
 // ErrTeXBundleUnusable is a DEPLOYMENT fault: the engine has no bundle it can
 // load. Carried as a sentinel rather than recognised by a substring, which is
 // what the worker used to do -- it looked for the env var's NAME in the error

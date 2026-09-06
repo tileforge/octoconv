@@ -181,6 +181,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("tectonic sandbox: %v", err)
 	}
+	// Only meaningful when the sandbox is on -- see ValidateTectonicCacheDir.
+	// Checked AFTER the helper is resolved so that a deployment which
+	// deliberately disabled the sandbox is not refused for a variable that
+	// does not matter to it.
+	if len(sandboxHelper) > 0 {
+		if err := convert.ValidateTectonicCacheDir(os.Getenv(convert.TectonicCacheEnv)); err != nil {
+			log.Fatalf("tectonic format cache: %v", err)
+		}
+	}
+
 	if len(sandboxHelper) == 0 {
 		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can")
 	} else {

@@ -211,3 +211,41 @@ func TestSandboxSetupFailureKeepsTheReason(t *testing.T) {
 			"want it to contain: %q\ngot: %v", reason, err)
 	}
 }
+
+// TestCacheDirValidationCatchesWhatTheSandboxMadeFatal covers a failure mode
+// this sandbox INTRODUCED.
+//
+// Unsandboxed, a tectonic that finds no TECTONIC_CACHE_DIR falls back to
+// $HOME/.cache and compiles its own format -- slow, but it works. Under
+// Landlock $HOME is not granted, so the same fallback ends as "cannot write
+// format file texput.fmt: Permission denied" on every job, measured in the
+// shipped image. The message names the sandbox and not the unset variable,
+// which is why this is a startup check and not a comment.
+func TestCacheDirValidationCatchesWhatTheSandboxMadeFatal(t *testing.T) {
+	if err := ValidateTectonicCacheDir(""); err == nil {
+		t.Fatal("an unset cache directory was accepted; every job would fail with a permission " +
+			"error that points at the sandbox rather than at the missing variable")
+	}
+	if err := ValidateTectonicCacheDir("/nonexistent/cache/dir"); err == nil {
+		t.Fatal("a cache directory that does not exist was accepted")
+	}
+
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTectonicCacheDir(file); err == nil {
+		t.Fatal("a regular file was accepted as the format cache")
+	}
+
+	if err := ValidateTectonicCacheDir(t.TempDir()); err != nil {
+		t.Fatalf("a real directory was refused: %v", err)
+	}
+
+	// Classified as a deployment fault, so the client is not told their
+	// document is at fault -- the same sentinel the bundle checks use.
+	if !errors.Is(ValidateTectonicCacheDir(""), ErrTeXBundleUnusable) {
+		t.Fatal("the cache fault is not classified as a deployment fault, so it would reach the " +
+			"client as \"the document could not be typeset\"")
+	}
+}
