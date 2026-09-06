@@ -198,6 +198,28 @@ that is the startup preflight rather than any measurement here: a node whose
 policy denies the ruleset refuses to start with a message naming seccomp,
 instead of consuming the queue and failing every job.
 
+### And whether the CHART can trip any of the new refusals
+
+Five startup refusals were added by this work, and every one of them reads
+configuration. So the question is not only "does the sandbox work" but "can the
+deployment as written fail to boot because of it". Rendered and inspected
+rather than assumed:
+
+- the tectonic-worker Deployment has **no volumeMounts at all**, so nothing is
+  mounted over /var/cache/tectonic -- the image's pre-warmed format survives,
+  and the empty-cache refusal cannot fire;
+- it has **no securityContext**, so nothing removes a capability or imposes a
+  profile the ruleset would need;
+- the ConfigMap sets TECTONIC_ENGINE_TIMEOUT, MAX_OUTPUT_BYTES, MAX_RETRY and
+  WORKER_CONCURRENCY, and deliberately not TECTONIC_CACHE_DIR, TMPDIR or HOME.
+  Those come from the image: TECTONIC_CACHE_DIR=/var/cache/tectonic,
+  HOME=/nonexistent, TMPDIR unset -- none of which any refusal matches.
+
+What has NOT been done: a full chart deploy of the whole stack. It would
+re-prove under Kubernetes what docker-compose already showed, at the cost of
+building and loading every image, and the three checks above answer the
+question it would answer.
+
 ### What is deliberately NOT closed by this
 
 The engine can still read what is granted: the bundle, the format cache and the
