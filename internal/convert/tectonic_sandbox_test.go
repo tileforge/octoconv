@@ -24,8 +24,12 @@ func TestSandboxSpecGrantsTheJobDirectoryAndNothingElseWritable(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle)
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine)
 
 	var rw []string
 	for _, tok := range spec {
@@ -68,8 +72,12 @@ func TestSandboxSpecDoesNotGrantEtc(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
 		path := tok[3:]
 		if path == "/etc" || path == "/" || path == "/proc" || path == "/run" {
 			t.Fatalf("spec grants %q. Landlock rules are PATH BENEATH: granting %q reaches every "+
@@ -89,8 +97,12 @@ func TestSandboxSpecSkipsPathsThatDoNotExist(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
 		if _, err := os.Stat(tok[3:]); err != nil {
 			t.Fatalf("spec names %q, which does not exist here: %v.\n"+
 				"sandbox.Apply refuses a rule it cannot open, so this spec would fail EVERY job "+
@@ -108,8 +120,12 @@ func TestSandboxSpecCarriesTheBundleReadOnly(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
-	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle)
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine)
 	if !slices.Contains(spec, "ro:"+bundle) {
 		t.Fatalf("bundle %q is not readable in the spec; the engine would find no packages at all.\nspec = %v", bundle, spec)
 	}
@@ -143,9 +159,13 @@ func TestSandboxSpecDoesNotGrantTheSharedTempDir(t *testing.T) {
 	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	shared := strings.TrimSuffix(os.TempDir(), "/")
-	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
 		if strings.TrimSuffix(tok[3:], "/") == shared {
 			t.Fatalf("spec grants %q, the SHARED temporary directory. Landlock grants are recursive: "+
 				"this reaches every other job's inputs and outputs, and lets a document write files "+
@@ -238,8 +258,29 @@ func TestCacheDirValidationCatchesWhatTheSandboxMadeFatal(t *testing.T) {
 		t.Fatal("a regular file was accepted as the format cache")
 	}
 
-	if err := ValidateTectonicCacheDir(t.TempDir()); err != nil {
-		t.Fatalf("a real directory was refused: %v", err)
+	// EXISTING IS NOT ENOUGH. An empty directory used to be accepted here, and
+	// codex round 2 named the case: an empty volume mounted over the image's
+	// pre-warmed cache. It passes every structural check and then fails every
+	// job, because the sandbox grants it read-only and the engine cannot
+	// compile the format it is missing. Before confinement that same empty
+	// cache populated itself on the first run.
+	if err := ValidateTectonicCacheDir(t.TempDir()); err == nil {
+		t.Fatal("an EMPTY cache directory was accepted. Read-only, the engine cannot populate it, " +
+			"so every job fails with a permission error -- and an empty mounted volume is the " +
+			"ordinary way to reach this")
+	}
+
+	// ...and a directory that actually holds a format is accepted, including
+	// one nested the way tectonic lays its cache out.
+	warm := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(warm, "formats", "x86"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(warm, "formats", "x86", "latex.fmt.gz"), []byte("f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTectonicCacheDir(warm); err != nil {
+		t.Fatalf("a cache holding a compiled format was refused: %v", err)
 	}
 
 	// Classified as a deployment fault, so the client is not told their
@@ -247,5 +288,40 @@ func TestCacheDirValidationCatchesWhatTheSandboxMadeFatal(t *testing.T) {
 	if !errors.Is(ValidateTectonicCacheDir(""), ErrTeXBundleUnusable) {
 		t.Fatal("the cache fault is not classified as a deployment fault, so it would reach the " +
 			"client as \"the document could not be typeset\"")
+	}
+}
+
+// TestSandboxSpecGrantsTheResolvedEngine covers an installation this would
+// otherwise break.
+//
+// tectonicSystemReadOnly names /usr, /lib and /bin, which is where this image
+// puts tectonic -- but exec.LookPath answers from PATH, and an image that
+// installs it in /opt or a Nix store resolves outside all three. The helper
+// would apply the ruleset and then take EACCES from execve, so a deployment
+// that worked before confinement would stop working, with an error that says
+// nothing about PATH (codex round 2).
+func TestSandboxSpecGrantsTheResolvedEngine(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately outside every entry in tectonicSystemReadOnly.
+	elsewhere := t.TempDir()
+	engine := filepath.Join(elsewhere, "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine)
+	if !slices.Contains(spec, "ro:"+engine) {
+		t.Fatalf("the resolved engine %q is not in the ruleset, so execve would return EACCES "+
+			"after the sandbox is applied -- and the failure would name the sandbox, not PATH.\nspec = %v",
+			engine, spec)
+	}
+	if slices.Contains(spec, "rw:"+engine) {
+		t.Fatalf("the engine binary is WRITABLE: a document could rewrite the program that typesets "+
+			"the next one.\nspec = %v", spec)
 	}
 }

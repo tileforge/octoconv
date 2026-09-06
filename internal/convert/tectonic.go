@@ -34,6 +34,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,7 +142,7 @@ var tectonicSystemReadOnly = []string{
 // It is a pure function of the paths so a test can assert on the whole set
 // without a kernel: the argv IS the sandbox, the same way tectonicArgs is the
 // hardening.
-func tectonicSandboxSpec(inPath, outDir, bundlePath string) []string {
+func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string {
 	// The job directory, and only the job directory, is writable. inPath's
 	// directory and outDir are the same one today; both are named because the
 	// worker is free to stop doing that and a sandbox that assumed otherwise
@@ -153,7 +154,14 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath string) []string {
 	// tectonicEnv.
 	rw := dedupeExisting([]string{filepath.Dir(inPath), outDir, "/dev/null"})
 
-	ro := []string{bundlePath}
+	// The engine binary ITSELF, not only the directories it usually lives in.
+	//
+	// tectonicSystemReadOnly covers /usr, /lib and /bin, which is where this
+	// image puts it -- but exec.LookPath answers from PATH, and an image that
+	// installs tectonic in /opt or a Nix store would resolve outside all three.
+	// The helper would then apply the ruleset and take EACCES from execve,
+	// breaking an installation that worked before confinement (codex round 2).
+	ro := []string{bundlePath, enginePath}
 	if cache := os.Getenv("TECTONIC_CACHE_DIR"); cache != "" {
 		// Read-only on purpose. The image pre-warms the compiled format at
 		// build time (Dockerfile.tectonic-worker), so nothing at run time
@@ -320,7 +328,49 @@ func ValidateTectonicCacheDir(path string) error {
 		return fmt.Errorf("%w: format cache %q is not a directory (mode %s)",
 			ErrTeXBundleUnusable, path, info.Mode())
 	}
+
+	// EXISTING IS NOT ENOUGH -- it has to already HOLD a compiled format.
+	//
+	// An empty directory passes every check above and then fails every job,
+	// and it is not a hypothetical: mounting an empty volume over the image's
+	// pre-warmed cache is an ordinary thing to do, and it USED to work,
+	// because a writable empty cache populates itself on the first run. The
+	// sandbox grants this directory read-only, so it cannot (codex round 2).
+	//
+	// This is the same check Dockerfile.tectonic-worker runs at build time
+	// after the pre-warm, deliberately: the image asserts the format is there
+	// when it is created, and this asserts it is still there when the process
+	// starts, which is where a mount can have replaced it.
+	found, err := cacheHoldsFormat(path)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if !found {
+		return fmt.Errorf("%w: format cache %q holds no compiled format (no *.fmt). The sandbox "+
+			"grants it READ-ONLY, so the engine cannot compile one -- every job would fail with a "+
+			"permission error. An empty volume mounted over the image's pre-warmed cache is the "+
+			"usual cause", ErrTeXBundleUnusable, path)
+	}
 	return nil
+}
+
+// cacheHoldsFormat reports whether a compiled TeX format is present anywhere
+// beneath dir. Stops at the first hit; the cache is small and this runs once.
+func cacheHoldsFormat(dir string) (bool, error) {
+	found := false
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// An unreadable subdirectory is not a reason to refuse the whole
+			// cache: the format may be elsewhere in it.
+			return nil
+		}
+		if !d.IsDir() && strings.Contains(filepath.Base(path), ".fmt") {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found, err
 }
 
 // ErrTeXBundleUnusable is a DEPLOYMENT fault: the engine has no bundle it can
@@ -656,7 +706,7 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		name = c.SandboxHelper[0]
 		args = append(append(append(
 			append([]string{}, c.SandboxHelper[1:]...),
-			tectonicSandboxSpec(inPath, outDir, c.BundlePath)...),
+			tectonicSandboxSpec(inPath, outDir, c.BundlePath, enginePath)...),
 			"--", enginePath), args...)
 	}
 	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(filepath.Dir(inPath)), name, args...)
