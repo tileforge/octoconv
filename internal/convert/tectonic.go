@@ -583,12 +583,30 @@ func ValidateTectonicCacheDir(path string) error {
 			"with a permission error that names the sandbox rather than this variable",
 			ErrTeXBundleUnusable, TectonicCacheEnv)
 	}
-	// THESE TWO RUN BEFORE THE STAT, deliberately. They are decisions about
-	// the PATH, not about what is on disk, and ordering them after os.Stat
-	// meant a system root that does not exist on the host got refused for
-	// "cannot be read" instead -- a refusal that evaporates the moment the
+	// RESOLVED ONCE. Every check below asks a question about the same path,
+	// and resolvePath is two syscalls -- recomputing it per check was sixteen
+	// resolutions in the denylist loop alone, and sixteen chances for two
+	// checks to disagree about what they are looking at.
+	//
+	// THE PATH CHECKS RUN BEFORE THE STAT, deliberately. They are decisions
+	// about the PATH, not about what is on disk, and ordering them after
+	// os.Stat meant a system root that does not exist on the host got refused
+	// for "cannot be read" instead -- a refusal that evaporates the moment the
 	// directory appears. Found by this file's own test, which asserts the
 	// REASON rather than the error.
+	resolved := resolvePath(path)
+	jobRoot := resolvePath(os.TempDir())
+
+	// Contains where jobs are materialised: granting it recursively hands one
+	// client every other client's files. TECTONIC_CACHE_DIR=/tmp is a real
+	// pre-warm layout, and so is a relative "tmp" from a working directory of
+	// "/", which is what this image has.
+	if resolved == jobRoot || strings.HasPrefix(jobRoot, resolved+string(filepath.Separator)) {
+		return fmt.Errorf("%w: format cache %q contains the directory jobs are materialised in (%s). "+
+			"Landlock grants are recursive, so granting it would give every document read access to "+
+			"every other job's files. Point it at a directory of its own",
+			ErrTeXBundleUnusable, path, jobRoot)
+	}
 	// A BACKSTOP, and labelled as one. The guarantee is tectonicCacheGrants,
 	// which grants only the directories actually holding formats -- so
 	// TECTONIC_CACHE_DIR=/etc grants nothing unless a format sits inside it.
@@ -603,13 +621,13 @@ func ValidateTectonicCacheDir(path string) error {
 		"/", "/etc", "/usr", "/var", "/home", "/root", "/proc", "/sys",
 		"/dev", "/run", "/boot", "/lib", "/lib64", "/bin", "/sbin", "/opt",
 	} {
-		if resolvePath(path) == resolvePath(root) {
+		if resolved == resolvePath(root) {
 			return fmt.Errorf("%w: format cache %q is a system directory. Granting it read-only "+
 				"would give every document read access to everything beneath it. Point it at a "+
 				"directory that holds only the TeX format cache", ErrTeXBundleUnusable, path)
 		}
 	}
-	if home := os.Getenv("HOME"); home != "" && home != "/" && resolvePath(path) == resolvePath(home) {
+	if home := os.Getenv("HOME"); home != "" && home != "/" && resolved == resolvePath(home) {
 		return fmt.Errorf("%w: format cache %q is the worker's home directory, which would be "+
 			"granted read-only in full. Point it at a directory of its own",
 			ErrTeXBundleUnusable, path)
@@ -657,15 +675,6 @@ func ValidateTectonicCacheDir(path string) error {
 	// still cannot widen the ruleset.
 	// RESOLVED, not cleaned: see resolvePath. A symlinked or ..-laden path that
 	// lands on the job root would otherwise pass here and be granted anyway.
-	jobRoot := resolvePath(os.TempDir())
-	if clean := resolvePath(path); clean == jobRoot ||
-		strings.HasPrefix(jobRoot, clean+string(filepath.Separator)) || clean == "/" {
-		return fmt.Errorf("%w: format cache %q contains the directory jobs are materialised in (%s). "+
-			"Landlock grants are recursive, so granting it would give every document read access to "+
-			"every other job's files. Point it at a directory of its own",
-			ErrTeXBundleUnusable, path, jobRoot)
-	}
-
 	// The per-job grant builder stops at maxCacheGrants. If a cache held more
 	// formats than that, it would grant the first 64 and silently skip the
 	// rest -- and a job needing a skipped one would fail with a permission
