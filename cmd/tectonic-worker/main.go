@@ -420,13 +420,18 @@ func preflightEngine(c convert.TectonicConverter, helper []string) error {
 	defer cancel()
 
 	if err := c.TectonicPreflight(ctx, helper); err != nil {
-		return fmt.Errorf("%v.\n\nTwo causes are usual. A runtime policy that permits the Landlock "+
-			"ABI query but denies establishing a ruleset (seccomp, LSM stacking, the container "+
-			"runtime) -- the kernel reports an ABI and confinement still cannot be applied. Or the "+
-			"engine's own runtime files: a wrapper whose interpreter, or a binary whose shared "+
-			"libraries, live outside the directories the ruleset grants; extend "+
-			"convert.tectonicSystemReadOnly for this image. Set %s=true to run unconfined "+
-			"deliberately", err, sandboxDisabledEnv)
+		return fmt.Errorf("%v.\n\nThree causes are usual, and the engine's own output above says "+
+			"which:\n"+
+			"  1. the format cache holds no format this engine can USE -- a stale one from another "+
+			"tectonic version passes the startup file check and then cannot be rebuilt, because "+
+			"the sandbox grants the cache read-only. Re-warm it, or let the image's own cache "+
+			"through instead of mounting over it.\n"+
+			"  2. a runtime policy permits the Landlock ABI query but denies establishing a "+
+			"ruleset (seccomp, LSM stacking, the container runtime).\n"+
+			"  3. the engine's runtime files sit outside the granted directories -- a wrapper "+
+			"whose interpreter, or a binary whose shared libraries, live elsewhere; extend "+
+			"convert.tectonicSystemReadOnly for this image.\n\n"+
+			"Set %s=true to run the engine unconfined deliberately", err, sandboxDisabledEnv)
 	}
 	return nil
 }

@@ -432,3 +432,89 @@ func TestCacheFormatMatchIsASuffix(t *testing.T) {
 		t.Fatalf("a real format file was not recognised: %v", err)
 	}
 }
+
+// TestCacheContainmentSeesThroughSymlinks: the containment check was purely
+// lexical, and a path that CLEANS somewhere harmless can RESOLVE onto the job
+// root. os.Stat and Landlock's O_PATH open both follow the alias, so the grant
+// lands on the resolved directory while the check inspected the string
+// (codex round 4).
+func TestCacheContainmentSeesThroughSymlinks(t *testing.T) {
+	root := t.TempDir()
+
+	// A cache that is a legitimate directory, reached through a symlink and a
+	// ".." -- the shape of a mounted cache on a host with a linked /tmp.
+	jobRootLink := filepath.Join(root, "tmp-link")
+	if err := os.Symlink(os.TempDir(), jobRootLink); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	alias := filepath.Join(jobRootLink, "cache", "..")
+
+	// Resolved INDEPENDENTLY of the code under test. The first version of this
+	// test asked resolvePath whether the alias resolves onto the job root --
+	// so disabling resolvePath made the test SKIP rather than fail, and the
+	// inversion passed against code whose guard was gone. A check that
+	// validates itself proves nothing.
+	realAlias, err := filepath.EvalSymlinks(alias)
+	if err != nil {
+		t.Skipf("cannot resolve %q here: %v", alias, err)
+	}
+	realTemp, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Skipf("cannot resolve %q here: %v", os.TempDir(), err)
+	}
+	if filepath.Clean(realAlias) != filepath.Clean(realTemp) {
+		t.Skipf("this platform does not resolve %q onto %q (got %q)", alias, os.TempDir(), realAlias)
+	}
+
+	if err := ValidateTectonicCacheDir(alias); err == nil ||
+		!strings.Contains(err.Error(), "contains the directory jobs are materialised in") {
+		t.Fatalf("a cache path that RESOLVES onto the job root was accepted (%v).\n"+
+			"filepath.Clean says %q, which contains nothing; the kernel says %q, which contains "+
+			"every job directory -- and the kernel is the one that grants.",
+			err, filepath.Clean(alias), realAlias)
+	}
+}
+
+// TestSandboxSpecDropsAliasedAncestors is the structural backstop with the
+// same weakness, checked the same way: the spec must not grant a path that
+// resolves onto a writable job directory's parent either.
+func TestSandboxSpecDropsAliasedAncestors(t *testing.T) {
+	parent := t.TempDir()
+	jobDir := filepath.Join(parent, "job-1")
+	if err := os.MkdirAll(jobDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "parent-link")
+	if err := os.Symlink(parent, link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The cache is a SYMLINK to the job directory's parent.
+	t.Setenv("TECTONIC_CACHE_DIR", link)
+
+	realParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		t.Skipf("cannot resolve %q here: %v", parent, err)
+	}
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
+		// EvalSymlinks directly, never resolvePath: see the note in
+		// TestCacheContainmentSeesThroughSymlinks.
+		granted, rerr := filepath.EvalSymlinks(tok[3:])
+		if rerr != nil {
+			continue
+		}
+		if filepath.Clean(granted) == filepath.Clean(realParent) {
+			t.Fatalf("spec grants %q, which resolves onto the job directory's parent (%s). "+
+				"Landlock follows the link when it opens the path, so this grants every job "+
+				"directory beside this one.", tok, parent)
+		}
+	}
+}

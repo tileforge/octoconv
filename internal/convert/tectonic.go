@@ -142,15 +142,35 @@ func (c TectonicConverter) TectonicPreflight(ctx context.Context, helper []strin
 	}
 	defer os.RemoveAll(jobDir)
 
+	// A REAL DOCUMENT, not --version.
+	//
+	// --version proves the binary can be executed and nothing else: it never
+	// opens the bundle and never loads a format. A persistent cache holding a
+	// stale format from another tectonic version passes cacheHoldsFormat and
+	// passes --version, and then every real job fails, because building the
+	// current format needs a cache the sandbox has made read-only (codex round
+	// 4). Compiling the smallest possible document exercises the whole
+	// configuration jobs depend on: bundle, format, ruleset, exec.
+	inPath := filepath.Join(jobDir, "in.tex")
+	const doc = "\\documentclass{article}\n\\begin{document}preflight\\end{document}\n"
+	if err := os.WriteFile(inPath, []byte(doc), 0o600); err != nil {
+		return fmt.Errorf("preflight document: %w", err)
+	}
+
 	args := append(append(append(
 		append([]string{}, helper[1:]...),
-		tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, c.BundlePath, enginePath)...),
-		"--", enginePath), "--version")
+		tectonicSandboxSpec(inPath, jobDir, c.BundlePath, enginePath)...),
+		"--", enginePath), tectonicArgs(inPath, jobDir, c.BundlePath)...)
 
 	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(jobDir), helper[0], args...)
 	if err != nil {
-		return fmt.Errorf("the engine cannot be executed under the sandbox: %w: %s",
+		return fmt.Errorf("the engine cannot typeset under the sandbox: %w: %s",
 			err, tectonicTail(out))
+	}
+	// The engine can exit 0 and produce nothing; the job path checks this too.
+	if info, serr := os.Stat(filepath.Join(jobDir, "in.pdf")); serr != nil || info.Size() == 0 {
+		return fmt.Errorf("the engine produced no PDF for the preflight document: %v: %s",
+			serr, tectonicTail(out))
 	}
 	return nil
 }
@@ -252,9 +272,9 @@ func dropAncestorsOf(paths, writable []string) []string {
 }
 
 func containsAny(parent string, children []string) bool {
-	pc := filepath.Clean(parent)
+	pc := resolvePath(parent)
 	for _, child := range children {
-		cc := filepath.Clean(child)
+		cc := resolvePath(child)
 		if pc == cc {
 			continue // the same directory, not an ancestor of it
 		}
@@ -263,6 +283,24 @@ func containsAny(parent string, children []string) bool {
 		}
 	}
 	return false
+}
+
+// resolvePath is what the KERNEL will see, not what the string says.
+//
+// Comparing cleaned strings is not enough, and the gap is not theoretical: a
+// cache configured as /mnt/tmp-link/cache/.. where tmp-link points at /tmp
+// cleans to /mnt/tmp-link, passes every lexical containment check, and then
+// resolves to /tmp when os.Stat and Landlock's O_PATH open follow it -- which
+// grants the whole job tree, which is the exact thing the check exists to
+// refuse (codex round 4).
+//
+// filepath.Clean is the fallback for a path that cannot be resolved, so a
+// non-existent path is still compared rather than silently passing.
+func resolvePath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 // dedupeExisting keeps order, drops repeats, and drops what is not there.
@@ -438,8 +476,10 @@ func ValidateTectonicCacheDir(path string) error {
 	// that (codex round 3). Refused here with the reason; the spec builder
 	// drops it structurally as well, so a path this check did not anticipate
 	// still cannot widen the ruleset.
-	jobRoot := filepath.Clean(os.TempDir())
-	if clean := filepath.Clean(path); clean == jobRoot ||
+	// RESOLVED, not cleaned: see resolvePath. A symlinked or ..-laden path that
+	// lands on the job root would otherwise pass here and be granted anyway.
+	jobRoot := resolvePath(os.TempDir())
+	if clean := resolvePath(path); clean == jobRoot ||
 		strings.HasPrefix(jobRoot, clean+string(filepath.Separator)) || clean == "/" {
 		return fmt.Errorf("%w: format cache %q contains the directory jobs are materialised in (%s). "+
 			"Landlock grants are recursive, so granting it would give every document read access to "+
