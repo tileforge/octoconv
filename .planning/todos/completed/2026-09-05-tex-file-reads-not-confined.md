@@ -102,6 +102,45 @@ argument for probing your own fix:
   `/dev/null` is now writable and `/dev/{urandom,random,zero}` readable — named
   one at a time, never `/dev`.
 
+### What review then found, over four rounds
+
+Nine findings from codex, and the two that matter most are the ones the live
+proof could not have caught or actively hid:
+
+- **Landlock is per-thread.** A goroutine may migrate between `Apply` and
+  `syscall.Exec`, and execve carries the security state of the thread that
+  CALLS it -- so the engine could have run entirely unconfined, intermittently,
+  producing a correct PDF and no error. Every probe reported confinement
+  because it happened to stay on one thread. `Apply` now locks the OS thread
+  and never unlocks it, and the helper refuses to exec if the tid changed.
+- **A recursive grant defeated the per-job grant, three times through three
+  different doors**: `TMPDIR` pointing at the shared `/tmp`; then
+  `TECTONIC_CACHE_DIR=/tmp`, a legitimate pre-warm layout; then a cache path
+  that CLEANED somewhere harmless and RESOLVED onto `/tmp` through a symlink.
+  Fixing the third as a third fix would have invited a fourth, so it is now an
+  invariant on the whole spec -- no read-only grant may be an ancestor of a
+  writable job directory -- compared on resolved paths.
+
+The other seven were the sandbox refusing setups that WORKED before it: an
+unset cache dir, an empty one, a stale format, an engine resolved outside the
+granted roots, a lost diagnostic. That is this engine's other recurring defect
+and the sandbox gave it a new cause.
+
+### Five greens that were not evidence
+
+Each looked like proof, and each was caught only by checking what made it
+green. Recorded because the pattern is the finding:
+
+1. an inversion that did not compile, so it exercised nothing;
+2. a refusal that came from the wrong branch (the shared temp directory also
+   holds no `*.fmt`);
+3. a process-group scan run with a `ps` this image does not have -- zero
+   survivors found among zero processes;
+4. an inversion that SKIPPED rather than failed, because the test asked the
+   function under test whether its own condition held;
+5. a boot-time measurement that matched a stale log line from the previous
+   container.
+
 ### What is deliberately NOT closed by this
 
 The engine can still read what is granted: the bundle, the format cache and the
