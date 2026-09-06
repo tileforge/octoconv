@@ -285,14 +285,14 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 // to remove.
 func tectonicCacheGrants(cacheDir string) []string {
 	var formats []string
-	_ = filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(resolvePath(cacheDir), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if len(formats) >= maxCacheGrants {
 			return fs.SkipAll
 		}
-		if !d.IsDir() && isCompiledFormat(filepath.Base(path)) {
+		if isFormatFile(d, path) {
 			formats = append(formats, path)
 		}
 		return nil
@@ -306,10 +306,28 @@ func tectonicCacheGrants(cacheDir string) []string {
 // add_rule calls.
 const maxCacheGrants = 64
 
-// isCompiledFormat is the one place that decides what a format file looks
-// like, so cacheHoldsFormat and tectonicCacheGrants cannot disagree about it --
-// a startup check that accepts a file the grant builder ignores would pass
-// boot and then fail every job.
+// isFormatFile is the one place that decides what counts as a format, so
+// cacheHoldsFormat and tectonicCacheGrants cannot disagree about it -- a
+// startup check that accepts a file the grant builder ignores would pass boot
+// and then fail every job.
+//
+// A REGULAR FILE, and the name alone is not enough. WalkDir reports a symlink
+// as a non-directory entry, and addPath opens what it is handed with O_PATH,
+// which FOLLOWS symlinks -- so a cache holding "credential.fmt -> .ssh/id_rsa"
+// beside a genuine format would pass validation, pass the preflight, and hand
+// client TeX the private key through the alias (codex round 7). d.Type() comes
+// from Lstat, so this decides on the entry itself and never on its target.
+func isFormatFile(d fs.DirEntry, path string) bool {
+	return d.Type().IsRegular() && isCompiledFormat(filepath.Base(path))
+}
+
+// isCompiledFormat is the NAME half of that decision.
+//
+// A SUFFIX, not a substring: ".fmt" anywhere in the name accepted
+// README.fmt.txt, which is not a format and leaves the deployment in exactly
+// the state these checks exist to refuse (codex round 3). The real artifact in
+// the shipped image is formats/<hash>-latex-33.fmt; .fmt.gz is accepted
+// because tectonic compresses formats on some builds.
 func isCompiledFormat(name string) bool {
 	return strings.HasSuffix(name, ".fmt") || strings.HasSuffix(name, ".fmt.gz")
 }
@@ -625,7 +643,9 @@ func ValidateTectonicCacheDir(path string) error {
 		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
 	}
 	if !found {
-		return fmt.Errorf("%w: format cache %q holds no compiled format (no *.fmt). The sandbox "+
+		return fmt.Errorf("%w: format cache %q holds no compiled format (no regular *.fmt file -- "+
+			"a SYMLINK named *.fmt does not count, because granting it would grant whatever it "+
+			"points at). The sandbox "+
 			"grants it READ-ONLY, so the engine cannot compile one -- every job would fail with a "+
 			"permission error. An empty volume mounted over the image's pre-warmed cache is the "+
 			"usual cause", ErrTeXBundleUnusable, path)
@@ -637,19 +657,18 @@ func ValidateTectonicCacheDir(path string) error {
 // beneath dir. Stops at the first hit; the cache is small and this runs once.
 func cacheHoldsFormat(dir string) (bool, error) {
 	found := false
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	// The RESOLVED root. filepath.WalkDir Lstats its root, so a
+	// TECTONIC_CACHE_DIR that is itself a symlink to the real cache -- an
+	// ordinary versioned or mounted layout -- would be visited as the symlink
+	// and walked no further, reporting an empty cache and refusing at startup
+	// a deployment that worked before this PR (codex round 7).
+	err := filepath.WalkDir(resolvePath(dir), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// An unreadable subdirectory is not a reason to refuse the whole
 			// cache: the format may be elsewhere in it.
 			return nil
 		}
-		// A SUFFIX, not a substring. ".fmt" anywhere in the name accepted
-		// README.fmt.txt, which is not a format and leaves the deployment in
-		// exactly the state this check exists to refuse (codex round 3). The
-		// real artifact in the shipped image is
-		// formats/<hash>-latex-33.fmt; .fmt.gz is accepted because tectonic
-		// compresses formats on some builds.
-		if !d.IsDir() && isCompiledFormat(filepath.Base(path)) {
+		if isFormatFile(d, path) {
 			found = true
 			return fs.SkipAll
 		}

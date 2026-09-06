@@ -664,17 +664,26 @@ func TestCacheGrantIsNarrowedToTheFormatFilesThemselves(t *testing.T) {
 
 	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine)
 
+	// Compared on the RESOLVED form, independently of the code under test.
+	// The grant walk resolves the cache root (a symlinked cache root would
+	// otherwise be walked as the symlink and found empty), so on a host where
+	// the temp directory is itself a symlink -- /var -> /private/var on macOS
+	// -- the emitted path is the resolved one and a lexical comparison misses
+	// a grant that is genuinely there.
+	wantFormat := resolveForTest(t, filepath.Join(root, "formats", "abc-latex-33.fmt"))
+
 	var formatsGranted bool
 	for _, tok := range spec {
 		g := filepath.Clean(tok[3:])
-		if g == filepath.Clean(filepath.Join(root, "formats", "abc-latex-33.fmt")) {
+		if g == wantFormat || g == filepath.Clean(filepath.Join(root, "formats", "abc-latex-33.fmt")) {
 			formatsGranted = true
 		}
 		// Neither the root NOR the directory holding the format: the grant is
 		// the format FILE. A per-directory grant would still hand out
 		// everything beside the format, which is the whole finding when the
 		// configured cache is a home directory.
-		if g == filepath.Clean(root) || g == filepath.Clean(filepath.Join(root, "formats")) {
+		if g == filepath.Clean(root) || g == filepath.Clean(filepath.Join(root, "formats")) ||
+			g == resolveForTest(t, root) || g == resolveForTest(t, filepath.Join(root, "formats")) {
 			t.Fatalf("spec grants %q, a DIRECTORY in the configured cache, which also holds %q. "+
 				"Path-beneath grants are recursive, so a cache configured as /etc or a home "+
 				"directory would hand every document the credentials beside the format. The grant "+
@@ -763,5 +772,112 @@ func TestRelativeCachePathIsStillCaughtByContainment(t *testing.T) {
 	if !strings.Contains(err.Error(), "contains the directory jobs are materialised in") {
 		t.Fatalf("refused for the wrong reason, so the containment check never fired on the "+
 			"relative form: %v", err)
+	}
+}
+
+// TestSymlinkNamedLikeAFormatIsNotGranted is codex round 7's P1, and it is the
+// per-file grant's own shadow: narrowing to files made the NAME the whole
+// decision, and a name is something the filesystem can lie about.
+//
+// addPath opens what it is handed with O_PATH, which follows symlinks. So a
+// cache holding "credential.fmt -> id_rsa" beside a genuine format would pass
+// validation, pass the compile preflight, and hand client TeX the key.
+func TestSymlinkNamedLikeAFormatIsNotGranted(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "formats"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "formats", "abc-latex-33.fmt")
+	if err := os.WriteFile(real, []byte("f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(root, "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(root, "formats", "credential.fmt")
+	if err := os.Symlink(secret, decoy); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	t.Setenv("TECTONIC_CACHE_DIR", root)
+
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// EVERY form the decoy can appear in, because the grant walk resolves the
+	// cache ROOT while leaving the entry's own name alone -- so the emitted
+	// token is "resolved parent directory + the link's name", which is neither
+	// Clean(decoy) nor the fully-resolved target.
+	//
+	// The first version of this test compared only those last two, and the
+	// inversion PASSED: the decoy was granted and the test said nothing. Every
+	// form is enumerated now.
+	forbidden := map[string]bool{
+		filepath.Clean(decoy):     true,
+		filepath.Clean(secret):    true,
+		resolveForTest(t, decoy):  true,
+		resolveForTest(t, secret): true,
+		filepath.Join(resolveForTest(t, filepath.Dir(decoy)), filepath.Base(decoy)): true,
+	}
+	delete(forbidden, "")
+
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
+		if forbidden[filepath.Clean(tok[3:])] {
+			t.Fatalf("spec grants %q. That entry is a SYMLINK named *.fmt pointing at %q, and "+
+				"O_PATH follows it -- so the grant lands on the credential, not on a format.\n"+
+				"The name of a file is not evidence about the file.", tok, secret)
+		}
+	}
+
+	// And the genuine format is still granted: refusing the decoy must not
+	// refuse the cache.
+	if !cacheHoldsFormatOrFail(t, root) {
+		t.Fatal("the cache is reported to hold no format, though it holds a real one beside the decoy")
+	}
+}
+
+func cacheHoldsFormatOrFail(t *testing.T, dir string) bool {
+	t.Helper()
+	ok, err := cacheHoldsFormat(dir)
+	if err != nil {
+		t.Fatalf("scanning %q: %v", dir, err)
+	}
+	return ok
+}
+
+// TestSymlinkedCacheRootIsWalked is round 7's P2, and it is a false-refusal
+// rather than a leak: filepath.WalkDir Lstats its root, so a cache directory
+// that is a symlink to the real one -- an ordinary versioned or mounted layout
+// -- was visited as the symlink, walked no further, reported empty, and the
+// worker refused to start on a deployment that worked before this PR.
+func TestSymlinkedCacheRootIsWalked(t *testing.T) {
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "formats"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "formats", "abc-latex-33.fmt"), []byte("f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache-current")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+
+	if !cacheHoldsFormatOrFail(t, link) {
+		t.Fatal("a cache reached through a symlink was reported empty; the worker would refuse to " +
+			"start on a layout that is ordinary and that worked before the sandbox existed")
+	}
+	if err := ValidateTectonicCacheDir(link); err != nil {
+		t.Fatalf("a symlinked cache root was refused at startup: %v", err)
+	}
+	if len(tectonicCacheGrants(link)) == 0 {
+		t.Fatal("no format granted through the symlinked root, so the engine would have none to load")
 	}
 }
