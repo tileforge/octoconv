@@ -881,3 +881,44 @@ func TestSymlinkedCacheRootIsWalked(t *testing.T) {
 		t.Fatal("no format granted through the symlinked root, so the engine would have none to load")
 	}
 }
+
+// TestTooManyFormatsIsRefusedAtStartup: the per-job grant builder stops at
+// maxCacheGrants, so a cache holding more would have the rest silently
+// skipped -- and a job needing a skipped format fails with a permission error
+// that names the sandbox rather than the cap.
+//
+// Silent truncation reads as "covered everything" when it did not, which is
+// the same failure this PR keeps finding in other shapes. Refused once, at
+// startup, with a sentence.
+func TestTooManyFormatsIsRefusedAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i <= maxCacheGrants; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("f%03d-latex-33.fmt", i))
+		if err := os.WriteFile(name, []byte("f"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := ValidateTectonicCacheDir(dir)
+	if err == nil {
+		t.Fatalf("a cache with %d formats was accepted, though only %d can be granted; the rest "+
+			"would be silently unreachable", maxCacheGrants+1, maxCacheGrants)
+	}
+	if !strings.Contains(err.Error(), "more than") {
+		t.Fatalf("refused for the wrong reason, so the cap was never checked: %v", err)
+	}
+
+	// And a cache at the cap is fine: the check must bound, not forbid.
+	ok := t.TempDir()
+	for i := 0; i < maxCacheGrants; i++ {
+		if err := os.WriteFile(filepath.Join(ok, fmt.Sprintf("f%03d-latex-33.fmt", i)), []byte("f"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ValidateTectonicCacheDir(ok); err != nil {
+		t.Fatalf("a cache holding exactly the cap was refused: %v", err)
+	}
+	if got := len(tectonicCacheGrants(ok)); got != maxCacheGrants {
+		t.Fatalf("granted %d of %d formats at the cap", got, maxCacheGrants)
+	}
+}

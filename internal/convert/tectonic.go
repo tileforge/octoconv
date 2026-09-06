@@ -300,6 +300,25 @@ func tectonicCacheGrants(cacheDir string) []string {
 	return formats
 }
 
+// countFormats counts formats beneath dir, stopping at limit. Bounded because
+// the answer is only ever compared against a cap.
+func countFormats(dir string, limit int) (int, error) {
+	n := 0
+	err := filepath.WalkDir(resolvePath(dir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if isFormatFile(d, path) {
+			n++
+			if n >= limit {
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
 // maxCacheGrants bounds how many rules one cache can add. A real cache holds a
 // handful of formats -- this image holds exactly one -- and the cap exists so a
 // misconfigured directory cannot turn every job's setup into thousands of
@@ -317,6 +336,15 @@ const maxCacheGrants = 64
 // beside a genuine format would pass validation, pass the preflight, and hand
 // client TeX the private key through the alias (codex round 7). d.Type() comes
 // from Lstat, so this decides on the entry itself and never on its target.
+//
+// A HARDLINK is deliberately not excluded, and the limit is stated rather than
+// papered over: a hardlink named *.fmt IS a regular file, so one pointing at a
+// secret inside the cache would be granted. Excluding it would mean refusing
+// any format with st_nlink > 1, which some build systems produce legitimately
+// (cp -l into place) -- and refusing valid deployments is the more expensive
+// failure here, as this PR has demonstrated four times. The symlink case is
+// different in kind: those exist in a home directory for unrelated reasons,
+// which is exactly the scenario that raised it.
 func isFormatFile(d fs.DirEntry, path string) bool {
 	return d.Type().IsRegular() && isCompiledFormat(filepath.Base(path))
 }
@@ -636,6 +664,24 @@ func ValidateTectonicCacheDir(path string) error {
 			"Landlock grants are recursive, so granting it would give every document read access to "+
 			"every other job's files. Point it at a directory of its own",
 			ErrTeXBundleUnusable, path, jobRoot)
+	}
+
+	// The per-job grant builder stops at maxCacheGrants. If a cache held more
+	// formats than that, it would grant the first 64 and silently skip the
+	// rest -- and a job needing a skipped one would fail with a permission
+	// error naming the sandbox. Silent truncation reads as "covered
+	// everything" when it did not, so the count is refused HERE instead, once,
+	// with a sentence (own sweep after round 7).
+	n, err := countFormats(path, maxCacheGrants+1)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if n > maxCacheGrants {
+		return fmt.Errorf("%w: format cache %q holds more than %d compiled formats. The sandbox "+
+			"grants them one rule each and stops at that cap, so some would be unreachable and "+
+			"the jobs needing them would fail with a permission error naming the sandbox. Point "+
+			"it at a directory holding only the formats this deployment uses",
+			ErrTeXBundleUnusable, path, maxCacheGrants)
 	}
 
 	found, err := cacheHoldsFormat(path)
