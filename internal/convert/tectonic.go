@@ -227,11 +227,19 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 	// breaking an installation that worked before confinement (codex round 2).
 	ro := []string{bundlePath, enginePath}
 	if cache := os.Getenv("TECTONIC_CACHE_DIR"); cache != "" {
-		// Read-only on purpose. The image pre-warms the compiled format at
-		// build time (Dockerfile.tectonic-worker), so nothing at run time
-		// needs to write here, and a cache the engine could write is a cache
-		// one job can poison for the next.
-		ro = append(ro, cache)
+		// THE DIRECTORIES HOLDING FORMATS, NOT THE CONFIGURED ROOT.
+		//
+		// Granting the root grants everything beneath it, and the root is an
+		// operator-supplied path: TECTONIC_CACHE_DIR=/etc or a home directory
+		// holding a *.fmt passes every startup check -- it IS a directory, it
+		// DOES hold a format, and the compile preflight succeeds -- and then
+		// hands client TeX /etc/passwd and any credential beside it (codex
+		// round 5).
+		//
+		// Read-only in either case. The image pre-warms the format at build
+		// time, so nothing at run time needs to write here, and a cache the
+		// engine could write is a cache one job can poison for the next.
+		ro = append(ro, tectonicCacheGrants(cache)...)
 	}
 	ro = dedupeExisting(append(ro, tectonicSystemReadOnly...))
 
@@ -253,6 +261,47 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 	ro = dropAncestorsOf(ro, rw)
 
 	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
+}
+
+// tectonicCacheGrants is the narrow half of the cache grant: the directories
+// that actually contain a compiled format, rather than whatever root the
+// operator configured.
+//
+// The blast radius becomes "the directories holding the formats" instead of
+// "everything under TECTONIC_CACHE_DIR", which is the difference between
+// granting /var/cache/tectonic/formats and granting /etc.
+//
+// Returning nothing is a legitimate answer and deliberately not backfilled
+// with cacheDir: ValidateTectonicCacheDir refused a cache with no format at
+// startup, so an empty result here means one disappeared underneath a running
+// worker. The engine then fails loudly on the next job, which is the right
+// direction -- backfilling the root would restore the very grant this exists
+// to remove.
+func tectonicCacheGrants(cacheDir string) []string {
+	var dirs []string
+	seen := make(map[string]bool)
+	_ = filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || !isCompiledFormat(filepath.Base(path)) {
+			return nil
+		}
+		if parent := filepath.Dir(path); !seen[parent] {
+			seen[parent] = true
+			dirs = append(dirs, parent)
+		}
+		return nil
+	})
+	return dirs
+}
+
+// isCompiledFormat is the one place that decides what a format file looks
+// like, so cacheHoldsFormat and tectonicCacheGrants cannot disagree about it --
+// a startup check that accepts a file the grant builder ignores would pass
+// boot and then fail every job.
+func isCompiledFormat(name string) bool {
+	return strings.HasSuffix(name, ".fmt") || strings.HasSuffix(name, ".fmt.gz")
 }
 
 // dropAncestorsOf removes any path that contains one of the writable
@@ -449,6 +498,38 @@ func ValidateTectonicCacheDir(path string) error {
 			"with a permission error that names the sandbox rather than this variable",
 			ErrTeXBundleUnusable, TectonicCacheEnv)
 	}
+	// THESE TWO RUN BEFORE THE STAT, deliberately. They are decisions about
+	// the PATH, not about what is on disk, and ordering them after os.Stat
+	// meant a system root that does not exist on the host got refused for
+	// "cannot be read" instead -- a refusal that evaporates the moment the
+	// directory appears. Found by this file's own test, which asserts the
+	// REASON rather than the error.
+	// A BACKSTOP, and labelled as one. The guarantee is tectonicCacheGrants,
+	// which grants only the directories actually holding formats -- so
+	// TECTONIC_CACHE_DIR=/etc grants nothing unless a format sits inside it.
+	// This refuses the case that narrowing cannot reach: a *.fmt placed
+	// directly in a system root, which would make that root itself the
+	// format-holding directory.
+	//
+	// A denylist is the wrong shape for a security boundary and this one is
+	// not carrying that weight; it is here so an obviously wrong value fails
+	// at startup with a sentence, rather than quietly granting.
+	for _, root := range []string{
+		"/", "/etc", "/usr", "/var", "/home", "/root", "/proc", "/sys",
+		"/dev", "/run", "/boot", "/lib", "/lib64", "/bin", "/sbin", "/opt",
+	} {
+		if resolvePath(path) == resolvePath(root) {
+			return fmt.Errorf("%w: format cache %q is a system directory. Granting it read-only "+
+				"would give every document read access to everything beneath it. Point it at a "+
+				"directory that holds only the TeX format cache", ErrTeXBundleUnusable, path)
+		}
+	}
+	if home := os.Getenv("HOME"); home != "" && home != "/" && resolvePath(path) == resolvePath(home) {
+		return fmt.Errorf("%w: format cache %q is the worker's home directory, which would be "+
+			"granted read-only in full. Point it at a directory of its own",
+			ErrTeXBundleUnusable, path)
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("%w: format cache %q cannot be read: %v", ErrTeXBundleUnusable, path, err)
@@ -457,6 +538,19 @@ func ValidateTectonicCacheDir(path string) error {
 		return fmt.Errorf("%w: format cache %q is not a directory (mode %s)",
 			ErrTeXBundleUnusable, path, info.Mode())
 	}
+
+	// EXISTING IS NOT ENOUGH -- it has to already HOLD a compiled format.
+	//
+	// An empty directory passes every check above and then fails every job,
+	// and it is not a hypothetical: mounting an empty volume over the image's
+	// pre-warmed cache is an ordinary thing to do, and it USED to work,
+	// because a writable empty cache populates itself on the first run. The
+	// sandbox grants this directory read-only, so it cannot (codex round 2).
+	//
+	// This is the same check Dockerfile.tectonic-worker runs at build time
+	// after the pre-warm, deliberately: the image asserts the format is there
+	// when it is created, and this asserts it is still there when the process
+	// starts, which is where a mount can have replaced it.
 
 	// EXISTING IS NOT ENOUGH -- it has to already HOLD a compiled format.
 	//
@@ -516,8 +610,7 @@ func cacheHoldsFormat(dir string) (bool, error) {
 		// real artifact in the shipped image is
 		// formats/<hash>-latex-33.fmt; .fmt.gz is accepted because tectonic
 		// compresses formats on some builds.
-		if name := filepath.Base(path); !d.IsDir() &&
-			(strings.HasSuffix(name, ".fmt") || strings.HasSuffix(name, ".fmt.gz")) {
+		if !d.IsDir() && isCompiledFormat(filepath.Base(path)) {
 			found = true
 			return fs.SkipAll
 		}

@@ -384,7 +384,13 @@ func TestCacheDirIsRefusedWhenItSwallowsTheJobRoot(t *testing.T) {
 	// not evidence.
 	const want = "contains the directory jobs are materialised in"
 
-	for _, dir := range []string{os.TempDir(), "/"} {
+	// "/" is deliberately NOT in this loop: round 5 added a system-root
+	// refusal that runs first and catches it, and TestSystemRootsAreRefused
+	// owns that case. Leaving it here would assert which of two correct
+	// refusals fires first, which is not a property worth freezing.
+	//
+	// os.TempDir() stays, because it is the case ONLY containment catches.
+	for _, dir := range []string{os.TempDir()} {
 		err := ValidateTectonicCacheDir(dir)
 		if err == nil {
 			t.Fatalf("%q was accepted as the format cache. Jobs are materialised under it, so "+
@@ -561,19 +567,138 @@ func TestHostileDocumentProbesNothingTheRulesetGrants(t *testing.T) {
 		granted = append(granted, tok[3:])
 	}
 
+	// Compared on BOTH the lexical and the resolved form of each side.
+	//
+	// Lexical alone is not enough, and the example is in this image: /var/run
+	// is a symlink to /run, so a future grant beneath /run/secrets would cover
+	// the fixture's /var/run/secrets/... path without ever matching as a
+	// string (codex round 5). Resolved alone is not enough either -- on a host
+	// where neither path exists, EvalSymlinks fails and there is nothing to
+	// compare but the strings.
 	for _, p := range probes {
-		target := filepath.Clean(p[1])
+		raw := p[1]
+		target := filepath.Clean(raw)
 		if !filepath.IsAbs(target) {
-			continue // a relative probe resolves inside the job dir; the kernel decides
+			// A relative probe resolves against the job's own directory, which
+			// IS granted; the escape it attempts (../../..) is the kernel's to
+			// refuse, and the live run is what shows that it does.
+			target = filepath.Clean(filepath.Join(jobDir, raw))
 		}
 		for _, g := range granted {
-			gc := filepath.Clean(g)
-			if target == gc || strings.HasPrefix(target, gc+string(filepath.Separator)) {
-				t.Errorf("the ruleset grants %q, which covers %q -- a path the hostile fixture "+
-					"attacks and that was measured as REFUSED. Either the grant is wrong, or the "+
-					"fixture's demonstration is now stale and says so on a machine nobody runs.",
-					g, target)
+			for _, pair := range [][2]string{
+				{target, filepath.Clean(g)},
+				{resolveForTest(t, target), resolveForTest(t, g)},
+			} {
+				tgt, gc := pair[0], pair[1]
+				if gc == "" || tgt == "" {
+					continue
+				}
+				if tgt == gc || strings.HasPrefix(tgt, gc+string(filepath.Separator)) {
+					t.Errorf("the ruleset grants %q, which covers %q -- a path the hostile fixture "+
+						"attacks and that was measured as REFUSED. Either the grant is wrong, or "+
+						"the fixture's demonstration is now stale and says so on a machine nobody "+
+						"runs.\n(compared as %q vs %q)", g, raw, tgt, gc)
+				}
 			}
+		}
+	}
+}
+
+// resolveForTest resolves a path the way the kernel will, WITHOUT going
+// through the package's own resolvePath -- a test that asks the code under
+// test whether the code under test is right proves nothing, which this file
+// learned the hard way in round 4.
+//
+// The longest existing prefix is resolved, so a path whose tail does not exist
+// on this host (/root/.ssh/id_rsa on a Mac) still gets its real ancestors.
+func resolveForTest(t *testing.T, path string) string {
+	t.Helper()
+	rest := ""
+	for cur := filepath.Clean(path); ; {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Clean(filepath.Join(r, rest))
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return ""
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
+}
+
+// TestCacheGrantIsNarrowedToFormatDirectories is the fix for the grant source
+// the fixture test could not see, because it runs with TECTONIC_CACHE_DIR
+// unset (codex round 5).
+//
+// The configured cache root is operator-supplied. Granting it grants
+// everything beneath it, and a root like /etc or a home directory holding a
+// *.fmt passes every startup check -- it is a directory, it holds a format,
+// and the compile preflight succeeds -- and then hands client TeX every
+// credential beside it.
+func TestCacheGrantIsNarrowedToFormatDirectories(t *testing.T) {
+	// A cache root that also holds something that must not be readable, which
+	// is what /etc or $HOME looks like from here.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "formats"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "formats", "abc-latex-33.fmt"), []byte("f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(root, "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TECTONIC_CACHE_DIR", root)
+
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine)
+
+	var formatsGranted bool
+	for _, tok := range spec {
+		g := filepath.Clean(tok[3:])
+		if g == filepath.Clean(filepath.Join(root, "formats")) {
+			formatsGranted = true
+		}
+		if g == filepath.Clean(root) {
+			t.Fatalf("spec grants the cache ROOT %q, which also holds %q. Path-beneath grants are "+
+				"recursive, so a cache configured as /etc or a home directory would hand every "+
+				"document the credentials beside the format.\nspec = %v", tok, secret, spec)
+		}
+	}
+	if !formatsGranted {
+		t.Fatalf("the directory holding the format was not granted at all; the engine would have "+
+			"no format to load.\nspec = %v", spec)
+	}
+}
+
+// TestSystemRootsAreRefusedAsTheCache is the backstop for what narrowing
+// cannot reach: a *.fmt placed directly in a system root makes that root the
+// format-holding directory.
+func TestSystemRootsAreRefusedAsTheCache(t *testing.T) {
+	for _, root := range []string{"/", "/etc", "/usr", "/home", "/root", "/var"} {
+		err := ValidateTectonicCacheDir(root)
+		if err == nil {
+			t.Errorf("%q was accepted as the format cache", root)
+			continue
+		}
+		// The reason matters: several of these would also be refused for
+		// holding no format, and that refusal disappears the moment somebody
+		// puts one there -- which is the case this test is about.
+		if !strings.Contains(err.Error(), "system directory") &&
+			!strings.Contains(err.Error(), "contains the directory jobs are materialised in") {
+			t.Errorf("%q was refused for the wrong reason, so a *.fmt placed there would make it "+
+				"acceptable: %v", root, err)
 		}
 	}
 }
