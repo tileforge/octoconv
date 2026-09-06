@@ -174,6 +174,30 @@ Three of the six are the same mistake in different clothes: the check and the
 thing checked were not the same object. That is also, exactly, what four of the
 review findings were.
 
+### Verified under Kubernetes, and the limit of that check
+
+The claim "Landlock needs no capability and no securityContext change" was
+proved under Docker first. Re-run as a pod on the OrbStack cluster, with an
+EMPTY securityContext (`{}`) and running as `nobody`:
+
+```
+user=nobody  pwd=/
+SANDBOXED exit=0  pdf=2704
+warning: open of input /etc/hostname failed
+caused by: Permission denied (os error 13)
+```
+
+So the capability half is confirmed under pod semantics: nothing in the pod
+spec grants anything, and the ruleset still establishes.
+
+THE LIMIT, stated because the check is weaker than it looks: that cluster's
+node reports `containerRuntimeVersion: docker://29.4.0`, so the runtime beneath
+is the same Docker whose seccomp profile was already exercised. This does NOT
+prove the syscalls survive a containerd or CRI-O default profile. What covers
+that is the startup preflight rather than any measurement here: a node whose
+policy denies the ruleset refuses to start with a message naming seccomp,
+instead of consuming the queue and failing every job.
+
 ### What is deliberately NOT closed by this
 
 The engine can still read what is granted: the bundle, the format cache and the
