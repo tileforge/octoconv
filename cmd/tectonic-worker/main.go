@@ -9,11 +9,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,12 +28,70 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// sandboxExecMode is the argv[1] that turns this binary into the thing that
+// applies the sandbox and then BECOMES the engine.
+//
+// It has to work this way. Landlock restricts the calling process and cannot be
+// applied to another one, so something must apply the rules and then exec
+// tectonic in the same process -- and the only binary guaranteed to be present
+// in this image is this one. os/exec offers no hook between fork and exec that
+// can run Go, which is why this is a mode rather than a callback.
+//
+// Not a subcommand anyone should call: it is an implementation detail of
+// convert.TectonicConverter, which builds the argv.
+const sandboxExecMode = "__sandbox-exec"
+
+// sandboxSetupExit is the exit status meaning "the ENGINE never ran".
+//
+// 78 is sysexits.h's EX_CONFIG. The value matters only in that it is not 1 and
+// not any status tectonic produces; convert.ErrTeXSandboxUnavailable is the
+// other half of this contract and the two are held together by a test.
+const sandboxSetupExit = convert.TectonicSandboxSetupExit
+
+// fatalSandbox reports on stderr and exits with the status that means the
+// engine never started.
+func fatalSandbox(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, sandboxExecMode+": "+format+"\n", args...)
+	os.Exit(sandboxSetupExit)
+}
+
+// runSandboxExec applies the ruleset from argv and execs the rest.
+//
+//	tectonic-worker __sandbox-exec rw:/tmp/job ro:/opt/tectonic ... -- /usr/local/bin/tectonic ...
+//
+// It exits with sandboxSetupExit, never 1: a sandbox that cannot be established
+// is an infrastructure fault the job should be RETRIED on, and tectonic's own
+// failure exit is 1. Sharing a code would report a broken node to the client as
+// a document that failed to typeset, and never retry it.
+func runSandboxExec(argv []string) {
+	p, cmd, err := sandbox.ParseSpec(argv)
+	if err != nil {
+		fatalSandbox("%v", err)
+	}
+	if err := sandbox.Apply(p); err != nil {
+		// FAIL CLOSED. Running the engine unconfined because the confinement
+		// could not be established is exactly the outcome this exists to
+		// prevent, and it would be invisible.
+		fatalSandbox("%v", err)
+	}
+	if err := syscall.Exec(cmd[0], cmd, os.Environ()); err != nil {
+		fatalSandbox("exec %s: %v", cmd[0], err)
+	}
+}
+
 func main() {
+	// Before flags, before config, before anything: this mode never returns.
+	if len(os.Args) > 1 && os.Args[1] == sandboxExecMode {
+		runSandboxExec(os.Args[2:])
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -96,7 +156,27 @@ func main() {
 	// nowhere else, the way PROBE_MAX_PAGES is -- a second reader is a second
 	// value that can disagree.
 	maxOutputBytes := envInt64("TECTONIC_MAX_OUTPUT_BYTES", convert.DefaultTectonicMaxOutputBytes)
-	convert.Default.Replace(buildTectonicConverter(bundlePath, maxOutputBytes))
+
+	// The filesystem sandbox, decided ONCE at startup for the same reason the
+	// bundle is: a worker that cannot confine the engine should not consume a
+	// queue and fail every task, and -- much worse -- must not quietly run it
+	// unconfined.
+	//
+	// --untrusted refuses \write18 and does NOT confine reads; that was
+	// measured, not assumed (PR #19 typeset /etc/hostname into a client's PDF).
+	// So this is the control that removes the read, and it is on unless
+	// somebody says otherwise in writing.
+	sandboxHelper, err := resolveSandboxHelper()
+	if err != nil {
+		log.Fatalf("tectonic sandbox: %v", err)
+	}
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can")
+	} else {
+		log.Printf("🔒 tectonic sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	convert.Default.Replace(buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper))
 	log.Printf("📚 %s=%s", convert.TectonicBundleEnv, bundlePath)
 	log.Printf("📄 TECTONIC_MAX_OUTPUT_BYTES=%d", maxOutputBytes)
 
@@ -218,8 +298,45 @@ func main() {
 // convert.Default registry side effect. Mirrors cmd/ocr-worker's
 // buildOCRConverter exactly, for the reason stated there: a bound that is
 // configured and not plumbed is a bound that does not exist.
-func buildTectonicConverter(bundlePath string, maxOutputBytes int64) convert.TectonicConverter {
-	return convert.TectonicConverter{BundlePath: bundlePath, MaxOutputBytes: maxOutputBytes}
+func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string) convert.TectonicConverter {
+	return convert.TectonicConverter{
+		BundlePath:     bundlePath,
+		MaxOutputBytes: maxOutputBytes,
+		SandboxHelper:  sandboxHelper,
+	}
+}
+
+// sandboxDisabledEnv is the escape hatch, and it is deliberately awkward.
+//
+// It exists because a kernel without Landlock is a real thing (a managed node
+// pool on an old LTS, a developer running the worker on a Mac) and "the
+// service does not start" is a worse answer there than "the service starts and
+// says what it gave up". It is NOT a default: the operator has to write it
+// down, and the log line it produces says what it costs.
+const sandboxDisabledEnv = "TECTONIC_SANDBOX_DISABLED"
+
+// resolveSandboxHelper returns the argv prefix the converter should run the
+// engine through, or an empty slice if the sandbox is explicitly disabled.
+//
+// An error means the sandbox was WANTED and cannot be established, and the
+// caller turns that into a refusal to start.
+func resolveSandboxHelper() ([]string, error) {
+	if os.Getenv(sandboxDisabledEnv) == "true" {
+		return nil, nil
+	}
+	if !sandbox.Available() {
+		return nil, fmt.Errorf("landlock is unavailable on this kernel; "+
+			"the engine would run with read access to every file in this container. "+
+			"Set %s=true to accept that deliberately", sandboxDisabledEnv)
+	}
+	// os.Executable and not a hardcoded path: this binary is the helper, and
+	// resolving it by name would depend on a PATH the engine's own allowlist
+	// environment controls.
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate this binary to use as the sandbox helper: %w", err)
+	}
+	return []string{self, sandboxExecMode}, nil
 }
 
 func envInt64(key string, def int64) int64 {

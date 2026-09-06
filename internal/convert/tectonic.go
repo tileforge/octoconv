@@ -40,6 +40,8 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/apaderin/octoconv/internal/sandbox"
 )
 
 // TectonicBundleEnv names the environment variable cmd/tectonic-worker reads
@@ -66,6 +68,17 @@ type TectonicConverter struct {
 	// MaxOutputBytes bounds the PRODUCED PDF. Zero means
 	// DefaultTectonicMaxOutputBytes; see maxOutputBytes.
 	MaxOutputBytes int64
+
+	// SandboxHelper is the argv prefix that establishes the filesystem
+	// sandbox and then BECOMES the engine -- in the deployed image,
+	// {"/usr/local/bin/tectonic-worker", "__sandbox-exec"}.
+	//
+	// Empty means the engine runs unconfined, which is what every unit test
+	// on a developer's machine does and what a non-Linux host has to do:
+	// Landlock is a Linux LSM. Production does not get that choice --
+	// cmd/tectonic-worker refuses to start if it cannot set this (see
+	// TECTONIC_SANDBOX_DISABLED for the one documented escape hatch).
+	SandboxHelper []string
 }
 
 // Engine reports the ninth engine class.
@@ -79,6 +92,90 @@ func (TectonicConverter) Engine() string { return EngineTectonic }
 // source format" safe to have at all.
 func (TectonicConverter) Pairs() []Pair {
 	return []Pair{{From: "latex", To: "pdf"}}
+}
+
+// TectonicSandboxSetupExit is the exit status the sandbox helper uses to say
+// THE ENGINE NEVER RAN -- the confinement could not be established.
+//
+// Declared here rather than in the helper because the two halves of the
+// contract are the helper that exits with it and the classifier below that
+// reads it; a constant in one binary that another compares against by literal
+// is how the two drift apart.
+const TectonicSandboxSetupExit = 78
+
+// ErrTeXSandboxUnavailable is that status, classified.
+//
+// RETRYABLE, and deliberately unlike every other error in this file: the
+// document is fine, this node is not. Left terminal, one bad node would burn
+// every tex job routed to it and report each as a client mistake.
+var ErrTeXSandboxUnavailable = errors.New("tex sandbox could not be established")
+
+// tectonicSystemReadOnly is what the engine needs merely to be a running
+// program: its own binary, its shared libraries, and the loader.
+//
+// Listed rather than derived because the list IS the security claim, and a
+// derived one would grow silently. /etc is deliberately absent, which is the
+// whole point -- the read that started this work was \openin=/etc/hostname.
+//
+// Entries that do not exist on the host are dropped by tectonicSandboxSpec
+// rather than being an error: /lib64 exists on x86_64 glibc and not on this
+// image's arm64, and /bin and /lib are symlinks into /usr on a merged-usr
+// distro. Dropping a MISSING path cannot widen anything; only a present one
+// grants, and sandbox.Apply still errors on a configured path that vanished.
+var tectonicSystemReadOnly = []string{
+	"/usr", "/lib", "/lib64", "/bin", "/etc/ssl/certs",
+	// The three character devices a normal program expects to exist. Named
+	// individually and never as /dev, which also holds the terminal, the
+	// block devices and whatever a runtime chooses to mount there.
+	//
+	// /dev/null is in the WRITABLE set above for the obvious reason. Its
+	// absence was measured rather than reasoned about: with no /dev granted,
+	// every `2>/dev/null` inside the sandbox failed with EACCES, which is a
+	// surprise that would surface as an unrelated engine error the first time
+	// something in the chain redirected.
+	"/dev/urandom", "/dev/random", "/dev/zero",
+}
+
+// tectonicSandboxSpec renders the ruleset as the argv tokens the helper parses.
+//
+// It is a pure function of the paths so a test can assert on the whole set
+// without a kernel: the argv IS the sandbox, the same way tectonicArgs is the
+// hardening.
+func tectonicSandboxSpec(inPath, outDir, bundlePath string) []string {
+	// The job directory, and only the job directory, is writable. inPath's
+	// directory and outDir are the same one today; both are named because the
+	// worker is free to stop doing that and a sandbox that assumed otherwise
+	// would fail as an unexplained engine error.
+	rw := dedupeExisting([]string{filepath.Dir(inPath), outDir, os.TempDir(), "/dev/null"})
+
+	ro := []string{bundlePath}
+	if cache := os.Getenv("TECTONIC_CACHE_DIR"); cache != "" {
+		// Read-only on purpose. The image pre-warms the compiled format at
+		// build time (Dockerfile.tectonic-worker), so nothing at run time
+		// needs to write here, and a cache the engine could write is a cache
+		// one job can poison for the next.
+		ro = append(ro, cache)
+	}
+	ro = dedupeExisting(append(ro, tectonicSystemReadOnly...))
+
+	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
+}
+
+// dedupeExisting keeps order, drops repeats, and drops what is not there.
+func dedupeExisting(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // tectonicArgs builds the argument vector, as its own function for the reason
@@ -492,9 +589,31 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	}
 
 	outDir := filepath.Dir(outPath)
-	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(), "tectonic",
-		tectonicArgs(inPath, outDir, c.BundlePath)...)
+	name, args := "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)
+	if len(c.SandboxHelper) > 0 {
+		// syscall.Exec in the helper takes a PATH, not a name, and resolving
+		// it HERE means a missing engine is reported as a missing engine
+		// rather than as a sandbox that failed to establish.
+		enginePath, lerr := exec.LookPath(name)
+		if lerr != nil {
+			return fmt.Errorf("tectonic: locate engine: %w", lerr)
+		}
+		name = c.SandboxHelper[0]
+		args = append(append(append(
+			append([]string{}, c.SandboxHelper[1:]...),
+			tectonicSandboxSpec(inPath, outDir, c.BundlePath)...),
+			"--", enginePath), args...)
+	}
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(), name, args...)
 	if err != nil {
+		// The helper's "the engine never ran" status, before any of the
+		// engine-shaped classification below: nothing in out is tectonic's
+		// output, because tectonic was never execed.
+		var setupErr *exec.ExitError
+		if len(c.SandboxHelper) > 0 && errors.As(err, &setupErr) &&
+			setupErr.ExitCode() == TectonicSandboxSetupExit {
+			return fmt.Errorf("tectonic: %w: %s", ErrTeXSandboxUnavailable, tectonicTail(out))
+		}
 		// THE ENGINE's deadline, named as such. The worker bounds the WHOLE
 		// attempt with one context -- download, convert, upload -- because the
 		// unique-lock TTL depends on the attempt never outliving it (T-03-11).

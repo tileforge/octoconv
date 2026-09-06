@@ -171,6 +171,24 @@ scripts/tectonic-bundle-fetch.sh --check  # verify only, no download
 The digest is checked twice on purpose: by that script before the build starts,
 and again inside the image against the bytes that actually land there.
 
+**The tex worker confines the engine's filesystem access, and refuses to start
+if it cannot.** A `.tex` is a program: it has macros, control flow and file
+input. `--untrusted` stops it from running shell commands and it does *not*
+stop it reading files — measured, not assumed, on a document that typeset the
+container's `/etc/hostname` into the PDF a client got back. So the engine now
+runs under a [Landlock](https://docs.kernel.org/userspace-api/landlock.html)
+ruleset that grants the job's own directory (read-write), the TeX bundle, the
+format cache and the system directories holding the binary (read-only), and
+nothing else — no `/etc`, no `/proc`, no mounted secret. It needs no capability
+and no privileged container: an unprivileged process restricts *itself*, and
+the restriction is inherited across `execve` and cannot be lifted.
+
+On a kernel without Landlock the worker **exits at startup** rather than
+typesetting client documents unconfined. If that is deliberate — an old node
+pool, a developer running the worker outside Linux — set
+`TECTONIC_SANDBOX_DISABLED=true`, which is the only value that disables it and
+which logs what it costs on every boot.
+
 | Service  | Image             | Host port                          | Notes                                        |
 |----------|-------------------|-------------------------------------|-----------------------------------------------|
 | postgres | `postgres:18`     | `5434`                              | `octo / octo-pass / octo_db`                  |
@@ -240,6 +258,23 @@ curl -H "Authorization: ApiKey <raw-key>" http://localhost:8090/v1/jobs/<job_id>
 
 Optionally, skip polling and get a signed webhook push on completion by adding
 `-F callback_url=https://your-service/hooks/octoconv` to the create request.
+
+**A LaTeX job can be a project rather than one file.** Repeat the `file` part —
+the first one is the document that gets typeset, the rest are materialised
+beside it under their own names, so `\input{preamble}`, `\bibliography{refs}`
+and `\includegraphics{fig.png}` resolve:
+
+```bash
+curl -H "Authorization: ApiKey <raw-key>" -F target=pdf -F source=latex \
+  -F file=@paper.tex -F file=@preamble.tex -F file=@refs.bib -F file=@fig.png \
+  http://localhost:8090/v1/jobs
+```
+
+Up to 32 parts, and the size limit applies to their **sum**, not to each — a
+thousand one-byte attachments would otherwise be a thousand uploads charged as
+one small job. An attachment named after a file the worker owns (`in.tex`,
+`out.pdf`) is refused rather than silently renamed, and every name is flattened
+to its base, so `../../etc/passwd` cannot name anything outside the job.
 
 ## API Semantics
 

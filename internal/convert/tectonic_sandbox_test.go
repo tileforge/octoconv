@@ -1,0 +1,127 @@
+package convert
+
+import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+// The sandbox spec IS the security claim, so it is asserted directly rather
+// than through a running engine -- the same argument tectonicArgs is tested
+// under. A kernel is not needed to see that /etc was granted.
+
+// TestSandboxSpecGrantsTheJobDirectoryAndNothingElseWritable is the property
+// that matters most: an engine whose input is a PROGRAM must not be able to
+// write outside the directory holding its own job.
+func TestSandboxSpecGrantsTheJobDirectoryAndNothingElseWritable(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle)
+
+	var rw []string
+	for _, tok := range spec {
+		if strings.HasPrefix(tok, "rw:") {
+			rw = append(rw, strings.TrimPrefix(tok, "rw:"))
+		}
+	}
+	if len(rw) == 0 {
+		t.Fatalf("no writable path at all; the engine could not write its PDF.\nspec = %v", spec)
+	}
+	// Two other writable entries are legitimate and are named here one at a
+	// time: TMPDIR, because the engine keeps intermediates, and /dev/null,
+	// because a program that cannot open it fails in ways that have nothing to
+	// do with typesetting. Anything BEYOND these is a widening nobody asked
+	// for, and adding one has to be an edit to this list.
+	allowed := map[string]bool{jobDir: true, os.TempDir(): true, "/dev/null": true}
+	for _, p := range rw {
+		if !allowed[p] {
+			t.Fatalf("spec grants WRITE to %q, which is neither the job directory (%q) nor TMPDIR (%q).\n"+
+				"An engine that runs client-authored programs must not be able to write there.\nspec = %v",
+				p, jobDir, os.TempDir(), spec)
+		}
+	}
+}
+
+// TestSandboxSpecDoesNotGrantEtc pins the read that started this work.
+//
+// PR #19 measured \openin=/etc/hostname typesetting the container's hostname
+// into a client's PDF. /etc/ssl/certs is the one exception, and it is named
+// explicitly so that widening the exception to /etc has to be a deliberate
+// edit to this test.
+func TestSandboxSpecDoesNotGrantEtc(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+		path := tok[3:]
+		if path == "/etc" || path == "/" || path == "/proc" || path == "/run" {
+			t.Fatalf("spec grants %q. Landlock rules are PATH BENEATH: granting %q reaches every "+
+				"secret, every mounted credential and /proc/self/environ -- the exact reads this "+
+				"sandbox exists to remove.", tok, path)
+		}
+	}
+}
+
+// TestSandboxSpecSkipsPathsThatDoNotExist is the other direction, and it is
+// about availability rather than confinement: sandbox.Apply treats a path it
+// cannot open as an ERROR, so a spec naming /lib64 on an arm64 image would
+// refuse every job on that image.
+func TestSandboxSpecSkipsPathsThatDoNotExist(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+		if _, err := os.Stat(tok[3:]); err != nil {
+			t.Fatalf("spec names %q, which does not exist here: %v.\n"+
+				"sandbox.Apply refuses a rule it cannot open, so this spec would fail EVERY job "+
+				"on a host with this layout rather than confining one.", tok, err)
+		}
+	}
+}
+
+// TestSandboxSpecCarriesTheBundleReadOnly: the bundle must be reachable (the
+// engine reads every .sty out of it) and must not be writable (one job must
+// not be able to edit what the next job typesets with).
+func TestSandboxSpecCarriesTheBundleReadOnly(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle)
+	if !slices.Contains(spec, "ro:"+bundle) {
+		t.Fatalf("bundle %q is not readable in the spec; the engine would find no packages at all.\nspec = %v", bundle, spec)
+	}
+	if slices.Contains(spec, "rw:"+bundle) {
+		t.Fatalf("bundle %q is WRITABLE in the spec: one client's document could rewrite the "+
+			"package set the next client is typeset with.\nspec = %v", bundle, spec)
+	}
+}
+
+// TestSandboxSetupExitIsNotTheEngineFailureCode holds the contract that keeps
+// a broken node from being reported as a broken document.
+//
+// tectonic exits 1 when a document fails to compile. If the helper shared that
+// status, Convert could not tell "the confinement could not be established"
+// from "this LaTeX is wrong", and the first would be classified terminal and
+// never retried.
+func TestSandboxSetupExitIsNotTheEngineFailureCode(t *testing.T) {
+	if TectonicSandboxSetupExit == 1 || TectonicSandboxSetupExit == 0 {
+		t.Fatalf("TectonicSandboxSetupExit = %d, which collides with the engine's own exit statuses; "+
+			"an infrastructure fault would be reported to the client as a document that failed to typeset",
+			TectonicSandboxSetupExit)
+	}
+}
