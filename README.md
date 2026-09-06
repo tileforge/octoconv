@@ -183,8 +183,20 @@ nothing else — no `/etc`, no `/proc`, no mounted secret. It needs no capabilit
 and no privileged container: an unprivileged process restricts *itself*, and
 the restriction is inherited across `execve` and cannot be lifted.
 
+The engine gets the format **files** it needs, not the directory holding them:
+a cache pointed at `/etc/ssh` or a home directory would otherwise grant the
+credentials sitting beside the format, because Landlock grants are recursive.
+`TECTONIC_CACHE_DIR` is validated at startup for the same reason — it may not
+be a system directory, may not contain the directory jobs are materialised in,
+and must hold regular `*.fmt` files (a symlink named `*.fmt` would grant
+whatever it points at). `.env.example` lists every refusal.
+
 On a kernel without Landlock the worker **exits at startup** rather than
-typesetting client documents unconfined. If that is deliberate — an old node
+typesetting client documents unconfined. Startup does not merely ask the kernel
+whether Landlock exists — a policy can answer yes and then deny the ruleset —
+it **compiles a document** through the real sandbox with the configured bundle
+and cache, so a host where the engine cannot run confined fails once, at boot,
+instead of on every job. If that is deliberate — an old node
 pool, a developer running the worker outside Linux — set
 `TECTONIC_SANDBOX_DISABLED=true`, which is the only value that disables it and
 which logs what it costs on every boot.
