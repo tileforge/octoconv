@@ -1,6 +1,9 @@
 package convert
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,12 +36,17 @@ func TestSandboxSpecGrantsTheJobDirectoryAndNothingElseWritable(t *testing.T) {
 	if len(rw) == 0 {
 		t.Fatalf("no writable path at all; the engine could not write its PDF.\nspec = %v", spec)
 	}
-	// Two other writable entries are legitimate and are named here one at a
-	// time: TMPDIR, because the engine keeps intermediates, and /dev/null,
-	// because a program that cannot open it fails in ways that have nothing to
-	// do with typesetting. Anything BEYOND these is a widening nobody asked
-	// for, and adding one has to be an edit to this list.
-	allowed := map[string]bool{jobDir: true, os.TempDir(): true, "/dev/null": true}
+	// /dev/null is the one other writable entry, because a program that cannot
+	// open it fails in ways that have nothing to do with typesetting. Anything
+	// BEYOND these is a widening nobody asked for, and adding one has to be an
+	// edit to this list.
+	//
+	// os.TempDir() is deliberately NOT here. It was, and that was the defect:
+	// Landlock grants are path-beneath and additive, so granting the shared
+	// /tmp granted every other job's directory underneath it and made the
+	// jobDir entry decorative. The engine's TMPDIR now points AT the job
+	// directory instead (codex, PR #21).
+	allowed := map[string]bool{jobDir: true, "/dev/null": true}
 	for _, p := range rw {
 		if !allowed[p] {
 			t.Fatalf("spec grants WRITE to %q, which is neither the job directory (%q) nor TMPDIR (%q).\n"+
@@ -123,5 +131,83 @@ func TestSandboxSetupExitIsNotTheEngineFailureCode(t *testing.T) {
 		t.Fatalf("TectonicSandboxSetupExit = %d, which collides with the engine's own exit statuses; "+
 			"an infrastructure fault would be reported to the client as a document that failed to typeset",
 			TectonicSandboxSetupExit)
+	}
+}
+
+// TestSandboxSpecDoesNotGrantTheSharedTempDir states the regression as its own
+// case, because the one above would keep passing if jobDir ever happened to BE
+// the shared temporary directory.
+func TestSandboxSpecDoesNotGrantTheSharedTempDir(t *testing.T) {
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	shared := strings.TrimSuffix(os.TempDir(), "/")
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle) {
+		if strings.TrimSuffix(tok[3:], "/") == shared {
+			t.Fatalf("spec grants %q, the SHARED temporary directory. Landlock grants are recursive: "+
+				"this reaches every other job's inputs and outputs, and lets a document write files "+
+				"outside the workDir the worker cleans up.", tok)
+		}
+	}
+}
+
+// TestSandboxSetupFailureKeepsTheReason drives Convert through a helper that
+// fails the way a real node does, and asserts the operator can still tell WHY.
+//
+// The defect it pins: runCommandLimitedEnv returns only STDOUT in out and
+// embeds stderr in the error, while the helper reports on stderr. Formatting
+// out here recorded an empty string, so "the sandbox could not be established"
+// arrived with no indication whether ruleset creation, a path rule,
+// restrict_self or the exec had failed -- on the one error class whose cause is
+// a property of the machine and cannot be reproduced from the job (codex, #21).
+func TestSandboxSetupFailureKeepsTheReason(t *testing.T) {
+	dir := t.TempDir()
+
+	// A stand-in engine, so exec.LookPath resolves on any host: Convert
+	// locates it before invoking the helper, and never runs it here.
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "tectonic"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	const reason = "landlock: restrict self: operation not permitted"
+	helper := filepath.Join(dir, "helper")
+	script := "#!/bin/sh\necho '__sandbox-exec: " + reason + "' >&2\nexit " +
+		fmt.Sprint(TectonicSandboxSetupExit) + "\n"
+	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := filepath.Join(dir, "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("not a real bundle, never opened"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := filepath.Join(dir, "in.tex")
+	if err := os.WriteFile(in, []byte("\\documentclass{article}\\begin{document}x\\end{document}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := TectonicConverter{BundlePath: bundle, SandboxHelper: []string{helper}}
+	err := c.Convert(context.Background(), in, filepath.Join(dir, "out.pdf"), nil)
+
+	if err == nil {
+		t.Fatal("a helper exiting with the setup status produced no error")
+	}
+	if !errors.Is(err, ErrTeXSandboxUnavailable) {
+		t.Fatalf("error is not classified as a sandbox fault, so the job would be treated as a bad "+
+			"document and never retried: %v", err)
+	}
+	if !strings.Contains(err.Error(), reason) {
+		t.Fatalf("the reason the sandbox could not be established is missing from the error.\n"+
+			"An operator sees only that it failed, not whether it was the ruleset, a path rule or "+
+			"the exec -- and this is the one failure here that cannot be reproduced from the job.\n"+
+			"want it to contain: %q\ngot: %v", reason, err)
 	}
 }

@@ -17,3 +17,6 @@ func Available() bool { return false }
 func Apply(Paths) error {
 	return errors.New("landlock: not available on this platform")
 }
+
+// ThreadID has no meaning where there is no sandbox to pin to a thread.
+func ThreadID() int { return 0 }

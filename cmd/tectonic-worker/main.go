@@ -80,6 +80,17 @@ func runSandboxExec(argv []string) {
 		// prevent, and it would be invisible.
 		fatalSandbox("%v", err)
 	}
+	restricted := sandbox.ThreadID()
+
+	// The rules live on the THREAD that established them, and execve carries
+	// the security state of the thread that calls it. Apply locks the thread
+	// so this cannot drift; this asserts it rather than trusting it, because
+	// the failure -- the engine running unsandboxed -- produces a correct PDF
+	// and no error at all.
+	if now := sandbox.ThreadID(); now != restricted {
+		fatalSandbox("thread changed between applying the sandbox (%d) and exec (%d): "+
+			"the engine would run unconfined", restricted, now)
+	}
 	if err := syscall.Exec(cmd[0], cmd, os.Environ()); err != nil {
 		fatalSandbox("exec %s: %v", cmd[0], err)
 	}

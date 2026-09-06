@@ -146,7 +146,12 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath string) []string {
 	// directory and outDir are the same one today; both are named because the
 	// worker is free to stop doing that and a sandbox that assumed otherwise
 	// would fail as an unexplained engine error.
-	rw := dedupeExisting([]string{filepath.Dir(inPath), outDir, os.TempDir(), "/dev/null"})
+	// The job's own directories, and NOT os.TempDir(). Landlock grants are
+	// path-beneath and additive, so naming the shared /tmp here would grant
+	// everything under it and make the two entries that matter meaningless.
+	// The engine's TMPDIR is pointed at the job directory instead; see
+	// tectonicEnv.
+	rw := dedupeExisting([]string{filepath.Dir(inPath), outDir, "/dev/null"})
 
 	ro := []string{bundlePath}
 	if cache := os.Getenv("TECTONIC_CACHE_DIR"); cache != "" {
@@ -507,13 +512,25 @@ func texIncludedNames(src []byte) []texInclude {
 // the image puts the precompiled format; PATH, HOME and TMPDIR are the
 // ordinary process minimum. Anything unset stays unset rather than being
 // invented.
-func tectonicEnv() []string {
-	keep := []string{"PATH", "HOME", "TMPDIR", "TECTONIC_CACHE_DIR", "SOURCE_DATE_EPOCH", "LANG", "LC_ALL"}
-	env := make([]string, 0, len(keep))
+func tectonicEnv(jobDir string) []string {
+	// TMPDIR is not inherited: it is SET, to the job's own directory.
+	//
+	// Inheriting it pointed the engine at the shared /tmp, and the sandbox had
+	// to grant whatever it named -- which is a path-beneath grant on the whole
+	// of /tmp, making the per-job grant beside it decorative. Every job could
+	// then read and write every other job's directory, and could leave files
+	// outside its own workDir that its deferred cleanup never removes. The
+	// worker's job directory already lives under /tmp, so pointing TMPDIR at
+	// it is strictly narrower and costs the engine nothing (codex, PR #21).
+	keep := []string{"PATH", "HOME", "TECTONIC_CACHE_DIR", "SOURCE_DATE_EPOCH", "LANG", "LC_ALL"}
+	env := make([]string, 0, len(keep)+1)
 	for _, k := range keep {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
+	}
+	if jobDir != "" {
+		env = append(env, "TMPDIR="+jobDir)
 	}
 	return env
 }
@@ -604,7 +621,7 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 			tectonicSandboxSpec(inPath, outDir, c.BundlePath)...),
 			"--", enginePath), args...)
 	}
-	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(), name, args...)
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(filepath.Dir(inPath)), name, args...)
 	if err != nil {
 		// The helper's "the engine never ran" status, before any of the
 		// engine-shaped classification below: nothing in out is tectonic's
@@ -612,7 +629,14 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		var setupErr *exec.ExitError
 		if len(c.SandboxHelper) > 0 && errors.As(err, &setupErr) &&
 			setupErr.ExitCode() == TectonicSandboxSetupExit {
-			return fmt.Errorf("tectonic: %w: %s", ErrTeXSandboxUnavailable, tectonicTail(out))
+			// err, not out. The helper reports on STDERR and
+			// runCommandLimitedEnv returns only stdout in out, embedding
+			// stderr in the error -- so formatting out here recorded an empty
+			// string and lost whether ruleset creation, a path rule,
+			// restrict_self or the exec itself failed. That is the entire
+			// diagnostic an operator has for a node that cannot confine the
+			// engine (codex, PR #21).
+			return fmt.Errorf("tectonic: %w: %s", ErrTeXSandboxUnavailable, tectonicTail([]byte(err.Error())))
 		}
 		// THE ENGINE's deadline, named as such. The worker bounds the WHOLE
 		// attempt with one context -- download, convert, upload -- because the

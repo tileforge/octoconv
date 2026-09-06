@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -95,6 +96,22 @@ func supportedAccess(abi int) uint64 {
 // property that makes it worth having, and the reason the caller has to be the
 // thing that becomes the engine.
 func Apply(p Paths) error {
+	// LOCK THE THREAD, AND NEVER UNLOCK IT.
+	//
+	// Landlock and no_new_privs are properties of the calling THREAD, not of
+	// the process. A goroutine may migrate to another OS thread at any
+	// preemption point, so without this the rules can be established on thread
+	// A while syscall.Exec runs on thread B -- and execve carries the security
+	// state of the thread that calls it. The engine would then run with NO
+	// sandbox at all, intermittently, while every test and every live probe
+	// that happened to stay on one thread reported success.
+	//
+	// It is deliberately never unlocked: the only caller applies the rules and
+	// then becomes the engine, so the lock must outlive this function. Found by
+	// codex on PR #21; the live proof did not catch it, because a race that
+	// usually goes the right way looks exactly like correctness.
+	runtime.LockOSThread()
+
 	abi := abiVersion()
 	if abi < 1 {
 		return fmt.Errorf("landlock: unavailable on this kernel")
@@ -170,3 +187,11 @@ func addPath(rulesetFD int, path string, access uint64) error {
 	}
 	return nil
 }
+
+// ThreadID is the OS thread the caller is running on.
+//
+// Exported so the process that applies the rules can prove, immediately before
+// execve, that it is still on the thread it restricted. Apply locks the thread
+// and that ought to be enough; this is the check that says so out loud rather
+// than trusting it, because the failure it guards against is silent.
+func ThreadID() int { return unix.Gettid() }
