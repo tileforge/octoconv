@@ -707,3 +707,61 @@ func TestSystemRootsAreRefusedAsTheCache(t *testing.T) {
 		}
 	}
 }
+
+// TestSpecEmitsOnlyAbsolutePaths is the invariant behind codex round 6's
+// second finding, stated so it cannot come back through a different setting.
+//
+// The helper opens every token with O_PATH, and a RELATIVE token is resolved
+// against a working directory nothing in the spec states. That is not
+// theoretical: this image's runtime stage has no WORKDIR, so the worker starts
+// in "/", and TECTONIC_CACHE_DIR=tmp compared as "tmp" (matching nothing)
+// while opening as "/tmp" (granting every job directory).
+func TestSpecEmitsOnlyAbsolutePaths(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	if err := os.MkdirAll("cache/formats", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("cache/formats/abc-latex-33.fmt", []byte("f"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("bundle.ttb", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile("tectonic", []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll("job", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Every configurable path given RELATIVE, which is the shape of the
+	// finding.
+	t.Setenv("TECTONIC_CACHE_DIR", "cache")
+
+	for _, tok := range tectonicSandboxSpec("job/in.tex", "job", "bundle.ttb", "tectonic") {
+		if p := tok[3:]; !filepath.IsAbs(p) {
+			t.Errorf("spec emits %q, a RELATIVE path. The helper opens it against a working "+
+				"directory the spec never states, so what is granted is not what was compared -- "+
+				"which is how a cache named %q grants the whole of the directory it resolves into.",
+				tok, "cache")
+		}
+	}
+}
+
+// TestRelativeCachePathIsStillCaughtByContainment is the same finding from the
+// validation side: a relative cache that RESOLVES onto the job root must be
+// refused, even though as strings the two have nothing in common.
+func TestRelativeCachePathIsStillCaughtByContainment(t *testing.T) {
+	t.Chdir(os.TempDir())
+
+	err := ValidateTectonicCacheDir(".")
+	if err == nil {
+		t.Fatal("a relative cache path that resolves onto the job root was accepted")
+	}
+	if !strings.Contains(err.Error(), "contains the directory jobs are materialised in") {
+		t.Fatalf("refused for the wrong reason, so the containment check never fired on the "+
+			"relative form: %v", err)
+	}
+}

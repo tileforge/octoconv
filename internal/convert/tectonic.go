@@ -356,10 +356,27 @@ func containsAny(parent string, children []string) bool {
 // filepath.Clean is the fallback for a path that cannot be resolved, so a
 // non-existent path is still compared rather than silently passing.
 func resolvePath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+	// ABSOLUTE FIRST. filepath.EvalSymlinks preserves a relative path as
+	// relative, so TECTONIC_CACHE_DIR=tmp resolved to "tmp" while the job root
+	// resolved to "/tmp" -- the containment check compared two paths that
+	// denote the same directory and saw no relation, and the kernel then
+	// opened the relative one against the process's working directory and
+	// granted the whole of /tmp. This image's runtime stage has no WORKDIR, so
+	// that working directory is "/" and the two forms coincide exactly
+	// (codex round 6, confirmed: `docker run --entrypoint sh ... -c pwd` = /).
+	//
+	// filepath.Abs uses this process's working directory, which is the same
+	// one the helper inherits and the same one the kernel resolves against --
+	// so this is the resolution the grant will actually get, not an
+	// approximation of it.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
 		return filepath.Clean(resolved)
 	}
-	return filepath.Clean(path)
+	return filepath.Clean(abs)
 }
 
 // dedupeExisting keeps order, drops repeats, and drops what is not there.
@@ -367,14 +384,26 @@ func dedupeExisting(paths []string) []string {
 	seen := make(map[string]bool, len(paths))
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		if p == "" || seen[p] {
+		if p == "" {
 			continue
 		}
-		seen[p] = true
-		if _, err := os.Stat(p); err != nil {
+		// ABSOLUTE in the emitted spec, for the same reason resolvePath is:
+		// the helper opens these tokens with O_PATH, and a relative one is
+		// resolved against a working directory nothing here states. Emitting
+		// the absolute form makes the argv say exactly what will be granted.
+		abs, err := filepath.Abs(p)
+		if err != nil {
 			continue
 		}
-		out = append(out, p)
+		abs = filepath.Clean(abs)
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		if _, serr := os.Stat(abs); serr != nil {
+			continue
+		}
+		out = append(out, abs)
 	}
 	return out
 }
