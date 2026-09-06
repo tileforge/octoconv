@@ -126,7 +126,32 @@ unset cache dir, an empty one, a stale format, an engine resolved outside the
 granted roots, a lost diagnostic. That is this engine's other recurring defect
 and the sandbox gave it a new cause.
 
-### Five greens that were not evidence
+### Rounds 5-8, and the shape they all shared
+
+Seventeen findings across eight rounds. Everything after round 4 was about ONE
+thing: `TECTONIC_CACHE_DIR` is operator-supplied, and every way of turning it
+into a grant was wider than it looked.
+
+  - the configured ROOT was granted, so `/etc` with a `*.fmt` in it handed out
+    `/etc/passwd`;
+  - narrowing to the format's PARENT still handed out `/etc/ssh` and any home
+    directory;
+  - narrowing to the FILES made the NAME the whole decision, and a symlink
+    named `*.fmt` pointing at `id_rsa` was granted through `O_PATH`;
+  - a RELATIVE path compared as `tmp` and opened as `/tmp` -- the path checked
+    and the path granted were different objects;
+  - and the opposite failure twice over: a symlinked cache root was walked as
+    the symlink and reported empty, refusing a layout that worked before.
+
+The lesson is not "check the cache harder". Each fix was correct and each one
+created the next finding, because the thing being narrowed was a path supplied
+from outside and every narrowing left a different residue. What finally held
+were invariants stated over the WHOLE spec rather than over the setting that
+had just failed: no read-only grant may be an ancestor of a writable job
+directory; no token may be relative; the grant is a regular file decided by
+`Lstat`, not a name.
+
+### Six greens that were not evidence
 
 Each looked like proof, and each was caught only by checking what made it
 green. Recorded because the pattern is the finding:
@@ -139,7 +164,15 @@ green. Recorded because the pattern is the finding:
 4. an inversion that SKIPPED rather than failed, because the test asked the
    function under test whether its own condition held;
 5. a boot-time measurement that matched a stale log line from the previous
-   container.
+   container;
+6. an inversion that passed because the TEST compared paths in one form while
+   the code emitted another -- the grant walk resolves the cache root but
+   leaves the entry's own name alone, so the token was "resolved parent + link
+   name" and neither form the test knew about.
+
+Three of the six are the same mistake in different clothes: the check and the
+thing checked were not the same object. That is also, exactly, what four of the
+review findings were.
 
 ### What is deliberately NOT closed by this
 
