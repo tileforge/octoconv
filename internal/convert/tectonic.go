@@ -263,13 +263,19 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
 }
 
-// tectonicCacheGrants is the narrow half of the cache grant: the directories
-// that actually contain a compiled format, rather than whatever root the
-// operator configured.
+// tectonicCacheGrants is the narrow half of the cache grant: the compiled
+// FORMAT FILES themselves, rather than whatever root the operator configured.
 //
-// The blast radius becomes "the directories holding the formats" instead of
-// "everything under TECTONIC_CACHE_DIR", which is the difference between
-// granting /var/cache/tectonic/formats and granting /etc.
+// Files and not their directories, which is tighter than it first looks. A
+// cache pointed at a home directory would still grant that home directory if
+// the grant were per-directory, and the system-root backstop does not list
+// every home a deployment might have. Per-file, the blast radius is exactly
+// the formats: pointing the cache at $HOME grants the .fmt inside it and not
+// the SSH keys beside it.
+//
+// Measured before adopting, because the engine could reasonably have needed to
+// enumerate the directory: with only the format file granted, a compile
+// returns exit 0 and a PDF, same as with the whole directory granted.
 //
 // Returning nothing is a legitimate answer and deliberately not backfilled
 // with cacheDir: ValidateTectonicCacheDir refused a cache with no format at
@@ -278,23 +284,27 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 // direction -- backfilling the root would restore the very grant this exists
 // to remove.
 func tectonicCacheGrants(cacheDir string) []string {
-	var dirs []string
-	seen := make(map[string]bool)
+	var formats []string
 	_ = filepath.WalkDir(cacheDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if d.IsDir() || !isCompiledFormat(filepath.Base(path)) {
-			return nil
+		if len(formats) >= maxCacheGrants {
+			return fs.SkipAll
 		}
-		if parent := filepath.Dir(path); !seen[parent] {
-			seen[parent] = true
-			dirs = append(dirs, parent)
+		if !d.IsDir() && isCompiledFormat(filepath.Base(path)) {
+			formats = append(formats, path)
 		}
 		return nil
 	})
-	return dirs
+	return formats
 }
+
+// maxCacheGrants bounds how many rules one cache can add. A real cache holds a
+// handful of formats -- this image holds exactly one -- and the cap exists so a
+// misconfigured directory cannot turn every job's setup into thousands of
+// add_rule calls.
+const maxCacheGrants = 64
 
 // isCompiledFormat is the one place that decides what a format file looks
 // like, so cacheHoldsFormat and tectonicCacheGrants cannot disagree about it --

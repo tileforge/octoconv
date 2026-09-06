@@ -636,7 +636,7 @@ func resolveForTest(t *testing.T, path string) string {
 // *.fmt passes every startup check -- it is a directory, it holds a format,
 // and the compile preflight succeeds -- and then hands client TeX every
 // credential beside it.
-func TestCacheGrantIsNarrowedToFormatDirectories(t *testing.T) {
+func TestCacheGrantIsNarrowedToTheFormatFilesThemselves(t *testing.T) {
 	// A cache root that also holds something that must not be readable, which
 	// is what /etc or $HOME looks like from here.
 	root := t.TempDir()
@@ -667,18 +667,23 @@ func TestCacheGrantIsNarrowedToFormatDirectories(t *testing.T) {
 	var formatsGranted bool
 	for _, tok := range spec {
 		g := filepath.Clean(tok[3:])
-		if g == filepath.Clean(filepath.Join(root, "formats")) {
+		if g == filepath.Clean(filepath.Join(root, "formats", "abc-latex-33.fmt")) {
 			formatsGranted = true
 		}
-		if g == filepath.Clean(root) {
-			t.Fatalf("spec grants the cache ROOT %q, which also holds %q. Path-beneath grants are "+
-				"recursive, so a cache configured as /etc or a home directory would hand every "+
-				"document the credentials beside the format.\nspec = %v", tok, secret, spec)
+		// Neither the root NOR the directory holding the format: the grant is
+		// the format FILE. A per-directory grant would still hand out
+		// everything beside the format, which is the whole finding when the
+		// configured cache is a home directory.
+		if g == filepath.Clean(root) || g == filepath.Clean(filepath.Join(root, "formats")) {
+			t.Fatalf("spec grants %q, a DIRECTORY in the configured cache, which also holds %q. "+
+				"Path-beneath grants are recursive, so a cache configured as /etc or a home "+
+				"directory would hand every document the credentials beside the format. The grant "+
+				"must be the format FILE.\nspec = %v", tok, secret, spec)
 		}
 	}
 	if !formatsGranted {
-		t.Fatalf("the directory holding the format was not granted at all; the engine would have "+
-			"no format to load.\nspec = %v", spec)
+		t.Fatalf("the format file itself was not granted; the engine would have no format to "+
+			"load.\nspec = %v", spec)
 	}
 }
 
