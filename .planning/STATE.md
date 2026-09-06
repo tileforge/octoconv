@@ -43,8 +43,16 @@ DEBT WORKED DOWN AFTER THE MILESTONE (PRs #17-#20, all merged):
   returned DATABASE_URL, S3 keys and API_KEY_SALT. Found while testing whether
   the engine can read a sibling file -- the premise multi-file projects depend
   on. TEX-04 had proved the mechanism it named and never asked this one. The
-  engine now gets an allowlist environment; CONFINING the reads is open work
-  (todos/pending/2026-09-05-tex-file-reads-not-confined.md).
+  engine now gets an allowlist environment; CONFINING the reads is #21
+  (todos/completed/2026-09-05-tex-file-reads-not-confined.md, open PR).
+- #21 closed that with Landlock, which the todo never costed: it listed three
+  PRIVILEGED mechanisms and called a mount namespace "the only one that makes
+  the guarantee structural", when an unprivileged process can restrict ITSELF
+  and have it inherited across execve. Measured before writing code (ABI 8 as
+  nobody in the image), and running it found two defects reasoning had not:
+  the ruleset would not build at all (the bundle is a FILE, and Landlock
+  refuses directory rights on one) and nothing could open /dev/null. The
+  option list was the defect, not the implementation.
 - #20 shipped multi-file projects (operator chose repeated "file" parts over an
   archive). Five review rounds, 16 findings, plus eight own sweeps finding seven
   more. "What counts as TeX source" was answered four times -- by extension, by
