@@ -376,15 +376,15 @@ func resolveSandboxHelper() ([]string, error) {
 	// permitting landlock_create_ruleset while blocking
 	// landlock_restrict_self, an LSM stacking limit, a container runtime that
 	// filters one syscall of the three. The worker would then start, consume
-	// the queue, and exit 78 on every job -- which is precisely the outcome
-	// the startup contract exists to prevent (codex round 3).
+	// the queue, and exit 78 on every job -- precisely what the startup
+	// contract exists to prevent (codex round 3).
 	//
-	// So the preflight RUNS THE REAL PATH: this same binary, in the same mode,
-	// with a real ruleset, restricting itself and exec'ing something trivial.
-	// Anything that would break at job time breaks here instead, once.
-	if err := preflightSandbox(helper); err != nil {
-		return nil, err
-	}
+	// Proving it is preflightEngine's job, not this function's: it execs the
+	// REAL engine under the REAL ruleset, which exercises create, add_rule,
+	// restrict_self and execve in one go. An earlier version of this also ran a
+	// separate probe against /bin/true first -- redundant with that, and it
+	// introduced a false refusal of its own, since a distroless image has no
+	// `true` to exec (own sweep).
 	return helper, nil
 }
 
@@ -420,10 +420,13 @@ func preflightEngine(c convert.TectonicConverter, helper []string) error {
 	defer cancel()
 
 	if err := c.TectonicPreflight(ctx, helper); err != nil {
-		return fmt.Errorf("%v.\nThe engine's own runtime files are the usual cause: a wrapper "+
-			"script whose interpreter, or a binary whose shared libraries, live outside the "+
-			"directories the ruleset grants. Extend convert.tectonicSystemReadOnly for this "+
-			"image, or set %s=true to run unconfined deliberately", err, sandboxDisabledEnv)
+		return fmt.Errorf("%v.\n\nTwo causes are usual. A runtime policy that permits the Landlock "+
+			"ABI query but denies establishing a ruleset (seccomp, LSM stacking, the container "+
+			"runtime) -- the kernel reports an ABI and confinement still cannot be applied. Or the "+
+			"engine's own runtime files: a wrapper whose interpreter, or a binary whose shared "+
+			"libraries, live outside the directories the ruleset grants; extend "+
+			"convert.tectonicSystemReadOnly for this image. Set %s=true to run unconfined "+
+			"deliberately", err, sandboxDisabledEnv)
 	}
 	return nil
 }
