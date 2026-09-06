@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -515,6 +516,64 @@ func TestSandboxSpecDropsAliasedAncestors(t *testing.T) {
 			t.Fatalf("spec grants %q, which resolves onto the job directory's parent (%s). "+
 				"Landlock follows the link when it opens the path, so this grants every job "+
 				"directory beside this one.", tok, parent)
+		}
+	}
+}
+
+// TestHostileDocumentProbesNothingTheRulesetGrants ties the corpus fixture to
+// the code, in the direction that can be checked without a kernel.
+//
+// testdata/tectonic/hostile_reads.tex is the document this whole change
+// exists to defeat, and it was verified live (status done, 1 page, every read
+// refused). But a live result ages: someone widens the ruleset for an
+// unrelated reason, the fixture keeps passing on a machine nobody runs it on,
+// and the demonstration quietly stops demonstrating.
+//
+// So this asserts the STATIC half: no path the document probes may be
+// reachable under the spec. It cannot prove Landlock enforces the spec -- that
+// is what the live run and the startup preflight are for -- but it does catch
+// the failure that would otherwise be silent, which is the ruleset growing to
+// cover something the fixture attacks.
+func TestHostileDocumentProbesNothingTheRulesetGrants(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("testdata", "tectonic", "hostile_reads.tex"))
+	if err != nil {
+		t.Fatalf("the hostile-reads fixture is missing: %v", err)
+	}
+
+	probes := regexp.MustCompile(`\\probe\{([^}]+)\}`).FindAllStringSubmatch(string(src), -1)
+	if len(probes) < 5 {
+		t.Fatalf("found %d \\probe targets in the fixture; it is supposed to attack a spread of "+
+			"them, so either the file was gutted or this matcher no longer matches it", len(probes))
+	}
+
+	jobDir := t.TempDir()
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var granted []string
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
+		granted = append(granted, tok[3:])
+	}
+
+	for _, p := range probes {
+		target := filepath.Clean(p[1])
+		if !filepath.IsAbs(target) {
+			continue // a relative probe resolves inside the job dir; the kernel decides
+		}
+		for _, g := range granted {
+			gc := filepath.Clean(g)
+			if target == gc || strings.HasPrefix(target, gc+string(filepath.Separator)) {
+				t.Errorf("the ruleset grants %q, which covers %q -- a path the hostile fixture "+
+					"attacks and that was measured as REFUSED. Either the grant is wrong, or the "+
+					"fixture's demonstration is now stale and says so on a machine nobody runs.",
+					g, target)
+			}
 		}
 	}
 }
