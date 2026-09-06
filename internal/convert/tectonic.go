@@ -111,6 +111,50 @@ const TectonicSandboxSetupExit = 78
 // every tex job routed to it and report each as a client mistake.
 var ErrTeXSandboxUnavailable = errors.New("tex sandbox could not be established")
 
+// TectonicPreflight proves the engine can actually be EXECUTED under the
+// ruleset this converter would build, before any job depends on it.
+//
+// It runs the real helper with a real spec and execs the real engine with
+// --version, which is the only check that covers a whole class of layout
+// problems without pretending to compute a runtime closure: a PATH-resolved
+// wrapper script whose shebang interpreter is outside the granted roots, an
+// ELF whose PT_INTERP is elsewhere, a build whose shared libraries live in a
+// store path. Parsing the binary to derive those would answer some of them and
+// silently miss the rest; running it answers all of them at once, and answers
+// them the same way the job would (codex round 3).
+//
+// Called at startup, so a host where the engine cannot run confined refuses to
+// consume the queue instead of failing every job on it.
+func (c TectonicConverter) TectonicPreflight(ctx context.Context, helper []string) error {
+	if len(helper) == 0 {
+		return nil // unconfined by explicit configuration; nothing to prove
+	}
+	enginePath, err := exec.LookPath("tectonic")
+	if err != nil {
+		return fmt.Errorf("locate engine: %w", err)
+	}
+
+	// A real job directory, because the spec grants one and Apply refuses a
+	// rule it cannot open.
+	jobDir, err := os.MkdirTemp("", "octoconv-preflight-")
+	if err != nil {
+		return fmt.Errorf("preflight work directory: %w", err)
+	}
+	defer os.RemoveAll(jobDir)
+
+	args := append(append(append(
+		append([]string{}, helper[1:]...),
+		tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, c.BundlePath, enginePath)...),
+		"--", enginePath), "--version")
+
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(jobDir), helper[0], args...)
+	if err != nil {
+		return fmt.Errorf("the engine cannot be executed under the sandbox: %w: %s",
+			err, tectonicTail(out))
+	}
+	return nil
+}
+
 // tectonicSystemReadOnly is what the engine needs merely to be a running
 // program: its own binary, its shared libraries, and the loader.
 //
@@ -171,7 +215,54 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 	}
 	ro = dedupeExisting(append(ro, tectonicSystemReadOnly...))
 
+	// STRUCTURAL BACKSTOP, and the reason it exists is that this exact defect
+	// already arrived twice through two different doors.
+	//
+	// Landlock grants are path-beneath and additive, so ANY grant that is an
+	// ancestor of the job directory hands out everything beside it -- every
+	// other job's inputs and outputs. The first door was TMPDIR (round 1); the
+	// second was TECTONIC_CACHE_DIR=/tmp, a legitimate pre-warm layout that
+	// silently restored read access to every leftover job directory (round 3).
+	// There is no reason to believe there is no third door, so the invariant is
+	// enforced on the whole set rather than on the two names that have failed.
+	//
+	// Dropping rather than erroring, because this function has no error to
+	// return and a missing READ grant fails loudly at job time, while a wrong
+	// one fails silently and forever. ValidateTectonicCacheDir refuses the
+	// configuration at startup so it should never come to this.
+	ro = dropAncestorsOf(ro, rw)
+
 	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
+}
+
+// dropAncestorsOf removes any path that contains one of the writable
+// directories, which a path-beneath grant would hand out along with it.
+//
+// Equality counts as containment: granting the job directory read-only
+// alongside read-write is harmless, but granting a PARENT of it is the whole
+// bug.
+func dropAncestorsOf(paths, writable []string) []string {
+	out := paths[:0:0]
+	for _, p := range paths {
+		if !containsAny(p, writable) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func containsAny(parent string, children []string) bool {
+	pc := filepath.Clean(parent)
+	for _, child := range children {
+		cc := filepath.Clean(child)
+		if pc == cc {
+			continue // the same directory, not an ancestor of it
+		}
+		if pc == "/" || strings.HasPrefix(cc, pc+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupeExisting keeps order, drops repeats, and drops what is not there.
@@ -341,6 +432,21 @@ func ValidateTectonicCacheDir(path string) error {
 	// after the pre-warm, deliberately: the image asserts the format is there
 	// when it is created, and this asserts it is still there when the process
 	// starts, which is where a mount can have replaced it.
+	// A cache directory that CONTAINS where jobs are materialised grants read
+	// access to all of them, because path-beneath rules are recursive.
+	// TECTONIC_CACHE_DIR=/tmp is a real pre-warm layout and would do exactly
+	// that (codex round 3). Refused here with the reason; the spec builder
+	// drops it structurally as well, so a path this check did not anticipate
+	// still cannot widen the ruleset.
+	jobRoot := filepath.Clean(os.TempDir())
+	if clean := filepath.Clean(path); clean == jobRoot ||
+		strings.HasPrefix(jobRoot, clean+string(filepath.Separator)) || clean == "/" {
+		return fmt.Errorf("%w: format cache %q contains the directory jobs are materialised in (%s). "+
+			"Landlock grants are recursive, so granting it would give every document read access to "+
+			"every other job's files. Point it at a directory of its own",
+			ErrTeXBundleUnusable, path, jobRoot)
+	}
+
 	found, err := cacheHoldsFormat(path)
 	if err != nil {
 		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
@@ -364,7 +470,14 @@ func cacheHoldsFormat(dir string) (bool, error) {
 			// cache: the format may be elsewhere in it.
 			return nil
 		}
-		if !d.IsDir() && strings.Contains(filepath.Base(path), ".fmt") {
+		// A SUFFIX, not a substring. ".fmt" anywhere in the name accepted
+		// README.fmt.txt, which is not a format and leaves the deployment in
+		// exactly the state this check exists to refuse (codex round 3). The
+		// real artifact in the shipped image is
+		// formats/<hash>-latex-33.fmt; .fmt.gz is accepted because tectonic
+		// compresses formats on some builds.
+		if name := filepath.Base(path); !d.IsDir() &&
+			(strings.HasSuffix(name, ".fmt") || strings.HasSuffix(name, ".fmt.gz")) {
 			found = true
 			return fs.SkipAll
 		}

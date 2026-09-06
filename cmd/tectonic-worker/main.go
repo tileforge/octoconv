@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -197,7 +198,16 @@ func main() {
 		log.Printf("🔒 tectonic sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
 	}
 
-	convert.Default.Replace(buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper))
+	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper)
+
+	// Proves the ENGINE runs under the rules, not merely that the rules can be
+	// built. Done after the converter exists so the preflight uses exactly the
+	// configuration the jobs will.
+	if err := preflightEngine(tectonicConverter, sandboxHelper); err != nil {
+		log.Fatalf("tectonic sandbox preflight: %v", err)
+	}
+
+	convert.Default.Replace(tectonicConverter)
 	log.Printf("📚 %s=%s", convert.TectonicBundleEnv, bundlePath)
 	log.Printf("📄 TECTONIC_MAX_OUTPUT_BYTES=%d", maxOutputBytes)
 
@@ -357,7 +367,65 @@ func resolveSandboxHelper() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate this binary to use as the sandbox helper: %w", err)
 	}
-	return []string{self, sandboxExecMode}, nil
+	helper := []string{self, sandboxExecMode}
+
+	// THE ABI QUERY IS NOT PROOF THAT CONFINEMENT CAN BE ESTABLISHED.
+	//
+	// It answers "does this kernel implement Landlock", and a runtime policy
+	// can allow that question and deny the answer: a seccomp profile
+	// permitting landlock_create_ruleset while blocking
+	// landlock_restrict_self, an LSM stacking limit, a container runtime that
+	// filters one syscall of the three. The worker would then start, consume
+	// the queue, and exit 78 on every job -- which is precisely the outcome
+	// the startup contract exists to prevent (codex round 3).
+	//
+	// So the preflight RUNS THE REAL PATH: this same binary, in the same mode,
+	// with a real ruleset, restricting itself and exec'ing something trivial.
+	// Anything that would break at job time breaks here instead, once.
+	if err := preflightSandbox(helper); err != nil {
+		return nil, err
+	}
+	return helper, nil
+}
+
+// preflightSandbox proves the whole mechanism works before any job depends on
+// it: create the ruleset, add a rule, restrict, exec.
+func preflightSandbox(helper []string) error {
+	// Something that exists in the image, does nothing, and exits 0. Resolved
+	// rather than hardcoded so the check does not itself become the reason a
+	// worker refuses to start.
+	probe, err := exec.LookPath("true")
+	if err != nil {
+		return fmt.Errorf("cannot preflight the sandbox: no 'true' binary to exec: %w", err)
+	}
+
+	args := append(append([]string{}, helper[1:]...), "ro:/usr", "--", probe)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, helper[0], args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("the sandbox cannot be established on this host, though the kernel "+
+			"reports a Landlock ABI: %v: %s. A runtime policy (seccomp, LSM stacking, the "+
+			"container runtime) is the usual cause. Set %s=true to run the engine unconfined "+
+			"deliberately", err, strings.TrimSpace(string(out)), sandboxDisabledEnv)
+	}
+	return nil
+}
+
+// preflightEngine is the second half: the mechanism working says nothing about
+// whether THIS engine can be executed under the rules this deployment builds.
+func preflightEngine(c convert.TectonicConverter, helper []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := c.TectonicPreflight(ctx, helper); err != nil {
+		return fmt.Errorf("%v.\nThe engine's own runtime files are the usual cause: a wrapper "+
+			"script whose interpreter, or a binary whose shared libraries, live outside the "+
+			"directories the ruleset grants. Extend convert.tectonicSystemReadOnly for this "+
+			"image, or set %s=true to run unconfined deliberately", err, sandboxDisabledEnv)
+	}
+	return nil
 }
 
 func envInt64(key string, def int64) int64 {

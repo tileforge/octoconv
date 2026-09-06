@@ -325,3 +325,110 @@ func TestSandboxSpecGrantsTheResolvedEngine(t *testing.T) {
 			"the next one.\nspec = %v", spec)
 	}
 }
+
+// TestSandboxSpecNeverGrantsAnAncestorOfTheJobDirectory is the invariant the
+// same defect reached twice through two different doors.
+//
+// Round 1: TMPDIR pointed at the shared /tmp, so the spec granted /tmp.
+// Round 3: TECTONIC_CACHE_DIR=/tmp is a legitimate pre-warm layout that
+// granted it again, read-only, restoring read access to every leftover job
+// directory beside it. Landlock grants are path-beneath: an ancestor hands out
+// everything under it.
+//
+// Stated as a property of the WHOLE spec rather than of the two variables that
+// have failed, because there is no reason to believe there is no third door.
+func TestSandboxSpecNeverGrantsAnAncestorOfTheJobDirectory(t *testing.T) {
+	parent := t.TempDir()
+	jobDir := filepath.Join(parent, "job-1")
+	sibling := filepath.Join(parent, "job-2")
+	for _, d := range []string{jobDir, sibling} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle := filepath.Join(t.TempDir(), "bundle.ttb")
+	if err := os.WriteFile(bundle, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := filepath.Join(t.TempDir(), "tectonic")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The cache pointed at the job directories' PARENT -- codex round 3's case.
+	t.Setenv("TECTONIC_CACHE_DIR", parent)
+
+	for _, tok := range tectonicSandboxSpec(filepath.Join(jobDir, "in.tex"), jobDir, bundle, engine) {
+		granted := filepath.Clean(tok[3:])
+		if granted == filepath.Clean(jobDir) {
+			continue
+		}
+		if strings.HasPrefix(filepath.Clean(sibling), granted+string(filepath.Separator)) {
+			t.Fatalf("spec grants %q, an ancestor of another job's directory (%s). Path-beneath "+
+				"grants are recursive, so this hands one client read access to every other "+
+				"client's inputs and outputs.", tok, sibling)
+		}
+	}
+}
+
+// TestCacheDirIsRefusedWhenItSwallowsTheJobRoot is the startup half: the spec
+// drops such a grant structurally, but silently, and a cache that was dropped
+// means every job fails with an error about formats. The operator should be
+// told at startup what is actually wrong.
+func TestCacheDirIsRefusedWhenItSwallowsTheJobRoot(t *testing.T) {
+	// The REASON is asserted, not merely that an error came back. Inverting
+	// the guard the first time still produced an error here -- the shared
+	// temporary directory also happens to hold no *.fmt -- so the test passed
+	// while the property it names was gone. A refusal for the wrong reason is
+	// not evidence.
+	const want = "contains the directory jobs are materialised in"
+
+	for _, dir := range []string{os.TempDir(), "/"} {
+		err := ValidateTectonicCacheDir(dir)
+		if err == nil {
+			t.Fatalf("%q was accepted as the format cache. Jobs are materialised under it, so "+
+				"granting it read-only gives every document read access to every other job's files.", dir)
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("%q was refused, but for the wrong reason -- the containment check did not "+
+				"fire, and a cache that DOES hold a format would sail through.\nwant the message "+
+				"to contain %q\ngot: %v", dir, want, err)
+		}
+	}
+
+	// The case the wrong-reason pass was hiding: an ancestor of the job root
+	// that IS properly pre-warmed. Only the containment check can refuse this.
+	warm := os.TempDir()
+	if err := os.WriteFile(filepath.Join(warm, "octoconv-test-latex-33.fmt"), []byte("f"), 0o600); err != nil {
+		t.Skipf("cannot write a probe format into %s: %v", warm, err)
+	}
+	defer os.Remove(filepath.Join(warm, "octoconv-test-latex-33.fmt"))
+
+	err := ValidateTectonicCacheDir(warm)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("a PRE-WARMED cache that contains the job root was accepted (%v). This is the "+
+			"configuration codex round 3 named: it passes every format check and grants read "+
+			"access to every job directory beside it.", err)
+	}
+}
+
+// TestCacheFormatMatchIsASuffix: ".fmt" anywhere in the name accepted
+// README.fmt.txt, which is not a format, leaving the deployment in exactly the
+// state the check exists to refuse (codex round 3).
+func TestCacheFormatMatchIsASuffix(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.fmt.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTectonicCacheDir(dir); err == nil {
+		t.Fatal("a cache holding only README.fmt.txt was accepted as pre-warmed; the engine would " +
+			"still have no format and, read-only, could not build one")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "abc-latex-33.fmt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTectonicCacheDir(dir); err != nil {
+		t.Fatalf("a real format file was not recognised: %v", err)
+	}
+}
