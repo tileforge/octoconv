@@ -198,9 +198,27 @@ func (c TectonicConverter) TectonicPreflight(ctx context.Context, helper []strin
 		return fmt.Errorf("preflight document: %w", err)
 	}
 
+	// THE SAME SPEC A JOB WOULD GET -- which means honouring
+	// ConfineFilesystem, and carrying the CPU budget.
+	//
+	// Building the ruleset unconditionally made the preflight prove something
+	// this deployment does not do: with TECTONIC_SANDBOX_DISABLED=true the
+	// helper is still used (it carries the CPU budget), so an unconditional
+	// spec applied Landlock on a host that has none, exited 78, and the worker
+	// refused to start -- in precisely the environment the escape hatch exists
+	// for (codex, PR #22). A preflight that tests a configuration nobody runs
+	// is worse than none: it fails the deployments that would have worked.
+	//
+	// The limit was missing too, so the preflight was not exercising the whole
+	// configuration it claims to. It costs nothing here: the document below
+	// compiles in under a second against a budget measured in minutes.
+	spec := sandbox.Paths{}.SpecWith(sandbox.Limits{CPUSeconds: c.CPUSeconds})
+	if c.ConfineFilesystem {
+		spec = tectonicSandboxSpecLimited(inPath, jobDir, c.BundlePath, enginePath, c.CPUSeconds)
+	}
 	args := append(append(append(
 		append([]string{}, helper[1:]...),
-		tectonicSandboxSpec(inPath, jobDir, c.BundlePath, enginePath)...),
+		spec...),
 		"--", enginePath), tectonicArgs(inPath, jobDir, c.BundlePath)...)
 
 	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(jobDir), helper[0], args...)
