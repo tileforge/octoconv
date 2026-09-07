@@ -20,12 +20,3 @@ func Apply(Paths) error {
 
 // ThreadID has no meaning where there is no sandbox to pin to a thread.
 func ThreadID() int { return 0 }
-
-// ApplyLimits fails for the same reason Apply does: a caller that asked for a
-// bound and did not get one must not proceed believing it has one.
-func ApplyLimits(l Limits) error {
-	if l.CPUSeconds <= 0 {
-		return nil
-	}
-	return errors.New("rlimit: not available on this platform")
-}
