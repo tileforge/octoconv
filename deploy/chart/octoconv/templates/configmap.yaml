@@ -188,6 +188,12 @@ data:
   # in 16 seconds against 1 914 057 for the largest legitimate document (2 MiB,
   # 745 pages). tectonic-worker-only; not an IN-02 var.
   TECTONIC_MAX_OUTPUT_BYTES: "33554432"
+  # TECTONIC_SANDBOX_DISABLED is deliberately ABSENT, not set to "false".
+  # Absent means the engine is confined by Landlock and the worker refuses to
+  # start if it cannot be -- so a node pool that loses Landlock produces a pod
+  # that will not become ready, which is visible, rather than a pod that
+  # typesets client documents with read access to every mounted secret, which
+  # is not. Landlock needs no capability and no privileged securityContext.
   TECTONIC_MAX_RETRY: "2"
   # tectonic-worker-only, not read by queue.NewClient(). 1, with the heavy
   # engines: a TeX interpreter plus a 128 MB bundle and its compiled format

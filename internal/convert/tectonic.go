@@ -34,12 +34,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
+
+	"github.com/apaderin/octoconv/internal/sandbox"
 )
 
 // TectonicBundleEnv names the environment variable cmd/tectonic-worker reads
@@ -66,6 +69,17 @@ type TectonicConverter struct {
 	// MaxOutputBytes bounds the PRODUCED PDF. Zero means
 	// DefaultTectonicMaxOutputBytes; see maxOutputBytes.
 	MaxOutputBytes int64
+
+	// SandboxHelper is the argv prefix that establishes the filesystem
+	// sandbox and then BECOMES the engine -- in the deployed image,
+	// {"/usr/local/bin/tectonic-worker", "__sandbox-exec"}.
+	//
+	// Empty means the engine runs unconfined, which is what every unit test
+	// on a developer's machine does and what a non-Linux host has to do:
+	// Landlock is a Linux LSM. Production does not get that choice --
+	// cmd/tectonic-worker refuses to start if it cannot set this (see
+	// TECTONIC_SANDBOX_DISABLED for the one documented escape hatch).
+	SandboxHelper []string
 }
 
 // Engine reports the ninth engine class.
@@ -79,6 +93,365 @@ func (TectonicConverter) Engine() string { return EngineTectonic }
 // source format" safe to have at all.
 func (TectonicConverter) Pairs() []Pair {
 	return []Pair{{From: "latex", To: "pdf"}}
+}
+
+// TectonicSandboxSetupExit is the exit status the sandbox helper uses to say
+// THE ENGINE NEVER RAN -- the confinement could not be established.
+//
+// Declared here rather than in the helper because the two halves of the
+// contract are the helper that exits with it and the classifier below that
+// reads it; a constant in one binary that another compares against by literal
+// is how the two drift apart.
+const TectonicSandboxSetupExit = 78
+
+// ErrTeXSandboxUnavailable is that status, classified.
+//
+// RETRYABLE, and deliberately unlike every other error in this file: the
+// document is fine, this node is not. Left terminal, one bad node would burn
+// every tex job routed to it and report each as a client mistake.
+var ErrTeXSandboxUnavailable = errors.New("tex sandbox could not be established")
+
+// TectonicPreflight proves the engine can actually be EXECUTED under the
+// ruleset this converter would build, before any job depends on it.
+//
+// It runs the real helper with a real spec and execs the real engine with
+// --version, which is the only check that covers a whole class of layout
+// problems without pretending to compute a runtime closure: a PATH-resolved
+// wrapper script whose shebang interpreter is outside the granted roots, an
+// ELF whose PT_INTERP is elsewhere, a build whose shared libraries live in a
+// store path. Parsing the binary to derive those would answer some of them and
+// silently miss the rest; running it answers all of them at once, and answers
+// them the same way the job would (codex round 3).
+//
+// Called at startup, so a host where the engine cannot run confined refuses to
+// consume the queue instead of failing every job on it.
+func (c TectonicConverter) TectonicPreflight(ctx context.Context, helper []string) error {
+	if len(helper) == 0 {
+		return nil // unconfined by explicit configuration; nothing to prove
+	}
+	enginePath, err := exec.LookPath("tectonic")
+	if err != nil {
+		return fmt.Errorf("locate engine: %w", err)
+	}
+
+	// A real job directory, because the spec grants one and Apply refuses a
+	// rule it cannot open.
+	jobDir, err := os.MkdirTemp("", "octoconv-preflight-")
+	if err != nil {
+		return fmt.Errorf("preflight work directory: %w", err)
+	}
+	defer os.RemoveAll(jobDir)
+
+	// A REAL DOCUMENT, not --version.
+	//
+	// --version proves the binary can be executed and nothing else: it never
+	// opens the bundle and never loads a format. A persistent cache holding a
+	// stale format from another tectonic version passes cacheHoldsFormat and
+	// passes --version, and then every real job fails, because building the
+	// current format needs a cache the sandbox has made read-only (codex round
+	// 4). Compiling the smallest possible document exercises the whole
+	// configuration jobs depend on: bundle, format, ruleset, exec.
+	inPath := filepath.Join(jobDir, "in.tex")
+	const doc = "\\documentclass{article}\n\\begin{document}preflight\\end{document}\n"
+	if err := os.WriteFile(inPath, []byte(doc), 0o600); err != nil {
+		return fmt.Errorf("preflight document: %w", err)
+	}
+
+	args := append(append(append(
+		append([]string{}, helper[1:]...),
+		tectonicSandboxSpec(inPath, jobDir, c.BundlePath, enginePath)...),
+		"--", enginePath), tectonicArgs(inPath, jobDir, c.BundlePath)...)
+
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(jobDir), helper[0], args...)
+	if err != nil {
+		return fmt.Errorf("the engine cannot typeset under the sandbox: %w: %s",
+			err, tectonicTail(out))
+	}
+	// The engine can exit 0 and produce nothing; the job path checks this too.
+	if info, serr := os.Stat(filepath.Join(jobDir, "in.pdf")); serr != nil || info.Size() == 0 {
+		return fmt.Errorf("the engine produced no PDF for the preflight document: %v: %s",
+			serr, tectonicTail(out))
+	}
+	return nil
+}
+
+// tectonicSystemReadOnly is what the engine needs merely to be a running
+// program: its own binary, its shared libraries, and the loader.
+//
+// Listed rather than derived because the list IS the security claim, and a
+// derived one would grow silently. /etc is deliberately absent, which is the
+// whole point -- the read that started this work was \openin=/etc/hostname.
+//
+// Entries that do not exist on the host are dropped by tectonicSandboxSpec
+// rather than being an error: /lib64 exists on x86_64 glibc and not on this
+// image's arm64, and /bin and /lib are symlinks into /usr on a merged-usr
+// distro. Dropping a MISSING path cannot widen anything; only a present one
+// grants, and sandbox.Apply still errors on a configured path that vanished.
+var tectonicSystemReadOnly = []string{
+	"/usr", "/lib", "/lib64", "/bin", "/etc/ssl/certs",
+	// The three character devices a normal program expects to exist. Named
+	// individually and never as /dev, which also holds the terminal, the
+	// block devices and whatever a runtime chooses to mount there.
+	//
+	// /dev/null is in the WRITABLE set above for the obvious reason. Its
+	// absence was measured rather than reasoned about: with no /dev granted,
+	// every `2>/dev/null` inside the sandbox failed with EACCES, which is a
+	// surprise that would surface as an unrelated engine error the first time
+	// something in the chain redirected.
+	"/dev/urandom", "/dev/random", "/dev/zero",
+}
+
+// tectonicSandboxSpec renders the ruleset as the argv tokens the helper parses.
+//
+// It is a pure function of the paths so a test can assert on the whole set
+// without a kernel: the argv IS the sandbox, the same way tectonicArgs is the
+// hardening.
+func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string {
+	// The job directory, and only the job directory, is writable. inPath's
+	// directory and outDir are the same one today; both are named because the
+	// worker is free to stop doing that and a sandbox that assumed otherwise
+	// would fail as an unexplained engine error.
+	// The job's own directories, and NOT os.TempDir(). Landlock grants are
+	// path-beneath and additive, so naming the shared /tmp here would grant
+	// everything under it and make the two entries that matter meaningless.
+	// The engine's TMPDIR is pointed at the job directory instead; see
+	// tectonicEnv.
+	rw := dedupeExisting([]string{filepath.Dir(inPath), outDir, "/dev/null"})
+
+	// The engine binary ITSELF, not only the directories it usually lives in.
+	//
+	// tectonicSystemReadOnly covers /usr, /lib and /bin, which is where this
+	// image puts it -- but exec.LookPath answers from PATH, and an image that
+	// installs tectonic in /opt or a Nix store would resolve outside all three.
+	// The helper would then apply the ruleset and take EACCES from execve,
+	// breaking an installation that worked before confinement (codex round 2).
+	ro := []string{bundlePath, enginePath}
+	if cache := os.Getenv("TECTONIC_CACHE_DIR"); cache != "" {
+		// THE DIRECTORIES HOLDING FORMATS, NOT THE CONFIGURED ROOT.
+		//
+		// Granting the root grants everything beneath it, and the root is an
+		// operator-supplied path: TECTONIC_CACHE_DIR=/etc or a home directory
+		// holding a *.fmt passes every startup check -- it IS a directory, it
+		// DOES hold a format, and the compile preflight succeeds -- and then
+		// hands client TeX /etc/passwd and any credential beside it (codex
+		// round 5).
+		//
+		// Read-only in either case. The image pre-warms the format at build
+		// time, so nothing at run time needs to write here, and a cache the
+		// engine could write is a cache one job can poison for the next.
+		ro = append(ro, tectonicCacheGrants(cache)...)
+	}
+	ro = dedupeExisting(append(ro, tectonicSystemReadOnly...))
+
+	// STRUCTURAL BACKSTOP, and the reason it exists is that this exact defect
+	// already arrived twice through two different doors.
+	//
+	// Landlock grants are path-beneath and additive, so ANY grant that is an
+	// ancestor of the job directory hands out everything beside it -- every
+	// other job's inputs and outputs. The first door was TMPDIR (round 1); the
+	// second was TECTONIC_CACHE_DIR=/tmp, a legitimate pre-warm layout that
+	// silently restored read access to every leftover job directory (round 3).
+	// There is no reason to believe there is no third door, so the invariant is
+	// enforced on the whole set rather than on the two names that have failed.
+	//
+	// Dropping rather than erroring, because this function has no error to
+	// return and a missing READ grant fails loudly at job time, while a wrong
+	// one fails silently and forever. ValidateTectonicCacheDir refuses the
+	// configuration at startup so it should never come to this.
+	ro = dropAncestorsOf(ro, rw)
+
+	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
+}
+
+// tectonicCacheGrants is the narrow half of the cache grant: the compiled
+// FORMAT FILES themselves, rather than whatever root the operator configured.
+//
+// Files and not their directories, which is tighter than it first looks. A
+// cache pointed at a home directory would still grant that home directory if
+// the grant were per-directory, and the system-root backstop does not list
+// every home a deployment might have. Per-file, the blast radius is exactly
+// the formats: pointing the cache at $HOME grants the .fmt inside it and not
+// the SSH keys beside it.
+//
+// Measured before adopting, because the engine could reasonably have needed to
+// enumerate the directory: with only the format file granted, a compile
+// returns exit 0 and a PDF, same as with the whole directory granted.
+//
+// Returning nothing is a legitimate answer and deliberately not backfilled
+// with cacheDir: ValidateTectonicCacheDir refused a cache with no format at
+// startup, so an empty result here means one disappeared underneath a running
+// worker. The engine then fails loudly on the next job, which is the right
+// direction -- backfilling the root would restore the very grant this exists
+// to remove.
+func tectonicCacheGrants(cacheDir string) []string {
+	var formats []string
+	_ = filepath.WalkDir(resolvePath(cacheDir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if len(formats) >= maxCacheGrants {
+			return fs.SkipAll
+		}
+		if isFormatFile(d, path) {
+			formats = append(formats, path)
+		}
+		return nil
+	})
+	return formats
+}
+
+// countFormats counts formats beneath dir, stopping at limit. Bounded because
+// the answer is only ever compared against a cap.
+func countFormats(dir string, limit int) (int, error) {
+	n := 0
+	err := filepath.WalkDir(resolvePath(dir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if isFormatFile(d, path) {
+			n++
+			if n >= limit {
+				return fs.SkipAll
+			}
+		}
+		return nil
+	})
+	return n, err
+}
+
+// maxCacheGrants bounds how many rules one cache can add. A real cache holds a
+// handful of formats -- this image holds exactly one -- and the cap exists so a
+// misconfigured directory cannot turn every job's setup into thousands of
+// add_rule calls.
+const maxCacheGrants = 64
+
+// isFormatFile is the one place that decides what counts as a format, so
+// cacheHoldsFormat and tectonicCacheGrants cannot disagree about it -- a
+// startup check that accepts a file the grant builder ignores would pass boot
+// and then fail every job.
+//
+// A REGULAR FILE, and the name alone is not enough. WalkDir reports a symlink
+// as a non-directory entry, and addPath opens what it is handed with O_PATH,
+// which FOLLOWS symlinks -- so a cache holding "credential.fmt -> .ssh/id_rsa"
+// beside a genuine format would pass validation, pass the preflight, and hand
+// client TeX the private key through the alias (codex round 7). d.Type() comes
+// from Lstat, so this decides on the entry itself and never on its target.
+//
+// A HARDLINK is deliberately not excluded, and the limit is stated rather than
+// papered over: a hardlink named *.fmt IS a regular file, so one pointing at a
+// secret inside the cache would be granted. Excluding it would mean refusing
+// any format with st_nlink > 1, which some build systems produce legitimately
+// (cp -l into place) -- and refusing valid deployments is the more expensive
+// failure here, as this PR has demonstrated four times. The symlink case is
+// different in kind: those exist in a home directory for unrelated reasons,
+// which is exactly the scenario that raised it.
+func isFormatFile(d fs.DirEntry, path string) bool {
+	return d.Type().IsRegular() && isCompiledFormat(filepath.Base(path))
+}
+
+// isCompiledFormat is the NAME half of that decision.
+//
+// A SUFFIX, not a substring: ".fmt" anywhere in the name accepted
+// README.fmt.txt, which is not a format and leaves the deployment in exactly
+// the state these checks exist to refuse (codex round 3). The real artifact in
+// the shipped image is formats/<hash>-latex-33.fmt; .fmt.gz is accepted
+// because tectonic compresses formats on some builds.
+func isCompiledFormat(name string) bool {
+	return strings.HasSuffix(name, ".fmt") || strings.HasSuffix(name, ".fmt.gz")
+}
+
+// dropAncestorsOf removes any path that contains one of the writable
+// directories, which a path-beneath grant would hand out along with it.
+//
+// Equality counts as containment: granting the job directory read-only
+// alongside read-write is harmless, but granting a PARENT of it is the whole
+// bug.
+func dropAncestorsOf(paths, writable []string) []string {
+	out := paths[:0:0]
+	for _, p := range paths {
+		if !containsAny(p, writable) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func containsAny(parent string, children []string) bool {
+	pc := resolvePath(parent)
+	for _, child := range children {
+		cc := resolvePath(child)
+		if pc == cc {
+			continue // the same directory, not an ancestor of it
+		}
+		if pc == "/" || strings.HasPrefix(cc, pc+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePath is what the KERNEL will see, not what the string says.
+//
+// Comparing cleaned strings is not enough, and the gap is not theoretical: a
+// cache configured as /mnt/tmp-link/cache/.. where tmp-link points at /tmp
+// cleans to /mnt/tmp-link, passes every lexical containment check, and then
+// resolves to /tmp when os.Stat and Landlock's O_PATH open follow it -- which
+// grants the whole job tree, which is the exact thing the check exists to
+// refuse (codex round 4).
+//
+// filepath.Clean is the fallback for a path that cannot be resolved, so a
+// non-existent path is still compared rather than silently passing.
+func resolvePath(path string) string {
+	// ABSOLUTE FIRST. filepath.EvalSymlinks preserves a relative path as
+	// relative, so TECTONIC_CACHE_DIR=tmp resolved to "tmp" while the job root
+	// resolved to "/tmp" -- the containment check compared two paths that
+	// denote the same directory and saw no relation, and the kernel then
+	// opened the relative one against the process's working directory and
+	// granted the whole of /tmp. This image's runtime stage has no WORKDIR, so
+	// that working directory is "/" and the two forms coincide exactly
+	// (codex round 6, confirmed: `docker run --entrypoint sh ... -c pwd` = /).
+	//
+	// filepath.Abs uses this process's working directory, which is the same
+	// one the helper inherits and the same one the kernel resolves against --
+	// so this is the resolution the grant will actually get, not an
+	// approximation of it.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(abs)
+}
+
+// dedupeExisting keeps order, drops repeats, and drops what is not there.
+func dedupeExisting(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		// ABSOLUTE in the emitted spec, for the same reason resolvePath is:
+		// the helper opens these tokens with O_PATH, and a relative one is
+		// resolved against a working directory nothing here states. Emitting
+		// the absolute form makes the argv say exactly what will be granted.
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		abs = filepath.Clean(abs)
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		if _, serr := os.Stat(abs); serr != nil {
+			continue
+		}
+		out = append(out, abs)
+	}
+	return out
 }
 
 // tectonicArgs builds the argument vector, as its own function for the reason
@@ -181,6 +554,182 @@ func ValidateTectonicBundle(path string) error {
 		return fmt.Errorf("%w: bundle %q is empty", ErrTeXBundleUnusable, path)
 	}
 	return nil
+}
+
+// TectonicCacheEnv names the directory holding the pre-compiled TeX format.
+const TectonicCacheEnv = "TECTONIC_CACHE_DIR"
+
+// ValidateTectonicCacheDir refuses a deployment whose engine would have nowhere
+// to find its compiled format.
+//
+// It only matters once the engine is SANDBOXED, and it is entirely a
+// consequence of that: unsandboxed, tectonic that finds no cache directory
+// falls back to $HOME/.cache and compiles the format itself, slowly but
+// successfully. Under Landlock $HOME is not granted, so the same fallback ends
+// as
+//
+//	error: cannot write format file texput.fmt
+//	caused by: Permission denied (os error 13)
+//
+// on EVERY job -- measured in the shipped image with the variable unset. That
+// message names the sandbox and not the missing variable, so an operator would
+// go looking in the wrong place. Checked at startup for the reason the bundle
+// is: a worker that cannot typeset anything should say so once, rather than
+// consume a queue and fail every task as though each document were at fault.
+func ValidateTectonicCacheDir(path string) error {
+	if path == "" {
+		return fmt.Errorf("%w: no format cache configured (%s unset). The image sets this; "+
+			"without it a sandboxed engine has nowhere to write its format and every job fails "+
+			"with a permission error that names the sandbox rather than this variable",
+			ErrTeXBundleUnusable, TectonicCacheEnv)
+	}
+	// RESOLVED ONCE. Every check below asks a question about the same path,
+	// and resolvePath is two syscalls -- recomputing it per check was sixteen
+	// resolutions in the denylist loop alone, and sixteen chances for two
+	// checks to disagree about what they are looking at.
+	//
+	// THE PATH CHECKS RUN BEFORE THE STAT, deliberately. They are decisions
+	// about the PATH, not about what is on disk, and ordering them after
+	// os.Stat meant a system root that does not exist on the host got refused
+	// for "cannot be read" instead -- a refusal that evaporates the moment the
+	// directory appears. Found by this file's own test, which asserts the
+	// REASON rather than the error.
+	resolved := resolvePath(path)
+	jobRoot := resolvePath(os.TempDir())
+
+	// Contains where jobs are materialised: granting it recursively hands one
+	// client every other client's files. TECTONIC_CACHE_DIR=/tmp is a real
+	// pre-warm layout, and so is a relative "tmp" from a working directory of
+	// "/", which is what this image has.
+	if resolved == jobRoot || strings.HasPrefix(jobRoot, resolved+string(filepath.Separator)) {
+		return fmt.Errorf("%w: format cache %q contains the directory jobs are materialised in (%s). "+
+			"Landlock grants are recursive, so granting it would give every document read access to "+
+			"every other job's files. Point it at a directory of its own",
+			ErrTeXBundleUnusable, path, jobRoot)
+	}
+	// A BACKSTOP, and labelled as one. The guarantee is tectonicCacheGrants,
+	// which grants only the directories actually holding formats -- so
+	// TECTONIC_CACHE_DIR=/etc grants nothing unless a format sits inside it.
+	// This refuses the case that narrowing cannot reach: a *.fmt placed
+	// directly in a system root, which would make that root itself the
+	// format-holding directory.
+	//
+	// A denylist is the wrong shape for a security boundary and this one is
+	// not carrying that weight; it is here so an obviously wrong value fails
+	// at startup with a sentence, rather than quietly granting.
+	for _, root := range []string{
+		"/", "/etc", "/usr", "/var", "/home", "/root", "/proc", "/sys",
+		"/dev", "/run", "/boot", "/lib", "/lib64", "/bin", "/sbin", "/opt",
+	} {
+		if resolved == resolvePath(root) {
+			return fmt.Errorf("%w: format cache %q is a system directory. Granting it read-only "+
+				"would give every document read access to everything beneath it. Point it at a "+
+				"directory that holds only the TeX format cache", ErrTeXBundleUnusable, path)
+		}
+	}
+	if home := os.Getenv("HOME"); home != "" && home != "/" && resolved == resolvePath(home) {
+		return fmt.Errorf("%w: format cache %q is the worker's home directory, which would be "+
+			"granted read-only in full. Point it at a directory of its own",
+			ErrTeXBundleUnusable, path)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q cannot be read: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: format cache %q is not a directory (mode %s)",
+			ErrTeXBundleUnusable, path, info.Mode())
+	}
+
+	// EXISTING IS NOT ENOUGH -- it has to already HOLD a compiled format.
+	//
+	// An empty directory passes every check above and then fails every job,
+	// and it is not a hypothetical: mounting an empty volume over the image's
+	// pre-warmed cache is an ordinary thing to do, and it USED to work,
+	// because a writable empty cache populates itself on the first run. The
+	// sandbox grants this directory read-only, so it cannot (codex round 2).
+	//
+	// This is the same check Dockerfile.tectonic-worker runs at build time
+	// after the pre-warm, deliberately: the image asserts the format is there
+	// when it is created, and this asserts it is still there when the process
+	// starts, which is where a mount can have replaced it.
+
+	// EXISTING IS NOT ENOUGH -- it has to already HOLD a compiled format.
+	//
+	// An empty directory passes every check above and then fails every job,
+	// and it is not a hypothetical: mounting an empty volume over the image's
+	// pre-warmed cache is an ordinary thing to do, and it USED to work,
+	// because a writable empty cache populates itself on the first run. The
+	// sandbox grants this directory read-only, so it cannot (codex round 2).
+	//
+	// This is the same check Dockerfile.tectonic-worker runs at build time
+	// after the pre-warm, deliberately: the image asserts the format is there
+	// when it is created, and this asserts it is still there when the process
+	// starts, which is where a mount can have replaced it.
+	// A cache directory that CONTAINS where jobs are materialised grants read
+	// access to all of them, because path-beneath rules are recursive.
+	// TECTONIC_CACHE_DIR=/tmp is a real pre-warm layout and would do exactly
+	// that (codex round 3). Refused here with the reason; the spec builder
+	// drops it structurally as well, so a path this check did not anticipate
+	// still cannot widen the ruleset.
+	// RESOLVED, not cleaned: see resolvePath. A symlinked or ..-laden path that
+	// lands on the job root would otherwise pass here and be granted anyway.
+	// The per-job grant builder stops at maxCacheGrants. If a cache held more
+	// formats than that, it would grant the first 64 and silently skip the
+	// rest -- and a job needing a skipped one would fail with a permission
+	// error naming the sandbox. Silent truncation reads as "covered
+	// everything" when it did not, so the count is refused HERE instead, once,
+	// with a sentence (own sweep after round 7).
+	n, err := countFormats(path, maxCacheGrants+1)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if n > maxCacheGrants {
+		return fmt.Errorf("%w: format cache %q holds more than %d compiled formats. The sandbox "+
+			"grants them one rule each and stops at that cap, so some would be unreachable and "+
+			"the jobs needing them would fail with a permission error naming the sandbox. Point "+
+			"it at a directory holding only the formats this deployment uses",
+			ErrTeXBundleUnusable, path, maxCacheGrants)
+	}
+
+	found, err := cacheHoldsFormat(path)
+	if err != nil {
+		return fmt.Errorf("%w: format cache %q could not be scanned: %v", ErrTeXBundleUnusable, path, err)
+	}
+	if !found {
+		return fmt.Errorf("%w: format cache %q holds no compiled format (no regular *.fmt file -- "+
+			"a SYMLINK named *.fmt does not count, because granting it would grant whatever it "+
+			"points at). The sandbox "+
+			"grants it READ-ONLY, so the engine cannot compile one -- every job would fail with a "+
+			"permission error. An empty volume mounted over the image's pre-warmed cache is the "+
+			"usual cause", ErrTeXBundleUnusable, path)
+	}
+	return nil
+}
+
+// cacheHoldsFormat reports whether a compiled TeX format is present anywhere
+// beneath dir. Stops at the first hit; the cache is small and this runs once.
+func cacheHoldsFormat(dir string) (bool, error) {
+	found := false
+	// The RESOLVED root. filepath.WalkDir Lstats its root, so a
+	// TECTONIC_CACHE_DIR that is itself a symlink to the real cache -- an
+	// ordinary versioned or mounted layout -- would be visited as the symlink
+	// and walked no further, reporting an empty cache and refusing at startup
+	// a deployment that worked before this PR (codex round 7).
+	err := filepath.WalkDir(resolvePath(dir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// An unreadable subdirectory is not a reason to refuse the whole
+			// cache: the format may be elsewhere in it.
+			return nil
+		}
+		if isFormatFile(d, path) {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found, err
 }
 
 // ErrTeXBundleUnusable is a DEPLOYMENT fault: the engine has no bundle it can
@@ -410,13 +959,25 @@ func texIncludedNames(src []byte) []texInclude {
 // the image puts the precompiled format; PATH, HOME and TMPDIR are the
 // ordinary process minimum. Anything unset stays unset rather than being
 // invented.
-func tectonicEnv() []string {
-	keep := []string{"PATH", "HOME", "TMPDIR", "TECTONIC_CACHE_DIR", "SOURCE_DATE_EPOCH", "LANG", "LC_ALL"}
-	env := make([]string, 0, len(keep))
+func tectonicEnv(jobDir string) []string {
+	// TMPDIR is not inherited: it is SET, to the job's own directory.
+	//
+	// Inheriting it pointed the engine at the shared /tmp, and the sandbox had
+	// to grant whatever it named -- which is a path-beneath grant on the whole
+	// of /tmp, making the per-job grant beside it decorative. Every job could
+	// then read and write every other job's directory, and could leave files
+	// outside its own workDir that its deferred cleanup never removes. The
+	// worker's job directory already lives under /tmp, so pointing TMPDIR at
+	// it is strictly narrower and costs the engine nothing (codex, PR #21).
+	keep := []string{"PATH", "HOME", "TECTONIC_CACHE_DIR", "SOURCE_DATE_EPOCH", "LANG", "LC_ALL"}
+	env := make([]string, 0, len(keep)+1)
 	for _, k := range keep {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
+	}
+	if jobDir != "" {
+		env = append(env, "TMPDIR="+jobDir)
 	}
 	return env
 }
@@ -492,9 +1053,38 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 	}
 
 	outDir := filepath.Dir(outPath)
-	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(), "tectonic",
-		tectonicArgs(inPath, outDir, c.BundlePath)...)
+	name, args := "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)
+	if len(c.SandboxHelper) > 0 {
+		// syscall.Exec in the helper takes a PATH, not a name, and resolving
+		// it HERE means a missing engine is reported as a missing engine
+		// rather than as a sandbox that failed to establish.
+		enginePath, lerr := exec.LookPath(name)
+		if lerr != nil {
+			return fmt.Errorf("tectonic: locate engine: %w", lerr)
+		}
+		name = c.SandboxHelper[0]
+		args = append(append(append(
+			append([]string{}, c.SandboxHelper[1:]...),
+			tectonicSandboxSpec(inPath, outDir, c.BundlePath, enginePath)...),
+			"--", enginePath), args...)
+	}
+	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(filepath.Dir(inPath)), name, args...)
 	if err != nil {
+		// The helper's "the engine never ran" status, before any of the
+		// engine-shaped classification below: nothing in out is tectonic's
+		// output, because tectonic was never execed.
+		var setupErr *exec.ExitError
+		if len(c.SandboxHelper) > 0 && errors.As(err, &setupErr) &&
+			setupErr.ExitCode() == TectonicSandboxSetupExit {
+			// err, not out. The helper reports on STDERR and
+			// runCommandLimitedEnv returns only stdout in out, embedding
+			// stderr in the error -- so formatting out here recorded an empty
+			// string and lost whether ruleset creation, a path rule,
+			// restrict_self or the exec itself failed. That is the entire
+			// diagnostic an operator has for a node that cannot confine the
+			// engine (codex, PR #21).
+			return fmt.Errorf("tectonic: %w: %s", ErrTeXSandboxUnavailable, tectonicTail([]byte(err.Error())))
+		}
 		// THE ENGINE's deadline, named as such. The worker bounds the WHOLE
 		// attempt with one context -- download, convert, upload -- because the
 		// unique-lock TTL depends on the attempt never outliving it (T-03-11).

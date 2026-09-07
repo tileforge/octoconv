@@ -22,10 +22,10 @@ import (
 func TestBuildTectonicConverter(t *testing.T) {
 	const path = "/opt/tectonic/some-other-bundle.ttb"
 
-	c := buildTectonicConverter(path, convert.DefaultTectonicMaxOutputBytes)
+	c := buildTectonicConverter(path, convert.DefaultTectonicMaxOutputBytes, nil)
 
 	if c.BundlePath != path {
-		t.Fatalf("buildTectonicConverter(%q).BundlePath = %q, want %q", path, c.BundlePath, path)
+		t.Fatalf("buildTectonicConverter(%q, nil).BundlePath = %q, want %q", path, c.BundlePath, path)
 	}
 	var _ convert.Converter = c
 }
@@ -37,8 +37,8 @@ func TestBuildTectonicConverter(t *testing.T) {
 // checking a different path than the converter ends up using -- the two would
 // agree today and diverge the first time the default moved.
 func TestBuildTectonicConverterDoesNotSubstituteADefault(t *testing.T) {
-	if got := buildTectonicConverter("", convert.DefaultTectonicMaxOutputBytes).BundlePath; got != "" {
-		t.Fatalf("buildTectonicConverter(\"\").BundlePath = %q, want \"\" -- the fallback belongs to main(), "+
+	if got := buildTectonicConverter("", convert.DefaultTectonicMaxOutputBytes, nil).BundlePath; got != "" {
+		t.Fatalf("buildTectonicConverter(\"\", nil).BundlePath = %q, want \"\" -- the fallback belongs to main(), "+
 			"which stats the path it chose; a second one here would be unverified", got)
 	}
 }
@@ -51,9 +51,9 @@ func TestBuildTectonicConverterDoesNotSubstituteADefault(t *testing.T) {
 func TestBuildTectonicConverterCarriesTheOutputCeiling(t *testing.T) {
 	const ceiling = 7 << 20
 
-	c := buildTectonicConverter("/opt/tectonic/octoconv-bundle.ttb", ceiling)
+	c := buildTectonicConverter("/opt/tectonic/octoconv-bundle.ttb", ceiling, nil)
 	if c.MaxOutputBytes != ceiling {
-		t.Fatalf("buildTectonicConverter(..., %d).MaxOutputBytes = %d -- the env value never reaches "+
+		t.Fatalf("buildTectonicConverter(..., %d, nil).MaxOutputBytes = %d -- the env value never reaches "+
 			"the guard, so the ceiling is whatever the converter defaults to", ceiling, c.MaxOutputBytes)
 	}
 }

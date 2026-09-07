@@ -479,6 +479,19 @@ func isTectonicTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
+	// NOT terminal, and stated before everything below so no later branch can
+	// claim it: the sandbox could not be established, which says nothing about
+	// the document. Every other tectonic failure here is a property of the
+	// source and therefore reproduces; this one is a property of the NODE, and
+	// left terminal a single bad node would fail every tex job routed to it
+	// and tell each client their file is broken.
+	//
+	// The literal `return false` rather than a fall-through: the signature
+	// scan at the bottom matches on substrings of the error text, and the text
+	// here carries the helper's stderr, which this code does not author.
+	if errors.Is(err, convert.ErrTeXSandboxUnavailable) {
+		return false
+	}
 	// A misconfigured process, not a bad document. Deliberately checked BEFORE
 	// the shared classifier, which knows nothing about bundles and would let
 	// this retry forever.
