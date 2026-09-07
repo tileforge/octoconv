@@ -43,11 +43,16 @@ progress: |
   catches it. So both are kept, and the pair of numbers is used to tell the two
   situations apart:
 
-    - RLIMIT_CPU (soft == hard, so SIGKILL rather than a grace period a runaway
-      would spend running) refuses a document on what it COST. Terminal.
-    - the wall deadline firing while the engine used less than HALF its budget
-      is now classified as STARVATION and is RETRYABLE -- the attempt took too
-      long, the document did not.
+    - RLIMIT_CPU (soft == hard, so no grace period a runaway could spend
+      running; the kill arrives as SIGXCPU, measured after assuming SIGKILL and
+      being wrong) refuses a document on what it COST. Terminal.
+    - the wall deadline firing while the engine got less than HALF OF ONE CPU
+      -- consumed CPU over elapsed time, NOT a fraction of the budget -- is
+      classified as STARVATION and is RETRYABLE. A share rather than a budget
+      comparison because the latter made the verdict depend on two
+      independently adjustable settings: at a 600s budget a saturated runaway
+      consumes ~271s against the deadline, under half of 600, and would have
+      been retried.
 
   Applied by cmd/tectonic-worker's __sandbox-exec helper, which already existed
   as the only hook that runs between fork and exec.

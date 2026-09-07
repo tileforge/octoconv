@@ -25,10 +25,15 @@ import (
 //
 // # WHY soft == hard
 //
-// The kernel sends SIGKILL rather than SIGXCPU-then-grace. A document that has
-// spent its budget has spent it, and a grace period is time the same document
-// uses to spend more. That signal is how the caller tells "this document cost
-// too much" apart from every other failure -- see convert.ErrTeXCPUExhausted.
+// A document that has spent its budget has spent it, and a grace period is
+// time the same document uses to spend more.
+//
+// WHAT SIGNAL THIS PRODUCES IS NOT WHAT I ASSUMED. I wrote here that soft ==
+// hard means the kernel sends SIGKILL rather than SIGXCPU; measured, the child
+// comes back as "cputime limit exceeded", which is SIGXCPU. Acting on the
+// assumption broke the classifier until it was measured, so the correction
+// stays written down: convert.cpuExhausted accepts SIGXCPU **and** SIGKILL,
+// and this comment is the one a future reader would have trusted.
 //
 // Applied to THIS process and inherited across execve, exactly like the
 // filesystem ruleset, and for the same reason: there is no other hook.
