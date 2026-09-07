@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -879,11 +882,17 @@ func (r *Repo) transition(
 	// (52-REVIEW.md WR-02): the SELECT ... FOR UPDATE re-read below and
 	// recordUsage's ON CONFLICT upsert (MarkDone/MarkFailed/Cancel) both
 	// assume the same per-statement snapshot.
-	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		var from string
+	// Identity read under the SAME lock as the status, so the record below
+	// describes the row the transition actually saw.
+	var from, engine, target string
+	var clientID *uuid.UUID
+	var corr *string
+
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id,
-		).Scan(&from); err != nil {
+			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id
+			   FROM jobs WHERE id = $1 FOR UPDATE`, id,
+		).Scan(&from, &clientID, &engine, &target, &corr); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -906,6 +915,48 @@ func (r *Repo) transition(
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// THE LIFECYCLE RECORD, emitted here and nowhere else.
+	//
+	// Every status change in this service goes through this function -- the
+	// worker's terminal outcomes, the API's cancel, the operator CLI's
+	// cancel-job, and the reconciler's exhaustion path. Logging at the callers
+	// instead meant four places to remember, and three of them were already
+	// missing when review looked (PR #23): a queued cancellation, an operator
+	// cancellation, and a reconciler-exhausted job each ended with no record.
+	//
+	// from_status comes from the LOCKED read above rather than from whatever
+	// the caller happened to see earlier, so a queued job that a worker
+	// activated between the two reads is recorded as it actually was.
+	//
+	// After the commit, deliberately: a record is a claim that the transition
+	// happened, and until BeginTxFunc returns it has not.
+	//
+	// internal/* logging is a deliberate exception here, the same one
+	// internal/api already carries. The alternative is what this replaces.
+	fields := []string{
+		"job_id", id.String(),
+		"correlation_id", derefStr(corr),
+		"engine", engine,
+		"target", target,
+		"from_status", from,
+	}
+	if clientID != nil {
+		fields = append(fields, "client_id", clientID.String())
+	}
+	log.Println(logfmt.KV("job "+to, fields...))
+	return nil
+}
+
+// derefStr reads a nullable text column as a string.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func contains(ss []string, s string) bool {

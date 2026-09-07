@@ -29,9 +29,13 @@ func TestFinishRecordReflectsWhetherTheCommitLanded(t *testing.T) {
 		absentEvent string
 	}{
 		{
+			// The terminal record itself now comes from jobs.Repo.transition
+			// (see internal/jobs/transitionlog_test.go). What this asserts is
+			// that finish stays SILENT when the commit landed -- two records
+			// for one outcome is its own defect.
 			name:        "the commit landed",
 			commitErr:   nil,
-			wantEvent:   "job failed",
+			wantEvent:   "",
 			absentEvent: "job finish uncommitted",
 		},
 		{
@@ -62,13 +66,13 @@ func TestFinishRecordReflectsWhetherTheCommitLanded(t *testing.T) {
 			_ = r.finish(context.Background(), job, jobs.StatusFailed, CodeEngineError, "boom", nil, 0)
 
 			out := buf.String()
-			if !strings.Contains(out, tc.wantEvent) {
+			if tc.wantEvent != "" && !strings.Contains(out, tc.wantEvent) {
 				t.Fatalf("no %q record.\nlog:\n%s", tc.wantEvent, out)
 			}
 			if strings.Contains(out, tc.absentEvent) {
 				t.Fatalf("the log says %q, which is not what happened.\nlog:\n%s", tc.absentEvent, out)
 			}
-			if !strings.Contains(out, jobID.String()) {
+			if tc.wantEvent != "" && !strings.Contains(out, jobID.String()) {
 				t.Fatalf("the record does not carry the job id, so it joins nothing:\n%s", out)
 			}
 		})

@@ -404,34 +404,27 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
 	}
 
-	// AFTER the commit, and the outcome of the commit decides what is said.
+	// THE TERMINAL RECORD IS NOT WRITTEN HERE. jobs.Repo.transition emits it
+	// for every status change in the service, including the paths that never
+	// reach this function: the reconciler's exhaustion, the operator CLI, and
+	// a cancellation of a job that is still queued.
 	//
-	// Logging first claimed a terminal state that MarkFailed might then fail
-	// to reach -- a Postgres error, or a concurrent transition that already
-	// took the job elsewhere. Everything below this treats such a job as NOT
-	// having reached the status, and terminal callers discard finish's error
-	// and return SkipRetry, so the log would have been the only record and it
-	// would have been wrong (codex, PR #23).
-	//
-	// A failed commit is NOT silent either: a job that could not be marked
-	// failed is exactly what an operator needs to see, and it is the one case
-	// where the row and the log genuinely disagree. It gets its own event
-	// rather than the terminal one.
-	event := "job " + status
-	fields := []string{
-		"job_id", job.ID.String(),
-		"correlation_id", job.CorrelationID,
-		"client_id", job.ClientID.String(),
-		"engine", job.Engine,
-		"target", job.TargetFormat,
-		"code", code,
-		"duration_ms", logfmt.MS(elapsed.Milliseconds()),
-	}
+	// What IS written here is the case transition can never report, because it
+	// is the case where transition did not happen: a commit that failed. The
+	// job is left where it was, terminal callers discard this error and return
+	// SkipRetry, so without this line the outcome would have no record at all.
 	if ferr != nil {
-		event = "job finish uncommitted"
-		fields = append(fields, "intended_status", status, "commit_error", ferr.Error())
+		log.Println(logfmt.KV("job finish uncommitted",
+			"job_id", job.ID.String(),
+			"correlation_id", job.CorrelationID,
+			"client_id", job.ClientID.String(),
+			"engine", job.Engine,
+			"intended_status", status,
+			"code", code,
+			"duration_ms", logfmt.MS(elapsed.Milliseconds()),
+			"commit_error", ferr.Error(),
+		))
 	}
-	log.Println(logfmt.KV(event, fields...))
 	// jobs.StatusDone: ferr stays nil -- process() (or a test's processFn
 	// stub standing in for it) already committed MarkDone inside its own
 	// transaction (worker.go's process(), the final line) before Handle
