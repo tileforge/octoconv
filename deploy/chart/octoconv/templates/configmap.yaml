@@ -192,6 +192,9 @@ data:
   # 1.00, and under 4x oversubscription the same document took 3.67s wall for
   # 1.08s of CPU. A wall-clock bound alone therefore refuses documents for the
   # sins of their neighbours; this one refuses them for what they consumed.
+  # At least 1s: RLIMIT_CPU is whole seconds, so anything below truncates to a
+  # budget of zero and applies no limit at all. The worker refuses to start
+  # rather than run with a bound it has logged and does not enforce.
   TECTONIC_ENGINE_CPU_SECONDS: "271s"
   TECTONIC_MAX_OUTPUT_BYTES: "33554432"
   # TECTONIC_SANDBOX_DISABLED is deliberately ABSENT, not set to "false".
