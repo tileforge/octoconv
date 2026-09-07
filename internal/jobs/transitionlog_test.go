@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every status change in this service goes through Repo.transition, and the
@@ -143,5 +144,67 @@ func TestMarkFailedIsRecordedWhoeverCallsIt(t *testing.T) {
 	}
 	if !strings.Contains(line, "from_status=queued") || !strings.Contains(line, id.String()) {
 		t.Errorf("the record is incomplete: %s", line)
+	}
+}
+
+// Centralising the record dropped the two fields the phase existed to provide
+// (codex, PR #23): without `code` an operator cannot tell engine_error from
+// invalid_options from reconciler_exhausted, and without duration_ms
+// completion latency means going back to Postgres.
+//
+// A refactor that keeps every test passing and silently narrows what the logs
+// say is exactly the failure this table is here to catch.
+func TestFailureRecordCarriesTheOutcome(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/oc/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	buf := captureLog(t)
+	if err := r.MarkFailed(ctx, id, "engine_error", "boom", nil, 1234*time.Millisecond); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+
+	line := recordFor(t, buf, "job failed")
+	for _, want := range []string{"code=engine_error", "duration_ms=1234"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the failure record lacks %s, so the logs cannot distinguish one failure "+
+				"class from another: %s", want, line)
+		}
+	}
+}
+
+// And the fields are OMITTED where they would be empty: a cancellation has no
+// error code, and a field that is usually blank trains readers to ignore it.
+func TestCancellationRecordHasNoEmptyOutcomeFields(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/nc/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	buf := captureLog(t)
+	if err := r.Cancel(ctx, id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	line := recordFor(t, buf, "job canceled")
+	for _, unwanted := range []string{`code=""`, `duration_ms=0`} {
+		if strings.Contains(line, unwanted) {
+			t.Errorf("the cancellation record carries %s, which means nothing here: %s", unwanted, line)
+		}
 	}
 }

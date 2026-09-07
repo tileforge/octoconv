@@ -236,7 +236,7 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 // activation, not the most recent retry, which the reconciler's active-
 // staleness check depends on for true elapsed running time.
 func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
-	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1 WHERE id = $1`, id)
 		return err
@@ -252,7 +252,7 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 // the elapsed engine time for this attempt (0 if the caller has no attempt
 // clock).
 func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, outcome{elapsed: attempt}, func(ctx context.Context, tx pgx.Tx) error {
 		// D-13: a done job without exactly one primary output is an
 		// unreachable state, enforced here rather than in transition()
 		// because this is a precondition of MarkDone's own semantics, not
@@ -299,7 +299,7 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration
 // for why. attempt is the elapsed engine time for this attempt; pass 0 when
 // the caller has no attempt clock (e.g. the reconciler's exhaustion path).
 func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, outcome{code: code, elapsed: attempt}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
 			id, code, message); err != nil {
@@ -338,7 +338,7 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 // 0, via the same fallback CASE expression recordUsage already implements
 // for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
-	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err
@@ -444,7 +444,7 @@ func nullableInterval(d time.Duration) any {
 // (RecoveryCount) and audit trail (RECON-03) stay consistent.
 func (r *Repo) RequeueStale(ctx context.Context, id uuid.UUID, reason string) error {
 	detail := map[string]any{"action": detailActionRecovery, "reason": reason}
-	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued' WHERE id = $1`, id)
 		return err
 	})
@@ -862,12 +862,29 @@ func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, curso
 // single transaction. It errors if the job is not in one of the allowed source
 // statuses (concurrency/idempotency guard). detail, when non-nil, is marshaled
 // into the job_events.detail jsonb column; when nil, the column stays NULL.
+// outcome is what only the CALLER knows about a transition: why it failed and
+// how long the attempt took.
+//
+// A struct rather than two more parameters on transition, because three of the
+// five callers have neither and would have to pass zero values -- and a
+// parameter every caller must supply and most cannot is how a signature grows
+// into noise.
+//
+// NOT re-read from the row after the commit: the caller has these values in
+// hand, and a second read is a second chance for the record to describe
+// something other than what happened.
+type outcome struct {
+	code    string
+	elapsed time.Duration
+}
+
 func (r *Repo) transition(
 	ctx context.Context,
 	id uuid.UUID,
 	to string,
 	allowedFrom []string,
 	detail map[string]any,
+	out outcome,
 	apply func(ctx context.Context, tx pgx.Tx) error,
 ) error {
 	var detailJSON []byte
@@ -946,6 +963,21 @@ func (r *Repo) transition(
 	}
 	if clientID != nil {
 		fields = append(fields, "client_id", clientID.String())
+	}
+	// The outcome fields, which centralising this record had DROPPED (codex,
+	// PR #23): without code an operator cannot tell engine_error from
+	// invalid_options from reconciler_exhausted, and without duration_ms
+	// completion latency means going back to Postgres -- both of which are the
+	// point of the phase.
+	//
+	// Present only where they mean something: a cancellation has no error code
+	// and MarkActive has no elapsed time, and a field that is usually empty
+	// trains readers to ignore it.
+	if out.code != "" {
+		fields = append(fields, "code", out.code)
+	}
+	if out.elapsed > 0 {
+		fields = append(fields, "duration_ms", logfmt.MS(out.elapsed.Milliseconds()))
 	}
 	log.Println(logfmt.KV("job "+to, fields...))
 	return nil
