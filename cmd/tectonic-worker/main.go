@@ -161,10 +161,15 @@ func main() {
 	// added to fix, so it fails loudly instead: an operator who asked for a
 	// bound gets a sentence rather than a service that quietly has none.
 	if cpuBudget < time.Second {
+		// No escape-hatch advice here, deliberately: TECTONIC_SANDBOX_DISABLED
+		// does NOT resolve this. That switch turns off the filesystem ruleset,
+		// and the disabled path still runs the helper precisely to carry the
+		// CPU budget -- so an operator following such advice would weaken
+		// confinement and still not start (codex, PR #22). Naming a remedy
+		// that does not work is worse than naming none.
 		log.Fatalf("TECTONIC_ENGINE_CPU_SECONDS=%s is below one second. RLIMIT_CPU is expressed "+
 			"in whole seconds, so this would silently disable the CPU budget rather than set a "+
-			"small one. Use a value of at least 1s, or set %s=true if the intent is to run "+
-			"without confinement", cpuBudget, sandboxDisabledEnv)
+			"small one. Use a value of at least 1s", cpuBudget)
 	}
 	cpuSeconds := int(cpuBudget.Seconds())
 

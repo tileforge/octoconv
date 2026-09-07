@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/apaderin/octoconv/internal/sandbox"
 	"testing"
@@ -142,38 +144,107 @@ func TestConvertStillTimesOutWhenTheEngineWasBusy(t *testing.T) {
 	}
 }
 
-// TestStarvationIsAShareNotABudgetComparison pins the fix for codex round 1's
-// second finding, and the reason it is a ratio.
+// The two verdicts that come from the same pair of measurements, decided by
+// VALUES rather than by what the scheduler happened to grant.
 //
-// The threshold used to compare consumption against the CONFIGURED budget,
-// which made the verdict depend on the relationship between two independently
-// configurable numbers: with TECTONIC_ENGINE_CPU_SECONDS=600 and the default
-// 271s deadline, a fully saturated runaway consumes ~271 CPU-seconds -- under
-// half of 600 -- and would have been called starvation and RETRIED,
-// multiplying the runaway's cost across every attempt.
-//
-// A share of one CPU cannot be gamed that way: a document that had a CPU to
-// itself is at 1.00 however the two settings are configured.
-func TestStarvationIsAShareNotABudgetComparison(t *testing.T) {
-	// The shape of the finding: a budget far larger than the deadline, and an
-	// engine that saturates its CPU for the whole attempt.
-	c, in := cpuTestConverter(t, "while :; do :; done\n", 600)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*1e9)
-	defer cancel()
-
-	err := c.Convert(ctx, in, filepath.Join(filepath.Dir(in), "out.pdf"), nil)
-	if err == nil {
-		t.Fatal("no error from a document that ran past its deadline")
+// These were busy loops, and on a loaded runner the loop genuinely receives
+// less than half a CPU -- which is the production condition that means
+// starvation -- so the test failed while the code did exactly what it is
+// configured to do. Codex reproduced 0.31-0.39 of a CPU with this package's
+// own tests running concurrently, and that is the same shape as the one
+// unexplained failure earlier in this branch that I could not reproduce and
+// did not diagnose. A test that needs a whole CPU to pass is testing the
+// runner.
+func TestDeadlineClassificationIsDecidedByTheMeasurements(t *testing.T) {
+	cases := []struct {
+		name        string
+		user, sys   time.Duration
+		elapsed     time.Duration
+		wantStarved bool
+	}{
+		{
+			// The engine had a CPU to itself and did not finish: the document
+			// is at fault, and it will be at fault again.
+			name: "a full CPU for the whole deadline", user: 271 * time.Second,
+			elapsed: 271 * time.Second, wantStarved: false,
+		},
+		{
+			// Codex's measured range on a contended runner.
+			name: "a third of a CPU", user: 90 * time.Second,
+			elapsed: 271 * time.Second, wantStarved: true,
+		},
+		{
+			// The shape the original finding named: a budget far larger than
+			// the deadline cannot make a saturated runaway look starved,
+			// because the test is a RATIO and does not know the budget.
+			name: "saturated, with a 600s budget and a 271s deadline", user: 271 * time.Second,
+			elapsed: 271 * time.Second, wantStarved: false,
+		},
+		{
+			// Exactly at the threshold is not below it.
+			name: "exactly half a CPU", user: 50 * time.Second,
+			elapsed: 100 * time.Second, wantStarved: false,
+		},
+		{
+			name: "system time counts as consumption", sys: 200 * time.Second,
+			elapsed: 271 * time.Second, wantStarved: false,
+		},
 	}
-	if errors.Is(err, ErrTeXEngineStarved) {
-		t.Fatalf("a runaway that had a whole CPU for the entire attempt is classified as STARVED "+
-			"because its consumption was small next to a 600s budget. It would be retried, and "+
-			"each retry would burn the same CPU again: %v", err)
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := classifyDeadline(engineCPU{User: c.user, Sys: c.sys, Elapsed: c.elapsed, Known: true})
+			if got != c.wantStarved {
+				t.Fatalf("starved = %v, want %v (%.2f of one CPU).\nGetting this wrong either "+
+					"blames a client for a busy node, or retries a document that does not "+
+					"terminate.", got, c.wantStarved,
+					(c.user+c.sys).Seconds()/c.elapsed.Seconds())
+			}
+		})
 	}
-	if !errors.Is(err, ErrTeXEngineTimeout) {
-		t.Fatalf("want the ordinary engine deadline for a document that worked and did not "+
-			"finish, got: %v", err)
+}
+
+// No measurement means no claim. Guessing "starved" here would retry a
+// document that may genuinely never terminate.
+func TestUnknownCPUIsNotCalledStarvation(t *testing.T) {
+	if classifyDeadline(engineCPU{Elapsed: time.Minute}) {
+		t.Fatal("a deadline with no CPU measurement was classified as starvation")
+	}
+}
+
+// cpuExhausted must not fire on a signal that is not the kernel's CPU kill,
+// and its tolerance must never swallow the budget -- at the smallest budget
+// startup accepts (1s), a flat one-second tolerance made the threshold zero
+// and every signaled child qualified (codex, PR #22).
+func TestCPUExhaustedNeedsTheRightSignalAndRealConsumption(t *testing.T) {
+	cases := []struct {
+		name   string
+		sig    syscall.Signal
+		used   time.Duration
+		budget int
+		want   bool
+	}{
+		// SIGXCPU is what a real kill produces here -- measured, after
+		// asserting SIGKILL alone and breaking the two tests that exercise
+		// one.
+		{"SIGXCPU at its budget", syscall.SIGXCPU, 271 * time.Second, 271, true},
+		{"SIGKILL at its budget", syscall.SIGKILL, 271 * time.Second, 271, true},
+		{"killed marginally under, within tolerance", syscall.SIGKILL, 270*time.Second + 500*time.Millisecond, 271, true},
+		{"the 1s budget, killed at it", syscall.SIGKILL, time.Second, 1, true},
+
+		// The finding: at a 1s budget an immediate crash used to qualify.
+		{"the 1s budget, crashed immediately", syscall.SIGXCPU, 5 * time.Millisecond, 1, false},
+		{"a segfault at its budget", syscall.SIGSEGV, 271 * time.Second, 271, false},
+		{"a shutdown TERM", syscall.SIGTERM, 271 * time.Second, 271, false},
+		{"an OOM kill early in the budget", syscall.SIGKILL, 10 * time.Second, 271, false},
+		{"no budget configured", syscall.SIGKILL, time.Hour, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cpuExhausted(c.sig, c.used, c.budget); got != c.want {
+				t.Fatalf("cpuExhausted(%v, %s, %ds) = %v, want %v", c.sig, c.used, c.budget, got, c.want)
+			}
+		})
 	}
 }
 

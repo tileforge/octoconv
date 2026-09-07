@@ -122,6 +122,94 @@ func (TectonicConverter) Pairs() []Pair {
 // is how the two drift apart.
 const TectonicSandboxSetupExit = 78
 
+// cpuExhausted decides whether a signaled child was killed for spending its
+// CPU budget, as opposed to any of the other reasons a child can be signaled.
+//
+// TWO CONDITIONS, and the earlier version had neither properly:
+//
+//   - THE SIGNAL. RLIMIT_CPU with soft == hard produces SIGKILL. Accepting any
+//     signal meant an immediate SIGSEGV or a SIGTERM from a shutdown was
+//     reported as a processing-time refusal -- terminal, and blaming the
+//     document for a crash (codex, PR #22).
+//   - THE CONSUMPTION, within a tolerance that CANNOT swallow the budget. The
+//     tolerance was a flat one second, so at the smallest budget startup
+//     accepts (1s) the threshold became zero and every signaled child
+//     qualified. It is now a fraction, floored at a tenth of a second, so it
+//     is always strictly inside the budget.
+//
+// The tolerance exists because RLIMIT_CPU is whole seconds while getrusage
+// reports what it accounted for, which can land marginally under.
+//
+// SIGKILL is also what the cgroup OOM killer sends, so this is not a complete
+// discriminator on its own -- the consumption test is what separates them, and
+// the OOM branch below catches what falls through.
+func cpuExhausted(sig syscall.Signal, used time.Duration, budgetSeconds int) bool {
+	// SIGXCPU **or** SIGKILL, and which one arrives is not a detail this code
+	// gets to assume.
+	//
+	// I asserted SIGKILL alone, reasoning that soft == hard means the kernel
+	// skips the SIGXCPU-then-grace dance. MEASURED, it does not: the child is
+	// reported as "cputime limit exceeded", which is SIGXCPU, and requiring
+	// SIGKILL broke the two tests that exercise a real kill. That was the
+	// third guess in a row about this branch -- the first two blamed the
+	// tolerance, and a measurement showed consumption at 1.0022s against a
+	// 1s budget, above it rather than under.
+	//
+	// Both are accepted because both are real: SIGXCPU is what a soft limit
+	// raises, and SIGKILL is what a hard limit produces when the soft one is
+	// ignored or already spent. The consumption test below is what separates
+	// either from an unrelated kill, including the cgroup OOM killer's
+	// SIGKILL.
+	if budgetSeconds <= 0 {
+		return false
+	}
+	if sig != syscall.SIGXCPU && sig != syscall.SIGKILL {
+		return false
+	}
+	budget := time.Duration(budgetSeconds) * time.Second
+	// A TENTH OF THE BUDGET, floored at a quarter-second.
+	//
+	// Both bounds are measured, not chosen for tidiness. RLIMIT_CPU is whole
+	// seconds and getrusage reports what it ACCOUNTED for, which on a
+	// contended host lands well under: with eight competing CPU burners a
+	// 1-second budget was reported as ~0.85s, and a flat 100ms floor left the
+	// kill unrecognised even though the kernel had said "cputime limit
+	// exceeded". A quarter-second covers that and stays far from any early
+	// crash.
+	tolerance := budget / 10
+	if tolerance < 250*time.Millisecond {
+		tolerance = 250 * time.Millisecond
+	}
+	if tolerance >= budget {
+		// Cannot happen while startup enforces a one-second minimum, and is
+		// written down rather than assumed: a tolerance that reaches the whole
+		// budget is the defect this function was rewritten to remove.
+		tolerance = budget / 2
+	}
+	return used >= budget-tolerance
+}
+
+// classifyDeadline decides whether a deadline that fired says something about
+// the DOCUMENT or about the NODE.
+//
+// A pure function of the two measurements, deliberately: the tests that used to
+// cover this ran a busy loop and asserted on what the scheduler gave it, so on
+// a loaded runner they failed while the code was behaving exactly as
+// configured -- codex reproduced 0.31-0.39 of a CPU with the package's own
+// tests running concurrently, and that is the same shape as my one
+// unexplained failure earlier in this branch, which I could not reproduce and
+// did not diagnose. A test that needs a whole CPU to pass is testing the
+// runner.
+func classifyDeadline(cpu engineCPU) (starved bool) {
+	if !cpu.Known {
+		// No measurement, no claim: fall through to the ordinary deadline,
+		// which is terminal. Guessing "starved" here would retry a document
+		// that may genuinely not terminate.
+		return false
+	}
+	return cpu.Share() < starvedCPUShare
+}
+
 // starvedCPUShare is the fraction of one CPU below which a deadline says
 // nothing about the document. See the classifier for the measurement.
 const starvedCPUShare = 0.5
@@ -1177,10 +1265,9 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 			// arrives with the identical signal and context state: an OOM can
 			// happen at any point in the budget, and this branch only claims a
 			// kill that landed at the end of it.
-			budget := time.Duration(c.CPUSeconds) * time.Second
-			if ctx.Err() == nil && errors.As(err, &xerr) && cpu.Known &&
-				cpu.Total() >= budget-time.Second {
-				if st, ok := xerr.Sys().(syscall.WaitStatus); ok && st.Signaled() {
+			if ctx.Err() == nil && errors.As(err, &xerr) && cpu.Known {
+				if st, ok := xerr.Sys().(syscall.WaitStatus); ok && st.Signaled() &&
+					cpuExhausted(st.Signal(), cpu.Total(), c.CPUSeconds) {
 					return fmt.Errorf("tectonic: %w after %.0fs of CPU: %s",
 						ErrTeXCPUExhausted, cpu.Total().Seconds(), tectonicTail(out))
 				}
@@ -1203,7 +1290,7 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		// 2-CPU quota: 1.00 idle, 0.28 with the node oversubscribed 4x. Half a
 		// CPU is far from both, and a document that had a CPU to itself can
 		// never be below it however the two settings are configured.
-		if errors.Is(err, context.DeadlineExceeded) && cpu.Known && cpu.Share() < starvedCPUShare {
+		if errors.Is(err, context.DeadlineExceeded) && classifyDeadline(cpu) {
 			return fmt.Errorf("tectonic: %w: the deadline expired after %.1fs of CPU in %.1fs "+
 				"of wall clock (%.2f of one CPU)", ErrTeXEngineStarved,
 				cpu.Total().Seconds(), cpu.Elapsed.Seconds(), cpu.Share())
