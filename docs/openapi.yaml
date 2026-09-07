@@ -138,6 +138,14 @@ components:
         job_id:
           type: string
           format: uuid
+        correlation_id:
+          type: string
+          maxLength: 128
+          description: >-
+            Echo of the Correlation-Id header the job was created with.
+            Present only when one was supplied — omitted rather than null, so a
+            client can tell "none was sent" from "one was sent and lost".
+          example: svc-checkout/req-8f31c2a4
         status:
           type: string
           enum: [queued, active, done, failed]
@@ -772,6 +780,29 @@ paths:
         (target [+ opts]) or preset must be supplied, never both. The
         declared filename extension must match the file's actual (magic-byte
         detected) content, or the request is rejected.
+      parameters:
+        - name: Correlation-Id
+          in: header
+          required: false
+          description: >-
+            The caller's own identifier for the operation that led to this job.
+            Stored, echoed in the job status and in every webhook body, and
+            written to this service's log records beside job_id — so an
+            incident that starts in the caller's logs can be followed here.
+            NOT a trace id: it carries no tracing semantics and is never
+            parsed. When distributed tracing is adopted, traceparent will
+            arrive as its own standard header and the two will coexist.
+            Absent is normal — no identifier is generated to replace it, and
+            the field is then omitted from responses and webhooks rather than
+            sent as null. At most 128 printable ASCII characters, excluding
+            space; a value that is longer or contains anything else is REFUSED
+            with 422 rather than truncated, because a truncated correlation id
+            matches nothing on the caller's side and gives no clue why.
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[!-~]+$'
+          example: svc-checkout/req-8f31c2a4
       requestBody:
         required: true
         content:

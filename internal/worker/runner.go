@@ -200,6 +200,19 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 
 	job, err := r.h.repo.Get(ctx, jobID)
 	if err != nil {
+		// A TRANSIENT failure BEFORE the job is loaded, and until now it was
+		// invisible: this returns to asynq without reaching the retry logger
+		// further down, so a Postgres outage produced repeated attempts with
+		// no correlatable record at all (codex, PR #23).
+		//
+		// Only job_id is known here -- correlation_id, engine and client_id
+		// live in the row that could not be read -- and job_id is what the
+		// admission record already carries, so the chain still joins.
+		fields := []string{"job_id", jobID.String(), "reason", err.Error()}
+		if n, ok := asynq.GetRetryCount(ctx); ok {
+			fields = append(fields, "attempt", strconv.Itoa(n+1))
+		}
+		log.Println(logfmt.KV("job load failed", fields...))
 		return fmt.Errorf("load job %s: %w", jobID, err)
 	}
 
@@ -260,6 +273,23 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 			// D-05, and re-failing a canceled job is wrong) and record no
 			// job-outcome metric (mirrors the transient branch's own
 			// no-double-count comment below).
+			// A terminal outcome like any other, and it had no line: this
+			// branch returns before finish, so the chain OBS-01 added stopped
+			// at admission or at a retry and never reached the job's actual
+			// end (codex, PR #23).
+			//
+			// finish is deliberately NOT called -- the cancel path commits its
+			// own status elsewhere, and calling it would attempt a second
+			// transition. Only the record was missing, so only the record is
+			// added.
+			log.Println(logfmt.KV("job canceled",
+				"job_id", job.ID.String(),
+				"correlation_id", job.CorrelationID,
+				"client_id", job.ClientID.String(),
+				"engine", job.Engine,
+				"target", job.TargetFormat,
+				"duration_ms", logfmt.MS(time.Since(start).Milliseconds()),
+			))
 			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
 		}
 		// A SkipRetry from the engine path means "no attempt can succeed", and a
@@ -375,7 +405,26 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 	//
 	// job_id is the join: internal/api logs it once at admission alongside the
 	// HTTP request id, and from there this is the same job across processes.
-	log.Println(logfmt.KV("job "+status,
+	var ferr error
+	if status == jobs.StatusFailed {
+		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
+	}
+
+	// AFTER the commit, and the outcome of the commit decides what is said.
+	//
+	// Logging first claimed a terminal state that MarkFailed might then fail
+	// to reach -- a Postgres error, or a concurrent transition that already
+	// took the job elsewhere. Everything below this treats such a job as NOT
+	// having reached the status, and terminal callers discard finish's error
+	// and return SkipRetry, so the log would have been the only record and it
+	// would have been wrong (codex, PR #23).
+	//
+	// A failed commit is NOT silent either: a job that could not be marked
+	// failed is exactly what an operator needs to see, and it is the one case
+	// where the row and the log genuinely disagree. It gets its own event
+	// rather than the terminal one.
+	event := "job " + status
+	fields := []string{
 		"job_id", job.ID.String(),
 		"correlation_id", job.CorrelationID,
 		"client_id", job.ClientID.String(),
@@ -383,12 +432,12 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 		"target", job.TargetFormat,
 		"code", code,
 		"duration_ms", logfmt.MS(elapsed.Milliseconds()),
-	))
-
-	var ferr error
-	if status == jobs.StatusFailed {
-		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
 	}
+	if ferr != nil {
+		event = "job finish uncommitted"
+		fields = append(fields, "intended_status", status, "commit_error", ferr.Error())
+	}
+	log.Println(logfmt.KV(event, fields...))
 	// jobs.StatusDone: ferr stays nil -- process() (or a test's processFn
 	// stub standing in for it) already committed MarkDone inside its own
 	// transaction (worker.go's process(), the final line) before Handle
