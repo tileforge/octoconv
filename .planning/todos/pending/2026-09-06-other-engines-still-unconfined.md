@@ -1,8 +1,25 @@
 ---
 created: 2026-09-06
+updated: 2026-09-07
 area: convert
 severity: low
 origin: PR #21, while wiring Landlock into the tex engine
+progress: |
+  Groundwork done: the exec mode is out of cmd/tectonic-worker and in
+  internal/sandbox, so adopting it is one line in a worker's main()
+  (sandbox.RunExecModeIfRequested). It was moved rather than copied because the
+  ORDER inside it is load-bearing -- limits before ruleset, thread id checked
+  before exec -- and both of those cost a review round to find once already.
+
+  MEASURED, and it changes the plan for one engine: the document worker cannot
+  be confined on an arm64 development host. Its image is pinned to linux/amd64
+  because verapdf publishes no arm64 manifest, and under qemu emulation the
+  helper reports "landlock: unavailable on this kernel". Since the startup
+  contract is FAIL CLOSED, adopting the sandbox there would make the document
+  worker refuse to start on every arm64 developer machine while working
+  normally on an amd64 node. That is a real cost to weigh, not a detail --
+  and it is the one engine where the answer is not simply "measure what it
+  reads".
 ---
 
 # The sandbox exists now, and only one of nine engines uses it
