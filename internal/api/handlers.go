@@ -20,8 +20,10 @@ import (
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/apaderin/octoconv/internal/storage"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 const (
@@ -1087,6 +1089,32 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Route to the matching engine-class queue (mirrors reconciler.go's
 	// engine switch). The row stays in 'queued' on any enqueue failure; a
 	// reconciler will recover it.
+	// THE JOIN BETWEEN THE TWO WORLDS, and the only place it exists.
+	//
+	// chi's middleware.RequestID gives every HTTP request an id and its Logger
+	// prints it, but that id is never stored and never leaves this process.
+	// job_id is stored everywhere and never appears in an HTTP log line. This
+	// record is where they meet: from here, request_id finds the chi access
+	// log, and job_id finds every worker line about the same job.
+	//
+	// After Create and before enqueue, deliberately: a job that exists is
+	// worth a line even if the enqueue then fails, and that is precisely the
+	// case an operator has to investigate (the Postgres-first double write
+	// exists so such a row is inspectable rather than lost).
+	//
+	// filename is the client's, so it goes through the same escaping the
+	// worker uses -- a newline in it would otherwise split this record.
+	log.Println(logfmt.KV("job accepted",
+		"request_id", middleware.GetReqID(ctx),
+		"job_id", createdID.String(),
+		"client_id", client.ID.String(),
+		"engine", engine,
+		"source", detected,
+		"target", target,
+		"filename", filename,
+		"bytes", strconv.FormatInt(totalBytes, 10),
+	))
+
 	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
 	if !routed {
 		// Fail closed: an engine class with no known queue must never be

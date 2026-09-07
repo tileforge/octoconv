@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/hibiken/asynq"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/apaderin/octoconv/internal/metrics"
 	"github.com/apaderin/octoconv/internal/queue"
 )
@@ -283,6 +286,35 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 		// own retry/backoff (per-engine RetryDelay/MAX_RETRY) applies. Not
 		// a terminal outcome, so it is NOT recorded in the job-outcome
 		// metric (Pitfall 6 -- one asynq retry must not double-count).
+		//
+		// It IS logged, and with the attempt number, for the reason the metric
+		// is not: without it, three attempts at one job read as three jobs
+		// that each vanished, and the retry -- the very thing that makes this
+		// branch different from the terminal one -- is invisible.
+		//
+		// The reason carries the engine's own error text, which is the engine
+		// reacting to a document the client wrote: jobLine escapes it.
+		fields := []string{
+			"job_id", job.ID.String(),
+			"client_id", job.ClientID.String(),
+			"engine", job.Engine,
+		}
+		// GetRetryCount reports FALSE outside an asynq handler -- which is
+		// every unit test that drives Handle directly. Rendering "attempt=1"
+		// there would be a claim the context cannot support, so the field is
+		// omitted rather than guessed.
+		//
+		// 1-based when it is present: asynq counts RETRIES, and "attempt=0"
+		// for the first try reads as a bug in the logging rather than as the
+		// first try.
+		if n, ok := asynq.GetRetryCount(ctx); ok {
+			fields = append(fields, "attempt", strconv.Itoa(n+1))
+		}
+		fields = append(fields,
+			"duration_ms", logfmt.MS(time.Since(start).Milliseconds()),
+			"reason", err.Error(),
+		)
+		log.Println(logfmt.KV("job retrying", fields...))
 		return err
 	}
 
@@ -334,6 +366,23 @@ func (r *Runner) runProcess(ctx context.Context, job *jobs.Job) (err error) {
 // that single-site structure is what makes "fire before commit" impossible
 // (T-56-12), and plan 56-05's inversion run is the proof.
 func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, message string, detail map[string]any, elapsed time.Duration) error {
+	// ONE log record per terminal outcome, emitted from the one place every
+	// terminal outcome already flows through. Putting it at the four call
+	// sites instead would mean four chances for a later branch to be added
+	// without one -- and a job that ends with no line at all is exactly the
+	// gap this is closing.
+	//
+	// job_id is the join: internal/api logs it once at admission alongside the
+	// HTTP request id, and from there this is the same job across processes.
+	log.Println(logfmt.KV("job "+status,
+		"job_id", job.ID.String(),
+		"client_id", job.ClientID.String(),
+		"engine", job.Engine,
+		"target", job.TargetFormat,
+		"code", code,
+		"duration_ms", logfmt.MS(elapsed.Milliseconds()),
+	))
+
 	var ferr error
 	if status == jobs.StatusFailed {
 		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
