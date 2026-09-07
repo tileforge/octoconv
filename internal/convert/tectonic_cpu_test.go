@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"testing"
 )
 
@@ -16,6 +18,16 @@ import (
 //
 // No tectonic involved: a stand-in engine reproduces the two kernel-level
 // outcomes that matter, which is what the classification actually reads.
+
+// helperArgv returns the tokens the stand-in helper was actually handed.
+func helperArgv(t *testing.T, in string) []string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(in), "argv"))
+	if err != nil {
+		t.Fatalf("the helper recorded no argv, so it was never invoked: %v", err)
+	}
+	return strings.Fields(string(b))
+}
 
 func cpuTestConverter(t *testing.T, engineBody string, cpuSeconds int) (TectonicConverter, string) {
 	t.Helper()
@@ -31,10 +43,18 @@ func cpuTestConverter(t *testing.T, engineBody string, cpuSeconds int) (Tectonic
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 
-	// The stand-in helper ignores the ruleset tokens and runs its own body, so
-	// the test needs no kernel support beyond `ulimit -t`.
+	// The stand-in helper RECORDS ITS ARGV before doing anything, then runs
+	// its own body -- so the test needs no kernel support beyond `ulimit -t`,
+	// and can still assert that the tokens it was supposed to receive arrived.
+	//
+	// The recording is not decoration. Without it these tests proved only that
+	// the CLASSIFICATION works, and an inversion that stopped emitting the
+	// cpu: token passed twice: the helper was killing itself with its own
+	// ulimit and the spec was never read.
 	helper := filepath.Join(dir, "helper")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"+engineBody), 0o755); err != nil {
+	argvFile := filepath.Join(dir, "argv")
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\n" + engineBody
+	if err := os.WriteFile(helper, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -47,9 +67,10 @@ func cpuTestConverter(t *testing.T, engineBody string, cpuSeconds int) (Tectonic
 		t.Fatal(err)
 	}
 	return TectonicConverter{
-		BundlePath:    bundle,
-		SandboxHelper: []string{helper},
-		CPUSeconds:    cpuSeconds,
+		BundlePath:        bundle,
+		SandboxHelper:     []string{helper},
+		CPUSeconds:        cpuSeconds,
+		ConfineFilesystem: true,
 	}, in
 }
 
@@ -118,5 +139,91 @@ func TestConvertStillTimesOutWhenTheEngineWasBusy(t *testing.T) {
 	if errors.Is(err, ErrTeXEngineStarved) {
 		t.Fatalf("an engine that burned CPU for the whole deadline is reported as STARVED, so a "+
 			"genuinely non-terminating document would be retried until the budget is gone: %v", err)
+	}
+}
+
+// TestStarvationIsAShareNotABudgetComparison pins the fix for codex round 1's
+// second finding, and the reason it is a ratio.
+//
+// The threshold used to compare consumption against the CONFIGURED budget,
+// which made the verdict depend on the relationship between two independently
+// configurable numbers: with TECTONIC_ENGINE_CPU_SECONDS=600 and the default
+// 271s deadline, a fully saturated runaway consumes ~271 CPU-seconds -- under
+// half of 600 -- and would have been called starvation and RETRIED,
+// multiplying the runaway's cost across every attempt.
+//
+// A share of one CPU cannot be gamed that way: a document that had a CPU to
+// itself is at 1.00 however the two settings are configured.
+func TestStarvationIsAShareNotABudgetComparison(t *testing.T) {
+	// The shape of the finding: a budget far larger than the deadline, and an
+	// engine that saturates its CPU for the whole attempt.
+	c, in := cpuTestConverter(t, "while :; do :; done\n", 600)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*1e9)
+	defer cancel()
+
+	err := c.Convert(ctx, in, filepath.Join(filepath.Dir(in), "out.pdf"), nil)
+	if err == nil {
+		t.Fatal("no error from a document that ran past its deadline")
+	}
+	if errors.Is(err, ErrTeXEngineStarved) {
+		t.Fatalf("a runaway that had a whole CPU for the entire attempt is classified as STARVED "+
+			"because its consumption was small next to a 600s budget. It would be retried, and "+
+			"each retry would burn the same CPU again: %v", err)
+	}
+	if !errors.Is(err, ErrTeXEngineTimeout) {
+		t.Fatalf("want the ordinary engine deadline for a document that worked and did not "+
+			"finish, got: %v", err)
+	}
+}
+
+// TestCPUBudgetAppliesWithLandlockOff is codex round 1's first finding, and
+// the configuration my other tests never exercised: TECTONIC_SANDBOX_DISABLED
+// is a supported deployment, and the CPU budget does not depend on Landlock.
+//
+// The bug it pins is the quiet kind -- the worker logged an active budget and
+// enforced nothing, which is "a bound that is configured and not plumbed is a
+// bound that does not exist", a defect this repository has shipped and named
+// before.
+func TestCPUBudgetAppliesWithLandlockOff(t *testing.T) {
+	c, in := cpuTestConverter(t, "ulimit -t 1\nwhile :; do :; done\n", 1)
+	c.ConfineFilesystem = false // the sandbox is off; the budget is not
+
+	err := c.Convert(context.Background(), in, filepath.Join(filepath.Dir(in), "out.pdf"), nil)
+	if err == nil {
+		t.Fatal("no error at all with the filesystem sandbox off")
+	}
+	if !errors.Is(err, ErrTeXCPUExhausted) {
+		t.Fatalf("with the sandbox off the CPU budget is not enforced or not classified, so a "+
+			"deployment that disabled Landlock silently loses the bound it configured: %v", err)
+	}
+
+	// The classification above can be satisfied by a child that limits itself.
+	// This is the half that says the BOUND WAS ASKED FOR: the cpu: token has
+	// to reach the helper, and no path token may, because the sandbox is off.
+	argv := helperArgv(t, in)
+	var sawCPU bool
+	for _, tok := range argv {
+		if tok == "cpu:1" {
+			sawCPU = true
+		}
+		if strings.HasPrefix(tok, "ro:") || strings.HasPrefix(tok, "rw:") {
+			t.Errorf("the helper was handed %q with the filesystem sandbox OFF; a ruleset nobody "+
+				"asked for is being applied.\nargv = %v", tok, argv)
+		}
+	}
+	if !sawCPU {
+		t.Fatalf("the helper was never handed a cpu: token, so the budget is not being applied at "+
+			"all -- the worker would log an active budget and enforce nothing.\nargv = %v", argv)
+	}
+}
+
+// And the spec proves which half is being asked for: limits with no path
+// tokens, because an EMPTY ruleset denies everything rather than nothing.
+func TestSpecWithoutConfinementCarriesOnlyTheLimit(t *testing.T) {
+	spec := (sandbox.Paths{}).SpecWith(sandbox.Limits{CPUSeconds: 42})
+	if len(spec) != 1 || spec[0] != "cpu:42" {
+		t.Fatalf("spec = %v, want exactly [cpu:42]. A path token here would be a ruleset nobody "+
+			"asked for; no token at all would be a budget that is never applied.", spec)
 	}
 }

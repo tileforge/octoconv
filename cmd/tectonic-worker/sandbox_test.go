@@ -39,10 +39,10 @@ func TestSandboxIsOnUnlessSomebodyWroteItDown(t *testing.T) {
 			t.Fatalf("a helper was returned on a host without landlock (%s): the sandbox cannot "+
 				"be established and every job would fail at exec time instead of at startup", runtime.GOOS)
 		}
-		if helper[len(helper)-1] != sandboxExecMode {
+		if helper[len(helper)-1] != sandbox.ExecMode {
 			t.Fatalf("helper = %v, whose last argument is not %q: the binary would start as a "+
 				"WORKER rather than as the sandbox helper, and consume the queue twice",
-				helper, sandboxExecMode)
+				helper, sandbox.ExecMode)
 		}
 	}
 }
@@ -70,10 +70,10 @@ func TestEscapeHatchIsExactlyTrue(t *testing.T) {
 // The helper's exit status and the classifier that reads it are one contract
 // spanning two packages. This is the cmd-side half.
 func TestSetupExitMatchesTheClassifier(t *testing.T) {
-	if sandboxSetupExit != convert.TectonicSandboxSetupExit {
+	if sandbox.SetupExit != convert.TectonicSandboxSetupExit {
 		t.Fatalf("the helper exits %d and Convert classifies %d: a node that cannot establish the "+
 			"sandbox would be reported to the client as a document that failed to typeset",
-			sandboxSetupExit, convert.TectonicSandboxSetupExit)
+			sandbox.SetupExit, convert.TectonicSandboxSetupExit)
 	}
 }
 
@@ -82,8 +82,8 @@ func TestSetupExitMatchesTheClassifier(t *testing.T) {
 // has shipped that exact defect once, which is why buildTectonicConverter is a
 // function at all.
 func TestSandboxHelperReachesTheConverter(t *testing.T) {
-	helper := []string{"/usr/local/bin/tectonic-worker", sandboxExecMode}
-	c := buildTectonicConverter("/opt/tectonic/b.ttb", convert.DefaultTectonicMaxOutputBytes, helper, 0)
+	helper := []string{"/usr/local/bin/tectonic-worker", sandbox.ExecMode}
+	c := buildTectonicConverter("/opt/tectonic/b.ttb", convert.DefaultTectonicMaxOutputBytes, helper, 0, true)
 	if len(c.SandboxHelper) != len(helper) {
 		t.Fatalf("SandboxHelper = %v, want %v: the engine would run unconfined", c.SandboxHelper, helper)
 	}

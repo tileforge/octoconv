@@ -130,6 +130,10 @@ func runCommandLimited(ctx context.Context, limit int, name string, args ...stri
 // something about the NODE.
 type engineCPU struct {
 	User, Sys time.Duration
+	// Elapsed is the wall clock the child occupied, kept beside the CPU it
+	// consumed because neither number means anything alone: the question is
+	// what SHARE of a CPU the child got, and that is a ratio.
+	Elapsed time.Duration
 	// Known is false when no child ever ran (a failure to start), so a caller
 	// cannot mistake "consumed nothing" for "consumed zero".
 	Known bool
@@ -137,11 +141,21 @@ type engineCPU struct {
 
 func (c engineCPU) Total() time.Duration { return c.User + c.Sys }
 
-func cpuOf(ps *os.ProcessState) engineCPU {
-	if ps == nil {
-		return engineCPU{}
+// Share is how much of one CPU the child actually got, 0..n. Measured in the
+// shipped image at a 2-CPU quota: 1.00 idle, 0.28 with the node
+// oversubscribed 4x.
+func (c engineCPU) Share() float64 {
+	if !c.Known || c.Elapsed <= 0 {
+		return 0
 	}
-	return engineCPU{User: ps.UserTime(), Sys: ps.SystemTime(), Known: true}
+	return c.Total().Seconds() / c.Elapsed.Seconds()
+}
+
+func cpuOf(ps *os.ProcessState, elapsed time.Duration) engineCPU {
+	if ps == nil {
+		return engineCPU{Elapsed: elapsed}
+	}
+	return engineCPU{User: ps.UserTime(), Sys: ps.SystemTime(), Elapsed: elapsed, Known: true}
 }
 
 func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name string, args ...string) ([]byte, error) {
@@ -164,6 +178,7 @@ func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name 
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
+	started := time.Now()
 	if err := cmd.Start(); err != nil {
 		return nil, engineCPU{}, fmt.Errorf("start %s: %w", name, err)
 	}
@@ -180,11 +195,11 @@ func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name 
 		// nil, not the partial output: every other engine reaches this path
 		// too, and changing what a timeout returns for all of them is not what
 		// this change is for.
-		return nil, cpuOf(cmd.ProcessState), fmt.Errorf("%s killed: %w", name, ctx.Err())
+		return nil, cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s killed: %w", name, ctx.Err())
 	case err := <-done:
 		if err != nil {
-			return stdout.Bytes(), cpuOf(cmd.ProcessState), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
+			return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
 		}
-		return stdout.Bytes(), cpuOf(cmd.ProcessState), nil
+		return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), nil
 	}
 }

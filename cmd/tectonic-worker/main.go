@@ -35,80 +35,9 @@ import (
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
-// sandboxExecMode is the argv[1] that turns this binary into the thing that
-// applies the sandbox and then BECOMES the engine.
-//
-// It has to work this way. Landlock restricts the calling process and cannot be
-// applied to another one, so something must apply the rules and then exec
-// tectonic in the same process -- and the only binary guaranteed to be present
-// in this image is this one. os/exec offers no hook between fork and exec that
-// can run Go, which is why this is a mode rather than a callback.
-//
-// Not a subcommand anyone should call: it is an implementation detail of
-// convert.TectonicConverter, which builds the argv.
-const sandboxExecMode = "__sandbox-exec"
-
-// sandboxSetupExit is the exit status meaning "the ENGINE never ran".
-//
-// 78 is sysexits.h's EX_CONFIG. The value matters only in that it is not 1 and
-// not any status tectonic produces; convert.ErrTeXSandboxUnavailable is the
-// other half of this contract and the two are held together by a test.
-const sandboxSetupExit = convert.TectonicSandboxSetupExit
-
-// fatalSandbox reports on stderr and exits with the status that means the
-// engine never started.
-func fatalSandbox(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, sandboxExecMode+": "+format+"\n", args...)
-	os.Exit(sandboxSetupExit)
-}
-
-// runSandboxExec applies the ruleset from argv and execs the rest.
-//
-//	tectonic-worker __sandbox-exec rw:/tmp/job ro:/opt/tectonic ... -- /usr/local/bin/tectonic ...
-//
-// It exits with sandboxSetupExit, never 1: a sandbox that cannot be established
-// is an infrastructure fault the job should be RETRIED on, and tectonic's own
-// failure exit is 1. Sharing a code would report a broken node to the client as
-// a document that failed to typeset, and never retry it.
-func runSandboxExec(argv []string) {
-	p, limits, cmd, err := sandbox.ParseSpec(argv)
-	if err != nil {
-		fatalSandbox("%v", err)
-	}
-	// BEFORE the filesystem ruleset, because Apply locks this thread and never
-	// unlocks it, and setrlimit is per-process rather than per-thread: doing it
-	// after would work, but it would put a process-wide call after a
-	// deliberately thread-pinned one, which is the kind of ordering nobody
-	// re-derives correctly later.
-	if err := sandbox.ApplyLimits(limits); err != nil {
-		fatalSandbox("%v", err)
-	}
-	if err := sandbox.Apply(p); err != nil {
-		// FAIL CLOSED. Running the engine unconfined because the confinement
-		// could not be established is exactly the outcome this exists to
-		// prevent, and it would be invisible.
-		fatalSandbox("%v", err)
-	}
-	restricted := sandbox.ThreadID()
-
-	// The rules live on the THREAD that established them, and execve carries
-	// the security state of the thread that calls it. Apply locks the thread
-	// so this cannot drift; this asserts it rather than trusting it, because
-	// the failure -- the engine running unsandboxed -- produces a correct PDF
-	// and no error at all.
-	if now := sandbox.ThreadID(); now != restricted {
-		fatalSandbox("thread changed between applying the sandbox (%d) and exec (%d): "+
-			"the engine would run unconfined", restricted, now)
-	}
-	if err := syscall.Exec(cmd[0], cmd, os.Environ()); err != nil {
-		fatalSandbox("exec %s: %v", cmd[0], err)
-	}
-}
-
 func main() {
 	// Before flags, before config, before anything: this mode never returns.
-	if len(os.Args) > 1 && os.Args[1] == sandboxExecMode {
-		runSandboxExec(os.Args[2:])
+	if sandbox.RunExecModeIfRequested(os.Args) {
 		return
 	}
 
@@ -200,8 +129,16 @@ func main() {
 		}
 	}
 
-	if len(sandboxHelper) == 0 {
-		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can")
+	// The helper runs EITHER WAY: it carries the CPU budget, which does not
+	// depend on Landlock. Only the filesystem ruleset is optional.
+	confineFS := len(sandboxHelper) > 0
+	if !confineFS {
+		self, serr := os.Executable()
+		if serr != nil {
+			log.Fatalf("locate this binary to use as the exec helper: %v", serr)
+		}
+		sandboxHelper = []string{self, sandbox.ExecMode}
+		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can (the CPU budget still applies)")
 	} else {
 		log.Printf("🔒 tectonic sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
 	}
@@ -215,7 +152,7 @@ func main() {
 	// which is the case this exists for.
 	cpuSeconds := int(envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second).Seconds())
 
-	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper, cpuSeconds)
+	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper, cpuSeconds, confineFS)
 	log.Printf("⏱  TECTONIC_ENGINE_CPU_SECONDS=%d", cpuSeconds)
 
 	// Proves the ENGINE runs under the rules, not merely that the rules can be
@@ -347,12 +284,13 @@ func main() {
 // convert.Default registry side effect. Mirrors cmd/ocr-worker's
 // buildOCRConverter exactly, for the reason stated there: a bound that is
 // configured and not plumbed is a bound that does not exist.
-func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string, cpuSeconds int) convert.TectonicConverter {
+func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string, cpuSeconds int, confineFS bool) convert.TectonicConverter {
 	return convert.TectonicConverter{
-		BundlePath:     bundlePath,
-		MaxOutputBytes: maxOutputBytes,
-		SandboxHelper:  sandboxHelper,
-		CPUSeconds:     cpuSeconds,
+		BundlePath:        bundlePath,
+		MaxOutputBytes:    maxOutputBytes,
+		SandboxHelper:     sandboxHelper,
+		CPUSeconds:        cpuSeconds,
+		ConfineFilesystem: confineFS,
 	}
 }
 
@@ -386,7 +324,7 @@ func resolveSandboxHelper() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate this binary to use as the sandbox helper: %w", err)
 	}
-	helper := []string{self, sandboxExecMode}
+	helper := []string{self, sandbox.ExecMode}
 
 	// THE ABI QUERY IS NOT PROOF THAT CONFINEMENT CAN BE ESTABLISHED.
 	//
