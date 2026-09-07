@@ -127,10 +127,11 @@ const TectonicSandboxSetupExit = 78
 //
 // TWO CONDITIONS, and the earlier version had neither properly:
 //
-//   - THE SIGNAL. RLIMIT_CPU with soft == hard produces SIGKILL. Accepting any
-//     signal meant an immediate SIGSEGV or a SIGTERM from a shutdown was
-//     reported as a processing-time refusal -- terminal, and blaming the
-//     document for a crash (codex, PR #22).
+//   - THE SIGNAL. RLIMIT_CPU produces SIGXCPU -- measured; see the note in the
+//     function body about asserting SIGKILL and being wrong. Accepting ANY
+//     signal, which is what the first version did, meant an immediate SIGSEGV
+//     or a SIGTERM from a shutdown was reported as a processing-time refusal:
+//     terminal, and blaming the document for a crash (codex, PR #22).
 //   - THE CONSUMPTION, within a tolerance that CANNOT swallow the budget. The
 //     tolerance was a flat one second, so at the smallest budget startup
 //     accepts (1s) the threshold became zero and every signaled child
@@ -167,24 +168,27 @@ func cpuExhausted(sig syscall.Signal, used time.Duration, budgetSeconds int) boo
 		return false
 	}
 	budget := time.Duration(budgetSeconds) * time.Second
-	// A TENTH OF THE BUDGET, floored at a quarter-second.
+
+	// THE TOLERANCE IS AN ACCOUNTING ERROR, SO IT IS A FIXED SIZE.
 	//
-	// Both bounds are measured, not chosen for tidiness. RLIMIT_CPU is whole
-	// seconds and getrusage reports what it ACCOUNTED for, which on a
-	// contended host lands well under: with eight competing CPU burners a
-	// 1-second budget was reported as ~0.85s, and a flat 100ms floor left the
-	// kill unrecognised even though the kernel had said "cputime limit
-	// exceeded". A quarter-second covers that and stays far from any early
-	// crash.
-	tolerance := budget / 10
-	if tolerance < 250*time.Millisecond {
-		tolerance = 250 * time.Millisecond
-	}
-	if tolerance >= budget {
-		// Cannot happen while startup enforces a one-second minimum, and is
-		// written down rather than assumed: a tolerance that reaches the whole
-		// budget is the defect this function was rewritten to remove.
-		tolerance = budget / 2
+	// It exists because RLIMIT_CPU is whole seconds while getrusage reports
+	// what it accounted for, which lands slightly under -- measured at ~150ms
+	// on a contended host at a 1-second limit. That error does not grow with
+	// the budget, and scaling it did: a tenth of the production 271s budget is
+	// 27 SECONDS, so a cgroup OOM kill at 244 CPU-seconds was inside the
+	// window and got reported as a processing-time refusal, telling the client
+	// to make the document cheaper when the answer was to make it smaller
+	// (codex, PR #22).
+	//
+	// Half a second is over three times the measured error and still tiny next
+	// to any budget startup accepts.
+	const tolerance = 500 * time.Millisecond
+	if budget <= tolerance {
+		// Unreachable while startup enforces a one-second minimum, and stated
+		// rather than assumed: a tolerance that reaches the whole budget makes
+		// every signaled child qualify, which is the defect this function was
+		// rewritten to remove.
+		return used >= budget
 	}
 	return used >= budget-tolerance
 }
@@ -1248,23 +1252,17 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		// output -- because in both of them the engine was killed and its
 		// output is whatever it had managed to print, which says nothing.
 		if c.CPUSeconds > 0 {
-			// Killed by the kernel for spending the budget. RLIMIT_CPU is set
-			// soft == hard, so this arrives as SIGKILL with the context still
-			// alive -- the same shape as the OOM kill, told apart by the CPU
-			// the child is recorded as having used.
-			var xerr *exec.ExitError
-			// WITHIN a second of the budget, not at or past it. RLIMIT_CPU is
-			// expressed in whole seconds and the kernel kills when the child
-			// REACHES the limit, but getrusage reports what it accounted for,
-			// which can land marginally under. An exact >= comparison is
-			// therefore fragile by construction: a child killed at its budget
-			// but accounted at 270.9s would fall through to the generic engine
-			// failure and be reported as a document that could not be typeset.
+			// Killed by the kernel for spending the budget.
 			//
-			// The slack is what discriminates this from the OOM kill, which
-			// arrives with the identical signal and context state: an OOM can
-			// happen at any point in the budget, and this branch only claims a
-			// kill that landed at the end of it.
+			// The kill arrives with the context still alive, which is also
+			// the shape of the cgroup OOM kill -- cpuExhausted separates them
+			// on CONSUMPTION, not on the signal, because both can be SIGKILL
+			// (RLIMIT_CPU raises SIGXCPU first; measured, and the assumption
+			// that soft == hard skips it was wrong).
+			var xerr *exec.ExitError
+			// The signal and the consumption together; see cpuExhausted for
+			// what each rules out and why the tolerance is a fixed size rather
+			// than a fraction of the budget.
 			if ctx.Err() == nil && errors.As(err, &xerr) && cpu.Known {
 				if st, ok := xerr.Sys().(syscall.WaitStatus); ok && st.Signaled() &&
 					cpuExhausted(st.Signal(), cpu.Total(), c.CPUSeconds) {

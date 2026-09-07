@@ -230,6 +230,16 @@ func TestCPUExhaustedNeedsTheRightSignalAndRealConsumption(t *testing.T) {
 		{"a segfault at its budget", syscall.SIGSEGV, 271 * time.Second, 271, false},
 		{"a shutdown TERM", syscall.SIGTERM, 271 * time.Second, 271, false},
 		{"an OOM kill early in the budget", syscall.SIGKILL, 10 * time.Second, 271, false},
+
+		// THE PRODUCTION BUDGET, and the case a proportional tolerance let
+		// through: a tenth of 271s is 27 SECONDS, so a cgroup OOM kill at 244
+		// CPU-seconds fell inside the window and was reported as a
+		// processing-time refusal -- telling the client to make the document
+		// cheaper when the answer was to make it smaller (codex, PR #22).
+		{"an OOM kill 27s short of the budget", syscall.SIGKILL, 244 * time.Second, 271, false},
+		{"an OOM kill 5s short of the budget", syscall.SIGKILL, 266 * time.Second, 271, false},
+		{"a real kill at the production budget", syscall.SIGXCPU, 271 * time.Second, 271, true},
+		{"a real kill 300ms under, within the accounting error", syscall.SIGXCPU, 270*time.Second + 700*time.Millisecond, 271, true},
 		{"no budget configured", syscall.SIGKILL, time.Hour, 0, false},
 	}
 	for _, c := range cases {
