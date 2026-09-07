@@ -69,6 +69,10 @@ type ConvertFileInput struct {
 	TargetFormat string         `json:"target_format,omitempty" jsonschema:"desired output format, e.g. jpg/png/webp -- provide exactly one of target_format or preset, never both, never neither"`
 	Preset       string         `json:"preset,omitempty" jsonschema:"name of a saved conversion preset to apply -- provide exactly one of target_format or preset, never both, never neither"`
 	Opts         map[string]any `json:"opts,omitempty" jsonschema:"engine-specific conversion options; only meaningful alongside target_format, not preset"`
+	// Optional. Without it an agent could READ a correlation id on jobs
+	// created elsewhere and never SET one on its own conversions (codex,
+	// PR #23).
+	CorrelationID string `json:"correlation_id,omitempty" jsonschema:"your own identifier for the operation that led to this conversion -- echoed back in the job status and in webhooks, and written to the service's logs beside the job id, so a job can be traced from your side. Optional; at most 128 printable ASCII characters without spaces. Not a trace id and carries no tracing semantics"`
 }
 
 // remoteExpiryNote is the expiry warning attached to remote-mode results
@@ -112,7 +116,14 @@ func convertFileHandler(c *Client) mcp.ToolHandlerFor[ConvertFileInput, ConvertF
 
 		onTick := progressTicker(ctx, req)
 
-		result, err := c.ConvertBlocking(ctx, path, in.Operation, in.TargetFormat, in.Preset, rawOpts, onTick)
+		result, err := c.ConvertBlocking(ctx, CreateRequest{
+			FilePath:      path,
+			Operation:     in.Operation,
+			Target:        in.TargetFormat,
+			Preset:        in.Preset,
+			Opts:          rawOpts,
+			CorrelationID: in.CorrelationID,
+		}, onTick)
 		if err != nil {
 			return nil, ConvertFileOutput{}, classifyAPIError(err)
 		}

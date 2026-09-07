@@ -139,7 +139,7 @@ func TestClientConvertBlocking_HappyPath(t *testing.T) {
 	})
 
 	var ticks []string
-	result, err := c.ConvertBlocking(context.Background(), sampleFile, "", "jpg", "", "", func(status string) {
+	result, err := c.ConvertBlocking(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "", Target: "jpg", Preset: "", Opts: ""}, func(status string) {
 		ticks = append(ticks, status)
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func TestClient_UnsupportedPair_422(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
+	_, err := c.CreateJob(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "", Target: "weird", Preset: "", Opts: ""})
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -430,7 +430,7 @@ func TestClient_422NoCode_UnchangedErrorText(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "", "weird", "", "")
+	_, err := c.CreateJob(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "", Target: "weird", Preset: "", Opts: ""})
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported pair")
 	}
@@ -742,7 +742,7 @@ func TestClientCreateJob_OperationFieldPresentWhenNonEmpty(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	if _, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", ""); err != nil {
+	if _, err := c.CreateJob(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "sanitize", Target: "jpg", Preset: "", Opts: ""}); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 	if !hasOperationField {
@@ -781,7 +781,7 @@ func TestClientCreateJob_OperationFieldAbsentWhenEmpty(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	if _, err := c.CreateJob(context.Background(), sampleFile, "", "jpg", "", ""); err != nil {
+	if _, err := c.CreateJob(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "", Target: "jpg", Preset: "", Opts: ""}); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 	if hasOperationField {
@@ -814,7 +814,7 @@ func TestClient_UnsupportedOperation422_ForwardedVerbatim(t *testing.T) {
 		PollInterval:   time.Millisecond,
 	})
 
-	_, err := c.CreateJob(context.Background(), sampleFile, "sanitize", "jpg", "", "")
+	_, err := c.CreateJob(context.Background(), CreateRequest{FilePath: sampleFile, Operation: "sanitize", Target: "jpg", Preset: "", Opts: ""})
 	if err == nil {
 		t.Fatal("CreateJob: expected an error for an unsupported operation")
 	}

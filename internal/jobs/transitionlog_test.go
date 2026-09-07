@@ -279,18 +279,57 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 		return id
 	}
 
-	t.Run("a zero-duration failure still reports it", func(t *testing.T) {
+	t.Run("a measured near-zero failure reports it", func(t *testing.T) {
 		r := newTestRepo(t)
 		id := newJob(t, r, "zd")
 		buf := captureLog(t)
-		// The reconciler's shape exactly: no attempt clock at all.
-		if err := r.MarkFailed(context.Background(), id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
+		// The worker's shape: an attempt clock that ran, and read almost
+		// nothing -- an invalid_options job rejected before the engine
+		// started. Sub-millisecond, so it renders as 0 and must still appear.
+		if err := r.MarkFailed(context.Background(), id, "invalid_options", "bad opts", nil, time.Microsecond); err != nil {
 			t.Fatalf("MarkFailed: %v", err)
 		}
 		line := recordFor(t, buf, "job failed")
 		if !strings.Contains(line, "duration_ms=0") {
-			t.Fatalf("an instant failure reports no duration, so it cannot be told from a "+
+			t.Fatalf("a MEASURED near-zero duration is not reported, so it cannot be told from a "+
 				"transition that has no notion of one: %s", line)
+		}
+	})
+
+	t.Run("the reconciler exhausting an ACTIVE job derives it", func(t *testing.T) {
+		r := newTestRepo(t)
+		ctx := context.Background()
+		id := newJob(t, r, "re")
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive: %v", err)
+		}
+		buf := captureLog(t)
+		// The reconciler's shape exactly: no attempt clock, because it never
+		// ran the job. Its elapsed time is in started_at (codex, PR #23).
+		if err := r.MarkFailed(ctx, id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
+			t.Fatalf("MarkFailed: %v", err)
+		}
+		line := recordFor(t, buf, "job failed")
+		if !strings.Contains(line, "duration_ms=") {
+			t.Fatalf("a stale ACTIVE job failed by the reconciler reports no duration, though "+
+				"started_at is in the locked row: %s", line)
+		}
+		if strings.Contains(line, "duration_ms=0 ") || strings.HasSuffix(line, "duration_ms=0") {
+			t.Fatalf("it reports zero rather than the time the job had actually been running: %s", line)
+		}
+	})
+
+	t.Run("the reconciler exhausting a QUEUED job has none", func(t *testing.T) {
+		r := newTestRepo(t)
+		id := newJob(t, r, "rq")
+		buf := captureLog(t)
+		if err := r.MarkFailed(context.Background(), id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
+			t.Fatalf("MarkFailed: %v", err)
+		}
+		line := recordFor(t, buf, "job failed")
+		if strings.Contains(line, "duration_ms=") {
+			t.Fatalf("a job that never started reports a duration, which would be invented "+
+				"rather than measured or derived: %s", line)
 		}
 	})
 

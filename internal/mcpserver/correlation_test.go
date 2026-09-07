@@ -1,9 +1,15 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // JobStatus is BOTH the decoded REST response and the get_job_status tool's
@@ -43,5 +49,86 @@ func TestJobStatusEmitsTheCorrelationID(t *testing.T) {
 	}
 	if strings.Contains(string(out), "correlation_id") {
 		t.Fatalf("an absent identifier is emitted as an empty field: %s", out)
+	}
+}
+
+// An agent must be able to SET the identifier on its own conversions, not only
+// read one on jobs created elsewhere. Without the header on the create
+// request, the decoder fix exposed the field and nothing ever filled it
+// (codex, PR #23).
+func TestCreateJobSendsTheCorrelationHeader(t *testing.T) {
+	var got string
+	var seen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			got, seen = r.Header.Get("Correlation-Id"), true
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job_id":"11111111-1111-1111-1111-111111111111","status":"queued"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "in.png")
+	if err := os.WriteFile(file, []byte("not really a png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      dir,
+		ConvertTimeout: 5 * time.Second,
+		PollInterval:   10 * time.Millisecond,
+	})
+	if _, err := c.CreateJob(context.Background(), CreateRequest{
+		FilePath: file, Target: "webp", CorrelationID: "agent/task-42",
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if !seen {
+		t.Fatal("the create request never reached the server")
+	}
+	if got != "agent/task-42" {
+		t.Fatalf("Correlation-Id = %q, want %q. An agent cannot correlate the conversions it "+
+			"performs, only ones somebody else created.", got, "agent/task-42")
+	}
+}
+
+// And no header at all when none was supplied: an empty Correlation-Id would
+// be a value the API has to decide about, rather than an absent one.
+func TestCreateJobOmitsAnEmptyCorrelationHeader(t *testing.T) {
+	var present bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, present = r.Header["Correlation-Id"]
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"job_id":"11111111-1111-1111-1111-111111111111","status":"queued"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	file := filepath.Join(dir, "in.png")
+	if err := os.WriteFile(file, []byte("not really a png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newTestClient(t, Config{
+		BaseURL:        srv.URL,
+		APIKey:         testAPIKey,
+		OutputDir:      dir,
+		ConvertTimeout: 5 * time.Second,
+		PollInterval:   10 * time.Millisecond,
+	})
+	if _, err := c.CreateJob(context.Background(), CreateRequest{FilePath: file, Target: "webp"}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if present {
+		t.Fatal("an empty Correlation-Id header was sent")
 	}
 }

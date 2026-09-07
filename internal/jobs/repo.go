@@ -299,14 +299,28 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration
 // for why. attempt is the elapsed engine time for this attempt; pass 0 when
 // the caller has no attempt clock (e.g. the reconciler's exhaustion path).
 func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, outcome{code: code, elapsed: attempt, hasElapsed: true}, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
-			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
-			id, code, message); err != nil {
-			return err
-		}
-		return r.recordUsage(ctx, tx, id, StatusFailed, attempt)
-	})
+	// attempt == 0 means NOT MEASURED, not "measured as zero".
+	//
+	// MarkFailed's callers split cleanly: the worker always has an attempt
+	// clock and passes it, and the reconciler has none and passes zero because
+	// it never ran the job (reconciler.go, the exhaustion path). Marking every
+	// MarkFailed as measured therefore logged duration_ms=0 for a stale ACTIVE
+	// job whose real elapsed time was sitting in started_at (codex, PR #23).
+	//
+	// So the distinction is preserved HERE, at the boundary where the two
+	// callers differ, and transition derives from the locked row when nothing
+	// was measured. A zero-duration failure that WAS measured -- an
+	// invalid_options job rejected before the engine ran -- still reports
+	// zero, because that path passes a real zero from a real clock.
+	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail,
+		outcome{code: code, elapsed: attempt, hasElapsed: attempt > 0}, func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx,
+				`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
+				id, code, message); err != nil {
+				return err
+			}
+			return r.recordUsage(ctx, tx, id, StatusFailed, attempt)
+		})
 }
 
 // Cancel transitions a queued or active job to canceled and stamps
