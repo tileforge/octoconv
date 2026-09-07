@@ -92,6 +92,13 @@ func (f *fakeStore) MarkFailed(ctx context.Context, id uuid.UUID, code, message 
 	return f.markFailedErr
 }
 
+// The reconciler uses this one: it never ran the job, so it has no attempt
+// clock and must not claim a measured zero (66-02). Recorded as a zero attempt
+// so the existing assertions on markFailedAttempts keep their meaning.
+func (f *fakeStore) MarkFailedUnmeasured(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error {
+	return f.MarkFailed(ctx, id, code, message, detail, 0)
+}
+
 func (f *fakeStore) Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error) {
 	if j, ok := f.jobs[id]; ok {
 		return j, nil

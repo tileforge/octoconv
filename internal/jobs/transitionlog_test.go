@@ -279,20 +279,21 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 		return id
 	}
 
-	t.Run("a measured near-zero failure reports it", func(t *testing.T) {
+	t.Run("a measured zero, as the opts guard produces, reports it", func(t *testing.T) {
 		r := newTestRepo(t)
 		id := newJob(t, r, "zd")
 		buf := captureLog(t)
-		// The worker's shape: an attempt clock that ran, and read almost
-		// nothing -- an invalid_options job rejected before the engine
-		// started. Sub-millisecond, so it renders as 0 and must still appear.
-		if err := r.MarkFailed(context.Background(), id, "invalid_options", "bad opts", nil, time.Microsecond); err != nil {
+		// THE PRODUCTION CALL, not an approximation of it: Runner.Handle's
+		// opts guard fails a queued job before the engine runs and passes a
+		// literal 0. My previous version passed a microsecond, which meant the
+		// test never exercised the path the finding was about (codex, PR #23).
+		if err := r.MarkFailed(context.Background(), id, "invalid_options", "bad opts", nil, 0); err != nil {
 			t.Fatalf("MarkFailed: %v", err)
 		}
 		line := recordFor(t, buf, "job failed")
 		if !strings.Contains(line, "duration_ms=0") {
-			t.Fatalf("a MEASURED near-zero duration is not reported, so it cannot be told from a "+
-				"transition that has no notion of one: %s", line)
+			t.Fatalf("a MEASURED zero duration is not reported, so an invalid-options failure "+
+				"cannot be told from a transition that has no notion of one: %s", line)
 		}
 	})
 
@@ -304,10 +305,11 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 			t.Fatalf("MarkActive: %v", err)
 		}
 		buf := captureLog(t)
-		// The reconciler's shape exactly: no attempt clock, because it never
-		// ran the job. Its elapsed time is in started_at (codex, PR #23).
-		if err := r.MarkFailed(ctx, id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
-			t.Fatalf("MarkFailed: %v", err)
+		// The reconciler's call exactly: it never ran the job, so it says so
+		// rather than passing a zero that cannot be told from a measurement
+		// (codex, PR #23).
+		if err := r.MarkFailedUnmeasured(ctx, id, "reconciler_exhausted", "exhausted", nil); err != nil {
+			t.Fatalf("MarkFailedUnmeasured: %v", err)
 		}
 		line := recordFor(t, buf, "job failed")
 		if !strings.Contains(line, "duration_ms=") {
@@ -323,8 +325,8 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 		r := newTestRepo(t)
 		id := newJob(t, r, "rq")
 		buf := captureLog(t)
-		if err := r.MarkFailed(context.Background(), id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
-			t.Fatalf("MarkFailed: %v", err)
+		if err := r.MarkFailedUnmeasured(context.Background(), id, "reconciler_exhausted", "exhausted", nil); err != nil {
+			t.Fatalf("MarkFailedUnmeasured: %v", err)
 		}
 		line := recordFor(t, buf, "job failed")
 		if strings.Contains(line, "duration_ms=") {

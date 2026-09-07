@@ -299,28 +299,35 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration
 // for why. attempt is the elapsed engine time for this attempt; pass 0 when
 // the caller has no attempt clock (e.g. the reconciler's exhaustion path).
 func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
-	// attempt == 0 means NOT MEASURED, not "measured as zero".
-	//
-	// MarkFailed's callers split cleanly: the worker always has an attempt
-	// clock and passes it, and the reconciler has none and passes zero because
-	// it never ran the job (reconciler.go, the exhaustion path). Marking every
-	// MarkFailed as measured therefore logged duration_ms=0 for a stale ACTIVE
-	// job whose real elapsed time was sitting in started_at (codex, PR #23).
-	//
-	// So the distinction is preserved HERE, at the boundary where the two
-	// callers differ, and transition derives from the locked row when nothing
-	// was measured. A zero-duration failure that WAS measured -- an
-	// invalid_options job rejected before the engine ran -- still reports
-	// zero, because that path passes a real zero from a real clock.
-	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail,
-		outcome{code: code, elapsed: attempt, hasElapsed: attempt > 0}, func(ctx context.Context, tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx,
-				`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
-				id, code, message); err != nil {
-				return err
-			}
-			return r.recordUsage(ctx, tx, id, StatusFailed, attempt)
-		})
+	return r.markFailed(ctx, id, code, message, detail, outcome{code: code, elapsed: attempt, hasElapsed: true})
+}
+
+// MarkFailedUnmeasured is MarkFailed for a caller that never ran the job and
+// therefore has no attempt clock -- the reconciler's exhaustion path.
+//
+// A SEPARATE METHOD rather than a zero sentinel, because zero is a legitimate
+// measurement: the worker's invalid-options guard fails a job before the
+// engine starts and passes a real 0, and inferring "unmeasured" from the value
+// made that record lose its duration entirely (codex, PR #23). The two callers
+// differ in whether they KNOW the duration, which is not something the number
+// can express.
+//
+// transition derives an elapsed time from the locked row's started_at when it
+// gets no measurement, so a stale ACTIVE job still reports how long it had
+// been running.
+func (r *Repo) MarkFailedUnmeasured(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error {
+	return r.markFailed(ctx, id, code, message, detail, outcome{code: code})
+}
+
+func (r *Repo) markFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, out outcome) error {
+	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, out, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
+			id, code, message); err != nil {
+			return err
+		}
+		return r.recordUsage(ctx, tx, id, StatusFailed, out.elapsed)
+	})
 }
 
 // Cancel transitions a queued or active job to canceled and stamps
@@ -924,13 +931,24 @@ func (r *Repo) transition(
 	var from, engine, target string
 	var clientID *uuid.UUID
 	var corr *string
-	var startedAt *time.Time
+	// NULL when the job never started: a duration that does not exist, as
+	// opposed to one that is zero.
+	var runningMS *float64
 
 	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id, started_at
+			// The elapsed time is computed BY POSTGRES, not by this process.
+			//
+			// started_at is stamped with the database's now(), so subtracting
+			// it from the application host's clock measures the skew between
+			// two machines as well as the job's duration -- and on a quick
+			// cancellation that can be NEGATIVE (codex, PR #23). recordUsage
+			// already keeps its arithmetic on the database clock for the same
+			// reason.
+			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id,
+			        EXTRACT(EPOCH FROM (now() - started_at)) * 1000
 			   FROM jobs WHERE id = $1 FOR UPDATE`, id,
-		).Scan(&from, &clientID, &engine, &target, &corr, &startedAt); err != nil {
+		).Scan(&from, &clientID, &engine, &target, &corr, &runningMS); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -1009,8 +1027,8 @@ func (r *Repo) transition(
 	switch {
 	case out.hasElapsed:
 		fields = append(fields, "duration_ms", logfmt.MS(out.elapsed.Milliseconds()))
-	case isTerminal(to) && startedAt != nil:
-		fields = append(fields, "duration_ms", logfmt.MS(time.Since(*startedAt).Milliseconds()))
+	case isTerminal(to) && runningMS != nil:
+		fields = append(fields, "duration_ms", logfmt.MS(int64(*runningMS)))
 	}
 	log.Println(logfmt.KV("job "+to, fields...))
 	return nil
