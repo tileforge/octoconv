@@ -1395,6 +1395,25 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// THE AUTHORITATIVE PLACE FOR THE CANCELLATION RECORD: immediately after
+	// the guarded transition committed, and nowhere else.
+	//
+	// The worker had one, and it was wrong in both directions (codex, PR #23).
+	// It fired whenever processing returned an error wrapping
+	// context.Canceled -- an asynq shutdown or any parent-context
+	// cancellation -- so it could claim "job canceled" while the row stayed
+	// active; and a QUEUED job canceled here never reaches the worker at all,
+	// so it had no record. Logging where the status actually becomes canceled
+	// answers both: exactly the jobs that were canceled, exactly once.
+	log.Println(logfmt.KV("job canceled",
+		"job_id", job.ID.String(),
+		"correlation_id", job.CorrelationID,
+		"client_id", job.ClientID.String(),
+		"engine", job.Engine,
+		"target", job.TargetFormat,
+		"from_status", job.Status,
+	))
+
 	// Best-effort publish of the cancel signal (speed layer, D-09): a
 	// worker actively running this job may wake and kill the process
 	// sooner. Fire-and-forget — its error is ignored and never blocks the

@@ -273,23 +273,17 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 			// D-05, and re-failing a canceled job is wrong) and record no
 			// job-outcome metric (mirrors the transient branch's own
 			// no-double-count comment below).
-			// A terminal outcome like any other, and it had no line: this
-			// branch returns before finish, so the chain OBS-01 added stopped
-			// at admission or at a retry and never reached the job's actual
-			// end (codex, PR #23).
+			// NO RECORD HERE, deliberately -- and it had one until codex
+			// pointed out that it was wrong in both directions (PR #23).
 			//
-			// finish is deliberately NOT called -- the cancel path commits its
-			// own status elsewhere, and calling it would attempt a second
-			// transition. Only the record was missing, so only the record is
-			// added.
-			log.Println(logfmt.KV("job canceled",
-				"job_id", job.ID.String(),
-				"correlation_id", job.CorrelationID,
-				"client_id", job.ClientID.String(),
-				"engine", job.Engine,
-				"target", job.TargetFormat,
-				"duration_ms", logfmt.MS(time.Since(start).Milliseconds()),
-			))
+			// isCanceled only says the error wraps context.Canceled: an asynq
+			// shutdown or any parent-context cancellation reaches it too, so
+			// this would claim "job canceled" for a row that is still active.
+			// And a job canceled while QUEUED never enters this branch at all.
+			//
+			// The record belongs where the guarded transition COMMITS, which
+			// is handleCancelJob -- exactly the jobs that were canceled,
+			// exactly once.
 			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
 		}
 		// A SkipRetry from the engine path means "no attempt can succeed", and a

@@ -7,6 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/apaderin/octoconv/internal/jobs"
 )
 
 // captureLog redirects the standard logger into a buffer for one test and
@@ -102,6 +106,58 @@ func TestAdmissionRecordIsOneLine(t *testing.T) {
 		if !strings.Contains(l, "bytes=") {
 			t.Fatalf("the record was cut short before its last field, so a value ended it "+
 				"early: %s", l)
+		}
+	}
+}
+
+// The cancellation record belongs where the guarded transition COMMITS.
+//
+// It first lived in the worker, keyed on the error wrapping context.Canceled,
+// and was wrong in both directions (codex, PR #23): an asynq shutdown or any
+// parent-context cancellation reached that branch too, so it could claim "job
+// canceled" for a row still active -- and a job canceled while QUEUED never
+// enters the worker at all, so it had no record.
+//
+// Here it fires for exactly the jobs that were canceled, exactly once.
+func TestCancelRecordIsWrittenWhereTheTransitionCommits(t *testing.T) {
+	buf := captureLog(t)
+
+	// Seeded the way the existing cancel tests do. The first version of this
+	// test built the job through the API and then SKIPPED, because fakeRepo.Get
+	// returns nil and the handler 500'd -- and its skip message claimed an
+	// "absence check below" that did not exist. A test that skips proves
+	// nothing, and one that says otherwise is worse than one that fails.
+	id := uuid.New()
+	resolver := newFakeResolver()
+	job := &jobs.Job{
+		ID: id, ClientID: resolver.client.ID, Status: jobs.StatusQueued,
+		Engine: "image", TargetFormat: "webp", CorrelationID: "svc-x/req-77",
+	}
+	repo := &fakeRepo{getJob: job}
+	srv := NewServer(repo, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(),
+		defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver,
+		healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs/"+id.String()+"/cancel", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var line string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(l, "job canceled") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("a QUEUED job was canceled and left no record. That job never reaches a worker, "+
+			"so if the record lived there it would not exist at all.\nlog:\n%s", buf.String())
+	}
+	for _, want := range []string{id.String(), "correlation_id=svc-x/req-77", "from_status=queued"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the cancellation record lacks %s: %s", want, line)
 		}
 	}
 }
