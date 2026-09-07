@@ -195,3 +195,25 @@ func addPath(rulesetFD int, path string, access uint64) error {
 // and that ought to be enough; this is the check that says so out loud rather
 // than trusting it, because the failure it guards against is silent.
 func ThreadID() int { return unix.Gettid() }
+
+// ApplyLimits sets the resource bounds that must be established before the
+// engine replaces this process.
+//
+// RLIMIT_CPU is set with soft == hard, so the kernel sends SIGKILL rather than
+// SIGXCPU-then-grace: a document that has spent its budget has spent it, and a
+// grace period is time the same document uses to spend more. The signal is how
+// the caller tells "this document cost too much" apart from every other
+// failure -- see convert.ErrTeXCPUExhausted.
+//
+// Applied to THIS process and inherited across execve, exactly like the
+// filesystem ruleset, and for the same reason: there is no other hook.
+func ApplyLimits(l Limits) error {
+	if l.CPUSeconds <= 0 {
+		return nil
+	}
+	rl := unix.Rlimit{Cur: uint64(l.CPUSeconds), Max: uint64(l.CPUSeconds)}
+	if err := unix.Setrlimit(unix.RLIMIT_CPU, &rl); err != nil {
+		return fmt.Errorf("rlimit cpu %ds: %w", l.CPUSeconds, err)
+	}
+	return nil
+}

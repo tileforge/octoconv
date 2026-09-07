@@ -1,5 +1,6 @@
-// Package sandbox confines a conversion engine's filesystem access to the files
-// its job actually needs.
+// Package sandbox confines what a conversion engine may TOUCH and what it may
+// CONSUME: the files its job actually needs, and the CPU its job is allowed to
+// cost.
 //
 // # WHY IT EXISTS
 //
@@ -29,6 +30,7 @@ package sandbox
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -45,6 +47,25 @@ type Paths struct {
 	ReadOnly []string
 }
 
+// Limits are the resource bounds applied alongside the filesystem ruleset.
+//
+// Here rather than in the worker because they share the one property that
+// makes this package exist: they can only be applied by the process that then
+// BECOMES the engine, and the only thing that survives that exec is argv. A
+// second owner of the same argv is a second thing to keep in step.
+type Limits struct {
+	// CPUSeconds bounds the CPU the engine may consume, via RLIMIT_CPU. Zero
+	// means unbounded.
+	//
+	// CPU and not wall clock, because they are different quantities and only
+	// one of them is the document's fault. Measured in the shipped image at a
+	// 2-CPU quota, the same document twice: idle it took 0.96s wall for 0.95s
+	// of CPU; with the node oversubscribed 4x it took 3.67s wall for 1.08s of
+	// CPU. Wall clock inflated 4x while consumption did not move. A bound on
+	// wall clock therefore refuses documents for the sins of their neighbours.
+	CPUSeconds int
+}
+
 // Spec renders p as argv tokens.
 //
 // # WHY A WIRE FORMAT AT ALL
@@ -54,8 +75,14 @@ type Paths struct {
 // thing that survives is argv. Rendering and parsing live together here
 // because they are one format with two ends in two binaries, and a format
 // whose halves live apart is a format that drifts.
-func (p Paths) Spec() []string {
-	spec := make([]string, 0, len(p.ReadWrite)+len(p.ReadOnly))
+func (p Paths) Spec() []string { return p.SpecWith(Limits{}) }
+
+// SpecWith renders the paths and the limits together.
+func (p Paths) SpecWith(l Limits) []string {
+	spec := make([]string, 0, len(p.ReadWrite)+len(p.ReadOnly)+1)
+	if l.CPUSeconds > 0 {
+		spec = append(spec, "cpu:"+strconv.Itoa(l.CPUSeconds))
+	}
 	for _, path := range p.ReadWrite {
 		spec = append(spec, "rw:"+path)
 	}
@@ -71,21 +98,28 @@ func (p Paths) Spec() []string {
 // An unrecognised token is an ERROR rather than something to skip: a dropped
 // token is a rule that was meant to be granted and was not, which surfaces
 // much later as an engine failing to read a file nobody can explain.
-func ParseSpec(argv []string) (Paths, []string, error) {
+func ParseSpec(argv []string) (Paths, Limits, []string, error) {
 	var p Paths
+	var l Limits
 	i := 0
 	for ; i < len(argv) && argv[i] != "--"; i++ {
 		switch {
+		case strings.HasPrefix(argv[i], "cpu:"):
+			n, err := strconv.Atoi(strings.TrimPrefix(argv[i], "cpu:"))
+			if err != nil || n <= 0 {
+				return p, l, nil, fmt.Errorf("sandbox: bad cpu limit %q", argv[i])
+			}
+			l.CPUSeconds = n
 		case strings.HasPrefix(argv[i], "ro:"):
 			p.ReadOnly = append(p.ReadOnly, strings.TrimPrefix(argv[i], "ro:"))
 		case strings.HasPrefix(argv[i], "rw:"):
 			p.ReadWrite = append(p.ReadWrite, strings.TrimPrefix(argv[i], "rw:"))
 		default:
-			return p, nil, fmt.Errorf("sandbox: unrecognised argument %q", argv[i])
+			return p, l, nil, fmt.Errorf("sandbox: unrecognised argument %q", argv[i])
 		}
 	}
 	if i >= len(argv)-1 {
-		return p, nil, fmt.Errorf("sandbox: no command after --")
+		return p, l, nil, fmt.Errorf("sandbox: no command after --")
 	}
-	return p, argv[i+1:], nil
+	return p, l, argv[i+1:], nil
 }

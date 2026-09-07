@@ -16,7 +16,7 @@ func TestSpecRoundTrips(t *testing.T) {
 	}
 	cmd := []string{"/usr/local/bin/tectonic", "-X", "compile", "--untrusted", "/tmp/job-1/in.tex"}
 
-	got, gotCmd, err := ParseSpec(append(append(want.Spec(), "--"), cmd...))
+	got, gotLimits, gotCmd, err := ParseSpec(append(append(want.SpecWith(Limits{CPUSeconds: 271}), "--"), cmd...))
 	if err != nil {
 		t.Fatalf("ParseSpec on Spec's own output: %v", err)
 	}
@@ -29,13 +29,17 @@ func TestSpecRoundTrips(t *testing.T) {
 	if !slices.Equal(gotCmd, cmd) {
 		t.Errorf("command = %v, want %v", gotCmd, cmd)
 	}
+	if gotLimits.CPUSeconds != 271 {
+		t.Errorf("CPUSeconds = %d, want 271: the bound was rendered and did not survive the "+
+			"parse, so the engine would run with no CPU limit at all", gotLimits.CPUSeconds)
+	}
 }
 
 // A path is never granted MORE than it was rendered with. The two prefixes are
 // three characters apart and the parse is a prefix match, which is exactly the
 // shape that silently promotes read-only to writable if it is ever loosened.
 func TestParseSpecDoesNotPromoteReadOnlyToWritable(t *testing.T) {
-	p, _, err := ParseSpec([]string{"ro:/opt/tectonic", "--", "/bin/true"})
+	p, _, _, err := ParseSpec([]string{"ro:/opt/tectonic", "--", "/bin/true"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,7 @@ func TestParseSpecDoesNotPromoteReadOnlyToWritable(t *testing.T) {
 // dropped rule is a directory the engine cannot read -- which arrives as an
 // engine error nobody can trace back to here.
 func TestParseSpecRefusesUnknownTokens(t *testing.T) {
-	if _, _, err := ParseSpec([]string{"rw:/tmp", "x:/etc", "--", "/bin/true"}); err == nil {
+	if _, _, _, err := ParseSpec([]string{"rw:/tmp", "x:/etc", "--", "/bin/true"}); err == nil {
 		t.Fatal("ParseSpec accepted an unrecognised token; the rule it named was silently dropped")
 	}
 }
@@ -58,7 +62,7 @@ func TestParseSpecRefusesUnknownTokens(t *testing.T) {
 // "sandbox applied".
 func TestParseSpecRequiresACommand(t *testing.T) {
 	for _, argv := range [][]string{{}, {"rw:/tmp"}, {"rw:/tmp", "--"}} {
-		if _, _, err := ParseSpec(argv); err == nil {
+		if _, _, _, err := ParseSpec(argv); err == nil {
 			t.Fatalf("ParseSpec(%v) returned no error but has no command to exec", argv)
 		}
 	}

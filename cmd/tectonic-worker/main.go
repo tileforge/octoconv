@@ -71,8 +71,16 @@ func fatalSandbox(format string, args ...any) {
 // failure exit is 1. Sharing a code would report a broken node to the client as
 // a document that failed to typeset, and never retry it.
 func runSandboxExec(argv []string) {
-	p, cmd, err := sandbox.ParseSpec(argv)
+	p, limits, cmd, err := sandbox.ParseSpec(argv)
 	if err != nil {
+		fatalSandbox("%v", err)
+	}
+	// BEFORE the filesystem ruleset, because Apply locks this thread and never
+	// unlocks it, and setrlimit is per-process rather than per-thread: doing it
+	// after would work, but it would put a process-wide call after a
+	// deliberately thread-pinned one, which is the kind of ordering nobody
+	// re-derives correctly later.
+	if err := sandbox.ApplyLimits(limits); err != nil {
 		fatalSandbox("%v", err)
 	}
 	if err := sandbox.Apply(p); err != nil {
@@ -198,7 +206,17 @@ func main() {
 		log.Printf("🔒 tectonic sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
 	}
 
-	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper)
+	// TECTONIC_ENGINE_CPU_SECONDS bounds what one document may COST, as
+	// opposed to how long it may occupy the clock. The default is the same
+	// number as the wall-clock deadline and that is not a coincidence: 271 is
+	// ceil(25.76 s/pass x 7 passes x 1.5), and at an idle 2-CPU quota this
+	// engine's cpu/wall ratio is 1.00, so the work bound and the time bound
+	// coincide on an unloaded node and diverge exactly when the node is busy --
+	// which is the case this exists for.
+	cpuSeconds := int(envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second).Seconds())
+
+	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper, cpuSeconds)
+	log.Printf("⏱  TECTONIC_ENGINE_CPU_SECONDS=%d", cpuSeconds)
 
 	// Proves the ENGINE runs under the rules, not merely that the rules can be
 	// built. Done after the converter exists so the preflight uses exactly the
@@ -329,11 +347,12 @@ func main() {
 // convert.Default registry side effect. Mirrors cmd/ocr-worker's
 // buildOCRConverter exactly, for the reason stated there: a bound that is
 // configured and not plumbed is a bound that does not exist.
-func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string) convert.TectonicConverter {
+func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string, cpuSeconds int) convert.TectonicConverter {
 	return convert.TectonicConverter{
 		BundlePath:     bundlePath,
 		MaxOutputBytes: maxOutputBytes,
 		SandboxHelper:  sandboxHelper,
+		CPUSeconds:     cpuSeconds,
 	}
 }
 

@@ -492,6 +492,22 @@ func isTectonicTerminal(err error) bool {
 	if errors.Is(err, convert.ErrTeXSandboxUnavailable) {
 		return false
 	}
+	// NOT terminal, and stated beside the sandbox fault because it is the same
+	// kind of claim: the wall-clock deadline fired while the engine had barely
+	// run, which is a fact about the NODE. Measured in the shipped image at a
+	// 2-CPU quota, the same document took 0.96s wall for 0.95s of CPU idle and
+	// 3.67s wall for 1.08s of CPU under 4x oversubscription -- wall inflated
+	// 4x, consumption did not move. Terminal, a busy node would tell every
+	// client their document failed to typeset and retry none of them.
+	if errors.Is(err, convert.ErrTeXEngineStarved) {
+		return false
+	}
+	// Terminal, and on stronger evidence than the deadline: this is what the
+	// document COST, measured by the kernel and independent of what else the
+	// node was doing. It costs the same on the next attempt.
+	if errors.Is(err, convert.ErrTeXCPUExhausted) {
+		return true
+	}
 	// A misconfigured process, not a bad document. Deliberately checked BEFORE
 	// the shared classifier, which knows nothing about bundles and would let
 	// this retry forever.
@@ -593,6 +609,12 @@ func tectonicFailureCode(err error) (code, message string) {
 		// prevent. Found in this PR's own sweep after round 3 widened the ways
 		// a bundle can be unusable.
 		return CodeEngineError, "the typesetting engine is not configured on this deployment"
+	}
+	if errors.Is(err, convert.ErrTeXCPUExhausted) {
+		// Says what ran out, and does NOT say "within the time limit": the
+		// document was refused on what it consumed, which is a different
+		// remedy -- a cheaper document rather than a faster one.
+		return CodeEngineError, "the document used more processing time than this deployment allows"
 	}
 	if errors.Is(err, convert.ErrTeXEngineTimeout) {
 		// Named separately from the generic typesetting failure because the

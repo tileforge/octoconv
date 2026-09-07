@@ -4,7 +4,8 @@ area: tectonic
 severity: low
 origin: phase 64 plan 05, while measuring TECTONIC_ENGINE_TIMEOUT
 updated: 2026-09-05
-status: partially addressed -- one recommendation REFUTED by measurement, one shipped
+completed: 2026-09-07
+status: closed -- one recommendation REFUTED by measurement, one shipped, one shipped differently than proposed, one left open with a reason
 progress: |
   "A pass ceiling of our own (tectonic -r N)" does not exist. Measured against
   the real CLI in the shipped image: -r is "rerun the TeX engine EXACTLY this
@@ -20,10 +21,46 @@ progress: |
   and could raise; if a future tectonic reruns further, the timeout silently
   describes a smaller bound than it claims, and now something says so.
 
-  STILL OPEN, unchanged: per-job CPU-seconds accounting instead of wall clock,
-  and re-measuring bytes/page against real consumer documents when there are
-  any. The 2 MiB ceiling remains a heuristic and the timeout remains the real
-  backstop, which is the correct order and is documented as such.
+  CPU-SECONDS SHIPPED, but NOT "instead of wall clock" as this todo proposed.
+  Measuring first showed why the proposal was half right: the two quantities
+  diverge exactly when the node is busy, and each catches something the other
+  cannot.
+
+  Measured in the shipped image at the chart's 2-CPU quota, the SAME document
+  twice:
+
+    idle                    0.96s wall   0.95s CPU   cpu/wall = 1.00
+    oversubscribed 4x       3.67s wall   1.08s CPU   cpu/wall = 0.28
+
+  Wall inflated 4x; consumption did not move. So wall clock alone refuses
+  documents for the sins of their neighbours -- a document legitimately needing
+  180 CPU-seconds dies at the 271s wall deadline on a busy node, and the client
+  is told their file did not finish typesetting. That is a FALSE REFUSAL, the
+  failure class this engine keeps producing.
+
+  But replacing wall clock outright would have been wrong too: a process stuck
+  rather than working consumes no CPU at all, and only the wall deadline
+  catches it. So both are kept, and the pair of numbers is used to tell the two
+  situations apart:
+
+    - RLIMIT_CPU (soft == hard, so SIGKILL rather than a grace period a runaway
+      would spend running) refuses a document on what it COST. Terminal.
+    - the wall deadline firing while the engine used less than HALF its budget
+      is now classified as STARVATION and is RETRYABLE -- the attempt took too
+      long, the document did not.
+
+  Applied by cmd/tectonic-worker's __sandbox-exec helper, which already existed
+  as the only hook that runs between fork and exec.
+
+  Deliberately NOT done: raising TECTONIC_ENGINE_TIMEOUT now that it is no
+  longer the primary bound. It also derives TectonicUniqueTTL (IN-02), where a
+  mismatch silently produces duplicate processing, so that is a separate
+  decision with its own blast radius.
+
+  STILL OPEN: re-measuring bytes/page against real consumer documents. Blocked
+  on there being any -- the current figure comes from a generated corpus and
+  says so (corpus/PROVENANCE.md). The 2 MiB ceiling remains a heuristic and the
+  bounds above remain the real backstop, which is the correct order.
 ---
 
 # The tex engine's real cost driver is not visible at admission

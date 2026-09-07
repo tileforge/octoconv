@@ -3,8 +3,10 @@ package convert
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // tailBuffer is an io.Writer that retains at most max bytes, discarding from
@@ -117,7 +119,40 @@ func runCommandLimited(ctx context.Context, limit int, name string, args ...stri
 // Scrubbing the child's environment does not confine the reads -- it removes
 // what they are worth. See TectonicConverter.Convert for the allowlist and for
 // what remains readable.
+// engineCPU is what the child actually CONSUMED, as opposed to how long it
+// occupied the clock.
+//
+// Carried out of runCommandLimitedEnv because the two quantities answer
+// different questions and only one of them is the document's fault: measured
+// in the shipped image at a 2-CPU quota, the same document took 0.96s wall for
+// 0.95s of CPU idle, and 3.67s wall for 1.08s of CPU with the node
+// oversubscribed 4x. A deadline that fires while the child has barely run says
+// something about the NODE.
+type engineCPU struct {
+	User, Sys time.Duration
+	// Known is false when no child ever ran (a failure to start), so a caller
+	// cannot mistake "consumed nothing" for "consumed zero".
+	Known bool
+}
+
+func (c engineCPU) Total() time.Duration { return c.User + c.Sys }
+
+func cpuOf(ps *os.ProcessState) engineCPU {
+	if ps == nil {
+		return engineCPU{}
+	}
+	return engineCPU{User: ps.UserTime(), Sys: ps.SystemTime(), Known: true}
+}
+
 func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name string, args ...string) ([]byte, error) {
+	out, _, err := runCommandLimitedEnvCPU(ctx, limit, env, name, args...)
+	return out, err
+}
+
+// runCommandLimitedEnvCPU also reports what the child consumed. Separate entry
+// point rather than a changed signature everywhere: only the tex engine has a
+// question the answer helps with.
+func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name string, args ...string) ([]byte, engineCPU, error) {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if env != nil {
@@ -130,7 +165,7 @@ func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name str
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start %s: %w", name, err)
+		return nil, engineCPU{}, fmt.Errorf("start %s: %w", name, err)
 	}
 
 	// Kill the entire process group on context cancellation/timeout.
@@ -141,12 +176,15 @@ func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name str
 	case <-ctx.Done():
 		// Negative pid targets the process group led by the child.
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done // reap
-		return nil, fmt.Errorf("%s killed: %w", name, ctx.Err())
+		<-done // reap -- and it is the reap that populates ProcessState
+		// nil, not the partial output: every other engine reaches this path
+		// too, and changing what a timeout returns for all of them is not what
+		// this change is for.
+		return nil, cpuOf(cmd.ProcessState), fmt.Errorf("%s killed: %w", name, ctx.Err())
 	case err := <-done:
 		if err != nil {
-			return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
+			return stdout.Bytes(), cpuOf(cmd.ProcessState), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
 		}
-		return stdout.Bytes(), nil
+		return stdout.Bytes(), cpuOf(cmd.ProcessState), nil
 	}
 }

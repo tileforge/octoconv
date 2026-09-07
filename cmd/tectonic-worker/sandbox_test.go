@@ -83,7 +83,7 @@ func TestSetupExitMatchesTheClassifier(t *testing.T) {
 // function at all.
 func TestSandboxHelperReachesTheConverter(t *testing.T) {
 	helper := []string{"/usr/local/bin/tectonic-worker", sandboxExecMode}
-	c := buildTectonicConverter("/opt/tectonic/b.ttb", convert.DefaultTectonicMaxOutputBytes, helper)
+	c := buildTectonicConverter("/opt/tectonic/b.ttb", convert.DefaultTectonicMaxOutputBytes, helper, 0)
 	if len(c.SandboxHelper) != len(helper) {
 		t.Fatalf("SandboxHelper = %v, want %v: the engine would run unconfined", c.SandboxHelper, helper)
 	}
