@@ -126,23 +126,16 @@ func TestConvertProducesTheStarvedSentinel(t *testing.T) {
 	}
 }
 
-// And a document that genuinely worked for its whole deadline keeps the old
-// meaning: terminal, because it did not finish and will not next time.
-func TestConvertStillTimesOutWhenTheEngineWasBusy(t *testing.T) {
-	c, in := cpuTestConverter(t, "while :; do :; done\n", 2)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*1e9)
-	defer cancel()
-
-	err := c.Convert(ctx, in, filepath.Join(filepath.Dir(in), "out.pdf"), nil)
-	if err == nil {
-		t.Fatal("no error from a document that ran past its deadline")
-	}
-	if errors.Is(err, ErrTeXEngineStarved) {
-		t.Fatalf("an engine that burned CPU for the whole deadline is reported as STARVED, so a "+
-			"genuinely non-terminating document would be retried until the budget is gone: %v", err)
-	}
-}
+// NOTE: TestConvertStillTimesOutWhenTheEngineWasBusy used to live here, and
+// it asserted on a busy loop getting a whole CPU -- so it failed on a loaded
+// runner while the code did exactly what it is configured to do. Its property
+// ("an engine that burned CPU for its whole deadline is NOT starvation") is
+// now the "a full CPU for the whole deadline" row of
+// TestDeadlineClassificationIsDecidedByTheMeasurements, decided by values.
+//
+// Deleting it rather than keeping both: a test that fails on a busy machine
+// teaches people to re-run the suite until it passes, which is how a real
+// failure gets re-run away.
 
 // The two verdicts that come from the same pair of measurements, decided by
 // VALUES rather than by what the scheduler happened to grant.
