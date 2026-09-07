@@ -44,25 +44,28 @@ DEBT WORKED DOWN AFTER THE MILESTONE (PRs #17-#20, all merged):
   the engine can read a sibling file -- the premise multi-file projects depend
   on. TEX-04 had proved the mechanism it named and never asked this one. The
   engine now gets an allowlist environment; CONFINING the reads is #21
-  (todos/completed/2026-09-05-tex-file-reads-not-confined.md, open PR).
-- #21 closed that with Landlock, and took EIGHT review rounds (17 findings) plus
-  ten own sweeps (6 more) to do it. Everything after round 4 was one thing:
-  TECTONIC_CACHE_DIR is operator-supplied, and every way of turning it into a
-  Landlock grant was wider than it looked -- the root, the format's parent, the
-  file's NAME, then a relative path that compared as "tmp" and opened as
-  "/tmp". Each fix was right and each produced the next finding. What held were
-  invariants over the WHOLE spec, not over the setting that had just failed.
+  (todos/completed/2026-09-05-tex-file-reads-not-confined.md).
+- #21 MERGED (af67937). It closed that with Landlock, which the todo never
+  costed: the todo listed three PRIVILEGED mechanisms, called a per-job mount
+  namespace "the only one that makes the guarantee structural", noted it needs
+  a capability the chart does not grant -- and shipped nothing. An unprivileged
+  process can restrict ITSELF, inherited across execve and unliftable, and one
+  measurement found it (ABI 8 as nobody in the image). A blocked option list
+  usually means the options share a premise nobody wrote down.
+
+  It cost EIGHT review rounds (17 findings) and eleven own sweeps (6 more).
+  Everything after round 4 was one thing: TECTONIC_CACHE_DIR is
+  operator-supplied, and every way of turning it into a Landlock grant was
+  wider than it looked -- the root, the format's parent, the file's NAME, then
+  a relative path that compared as "tmp" and opened as "/tmp". Each fix was
+  right and each produced the next finding. What held were invariants over the
+  WHOLE spec, not over the setting that had just failed.
+
   Six of my own greens were not evidence, and three of those were the same
-  mistake as four of the findings: the check and the checked thing were not the
-  same object.
-- #21 closed that with Landlock, which the todo never costed: it listed three
-  PRIVILEGED mechanisms and called a mount namespace "the only one that makes
-  the guarantee structural", when an unprivileged process can restrict ITSELF
-  and have it inherited across execve. Measured before writing code (ABI 8 as
-  nobody in the image), and running it found two defects reasoning had not:
-  the ruleset would not build at all (the bundle is a FILE, and Landlock
-  refuses directory rights on one) and nothing could open /dev/null. The
-  option list was the defect, not the implementation.
+  mistake as four of the review findings: the check and the checked thing were
+  not the same object. That is now the single most expensive defect shape this
+  project has recorded.
+
 - #20 shipped multi-file projects (operator chose repeated "file" parts over an
   archive). Five review rounds, 16 findings, plus eight own sweeps finding seven
   more. "What counts as TeX source" was answered four times -- by extension, by
