@@ -120,12 +120,21 @@ type JobOutput struct {
 // get_job_status MCP tool's output type (tools.go:192), so every field's
 // json tag and jsonschema description doubles as agent-facing documentation.
 type JobStatus struct {
-	JobID        string         `json:"job_id"`
-	Status       string         `json:"status"`
-	Opts         map[string]any `json:"opts,omitempty"`
-	DownloadURL  string         `json:"download_url,omitempty"`
-	ErrorCode    string         `json:"error_code,omitempty"`
-	ErrorMessage string         `json:"error_message,omitempty"`
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+	// CorrelationID echoes the Correlation-Id header the job was created
+	// with, when one was supplied.
+	//
+	// Present here because this struct IS the get_job_status tool's output:
+	// Go's decoder silently discards fields it does not declare, so without
+	// this the REST response carried the identifier and the MCP surface
+	// dropped it -- an agent could not correlate a job with the operation
+	// that asked for it (codex, PR #23).
+	CorrelationID string         `json:"correlation_id,omitempty" jsonschema:"the caller-supplied Correlation-Id this job was created with, echoed unchanged. Absent when none was supplied. Use it to tie this job to the operation that requested it; it is not a trace id and carries no tracing semantics"`
+	Opts          map[string]any `json:"opts,omitempty"`
+	DownloadURL   string         `json:"download_url,omitempty"`
+	ErrorCode     string         `json:"error_code,omitempty"`
+	ErrorMessage  string         `json:"error_message,omitempty"`
 	// ProgressPct and EtaSeconds mirror the null-aware contract
 	// handleGetJob has emitted since Phase 41 (PROG-01/PROG-04,
 	// internal/api/handlers.go:902-910): both keys are ALWAYS present, and

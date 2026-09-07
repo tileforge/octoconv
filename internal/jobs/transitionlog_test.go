@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Every status change in this service goes through Repo.transition, and the
@@ -254,4 +256,73 @@ func TestRedeliveryIsVisibleAsRedelivery(t *testing.T) {
 		t.Fatalf("want a queued->active record then an active->active one, so a redelivery reads "+
 			"as a redelivery rather than as a second job; got %v\nlog:\n%s", froms, buf.String())
 	}
+}
+
+// Every TERMINAL record carries a duration -- including the ones where it is
+// genuinely zero, and including a cancellation, where the number exists only
+// in the locked row (codex, PR #23).
+//
+// The first version of this treated zero as "not applicable" and omitted the
+// field, so an instant invalid_options failure and a cancellation of a
+// long-running job both reported nothing.
+func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
+	newJob := func(t *testing.T, r *Repo, key string) uuid.UUID {
+		t.Helper()
+		id, err := r.Create(context.Background(), CreateParams{
+			ClientID:  createTestClient(t, r),
+			Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+			Input: Input{ObjectKey: "uploads/" + key + "/0-in.png", Filename: "in.png", Format: "png"},
+		})
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		return id
+	}
+
+	t.Run("a zero-duration failure still reports it", func(t *testing.T) {
+		r := newTestRepo(t)
+		id := newJob(t, r, "zd")
+		buf := captureLog(t)
+		// The reconciler's shape exactly: no attempt clock at all.
+		if err := r.MarkFailed(context.Background(), id, "reconciler_exhausted", "exhausted", nil, 0); err != nil {
+			t.Fatalf("MarkFailed: %v", err)
+		}
+		line := recordFor(t, buf, "job failed")
+		if !strings.Contains(line, "duration_ms=0") {
+			t.Fatalf("an instant failure reports no duration, so it cannot be told from a "+
+				"transition that has no notion of one: %s", line)
+		}
+	})
+
+	t.Run("cancelling an active job derives it from the row", func(t *testing.T) {
+		r := newTestRepo(t)
+		ctx := context.Background()
+		id := newJob(t, r, "ca")
+		if err := r.MarkActive(ctx, id); err != nil {
+			t.Fatalf("MarkActive: %v", err)
+		}
+		buf := captureLog(t)
+		if err := r.Cancel(ctx, id); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		line := recordFor(t, buf, "job canceled")
+		if !strings.Contains(line, "duration_ms=") {
+			t.Fatalf("a cancellation of a job that had been RUNNING reports no duration, though "+
+				"started_at is right there in the locked row: %s", line)
+		}
+	})
+
+	t.Run("cancelling a queued job has none to report", func(t *testing.T) {
+		r := newTestRepo(t)
+		id := newJob(t, r, "cq2")
+		buf := captureLog(t)
+		if err := r.Cancel(context.Background(), id); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		line := recordFor(t, buf, "job canceled")
+		if strings.Contains(line, "duration_ms=") {
+			t.Fatalf("a job that never started reports a duration, which is a number invented "+
+				"rather than measured: %s", line)
+		}
+	})
 }

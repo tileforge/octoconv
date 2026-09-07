@@ -252,7 +252,7 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 // the elapsed engine time for this attempt (0 if the caller has no attempt
 // clock).
 func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, outcome{elapsed: attempt}, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, outcome{elapsed: attempt, hasElapsed: true}, func(ctx context.Context, tx pgx.Tx) error {
 		// D-13: a done job without exactly one primary output is an
 		// unreachable state, enforced here rather than in transition()
 		// because this is a precondition of MarkDone's own semantics, not
@@ -299,7 +299,7 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration
 // for why. attempt is the elapsed engine time for this attempt; pass 0 when
 // the caller has no attempt clock (e.g. the reconciler's exhaustion path).
 func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, outcome{code: code, elapsed: attempt}, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, outcome{code: code, elapsed: attempt, hasElapsed: true}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
 			id, code, message); err != nil {
@@ -876,6 +876,12 @@ func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, curso
 type outcome struct {
 	code    string
 	elapsed time.Duration
+	// hasElapsed distinguishes "no duration applies" from "the duration was
+	// zero". Without it, a genuinely instant failure -- invalid_options and
+	// reconciler_exhausted both pass zero -- looked identical to a transition
+	// that has no notion of elapsed time, and the field was dropped from both
+	// (codex, PR #23).
+	hasElapsed bool
 }
 
 func (r *Repo) transition(
@@ -904,12 +910,13 @@ func (r *Repo) transition(
 	var from, engine, target string
 	var clientID *uuid.UUID
 	var corr *string
+	var startedAt *time.Time
 
 	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id
+			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id, started_at
 			   FROM jobs WHERE id = $1 FOR UPDATE`, id,
-		).Scan(&from, &clientID, &engine, &target, &corr); err != nil {
+		).Scan(&from, &clientID, &engine, &target, &corr, &startedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -976,11 +983,29 @@ func (r *Repo) transition(
 	if out.code != "" {
 		fields = append(fields, "code", out.code)
 	}
-	if out.elapsed > 0 {
+	// The caller's measurement when it has one, otherwise derived from the
+	// row: a job canceled while ACTIVE has a real elapsed time that only the
+	// locked row knows, and reporting nothing there loses the one number an
+	// operator wants about a cancellation.
+	//
+	// A terminal outcome always carries the field, including duration_ms=0 for
+	// the genuinely instant ones -- see outcome.hasElapsed. A queued
+	// cancellation has no started_at and no duration, which is a fact rather
+	// than a missing value.
+	switch {
+	case out.hasElapsed:
 		fields = append(fields, "duration_ms", logfmt.MS(out.elapsed.Milliseconds()))
+	case isTerminal(to) && startedAt != nil:
+		fields = append(fields, "duration_ms", logfmt.MS(time.Since(*startedAt).Milliseconds()))
 	}
 	log.Println(logfmt.KV("job "+to, fields...))
 	return nil
+}
+
+// isTerminal reports whether a status ends a job's life, and therefore whether
+// a duration is meaningful for it.
+func isTerminal(status string) bool {
+	return status == StatusDone || status == StatusFailed || status == StatusCanceled
 }
 
 // derefStr reads a nullable text column as a string.
