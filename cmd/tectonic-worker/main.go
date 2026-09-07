@@ -150,7 +150,23 @@ func main() {
 	// engine's cpu/wall ratio is 1.00, so the work bound and the time bound
 	// coincide on an unloaded node and diverge exactly when the node is busy --
 	// which is the case this exists for.
-	cpuSeconds := int(envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second).Seconds())
+	cpuBudget := envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second)
+	// REFUSED AT STARTUP, not truncated to zero. RLIMIT_CPU is expressed in
+	// whole seconds, so 0s, -1s and 500ms are all syntactically valid
+	// durations that become CPUSeconds <= 0 -- at which point SpecWith omits
+	// the cpu: token, ApplyLimits does nothing, and the worker starts having
+	// LOGGED a budget it does not enforce (codex, PR #22).
+	//
+	// That is the same "configured but not plumbed" defect this variable was
+	// added to fix, so it fails loudly instead: an operator who asked for a
+	// bound gets a sentence rather than a service that quietly has none.
+	if cpuBudget < time.Second {
+		log.Fatalf("TECTONIC_ENGINE_CPU_SECONDS=%s is below one second. RLIMIT_CPU is expressed "+
+			"in whole seconds, so this would silently disable the CPU budget rather than set a "+
+			"small one. Use a value of at least 1s, or set %s=true if the intent is to run "+
+			"without confinement", cpuBudget, sandboxDisabledEnv)
+	}
+	cpuSeconds := int(cpuBudget.Seconds())
 
 	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper, cpuSeconds, confineFS)
 	log.Printf("⏱  TECTONIC_ENGINE_CPU_SECONDS=%d", cpuSeconds)
