@@ -130,6 +130,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// BEFORE the body is read, let alone uploaded. A value this service will
+	// not carry is worth refusing while the request has cost nothing -- and
+	// the alternative, discovering it after the upload, would mean either
+	// dropping the id (silently useless) or discarding work already done.
+	correlationID, cerr := parseCorrelationID(r.Header)
+	if cerr != nil {
+		log.Printf("correlation id rejected: reason=invalid len=%d", len(r.Header.Get(CorrelationHeader)))
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
+			"Correlation-Id must be at most 128 printable ASCII characters without spaces")
+		return
+	}
+
 	// Cap the request body to reject oversized uploads before buffering them.
 	// The total-size ceiling is enforced here by MaxBytesReader; the separate,
 	// smaller multipartInMemoryBudget bounds heap use during parsing (CR-01).
@@ -1055,6 +1067,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
+		CorrelationID:   correlationID,
 		ID:              jobID,
 		ClientID:        client.ID,
 		Operation:       operation,
@@ -1113,6 +1126,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		"target", target,
 		"filename", filename,
 		"bytes", strconv.FormatInt(totalBytes, 10),
+		"correlation_id", correlationID,
 	))
 
 	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
@@ -1209,6 +1223,12 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"job_id": job.ID,
 		"status": job.Status,
+	}
+	// Echoed so the caller can VERIFY its value arrived, rather than assume
+	// it. Omitted when absent for the same reason it is omitted from the
+	// webhook: a field that is usually null trains readers to ignore it.
+	if job.CorrelationID != "" {
+		resp["correlation_id"] = job.CorrelationID
 	}
 	if len(job.Opts) > 0 {
 		resp["opts"] = job.Opts

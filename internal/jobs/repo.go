@@ -50,6 +50,18 @@ type WebhookGapJob struct {
 	Status string
 }
 
+// nullIfEmpty stores "" as SQL NULL.
+//
+// So that "the caller sent no correlation id" and "the caller sent an empty
+// one" cannot be confused by anything reading the column -- and the API cannot
+// send an empty one, because parseCorrelationID returns "" only for absent.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // Repo is the jobs repository backed by a pgx pool.
 type Repo struct {
 	pool *pgxpool.Pool
@@ -76,6 +88,11 @@ type CreateParams struct {
 	SourceFormat string
 	TargetFormat string
 	CallbackURL  string
+	// CorrelationID is the caller's own identifier, already bounded by the API
+	// (length + charset). Empty means the caller sent none, and is stored as
+	// NULL rather than an empty string so "absent" and "empty" cannot be
+	// confused by anything reading the column later.
+	CorrelationID string
 	// ProgressWebhook is the per-job opt-in flag (0008_progress_webhook.sql,
 	// PUSH-02/D-03) gating the worker's best-effort inline progress-webhook
 	// fire. Zero value (false) for every existing caller shape.
@@ -178,9 +195,9 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		}
 
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options)
-			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11)`,
-			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON,
+			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id)
+			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12)`,
+			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID),
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}
@@ -632,14 +649,15 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	// options is NOT NULL (0001_init.sql:25), so it is scanned into a plain
 	// []byte, NOT a *string pointer, unlike the other nullable columns above.
 	var optsJSON []byte
+	var corr *string
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
 		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
-		       progress_pct, eta_seconds, source_duration_seconds
+		       progress_pct, eta_seconds, source_duration_seconds, correlation_id
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
 		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
-		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds)
+		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -657,6 +675,7 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	j.CallbackURL = deref(cb)
 	j.ErrorCode = deref(code)
 	j.ErrorMessage = deref(msg)
+	j.CorrelationID = deref(corr)
 	if err := json.Unmarshal(optsJSON, &j.Opts); err != nil {
 		return nil, fmt.Errorf("unmarshal job options: %w", err)
 	}

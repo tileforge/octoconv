@@ -1,0 +1,18 @@
+-- OBS-03: the caller's own identifier for the operation that led to this job.
+--
+-- NULLABLE and never defaulted. A job created without the header has no
+-- correlation id, and this service does not invent one: job_id already
+-- identifies the job internally, and a second generated identifier would be a
+-- second thing meaning the same, which drifts from the first.
+--
+-- text and not uuid: it is the CALLER's identifier in the caller's format --
+-- a ULID, a base64 request id, a dotted business key. Constraining it to uuid
+-- would refuse most of the shapes it exists to carry. The API bounds length
+-- and charset (internal/api/correlation.go); the column carries what survived
+-- that.
+--
+-- NOT indexed, deliberately. Nothing in this service looks a job up by it:
+-- it is written once, read back with the job, and its whole purpose is to be
+-- grepped for in LOGS. An index would cost every insert to serve a query
+-- nobody makes.
+ALTER TABLE jobs ADD COLUMN correlation_id text;

@@ -296,6 +296,7 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 		// reacting to a document the client wrote: jobLine escapes it.
 		fields := []string{
 			"job_id", job.ID.String(),
+			"correlation_id", job.CorrelationID,
 			"client_id", job.ClientID.String(),
 			"engine", job.Engine,
 		}
@@ -376,6 +377,7 @@ func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, messag
 	// HTTP request id, and from there this is the same job across processes.
 	log.Println(logfmt.KV("job "+status,
 		"job_id", job.ID.String(),
+		"correlation_id", job.CorrelationID,
 		"client_id", job.ClientID.String(),
 		"engine", job.Engine,
 		"target", job.TargetFormat,

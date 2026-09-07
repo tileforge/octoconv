@@ -933,6 +933,16 @@ func buildTerminalWebhookBody(job *jobs.Job) map[string]any {
 		"job_id": job.ID,
 		"status": job.Status,
 	}
+	// The caller's own identifier, echoed back. This is the ONE thing the
+	// caller cannot do for itself: the webhook arrives later, possibly at a
+	// different instance, and until now carried only job_id -- so a service
+	// investigating an incident from its own logs had nothing to match on.
+	//
+	// Omitted entirely when absent, rather than sent as null: a field that is
+	// usually null trains readers to ignore it.
+	if job.CorrelationID != "" {
+		body["correlation_id"] = job.CorrelationID
+	}
 	body["event"] = "completed"
 	return body
 }
