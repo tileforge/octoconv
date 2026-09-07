@@ -208,3 +208,50 @@ func TestCancellationRecordHasNoEmptyOutcomeFields(t *testing.T) {
 		}
 	}
 }
+
+// A redelivered task transitions active -> active (MarkActive allows it), so
+// it writes a second record. That is correct and worth pinning rather than
+// deduplicating: from_status distinguishes the two, so the log shows a
+// REDELIVERY rather than a second job.
+//
+// Checked because centralising the record made it fire on every transition,
+// including this one -- a change in volume is a change an operator lives with,
+// and it should be one somebody decided rather than discovered.
+func TestRedeliveryIsVisibleAsRedelivery(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+
+	id, err := r.Create(ctx, CreateParams{
+		ClientID:  createTestClient(t, r),
+		Operation: "convert", Engine: "image", SourceFormat: "png", TargetFormat: "webp",
+		Input: Input{ObjectKey: "uploads/rd/0-in.png", Filename: "in.png", Format: "png"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	buf := captureLog(t)
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("first MarkActive: %v", err)
+	}
+	if err := r.MarkActive(ctx, id); err != nil {
+		t.Fatalf("second MarkActive: %v", err)
+	}
+
+	var froms []string
+	for _, l := range strings.Split(buf.String(), "\n") {
+		if !strings.Contains(l, "job active") {
+			continue
+		}
+		switch {
+		case strings.Contains(l, "from_status=queued"):
+			froms = append(froms, "queued")
+		case strings.Contains(l, "from_status=active"):
+			froms = append(froms, "active")
+		}
+	}
+	if len(froms) != 2 || froms[0] != "queued" || froms[1] != "active" {
+		t.Fatalf("want a queued->active record then an active->active one, so a redelivery reads "+
+			"as a redelivery rather than as a second job; got %v\nlog:\n%s", froms, buf.String())
+	}
+}
