@@ -19,18 +19,33 @@
 // still counts. The closure UNDER-approximates -- an unresolved indirect call
 // hides whatever it emits -- and that error direction is the safe one: a
 // missed status makes this test permissive, never noisy.
+//
+// WHICH handler to analyze is read off the live router, never from a list kept
+// here. An earlier revision of this file did keep one, arguing it was safe
+// because the path-set test pins the operation set. That argument is exactly
+// wrong: the path-set test compares method and path and never looks at what is
+// bound to them, so rebinding a route to a different handler leaves it green
+// while this test goes on analyzing a function that no longer serves the
+// route. The check and the checked thing have to be the same object -- and
+// chi.Walk hands over the endpoint handler itself, whose symbol name
+// runtime.FuncForPC recovers.
 package api
 
 import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
 	"os"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // httpStatusConstants maps the net/http constant names this package uses to
@@ -54,36 +69,83 @@ var httpStatusConstants = map[string]int{
 	"StatusServiceUnavailable":    503,
 }
 
-// routeHandlers maps each served operation to the handler method that serves
-// it. It is hand-written, and safe to be: openapi_paths_sync_test.go holds the
-// operation set itself equal to the live router, so a route added or removed
-// without touching this map surfaces there rather than silently skipping a
-// handler here. TestRouteHandlerMapCoversEveryDocumentedOperation below pins
-// the other half.
-var routeHandlers = map[string]string{
-	"GET /healthz":                     "handleHealth",
-	"POST /v1/jobs":                    "handleCreateJob",
-	"GET /v1/jobs":                     "handleListJobs",
-	"POST /v1/inspect":                 "handleInspect",
-	"GET /v1/jobs/{id}":                "handleGetJob",
-	"GET /v1/jobs/{id}/events":         "handleJobEvents",
-	"POST /v1/jobs/{id}/cancel":        "handleCancelJob",
-	"GET /v1/formats":                  "handleListFormats",
-	"POST /v1/presets":                 "handleCreatePreset",
-	"GET /v1/presets":                  "handleListPresets",
-	"GET /v1/presets/{name}":           "handleShowPreset",
-	"PUT /v1/presets/{name}":           "handleUpdatePreset",
-	"DELETE /v1/presets/{name}":        "handleDeactivatePreset",
-	"POST /v1/system/presets":          "handleCreateSystemPreset",
-	"GET /v1/system/presets":           "handleListSystemPresets",
-	"GET /v1/system/presets/{name}":    "handleShowSystemPreset",
-	"PUT /v1/system/presets/{name}":    "handleUpdateSystemPreset",
-	"DELETE /v1/system/presets/{name}": "handleDeactivateSystemPreset",
-	"GET /v1/system/usage":             "handleSystemUsage",
+// handlerNamePattern matches the symbol runtime.FuncForPC reports for a method
+// value bound as a chi endpoint: "<pkgpath>.(*Server).handleX-fm". Anchored at
+// the end so an anonymous handler ("...Routes.func1") does not match and is
+// reported rather than quietly skipped.
+var handlerNamePattern = regexp.MustCompile(`\.\(\*Server\)\.(\w+)-fm$`)
+
+// routerHandlers returns, for every operation the service serves, the name of
+// the function the router will actually dispatch to.
+func routerHandlers(t *testing.T) map[string]string {
+	t.Helper()
+
+	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(),
+		defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(),
+		healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+	out := map[string]string{}
+	for _, router := range []chi.Router{srv.Routes(), srv.HealthRoutes()} {
+		err := chi.Walk(router, func(method, route string, h http.Handler, _ ...func(http.Handler) http.Handler) error {
+			// chi renders a sub-router's index route as ".../" -- the same
+			// endpoint OpenAPI writes without the trailing slash.
+			if route != "/" {
+				route = strings.TrimSuffix(route, "/")
+			}
+			op := method + " " + route
+
+			if h == nil {
+				t.Errorf("%s is registered with a nil handler", op)
+				return nil
+			}
+			symbol := runtime.FuncForPC(reflect.ValueOf(h).Pointer()).Name()
+			m := handlerNamePattern.FindStringSubmatch(symbol)
+			if m == nil {
+				t.Errorf("%s is served by %q, which is not a named method on *Server, so its "+
+					"status codes cannot be analyzed. Bind the route to a named method rather "+
+					"than letting this gate silently stop covering it.", op, symbol)
+				return nil
+			}
+			if prev, ok := out[op]; ok && prev != m[1] {
+				t.Errorf("%s resolves to two different handlers (%s and %s)", op, prev, m[1])
+			}
+			out[op] = m[1]
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk router: %v", err)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("walked the router and found no routes -- the walk, not the router, is probably what broke")
+	}
+	return out
 }
 
-// emittedStatuses returns, per function name in this package, every HTTP
-// status code reachable from it.
+// qualify names a declaration the way emittedStatuses keys it: a method on T
+// as "T.Name", a package-level function as "Name".
+//
+// Qualified rather than keyed by bare name so a method on another receiver
+// cannot merge its statuses into a Server handler of the same name. No such
+// collision exists today -- but "it is fine because the names happen to be
+// unique" is an unchecked premise, and this file exists because one of those
+// failed.
+func qualify(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) == 0 {
+		return fn.Name.Name
+	}
+	typ := fn.Recv.List[0].Type
+	if star, ok := typ.(*ast.StarExpr); ok {
+		typ = star.X
+	}
+	if id, ok := typ.(*ast.Ident); ok {
+		return id.Name + "." + fn.Name.Name
+	}
+	return fn.Name.Name
+}
+
+// emittedStatuses returns, per qualified declaration name in this package,
+// every HTTP status code reachable from it.
 func emittedStatuses(t *testing.T) map[string]map[int]bool {
 	t.Helper()
 
@@ -105,7 +167,7 @@ func emittedStatuses(t *testing.T) map[string]map[int]bool {
 				if !ok {
 					continue
 				}
-				name := fn.Name.Name
+				name := qualify(fn)
 				if direct[name] == nil {
 					direct[name] = map[int]bool{}
 					callees[name] = map[string]bool{}
@@ -126,7 +188,7 @@ func emittedStatuses(t *testing.T) map[string]map[int]bool {
 							// s.helper(...) -- a method on the Server
 							// receiver, the only receiver handlers use.
 							if id, ok := callee.X.(*ast.Ident); ok && id.Name == "s" {
-								callees[name][callee.Sel.Name] = true
+								callees[name]["Server."+callee.Sel.Name] = true
 							}
 						}
 					}
@@ -203,12 +265,20 @@ func documentedStatuses(t *testing.T) map[string]map[int]bool {
 func TestOpenAPIDocumentsEveryEmittedStatus(t *testing.T) {
 	emitted := emittedStatuses(t)
 	documented := documentedStatuses(t)
+	handlers := routerHandlers(t)
 
-	for _, op := range sortedKeys(routeHandlers) {
-		handler := routeHandlers[op]
-		codes, ok := emitted[handler]
+	ops := make([]string, 0, len(handlers))
+	for op := range handlers {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+
+	for _, op := range ops {
+		handler := handlers[op]
+		codes, ok := emitted["Server."+handler]
 		if !ok {
-			t.Errorf("%s: no function named %q in package api -- routeHandlers is stale", op, handler)
+			t.Errorf("%s is served by (*Server).%s, which package api does not declare -- "+
+				"its status codes are unanalyzable", op, handler)
 			continue
 		}
 		var missing []int
@@ -225,23 +295,16 @@ func TestOpenAPIDocumentsEveryEmittedStatus(t *testing.T) {
 				op, handler, missing)
 		}
 	}
-}
 
-// TestRouteHandlerMapCoversEveryDocumentedOperation keeps routeHandlers from
-// silently shrinking: an operation dropped from the map would stop being
-// checked above while every other test stayed green.
-func TestRouteHandlerMapCoversEveryDocumentedOperation(t *testing.T) {
-	documented := documentedStatuses(t)
+	// Every documented operation must be one this test actually walked.
+	// TestOpenAPIPathsMatchRegisteredRoutes compares the same two sets, but
+	// this assertion guards THIS test's own coverage: without it a documented
+	// operation the walk never reached would go unchecked here, while the
+	// other test explained the discrepancy in a message about paths.
 	for op := range documented {
-		if _, ok := routeHandlers[op]; !ok {
-			t.Errorf("%s is documented in the spec but absent from routeHandlers, so its "+
-				"status codes are unchecked -- add it", op)
-		}
-	}
-	for op := range routeHandlers {
-		if _, ok := documented[op]; !ok {
-			t.Errorf("%s is in routeHandlers but not in the spec -- remove it or document the "+
-				"operation", op)
+		if _, ok := handlers[op]; !ok {
+			t.Errorf("%s is documented but the router walk never reached it, so its status "+
+				"codes went unchecked", op)
 		}
 	}
 }
@@ -276,13 +339,4 @@ func TestEveryEmittedStatusConstantIsMapped(t *testing.T) {
 			})
 		}
 	}
-}
-
-func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
