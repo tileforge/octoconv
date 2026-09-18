@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/hibiken/asynq"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/apaderin/octoconv/internal/metrics"
 	"github.com/apaderin/octoconv/internal/queue"
 )
@@ -197,6 +200,19 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 
 	job, err := r.h.repo.Get(ctx, jobID)
 	if err != nil {
+		// A TRANSIENT failure BEFORE the job is loaded, and until now it was
+		// invisible: this returns to asynq without reaching the retry logger
+		// further down, so a Postgres outage produced repeated attempts with
+		// no correlatable record at all (codex, PR #23).
+		//
+		// Only job_id is known here -- correlation_id, engine and client_id
+		// live in the row that could not be read -- and job_id is what the
+		// admission record already carries, so the chain still joins.
+		fields := []string{"job_id", jobID.String(), "reason", err.Error()}
+		if n, ok := asynq.GetRetryCount(ctx); ok {
+			fields = append(fields, "attempt", strconv.Itoa(n+1))
+		}
+		log.Println(logfmt.KV("job load failed", fields...))
 		return fmt.Errorf("load job %s: %w", jobID, err)
 	}
 
@@ -257,6 +273,17 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 			// D-05, and re-failing a canceled job is wrong) and record no
 			// job-outcome metric (mirrors the transient branch's own
 			// no-double-count comment below).
+			// NO RECORD HERE, deliberately -- and it had one until codex
+			// pointed out that it was wrong in both directions (PR #23).
+			//
+			// isCanceled only says the error wraps context.Canceled: an asynq
+			// shutdown or any parent-context cancellation reaches it too, so
+			// this would claim "job canceled" for a row that is still active.
+			// And a job canceled while QUEUED never enters this branch at all.
+			//
+			// The record belongs where the guarded transition COMMITS, which
+			// is handleCancelJob -- exactly the jobs that were canceled,
+			// exactly once.
 			return fmt.Errorf("%w: canceled", asynq.SkipRetry)
 		}
 		// A SkipRetry from the engine path means "no attempt can succeed", and a
@@ -283,6 +310,36 @@ func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error {
 		// own retry/backoff (per-engine RetryDelay/MAX_RETRY) applies. Not
 		// a terminal outcome, so it is NOT recorded in the job-outcome
 		// metric (Pitfall 6 -- one asynq retry must not double-count).
+		//
+		// It IS logged, and with the attempt number, for the reason the metric
+		// is not: without it, three attempts at one job read as three jobs
+		// that each vanished, and the retry -- the very thing that makes this
+		// branch different from the terminal one -- is invisible.
+		//
+		// The reason carries the engine's own error text, which is the engine
+		// reacting to a document the client wrote: jobLine escapes it.
+		fields := []string{
+			"job_id", job.ID.String(),
+			"correlation_id", job.CorrelationID,
+			"client_id", job.ClientID.String(),
+			"engine", job.Engine,
+		}
+		// GetRetryCount reports FALSE outside an asynq handler -- which is
+		// every unit test that drives Handle directly. Rendering "attempt=1"
+		// there would be a claim the context cannot support, so the field is
+		// omitted rather than guessed.
+		//
+		// 1-based when it is present: asynq counts RETRIES, and "attempt=0"
+		// for the first try reads as a bug in the logging rather than as the
+		// first try.
+		if n, ok := asynq.GetRetryCount(ctx); ok {
+			fields = append(fields, "attempt", strconv.Itoa(n+1))
+		}
+		fields = append(fields,
+			"duration_ms", logfmt.MS(time.Since(start).Milliseconds()),
+			"reason", err.Error(),
+		)
+		log.Println(logfmt.KV("job retrying", fields...))
 		return err
 	}
 
@@ -334,9 +391,39 @@ func (r *Runner) runProcess(ctx context.Context, job *jobs.Job) (err error) {
 // that single-site structure is what makes "fire before commit" impossible
 // (T-56-12), and plan 56-05's inversion run is the proof.
 func (r *Runner) finish(ctx context.Context, job *jobs.Job, status, code, message string, detail map[string]any, elapsed time.Duration) error {
+	// ONE log record per terminal outcome, emitted from the one place every
+	// terminal outcome already flows through. Putting it at the four call
+	// sites instead would mean four chances for a later branch to be added
+	// without one -- and a job that ends with no line at all is exactly the
+	// gap this is closing.
+	//
+	// job_id is the join: internal/api logs it once at admission alongside the
+	// HTTP request id, and from there this is the same job across processes.
 	var ferr error
 	if status == jobs.StatusFailed {
 		ferr = r.h.repo.MarkFailed(ctx, job.ID, code, message, detail, elapsed)
+	}
+
+	// THE TERMINAL RECORD IS NOT WRITTEN HERE. jobs.Repo.transition emits it
+	// for every status change in the service, including the paths that never
+	// reach this function: the reconciler's exhaustion, the operator CLI, and
+	// a cancellation of a job that is still queued.
+	//
+	// What IS written here is the case transition can never report, because it
+	// is the case where transition did not happen: a commit that failed. The
+	// job is left where it was, terminal callers discard this error and return
+	// SkipRetry, so without this line the outcome would have no record at all.
+	if ferr != nil {
+		log.Println(logfmt.KV("job finish uncommitted",
+			"job_id", job.ID.String(),
+			"correlation_id", job.CorrelationID,
+			"client_id", job.ClientID.String(),
+			"engine", job.Engine,
+			"intended_status", status,
+			"code", code,
+			"duration_ms", logfmt.MS(elapsed.Milliseconds()),
+			"commit_error", ferr.Error(),
+		))
 	}
 	// jobs.StatusDone: ferr stays nil -- process() (or a test's processFn
 	// stub standing in for it) already committed MarkDone inside its own

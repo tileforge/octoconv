@@ -20,8 +20,10 @@ import (
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/errcode"
 	"github.com/apaderin/octoconv/internal/jobs"
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/apaderin/octoconv/internal/presets"
 	"github.com/apaderin/octoconv/internal/storage"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 const (
@@ -127,6 +129,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // the job in Postgres (queued) and enqueues the conversion task.
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// BEFORE the body is read, let alone uploaded. A value this service will
+	// not carry is worth refusing while the request has cost nothing -- and
+	// the alternative, discovering it after the upload, would mean either
+	// dropping the id (silently useless) or discarding work already done.
+	correlationID, cerr := parseCorrelationID(r.Header)
+	if cerr != nil {
+		log.Printf("correlation id rejected: reason=invalid len=%d", len(r.Header.Get(CorrelationHeader)))
+		writeError(w, http.StatusUnprocessableEntity, errcode.InvalidRequest,
+			"Correlation-Id must be at most 128 printable ASCII characters without spaces")
+		return
+	}
 
 	// Cap the request body to reject oversized uploads before buffering them.
 	// The total-size ceiling is enforced here by MaxBytesReader; the separate,
@@ -1053,6 +1067,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Postgres-first double write: record the job, then enqueue. The job id is
 	// the one already embedded in the storage key above so they stay aligned.
 	createdID, err := s.repo.Create(ctx, jobs.CreateParams{
+		CorrelationID:   correlationID,
 		ID:              jobID,
 		ClientID:        client.ID,
 		Operation:       operation,
@@ -1087,6 +1102,33 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// Route to the matching engine-class queue (mirrors reconciler.go's
 	// engine switch). The row stays in 'queued' on any enqueue failure; a
 	// reconciler will recover it.
+	// THE JOIN BETWEEN THE TWO WORLDS, and the only place it exists.
+	//
+	// chi's middleware.RequestID gives every HTTP request an id and its Logger
+	// prints it, but that id is never stored and never leaves this process.
+	// job_id is stored everywhere and never appears in an HTTP log line. This
+	// record is where they meet: from here, request_id finds the chi access
+	// log, and job_id finds every worker line about the same job.
+	//
+	// After Create and before enqueue, deliberately: a job that exists is
+	// worth a line even if the enqueue then fails, and that is precisely the
+	// case an operator has to investigate (the Postgres-first double write
+	// exists so such a row is inspectable rather than lost).
+	//
+	// filename is the client's, so it goes through the same escaping the
+	// worker uses -- a newline in it would otherwise split this record.
+	log.Println(logfmt.KV("job accepted",
+		"request_id", middleware.GetReqID(ctx),
+		"job_id", createdID.String(),
+		"client_id", client.ID.String(),
+		"engine", engine,
+		"source", detected,
+		"target", target,
+		"filename", filename,
+		"bytes", strconv.FormatInt(totalBytes, 10),
+		"correlation_id", correlationID,
+	))
+
 	routed, enqueueErr := s.enqueueForEngine(ctx, engine, createdID)
 	if !routed {
 		// Fail closed: an engine class with no known queue must never be
@@ -1181,6 +1223,12 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"job_id": job.ID,
 		"status": job.Status,
+	}
+	// Echoed so the caller can VERIFY its value arrived, rather than assume
+	// it. Omitted when absent for the same reason it is omitted from the
+	// webhook: a field that is usually null trains readers to ignore it.
+	if job.CorrelationID != "" {
+		resp["correlation_id"] = job.CorrelationID
 	}
 	if len(job.Opts) > 0 {
 		resp["opts"] = job.Opts
@@ -1346,6 +1394,12 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to cancel job")
 		return
 	}
+
+	// NO RECORD HERE. jobs.Repo.transition emits it, which is the only place
+	// that sees EVERY cancellation -- this handler, the operator CLI's
+	// cancel-job, and any future caller -- and that reads from_status under
+	// the same lock as the transition. Logging here covered one of the three
+	// and reported a possibly stale prior status (codex, PR #23).
 
 	// Best-effort publish of the cancel signal (speed layer, D-09): a
 	// worker actively running this job may wake and kill the process

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/apaderin/octoconv/internal/logfmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -50,6 +53,18 @@ type WebhookGapJob struct {
 	Status string
 }
 
+// nullIfEmpty stores "" as SQL NULL.
+//
+// So that "the caller sent no correlation id" and "the caller sent an empty
+// one" cannot be confused by anything reading the column -- and the API cannot
+// send an empty one, because parseCorrelationID returns "" only for absent.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // Repo is the jobs repository backed by a pgx pool.
 type Repo struct {
 	pool *pgxpool.Pool
@@ -76,6 +91,11 @@ type CreateParams struct {
 	SourceFormat string
 	TargetFormat string
 	CallbackURL  string
+	// CorrelationID is the caller's own identifier, already bounded by the API
+	// (length + charset). Empty means the caller sent none, and is stored as
+	// NULL rather than an empty string so "absent" and "empty" cannot be
+	// confused by anything reading the column later.
+	CorrelationID string
 	// ProgressWebhook is the per-job opt-in flag (0008_progress_webhook.sql,
 	// PUSH-02/D-03) gating the worker's best-effort inline progress-webhook
 	// fire. Zero value (false) for every existing caller shape.
@@ -178,9 +198,9 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 		}
 
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options)
-			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11)`,
-			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON,
+			INSERT INTO jobs (id, client_id, operation, engine, status, source_format, target_format, preset_name, preset_version, callback_url, progress_webhook, options, correlation_id)
+			VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9, $10, $11, $12)`,
+			jobID, p.ClientID, p.Operation, p.Engine, p.SourceFormat, p.TargetFormat, pname, pver, p.CallbackURL, p.ProgressWebhook, optsJSON, nullIfEmpty(p.CorrelationID),
 		); err != nil {
 			return fmt.Errorf("insert job: %w", err)
 		}
@@ -216,7 +236,7 @@ func (r *Repo) Create(ctx context.Context, p CreateParams) (uuid.UUID, error) {
 // activation, not the most recent retry, which the reconciler's active-
 // staleness check depends on for true elapsed running time.
 func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
-	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusActive, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'active', started_at = COALESCE(started_at, now()), attempts = attempts + 1 WHERE id = $1`, id)
 		return err
@@ -232,7 +252,7 @@ func (r *Repo) MarkActive(ctx context.Context, id uuid.UUID) error {
 // the elapsed engine time for this attempt (0 if the caller has no attempt
 // clock).
 func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusDone, []string{StatusActive}, nil, outcome{elapsed: attempt, hasElapsed: true}, func(ctx context.Context, tx pgx.Tx) error {
 		// D-13: a done job without exactly one primary output is an
 		// unreachable state, enforced here rather than in transition()
 		// because this is a precondition of MarkDone's own semantics, not
@@ -279,13 +299,34 @@ func (r *Repo) MarkDone(ctx context.Context, id uuid.UUID, attempt time.Duration
 // for why. attempt is the elapsed engine time for this attempt; pass 0 when
 // the caller has no attempt clock (e.g. the reconciler's exhaustion path).
 func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error {
-	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, func(ctx context.Context, tx pgx.Tx) error {
+	return r.markFailed(ctx, id, code, message, detail, outcome{code: code, elapsed: attempt, hasElapsed: true})
+}
+
+// MarkFailedUnmeasured is MarkFailed for a caller that never ran the job and
+// therefore has no attempt clock -- the reconciler's exhaustion path.
+//
+// A SEPARATE METHOD rather than a zero sentinel, because zero is a legitimate
+// measurement: the worker's invalid-options guard fails a job before the
+// engine starts and passes a real 0, and inferring "unmeasured" from the value
+// made that record lose its duration entirely (codex, PR #23). The two callers
+// differ in whether they KNOW the duration, which is not something the number
+// can express.
+//
+// transition derives an elapsed time from the locked row's started_at when it
+// gets no measurement, so a stale ACTIVE job still reports how long it had
+// been running.
+func (r *Repo) MarkFailedUnmeasured(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error {
+	return r.markFailed(ctx, id, code, message, detail, outcome{code: code})
+}
+
+func (r *Repo) markFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, out outcome) error {
+	return r.transition(ctx, id, StatusFailed, []string{StatusQueued, StatusActive}, detail, out, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'failed', finished_at = now(), error_code = $2, error_message = $3 WHERE id = $1`,
 			id, code, message); err != nil {
 			return err
 		}
-		return r.recordUsage(ctx, tx, id, StatusFailed, attempt)
+		return r.recordUsage(ctx, tx, id, StatusFailed, out.elapsed)
 	})
 }
 
@@ -318,7 +359,7 @@ func (r *Repo) MarkFailed(ctx context.Context, id uuid.UUID, code, message strin
 // 0, via the same fallback CASE expression recordUsage already implements
 // for the reconciler's exhaustion path (no SQL changes needed).
 func (r *Repo) Cancel(ctx context.Context, id uuid.UUID) error {
-	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusCanceled, []string{StatusQueued, StatusActive}, nil, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx,
 			`UPDATE jobs SET status = 'canceled', finished_at = now() WHERE id = $1`, id); err != nil {
 			return err
@@ -424,7 +465,7 @@ func nullableInterval(d time.Duration) any {
 // (RecoveryCount) and audit trail (RECON-03) stay consistent.
 func (r *Repo) RequeueStale(ctx context.Context, id uuid.UUID, reason string) error {
 	detail := map[string]any{"action": detailActionRecovery, "reason": reason}
-	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, func(ctx context.Context, tx pgx.Tx) error {
+	return r.transition(ctx, id, StatusQueued, []string{StatusQueued, StatusActive}, detail, outcome{}, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE jobs SET status = 'queued' WHERE id = $1`, id)
 		return err
 	})
@@ -632,14 +673,15 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	// options is NOT NULL (0001_init.sql:25), so it is scanned into a plain
 	// []byte, NOT a *string pointer, unlike the other nullable columns above.
 	var optsJSON []byte
+	var corr *string
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, client_id, operation, engine, status, source_format, target_format,
 		       callback_url, progress_webhook, options, error_code, error_message, created_at, started_at, finished_at,
-		       progress_pct, eta_seconds, source_duration_seconds
+		       progress_pct, eta_seconds, source_duration_seconds, correlation_id
 		FROM jobs WHERE id = $1`, id,
 	).Scan(&j.ID, &clientID, &j.Operation, &j.Engine, &j.Status, &src, &tgt,
 		&cb, &j.ProgressWebhook, &optsJSON, &code, &msg, &j.CreatedAt, &j.StartedAt, &j.FinishedAt,
-		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds)
+		&j.ProgressPct, &j.EtaSeconds, &j.SourceDurationSeconds, &corr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -657,6 +699,7 @@ func (r *Repo) Get(ctx context.Context, id uuid.UUID) (*Job, error) {
 	j.CallbackURL = deref(cb)
 	j.ErrorCode = deref(code)
 	j.ErrorMessage = deref(msg)
+	j.CorrelationID = deref(corr)
 	if err := json.Unmarshal(optsJSON, &j.Opts); err != nil {
 		return nil, fmt.Errorf("unmarshal job options: %w", err)
 	}
@@ -840,12 +883,35 @@ func (r *Repo) List(ctx context.Context, clientID uuid.UUID, f ListFilter, curso
 // single transaction. It errors if the job is not in one of the allowed source
 // statuses (concurrency/idempotency guard). detail, when non-nil, is marshaled
 // into the job_events.detail jsonb column; when nil, the column stays NULL.
+// outcome is what only the CALLER knows about a transition: why it failed and
+// how long the attempt took.
+//
+// A struct rather than two more parameters on transition, because three of the
+// five callers have neither and would have to pass zero values -- and a
+// parameter every caller must supply and most cannot is how a signature grows
+// into noise.
+//
+// NOT re-read from the row after the commit: the caller has these values in
+// hand, and a second read is a second chance for the record to describe
+// something other than what happened.
+type outcome struct {
+	code    string
+	elapsed time.Duration
+	// hasElapsed distinguishes "no duration applies" from "the duration was
+	// zero". Without it, a genuinely instant failure -- invalid_options and
+	// reconciler_exhausted both pass zero -- looked identical to a transition
+	// that has no notion of elapsed time, and the field was dropped from both
+	// (codex, PR #23).
+	hasElapsed bool
+}
+
 func (r *Repo) transition(
 	ctx context.Context,
 	id uuid.UUID,
 	to string,
 	allowedFrom []string,
 	detail map[string]any,
+	out outcome,
 	apply func(ctx context.Context, tx pgx.Tx) error,
 ) error {
 	var detailJSON []byte
@@ -860,11 +926,29 @@ func (r *Repo) transition(
 	// (52-REVIEW.md WR-02): the SELECT ... FOR UPDATE re-read below and
 	// recordUsage's ON CONFLICT upsert (MarkDone/MarkFailed/Cancel) both
 	// assume the same per-statement snapshot.
-	return pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
-		var from string
+	// Identity read under the SAME lock as the status, so the record below
+	// describes the row the transition actually saw.
+	var from, engine, target string
+	var clientID *uuid.UUID
+	var corr *string
+	// NULL when the job never started: a duration that does not exist, as
+	// opposed to one that is zero.
+	var runningMS *float64
+
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if err := tx.QueryRow(ctx,
-			`SELECT status FROM jobs WHERE id = $1 FOR UPDATE`, id,
-		).Scan(&from); err != nil {
+			// The elapsed time is computed BY POSTGRES, not by this process.
+			//
+			// started_at is stamped with the database's now(), so subtracting
+			// it from the application host's clock measures the skew between
+			// two machines as well as the job's duration -- and on a quick
+			// cancellation that can be NEGATIVE (codex, PR #23). recordUsage
+			// already keeps its arithmetic on the database clock for the same
+			// reason.
+			`SELECT status, client_id, engine, coalesce(target_format,''), correlation_id,
+			        EXTRACT(EPOCH FROM (now() - started_at)) * 1000
+			   FROM jobs WHERE id = $1 FOR UPDATE`, id,
+		).Scan(&from, &clientID, &engine, &target, &corr, &runningMS); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
 			}
@@ -887,6 +971,92 @@ func (r *Repo) transition(
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// THE LIFECYCLE RECORD, emitted here and nowhere else.
+	//
+	// Every status change in this service goes through this function -- the
+	// worker's terminal outcomes, the API's cancel, the operator CLI's
+	// cancel-job, and the reconciler's exhaustion path. Logging at the callers
+	// instead meant four places to remember, and three of them were already
+	// missing when review looked (PR #23): a queued cancellation, an operator
+	// cancellation, and a reconciler-exhausted job each ended with no record.
+	//
+	// from_status comes from the LOCKED read above rather than from whatever
+	// the caller happened to see earlier, so a queued job that a worker
+	// activated between the two reads is recorded as it actually was.
+	//
+	// After the commit, deliberately: a record is a claim that the transition
+	// happened, and until BeginTxFunc returns it has not.
+	//
+	// internal/* logging is a deliberate exception here, the same one
+	// internal/api already carries. The alternative is what this replaces.
+	fields := []string{
+		"job_id", id.String(),
+		"correlation_id", derefStr(corr),
+		"engine", engine,
+		"target", target,
+		"from_status", from,
+	}
+	if clientID != nil {
+		fields = append(fields, "client_id", clientID.String())
+	}
+	// The outcome fields, which centralising this record had DROPPED (codex,
+	// PR #23): without code an operator cannot tell engine_error from
+	// invalid_options from reconciler_exhausted, and without duration_ms
+	// completion latency means going back to Postgres -- both of which are the
+	// point of the phase.
+	//
+	// Present only where they mean something: a cancellation has no error code
+	// and MarkActive has no elapsed time, and a field that is usually empty
+	// trains readers to ignore it.
+	if out.code != "" {
+		fields = append(fields, "code", out.code)
+	}
+	// The caller's measurement when it has one, otherwise derived from the
+	// row: a job canceled while ACTIVE has a real elapsed time that only the
+	// locked row knows, and reporting nothing there loses the one number an
+	// operator wants about a cancellation.
+	//
+	// EVERY terminal outcome carries the field, a job that never started
+	// included, and that last case is 0 rather than an omission.
+	//
+	// It was an omission, on the reasoning that zero would be a number
+	// invented rather than measured. That reasoning was already contradicted
+	// three files away: recordUsage (usage.go) writes wall_seconds = 0 for
+	// exactly this case, in the SAME transaction, because a job that never
+	// occupied a worker consumed no wall time. The ledger and the log were
+	// answering one question two ways, and the phase asks for a duration on
+	// every done/failed/canceled record (66-01-PLAN.md) -- a consumer should
+	// not have to treat a terminal record as two shapes (codex, PR #23).
+	//
+	// Zero is not a guess here: it is how long the job ran.
+	switch {
+	case out.hasElapsed:
+		fields = append(fields, "duration_ms", logfmt.MS(out.elapsed.Milliseconds()))
+	case isTerminal(to) && runningMS != nil:
+		fields = append(fields, "duration_ms", logfmt.MS(int64(*runningMS)))
+	case isTerminal(to):
+		fields = append(fields, "duration_ms", logfmt.MS(0))
+	}
+	log.Println(logfmt.KV("job "+to, fields...))
+	return nil
+}
+
+// isTerminal reports whether a status ends a job's life, and therefore whether
+// a duration is meaningful for it.
+func isTerminal(status string) bool {
+	return status == StatusDone || status == StatusFailed || status == StatusCanceled
+}
+
+// derefStr reads a nullable text column as a string.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func contains(ss []string, s string) bool {

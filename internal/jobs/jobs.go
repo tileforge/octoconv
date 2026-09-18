@@ -21,14 +21,18 @@ const (
 
 // Job is a row of the jobs table (subset used by the image slice).
 type Job struct {
-	ID           uuid.UUID
-	ClientID     uuid.UUID
-	Operation    string
-	Engine       string
-	Status       string
-	SourceFormat string
-	TargetFormat string
-	CallbackURL  string
+	ID        uuid.UUID
+	ClientID  uuid.UUID
+	Operation string
+	Engine    string
+	// CorrelationID is the caller's own identifier, echoed back in the job
+	// status and in the webhook. Empty when the caller sent none -- this
+	// service never generates one, because job_id already identifies the job.
+	CorrelationID string
+	Status        string
+	SourceFormat  string
+	TargetFormat  string
+	CallbackURL   string
 	// ProgressWebhook is the per-job opt-in flag (0008_progress_webhook.sql,
 	// PUSH-02/D-03) gating the worker's best-effort inline progress-webhook
 	// fire; deliberately a dedicated NOT NULL boolean column, never stored in

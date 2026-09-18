@@ -71,7 +71,7 @@ type jobStore interface {
 	FindStale(ctx context.Context, queuedStaleAfter, activeStaleAfter time.Duration) ([]jobs.StaleJob, error)
 	RecoveryCount(ctx context.Context, id uuid.UUID) (int, error)
 	RequeueStale(ctx context.Context, id uuid.UUID, reason string) error
-	MarkFailed(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any, attempt time.Duration) error
+	MarkFailedUnmeasured(ctx context.Context, id uuid.UUID, code, message string, detail map[string]any) error
 	Get(ctx context.Context, id uuid.UUID) (*jobs.Job, error)
 	FindWebhookGaps(ctx context.Context, activeStaleAfter time.Duration) ([]jobs.WebhookGapJob, error)
 	RecordWebhookGapRecovered(ctx context.Context, id uuid.UUID, status string) error
@@ -314,7 +314,10 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// started_at instead. For a job exhausted while still stranded
 			// in `queued` (never activated, started_at NULL) that correctly
 			// falls back to 0 -- it never occupied a worker at all.
-			ferr := s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"}, 0)
+			// Unmeasured, not zero: this path never ran the job, so the
+			// elapsed time it would report is derived from started_at rather
+			// than invented (66-02).
+			ferr := s.store.MarkFailedUnmeasured(ctx, j.ID, "reconciler_exhausted", "recovery attempts exhausted", map[string]any{"action": "reconciler_exhausted"})
 			// RUNR-02: RecordReconcilerAction("exhausted") is guarded on
 			// ferr == nil for the same reason RecordClientJobOutcome below
 			// already is -- MarkFailed's error was previously discarded

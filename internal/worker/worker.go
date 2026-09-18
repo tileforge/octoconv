@@ -933,6 +933,16 @@ func buildTerminalWebhookBody(job *jobs.Job) map[string]any {
 		"job_id": job.ID,
 		"status": job.Status,
 	}
+	// The caller's own identifier, echoed back. This is the ONE thing the
+	// caller cannot do for itself: the webhook arrives later, possibly at a
+	// different instance, and until now carried only job_id -- so a service
+	// investigating an incident from its own logs had nothing to match on.
+	//
+	// Omitted entirely when absent, rather than sent as null: a field that is
+	// usually null trains readers to ignore it.
+	if job.CorrelationID != "" {
+		body["correlation_id"] = job.CorrelationID
+	}
 	body["event"] = "completed"
 	return body
 }
@@ -1123,11 +1133,17 @@ type progressWebhookDeliverer interface {
 // deliverer/unset callback byte-identical to "opted out," no separate code
 // path.
 type progressSink struct {
-	ctx         context.Context
-	repo        progressRepo
-	jobID       uuid.UUID
-	minInterval time.Duration
-	minDeltaPct int
+	ctx  context.Context
+	repo progressRepo
+	// jobID and correlationID travel together for the same reason they do in
+	// the terminal body: a progress delivery is asynchronous, arrives at
+	// whatever instance the caller has, and until now carried only job_id --
+	// so nothing the caller could match on until the job finished (codex,
+	// PR #23).
+	jobID         uuid.UUID
+	correlationID string
+	minInterval   time.Duration
+	minDeltaPct   int
 
 	hasLast   bool
 	lastWrite time.Time
@@ -1183,12 +1199,18 @@ func (s *progressSink) Update(u convert.ProgressUpdate) {
 // separation from the terminal retry/dead-letter budget (T-42-08) a
 // construction guarantee, not a runtime check.
 func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"job_id":       s.jobID,
 		"event":        "progress",
 		"progress_pct": u.Pct,
 		"eta_seconds":  u.ETA,
-	})
+	}
+	// Omitted when absent, matching the terminal body exactly: a field that is
+	// usually null trains readers to ignore it.
+	if s.correlationID != "" {
+		payload["correlation_id"] = s.correlationID
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		// Best-effort: a marshal failure for this fixed, non-adversarial
 		// shape should never happen; silently drop the fire rather than
@@ -1230,14 +1252,15 @@ func (s *progressSink) fireDetached(u convert.ProgressUpdate) {
 // the constructed progressSink; every non-opted-in job and every
 // non-av-worker cmd passes webhookEnabled=false / webhookDelivr=nil, which
 // keeps the DB-write path byte-identical to before this plan.
-func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) error {
+func runConvertWithOptionalProgress(ctx context.Context, conv convert.Converter, inPath, outPath string, opts map[string]any, repo progressRepo, jobID uuid.UUID, correlationID string, minInterval time.Duration, minDeltaPct int, webhookEnabled bool, callbackURL string, webhookDelivr progressWebhookDeliverer, webhookSecret []byte, webhookTimeout time.Duration) error {
 	pconv, ok := conv.(convert.ProgressConverter)
 	if !ok || minInterval <= 0 {
 		return conv.Convert(ctx, inPath, outPath, opts)
 	}
 
 	sink := &progressSink{
-		ctx: ctx, repo: repo, jobID: jobID, minInterval: minInterval, minDeltaPct: minDeltaPct,
+		ctx: ctx, repo: repo, jobID: jobID, correlationID: correlationID,
+		minInterval: minInterval, minDeltaPct: minDeltaPct,
 		webhookEnabled: webhookEnabled, callbackURL: callbackURL, webhookDelivr: webhookDelivr,
 		webhookSecret: webhookSecret, webhookTimeout: webhookTimeout,
 	}
@@ -1350,7 +1373,7 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 	// always-audio-shaped wrapper here changes no externally observable
 	// behavior.
 	convertFn := func() error {
-		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
+		if err := runConvertWithOptionalProgress(attemptCtx, conv, inPath, outPath, job.Opts, h.repo, job.ID, job.CorrelationID, h.progressMinInterval, h.progressMinDeltaPct, job.ProgressWebhook, job.CallbackURL, h.progressWebhookDelivr, h.progressWebhookSecret, h.progressWebhookTimeout); err != nil {
 			return fmt.Errorf("convert: %w", err)
 		}
 		return nil

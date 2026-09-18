@@ -120,12 +120,21 @@ type JobOutput struct {
 // get_job_status MCP tool's output type (tools.go:192), so every field's
 // json tag and jsonschema description doubles as agent-facing documentation.
 type JobStatus struct {
-	JobID        string         `json:"job_id"`
-	Status       string         `json:"status"`
-	Opts         map[string]any `json:"opts,omitempty"`
-	DownloadURL  string         `json:"download_url,omitempty"`
-	ErrorCode    string         `json:"error_code,omitempty"`
-	ErrorMessage string         `json:"error_message,omitempty"`
+	JobID  string `json:"job_id"`
+	Status string `json:"status"`
+	// CorrelationID echoes the Correlation-Id header the job was created
+	// with, when one was supplied.
+	//
+	// Present here because this struct IS the get_job_status tool's output:
+	// Go's decoder silently discards fields it does not declare, so without
+	// this the REST response carried the identifier and the MCP surface
+	// dropped it -- an agent could not correlate a job with the operation
+	// that asked for it (codex, PR #23).
+	CorrelationID string         `json:"correlation_id,omitempty" jsonschema:"the caller-supplied Correlation-Id this job was created with, echoed unchanged. Absent when none was supplied. Use it to tie this job to the operation that requested it; it is not a trace id and carries no tracing semantics"`
+	Opts          map[string]any `json:"opts,omitempty"`
+	DownloadURL   string         `json:"download_url,omitempty"`
+	ErrorCode     string         `json:"error_code,omitempty"`
+	ErrorMessage  string         `json:"error_message,omitempty"`
 	// ProgressPct and EtaSeconds mirror the null-aware contract
 	// handleGetJob has emitted since Phase 41 (PROG-01/PROG-04,
 	// internal/api/handlers.go:902-910): both keys are ALWAYS present, and
@@ -230,7 +239,20 @@ func (e *TimeoutError) Error() string {
 // diverge from the registry, and the API's 422 unsupported_operation
 // response is forwarded to the caller unchanged either way. opts is an
 // optional raw JSON string. Returns the created job id.
-func (c *Client) CreateJob(ctx context.Context, filePath, operation, target, preset, opts string) (string, error) {
+// CreateRequest is what a conversion needs. A struct rather than a seventh
+// positional string: five interchangeable strings in a row is already a
+// signature where a transposed pair compiles and does the wrong thing.
+type CreateRequest struct {
+	FilePath      string
+	Operation     string
+	Target        string
+	Preset        string
+	Opts          string
+	CorrelationID string
+}
+
+func (c *Client) CreateJob(ctx context.Context, req CreateRequest) (string, error) {
+	filePath, operation, target, preset, opts := req.FilePath, req.Operation, req.Target, req.Preset, req.Opts
 	f, err := os.Open(filePath)
 	if err != nil {
 		return "", fmt.Errorf("open input file: %w", err)
@@ -270,14 +292,21 @@ func (c *Client) CreateJob(ctx context.Context, filePath, operation, target, pre
 		return "", fmt.Errorf("build multipart request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/jobs", &body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/jobs", &body)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("Authorization", "ApiKey "+c.apiKey)
+	httpReq.Header.Set("Content-Type", mw.FormDataContentType())
+	httpReq.Header.Set("Authorization", "ApiKey "+c.apiKey)
+	// The caller's own identifier, forwarded unchanged. Without this the MCP
+	// surface could READ a correlation id on jobs created elsewhere and never
+	// set one on its own -- so an agent could not use the feature for the
+	// conversions it actually performs (codex, PR #23).
+	if req.CorrelationID != "" {
+		httpReq.Header.Set("Correlation-Id", req.CorrelationID)
+	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return "", c.wrapTransportErr("create job", err)
 	}
@@ -447,8 +476,8 @@ func (c *Client) downloadClient() *http.Client {
 // every tick) bounded by ConvertTimeout, then Download the presigned result
 // on success. operation is forwarded to CreateJob verbatim -- see CreateJob's
 // doc comment for why this client never arbitrates its value.
-func (c *Client) ConvertBlocking(ctx context.Context, filePath, operation, target, preset, opts string, onTick func(status string)) (ConvertResult, error) {
-	jobID, err := c.CreateJob(ctx, filePath, operation, target, preset, opts)
+func (c *Client) ConvertBlocking(ctx context.Context, req CreateRequest, onTick func(status string)) (ConvertResult, error) {
+	jobID, err := c.CreateJob(ctx, req)
 	if err != nil {
 		return ConvertResult{}, err
 	}

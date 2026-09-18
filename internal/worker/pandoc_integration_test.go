@@ -62,7 +62,7 @@ func TestPandocConvertIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
+	if err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", 2*time.Second, 1, false, "", nil, nil, 0); err != nil {
 		t.Fatalf("runConvertWithOptionalProgress(md->html): %v, want nil (queued->active->done proxy)", err)
 	}
 
@@ -113,7 +113,7 @@ func TestPandocConvertIntegrationTerminalOnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, 0, 0, false, "", nil, nil, 0)
+	err := runConvertWithOptionalProgress(ctx, conv, inPath, outPath, nil, repo, jobID, "", 0, 0, false, "", nil, nil, 0)
 	if err == nil {
 		t.Fatal("runConvertWithOptionalProgress(corrupt docx->md) = nil, want a genuine pandoc engine failure")
 	}
