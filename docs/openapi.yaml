@@ -27,11 +27,16 @@ info:
     object.
 
 
+    The two halves are established differently. A handler's statuses are read
+    from its source, because no request reaches every branch. A middleware's
+    are OBSERVED: the router is driven with a request carrying no key, one
+    whose key cannot be resolved, one past its rate budget and one from a
+    non-operator, and whatever comes back must be documented — which holds
+    whoever wrote the middleware and whatever the compiler does with it.
+
+
     NOT held by a test: response bodies, schemas and examples, which are
-    maintained by hand. Third-party middleware is declared rather than
-    analyzed, so what chi's Recoverer and httprate can write is pinned by the
-    module version rather than by a check here; middleware this repository
-    owns IS cross-checked against its source.
+    maintained by hand.
 servers:
   - url: "{base_url}"
     description: OctoConv API server. Defaults to the local docker-compose deployment.
