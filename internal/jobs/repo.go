@@ -1020,15 +1020,26 @@ func (r *Repo) transition(
 	// locked row knows, and reporting nothing there loses the one number an
 	// operator wants about a cancellation.
 	//
-	// A terminal outcome always carries the field, including duration_ms=0 for
-	// the genuinely instant ones -- see outcome.hasElapsed. A queued
-	// cancellation has no started_at and no duration, which is a fact rather
-	// than a missing value.
+	// EVERY terminal outcome carries the field, a job that never started
+	// included, and that last case is 0 rather than an omission.
+	//
+	// It was an omission, on the reasoning that zero would be a number
+	// invented rather than measured. That reasoning was already contradicted
+	// three files away: recordUsage (usage.go) writes wall_seconds = 0 for
+	// exactly this case, in the SAME transaction, because a job that never
+	// occupied a worker consumed no wall time. The ledger and the log were
+	// answering one question two ways, and the phase asks for a duration on
+	// every done/failed/canceled record (66-01-PLAN.md) -- a consumer should
+	// not have to treat a terminal record as two shapes (codex, PR #23).
+	//
+	// Zero is not a guess here: it is how long the job ran.
 	switch {
 	case out.hasElapsed:
 		fields = append(fields, "duration_ms", logfmt.MS(out.elapsed.Milliseconds()))
 	case isTerminal(to) && runningMS != nil:
 		fields = append(fields, "duration_ms", logfmt.MS(int64(*runningMS)))
+	case isTerminal(to):
+		fields = append(fields, "duration_ms", logfmt.MS(0))
 	}
 	log.Println(logfmt.KV("job "+to, fields...))
 	return nil

@@ -183,8 +183,15 @@ func TestFailureRecordCarriesTheOutcome(t *testing.T) {
 	}
 }
 
-// And the fields are OMITTED where they would be empty: a cancellation has no
-// error code, and a field that is usually blank trains readers to ignore it.
+// And a field is OMITTED where it would be EMPTY rather than zero: a
+// cancellation has no error code, and a key that is usually blank trains
+// readers to ignore it.
+//
+// duration_ms is deliberately NOT in that set, though it was until codex
+// pointed at the cost. Zero is a value, not a blank: recordUsage writes
+// wall_seconds=0 for this same job in this same transaction, so omitting it
+// here made the log and the ledger answer one question two ways, and left a
+// terminal record with two possible shapes for every consumer to handle.
 func TestCancellationRecordHasNoEmptyOutcomeFields(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
@@ -204,10 +211,14 @@ func TestCancellationRecordHasNoEmptyOutcomeFields(t *testing.T) {
 	}
 
 	line := recordFor(t, buf, "job canceled")
-	for _, unwanted := range []string{`code=""`, `duration_ms=0`} {
+	for _, unwanted := range []string{`code=""`, `message=""`} {
 		if strings.Contains(line, unwanted) {
 			t.Errorf("the cancellation record carries %s, which means nothing here: %s", unwanted, line)
 		}
+	}
+	if !strings.Contains(line, "duration_ms=0") {
+		t.Errorf("the cancellation record omits duration_ms, so a consumer must handle a "+
+			"terminal record in two shapes: %s", line)
 	}
 }
 
@@ -321,7 +332,7 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 		}
 	})
 
-	t.Run("the reconciler exhausting a QUEUED job has none", func(t *testing.T) {
+	t.Run("the reconciler exhausting a QUEUED job reports zero", func(t *testing.T) {
 		r := newTestRepo(t)
 		id := newJob(t, r, "rq")
 		buf := captureLog(t)
@@ -329,9 +340,13 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 			t.Fatalf("MarkFailedUnmeasured: %v", err)
 		}
 		line := recordFor(t, buf, "job failed")
-		if strings.Contains(line, "duration_ms=") {
-			t.Fatalf("a job that never started reports a duration, which would be invented "+
-				"rather than measured or derived: %s", line)
+		// Zero, not absent: recordUsage writes wall_seconds=0 for this same
+		// job in this same transaction, and a terminal record that sometimes
+		// carries a duration and sometimes does not makes every consumer
+		// handle two shapes (codex, PR #23).
+		if !strings.Contains(line, "duration_ms=0") {
+			t.Fatalf("a job that never started reports no duration, so the log and the usage "+
+				"ledger disagree about the same job: %s", line)
 		}
 	})
 
@@ -353,7 +368,7 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 		}
 	})
 
-	t.Run("cancelling a queued job has none to report", func(t *testing.T) {
+	t.Run("cancelling a queued job reports zero", func(t *testing.T) {
 		r := newTestRepo(t)
 		id := newJob(t, r, "cq2")
 		buf := captureLog(t)
@@ -361,9 +376,9 @@ func TestTerminalRecordsAlwaysCarryADuration(t *testing.T) {
 			t.Fatalf("Cancel: %v", err)
 		}
 		line := recordFor(t, buf, "job canceled")
-		if strings.Contains(line, "duration_ms=") {
-			t.Fatalf("a job that never started reports a duration, which is a number invented "+
-				"rather than measured: %s", line)
+		if !strings.Contains(line, "duration_ms=0") {
+			t.Fatalf("a cancellation of a job that never started reports no duration, though "+
+				"zero is how long it ran: %s", line)
 		}
 	})
 }
