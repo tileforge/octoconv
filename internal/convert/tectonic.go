@@ -41,6 +41,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/apaderin/octoconv/internal/sandbox"
 )
@@ -70,8 +71,25 @@ type TectonicConverter struct {
 	// DefaultTectonicMaxOutputBytes; see maxOutputBytes.
 	MaxOutputBytes int64
 
-	// SandboxHelper is the argv prefix that establishes the filesystem
-	// sandbox and then BECOMES the engine -- in the deployed image,
+	// CPUSeconds bounds what one document may COST, via RLIMIT_CPU on the
+	// engine. Zero means unbounded, which is what every unit test and any
+	// unconfined deployment gets.
+	CPUSeconds int
+
+	// ConfineFilesystem says whether SandboxHelper should also apply the
+	// Landlock ruleset, as opposed to only the resource limits.
+	//
+	// Separate from SandboxHelper being set, because the two controls are
+	// independent: a deployment can disable Landlock and still want a CPU
+	// budget. Folding them into one flag is what made the CPU bound silently
+	// unenforced when the sandbox was off (codex, PR #22), and the fallback
+	// that patched it -- resolving os.Executable() as a helper -- quietly
+	// assumed the running binary implements the exec mode, which is true of a
+	// worker and of nothing else.
+	ConfineFilesystem bool
+
+	// SandboxHelper is the argv prefix that establishes the confinement and
+	// then BECOMES the engine -- in the deployed image,
 	// {"/usr/local/bin/tectonic-worker", "__sandbox-exec"}.
 	//
 	// Empty means the engine runs unconfined, which is what every unit test
@@ -103,6 +121,130 @@ func (TectonicConverter) Pairs() []Pair {
 // reads it; a constant in one binary that another compares against by literal
 // is how the two drift apart.
 const TectonicSandboxSetupExit = 78
+
+// cpuExhausted decides whether a signaled child was killed for spending its
+// CPU budget, as opposed to any of the other reasons a child can be signaled.
+//
+// TWO CONDITIONS, and the earlier version had neither properly:
+//
+//   - THE SIGNAL. RLIMIT_CPU produces SIGXCPU -- measured; see the note in the
+//     function body about asserting SIGKILL and being wrong. Accepting ANY
+//     signal, which is what the first version did, meant an immediate SIGSEGV
+//     or a SIGTERM from a shutdown was reported as a processing-time refusal:
+//     terminal, and blaming the document for a crash (codex, PR #22).
+//   - THE CONSUMPTION, within a tolerance that CANNOT swallow the budget. The
+//     tolerance was a flat one second, so at the smallest budget startup
+//     accepts (1s) the threshold became zero and every signaled child
+//     qualified. It is now a fraction, floored at a tenth of a second, so it
+//     is always strictly inside the budget.
+//
+// The tolerance exists because RLIMIT_CPU is whole seconds while getrusage
+// reports what it accounted for, which can land marginally under.
+//
+// SIGKILL is also what the cgroup OOM killer sends, so this is not a complete
+// discriminator on its own -- the consumption test is what separates them, and
+// the OOM branch below catches what falls through.
+func cpuExhausted(sig syscall.Signal, used time.Duration, budgetSeconds int) bool {
+	// SIGXCPU **or** SIGKILL, and which one arrives is not a detail this code
+	// gets to assume.
+	//
+	// I asserted SIGKILL alone, reasoning that soft == hard means the kernel
+	// skips the SIGXCPU-then-grace dance. MEASURED, it does not: the child is
+	// reported as "cputime limit exceeded", which is SIGXCPU, and requiring
+	// SIGKILL broke the two tests that exercise a real kill. That was the
+	// third guess in a row about this branch -- the first two blamed the
+	// tolerance, and a measurement showed consumption at 1.0022s against a
+	// 1s budget, above it rather than under.
+	//
+	// Both are accepted because both are real: SIGXCPU is what a soft limit
+	// raises, and SIGKILL is what a hard limit produces when the soft one is
+	// ignored or already spent. The consumption test below is what separates
+	// either from an unrelated kill, including the cgroup OOM killer's
+	// SIGKILL.
+	if budgetSeconds <= 0 {
+		return false
+	}
+	if sig != syscall.SIGXCPU && sig != syscall.SIGKILL {
+		return false
+	}
+	budget := time.Duration(budgetSeconds) * time.Second
+
+	// THE TOLERANCE IS SMALL, AND SMALLER THAN I TWICE BELIEVED IT NEEDED
+	// TO BE.
+	//
+	// It exists in case getrusage accounts marginally UNDER the limit the
+	// kernel enforced, which would make an exact >= comparison miss a genuine
+	// kill. Two versions of it were wrong before this one, and both were wrong
+	// because the size was reasoned about rather than measured:
+	//
+	//   - a tenth of the budget: 27 SECONDS at the production 271s, so a
+	//     cgroup OOM kill at 244 CPU-seconds was called a processing-time
+	//     refusal;
+	//   - a flat 500ms: half of the smallest budget startup accepts, so at 1s
+	//     an OOM anywhere in the second half was called the same thing.
+	//
+	// Both told the client to make the document cheaper when the answer was to
+	// make it smaller. MEASURED at a 1s limit, ten runs, idle and under eight
+	// competing CPU burners: getrusage reported 1.0011s to 1.0065s -- always
+	// ABOVE the limit, never under. The under-accounting this tolerance was
+	// sized for did not appear at all.
+	//
+	// So it is 50ms: enough to absorb a rounding artefact if one exists on
+	// another kernel, and 5% of even the smallest budget, which leaves the OOM
+	// branch the rest of it.
+	const tolerance = 50 * time.Millisecond
+	if budget <= tolerance {
+		// Unreachable while startup enforces a one-second minimum; stated
+		// rather than assumed, because a tolerance that reaches the budget
+		// makes every signaled child qualify.
+		return used >= budget
+	}
+	return used >= budget-tolerance
+}
+
+// classifyDeadline decides whether a deadline that fired says something about
+// the DOCUMENT or about the NODE.
+//
+// A pure function of the two measurements, deliberately: the tests that used to
+// cover this ran a busy loop and asserted on what the scheduler gave it, so on
+// a loaded runner they failed while the code was behaving exactly as
+// configured -- codex reproduced 0.31-0.39 of a CPU with the package's own
+// tests running concurrently, and that is the same shape as my one
+// unexplained failure earlier in this branch, which I could not reproduce and
+// did not diagnose. A test that needs a whole CPU to pass is testing the
+// runner.
+func classifyDeadline(cpu engineCPU) (starved bool) {
+	if !cpu.Known {
+		// No measurement, no claim: fall through to the ordinary deadline,
+		// which is terminal. Guessing "starved" here would retry a document
+		// that may genuinely not terminate.
+		return false
+	}
+	return cpu.Share() < starvedCPUShare
+}
+
+// starvedCPUShare is the fraction of one CPU below which a deadline says
+// nothing about the document. See the classifier for the measurement.
+const starvedCPUShare = 0.5
+
+// ErrTeXCPUExhausted is the document having spent its CPU budget.
+//
+// TERMINAL, and for a stronger reason than the wall-clock deadline: this is
+// what the document COST, measured by the kernel, independent of what else the
+// node was doing. A document that burns the budget burns it again.
+var ErrTeXCPUExhausted = errors.New("tex document exhausted its CPU budget")
+
+// ErrTeXEngineStarved is the opposite finding from the same pair of numbers:
+// the wall-clock deadline fired while the engine had barely run.
+//
+// RETRYABLE. The deadline says the attempt took too long; it does not say the
+// DOCUMENT did, and the difference is measurable. In the shipped image at a
+// 2-CPU quota, the same document took 0.96s wall for 0.95s of CPU idle and
+// 3.67s wall for 1.08s of CPU with the node oversubscribed 4x -- wall clock
+// inflated 4x while consumption did not move. Without this branch, a busy node
+// tells the client their document did not finish typesetting, and never
+// retries it elsewhere.
+var ErrTeXEngineStarved = errors.New("tex engine did not get the CPU to finish")
 
 // ErrTeXSandboxUnavailable is that status, classified.
 //
@@ -157,9 +299,27 @@ func (c TectonicConverter) TectonicPreflight(ctx context.Context, helper []strin
 		return fmt.Errorf("preflight document: %w", err)
 	}
 
+	// THE SAME SPEC A JOB WOULD GET -- which means honouring
+	// ConfineFilesystem, and carrying the CPU budget.
+	//
+	// Building the ruleset unconditionally made the preflight prove something
+	// this deployment does not do: with TECTONIC_SANDBOX_DISABLED=true the
+	// helper is still used (it carries the CPU budget), so an unconditional
+	// spec applied Landlock on a host that has none, exited 78, and the worker
+	// refused to start -- in precisely the environment the escape hatch exists
+	// for (codex, PR #22). A preflight that tests a configuration nobody runs
+	// is worse than none: it fails the deployments that would have worked.
+	//
+	// The limit was missing too, so the preflight was not exercising the whole
+	// configuration it claims to. It costs nothing here: the document below
+	// compiles in under a second against a budget measured in minutes.
+	spec := sandbox.Paths{}.SpecWith(sandbox.Limits{CPUSeconds: c.CPUSeconds})
+	if c.ConfineFilesystem {
+		spec = tectonicSandboxSpecLimited(inPath, jobDir, c.BundlePath, enginePath, c.CPUSeconds)
+	}
 	args := append(append(append(
 		append([]string{}, helper[1:]...),
-		tectonicSandboxSpec(inPath, jobDir, c.BundlePath, enginePath)...),
+		spec...),
 		"--", enginePath), tectonicArgs(inPath, jobDir, c.BundlePath)...)
 
 	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(jobDir), helper[0], args...)
@@ -207,6 +367,11 @@ var tectonicSystemReadOnly = []string{
 // without a kernel: the argv IS the sandbox, the same way tectonicArgs is the
 // hardening.
 func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string {
+	return tectonicSandboxSpecLimited(inPath, outDir, bundlePath, enginePath, 0)
+}
+
+// tectonicSandboxSpecLimited is the same ruleset plus what the job may cost.
+func tectonicSandboxSpecLimited(inPath, outDir, bundlePath, enginePath string, cpuSeconds int) []string {
 	// The job directory, and only the job directory, is writable. inPath's
 	// directory and outDir are the same one today; both are named because the
 	// worker is free to stop doing that and a sandbox that assumed otherwise
@@ -260,7 +425,7 @@ func tectonicSandboxSpec(inPath, outDir, bundlePath, enginePath string) []string
 	// configuration at startup so it should never come to this.
 	ro = dropAncestorsOf(ro, rw)
 
-	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.Spec()
+	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.SpecWith(sandbox.Limits{CPUSeconds: cpuSeconds})
 }
 
 // tectonicCacheGrants is the narrow half of the cache grant: the compiled
@@ -1054,6 +1219,16 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 
 	outDir := filepath.Dir(outPath)
 	name, args := "tectonic", tectonicArgs(inPath, outDir, c.BundlePath)
+	// THE CPU BOUND DOES NOT DEPEND ON LANDLOCK, and until this it silently
+	// did: the cpu: token was only added inside the sandbox branch, so a
+	// deployment running with TECTONIC_SANDBOX_DISABLED=true logged an active
+	// budget and enforced nothing (codex, PR #22). A bound that is configured
+	// and not plumbed is a bound that does not exist -- this repository has
+	// shipped that defect before and named it.
+	//
+	// So the helper runs whenever EITHER control is wanted. With no path
+	// tokens it applies the limit and skips the ruleset; see
+	// sandbox.RunExecMode.
 	if len(c.SandboxHelper) > 0 {
 		// syscall.Exec in the helper takes a PATH, not a name, and resolving
 		// it HERE means a missing engine is reported as a missing engine
@@ -1062,17 +1237,71 @@ func (c TectonicConverter) Convert(ctx context.Context, inPath, outPath string, 
 		if lerr != nil {
 			return fmt.Errorf("tectonic: locate engine: %w", lerr)
 		}
+		// The limits always; the ruleset only when asked for. RunExecMode
+		// reads the absence of path tokens as "no filesystem confinement
+		// requested" and skips it, because an EMPTY ruleset denies everything
+		// rather than nothing.
+		spec := sandbox.Paths{}.SpecWith(sandbox.Limits{CPUSeconds: c.CPUSeconds})
+		if c.ConfineFilesystem {
+			spec = tectonicSandboxSpecLimited(inPath, outDir, c.BundlePath, enginePath, c.CPUSeconds)
+		}
+
 		name = c.SandboxHelper[0]
 		args = append(append(append(
 			append([]string{}, c.SandboxHelper[1:]...),
-			tectonicSandboxSpec(inPath, outDir, c.BundlePath, enginePath)...),
+			spec...),
 			"--", enginePath), args...)
 	}
-	out, err := runCommandLimitedEnv(ctx, tectonicLogLimit, tectonicEnv(filepath.Dir(inPath)), name, args...)
+	out, cpu, err := runCommandLimitedEnvCPU(ctx, tectonicLogLimit, tectonicEnv(filepath.Dir(inPath)), name, args...)
 	if err != nil {
 		// The helper's "the engine never ran" status, before any of the
 		// engine-shaped classification below: nothing in out is tectonic's
 		// output, because tectonic was never execed.
+		// THE TWO CPU BRANCHES, before anything that reads the engine's own
+		// output -- because in both of them the engine was killed and its
+		// output is whatever it had managed to print, which says nothing.
+		if c.CPUSeconds > 0 {
+			// Killed by the kernel for spending the budget.
+			//
+			// The kill arrives with the context still alive, which is also
+			// the shape of the cgroup OOM kill -- cpuExhausted separates them
+			// on CONSUMPTION, not on the signal, because both can be SIGKILL
+			// (RLIMIT_CPU raises SIGXCPU first; measured, and the assumption
+			// that soft == hard skips it was wrong).
+			var xerr *exec.ExitError
+			// The signal and the consumption together; see cpuExhausted for
+			// what each rules out and why the tolerance is a fixed size rather
+			// than a fraction of the budget.
+			if ctx.Err() == nil && errors.As(err, &xerr) && cpu.Known {
+				if st, ok := xerr.Sys().(syscall.WaitStatus); ok && st.Signaled() &&
+					cpuExhausted(st.Signal(), cpu.Total(), c.CPUSeconds) {
+					return fmt.Errorf("tectonic: %w after %.0fs of CPU: %s",
+						ErrTeXCPUExhausted, cpu.Total().Seconds(), tectonicTail(out))
+				}
+			}
+		}
+		// The wall-clock deadline fired while the engine had barely run. That
+		// is a statement about the NODE, not the document, and it must not be
+		// reported as a document that failed to typeset.
+		//
+		// THE TEST IS THE SHARE OF A CPU THE CHILD GOT, not how its
+		// consumption compares to the configured budget. Comparing against the
+		// budget made the verdict depend on the relationship between two
+		// INDEPENDENTLY configurable numbers: with CPUSeconds=600 and a 271s
+		// deadline, a fully saturated runaway consumes ~271 CPU-seconds, which
+		// is under half of 600, and would have been called starvation and
+		// retried -- multiplying a runaway's cost across every attempt (codex,
+		// PR #22).
+		//
+		// A ratio has no such dependency. Measured in the shipped image at a
+		// 2-CPU quota: 1.00 idle, 0.28 with the node oversubscribed 4x. Half a
+		// CPU is far from both, and a document that had a CPU to itself can
+		// never be below it however the two settings are configured.
+		if errors.Is(err, context.DeadlineExceeded) && classifyDeadline(cpu) {
+			return fmt.Errorf("tectonic: %w: the deadline expired after %.1fs of CPU in %.1fs "+
+				"of wall clock (%.2f of one CPU)", ErrTeXEngineStarved,
+				cpu.Total().Seconds(), cpu.Elapsed.Seconds(), cpu.Share())
+		}
 		var setupErr *exec.ExitError
 		if len(c.SandboxHelper) > 0 && errors.As(err, &setupErr) &&
 			setupErr.ExitCode() == TectonicSandboxSetupExit {

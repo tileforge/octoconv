@@ -1571,6 +1571,13 @@ services:
       # measured at: see .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      # What one document may COST, as opposed to how long it may occupy
+      # the clock. Interpolated from .env so the documented
+      # `cp .env.example .env && docker compose up` path can actually
+      # change it: an advertised setting the deployment ignores is the
+      # same "configured but not plumbed" defect this variable exists to
+      # fix (codex, PR #22).
+      TECTONIC_ENGINE_CPU_SECONDS: "${TECTONIC_ENGINE_CPU_SECONDS:-271s}"
       # queue.NewClient() (constructed by cmd/tectonic-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the tex engine (DEBT-05).

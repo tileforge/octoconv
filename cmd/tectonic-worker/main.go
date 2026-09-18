@@ -35,72 +35,9 @@ import (
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
-// sandboxExecMode is the argv[1] that turns this binary into the thing that
-// applies the sandbox and then BECOMES the engine.
-//
-// It has to work this way. Landlock restricts the calling process and cannot be
-// applied to another one, so something must apply the rules and then exec
-// tectonic in the same process -- and the only binary guaranteed to be present
-// in this image is this one. os/exec offers no hook between fork and exec that
-// can run Go, which is why this is a mode rather than a callback.
-//
-// Not a subcommand anyone should call: it is an implementation detail of
-// convert.TectonicConverter, which builds the argv.
-const sandboxExecMode = "__sandbox-exec"
-
-// sandboxSetupExit is the exit status meaning "the ENGINE never ran".
-//
-// 78 is sysexits.h's EX_CONFIG. The value matters only in that it is not 1 and
-// not any status tectonic produces; convert.ErrTeXSandboxUnavailable is the
-// other half of this contract and the two are held together by a test.
-const sandboxSetupExit = convert.TectonicSandboxSetupExit
-
-// fatalSandbox reports on stderr and exits with the status that means the
-// engine never started.
-func fatalSandbox(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, sandboxExecMode+": "+format+"\n", args...)
-	os.Exit(sandboxSetupExit)
-}
-
-// runSandboxExec applies the ruleset from argv and execs the rest.
-//
-//	tectonic-worker __sandbox-exec rw:/tmp/job ro:/opt/tectonic ... -- /usr/local/bin/tectonic ...
-//
-// It exits with sandboxSetupExit, never 1: a sandbox that cannot be established
-// is an infrastructure fault the job should be RETRIED on, and tectonic's own
-// failure exit is 1. Sharing a code would report a broken node to the client as
-// a document that failed to typeset, and never retry it.
-func runSandboxExec(argv []string) {
-	p, cmd, err := sandbox.ParseSpec(argv)
-	if err != nil {
-		fatalSandbox("%v", err)
-	}
-	if err := sandbox.Apply(p); err != nil {
-		// FAIL CLOSED. Running the engine unconfined because the confinement
-		// could not be established is exactly the outcome this exists to
-		// prevent, and it would be invisible.
-		fatalSandbox("%v", err)
-	}
-	restricted := sandbox.ThreadID()
-
-	// The rules live on the THREAD that established them, and execve carries
-	// the security state of the thread that calls it. Apply locks the thread
-	// so this cannot drift; this asserts it rather than trusting it, because
-	// the failure -- the engine running unsandboxed -- produces a correct PDF
-	// and no error at all.
-	if now := sandbox.ThreadID(); now != restricted {
-		fatalSandbox("thread changed between applying the sandbox (%d) and exec (%d): "+
-			"the engine would run unconfined", restricted, now)
-	}
-	if err := syscall.Exec(cmd[0], cmd, os.Environ()); err != nil {
-		fatalSandbox("exec %s: %v", cmd[0], err)
-	}
-}
-
 func main() {
 	// Before flags, before config, before anything: this mode never returns.
-	if len(os.Args) > 1 && os.Args[1] == sandboxExecMode {
-		runSandboxExec(os.Args[2:])
+	if sandbox.RunExecModeIfRequested(os.Args) {
 		return
 	}
 
@@ -192,13 +129,67 @@ func main() {
 		}
 	}
 
-	if len(sandboxHelper) == 0 {
-		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can")
+	// The helper runs EITHER WAY: it carries the CPU budget, which does not
+	// depend on Landlock. Only the filesystem ruleset is optional.
+	confineFS := len(sandboxHelper) > 0
+	if !confineFS {
+		self, serr := os.Executable()
+		if serr != nil {
+			log.Fatalf("locate this binary to use as the exec helper: %v", serr)
+		}
+		sandboxHelper = []string{self, sandbox.ExecMode}
+		log.Printf("⚠️  TECTONIC_SANDBOX_DISABLED=true — the engine can read every file this container can (the CPU budget still applies)")
 	} else {
 		log.Printf("🔒 tectonic sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
 	}
 
-	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper)
+	// TECTONIC_ENGINE_CPU_SECONDS bounds what one document may COST, as
+	// opposed to how long it may occupy the clock. The default is the same
+	// number as the wall-clock deadline and that is not a coincidence: 271 is
+	// ceil(25.76 s/pass x 7 passes x 1.5), and at an idle 2-CPU quota this
+	// engine's cpu/wall ratio is 1.00, so the work bound and the time bound
+	// coincide on an unloaded node and diverge exactly when the node is busy --
+	// which is the case this exists for.
+	// A VALUE THAT CANNOT BE PARSED IS A REFUSAL, not a fallback.
+	//
+	// envDuration returns the default for anything it cannot read, which is
+	// right for most settings and wrong for this one: "60" is a plausible way
+	// to write sixty seconds, and an operator who wrote it would have got the
+	// 271-second default -- a bound four times weaker than the one they asked
+	// for, with nothing said (codex, PR #22).
+	if raw := os.Getenv("TECTONIC_ENGINE_CPU_SECONDS"); raw != "" {
+		if _, err := time.ParseDuration(firstField(raw)); err != nil {
+			log.Fatalf("TECTONIC_ENGINE_CPU_SECONDS=%q is not a duration: %v. Write it with a "+
+				"unit, e.g. 271s or 5m -- a bare number is not accepted, because silently "+
+				"falling back to the default would give you a weaker bound than you asked for",
+				raw, err)
+		}
+	}
+	cpuBudget := envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second)
+	// REFUSED AT STARTUP, not truncated to zero. RLIMIT_CPU is expressed in
+	// whole seconds, so 0s, -1s and 500ms are all syntactically valid
+	// durations that become CPUSeconds <= 0 -- at which point SpecWith omits
+	// the cpu: token, ApplyLimits does nothing, and the worker starts having
+	// LOGGED a budget it does not enforce (codex, PR #22).
+	//
+	// That is the same "configured but not plumbed" defect this variable was
+	// added to fix, so it fails loudly instead: an operator who asked for a
+	// bound gets a sentence rather than a service that quietly has none.
+	if cpuBudget < time.Second {
+		// No escape-hatch advice here, deliberately: TECTONIC_SANDBOX_DISABLED
+		// does NOT resolve this. That switch turns off the filesystem ruleset,
+		// and the disabled path still runs the helper precisely to carry the
+		// CPU budget -- so an operator following such advice would weaken
+		// confinement and still not start (codex, PR #22). Naming a remedy
+		// that does not work is worse than naming none.
+		log.Fatalf("TECTONIC_ENGINE_CPU_SECONDS=%s is below one second. RLIMIT_CPU is expressed "+
+			"in whole seconds, so this would silently disable the CPU budget rather than set a "+
+			"small one. Use a value of at least 1s", cpuBudget)
+	}
+	cpuSeconds := int(cpuBudget.Seconds())
+
+	tectonicConverter := buildTectonicConverter(bundlePath, maxOutputBytes, sandboxHelper, cpuSeconds, confineFS)
+	log.Printf("⏱  TECTONIC_ENGINE_CPU_SECONDS=%d", cpuSeconds)
 
 	// Proves the ENGINE runs under the rules, not merely that the rules can be
 	// built. Done after the converter exists so the preflight uses exactly the
@@ -329,11 +320,13 @@ func main() {
 // convert.Default registry side effect. Mirrors cmd/ocr-worker's
 // buildOCRConverter exactly, for the reason stated there: a bound that is
 // configured and not plumbed is a bound that does not exist.
-func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string) convert.TectonicConverter {
+func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelper []string, cpuSeconds int, confineFS bool) convert.TectonicConverter {
 	return convert.TectonicConverter{
-		BundlePath:     bundlePath,
-		MaxOutputBytes: maxOutputBytes,
-		SandboxHelper:  sandboxHelper,
+		BundlePath:        bundlePath,
+		MaxOutputBytes:    maxOutputBytes,
+		SandboxHelper:     sandboxHelper,
+		CPUSeconds:        cpuSeconds,
+		ConfineFilesystem: confineFS,
 	}
 }
 
@@ -367,7 +360,7 @@ func resolveSandboxHelper() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate this binary to use as the sandbox helper: %w", err)
 	}
-	helper := []string{self, sandboxExecMode}
+	helper := []string{self, sandbox.ExecMode}
 
 	// THE ABI QUERY IS NOT PROOF THAT CONFINEMENT CAN BE ESTABLISHED.
 	//
