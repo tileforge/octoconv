@@ -60,7 +60,7 @@ Every job carries an **operation** as well as a format pair. `convert` is the de
 | `av` | `mov`/`avi`/`mkv`/`webm` → `mp4`; `mp4` → `webm`; audio extract; thumbnail | ffmpeg |
 | `ocr` | `jpg` `png` `tiff` `webp` `pdf` → `txt` `hocr` `alto` | Tesseract |
 | `pandoc` | `md` `rst` `org` `latex` `html` `docx` `epub`, across a curated allowlist | pandoc |
-| `probe` | `sanitize`: `pdf` and six OOXML formats, rebuilt in place; also serves `POST /v1/inspect` | in-process |
+| `probe` | `sanitize`: `pdf` `docx` `xlsx` `pptx` `jpg` `png` rebuilt in the same format, and `docm` `xlsm` `pptm` rebuilt into their macro-free extension; also serves `POST /v1/inspect` | in-process |
 | `tectonic` | `latex` → `pdf`, single file or multi-file project | [tectonic][tectonic] |
 
 `GET /v1/formats` returns this table as the service itself sees it — derived from the
@@ -121,7 +121,9 @@ internal/
   reconciler/         — stranded-job and webhook-gap recovery
   webhook/            — HMAC signing, delivery, dead-lettering
   inspect/            — synchronous inspection and the findings vocabulary
+  mcpserver/          — MCP tool implementations, shared by both MCP binaries
   cancel/ presets/ ratelimit/ errcode/ metrics/ storage/ auth/ clients/ db/
+  envcfg/ e2e/        — env parsing shared by every cmd; the live end-to-end suite
 deploy/chart/         — Helm chart with KEDA queue-depth autoscaling
 docs/                 — OpenAPI spec and reference docs
 frontend/             — reference UI (React + Vite)
@@ -234,8 +236,9 @@ really pings Postgres, Redis and S3.
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
 
-The full contract is [`docs/openapi.yaml`](docs/openapi.yaml); every machine-readable error
-code is frozen in [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
+The full contract is [`docs/openapi.yaml`](docs/openapi.yaml), held equal to the routes the
+service actually registers by a test that walks the live router. Every machine-readable
+error code is frozen in [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
 
 <details>
 <summary>A LaTeX job can be a project, not just a file</summary>
@@ -406,7 +409,7 @@ documented list — including how each measured limit was derived.
 
 | Document | What's in it |
 |---|---|
-| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec matching `internal/api/` path for path |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec, held equal to `internal/api/`'s registered routes by a sync test |
 | [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md) | Frozen list of every machine-readable error code, sync and async |
 | [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
 | [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |
