@@ -237,11 +237,12 @@ really pings Postgres, Redis and S3.
   zip-bomb shape → `422`, rejected before anything touches storage
 
 The HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml). Two things in it are held by
-tests rather than by care: its operation set equals the routes the service registers, walked
-from the live router, and every status code a handler can emit has a declared response.
-Response bodies and examples are maintained by hand — the spec says so itself rather than
-promising an exactness nothing checks. Every machine-readable error code is frozen in
-[`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
+tests rather than by care: its operation set is compared both ways against the live router,
+and every status a route can produce — from its handler and from every middleware wrapped
+around it — has a declared response. The second is coverage, not equality: the spec may
+declare a response nothing produces. Response bodies and examples are maintained by hand,
+and the spec says which is which rather than promising an exactness nothing checks. Every
+machine-readable error code is frozen in [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
 
 <details>
 <summary>A LaTeX job can be a project, not just a file</summary>
@@ -412,7 +413,7 @@ documented list — including how each measured limit was derived.
 
 | Document | What's in it |
 |---|---|
-| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec; its routes and emitted status codes are held equal to `internal/api/` by sync tests |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec; sync tests pin its route set to the live router and require every status a route can produce to be documented |
 | [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md) | Frozen list of every machine-readable error code, sync and async |
 | [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
 | [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |

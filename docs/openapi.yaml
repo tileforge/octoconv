@@ -12,18 +12,26 @@ info:
     than written down here.
 
 
-    Two parts of this spec are machine-checked against internal/api, and the
-    rest is not — the distinction is stated rather than glossed, because an
-    unqualified promise of exactness is what let fourteen operations document
-    no 500 while their handlers emitted one. Held by tests:
-    the set of operations equals the routes the service registers, walked from
-    the live router (TestOpenAPIPathsMatchRegisteredRoutes); and every status
-    code a handler can emit has a declared response
-    (TestOpenAPIDocumentsEveryEmittedStatus). NOT held by a test: response
-    bodies, schemas and examples, which are maintained by hand — as is the
-    reverse status-code direction, since a response documented here may come
-    from middleware (401, 429, and 404 on operator-gated routes) rather than
-    from any handler body.
+    What is machine-checked against internal/api is stated here rather than
+    glossed, because an unqualified promise of exactness is what let fourteen
+    operations document no 500 while emitting one.
+
+
+    Held by tests: the set of operations EQUALS the routes the service
+    registers, compared in both directions against the live router
+    (TestOpenAPIPathsMatchRegisteredRoutes); and every status code a route can
+    produce — from its handler and from every middleware wrapped around it —
+    has a declared response (TestOpenAPIDocumentsEveryEmittedStatus). That
+    second one is COVERAGE, not equality: an operation may declare a response
+    nothing produces, which costs a client nothing, and the check does not
+    object.
+
+
+    NOT held by a test: response bodies, schemas and examples, which are
+    maintained by hand. Third-party middleware is declared rather than
+    analyzed, so what chi's Recoverer and httprate can write is pinned by the
+    module version rather than by a check here; middleware this repository
+    owns IS cross-checked against its source.
 servers:
   - url: "{base_url}"
     description: OctoConv API server. Defaults to the local docker-compose deployment.
@@ -774,6 +782,11 @@ paths:
                 redis: unreachable
                 s3: ok
                 status: degraded
+        "500":
+          description: >-
+            A panic in the handler, answered by chi's Recoverer middleware.
+            The body is not JSON — it is the middleware's own bare response,
+            so a client must not assume the Error schema here.
 
   /v1/jobs:
     post:
@@ -1449,6 +1462,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/presets:
     post:

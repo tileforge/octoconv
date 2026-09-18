@@ -5,13 +5,19 @@
 // did not document -- including three added in the very commit that fixed the
 // missing paths.
 //
-// The check runs in ONE direction on purpose: every status a handler can emit
-// must be documented. The reverse is not enforced, and that is not laziness --
-// the spec legitimately documents responses no handler body contains, because
-// auth.Middleware produces 401, ratelimit produces 429 and requireOperator
-// produces 404 for every route they wrap. Demanding the reverse would make
-// this test fire on correct documentation, and a test that cries wolf gets
-// deleted rather than obeyed.
+// The check runs in ONE direction: every status a route can produce must be
+// documented. The reverse -- a documented response nothing produces -- is not
+// enforced, because over-documenting an error costs a client nothing while a
+// status it cannot parse breaks it.
+//
+// "A route" means the whole chain, not the handler. An earlier revision
+// analyzed handlers only and called middleware statuses out of scope; that
+// scope note was a claim with a consequence, since auth.Middleware answers a
+// failed key resolution with 500 and chi's Recoverer answers a panic with 500
+// on EVERY route -- so GET /healthz and GET /v1/formats could hand a client a
+// 500 the spec did not mention. Middleware is therefore part of the
+// comparison, declared per symbol as the router reports it, with the
+// declaration for in-module middleware cross-checked against its source.
 //
 // Emitted statuses come from the AST: the http.Status* constants reachable
 // from a handler, following calls to package-local functions and to methods on
@@ -69,24 +75,86 @@ var httpStatusConstants = map[string]int{
 	"StatusServiceUnavailable":    503,
 }
 
+// symbolSuffix strips the decorations Go appends to a symbol for a method
+// value ("-fm") and for a closure returned from a function (".1", ".func1"),
+// leaving the name of the declaration a reader can go and open.
+var symbolSuffix = regexp.MustCompile(`(?:-fm)?(?:\.(?:func)?\d+)*$`)
+
+func normalizeSymbol(sym string) string {
+	return symbolSuffix.ReplaceAllString(sym, "")
+}
+
+// middlewareDecl is what one middleware can write to the response.
+//
+// codes is authoritative for the comparison. verifyPkg/verifyFunc, when set,
+// name the in-module declaration those codes are cross-checked against, so a
+// status added inside our own middleware fails this file rather than reaching
+// a client undocumented. They are empty for third-party middleware, whose
+// behaviour is pinned by the module version rather than by anything here --
+// stated plainly instead of implied.
+type middlewareDecl struct {
+	codes      []int
+	verifyPkg  string
+	verifyFunc string
+	why        string
+}
+
+// middlewareStatuses is keyed by the symbol the ROUTER reports, normalized --
+// not by a name chosen here. A middleware on a route whose symbol is absent
+// from this table fails the test: silence about what a wrapper can write is
+// the hole this table exists to close, so an unrecognized one must be loud.
+var middlewareStatuses = map[string]middlewareDecl{
+	"github.com/apaderin/octoconv/internal/auth.Middleware": {
+		codes:      []int{401, 500},
+		verifyPkg:  "../auth",
+		verifyFunc: "Middleware",
+	},
+	"github.com/apaderin/octoconv/internal/api.(*Server).requireOperator": {
+		codes:      []int{404},
+		verifyPkg:  ".",
+		verifyFunc: "Server.requireOperator",
+	},
+	"github.com/go-chi/httprate.(*RateLimiter).Handler": {
+		codes: []int{429},
+		why: "the 429 body is built by internal/ratelimit.limitHandler and installed as an " +
+			"httprate option, so the symbol the router reports belongs to httprate even though " +
+			"the bytes come from this module -- which is why this entry cannot be cross-checked " +
+			"against a package of ours",
+	},
+	"github.com/go-chi/chi/v5/middleware.Recoverer": {
+		codes: []int{500},
+		why:   "answers a panic in any downstream handler with 500, on every route it wraps",
+	},
+	"github.com/go-chi/chi/v5/middleware.RequestID":              {why: "sets a header, never writes a status"},
+	"github.com/go-chi/chi/v5/middleware.Logger":                 {why: "observes the response, never writes a status"},
+	"github.com/go-chi/chi/v5/middleware.ClientIPFromRemoteAddr": {why: "sets a context value, never writes a status"},
+}
+
 // handlerNamePattern matches the symbol runtime.FuncForPC reports for a method
 // value bound as a chi endpoint: "<pkgpath>.(*Server).handleX-fm". Anchored at
 // the end so an anonymous handler ("...Routes.func1") does not match and is
 // reported rather than quietly skipped.
 var handlerNamePattern = regexp.MustCompile(`\.\(\*Server\)\.(\w+)-fm$`)
 
-// routerHandlers returns, for every operation the service serves, the name of
-// the function the router will actually dispatch to.
-func routerHandlers(t *testing.T) map[string]string {
+// routeChain is everything that can write a response for one operation: the
+// endpoint handler, and every middleware wrapped around it.
+type routeChain struct {
+	handler     string
+	middlewares map[string]bool
+}
+
+// routerHandlers returns, for every operation the service serves, the chain
+// the router will actually run.
+func routerHandlers(t *testing.T) map[string]routeChain {
 	t.Helper()
 
 	srv := NewServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{}, defaultFakePresetRepo(),
 		defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(),
 		healthyDeps(), Config{MaxUploadBytes: 1 << 20})
 
-	out := map[string]string{}
+	out := map[string]routeChain{}
 	for _, router := range []chi.Router{srv.Routes(), srv.HealthRoutes()} {
-		err := chi.Walk(router, func(method, route string, h http.Handler, _ ...func(http.Handler) http.Handler) error {
+		err := chi.Walk(router, func(method, route string, h http.Handler, mws ...func(http.Handler) http.Handler) error {
 			// chi renders a sub-router's index route as ".../" -- the same
 			// endpoint OpenAPI writes without the trailing slash.
 			if route != "/" {
@@ -106,10 +174,24 @@ func routerHandlers(t *testing.T) map[string]string {
 					"than letting this gate silently stop covering it.", op, symbol)
 				return nil
 			}
-			if prev, ok := out[op]; ok && prev != m[1] {
-				t.Errorf("%s resolves to two different handlers (%s and %s)", op, prev, m[1])
+			if prev, ok := out[op]; ok && prev.handler != m[1] {
+				t.Errorf("%s resolves to two different handlers (%s and %s)", op, prev.handler, m[1])
 			}
-			out[op] = m[1]
+			chain, ok := out[op]
+			if !ok {
+				chain = routeChain{middlewares: map[string]bool{}}
+			}
+			chain.handler = m[1]
+			// The same operation can be reachable through more than one
+			// router (GET /healthz is), so middleware accumulates across
+			// walks rather than replacing: a client can meet any of them.
+			for _, mw := range mws {
+				if mw == nil {
+					continue
+				}
+				chain.middlewares[normalizeSymbol(runtime.FuncForPC(reflect.ValueOf(mw).Pointer()).Name())] = true
+			}
+			out[op] = chain
 			return nil
 		})
 		if err != nil {
@@ -147,14 +229,21 @@ func qualify(fn *ast.FuncDecl) string {
 // emittedStatuses returns, per qualified declaration name in this package,
 // every HTTP status code reachable from it.
 func emittedStatuses(t *testing.T) map[string]map[int]bool {
+	return emittedStatusesIn(t, ".")
+}
+
+// emittedStatusesIn is emittedStatuses for an arbitrary package directory, so
+// an in-module middleware's declared statuses can be checked against the
+// package it actually lives in.
+func emittedStatusesIn(t *testing.T, dir string) map[string]map[int]bool {
 	t.Helper()
 
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
 	}, 0)
 	if err != nil {
-		t.Fatalf("parse package: %v", err)
+		t.Fatalf("parse package %s: %v", dir, err)
 	}
 
 	direct := map[string]map[int]bool{}
@@ -265,34 +354,58 @@ func documentedStatuses(t *testing.T) map[string]map[int]bool {
 func TestOpenAPIDocumentsEveryEmittedStatus(t *testing.T) {
 	emitted := emittedStatuses(t)
 	documented := documentedStatuses(t)
-	handlers := routerHandlers(t)
+	chains := routerHandlers(t)
 
-	ops := make([]string, 0, len(handlers))
-	for op := range handlers {
+	ops := make([]string, 0, len(chains))
+	for op := range chains {
 		ops = append(ops, op)
 	}
 	sort.Strings(ops)
 
 	for _, op := range ops {
-		handler := handlers[op]
-		codes, ok := emitted["Server."+handler]
+		chain := chains[op]
+
+		codes, ok := emitted["Server."+chain.handler]
 		if !ok {
 			t.Errorf("%s is served by (*Server).%s, which package api does not declare -- "+
-				"its status codes are unanalyzable", op, handler)
+				"its status codes are unanalyzable", op, chain.handler)
 			continue
 		}
-		var missing []int
+
+		// Who can produce each status, so a failure names the source rather
+		// than leaving the reader to find it.
+		produced := map[int]string{}
 		for code := range codes {
+			produced[code] = "handler " + chain.handler
+		}
+		for _, sym := range sortedSet(chain.middlewares) {
+			decl, known := middlewareStatuses[sym]
+			if !known {
+				t.Errorf("%s is wrapped by middleware %q, which middlewareStatuses does not "+
+					"describe. Add it with the statuses it can write -- none is a valid answer, "+
+					"stated explicitly. An undescribed wrapper is the silence this table exists "+
+					"to prevent.", op, sym)
+				continue
+			}
+			for _, code := range decl.codes {
+				if _, already := produced[code]; !already {
+					produced[code] = "middleware " + sym
+				}
+			}
+		}
+
+		var missing []int
+		for code := range produced {
 			if !documented[op][code] {
 				missing = append(missing, code)
 			}
 		}
 		sort.Ints(missing)
-		if len(missing) > 0 {
-			t.Errorf("%s (%s) can emit %v, which docs/openapi.yaml does not document.\n"+
+		for _, code := range missing {
+			t.Errorf("%s can return %d (from %s), which docs/openapi.yaml does not document.\n"+
 				"Document the response -- never delete it from this list. A status a client "+
 				"can receive and cannot parse is the failure this test exists to prevent.",
-				op, handler, missing)
+				op, code, produced[code])
 		}
 	}
 
@@ -302,11 +415,84 @@ func TestOpenAPIDocumentsEveryEmittedStatus(t *testing.T) {
 	// operation the walk never reached would go unchecked here, while the
 	// other test explained the discrepancy in a message about paths.
 	for op := range documented {
-		if _, ok := handlers[op]; !ok {
+		if _, ok := chains[op]; !ok {
 			t.Errorf("%s is documented but the router walk never reached it, so its status "+
 				"codes went unchecked", op)
 		}
 	}
+}
+
+// TestInModuleMiddlewareDeclarationsMatchTheirSource keeps middlewareStatuses
+// from drifting for the middleware this repository owns: a status added inside
+// auth.Middleware or requireOperator fails here rather than reaching a client
+// undocumented.
+//
+// Third-party entries are deliberately not checked -- their behaviour is
+// pinned by the module version, not by anything in this repository. Each one
+// must still say why it cannot be verified, so "unverified" stays a stated
+// fact rather than an omission.
+func TestInModuleMiddlewareDeclarationsMatchTheirSource(t *testing.T) {
+	byPkg := map[string]map[string]map[int]bool{}
+	for _, sym := range sortedDecls(middlewareStatuses) {
+		decl := middlewareStatuses[sym]
+		if decl.verifyPkg == "" {
+			if decl.why == "" {
+				t.Errorf("%s is declared with neither a package to verify it against nor a "+
+					"stated reason it cannot be verified", sym)
+			}
+			continue
+		}
+		if byPkg[decl.verifyPkg] == nil {
+			byPkg[decl.verifyPkg] = emittedStatusesIn(t, decl.verifyPkg)
+		}
+		actual, ok := byPkg[decl.verifyPkg][decl.verifyFunc]
+		if !ok {
+			t.Errorf("%s names %s in %s, which that package does not declare",
+				sym, decl.verifyFunc, decl.verifyPkg)
+			continue
+		}
+		declared := map[int]bool{}
+		for _, c := range decl.codes {
+			declared[c] = true
+		}
+		var undeclared, unreachable []int
+		for c := range actual {
+			if !declared[c] {
+				undeclared = append(undeclared, c)
+			}
+		}
+		for c := range declared {
+			if !actual[c] {
+				unreachable = append(unreachable, c)
+			}
+		}
+		sort.Ints(undeclared)
+		sort.Ints(unreachable)
+		if len(undeclared) > 0 || len(unreachable) > 0 {
+			t.Errorf("middlewareStatuses[%q] has drifted from %s.%s.\n"+
+				"  it can write, undeclared here: %v\n"+
+				"  declared here, but it cannot write: %v",
+				sym, decl.verifyPkg, decl.verifyFunc, undeclared, unreachable)
+		}
+	}
+}
+
+func sortedSet(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedDecls(m map[string]middlewareDecl) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestEveryEmittedStatusConstantIsMapped fails if this package starts using a
