@@ -6,11 +6,37 @@ info:
   description: >-
     Internal asynchronous file-conversion service. Clients upload a file via
     this HTTP API; the server stores it in S3-compatible storage, queues a
-    conversion job, and a worker runs the appropriate engine (libvips for
-    images, LibreOffice for documents, headless Chromium for HTML, and
-    whisper.cpp for audio transcription). This spec describes the API exactly
-    as implemented — every path, status code, and error body matches
-    internal/api/*.go and internal/auth/*.go verbatim.
+    job, and a worker runs the engine class that serves it — see
+    GET /v1/formats for the operations and format pairs this deployment
+    actually supports, which is derived from the converter registry rather
+    than written down here.
+
+
+    What is machine-checked against internal/api is stated here rather than
+    glossed, because an unqualified promise of exactness is what let fourteen
+    operations document no 500 while emitting one.
+
+
+    Held by tests: the set of operations EQUALS the routes the service
+    registers, compared in both directions against the live router
+    (TestOpenAPIPathsMatchRegisteredRoutes); and every status code a route can
+    produce — from its handler and from every middleware wrapped around it —
+    has a declared response (TestOpenAPIDocumentsEveryEmittedStatus). That
+    second one is COVERAGE, not equality: an operation may declare a response
+    nothing produces, which costs a client nothing, and the check does not
+    object.
+
+
+    The two halves are established differently. A handler's statuses are read
+    from its source, because no request reaches every branch. A middleware's
+    are OBSERVED: the router is driven with a request carrying no key, one
+    whose key cannot be resolved, one past its rate budget and one from a
+    non-operator, and whatever comes back must be documented — which holds
+    whoever wrote the middleware and whatever the compiler does with it.
+
+
+    NOT held by a test: response bodies, schemas and examples, which are
+    maintained by hand.
 servers:
   - url: "{base_url}"
     description: OctoConv API server. Defaults to the local docker-compose deployment.
@@ -761,6 +787,11 @@ paths:
                 redis: unreachable
                 s3: ok
                 status: degraded
+        "500":
+          description: >-
+            A panic in the handler, answered by chi's Recoverer middleware.
+            The body is not JSON — it is the middleware's own bare response,
+            so a client must not assume the Error schema here.
 
   /v1/jobs:
     post:
@@ -939,6 +970,131 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+    get:
+      tags: [Jobs]
+      operationId: listJobs
+      summary: List the caller's own jobs, keyset-paginated
+      description: >-
+        Scoped to the authenticated client unconditionally -- there is no
+        parameter for listing another client's jobs. Results are keyset
+        paginated: pass the previous response's `next_cursor` back as `cursor`
+        until it is `null`.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by job status. An unrecognized value is rejected, never ignored.
+          schema:
+            type: string
+            enum: [awaiting_upload, queued, active, done, failed, canceled]
+        - name: engine
+          in: query
+          required: false
+          description: >-
+            Filter by engine class. Must be one of the classes
+            `GET /v1/formats` reports; an unrecognized value is rejected.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Page size (`JOBS_LIST_DEFAULT_PAGE_SIZE` when omitted). A value
+            above `JOBS_LIST_MAX_PAGE_SIZE` is clamped to it rather than
+            rejected.
+          schema:
+            type: integer
+            minimum: 1
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from a previous response's `next_cursor`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of the caller's jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [jobs, next_cursor]
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        [job_id, status, engine, source_format, target_format,
+                         progress_pct, created_at, started_at, finished_at]
+                      properties:
+                        job_id:
+                          type: string
+                          format: uuid
+                        status:
+                          type: string
+                          enum: [awaiting_upload, queued, active, done, failed, canceled]
+                        engine:
+                          type: string
+                        source_format:
+                          type: string
+                        target_format:
+                          type: string
+                        progress_pct:
+                          type: [integer, "null"]
+                        created_at:
+                          type: string
+                          format: date-time
+                        started_at:
+                          type: [string, "null"]
+                          format: date-time
+                        finished_at:
+                          type: [string, "null"]
+                          format: date-time
+                        error_code:
+                          type: string
+                          description: Present only on a failed job.
+                  next_cursor:
+                    type: [string, "null"]
+                    description: Pass back as `cursor` for the next page; `null` on the last page.
+              example:
+                jobs:
+                  - job_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                    status: done
+                    engine: image
+                    source_format: png
+                    target_format: webp
+                    progress_pct: 100
+                    created_at: "2026-09-18T10:00:00Z"
+                    started_at: "2026-09-18T10:00:01Z"
+                    finished_at: "2026-09-18T10:00:03Z"
+                next_cursor: null
+        "400":
+          description: The cursor failed to decode.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid cursor
+                code: invalid_cursor
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          description: Unrecognized status or engine filter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid engine filter
+                code: invalid_request
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/inspect:
     post:
       tags: [Inspect]
@@ -1080,6 +1236,156 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{id}/events:
+    get:
+      tags: [Jobs]
+      operationId: streamJobEvents
+      summary: Stream a job's live progress over Server-Sent Events
+      description: >-
+        Opens a `text/event-stream` carrying named `progress` events. The
+        current state is emitted immediately on connect; after that an event is
+        emitted only when `status`, `progress_pct` or `eta_seconds` changed. A
+        `: keepalive` comment is sent on its own cadence to survive proxy idle
+        timeouts, and the stream closes after one final event on a terminal
+        status (`done`/`failed`/`canceled`). The terminal event carries
+        `status` only -- never a presigned URL; fetch `GET /v1/jobs/{id}` for
+        the result. Streams are also closed by a server-side maximum duration
+        (`SSE_MAX_STREAM_DURATION`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Event stream opened.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              example: no-cache
+            X-Accel-Buffering:
+              description: Set to `no` so an intermediary does not buffer the stream.
+              schema:
+                type: string
+              example: "no"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                progressThenDone:
+                  summary: One progress update followed by the terminal event
+                  value: |
+                    event: progress
+                    data: {"status":"active","progress_pct":42,"eta_seconds":18}
+
+                    : keepalive
+
+                    event: progress
+                    data: {"status":"done"}
+        "400":
+          description: Invalid job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid job id
+                code: invalid_request
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Job not found (also returned for a job owned by a different client).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: job not found
+                code: not_found
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{id}/cancel:
+    post:
+      tags: [Jobs]
+      operationId: cancelJob
+      summary: Cancel a queued or active job
+      description: >-
+        Idempotent and always `200` -- never `202`, `403` or `409`. A job that
+        is already terminal is returned with its current status and is not
+        re-transitioned, and a job that reaches `done`/`failed` between the read
+        and the transition is reported with that now-current status rather than
+        as a conflict. Killing the engine process is asynchronous and
+        best-effort; the request never blocks on it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The job's status after the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [job_id, status]
+                properties:
+                  job_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [done, failed, canceled]
+                    description: >-
+                      `canceled` when this request cancelled the job; `done` or
+                      `failed` when it was already terminal.
+              examples:
+                canceled:
+                  value:
+                    job_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                    status: canceled
+                alreadyDone:
+                  summary: Already terminal -- returned as-is, not re-transitioned
+                  value:
+                    job_id: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+                    status: done
+        "400":
+          description: Invalid job id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: invalid job id
+                code: invalid_request
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Job not found (also returned for a job owned by a different client).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: job not found
+                code: not_found
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/formats:
     get:
@@ -1161,6 +1467,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/presets:
     post:
@@ -1205,6 +1513,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     get:
       tags: [Presets]
       operationId: listPresets
@@ -1230,6 +1540,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/presets/{name}:
     get:
@@ -1257,6 +1569,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     put:
       tags: [Presets]
       operationId: updatePreset
@@ -1304,6 +1618,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [Presets]
       operationId: deactivatePreset
@@ -1339,6 +1655,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/presets:
     post:
@@ -1390,6 +1708,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     get:
       tags: [System]
       operationId: listSystemPresets
@@ -1422,6 +1742,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/presets/{name}:
     get:
@@ -1454,6 +1776,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     put:
       tags: [System]
       operationId: updateSystemPreset
@@ -1496,6 +1820,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [System]
       operationId: deactivateSystemPreset
@@ -1533,6 +1859,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/usage:
     get:
@@ -1755,3 +2083,5 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
