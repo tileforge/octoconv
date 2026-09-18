@@ -150,6 +150,21 @@ func main() {
 	// engine's cpu/wall ratio is 1.00, so the work bound and the time bound
 	// coincide on an unloaded node and diverge exactly when the node is busy --
 	// which is the case this exists for.
+	// A VALUE THAT CANNOT BE PARSED IS A REFUSAL, not a fallback.
+	//
+	// envDuration returns the default for anything it cannot read, which is
+	// right for most settings and wrong for this one: "60" is a plausible way
+	// to write sixty seconds, and an operator who wrote it would have got the
+	// 271-second default -- a bound four times weaker than the one they asked
+	// for, with nothing said (codex, PR #22).
+	if raw := os.Getenv("TECTONIC_ENGINE_CPU_SECONDS"); raw != "" {
+		if _, err := time.ParseDuration(firstField(raw)); err != nil {
+			log.Fatalf("TECTONIC_ENGINE_CPU_SECONDS=%q is not a duration: %v. Write it with a "+
+				"unit, e.g. 271s or 5m -- a bare number is not accepted, because silently "+
+				"falling back to the default would give you a weaker bound than you asked for",
+				raw, err)
+		}
+	}
 	cpuBudget := envDuration("TECTONIC_ENGINE_CPU_SECONDS", 271*time.Second)
 	// REFUSED AT STARTUP, not truncated to zero. RLIMIT_CPU is expressed in
 	// whole seconds, so 0s, -1s and 500ms are all syntactically valid

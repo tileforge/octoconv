@@ -169,25 +169,34 @@ func cpuExhausted(sig syscall.Signal, used time.Duration, budgetSeconds int) boo
 	}
 	budget := time.Duration(budgetSeconds) * time.Second
 
-	// THE TOLERANCE IS AN ACCOUNTING ERROR, SO IT IS A FIXED SIZE.
+	// THE TOLERANCE IS SMALL, AND SMALLER THAN I TWICE BELIEVED IT NEEDED
+	// TO BE.
 	//
-	// It exists because RLIMIT_CPU is whole seconds while getrusage reports
-	// what it accounted for, which lands slightly under -- measured at ~150ms
-	// on a contended host at a 1-second limit. That error does not grow with
-	// the budget, and scaling it did: a tenth of the production 271s budget is
-	// 27 SECONDS, so a cgroup OOM kill at 244 CPU-seconds was inside the
-	// window and got reported as a processing-time refusal, telling the client
-	// to make the document cheaper when the answer was to make it smaller
-	// (codex, PR #22).
+	// It exists in case getrusage accounts marginally UNDER the limit the
+	// kernel enforced, which would make an exact >= comparison miss a genuine
+	// kill. Two versions of it were wrong before this one, and both were wrong
+	// because the size was reasoned about rather than measured:
 	//
-	// Half a second is over three times the measured error and still tiny next
-	// to any budget startup accepts.
-	const tolerance = 500 * time.Millisecond
+	//   - a tenth of the budget: 27 SECONDS at the production 271s, so a
+	//     cgroup OOM kill at 244 CPU-seconds was called a processing-time
+	//     refusal;
+	//   - a flat 500ms: half of the smallest budget startup accepts, so at 1s
+	//     an OOM anywhere in the second half was called the same thing.
+	//
+	// Both told the client to make the document cheaper when the answer was to
+	// make it smaller. MEASURED at a 1s limit, ten runs, idle and under eight
+	// competing CPU burners: getrusage reported 1.0011s to 1.0065s -- always
+	// ABOVE the limit, never under. The under-accounting this tolerance was
+	// sized for did not appear at all.
+	//
+	// So it is 50ms: enough to absorb a rounding artefact if one exists on
+	// another kernel, and 5% of even the smallest budget, which leaves the OOM
+	// branch the rest of it.
+	const tolerance = 50 * time.Millisecond
 	if budget <= tolerance {
-		// Unreachable while startup enforces a one-second minimum, and stated
-		// rather than assumed: a tolerance that reaches the whole budget makes
-		// every signaled child qualify, which is the defect this function was
-		// rewritten to remove.
+		// Unreachable while startup enforces a one-second minimum; stated
+		// rather than assumed, because a tolerance that reaches the budget
+		// makes every signaled child qualify.
 		return used >= budget
 	}
 	return used >= budget-tolerance

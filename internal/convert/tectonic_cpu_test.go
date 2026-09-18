@@ -222,7 +222,7 @@ func TestCPUExhaustedNeedsTheRightSignalAndRealConsumption(t *testing.T) {
 		// one.
 		{"SIGXCPU at its budget", syscall.SIGXCPU, 271 * time.Second, 271, true},
 		{"SIGKILL at its budget", syscall.SIGKILL, 271 * time.Second, 271, true},
-		{"killed marginally under, within tolerance", syscall.SIGKILL, 270*time.Second + 500*time.Millisecond, 271, true},
+		{"killed marginally under, within tolerance", syscall.SIGKILL, 270*time.Second + 980*time.Millisecond, 271, true},
 		{"the 1s budget, killed at it", syscall.SIGKILL, time.Second, 1, true},
 
 		// The finding: at a 1s budget an immediate crash used to qualify.
@@ -239,7 +239,14 @@ func TestCPUExhaustedNeedsTheRightSignalAndRealConsumption(t *testing.T) {
 		{"an OOM kill 27s short of the budget", syscall.SIGKILL, 244 * time.Second, 271, false},
 		{"an OOM kill 5s short of the budget", syscall.SIGKILL, 266 * time.Second, 271, false},
 		{"a real kill at the production budget", syscall.SIGXCPU, 271 * time.Second, 271, true},
-		{"a real kill 300ms under, within the accounting error", syscall.SIGXCPU, 270*time.Second + 700*time.Millisecond, 271, true},
+		{"a real kill 30ms under, within the tolerance", syscall.SIGXCPU, 270*time.Second + 970*time.Millisecond, 271, true},
+
+		// THE MINIMUM BUDGET, and the case a flat 500ms window let through: a
+		// fast OOM in the second half of a 1s budget was called a
+		// processing-time refusal (codex, PR #22).
+		{"a 1s budget, OOM at 0.6s", syscall.SIGKILL, 600 * time.Millisecond, 1, false},
+		{"a 1s budget, OOM at 0.9s", syscall.SIGKILL, 900 * time.Millisecond, 1, false},
+		{"a 1s budget, a real kill at 1.002s", syscall.SIGXCPU, 1002 * time.Millisecond, 1, true},
 		{"no budget configured", syscall.SIGKILL, time.Hour, 0, false},
 	}
 	for _, c := range cases {
