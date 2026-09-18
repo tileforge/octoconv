@@ -224,13 +224,15 @@ denied package IS in the bundle, so tectonic loads it happily. Both the API and
 the worker check for it explicitly, so pushing the `\usepackage` past the API's
 preamble window does not get it through.
 
-## Two failures that are not compilation errors
+## Failures that are not compilation errors
 
 | what happens | why the job fails rather than returning a PDF |
 |---|---|
 | **undefined references** | LaTeX warns `LaTeX Warning: There were undefined references.` and produces a PDF showing `??` where your `\ref`/`\cite` should be. Publishing that silently would hand you a document whose cross-references are visibly broken, with a green job and no signal. Checked on the FINAL pass only — the warning is normal on early passes, before the `.aux` file exists — and matched on LaTeX's own warning line, so a document that merely `\typeout`s the phrase is not failed for it. |
 | **the document did not finish** | The engine hit `TECTONIC_ENGINE_TIMEOUT` (271s). This is **terminal, not retried**: your document is a program, and one that does not finish will not finish on a second attempt either. The usual cause is a construct that expands without bound, which no size limit can catch. |
 | **the PDF is too large** | The document typeset correctly and the result is past the 32 MiB output bound (`output_too_large`). Nothing is wrong with your source; there is simply too much of it — the remedy is fewer pages, not a fix. Also terminal: the same source ships the same pages every time. |
+| **the document cost too much CPU** | The engine consumed more than `TECTONIC_ENGINE_CPU_SECONDS` (271s) and the kernel stopped it through `RLIMIT_CPU`. **Terminal**, for the same reason the deadline is: a document that costs this much costs it again. This bound exists separately from the deadline because the two measure different things — wall clock inflates when the node is busy, consumption does not. Measured on one document at a 2-CPU quota: idle 0.96s wall / 0.95s CPU, node oversubscribed 4× 3.67s wall / 1.08s CPU. |
+| **the engine was starved** | The wall deadline fired while the engine had received less than half of one CPU over its elapsed time. That says the attempt took too long, not that your document did, so it is **retried** rather than failed — the one deadline outcome that is not your document's fault. |
 
 ## Asking for a package
 

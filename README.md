@@ -236,6 +236,18 @@ really pings Postgres, Redis and S3.
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
 
+**Correlating a job with your own request.** Send your identifier as a
+`Correlation-Id` header on `POST /v1/jobs`. It comes back in the job status and in the
+webhook, and is written beside the `job_id` in every lifecycle log record, so a conversion
+can be followed from your side without a database session. At most 128 bytes of printable
+ASCII without spaces; anything else is `422` rather than truncated, because a value silently
+cut in half no longer matches what you searched for. Absent is not an error, and nothing is
+generated to replace it.
+
+> [!NOTE]
+> It is not a trace id and carries no tracing semantics. If OpenTelemetry is added later, it
+> links to this rather than replacing it.
+
 The HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml). Two things in it are held by
 tests rather than by care: its operation set is compared both ways against the live router,
 and every status a route can produce has a declared response — the handler's read from its
@@ -372,6 +384,22 @@ named `*.fmt` would grant whatever it points at. `.env.example` lists every refu
 > `TECTONIC_SANDBOX_DISABLED=true`: the only value that disables it, and one that logs what
 > it costs on every boot.
 
+**A second bound, on what the document costs rather than how long it takes.**
+`TECTONIC_ENGINE_CPU_SECONDS` caps the engine's CPU consumption through `RLIMIT_CPU`. The
+two are different quantities and only one of them is the document's fault: measured on the
+same document at a 2-CPU quota, an idle node gave 0.96s wall / 0.95s CPU, and a node
+oversubscribed 4× gave 3.67s wall / 1.08s CPU. Wall clock inflated fourfold while
+consumption did not move — so a wall deadline alone refuses documents for their neighbours'
+sins.
+
+Both bounds are kept because they catch different things. Exhausting the CPU budget is
+terminal: the document costs the same next time. The wall deadline still catches a process
+that is stuck rather than working, since one that sleeps forever consumes no CPU at all —
+and when it fires while the engine got less than half of one CPU, that is starvation and is
+retried, because the deadline said the attempt took too long, not that the document did.
+The budget is carried by the same helper that establishes the ruleset, so it applies even
+where the filesystem confinement is deliberately off.
+
 <details>
 <summary>Building the tex worker needs one extra step</summary>
 
@@ -400,7 +428,7 @@ documented list — including how each measured limit was derived.
 | Infrastructure | `DATABASE_URL`, `DB_MAX_CONNS`, `REDIS_ADDR`, `S3_*`, `API_ADDR`, `HEALTH_ADDR`, `METRICS_ADDR` |
 | Auth & limits | `API_KEY_SALT`, `RATE_LIMIT_IP_RPM`, `RATE_LIMIT_CLIENT_RPM`, `OPERATOR_CLIENT_IDS`, `QUOTA_ENFORCEMENT_DISABLED` |
 | Upload guards | `MAX_UPLOAD_BYTES`, `MAX_IMAGE_PIXELS`, `MAX_DOCUMENT_UNCOMPRESSED_BYTES` |
-| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, …). The image class predates the prefix: it is `WORKER_CONCURRENCY` and `ENGINE_TIMEOUT`, but `IMAGE_MAX_RETRY` |
+| Per engine | `<CLASS>_WORKER_CONCURRENCY`, `<CLASS>_ENGINE_TIMEOUT`, `<CLASS>_MAX_RETRY`, plus class-specific ceilings (`AUDIO_MAX_DURATION_SECONDS`, `OCR_MAX_PAGES`, `TECTONIC_MAX_OUTPUT_BYTES`, `TECTONIC_ENGINE_CPU_SECONDS`, …). The image class predates the prefix: it is `WORKER_CONCURRENCY` and `ENGINE_TIMEOUT`, but `IMAGE_MAX_RETRY` |
 | Inspect | `INSPECT_MAX_UPLOAD_BYTES`, `INSPECT_MAX_WORK_BYTES`, `INSPECT_MAX_WORK_DURATION`, `INSPECT_MAX_CONCURRENT`, `RATE_LIMIT_INSPECT_RPM` |
 | Webhooks | `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_PRESIGN_TTL`, `WEBHOOK_ALLOW_PRIVATE_IPS`, `WEBHOOK_ALLOW_INSECURE_HTTP` |
 | Lifecycle | `RECONCILER_*`, `JOBS_RETENTION`, `USAGE_RETENTION`, `STORAGE_TTL`, `SSE_*`, `PROGRESS_*` |
