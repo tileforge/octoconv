@@ -9,11 +9,21 @@ info:
     job, and a worker runs the engine class that serves it — see
     GET /v1/formats for the operations and format pairs this deployment
     actually supports, which is derived from the converter registry rather
-    than written down here. This spec describes the API exactly as
-    implemented — every path, status code, and error body matches
-    internal/api/*.go and internal/auth/*.go verbatim, and the set of
-    documented operations is held equal to the registered routes by
-    TestOpenAPIPathsMatchRegisteredRoutes (internal/api).
+    than written down here.
+
+
+    Two parts of this spec are machine-checked against internal/api, and the
+    rest is not — the distinction is stated rather than glossed, because an
+    unqualified promise of exactness is what let fourteen operations document
+    no 500 while their handlers emitted one. Held by tests:
+    the set of operations equals the routes the service registers, walked from
+    the live router (TestOpenAPIPathsMatchRegisteredRoutes); and every status
+    code a handler can emit has a declared response
+    (TestOpenAPIDocumentsEveryEmittedStatus). NOT held by a test: response
+    bodies, schemas and examples, which are maintained by hand — as is the
+    reverse status-code direction, since a response documented here may come
+    from middleware (401, 429, and 404 on operator-gated routes) rather than
+    from any handler body.
 servers:
   - url: "{base_url}"
     description: OctoConv API server. Defaults to the local docker-compose deployment.
@@ -1208,6 +1218,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/jobs/{id}/events:
     get:
@@ -1281,6 +1293,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/jobs/{id}/cancel:
     post:
@@ -1352,6 +1366,8 @@ paths:
                 code: not_found
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/formats:
     get:
@@ -1477,6 +1493,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     get:
       tags: [Presets]
       operationId: listPresets
@@ -1502,6 +1520,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/presets/{name}:
     get:
@@ -1529,6 +1549,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     put:
       tags: [Presets]
       operationId: updatePreset
@@ -1576,6 +1598,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [Presets]
       operationId: deactivatePreset
@@ -1611,6 +1635,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/presets:
     post:
@@ -1662,6 +1688,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     get:
       tags: [System]
       operationId: listSystemPresets
@@ -1694,6 +1722,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/presets/{name}:
     get:
@@ -1726,6 +1756,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     put:
       tags: [System]
       operationId: updateSystemPreset
@@ -1768,6 +1800,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [System]
       operationId: deactivateSystemPreset
@@ -1805,6 +1839,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/system/usage:
     get:
@@ -2027,3 +2063,5 @@ paths:
                 code: invalid_request
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"

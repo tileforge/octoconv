@@ -236,9 +236,12 @@ really pings Postgres, Redis and S3.
 - Unsupported pair, mismatched content, oversized declared dimensions, embedded macros or a
   zip-bomb shape → `422`, rejected before anything touches storage
 
-The full contract is [`docs/openapi.yaml`](docs/openapi.yaml), held equal to the routes the
-service actually registers by a test that walks the live router. Every machine-readable
-error code is frozen in [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
+The HTTP contract is [`docs/openapi.yaml`](docs/openapi.yaml). Two things in it are held by
+tests rather than by care: its operation set equals the routes the service registers, walked
+from the live router, and every status code a handler can emit has a declared response.
+Response bodies and examples are maintained by hand — the spec says so itself rather than
+promising an exactness nothing checks. Every machine-readable error code is frozen in
+[`docs/ERROR-CODES.md`](docs/ERROR-CODES.md).
 
 <details>
 <summary>A LaTeX job can be a project, not just a file</summary>
@@ -409,7 +412,7 @@ documented list — including how each measured limit was derived.
 
 | Document | What's in it |
 |---|---|
-| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec, held equal to `internal/api/`'s registered routes by a sync test |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | OpenAPI 3.1 spec; its routes and emitted status codes are held equal to `internal/api/` by sync tests |
 | [`docs/ERROR-CODES.md`](docs/ERROR-CODES.md) | Frozen list of every machine-readable error code, sync and async |
 | [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
 | [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |
