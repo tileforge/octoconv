@@ -187,6 +187,15 @@ data:
   # pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF
   # in 16 seconds against 1 914 057 for the largest legitimate document (2 MiB,
   # 745 pages). tectonic-worker-only; not an IN-02 var.
+  # What one document may COST, as opposed to how long it may occupy the clock.
+  # Measured at this chart's 2-CPU quota: idle the engine's cpu/wall ratio is
+  # 1.00, and under 4x oversubscription the same document took 3.67s wall for
+  # 1.08s of CPU. A wall-clock bound alone therefore refuses documents for the
+  # sins of their neighbours; this one refuses them for what they consumed.
+  # At least 1s: RLIMIT_CPU is whole seconds, so anything below truncates to a
+  # budget of zero and applies no limit at all. The worker refuses to start
+  # rather than run with a bound it has logged and does not enforce.
+  TECTONIC_ENGINE_CPU_SECONDS: "271s"
   TECTONIC_MAX_OUTPUT_BYTES: "33554432"
   # TECTONIC_SANDBOX_DISABLED is deliberately ABSENT, not set to "false".
   # Absent means the engine is confined by Landlock and the worker refuses to
