@@ -28,6 +28,41 @@ is about likelihood, not consequence. LibreOffice and chromium are both large
 enough to have had exactly that class of bug, and both are given files a client
 chose.
 
+## Где это можно делать, а где нельзя — замерено 2026-09-19
+
+Раньше здесь подразумевалось (и повторялось в пересказах), что arm64-хост
+мешает конфайнить движки. **Это неверно.** Замер пробником, который вызывает
+тот же `sandbox.Available()` и настоящий `sandbox.Apply()`, а затем пытается
+прочитать `/etc/hostname`:
+
+| Где | `Available()` | `Apply()` | чтение вне грантов |
+|---|---|---|---|
+| `debian:bookworm-slim`, нативный arm64 | `true` | ruleset установлен | **DENIED** |
+| `debian:bookworm-slim`, `--platform linux/amd64` | `false` | `unavailable on this kernel` | — |
+| `octoconv-document-worker:latest` (реальный образ, amd64) | `false` | `unavailable on this kernel` | — |
+| `octoconv-tectonic-worker:latest` (реальный образ, arm64) | `true` | ruleset установлен | **DENIED** |
+
+Ядро одно и то же — одна Docker-VM. Разница только в эмуляции:
+`landlock_create_ruleset` из amd64-процесса не проходит.
+
+Причина, следовательно, **не в архитектуре хоста**, а в том, что
+`document-worker` — единственный из двенадцати сервисов, закреплённый на
+`platform: linux/amd64` (`docker-compose.yml`), потому что `verapdf/cli:v1.30.2`
+публикуется amd64-only. Остальные одиннадцать, включая chromium, ocr, pandoc,
+av, audio, image и probe, идут нативно.
+
+Что из этого следует для планирования фазы:
+
+- **Семь из восьми неконфайненных классов разрабатываются и проверяются на этом
+  хосте**, включая chromium — тот самый, который этот документ называет
+  настоящей работой.
+- Заблокирован ровно один, `document`, и снять блокировку можно, не трогая
+  Landlock: либо amd64-машина/узел для живого гейта, либо arm64-сборка veraPDF,
+  либо вынос veraPDF из этого образа.
+- **В проде блокировки, вероятно, нет вовсе** — на amd64-узлах сервис идёт
+  нативно. Это следствие, а НЕ замер: узлы не проверялись, и до проверки так и
+  писать.
+
 ## What would be involved
 
 Much less than the first one. `sandbox.Paths`, `sandbox.Apply` and the argv
