@@ -16,6 +16,27 @@ sections below and in `.planning/milestones/`.
 No milestone is open. The next one is not chosen yet; open debt is in
 `.planning/todos/pending/`.
 
+### Шипнуто вне милстоуна (2026-09-19)
+
+Две фазы выполнены и влиты, когда ни один милстоун не был открыт. Записаны
+здесь как есть: придумывать им милстоун задним числом значило бы подогнать
+историю под форму документа.
+
+| Фаза | Что | PR | Влито |
+|---|---|---|---|
+| 65 | CPU-бюджет движка TeX (`TECTONIC_ENGINE_CPU_SECONDS`, `RLIMIT_CPU`) — граница на то, чего документ СТОИТ, а не сколько он занимает часы | [#22](https://github.com/paderinandrey/octoconv/pull/22) `5579e59` | 2026-09-19 |
+| 66 | Observability: `job_id` сквозь логи, `Correlation-Id` от вызывающего, запись, соединяющая request id с job_id (OBS-01..04) | [#23](https://github.com/paderinandrey/octoconv/pull/23) `b95b38d` | 2026-09-19 |
+
+У фазы 66 планировочные артефакты лежат в
+`.planning/phases/66-observability-correlation/`. **У фазы 65 их нет вовсе** —
+ни CONTEXT, ни PLAN, ни SUMMARY: работа шла по ветке `phase-65-cpu-budget` без
+них. Это записано как факт, а не замолчано: единственный след решений фазы —
+комментарии в коде, замеры в `.env.example` и история ревью PR #22.
+
+Тем же днём влит [#24](https://github.com/paderinandrey/octoconv/pull/24)
+(`ddc150c`) — переписанный README и контрактные тесты, держащие
+`docs/openapi.yaml` равным маршрутам живого роутера.
+
 <details>
 <summary>✅ v1.14 Typesetting &amp; Debt (Phases 62–64) — SHIPPED 2026-09-05</summary>
 
