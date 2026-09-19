@@ -63,6 +63,13 @@ av, audio, image и probe, идут нативно.
   нативно. Это следствие, а НЕ замер: узлы не проверялись, и до проверки так и
   писать.
 
+## Замеры путей
+
+`.planning/research/SANDBOX-PATHS.md` — что каждому движку нужно читать, по
+замеру, а не по рассуждению. Инструмент: `scripts/sandbox-paths-measure.sh`.
+На 2026-09-20 замерен и доказан `image`; остальные шесть нативных ждут того же
+прогона.
+
 ## What would be involved
 
 Much less than the first one. `sandbox.Paths`, `sandbox.Apply` and the argv
