@@ -9,4 +9,26 @@ frontend/dist
 __pycache__/
 *.pyc
 deploy/tectonic-bundle/octoconv-bundle.ttb
+# cmd-binaries: every cmd/<name> built with `go build -o <name> ./cmd/<name>`
+# lands here, in the repository root. The list is held equal to cmd/ by
+# internal/repohygiene -- it was one line (/tectonic-worker) added after one
+# incident, which left every other command free to repeat it. Add a cmd/ and
+# this list must follow; the test says so before git does.
+# cmd-binaries-begin
+/api
+/audio-worker
+/av-worker
+/chromium-worker
+/document-worker
+/manage-clients
+/manage-presets
+/mcp-http
+/mcp-server
+/migrate
+/ocr-worker
+/pandoc-worker
+/probe-worker
 /tectonic-worker
+/webhook-worker
+/worker
+# cmd-binaries-end
