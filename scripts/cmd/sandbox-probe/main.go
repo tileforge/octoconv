@@ -19,7 +19,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 	"syscall"
@@ -39,6 +41,23 @@ import (
 const defaultCanary = "/etc/hostname"
 
 func main() {
+	canary := os.Getenv("PROBE_CANARY")
+	if canary == "" {
+		canary = defaultCanary
+	}
+
+	// BEFORE the ruleset, and before it for a reason: an error afterwards is
+	// only evidence of confinement if the read would have worked without it.
+	// A mistyped PROBE_CANARY, a directory, or a file this user cannot read
+	// anyway all fail for reasons Landlock had no part in, and taking that for
+	// proof makes every result after it unsound (codex, PR #27).
+	if _, err := os.ReadFile(canary); err != nil {
+		fmt.Fprintf(os.Stderr, "canary %s is not readable before the ruleset is applied (%v), so "+
+			"its failure afterwards would prove nothing. Name a regular file this user can read "+
+			"and no grant covers.\n", canary, err)
+		os.Exit(7)
+	}
+
 	if err := sandbox.Apply(sandbox.Paths{
 		ReadWrite: splitPaths(os.Getenv("PROBE_RW")),
 		ReadOnly:  splitPaths(os.Getenv("PROBE_RO")),
@@ -47,15 +66,17 @@ func main() {
 		os.Exit(3)
 	}
 
-	canary := os.Getenv("PROBE_CANARY")
-	if canary == "" {
-		canary = defaultCanary
-	}
+	// And afterwards it must fail with a PERMISSION denial specifically. Any
+	// other errno means something else changed, not that the ruleset bound.
 	if _, err := os.ReadFile(canary); err == nil {
 		fmt.Fprintf(os.Stderr, "the ruleset confines nothing: %s is still readable. Either the "+
 			"grants cover it, in which case name a canary outside them with PROBE_CANARY, or "+
 			"the ruleset was not established at all.\n", canary)
 		os.Exit(4)
+	} else if !errors.Is(err, fs.ErrPermission) {
+		fmt.Fprintf(os.Stderr, "canary %s became unreadable for a reason that is not a permission "+
+			"denial (%v), so the ruleset is not what stopped it.\n", canary, err)
+		os.Exit(8)
 	}
 
 	argv := os.Args[1:]

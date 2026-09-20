@@ -4,9 +4,30 @@
 # Two phases, because neither alone is enough:
 #
 #   trace   runs a real conversion under strace and reports every path the
-#           engine successfully opened. This DISCOVERS candidates and it
-#           under-reports: the engine's own executable is execve'd, never
-#           opened, so it will not appear here.
+#           engine successfully opened. This DISCOVERS candidates, and it is
+#           wrong in both directions.
+#
+#           It says nothing reliable about what is EXECUTED. libvips is
+#           execve'd and never opened, so /usr/bin/vips appears in no trace
+#           under any input, and a set built from the trace alone failed every
+#           conversion with "exec: permission denied". Chromium re-execs itself
+#           and DOES open its own binary -- so this is a property of the
+#           engine, not a rule. Add the executable by hand either way, plus the
+#           interpreter when it is a wrapper: /usr/bin/chromium-headless-shell
+#           is 61 bytes of `#!/bin/sh`.
+#
+#           strace -f interleaves processes and splits a call across
+#           `<unfinished ...>` and `<... resumed>`; the first line carries the
+#           path and no result, so failed opens leaked into the successful set
+#           (311 such lines in one chromium run put the non-existent
+#           /etc/vulkan into a candidate set). -ff writes one file per process,
+#           and only a result of `= <non-negative>` is accepted.
+#
+#           strace is installed as root and then DROPPED: the traced command
+#           runs as the image's configured user, because it is that user's path
+#           set we need. Leaving the container as root made chromium report
+#           /root/.config and /root/.fontconfig, which the shipped process
+#           never touches (codex, PR #27).
 #
 #   verify  runs the same conversions under a real Landlock ruleset built from
 #           a candidate set, then repeats one with an input OUTSIDE the job
@@ -39,13 +60,21 @@ trace)
   [ $# -gt 0 ] || die "command required"
   # strace is installed into a throwaway container layer rather than into the
   # image: the thing being measured must stay the thing that ships.
+  image_user=$(docker image inspect "$image" --format '{{.Config.User}}')
+  [ -n "$image_user" ] || image_user=root
+
   docker run --rm --user root --cap-add SYS_PTRACE -v "$jobdir:/job" \
+    -e PROBE_USER="$image_user" \
     --entrypoint sh "$image" -c '
       apt-get update -qq >/dev/null 2>&1
       apt-get install -y -qq strace >/dev/null 2>&1
       command -v strace >/dev/null || { echo "strace could not be installed" >&2; exit 1; }
       rm -f /job/.trace.*
-      strace -ff -e trace=openat,open -o /job/.trace "$@"
+      chmod 0777 /job
+      # strace runs as the shipped user too and traces its own child, which
+      # ptrace allows without the tracer being root.
+      setpriv --reuid "$PROBE_USER" --regid nogroup --clear-groups \
+        strace -ff -e trace=openat,open -o /job/.trace "$@"
     ' sh "$@" >/dev/null
 
   echo "paths opened successfully, outside the job directory:"
@@ -65,8 +94,21 @@ trace)
 verify)
   ro=${1:-}; shift || die "colon-separated read-only path list required"
   [ $# -gt 0 ] || die "command required"
+  # The IMAGE's architecture, not the server's. document-worker is pinned to
+  # linux/amd64, and a probe built for an arm64 server would run natively,
+  # establish Landlock successfully, and leave only the engine emulated -- so
+  # the run would report a path set instead of reporting that Landlock is
+  # unavailable there, which is the one thing it must say (codex, PR #27).
+  image_arch=$(docker image inspect "$image" --format '{{.Architecture}}')
+  [ -n "$image_arch" ] || die "cannot read the architecture of $image"
+  server_arch=$(docker version --format '{{.Server.Arch}}')
+  if [ "$image_arch" != "$server_arch" ]; then
+    echo "note: $image is $image_arch on a $server_arch server; the probe is built" \
+         "$image_arch and Landlock is expected to be unavailable to it" >&2
+  fi
+
   probe="$jobdir/.sandbox-probe"
-  CGO_ENABLED=0 GOOS=linux GOARCH="$(docker version --format '{{.Server.Arch}}')" \
+  CGO_ENABLED=0 GOOS=linux GOARCH="$image_arch" \
     go build -o "$probe" ./scripts/cmd/sandbox-probe
   trap 'rm -f "$probe"' EXIT
 
