@@ -44,17 +44,22 @@ trace)
       apt-get update -qq >/dev/null 2>&1
       apt-get install -y -qq strace >/dev/null 2>&1
       command -v strace >/dev/null || { echo "strace could not be installed" >&2; exit 1; }
-      strace -f -e trace=openat,open -o /job/.trace "$@"
+      rm -f /job/.trace.*
+      strace -ff -e trace=openat,open -o /job/.trace "$@"
     ' sh "$@" >/dev/null
 
   echo "paths opened successfully, outside the job directory:"
-  grep -vE 'ENOENT|EACCES' "$jobdir/.trace" \
-    | grep -oE 'openat?\([^,]*, "[^"]+"' | sed 's/.*"\(.*\)"/\1/' \
+  # Only a completed call with a non-negative result counts. An errno, or a
+  # line strace split across <unfinished>/<resumed>, is a path the engine did
+  # not get -- and the second kind carries no result to filter on.
+  cat "$jobdir"/.trace.* \
+    | grep -oE 'openat?\([^,]*, "[^"]+"[^)]*\) *= *[0-9]+' \
+    | sed 's/.*"\(.*\)".*/\1/' \
     | grep '^/' | grep -v '^/job/' | sort -u | sed 's/^/  /'
   echo
   echo "NOT shown, and needed anyway: the engine's own binary. Add it to the"
   echo "candidate set by hand and let verify decide."
-  rm -f "$jobdir/.trace"
+  rm -f "$jobdir"/.trace.*
   ;;
 
 verify)
@@ -65,7 +70,11 @@ verify)
     go build -o "$probe" ./scripts/cmd/sandbox-probe
   trap 'rm -f "$probe"' EXIT
 
-  docker run --rm -v "$jobdir:/job" -e PROBE_RW=/job -e PROBE_RO="$ro" \
+  # PROBE_RW and PROBE_CANARY come from the environment: chromium needs /tmp
+  # writable, and an engine whose set legitimately includes /etc needs a canary
+  # that is not inside it.
+  docker run --rm -v "$jobdir:/job" \
+    -e PROBE_RW="${PROBE_RW:-/job}" -e PROBE_CANARY="${PROBE_CANARY:-}" -e PROBE_RO="$ro" \
     --entrypoint /job/.sandbox-probe "$image" "$@"
   ;;
 

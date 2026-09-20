@@ -27,9 +27,16 @@ import (
 	"github.com/apaderin/octoconv/internal/sandbox"
 )
 
-// canaryPath is read after the ruleset is established and must be denied. It
-// is granted by no engine's set and exists in every image.
-const canaryPath = "/etc/hostname"
+// defaultCanary is read after the ruleset is established and must be denied.
+//
+// Overridable through PROBE_CANARY because a fixed path stops being a canary
+// the moment an engine legitimately needs the directory holding it: chromium
+// reads /etc/fonts, /etc/hosts and /etc/resolv.conf, and a first attempt that
+// granted /etc wholesale made /etc/hostname readable -- at which point this
+// check cannot tell a confined engine from an unconfined one. It refused to
+// continue, which is the behaviour wanted, but the fix is to let the caller
+// name a path outside its own set.
+const defaultCanary = "/etc/hostname"
 
 func main() {
 	if err := sandbox.Apply(sandbox.Paths{
@@ -40,14 +47,20 @@ func main() {
 		os.Exit(3)
 	}
 
-	if _, err := os.ReadFile(canaryPath); err == nil {
-		fmt.Fprintf(os.Stderr, "the ruleset confines nothing: %s is still readable\n", canaryPath)
+	canary := os.Getenv("PROBE_CANARY")
+	if canary == "" {
+		canary = defaultCanary
+	}
+	if _, err := os.ReadFile(canary); err == nil {
+		fmt.Fprintf(os.Stderr, "the ruleset confines nothing: %s is still readable. Either the "+
+			"grants cover it, in which case name a canary outside them with PROBE_CANARY, or "+
+			"the ruleset was not established at all.\n", canary)
 		os.Exit(4)
 	}
 
 	argv := os.Args[1:]
 	if len(argv) == 0 {
-		fmt.Printf("ruleset established, %s denied, no command given\n", canaryPath)
+		fmt.Printf("ruleset established, %s denied, no command given\n", canary)
 		return
 	}
 
