@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,13 +23,53 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// imageSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted: a deployment gets an unconfined
+// engine only by saying so.
+const imageSandboxDisabledEnv = "IMAGE_SANDBOX_DISABLED"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec the engine, not connect to Postgres and start a worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine its engine must not consume a queue. It would fail every job --
+	// or, far worse, run the engine unconfined while the deployment believes
+	// otherwise.
+	//
+	// The paths it grants were MEASURED, not reasoned: see
+	// .planning/research/SANDBOX-PATHS.md and libvipsReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(imageSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("image sandbox: %v", err)
+	}
+	convert.Default.Replace(convert.ConfinedLibvips(sandboxHelper))
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", imageSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 image sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the ENGINE runs under the rules, not merely that the rules can be
+	// built. A kernel can answer the ABI query and still refuse restrict_self.
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := convert.LibvipsPreflight(preflightCtx, sandboxHelper); err != nil {
+		cancelPreflight()
+		log.Fatalf("image sandbox preflight: %v", err)
+	}
+	cancelPreflight()
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
