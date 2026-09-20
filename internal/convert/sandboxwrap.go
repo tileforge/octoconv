@@ -10,9 +10,12 @@ import (
 // engineSandbox is what a converter needs to run its engine confined: the
 // helper argv prefix, and whether a filesystem ruleset is wanted at all.
 //
-// Embedded in each converter rather than passed per call, so the decision is
-// made once at startup where it can refuse to start, not per job where it
-// could silently vary.
+// Held by POINTER in converters, and nil-safe in every method below, so that
+// adding it does not make an exported converter non-comparable. LibvipsConverter
+// was an empty struct and could be compared with ==; a slice field would have
+// taken that away silently, and the property is easier to keep than to restore
+// once something depends on it (codex, PR #28). A nil *engineSandbox means "run
+// the engine directly", which is the zero value every test wants.
 type engineSandbox struct {
 	// Helper is the argv prefix from sandbox.ResolveHelper. Empty means the
 	// engine is executed directly.
@@ -30,12 +33,12 @@ type engineSandbox struct {
 // helper, so a missing binary is reported as a missing binary instead of as a
 // sandbox that failed to establish -- two failures an operator would otherwise
 // have to tell apart from one exit status.
-func (s engineSandbox) wrapEngine(name string, spec []string, args []string) (string, []string, error) {
+func (s *engineSandbox) wrapEngine(name string, spec []string, args []string) (string, []string, error) {
 	enginePath, err := exec.LookPath(name)
 	if err != nil {
 		return "", nil, fmt.Errorf("locate engine %s: %w", name, err)
 	}
-	if len(s.Helper) == 0 {
+	if s == nil || len(s.Helper) == 0 {
 		return enginePath, args, nil
 	}
 	wrapped := append(append(append(
@@ -55,6 +58,11 @@ func enginePathFor(name string) (string, error) {
 	}
 	return p, nil
 }
+
+// confines reports whether a filesystem ruleset is wanted. Nil-safe for the
+// same reason wrapEngine is: a converter built without a sandbox is the
+// ordinary case in tests.
+func (s *engineSandbox) confines() bool { return s != nil && s.Confine }
 
 // spec is a thin alias so converters read as "paths, then spec" rather than
 // repeating the SpecWith call with an empty Limits every time.

@@ -86,7 +86,7 @@ func TestLibvipsReadOnlySetIsTheMeasuredOne(t *testing.T) {
 // wrapEngine is what turns a spec into an argv, and the order matters: the
 // helper reads its own flags, then the spec, then "--", then the engine.
 func TestWrapEnginePutsTheSpecBeforeTheSeparator(t *testing.T) {
-	s := engineSandbox{Helper: []string{"/usr/local/bin/worker", "__sandbox-exec"}, Confine: true}
+	s := &engineSandbox{Helper: []string{"/usr/local/bin/worker", "__sandbox-exec"}, Confine: true}
 
 	name, args, err := s.wrapEngine("sh", []string{"rw:/job", "ro:/lib"}, []string{"-c", "true"})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestWrapEnginePutsTheSpecBeforeTheSeparator(t *testing.T) {
 // into its argv -- a converter built by a test has no sandbox, and vips would
 // be handed "rw:/job" as a filename.
 func TestWrapEngineWithoutAHelperPassesArgumentsThrough(t *testing.T) {
-	var s engineSandbox
+	var s *engineSandbox
 
 	name, args, err := s.wrapEngine("sh", []string{"rw:/job"}, []string{"-c", "true"})
 	if err != nil {
@@ -136,4 +136,30 @@ func indexOf(ss []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// TestLibvipsConverterStaysComparable pins the property adding the sandbox
+// field nearly took away.
+//
+// The type was an empty struct, so `==` compiled. A slice field would have
+// removed that silently -- nothing in this module compares converters today,
+// so nothing would have failed until something did (codex, PR #28). The
+// sandbox is held behind a pointer to keep it, and this fails to COMPILE if
+// that changes, which is the only way to state it.
+func TestLibvipsConverterStaysComparable(t *testing.T) {
+	var a, b LibvipsConverter
+	if a != b {
+		t.Fatal("two zero converters differ")
+	}
+
+	confined := ConfinedLibvips([]string{"/usr/local/bin/worker", "__sandbox-exec"})
+	if confined == a {
+		t.Error("a confined converter equals an unconfined one, so the field is not being " +
+			"compared at all")
+	}
+	// Usable as a map key, which is what comparability buys.
+	seen := map[LibvipsConverter]bool{a: true}
+	if !seen[b] {
+		t.Error("the zero converter is not its own map key")
+	}
 }

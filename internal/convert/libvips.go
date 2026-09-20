@@ -19,7 +19,7 @@ type LibvipsConverter struct {
 	// engine directly, which is what every unit test wants and what a
 	// deployment gets only by saying so out loud -- cmd/worker refuses to
 	// start otherwise.
-	Sandbox engineSandbox
+	Sandbox *engineSandbox
 }
 
 // Pairs returns every ordered pair of supported image formats (from != to).
@@ -81,7 +81,7 @@ func (c LibvipsConverter) Convert(ctx context.Context, inPath, outPath string, _
 
 	args := []string{"copy", inPath, outPath}
 	var s []string
-	if c.Sandbox.Confine {
+	if c.Sandbox.confines() {
 		s = libvipsSpec(inPath, outPath, enginePath)
 	}
 	name, args, err := c.Sandbox.wrapEngine("vips", s, args)
@@ -102,7 +102,7 @@ func (LibvipsConverter) Engine() string { return EngineImage }
 // measured ruleset. An empty helper runs the engine directly, which is what
 // LIBVIPS_SANDBOX_DISABLED=true produces and what tests use.
 func ConfinedLibvips(helper []string) LibvipsConverter {
-	return LibvipsConverter{Sandbox: engineSandbox{Helper: helper, Confine: len(helper) > 0}}
+	return LibvipsConverter{Sandbox: &engineSandbox{Helper: helper, Confine: len(helper) > 0}}
 }
 
 // LibvipsPreflight proves the engine can actually be EXECUTED under the
@@ -142,7 +142,7 @@ func LibvipsPreflight(ctx context.Context, helper []string) error {
 	}
 
 	outPath := filepath.Join(dir, "out.webp")
-	c := LibvipsConverter{Sandbox: engineSandbox{Helper: helper, Confine: true}}
+	c := LibvipsConverter{Sandbox: &engineSandbox{Helper: helper, Confine: true}}
 	if err := c.Convert(ctx, inPath, outPath, nil); err != nil {
 		return fmt.Errorf("the engine cannot convert under the sandbox: %w", err)
 	}

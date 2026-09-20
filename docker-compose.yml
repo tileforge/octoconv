@@ -241,6 +241,13 @@ services:
       WORKER_CONCURRENCY: "4"
       ENGINE_TIMEOUT: "120s"
       IMAGE_MAX_RETRY: "4"
+      # IMAGE_SANDBOX_DISABLED is forwarded from .env, not set here. Unset
+      # means the engine is confined and the worker refuses to start if it
+      # cannot be; an empty value is not "true" and changes nothing. It is
+      # forwarded at all because the startup error names it as the remedy, and
+      # a remedy an operator cannot apply from the documented .env is not a
+      # remedy (codex, PR #28).
+      IMAGE_SANDBOX_DISABLED: "${IMAGE_SANDBOX_DISABLED:-}"
       # queue.NewClient() (constructed by cmd/worker/main.go) also reads the
       # document-side and html-side retry/timeout vars unconditionally, even
       # though this process only runs the image engine (DEBT-05).
@@ -1578,6 +1585,11 @@ services:
       # same "configured but not plumbed" defect this variable exists to
       # fix (codex, PR #22).
       TECTONIC_ENGINE_CPU_SECONDS: "${TECTONIC_ENGINE_CPU_SECONDS:-271s}"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service: the
+      # tectonic worker has refused to start without Landlock since PR #21 and
+      # names this switch, and until now it could only be applied by editing
+      # this file.
+      TECTONIC_SANDBOX_DISABLED: "${TECTONIC_SANDBOX_DISABLED:-}"
       # queue.NewClient() (constructed by cmd/tectonic-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the tex engine (DEBT-05).

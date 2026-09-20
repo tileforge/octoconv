@@ -46,6 +46,23 @@ spec:
           image: "{{ .Values.worker.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: IfNotPresent
           {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.worker.extraEnv }}
+          # extraEnv (mirrors tectonicWorker.extraEnv): explicit `env:` entries
+          # take precedence over envFrom-sourced values for the same key.
+          #
+          # It exists here because the image worker now REFUSES TO START when
+          # it cannot confine libvips, and the startup error names
+          # IMAGE_SANDBOX_DISABLED=true as the remedy. Without this block that
+          # remedy was unreachable: an operator on a node pool without Landlock
+          # could read what to do and have nowhere to write it (codex, PR #28).
+          # Intentionally absent from values.yaml, so this renders nothing in
+          # production and an unconfined engine stays a deliberate act.
+          env:
+            {{- range $k, $v := .Values.worker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 9090
