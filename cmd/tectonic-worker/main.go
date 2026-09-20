@@ -115,7 +115,7 @@ func main() {
 	// measured, not assumed (PR #19 typeset /etc/hostname into a client's PDF).
 	// So this is the control that removes the read, and it is on unless
 	// somebody says otherwise in writing.
-	sandboxHelper, err := resolveSandboxHelper()
+	sandboxHelper, err := sandbox.ResolveHelper(sandboxDisabledEnv)
 	if err != nil {
 		log.Fatalf("tectonic sandbox: %v", err)
 	}
@@ -338,48 +338,6 @@ func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelp
 // says what it gave up". It is NOT a default: the operator has to write it
 // down, and the log line it produces says what it costs.
 const sandboxDisabledEnv = "TECTONIC_SANDBOX_DISABLED"
-
-// resolveSandboxHelper returns the argv prefix the converter should run the
-// engine through, or an empty slice if the sandbox is explicitly disabled.
-//
-// An error means the sandbox was WANTED and cannot be established, and the
-// caller turns that into a refusal to start.
-func resolveSandboxHelper() ([]string, error) {
-	if os.Getenv(sandboxDisabledEnv) == "true" {
-		return nil, nil
-	}
-	if !sandbox.Available() {
-		return nil, fmt.Errorf("landlock is unavailable on this kernel; "+
-			"the engine would run with read access to every file in this container. "+
-			"Set %s=true to accept that deliberately", sandboxDisabledEnv)
-	}
-	// os.Executable and not a hardcoded path: this binary is the helper, and
-	// resolving it by name would depend on a PATH the engine's own allowlist
-	// environment controls.
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("locate this binary to use as the sandbox helper: %w", err)
-	}
-	helper := []string{self, sandbox.ExecMode}
-
-	// THE ABI QUERY IS NOT PROOF THAT CONFINEMENT CAN BE ESTABLISHED.
-	//
-	// It answers "does this kernel implement Landlock", and a runtime policy
-	// can allow that question and deny the answer: a seccomp profile
-	// permitting landlock_create_ruleset while blocking
-	// landlock_restrict_self, an LSM stacking limit, a container runtime that
-	// filters one syscall of the three. The worker would then start, consume
-	// the queue, and exit 78 on every job -- precisely what the startup
-	// contract exists to prevent (codex round 3).
-	//
-	// Proving it is preflightEngine's job, not this function's: it execs the
-	// REAL engine under the REAL ruleset, which exercises create, add_rule,
-	// restrict_self and execve in one go. An earlier version of this also ran a
-	// separate probe against /bin/true first -- redundant with that, and it
-	// introduced a false refusal of its own, since a distroless image has no
-	// `true` to exec (own sweep).
-	return helper, nil
-}
 
 // preflightSandbox proves the whole mechanism works before any job depends on
 // it: create the ruleset, add a rule, restrict, exec.
