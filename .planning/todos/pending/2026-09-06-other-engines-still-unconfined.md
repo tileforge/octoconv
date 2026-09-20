@@ -63,6 +63,15 @@ av, audio, image и probe, идут нативно.
   нативно. Это следствие, а НЕ замер: узлы не проверялись, и до проверки так и
   писать.
 
+## Замеры путей
+
+`.planning/research/SANDBOX-PATHS.md` — что каждому движку нужно читать, по
+замеру, а не по рассуждению. Инструмент: `scripts/sandbox-paths-measure.sh`.
+На 2026-09-20 замерены и доказаны ВСЕ СЕМЬ нативных классов: `image`, `html`,
+`pandoc`, `ocr`, `av`, `audio`, `probe`. Незамеренным остаётся только
+`document` — его образ закреплён на amd64, а эмулируемому amd64 Landlock
+недоступен.
+
 ## What would be involved
 
 Much less than the first one. `sandbox.Paths`, `sandbox.Apply` and the argv
