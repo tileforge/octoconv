@@ -67,7 +67,7 @@ av, audio, image и probe, идут нативно.
 
 `.planning/research/SANDBOX-PATHS.md` — что каждому движку нужно читать, по
 замеру, а не по рассуждению. Инструмент: `scripts/sandbox-paths-measure.sh`.
-На 2026-09-20 замерены и доказаны `image` и `html`; остальные пять нативных ждут того же
+На 2026-09-20 замерены и доказаны `image`, `html` и `pandoc`; остальные четыре нативных ждут того же
 прогона.
 
 ## What would be involved
