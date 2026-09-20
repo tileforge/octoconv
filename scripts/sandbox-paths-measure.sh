@@ -77,14 +77,29 @@ trace)
         strace -ff -e trace=openat,open -o /job/.trace "$@"
     ' sh "$@" >/dev/null
 
-  echo "paths opened successfully, outside the job directory:"
+  # Resolved through symlinks, because Landlock evaluates the path AFTER
+  # resolution and the trace records it BEFORE. Ghostscript opens
+  # /usr/share/ghostscript/10.00.0/iccprofiles/... and its fonts under
+  # Resource/Font; both are symlinks into /usr/share/color and
+  # /usr/share/fonts, so a grant on /usr/share/ghostscript covers neither and
+  # gs silently emits an empty skeleton instead of failing (codex-adjacent,
+  # found while measuring probe).
+  echo "paths opened successfully, outside the job directory (-> resolved target when it differs):"
   # Only a completed call with a non-negative result counts. An errno, or a
   # line strace split across <unfinished>/<resumed>, is a path the engine did
   # not get -- and the second kind carries no result to filter on.
   cat "$jobdir"/.trace.* \
     | grep -oE 'openat?\([^,]*, "[^"]+"[^)]*\) *= *[0-9]+' \
     | sed 's/.*"\(.*\)".*/\1/' \
-    | grep '^/' | grep -v '^/job/' | sort -u | sed 's/^/  /'
+    | grep '^/' | grep -v '^/job/' | sort -u > "$jobdir/.paths"
+
+  docker run --rm -v "$jobdir:/job" --entrypoint sh "$image" -c '
+    while IFS= read -r p; do
+      r=$(readlink -f "$p" 2>/dev/null)
+      if [ -n "$r" ] && [ "$r" != "$p" ]; then printf "  %s -> %s\n" "$p" "$r"
+      else printf "  %s\n" "$p"; fi
+    done < /job/.paths'
+  rm -f "$jobdir/.paths"
   echo
   echo "NOT shown, and needed anyway: the engine's own binary. Add it to the"
   echo "candidate set by hand and let verify decide."

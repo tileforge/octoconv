@@ -67,8 +67,10 @@ av, audio, image и probe, идут нативно.
 
 `.planning/research/SANDBOX-PATHS.md` — что каждому движку нужно читать, по
 замеру, а не по рассуждению. Инструмент: `scripts/sandbox-paths-measure.sh`.
-На 2026-09-20 замерены и доказаны `image`, `html`, `pandoc` и `ocr`; остальные три нативных ждут того же
-прогона.
+На 2026-09-20 замерены и доказаны ВСЕ СЕМЬ нативных классов: `image`, `html`,
+`pandoc`, `ocr`, `av`, `audio`, `probe`. Незамеренным остаётся только
+`document` — его образ закреплён на amd64, а эмулируемому amd64 Landlock
+недоступен.
 
 ## What would be involved
 
