@@ -184,9 +184,50 @@ chromium именно в `/tmp`).
 Landlock ограничивает процесс независимо от argv, то есть закрывает другое и
 более широкое.
 
+## ocr (tesseract + pdftoppm) — замерено и доказано 2026-09-20
+
+Образ `octoconv-ocr-worker:latest`. **Два** бинарника: PDF растеризуется
+постранично через `pdftoppm` (`ocrRasterizePageArgs`), и только потом идёт
+`tesseract`.
+
+**Read-write:** каталог задачи.
+
+**Read-only:**
+
+| Путь | Зачем |
+|---|---|
+| `/usr/local/bin/tesseract`, `/usr/bin/pdftoppm` | оба движка |
+| `/lib`, `/usr/local/lib` | библиотеки; `/lib` в этом образе — **симлинк на `usr/lib`** |
+| `/usr/local/share/tessdata` | модели; в прогоне открылась только `eng.traineddata`, но выдавать надо каталог — рядом лежит `rus.traineddata`, и задача вправе её попросить |
+| `/etc/ld.so.cache`, `/etc/localtime` | вторая — для `pdftoppm` |
+| `/sys/devices/system/cpu/possible` | |
+
+**Достаточность.** `tesseract` — 3/3 по коду возврата; `pdftoppm` — OK. Форматы
+`txt`, `hocr` и `alto` проходят.
+
+**Действенность.** Вход `/var/tmp/outside.png`: без ruleset распознан
+(`Hello OctoConv OCR`), под ruleset — `Error during processing.`, выходного
+файла нет.
+
+### Две ошибки МОЕЙ проверки, не движка
+
+**`alto` писался не туда, куда я смотрел.** Я счёл его провалившимся, потому
+что искал `v.alto`, а tesseract для этого конфига пишет `outputbase.xml` —
+файл был на месте, 1491 байт. Это прямо задокументировано в `ocr.go`
+(«alto configfile writes outputbase.xml, NOT outputbase.alto»), то есть
+проект предупреждал, а я проверил не тот объект.
+
+**Критерий «файл существует» слабее кода возврата.** В разовых циклах я судил
+по наличию файла на хосте через bind-mount и один раз получил провал
+(`could not create TXT output file`), который не воспроизвёлся ни разу в 8
+последующих прогонах того же набора и ни разу по коду возврата (3/3). Причина
+не установлена — вероятнее всего задержка проброса файлов на macOS, а не
+ruleset. Вывод для метода: судить по коду возврата движка, как это и делает
+фаза `verify`; наличие файла на хосте — признак слабее.
+
 ## Ещё не замерено
 
-`audio` (whisper.cpp), `av` (ffmpeg), `ocr` (tesseract + ghostscript),
-`probe`. Все идут нативно и замеряются на этом хосте тем же скриптом.
+`audio` (whisper.cpp), `av` (ffmpeg), `probe`. Все идут нативно и замеряются
+на этом хосте тем же скриптом.
 
 `document` (LibreOffice) — только на amd64-узле, по причине выше.
