@@ -295,6 +295,12 @@ func isAudioTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every prefix/substring match below,
+	// including "audio: ffmpeg:", so a node fault never misclassifies as one.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	if errors.Is(err, convert.ErrAudioDurationExceeded) {
 		// T-30-08/IN-02: a rejected declared duration can never succeed on
 		// retry.
@@ -355,6 +361,11 @@ func isAudioTerminal(err error) bool {
 // treatment — keeps the two engines' client-facing contracts symmetric.
 func isAVTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every sentinel/prefix match below.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	// Deterministic guard/output-validation rejections: always terminal,
@@ -431,6 +442,12 @@ var terminalOCRSignatures = []string{
 // other unrecognized shape entirely) falls through to the shared isTerminal.
 func isOCRTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every substring in
+	// terminalOCRSignatures below, including "pdfinfo:".
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	if errors.Is(err, convert.ErrOCRTooManyPages) ||
@@ -537,6 +554,12 @@ func ocrFailureCode(err error) (code, message string) {
 // isAudioTerminal/isAVTerminal -- never reword another engine's signature.
 func isPandocTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before the "pandoc:" substring match
+	// below, which the sandbox fault's own wrapped text also carries.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
