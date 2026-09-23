@@ -1258,6 +1258,10 @@ services:
       # nonetheless match byte-for-byte or the API accepts uploads the
       # worker will certainly reject.
       PANDOC_MAX_INPUT_BYTES: "3145728"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      PANDOC_SANDBOX_DISABLED: "${PANDOC_SANDBOX_DISABLED:-}"
       # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
       # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank
       # p95, wall-sec/conversion, at the 4 MiB PANDOC_MAX_INPUT_BYTES cap

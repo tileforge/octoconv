@@ -78,7 +78,7 @@ func (w preflightWorkspace) place(name string, data []byte) (inside, outside str
 			"any ruleset is applied, so a later denial would prove nothing: %w", err)
 	}
 	if !bytes.Equal(got, data) {
-		return "", "", fmt.Errorf("preflight canary: the outside fixture read back different bytes "+
+		return "", "", fmt.Errorf("preflight canary: the outside fixture read back different bytes " +
 			"than it was written, before any ruleset was applied")
 	}
 	return inside, outside, nil
