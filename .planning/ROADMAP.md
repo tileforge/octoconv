@@ -168,3 +168,37 @@ Each milestone's full phase detail and requirements live in
 - 15 спящих семян в `.planning/seeds/`, включая другие engine-классы
   (CAD, archive, preview, tabular), чьи триггеры формально сработали на
   «милстоун добавляет новый класс» и которые сознательно не взяты.
+
+## Backlog
+
+### Phase 999.1: Per-Deployment Worker Selection (BACKLOG)
+
+**Goal:** Каждая установка поднимает только нужный ей набор engine-классов, а API
+честно отказывает в классах, которых в установке нет. Сейчас в чарте ни у
+одного воркера нет `enabled` — любая установка поднимает все девять.
+
+Решено вместо выноса воркеров в отдельные репозитории (обсуждено 2026-09-23):
+воркеры и так собираются раздельно (свой `cmd/*-worker`, Dockerfile,
+deployment), а общий контракт (`jobs.Repo` transitions, миграции, asynq payload,
+S3-ключи, коды ошибок, `Converter`, `sandbox`) живёт в `internal/` и при
+раздельных репо потребовал бы версионируемого SDK и дал бы version skew в
+рантайме. Пересмотреть, если движками начнут владеть разные команды или
+разойдутся релизные циклы.
+
+Состав:
+1. `<name>Worker.enabled` в `deploy/chart/octoconv/values.yaml` для каждого
+   воркера (включая KEDA `scaledobject-*`) + готовые наборы values; `profiles:`
+   в `docker-compose.yml`
+2. **Главное:** API отказывает (явный 4xx с кодом ошибки) на пару форматов,
+   чей engine-класс не развёрнут, вместо вечного `queued`. Сейчас валидация
+   идёт по `convert.Default`, где зарегистрированы все классы. Источник правды —
+   один список включённых классов (напр. `ENABLED_ENGINES`), выводимый из тех же
+   values, чтобы чарт и API не могли разойтись. `/formats`, inspect и MCP
+   отдают только включённые классы
+3. Опционально: CI собирает/тестирует только затронутые воркеры по путям
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
