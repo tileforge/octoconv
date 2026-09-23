@@ -2,10 +2,10 @@
 gsd_state_version: 1.0
 milestone: v1.15
 milestone_name: Engine Confinement
-status: Defining requirements
-stopped_at: context exhaustion at 84% (2026-09-23)
+status: Planning phase 68
+stopped_at: Phase 67 merged (PR #28); planning phase 68
 last_updated: "2026-09-23T15:26:21.905Z"
-last_activity: 2026-09-23 — Milestone v1.15 started
+last_activity: 2026-09-23 — Phase 67 merged (PR #28 eb28f67); phase 68 planning started
 progress:
   total_phases: 4
   completed_phases: 1
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** none. v1.14 SHIPPED (2026-09-05) and its debt tail is worked down (PRs #17-#20). Two todos remain, both tex: confining the engine's file reads, and the page-count heuristic. Next milestone not yet chosen.
+**Current focus:** v1.15 Engine Confinement (phases 67–70). Phase 67 (`image` + shared sandbox) merged 2026-09-23 as PR #28 (`eb28f67`). Next: Phase 68 — `pandoc`, `ocr`, `av`, `audio` under Landlock.
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 68 of 67–70 (Four Straightforward Engine Classes)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-09-23 — Milestone v1.15 started
+Status: Planning
+Last activity: 2026-09-23 — Phase 67 merged (PR #28); phase 68 planning started
 
 ## Performance Metrics
 
@@ -265,9 +265,9 @@ and the soak test that shares a database with parallel packages.
 ## Session Continuity
 
 Last session: 2026-09-23T15:26:21.897Z
-Stopped at: context exhaustion at 84% (2026-09-23)
+Stopped at: Phase 67 merged; planning phase 68
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Plan and execute Phase 68 (/gsd-plan-phase 68, then /gsd-execute-phase 68)
