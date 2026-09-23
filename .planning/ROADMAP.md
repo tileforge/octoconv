@@ -63,6 +63,16 @@ ffprobe), `audio` (whisper + ffmpeg по ДРУГОМУ пути, чем в av-�
 2. Наборы путей совпадают с `SANDBOX-PATHS.md` и удерживаются тестом
 3. Каждый воркер отказывается стартовать без Landlock
 
+**Plans:** 6 plans
+
+Plans:
+- [ ] 68-01-PLAN.md — tracer: `pandoc` под ruleset целиком + общая часть (engineExec, runCommandAs, ErrEngineSandboxUnavailable, preflight-инструменты, `scripts/sandbox-liveproof.sh`)
+- [ ] 68-02-PLAN.md — перезамер всех четырёх классов по реальным argv задачи (pdfinfo/pdftotext, ffprobe в audio, шрифты), доказательства по содержимому, conf05-блоки и `scripts/conf05-crosscheck.sh`
+- [ ] 68-03-PLAN.md — `ocr`: шесть вызовов через engineExec, страницы внутри каталога задачи, preflight трёх маршрутов, воркер, extraEnv в чарте
+- [ ] 68-04-PLAN.md — `av`: семь вызовов, FIFO прогресса внутри каталога задачи, preflight на потоковом перекодировании, воркер, extraEnv
+- [ ] 68-05-PLAN.md — `audio`: ffmpeg + whisper-cli и ffprobe-гард из воркера через NewHandler, файл модели, preflight, воркер, extraEnv
+- [ ] 68-06-PLAN.md — класс целиком: AST-тест покрытия exec, сверка наборов, compose для ocr/av/audio, живые доказательства на пересобранных образах
+
 ### Phase 69: HTML, Probe & the /tmp Decision
 
 **Goal**: `html` и `probe` под Landlock, и решение по `/tmp`. Chromium кладёт
