@@ -94,6 +94,19 @@ todo говорит, что настоящая работа здесь — уз�
 | worker, chromium-worker, audio-worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
 | document-worker | `platform: linux/amd64` (ради `verapdf/cli`, amd64-only) | **невозможен**, нужен amd64-узел |
 
+## Что уже внедрено
+
+| Класс | Замерен | Внедрён |
+|---|---|---|
+| `tectonic` | — (PR #21) | **да** |
+| `image` | да | **да** (эта ветка) |
+| `html`, `pandoc`, `ocr`, `av`, `audio`, `probe` | да | нет |
+| `document` | нельзя на этом хосте | нет |
+
+Общая часть вынесена: `sandbox.ResolveHelper` (разрешение хелпера и отказ
+стартовать), `engineSandbox.wrapEngine` (сборка argv). Каждому движку остаётся
+свой список путей и свой preflight.
+
 ## image (libvips) — замерено и доказано 2026-09-20
 
 Образ `octoconv-worker:latest`, движок `vips copy`.

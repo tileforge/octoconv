@@ -1,0 +1,71 @@
+package convert
+
+import (
+	"fmt"
+	"os/exec"
+
+	"github.com/apaderin/octoconv/internal/sandbox"
+)
+
+// engineSandbox is what a converter needs to run its engine confined: the
+// helper argv prefix, and whether a filesystem ruleset is wanted at all.
+//
+// Held by POINTER in converters, and nil-safe in every method below, so that
+// adding it does not make an exported converter non-comparable. LibvipsConverter
+// was an empty struct and could be compared with ==; a slice field would have
+// taken that away silently, and the property is easier to keep than to restore
+// once something depends on it (codex, PR #28). A nil *engineSandbox means "run
+// the engine directly", which is the zero value every test wants.
+type engineSandbox struct {
+	// Helper is the argv prefix from sandbox.ResolveHelper. Empty means the
+	// engine is executed directly.
+	Helper []string
+	// Confine asks for the filesystem ruleset. False with a non-empty Helper
+	// is meaningful for an engine that also carries a resource limit -- see
+	// TectonicConverter -- and means "run through the helper, restrict
+	// nothing", because an EMPTY ruleset denies everything rather than nothing.
+	Confine bool
+}
+
+// wrapEngine turns (engine name, args) into the command actually executed.
+//
+// It resolves the engine through PATH here rather than leaving it to the
+// helper, so a missing binary is reported as a missing binary instead of as a
+// sandbox that failed to establish -- two failures an operator would otherwise
+// have to tell apart from one exit status.
+func (s *engineSandbox) wrapEngine(name string, spec []string, args []string) (string, []string, error) {
+	enginePath, err := exec.LookPath(name)
+	if err != nil {
+		return "", nil, fmt.Errorf("locate engine %s: %w", name, err)
+	}
+	if s == nil || len(s.Helper) == 0 {
+		return enginePath, args, nil
+	}
+	wrapped := append(append(append(
+		append([]string{}, s.Helper[1:]...),
+		spec...),
+		"--", enginePath), args...)
+	return s.Helper[0], wrapped, nil
+}
+
+// enginePathFor is wrapEngine's lookup alone, for a spec builder that needs
+// the resolved binary before the argv is assembled -- every ruleset has to
+// grant the engine its own executable, which no trace reports reliably.
+func enginePathFor(name string) (string, error) {
+	p, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("locate engine %s: %w", name, err)
+	}
+	return p, nil
+}
+
+// confines reports whether a filesystem ruleset is wanted. Nil-safe for the
+// same reason wrapEngine is: a converter built without a sandbox is the
+// ordinary case in tests.
+func (s *engineSandbox) confines() bool { return s != nil && s.Confine }
+
+// spec is a thin alias so converters read as "paths, then spec" rather than
+// repeating the SpecWith call with an empty Limits every time.
+func spec(rw, ro []string) []string {
+	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.SpecWith(sandbox.Limits{})
+}
