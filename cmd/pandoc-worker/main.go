@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,14 +24,61 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// pandocSandboxDisabledEnv is the one value that turns filesystem
+// confinement off, spelled out rather than defaulted -- mirrors
+// imageSandboxDisabledEnv (cmd/worker/main.go): a deployment gets an
+// unconfined engine only by saying so.
+const pandocSandboxDisabledEnv = "PANDOC_SANDBOX_DISABLED"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec pandoc, not connect to Postgres and start a worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine pandoc must not consume a queue. It would fail every job -- or,
+	// far worse, run the engine unconfined while the deployment believes
+	// otherwise. The paths it grants were MEASURED, not reasoned: see
+	// .planning/research/SANDBOX-PATHS.md and pandocReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(pandocSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("pandoc sandbox: %v", err)
+	}
+	pandocMaxInputBytes := envInt64("PANDOC_MAX_INPUT_BYTES", 50<<20)
+	conv := buildPandocConverter(pandocMaxInputBytes).WithSandbox(sandboxHelper)
+	convert.Default.Replace(conv)
+	log.Printf("📏 PANDOC_MAX_INPUT_BYTES=%d", pandocMaxInputBytes)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", pandocSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 pandoc sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the ENGINE runs under the rules, not merely that the rules can be
+	// built -- both directions, by content: a conversion INSIDE the job
+	// directory succeeds and carries the expected output, and the identical
+	// bytes OUTSIDE it are denied (CONF-04).
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := convert.PandocPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("pandoc sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 pandoc sandbox proven: the engine converted inside the job directory and was denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -68,20 +116,14 @@ func main() {
 	repo := jobs.NewRepo(pool)
 
 	// D-01/D-03 (mirrors cmd/ocr-worker/main.go's own re-register precedent):
-	// re-register a CONFIGURED PandocConverter, overriding the zero-value
-	// registration converters.go's init() already performed -- documented
-	// last-write-wins semantics (Registry.Register is a bare map assignment,
-	// converters.go). This MUST run before srv.Start(mux) below: that is the
-	// point asynq's worker goroutines begin concurrently reading the
-	// registered converter, so this single write must happen-before every
-	// concurrent read.
-	//
-	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
-	// instead of silently last-write-winning -- this deliberate overwrite of
-	// converters.go's own placeholder registration moved to Registry.Replace,
-	// which performs the identical unconditional overwrite without the
-	// occupancy check. Using Register here would panic on startup against
-	// the very placeholder this re-registration exists to override.
+	// convert.Default was already re-registered with a CONFIGURED,
+	// sandbox-wired PandocConverter above, before db.Connect -- overriding
+	// the zero-value registration converters.go's init() performed, via
+	// Registry.Replace (Phase 57 D-09: Register PANICS on a triple collision,
+	// so the deliberate overwrite of converters.go's own placeholder uses
+	// Replace instead). That single write happens-before srv.Start(mux)
+	// below, the point asynq's worker goroutines begin concurrently reading
+	// the registered converter.
 	//
 	// PANDOC_MAX_INPUT_BYTES default (50 MiB) is Claude's Discretion
 	// (48-CONTEXT.md): pandoc reads its input linearly with no exotic
@@ -96,9 +138,6 @@ func main() {
 	// a 1Gi container cannot afford more (50-04 live OOMKill at 4.09 MB, then
 	// evidence/blocker1-memory-probe-20260802.txt). Do not raise the deployed
 	// value without re-running that probe.
-	pandocMaxInputBytes := envInt64("PANDOC_MAX_INPUT_BYTES", 50<<20)
-	convert.Default.Replace(buildPandocConverter(pandocMaxInputBytes))
-	log.Printf("📏 PANDOC_MAX_INPUT_BYTES=%d", pandocMaxInputBytes)
 
 	// PANDOC_ENGINE_TIMEOUT default of 90s is the UNMEASURED FALLBACK for a
 	// host that sets no env -- pandoc is a fast, deterministic CPU-bound

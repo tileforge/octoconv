@@ -167,6 +167,31 @@ func runCommandLimitedEnv(ctx context.Context, limit int, env []string, name str
 // point rather than a changed signature everywhere: only the tex engine has a
 // question the answer helps with.
 func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name string, args ...string) ([]byte, engineCPU, error) {
+	return runCommandCore(ctx, limit, env, name, name, args...)
+}
+
+// runCommandAs runs name -- the command actually exec'd -- but names label in
+// every error shape it produces.
+//
+// Exists for the sandbox helper: when an engine runs confined, the process
+// this package starts is the WORKER BINARY in its own re-exec mode, not the
+// engine. Without this, every error would read "/usr/local/bin/pandoc-worker
+// failed: ..." instead of "pandoc failed: ...", and the worker's own
+// terminal-error classifiers (isAudioTerminal's "ffprobe failed:" match and
+// its siblings) would stop matching the moment confinement is turned on.
+// Same process handling as runCommand: Setpgid, SIGKILL of the whole process
+// group on ctx.Done, unbounded tail buffers, stdout returned even on a
+// non-zero exit.
+func runCommandAs(ctx context.Context, label, name string, args ...string) ([]byte, error) {
+	out, _, err := runCommandCore(ctx, 0, nil, label, name, args...)
+	return out, err
+}
+
+// runCommandCore is runCommandLimitedEnvCPU's body, with the process actually
+// started (name) separated from the name every error shape reports (label).
+// runCommandLimitedEnvCPU calls this with label == name, so every existing
+// caller's error text is byte-identical to before this split.
+func runCommandCore(ctx context.Context, limit int, env []string, label, name string, args ...string) ([]byte, engineCPU, error) {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if env != nil {
@@ -180,7 +205,7 @@ func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name 
 
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
-		return nil, engineCPU{}, fmt.Errorf("start %s: %w", name, err)
+		return nil, engineCPU{}, fmt.Errorf("start %s: %w", label, err)
 	}
 
 	// Kill the entire process group on context cancellation/timeout.
@@ -195,10 +220,10 @@ func runCommandLimitedEnvCPU(ctx context.Context, limit int, env []string, name 
 		// nil, not the partial output: every other engine reaches this path
 		// too, and changing what a timeout returns for all of them is not what
 		// this change is for.
-		return nil, cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s killed: %w", name, ctx.Err())
+		return nil, cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s killed: %w", label, ctx.Err())
 	case err := <-done:
 		if err != nil {
-			return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
+			return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), fmt.Errorf("%s failed: %w: %s", label, err, stderr.String())
 		}
 		return stdout.Bytes(), cpuOf(cmd.ProcessState, time.Since(started)), nil
 	}

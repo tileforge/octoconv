@@ -82,6 +82,12 @@ var pandocStructuralTargets = map[string]bool{
 // AVConverter.MaxSourceDuration's zero-value-defaulting contract.
 type PandocConverter struct {
 	MaxInputBytes int64
+
+	// Sandbox confines the engine's filesystem access, mirroring
+	// LibvipsConverter's own field: zero value runs pandoc directly, which is
+	// what every unit test wants and what a deployment gets only by saying so
+	// out loud -- cmd/pandoc-worker refuses to start otherwise.
+	Sandbox *engineSandbox
 }
 
 // var _ Converter ensures PandocConverter's concrete value type satisfies the
@@ -305,7 +311,8 @@ func (c PandocConverter) Convert(ctx context.Context, inPath, outPath string, op
 	}
 
 	args := pandocConvertArgs(src, tgt, inPath, outPath, o)
-	if _, err := runCommand(ctx, "pandoc", args...); err != nil {
+	x := c.Sandbox.forJob(filepath.Dir(outPath), pandocReadOnly, pandocEngines)
+	if _, err := x.run(ctx, "pandoc", args...); err != nil {
 		return fmt.Errorf("pandoc: pandoc: %w", err)
 	}
 
