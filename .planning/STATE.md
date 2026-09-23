@@ -1,15 +1,19 @@
 ---
-gsd_state_version: 1.0
+gsd_state_version: "1.0"
 milestone: v1.15
-milestone_name: Engine Confinement
-status: Ready to execute phase 68
-stopped_at: Phase 67 merged (PR #28); planning phase 68
-last_updated: "2026-09-23T15:26:21.905Z"
-last_activity: 2026-09-23 — Phase 67 merged (PR #28 eb28f67); phase 68 planning started
+milestone_name: Engine Confinement (67–70)
+current_phase: 68
+current_phase_name: Four Straightforward Engine Classes
+status: executing
+stopped_at: Completed 68-01-PLAN.md
+last_updated: "2026-09-23T23:58:30.835Z"
+last_activity: 2026-09-24
+last_activity_desc: Phase 68 execution started
+state_head: 63f3bc2e06f1031001d883d52f740aebbd94c6d5
 progress:
   total_phases: 4
   completed_phases: 1
-  total_plans: 2
+  total_plans: 6
   completed_plans: 2
   percent: 25
 ---
@@ -21,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** v1.15 Engine Confinement (phases 67–70). Phase 67 (`image` + shared sandbox) merged 2026-09-23 as PR #28 (`eb28f67`). Next: Phase 68 — `pandoc`, `ocr`, `av`, `audio` under Landlock.
+**Current focus:** Phase 68 — Four Straightforward Engine Classes
 
 ## Current Position
 
-Phase: 68 of 67–70 (Four Straightforward Engine Classes)
-Plan: 68-01..68-06 planned, none executed
-Status: Ready to execute (6 plans, 4 waves; plan-checker passed)
-Last activity: 2026-09-23 — Phase 67 merged (PR #28); phase 68 planning started
+Phase: 68 (Four Straightforward Engine Classes) — EXECUTING
+Plan: 2 of 6
+Status: Ready to execute
+Last activity: 2026-09-24 — Phase 68 execution started
 
 ## Performance Metrics
 
@@ -104,6 +108,11 @@ Last activity: 2026-09-23 — Phase 67 merged (PR #28); phase 68 planning starte
 
 *Updated after each plan completion*
 | Phase 55 P05 | 15min | 2 tasks | 2 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 68 P01 | 75min | 3 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -134,6 +143,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - **Per-client sub-queue fairness (the design that renames queues and touches all 7 ScaledObject PromQL strings) is explicitly NOT in this roadmap** — deferred (FAIR-V2-01 in REQUIREMENTS.md v2), evidence-gated on Phase 53's operator visibility showing the admission-cap baseline is actually insufficient in practice. Building it speculatively would repeat the SEED-010 rejection pattern already recorded in PROJECT.md, this time risking the KEDA scale-from-zero contract instead of the compile-time engine allowlist.
 - **Coverage: 15/15 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
 - [Phase 55]: internal/jobs/admission.go records that quota admission carries no api.replicas:1-only caveat, citing live gate run 20260807T153358Z (10/10 rounds, 167 assertions) by path — Closes ROADMAP Phase 55 SC2 and QUOT-05; mirrors internal/ratelimit's own caveat register, inverted
+- [Phase 68]: 68-01: forJob never grants an input directory separately -- every confined class must materialise its input inside the job directory (mirrors pandoc; binding for plans 03-06)
+- [Phase 68]: 68-01: sandbox-fault sentinel (ErrEngineSandboxUnavailable) checked before class-prefix text in all four engine-scoped terminal classifiers, so a node fault is never misclassified as a client file defect
 
 ### Quick Tasks Completed
 
@@ -264,8 +275,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-23T15:26:21.897Z
-Stopped at: Phase 67 merged; planning phase 68
+Last session: 2026-09-23T23:58:30.806Z
+Stopped at: Completed 68-01-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
