@@ -57,6 +57,20 @@ spec:
           image: "{{ .Values.ocrWorker.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: IfNotPresent
           {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.ocrWorker.extraEnv }}
+          # extraEnv (Phase 68, mirrors pandocWorker.extraEnv): explicit
+          # `env:` entries always take precedence over envFrom-sourced values
+          # for the same key. This is how OCR_SANDBOX_DISABLED=true -- the
+          # remedy the worker names when it refuses to start -- is set.
+          # ocrWorker.extraEnv is intentionally absent from values.yaml so
+          # this block renders nothing in production and an unconfined
+          # engine stays a deliberate act.
+          env:
+            {{- range $k, $v := .Values.ocrWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 9090

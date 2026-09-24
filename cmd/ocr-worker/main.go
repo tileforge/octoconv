@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,14 +25,92 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// ocrSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors pandocSandboxDisabledEnv
+// (cmd/pandoc-worker/main.go): a deployment gets an unconfined engine only
+// by saying so.
+const ocrSandboxDisabledEnv = "OCR_SANDBOX_DISABLED"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec the OCR engine, not connect to Postgres and start a
+	// worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine tesseract/pdftoppm/pdfinfo/pdftotext must not consume a
+	// queue. It would fail every job -- or, far worse, run every engine
+	// unconfined while the deployment believes otherwise. The paths it
+	// grants were MEASURED, not reasoned: see
+	// .planning/research/SANDBOX-PATHS.md and ocrReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(ocrSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("ocr sandbox: %v", err)
+	}
+
+	// OCR_MAX_PAGES default (200) is PROVISIONAL -- Plan 03's measurement
+	// finalizes the real ceiling from a measured p95 seconds-per-page run,
+	// mirroring AV_MAX_DURATION_SECONDS's own provisional-then-measured
+	// precedent. OCR_MAX_IMAGE_PIXELS reuses MAX_IMAGE_PIXELS's own 100
+	// megapixel magnitude (cmd/api/main.go's decompression-bomb ceiling) as
+	// its Claude's-Discretion default -- the same declared-dimension guard
+	// class, just enforced by the OCR converter instead of the API layer.
+	ocrMaxPages := envInt("OCR_MAX_PAGES", 200)
+	ocrMaxPixels := uint64(envInt64("OCR_MAX_IMAGE_PIXELS", 100_000_000))
+
+	// D-03 (Phase 45): tesseract's own OpenMP thread use is pinned to the
+	// cgroup CPU quota via OMP_THREAD_LIMIT (mirrors av-worker's
+	// resolveAVThreads -> -threads cgroup discipline), so tesseract honors
+	// the container's CPU limit rather than the host core count. This MUST
+	// land before the preflight below runs a real tesseract invocation
+	// through this same process's environment -- os/exec.Command inherits
+	// the parent process env unless overridden, so the preflight's own
+	// tesseract call must see the SAME OMP_THREAD_LIMIT every real job does.
+	ompThreads, ompSource := resolveOCRThreadLimit()
+	os.Setenv("OMP_THREAD_LIMIT", strconv.Itoa(ompThreads))
+	log.Printf("🧵 OCR_MAX_PAGES=%d OCR_MAX_IMAGE_PIXELS=%d OMP_THREAD_LIMIT=%d (source=%s)",
+		ocrMaxPages, ocrMaxPixels, ompThreads, ompSource)
+
+	// D-01/D-03 (Phase 45/68, mirrors cmd/pandoc-worker's own re-Register
+	// precedent): re-register a CONFIGURED, sandbox-wired OCRConverter,
+	// overriding the zero-value registration converters.go's init() already
+	// performed -- exactly one Registry.Replace call, before srv.Start(mux)
+	// far below, the point asynq's worker goroutines begin concurrently
+	// reading the registered converter.
+	conv := buildOCRConverter(ocrMaxPages, ocrMaxPixels).WithSandbox(sandboxHelper)
+	convert.Default.Replace(conv)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", ocrSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 ocr sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves every OCR route (text-layer, render, image) runs under the
+	// rules, not merely that the rules can be built -- and that the
+	// identical bytes OUTSIDE the job directory are denied (CONF-04). 60s,
+	// not PandocPreflight's 30s: this preflight drives four engines across
+	// three routes, not one.
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := convert.OCRPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("ocr sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 ocr sandbox proven: the engine converted inside the job directory and was denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -67,49 +146,6 @@ func main() {
 	defer qc.Close()
 
 	repo := jobs.NewRepo(pool)
-
-	// D-01/D-03 (Phase 45, mirrors cmd/av-worker's D-09/Pitfall-4 re-Register
-	// precedent): re-register a CONFIGURED OCRConverter, overriding the
-	// zero-value registration converters.go's init() already performed --
-	// documented last-write-wins semantics (Registry.Register is a bare map
-	// assignment, converters.go). This MUST run before srv.Start(mux) below:
-	// that is the point asynq's worker goroutines begin concurrently reading
-	// the registered converter, so this single write must happen-before
-	// every concurrent read (same happens-before boundary as
-	// AV_MAX_DURATION_SECONDS/AV_DISK_SAFETY_FACTOR in cmd/av-worker/main.go).
-	//
-	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
-	// instead of silently last-write-winning -- this deliberate overwrite of
-	// converters.go's own placeholder registration moved to Registry.Replace,
-	// which performs the identical unconditional overwrite without the
-	// occupancy check. Using Register here would panic on startup against
-	// the very placeholder this re-registration exists to override.
-	//
-	// OCR_MAX_PAGES default (200) is PROVISIONAL -- Plan 03's measurement
-	// finalizes the real ceiling from a measured p95 seconds-per-page run,
-	// mirroring AV_MAX_DURATION_SECONDS's own provisional-then-measured
-	// precedent. OCR_MAX_IMAGE_PIXELS reuses MAX_IMAGE_PIXELS's own 100
-	// megapixel magnitude (cmd/api/main.go's decompression-bomb ceiling) as
-	// its Claude's-Discretion default -- the same declared-dimension guard
-	// class, just enforced by the OCR converter instead of the API layer.
-	ocrMaxPages := envInt("OCR_MAX_PAGES", 200)
-	ocrMaxPixels := uint64(envInt64("OCR_MAX_IMAGE_PIXELS", 100_000_000))
-	convert.Default.Replace(buildOCRConverter(ocrMaxPages, ocrMaxPixels))
-
-	// D-03 (Phase 45): tesseract's own OpenMP thread use is pinned to the
-	// cgroup CPU quota via OMP_THREAD_LIMIT (mirrors av-worker's
-	// resolveAVThreads -> -threads cgroup discipline), so tesseract honors
-	// the container's CPU limit rather than the host core count. Must
-	// complete before srv.Start(mux) below -- the same happens-before
-	// boundary every other process-wide config write in this file uses;
-	// tesseract itself only reads OMP_THREAD_LIMIT from its own process
-	// environment at invocation time (os/exec.Command inherits the parent
-	// process env unless overridden), so this write must land before any
-	// asynq worker goroutine can shell out to tesseract.
-	ompThreads, ompSource := resolveOCRThreadLimit()
-	os.Setenv("OMP_THREAD_LIMIT", strconv.Itoa(ompThreads))
-	log.Printf("🧵 OCR_MAX_PAGES=%d OCR_MAX_IMAGE_PIXELS=%d OMP_THREAD_LIMIT=%d (source=%s)",
-		ocrMaxPages, ocrMaxPixels, ompThreads, ompSource)
 
 	engineTimeout := envDuration("OCR_ENGINE_TIMEOUT", 300*time.Second) // 300s is purely a docker-compose.yml-unset fallback default -- the real, measured/finalized value arrives via Phase 45 Plan 03's supervised scripts/ocr-timing-measure.sh matrix run and is set explicitly in docker-compose.yml/.env.example (mirrors AV_ENGINE_TIMEOUT's own provisional-fallback-then-measured comment, cmd/av-worker/main.go).
 
