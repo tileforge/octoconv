@@ -5,16 +5,16 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 68
 current_phase_name: Four Straightforward Engine Classes
 status: executing
-stopped_at: Completed 68-04-PLAN.md
-last_updated: "2026-09-24T01:59:42.132Z"
+stopped_at: Completed 68-05-PLAN.md
+last_updated: "2026-09-24T02:23:08.162Z"
 last_activity: 2026-09-24
 last_activity_desc: Phase 68 execution started
-state_head: 777ac285e01fed220cbf0529836ba11f62f94217
+state_head: 2e76849f75561cb6abe2a7c1763d41679e275022
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
   percent: 25
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 ## Current Position
 
 Phase: 68 (Four Straightforward Engine Classes) — EXECUTING
-Plan: 5 of 6
+Plan: 6 of 6
 Status: Ready to execute
 Last activity: 2026-09-24 — Phase 68 execution started
 
@@ -116,6 +116,7 @@ Last activity: 2026-09-24 — Phase 68 execution started
 | Phase 68 P02 | 31min | 3 tasks | 3 files |
 | Phase 68 P03 | 25min | 3 tasks | 9 files |
 | Phase 68 P04 | 60min | 3 tasks | 12 files |
+| Phase 68 P05 | ~55min | 3 tasks | 20 files |
 
 ## Accumulated Context
 
@@ -154,6 +155,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 68]: AV: engineExec built once per job in avPrepareConversion and threaded through every ffprobe/ffmpeg call site (probe, transcode, audio-extract, thumbnail)
 - [Phase 68]: AV: progress FIFO directory moved inside the job directory; -progress option folded into the engine's own argv BEFORE sandbox wrapping (engineExec.stream), never after
 - [Phase 68]: AV: EnforceMaxDuration keeps its exported signature this plan (calls probeDuration with engineExec{}); plan 05 threads the audio worker's own sandbox handle into it
+- [Phase 68]: The pre-Convert audio duration guard's ffprobe is confined by threading a sandbox helper through Handler.audioSandboxHelper the same way audioMaxDuration already travels (NewHandler -> NewRunner -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert -> convert.EnforceMaxDuration); cmd/audio-worker hands the converter and NewHandler the SAME helper variable so they cannot disagree.
 
 ### Quick Tasks Completed
 
@@ -284,8 +286,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-24T01:59:42.098Z
-Stopped at: Completed 68-04-PLAN.md
+Last session: 2026-09-24T02:23:08.118Z
+Stopped at: Completed 68-05-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
