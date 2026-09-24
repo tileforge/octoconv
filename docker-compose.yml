@@ -797,6 +797,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      AUDIO_SANDBOX_DISABLED: "${AUDIO_SANDBOX_DISABLED:-}"
       AUDIO_WORKER_CONCURRENCY: "1"
       # RTF-measured (Phase 32 AUD-07, scripts/audio-rtf-measure.sh, p95
       # RTF=0.205853 on this exact --cpus/--memory container), NOT the old
@@ -918,6 +922,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      AV_SANDBOX_DISABLED: "${AV_SANDBOX_DISABLED:-}"
       # RTF-measured (Phase 36 Plan 04, threads=avThreadCount()=2 saturates
       # this service's own cpus=2.0 limit per job -- mirrors
       # AUDIO_WORKER_CONCURRENCY=1's exact provenance, audio-worker above:
@@ -1079,6 +1087,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      OCR_SANDBOX_DISABLED: "${OCR_SANDBOX_DISABLED:-}"
       # D-03 (Phase 45, mirrors AV_WORKER_CONCURRENCY=1/
       # AUDIO_WORKER_CONCURRENCY=1's own measured-not-assumed provenance):
       # one OCR job at a time -- avoids CPU oversubscription/CFS-thrashing
