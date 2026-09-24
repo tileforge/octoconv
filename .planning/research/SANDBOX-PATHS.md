@@ -84,6 +84,15 @@ todo говорит, что настоящая работа здесь — уз�
 проверке: шесть из восьми ловушек выше нашлись в нём или в моей проверке, а не
 в движках.
 
+**Добавлено фазой 68.** Набор измеряется через РЕАЛЬНУЮ последовательность
+argv задачи, а не только главный движок: OCR-повтор нашёл `pdfinfo` и
+`pdftotext`, которых не было в наборе, потому что первый замер прогонял
+`tesseract`/`pdftoppm` напрямую, а не тот же путь, что проходит PDF-задача
+через `ocrPDFGuardStage`. И вывод, зависящий от шрифта, судится по
+содержимому, а не по коду возврата: `pdftoppm` без `/usr/share/fonts`
+рендерит другую картинку с кодом 0, а `tesseract` на ней тоже с кодом 0
+возвращает пустой текст.
+
 ## Где замер возможен
 
 Замерено 2026-09-19 (подробности и таблица — в todo): Landlock работает в
@@ -214,6 +223,80 @@ chromium именно в `/tmp`).
 Landlock ограничивает процесс независимо от argv, то есть закрывает другое и
 более широкое.
 
+### Замер фазы 68 — кандидаты
+
+Коммит `f0c55718540c1ca14b5d9553961ab54a2257a5aa`, образ
+`octoconv-pandoc-worker:measure68`
+(`sha256:ce4e62d9cb98fe503674342b5ec12e2c088e2643949f7ef85e8a72baf1bd6f80`,
+arm64). Повод для повторного замера — не сомнение в предыдущем результате, а
+дисциплина: каждый класс фазы 68 проходит один и тот же протокол (полный
+инвентарь argv, включая пары, не измерявшиеся 2026-09-20), чтобы конкретно
+для pandoc подтвердить «и больше ничего» на девяти прогонах вместо пяти.
+
+**Бинарник на job-пути:**
+
+| Бинарник | Путь в образе |
+|---|---|
+| `pandoc` | `/usr/local/bin/pandoc` (не симлинк) |
+
+**Трассированные argv** (девять: каждый читатель из `pandocPairTable` один раз
+на допустимую цель, плюс `md→docx` и `md→epub` — структурные писатели с
+`--standalone`; все с `--sandbox`, пути `/job`):
+
+```
+pandoc -f rst -t html --sandbox --standalone /job/in.rst -o /job/out_rst_html.html
+pandoc -f org -t html --sandbox --standalone /job/in.org -o /job/out_org_html.html
+pandoc -f latex-raw_tex -t html --sandbox --standalone /job/in.latex -o /job/out_latex_html.html
+pandoc -f html-raw_html-raw_tex -t markdown --sandbox /job/in.html -o /job/out_html_md.md
+pandoc -f docx -t markdown --sandbox /job/in.docx -o /job/out_docx_md.md
+pandoc -f epub-raw_html-raw_tex -t markdown --sandbox /job/in.epub -o /job/out_epub_md.md
+pandoc -f markdown-raw_html-raw_tex -t docx --sandbox --standalone /job/in.md -o /job/out_md_docx.docx
+pandoc -f markdown-raw_html-raw_tex -t epub --sandbox --standalone /job/in.md -o /job/out_md_epub.epub
+pandoc -f markdown-raw_html-raw_tex -t html --sandbox --standalone /job/in.md -o /job/out_md_html.html
+```
+
+**Кандидатный набор:** ноль путей вне `/job` на всех девяти прогонах — то же
+самое «ничего», что и 2026-09-20. Новых путей нет («новое» отсутствует).
+
+**Инструментальная находка (Rule 1, не про pandoc).**
+`scripts/sandbox-paths-measure.sh`'s фаза `trace` при НУЛЕВОМ числе найденных
+путей падала до печати финальной подсказки и до очистки `.trace.*`: конвейер
+`grep '^/' | grep -v '^/job/' | sort -u` при отсутствии совпадений возвращает
+код 1 от `grep`, а `pipefail` вместе с `set -e` останавливал скрипт посреди
+дела. Пустой результат здесь — не ошибка, а ответ; добавлен `|| true` на весь
+конвейер (`scripts/sandbox-paths-measure.sh`, ветка `trace`). Без этого фикса
+не удалось бы завершить ни один из девяти прогонов pandoc.
+
+**Достаточность** (содержимое, не код возврата — sha256 конфайнд vs
+unconfined, тот же движок, тот же образ, набор `ro: /usr/local/bin/pandoc`):
+
+| argv | Сравнение | Результат |
+|---|---|---|
+| `rst→html` | sha256 | равно, 4324 б |
+| `org→html` | sha256 | равно, 4276 б |
+| `latex→html` | sha256 | равно, 4399 б |
+| `html→md` | sha256 | равно, 198 б |
+| `docx→md` | sha256 | равно, 111 б |
+| `epub→md` | sha256 | равно, 271 б |
+| `md→docx` | sha256 (контейнер целиком) | равно, 11086 б |
+| `md→epub` | sha256 (контейнер целиком) | равно, 5061 б |
+| `md→html` | sha256 | равно, 4275 б |
+
+**Необходимость через удаление.** Не применимо — кандидатный набор не вырос
+относительно замера 2026-09-20 (`pandocReadOnly=[]`), удалять нечего.
+
+**Действенность.** Вход `/var/tmp/outside/pandoc.md` (тот же markdown, что и
+для трассы): без ruleset — прочитан, `pandoc.md→html` содержит "Sample
+Heading" (grep находит совпадение); под ruleset (`ro:
+/usr/local/bin/pandoc`) — `withBinaryFile: permission denied`, файл
+`/job/eff_confined.html` не создан.
+
+<!-- conf05:pandoc:readonly -->
+<!-- /conf05:pandoc:readonly -->
+<!-- conf05:pandoc:engines -->
+pandoc
+<!-- /conf05:pandoc:engines -->
+
 ## ocr (tesseract + pdftoppm) — замерено и доказано 2026-09-20
 
 Образ `octoconv-ocr-worker:latest`. **Два** бинарника: PDF растеризуется
@@ -255,6 +338,143 @@ Landlock ограничивает процесс независимо от argv,
 ruleset. Вывод для метода: судить по коду возврата движка, как это и делает
 фаза `verify`; наличие файла на хосте — признак слабее.
 
+### Замер фазы 68 — кандидаты
+
+Коммит `f0c55718540c1ca14b5d9553961ab54a2257a5aa`, образ
+`octoconv-ocr-worker:measure68`
+(`sha256:3ef142879bc2e94f2056ac37acad9e2330c3ed0b2dfa56dcd0fb071d21a5238f`,
+arm64).
+
+**Повод.** Замер 2026-09-20 прогнал только `tesseract` и `pdftoppm` напрямую
+как бинарники — не через реальный job-путь Go-кода. Но `ocrPDFGuardStage`
+(`ocrpdf.go`) на КАЖДОЙ PDF-задаче сначала зовёт `pdfinfo` (счётчик страниц,
+`ocrPDFPageCount`), а на PDF→txt — ещё и `pdftotext`
+(`extractPDFTextLayer`); `ocrPDFPageSizeForPage` зовёт `pdfinfo` повторно,
+на каждую страницу отдельно. Ни `pdfinfo`, ни `pdftotext` не были в
+документированном наборе 2026-09-20 — задача pdf→txt/hocr/alto под старым
+набором упала бы на первом же вызове `pdfinfo` с `exec: permission denied`.
+
+**Бинарники на job-пути:**
+
+| Бинарник | Путь в образе |
+|---|---|
+| `tesseract` | `/usr/local/bin/tesseract` |
+| `pdftoppm` | `/usr/bin/pdftoppm` |
+| `pdfinfo` | `/usr/bin/pdfinfo` — **новое**, ранее не измерялся |
+| `pdftotext` | `/usr/bin/pdftotext` — **новое**, ранее не измерялся |
+
+**Трассированные argv** (двенадцать: `pdfinfo` в форме счётчика страниц и
+форме на одну страницу — на обоих PDF; `pdftotext` в стдаут на
+born_digital.pdf; `pdftoppm` в `/job/pg/` на обоих PDF; `tesseract` на
+отрендеренных страницах и на `text_sample.png`, для `txt`/`hocr`/`alto`, с
+`-l eng` и один раз с `-l eng+rus`):
+
+```
+pdfinfo /job/born_digital.pdf
+pdfinfo -f 1 -l 1 /job/born_digital.pdf
+pdfinfo /job/multipage_image_only.pdf
+pdfinfo -f 1 -l 1 /job/multipage_image_only.pdf
+pdftotext /job/born_digital.pdf -
+pdftoppm -r 300 -f 1 -l 1 -singlefile -png /job/born_digital.pdf /job/pg/bd_page
+pdftoppm -r 300 -f 1 -l 1 -singlefile -png /job/multipage_image_only.pdf /job/pg/mi_page
+tesseract /job/pg/bd_page.png /job/pg/bd_out --psm 3 --oem 1 -l eng
+tesseract /job/pg/mi_page.png /job/pg/mi_out --psm 3 --oem 1 -l eng hocr
+tesseract /job/pg/mi_page.png /job/pg/mi_out2 --psm 3 --oem 1 -l eng alto
+tesseract /job/text_sample.png /job/pg/img_out --psm 3 --oem 1 -l eng
+tesseract /job/text_sample.png /job/pg/img_out2 --psm 3 --oem 1 -l eng+rus
+```
+
+**Кандидатный набор** (пути вне `/job`, все двенадцать прогонов объединены):
+
+`/etc/fonts/*` (fonts.conf, conf.d, conf.avail/*.conf) — **новое**,
+`/etc/ld.so.cache`, `/etc/localtime`,
+`/lib/aarch64-linux-gnu/*.so*` (покрывается грантом `/lib`),
+`/sys/devices/system/cpu/possible`,
+`/usr/local/lib/libleptonica.so.6`, `/usr/local/lib/libtesseract.so.5`
+(покрывается грантом `/usr/local/lib`),
+`/usr/local/share/fonts` — **новое** (пустой каталог),
+`/usr/local/share/tessdata/configs/{alto,hocr}`,
+`/usr/local/share/tessdata/{eng,rus}.traineddata`
+(покрывается грантом `/usr/local/share/tessdata`),
+`/usr/share/fontconfig/conf.avail/*.conf` — **новое**,
+`/usr/share/fonts`, `/usr/share/fonts/truetype/dejavu/*.ttf` — **новое**.
+
+Находка совпадает с ожиданием исследования фазы: образ несёт
+`/etc/fonts` и `/usr/share/fonts/truetype/dejavu`, и born-digital PDF с
+невстроенным Helvetica заставляет `pdftoppm` их открыть — заменить шрифт
+нечем без файлов подстановки.
+
+**Достаточность** (содержимое, не код возврата — конфайнд vs unconfined,
+кандидатный набор целиком: `/lib:/usr/local/lib:/usr/local/share/tessdata:
+/etc/ld.so.cache:/etc/localtime:/etc/fonts:/usr/share/fonts:
+/usr/share/fontconfig/conf.avail:/usr/local/share/fonts:
+/sys/devices/system/cpu/possible` + четыре движка):
+
+| argv | Сравнение | Результат |
+|---|---|---|
+| `pdfinfo born_digital.pdf` | sha256 стдаут | равно |
+| `pdfinfo -f 1 -l 1 born_digital.pdf` | sha256 стдаут | равно |
+| `pdfinfo multipage_image_only.pdf` | sha256 стдаут | равно |
+| `pdfinfo -f 1 -l 1 multipage_image_only.pdf` | sha256 стдаут | равно |
+| `pdftotext born_digital.pdf -` | sha256 стдаут | равно |
+| `pdftoppm` born_digital.pdf → PNG | sha256 | **равно** (рендер со шрифтом-заменой побайтово идентичен) |
+| `pdftoppm` multipage_image_only.pdf → PNG | sha256 | равно |
+| `tesseract` born_digital page → txt | текст | равно: «This is a born-digital PDF with real extractable text. OctoConv OCR guard test fixture - Phase 43.» |
+| `tesseract` multipage page → hocr | текст без тегов (bbox/ppageno/scan_res) | равно; единственная разница в сырых байтах — встроенный путь к файлу (`/job/base/...` vs `/job/full/...`), артефакт замера, не движка |
+| `tesseract` multipage page → alto | текст без тегов (`<fileName>`) | равно, та же причина расхождения байтов |
+| `tesseract` text_sample.png `-l eng` → txt | текст | равно: «Hello OctoConv OCR» |
+| `tesseract` text_sample.png `-l eng+rus` → txt | текст | равно: «Hello OctoConv OCR» |
+
+**Необходимость через удаление** (по одному пути кандидатного набора, на
+`pdftoppm born_digital→PNG` + `tesseract →txt`, сравнение по sha256 PNG и по
+тексту):
+
+| Путь | Убран | Результат |
+|---|---|---|
+| `/etc/fonts` | да | PNG равно, текст равно — **не нужен** |
+| `/usr/share/fontconfig/conf.avail` | да | PNG равно, текст равно — **не нужен** |
+| `/usr/local/share/fonts` (пустой каталог) | да | PNG равно, текст равно — **не нужен** |
+| `/usr/share/fonts` | да | **PNG другой** (иной sha256), **текст пустой** — код возврата и `pdftoppm`, и `tesseract` остался 0 на обоих. **Нужен.** |
+
+Последняя строка — та самая ловушка ghostscript (пункт 8 «Метода») в новом
+месте: без `/usr/share/fonts` `pdftoppm` рендерит другую (пустую от текста)
+картинку с кодом возврата 0, а `tesseract` на ней тоже с кодом 0 возвращает
+ПУСТОЙ текст — то же самое «файл создан, содержимое неверно», которое
+проверка по коду возврата не увидит.
+
+**Итоговый набор** (кандидатный минус три доказанно ненужных):
+`/lib`, `/usr/local/lib`, `/usr/local/share/tessdata`, `/etc/ld.so.cache`,
+`/etc/localtime`, `/usr/share/fonts`, `/sys/devices/system/cpu/possible` +
+движки `tesseract`, `pdftoppm`, `pdfinfo`, `pdftotext`. Повторно все
+двенадцать argv под ЭТИМ итоговым набором — те же результаты, что в таблице
+достаточности выше (включая побайтовое совпадение `bd_page.png` и текст
+born-digital после замены шрифта).
+
+**Действенность** (вход `/var/tmp/outside/ocr.pdf` = born_digital.pdf,
+`/var/tmp/outside/ocr.png` = text_sample.png, итоговый набор):
+
+| Движок | Внешняя фикстура | Без ruleset | Под ruleset |
+|---|---|---|---|
+| `pdfinfo` | ocr.pdf | читает метаданные | `I/O Error: Couldn't open file ... Permission denied.` |
+| `pdftoppm` | ocr.pdf | пишет PNG (68974 б) | `I/O Error: ... Permission denied.`, файла нет |
+| `tesseract` | ocr.png | «Hello OctoConv OCR» | `Error, cannot read input file ...: Permission denied` / `Error during processing.`, файла нет |
+
+<!-- conf05:ocr:readonly -->
+/lib
+/usr/local/lib
+/usr/local/share/tessdata
+/etc/ld.so.cache
+/etc/localtime
+/usr/share/fonts
+/sys/devices/system/cpu/possible
+<!-- /conf05:ocr:readonly -->
+<!-- conf05:ocr:engines -->
+tesseract
+pdftoppm
+pdfinfo
+pdftotext
+<!-- /conf05:ocr:engines -->
+
 ## av (ffmpeg + ffprobe) — замерено и доказано 2026-09-20
 
 **Read-write:** каталог задачи. **Read-only:** `/usr/local/bin/ffmpeg`,
@@ -269,6 +489,96 @@ ruleset. Вывод для метода: судить по коду возвра
 Фикстуру пришлось сгенерировать: `scripts/fixtures/inspect-burst-pathological.mp4`
 намеренно битый (он для нагрузочных тестов), и на нём замер измерял бы разбор
 ошибки, а не конверсию.
+
+### Замер фазы 68 — кандидаты
+
+Коммит `f0c55718540c1ca14b5d9553961ab54a2257a5aa`, образ
+`octoconv-av-worker:measure68`
+(`sha256:311f90024a04933d3496be0e24f919fb5027909b9d8de1e1322d3cf0f11f91c2`,
+arm64). Повод — замер 2026-09-20 не прогонял ffprobe'овский probe аудио-кодека
+(`ffprobeAudioCodecArgs`, AVC-05 stream-copy проверка), прогресс-обёрнутый
+транскод, hevc-ветку, извлечение аудио во все три формата, все три миниатюры
+и argv генерации lavfi-источника preflight'а (план 04).
+
+**Бинарники на job-пути:**
+
+| Бинарник | Путь в образе |
+|---|---|
+| `ffmpeg` | `/usr/local/bin/ffmpeg` |
+| `ffprobe` | `/usr/local/bin/ffprobe` |
+
+**Трассированные argv** (тринадцать: три формы `ffprobe`; `mp4`-транскод с
+`-progress file:/job/progress.txt` спереди — обычный файл вместо FIFO, саму
+FIFO доказывает preflight плана 04; `mp4→webm`; hevc-транскод; извлечение
+аудио в mp3/wav/m4a; миниатюры в jpg/png/webp; argv генерации lavfi-источника
+из инвентаря):
+
+```
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -protocol_whitelist file,crypto file:/job/in.mp4
+ffprobe -v error -select_streams v -show_entries stream=index,codec_name,width,height:stream_disposition=attached_pic -of json -protocol_whitelist file,crypto file:/job/in.mp4
+ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 -protocol_whitelist file,crypto file:/job/in.mp4
+ffmpeg -progress file:/job/progress.txt -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -map 0:0 -map 0:a:0? -c:v libx264 -preset veryfast -crf 23 -c:a aac -b:a 128k -movflags +faststart -threads 2 file:/job/out_transcode_mp4.mp4
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -map 0:0 -map 0:a:0? -c:v libvpx-vp9 -b:v 1M -c:a libopus -threads 2 file:/job/out_transcode.webm
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -map 0:0 -map 0:a:0? -c:v libx265 -preset veryfast -crf 28 -c:a aac -b:a 128k -movflags +faststart -threads 2 file:/job/out_hevc.mp4
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -vn -c:a libmp3lame -q:a 2 file:/job/out_extract.mp3
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -vn -c:a pcm_s16le file:/job/out_extract.wav
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/in.mp4 -vn -c:a copy file:/job/out_extract.m4a
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -ss 1 -i file:/job/in.mp4 -map 0:0 -frames:v 1 -c:v mjpeg -q:v 2 file:/job/out_thumb.jpg
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -ss 1 -i file:/job/in.mp4 -map 0:0 -frames:v 1 -c:v png file:/job/out_thumb.png
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -ss 1 -i file:/job/in.mp4 -map 0:0 -frames:v 1 -c:v libwebp file:/job/out_thumb.webp
+ffmpeg -f lavfi -i testsrc=size=64x64:rate=10:duration=1 -c:v libx264 -pix_fmt yuv420p file:/job/out_lavfi.mp4
+```
+
+**Кандидатный набор.** Все пути вне `/job` — под уже документированными
+директориями (`/lib/aarch64-linux-gnu/lib{c,gcc_s,m,mp3lame,numa,opus,stdc++,
+vpx,webp,x264,x265,z}.so*`, покрывается `/lib`; `/etc/ld.so.cache`;
+`/dev/urandom`; `/proc/self/status`; `/proc/sys/vm/overcommit_memory`;
+`/sys/devices/system/cpu/{online,possible}`). Новых путей нет («новое»
+отсутствует) — набор совпадает с версией 2026-09-20.
+
+**Достаточность** (содержимое — конфайнд vs unconfined, набор из уже
+документированного read-only + `/usr/local/bin/ffmpeg` +
+`/usr/local/bin/ffprobe`):
+
+| argv | Сравнение | Результат |
+|---|---|---|
+| `ffprobe` duration | sha256 стдаут | равно |
+| `ffprobe` stream (json) | sha256 стдаут | равно |
+| `ffprobe` audio-codec | sha256 стдаут | равно |
+| `mp4`-транскод (progress) | сводка ffprobe (кодек/ширина/высота/sample_rate/channels/duration) | равно |
+| `mp4→webm` | сводка ffprobe | равно |
+| hevc-транскод | сводка ffprobe | равно |
+| extract→mp3 | sha256 (контейнер целиком) | **равно** |
+| extract→wav | сводка ffprobe | равно |
+| extract→m4a (stream-copy, source уже aac) | сводка ffprobe | равно |
+| thumb→jpg | sha256 | равно |
+| thumb→png | sha256 | равно |
+| thumb→webp | sha256 | равно |
+| lavfi-источник | сводка ffprobe | равно |
+
+**Необходимость через удаление.** Не применимо — кандидатный набор не вырос
+относительно 2026-09-20, удалять нечего.
+
+**Действенность** (вход `/var/tmp/outside/av.mp4` = копия `in.mp4`):
+
+| Движок | Без ruleset | Под ruleset |
+|---|---|---|
+| `ffprobe` (duration) | `2.000000` | `Error opening input: Permission denied` (206 codes) — нет вывода |
+| `ffmpeg` (миниатюра) | пишет jpg (9016 б) | `[in#0] Error opening input: Permission denied`, файла нет |
+
+<!-- conf05:av:readonly -->
+/lib
+/etc/ld.so.cache
+/dev/urandom
+/proc/self/status
+/proc/sys/vm/overcommit_memory
+/sys/devices/system/cpu/online
+/sys/devices/system/cpu/possible
+<!-- /conf05:av:readonly -->
+<!-- conf05:av:engines -->
+ffmpeg
+ffprobe
+<!-- /conf05:av:engines -->
 
 ## audio (whisper.cpp + ffmpeg) — замерено и доказано 2026-09-20
 
@@ -287,6 +597,106 @@ ruleset. Вывод для метода: судить по коду возвра
 без ruleset распознаётся, под ruleset — `error: input file not found`.
 Движок сообщает «не найден», а не «отказано в доступе»: по тексту его ошибки
 отличить запрет нельзя.
+
+### Замер фазы 68 — кандидаты
+
+Коммит `f0c55718540c1ca14b5d9553961ab54a2257a5aa`, образ
+`octoconv-audio-worker:measure68`
+(`sha256:9a4b7fc398cd7e0d374eeff750f0a62e8fdfc1dff95ce79701fe65ccd1a6a5e1`,
+arm64).
+
+**Повод.** Замер 2026-09-20 прогнал нормализацию и распознавание, но не
+`ffprobe`'овский guard длительности (`EnforceMaxDuration`), который
+`internal/worker` зовёт из `enforceAudioGuardBeforeConvert` ДО `Convert` —
+код в другом пакете, чем поле `Sandbox` конвертера. Этот замер прогоняет
+именно его форму (`ffprobeDurationArgs`) на всех трёх типах входа этого
+класса (wav, m4a, видео-контейнер), чтобы набор был готов покрыть и его —
+решение о конфайнменте самого guard'а (вариант A/B из 68-RESEARCH.md) остаётся
+за планом реализации, здесь только измерено, что ему нужно, если он тоже
+пойдёт через `forJob`.
+
+**Бинарники на job-пути:**
+
+| Бинарник | Путь в образе |
+|---|---|
+| `ffmpeg` | `/usr/bin/ffmpeg` (apt, не там, где в av-образе) |
+| `ffprobe` | `/usr/bin/ffprobe` — **новое**, ранее не измерялся (лежит рядом с `ffmpeg`, тот же apt-пакет) |
+| `whisper-cli` | `/usr/local/bin/whisper-cli` |
+
+**Трассированные argv** (шесть: форма ffprobe-guard'а на jfk.wav, sample.m4a
+и in.mp4 — видео-контейнер, который этот класс тоже принимает; нормализация
+ffmpeg jfk.wav→norm.wav; `whisper-cli` по `whisperArgs` на norm.wav для txt и
+json):
+
+```
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -protocol_whitelist file,crypto file:/job/jfk.wav
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -protocol_whitelist file,crypto file:/job/sample.m4a
+ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 -protocol_whitelist file,crypto file:/job/in.mp4
+ffmpeg -y -nostdin -protocol_whitelist file,crypto -i file:/job/jfk.wav -map 0:a:0 -ar 16000 -ac 1 -c:a pcm_s16le file:/job/norm.wav
+whisper-cli -m /models/ggml-base.bin -f /job/norm.wav -of /job/out_txt -otxt -l auto -t 2
+whisper-cli -m /models/ggml-base.bin -f /job/norm.wav -of /job/out_json -ojf -l auto -t 2
+```
+
+**Кандидатный набор** (сверх уже документированного): `/proc/filesystems` —
+**новое**; `/proc/self/status` — **новое**; `/models/ggml-base.bin` (ФАЙЛ, не
+каталог `/models`) — **новое по форме гранта**; `/usr/bin/ffprobe` —
+**новое**, движок. `/` и `/usr/local/bin/` снова открылись как каталоги
+(`whisper-cli`) — то же самое, что уже проверено и отброшено 2026-09-20.
+
+**Достаточность** (содержимое — конфайнд vs unconfined, кандидатный набор:
+уже документированный + `/proc/filesystems` + `/proc/self/status` +
+`/models/ggml-base.bin` + `/usr/bin/ffprobe`):
+
+| argv | Сравнение | Результат |
+|---|---|---|
+| `ffprobe` jfk.wav | sha256 стдаут | равно (`11.000000`) |
+| `ffprobe` sample.m4a | sha256 стдаут | равно |
+| `ffprobe` in.mp4 | sha256 стдаут | равно |
+| `ffmpeg` нормализация | sha256 (PCM WAV) | равно |
+| `whisper-cli` → txt | текст | равно: «And so my fellow Americans ask not what your country can do for you, ask what you can do for your country.» |
+| `whisper-cli` → json | текст сегмента | равно, тот же транскрипт |
+
+**Необходимость через удаление** (все шесть argv, попарно, сравнение по
+sha256/тексту):
+
+| Путь | Убран | Результат |
+|---|---|---|
+| `/proc/filesystems` | да | все шесть равны — **не нужен** |
+| `/proc/self/status` | да | все шесть равны — **не нужен** |
+
+**Итоговый набор:** `/lib`, `/usr/lib`, `/usr/local/lib`, `/etc/ld.so.cache`,
+`/proc/cpuinfo`, `/sys/devices/system/cpu/online`,
+`/sys/devices/system/cpu/possible` (статический список) + движки `ffmpeg`,
+`ffprobe`, `whisper-cli` (разрешаются во время выполнения через PATH, как у
+остальных классов) + модель `/models/ggml-base.bin` — ФАЙЛ, выдаваемый
+отдельно от статического списка, во время выполнения, из
+`AUDIO_MODEL_PATH` (по умолчанию тот же путь): грант на файл, а не на
+каталог `/models` целиком, потому что путь к модели конфигурируем и не
+известен статически на этапе объявления Go-переменной.
+
+**Действенность** (вход `/var/tmp/outside/audio.wav` = копия jfk.wav,
+итоговый набор):
+
+| Движок | Без ruleset | Под ruleset |
+|---|---|---|
+| `ffprobe` | `11.000000` | `Permission denied`, нет вывода |
+| `ffmpeg` | пишет norm.wav (352078 б) | `Permission denied`, файла нет |
+| `whisper-cli` | «And so my fellow Americans…» | `error: input file not found`, файла нет — движок сообщает «не найден», а не «отказано», как и в замере 2026-09-20 |
+
+<!-- conf05:audio:readonly -->
+/lib
+/usr/lib
+/usr/local/lib
+/etc/ld.so.cache
+/proc/cpuinfo
+/sys/devices/system/cpu/online
+/sys/devices/system/cpu/possible
+<!-- /conf05:audio:readonly -->
+<!-- conf05:audio:engines -->
+ffmpeg
+ffprobe
+whisper-cli
+<!-- /conf05:audio:engines -->
 
 ## probe (gs + pdfinfo + unzip) — замерено и доказано 2026-09-20
 
