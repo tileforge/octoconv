@@ -27,7 +27,7 @@
 | 70 | `document` — на amd64-узле | CONF-01, 02, 04, 05, 07 | ○ |
 
 - [x] Phase 67: Image Confinement & Shared Sandbox — 2026-09-23, PR #28
-- [ ] Phase 68: Four Straightforward Engine Classes
+- [x] Phase 68: Four Straightforward Engine Classes (completed 2026-09-24)
 - [ ] Phase 69: HTML, Probe & the /tmp Decision
 - [ ] Phase 70: Document on amd64
 
@@ -43,6 +43,7 @@ libvips по замеренному набору, пробрасывает ав�
 **Requirements**: CONF-01, CONF-02, CONF-03, CONF-04, CONF-05, DEBT-15
 
 **Success Criteria** (what must be TRUE):
+
 1. Боевой бинарник в режиме хелпера конвертирует внутри каталога задачи и
    получает отказ на файле снаружи — проверено в собранном образе
 2. Воркер отказывается стартовать без Landlock и называет переменную
@@ -59,19 +60,21 @@ ffprobe), `audio` (whisper + ffmpeg по ДРУГОМУ пути, чем в av-�
 **Requirements**: CONF-01, CONF-02, CONF-04, CONF-05
 
 **Success Criteria** (what must be TRUE):
+
 1. Каждый из четырёх конвертирует под ruleset и получает отказ на файле извне
 2. Наборы путей совпадают с `SANDBOX-PATHS.md` и удерживаются тестом
 3. Каждый воркер отказывается стартовать без Landlock
 
-**Plans:** 6 plans
+**Plans:** 6/6 plans complete
 
 Plans:
-- [ ] 68-01-PLAN.md — tracer: `pandoc` под ruleset целиком + общая часть (engineExec, runCommandAs, ErrEngineSandboxUnavailable, preflight-инструменты, `scripts/sandbox-liveproof.sh`)
-- [ ] 68-02-PLAN.md — перезамер всех четырёх классов по реальным argv задачи (pdfinfo/pdftotext, ffprobe в audio, шрифты), доказательства по содержимому, conf05-блоки и `scripts/conf05-crosscheck.sh`
-- [ ] 68-03-PLAN.md — `ocr`: шесть вызовов через engineExec, страницы внутри каталога задачи, preflight трёх маршрутов, воркер, extraEnv в чарте
-- [ ] 68-04-PLAN.md — `av`: семь вызовов, FIFO прогресса внутри каталога задачи, preflight на потоковом перекодировании, воркер, extraEnv
-- [ ] 68-05-PLAN.md — `audio`: ffmpeg + whisper-cli и ffprobe-гард из воркера через NewHandler, файл модели, preflight, воркер, extraEnv
-- [ ] 68-06-PLAN.md — класс целиком: AST-тест покрытия exec, сверка наборов, compose для ocr/av/audio, живые доказательства на пересобранных образах
+
+- [x] 68-01-PLAN.md — tracer: `pandoc` под ruleset целиком + общая часть (engineExec, runCommandAs, ErrEngineSandboxUnavailable, preflight-инструменты, `scripts/sandbox-liveproof.sh`)
+- [x] 68-02-PLAN.md — перезамер всех четырёх классов по реальным argv задачи (pdfinfo/pdftotext, ffprobe в audio, шрифты), доказательства по содержимому, conf05-блоки и `scripts/conf05-crosscheck.sh`
+- [x] 68-03-PLAN.md — `ocr`: шесть вызовов через engineExec, страницы внутри каталога задачи, preflight трёх маршрутов, воркер, extraEnv в чарте
+- [x] 68-04-PLAN.md — `av`: семь вызовов, FIFO прогресса внутри каталога задачи, preflight на потоковом перекодировании, воркер, extraEnv
+- [x] 68-05-PLAN.md — `audio`: ffmpeg + whisper-cli и ffprobe-гард из воркера через NewHandler, файл модели, preflight, воркер, extraEnv
+- [x] 68-06-PLAN.md — класс целиком: AST-тест покрытия exec, сверка наборов, compose для ocr/av/audio, живые доказательства на пересобранных образах
 
 ### Phase 69: HTML, Probe & the /tmp Decision
 
@@ -83,6 +86,7 @@ Plans:
 **Requirements**: CONF-01, CONF-02, CONF-04, CONF-05, CONF-06
 
 **Success Criteria** (what must be TRUE):
+
 1. Решение по `/tmp` принято и записано с причиной
 2. Оба класса конвертируют под ruleset; действенность проверена **по
    содержимому** результата, а не по факту создания файла
@@ -98,6 +102,7 @@ Landlock недоступен — замерено 2026-09-19 на реальн�
 **Requirements**: CONF-01, CONF-02, CONF-04, CONF-05, CONF-07
 
 **Success Criteria** (what must be TRUE):
+
 1. Набор путей для LibreOffice замерен на amd64 тем же инструментом
 2. Конверсия проходит под ruleset, файл извне недоступен
 3. Воркер отказывается стартовать без Landlock — включая случай, когда причина
@@ -196,6 +201,7 @@ S3-ключи, коды ошибок, `Converter`, `sandbox`) живёт в `int
 разойдутся релизные циклы.
 
 Состав:
+
 1. `<name>Worker.enabled` в `deploy/chart/octoconv/values.yaml` для каждого
    воркера (включая KEDA `scaledobject-*`) + готовые наборы values; `profiles:`
    в `docker-compose.yml`
@@ -211,4 +217,5 @@ S3-ключи, коды ошибок, `Converter`, `sandbox`) живёт в `int
 **Plans:** 0 plans
 
 Plans:
+
 - [ ] TBD (promote with /gsd-review-backlog when ready)

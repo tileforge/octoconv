@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v1.15
 milestone_name: Engine Confinement (67–70)
-current_phase: 68
-current_phase_name: Four Straightforward Engine Classes
-status: verifying
-stopped_at: Completed 68-06-PLAN.md
-last_updated: "2026-09-24T03:14:42.257Z"
+current_phase: 69
+current_phase_name: HTML, Probe & the /tmp Decision
+status: planning
+stopped_at: Phase 68 complete, ready to plan Phase 69
+last_updated: "2026-09-24T10:03:24.713Z"
 last_activity: 2026-09-24
-last_activity_desc: Phase 68 execution started
-state_head: f4818c2a7d7d87349de331f30eb941a13b0d7bff
+last_activity_desc: Phase 68 complete, transitioned to Phase 69
+state_head: 7c37b30779128a6a71b36b381c40401f42c529e4
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 6
-  completed_plans: 6
-  percent: 25
+  completed_phases: 2
+  total_plans: 8
+  completed_plans: 8
+  percent: 50
 ---
 
 # Project State
@@ -29,16 +29,16 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 ## Current Position
 
-Phase: 68 (Four Straightforward Engine Classes) — EXECUTING
-Plan: 6 of 6
-Status: Phase complete — ready for verification
-Last activity: 2026-09-24 — Phase 68 execution started
+Phase: 69 — HTML, Probe & the /tmp Decision
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-24 — Phase 68 complete, transitioned to Phase 69
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 153 (all v1.0–v1.11)
+- Total plans completed: 191 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -100,6 +100,7 @@ Last activity: 2026-09-24 — Phase 68 execution started
 | 54 | 2 | - | - |
 | 55 | 7 | - | - |
 | 56 | 7 | - | - |
+| 68 | 6 | - | - |
 
 **Recent Trend:**
 
@@ -289,7 +290,7 @@ and the soak test that shares a database with parallel packages.
 ## Session Continuity
 
 Last session: 2026-09-24T03:14:42.227Z
-Stopped at: Completed 68-06-PLAN.md
+Stopped at: Phase 68 complete, ready to plan Phase 69
 Resume file: None
 
 ## Operator Next Steps
