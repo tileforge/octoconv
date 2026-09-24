@@ -4,17 +4,17 @@ milestone: v1.15
 milestone_name: Engine Confinement (67–70)
 current_phase: 68
 current_phase_name: Four Straightforward Engine Classes
-status: executing
-stopped_at: Completed 68-05-PLAN.md
-last_updated: "2026-09-24T02:23:08.162Z"
+status: verifying
+stopped_at: Completed 68-06-PLAN.md
+last_updated: "2026-09-24T03:14:42.257Z"
 last_activity: 2026-09-24
 last_activity_desc: Phase 68 execution started
-state_head: 2e76849f75561cb6abe2a7c1763d41679e275022
+state_head: f4818c2a7d7d87349de331f30eb941a13b0d7bff
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
   percent: 25
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 Phase: 68 (Four Straightforward Engine Classes) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-24 — Phase 68 execution started
 
 ## Performance Metrics
@@ -117,6 +117,7 @@ Last activity: 2026-09-24 — Phase 68 execution started
 | Phase 68 P03 | 25min | 3 tasks | 9 files |
 | Phase 68 P04 | 60min | 3 tasks | 12 files |
 | Phase 68 P05 | ~55min | 3 tasks | 20 files |
+| Phase 68 P06 | 28min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -156,6 +157,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 68]: AV: progress FIFO directory moved inside the job directory; -progress option folded into the engine's own argv BEFORE sandbox wrapping (engineExec.stream), never after
 - [Phase 68]: AV: EnforceMaxDuration keeps its exported signature this plan (calls probeDuration with engineExec{}); plan 05 threads the audio worker's own sandbox handle into it
 - [Phase 68]: The pre-Convert audio duration guard's ffprobe is confined by threading a sandbox helper through Handler.audioSandboxHelper the same way audioMaxDuration already travels (NewHandler -> NewRunner -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert -> convert.EnforceMaxDuration); cmd/audio-worker hands the converter and NewHandler the SAME helper variable so they cannot disagree.
+- [Phase 68]: Coverage-as-a-class AST test holds all of internal/convert to engineExec routing; conf05-crosscheck all four classes MATCH; docker compose down -v replaced with down (no -v) for the mid-sequence teardown per sandbox/environment constraints — Prevents future unclassified/unconfined engine execs by construction rather than by per-class review; -v teardown avoided to preserve volumes and respect sandbox denial of irreversible destruction
 
 ### Quick Tasks Completed
 
@@ -286,8 +288,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-24T02:23:08.118Z
-Stopped at: Completed 68-05-PLAN.md
+Last session: 2026-09-24T03:14:42.227Z
+Stopped at: Completed 68-06-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
