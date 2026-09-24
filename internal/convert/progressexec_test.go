@@ -223,9 +223,10 @@ func TestEngineExecStream_DeliversProgressLinesThroughTheHelper(t *testing.T) {
 	jobDir := t.TempDir()
 	x := s.forJob(jobDir, []string{"/lib"}, []string{"fakeffmpeg"})
 
+	outPath := filepath.Join(jobDir, "out.mp4")
 	var lines []string
 	if _, err := x.stream(context.Background(), func(l string) { lines = append(lines, l) },
-		jobDir, "fakeffmpeg", []string{"-i", "in.mp4"}); err != nil {
+		jobDir, "fakeffmpeg", []string{"-i", "in.mp4", outPath}); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	if len(lines) != 2 || lines[0] != "out_time_us=1000000" || lines[1] != "progress=end" {
@@ -268,8 +269,8 @@ func TestEngineExecStream_DeliversProgressLinesThroughTheHelper(t *testing.T) {
 	if !strings.HasPrefix(rest[2], "file:"+jobDir) || !strings.Contains(rest[2], ".progress-") {
 		t.Errorf("fifo argument = %q, want a file:-prefixed path inside %q under a .progress- directory", rest[2], jobDir)
 	}
-	if got := rest[3:]; len(got) != 2 || got[0] != "-i" || got[1] != "in.mp4" {
-		t.Errorf("caller args = %v, want [-i in.mp4] preserved after the progress pair", got)
+	if got := rest[3:]; len(got) != 3 || got[0] != "-i" || got[1] != "in.mp4" || got[2] != outPath {
+		t.Errorf("caller args = %v, want [-i in.mp4 %s] preserved after the progress pair", got, outPath)
 	}
 
 	// No ".progress-" entry remains in the job directory once stream has
@@ -298,7 +299,7 @@ func TestEngineExecStream_UnconfinedRunsDirectlyWithProgressFirst(t *testing.T) 
 	fifoDir := t.TempDir()
 	var lines []string
 	if _, err := x.stream(context.Background(), func(l string) { lines = append(lines, l) },
-		fifoDir, "directffmpeg", []string{"-i", "in.mp4"}); err != nil {
+		fifoDir, "directffmpeg", []string{"-i", "in.mp4", filepath.Join(fifoDir, "out.mp4")}); err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	if len(lines) != 2 || lines[0] != "out_time_us=1000000" || lines[1] != "progress=end" {
