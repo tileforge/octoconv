@@ -172,6 +172,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleAVConvert never reads it
 		0,   // presignTTL — webhook-only; HandleAVConvert never reads it
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd (worker.go:350-355); AV's duration/resolution guard is self-contained inside AVConverter.Convert, not spliced through this parameter
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// PROG-03: install the throttle BEFORE srv.Start(mux) below -- the point

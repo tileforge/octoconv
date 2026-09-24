@@ -511,7 +511,7 @@ func TestEnforceAudioGuardBeforeConvert_IN02(t *testing.T) {
 	defer cancel()
 
 	// Ceiling of 1s is well below jfk.wav's ~11s declared duration.
-	err := enforceAudioGuardBeforeConvert(ctx, convert.EngineAudio, fixture, 1*time.Second, convertFn)
+	err := enforceAudioGuardBeforeConvert(ctx, convert.EngineAudio, fixture, 1*time.Second, nil, convertFn)
 	if err == nil {
 		t.Fatal("enforceAudioGuardBeforeConvert(over-ceiling audio) = nil, want ErrAudioDurationExceeded")
 	}
@@ -529,7 +529,7 @@ func TestEnforceAudioGuardBeforeConvert_IN02(t *testing.T) {
 	// (0, the zero value every non-audio worker cmd passes) must NOT reject
 	// an image/document/html job — convertFn always runs.
 	convertCalled = false
-	if err := enforceAudioGuardBeforeConvert(ctx, convert.EngineImage, fixture, 0, convertFn); err != nil {
+	if err := enforceAudioGuardBeforeConvert(ctx, convert.EngineImage, fixture, 0, nil, convertFn); err != nil {
 		t.Fatalf("enforceAudioGuardBeforeConvert(non-audio engine) = %v, want nil (guard must not run)", err)
 	}
 	if !convertCalled {
@@ -556,7 +556,7 @@ func TestEnforceAudioGuardProbeExpiryTransient_WR02(t *testing.T) {
 	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
-	err := enforceAudioGuardBeforeConvert(expiredCtx, convert.EngineAudio, fixture, 4*time.Hour, func() error {
+	err := enforceAudioGuardBeforeConvert(expiredCtx, convert.EngineAudio, fixture, 4*time.Hour, nil, func() error {
 		convertCalled = true
 		return nil
 	})

@@ -168,6 +168,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleOCRConvert never reads it
 		0,   // presignTTL — webhook-only; HandleOCRConvert never reads it
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd (worker.go); OCR's guards are self-contained inside OCRConverter.Convert, not spliced through this parameter
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// SC4 (44-CONTEXT.md): install the throttle BEFORE srv.Start(mux) below --

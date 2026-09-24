@@ -77,6 +77,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleAudioConvert never reads it
 		0,   // presignTTL — webhook-only; HandleAudioConvert never reads it
 		envDurationSeconds("AUDIO_MAX_DURATION_SECONDS", 4*time.Hour),
+		nil, // audioSandboxHelper — Task 3 (this plan) replaces this with the resolved sandbox helper
 	)
 
 	// D-04/D-05: the stale-job sweep loop runs solely in cmd/webhook-worker

@@ -240,6 +240,7 @@ func main() {
 		nil, // signingSecret — webhook-only
 		0,   // presignTTL — webhook-only
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// TectonicConverter does not implement convert.ProgressConverter, so this

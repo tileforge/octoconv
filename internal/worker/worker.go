@@ -681,6 +681,16 @@ type Handler struct {
 	// convert.EngineAudio, so image/document/html/webhook workers never read
 	// this field. The real value is wired by the audio worker cmd (Plan 04).
 	audioMaxDuration time.Duration
+	// audioSandboxHelper is the audio worker's own sandbox helper argv
+	// prefix (Phase 68 Plan 05, orchestrator decision 1). nil for every
+	// worker cmd but audio, and nil for audio too when
+	// AUDIO_SANDBOX_DISABLED=true. Threaded the same way audioMaxDuration
+	// already is (cmd/audio-worker -> NewHandler -> this field -> NewRunner
+	// -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert ->
+	// convert.EnforceMaxDuration) so the guard's ffprobe -- the first engine
+	// to read the client's file, before Convert ever runs -- confines under
+	// the SAME ruleset the converter's own two stages use.
+	audioSandboxHelper []string
 	// progressMinInterval / progressMinDeltaPct are the PROG-03 dual-gate
 	// throttle config (D-03), installed via SetProgressThrottle after
 	// construction. progressMinInterval <= 0 (the zero value every worker cmd
@@ -757,7 +767,7 @@ func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int
 // interfaces (D-10 step 1): both concrete types satisfy those interfaces
 // structurally, so no production wiring changes, and no external package
 // gains a way to inject an alternative store (T-56-01).
-func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration) *Handler {
+func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration, audioSandboxHelper []string) *Handler {
 	if engineTimeout == 0 {
 		engineTimeout = 120 * time.Second
 	}
@@ -767,16 +777,17 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		presignTTL = 6 * time.Hour
 	}
 	h := &Handler{
-		repo:             repo,
-		store:            store,
-		registry:         registry,
-		engineTimout:     engineTimeout,
-		webhookRepo:      webhookRepo,
-		deliverer:        deliverer,
-		enqueuer:         enqueuer,
-		signingSecret:    signingSecret,
-		presignTTL:       presignTTL,
-		audioMaxDuration: audioMaxDuration,
+		repo:               repo,
+		store:              store,
+		registry:           registry,
+		engineTimout:       engineTimeout,
+		webhookRepo:        webhookRepo,
+		deliverer:          deliverer,
+		enqueuer:           enqueuer,
+		signingSecret:      signingSecret,
+		presignTTL:         presignTTL,
+		audioMaxDuration:   audioMaxDuration,
+		audioSandboxHelper: audioSandboxHelper,
 	}
 	// processFn defaults to h.process (D-10): the struct literal above cannot
 	// reference h while h is still being constructed, so the method value is
@@ -1100,13 +1111,19 @@ const audioProbeTimeout = 15 * time.Second
 // constructed in a pure unit test. A rejection here surfaces as
 // ErrAudioDurationExceeded, unwrapped, which isAudioTerminal classifies
 // terminal.
-func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, audioMaxDuration time.Duration, convertFn func() error) error {
+func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, audioMaxDuration time.Duration, audioSandboxHelper []string, convertFn func() error) error {
 	if engine == convert.EngineAudio {
 		// WR-02/T-30-03: derive a short probe-only deadline from the
 		// whole-attempt ctx rather than passing it through — ProbeDuration
 		// must never run under the full AUDIO_ENGINE_TIMEOUT budget.
+		//
+		// audioSandboxHelper (Phase 68 Plan 05, orchestrator decision 1):
+		// this ffprobe call reads the client's file BEFORE Convert ever
+		// runs, so it confines under the same ruleset the converter's own
+		// two stages use -- nil is the zero-value/unconfined contract every
+		// other guard/engine call in this codebase already carries.
 		probeCtx, cancel := context.WithTimeout(ctx, audioProbeTimeout)
-		err := convert.EnforceMaxDuration(probeCtx, inPath, audioMaxDuration)
+		err := convert.EnforceMaxDuration(probeCtx, audioSandboxHelper, inPath, audioMaxDuration)
 		cancel()
 		if err != nil {
 			return err
