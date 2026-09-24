@@ -5,16 +5,16 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 68
 current_phase_name: Four Straightforward Engine Classes
 status: executing
-stopped_at: Completed 68-03-PLAN.md
-last_updated: "2026-09-24T01:03:32.624Z"
+stopped_at: Completed 68-04-PLAN.md
+last_updated: "2026-09-24T01:59:42.132Z"
 last_activity: 2026-09-24
 last_activity_desc: Phase 68 execution started
-state_head: 2baa70599580f60308b5aff2e48c77236c99a36f
+state_head: 777ac285e01fed220cbf0529836ba11f62f94217
 progress:
   total_phases: 4
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
   percent: 25
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 ## Current Position
 
 Phase: 68 (Four Straightforward Engine Classes) — EXECUTING
-Plan: 4 of 6
+Plan: 5 of 6
 Status: Ready to execute
 Last activity: 2026-09-24 — Phase 68 execution started
 
@@ -115,6 +115,7 @@ Last activity: 2026-09-24 — Phase 68 execution started
 | Phase 68 P01 | 75min | 3 tasks | 16 files |
 | Phase 68 P02 | 31min | 3 tasks | 3 files |
 | Phase 68 P03 | 25min | 3 tasks | 9 files |
+| Phase 68 P04 | 60min | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -150,6 +151,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 68]: 68-02: OCR's proven set keeps /usr/share/fonts (necessary -- without it pdftoppm+tesseract silently degrade to empty OCR text at exit 0) but drops /etc/fonts, /usr/share/fontconfig/conf.avail and the empty /usr/local/share/fonts — necessity-by-removal, judged by content not exit code
 - [Phase 68]: 68-02: audio's model grant moves from the /models directory to the resolved /models/ggml-base.bin file, granted at run time; ffprobe added to the engine set to cover the pre-Convert duration guard — AUDIO_MODEL_PATH is configurable and not known at Go-var-declaration time
 - [Phase 68]: OCR's six engine call sites (spanning ocr.go/ocrpdf.go/ocrguards.go) share one per-job engineExec via an explicit x engineExec parameter, not a Sandbox-field lookup per file — keeps every free function testable with a bare engineExec{} (unconfined), byte-identical to the pre-Phase-68 runCommand calls, and is the shape plan 04 (av, five call sites across two files) reuses directly
+- [Phase 68]: AV: engineExec built once per job in avPrepareConversion and threaded through every ffprobe/ffmpeg call site (probe, transcode, audio-extract, thumbnail)
+- [Phase 68]: AV: progress FIFO directory moved inside the job directory; -progress option folded into the engine's own argv BEFORE sandbox wrapping (engineExec.stream), never after
+- [Phase 68]: AV: EnforceMaxDuration keeps its exported signature this plan (calls probeDuration with engineExec{}); plan 05 threads the audio worker's own sandbox handle into it
 
 ### Quick Tasks Completed
 
@@ -280,8 +284,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-24T01:03:32.596Z
-Stopped at: Completed 68-03-PLAN.md
+Last session: 2026-09-24T01:59:42.098Z
+Stopped at: Completed 68-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
