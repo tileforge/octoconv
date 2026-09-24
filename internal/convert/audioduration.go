@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -99,6 +100,17 @@ func probeDuration(ctx context.Context, x engineExec, path string) (time.Duratio
 // is a plain parameter, NOT read from any env var here -- the API layer
 // wires AUDIO_MAX_DURATION_SECONDS in a later out-of-scope phase.
 //
+// Phase 68 Plan 05 (orchestrator decision 1): this guard runs on the
+// client's file BEFORE any other engine does (internal/worker, before
+// Convert ever runs) -- the first engine to read untrusted input for this
+// class -- so it runs under the SAME audio ruleset the converter's own two
+// stages use, built here from helper (nil means unconfined, matching every
+// other engine class's zero-value contract) and this file's own
+// audioReadOnly/audioEngines (audiosandbox.go). helper travels the same way
+// audioMaxDuration already does: cmd/audio-worker -> NewHandler ->
+// Handler.audioSandboxHelper -> NewRunner -> audioPreConvertGuard ->
+// enforceAudioGuardBeforeConvert -> here.
+//
 // Accepted residual risk (T-30, SC5): this guard rejects an oversized
 // DECLARED duration, but cannot detect hallucination-on-silence -- whisper
 // exits 0 with a structurally-valid transcript even on silence/music/noise,
@@ -107,8 +119,9 @@ func probeDuration(ctx context.Context, x engineExec, path string) (time.Duratio
 // only per-token confidence available is "p" under -ojf, a token
 // probability, not a segment-level no-speech signal). Do not attempt
 // hallucination detection/mitigation as part of this guard.
-func EnforceMaxDuration(ctx context.Context, path string, max time.Duration) error {
-	d, err := probeDuration(ctx, engineExec{}, path)
+func EnforceMaxDuration(ctx context.Context, helper []string, path string, max time.Duration) error {
+	x := newEngineSandbox(helper).forJob(filepath.Dir(path), audioReadOnly, audioEngines)
+	d, err := probeDuration(ctx, x, path)
 	if err != nil {
 		return err
 	}
