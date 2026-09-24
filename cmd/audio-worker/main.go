@@ -24,13 +24,96 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// audioSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors avSandboxDisabledEnv/
+// ocrSandboxDisabledEnv: a deployment gets an unconfined engine only by
+// saying so.
+const audioSandboxDisabledEnv = "AUDIO_SANDBOX_DISABLED"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec ffmpeg/whisper-cli, not connect to Postgres and start
+	// a worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine ffmpeg/whisper-cli -- AND the duration guard's ffprobe, the
+	// first engine to read the client's file, before Convert ever runs --
+	// must not consume a queue. The paths it grants were MEASURED, not
+	// reasoned: see .planning/research/SANDBOX-PATHS.md and audioReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(audioSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("audio sandbox: %v", err)
+	}
+
+	// AUD-05/D-01: AUDIO_MODEL_PATH is read ONLY here (env-only-in-main,
+	// mirroring VERAPDF_TIMEOUT's threading into internal/convert) and
+	// injected via a setter -- internal/convert never calls os.Getenv
+	// directly. Moved ahead of db.Connect (Phase 68): the preflight below
+	// must load the SAME model production jobs use, so this must already be
+	// in place before it runs. stripInlineComment (WR-06): non-shell
+	// env-file loaders (docker --env-file, compose env_file:, k8s
+	// configmaps) do NOT strip trailing "# comment" text, which would hand
+	// whisper-cli a garbage -m path — same defense firstField provides for
+	// the numeric/duration envs, but conservative enough to keep paths with
+	// spaces working.
+	convert.SetAudioModelPath(stripInlineComment(os.Getenv("AUDIO_MODEL_PATH")))
+
+	// T-32-04/AUD-06/AUD-07 SC4: size whisper-cli's --threads to the
+	// container's real cgroup CPU quota, not host core count (PITFALLS.md
+	// Pitfall 5) -- same env-only-in-main + setter convention as
+	// AUDIO_MODEL_PATH above. Moved ahead of db.Connect (Phase 68) for the
+	// same reason: the preflight's real conversion must use the same thread
+	// count jobs use. Logged at startup: this is operator-visible evidence
+	// the RTF measurement and Phase 33 depend on.
+	threads, threadSource := resolveAudioThreads()
+	convert.SetAudioThreads(threads)
+	log.Printf("🧵 audio threads=%d (source=%s)", threads, threadSource)
+
+	// D-09/Pitfall 4-style (Phase 68, mirrors cmd/av-worker/main.go): build a
+	// CONFIGURED, sandbox-wired AudioConverter and re-register it, overriding
+	// the zero-value registration converters.go's init() already performed
+	// (documented last-write-wins semantics, Registry.Replace). This MUST
+	// run before srv.Start(mux) below: that is the point asynq's worker
+	// goroutines begin concurrently reading the registered converter, so
+	// this single write must happen-before every concurrent read (no mutex
+	// needed, same happens-before boundary as AUDIO_MODEL_PATH/AUDIO_THREADS
+	// above).
+	conv := convert.AudioConverter{}.WithSandbox(sandboxHelper)
+	convert.Default.Replace(conv)
+
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", audioSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 audio sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the engine can actually be EXECUTED under the ruleset, along the
+	// path a real job takes: the pre-Convert ffprobe duration guard (the
+	// SAME exported EnforceMaxDuration entry point internal/worker calls),
+	// both converter stages, and a denial from outside the job directory
+	// (CONF-04). 120s: this preflight loads the whisper.cpp model and runs a
+	// real transcription, heavier than pandoc's/av's own preflights.
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 120*time.Second)
+	if err := convert.AudioPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("audio sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 audio sandbox proven: the engine converted inside the job directory and was denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -77,38 +160,13 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleAudioConvert never reads it
 		0,   // presignTTL — webhook-only; HandleAudioConvert never reads it
 		envDurationSeconds("AUDIO_MAX_DURATION_SECONDS", 4*time.Hour),
-		nil, // audioSandboxHelper — Task 3 (this plan) replaces this with the resolved sandbox helper
+		sandboxHelper, // audioSandboxHelper — the SAME variable the converter received above, so the guard and the converter cannot disagree
 	)
 
 	// D-04/D-05: the stale-job sweep loop runs solely in cmd/webhook-worker
 	// (under a Postgres advisory lock) — no sweeper of any kind is
 	// constructed or run here, avoiding a double-sweep race between
 	// independent sweep loops recovering the same stranded job.
-
-	// AUD-05/D-01: AUDIO_MODEL_PATH is read ONLY here (env-only-in-main,
-	// mirroring VERAPDF_TIMEOUT's threading into internal/convert) and
-	// injected via a setter -- internal/convert never calls os.Getenv
-	// directly. This MUST run before srv.Start(mux) below: that is the
-	// point asynq's worker goroutines begin concurrently reading
-	// audioModelPath, so this single write must happen-before every
-	// concurrent read (no mutex needed). stripInlineComment (WR-06): non-
-	// shell env-file loaders (docker --env-file, compose env_file:, k8s
-	// configmaps) do NOT strip trailing "# comment" text, which would hand
-	// whisper-cli a garbage -m path — same defense firstField provides for
-	// the numeric/duration envs, but conservative enough to keep paths with
-	// spaces working.
-	convert.SetAudioModelPath(stripInlineComment(os.Getenv("AUDIO_MODEL_PATH")))
-
-	// T-32-04/AUD-06/AUD-07 SC4: size whisper-cli's --threads to the
-	// container's real cgroup CPU quota, not host core count (PITFALLS.md
-	// Pitfall 5) -- same env-only-in-main + setter convention as
-	// AUDIO_MODEL_PATH above, and the same happens-before boundary (must
-	// run before srv.Start(mux) below, the point asynq's worker goroutines
-	// begin concurrently reading audioThreads). Logged at startup: this is
-	// operator-visible evidence the RTF measurement and Phase 33 depend on.
-	threads, threadSource := resolveAudioThreads()
-	convert.SetAudioThreads(threads)
-	log.Printf("🧵 audio threads=%d (source=%s)", threads, threadSource)
 
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(queue.TypeAudioConvert, worker.NewRunner(h, worker.AudioDescriptor).Handle)
