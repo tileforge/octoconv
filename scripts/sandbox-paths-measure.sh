@@ -88,10 +88,17 @@ trace)
   # Only a completed call with a non-negative result counts. An errno, or a
   # line strace split across <unfinished>/<resumed>, is a path the engine did
   # not get -- and the second kind carries no result to filter on.
+  # `|| true` on the whole pipeline: a statically-linked engine (pandoc) can
+  # legitimately open NOTHING outside the job directory, and both `grep`
+  # stages exit 1 on zero matches. Under `pipefail` that failure propagated
+  # from an EARLIER stage aborted the whole script before it ever printed
+  # the trailing "NOT shown, and needed anyway" note or cleaned up
+  # .trace.* -- found live while re-measuring phase 68 (a genuinely empty
+  # result is success, not an error).
   cat "$jobdir"/.trace.* \
     | grep -oE 'openat?\([^,]*, "[^"]+"[^)]*\) *= *[0-9]+' \
     | sed 's/.*"\(.*\)".*/\1/' \
-    | grep '^/' | grep -v '^/job/' | sort -u > "$jobdir/.paths"
+    | grep '^/' | grep -v '^/job/' | sort -u > "$jobdir/.paths" || true
 
   docker run --rm -v "$jobdir:/job" --entrypoint sh "$image" -c '
     while IFS= read -r p; do
