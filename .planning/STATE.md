@@ -5,15 +5,15 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 69
 current_phase_name: HTML, Probe & the /tmp Decision
 status: planning
-stopped_at: Phase 68 complete, ready to plan Phase 69
-last_updated: "2026-09-24T10:03:24.713Z"
+stopped_at: Phase 69 context gathered
+last_updated: "2026-09-25T20:41:54.024Z"
 last_activity: 2026-09-24
 last_activity_desc: Phase 68 complete, transitioned to Phase 69
-state_head: 7c37b30779128a6a71b36b381c40401f42c529e4
+state_head: 9e058e733b665cec0a4fb70a4ba44b8bd097c274
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 8
+  total_plans: 6
   completed_plans: 8
   percent: 50
 ---
@@ -289,9 +289,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-24T03:14:42.227Z
-Stopped at: Phase 68 complete, ready to plan Phase 69
-Resume file: None
+Last session: 2026-09-25T20:41:53.969Z
+Stopped at: Phase 69 context gathered
+Resume file: .planning/phases/69-html-probe-the-tmp-decision/69-CONTEXT.md
 
 ## Operator Next Steps
 
