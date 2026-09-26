@@ -5,17 +5,17 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 69
 current_phase_name: HTML, Probe & the /tmp Decision
 status: executing
-stopped_at: Phase 69 context gathered
-last_updated: "2026-09-26T01:10:43.525Z"
-last_activity: 2026-09-24
-last_activity_desc: Phase 68 complete, transitioned to Phase 69
-state_head: b4153083591cb538266b45dbfd7f1299ce8cbe3d
+stopped_at: Completed 69-01-PLAN.md
+last_updated: "2026-09-26T16:13:05.686Z"
+last_activity: 2026-09-26
+last_activity_desc: Phase 69 execution started
+state_head: b29725fa9c4c35121a44f777c3a94ff6bd4603ae
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 9
   completed_plans: 8
-  percent: 25
+  percent: 50
 ---
 
 # Project State
@@ -25,14 +25,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 68 — Four Straightforward Engine Classes
+**Current focus:** Phase 69 — HTML, Probe & the /tmp Decision
 
 ## Current Position
 
-Phase: 69 (HTML, Probe & the /tmp Decision) — READY TO EXECUTE
-Plan: Not started
+Phase: 69 (HTML, Probe & the /tmp Decision) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-09-24 — Phase 68 complete, transitioned to Phase 69
+Last activity: 2026-09-26 — Phase 69 execution started
 
 ## Performance Metrics
 
@@ -119,6 +119,7 @@ Last activity: 2026-09-24 — Phase 68 complete, transitioned to Phase 69
 | Phase 68 P04 | 60min | 3 tasks | 12 files |
 | Phase 68 P05 | ~55min | 3 tasks | 20 files |
 | Phase 68 P06 | 28min | 3 tasks | 4 files |
+| Phase 69 P01 | 95min | 3 tasks | 20 files |
 
 ## Accumulated Context
 
@@ -159,6 +160,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 68]: AV: EnforceMaxDuration keeps its exported signature this plan (calls probeDuration with engineExec{}); plan 05 threads the audio worker's own sandbox handle into it
 - [Phase 68]: The pre-Convert audio duration guard's ffprobe is confined by threading a sandbox helper through Handler.audioSandboxHelper the same way audioMaxDuration already travels (NewHandler -> NewRunner -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert -> convert.EnforceMaxDuration); cmd/audio-worker hands the converter and NewHandler the SAME helper variable so they cannot disagree.
 - [Phase 68]: Coverage-as-a-class AST test holds all of internal/convert to engineExec routing; conf05-crosscheck all four classes MATCH; docker compose down -v replaced with down (no -v) for the mid-sequence teardown per sandbox/environment constraints — Prevents future unclassified/unconfined engine execs by construction rather than by per-class review; -v teardown avoided to preserve volumes and respect sandbox denial of irreversible destruction
+- [Phase 69]: 69-01: html keeps /tmp read-write (chromium's shared memory, TMPDIR does not move it) -- concurrency capped to 1 while confined, held by a startup guard (D-03) and a pre-task sweep (D-04), not a comment
+- [Phase 69]: 69-01: forJob generalised into forJobRW (a class-shared writable path beyond the job directory); engineExec gained a replaceable, allowlisted environment (withEnv/engineEnv) so a class whose grant includes /proc never leaks secrets via /proc/self/environ
+- [Phase 69]: 69-01: HTMLPreflight judges confinement by the produced PDF's /Title field, never by chromium's exit status (it exits 0 and writes a blank PDF when denied, D-06/D-07); the negative run points the engine itself outside every grant since Convert copies its input into the job directory first
 
 ### Quick Tasks Completed
 
@@ -289,9 +293,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-25T20:41:53.969Z
-Stopped at: Phase 69 context gathered
-Resume file: .planning/phases/69-html-probe-the-tmp-decision/69-CONTEXT.md
+Last session: 2026-09-26T16:13:05.643Z
+Stopped at: Completed 69-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
