@@ -97,7 +97,7 @@ Plans:
 Plans:
 **Wave 1**
 
-- [ ] 69-01-PLAN.md — сначала решение по `/tmp` в SANDBOX-PATHS.md (D-01…D-05 с замерами), затем tracer `html`: ruleset с общими путями записи (forJobRW), окружение движка по списку, проверка параллельности и очистка `/tmp` перед задачей, preflight по `/Title`, воркер, compose/чарт, живой гейт
+- [x] 69-01-PLAN.md — сначала решение по `/tmp` в SANDBOX-PATHS.md (D-01…D-05 с замерами), затем tracer `html`: ruleset с общими путями записи (forJobRW), окружение движка по списку, проверка параллельности и очистка `/tmp` перед задачей, preflight по `/Title`, воркер, compose/чарт, живой гейт
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
