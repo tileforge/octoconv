@@ -330,3 +330,204 @@ func TestEngineExecKilledOnContextDeadline(t *testing.T) {
 		t.Errorf("err = %v, want errors.Is context.DeadlineExceeded", err)
 	}
 }
+
+// A confined forJobRW run grants rw:<job dir>, then rw: for every extraRW
+// path IN THE ORDER GIVEN -- CONF-06's html/tmp decision depends on that
+// order being stable and on jobDir always coming first. forJob (no extras)
+// stays byte-identical: exactly one rw: token, the job directory.
+func TestEngineExecRWGrantsJobDirThenExtrasInOrder(t *testing.T) {
+	helper, calls := fakeSandboxHelper(t)
+	dir := t.TempDir()
+	fakeEngine(t, dir, "fakeengine", "echo ok\n")
+	pathWith(t, dir)
+
+	s := &engineSandbox{Helper: helper, Confine: true}
+	jobDir := t.TempDir()
+
+	x := s.forJobRW(jobDir, []string{"/extra1", "/extra2"}, nil, []string{"fakeengine"})
+	if _, err := x.run(context.Background(), "fakeengine"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	invocations := calls()
+	if len(invocations) != 1 {
+		t.Fatalf("helper invoked %d time(s), want 1: %v", len(invocations), invocations)
+	}
+	argv := invocations[0]
+	sep := indexOf(argv, "--")
+	if sep < 0 {
+		t.Fatalf("no -- separator in %v", argv)
+	}
+	var rw []string
+	for _, tok := range argv[1:sep] {
+		if strings.HasPrefix(tok, "rw:") {
+			rw = append(rw, strings.TrimPrefix(tok, "rw:"))
+		}
+	}
+	want := []string{jobDir, "/extra1", "/extra2"}
+	if len(rw) != len(want) {
+		t.Fatalf("rw tokens = %v, want %v", rw, want)
+	}
+	for i := range want {
+		if rw[i] != want[i] {
+			t.Errorf("rw[%d] = %q, want %q", i, rw[i], want[i])
+		}
+	}
+
+	// forJob unchanged: exactly one rw: token, the job dir.
+	x2 := s.forJob(jobDir, nil, []string{"fakeengine"})
+	if _, err := x2.run(context.Background(), "fakeengine"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	invocations = calls()
+	argv2 := invocations[len(invocations)-1]
+	sep2 := indexOf(argv2, "--")
+	var rw2 []string
+	for _, tok := range argv2[1:sep2] {
+		if strings.HasPrefix(tok, "rw:") {
+			rw2 = append(rw2, strings.TrimPrefix(tok, "rw:"))
+		}
+	}
+	if len(rw2) != 1 || rw2[0] != jobDir {
+		t.Errorf("forJob's rw tokens = %v, want exactly [%s]", rw2, jobDir)
+	}
+}
+
+// engineExec.withEnv REPLACES the engine's environment entirely -- not a
+// merge -- both directly (unconfined) and through the real helper path
+// (confined), which inherits the replaced environment across its own exec.
+func TestEngineExecEnvReplacesTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("DATABASE_URL", "secret-canary")
+	dir := t.TempDir()
+	fakeEngine(t, dir, "envengine", "env\n")
+	pathWith(t, dir)
+
+	runWith := func(s *engineSandbox) string {
+		// PATH includes /usr/bin:/bin too -- the fake engine's own script
+		// calls the external `env` binary to dump its environment, and that
+		// binary must itself be resolvable under the REPLACED environment
+		// this test is proving.
+		x := s.forJob(t.TempDir(), nil, []string{"envengine"}).withEnv([]string{"PATH=" + dir + ":/usr/bin:/bin", "ONLY=1"})
+		out, err := x.run(context.Background(), "envengine")
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		return string(out)
+	}
+
+	var unconfined *engineSandbox
+	if out := runWith(unconfined); !strings.Contains(out, "ONLY=1") || strings.Contains(out, "DATABASE_URL") {
+		t.Errorf("unconfined output = %q, want ONLY=1 present and DATABASE_URL absent", out)
+	}
+
+	helper, _ := fakeSandboxHelper(t)
+	confined := &engineSandbox{Helper: helper, Confine: true}
+	if out := runWith(confined); !strings.Contains(out, "ONLY=1") || strings.Contains(out, "DATABASE_URL") {
+		t.Errorf("confined output = %q, want ONLY=1 present and DATABASE_URL absent", out)
+	}
+}
+
+// Without withEnv, every phase-68 class is unchanged: the fake engine still
+// sees this process's own environment (DATABASE_URL included).
+func TestEngineExecNilEnvInherits(t *testing.T) {
+	t.Setenv("DATABASE_URL", "secret-canary")
+	dir := t.TempDir()
+	fakeEngine(t, dir, "envengine2", "env\n")
+	pathWith(t, dir)
+
+	var s *engineSandbox
+	x := s.forJob(t.TempDir(), nil, []string{"envengine2"})
+	out, err := x.run(context.Background(), "envengine2")
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(string(out), "DATABASE_URL=secret-canary") {
+		t.Errorf("output = %q, want it to contain the inherited DATABASE_URL", out)
+	}
+}
+
+// engineEnv is an allowlist: PATH/HOME/LANG/LC_ALL only when set, TMPDIR
+// only when requested, and never a secret -- the same answer tectonicEnv
+// already gives, reused here for html.
+func TestEngineEnvIsAnAllowlist(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("HOME", "/home/tester")
+	t.Setenv("LANG", "en_US.UTF-8")
+	t.Setenv("LC_ALL", "en_US.UTF-8")
+	t.Setenv("DATABASE_URL", "secret-canary")
+	t.Setenv("S3_SECRET_KEY", "secret-canary-2")
+
+	env := engineEnv("")
+	for _, want := range []string{"PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8"} {
+		if indexOf(env, want) < 0 {
+			t.Errorf("engineEnv(\"\") = %v, missing %q", env, want)
+		}
+	}
+	for _, bad := range []string{"DATABASE_URL=", "S3_SECRET_KEY=", "TMPDIR="} {
+		for _, e := range env {
+			if strings.HasPrefix(e, bad) {
+				t.Errorf("engineEnv(\"\") leaked %q", e)
+			}
+		}
+	}
+
+	env2 := engineEnv("/job/tmp")
+	if len(env2) == 0 || env2[len(env2)-1] != "TMPDIR=/job/tmp" {
+		t.Errorf("engineEnv(\"/job/tmp\") = %v, want it to end with TMPDIR=/job/tmp", env2)
+	}
+}
+
+// sharedTmpGuard fires ONLY when all three hold: confined, the writable set
+// grants sharedTmpDir, and concurrency > 1 -- keyed on the GRANT SET, never
+// on a class name (CONF-06).
+func TestSharedTmpGuard(t *testing.T) {
+	confined := &engineSandbox{Helper: []string{"helper"}, Confine: true}
+	var unconfined *engineSandbox
+
+	cases := []struct {
+		name        string
+		readWrite   []string
+		sandbox     *engineSandbox
+		concurrency int
+		wantErr     bool
+	}{
+		{"confined shared /tmp concurrency 2", []string{"/tmp", "/dev/null"}, confined, 2, true},
+		{"confined shared /tmp concurrency 1", []string{"/tmp", "/dev/null"}, confined, 1, false},
+		{"unconfined shared /tmp concurrency 2", []string{"/tmp"}, unconfined, 2, false},
+		{"confined without /tmp concurrency 4 (empty)", nil, confined, 4, false},
+		{"confined without /tmp concurrency 4 (/dev/null only)", []string{"/dev/null"}, confined, 4, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := sharedTmpGuard(c.readWrite, c.sandbox, c.concurrency, "X_CONCURRENCY")
+			if c.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				if !strings.Contains(err.Error(), "X_CONCURRENCY=2") || !strings.Contains(err.Error(), "shared /tmp") {
+					t.Errorf("err = %q, missing expected substrings", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// engineExec.stream refuses a per-exec environment outright rather than
+// silently dropping it -- runCommandStreaming has no env parameter, so a
+// caller that opted into withEnv and then streamed would otherwise run the
+// engine with the WRONG (inherited) environment.
+func TestEngineExecStreamRefusesAnEnv(t *testing.T) {
+	dir := t.TempDir()
+	fakeEngine(t, dir, "streamengine", "echo should-not-run\n")
+	pathWith(t, dir)
+
+	var s *engineSandbox
+	jobDir := t.TempDir()
+	x := s.forJob(jobDir, nil, []string{"streamengine"}).withEnv([]string{"ONLY=1"})
+	if _, err := x.stream(context.Background(), func(string) {}, jobDir, "streamengine", nil); err == nil {
+		t.Fatal("expected an error: stream must refuse a per-exec environment rather than silently drop it")
+	}
+}

@@ -117,6 +117,100 @@ func TestPreflightWorkspacePlaceWritesIdenticalBytesToBothDirs(t *testing.T) {
 	}
 }
 
+// requireAbsent is the marker judgment on its own -- html's own negative
+// preflight run cannot go through requireDenied's convErr check (chromium
+// exits 0 and writes a blank PDF when denied, D-06), so this is what
+// HTMLPreflight judges the effectiveness run with.
+func TestRequireAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := requireAbsent(filepath.Join(dir, "missing"), []byte("marker")); err != nil {
+		t.Errorf("missing file: %v, want nil (a clean denial)", err)
+	}
+
+	clean := filepath.Join(dir, "clean")
+	if err := os.WriteFile(clean, []byte("nothing of interest here"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := requireAbsent(clean, []byte("the-marker")); err != nil {
+		t.Errorf("file without marker: %v, want nil", err)
+	}
+
+	leaked := filepath.Join(dir, "leaked")
+	if err := os.WriteFile(leaked, []byte("leaked the-marker anyway"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := requireAbsent(leaked, []byte("the-marker")); err == nil {
+		t.Error("file carrying the marker: expected an error")
+	}
+
+	if err := requireAbsent(filepath.Join(dir, "irrelevant"), nil); err == nil {
+		t.Error("nil marker: expected an error -- a denial judged without one proves nothing")
+	}
+}
+
+// newPreflightWorkspaceOutside places the outside directory under the given
+// base rather than always os.TempDir() -- html's own grant includes /tmp, so
+// its preflight needs an outside location its ruleset does not also read.
+func TestPreflightWorkspaceOutsideBase(t *testing.T) {
+	base := t.TempDir()
+	w, cleanup, err := newPreflightWorkspaceOutside("testclass", base)
+	if err != nil {
+		t.Fatalf("newPreflightWorkspaceOutside: %v", err)
+	}
+
+	if !strings.HasPrefix(w.outsideDir, base) {
+		t.Errorf("outsideDir %q is not under base %q", w.outsideDir, base)
+	}
+	if strings.HasPrefix(w.jobDir, base) {
+		t.Errorf("jobDir %q unexpectedly landed under base %q -- only outsideDir should move", w.jobDir, base)
+	}
+	if _, err := os.Stat(w.jobDir); err != nil {
+		t.Errorf("jobDir does not exist: %v", err)
+	}
+	if _, err := os.Stat(w.outsideDir); err != nil {
+		t.Errorf("outsideDir does not exist: %v", err)
+	}
+
+	cleanup()
+	if _, err := os.Stat(w.jobDir); !os.IsNotExist(err) {
+		t.Error("cleanup did not remove jobDir")
+	}
+	if _, err := os.Stat(w.outsideDir); !os.IsNotExist(err) {
+		t.Error("cleanup did not remove outsideDir")
+	}
+}
+
+// requireOutsideGrants proves the workspace's outside directory is not
+// itself readable under any granted set -- equal to or beneath a grant is an
+// error; a sibling that merely shares a string prefix, or an unrelated path,
+// is not.
+func TestRequireOutsideGrants(t *testing.T) {
+	cases := []struct {
+		name    string
+		outside string
+		granted []string
+		wantErr bool
+	}{
+		{"equal to a granted path", "/a/b", []string{"/a/b"}, true},
+		{"beneath a granted path", "/a/b/c", []string{"/a/b"}, true},
+		{"sibling sharing a mere string prefix", "/a/bc", []string{"/a/b"}, false},
+		{"unrelated", "/x/y", []string{"/a/b"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := preflightWorkspace{outsideDir: c.outside}
+			err := w.requireOutsideGrants(c.granted)
+			if c.wantErr && err == nil {
+				t.Error("expected an error")
+			}
+			if !c.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestPreflightMarkerIsUniqueAndPrefixed(t *testing.T) {
 	a, err := preflightMarker()
 	if err != nil {

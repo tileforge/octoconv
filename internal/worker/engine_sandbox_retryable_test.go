@@ -24,6 +24,11 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		{"ocr", isOCRTerminal, fmt.Errorf("ocr: tesseract: %w", convert.ErrEngineSandboxUnavailable)},
 		{"av", isAVTerminal, fmt.Errorf("av: transcode: %w: %w", convert.ErrAVTranscodeFailed, convert.ErrEngineSandboxUnavailable)},
 		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", convert.ErrEngineSandboxUnavailable)},
+		// "stat output" is itself a chromium terminal signature
+		// (terminalChromiumSignatures) -- wrapping the sentinel around it is
+		// the non-vacuous case: the sentinel must win even when the wrapped
+		// text ALSO carries html's own terminal shape.
+		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", convert.ErrEngineSandboxUnavailable)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -50,6 +55,7 @@ func TestEngineSandboxControlShapesAreTerminal(t *testing.T) {
 		{"ocr", isOCRTerminal, fmt.Errorf("ocr: tesseract: %w", plain)},
 		{"av", isAVTerminal, fmt.Errorf("av: transcode: %w: %w", convert.ErrAVTranscodeFailed, plain)},
 		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", plain)},
+		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", plain)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
