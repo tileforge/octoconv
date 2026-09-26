@@ -101,7 +101,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 69-02-PLAN.md — `probe`: шесть вызовов через один engineExec, без `/tmp`, TMPDIR в окружении самого движка, scratch внутри каталога задачи, сохранение sandbox-сбоя до классификатора, preflight четырёх движков по содержимому, раздел probe исправлен по коду (D-10)
+- [x] 69-02-PLAN.md — `probe`: шесть вызовов через один engineExec, без `/tmp`, TMPDIR в окружении самого движка, scratch внутри каталога задачи, сохранение sandbox-сбоя до классификатора, preflight четырёх движков по содержимому, раздел probe исправлен по коду (D-10)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
