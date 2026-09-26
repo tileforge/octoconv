@@ -110,7 +110,7 @@ argv задачи, а не только главный движок: OCR-пов�
 | `tectonic` | — (PR #21) | **да** |
 | `image` | да | **да** (эта ветка) |
 | `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
-| `html`, `probe` | да | нет (фаза 69) |
+| `html`, `probe` | да | **да (фаза 69)** |
 | `document` | нельзя на этом хосте | нет (фаза 70) |
 
 Общая часть вынесена: `sandbox.ResolveHelper` (разрешение хелпера и отказ
@@ -122,7 +122,17 @@ preflight-набор (`sandbox.Preflight`-подобные проверки, д�
 (`internal/convert/sandboxcoverage_test.go`): любой exec движка в
 `internal/convert`, не прошедший через `engineExec`, ломает сборку, если файл
 не отнесён явно к классу будущей фазы. Каждому движку остаётся свой список
-путей и свой preflight.
+путей и свой preflight. Фаза 69 добавила к общей части `forJobRW` (класс может
+разделять с job dir ещё один writable-путь сверх самого каталога задачи —
+сегодня использует только `html`, ради `/tmp`), `engineExec.withEnv`/`engineEnv`
+(среда движка ЗАМЕНЯЕТСЯ целиком на allowlist `PATH`/`HOME`/`LANG`/`LC_ALL` +
+опциональный `TMPDIR`, никогда не наследуется процессом-воркером — нужно
+классу, чей grant включает `/proc`, иначе секреты воркера утекли бы через
+`/proc/self/environ`) и общий guard на разделяемый `/tmp`, ключ которого —
+сам GRANT SET (любой класс, чей writable-набор содержит разделяемый `/tmp`),
+а не имя класса. Allowlist `sandboxcoverage_test.go`'s `sandboxPendingFiles`
+теперь держит ровно два файла будущей фазы 70 — `libreoffice.go` и
+`verapdf.go`.
 
 ## image (libvips) — замерено и доказано 2026-09-20
 
