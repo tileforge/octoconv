@@ -29,6 +29,12 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		// the non-vacuous case: the sentinel must win even when the wrapped
 		// text ALSO carries html's own terminal shape.
 		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", convert.ErrEngineSandboxUnavailable)},
+		// The wrapped text ALSO carries ErrSanitizeMalformedInput, which
+		// classifyEngineFailure's OWN doc comment says is terminal on its
+		// own -- the non-vacuous case: the sentinel must win even when the
+		// wrapped text carries probe's own terminal shape too.
+		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w",
+			convert.ErrSanitizeMalformedInput, convert.ErrEngineSandboxUnavailable)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -56,6 +62,7 @@ func TestEngineSandboxControlShapesAreTerminal(t *testing.T) {
 		{"av", isAVTerminal, fmt.Errorf("av: transcode: %w: %w", convert.ErrAVTranscodeFailed, plain)},
 		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", plain)},
 		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", plain)},
+		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w", convert.ErrSanitizeMalformedInput, plain)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
