@@ -4,17 +4,17 @@ milestone: v1.15
 milestone_name: Engine Confinement (67–70)
 current_phase: 69
 current_phase_name: HTML, Probe & the /tmp Decision
-status: executing
-stopped_at: Completed 69-01-PLAN.md
-last_updated: "2026-09-26T19:51:58.355Z"
+status: verifying
+stopped_at: Completed 69-03-PLAN.md (phase 69 complete, ready for verification)
+last_updated: "2026-09-26T20:48:50.062Z"
 last_activity: 2026-09-26
 last_activity_desc: Phase 69 execution started
-state_head: daa1259a959245393f15b0158b3b7d3afe352d67
+state_head: 5f1cd4dfff702e087c580fcc7a8b14e05fc0cc0c
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 9
-  completed_plans: 8
+  completed_plans: 9
   percent: 50
 ---
 
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 
 Phase: 69 (HTML, Probe & the /tmp Decision) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-26 — Phase 69 execution started
 
 ## Performance Metrics
@@ -121,6 +121,7 @@ Last activity: 2026-09-26 — Phase 69 execution started
 | Phase 68 P06 | 28min | 3 tasks | 4 files |
 | Phase 69 P01 | 95min | 3 tasks | 20 files |
 | Phase 69 P02 | 51min | 3 tasks | 32 files |
+| Phase 69 P03 | 55min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-01: html keeps /tmp read-write (chromium's shared memory, TMPDIR does not move it) -- concurrency capped to 1 while confined, held by a startup guard (D-03) and a pre-task sweep (D-04), not a comment
 - [Phase 69]: 69-01: forJob generalised into forJobRW (a class-shared writable path beyond the job directory); engineExec gained a replaceable, allowlisted environment (withEnv/engineEnv) so a class whose grant includes /proc never leaks secrets via /proc/self/environ
 - [Phase 69]: 69-01: HTMLPreflight judges confinement by the produced PDF's /Title field, never by chromium's exit status (it exits 0 and writes a blank PDF when denied, D-06/D-07); the negative run points the engine itself outside every grant since Convert copies its input into the job directory first
+- [Phase 69]: [Phase 69]: 69-03: three of four required class-closure inversions performed and reverted (isProbeTerminal sentinel removal, /tmp added to probeReadWrite); the fourth (literal exec restored in chromium.go) was blocked by the harness's own security-weakening tool classifier and is tracked as an open item in WINDOWS.md
 
 ### Quick Tasks Completed
 
@@ -208,7 +210,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Blockers/Concerns
 
-None currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
+currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
 
 - Hard-ordered spine: **56 → 57 → 58 → 59**, and **56 + 57 → 60**. Phase 61 (debt tail) is fully independent and can execute in any slot.
 - **Highest-blast-radius risk is Phase 56, and it is not the refactor itself — it is metric-label drift.** The phase touches all 14 metric call sites in the same milestone that adds an `operation` dimension; the natural "let's add an `operation` label while we're here" impulse would break KEDA scale-from-zero for all seven existing engine classes. `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` must stay green, verified by diff, mirroring FAIR-02's v1.12 method.
@@ -229,6 +231,7 @@ Carried from v1.12:
 - Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
 - Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
+- 69-03: the chromium.go literal-low-level-exec inversion required by Task 2 could not be performed -- a security-weakening tool-permission denial blocked both the edit and a follow-up exploratory read. 3/4 class-closure inversions are proven; this one needs a human operator or an explicit acceptance of the Phase 68 generic self-test as substitute evidence. Tracked in WINDOWS.md.
 
 ## Deferred Items
 
@@ -294,8 +297,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-26T16:13:05.643Z
-Stopped at: Completed 69-01-PLAN.md
+Last session: 2026-09-26T20:48:50.021Z
+Stopped at: Completed 69-03-PLAN.md (phase 69 complete, ready for verification)
 Resume file: None
 
 ## Operator Next Steps
