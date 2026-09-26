@@ -251,6 +251,19 @@ func isDocumentTerminal(err error) bool {
 // timeoutIsTerminal) to the shared isTerminal (which now also checks
 // terminalChromiumSignatures).
 func isHTMLTerminal(err error) bool {
+	// Phase 69/CONF-06: a node that cannot confine the engine or sweep its
+	// shared /tmp is retried elsewhere, never blamed on the file -- checked
+	// before delegating to timeoutIsTerminal, so this sentinel is never
+	// misclassified even when the wrapped text also carries one of
+	// terminalChromiumSignatures's own substrings (e.g. "stat output").
+	// Every other confined class already has this exact guard at the top of
+	// its own classifier (isPandocTerminal/isOCRTerminal/isAVTerminal/
+	// isAudioTerminal); this was html's own accidental (not stated) safety
+	// until now, since terminalChromiumSignatures happened not to match the
+	// sentinel's own wrapped text.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	return timeoutIsTerminal(err)
 }
 
