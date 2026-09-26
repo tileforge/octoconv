@@ -95,9 +95,16 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 69-01-PLAN.md — сначала решение по `/tmp` в SANDBOX-PATHS.md (D-01…D-05 с замерами), затем tracer `html`: ruleset с общими путями записи (forJobRW), окружение движка по списку, проверка параллельности и очистка `/tmp` перед задачей, preflight по `/Title`, воркер, compose/чарт, живой гейт
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 69-02-PLAN.md — `probe`: шесть вызовов через один engineExec, без `/tmp`, TMPDIR в окружении самого движка, scratch внутри каталога задачи, сохранение sandbox-сбоя до классификатора, preflight четырёх движков по содержимому, раздел probe исправлен по коду (D-10)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 69-03-PLAN.md — класс целиком: e2e для OOXML/изображений через конфайненный воркер, allowlist только фазы 70, сверка шести классов, инверсии, живой гейт 31 проверки на пересобранных образах, статус в SANDBOX-PATHS.md
 
 ### Phase 70: Document on amd64
