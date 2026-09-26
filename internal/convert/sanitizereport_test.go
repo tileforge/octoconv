@@ -95,7 +95,7 @@ func TestSanitizeReportFromARealRun(t *testing.T) {
 	requireVerifierBinaries(t)
 
 	out := filepath.Join(t.TempDir(), "out.pdf")
-	res, err := SanitizeFile(context.Background(), "pdf",
+	res, err := SanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out)
 	if err != nil {
 		t.Fatalf("SanitizeFile: %v", err)

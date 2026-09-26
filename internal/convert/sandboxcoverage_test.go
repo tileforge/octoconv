@@ -65,10 +65,8 @@ var sandboxLegacyConfinedFiles = map[string]bool{
 // nowhere else in the package -- each commented with the phase that
 // removes its entry once that phase confines the class.
 var sandboxPendingFiles = map[string]string{
-	"sanitizepdf.go":    "phase 69",
-	"sanitizeverify.go": "phase 69",
-	"libreoffice.go":    "phase 70",
-	"verapdf.go":        "phase 70",
+	"libreoffice.go": "phase 70",
+	"verapdf.go":     "phase 70",
 }
 
 // sandboxClassFileEngines maps a class file to the literal engine names its
@@ -92,6 +90,8 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return sandboxIntersect(avEngines, audioEngines), true
 	case "chromium.go", "htmlsandbox.go":
 		return htmlEngines, true
+	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
+		return probeEngines, true
 	}
 	return nil, false
 }
@@ -114,6 +114,8 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"av", "audio"}
 	case "chromium.go", "htmlsandbox.go":
 		return []string{"html"}
+	case "sanitizeconverter.go", "sanitize.go", "sanitizepdf.go", "sanitizeverify.go", "probesandbox.go":
+		return []string{"probe"}
 	}
 	return nil
 }
@@ -133,6 +135,8 @@ func sandboxGroupEngines(group string) []string {
 		return audioEngines
 	case "html":
 		return htmlEngines
+	case "probe":
+		return probeEngines
 	}
 	return nil
 }
@@ -468,13 +472,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)

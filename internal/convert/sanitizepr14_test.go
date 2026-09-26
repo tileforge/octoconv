@@ -134,7 +134,7 @@ func TestContentTypeExtensionMatchIsCaseInsensitive(t *testing.T) {
 					`</Types>`),
 				"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 			})
-			if _, err := VerifySanitized(context.Background(), "docx", path); err != nil {
+			if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", path); err != nil {
 				t.Errorf("a package declaring its main part with Extension=%q was rejected: %v",
 					ext, err)
 			}
@@ -150,7 +150,7 @@ func TestContentTypeExtensionMatchIsCaseInsensitive(t *testing.T) {
 			`</Types>`),
 		"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 	})
-	if _, err := VerifySanitized(context.Background(), "docx", path); err == nil {
+	if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", path); err == nil {
 		t.Error("a Default for a DIFFERENT extension was accepted as declaring word/document.xml")
 	}
 }
@@ -168,7 +168,7 @@ func TestPR14FixesDoNotBreakTheCorpus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "out")
-			if _, err := SanitizeFile(context.Background(), tc.format,
+			if _, err := SanitizeFile(context.Background(), engineExec{}, tc.format,
 				filepath.Join(sanitizeCorpusDir, tc.name), out); err != nil {
 				t.Errorf("SanitizeFile: %v", err)
 			}

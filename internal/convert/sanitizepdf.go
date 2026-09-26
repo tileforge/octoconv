@@ -148,8 +148,9 @@ func pdfwriteArgs(psPath, outPath string) []string {
 
 // sanitizePDF rebuilds inPath into outPath through PostScript.
 //
-// The intermediate lives in a server-owned temp dir removed on every return
-// path; temp paths are never client-controlled. The overhead is roughly a
+// The intermediate lives inside the job directory (filepath.Dir(outPath)),
+// removed on every return path; temp paths are never client-controlled. The
+// overhead is roughly a
 // constant ~170 KB rather than a multiple of the input (60-RESEARCH.md R4),
 // measured on 1.9-36 KB inputs only -- Plan 60-06's timeout must come from a
 // production-scale corpus, not from that range.
@@ -217,8 +218,8 @@ func pdfwriteArgs(psPath, outPath string) []string {
 //
 // A count pdfinfo cannot produce is NOT treated as "no pages": it is reported
 // as malformed input -- terminal, and honest about which side failed.
-func probePDFPageCount(ctx context.Context, inPath string) (int, error) {
-	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(inPath)...)
+func probePDFPageCount(ctx context.Context, x engineExec, inPath string) (int, error) {
+	out, err := x.run(ctx, "pdfinfo", ocrPageCountArgs(inPath)...)
 	if err != nil {
 		// Through the SAME classifier the ghostscript passes use. Writing a
 		// second one here is what the first version did, and it put a
@@ -241,19 +242,26 @@ func probePDFPageCount(ctx context.Context, inPath string) (int, error) {
 // max == 0 means no ceiling is configured, and then pdfinfo is not invoked at
 // all: an unconfigured bound must cost nothing, not a subprocess whose only use
 // would be a comparison that cannot fail.
-func enforcePDFPageCeiling(ctx context.Context, inPath string, max int) error {
+func enforcePDFPageCeiling(ctx context.Context, x engineExec, inPath string, max int) error {
 	if max <= 0 {
 		return nil
 	}
-	count, err := probePDFPageCount(ctx, inPath)
+	count, err := probePDFPageCount(ctx, x, inPath)
 	if err != nil {
 		return err
 	}
 	return EnforceProbeMaxPages(count, max)
 }
 
-func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
-	tmpDir, err := os.MkdirTemp("", "octoconv-sanitize-pdf-*")
+// sanitizePDF's intermediate directory lives INSIDE the job directory
+// (filepath.Dir(outPath)), the only writable path probe's ruleset grants
+// (D-05 precondition): a call landing under the system temp dir would fail
+// closed on every PDF sanitize job the moment /tmp leaves probeReadWrite.
+// TMPDIR for both gs passes travels in x's OWN environment
+// (probesandbox.go's exec: withEnv(engineEnv(jobDir))), never as a
+// process-wide os.Setenv -- the worker's own environment is never touched.
+func sanitizePDF(ctx context.Context, x engineExec, inPath, outPath string) (SanitizeResult, error) {
+	tmpDir, err := os.MkdirTemp(filepath.Dir(outPath), ".sanitize-pdf-")
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: tmpdir: %w", err)
 	}
@@ -261,7 +269,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 
 	psPath := filepath.Join(tmpDir, "intermediate.ps")
 
-	if _, err := runCommand(ctx, "gs", ps2writeArgs(inPath, psPath)...); err != nil {
+	if _, err := x.run(ctx, "gs", ps2writeArgs(inPath, psPath)...); err != nil {
 		return SanitizeResult{}, classifyEngineFailure("ps2write pass", err)
 	}
 
@@ -278,7 +286,7 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 			ErrSanitizeMalformedInput)
 	}
 
-	if _, err := runCommand(ctx, "gs", pdfwriteArgs(psPath, outPath)...); err != nil {
+	if _, err := x.run(ctx, "gs", pdfwriteArgs(psPath, outPath)...); err != nil {
 		return SanitizeResult{}, classifyEngineFailure("pdfwrite pass", err)
 	}
 
@@ -345,8 +353,20 @@ func sanitizePDF(ctx context.Context, inPath, outPath string) (SanitizeResult, e
 // matters: it flattens the cause so nothing downstream mistakes an engine
 // message for a context outcome. That flattening is exactly what destroyed the
 // cancellation signal when the check above did not cover it.
+//
+// THE SANDBOX-FAULT CHECK, added in the same place cancellation was: a node
+// that cannot confine gs/pdfinfo (ErrEngineSandboxUnavailable) is not a
+// discovery about the FILE -- it is a property of this node's Landlock
+// availability, exactly like the could-not-start case above but for a
+// different reason. Without this branch the malformed-input fallthrough's
+// %v flattening would destroy the sentinel before isProbeTerminal ever ran,
+// turning a retryable environment fault into a permanent client-blaming
+// failure on every job that node touches until it is drained.
 func classifyEngineFailure(stage string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
+	}
+	if errors.Is(err, ErrEngineSandboxUnavailable) {
 		return fmt.Errorf("sanitize pdf: %s: %w", stage, err)
 	}
 	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {

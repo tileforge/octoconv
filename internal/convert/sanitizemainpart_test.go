@@ -65,7 +65,7 @@ func TestSanitizedPackageWithoutItsDocumentIsRejected(t *testing.T) {
 	src := filepath.Join(sanitizeCorpusDir, "ooxml_rel_targets_main.docx")
 	out := filepath.Join(t.TempDir(), "out.docx")
 
-	_, err := SanitizeFile(context.Background(), "docx", src, out)
+	_, err := SanitizeFile(context.Background(), engineExec{}, "docx", src, out)
 	if err == nil {
 		t.Fatal("SanitizeFile delivered a package whose main part it had just dropped")
 	}
@@ -114,7 +114,7 @@ func TestVerifierRequiresTheMainPartAndItsDeclaration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := buildOOXMLPackage(t, tc.parts)
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := VerifySanitized(context.Background(), engineExec{}, "docx", path)
 			if err == nil {
 				t.Fatal("the verifier accepted it")
 			}
@@ -130,7 +130,7 @@ func TestVerifierRequiresTheMainPartAndItsDeclaration(t *testing.T) {
 		"[Content_Types].xml": []byte(ctWithDocument),
 		"word/document.xml":   []byte(`<?xml version="1.0"?><document/>`),
 	})
-	if _, err := VerifySanitized(context.Background(), "docx", ok); err != nil {
+	if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", ok); err != nil {
 		t.Errorf("a package that has its document and declares it was rejected: %v", err)
 	}
 }
@@ -150,7 +150,7 @@ func TestVerifierAcceptsADefaultExtensionDeclaration(t *testing.T) {
 			`</Types>`),
 		"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 	})
-	if _, err := VerifySanitized(context.Background(), "docx", path); err != nil {
+	if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", path); err != nil {
 		t.Errorf("a Default-declared main part was rejected: %v", err)
 	}
 }

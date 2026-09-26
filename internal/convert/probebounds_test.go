@@ -350,7 +350,7 @@ func TestProbePDFPageCountReportsMalformedInput(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if _, err := probePDFPageCount(context.Background(), bad); !errors.Is(err, ErrSanitizeMalformedInput) {
+	if _, err := probePDFPageCount(context.Background(), engineExec{}, bad); !errors.Is(err, ErrSanitizeMalformedInput) {
 		t.Fatalf("probePDFPageCount(unreadable) = %v, want an error wrapping ErrSanitizeMalformedInput", err)
 	}
 }
@@ -374,7 +374,7 @@ func TestProbePDFPageCountIsBoundByContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, err := probePDFPageCount(ctx, "testdata/sanitize/threat_all_classes.pdf"); err == nil {
+	if _, err := probePDFPageCount(ctx, engineExec{}, "testdata/sanitize/threat_all_classes.pdf"); err == nil {
 		t.Fatal("probePDFPageCount succeeded under an already-cancelled context -- the count must be " +
 			"bounded by the same deadline as the ghostscript passes, not merely documented as if it were")
 	}
@@ -410,7 +410,7 @@ func TestPageCountFailuresAreAttributedCorrectly(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err := enforcePDFPageCeiling(ctx, fixture(t), 200)
+		err := enforcePDFPageCeiling(ctx, engineExec{}, fixture(t), 200)
 
 		if errors.Is(err, ErrSanitizeMalformedInput) {
 			t.Fatalf("enforcePDFPageCeiling under a cancelled context = %v, wrapping "+
@@ -428,7 +428,7 @@ func TestPageCountFailuresAreAttributedCorrectly(t *testing.T) {
 		// all. That is our image being wrong, not the client's file.
 		t.Setenv("PATH", t.TempDir())
 
-		err := enforcePDFPageCeiling(context.Background(), fixture(t), 200)
+		err := enforcePDFPageCeiling(context.Background(), engineExec{}, fixture(t), 200)
 
 		if err == nil {
 			t.Fatal("enforcePDFPageCeiling = nil with no pdfinfo on PATH -- an unavailable counter must " +
@@ -449,7 +449,7 @@ func TestPageCountFailuresAreAttributedCorrectly(t *testing.T) {
 			t.Fatalf("write fixture: %v", err)
 		}
 
-		err := enforcePDFPageCeiling(context.Background(), bad, 200)
+		err := enforcePDFPageCeiling(context.Background(), engineExec{}, bad, 200)
 
 		if !errors.Is(err, ErrSanitizeMalformedInput) {
 			t.Fatalf("enforcePDFPageCeiling on an unreadable file = %v, want ErrSanitizeMalformedInput "+

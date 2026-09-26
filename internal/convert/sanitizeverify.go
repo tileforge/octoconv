@@ -125,7 +125,12 @@ var (
 // there" needs to know which part that is, and inferring it from whichever main
 // part happens to be present is the same "the check only runs when the thing is
 // there" defect SANI-09 exists to close.
-var verifiers = map[string]func(ctx context.Context, format, path string) ([]ThreatClass, error){}
+//
+// x is the SanitizeConverter's own engineExec, threaded through so verifyOOXML
+// and verifyImage run unzip/file(1) under the SAME ruleset the sanitizer used
+// to produce the file they are checking. verifyPDF carries x unused -- pdfcpu
+// parses in-process and execs nothing.
+var verifiers = map[string]func(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error){}
 
 // VerifySanitized inspects the sanitized OUTPUT at path and reports which
 // threat classes an independent implementation confirmed absent.
@@ -133,13 +138,30 @@ var verifiers = map[string]func(ctx context.Context, format, path string) ([]Thr
 // It never reports a class it did not actually look for: the returned slice is
 // what feeds SanitizeResult.Verified, and that field exists precisely so that
 // "removed" and "confirmed absent" stay separate claims.
-func VerifySanitized(ctx context.Context, format, path string) ([]ThreatClass, error) {
+func VerifySanitized(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error) {
 	fn, ok := verifiers[NormalizeFormat(format)]
 	if !ok {
 		return nil, fmt.Errorf("%w: no verifier registered for format %q",
 			ErrSanitizeUnverifiable, format)
 	}
-	return fn(ctx, NormalizeFormat(format), path)
+	return fn(ctx, x, NormalizeFormat(format), path)
+}
+
+// unverifiableEngineFailure classifies an engine failure encountered WHILE
+// VERIFYING a sanitized output. When err carries ErrEngineSandboxUnavailable
+// it is a NODE fault -- this node could not confine unzip/file(1), which says
+// nothing about the file -- and the sentinel is preserved unwrapped so
+// isProbeTerminal sees it before any terminal classification runs. Otherwise
+// this returns exactly the ErrSanitizeUnverifiable wrap every call site used
+// before x existed, byte-identical: "%w: "+format+": %v" with err last.
+func unverifiableEngineFailure(err error, format string, args ...any) error {
+	if errors.Is(err, ErrEngineSandboxUnavailable) {
+		wrapArgs := append(append([]any{}, args...), err)
+		return fmt.Errorf("sanitize verify: "+format+": %w", wrapArgs...)
+	}
+	wrapArgs := append([]any{ErrSanitizeUnverifiable}, args...)
+	wrapArgs = append(wrapArgs, err)
+	return fmt.Errorf("%w: "+format+": %v", wrapArgs...)
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +235,7 @@ var pdfByteResidue = map[string]ThreatClass{
 	"/ObjStm": ThreatDocumentMetadata,
 }
 
-func verifyPDF(ctx context.Context, _, path string) ([]ThreatClass, error) {
+func verifyPDF(ctx context.Context, _ engineExec, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)
@@ -787,11 +809,10 @@ func residualRelationship(raw []byte) (string, bool) {
 	return "", false
 }
 
-func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error) {
-	listing, err := runCommand(ctx, "unzip", "-Z1", path)
+func verifyOOXML(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error) {
+	listing, err := x.run(ctx, "unzip", "-Z1", path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: unzip could not list the output: %v",
-			ErrSanitizeUnverifiable, err)
+		return nil, unverifiableEngineFailure(err, "unzip could not list the output")
 	}
 	parts := strings.Fields(strings.TrimSpace(string(listing)))
 	if len(parts) == 0 {
@@ -826,7 +847,12 @@ func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error
 	sawMainPart := false
 	var contentTypesBlob []byte
 
-	dir, err := os.MkdirTemp("", "octoconv-verify-*")
+	// D-05 precondition: this scratch directory lives INSIDE the job
+	// directory (filepath.Dir(path)), never under the system temp dir --
+	// probe's ruleset grants no /tmp at all, and a call here that landed
+	// under os.TempDir() would fail closed on every single sanitize job the
+	// moment that grant leaves probeReadWrite.
+	dir, err := os.MkdirTemp(filepath.Dir(path), ".verify-")
 	if err != nil {
 		return nil, fmt.Errorf("%w: temp dir: %v", ErrSanitizeUnverifiable, err)
 	}
@@ -838,19 +864,17 @@ func verifyOOXML(ctx context.Context, format, path string) ([]ThreatClass, error
 		// nothing unless escaped. Left unhandled this reads as "the part is
 		// empty", which is a clean verdict produced by a quoting bug.
 		extracted := filepath.Join(dir, fmt.Sprintf("part-%03d", i))
-		blob, err := runCommand(ctx, "unzip", "-p", path, escapeZipGlob(part))
+		blob, err := x.run(ctx, "unzip", "-p", path, escapeZipGlob(part))
 		if err != nil {
-			return nil, fmt.Errorf("%w: unzip could not extract %q: %v",
-				ErrSanitizeUnverifiable, part, err)
+			return nil, unverifiableEngineFailure(err, "unzip could not extract %q", part)
 		}
 		if err := os.WriteFile(extracted, blob, 0o600); err != nil {
 			return nil, fmt.Errorf("%w: write %q: %v", ErrSanitizeUnverifiable, part, err)
 		}
 
-		out, err := runCommand(ctx, "file", "--mime-type", "-b", extracted)
+		out, err := x.run(ctx, "file", "--mime-type", "-b", extracted)
 		if err != nil {
-			return nil, fmt.Errorf("%w: file(1) could not classify %q: %v",
-				ErrSanitizeUnverifiable, part, err)
+			return nil, unverifiableEngineFailure(err, "file(1) could not classify %q", part)
 		}
 		mime := strings.ToLower(strings.TrimSpace(string(out)))
 		for _, ole := range oleMIMETypes {
@@ -1280,7 +1304,7 @@ func pngMetadataResidue(raw []byte) (string, bool) {
 // upload the API accepted into a failed job at the last step.
 const verifyMaxDecodePixels = 100_000_000
 
-func verifyImage(ctx context.Context, _, path string) ([]ThreatClass, error) {
+func verifyImage(ctx context.Context, x engineExec, _, path string) ([]ThreatClass, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read output: %v", ErrSanitizeUnverifiable, err)
@@ -1324,10 +1348,9 @@ func verifyImage(ctx context.Context, _, path string) ([]ThreatClass, error) {
 	}
 
 	// --- view 2: libmagic, a different codebase, agrees what this is ---
-	out, err := runCommand(ctx, "file", "--mime-type", "-b", path)
+	out, err := x.run(ctx, "file", "--mime-type", "-b", path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: file(1) could not classify the output: %v",
-			ErrSanitizeUnverifiable, err)
+		return nil, unverifiableEngineFailure(err, "file(1) could not classify the output")
 	}
 	mime := strings.ToLower(strings.TrimSpace(string(out)))
 	if !strings.HasPrefix(mime, "image/") {

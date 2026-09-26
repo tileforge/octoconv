@@ -129,7 +129,7 @@ func TestSanitizePDFRemovesEveryThreatMarker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := SanitizeFile(ctx, "pdf", in, out)
+	res, err := SanitizeFile(ctx, engineExec{}, "pdf", in, out)
 	if err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestSanitizePDFPreservesText(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "clean.pdf")
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if _, err := SanitizeFile(ctx, "pdf", tc.path, out); err != nil {
+			if _, err := SanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
 				t.Fatalf("SanitizeFile: %v", err)
 			}
 			if after := nonWhitespaceCount(t, out); after != tc.want {
@@ -238,7 +238,7 @@ func TestSanitizePDFOutputIsASingleRevision(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "clean.pdf")
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if _, err := SanitizeFile(ctx, "pdf", tc.path, out); err != nil {
+			if _, err := SanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
 				t.Fatalf("SanitizeFile: %v", err)
 			}
 			got, err := os.ReadFile(out)
@@ -432,7 +432,7 @@ func TestRedactionSkipsStreamPayloads(t *testing.T) {
 	requireGhostscript(t)
 
 	out := filepath.Join(t.TempDir(), "out.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := SanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
 	}

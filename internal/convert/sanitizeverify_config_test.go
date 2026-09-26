@@ -53,7 +53,7 @@ func TestVerifyPDFSurvivesAnUnwritableHome(t *testing.T) {
 		}
 		// Any verdict is acceptable -- this fixture is not a sanitizer OUTPUT,
 		// so it may well be reported as unverifiable. A PANIC is not.
-		_, _ = VerifySanitized(t.Context(), "pdf", path)
+		_, _ = VerifySanitized(t.Context(), engineExec{}, "pdf", path)
 		return
 	}
 

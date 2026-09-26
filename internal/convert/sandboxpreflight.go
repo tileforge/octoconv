@@ -193,6 +193,32 @@ func requireAbsent(outPath string, marker []byte) error {
 	return nil
 }
 
+// requireContains is the sufficiency judgment for an engine's own STDOUT
+// rather than a file on disk -- probe's preflight reads gs/unzip/file output
+// directly, never through a path requireOutput could open. what names the
+// check in the returned error, mirroring requireOutput's shape.
+func requireContains(what string, got, want []byte) error {
+	if len(got) == 0 {
+		return fmt.Errorf("%s produced no output", what)
+	}
+	if !bytes.Contains(got, want) {
+		return fmt.Errorf("%s does not contain the expected marker", what)
+	}
+	return nil
+}
+
+// requireLacks is requireContains's effectiveness mirror, for an engine's own
+// stdout: got must not carry marker. Unlike requireAbsent (a FILE that may be
+// entirely missing on a clean denial), an engine invocation that ran at all
+// always produces SOME stdout, even a permission-denied message -- so this
+// never treats empty output as a synonym for "clean"; it only checks content.
+func requireLacks(what string, got, marker []byte) error {
+	if bytes.Contains(got, marker) {
+		return fmt.Errorf("%s carries the marker from the denied file: it was processed anyway", what)
+	}
+	return nil
+}
+
 // preflightMarker is a value a preflight can plant in a fixture and then
 // search for in output -- unique per run, so a marker found in an output
 // could only have come from THIS preflight's own fixture, never a stale file

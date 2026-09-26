@@ -104,7 +104,11 @@ const (
 // in ocrReadOnly provable by this preflight rather than merely assumed.
 //
 // text is restricted to A-Z and spaces by every caller (ocrPreflightText),
-// so no PDF string escaping is needed here.
+// so no PDF string escaping is needed here. Reused directly by
+// probesandbox.go (plan 69-02): a preflightMarker() value (lowercase hex,
+// digits and hyphens) is equally safe here, because text must not contain
+// the PDF string delimiters '(', ')' or '\' -- none of which a hex marker
+// ever produces.
 //
 // The object numbering/xref-table shape mirrors this package's own
 // pdflex_test.go buildPDF helper (sequential object numbers, a correct

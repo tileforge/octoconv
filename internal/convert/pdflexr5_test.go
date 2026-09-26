@@ -115,7 +115,7 @@ func TestMainPartMustParseToACleanEOF(t *testing.T) {
 				"[Content_Types].xml": ct,
 				"word/document.xml":   []byte(tc.doc),
 			})
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := VerifySanitized(context.Background(), engineExec{}, "docx", path)
 			if tc.ok && err != nil {
 				t.Errorf("a complete document was rejected: %v", err)
 			}
@@ -141,7 +141,7 @@ func TestRoundFiveFixesDoNotBreakTheCorpus(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := t.TempDir() + "/out"
-			if _, err := SanitizeFile(context.Background(), tc.format,
+			if _, err := SanitizeFile(context.Background(), engineExec{}, tc.format,
 				sanitizeCorpusDir+"/"+tc.name, out); err != nil {
 				t.Errorf("SanitizeFile: %v", err)
 			}

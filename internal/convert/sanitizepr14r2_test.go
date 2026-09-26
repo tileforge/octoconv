@@ -169,7 +169,7 @@ func TestEmptyContentTypeIsNotADeclaration(t *testing.T) {
 					tc.types + `</Types>`),
 				"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 			})
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := VerifySanitized(context.Background(), engineExec{}, "docx", path)
 			if tc.want && err != nil {
 				t.Errorf("a validly declared main part was rejected: %v", err)
 			}

@@ -228,7 +228,7 @@ func TestMainPartMustParseAndCarryItsRoot(t *testing.T) {
 				"[Content_Types].xml": ct,
 				"word/document.xml":   tc.doc,
 			})
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := VerifySanitized(context.Background(), engineExec{}, "docx", path)
 			if tc.ok && err != nil {
 				t.Errorf("a usable document was rejected: %v", err)
 			}

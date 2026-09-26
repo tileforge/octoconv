@@ -295,7 +295,7 @@ func TestMalformedContentTypesFailsVerification(t *testing.T) {
 			`<Override PartName="/word/document.xml" ContentType="application/xml"/>`),
 		"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 	})
-	if _, err := VerifySanitized(context.Background(), "docx", path); err == nil {
+	if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", path); err == nil {
 		t.Error("a package whose [Content_Types].xml does not parse to the end was verified")
 	}
 }

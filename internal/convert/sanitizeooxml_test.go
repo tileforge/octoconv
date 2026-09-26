@@ -37,7 +37,7 @@ func TestSanitizeOOXMLRemovesMacroBytes(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "clean.docx")
-	res, err := SanitizeFile(context.Background(), "docm", in, out)
+	res, err := SanitizeFile(context.Background(), engineExec{}, "docm", in, out)
 	if err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
 	}
@@ -149,7 +149,7 @@ func ooxmlConsistency(t *testing.T, archive []byte) []string {
 // valid zip, finishes the job green, and is refused by Word.
 func TestSanitizeOOXMLStaysConsistent(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "clean.docx")
-	if _, err := SanitizeFile(context.Background(), "docm", sanitizeDocmFixture(t), out); err != nil {
+	if _, err := SanitizeFile(context.Background(), engineExec{}, "docm", sanitizeDocmFixture(t), out); err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
 	}
 	got, err := os.ReadFile(out)
@@ -231,7 +231,7 @@ func TestSanitizeOOXMLDropsRenamedMacroPart(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "clean.docx")
-	if _, err := SanitizeFile(context.Background(), "docm", in, out); err != nil {
+	if _, err := SanitizeFile(context.Background(), engineExec{}, "docm", in, out); err != nil {
 		t.Fatalf("SanitizeFile: %v", err)
 	}
 
@@ -314,7 +314,7 @@ func TestSanitizeOOXMLDropsEmbeddedPackageByRelationshipType(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "out.docx")
-	res, err := sanitizeOOXML(context.Background(), in, out)
+	res, err := sanitizeOOXML(context.Background(), engineExec{}, in, out)
 	if err != nil {
 		t.Fatalf("sanitizeOOXML: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestSanitizeOOXMLDropsPropertiesByRelationshipType(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "out.docx")
-	res, err := sanitizeOOXML(context.Background(), in, out)
+	res, err := sanitizeOOXML(context.Background(), engineExec{}, in, out)
 	if err != nil {
 		t.Fatalf("sanitizeOOXML: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestSanitizeMalformedInputIsDistinguishable(t *testing.T) {
 	if err := os.WriteFile(in, []byte("PK\x03\x04 not really a zip"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := sanitizeOOXML(context.Background(), in, filepath.Join(dir, "out.docx"))
+	_, err := sanitizeOOXML(context.Background(), engineExec{}, in, filepath.Join(dir, "out.docx"))
 	if err == nil {
 		t.Fatal("a corrupt archive was accepted")
 	}
@@ -475,7 +475,7 @@ func TestSanitizeMalformedInputIsDistinguishable(t *testing.T) {
 			if err := os.WriteFile(in, tc.blob, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := sanitizeImage(context.Background(), in, filepath.Join(t.TempDir(), "out.jpg"))
+			_, err := sanitizeImage(context.Background(), engineExec{}, in, filepath.Join(t.TempDir(), "out.jpg"))
 			if err == nil {
 				t.Fatalf("accepted a malformed image (%s)", tc.why)
 			}
