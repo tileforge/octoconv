@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // preflightWorkspace is a preflight's two directories: the job directory the
@@ -40,11 +41,23 @@ type preflightWorkspace struct {
 // process running several preflights leaves distinguishable temp
 // directories on a failed cleanup.
 func newPreflightWorkspace(class string) (preflightWorkspace, func(), error) {
+	return newPreflightWorkspaceOutside(class, "")
+}
+
+// newPreflightWorkspaceOutside is newPreflightWorkspace with the outside
+// directory's PARENT chosen explicitly, rather than always os.TempDir().
+// A class whose own writable grant includes the system temp dir (html's
+// /tmp, CONF-06) cannot use newPreflightWorkspace's default -- an "outside"
+// file placed there would be readable under that class's own ruleset, and
+// the preflight would refuse to start for having nothing to test. outsideBase
+// "" reproduces newPreflightWorkspace's exact prior behaviour (os.TempDir()),
+// so every phase-68 class is unaffected by this function's existence.
+func newPreflightWorkspaceOutside(class, outsideBase string) (preflightWorkspace, func(), error) {
 	jobDir, err := os.MkdirTemp("", class+"-preflight-job-")
 	if err != nil {
 		return preflightWorkspace{}, nil, fmt.Errorf("preflight job directory: %w", err)
 	}
-	outsideDir, err := os.MkdirTemp("", class+"-preflight-outside-")
+	outsideDir, err := os.MkdirTemp(outsideBase, class+"-preflight-outside-")
 	if err != nil {
 		os.RemoveAll(jobDir)
 		return preflightWorkspace{}, nil, fmt.Errorf("preflight outside directory: %w", err)
@@ -55,6 +68,38 @@ func newPreflightWorkspace(class string) (preflightWorkspace, func(), error) {
 		os.RemoveAll(outsideDir)
 	}
 	return w, cleanup, nil
+}
+
+// requireOutsideGrants proves the workspace's own outside directory is not
+// itself readable under any of the granted path sets -- a negative
+// (effectiveness) preflight run is only evidence of confinement when the
+// file it tries to read is genuinely outside every grant. Resolves both the
+// outside directory and each granted path through filepath.EvalSymlinks
+// (falling back to filepath.Clean when a path cannot be resolved, e.g. it
+// does not exist on this host) before comparing, since Landlock itself
+// restricts the RESOLVED path, not the string a class happens to write in
+// its own readOnly/readWrite var.
+func (w preflightWorkspace) requireOutsideGrants(granted ...[]string) error {
+	outside := resolveOrClean(w.outsideDir)
+	for _, set := range granted {
+		for _, g := range set {
+			gr := resolveOrClean(g)
+			if outside == gr || strings.HasPrefix(outside, gr+string(filepath.Separator)) {
+				return fmt.Errorf("preflight outside directory %s lies at or beneath granted path %s: "+
+					"a negative run against it would prove nothing", w.outsideDir, g)
+			}
+		}
+	}
+	return nil
+}
+
+// resolveOrClean resolves symlinks in p, falling back to filepath.Clean when
+// p cannot be resolved (most commonly: it does not exist).
+func resolveOrClean(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
 }
 
 // place writes identical bytes to both directories under name, then reads the
@@ -111,16 +156,35 @@ func requireDenied(convErr error, outPath string, marker []byte) error {
 	if convErr == nil {
 		return fmt.Errorf("converted a file outside the job directory: confinement is not in effect")
 	}
-	data, err := os.ReadFile(outPath)
-	if err != nil {
-		return nil // no output at all: the denial is clean
-	}
 	if marker == nil {
+		data, err := os.ReadFile(outPath)
+		if err != nil {
+			return nil // no output at all: the denial is clean
+		}
 		if len(data) > 0 {
 			return fmt.Errorf("the denied conversion still produced %d bytes of output at %s",
 				len(data), outPath)
 		}
 		return nil
+	}
+	return requireAbsent(outPath, marker)
+}
+
+// requireAbsent is the marker judgment on its own, extracted so a preflight
+// that cannot route its negative run through requireDenied's convErr check
+// (html's own: chromium exits 0 and writes a blank PDF when denied, so
+// "convErr == nil is itself a failure" cannot judge it -- see htmlsandbox.go)
+// still shares the same byte judgment requireDenied's marker branch uses. A
+// nil marker is itself an error here: a denial judged without a marker to
+// look for proves nothing, and this function exists specifically for a
+// caller that has one.
+func requireAbsent(outPath string, marker []byte) error {
+	if marker == nil {
+		return fmt.Errorf("requireAbsent: no marker given -- a denial judged without one proves nothing")
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil // missing or unreadable: a clean denial
 	}
 	if bytes.Contains(data, marker) {
 		return fmt.Errorf("output at %s carries the marker from the denied file: it was converted anyway",

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"slices"
 
 	"github.com/apaderin/octoconv/internal/sandbox"
 )
@@ -104,6 +106,23 @@ func newEngineSandbox(helper []string) *engineSandbox {
 type engineExec struct {
 	sandbox *engineSandbox
 	spec    []string
+	// env is the environment the ENGINE gets. nil (every class before this
+	// one, and every call site that never opts in) means "inherit this
+	// process's environment" -- run's existing runCommandAs path, unchanged.
+	// Non-nil REPLACES the environment entirely: it is not merged with the
+	// process's own, because a merge would still leak whatever the caller
+	// forgot to scrub (html's own DATABASE_URL leak via /proc/self/environ,
+	// engineEnv's doc comment).
+	env []string
+}
+
+// withEnv returns a copy of e with its engine environment replaced by env.
+// Copies the slice header only (env itself is not mutated in place by any
+// caller), so two engineExec values built from the same forJobRW call never
+// alias each other's environment.
+func (e engineExec) withEnv(env []string) engineExec {
+	e.env = append([]string{}, env...)
+	return e
 }
 
 // forJob builds one job's engineExec: readOnly is the class's own measured
@@ -125,9 +144,21 @@ type engineExec struct {
 // read, and the preflight's negative run depends on exactly that being
 // denied.
 func (s *engineSandbox) forJob(jobDir string, readOnly, engines []string) engineExec {
+	return s.forJobRW(jobDir, nil, readOnly, engines)
+}
+
+// forJobRW is forJob with a class-specific extra writable set: every entry
+// of extraRW is a path ALL tasks of the class share, not merely this job's
+// own directory -- which is exactly what CONF-06 decides about (html's
+// shared /tmp). The writable list is jobDir followed by extraRW, in the
+// order given; forJob is this function called with a nil extraRW, so its
+// token stream (a single rw: entry, the job directory) stays byte-identical
+// for every class that has no such shared path.
+func (s *engineSandbox) forJobRW(jobDir string, extraRW, readOnly, engines []string) engineExec {
 	if !s.confines() {
 		return engineExec{sandbox: s}
 	}
+	rw := append([]string{jobDir}, extraRW...)
 	ro := append([]string{}, readOnly...)
 	for _, name := range engines {
 		// A name that does not resolve is skipped, not an error here: it
@@ -137,19 +168,80 @@ func (s *engineSandbox) forJob(jobDir string, readOnly, engines []string) engine
 			ro = append(ro, p)
 		}
 	}
-	return engineExec{sandbox: s, spec: spec([]string{jobDir}, ro)}
+	return engineExec{sandbox: s, spec: spec(rw, ro)}
+}
+
+// engineEnv is the allowlisted environment an engine gets when its class
+// replaces the inherited one (engineExec.withEnv). PATH/HOME/LANG/LC_ALL are
+// copied when set (an unset one stays unset, never invented); TMPDIR is
+// appended only when tmpDir is non-empty, so a caller that has nothing
+// job-scoped to point it at can still get the allowlist without a
+// meaningless TMPDIR=.
+//
+// Mirrors tectonicEnv's own allowlist (tectonic.go) -- the same measured
+// leak (a class whose grant includes /proc, and therefore
+// /proc/self/environ, hands the engine DATABASE_URL and the S3 keys unless
+// the environment itself is scrubbed) answered the same way for html.
+func engineEnv(tmpDir string) []string {
+	keep := []string{"PATH", "HOME", "LANG", "LC_ALL"}
+	env := make([]string, 0, len(keep)+1)
+	for _, k := range keep {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	if tmpDir != "" {
+		env = append(env, "TMPDIR="+tmpDir)
+	}
+	return env
+}
+
+// sharedTmpDir is the one path a class's writable set can name that is NOT
+// scoped to a single job -- the container's own /tmp, shared by every task
+// that ever runs in it.
+const sharedTmpDir = "/tmp"
+
+// sharedTmpGuard is D-03: a confined class whose writable set grants
+// sharedTmpDir is safe ONLY when at most one task runs at a time in that
+// container (D-01) -- concurrency above 1 would let two tasks read and write
+// each other's files there. nil when s does not confine, when readWrite
+// does not contain sharedTmpDir at all (the guard is keyed on the GRANT SET,
+// not on a class name, so it applies to any class that ever grants /tmp --
+// CONF-06), or when concurrency is at most 1.
+func sharedTmpGuard(readWrite []string, s *engineSandbox, concurrency int, concurrencyEnv string) error {
+	if !s.confines() || !slices.Contains(readWrite, sharedTmpDir) || concurrency <= 1 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s=%d with the sandbox enabled: this class's ruleset grants the container's shared %s "+
+			"read-write, so concurrent tasks could read each other's files there; set %s=1 and "+
+			"scale with replicas (CONF-06)",
+		concurrencyEnv, concurrency, sharedTmpDir, concurrencyEnv,
+	)
 }
 
 // run wraps and executes one engine invocation under e's ruleset, naming the
 // ENGINE (not the helper) in every error runCommandAs produces, and turning a
 // helper-exited-78 failure into the retryable ErrEngineSandboxUnavailable
 // rather than an ordinary engine failure.
+//
+// e.env nil (every class before html, and every call site that never opts
+// in) keeps today's runCommandAs call -- the engine inherits this process's
+// environment, byte-identical to before this field existed. e.env non-nil
+// routes through runCommandCore with that environment REPLACING the
+// process's own; the CPU-usage return value runCommandCore also reports is
+// discarded here, the same way runCommandAs already discards it.
 func (e engineExec) run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmdName, cmdArgs, err := e.sandbox.wrapEngine(name, e.spec, args)
 	if err != nil {
 		return nil, err
 	}
-	out, err := runCommandAs(ctx, name, cmdName, cmdArgs...)
+	var out []byte
+	if e.env == nil {
+		out, err = runCommandAs(ctx, name, cmdName, cmdArgs...)
+	} else {
+		out, _, err = runCommandCore(ctx, 0, e.env, name, cmdName, cmdArgs...)
+	}
 	return out, e.sandboxFault(err)
 }
 

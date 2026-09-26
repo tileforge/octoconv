@@ -170,7 +170,14 @@ func TestChromiumArgvContainsRequiredFlags(t *testing.T) {
 		// IN-02: chromium scratch/profile state pinned inside the per-job
 		// workDir so it lands within the caller's os.RemoveAll cleanup boundary.
 		`"--user-data-dir=" + profileDir`,
-		`"file://" + renderedPath`,
+		// Phase 69: the URL is now built at the Convert call site and passed
+		// into chromiumPrintArgs as a plain function argument, where gofmt
+		// drops the spaces around the binary + it kept inside the slice
+		// literal above (verified: `gofmt` collapses `"a" + b` to `"a"+b`
+		// when it is a call argument rather than a composite-literal
+		// element) -- the expression is unchanged, only its formatting
+		// context is.
+		`"file://"+renderedPath`,
 	}
 	for _, want := range required {
 		if !strings.Contains(data, want) {

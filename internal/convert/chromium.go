@@ -11,7 +11,18 @@ import (
 // ChromiumConverter renders HTML to PDF via chromium-headless-shell's
 // one-shot --print-to-pdf mode (D-01). It is the third engine class
 // (EngineHTML), after image (libvips) and document (LibreOffice).
-type ChromiumConverter struct{}
+type ChromiumConverter struct {
+	// Sandbox is nil-safe and empty by default (Phase 69): a converter built
+	// as a bare ChromiumConverter{} (every test predating this phase) stays
+	// exactly as comparable and as unconfined as before.
+	Sandbox *engineSandbox
+	// sharedTmp is the directory Convert sweeps before every task (D-04) --
+	// empty means no sweep at all. Set only by ConfinedChromium, never by a
+	// bare WithSandbox call, so a converter built for a preflight's own
+	// negative run (which must NOT sweep the real /tmp mid-test) never
+	// sweeps anything unless a test opts in explicitly.
+	sharedTmp string
+}
 
 // Pairs returns the single supported {html, pdf} pair -- no cross-pairs
 // exist for this engine (D-06/HTML-03 scope).
@@ -111,14 +122,36 @@ func spliceAt(html []byte, at int, css string) []byte {
 	return out
 }
 
+// exec builds this job's engineExec: the measured html ruleset (job
+// directory + the CONF-06 shared writable paths, read-only the measured
+// set), with the engine's environment replaced by the allowlist engineEnv
+// builds -- TMPDIR is deliberately left UNSET ("") here, so chromium sees
+// the measured default (/tmp) rather than a job-scoped directory it cannot
+// use for its shared memory (SANDBOX-PATHS.md html section).
+func (c ChromiumConverter) exec(workDir string) engineExec {
+	return c.Sandbox.forJobRW(workDir, htmlReadWrite, htmlReadOnly, htmlEngines).withEnv(engineEnv(""))
+}
+
 // Convert builds a CSS+CSP-injected copy of inPath (never mutating inPath
 // itself, mirroring LibreOfficeConverter's never-touch-inPath discipline)
 // and invokes chromium-headless-shell's one-shot print-to-pdf mode against
 // that copy, with the layered network-block flags (D-03) and JS disabled
 // via the injected CSP meta tag (D-05, see cspNoScriptMeta). ctx must carry
 // the engine timeout.
-func (ChromiumConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+func (c ChromiumConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	workDir := filepath.Dir(outPath) // caller's per-job workDir; already unique, already cleaned up
+
+	// D-04: sweep the container's shared /tmp before this task's engine ever
+	// runs, keeping only the current job's own directory (which itself lives
+	// under /tmp -- internal/worker/worker.go creates job directories via
+	// os.MkdirTemp("", ...)). c.sharedTmp is empty for any converter not
+	// built by ConfinedChromium (every pre-Phase-69 test, and the preflight's
+	// own negative-run converter), so this is a no-op there.
+	if c.sharedTmp != "" {
+		if err := sweepSharedTmp(c.sharedTmp, workDir); err != nil {
+			return fmt.Errorf("chromium: %w", err)
+		}
+	}
 
 	// Garbage opts (e.g. a corrupt jobs.options column) is a deterministic
 	// failure, not a transient one -- HTMLOptsFromMap applies the same
@@ -148,43 +181,10 @@ func (ChromiumConverter) Convert(ctx context.Context, inPath, outPath string, op
 		return fmt.Errorf("chromium: write rendered html: %w", err)
 	}
 
-	// flags verify-live-confirmed in Plan 04 smoke checklist. Notably
-	// ABSENT: --blink-settings=scriptEnabled=false (live-tested to make the
-	// one-shot command handler silently produce no output at all -- see
-	// cspNoScriptMeta) and --disable-javascript (live-tested no-op, does not
-	// actually disable script execution in this build). JS-disable is
-	// instead enforced via the injected CSP meta tag above. --headless is
-	// live-confirmed optional-but-harmless for the standalone shell binary
-	// (kept for explicitness); --no-sandbox is live-confirmed REQUIRED under
-	// USER nobody (D-08) -- omitting it fails with "No usable sandbox!".
-	// --no-pdf-header-footer suppresses chromium's default print
-	// header/footer, which otherwise leaks the internal
-	// file:///workDir/rendered.html path and generation timestamp into
-	// every produced PDF (live-observed default-on behavior, not requested
-	// by any HTML-03 option).
-	//
-	// --user-data-dir pins chromium's profile/scratch/crash-dump state to a
-	// per-job directory INSIDE workDir (IN-02 hardening). Without it,
-	// chromium-headless-shell falls back to a $HOME-relative default, which
-	// under USER nobody is typically non-writable (/nonexistent); pinning it
-	// here guarantees all scratch state lands within the caller's
-	// os.RemoveAll(workDir) cleanup boundary -- no stray writes, no cross-job
-	// state. The value is a server-derived path (workDir), never client bytes.
-	profileDir := filepath.Join(workDir, "chrome-profile")
-	args := []string{
-		"--headless",
-		"--disable-gpu",
-		"--no-sandbox",
-		"--disable-dev-shm-usage",
-		"--no-pdf-header-footer",
-		"--user-data-dir=" + profileDir,
-		"--proxy-server=127.0.0.1:9",
-		"--proxy-bypass-list=<-loopback>",
-		"--host-resolver-rules=MAP * ~NOTFOUND",
-		"--print-to-pdf=" + outPath,
-		"file://" + renderedPath, // NOT inPath -- renderedPath carries the injected print CSS + CSP
-	}
-	if _, err := runCommand(ctx, "chromium-headless-shell", args...); err != nil {
+	// chromiumPrintArgs builds the full flag set (Plan 04 smoke checklist,
+	// D-08) -- see its own doc comment for what each flag does and why.
+	args := chromiumPrintArgs(workDir, outPath, "file://"+renderedPath)
+	if _, err := c.exec(workDir).run(ctx, "chromium-headless-shell", args...); err != nil {
 		return fmt.Errorf("chromium: %w", err)
 	}
 
@@ -201,4 +201,49 @@ func (ChromiumConverter) Convert(ctx context.Context, inPath, outPath string, op
 		return fmt.Errorf("chromium: %w", err)
 	}
 	return nil
+}
+
+// chromiumPrintArgs builds the argv chromium-headless-shell is exec'd with,
+// for both the production Convert path and the preflight's own sufficiency
+// and effectiveness runs (htmlsandbox.go) -- one builder, so every run this
+// converter ever makes carries the identical flag set. sourceURL is the
+// "file://..." URL of the document to render.
+//
+// flags verify-live-confirmed in Plan 04 smoke checklist. Notably ABSENT:
+// --blink-settings=scriptEnabled=false (live-tested to make the one-shot
+// command handler silently produce no output at all -- see
+// cspNoScriptMeta's doc comment) and --disable-javascript (live-tested
+// no-op, does not actually disable script execution in this build).
+// JS-disable is instead enforced via the injected CSP meta tag Convert
+// writes into rendered.html. --headless is live-confirmed
+// optional-but-harmless for the standalone shell binary (kept for
+// explicitness); --no-sandbox is live-confirmed REQUIRED under USER nobody
+// (D-08) -- omitting it fails with "No usable sandbox!". --no-pdf-header-
+// footer suppresses chromium's default print header/footer, which otherwise
+// leaks the internal file:///workDir/rendered.html path and generation
+// timestamp into every produced PDF (live-observed default-on behavior, not
+// requested by any HTML-03 option).
+//
+// --user-data-dir pins chromium's profile/scratch/crash-dump state to a
+// per-job directory INSIDE workDir (IN-02 hardening). Without it,
+// chromium-headless-shell falls back to a $HOME-relative default, which
+// under USER nobody is typically non-writable (/nonexistent); pinning it
+// here guarantees all scratch state lands within the caller's
+// os.RemoveAll(workDir) cleanup boundary -- no stray writes, no cross-job
+// state. The value is a server-derived path (workDir), never client bytes.
+func chromiumPrintArgs(workDir, outPath, sourceURL string) []string {
+	profileDir := filepath.Join(workDir, "chrome-profile")
+	return []string{
+		"--headless",
+		"--disable-gpu",
+		"--no-sandbox",
+		"--disable-dev-shm-usage",
+		"--no-pdf-header-footer",
+		"--user-data-dir=" + profileDir,
+		"--proxy-server=127.0.0.1:9",
+		"--proxy-bypass-list=<-loopback>",
+		"--host-resolver-rules=MAP * ~NOTFOUND",
+		"--print-to-pdf=" + outPath,
+		sourceURL,
+	}
 }

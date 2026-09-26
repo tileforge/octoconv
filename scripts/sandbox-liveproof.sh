@@ -7,8 +7,8 @@
 #   scripts/sandbox-liveproof.sh <class>...
 #
 # Every class this script knows about is in the table below from the start
-# (image, pandoc, ocr, av, audio), including classes not yet confined by any
-# converter -- so the classes that land later (plans 03-05) extend the
+# (image, pandoc, ocr, av, audio, html, probe), including classes not yet
+# confined by any converter -- so a class that lands later extends the
 # CONVERTER, never this script.
 #
 # A UNIQUE tag per run, not :latest: a shared tag can be overwritten by a
@@ -18,16 +18,20 @@ set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
-# class_row prints "dockerfile binary envvar expects_proven" for class, or
-# dies on an unknown one.
+# class_row prints "dockerfile binary envvar expects_proven extra_run_args"
+# for class, or dies on an unknown one. extra_run_args is "-" (meaning none)
+# for every class but html, whose shared /tmp (CONF-06) needs the same
+# --shm-size docker-compose.yml's chromium-worker service carries.
 class_row() {
   case "$1" in
-    image)  echo "Dockerfile.worker worker IMAGE_SANDBOX_DISABLED no" ;;
-    pandoc) echo "Dockerfile.pandoc-worker pandoc-worker PANDOC_SANDBOX_DISABLED yes" ;;
-    ocr)    echo "Dockerfile.ocr-worker ocr-worker OCR_SANDBOX_DISABLED yes" ;;
-    av)     echo "Dockerfile.av-worker av-worker AV_SANDBOX_DISABLED yes" ;;
-    audio)  echo "Dockerfile.audio-worker audio-worker AUDIO_SANDBOX_DISABLED yes" ;;
-    *) die "unknown class: $1 (expected image, pandoc, ocr, av or audio)" ;;
+    image)  echo "Dockerfile.worker worker IMAGE_SANDBOX_DISABLED no -" ;;
+    pandoc) echo "Dockerfile.pandoc-worker pandoc-worker PANDOC_SANDBOX_DISABLED yes -" ;;
+    ocr)    echo "Dockerfile.ocr-worker ocr-worker OCR_SANDBOX_DISABLED yes -" ;;
+    av)     echo "Dockerfile.av-worker av-worker AV_SANDBOX_DISABLED yes -" ;;
+    audio)  echo "Dockerfile.audio-worker audio-worker AUDIO_SANDBOX_DISABLED yes -" ;;
+    html)   echo "Dockerfile.chromium-worker chromium-worker HTML_SANDBOX_DISABLED yes --shm-size=256m" ;;
+    probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
+    *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, html or probe)" ;;
   esac
 }
 
@@ -54,6 +58,8 @@ fail() {
 # cleared), (4) never logged a preflight failure, and (5) exited non-zero.
 check_confined_startup() {
   local class=$1 bin=$2 expects_proven=$3 tag=$4
+  shift 4
+  local extra=("$@") # the class's own extra docker run args (class_row's fifth field), "" for none
   local cname="octoconv-liveproof-${class}-confined-${RUN_ID}"
 
   # macOS has no timeout(1); a background watchdog kills the container if the
@@ -64,7 +70,7 @@ check_confined_startup() {
 
   set +e
   local out status
-  out=$(docker run --name "$cname" --rm \
+  out=$(docker run --name "$cname" --rm "${extra[@]}" \
     -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
     "$tag" 2>&1)
   status=$?
@@ -176,11 +182,13 @@ run_gated() {
 # and never claim confinement or reach postgres.
 check_refuses_without_landlock() {
   local class=$1 envvar=$2 tag=$3
+  shift 3
+  local extra=("$@")
   local profile; profile=$(mktemp)
   write_seccomp_profile "$profile" 38 landlock_create_ruleset landlock_add_rule landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" noland "$profile" "$tag")
+  result=$(run_gated "$class" noland "$profile" "$tag" "${extra[@]}")
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -210,11 +218,13 @@ check_refuses_without_landlock() {
 # never claim the lock symbol.
 check_escape_hatch() {
   local class=$1 envvar=$2 tag=$3
+  shift 3
+  local extra=("$@")
   local profile; profile=$(mktemp)
   write_seccomp_profile "$profile" 38 landlock_create_ruleset landlock_add_rule landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" escape "$profile" "$tag" -e "${envvar}=true")
+  result=$(run_gated "$class" escape "$profile" "$tag" -e "${envvar}=true" "${extra[@]}")
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -242,11 +252,13 @@ check_escape_hatch() {
 # be applied. Must refuse at the preflight, never reach postgres.
 check_preflight_catches_restrict_self() {
   local class=$1 bin=$2 tag=$3
+  shift 3
+  local extra=("$@")
   local profile; profile=$(mktemp)
   write_seccomp_profile "$profile" 1 landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" restrictself "$profile" "$tag")
+  result=$(run_gated "$class" restrictself "$profile" "$tag" "${extra[@]}")
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -268,8 +280,16 @@ check_preflight_catches_restrict_self() {
 }
 
 for class in "$@"; do
-  read -r dockerfile bin envvar expects_proven < <(class_row "$class")
+  read -r dockerfile bin envvar expects_proven extra_raw < <(class_row "$class")
   tag="octoconv-${class}:sandbox-liveproof-${RUN_ID}"
+
+  # The class's own extra docker run args (class_row's fifth field), applied
+  # to EVERY docker run this script makes for this class -- "-" means none.
+  extra_run_args=()
+  if [ "$extra_raw" != "-" ]; then
+    # shellcheck disable=SC2206  # deliberate word-splitting: extra_raw is one of class_row's own values, never user/network input
+    extra_run_args=($extra_raw)
+  fi
 
   echo "== ${class}: building ${tag} from ${dockerfile} =="
   build_log=$(mktemp)
@@ -284,10 +304,10 @@ for class in "$@"; do
   echo "tracked dirt: $(git status --short | wc -l | tr -d ' ') file(s)"
   echo "image id: $(docker image inspect "$tag" --format '{{.Id}}')"
 
-  check_confined_startup "$class" "$bin" "$expects_proven" "$tag"
-  check_refuses_without_landlock "$class" "$envvar" "$tag"
-  check_escape_hatch "$class" "$envvar" "$tag"
-  check_preflight_catches_restrict_self "$class" "$bin" "$tag"
+  check_confined_startup "$class" "$bin" "$expects_proven" "$tag" "${extra_run_args[@]}"
+  check_refuses_without_landlock "$class" "$envvar" "$tag" "${extra_run_args[@]}"
+  check_escape_hatch "$class" "$envvar" "$tag" "${extra_run_args[@]}"
+  check_preflight_catches_restrict_self "$class" "$bin" "$tag" "${extra_run_args[@]}"
 
   docker rmi -f "$tag" >/dev/null 2>&1 || true
 done

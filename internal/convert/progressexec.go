@@ -210,6 +210,13 @@ func runCommandStreaming(ctx context.Context, onLine func(string), fifoDir, labe
 // binary would try to start a second worker process instead of exec'ing
 // ffmpeg. T-68-18.
 func (e engineExec) stream(ctx context.Context, onLine func(string), fifoDir, name string, args []string) ([]byte, error) {
+	// A per-exec environment (html's own replaced-environment shape) is not
+	// wired through runCommandStreaming at all -- refusing loudly here means
+	// a future streaming class that also needs one fails fast at the call
+	// site instead of silently running with the wrong (inherited) environment.
+	if e.env != nil {
+		return nil, fmt.Errorf("engineExec.stream: a per-exec environment is not supported")
+	}
 	out, err := runCommandStreaming(ctx, onLine, fifoDir, name, func(fifoPath string) (string, []string, error) {
 		return e.sandbox.wrapEngine(name, e.spec, progressStreamArgs(fifoPath, args))
 	})

@@ -65,7 +65,6 @@ var sandboxLegacyConfinedFiles = map[string]bool{
 // nowhere else in the package -- each commented with the phase that
 // removes its entry once that phase confines the class.
 var sandboxPendingFiles = map[string]string{
-	"chromium.go":       "phase 69",
 	"sanitizepdf.go":    "phase 69",
 	"sanitizeverify.go": "phase 69",
 	"libreoffice.go":    "phase 70",
@@ -91,6 +90,8 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return audioEngines, true
 	case "audioduration.go":
 		return sandboxIntersect(avEngines, audioEngines), true
+	case "chromium.go", "htmlsandbox.go":
+		return htmlEngines, true
 	}
 	return nil, false
 }
@@ -111,6 +112,8 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"audio"}
 	case "audioduration.go":
 		return []string{"av", "audio"}
+	case "chromium.go", "htmlsandbox.go":
+		return []string{"html"}
 	}
 	return nil
 }
@@ -128,6 +131,8 @@ func sandboxGroupEngines(group string) []string {
 		return avEngines
 	case "audio":
 		return audioEngines
+	case "html":
+		return htmlEngines
 	}
 	return nil
 }
@@ -463,13 +468,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)
