@@ -1478,6 +1478,10 @@ services:
       # document, inside a 1g cgroup. REASONED, not measured -- the same
       # status as the timeout above.
       PROBE_WORKER_CONCURRENCY: "1"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      PROBE_SANDBOX_DISABLED: "${PROBE_SANDBOX_DISABLED:-}"
       PROBE_MAX_RETRY: "2"
       # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
       # derives tectonicUniqueTTL from these two unconditionally in EVERY

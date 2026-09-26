@@ -788,20 +788,103 @@ ffprobe
 whisper-cli
 <!-- /conf05:audio:engines -->
 
-## probe (gs + pdfinfo + unzip) — замерено и доказано 2026-09-20
+## probe (gs + pdfinfo + unzip + file) — переизмерено и доказано 2026-09-26 (фаза 69, D-10)
 
-Вопреки ожиданию, класс **не** чисто внутрипроцессный: `sanitizepdf.go` зовёт
-`pdfinfo` и дважды `gs` (PDF → PostScript → PDF), `sanitizeverify.go` — `unzip`.
+Первоначальный замер 2026-09-20 (ниже был вычеркнут) охватывал только `gs`,
+`pdfinfo` и `unzip` и пропустил `file(1)` целиком. D-10 переизмерил класс по
+СОБСТВЕННЫМ exec-точкам кода, а не по старому документу — семь вызовов,
+четыре бинарника:
 
-**Read-write:** каталог задачи, **`/tmp`** (gs пишет туда `gs_*`).
+| Файл:строка | Бинарник | Вызов |
+|---|---|---|
+| `internal/convert/sanitizepdf.go:222` | `pdfinfo` | подсчёт страниц перед первым проходом gs |
+| `internal/convert/sanitizepdf.go:272` | `gs` | проход 1: PDF → PostScript (`ps2writeArgs`) |
+| `internal/convert/sanitizepdf.go:289` | `gs` | проход 2: PostScript → санированный PDF (`pdfwriteArgs`) |
+| `internal/convert/sanitizeverify.go:813` | `unzip` | листинг частей санированного пакета (`-Z1`) |
+| `internal/convert/sanitizeverify.go:867` | `unzip` | извлечение одной части (`-p`) для классификации |
+| `internal/convert/sanitizeverify.go:875` | `file` | классификация MIME извлечённой OOXML-части |
+| `internal/convert/sanitizeverify.go:1351` | `file` | классификация MIME санированного изображения |
 
-**Read-only:** `/usr/bin/{gs,pdfinfo,unzip}`, `/lib`, `/usr/lib`,
-`/usr/share/ghostscript`, **`/usr/share/color`**, **`/usr/share/fonts`**,
-`/var/lib/ghostscript`, `/etc/{ld.so.cache,localtime,papersize}`.
+**Read-write:** каталог задачи — и **только** он. `/tmp` в этот раз НЕ
+предоставляется (см. решение по CONF-06 ниже) — `probeReadWrite` пуст.
 
-**Достаточность и действенность — по СОДЕРЖИМОМУ:** после круга под ruleset
-`pdftotext` извлекает `This is a born-digital PDF with real extractable text`;
-из файла вне каталога задачи, под тем же ruleset, — пусто.
+**Read-only** (`probeReadOnly`, ровно в этом порядке — держится тестом
+`TestProbeReadOnlySetIsTheMeasuredOne`):
+
+| Путь | Причина |
+|---|---|
+| `/lib` | динамические библиотеки всех четырёх движков |
+| `/usr/lib` | сами движки (`gs`/`pdfinfo`/`unzip`/`file`) и скомпилированная база `file(1)` (`/usr/lib/file/magic.mgc`, резолвится через уже выданный `/usr/share/misc/magic.mgc`) |
+| `/usr/share/ghostscript` | ресурсы и ICC-профили ghostscript |
+| `/usr/share/color` | системные ICC-профили, которые `gs` читает при цветоконверсии |
+| `/usr/share/fonts` | шрифты для рендеринга PDF-страниц |
+| `/usr/share/poppler` | таблицы cmap/cidToUnicode `pdfinfo` (libpoppler) — см. "Консервативный грант" ниже |
+| `/var/lib/ghostscript` | состояние ghostscript (шрифтовой кэш и т.п.) |
+| `/etc/ld.so.cache` | резолвер динамического линковщика |
+| `/etc/localtime` | часовой пояс для меток времени движков |
+| `/etc/papersize` | размер бумаги по умолчанию для ghostscript |
+
+**Найдено НЕНУЖНЫМ удалением (D-10), НЕ выдано:**
+
+- `/etc/magic` — `file --mime-type -b` под ruleset БЕЗ этого гранта всё
+  равно печатает верный `image/jpeg` в stdout (что и парсит код); в stderr
+  появляется `file: cannot read magic file '/etc/magic' (Permission denied)
+  (No such file or directory)`, которое runCommand отбрасывает при нулевом
+  коде выхода.
+- `/usr/share/misc` — тот же приём: без отдельного гранта на этот путь
+  `file(1)` всё равно правильно отвечает `text/xml`/`image/jpeg`, потому что
+  уже выданный `/usr/lib` покрывает результат резолва символьной ссылки
+  `/usr/share/misc/magic.mgc → /usr/lib/file/magic.mgc`.
+
+**Консервативный грант:** `/usr/share/poppler` оставлен, хотя удаление на
+единственной ASCII-фикстуре метаданных не изменило вывод `pdfinfo` —
+недорогой грант (это содержимое образа, не хост), а его отсутствие рискует
+молчаливым неверным декодированием non-ASCII полей Title/Author при
+`rc=0` — тот же класс ловушки, что уже поймали на `/usr/share/fonts` для OCR.
+
+**D-05 (TMPDIR): измерено 2026-09-25**, `strace -ff -e
+trace=open,openat,creat,unlink,unlinkat` под `TMPDIR=/job/tmp` на реальном
+`octoconv-probe-worker` образе, оба прохода `gs` на
+`testdata/sanitize/threat_all_classes.pdf`: каждый `gs_*` scratch-файл
+создаётся и удаляется внутри `/job/tmp`; grep по обеим трассам на голый
+`"/tmp/` (не `/job/tmp`) — ноль совпадений. Полное решение и альтернативы —
+в разделе "Решение по /tmp (CONF-06, фаза 69)" ниже; здесь фиксируется
+только сам факт: TMPDIR передаётся в СОБСТВЕННОЕ окружение движка
+(`engineEnv(jobDir)` через `engineExec.withEnv`), никогда не
+`os.Setenv`-ом в процессе воркера.
+
+**Действенность — по СОДЕРЖИМОМУ, никогда по коду выхода** (движки этого
+класса, в отличие от chromium, отказывают ГРОМКО — но `file(1)` всё равно
+выходит с кодом 0 при отказе, что и делает суждение по содержимому
+обязательным, а не факультативным):
+
+| Движок | Вне каталога задачи | Внутри (для сравнения) |
+|---|---|---|
+| `gs` (обе фазы) | код возврата 1, `/undefinedfilename … Unrecoverable error`; на выходе — 166046-байтный "скелет" без единого маркера содержимого | `rc=0`, реальный санированный вывод, маркер найден |
+| `pdfinfo` | `I/O Error: Couldn't open file …: Permission denied.` | полные корректные метаданные |
+| `unzip` | `error: cannot open zipfile … Permission denied` | листинг из 5 частей, содержимое верное |
+| `file` | `writable, regular file, no read permission` (это САМ ответ на stdout — не предупреждение и не ошибка; **код выхода 0**) | верный MIME (`text/xml`/`image/jpeg`) |
+
+<!-- conf05:probe:readwrite -->
+<!-- /conf05:probe:readwrite -->
+<!-- conf05:probe:readonly -->
+/lib
+/usr/lib
+/usr/share/ghostscript
+/usr/share/color
+/usr/share/fonts
+/usr/share/poppler
+/var/lib/ghostscript
+/etc/ld.so.cache
+/etc/localtime
+/etc/papersize
+<!-- /conf05:probe:readonly -->
+<!-- conf05:probe:engines -->
+gs
+pdfinfo
+unzip
+file
+<!-- /conf05:probe:engines -->
 
 ## Ещё не замерено
 
