@@ -45,7 +45,9 @@ data:
   RATE_LIMIT_INSPECT_RPM: "30"
   WORKER_CONCURRENCY: "4"
   DOCUMENT_WORKER_CONCURRENCY: "2"
-  HTML_WORKER_CONCURRENCY: "2"
+  # CONF-06/D-01 (phase 69): one task per container -- the ruleset grants
+  # the shared /tmp; a confined worker refuses to start above 1.
+  HTML_WORKER_CONCURRENCY: "1"
   WEBHOOK_WORKER_CONCURRENCY: "4"
   ENGINE_TIMEOUT: "120s"
   IMAGE_MAX_RETRY: "4"

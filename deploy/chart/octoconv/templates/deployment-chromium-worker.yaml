@@ -48,6 +48,21 @@ spec:
           image: "{{ .Values.chromiumWorker.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: IfNotPresent
           {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.chromiumWorker.extraEnv }}
+          # extraEnv (mirrors deployment-pandoc-worker.yaml's own block):
+          # explicit `env:` entries always take precedence over
+          # envFrom-sourced values for the same key -- this is how
+          # HTML_SANDBOX_DISABLED=true is set (phase 69), the remedy the
+          # worker names when it refuses to start; an HTML_WORKER_CONCURRENCY
+          # above 1 set here is refused while confined (D-03).
+          # chromiumWorker.extraEnv is intentionally absent from values.yaml
+          # so this block renders nothing in production.
+          env:
+            {{- range $k, $v := .Values.chromiumWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 9090

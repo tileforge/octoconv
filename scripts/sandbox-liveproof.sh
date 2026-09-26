@@ -70,7 +70,7 @@ check_confined_startup() {
 
   set +e
   local out status
-  out=$(docker run --name "$cname" --rm "${extra[@]}" \
+  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
     -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
     "$tag" 2>&1)
   status=$?
@@ -150,8 +150,6 @@ run_gated() {
   local class=$1 suffix=$2 profile=$3 tag=$4
   shift 4
   local cname="octoconv-liveproof-${class}-${suffix}-${RUN_ID}"
-  local secopt=()
-  [ -n "$profile" ] && secopt=(--security-opt "seccomp=${profile}")
 
   # Redirected to /dev/null explicitly, and not merely relying on the inner
   # `docker kill` command's own redirection: this whole function's stdout is
@@ -167,9 +165,21 @@ run_gated() {
   local watchdog=$!
   set +e
   local out status
-  out=$(docker run --name "$cname" --rm "${secopt[@]}" "$@" \
-    -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
-    "$tag" 2>&1)
+  # A conditional (not an empty-array-expansion) branch on profile: bash 3.2
+  # (macOS's shipped /bin/bash) raises "unbound variable" under `set -u`
+  # when expanding a DECLARED-BUT-EMPTY array via "${arr[@]}" -- a real, if
+  # dormant, bug this file's own doc comment already promised support for
+  # ("or none, when profile is ''"), first exercised by a caller with no
+  # seccomp profile at all.
+  if [ -n "$profile" ]; then
+    out=$(docker run --name "$cname" --rm --security-opt "seccomp=${profile}" "$@" \
+      -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
+      "$tag" 2>&1)
+  else
+    out=$(docker run --name "$cname" --rm "$@" \
+      -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
+      "$tag" 2>&1)
+  fi
   status=$?
   set -e
   kill "$watchdog" >/dev/null 2>&1 || true
@@ -188,7 +198,7 @@ check_refuses_without_landlock() {
   write_seccomp_profile "$profile" 38 landlock_create_ruleset landlock_add_rule landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" noland "$profile" "$tag" "${extra[@]}")
+  result=$(run_gated "$class" noland "$profile" "$tag" ${extra[@]+"${extra[@]}"})
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -224,7 +234,7 @@ check_escape_hatch() {
   write_seccomp_profile "$profile" 38 landlock_create_ruleset landlock_add_rule landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" escape "$profile" "$tag" -e "${envvar}=true" "${extra[@]}")
+  result=$(run_gated "$class" escape "$profile" "$tag" -e "${envvar}=true" ${extra[@]+"${extra[@]}"})
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -258,7 +268,7 @@ check_preflight_catches_restrict_self() {
   write_seccomp_profile "$profile" 1 landlock_restrict_self
 
   local result out status
-  result=$(run_gated "$class" restrictself "$profile" "$tag" "${extra[@]}")
+  result=$(run_gated "$class" restrictself "$profile" "$tag" ${extra[@]+"${extra[@]}"})
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   rm -f "$profile"
@@ -276,6 +286,130 @@ check_preflight_catches_restrict_self() {
     printf '%s\n' "$out" | grep -F "sandbox preflight:" | head -1 | sed 's/^/  /'
   else
     fail "${class} preflight-catches-restrict-self" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
+# check_html_concurrency_guard (D-03): a confined worker whose configured
+# concurrency is above 1 must refuse to start, naming HTML_WORKER_CONCURRENCY
+# and the shared /tmp, before ever reaching Postgres or claiming confinement
+# proven -- the ruleset's shared-/tmp grant is safe only at concurrency 1.
+check_html_concurrency_guard() {
+  local tag=$1
+  shift
+  local extra=("$@")
+
+  local result out status
+  result=$(run_gated html concurrencyguard "" "$tag" -e "HTML_WORKER_CONCURRENCY=2" ${extra[@]+"${extra[@]}"})
+  status=${result%%$'\x1e'*}
+  out=${result#*$'\x1e'}
+
+  local ok=1 reasons=()
+  printf '%s\n' "$out" | grep -qF "HTML_WORKER_CONCURRENCY=2" \
+    || { ok=0; reasons+=("refusal does not name HTML_WORKER_CONCURRENCY=2"); }
+  printf '%s\n' "$out" | grep -qF "shared /tmp" \
+    || { ok=0; reasons+=("refusal does not name the shared /tmp"); }
+  printf '%s\n' "$out" | grep -qF "🔒 html sandbox proven:" \
+    && { ok=0; reasons+=("output claims 🔒 html sandbox proven: -- should have refused before the preflight ever ran"); }
+  printf '%s\n' "$out" | grep -qF "postgres:" \
+    && { ok=0; reasons+=("reached the postgres connect attempt -- should have refused at startup"); }
+  [ "$status" -ne 0 ] \
+    || { ok=0; reasons+=("exit status 0, want non-zero"); }
+
+  if [ "$ok" = 1 ]; then
+    pass "html concurrency-guard"
+    printf '%s\n' "$out" | grep -F "HTML_WORKER_CONCURRENCY=2" | head -1 | sed 's/^/  /'
+  else
+    fail "html concurrency-guard" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
+# check_html_wrapper_as_measured (D-08): a package update that changes the
+# wrapper shows up here. PASS iff the four values are EXACTLY the measured
+# ones: the wrapper's first line, its interpreter (resolved from /bin/sh),
+# the count of lines naming the real binary, and the wrapper's byte count.
+check_html_wrapper_as_measured() {
+  local tag=$1
+  shift
+  local extra=("$@")
+  local cname="octoconv-liveproof-html-wrapper-${RUN_ID}"
+
+  ( sleep 300; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+  local watchdog=$!
+
+  set +e
+  local out status
+  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} --entrypoint sh "$tag" -c '
+    head -n1 /usr/bin/chromium-headless-shell
+    readlink -f /bin/sh
+    grep -c "^/usr/lib/chromium/chromium-headless-shell " /usr/bin/chromium-headless-shell
+    wc -c < /usr/bin/chromium-headless-shell
+  ' 2>&1)
+  status=$?
+  set -e
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+
+  local trimmed
+  trimmed=$(printf '%s\n' "$out" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  local want
+  want=$(printf '%s\n' '#!/bin/sh -e' '/usr/bin/dash' '1' '61')
+
+  if [ "$status" -eq 0 ] && [ "$trimmed" = "$want" ]; then
+    pass "html wrapper-as-measured"
+  else
+    fail "html wrapper-as-measured" "found: $(printf '%s' "$trimmed" | tr '\n' '|')" \
+      "want: $(printf '%s' "$want" | tr '\n' '|')" "--- full output ---" "$out"
+  fi
+}
+
+# check_html_sweeps_shared_tmp (D-04): a leftover planted in the container's
+# /tmp before startup -- a plain file (mimics a killed gs-style scratch file)
+# and a chromium-shm-shaped name -- must be gone once the confined worker's
+# preflight has proven the sandbox and swept /tmp, BEFORE the engine would
+# run a real task.
+check_html_sweeps_shared_tmp() {
+  local tag=$1
+  shift
+  local extra=("$@")
+  local cname="octoconv-liveproof-html-sweep-${RUN_ID}"
+
+  ( sleep 300; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+  local watchdog=$!
+
+  set +e
+  local out status
+  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
+    -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
+    --entrypoint sh "$tag" -c '
+    touch /tmp/octoconv-liveproof-leftover
+    touch /tmp/.org.chromium.Chromium.liveproof
+    /usr/local/bin/chromium-worker
+    echo "--- after ---"
+    ls -A /tmp
+  ' 2>&1)
+  status=$?
+  set -e
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+
+  local ok=1 reasons=()
+  printf '%s\n' "$out" | grep -qF "🔒 html sandbox proven:" \
+    || { ok=0; reasons+=("missing '🔒 html sandbox proven:' -- the preflight never cleared, so the sweep proves nothing here"); }
+  local after
+  after=$(printf '%s\n' "$out" | awk '/^--- after ---$/{f=1; next} f')
+  if printf '%s\n' "$after" | grep -qF "octoconv-liveproof-leftover"; then
+    ok=0
+    reasons+=("the planted plain-file leftover survived the sweep")
+  fi
+  if printf '%s\n' "$after" | grep -qF ".org.chromium.Chromium.liveproof"; then
+    ok=0
+    reasons+=("the planted chromium-shm-shaped leftover survived the sweep")
+  fi
+
+  if [ "$ok" = 1 ]; then
+    pass "html sweeps-shared-tmp"
+  else
+    fail "html sweeps-shared-tmp" "${reasons[@]}" "--- full output ---" "$out"
   fi
 }
 
@@ -304,10 +438,16 @@ for class in "$@"; do
   echo "tracked dirt: $(git status --short | wc -l | tr -d ' ') file(s)"
   echo "image id: $(docker image inspect "$tag" --format '{{.Id}}')"
 
-  check_confined_startup "$class" "$bin" "$expects_proven" "$tag" "${extra_run_args[@]}"
-  check_refuses_without_landlock "$class" "$envvar" "$tag" "${extra_run_args[@]}"
-  check_escape_hatch "$class" "$envvar" "$tag" "${extra_run_args[@]}"
-  check_preflight_catches_restrict_self "$class" "$bin" "$tag" "${extra_run_args[@]}"
+  check_confined_startup "$class" "$bin" "$expects_proven" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  check_refuses_without_landlock "$class" "$envvar" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  check_escape_hatch "$class" "$envvar" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  check_preflight_catches_restrict_self "$class" "$bin" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+
+  if [ "$class" = "html" ]; then
+    check_html_concurrency_guard "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_html_wrapper_as_measured "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_html_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  fi
 
   docker rmi -f "$tag" >/dev/null 2>&1 || true
 done

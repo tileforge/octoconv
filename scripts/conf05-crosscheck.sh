@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # Doc-vs-Go cross-check for CONF-05: each confined class's measured path set
 # is recorded ONCE, in SANDBOX-PATHS.md, between a pair of conf05 marker
-# blocks -- and the Go var every converter actually enforces (plans 03-06)
-# must equal it exactly, or the two have drifted apart with nothing to say
-# so.
+# blocks -- and the Go var every converter actually enforces must equal it
+# exactly, or the two have drifted apart with nothing to say so.
 #
 # Usage:
 #   scripts/conf05-crosscheck.sh [--doc] <class>...
 #
-# --doc prints what the DOCUMENT says (readonly/engines counts and lists)
-# and exits 0 -- no Go file is read, so this mode works before any of the
-# four sandbox.go files exist (this plan writes none of them; plans 03-06
-# do). Without --doc, the doc lists are diffed against
-# internal/convert/<class>sandbox.go's var <class>ReadOnly / var
-# <class>Engines.
+# Seven classes: pandoc, ocr, av, audio, html, probe (probe's Go file lands
+# in a later plan -- until then this script exits 3 for it, its documented
+# "not there yet" status). html and probe additionally carry a conf05
+# readwrite block (CONF-06's shared-writable-path decision) -- the other
+# four classes' writable set is the job directory alone and have no such
+# block.
+#
+# --doc prints what the DOCUMENT says (readonly/engines/readwrite counts and
+# lists) and exits 0 -- no Go file is read. Without --doc, the doc lists are
+# diffed against internal/convert/<class>sandbox.go's var <class>ReadOnly /
+# var <class>Engines / (html, probe only) var <class>ReadWrite.
 #
 # Exit codes:
 #   0  doc read cleanly (--doc), or doc and Go agree exactly
@@ -21,8 +25,8 @@
 #   2  a conf05 marker block is missing from SANDBOX-PATHS.md for a
 #      requested class -- never treated as an empty, passing set
 #   3  the Go file exists but the named var was not found in it -- distinct
-#      from a mismatch: the var is simply not there yet (e.g. before plans
-#      03-06 land)
+#      from a mismatch: the var is simply not there yet (e.g. before probe's
+#      own plan lands)
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -44,7 +48,9 @@ class_go_file() {
     ocr)    echo "internal/convert/ocrsandbox.go" ;;
     av)     echo "internal/convert/avsandbox.go" ;;
     audio)  echo "internal/convert/audiosandbox.go" ;;
-    *) die "unknown class: $1 (expected pandoc, ocr, av or audio)" ;;
+    html)   echo "internal/convert/htmlsandbox.go" ;;
+    probe)  echo "internal/convert/probesandbox.go" ;;
+    *) die "unknown class: $1 (expected pandoc, ocr, av, audio, html or probe)" ;;
   esac
 }
 class_go_readonly_var() {
@@ -53,6 +59,8 @@ class_go_readonly_var() {
     ocr)    echo "ocrReadOnly" ;;
     av)     echo "avReadOnly" ;;
     audio)  echo "audioReadOnly" ;;
+    html)   echo "htmlReadOnly" ;;
+    probe)  echo "probeReadOnly" ;;
   esac
 }
 class_go_engines_var() {
@@ -61,6 +69,20 @@ class_go_engines_var() {
     ocr)    echo "ocrEngines" ;;
     av)     echo "avEngines" ;;
     audio)  echo "audioEngines" ;;
+    html)   echo "htmlEngines" ;;
+    probe)  echo "probeEngines" ;;
+  esac
+}
+# class_go_readwrite_var prints the Go var naming a class's shared writable
+# set BEYOND the job directory (CONF-06) -- html and probe only; empty for
+# every class whose writable set is the job directory alone (pandoc/ocr/av/
+# audio), which the main loop below reads as "no readwrite block for this
+# class", not as an empty passing set.
+class_go_readwrite_var() {
+  case "$1" in
+    html)  echo "htmlReadWrite" ;;
+    probe) echo "probeReadWrite" ;;
+    *) : ;;
   esac
 }
 
@@ -95,6 +117,9 @@ doc_readonly_lines() {
 }
 doc_engine_lines() {
   extract_doc_block "$1" engines | grep -v '^[[:space:]]*$' || true
+}
+doc_readwrite_lines() {
+  extract_doc_block "$1" readwrite | grep '^/' || true
 }
 
 # extract_go_list prints, one per line, the quoted string elements of
@@ -159,10 +184,32 @@ for class in "$@"; do
   eng_count=0
   [ -n "$eng_lines" ] && eng_count=$(printf '%s\n' "$eng_lines" | grep -vc '^[[:space:]]*$')
 
+  # A class with a readwrite var (html, probe) MUST carry a conf05 readwrite
+  # block -- exit 2 when missing, never read as an empty passing set. A
+  # class without one (pandoc/ocr/av/audio) keeps its current output
+  # byte-for-byte: has_rw stays 0 and every readwrite-shaped branch below is
+  # skipped entirely.
+  rw_var=$(class_go_readwrite_var "$class")
+  has_rw=0
+  rw_lines=""
+  rw_count=0
+  if [ -n "$rw_var" ]; then
+    has_rw=1
+    require_doc_block "$class" readwrite \
+      || { echo "error: missing conf05 readwrite marker block for class: $class" >&2; exit 2; }
+    rw_lines=$(doc_readwrite_lines "$class")
+    [ -n "$rw_lines" ] && rw_count=$(printf '%s\n' "$rw_lines" | grep -c '^/')
+  fi
+
   if [ "$DOC_MODE" = 1 ]; then
-    echo "DOC: $class readonly ($ro_count) engines ($eng_count)"
+    if [ "$has_rw" = 1 ]; then
+      echo "DOC: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)"
+    else
+      echo "DOC: $class readonly ($ro_count) engines ($eng_count)"
+    fi
     [ -n "$ro_lines" ] && printf '%s\n' "$ro_lines" | sed 's/^/  ro: /'
     [ -n "$eng_lines" ] && printf '%s\n' "$eng_lines" | sed 's/^/  engine: /'
+    [ "$has_rw" = 1 ] && [ -n "$rw_lines" ] && printf '%s\n' "$rw_lines" | sed 's/^/  rw: /'
     continue
   fi
 
@@ -184,7 +231,17 @@ for class in "$@"; do
   ro_diff=$(diff <(printf '%s\n' "$ro_lines") <(printf '%s\n' "$go_ro_raw") || true)
   eng_diff=$(diff <(printf '%s\n' "$eng_lines") <(printf '%s\n' "$go_eng_raw") || true)
 
-  if [ -n "$ro_diff" ] || [ -n "$eng_diff" ]; then
+  rw_diff=""
+  if [ "$has_rw" = 1 ]; then
+    go_rw_raw=$(extract_go_list "$go_file" "$rw_var")
+    if [ "$go_rw_raw" = "__NOTFOUND__" ]; then
+      echo "error: var $rw_var not found in $go_file" >&2
+      exit 3
+    fi
+    rw_diff=$(diff <(printf '%s\n' "$rw_lines") <(printf '%s\n' "$go_rw_raw") || true)
+  fi
+
+  if [ -n "$ro_diff" ] || [ -n "$eng_diff" ] || [ -n "$rw_diff" ]; then
     echo "MISMATCH: $class"
     if [ -n "$ro_diff" ]; then
       echo "readonly diff (doc vs go, - doc / + go):"
@@ -194,11 +251,19 @@ for class in "$@"; do
       echo "engines diff (doc vs go, - doc / + go):"
       echo "$eng_diff"
     fi
+    if [ -n "$rw_diff" ]; then
+      echo "readwrite diff (doc vs go, - doc / + go):"
+      echo "$rw_diff"
+    fi
     status=1
     continue
   fi
 
-  echo "MATCH: $class readonly ($ro_count) engines ($eng_count)"
+  if [ "$has_rw" = 1 ]; then
+    echo "MATCH: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)"
+  else
+    echo "MATCH: $class readonly ($ro_count) engines ($eng_count)"
+  fi
 done
 
 exit "$status"

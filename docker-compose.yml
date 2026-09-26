@@ -687,9 +687,16 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
-      HTML_WORKER_CONCURRENCY: "2"
+      # D-01 (CONF-06, phase 69): one task per container -- the ruleset
+      # grants the container's shared /tmp read-write, which is safe only at
+      # concurrency 1; a confined worker refuses to start above it.
+      HTML_WORKER_CONCURRENCY: "1"
       HTML_ENGINE_TIMEOUT: "60s"
       HTML_MAX_RETRY: "3"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      HTML_SANDBOX_DISABLED: "${HTML_SANDBOX_DISABLED:-}"
       # queue.NewClient() (constructed by cmd/chromium-worker/main.go) also
       # reads the image-side and document-side retry/timeout vars
       # unconditionally, even though this process only runs the html engine
