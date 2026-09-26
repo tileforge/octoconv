@@ -314,6 +314,14 @@ func isProbeTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the document: this MUST precede every check below, because
+	// classifyEngineFailure/unverifiableEngineFailure preserve the sentinel
+	// unwrapped, but the wrapped text can still carry this class's own
+	// terminal shape (e.g. ErrSanitizeMalformedInput) alongside it.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	// Verification failure: deterministic on the output, which is
 	// deterministic on the input. Both outcomes -- residue found, and could
 	// not be verified -- are terminal, and for the same reason.
