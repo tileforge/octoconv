@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"os"
 	"strings"
 	"testing"
@@ -59,6 +60,97 @@ func TestInjectPrintCSSWithHeadClose(t *testing.T) {
 	// inPath content must never be mutated.
 	if string(original) != string(originalCopy) {
 		t.Error("injectPrintCSS mutated its input html slice in place")
+	}
+}
+
+// cspShapeRow is one row of this plan's Shape table (69-04-PLAN.md): a
+// crafted document plus the byte offset injectCSPFirst must splice the CSP
+// at. Task 1 builds only row s1 (the canonical CR-01 bypass); Task 2 extends
+// this to all 18 top-level rows plus the six unit-only edge rows.
+type cspShapeRow struct {
+	name        string
+	raw         []byte
+	wantAt      int
+	subDocument bool
+}
+
+// cspShapeTable builds the shared shape table (one table, two levels: the
+// unit invariant below and the live differential in
+// chromium_live_test.go). marker must be a fresh preflightMarker() value per
+// invocation so a live run's oracle can never be confused with a stale one.
+func cspShapeTable(marker string) []cspShapeRow {
+	const d = "<!doctype html>"
+	title := "<title>SAFE-" + marker + "</title>"
+	script := "<script>document.title='BYPASS-" + marker + "'</script>"
+	return []cspShapeRow{
+		{
+			name:   "s1",
+			raw:    []byte(d + script + "<html><head>" + title + "</head><body><p>x</p></body></html>"),
+			wantAt: len(d),
+		},
+	}
+}
+
+// validateCSPPrefixInvariant asserts that raw[:wantAt] is at most a leading
+// UTF-8 BOM, then only HTML whitespace (TAB, LF, FF, CR, SPACE), then at most
+// one case-insensitive "<!doctype" run ending at its first '>' -- the
+// structural invariant injectCSPFirst's document-start splice must hold for
+// every shape-table row (69-04-PLAN.md Task 1 <behavior>).
+func validateCSPPrefixInvariant(t *testing.T, name string, raw []byte, wantAt int) {
+	t.Helper()
+	p := raw[:wantAt]
+	if bytes.HasPrefix(p, []byte{0xEF, 0xBB, 0xBF}) {
+		p = p[3:]
+	}
+	for len(p) > 0 {
+		switch p[0] {
+		case '\t', '\n', '\f', '\r', ' ':
+			p = p[1:]
+			continue
+		}
+		break
+	}
+	if len(p) == 0 {
+		return
+	}
+	lower := bytes.ToLower(p)
+	if !bytes.HasPrefix(lower, []byte("<!doctype")) {
+		t.Fatalf("%s: prefix %q is neither whitespace nor a doctype opener", name, p)
+	}
+	gt := bytes.IndexByte(p, '>')
+	if gt < 0 || gt != len(p)-1 {
+		t.Fatalf("%s: prefix %q does not end exactly at the doctype's first '>'", name, p)
+	}
+}
+
+// TestInjectCSPFirstLeadsEveryShape is the shared shape-table invariant
+// (Task 1: row s1 only; Task 2 extends the table to all 24 rows). For every
+// row, injectCSPFirst's output must equal raw[:wantAt] + csp + raw[wantAt:],
+// the prefix must satisfy validateCSPPrefixInvariant, the input slice must be
+// left unmodified, and a leading BOM must survive into the output.
+func TestInjectCSPFirstLeadsEveryShape(t *testing.T) {
+	marker, err := preflightMarker()
+	if err != nil {
+		t.Fatalf("preflightMarker: %v", err)
+	}
+	for _, row := range cspShapeTable(marker) {
+		t.Run(row.name, func(t *testing.T) {
+			original := append([]byte(nil), row.raw...)
+			validateCSPPrefixInvariant(t, row.name, row.raw, row.wantAt)
+
+			got := injectCSPFirst(row.raw, cspNoScriptMeta)
+
+			want := append(append(append([]byte{}, row.raw[:row.wantAt]...), cspNoScriptMeta...), row.raw[row.wantAt:]...)
+			if !bytes.Equal(got, want) {
+				t.Errorf("%s: injectCSPFirst output mismatch\n got: %s\nwant: %s", row.name, got, want)
+			}
+			if !bytes.Equal(row.raw, original) {
+				t.Errorf("%s: injectCSPFirst mutated its input slice in place", row.name)
+			}
+			if bytes.HasPrefix(original, []byte{0xEF, 0xBB, 0xBF}) && !bytes.HasPrefix(got, []byte{0xEF, 0xBB, 0xBF}) {
+				t.Errorf("%s: leading BOM did not survive into the output", row.name)
+			}
+		})
 	}
 }
 
