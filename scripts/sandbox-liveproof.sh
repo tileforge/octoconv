@@ -18,6 +18,11 @@ set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# CSP_LIVE_ROWS must equal the row count of cspShapeTable
+# (internal/convert/chromium_test.go) -- Task 1 of 69-04-PLAN.md builds only
+# row s1; Task 2 raises this to 18 once the table covers every row.
+CSP_LIVE_ROWS=1
+
 # class_row prints "dockerfile binary envvar expects_proven extra_run_args"
 # for class, or dies on an unknown one. extra_run_args is "-" (meaning none)
 # for every class but html, whose shared /tmp (CONF-06) needs the same
@@ -413,6 +418,80 @@ check_html_sweeps_shared_tmp() {
   fi
 }
 
+# run_html_csp_live_test docker-runs the freshly cross-compiled convert.test
+# binary, read-only bind-mounted at /liveproof, inside tag under tini,
+# invoking only TestChromiumCSPPrecedesEveryScriptLive with
+# OCTOCONV_CHROMIUM_LIVE=1 -- modeled on run_gated's watchdog discipline
+# (background watchdog, stdio redirected to /dev/null, so a $(...) capture is
+# not held open) but with a longer watchdog period (900s): the live test
+# builds one docker-run per shape-table row, all inside a single process.
+run_html_csp_live_test() {
+  local tag=$1 bindir=$2
+  shift 2
+  local extra=("$@")
+  local cname="octoconv-liveproof-html-csplive-${RUN_ID}"
+
+  ( sleep 900; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+  local watchdog=$!
+
+  set +e
+  local out status
+  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
+    -v "${bindir}:/liveproof:ro" -e OCTOCONV_CHROMIUM_LIVE=1 \
+    --entrypoint /usr/bin/tini "$tag" -- \
+    /liveproof/convert.test -test.run '^TestChromiumCSPPrecedesEveryScriptLive$' -test.v -test.timeout 10m 2>&1)
+  status=$?
+  set -e
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+  printf '%s\x1e%s' "$status" "$out"
+}
+
+# check_html_csp_live (G-69-2): PASS iff exit 0, the output contains
+# "--- PASS: TestChromiumCSPPrecedesEveryScriptLive" (unanchored -- -test.v
+# indents subtest lines), the count of
+# "--- PASS: TestChromiumCSPPrecedesEveryScriptLive/" lines equals
+# CSP_LIVE_ROWS, and there is no "--- SKIP" and no "--- FAIL" line.
+check_html_csp_live() {
+  local tag=$1 bindir=$2
+  shift 2
+  local extra=("$@")
+
+  local result out status
+  result=$(run_html_csp_live_test "$tag" "$bindir" ${extra[@]+"${extra[@]}"})
+  status=${result%%$'\x1e'*}
+  out=${result#*$'\x1e'}
+
+  local ok=1 reasons=()
+  if [ "$status" -ne 0 ]; then
+    ok=0
+    reasons+=("exit status ${status}, want 0")
+  fi
+  printf '%s\n' "$out" | grep -q -- "--- PASS: TestChromiumCSPPrecedesEveryScriptLive" \
+    || { ok=0; reasons+=("missing '--- PASS: TestChromiumCSPPrecedesEveryScriptLive'"); }
+  local pass_count
+  pass_count=$(printf '%s\n' "$out" | grep -c -- "--- PASS: TestChromiumCSPPrecedesEveryScriptLive/" || true)
+  if [ "$pass_count" -ne "$CSP_LIVE_ROWS" ]; then
+    ok=0
+    reasons+=("found ${pass_count} passing subtests, want ${CSP_LIVE_ROWS}")
+  fi
+  if printf '%s\n' "$out" | grep -q -- "--- SKIP"; then
+    ok=0
+    reasons+=("output contains a --- SKIP line")
+  fi
+  if printf '%s\n' "$out" | grep -q -- "--- FAIL"; then
+    ok=0
+    while IFS= read -r line; do reasons+=("$line"); done < <(printf '%s\n' "$out" | grep -- "--- FAIL")
+  fi
+
+  if [ "$ok" = 1 ]; then
+    pass "html csp-precedes-every-script"
+    printf '%s\n' "$out" | grep -F "csp-live:" | head -1 | sed 's/^/  /'
+  else
+    fail "html csp-precedes-every-script" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
 for class in "$@"; do
   read -r dockerfile bin envvar expects_proven extra_raw < <(class_row "$class")
   tag="octoconv-${class}:sandbox-liveproof-${RUN_ID}"
@@ -444,9 +523,28 @@ for class in "$@"; do
   check_preflight_catches_restrict_self "$class" "$bin" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
 
   if [ "$class" = "html" ]; then
+    # Cross-compile the convert.test binary for the IMAGE's architecture, on
+    # go.mod's own toolchain (never the host default -- the host toolchain is
+    # newer than go.mod, #4619/#4748 class of drift), so the binary the live
+    # check runs is proven to be the tree's own build, not an incidental one.
+    image_arch=$(docker image inspect "$tag" --format '{{.Architecture}}')
+    [ -n "$image_arch" ] || die "cannot read the architecture of $tag"
+    go_toolchain="go$(awk '$1=="go"{print $2; exit}' go.mod)"
+    echo "toolchain: $(GOTOOLCHAIN="$go_toolchain" go version)"
+    bindir=$(mktemp -d)
+    if ! CGO_ENABLED=0 GOOS=linux GOARCH="$image_arch" GOTOOLCHAIN="$go_toolchain" \
+        go test -c -o "$bindir/convert.test" ./internal/convert >"$bindir/build.log" 2>&1; then
+      cat "$bindir/build.log"
+      rm -rf "$bindir"
+      die "cross-compile of convert.test failed for class ${class}"
+    fi
+
     check_html_concurrency_guard "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_html_wrapper_as_measured "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_html_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_html_csp_live "$tag" "$bindir" ${extra_run_args[@]+"${extra_run_args[@]}"}
+
+    rm -rf "$bindir"
   fi
 
   docker rmi -f "$tag" >/dev/null 2>&1 || true

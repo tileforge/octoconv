@@ -58,9 +58,13 @@ const cspNoScriptMeta = `<meta http-equiv="Content-Security-Policy" content="scr
 // Pattern 1).
 var (
 	headCloseTag   = []byte("</head>")
-	headOpenPrefix = []byte("<head")
 	htmlOpenPrefix = []byte("<html")
 )
+
+// cspDoctypePrefix is the case-insensitive opener injectCSPFirst recognizes
+// at the document start, and htmlWhitespace is the whitespace set it skips
+// before looking for it.
+var cspDoctypePrefix = []byte("<!doctype")
 
 // injectPrintCSS returns a NEW copy of html with css inserted immediately
 // before the last child position of <head> -- i.e. right before the first
@@ -86,30 +90,65 @@ func injectPrintCSS(html []byte, css string) []byte {
 	return spliceAt(html, 0, css)
 }
 
-// injectCSPFirst returns a NEW copy of html with csp inserted as the FIRST
-// child of <head> -- immediately after the opening "<head ...>" tag -- so
-// the CSP is parsed before any <script> that also lives in <head> (CR-01).
-// A <meta> CSP only governs content that appears AFTER it in source order;
-// injecting it right before </head> (as injectPrintCSS does for the print
-// style) would leave a head-preceding inline <script> to execute before the
-// policy is installed, defeating D-05's JS-disable. The print <style> stays
-// at end-of-head for cascade priority; only the CSP must lead. Fallbacks
-// mirror injectPrintCSS: after the opening "<html ...>" tag, else position 0
-// (LooksLikeHTML has already gated that one of these markers exists, D-07).
+// injectCSPFirst returns a NEW copy of html with csp spliced at the
+// DOCUMENT START -- the only point in the document that is guaranteed to
+// precede every parser-executable byte, regardless of where a literal
+// <head>/<html> tag sits in the source text (UAT gap G-69-2,
+// .planning/debug/csp-bypass-before-head.md).
+//
+// The earlier version located its injection point with a bare byte search
+// for "<head" then "<html" -- but source order is not tree-construction
+// order: chromium's real HTML5 parser opens an implicit <head>/<body> for
+// any content it meets before the literal tag, and then DISCARDS that later
+// literal tag as a duplicate. A CSP spliced relative to the discarded tag's
+// byte offset lands in the parser's <body> and is REJECTED OUTRIGHT
+// ("delivered via a <meta> element outside the document's <head>, which is
+// disallowed"), not merely installed late -- confirmed live against the
+// production chromium-headless-shell binary for 8 crafted shapes (the debug
+// session's divergence table). A byte search can also fire inside an HTML
+// comment, splicing the CSP as inert comment text that is never parsed as
+// markup at all. Neither failure is possible when nothing is searched for:
+// this function performs NO search of the document for a head or html tag.
+//
+// The splice point itself: skip one leading UTF-8 BOM, then skip only HTML
+// whitespace (TAB, LF, FF, CR, SPACE), then, if a case-insensitive
+// "<!doctype" run starts there and a '>' follows, splice right after that
+// FIRST '>' -- the HTML tokenizer ends a doctype at its first '>', even
+// inside a quoted identifier (row x4 of the shape table), so matching that
+// exactly keeps the CSP outside the doctype rather than splitting it.
+// Otherwise splice at that position (row x3: BOM, no doctype -- byte 3, not
+// 0, so the encoding signature stays first).
+//
+// The whitespace set is deliberately HTML's five characters, not
+// LooksLikeHTML's wider trim set (which also accepts a vertical tab):
+// measured live, a vertical tab before the doctype is not itself parsed as
+// leading whitespace by chromium, so splicing after the doctype there lands
+// the CSP outside <head> and the script runs (row x2). Reusing
+// LooksLikeHTML's set here would be a live bypass, not mere leniency.
+//
+// The doctype stays the first token in the output (so the document keeps
+// standards mode) and the BOM stays at byte 0 (so encoding detection is
+// unaffected) -- both are asserted by every shape-table row's structural
+// invariant (chromium_test.go), not merely implied by this comment.
 func injectCSPFirst(html []byte, csp string) []byte {
-	lower := bytes.ToLower(html)
-
-	if idx := bytes.Index(lower, headOpenPrefix); idx >= 0 {
-		if end := bytes.IndexByte(html[idx:], '>'); end >= 0 {
-			return spliceAt(html, idx+end+1, csp)
+	p := 0
+	if bytes.HasPrefix(html, []byte{0xEF, 0xBB, 0xBF}) {
+		p = 3
+	}
+	for p < len(html) {
+		switch html[p] {
+		case '\t', '\n', '\f', '\r', ' ':
+			p++
+			continue
+		}
+		break
+	}
+	if p+len(cspDoctypePrefix) <= len(html) && bytes.EqualFold(html[p:p+len(cspDoctypePrefix)], cspDoctypePrefix) {
+		if end := bytes.IndexByte(html[p:], '>'); end >= 0 {
+			return spliceAt(html, p+end+1, csp)
 		}
 	}
-	if idx := bytes.Index(lower, htmlOpenPrefix); idx >= 0 {
-		if end := bytes.IndexByte(html[idx:], '>'); end >= 0 {
-			return spliceAt(html, idx+end+1, csp)
-		}
-	}
-	return spliceAt(html, 0, csp)
+	return spliceAt(html, p, csp)
 }
 
 // spliceAt returns a new byte slice with css inserted into html at byte
@@ -166,14 +205,16 @@ func (c ChromiumConverter) Convert(ctx context.Context, inPath, outPath string, 
 	if err != nil {
 		return fmt.Errorf("chromium: read input: %w", err)
 	}
-	// Two separate injections with distinct anchors (CR-01): the CSP meta
-	// must be the FIRST child of <head> so it precedes any in-head <script>
-	// (a <meta> CSP only governs content parsed after it); the print <style>
-	// goes just before </head> for cascade priority. Both are server-constant
-	// strings selected only by already-validated HTMLOpts fields -- never
-	// built from raw client bytes (RESEARCH.md Pattern 1, Pitfall 9's lesson
-	// applied to CSS). See cspNoScriptMeta's doc comment for why JS-disable
-	// moved from a launch flag to this injection point (Plan 04 live finding).
+	// Two separate injections with distinct anchors (CR-01, and G-69-2's
+	// fix): the CSP meta is spliced at the DOCUMENT START -- the only point
+	// guaranteed to precede every parser-executable byte, wherever a literal
+	// <head>/<html> tag sits (injectCSPFirst's own doc comment); the print
+	// <style> goes just before </head> for cascade priority, unchanged. Both
+	// are server-constant strings selected only by already-validated
+	// HTMLOpts fields -- never built from raw client bytes (RESEARCH.md
+	// Pattern 1, Pitfall 9's lesson applied to CSS). See cspNoScriptMeta's
+	// doc comment for why JS-disable moved from a launch flag to this
+	// injection point (Plan 04 live finding).
 	rendered := injectCSPFirst(input, cspNoScriptMeta)
 	rendered = injectPrintCSS(rendered, buildPrintCSS(o))
 	renderedPath := filepath.Join(workDir, "rendered.html")
