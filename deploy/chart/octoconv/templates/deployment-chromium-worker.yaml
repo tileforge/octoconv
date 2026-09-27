@@ -6,10 +6,16 @@ deployment-worker.yaml header for the full rationale — identical here).
 
 Grace 90s (D-09) is ≥ HTML_ENGINE_TIMEOUT (60s, ConfigMap) + margin.
 
-/dev/shm (D-10): k8s pods default to a 64Mi shm, far below Chromium's
-compose shm_size:256m. Even with --disable-dev-shm-usage some Chromium
-internal paths still touch /dev/shm, so an explicit medium:Memory emptyDir
-sized 256Mi recreates the compose behaviour exactly.
+/dev/shm (G-69-3, closes D-10): nothing is mounted at /dev/shm for this
+worker. The engine runs with --disable-dev-shm-usage
+(internal/convert/chromium.go's chromiumPrintArgs), and the html Landlock
+ruleset (internal/convert/htmlsandbox.go) grants no /dev/shm at all -- a
+production-scale document (18 page sections, large incompressible images, a
+5000-row table) was measured to convert clean through the confined
+production path with no /dev/shm mount and no Landlock denial, and a
+negative control confirmed the method would have caught a real /dev/shm
+dependency had one existed. Measured, not merely re-asserted here --
+.planning/research/SANDBOX-PATHS.md, html section.
 
 startupProbe: heavy Chromium image cold start gets the same generous
 startup budget as document-worker (see that file's header).
@@ -88,11 +94,3 @@ spec:
             limits:
               cpu: {{ .Values.chromiumWorker.resources.limits.cpu | quote }}
               memory: {{ .Values.chromiumWorker.resources.limits.memory | quote }}
-          volumeMounts:
-            - name: dshm
-              mountPath: /dev/shm
-      volumes:
-        - name: dshm
-          emptyDir:
-            medium: Memory
-            sizeLimit: {{ .Values.chromiumWorker.shmSize | quote }}

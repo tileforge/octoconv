@@ -222,7 +222,6 @@ chromiumWorker:
     repository: "octoconv-chromium-worker"
   replicas: 1
   terminationGracePeriodSeconds: 90
-  shmSize: "256Mi"
   resources:
     limits:
       cpu: "2"

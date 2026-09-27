@@ -143,6 +143,40 @@ started: |
     Every values-*.yaml overlay templates cleanly (exit 0) against the patched chart too.
   implication: The chart renders correctly with the mount and value removed; no other
     template or values file depends on chromiumWorker.shmSize.
+- timestamp: 2026-09-27T04:05:00Z
+  checked: |
+    Correction to this session's own root-cause text below: "A Kubernetes pod without
+    the chart's mount gets the runtime default of 64 MiB" repeats the diagnosis
+    session's assumption without re-measuring it on THIS host. Planning-time
+    measurement (69-05-PLAN.md): `/proc/mounts` inside a container on this Docker
+    (OrbStack), no flag at all, reads `shm /dev/shm tmpfs ... size=8212480k` -- about
+    7.8 GiB, not ~64Mi. Re-ran 69-05-PLAN.md Task 1
+    (TestChromiumLargeDocumentNeedsNoDevShmLive, internal/convert/chromium_live_test.go)
+    at the deployed limits (--cpus=2 --memory=2g, scripts/sandbox-liveproof.sh html):
+    an 84,543,422-byte HTML fixture (18 page-break sections, incompressible noise
+    PNGs, a 5000-row table) converts through the confined production
+    ChromiumConverter.Convert to a 20,460,780-byte PDF (/Title marker present) in
+    5.94s wall; a direct engine run on the rendered output, same argv, exits 0 with no
+    "/dev/shm" in stderr; the negative control (the same run with
+    --disable-dev-shm-usage removed) fails in the engine with stderr naming
+    /dev/shm, and its output carries no marker.
+  found: |
+    The actual /dev/shm size this host's containers get by default is NOT the ~64Mi
+    the diagnosis assumed -- it is whatever the container runtime happens to default
+    to (7.8 GiB here). The conclusion this session reached ("dropping the mount is
+    safe") does not depend on that size at all: the html Landlock ruleset
+    (internal/convert/htmlsandbox.go) grants no /dev/shm at any size, so the negative
+    control failing on /dev/shm (not on an exhausted tmpfs) is what the conclusion
+    actually rests on, both for the small fixture measured here and for the large one
+    measured in 69-05-PLAN.md.
+  implication: |
+    fix_applied: deploy/chart/octoconv/templates/deployment-chromium-worker.yaml's
+    /dev/shm volume/volumeMount removed, its D-10 comment replaced by a cross-reference
+    to SANDBOX-PATHS.md; deploy/chart/octoconv/values.yaml's chromiumWorker.shmSize
+    removed; docker-compose.yml's chromium-worker shm_size removed (same
+    cross-reference); scripts/sandbox-liveproof.sh's html class dropped its
+    --shm-size docker-run flag and gained the "html large-document-without-dev-shm"
+    check. G-69-3 closed by 69-05-PLAN.md.
 
 ## Resolution
 
