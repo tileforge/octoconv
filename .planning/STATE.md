@@ -5,16 +5,16 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 69
 current_phase_name: HTML, Probe & the /tmp Decision
 status: executing
-stopped_at: Completed 69-03-PLAN.md (phase 69 complete, ready for verification)
-last_updated: "2026-09-27T03:04:20.254Z"
+stopped_at: Completed 69-04-PLAN.md (G-69-2 closed, live-proven)
+last_updated: "2026-09-27T03:45:32.014Z"
 last_activity: 2026-09-27
 last_activity_desc: Phase 69 execution started
-state_head: 5747b403c0ee385f38adcbd85110ce32134957be
+state_head: f2b814cd29907b2cb7f2ea1fcea5ad2999da40d2
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 11
-  completed_plans: 9
+  completed_plans: 10
   percent: 50
 ---
 
@@ -30,8 +30,8 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 ## Current Position
 
 Phase: 69 (HTML, Probe & the /tmp Decision) — EXECUTING
-Plan: 1 of 5
-Status: Executing Phase 69
+Plan: 2 of 5
+Status: Ready to execute
 Last activity: 2026-09-27 — Phase 69 execution started
 
 ## Performance Metrics
@@ -122,6 +122,7 @@ Last activity: 2026-09-27 — Phase 69 execution started
 | Phase 69 P01 | 95min | 3 tasks | 20 files |
 | Phase 69 P02 | 51min | 3 tasks | 32 files |
 | Phase 69 P03 | 55min | 2 tasks | 3 files |
+| Phase 69 P04 | 50min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -166,6 +167,9 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-01: forJob generalised into forJobRW (a class-shared writable path beyond the job directory); engineExec gained a replaceable, allowlisted environment (withEnv/engineEnv) so a class whose grant includes /proc never leaks secrets via /proc/self/environ
 - [Phase 69]: 69-01: HTMLPreflight judges confinement by the produced PDF's /Title field, never by chromium's exit status (it exits 0 and writes a blank PDF when denied, D-06/D-07); the negative run points the engine itself outside every grant since Convert copies its input into the job directory first
 - [Phase 69]: [Phase 69]: 69-03: three of four required class-closure inversions performed and reverted (isProbeTerminal sentinel removal, /tmp added to probeReadWrite); the fourth (literal exec restored in chromium.go) was blocked by the harness's own security-weakening tool classifier and is tracked as an open item in WINDOWS.md
+- [Phase 69]: 69-04: injectCSPFirst performs no head/html tag search at all -- document-start splice (BOM, HTML whitespace, past a leading doctype's first '>') closes G-69-2
+- [Phase 69]: 69-04: frame-src 'none' and child-src 'none' added to cspNoScriptMeta -- refuses a framed/embedded copy of the raw upload (in.html), a live bypass measured independent of the splice fix
+- [Phase 69]: 69-04: both G-69-2 guards proven load-bearing by live inversion -- pre-fix splice fails exactly 12 of 18 rows, frame-src/child-src removal fails exactly f1/f2
 
 ### Quick Tasks Completed
 
@@ -297,8 +301,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-26T20:48:50.021Z
-Stopped at: Completed 69-03-PLAN.md (phase 69 complete, ready for verification)
+Last session: 2026-09-27T03:45:31.959Z
+Stopped at: Completed 69-04-PLAN.md (G-69-2 closed, live-proven)
 Resume file: None
 
 ## Operator Next Steps
