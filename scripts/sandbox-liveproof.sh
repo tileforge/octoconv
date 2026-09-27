@@ -25,8 +25,14 @@ CSP_LIVE_ROWS=18
 
 # class_row prints "dockerfile binary envvar expects_proven extra_run_args"
 # for class, or dies on an unknown one. extra_run_args is "-" (meaning none)
-# for every class but html, whose shared /tmp (CONF-06) needs the same
-# --shm-size docker-compose.yml's chromium-worker service carries.
+# for every class today -- html's own former shared-memory sizing flag (a
+# belt-and-suspenders docker /dev/shm size matching docker-compose.yml's
+# since-dropped compensating value) was measured unused (G-69-3,
+# .planning/research/SANDBOX-PATHS.md html section: a large document converts
+# clean through the confined production path with NO /dev/shm mount at all)
+# and removed here too, so nothing in this script props up a rationale the
+# measurement no longer supports. The field exists for a class whose runs
+# genuinely need extra docker arguments -- none does, today.
 class_row() {
   case "$1" in
     image)  echo "Dockerfile.worker worker IMAGE_SANDBOX_DISABLED no -" ;;
@@ -34,7 +40,7 @@ class_row() {
     ocr)    echo "Dockerfile.ocr-worker ocr-worker OCR_SANDBOX_DISABLED yes -" ;;
     av)     echo "Dockerfile.av-worker av-worker AV_SANDBOX_DISABLED yes -" ;;
     audio)  echo "Dockerfile.audio-worker audio-worker AUDIO_SANDBOX_DISABLED yes -" ;;
-    html)   echo "Dockerfile.chromium-worker chromium-worker HTML_SANDBOX_DISABLED yes --shm-size=256m" ;;
+    html)   echo "Dockerfile.chromium-worker chromium-worker HTML_SANDBOX_DISABLED yes -" ;;
     probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
     *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, html or probe)" ;;
   esac
@@ -492,6 +498,76 @@ check_html_csp_live() {
   fi
 }
 
+# run_html_large_document_live_test docker-runs the freshly cross-compiled
+# convert.test binary, modeled on run_html_csp_live_test (same read-only
+# bind mount, tini entrypoint, 900s watchdog), but ADDS --cpus=2 --memory=2g
+# to the docker-run arguments -- the deployed limits (chart values.yaml
+# chromiumWorker.resources.limits and compose's chromium-worker deploy
+# limits) -- and invokes ONLY TestChromiumLargeDocumentNeedsNoDevShmLive
+# (69-05-PLAN.md Task 1, G-69-3).
+run_html_large_document_live_test() {
+  local tag=$1 bindir=$2
+  shift 2
+  local extra=("$@")
+  local cname="octoconv-liveproof-html-largedoc-${RUN_ID}"
+
+  ( sleep 900; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+  local watchdog=$!
+
+  set +e
+  local out status
+  out=$(docker run --name "$cname" --rm --cpus=2 --memory=2g ${extra[@]+"${extra[@]}"} \
+    -v "${bindir}:/liveproof:ro" -e OCTOCONV_CHROMIUM_LIVE=1 \
+    --entrypoint /usr/bin/tini "$tag" -- \
+    /liveproof/convert.test -test.run '^TestChromiumLargeDocumentNeedsNoDevShmLive$' -test.v -test.timeout 10m 2>&1)
+  status=$?
+  set -e
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+  printf '%s\x1e%s' "$status" "$out"
+}
+
+# check_html_large_document_live (G-69-3): PASS iff exit 0, the output
+# contains "--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive" (unanchored
+# -- -test.v indents subtest lines), no "--- SKIP" and no "--- FAIL". Runs at
+# the deployed limits (--cpus=2 --memory=2g) with no shared-memory docker
+# flag of any kind: the whole point of this check is that the confined
+# engine needs none.
+check_html_large_document_live() {
+  local tag=$1 bindir=$2
+  shift 2
+  local extra=("$@")
+
+  local result out status
+  result=$(run_html_large_document_live_test "$tag" "$bindir" ${extra[@]+"${extra[@]}"})
+  status=${result%%$'\x1e'*}
+  out=${result#*$'\x1e'}
+
+  local ok=1 reasons=()
+  if [ "$status" -ne 0 ]; then
+    ok=0
+    reasons+=("exit status ${status}, want 0")
+  fi
+  printf '%s\n' "$out" | grep -q -- "--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive" \
+    || { ok=0; reasons+=("missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'"); }
+  if printf '%s\n' "$out" | grep -q -- "--- SKIP"; then
+    ok=0
+    reasons+=("output contains a --- SKIP line")
+  fi
+  if printf '%s\n' "$out" | grep -q -- "--- FAIL"; then
+    ok=0
+    while IFS= read -r line; do reasons+=("$line"); done < <(printf '%s\n' "$out" | grep -- "--- FAIL")
+  fi
+
+  if [ "$ok" = 1 ]; then
+    pass "html large-document-without-dev-shm"
+    printf '%s\n' "$out" | grep -F "dev-shm:" | head -1 | sed 's/^/  /'
+    printf '%s\n' "$out" | grep -F "large-doc:" | head -1 | sed 's/^/  /'
+  else
+    fail "html large-document-without-dev-shm" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
 for class in "$@"; do
   read -r dockerfile bin envvar expects_proven extra_raw < <(class_row "$class")
   tag="octoconv-${class}:sandbox-liveproof-${RUN_ID}"
@@ -543,6 +619,7 @@ for class in "$@"; do
     check_html_wrapper_as_measured "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_html_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_html_csp_live "$tag" "$bindir" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_html_large_document_live "$tag" "$bindir" ${extra_run_args[@]+"${extra_run_args[@]}"}
 
     rm -rf "$bindir"
   fi
