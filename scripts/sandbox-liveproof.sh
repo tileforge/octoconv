@@ -19,9 +19,9 @@ set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 
 # CSP_LIVE_ROWS must equal the row count of cspShapeTable
-# (internal/convert/chromium_test.go) -- Task 1 of 69-04-PLAN.md builds only
-# row s1; Task 2 raises this to 18 once the table covers every row.
-CSP_LIVE_ROWS=1
+# (internal/convert/chromium_test.go) -- all 18 top-level rows (s1-s9,
+# x1-x5, f1-f4) of 69-04-PLAN.md's Shape table.
+CSP_LIVE_ROWS=18
 
 # class_row prints "dockerfile binary envvar expects_proven extra_run_args"
 # for class, or dies on an unknown one. extra_run_args is "-" (meaning none)

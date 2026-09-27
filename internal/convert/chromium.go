@@ -51,7 +51,19 @@ func (ChromiumConverter) Engine() string { return EngineHTML }
 // output) while leaving --print-to-pdf fully functional -- it is the
 // mechanism this converter uses to satisfy D-05, in place of the
 // launch-time flag RESEARCH.md originally specified.
-const cspNoScriptMeta = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'">`
+//
+// frame-src 'none' and child-src 'none' (child-src is frame-src's fallback
+// directive) were added by G-69-2 (69-04-PLAN.md): the worker always writes
+// the upload's raw copy into the job directory as in.html
+// (internal/worker/worker.go), and that copy carries no CSP of its own -- an
+// <iframe> or <frameset> loading it back as a SEPARATE document executed its
+// script on the CSP as shipped, a live bypass independent of where the CSP
+// is spliced into the top-level document (Planning-time measurement 3, rows
+// f1/f2). object-src 'none' already refused <object>/<embed> of the same
+// raw copy (rows f3/f4). Neither directive is needed by any document this
+// engine can legitimately render: the network is blocked by D-03's flags,
+// and the only local documents that exist are the job's own files.
+const cspNoScriptMeta = `<meta http-equiv="Content-Security-Policy" content="script-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'">`
 
 // headCloseTag and htmlOpenPrefix are the case-insensitive markers
 // injectPrintCSS searches for to place the print CSS block (RESEARCH.md
