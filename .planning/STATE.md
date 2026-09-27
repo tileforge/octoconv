@@ -5,16 +5,16 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 69
 current_phase_name: HTML, Probe & the /tmp Decision
 status: executing
-stopped_at: Completed 69-04-PLAN.md (G-69-2 closed, live-proven)
-last_updated: "2026-09-27T03:45:32.014Z"
+stopped_at: Completed 69-05-PLAN.md (G-69-3 closed, live-proven)
+last_updated: "2026-09-27T04:10:51.266Z"
 last_activity: 2026-09-27
 last_activity_desc: Phase 69 execution started
-state_head: f2b814cd29907b2cb7f2ea1fcea5ad2999da40d2
+state_head: 57715bbff75ee664f074b090515efaba15465158
 progress:
   total_phases: 4
   completed_phases: 2
   total_plans: 11
-  completed_plans: 10
+  completed_plans: 11
   percent: 50
 ---
 
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
 ## Current Position
 
 Phase: 69 (HTML, Probe & the /tmp Decision) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-09-27 — Phase 69 execution started
 
@@ -123,6 +123,7 @@ Last activity: 2026-09-27 — Phase 69 execution started
 | Phase 69 P02 | 51min | 3 tasks | 32 files |
 | Phase 69 P03 | 55min | 2 tasks | 3 files |
 | Phase 69 P04 | 50min | 3 tasks | 5 files |
+| Phase 69 P05 | 40 min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -170,6 +171,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-04: injectCSPFirst performs no head/html tag search at all -- document-start splice (BOM, HTML whitespace, past a leading doctype's first '>') closes G-69-2
 - [Phase 69]: 69-04: frame-src 'none' and child-src 'none' added to cspNoScriptMeta -- refuses a framed/embedded copy of the raw upload (in.html), a live bypass measured independent of the splice fix
 - [Phase 69]: 69-04: both G-69-2 guards proven load-bearing by live inversion -- pre-fix splice fails exactly 12 of 18 rows, frame-src/child-src removal fails exactly f1/f2
+- [Phase 69]: 69-05: the large-document check's transcript states the /dev/shm size actually in effect (~7.8 GiB, OrbStack default), never the diagnosis session's assumed ~64Mi -- validity rests on the negative control (denied on /dev/shm, not on an exhausted tmpfs), not on that size
+- [Phase 69]: 69-05: G-69-3 closed -- chromium-worker chart/compose/live-gate no longer mount or size /dev/shm; each now cross-references SANDBOX-PATHS.md instead of restating a pre-Landlock rationale
 
 ### Quick Tasks Completed
 
@@ -301,8 +304,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-27T03:45:31.959Z
-Stopped at: Completed 69-04-PLAN.md (G-69-2 closed, live-proven)
+Last session: 2026-09-27T04:10:51.216Z
+Stopped at: Completed 69-05-PLAN.md (G-69-3 closed, live-proven)
 Resume file: None
 
 ## Operator Next Steps
