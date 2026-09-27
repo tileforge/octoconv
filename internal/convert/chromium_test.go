@@ -182,8 +182,8 @@ func cspEdgeRows(marker string) []cspShapeRow {
 
 	return []cspShapeRow{
 		{name: "e1", raw: []byte{}, wantAt: 0},
-		{name: "e2", raw: []byte("<!doctype html"), wantAt: 0}, // no '>' at all
-		{name: "e3", raw: []byte(script + d + "<html>" + tail), wantAt: 0},     // script first
+		{name: "e2", raw: []byte("<!doctype html"), wantAt: 0},                   // no '>' at all
+		{name: "e3", raw: []byte(script + d + "<html>" + tail), wantAt: 0},       // script first
 		{name: "e4", raw: []byte("<!-- c -->" + d + "<html>" + tail), wantAt: 0}, // comment first
 		{
 			name:   "e5",
