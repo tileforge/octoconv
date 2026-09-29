@@ -2,43 +2,43 @@
 gsd_state_version: "1.0"
 milestone: v1.15
 milestone_name: Engine Confinement (67–70)
-current_phase: 69
-current_phase_name: HTML, Probe & the /tmp Decision
-status: executing
-stopped_at: Completed 69-05-PLAN.md (G-69-3 closed, live-proven)
-last_updated: "2026-09-27T04:10:51.266Z"
-last_activity: 2026-09-27
-last_activity_desc: Phase 69 execution started
-state_head: 57715bbff75ee664f074b090515efaba15465158
+current_phase: 70
+current_phase_name: Document on amd64
+status: planning
+stopped_at: Phase 69 complete, ready to plan Phase 70
+last_updated: "2026-09-29T13:34:24.622Z"
+last_activity: 2026-09-29
+last_activity_desc: Phase 69 complete, transitioned to Phase 70
+state_head: f56ddf44a175808629f85a147feff57d5b0f0c1f
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 11
   completed_plans: 11
-  percent: 50
+  percent: 75
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
+See: .planning/PROJECT.md (updated 2026-09-29 after Phase 69)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 69 — HTML, Probe & the /tmp Decision
+**Current focus:** Phase 70 — Document on amd64
 
 ## Current Position
 
-Phase: 69 (HTML, Probe & the /tmp Decision) — EXECUTING
-Plan: 3 of 5
-Status: Ready to execute
-Last activity: 2026-09-27 — Phase 69 execution started
+Phase: 70 — Document on amd64
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-09-29 — Phase 69 complete, transitioned to Phase 70
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 191 (all v1.0–v1.11)
+- Total plans completed: 196 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -101,6 +101,7 @@ Last activity: 2026-09-27 — Phase 69 execution started
 | 55 | 7 | - | - |
 | 56 | 7 | - | - |
 | 68 | 6 | - | - |
+| 69 | 5 | - | - |
 
 **Recent Trend:**
 
@@ -238,7 +239,6 @@ Carried from v1.12:
 - Highest-risk phase is 52: three-tier admission gate (concurrency/byte-budget/atomic-reserve) touching `handleCreateJob`, both MCP entry points, and the reconciler's release-on-every-terminal-state discipline — PITFALLS.md documents 10 pitfalls anchored to this exact area (cardinality, replica-races, reconciler double-count, rollout safety, KEDA/fairness conflation, 429-vs-403).
 - Explicit non-goals for this milestone (do not resurface): per-client sub-queues/dynamic virtual queues (breaks all 7 ScaledObject PromQL strings + `AllConvertQueues()` + reconciler routing — FAIR-V2-01), billing/invoicing, self-service quota portal, ML/anomaly throttling, formal SLA tiers.
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
-- 69-03: the chromium.go literal-low-level-exec inversion required by Task 2 could not be performed -- a security-weakening tool-permission denial blocked both the edit and a follow-up exploratory read. 3/4 class-closure inversions are proven; this one needs a human operator or an explicit acceptance of the Phase 68 generic self-test as substitute evidence. Tracked in WINDOWS.md.
 
 ## Deferred Items
 
@@ -304,8 +304,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-27T04:10:51.216Z
-Stopped at: Completed 69-05-PLAN.md (G-69-3 closed, live-proven)
+Last session: 2026-09-29
+Stopped at: Phase 69 complete, ready to plan Phase 70
 Resume file: None
 
 ## Operator Next Steps

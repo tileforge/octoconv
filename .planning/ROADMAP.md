@@ -28,7 +28,7 @@
 
 - [x] Phase 67: Image Confinement & Shared Sandbox — 2026-09-23, PR #28
 - [x] Phase 68: Four Straightforward Engine Classes (completed 2026-09-24)
-- [ ] Phase 69: HTML, Probe & the /tmp Decision
+- [x] Phase 69: HTML, Probe & the /tmp Decision (completed 2026-09-29)
 - [ ] Phase 70: Document on amd64
 
 ### Phase 67: Image Confinement & Shared Sandbox
@@ -92,7 +92,7 @@ Plans:
    содержимому** результата, а не по факту создания файла
 3. Chromium получает и обёртку, и интерпретатор, и настоящий бинарник
 
-**Plans:** 5 plans
+**Plans:** 5/5 plans complete
 
 Plans:
 **Wave 1**
@@ -109,7 +109,7 @@ Plans:
 
 **Gap closure, wave 1** *(UAT 2026-09-27)*
 
-- [ ] 69-04-PLAN.md — G-69-2: CSP вклеивается в начало документа (после ведущего doctype, иначе после BOM или в байт 0), без поиска `<head`/`<html`; CSP запрещает фреймы (сырой `in.html` во фрейме исполнял скрипт); 18 форм — юнит-тестом и живой дифференциальной проверкой в `sandbox-liveproof.sh html`, обе защиты инвертированы
+- [x] 69-04-PLAN.md — G-69-2: CSP вклеивается в начало документа (после ведущего doctype, иначе после BOM или в байт 0), без поиска `<head`/`<html`; CSP запрещает фреймы (сырой `in.html` во фрейме исполнял скрипт); 18 форм — юнит-тестом и живой дифференциальной проверкой в `sandbox-liveproof.sh html`, обе защиты инвертированы
 
 **Gap closure, wave 2** *(blocked on 69-04)*
 
