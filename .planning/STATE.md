@@ -5,11 +5,11 @@ milestone_name: Engine Confinement (67–70)
 current_phase: 70
 current_phase_name: Document on amd64
 status: planning
-stopped_at: Phase 69 complete, ready to plan Phase 70
-last_updated: "2026-09-29T13:34:24.622Z"
+stopped_at: Phase 70 context gathered
+last_updated: "2026-09-29T19:40:04.185Z"
 last_activity: 2026-09-29
 last_activity_desc: Phase 69 complete, transitioned to Phase 70
-state_head: f56ddf44a175808629f85a147feff57d5b0f0c1f
+state_head: 7ecd651a203ba3724194bb4c07dd0f6f1e2b13a2
 progress:
   total_phases: 4
   completed_phases: 3
@@ -304,9 +304,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-29
-Stopped at: Phase 69 complete, ready to plan Phase 70
-Resume file: None
+Last session: 2026-09-29T19:40:04.078Z
+Stopped at: Phase 70 context gathered
+Resume file: .planning/phases/70-document-on-amd64/70-CONTEXT.md
 
 ## Operator Next Steps
 
