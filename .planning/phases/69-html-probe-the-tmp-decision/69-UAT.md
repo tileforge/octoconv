@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: complete
 phase: 69-html-probe-the-tmp-decision
 source: [69-VERIFICATION.md]
 started: 2026-09-26T22:09:48Z
-updated: 2026-09-27T01:06:06Z
+updated: 2026-09-29T00:10:00Z
 ---
 
 ## Current Test
@@ -17,25 +17,23 @@ expected: TestConfinedClassesExecOnlyThroughTheSandbox fails naming chromium.go 
 result: pass
 evidence: "2026-09-27: chromium.go:187 c.exec(workDir).run -> runCommand; TestConfinedClassesExecOnlyThroughTheSandbox FAIL naming chromium.go:187 (direct runCommand) + non-vacuity (zero engineExec calls in chromium.go); reverted, git diff --exit-code internal/ clean, test ok (go1.26.4)"
 
-### 2. CR-01 decision (injectCSPFirst bypass by a script before the literal <head>/<html>)
-expected: A recorded decision — fix now, DEBT item, or accepted risk
-result: issue
-reported: "чиним"
-severity: blocker
+### 2. CR-01 re-test after gap closure 69-04 (CSP spliced at document start)
+expected: A <script> placed anywhere before the literal <head>/<html> (pre-tag script, <header> decoy, '<head>' in a comment, uppercase, BOM) does not execute in chromium-headless-shell: `scripts/sandbox-liveproof.sh html` reports all 18 live CSP differential rows PASS, and the 24 unit rows in chromium_test.go pass
+result: pass
+prior_result: issue (reported "чиним", blocker) — fixed by 69-04, gap G-69-2
 decision: fix now via gap closure — CSP must precede any parser-executable content regardless of where the literal <head>/<html> sits; proof must be a live chromium-headless-shell differential test (script before <head> does not run), not a code-reading argument
 
-### 3. WR-01 decision (/dev/shm mount in deployment-chromium-worker.yaml vs SANDBOX-PATHS.md measurement)
-expected: Mount dropped, or comment corrected with a cross-reference to the measurement
-result: issue
-reported: "убирай монтирование"
-severity: major
+### 3. WR-01 re-test after gap closure 69-05 (/dev/shm mount dropped)
+expected: The chromium-worker chart has no dshm volume/mount, values.yaml has no chromiumWorker.shmSize, docker-compose.yml has no chromium-worker shm_size, the old D-10 comments point to SANDBOX-PATHS.md; helm template renders cleanly; `scripts/sandbox-liveproof.sh html` reports `PASS: html large-document-without-dev-shm`
+result: pass
+prior_result: issue (reported "убирай монтирование", major) — fixed by 69-05, gap G-69-3
 decision: drop the /dev/shm emptyDir mount and chromiumWorker.shmSize value; replace the D-10 comment with a cross-reference to SANDBOX-PATHS.md; confirm with a large HTML document through the confined worker that no Landlock denial appears
 
 ## Summary
 
 total: 3
-passed: 1
-issues: 2
+passed: 3
+issues: 0
 pending: 0
 skipped: 0
 blocked: 0
@@ -43,8 +41,10 @@ blocked: 0
 ## Gaps
 
 - gap_id: G-69-2
+  resolved_by: 69-04-PLAN.md
+  resolved_at: 2026-09-29
   truth: "The JS-disable CSP injected by injectCSPFirst governs every script in an uploaded HTML document, including a <script> placed before the literal <head>/<html> tag"
-  status: failed
+  status: resolved
   reason: "User reported: чиним (CR-01 from 69-REVIEW.md, decided fix-now)"
   severity: blocker
   test: 2
@@ -63,8 +63,10 @@ blocked: 0
   debug_session: ".planning/debug/csp-bypass-before-head.md"
 
 - gap_id: G-69-3
+  resolved_by: 69-05-PLAN.md
+  resolved_at: 2026-09-29
   truth: "The chromium-worker chart carries no /dev/shm mount that the phase-69 Landlock ruleset denies anyway, and its comments agree with SANDBOX-PATHS.md"
-  status: failed
+  status: resolved
   reason: "User reported: убирай монтирование (WR-01 from 69-REVIEW.md)"
   severity: major
   test: 3
