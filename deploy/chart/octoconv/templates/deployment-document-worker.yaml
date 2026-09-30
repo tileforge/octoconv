@@ -1,15 +1,15 @@
 {{/*
 document-worker Deployment — document-conversion engine class (LibreOffice
-+ veraPDF), amd64-only image run via OrbStack's Rosetta translation (D-10;
-no nodeSelector needed on this single-node local cluster — a multi-node
-cluster would need one, out of scope here).
++ veraPDF). The image is built per architecture: only the verapdf build stage
+is pinned to linux/amd64 (see Dockerfile.document-worker), so no nodeSelector
+is needed for the runtime image on this single-node local cluster.
 
 TIER LABEL: pod template carries octoconv.io/tier: app (see
 deployment-worker.yaml header for the full rationale — identical here).
 
 Grace 330s (D-09) is ≥ DOCUMENT_ENGINE_TIMEOUT (300s, ConfigMap) + margin.
 
-startupProbe: LibreOffice cold start under Rosetta emulation is slow — a
+startupProbe: LibreOffice cold start is slow — a
 generous startup budget (failureThreshold x periodSeconds ≈ 120s) keeps
 this pod out of a CrashLoopBackOff before the metrics listener is even up,
 while readiness/liveness stay tight once startup has succeeded.

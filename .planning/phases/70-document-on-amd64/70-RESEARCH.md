@@ -148,6 +148,22 @@ This build produces a **native arm64 image**, and veraPDF runs on it using **Deb
 
 This satisfies D-02's own bar exactly ("For every file the verdict (`isCompliant`) and the set of failed rule IDs must match. Any divergence goes into a table ... and a divergence the phase cannot explain blocks the unpin"). The table above is that table, and it is empty by measurement, not by assumption.
 
+### In-phase differential (70-01)
+
+Repeatable run of `scripts/verapdf-differential.sh` against the committed `Dockerfile.document-worker` (verapdf stage pinned alone), run id `20260930T140106Z-30055`, commit `7744ddf` plus the uncommitted Dockerfile edit under test (3 tracked-dirty files, two of them orchestrator state). Docker server arch arm64; native image arch arm64, comparison image arch amd64 (emulated). The extractor was self-checked on the two committed reports before any verdict, and non-vacuity held on both images (3 compliant, 3 non-compliant with failed rules, 1 corrupt file with failedToParse=1 and isCompliant absent). Full transcript: `evidence/verapdf-differential.txt`.
+
+| File | Native isCompliant | Native failedToParse | Native failed rules | amd64 isCompliant | amd64 failedToParse | amd64 failed rules | Result |
+|---|---|---|---|---|---|---|---|
+| soffice_docx_pdfa.pdf (real PDF/A-2b export of sample.docx) | true | 0 | none | true | 0 | none | MATCH |
+| soffice_xlsx_pdfa.pdf (real PDF/A-2b export of sample.xlsx) | true | 0 | none | true | 0 | none | MATCH |
+| soffice_pptx_pdfa.pdf (real PDF/A-2b export of sample.pptx) | true | 0 | none | true | 0 | none | MATCH |
+| soffice_docx_plain.pdf (plain soffice export) | false | 0 | 6.2.4.3/2 6.6.2.1/1 | false | 0 | 6.2.4.3/2 6.6.2.1/1 | MATCH |
+| fixture_noncompliant.pdf | false | 0 | 6.2.4.3/2 6.6.2.1/1 | false | 0 | 6.2.4.3/2 6.6.2.1/1 | MATCH |
+| fixture_noncompliant_marker.pdf | false | 0 | 6.6.4/4 6.6.4/5 | false | 0 | 6.6.4/4 6.6.4/5 | MATCH |
+| corrupt.pdf | ABSENT | 1 | none | ABSENT | 1 | none | MATCH |
+
+Last line of the transcript: `DIVERGENCES: 0`. veraPDF exit statuses were 0 for the three PDF/A exports, 1 for the three non-compliant files and 7 for the corrupt file, identical on both images (printed, never judged).
+
 **What the D-02 decision does not cover, and the planner should note explicitly:** this session's corpus did not include the actual PDFA e2e test suite (`internal/e2e`'s own PDFA-tagged tests) run end-to-end against a compiled native binary talking to a running document-worker container — that is a heavier integration-test-level proof CONTEXT's D-02 also asks for ("The PDFA e2e must stay green on the native image"). Running the actual `go test ./internal/e2e/...` suite against a natively-built document-worker image is recommended as an early Wave 0/1 task, not a research-phase task — it needs the full compose stack (Postgres/Redis/MinIO), which this research session deliberately avoided starting per the OrbStack "don't run compose while k8s is hot" constraint (k8s was hot on this host throughout this session; only isolated `docker build`/`docker run` commands were used, never `docker compose up`).
 
 ## D-09: TMPDIR / JVM temp-dir redirection — MEASURED, MIXED RESULT

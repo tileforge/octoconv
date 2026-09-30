@@ -1,0 +1,77 @@
+extractor self-check: OK (both committed reports read correctly)
+building octoconv-document-worker:diff-native-20260930T140106Z-30055 ...
+building octoconv-document-worker:diff-amd64-20260930T140106Z-30055 ...
+run: 20260930T140106Z-30055
+commit: 7744ddf096e475669441e921d90a31dd7af6cad1 (tracked-dirty files: 3)
+docker server arch: arm64
+native image: octoconv-document-worker:diff-native-20260930T140106Z-30055 id=sha256:593cf90ebc368c3df9b9693f138b95bdda5cfa59e6de2c67b3de229138f31bde arch=arm64
+amd64  image: octoconv-document-worker:diff-amd64-20260930T140106Z-30055 id=sha256:c7ff39b3758c433b33e0a144d78729a8609096f2ab7c39296d387e2709aae960 arch=amd64
+pdfa suffix: {"SelectPdfVersion":{"type":"long","value":"2"},"EmbedStandardFonts":{"type":"boolean","value":true}}
+soffice export -> soffice_docx_pdfa.pdf (writer_pdf_Export suffix=1)
+Warning: failed to launch javaldx - java may not function correctly
+
+(process:20): dconf-CRITICAL **: 14:02:20.625: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+
+(process:24): dconf-CRITICAL **: 14:02:20.805: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+convert /corpus/work-soffice_docx_pdfa/sample.docx -> /corpus/work-soffice_docx_pdfa/sample.pdf using filter : writer_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"2"},"EmbedStandardFonts":{"type":"boolean","value":true}}
+soffice export -> soffice_xlsx_pdfa.pdf (calc_pdf_Export suffix=1)
+Warning: failed to launch javaldx - java may not function correctly
+
+(process:20): dconf-CRITICAL **: 14:02:21.805: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+
+(process:24): dconf-CRITICAL **: 14:02:21.937: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+convert /corpus/work-soffice_xlsx_pdfa/sample.xlsx -> /corpus/work-soffice_xlsx_pdfa/sample.pdf using filter : calc_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"2"},"EmbedStandardFonts":{"type":"boolean","value":true}}
+soffice export -> soffice_pptx_pdfa.pdf (impress_pdf_Export suffix=1)
+Warning: failed to launch javaldx - java may not function correctly
+
+(process:20): dconf-CRITICAL **: 14:02:22.885: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+
+(process:24): dconf-CRITICAL **: 14:02:22.994: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+convert /corpus/work-soffice_pptx_pdfa/sample.pptx -> /corpus/work-soffice_pptx_pdfa/sample.pdf using filter : impress_pdf_Export:{"SelectPdfVersion":{"type":"long","value":"2"},"EmbedStandardFonts":{"type":"boolean","value":true}}
+soffice export -> soffice_docx_plain.pdf (writer_pdf_Export suffix=0)
+Warning: failed to launch javaldx - java may not function correctly
+
+(process:20): dconf-CRITICAL **: 14:02:23.916: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+
+(process:24): dconf-CRITICAL **: 14:02:24.045: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will not work properly.
+Fontconfig error: No writable cache directories
+Fontconfig error: No writable cache directories
+convert /corpus/work-soffice_docx_plain/sample.docx -> /corpus/work-soffice_docx_plain/sample.pdf using filter : writer_pdf_Export
+verapdf exit status (native, soffice_docx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (native, soffice_xlsx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (native, soffice_pptx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (native, soffice_docx_plain.pdf): 1 (printed, not judged)
+verapdf exit status (native, fixture_noncompliant.pdf): 1 (printed, not judged)
+verapdf exit status (native, fixture_noncompliant_marker.pdf): 1 (printed, not judged)
+verapdf exit status (native, corrupt.pdf): 7 (printed, not judged)
+verapdf exit status (amd64, soffice_docx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (amd64, soffice_xlsx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (amd64, soffice_pptx_pdfa.pdf): 0 (printed, not judged)
+verapdf exit status (amd64, soffice_docx_plain.pdf): 1 (printed, not judged)
+verapdf exit status (amd64, fixture_noncompliant.pdf): 1 (printed, not judged)
+verapdf exit status (amd64, fixture_noncompliant_marker.pdf): 1 (printed, not judged)
+verapdf exit status (amd64, corrupt.pdf): 7 (printed, not judged)
+non-vacuity (native): OK (compliant=3 non-compliant-with-rules=3 corrupt-parse-failure=1)
+non-vacuity (amd64): OK (compliant=3 non-compliant-with-rules=3 corrupt-parse-failure=1)
+MATCH soffice_docx_pdfa.pdf native=true|0| amd64=true|0|
+MATCH soffice_xlsx_pdfa.pdf native=true|0| amd64=true|0|
+MATCH soffice_pptx_pdfa.pdf native=true|0| amd64=true|0|
+MATCH soffice_docx_plain.pdf native=false|0|6.2.4.3/2 6.6.2.1/1 amd64=false|0|6.2.4.3/2 6.6.2.1/1
+MATCH fixture_noncompliant.pdf native=false|0|6.2.4.3/2 6.6.2.1/1 amd64=false|0|6.2.4.3/2 6.6.2.1/1
+MATCH fixture_noncompliant_marker.pdf native=false|0|6.6.4/4 6.6.4/5 amd64=false|0|6.6.4/4 6.6.4/5
+MATCH corrupt.pdf native=ABSENT|1| amd64=ABSENT|1|
+DIVERGENCES: 0

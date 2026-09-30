@@ -567,11 +567,16 @@ services:
   document-worker:
     # veraPDF (PDFA-02, D-03) is bundled into this image from the pinned
     # verapdf/cli:v1.30.2 Docker Hub image, which is published amd64-only
-    # (verified live against the registry, 23-01) -- pin the whole service
-    # to linux/amd64 so the build (and any arm64 host, e.g. Apple Silicon
-    # dev machines) doesn't accidentally cross-copy incompatible
-    # architecture binaries into the runtime stage.
-    platform: linux/amd64
+    # (verified live against the registry, 23-01). The image is NATIVE: only
+    # the verapdf build stage is pinned to linux/amd64 (see
+    # Dockerfile.document-worker), because only its /opt/verapdf tree is
+    # copied and that tree holds no ELF object. Until phase 70 this whole
+    # service carried a `platform: linux/amd64` pin; it came off after
+    # scripts/verapdf-differential.sh found no divergence between veraPDF in
+    # the native and the emulated image (70-01,
+    # .planning/phases/70-document-on-amd64/evidence/verapdf-differential.txt).
+    # An emulated amd64 process cannot establish Landlock (measured
+    # 2026-09-19), which is why the whole-image pin had to go.
     build:
       context: .
       dockerfile: Dockerfile.document-worker
@@ -770,8 +775,8 @@ services:
           memory: 2g
 
   # whisper.cpp is source-built with -DGGML_NATIVE=OFF, portable across
-  # arm64/amd64 hosts -- no platform: pin needed (chromium-worker precedent,
-  # unlike document-worker's veraPDF-forced amd64 pin).
+  # arm64/amd64 hosts -- no platform: pin needed (chromium-worker precedent;
+  # no platform: pin on any worker since phase 70).
   audio-worker:
     build:
       context: .
@@ -891,8 +896,8 @@ services:
   # ffmpeg is source-built with a minimal --disable-everything codec set
   # (Dockerfile.av-worker, Phase 36 Plan 02) -- no platform: pin needed
   # (ffmpeg runtime CPU dispatch, 36-RESEARCH.md Pattern 3, mirrors the
-  # audio-worker/chromium-worker precedent, unlike document-worker's
-  # veraPDF-forced amd64 pin).
+  # audio-worker/chromium-worker precedent; no platform: pin on any worker
+  # since phase 70).
   av-worker:
     build:
       context: .
@@ -1057,8 +1062,8 @@ services:
 
   # Tesseract/poppler are source-built (Dockerfile.ocr-worker, Phase 45
   # Plan 01) -- no platform: pin needed, same posture as av-worker/
-  # audio-worker/chromium-worker (unlike document-worker's veraPDF-forced
-  # amd64 pin).
+  # audio-worker/chromium-worker (no platform: pin on any worker since
+  # phase 70).
   ocr-worker:
     build:
       context: .
@@ -1206,8 +1211,8 @@ services:
 
   # pandoc is a pinned static-release binary (Dockerfile.pandoc-worker,
   # Phase 49 Plan 01) -- no platform: pin needed, same posture as
-  # av-worker/audio-worker/chromium-worker/ocr-worker (unlike
-  # document-worker's veraPDF-forced amd64 pin). NO TeX toolchain --
+  # av-worker/audio-worker/chromium-worker/ocr-worker (no platform: pin on
+  # any worker since phase 70). NO TeX toolchain --
   # markup<->markup only (->pdf deferred to v2).
   pandoc-worker:
     build:

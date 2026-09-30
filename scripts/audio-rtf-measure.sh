@@ -29,8 +29,7 @@
 # Task 2 / SUMMARY), reading the p95 RTF this script prints.
 #
 # No cross-arch --platform pin anywhere: whisper.cpp is source-built with
-# -DGGML_NATIVE=OFF (32-01), portable across arm64/amd64 without one --
-# unlike document-worker's hard verapdf/cli amd64-only constraint.
+# -DGGML_NATIVE=OFF (32-01), portable across arm64/amd64 without one.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

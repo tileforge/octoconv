@@ -6,15 +6,25 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/document-worker ./cmd/document-worker
 
-# veraPDF stage: reuse the official jlink-trimmed JRE + app, don't rebuild it
+# veraPDF stage: reuse the official veraPDF app tree, don't rebuild it
 # (PDFA-02, D-03). Pinned tag is `v1.30.2` (NOT `1.30.2` -- the Docker Hub tag
 # carries a leading "v"; verified live against the registry during 23-01
-# execution, the bare "1.30.2" tag does not exist). This image is published
-# amd64-only (no arm64 manifest as of 2026-07-13, verified via Docker Hub
-# API) -- the whole document-worker image must therefore be built with
-# `--platform linux/amd64` on arm64 hosts (see docker-compose.yml `platform:`
-# pin on this service).
-FROM verapdf/cli:v1.30.2 AS verapdf
+# execution, the bare "1.30.2" tag does not exist).
+#
+# The published verapdf/cli image is amd64-only (no arm64 manifest as of
+# 2026-07-13, verified via Docker Hub API), so THIS STAGE ALONE is pinned to
+# linux/amd64. Only its /opt/verapdf tree is copied into the runtime stage
+# below, and that tree holds two jars, a shell launch script and data files:
+# no ELF object at all (measured 2026-09-29, 70-RESEARCH.md D-01). The
+# runtime stage carries no platform, so it is built for the builder's own
+# platform and runs veraPDF on Debian's openjdk-17-jre-headless (path B,
+# below, unchanged). On an amd64 builder the pin is a no-op.
+#
+# History: until phase 70 the WHOLE image was pinned to linux/amd64. An
+# emulated amd64 process cannot establish Landlock (landlock_create_ruleset
+# fails; measured 2026-09-19), which is why the whole-image pin had to go
+# before the document class could be confined.
+FROM --platform=linux/amd64 verapdf/cli:v1.30.2 AS verapdf
 
 # Runtime stage: document engine needs LibreOffice (soffice) headless conversion.
 FROM debian:bookworm-slim
