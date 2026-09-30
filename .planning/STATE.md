@@ -2,19 +2,19 @@
 gsd_state_version: "1.0"
 milestone: v1.15
 milestone_name: Engine Confinement (67–70)
-current_phase: 70
-status: completed
+status: Awaiting next milestone
 stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-09-30T21:51:40.940Z"
+last_updated: "2026-09-30T22:03:18.680Z"
 last_activity: 2026-10-01
-last_activity_desc: Phase 70 complete
-state_head: a5473412ee08498b6f28b8009bf5be1ace35d159
+last_activity_desc: Milestone v1.15 completed and archived
+state_head: 88da0b378884041b6c2846ef71709a288f34fdb5
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 20
   completed_plans: 20
   percent: 75
+current_phase: 70
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-09-29 after Phase 69)
 
 ## Current Position
 
-Phase: 70
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-10-01 — Phase 70 complete
+Phase: Milestone v1.15 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-10-01 — Milestone v1.15 completed and archived
 
 ## Performance Metrics
 
@@ -316,7 +316,6 @@ session (csp-bypass-before-head, fixed in 69-04).
 | deferred_items | 09/deferred-items.md: internal/queue/queue_test.go gofmt formatting - **Found during:** 09-02 Task 2 verification ( gofmt -l . run across the whole repo after l | acknowledged | 2026-10-01 | v1.15 |
 | deferred_items | 03/deferred-items.md: Deferred Items — Phase 03 Plan 01 - Pre-existing gofmt violation in internal/queue/queue_test.go line ~50 ( {n: 6, base: schedule[5]}, //  | acknowledged | 2026-10-01 | v1.15 |
 
-
 Acknowledged and deferred at the v1.13 milestone close on 2026-09-02: 47 items.
 
 These accumulated across thirteen milestones. The seeds are dormant by
@@ -385,4 +384,4 @@ Resume file: .planning/phases/70-document-on-amd64/70-CONTEXT.md
 
 ## Operator Next Steps
 
-- Plan and execute Phase 68 (/gsd-plan-phase 68, then /gsd-execute-phase 68)
+- Start the next milestone with /gsd-new-milestone

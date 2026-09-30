@@ -1,5 +1,25 @@
 # Milestones
 
+## v1.15 Engine Confinement (Shipped: 2026-10-01)
+
+**Phases:** 4 (67–70) | **Plans:** 20 with artifacts (68–70) + phase 67 as PR #28 | **Tasks:** 43
+
+"The engine reads only what it was given" stops being a property of one class
+out of nine: every engine class now runs under a measured Landlock ruleset.
+
+**Key accomplishments:**
+
+- Every engine class (`image`, `pandoc`, `ocr`, `av`, `audio`, `html`, `probe`, `document`) runs its engines through one shared `engineExec` path under a per-job Landlock ruleset whose grant set is measured, recorded in `SANDBOX-PATHS.md` and pinned by test plus `scripts/conf05-crosscheck.sh`; an AST scanner fails the build on any engine exec outside the sandbox (`sandboxPendingFiles` is empty).
+- Each worker refuses to start without Landlock (naming its `<CLASS>_SANDBOX_DISABLED` escape hatch) and proves confinement with a content-judged real-engine preflight before touching Postgres; sandbox faults are retryable, never terminal.
+- The `/tmp` decision: classes that measurably need a shared `/tmp` (`html`, `document`) run at concurrency exactly 1 behind a startup guard and a pre-task sweep; `probe` gets per-exec `TMPDIR` and no `/tmp` grant.
+- `document` is native: the amd64 pin shrank to the `verapdf` build stage after a repeatable native-vs-emulated veraPDF differential ended `DIVERGENCES: 0`; soffice gets a new socket-only grant kind plus `rw:/tmp` (MAKE_SOCK alone was measured insufficient); an emulated amd64 image is proven to refuse before Postgres; veraPDF's `/proc` narrowed to three entries by measurement.
+- The eight-class live gate ends `ALL PASS (40 checks)` on images built from the final commit, with e2e green through the confined workers; the html `/dev/shm` control was rebuilt as an inotify observation after Chromium 154 moved to `memfd_create`.
+
+**Closeout:** override_closeout. Phase 67 shipped as PR #28 (`eb28f67`) before the milestone was opened and has no planning artifacts (recorded in the v1.15 roadmap); phases 68–70 re-verified passed on the final tree. No milestone audit file (as for v1.13/v1.14).
+Known verification overrides: 46 newly acknowledged, 0 carried forward from a prior close (see STATE.md Deferred Items). Live follow-ups: amd64 first-deployment preflight check, MinIO images off Docker Hub, html `/proc` other-process entries, narrower soffice socket grant, sweep tests vs host `/tmp`.
+
+---
+
 ## v1.14 Typesetting & Debt (Shipped: 2026-09-05)
 
 **Phases:** 3 (62-64) | **Plans:** 7
@@ -55,7 +75,6 @@ at all.
   operational debt tail: an initContainer for all ten pods, a test that had
   stopped asserting about the database, and one requirement that was already met.
 
----
 
 ## v1.13 Inspect & Operations (Shipped: 2026-09-02)
 
@@ -149,7 +168,6 @@ that eight review rounds had not.
   5 todos, accumulated across thirteen milestones) — see STATE.md § Deferred
   Items.
 
-
 ## v1.12 Consumer Accounting & Fairness (Shipped: 2026-08-07)
 
 Known deferred items at close: 13 entries across tech_debt / accepted_risk / infra / tooling_noise / seeds (see STATE.md Deferred Items). Milestone audit: tech_debt — 15/15 requirements, 5/5 phases, 9/9 cross-phase seams, 1/1 E2E flow, 0 blockers (.planning/milestones/v1.12-MILESTONE-AUDIT.md).
@@ -168,7 +186,6 @@ Known deferred items at close: 13 entries across tech_debt / accepted_risk / inf
 - QUOT-05 closed by a live gate, not by assertion: 10 rounds of 10 concurrent requests at `api.replicas: 2` admitted exactly K=2 and rejected exactly 8 with `quota_exceeded` every round, 0 `rate_limited`, both pods serving both outcomes — 167 assertions, evidence TSVs committed. The gate has a real history of catching genuine failures (a disproven host→ClusterIP reachability assumption, a legitimate-slot-reuse ambiguity at round 4/10) and closing them structurally: a heavy fixture, a self-checking spread bound, and a per-round Postgres precondition proving no admitted job went terminal inside the burst — never by relaxing `==` to `<=`.
 - `internal/jobs/admission.go` now records the inverse of `internal/ratelimit`'s own caveat register: the quota mechanism carries NO `api.replicas: 1`-only caveat, structural argument first, live confirmation second, with the run's bounds (K=2, image engine, exactly 2 replicas) stated as bounds rather than implied as generality.
 
----
 
 ## v1.11 Pandoc Engine (Shipped: 2026-08-02)
 
@@ -192,7 +209,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - values-loadproof.yaml pandoc overlay exercising the falsy-0 guard (scaleDownStabilizationSeconds: 0) plus a values-driven Prometheus scrape interval, and a self-contained scripts/keda-pandoc-loadproof.sh SC3 scale-from-zero gate with run-time in-container markdown fixture synthesis (no committed testdata).
 - scripts/keda-pandoc-downscale-survival.sh (a depth-arithmetic drive shape + /proc-based attribution SC4 harness, structurally distinct from the ocr clone source by design) plus committed offline calibration evidence (fixture_bytes=4094606, wall_seconds=18.276, safely inside [15,50]) proving the SC4 job window before any cluster time is spent.
 
----
 
 ## v1.10 OCR Engine (Shipped: 2026-07-27)
 
@@ -215,7 +231,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Authored the SC3 scale-from-zero and SC4 downscale-survival live-proof gate scripts for the OCR engine class as structural clones of the av Phase-37 harness, plus the keda.ocr load-proof overlay knob -- statically verified, ready for Plan 03's live OrbStack run.
 - OCR class autoscaling live-proven on OrbStack k8s — scale-from-zero 0→1→0 (SC3, 11 assertions) and a 60-page OCR job surviving a genuine 2→1 downscale with graceful SIGTERM-before-completion / exit-0 / grace=774 (SC4, 22 assertions).
 
----
 
 ## v1.9 Job Progress & Control (Shipped: 2026-07-25)
 
@@ -239,7 +254,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Adds an opt-in, HMAC-signed `progress` webhook event fired from a detached, single-attempt, own-timeout goroutine inside the Phase 41 progressSink — reusing the existing PROG-03 throttle decision and structurally incapable of touching the terminal `done`/`failed` bounded-retry/dead-letter queue — plus the additive `event` discriminator on both webhook bodies and cmd/av-worker's real `webhook.Deliverer` wiring.
 - Authored scripts/sse-liveproof.sh -- a docker-compose-live operator gate that submits a forced hevc@1080 ffmpeg re-encode, opens GET /v1/jobs/{id}/events over a real socket, and hard-gates on Content-Type: text/event-stream, >=2 event: progress frames at distinct wall-clock timestamps before the stream's one terminal frame, >=1 `: keepalive` heartbeat, a clean close shortly after the terminal frame, and a cross-client 404. Task 2 (the live operator run) has NOT been executed -- PUSH-01 stays Pending until an operator runs the script against a live docker-compose stack and confirms the PASS summary.
 
----
 
 ## v1.8 AV Engine (video/ffmpeg) (Shipped: 2026-07-23)
 
@@ -266,7 +280,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Two statically-verified live-proof gate scripts (scripts/keda-av-loadproof.sh for scale-from-zero, scripts/keda-av-downscale-survival.sh for N->N-1 downscale survival) plus a values-loadproof.yaml keda.av.scaleDownStabilizationSeconds:15 override, ready for Plan 03's live cluster execution.
 - Rebuilding octoconv-api:dev from current HEAD (which already has QueueAV wired into AllConvertQueues()) resolved the prior BLOCKED run's STEP 6 failure outright, and Task 1 (SC3 scale-from-zero) passed clean on the first attempt; Task 2 (SC4 downscale-survival) then surfaced and fixed a second, independent live bug (an inherited WR-05-class jsonpath defect in the non-frozen keda-av-downscale-survival.sh) before passing all 22 assertions on retry, live-proving that a long hevc@1080 av transcode survives a genuine KEDA/HPA 2->1 downscale under production terminationGracePeriodSeconds=783 with a graceful exit 0.
 
----
 
 ## v1.7 Audio Engine & Hardening (Shipped: 2026-07-18)
 
@@ -293,7 +306,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - New self-contained scripts/keda-audio-loadproof.sh: structural clone of scripts/keda-load-proof.sh, narrower (no trial-run mode) and with new scope (timestamped kubectl pod-event-timeline capture for the audio class's scale-from-zero proof), statically verified — the two frozen sibling scripts remain byte-unchanged.
 - Live-ran both KEDA load-proof gates on OrbStack: keda-audio-loadproof.sh cleanly proved audio 0->1 scale-from-zero with the whisper model baked in (SC3, AUD-08 complete); the unmodified keda-load-proof.sh re-run newly confirmed SC1/SC2 pass under the WR-01-hardened chart but also empirically surfaced a real, previously-only-theoretical WR-05 jsonpath defect in SC3's BUSY_POD selection (fails loud, as 29-REVIEW.md predicted) -- Phase 29's deferred item is re-verified, not cleanly closed.
 
----
 
 ## v1.6 Kubernetes & KEDA (Shipped: 2026-07-17)
 
@@ -318,7 +330,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Three new tools -- a calibratable python-docx heavy-fixture generator, a headless matplotlib CSV-to-PNG dual-axis renderer, and a self-contained 854-line `keda-load-proof.sh` gate implementing the SC1/SC2 image-burst 0->N->0 scenario and the SC3 document-class downscale-soak with deterministic pod-deletion-cost victim selection and the D-09 triple-check -- all statically verified (bash -n, uv smoke runs) and ready for the live in-cluster run in plan 28-03.
 - A single ALL-27-ASSERTIONS-PASSED live gate run against the real OrbStack cluster proving the full 0→4→0 image-class burst cycle (first replica +6s, peak 4 = maxReplicaCount at +11s, drain +76s, scale-to-zero +136s) and a 178s document conversion gracefully surviving a genuine KEDA/HPA 2→1 downscale (SIGTERM 142.8s before job completion, Completed/exit-0 with 188s of the 330s grace window unused) — all captured as committed, credential-free, timestamped evidence.
 
----
 
 ## v1.5 MCP Access & Document Fidelity (Shipped: 2026-07-13)
 
@@ -337,7 +348,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - ValidatePDFA wired into validateDocumentOutput's wantPDFA branch (after the /GTS_PDFA pre-filter) via the existing hardened runCommand, extended to capture stdout since veraPDF's `--format xml` report is stdout-only; fail-closed terminal classification (terminalVeraPDFSignatures) lands in the same commit, and VERAPDF_TIMEOUT is injected from cmd/document-worker/main.go via SetVeraPDFTimeout.
 - Live, unconditional proof against the rebuilt document-worker image (real veraPDF JVM in the path): a genuine PDF/A-2b export still reaches done (no regression), and a marker-bearing-but-corrupted PDF/A export injected via an e2e-only soffice shim fails terminally with the exact "pdf/a non-compliant" veraPDF reason recorded in job_events -- all three live tests (TestPDFAExportE2E, TestPDFANonCompliantE2E, TestDocumentConversionE2E) passed in a single 43.16s run; document-worker image build-time delta measured at +12.13s (+8%) via two controlled --no-cache local builds.
 
----
 
 ## v1.4 CI, Presets & Debt Cleanup (Shipped: 2026-07-12)
 
@@ -354,7 +364,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - Authored `.github/workflows/ci.yml` — OctoConv's first-ever CI workflow, a 4-tier needs-chained pipeline (gate → race → docker-build → e2e) covering CI-01..CI-04, with every tier's exact commands locally hard-gated green before any push.
 - Executed inline by the orchestrator
 
----
 
 ## v1.3 Document Class v2 (Shipped: 2026-07-12)
 
@@ -380,7 +389,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - All three Phase 16 success criteria live-verified against a freshly built two-webhook-worker stack and human-approved: webhook delivery survives image-worker absence (SC1), survives a mid-delivery consumer kill with zero lost/zero duplicated delivered webhooks (SC2), and exactly one fleet-wide advisory-lock sweeper with ~11s auto-failover (SC3). WEBH-01 satisfied.
 - Verified CR-01/WR-01 pool-slot-leak and shutdown-blocking fixes already landed by a parallel quick-task, and closed the one remaining test gap with a new -race regression test for the TryAcquire/Close mutex interleaving.
 
----
 
 ## v1.2 Document Engine Class (Shipped: 2026-07-10)
 
@@ -403,7 +411,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - All 6 document format pairs (docx/xlsx/pptx/odt/ods/odp to pdf) converted successfully through a freshly built, live docker-compose stack (api + worker + document-worker + postgres/redis/minio), including a fully HMAC-verified signed webhook delivery for the docx pair — `go test ./internal/e2e/ -run E2E -v` ran (not skipped) and passed in 15.3s.
 - Extended `convert.MIMEType` with the six document formats and `pdf`, closing the last gap in DOC-10 so document job uploads/downloads are served with the correct MIME type instead of `application/octet-stream`, exactly like image jobs.
 
----
 
 ## v1.1 Tech Debt Cleanup (Shipped: 2026-07-08)
 
@@ -419,7 +426,6 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - `convert.Dimensions()` — hand-written binary parsers for PNG/JPEG/WebP/TIFF/HEIC extracting declared pixel width/height from a bounded 64 KiB non-seekable stream prefix, with zero new dependencies and full byte-fixture test coverage.
 - MAX_IMAGE_PIXELS config/env wiring plus a handleCreateJob gate that calls convert.Dimensions between the format pair-check and callback_url validation, rejecting 422 before any storage write when declared pixel dimensions are unknown or exceed the configurable 100-megapixel default.
 
----
 
 ## v1.0 Hardening MVP (Shipped: 2026-07-08)
 
@@ -443,4 +449,3 @@ Known deferred items at close: 5 categories (see STATE.md Deferred Items). Miles
 - GET /healthz now pings Postgres, Redis, and S3/MinIO under a shared 3s timeout, returning 200/ok when all reachable and 503/degraded with per-dependency detail otherwise.
 - Second localhost-only `/metrics` HTTP listener mounted in both `cmd/api/main.go` and `cmd/worker/main.go` (promhttp.Handler(), METRICS_ADDR default 127.0.0.1:9090), queue-depth collector registered in the worker, and a pinned `hibiken/asynqmon:0.7.2` dashboard service bound to 127.0.0.1:8980 — all three verified live end-to-end (real conversion job, real metrics scrape, real dashboard query).
 
----
