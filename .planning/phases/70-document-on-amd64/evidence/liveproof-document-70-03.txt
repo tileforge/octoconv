@@ -1,0 +1,41 @@
+# scripts/sandbox-liveproof.sh document, run 2026-09-30 on a native arm64 docker server (OrbStack), tree = 1c7db1c plus the uncommitted worker/test changes of Task 2
+# first run (before the Dockerfile hsperfdata_root fix) is kept below the passing one as the finding it produced
+
+== document: building octoconv-document:sandbox-liveproof-1790782849-24381 from Dockerfile.document-worker ==
+commit: 22d524c2cef7cca0f7d7c35ca9650e7129dc01ae
+tracked dirt: 16 file(s)
+image id: sha256:8bfc7b4ba416d57a46f1528134bacc14aa4560de3cfdaf41803f8d77acae3650
+PASS: document confined-startup
+  2026/09/30 15:40:52 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  2026/09/30 15:40:56 🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it
+  2026/09/30 15:40:56 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: document refuses-without-landlock
+  2026/09/30 15:40:57 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document escape-hatch
+  2026/09/30 15:40:57 ⚠️  DOCUMENT_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: document preflight-catches-restrict-self
+  2026/09/30 15:40:58 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: soffice failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+ALL PASS (4 checks)
+exit=0
+
+# ---- first run, FAILED: the sweep could not remove the root-owned /tmp/hsperfdata_root ----
+== document: building octoconv-document:sandbox-liveproof-1790782582-99396 from Dockerfile.document-worker ==
+commit: 22d524c2cef7cca0f7d7c35ca9650e7129dc01ae
+tracked dirt: 11 file(s)
+image id: sha256:4aef42b0c424ae8c70d297a5a38e3cadf23288a64a6cfbba2762ae2c173fec22
+FAIL: document confined-startup
+  missing the '🔒 document sandbox proven:' line
+  never reached the postgres connect attempt -- the preflight did not clear
+  the preflight itself FAILED ('document sandbox preflight:' is in the output)
+  --- full output ---
+  2026/09/30 15:36:48 📄 DOCUMENT_WORKER_CONCURRENCY=1
+2026/09/30 15:36:48 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+2026/09/30 15:36:48 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: sweep /tmp before the task: unlinkat /tmp/hsperfdata_root: operation not permitted
+PASS: document refuses-without-landlock
+  2026/09/30 15:36:49 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document escape-hatch
+  2026/09/30 15:36:49 ⚠️  DOCUMENT_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: document preflight-catches-restrict-self
+  2026/09/30 15:36:50 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: sweep /tmp before the task: unlinkat /tmp/hsperfdata_root: operation not permitted
+FAILURES PRESENT (4 checks run)
+exit=1
