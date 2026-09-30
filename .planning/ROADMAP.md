@@ -144,7 +144,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 70-03-PLAN.md — tracer `document` в коде: два ruleset на задачу, очищенное окружение движков (TMPDIR, JAVA_OPTS), preflight обоих движков по содержимому, отказ до Postgres, `isDocumentTerminal` с sentinel, строка класса в живом гейте (четыре общие проверки)
+- [x] 70-03-PLAN.md — tracer `document` в коде: два ruleset на задачу, очищенное окружение движков (TMPDIR, JAVA_OPTS), preflight обоих движков по содержимому, отказ до Postgres, `isDocumentTerminal` с sentinel, строка класса в живом гейте (четыре общие проверки)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
