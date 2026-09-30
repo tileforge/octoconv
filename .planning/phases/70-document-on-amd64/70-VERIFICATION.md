@@ -1,7 +1,8 @@
 ---
 phase: 70-document-on-amd64
 verified: 2026-10-01T01:10:00Z
-status: human_needed
+status: passed
+human_approved: 2026-10-01 (user approved human-check items 1-4: measured sets, emulated-amd64 refusal, final evidence set, html /dev/shm control redesign; residuals tracked as pending todos)
 score: 15/15 must-haves verified
 covered_files:
   - .env.example
