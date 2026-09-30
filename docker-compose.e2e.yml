@@ -99,7 +99,15 @@ services:
   # terminal classification, and job_events diagnostics trail end-to-end.
   # Both mounted files must stay world-readable/executable: the worker
   # container runs as USER nobody.
+  #
+  # Since phase 70 the document worker is CONFINED (it is never disabled here:
+  # DOCUMENT_SANDBOX_DISABLED stays unset), and the worker resolves soffice to
+  # this shim, so the shim runs inside soffice's Landlock ruleset. That is why
+  # the fixture is mounted beneath /usr/lib -- a directory the measured soffice
+  # set grants for LibreOffice's own program tree -- and not at a path of its
+  # own outside every grant; and why the shim uses only sh and sed (both listed
+  # in that set). The production grant is not widened for the shim.
   document-worker:
     volumes:
       - ./internal/e2e/testdata/verapdf-shim/soffice:/usr/local/bin/soffice:ro
-      - ./internal/e2e/testdata/verapdf_noncompliant_marker.pdf:/e2e-fixtures/verapdf_noncompliant_marker.pdf:ro
+      - ./internal/e2e/testdata/verapdf_noncompliant_marker.pdf:/usr/lib/octoconv-e2e/verapdf_noncompliant_marker.pdf:ro

@@ -15,6 +15,13 @@
 # MUST NEVER be used in production -- confined entirely to
 # docker-compose.e2e.yml's established test-only bind-mount pattern.
 #
+# Since phase 70 this script runs INSIDE soffice's Landlock ruleset (the
+# document worker is confined; the worker resolves soffice to this shim). So it
+# uses only shell builtins and binaries the measured soffice set lists
+# literally (/usr/bin/dash as the interpreter, /usr/bin/sed), reads its fixture
+# from beneath a directory that set grants (/usr/lib), and never widens it.
+# The production grant was not changed for the shim.
+#
 # Argv contract honored (internal/convert/libreoffice.go Convert, ~101-108):
 #   soffice --headless --invisible --nocrashreport --nodefault --nologo
 #     --nofirststartwizard --norestore -env:UserInstallation=file://<profile>
@@ -26,7 +33,7 @@
 set -eu
 
 TRIGGER_MARKER='VERAPDF-E2E-NONCOMPLIANT-TRIGGER'
-FIXTURE_PATH='/e2e-fixtures/verapdf_noncompliant_marker.pdf'
+FIXTURE_PATH='/usr/lib/octoconv-e2e/verapdf_noncompliant_marker.pdf'
 
 outdir=""
 input=""
@@ -39,10 +46,21 @@ for arg in "$@"; do
 	input="$arg" # the last argv element is always the input path
 done
 
-if [ -n "$input" ] && [ -f "$input" ] && grep -aq "$TRIGGER_MARKER" "$input" 2>/dev/null; then
-	base=$(basename "$input")
+# Trigger detection with sed (grep is not in soffice's measured set): prints
+# the line number of the first line carrying the marker, nothing otherwise.
+# No redirection to /dev/null anywhere: soffice's ruleset grants it read-only,
+# so opening it for writing is denied.
+hit=""
+if [ -n "$input" ] && [ -f "$input" ]; then
+	hit=$(sed -n "/$TRIGGER_MARKER/{=;q;}" "$input" || true)
+fi
+
+if [ -n "$hit" ]; then
+	base=${input##*/}
 	stem=${base%.*}
-	cp "$FIXTURE_PATH" "$outdir/$stem.pdf"
+	# sed -n p is a byte-transparent copy (GNU sed keeps a missing final
+	# newline); cp is not in soffice's measured set.
+	sed -n p "$FIXTURE_PATH" >"$outdir/$stem.pdf"
 	exit 0
 fi
 
