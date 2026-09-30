@@ -102,7 +102,7 @@ func main() {
 	// identical bytes OUTSIDE the job directory are denied (CONF-04). 60s,
 	// not PandocPreflight's 30s: this preflight drives four engines across
 	// three routes, not one.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 60*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
 	if err := convert.OCRPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("ocr sandbox preflight: %v", err)

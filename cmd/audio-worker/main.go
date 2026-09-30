@@ -105,7 +105,7 @@ func main() {
 	// both converter stages, and a denial from outside the job directory
 	// (CONF-04). 120s: this preflight loads the whisper.cpp model and runs a
 	// real transcription, heavier than pandoc's/av's own preflights.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 120*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 120*time.Second)
 	if err := convert.AudioPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("audio sandbox preflight: %v", err)

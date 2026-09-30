@@ -45,3 +45,29 @@ check: no 'postgres:' line
 RESULT: PASS
 
 OVERALL: PASS
+
+# Part 2: SIGTERM during the startup preflight, document-worker, confined, default concurrency (Task 2, IN-01)
+Method: docker run -d the confined image (DATABASE_URL at a dead port), wait 1 s (the preflight is ~4-5 s), docker kill -s TERM (tini is PID 1 and forwards it),
+docker wait, time from the signal to exit. Same script for both images. Claim under test: exit within 3 s of the signal.
+
+## BEFORE (preflight context derived from context.Background()) -- image built from 3be14e2 + evidence commit 78d678b, cmd/ untouched
+image: octoconv-document-worker:plan-70-07-fix  sha256:bde7fe42f7cd8ad695da14bceb41be5fa460371d351ef4a050cc0862ff8147e6
+run 1: signal sent at +1.09s after start; container exited 3.75s after the signal; exit code 1
+run 2: signal sent at +1.07s after start; container exited 3.02s after the signal; exit code 1
+log (run 1): the preflight ran to completion AFTER the signal and claimed proof, then the already-cancelled signal context failed the Postgres connect:
+  2026/09/30 20:07:06 📄 DOCUMENT_WORKER_CONCURRENCY=1
+  2026/09/30 20:07:06 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  2026/09/30 20:07:11 🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it
+  2026/09/30 20:07:11 postgres: ping postgres: context canceled
+(run 2 log identical in shape.) Verdict: the preflight ignored the signal and outlived it by 3.0-3.75 s.
+
+## AFTER (preflight context derived from the signal context, all eight mains; tectonic helpers take ctx)
+image: octoconv-document-worker:plan-70-07-fix2  sha256:e735410ac9271d44777a468e9cf39b1fb0440a902b2ad8a42311575ef604024d  (built from the Task 2 working tree on top of 78d678b)
+run: signal sent at +1.05s after start; container exited 0.31s after the signal; exit code 1
+run: signal sent at +1.06s after start; container exited 0.33s after the signal; exit code 1
+run: signal sent at +1.06s after start; container exited 0.33s after the signal; exit code 1
+log (each run):
+  📄 DOCUMENT_WORKER_CONCURRENCY=1
+  🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: verapdf: pdf/a validation error: verapdf killed: context canceled
+Verdict: the preflight ends on the cancelled context (verapdf killed: context canceled), no 'sandbox proven' claim, container exited 0.31-0.33 s after the signal (limit 3 s).

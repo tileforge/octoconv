@@ -123,7 +123,7 @@ func main() {
 	// gs/pdfinfo/unzip fail LOUDLY when denied, but file(1) exits 0 and
 	// prints a non-MIME answer, so the exit status is never what decides
 	// this.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 60*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
 	if err := convert.ProbePreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("probe sandbox preflight: %v", err)

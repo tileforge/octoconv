@@ -70,7 +70,7 @@ func main() {
 	// built -- both directions, by content: a conversion INSIDE the job
 	// directory succeeds and carries the expected output, and the identical
 	// bytes OUTSIDE it are denied (CONF-04).
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 30*time.Second)
 	if err := convert.PandocPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("pandoc sandbox preflight: %v", err)

@@ -71,9 +71,10 @@ func main() {
 	}
 
 	// D-09/CONF-06: soffice's measured ruleset grants the container's shared
-	// /tmp read-write, so a confined worker configured above one task at a time
-	// refuses to start, naming DOCUMENT_WORKER_CONCURRENCY. The default is 1 for
-	// the same reason; scale with replicas. This is the SAME value asynq uses.
+	// /tmp read-write, so a confined worker configured to anything but one task at
+	// a time (above 1, or below 1, which asynq runs as the CPU count) refuses to
+	// start, naming DOCUMENT_WORKER_CONCURRENCY. The default is 1 for the same
+	// reason; scale with replicas. This is the SAME value asynq uses.
 	concurrency := envInt(documentConcurrencyEnv, 1)
 	log.Printf("📄 %s=%d", documentConcurrencyEnv, concurrency)
 	conv, err := convert.ConfinedDocument(sandboxHelper, concurrency, documentConcurrencyEnv)
@@ -106,7 +107,7 @@ func main() {
 	// the queue is touched (CONF-04): soffice is silent when denied and veraPDF
 	// exits the same code for a verdict and a denial, so exit status is never
 	// what decides this.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), documentPreflightTimeout)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, documentPreflightTimeout)
 	if err := convert.DocumentPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("document sandbox preflight: %v", err)

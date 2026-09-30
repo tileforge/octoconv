@@ -107,7 +107,7 @@ func main() {
 	// that the identical bytes OUTSIDE the job directory are denied. 60s,
 	// not PandocPreflight's 30s: this preflight drives a real ffmpeg
 	// transcode, not a single fast pandoc conversion.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 60*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
 	if err := convert.AVPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("av sandbox preflight: %v", err)

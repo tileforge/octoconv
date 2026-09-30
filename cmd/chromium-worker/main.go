@@ -59,7 +59,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("html sandbox: %v", err)
 	}
-	concurrency := envInt(htmlConcurrencyEnv, 1) // D-01: one task per container while confined
+	// D-01: one task per container while confined. A confined worker configured
+	// to anything but 1 (above 1, or below 1, which asynq runs as the CPU count)
+	// refuses to start in ConfinedChromium below.
+	concurrency := envInt(htmlConcurrencyEnv, 1)
 	log.Printf("🧵 %s=%d", htmlConcurrencyEnv, concurrency)
 	conv, err := convert.ConfinedChromium(sandboxHelper, concurrency, htmlConcurrencyEnv)
 	if err != nil {
@@ -76,7 +79,7 @@ func main() {
 	// built -- both directions, by PDF content (D-06/D-07): a conversion
 	// INSIDE the job directory succeeds and carries the marker, and the
 	// identical bytes OUTSIDE it are denied.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 60*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
 	if err := convert.HTMLPreflight(preflightCtx, conv); err != nil {
 		cancelPreflight()
 		log.Fatalf("html sandbox preflight: %v", err)
