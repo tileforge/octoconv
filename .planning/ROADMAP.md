@@ -167,7 +167,7 @@ Plans:
 
 **Gap closure — Wave 2** *(blocked on Wave 1)*
 
-- [ ] 70-08-PLAN.md — WR-02: сужение `ro:/proc` veraPDF по замеру (проверки N3 и V0L в драйвере, JVM через боевой launcher), либо записанный остаточный риск; честные комментарии про очистку окружения; html и tectonic — запись и один todo
+- [x] 70-08-PLAN.md — WR-02: сужение `ro:/proc` veraPDF по замеру (проверки N3 и V0L в драйвере, JVM через боевой launcher), либо записанный остаточный риск; честные комментарии про очистку окружения; html и tectonic — запись и один todo
 
 **Gap closure — Wave 3** *(blocked on Wave 2)*
 
