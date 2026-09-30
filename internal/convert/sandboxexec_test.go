@@ -477,8 +477,9 @@ func TestEngineEnvIsAnAllowlist(t *testing.T) {
 }
 
 // sharedTmpGuard fires ONLY when all three hold: confined, the writable set
-// grants sharedTmpDir, and concurrency > 1 -- keyed on the GRANT SET, never
-// on a class name (CONF-06).
+// grants sharedTmpDir, and concurrency is anything but exactly 1 -- keyed on
+// the GRANT SET, never on a class name (CONF-06). A value below 1 is not
+// "one at a time": asynq runs runtime.NumCPU() tasks for it.
 func TestSharedTmpGuard(t *testing.T) {
 	confined := &engineSandbox{Helper: []string{"helper"}, Confine: true}
 	var unconfined *engineSandbox
@@ -492,7 +493,12 @@ func TestSharedTmpGuard(t *testing.T) {
 	}{
 		{"confined shared /tmp concurrency 2", []string{"/tmp", "/dev/null"}, confined, 2, true},
 		{"confined shared /tmp concurrency 1", []string{"/tmp", "/dev/null"}, confined, 1, false},
+		{"confined shared /tmp concurrency 0", []string{"/tmp", "/dev/null"}, confined, 0, true},
+		{"confined shared /tmp concurrency -1", []string{"/tmp", "/dev/null"}, confined, -1, true},
 		{"unconfined shared /tmp concurrency 2", []string{"/tmp"}, unconfined, 2, false},
+		{"unconfined shared /tmp concurrency 0", []string{"/tmp"}, unconfined, 0, false},
+		{"confined without /tmp concurrency 0", []string{"/dev/null"}, confined, 0, false},
+		{"confined without /tmp concurrency -1 (empty)", nil, confined, -1, false},
 		{"confined without /tmp concurrency 4 (empty)", nil, confined, 4, false},
 		{"confined without /tmp concurrency 4 (/dev/null only)", []string{"/dev/null"}, confined, 4, false},
 	}
@@ -503,7 +509,7 @@ func TestSharedTmpGuard(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected an error")
 				}
-				if !strings.Contains(err.Error(), "X_CONCURRENCY=2") || !strings.Contains(err.Error(), "shared /tmp") {
+				if !strings.Contains(err.Error(), fmt.Sprintf("X_CONCURRENCY=%d", c.concurrency)) || !strings.Contains(err.Error(), "shared /tmp") {
 					t.Errorf("err = %q, missing expected substrings", err.Error())
 				}
 				return

@@ -3,6 +3,7 @@ package convert
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,6 +134,15 @@ func TestConfinedChromium(t *testing.T) {
 		t.Errorf("ConfinedChromium(helper, 2, ...) err = %v, want it to name HTML_WORKER_CONCURRENCY=2", err)
 	}
 
+	for _, n := range []int{0, -1} {
+		want := fmt.Sprintf("HTML_WORKER_CONCURRENCY=%d", n)
+		if _, err := ConfinedChromium(helper, n, "HTML_WORKER_CONCURRENCY"); err == nil ||
+			!strings.Contains(err.Error(), want) ||
+			!strings.Contains(err.Error(), "shared /tmp") {
+			t.Errorf("ConfinedChromium(helper, %d, ...) err = %v, want it to name %s and the shared /tmp", n, err, want)
+		}
+	}
+
 	c, err := ConfinedChromium(helper, 1, "HTML_WORKER_CONCURRENCY")
 	if err != nil {
 		t.Fatalf("ConfinedChromium(helper, 1, ...): %v", err)
@@ -149,12 +159,14 @@ func TestConfinedChromium(t *testing.T) {
 		t.Errorf("unconfined: sharedTmp = %q, want empty (nothing to sweep)", c2.sharedTmp)
 	}
 
-	c3, err := ConfinedChromium(nil, 1, "HTML_WORKER_CONCURRENCY")
-	if err != nil {
-		t.Fatalf("ConfinedChromium(nil, 1, ...): %v", err)
-	}
-	if c3.sharedTmp != "" {
-		t.Errorf("unconfined: sharedTmp = %q, want empty", c3.sharedTmp)
+	for _, n := range []int{-1, 0, 1} {
+		c3, err := ConfinedChromium(nil, n, "HTML_WORKER_CONCURRENCY")
+		if err != nil {
+			t.Fatalf("ConfinedChromium(nil, %d, ...): %v", n, err)
+		}
+		if c3.sharedTmp != "" {
+			t.Errorf("unconfined at %d: sharedTmp = %q, want empty", n, c3.sharedTmp)
+		}
 	}
 }
 

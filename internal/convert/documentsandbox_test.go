@@ -141,6 +141,17 @@ func TestConfinedDocument(t *testing.T) {
 		t.Errorf("ConfinedDocument(helper, 2, ...) err = %v, want it to name DOCUMENT_WORKER_CONCURRENCY=2 and the shared /tmp", err)
 	}
 
+	// asynq runs runtime.NumCPU() tasks for a value below 1, so 0 and -1 are
+	// not "one at a time" and are refused like any other value above 1.
+	for _, n := range []int{0, -1} {
+		want := fmt.Sprintf("DOCUMENT_WORKER_CONCURRENCY=%d", n)
+		if _, err := ConfinedDocument(helper, n, "DOCUMENT_WORKER_CONCURRENCY"); err == nil ||
+			!strings.Contains(err.Error(), want) ||
+			!strings.Contains(err.Error(), "shared /tmp") {
+			t.Errorf("ConfinedDocument(helper, %d, ...) err = %v, want it to name %s and the shared /tmp", n, err, want)
+		}
+	}
+
 	c, err := ConfinedDocument(helper, 1, "DOCUMENT_WORKER_CONCURRENCY")
 	if err != nil {
 		t.Fatalf("ConfinedDocument(helper, 1, ...): %v", err)
@@ -149,7 +160,7 @@ func TestConfinedDocument(t *testing.T) {
 		t.Errorf("confined at concurrency 1: sharedTmp = %q, want %q", c.sharedTmp, sharedTmpDir)
 	}
 
-	for _, n := range []int{1, 2, 4} {
+	for _, n := range []int{-1, 0, 1, 2, 4} {
 		c, err := ConfinedDocument(nil, n, "DOCUMENT_WORKER_CONCURRENCY")
 		if err != nil {
 			t.Fatalf("ConfinedDocument(nil, %d, ...): %v", n, err)
