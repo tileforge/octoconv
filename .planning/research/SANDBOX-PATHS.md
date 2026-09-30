@@ -117,7 +117,7 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 | `image` | да | **да** (эта ветка) |
 | `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
 | `html`, `probe` | да | **да (фаза 69)** |
-| `document` | да (фаза 70, ниже) | нет (фаза 70, план 03) |
+| `document` | да (фаза 70, ниже) | **да (фаза 70)** |
 
 Общая часть вынесена: `sandbox.ResolveHelper` (разрешение хелпера и отказ
 стартовать), `engineSandbox.wrapEngine` (сборка argv), `engineExec.run`/`.stream`
@@ -137,8 +137,16 @@ preflight-набор (`sandbox.Preflight`-подобные проверки, д�
 `/proc/self/environ`) и общий guard на разделяемый `/tmp`, ключ которого —
 сам GRANT SET (любой класс, чей writable-набор содержит разделяемый `/tmp`),
 а не имя класса. Allowlist `sandboxcoverage_test.go`'s `sandboxPendingFiles`
-теперь держит ровно два файла будущей фазы 70 — `libreoffice.go` и
-`verapdf.go`.
+теперь пуст: каждый движковый класс в `internal/convert` идёт через
+`engineExec`, и тест держит это для всего пакета. Фаза 70 добавила к общей части
+две вещи, нужные только `document`: у него на каждую задачу **два ruleset** —
+один у soffice, другой у veraPDF, каждый со своим замеренным набором (D-10;
+veraPDF не получает ни права записи, кроме `/dev/null`, ни общего `/tmp`), — и
+**право на сокет** (`sock:`, `Paths.Socket`): создать Unix-сокет под названной
+директорией и больше ничего. Это единственное право, которого нет ни у одного
+другого класса: оно не входит ни в `accessReadWrite`, ни в `accessReadOnly`, и
+`TestNothingMayCreateSymlinksOrSpecialFiles` продолжает утверждать, что ни
+каталог задачи, ни системное дерево сокет создать не могут.
 
 ## image (libvips) — замерено и доказано 2026-09-20
 
