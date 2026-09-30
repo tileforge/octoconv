@@ -129,9 +129,9 @@ func TestSanitizePDFRemovesEveryThreatMarker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := SanitizeFile(ctx, engineExec{}, "pdf", in, out)
+	res, err := sanitizeFile(ctx, engineExec{}, "pdf", in, out)
 	if err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 
 	got, err := os.ReadFile(out)
@@ -186,8 +186,8 @@ func TestSanitizePDFPreservesText(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "clean.pdf")
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if _, err := SanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
-				t.Fatalf("SanitizeFile: %v", err)
+			if _, err := sanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
+				t.Fatalf("sanitizeFile: %v", err)
 			}
 			if after := nonWhitespaceCount(t, out); after != tc.want {
 				t.Errorf("text after sanitization = %d non-whitespace chars, want %d", after, tc.want)
@@ -238,8 +238,8 @@ func TestSanitizePDFOutputIsASingleRevision(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "clean.pdf")
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			if _, err := SanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
-				t.Fatalf("SanitizeFile: %v", err)
+			if _, err := sanitizeFile(ctx, engineExec{}, "pdf", tc.path, out); err != nil {
+				t.Fatalf("sanitizeFile: %v", err)
 			}
 			got, err := os.ReadFile(out)
 			if err != nil {
@@ -432,9 +432,9 @@ func TestRedactionSkipsStreamPayloads(t *testing.T) {
 	requireGhostscript(t)
 
 	out := filepath.Join(t.TempDir(), "out.pdf")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	raw, err := os.ReadFile(out)
 	if err != nil {

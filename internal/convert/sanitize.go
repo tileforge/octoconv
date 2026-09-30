@@ -93,7 +93,7 @@ var sanitizeFormats = map[string]func(context.Context, engineExec, string, strin
 	"png": sanitizeImage,
 }
 
-// SanitizeFile sanitizes inPath into outPath, dispatching on the NORMALIZED
+// sanitizeFile sanitizes inPath into outPath, dispatching on the NORMALIZED
 // source format.
 //
 // The format is normalized through NormalizeFormat, the same entry point the
@@ -109,7 +109,15 @@ var sanitizeFormats = map[string]func(context.Context, engineExec, string, strin
 // anything and carry x unused -- the map's value type is shared across all
 // six functions, and a caller reaching this function directly (every test)
 // passes engineExec{} for "run the engine unconfined".
-func SanitizeFile(ctx context.Context, x engineExec, format, inPath, outPath string) (SanitizeResult, error) {
+//
+// It is package-private on purpose (Codex P2, PR #30): its x parameter is the
+// package-private engineExec, so an exported version could not be called from
+// outside this package. The only way to make it callable would be an exported
+// variant that fills x itself -- and that would have to pass a zero engineExec,
+// i.e. run the engine with no sandbox, bypassing the Landlock ruleset
+// SanitizeConverter.Convert builds for every job. Production reaches this
+// function only through SanitizeConverter.Convert.
+func sanitizeFile(ctx context.Context, x engineExec, format, inPath, outPath string) (SanitizeResult, error) {
 	norm := NormalizeFormat(format)
 	fn, ok := sanitizeFormats[norm]
 	if !ok {
@@ -125,7 +133,7 @@ func SanitizeFile(ctx context.Context, x engineExec, format, inPath, outPath str
 	// named sanitize and was never checked -- and nothing downstream can tell
 	// that file from a verified one. There is no skip flag for the same
 	// reason (SANI-04, D-07).
-	verified, verr := VerifySanitized(ctx, x, norm, outPath)
+	verified, verr := verifySanitized(ctx, x, norm, outPath)
 	if verr != nil {
 		// Delete the output before returning. The requirement is that
 		// nothing unverified reaches S3; the strongest form of that is that

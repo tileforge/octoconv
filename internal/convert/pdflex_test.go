@@ -85,8 +85,8 @@ func TestObjectHeadersAreNotReadOutOfComments(t *testing.T) {
 // "<< /Length 5 >> % stream\nstream\nabcde": the first "stream" is inside a
 // comment. The backward-scanning walker skipped back over the comment, found the
 // dictionary, and classified the commented word as the keyword -- then its
-// length did not line up and the whole file was refused. VerifySanitized is a
-// public API and SanitizeFile deletes what it cannot verify, so this cost a
+// length did not line up and the whole file was refused. verifySanitized gates every
+// sanitize output and sanitizeFile deletes what it cannot verify, so this cost a
 // client a valid file.
 func TestStreamKeywordInsideACommentIsNotAStream(t *testing.T) {
 	raw := []byte("%PDF-1.4\n1 0 obj\n<< /Length 5 >> % stream\nstream\nabcde\nendstream\nendobj\n" +
@@ -242,7 +242,7 @@ func TestUnresolvableLengthStillFailsClosed(t *testing.T) {
 // so a truncated [Content_Types].xml -- a matching Override and then no closing
 // tag -- was accepted, because the decoder had not yet reached the error.
 // verifyOOXML's own check looks at the first start element only, so nothing else
-// caught it either, and VerifySanitized reported a malformed package as verified.
+// caught it either, and verifySanitized reported a malformed package as verified.
 func TestContentTypesMustParseToTheEnd(t *testing.T) {
 	good := `<?xml version="1.0"?>` +
 		`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
@@ -295,7 +295,7 @@ func TestMalformedContentTypesFailsVerification(t *testing.T) {
 			`<Override PartName="/word/document.xml" ContentType="application/xml"/>`),
 		"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 	})
-	if _, err := VerifySanitized(context.Background(), engineExec{}, "docx", path); err == nil {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "docx", path); err == nil {
 		t.Error("a package whose [Content_Types].xml does not parse to the end was verified")
 	}
 }

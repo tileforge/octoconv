@@ -37,9 +37,9 @@ func TestSanitizeOOXMLRemovesMacroBytes(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "clean.docx")
-	res, err := SanitizeFile(context.Background(), engineExec{}, "docm", in, out)
+	res, err := sanitizeFile(context.Background(), engineExec{}, "docm", in, out)
 	if err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 
 	got, err := os.ReadFile(out)
@@ -149,8 +149,8 @@ func ooxmlConsistency(t *testing.T, archive []byte) []string {
 // valid zip, finishes the job green, and is refused by Word.
 func TestSanitizeOOXMLStaysConsistent(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "clean.docx")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "docm", sanitizeDocmFixture(t), out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "docm", sanitizeDocmFixture(t), out); err != nil {
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	got, err := os.ReadFile(out)
 	if err != nil {
@@ -231,8 +231,8 @@ func TestSanitizeOOXMLDropsRenamedMacroPart(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "clean.docx")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "docm", in, out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "docm", in, out); err != nil {
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 
 	// Every Override must name a part that is actually present. A declaration

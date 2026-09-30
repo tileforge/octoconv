@@ -117,7 +117,7 @@ var (
 
 // verifiers is the closed set of formats that have an independent verifier.
 // A format that sanitizes but has no verifier must not silently skip
-// verification -- SanitizeFile turns a missing entry into an error, because
+// verification -- sanitizeFile turns a missing entry into an error, because
 // "nothing checked it" and "it checked out" must never share an outcome.
 //
 // The signature carries the FORMAT as well as the path because one verifier
@@ -132,13 +132,16 @@ var (
 // parses in-process and execs nothing.
 var verifiers = map[string]func(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error){}
 
-// VerifySanitized inspects the sanitized OUTPUT at path and reports which
+// verifySanitized inspects the sanitized OUTPUT at path and reports which
 // threat classes an independent implementation confirmed absent.
 //
 // It never reports a class it did not actually look for: the returned slice is
 // what feeds SanitizeResult.Verified, and that field exists precisely so that
 // "removed" and "confirmed absent" stay separate claims.
-func VerifySanitized(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error) {
+//
+// It is package-private for the same reason as sanitizeFile: its x parameter
+// is the package-private engineExec.
+func verifySanitized(ctx context.Context, x engineExec, format, path string) ([]ThreatClass, error) {
 	fn, ok := verifiers[NormalizeFormat(format)]
 	if !ok {
 		return nil, fmt.Errorf("%w: no verifier registered for format %q",
@@ -837,7 +840,7 @@ func verifyOOXML(ctx context.Context, x engineExec, format, path string) ([]Thre
 	// [Content_Types].xml, and contains no document at all -- and this
 	// verifier was satisfied by it, because it counted [Content_Types].xml and
 	// never asked whether anything else survived. Observed before the fix:
-	// SanitizeFile succeeded, reported five removed classes, and delivered a
+	// sanitizeFile succeeded, reported five removed classes, and delivered a
 	// package that opens as nothing.
 	//
 	// "I removed every threat" is not the claim this service makes. It says it
@@ -1023,7 +1026,7 @@ func joinClasses(cs []ThreatClass) string {
 // written expecting the image path to shell out to exiftool. Plan 60-03 chose
 // a structural strip instead, so an image verifier is needed and this is it.
 //
-// The rule that verification cannot be skipped (see SanitizeFile) is what
+// The rule that verification cannot be skipped (see sanitizeFile) is what
 // forced the issue rather than letting it slide: with no verifier registered,
 // every image sanitize failed closed. That is the correct failure, and it is
 // louder than a TODO.

@@ -18,10 +18,10 @@ import (
 // it, which is precisely how a timeout ends up measuring something other than
 // what runs in production.
 //
-// It calls SanitizeConverter.Convert, not SanitizeFile, for the same reason.
+// It calls SanitizeConverter.Convert, not sanitizeFile, for the same reason.
 // Convert is what the worker's Runner invokes, and it does one thing more:
 // it builds and writes the report. The first version of this harness called
-// SanitizeFile and reported report_bytes=0 on every row -- the number was
+// sanitizeFile and reported report_bytes=0 on every row -- the number was
 // visibly wrong, which is the only reason it was noticed.
 //
 // It does nothing unless OCTOCONV_PROBE_CORPUS names a directory, so a normal

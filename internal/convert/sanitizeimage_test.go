@@ -32,9 +32,9 @@ func TestSanitizeImageRemovesEXIFAndGPS(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "clean.jpg")
-	res, err := SanitizeFile(context.Background(), engineExec{}, "jpg", in, out)
+	res, err := sanitizeFile(context.Background(), engineExec{}, "jpg", in, out)
 	if err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	got, err := os.ReadFile(out)
 	if err != nil {
@@ -63,8 +63,8 @@ func TestSanitizeImageRemovesEXIFAndGPS(t *testing.T) {
 func TestSanitizeImageStaysDecodable(t *testing.T) {
 	in := filepath.Join(sanitizeCorpusDir, "exif_gps.jpg")
 	out := filepath.Join(t.TempDir(), "clean.jpg")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "jpg", in, out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "jpg", in, out); err != nil {
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 
 	before, err := os.Open(in)
@@ -104,9 +104,9 @@ func TestSanitizeImageStaysDecodable(t *testing.T) {
 func TestSanitizeImageIsLossless(t *testing.T) {
 	in := filepath.Join(sanitizeCorpusDir, "exif_gps.jpg")
 	out := filepath.Join(t.TempDir(), "clean.jpg")
-	res, err := SanitizeFile(context.Background(), engineExec{}, "jpg", in, out)
+	res, err := sanitizeFile(context.Background(), engineExec{}, "jpg", in, out)
 	if err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	if len(res.LostCapabilities) != 0 {
 		t.Fatalf("LostCapabilities = %v, want empty -- this test exists to back that claim", res.LostCapabilities)
@@ -152,8 +152,8 @@ func TestSanitizeImagePNGChunks(t *testing.T) {
 	}
 
 	out := filepath.Join(dir, "clean.png")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "png", in, out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "png", in, out); err != nil {
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	got, err := os.ReadFile(out)
 	if err != nil {
@@ -343,7 +343,7 @@ func TestVerifierDoesNotMistakePayloadForStructure(t *testing.T) {
 		t.Fatal("fixture does not contain the literal bytes the old scan tripped on")
 	}
 
-	if _, err := VerifySanitized(context.Background(), engineExec{}, "png", out); err != nil {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "png", out); err != nil {
 		t.Fatalf("a clean PNG was rejected because its IMAGE DATA contained a chunk-type "+
 			"sequence: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestSanitizeImageStripsSegmentsAfterTheScan(t *testing.T) {
 
 	// Half one: the verifier must REFUSE this file. If it does not, its
 	// "clean" on the sanitized output says nothing.
-	if _, err := VerifySanitized(context.Background(), engineExec{}, "jpg", in); err == nil {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "jpg", in); err == nil {
 		t.Error("the verifier called a file with post-scan EXIF clean -- it is blind in the " +
 			"same place the sanitizer was, so its verdict on the output is worthless")
 	}
@@ -494,7 +494,7 @@ func TestSanitizeImageStripsSegmentsAfterTheScan(t *testing.T) {
 		t.Error("the entropy-coded scan was altered -- stuffing or a restart marker was " +
 			"mistaken for a segment boundary")
 	}
-	if _, err := VerifySanitized(context.Background(), engineExec{}, "jpg", out); err != nil {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "jpg", out); err != nil {
 		t.Errorf("the sanitized output does not verify: %v", err)
 	}
 }
@@ -538,7 +538,7 @@ func TestVerifierRequiresAFullDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = VerifySanitized(context.Background(), engineExec{}, "jpg", out)
+	_, err = verifySanitized(context.Background(), engineExec{}, "jpg", out)
 	if err == nil {
 		t.Fatal("the verifier accepted an image that cannot be decoded; the job would " +
 			"finish successfully with an unusable output and a report claiming it verified")
@@ -548,14 +548,14 @@ func TestVerifierRequiresAFullDecode(t *testing.T) {
 	}
 
 	// And the whole pipeline must refuse it, not merely the verifier in
-	// isolation -- SanitizeFile deletes an unverified output.
+	// isolation -- sanitizeFile deletes an unverified output.
 	in := filepath.Join(dir, "in.jpg")
 	if err := os.WriteFile(in, broken, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	produced := filepath.Join(dir, "out.jpg")
-	if _, err := SanitizeFile(context.Background(), engineExec{}, "jpg", in, produced); err == nil {
-		t.Error("SanitizeFile succeeded on an image that cannot be decoded")
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "jpg", in, produced); err == nil {
+		t.Error("sanitizeFile succeeded on an image that cannot be decoded")
 	}
 	if _, err := os.Stat(produced); !os.IsNotExist(err) {
 		t.Errorf("the unverified output still exists (stat err = %v)", err)

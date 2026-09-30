@@ -129,11 +129,11 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// per job rather than a format-conditional one.
 	x := c.exec(outPath)
 
-	// PROBE-02: the page ceiling, enforced BEFORE SanitizeFile and therefore
+	// PROBE-02: the page ceiling, enforced BEFORE sanitizeFile and therefore
 	// before the first ghostscript pass. It lives HERE rather than inside
-	// SanitizeFile for one reason: the bound is CONFIGURATION, held by this
+	// sanitizeFile for one reason: the bound is CONFIGURATION, held by this
 	// converter (the registry entry cmd/probe-worker replaces with the
-	// env-resolved value), and SanitizeFile takes no configuration at all.
+	// env-resolved value), and sanitizeFile takes no configuration at all.
 	// Threading it through changed that function's signature at every one of
 	// its own test call sites -- x engineExec is one of them, added in the
 	// same plan for a different reason (CONF-01), not because of the ceiling.
@@ -141,7 +141,7 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 	// Every production path reaches the sanitizer through this method -- the
 	// worker resolves a Converter from the registry and calls Convert -- so
 	// "a caller could forget the gate" is not the same risk it is for
-	// verification, which SanitizeFile keeps inside itself precisely because
+	// verification, which sanitizeFile keeps inside itself precisely because
 	// its callers include this one.
 	if enforce, ok := sanitizePageCeilings[format]; ok {
 		if err := enforce(ctx, x, inPath, c.MaxPages); err != nil {
@@ -149,7 +149,7 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 		}
 	}
 
-	res, err := SanitizeFile(ctx, x, format, inPath, outPath)
+	res, err := sanitizeFile(ctx, x, format, inPath, outPath)
 	if err != nil {
 		return err
 	}

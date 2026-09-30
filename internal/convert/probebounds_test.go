@@ -289,7 +289,7 @@ func TestSanitizeConverterEnforcesPageCeilingBeforeGhostscript(t *testing.T) {
 	//
 	// The whole suite stayed green because the gate lives in
 	// SanitizeConverter.Convert while nearly every sanitize test calls
-	// SanitizeFile directly, which bypasses it. So this test is deliberately
+	// sanitizeFile directly, which bypasses it. So this test is deliberately
 	// driven through Convert, with a NONZERO ceiling, on the repository's own
 	// threat fixture. Those three properties together are the regression; drop
 	// any one and it stops covering anything.

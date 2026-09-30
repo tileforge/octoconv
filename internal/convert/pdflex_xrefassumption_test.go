@@ -32,7 +32,7 @@ func TestXrefAssumptionIsPinnedToTheGhostscriptFlag(t *testing.T) {
 			"pdfStreamPayloads resolves forward /Length references through the CLASSIC "+
 			"cross-reference table, and a 1.5+ writer emits a cross-reference STREAM that "+
 			"pdfXrefObjects cannot read. Every forward-referenced stream would go unresolved and "+
-			"VerifySanitized would fail closed on its own sanitizer's output.\n\nIf the level is "+
+			"verifySanitized would fail closed on its own sanitizer's output.\n\nIf the level is "+
 			"raised deliberately, pdfXrefObjects has to learn cross-reference streams FIRST.\n\n"+
 			"args = %s", flag, args)
 	}

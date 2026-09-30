@@ -193,7 +193,7 @@ func pdfwriteArgs(psPath, outPath string) []string {
 // sanitize is FOR -- would have failed terminally as malformed input instead
 // of being disarmed. The ceiling would have broken precisely the case it was
 // added alongside. Found in review (PR #15), not by a test: the gate lives in
-// SanitizeConverter.Convert while nearly every sanitize test calls SanitizeFile
+// SanitizeConverter.Convert while nearly every sanitize test calls sanitizeFile
 // directly, so the whole suite stayed green.
 //
 // It was also NOT CANCELLABLE. api.PageCountFile takes no context, so an

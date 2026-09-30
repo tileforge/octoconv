@@ -173,7 +173,7 @@ func TestUnrelatedDictionariesDoNotExhaustTheLookup(t *testing.T) {
 // to pdfStreamPayloads -- which verifies whole sanitizer OUTPUT inside a
 // cgroup, under a measured timeout, on a file the service produced itself. A
 // silently partial index there can leave a forward /Length unresolved, and
-// VerifySanitized would then reject a valid job to save memory the worker has.
+// verifySanitized would then reject a valid job to save memory the worker has.
 func TestXrefIndexCapIsTheCallersChoice(t *testing.T) {
 	raw := readFixtureOrSkip(t, "testdata/ocr/multipage_text.pdf")
 

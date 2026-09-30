@@ -499,7 +499,7 @@ func pdfReadIntAt(b []byte, off int) (int, int, bool) {
 // Comments count as whitespace between all three tokens: "/Length 7 % why\n0 R"
 // is valid, and a version of this that skipped only whitespace read the 7 as a
 // direct length -- so unless the stream happened to be seven bytes long, both
-// passes left it unresolved and VerifySanitized refused a valid PDF. Found by
+// passes left it unresolved and verifySanitized refused a valid PDF. Found by
 // review on PR #14, round 4. The main loop already treated comments as
 // whitespace; this helper is the second place that needed the same rule, which
 // is the shape this package keeps paying for.
@@ -613,7 +613,7 @@ func pdfXrefObjects(b []byte) map[int]int { return pdfXrefObjectsLimited(b, 0) }
 // was a defect of its own (PR #18 review): pdfStreamPayloads verifies whole
 // sanitizer OUTPUT inside a cgroup under a measured timeout, and a silently
 // partial index there can leave a forward /Length unresolved -- so
-// VerifySanitized would reject a valid job to save memory the worker has.
+// verifySanitized would reject a valid job to save memory the worker has.
 // cmd/api's inspect path runs on an 8 MiB attacker-supplied window and passes
 // a cap; the worker passes none.
 func pdfXrefObjectsLimited(b []byte, maxIndexed int) map[int]int {
@@ -771,7 +771,7 @@ func pdfTrailerPrev(b []byte, i int) (int, bool) {
 	// is a security hole -- pdfXrefObjects verifies that every offset carries
 	// its own object header, so a wrong chain yields FEWER objects, not wrong
 	// ones -- but "fewer" means forward /Length references go unresolved and
-	// VerifySanitized fails closed on a VALID file. That is this project's
+	// verifySanitized fails closed on a VALID file. That is this project's
 	// most expensive defect class, not its cheapest.
 	depth, arrayDepth := 0, 0
 	await := false
