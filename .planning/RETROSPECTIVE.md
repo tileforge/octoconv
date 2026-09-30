@@ -588,3 +588,73 @@ came back `reconciler_exhausted` in 49 seconds and looked like a defect; it was
   error. Recovering at the right level turns it into an honest failure with the
   stack in `job_events.detail`.
 - **Publish the measurement, never the rate.**
+
+## Milestone: v1.15 — Engine Confinement
+
+**Shipped:** 2026-10-01
+**Phases:** 4 (67–70; 67 shipped as PR #28 before the milestone opened) | **Plans:** 20 (68–70) | **Commits:** 136 on the phase branch since main
+**Code:** +3.5k Go non-test, +5.9k Go test
+
+### What Was Built
+
+Every engine class — image, pandoc, ocr, av, audio, html, probe, document — runs
+its engines through one `engineExec` path under a per-job Landlock ruleset whose
+grant set was measured, recorded in SANDBOX-PATHS.md and pinned by test and by a
+doc-vs-code cross-check. Workers refuse to start without Landlock and prove
+confinement with a content-judged real-engine preflight before Postgres. The
+eight-class live gate ends `ALL PASS (40 checks)` on images built from the final
+commit.
+
+### What Worked
+
+**Testing the premise before paying for the hardware.** Phase 70 was scoped
+around an amd64 node because veraPDF is published amd64-only. Measuring first
+(no ELF under /opt/verapdf, then a native-vs-emulated differential that must end
+`DIVERGENCES: 0`) removed the need for the node entirely; the differential is a
+repeatable script, not a one-off observation.
+
+**Letting measurement overturn a review.** WR-02 claimed veraPDF's `ro:/proc`
+leaked the worker's secrets through `/proc/<ppid>/environ`. A canary proven
+readable unconfined showed environ was already denied (ptrace), while
+other processes' cmdline/status did leak — the grant was narrowed for the
+measured leak, not the predicted one.
+
+**A live gate that catches drift nobody changed.** The eight-class gate went red
+on an html check no phase-70 code touched: Chromium 153 → 154 moved shared
+memory to `memfd_create`, silently defeating a negative control. Rebuilding the
+same tip of phase 69 reproduced it, which kept the fix scoped correctly.
+
+### What Was Inefficient
+
+- The plan-checker/planner loop and two executors were interrupted by transient
+  API/classifier failures; each needed a resume with explicit disk state.
+- GSD's worktree dispatch default fought the live-gate workflow (compose project
+  names tie to the repo root); sequential dispatch had to be set explicitly.
+- The verifier wrote a fingerprint without the phase's PLAN/SUMMARY files, which
+  read as `stale` and blocked `phase.complete` until regenerated.
+- Docker Hub stopped serving `minio/minio`/`minio/mc` mid-milestone; e2e ran on a
+  local chainguard retag and the durable fix is a follow-up.
+
+### Patterns Established
+
+- Negative controls must observe, not infer: "fails when denied" is defeated by
+  any fallback; "an outside observer sees the control and not production" is not.
+- A new grant kind (socket-only) instead of widening a shared access mask keeps
+  seven proven classes byte-identical.
+- Shared-/tmp guards compare for *exactly* 1, never `<= 1`: the queue library
+  maps `< 1` to NumCPU.
+
+### Key Lessons
+
+1. A pinned-architecture constraint is a hypothesis about one component; measure
+   which component before buying hardware for the whole image.
+2. Unpinned engine packages make live gates non-reproducible across days; record
+   the engine version in every gate transcript.
+3. Tests that build a confined converter and reach `Convert` run the shared-/tmp
+   sweep — give them a scratch directory, never the host's `/tmp`.
+
+### Cost Observations
+
+- Model mix: planner opus; researcher, checker, executors, verifiers sonnet.
+- Notable: live gates (image builds) dominated wall-clock; the 4-plan gap
+  closure cost about as much as the original 5 plans.
