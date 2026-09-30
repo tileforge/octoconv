@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
 milestone: v1.15
-milestone_name: Engine Confinement (67–70)
 status: Awaiting next milestone
 stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-09-30T22:03:18.680Z"
+last_updated: "2026-09-30T23:37:15.545Z"
 last_activity: 2026-10-01
 last_activity_desc: Milestone v1.15 completed and archived
-state_head: 88da0b378884041b6c2846ef71709a288f34fdb5
+state_head: 32e174b0a8f690f6ec6b899f67be4fd5c004360c
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 20
   completed_plans: 20
   percent: 75
+milestone_name: Engine Confinement (67–70)
 current_phase: 70
 ---
 
@@ -197,6 +197,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260919-b4n | `.gitignore` не знал бинарников `cmd/`: в корне лежали `api` (39 МБ) и `manage-clients` (14 МБ), один `git add -A` от попадания в историю навсегда. Строка `/tectonic-worker` показывала, что это уже случалось и было починено узко, для одного имени — класс сработал ещё дважды молча. Блок между маркерами покрывает все шестнадцать `cmd/`, а `internal/repohygiene` держит список равным `cmd/` в обе стороны: команда без строки — бинарник, который можно закоммитить; строка без команды — шаблон, который однажды скроет файл, взявший это имя. Третья проверка ловит имя без ведущего `/`, которое заглушило бы `cmd/api` и `internal/api` целиком (проверено `git ls-files`/`check-ignore`, а не рассуждением). Пакет из одних тест-файлов — что Go такой принимает, измерено до того, как на этом строить. Инверсия в три стороны. Бинарники не удалены, `.vscode/` не тронут: это файлы владельца | 2026-09-19 | 5979dfc | [260919-b4n-gitignore-cmd-binaries](./quick/260919-b4n-gitignore-cmd-binaries/) |
 | 260919-fast | Перепроверено утверждение «document-worker не сконфайнить на arm64-хосте» — верно по исходу, неверно по причине, и разница меняет план фазы. Замер пробником (`sandbox.Available()` + настоящий `Apply()` + чтение `/etc/hostname`) в четырёх средах: нативный arm64 конфайнит по-настоящему (DENIED), эмулируемый amd64 — `available=false`, и то же самое в РЕАЛЬНЫХ образах `octoconv-tectonic-worker` и `octoconv-document-worker`. Ядро одно, разница в эмуляции: `landlock_create_ruleset` из amd64-процесса не проходит. Причина не в архитектуре хоста, а в `platform: linux/amd64` у одного из двенадцати сервисов — ради `verapdf/cli`, который публикуется amd64-only. Следствие: семь из восьми классов, включая chromium, разрабатываются здесь; заблокирован один, и снять блокировку можно не трогая Landlock. Записано в todo. Происхождение неверной версии: её нет ни в `MEMORY.md`, ни в todo — она жила только в моём пересказе прошлой сессии и дважды процитирована мной как факт | 2026-09-19 | e08a627 | — |
 | 260920-s3p | Инструмент замера путей для песочницы и первый замеренный набор. `scripts/sandbox-paths-measure.sh` (две фазы) + `scripts/cmd/sandbox-probe`, который ставит кандидатный ruleset и `exec`'ает под ним движок. Ловушка, ради которой нужны обе фазы: трасса `openat` **не видит исполняемый файл движка** — его не открывают, его `execve`'ят, поэтому первый набор для libvips выглядел полным и все пять пар упали с `exec: permission denied` под настоящим ruleset. Результат по `image`: rw — каталог задачи; ro — `/usr/bin/vips`, `/lib`, `/usr/lib`, `/etc/ld.so.cache`, две записи `/proc/self`, `/proc/{filesystems,cpuinfo}`, две записи `/sys/devices/system/cpu`. Из `/etc` больше ничего, `/tmp` не нужен. Достаточность — пять пар форматов `rc=0` с непустым выходом; действенность — тот же движок с входом вне каталога задачи читает файл без ruleset и получает `Permission denied` под ним. Записано в `.planning/research/SANDBOX-PATHS.md`. Взято именно это, потому что лимит Codex исчерпан, а замер ничего не меняет в поведении | 2026-09-20 | PENDING | [260920-s3p-sandbox-path-measure](./quick/260920-s3p-sandbox-path-measure/) |
+| 261001-366 | Unexport sanitizeFile, verifySanitized and validatePDFA; guard exported API against engineExec (Codex P2, PR #30) | 2026-09-30 | 32e174b | [261001-366-unexport-sanitizefile-and-verifysanitize](./quick/261001-366-unexport-sanitizefile-and-verifysanitize/) |
 
 ### Pending Todos
 
