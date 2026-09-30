@@ -200,12 +200,24 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Pending Todos
 
-Ровно один, и он совпадает с тем, что лежит в `.planning/todos/pending/`:
+Ровно пять, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
   конструкцией — это рассуждение, а не замер (D-05, фаза 70). См.
   `.planning/todos/pending/2026-09-29-amd64-first-deployment-preflight-check.md`.
+- **html держит `/proc` целиком.** `cmdline` и `status` чужих процессов читаются, `environ` нет
+  (замерено в 70-08); сузить так же, как veraPDF, нельзя — chromium пере-`exec`ает себя. См.
+  `.planning/todos/pending/2026-09-30-proc-grant-other-process-entries.md`.
+- **soffice: более узкий грант на сокет вместо `rw:/tmp`** (`sock:` = MAKE_SOCK + REMOVE_FILE) —
+  не замерен и не построен; решение пользователя 2026-09-30 — оставить `rw:/tmp`. См.
+  `.planning/todos/pending/2026-09-30-soffice-socket-grant-remove-file-alternative.md`.
+- **Образы MinIO больше не отдаются с Docker Hub:** быстрая задача после милстоуна — перевести
+  compose и chart на `cgr.dev/chainguard/minio`. См.
+  `.planning/todos/pending/2026-09-30-minio-images-off-docker-hub.md`.
+- **Тест, строящий `ConfinedDocument`/`ConfinedChromium` и доходящий до `Convert`, чистит настоящий
+  `/tmp` хоста** (находка 70-07). См.
+  `.planning/todos/pending/2026-09-30-sweep-tests-must-not-touch-host-tmp.md`.
 
 Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
