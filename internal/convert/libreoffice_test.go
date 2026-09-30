@@ -265,6 +265,81 @@ func TestConvertRejectsPDFAOnNonPDFTarget(t *testing.T) {
 	// PATH, so it is deliberately not exercised in this hermetic test.
 }
 
+// TestConvertPDFARefusesWhitespaceJobDir pins review IN-02: the veraPDF
+// launcher word-splits JAVA_OPTS, so a job directory with whitespace in it
+// would tear -Djava.io.tmpdir=<dir> into separate JVM arguments. A conversion
+// that will run veraPDF (pdf_profile set) must therefore fail BEFORE any
+// engine runs, naming TMPDIR; one that will not run veraPDF is unaffected,
+// and so is a whitespace-free directory. A fake soffice on PATH records
+// whether the engine was reached.
+func TestConvertPDFARefusesWhitespaceJobDir(t *testing.T) {
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "soffice-ran")
+	fakeEngine(t, bin, "soffice", "echo ran > '"+marker+"'\nexit 0\n")
+	pathWith(t, bin)
+
+	run := func(t *testing.T, jobDirName string, opts map[string]any) error {
+		t.Helper()
+		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		jobDir := filepath.Join(t.TempDir(), jobDirName)
+		if err := os.MkdirAll(jobDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		inPath := filepath.Join(jobDir, "in.docx")
+		if err := os.WriteFile(inPath, []byte("stub"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return LibreOfficeConverter{}.Convert(context.Background(), inPath, filepath.Join(jobDir, "out.pdf"), opts)
+	}
+	ran := func() bool { _, err := os.Stat(marker); return err == nil }
+	pdfa := map[string]any{"pdf_profile": "pdf/a-2b"}
+
+	t.Run("pdf/a with whitespace in the job directory fails before any engine", func(t *testing.T) {
+		err := run(t, "job with space", pdfa)
+		if err == nil {
+			t.Fatal("Convert = nil, want a refusal")
+		}
+		if !strings.Contains(err.Error(), "TMPDIR") {
+			t.Errorf("error = %q, want it to name TMPDIR", err)
+		}
+		if ran() {
+			t.Error("soffice ran, want the refusal before any engine")
+		}
+	})
+
+	t.Run("pdf/a with a tab in the job directory fails before any engine", func(t *testing.T) {
+		err := run(t, "job\twith-tab", pdfa)
+		if err == nil || !strings.Contains(err.Error(), "TMPDIR") {
+			t.Errorf("error = %v, want a refusal naming TMPDIR", err)
+		}
+		if ran() {
+			t.Error("soffice ran, want the refusal before any engine")
+		}
+	})
+
+	t.Run("without pdf_profile no veraPDF runs, so whitespace is not rejected", func(t *testing.T) {
+		err := run(t, "job with space", nil)
+		if err != nil && strings.Contains(err.Error(), "TMPDIR") {
+			t.Errorf("error = %q, a job that never runs veraPDF must not be refused for whitespace", err)
+		}
+		if !ran() {
+			t.Error("soffice did not run, want the conversion to proceed")
+		}
+	})
+
+	t.Run("pdf/a without whitespace reaches the engine as before", func(t *testing.T) {
+		err := run(t, "job-no-space", pdfa)
+		if err != nil && strings.Contains(err.Error(), "TMPDIR") {
+			t.Errorf("error = %q, want no TMPDIR refusal", err)
+		}
+		if !ran() {
+			t.Error("soffice did not run, want the conversion to proceed")
+		}
+	})
+}
+
 // TestParseDocOptsStrictness proves the parser rejects the laxities
 // json.Decoder.Decode alone would accept (review WR-01): trailing data after
 // the first JSON value (a smuggled second object or plain garbage), a
