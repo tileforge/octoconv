@@ -171,7 +171,7 @@ Plans:
 
 **Gap closure — Wave 3** *(blocked on Wave 2)*
 
-- [ ] 70-09-PLAN.md — e2e через конфайненный воркер и живой гейт восьми классов `ALL PASS (40 checks)` на образах из фиксирующего коммита, сверка conf05, окно в WINDOWS.md закрыто; todo про `sock:`-альтернативу (MAKE_SOCK+REMOVE_FILE) и про образы MinIO
+- [x] 70-09-PLAN.md — e2e через конфайненный воркер и живой гейт восьми классов `ALL PASS (40 checks)` на образах из фиксирующего коммита, сверка conf05, окно в WINDOWS.md закрыто; todo про `sock:`-альтернативу (MAKE_SOCK+REMOVE_FILE) и про образы MinIO
 
 Phase detail for shipped milestones lives in the collapsed sections below and in
 `.planning/milestones/`.
