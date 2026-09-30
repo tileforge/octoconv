@@ -137,7 +137,7 @@ veraPDF (в `/opt/verapdf` jar-файлы и скрипт, ELF нет), сдел
 3. Воркер отказывается стартовать без Landlock — включая случай, когда причина
    в эмуляции, а не в ядре
 
-**Plans:** 5 plans
+**Plans:** 9 plans (5 + 4 gap closure)
 
 Plans:
 **Wave 1**
@@ -159,6 +159,19 @@ Plans:
 **Wave 5** *(blocked on Wave 4 completion)*
 
 - [x] 70-05-PLAN.md — класс целиком: e2e через конфайненный воркер (шим внутри ruleset), инверсии, сверка восьми классов, живой гейт восьми классов на пересобранных образах; CONF-07 и формулировка фазы (D-04), один todo про amd64-прод (D-05), закрытие todo
+
+**Gap closure — Wave 1** *(70-VERIFICATION.md: gaps 1 и 2; 70-06 и 70-07 не делят файлов)*
+
+- [ ] 70-06-PLAN.md — html: замер того, что Chromium, который ставит образ сегодня, делает с разделяемой памятью (`/dev/shm` запрещён, доступен, 64 МиБ), и негативный контроль large-document, который fallback не обходит (наблюдение inotify при ДОСТУПНОМ `/dev/shm`, только в тесте); `sandbox-liveproof.sh html` ALL PASS (9 checks); Chromium не закрепляется
+- [ ] 70-07-PLAN.md — WR-01: общий `sharedTmpGuard` отказывает при concurrency ниже 1 (document и html, тесты 0 и -1, отказ на собранных образах); IN-01 preflight от signal-контекста во всех воркерах; IN-02 TMPDIR с пробелом на пути PDF/A; IN-03 гигиена differential-скрипта
+
+**Gap closure — Wave 2** *(blocked on Wave 1)*
+
+- [ ] 70-08-PLAN.md — WR-02: сужение `ro:/proc` veraPDF по замеру (проверки N3 и V0L в драйвере, JVM через боевой launcher), либо записанный остаточный риск; честные комментарии про очистку окружения; html и tectonic — запись и один todo
+
+**Gap closure — Wave 3** *(blocked on Wave 2)*
+
+- [ ] 70-09-PLAN.md — e2e через конфайненный воркер и живой гейт восьми классов `ALL PASS (40 checks)` на образах из фиксирующего коммита, сверка conf05, окно в WINDOWS.md закрыто; todo про `sock:`-альтернативу (MAKE_SOCK+REMOVE_FILE) и про образы MinIO
 
 Phase detail for shipped milestones lives in the collapsed sections below and in
 `.planning/milestones/`.
