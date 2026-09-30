@@ -136,7 +136,7 @@ Landlock недоступен — замерено 2026-09-19 на реальн�
 Plans:
 **Wave 1**
 
-- [ ] 70-01-PLAN.md — tracer: нативный образ (на amd64 закреплена только стадия veraPDF), повторяемый дифференциальный прогон veraPDF natively vs emulated с реальным PDF/A из soffice, снятие pin в compose только при `DIVERGENCES: 0` (иначе pin остаётся и допустим только маршрут amd64-host), PDFA e2e на нативном образе; спайк по bind'у сокета soffice.bin; checkpoint: как soffice получает право на сокет (или стоп ради amd64-узла, D-03)
+- [x] 70-01-PLAN.md — tracer: нативный образ (на amd64 закреплена только стадия veraPDF), повторяемый дифференциальный прогон veraPDF natively vs emulated с реальным PDF/A из soffice, снятие pin в compose только при `DIVERGENCES: 0` (иначе pin остаётся и допустим только маршрут amd64-host), PDFA e2e на нативном образе; спайк по bind'у сокета soffice.bin; checkpoint: как soffice получает право на сокет (или стоп ради amd64-узла, D-03)
 
 **Wave 2** *(blocked on Wave 1 completion; runs only on `DIVERGENCES: 0`)*
 
