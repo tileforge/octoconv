@@ -11,6 +11,15 @@
 # confined by any converter -- so a class that lands later extends the
 # CONVERTER, never this script.
 #
+# The document class adds three checks of its own after the four generic
+# ones (70-04): emulated-amd64-refuses -- the SAME Dockerfile built for
+# linux/amd64 and run emulated must refuse to start before Postgres, naming
+# DOCUMENT_SANDBOX_DISABLED; and, because 70-02 measured the read-write /tmp
+# route, concurrency-guard and sweeps-shared-tmp. The emulation check needs an
+# arm64 docker server: on an amd64 one nothing is emulated, so it prints
+# "NOT RUN:", is never counted as a pass, and the final line says how many
+# checks did not run.
+#
 # A UNIQUE tag per run, not :latest: a shared tag can be overwritten by a
 # concurrent build, and the object under test has to be the one this run
 # actually produced, not whatever happened to be tagged last.
@@ -52,6 +61,7 @@ class_row() {
 RUN_ID=$(date +%s)-$$
 FAILED=0
 CHECK_COUNT=0
+NOT_RUN_COUNT=0
 
 pass() { CHECK_COUNT=$((CHECK_COUNT + 1)); echo "PASS: $1"; }
 fail() {
@@ -60,6 +70,13 @@ fail() {
   local what=$1; shift
   echo "FAIL: $what"
   for line in "$@"; do echo "  $line"; done
+}
+
+# not_run records a check that could not run here. It is NOT a pass and does
+# not bump CHECK_COUNT; the final line reports how many did not run.
+not_run() {
+  NOT_RUN_COUNT=$((NOT_RUN_COUNT + 1))
+  echo "NOT RUN: $1"
 }
 
 # check_confined_startup runs class's freshly built tag with an unreachable
@@ -569,6 +586,152 @@ check_html_large_document_live() {
   fi
 }
 
+# check_document_concurrency_guard (D-09, CONF-06): 70-02 measured that
+# soffice needs the shared /tmp read-write, so a confined document worker
+# configured above one task at a time must refuse to start, naming
+# DOCUMENT_WORKER_CONCURRENCY=2 in the guard's own words and the shared /tmp,
+# before the preflight or Postgres. The worker's earlier "📄 <var>=<n>" log
+# line also names the variable, so the match is on the guard's wording.
+check_document_concurrency_guard() {
+  local tag=$1
+  shift
+  local extra=("$@")
+
+  local result out status
+  result=$(run_gated document concurrencyguard "" "$tag" -e "DOCUMENT_WORKER_CONCURRENCY=2" ${extra[@]+"${extra[@]}"})
+  status=${result%%$'\x1e'*}
+  out=${result#*$'\x1e'}
+
+  local ok=1 reasons=()
+  printf '%s\n' "$out" | grep -qF "DOCUMENT_WORKER_CONCURRENCY=2 with the sandbox enabled" \
+    || { ok=0; reasons+=("refusal does not name DOCUMENT_WORKER_CONCURRENCY=2 as the sandbox guard's error"); }
+  printf '%s\n' "$out" | grep -qF "shared /tmp" \
+    || { ok=0; reasons+=("refusal does not name the shared /tmp"); }
+  printf '%s\n' "$out" | grep -qF "🔒" \
+    && { ok=0; reasons+=("output contains 🔒 -- should have refused before confinement was claimed or the preflight ran"); }
+  printf '%s\n' "$out" | grep -qF "postgres:" \
+    && { ok=0; reasons+=("reached the postgres connect attempt -- should have refused at startup"); }
+  [ "$status" -ne 0 ] \
+    || { ok=0; reasons+=("exit status 0, want non-zero"); }
+
+  if [ "$ok" = 1 ]; then
+    pass "document concurrency-guard"
+    printf '%s\n' "$out" | grep -F "with the sandbox enabled" | head -1 | sed 's/^/  /'
+  else
+    fail "document concurrency-guard" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
+# check_document_sweeps_shared_tmp (CONF-06): entries planted in the
+# container's /tmp before startup -- a plain file and a soffice-pipe-shaped
+# name -- must be gone once the confined worker's preflight has proven the
+# sandbox. The preflight converts through the production converter, which
+# sweeps /tmp before every task.
+check_document_sweeps_shared_tmp() {
+  local tag=$1
+  shift
+  local extra=("$@")
+  local cname="octoconv-liveproof-document-sweep-${RUN_ID}"
+
+  ( sleep 300; docker kill "$cname" >/dev/null 2>&1 || true ) </dev/null >/dev/null 2>&1 &
+  local watchdog=$!
+
+  set +e
+  local out status
+  out=$(docker run --name "$cname" --rm ${extra[@]+"${extra[@]}"} \
+    -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate \
+    --entrypoint sh "$tag" -c '
+    touch /tmp/octoconv-liveproof-leftover
+    touch /tmp/OSL_PIPE_SingleOfficeIPC_liveproof
+    /usr/local/bin/document-worker
+    echo "--- after ---"
+    ls -A /tmp
+  ' 2>&1)
+  status=$?
+  set -e
+  kill "$watchdog" >/dev/null 2>&1 || true
+  wait "$watchdog" 2>/dev/null || true
+
+  local ok=1 reasons=()
+  printf '%s\n' "$out" | grep -qF "🔒 document sandbox proven:" \
+    || { ok=0; reasons+=("missing '🔒 document sandbox proven:' -- the preflight never cleared, so the sweep proves nothing here"); }
+  printf '%s\n' "$out" | grep -qF -- "--- after ---" \
+    || { ok=0; reasons+=("missing the '--- after ---' separator -- the listing never ran"); }
+  local after
+  after=$(printf '%s\n' "$out" | awk '/^--- after ---$/{f=1; next} f')
+  if printf '%s\n' "$after" | grep -qF "octoconv-liveproof-leftover"; then
+    ok=0
+    reasons+=("the planted plain-file leftover survived the sweep")
+  fi
+  if printf '%s\n' "$after" | grep -qF "OSL_PIPE_SingleOfficeIPC_liveproof"; then
+    ok=0
+    reasons+=("the planted soffice-pipe-shaped leftover survived the sweep")
+  fi
+
+  if [ "$ok" = 1 ]; then
+    pass "document sweeps-shared-tmp"
+  else
+    fail "document sweeps-shared-tmp" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
+# check_document_emulated_amd64_refuses (D-07, D-08): the SAME Dockerfile,
+# built for linux/amd64 and run emulated, cannot establish Landlock, so the
+# worker must refuse before Postgres with sandbox.ResolveHelper's own message
+# naming DOCUMENT_SANDBOX_DISABLED. No seccomp profile and no escape hatch:
+# whatever refuses here is the emulation itself. On an amd64 docker server
+# nothing is emulated, so the check is NOT RUN -- never a pass.
+check_document_emulated_amd64_refuses() {
+  local dockerfile=$1 envvar=$2
+  shift 2
+  local extra=("$@")
+
+  local server_arch
+  server_arch=$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)
+  [ -n "$server_arch" ] || die "cannot read the docker server's architecture"
+  case "$server_arch" in
+    amd64|x86_64)
+      not_run "document emulated-amd64-refuses (the docker server is amd64: nothing is emulated here)"
+      return
+      ;;
+  esac
+
+  local tag2="octoconv-document:sandbox-liveproof-amd64-${RUN_ID}"
+  local build_log; build_log=$(mktemp)
+  if ! docker build --platform linux/amd64 -f "$dockerfile" -t "$tag2" . >"$build_log" 2>&1; then
+    cat "$build_log"
+    rm -f "$build_log"
+    die "amd64 build failed for class document (${dockerfile})"
+  fi
+  rm -f "$build_log"
+  echo "emulated image id: $(docker image inspect "$tag2" --format '{{.Id}}') ($(docker image inspect "$tag2" --format '{{.Architecture}}'))"
+
+  local result out status
+  result=$(run_gated document emulated "" "$tag2" --platform linux/amd64 ${extra[@]+"${extra[@]}"})
+  status=${result%%$'\x1e'*}
+  out=${result#*$'\x1e'}
+  docker rmi -f "$tag2" >/dev/null 2>&1 || true
+
+  local ok=1 reasons=()
+  printf '%s\n' "$out" | grep -qF "document sandbox: landlock is unavailable" \
+    || { ok=0; reasons+=("missing 'document sandbox: landlock is unavailable' in the refusal"); }
+  printf '%s\n' "$out" | grep -qF "Set ${envvar}=true" \
+    || { ok=0; reasons+=("refusal does not name Set ${envvar}=true as the remedy"); }
+  printf '%s\n' "$out" | grep -qF "🔒" \
+    && { ok=0; reasons+=("output contains 🔒 -- an emulated image must never claim confinement"); }
+  printf '%s\n' "$out" | grep -qF "postgres:" \
+    && { ok=0; reasons+=("reached the postgres connect attempt -- should have refused at startup"); }
+  [ "$status" -ne 0 ] \
+    || { ok=0; reasons+=("exit status 0, want non-zero"); }
+
+  if [ "$ok" = 1 ]; then
+    pass "document emulated-amd64-refuses"
+    printf '%s\n' "$out" | grep -F "landlock is unavailable" | head -1 | sed 's/^/  /'
+  else
+    fail "document emulated-amd64-refuses" "${reasons[@]}" "--- full output ---" "$out"
+  fi
+}
+
 for class in "$@"; do
   read -r dockerfile bin envvar expects_proven extra_raw < <(class_row "$class")
   tag="octoconv-${class}:sandbox-liveproof-${RUN_ID}"
@@ -625,12 +788,26 @@ for class in "$@"; do
     rm -rf "$bindir"
   fi
 
+  if [ "$class" = "document" ]; then
+    check_document_emulated_amd64_refuses "$dockerfile" "$envvar" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_document_concurrency_guard "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+    check_document_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  fi
+
   docker rmi -f "$tag" >/dev/null 2>&1 || true
 done
 
 if [ "$FAILED" -eq 0 ]; then
-  echo "ALL PASS (${CHECK_COUNT} checks)"
+  if [ "$NOT_RUN_COUNT" -eq 0 ]; then
+    echo "ALL PASS (${CHECK_COUNT} checks)"
+  else
+    echo "ALL PASS (${CHECK_COUNT} checks, ${NOT_RUN_COUNT} not run)"
+  fi
 else
-  echo "FAILURES PRESENT (${CHECK_COUNT} checks run)"
+  if [ "$NOT_RUN_COUNT" -eq 0 ]; then
+    echo "FAILURES PRESENT (${CHECK_COUNT} checks run)"
+  else
+    echo "FAILURES PRESENT (${CHECK_COUNT} checks run, ${NOT_RUN_COUNT} not run)"
+  fi
   exit 1
 fi

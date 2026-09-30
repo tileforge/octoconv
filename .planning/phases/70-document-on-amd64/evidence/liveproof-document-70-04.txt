@@ -1,0 +1,29 @@
+# 70-04 Task 1: scripts/sandbox-liveproof.sh document on arm64 docker server (OrbStack). Route: read-write /tmp (70-02).
+# Then the same script with a docker shim reporting an amd64 server, to exercise the NOT RUN branch (final line below the separator).
+
+== document: building octoconv-document:sandbox-liveproof-1790783367-77306 from Dockerfile.document-worker ==
+commit: 31c230fef1ecd6a659435613a735f4ba7063539b
+tracked dirt: 4 file(s)
+image id: sha256:8bfc7b4ba416d57a46f1528134bacc14aa4560de3cfdaf41803f8d77acae3650
+PASS: document confined-startup
+  2026/09/30 15:49:52 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  2026/09/30 15:49:56 🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it
+  2026/09/30 15:49:56 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: document refuses-without-landlock
+  2026/09/30 15:49:56 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document escape-hatch
+  2026/09/30 15:49:57 ⚠️  DOCUMENT_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: document preflight-catches-restrict-self
+  2026/09/30 15:49:57 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: soffice failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+emulated image id: sha256:83e3ba54e1b9f995ab617fb43dcd984cf93b2fa55ac323b1f6afe2349e67f83f (amd64)
+PASS: document emulated-amd64-refuses
+  2026/09/30 15:52:56 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document concurrency-guard
+  2026/09/30 15:52:58 document sandbox: DOCUMENT_WORKER_CONCURRENCY=2 with the sandbox enabled: this class's ruleset grants the container's shared /tmp read-write, so concurrent tasks could read each other's files there; set DOCUMENT_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+PASS: document sweeps-shared-tmp
+ALL PASS (7 checks)
+exit=0
+
+----- amd64-server shim run (native arm64 daemon, 'docker version' reports amd64) -----
+NOT RUN: document emulated-amd64-refuses (the docker server is amd64: nothing is emulated here)
+ALL PASS (6 checks, 1 not run)
