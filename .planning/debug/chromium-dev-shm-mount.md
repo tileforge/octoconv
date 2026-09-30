@@ -1,12 +1,12 @@
 ---
-status: diagnosed
+status: resolved
 trigger: |
   UAT gap G-69-3 (goal: find_root_cause_only). truth: "The chromium-worker
   chart carries no /dev/shm mount that the phase-69 Landlock ruleset denies
   anyway, and its comments agree with SANDBOX-PATHS.md". User decision (UAT
   test 3, WR-01 in 69-REVIEW.md): drop the mount.
 created: 2026-09-27T01:04:16Z
-updated: 2026-09-27T01:35:00Z
+updated: 2026-10-01T00:00:00Z
 ---
 
 ## Current Focus

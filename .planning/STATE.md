@@ -260,6 +260,63 @@ Carried from v1.12:
 
 ## Deferred Items
 
+Acknowledged and deferred at the v1.15 milestone close on 2026-10-01: 46 items.
+The five todos are the live work from phase 70 (amd64 first deployment, MinIO
+off Docker Hub, html /proc, the narrower soffice socket grant, sweep tests and
+the host /tmp); the rest are the same dormant seeds, historical quick tasks and
+phase-58 deferred items carried since earlier closes, plus one diagnosed debug
+session (csp-bypass-before-head, fixed in 69-04).
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| debug_sessions | csp-bypass-before-head | diagnosed | 2026-10-01 | v1.15 |
+| quick_tasks | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260728-0ay-modernize-frontend-spa-to-api-v1-10-with | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-9de-close-remaining-pr-2-review-findings-enf | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-asr-fix-three-frontend-bugs-found-in-pr-2-re | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260803-q7u-fix-test-integrity-defects-found-by-code | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260803-tm4-strict-boolean-env-parsing-plus-openapi- | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260804-44i-round-retry-after-up-to-whole-seconds-fo | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260804-47r-fix-flaky-testenforceminfreedisk-exact-b | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260809-ul4-4-codex-pr-7-role-driven-download-url-op | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-r2a-round2-eocd-bound | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-r2i-round2-inspect-exit-paths | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-sle-fix-six-codex-findings-in-internal-inspe | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-slf-fix-four-codex-findings-in-internal-api | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r3s-exhaustion-sink | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r4b-bounded-record-count | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r5p-parser-divergence | missing | 2026-10-01 | v1.15 |
+| quick_tasks | 260812-r6c-criterion-collapse | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260816-r8m-intake-and-placement | missing | 2026-10-01 | v1.15 |
+| seeds | SEED-004 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-005 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-006 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-007 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-010 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-013 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-014 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-015 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-016 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-017 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-018 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-019 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-021 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-022 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-023 | dormant | 2026-10-01 | v1.15 |
+| todos | 2026-09-29-amd64-first-deployment-preflight-check.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-minio-images-off-docker-hub.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-proc-grant-other-process-entries.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-soffice-socket-grant-remove-file-alternative.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-sweep-tests-must-not-touch-host-tmp.md | (presence-only) | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Plan 58-03 - ** helm lint deploy/chart/octoconv / helm template ... with NO -f fails regardless of Phase 58**, pre-existing and out of sco | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Codex PR#9 round 22 (2026-08-17) - **A bounded EPUB external-reference scan** ( container.go , closed in the honest direction by reporting | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Codex PR#9 round 25 (2026-08-18) — recorded, not fixed - **Does read_failed make a report's coverage incomplete?** Today it does not. buil | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 09/deferred-items.md: internal/queue/queue_test.go gofmt formatting - **Found during:** 09-02 Task 2 verification ( gofmt -l . run across the whole repo after l | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 03/deferred-items.md: Deferred Items — Phase 03 Plan 01 - Pre-existing gofmt violation in internal/queue/queue_test.go line ~50 ( {n: 6, base: schedule[5]}, //  | acknowledged | 2026-10-01 | v1.15 |
+
+
 Acknowledged and deferred at the v1.13 milestone close on 2026-09-02: 47 items.
 
 These accumulated across thirteen milestones. The seeds are dormant by
