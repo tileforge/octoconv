@@ -49,7 +49,11 @@ cleanup() {
 		docker image rm -f "$NATIVE_IMG" "$AMD64_IMG" >/dev/null 2>&1 || true
 	fi
 	if [ "${KEEP_CORPUS:-0}" != 1 ]; then
-		rm -rf "$CORPUS"
+		# The corpus is written by containers that run as another uid, so the
+		# host user may be unable to remove some of it. That must not turn a
+		# finished run into a failing EXIT trap: say what is left and where.
+		rm -rf "$CORPUS" 2>/dev/null ||
+			log "could not remove container-owned files under $CORPUS; remove it by hand"
 	else
 		log "corpus kept at $CORPUS"
 	fi
@@ -167,7 +171,7 @@ run_vera amd64 "$AMD64_IMG" --platform linux/amd64
 
 # ---- non-vacuity -----------------------------------------------------------
 nonvacuity() { # <label>
-	local label="$1" f r c p rules ncomp=0 nnon=0 ncorrupt=0
+	local label="$1" f r c p rest rules ncomp=0 nnon=0 ncorrupt=0
 	for f in $FILES; do
 		r="$(extract "$OUT/$label/$f.xml")"
 		c="${r%%|*}"
