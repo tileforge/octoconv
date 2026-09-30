@@ -162,7 +162,7 @@ Plans:
 
 **Gap closure — Wave 1** *(70-VERIFICATION.md: gaps 1 и 2; 70-06 и 70-07 не делят файлов)*
 
-- [ ] 70-06-PLAN.md — html: замер того, что Chromium, который ставит образ сегодня, делает с разделяемой памятью (`/dev/shm` запрещён, доступен, 64 МиБ), и негативный контроль large-document, который fallback не обходит (наблюдение inotify при ДОСТУПНОМ `/dev/shm`, только в тесте); `sandbox-liveproof.sh html` ALL PASS (9 checks); Chromium не закрепляется
+- [x] 70-06-PLAN.md — html: замер того, что Chromium, который ставит образ сегодня, делает с разделяемой памятью (`/dev/shm` запрещён, доступен, 64 МиБ), и негативный контроль large-document, который fallback не обходит (наблюдение inotify при ДОСТУПНОМ `/dev/shm`, только в тесте); `sandbox-liveproof.sh html` ALL PASS (9 checks); Chromium не закрепляется
 - [ ] 70-07-PLAN.md — WR-01: общий `sharedTmpGuard` отказывает при concurrency ниже 1 (document и html, тесты 0 и -1, отказ на собранных образах); IN-01 preflight от signal-контекста во всех воркерах; IN-02 TMPDIR с пробелом на пути PDF/A; IN-03 гигиена differential-скрипта
 
 **Gap closure — Wave 2** *(blocked on Wave 1)*
