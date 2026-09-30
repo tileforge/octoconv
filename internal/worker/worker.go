@@ -234,7 +234,19 @@ func timeoutIsTerminal(err error) bool {
 // Every non-timeout error is classified identically to the image path by
 // delegating (via timeoutIsTerminal) to isTerminal — no document-specific
 // duplication of the no-converter/minio.NoSuchKey/LibreOffice-signature checks.
+//
+// Phase 70: soffice and veraPDF run confined, so a sandbox that could not be
+// established (or a shared /tmp that could not be swept) is a node fault and
+// is checked FIRST -- before the timeout rule and before any signature. This
+// class needs the check stated explicitly: ValidatePDFA words a veraPDF run
+// that produced no stdout, which is what a helper that never exec'd the
+// engine looks like, as "pdf/a validation error", and that is itself one of
+// terminalVeraPDFSignatures. Without this line a sandbox fault would fail the
+// job terminally instead of being retried on another node.
 func isDocumentTerminal(err error) bool {
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	return timeoutIsTerminal(err)
 }
 

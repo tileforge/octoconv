@@ -531,3 +531,53 @@ func TestEngineExecStreamRefusesAnEnv(t *testing.T) {
 		t.Fatal("expected an error: stream must refuse a per-exec environment rather than silently drop it")
 	}
 }
+
+// forJobRWSock renders the socket-only grant kind between the writable and
+// the read-only tokens (rw:, then sock:, then ro:), and forJobRW -- what every
+// other class calls -- renders no sock: token at all, so their token streams
+// are unchanged by the socket right's existence.
+func TestEngineExecSocketTokensFollowRWAndPrecedeRO(t *testing.T) {
+	helper, calls := fakeSandboxHelper(t)
+	dir := t.TempDir()
+	fakeEngine(t, dir, "fakeengine", "true\n")
+	pathWith(t, dir)
+
+	s := &engineSandbox{Helper: helper, Confine: true}
+	jobDir := t.TempDir()
+	withSock := s.forJobRWSock(jobDir, []string{"/extra-rw"}, []string{"/sockdir"}, []string{"/lib"}, []string{"fakeengine"})
+	plain := s.forJobRW(jobDir, []string{"/extra-rw"}, []string{"/lib"}, []string{"fakeengine"})
+
+	for _, x := range []engineExec{withSock, plain} {
+		if _, err := x.run(context.Background(), "fakeengine"); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	}
+	invocations := calls()
+	if len(invocations) != 2 {
+		t.Fatalf("helper invoked %d time(s), want 2", len(invocations))
+	}
+
+	prefixOf := func(tok string) string { return tok[:strings.Index(tok, ":")+1] }
+	socket := invocations[0][1:indexOf(invocations[0], "--")]
+	var kinds []string
+	for _, tok := range socket {
+		if k := prefixOf(tok); len(kinds) == 0 || kinds[len(kinds)-1] != k {
+			kinds = append(kinds, k)
+		}
+	}
+	if strings.Join(kinds, " ") != "rw: sock: ro:" {
+		t.Errorf("token kinds in order = %v, want rw: then sock: then ro: (tokens %v)", kinds, socket)
+	}
+	if want := "sock:/sockdir"; indexOf(socket, want) < 0 {
+		t.Errorf("tokens %v lack %s", socket, want)
+	}
+	if want := "rw:/extra-rw"; indexOf(socket, want) != indexOf(socket, "rw:"+jobDir)+1 {
+		t.Errorf("tokens %v: the extra writable entry must directly follow the job directory", socket)
+	}
+
+	for _, tok := range invocations[1][1:indexOf(invocations[1], "--")] {
+		if strings.HasPrefix(tok, "sock:") {
+			t.Errorf("forJobRW rendered a socket token %q: every other class's token stream must stay unchanged", tok)
+		}
+	}
+}

@@ -35,6 +35,14 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		// wrapped text carries probe's own terminal shape too.
 		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w",
 			convert.ErrSanitizeMalformedInput, convert.ErrEngineSandboxUnavailable)},
+		// "pdf/a validation error" is itself a terminal veraPDF signature
+		// (terminalVeraPDFSignatures), and ValidatePDFA words a veraPDF run
+		// that produced no stdout -- a helper that could not establish the
+		// ruleset included -- exactly that way. Wrapping the sentinel inside
+		// it is the non-vacuous case: without the sentinel check first, a
+		// sandbox fault would fail the job terminally.
+		{"document", isDocumentTerminal, fmt.Errorf("libreoffice: verapdf: pdf/a validation error: %w",
+			convert.ErrEngineSandboxUnavailable)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,6 +71,7 @@ func TestEngineSandboxControlShapesAreTerminal(t *testing.T) {
 		{"audio", isAudioTerminal, fmt.Errorf("audio: ffmpeg: %w", plain)},
 		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", plain)},
 		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w", convert.ErrSanitizeMalformedInput, plain)},
+		{"document", isDocumentTerminal, fmt.Errorf("libreoffice: verapdf: pdf/a validation error: %w", plain)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
