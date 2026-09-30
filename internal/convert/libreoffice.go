@@ -272,11 +272,11 @@ var gtsPDFAMarker = []byte("/GTS_PDFA")
 // present -- a regressed LibreOffice that silently returns a plain PDF under
 // a PDF/A request must never be reported as a successful archival export
 // (the cheap pre-filter, D-05) -- and, once that marker passes, real ISO
-// 19005-2b conformance is verified via ValidatePDFA (phase 23, D-05/D-06):
+// 19005-2b conformance is verified via validatePDFA (phase 23, D-05/D-06):
 // the marker alone was always a non-authoritative sanity check (Pitfall 8),
 // never a substitute for full veraPDF validation. ctx carries the
 // DOCUMENT_ENGINE_TIMEOUT budget the caller (Convert) already holds;
-// ValidatePDFA derives its own bounded sub-context from it (D-04). vx is the
+// validatePDFA derives its own bounded sub-context from it (D-04). vx is the
 // job's veraPDF engineExec (its own, narrower ruleset -- D-10); a zero
 // engineExec runs veraPDF directly.
 func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetFormat string, wantPDFA bool) error {
@@ -302,7 +302,7 @@ func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetForm
 		// signatures ("pdf/a non-compliant", "pdf/a validation error") are
 		// coupled into terminalVeraPDFSignatures (internal/worker/worker.go)
 		// in this SAME commit.
-		if err := ValidatePDFA(ctx, vx, path); err != nil {
+		if err := validatePDFA(ctx, vx, path); err != nil {
 			return fmt.Errorf("libreoffice: %w", err)
 		}
 		return nil

@@ -119,7 +119,7 @@ var terminalAudioSignatures = []string{
 // terminalVeraPDFSignatures are lowercased error-message substrings that
 // classify a real ISO 19005-2b PDF/A validation failure as deterministically
 // unrecoverable (D-06, phase 23): "pdf/a non-compliant" is emitted by
-// ValidatePDFA (internal/convert/verapdf.go) when veraPDF's machine-readable
+// validatePDFA (internal/convert/verapdf.go) when veraPDF's machine-readable
 // report says isCompliant=false; "pdf/a validation error" is emitted for ANY
 // veraPDF invocation/parse failure (unparseable report, batchSummary failure
 // counters, process start failure) -- fail-closed per D-06: an unverifiable
@@ -238,7 +238,7 @@ func timeoutIsTerminal(err error) bool {
 // Phase 70: soffice and veraPDF run confined, so a sandbox that could not be
 // established (or a shared /tmp that could not be swept) is a node fault and
 // is checked FIRST -- before the timeout rule and before any signature. This
-// class needs the check stated explicitly: ValidatePDFA words a veraPDF run
+// class needs the check stated explicitly: validatePDFA words a veraPDF run
 // that produced no stdout, which is what a helper that never exec'd the
 // engine looks like, as "pdf/a validation error", and that is itself one of
 // terminalVeraPDFSignatures. Without this line a sandbox fault would fail the

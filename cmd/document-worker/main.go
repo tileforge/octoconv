@@ -86,7 +86,7 @@ func main() {
 	// ONLY here (env-only-in-main, mirroring engineTimeout's threading into
 	// NewHandler below) and injected into internal/convert via a setter --
 	// internal/convert never calls os.Getenv directly. Moved up from below the
-	// handler: the preflight runs ValidatePDFA, so the timeout must be set
+	// handler: the preflight runs validatePDFA, so the timeout must be set
 	// before it, and before srv.Start(mux), the point at which asynq's worker
 	// goroutines begin concurrently reading verapdfTimeout (this single write
 	// happens-before every concurrent read, no mutex needed).

@@ -113,7 +113,7 @@ var verapdfReadOnly = []string{
 	"/dev/random",
 }
 
-// verapdfEngines is the one binary ValidatePDFA hands to its ruleset.
+// verapdfEngines is the one binary validatePDFA hands to its ruleset.
 var verapdfEngines = []string{
 	"verapdf",
 }
@@ -371,7 +371,7 @@ func documentPreflightSufficiency(ctx context.Context, c LibreOfficeConverter, w
 	}
 
 	// (b) soffice and veraPDF together: the full production PDF/A path (soffice,
-	// the /GTS_PDFA pre-filter, ValidatePDFA under the veraPDF ruleset).
+	// the /GTS_PDFA pre-filter, validatePDFA under the veraPDF ruleset).
 	outPDF := filepath.Join(w.jobDir, "out.pdf")
 	if err := c.Convert(ctx, inside, outPDF, map[string]any{"pdf_profile": pdfProfileA2b}); err != nil {
 		return fmt.Errorf("the engines cannot convert under the sandbox: %w", err)

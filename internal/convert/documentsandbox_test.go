@@ -449,7 +449,7 @@ func TestDocumentEnginesGetAJobScopedTmpAndNoSecrets(t *testing.T) {
 	}
 }
 
-// A helper exit of 78 means the engine never ran. ValidatePDFA words a run
+// A helper exit of 78 means the engine never ran. validatePDFA words a run
 // with no stdout as a pdf/a validation error, but the sentinel stays reachable
 // inside it so isDocumentTerminal can tell a node fault from a bad document.
 func TestValidatePDFAKeepsTheSandboxSentinel(t *testing.T) {
@@ -460,9 +460,9 @@ func TestValidatePDFAKeepsTheSandboxSentinel(t *testing.T) {
 	s := &engineSandbox{Helper: failingSandboxHelper(t, 78), Confine: true}
 	x := s.forJobRW(t.TempDir(), verapdfReadWrite, verapdfReadOnly, verapdfEngines)
 
-	err := ValidatePDFA(context.Background(), x, "/x.pdf")
+	err := validatePDFA(context.Background(), x, "/x.pdf")
 	if err == nil {
-		t.Fatal("ValidatePDFA succeeded though the helper exited 78")
+		t.Fatal("validatePDFA succeeded though the helper exited 78")
 	}
 	if !errors.Is(err, ErrEngineSandboxUnavailable) {
 		t.Errorf("err = %v, want it to wrap ErrEngineSandboxUnavailable", err)
@@ -473,7 +473,7 @@ func TestValidatePDFAKeepsTheSandboxSentinel(t *testing.T) {
 
 	// Control: any other helper exit keeps the text but not the sentinel.
 	s2 := &engineSandbox{Helper: failingSandboxHelper(t, 1), Confine: true}
-	err = ValidatePDFA(context.Background(), s2.forJobRW(t.TempDir(), verapdfReadWrite, verapdfReadOnly, verapdfEngines), "/x.pdf")
+	err = validatePDFA(context.Background(), s2.forJobRW(t.TempDir(), verapdfReadWrite, verapdfReadOnly, verapdfEngines), "/x.pdf")
 	if err == nil || errors.Is(err, ErrEngineSandboxUnavailable) {
 		t.Errorf("exit 1: err = %v, want a plain validation error without the sentinel", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// verapdfTimeout bounds a single ValidatePDFA invocation (D-04). It is set
+// verapdfTimeout bounds a single validatePDFA invocation (D-04). It is set
 // once at process startup via SetVeraPDFTimeout from
 // cmd/document-worker/main.go -- mirroring NewHandler's engineTimeout
 // threading, this package never reads VERAPDF_TIMEOUT (or any env var)
@@ -18,7 +18,7 @@ import (
 var verapdfTimeout time.Duration
 
 // SetVeraPDFTimeout stores the VERAPDF_TIMEOUT budget for every subsequent
-// ValidatePDFA call. Call exactly once at process startup, BEFORE the asynq
+// validatePDFA call. Call exactly once at process startup, BEFORE the asynq
 // server starts consuming tasks (single write before any concurrent reader
 // -- no mutex needed, mirroring how engineTimeout is threaded into
 // NewHandler).
@@ -128,7 +128,7 @@ func parseVeraPDFReport(raw []byte) (compliant bool, summary string, err error) 
 	return false, summary, nil
 }
 
-// validateReport turns a parsed veraPDF verdict into ValidatePDFA's
+// validateReport turns a parsed veraPDF verdict into validatePDFA's
 // fail-closed terminal error (D-06): "pdf/a non-compliant" for a clean
 // non-compliant report, "pdf/a validation error" for anything the validator
 // itself could not produce a trustworthy verdict for. Both substrings are
@@ -145,7 +145,7 @@ func validateReport(raw []byte) error {
 	return nil
 }
 
-// verapdfArgs is the one veraPDF argv: production (ValidatePDFA) and the
+// verapdfArgs is the one veraPDF argv: production (validatePDFA) and the
 // document preflight both build it here, so a preflight that passes has
 // exercised the exact invocation a task makes (the chromiumPrintArgs
 // precedent).
@@ -153,7 +153,7 @@ func verapdfArgs(path string) []string {
 	return []string{"-f", "2b", "--format", "xml", path}
 }
 
-// ValidatePDFA runs real ISO 19005-2b validation (D-05: only ever called
+// validatePDFA runs real ISO 19005-2b validation (D-05: only ever called
 // AFTER the cheap /GTS_PDFA marker pre-filter in validateDocumentOutput has
 // passed) against the produced PDF at path. veraPDF runs under the class's
 // OWN ruleset (phase 70, D-10) through x, the job's veraPDF engineExec --
@@ -180,7 +180,7 @@ func verapdfArgs(path string) []string {
 // wrapped INSIDE the "pdf/a validation error" text (the %w below keeps it
 // reachable); isDocumentTerminal checks that sentinel before it looks at the
 // text, because "pdf/a validation error" is itself a terminal signature.
-func ValidatePDFA(ctx context.Context, x engineExec, path string) error {
+func validatePDFA(ctx context.Context, x engineExec, path string) error {
 	vctx, cancel := context.WithTimeout(ctx, effectiveVeraPDFTimeout())
 	defer cancel()
 

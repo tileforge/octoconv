@@ -36,7 +36,7 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w",
 			convert.ErrSanitizeMalformedInput, convert.ErrEngineSandboxUnavailable)},
 		// "pdf/a validation error" is itself a terminal veraPDF signature
-		// (terminalVeraPDFSignatures), and ValidatePDFA words a veraPDF run
+		// (terminalVeraPDFSignatures), and validatePDFA words a veraPDF run
 		// that produced no stdout -- a helper that could not establish the
 		// ruleset included -- exactly that way. Wrapping the sentinel inside
 		// it is the non-vacuous case: without the sentinel check first, a

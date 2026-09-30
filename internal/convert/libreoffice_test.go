@@ -387,13 +387,13 @@ func TestParseDocOptsStrictness(t *testing.T) {
 // AND the real veraPDF validation it now gates into.
 //
 // Two of the three legs stay fully offline (they fail/pass at the marker
-// pre-filter BEFORE ValidatePDFA is ever reached, so no veraPDF binary is
+// pre-filter BEFORE validatePDFA is ever reached, so no veraPDF binary is
 // needed): marker-absent+wantPDFA=true fails with an "OutputIntent"-substring
 // error, and marker-absent+wantPDFA=false returns nil (both marker and
 // veraPDF skipped).
 //
 // The third leg (marker-PRESENT+wantPDFA=true) now flows PAST the marker
-// gate into a real ValidatePDFA call, since the synthetic "/GTS_PDFA1" bytes
+// gate into a real validatePDFA call, since the synthetic "/GTS_PDFA1" bytes
 // below are not a genuine PDF/A document -- it can no longer assert
 // err==nil. This leg is gated behind exec.LookPath("verapdf") (mirroring the
 // soffice-skip precedent elsewhere in this file): when veraPDF IS present,
@@ -432,14 +432,14 @@ func TestValidatePDFAOutputIntent(t *testing.T) {
 	}
 
 	if _, err := exec.LookPath("verapdf"); err != nil {
-		t.Skip("verapdf not on PATH; run inside the document-worker image to exercise the real ValidatePDFA leg")
+		t.Skip("verapdf not on PATH; run inside the document-worker image to exercise the real validatePDFA leg")
 	}
 	markerErr := validateDocumentOutput(context.Background(), engineExec{}, withMarker, "pdf", true)
 	if markerErr == nil {
 		t.Fatal("validateDocumentOutput(marker present, wantPDFA=true) = nil, want a real veraPDF rejection (synthetic marker bytes are not a genuine PDF/A document)")
 	}
 	if strings.Contains(markerErr.Error(), "OutputIntent") {
-		t.Errorf("validateDocumentOutput(marker present, wantPDFA=true) error = %v, still failed at the OutputIntent pre-filter -- expected control to pass the marker gate into ValidatePDFA", markerErr)
+		t.Errorf("validateDocumentOutput(marker present, wantPDFA=true) error = %v, still failed at the OutputIntent pre-filter -- expected control to pass the marker gate into validatePDFA", markerErr)
 	}
 	if !strings.Contains(markerErr.Error(), "pdf/a non-compliant") && !strings.Contains(markerErr.Error(), "pdf/a validation error") {
 		t.Errorf("validateDocumentOutput(marker present, wantPDFA=true) error = %v, want a terminal veraPDF signature (\"pdf/a non-compliant\" or \"pdf/a validation error\")", markerErr)
