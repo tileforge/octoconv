@@ -35,8 +35,16 @@
 #   S4 pptx->odp        content.xml carries the fixture text
 #   S5 docx->pdf PDF/A  starts %PDF- and carries /GTS_PDFA
 #   V1 veraPDF on S5's output: isCompliant="true"
-#   V0 java -XshowSettings:system: identical Operating System Metrics with and
-#      without the ruleset
+#   F1 a docx asking for Calibri, Cambria and Arial exports to a PDF that embeds
+#      Carlito, Caladea and LiberationSans: fontconfig's metric aliases
+#      (/etc/fonts) were read. A denial there changes layout, not text, so the
+#      fixture text alone cannot see it
+#   V2 veraPDF is not slower under the ruleset than without it (at most 3x plus
+#      2s): a denied /dev/random makes the JVM's SecureRandom seed through its
+#      threaded fallback, about 8s slower, and still returns the right verdict
+#   V0 the JVM sees the same container: java -XshowSettings:system Operating
+#      System Metrics and the ergonomic -XX:+PrintFlagsFinal values (heap sizes,
+#      processor and GC thread counts) identical with and without the ruleset
 #   N1 soffice on a file outside every grant: no output carries the fixture text;
 #      prints SOFFICE-DENIAL: loud|silent (the exit status is reported, never judged)
 #   N2 veraPDF on a PDF/A outside every grant: no isCompliant verdict
@@ -53,7 +61,9 @@
 # Other env: KEEP_IMAGE=1 keeps the image; KEEP_WORK=1 keeps the scratch
 # directory (per-check stdout/stderr, job directories); MEASURE_TMP=<dir> hosts the scratch
 # directories (default /tmp -- it must be a path the docker host can mount);
-# MEASURE_MEMORY / MEASURE_CPUS (default 1g / 2.0, the worker's compose limits).
+# MEASURE_MEMORY / MEASURE_CPUS (default 1g / 2.0, the worker's compose limits);
+# RUN_TIMEOUT seconds per engine run (default 60: a denied config read can make
+# soffice wait forever instead of failing, and a hang is a failed check).
 #
 # Exit 2: the run could not establish what it measures (missing block, emulated
 # image). Saves nothing into the repo. macOS/BSD-safe; diagnostics on stderr.
@@ -203,8 +213,8 @@ run_container() {
 	local label=$1
 	rm -f "$JOB/.rc" "$JOB/.residue"
 	docker run --rm "${LIMITS[@]}" -v "$JOB:/tmp/job" -v "$OUT:/outside" \
-		${RUN_ENV[@]+"${RUN_ENV[@]}"} --entrypoint sh "$IMG" -c '
-			"$@" >/tmp/job/.stdout 2>/tmp/job/.stderr
+		-e RUN_TIMEOUT="${RUN_TIMEOUT:-60}" ${RUN_ENV[@]+"${RUN_ENV[@]}"} --entrypoint sh "$IMG" -c '
+			timeout -k 3 "$RUN_TIMEOUT" "$@" >/tmp/job/.stdout 2>/tmp/job/.stderr
 			echo $? >/tmp/job/.rc
 			ls -A /tmp | grep -vx job >/tmp/job/.residue || true
 		' sh "${RUN_CMD[@]}" >/dev/null 2>&1 || true
@@ -283,7 +293,7 @@ soffice_check() {
 }
 
 LAST_ELAPSED=0
-TIME_S1=0; TIME_S5=0; TIME_V1=0; TIME_N1=0; TIME_N2=0
+TIME_S1=0; TIME_S5=0; TIME_V1=0; TIME_V2=0; TIME_N1=0; TIME_N2=0
 
 soffice_check S1 "$DOCX" in.docx "odt:writer8" in.odt content.xml "$DOCX_TEXT"
 TIME_S1="$LAST_ELAPSED"
@@ -306,6 +316,36 @@ else
 fi
 TIME_S5="$(elapsed "$t0" "$t1")"
 
+# F1: metric-compatible font substitution (fontconfig's aliases under /etc/fonts).
+FONTS_DOCX="$WORK/fonts.docx"
+FDIR="$WORK/fonts-src"
+mkdir -p "$FDIR/_rels" "$FDIR/word"
+cat >"$FDIR/[Content_Types].xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>
+XML
+cat >"$FDIR/_rels/.rels" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>
+XML
+cat >"$FDIR/word/document.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/></w:rPr><w:t>octoconv font calibri</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:ascii="Cambria" w:hAnsi="Cambria"/></w:rPr><w:t>octoconv font cambria</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr><w:t>octoconv font arial</w:t></w:r></w:p></w:body></w:document>
+XML
+(cd "$FDIR" && zip -X -q "$FONTS_DOCX" '[Content_Types].xml' _rels/.rels word/document.xml)
+new_job "$FONTS_DOCX" in.docx
+soffice_cmd /tmp/job/in.docx "pdf:writer_pdf_Export"
+t0=$(now); run_container F1; t1=$(now)
+missing=""
+for font in Carlito Caladea LiberationSans; do
+	grep -aq "$font" "$JOB/in.pdf" 2>/dev/null || missing="$missing $font"
+done
+if [ -f "$JOB/in.pdf" ] && [ -z "$missing" ]; then
+	pass F1 "$(elapsed "$t0" "$t1")" "in.pdf embeds Carlito, Caladea and LiberationSans for Calibri, Cambria and Arial (exit $RC, not judged)"
+else
+	failed F1 "$(elapsed "$t0" "$t1")" "metric-compatible substitution missing:${missing:- (no PDF)} (exit $RC): $(head -c 200 "$WORK/F1.stderr" | tr '\n' ' ')"
+fi
+
 # V1: veraPDF on S5's output, inside the job directory.
 if [ -f "$S5_PDF" ]; then
 	new_job "$S5_PDF" in.pdf
@@ -317,24 +357,43 @@ if [ -f "$S5_PDF" ]; then
 		failed V1 "$(elapsed "$t0" "$t1")" "no isCompliant=\"true\" (exit $RC): $(head -c 400 "$WORK/V1.stdout" | tr '\n' ' ')"
 	fi
 	TIME_V1="$(elapsed "$t0" "$t1")"
+
+	# V2: the same validation without any ruleset, timed against V1.
+	new_job "$S5_PDF" in.pdf
+	RUN_ENV=(-e "JAVA_OPTS=-Djava.io.tmpdir=/tmp/job/tmp -XX:-UsePerfData")
+	RUN_CMD=("$VERAPDF_BIN" -f 2b --format xml /tmp/job/in.pdf)
+	t0=$(now); run_container V2-unconfined; t1=$(now)
+	TIME_V2="$(elapsed "$t0" "$t1")"
+	if awk -v a="$TIME_V1" -v b="$TIME_V2" 'BEGIN { exit !(a <= 3 * b + 2) }'; then
+		pass V2 "$TIME_V1" "veraPDF under the ruleset ${TIME_V1}s vs ${TIME_V2}s without (limit 3x + 2s)"
+	else
+		failed V2 "$TIME_V1" "veraPDF under the ruleset took ${TIME_V1}s vs ${TIME_V2}s without: a denied read is being retried or timed out"
+	fi
 else
 	failed V1 0 "S5 produced no PDF/A to validate"
 fi
 
-# V0: the JVM sees the same container metrics with and without the ruleset.
-metrics() { awk '/Operating System Metrics/ { f = 1; print; next } f && /^[^ \t]/ { f = 0 } f'; }
+# V0: the JVM sees the same container with and without the ruleset: its cgroup
+# metrics and the ergonomic values it derives from them and from the CPU count.
+jvm_view() {
+	awk '/Operating System Metrics/ { f = 1; print; next } f && /^[^ \t]/ { f = 0 } f'
+}
+jvm_flags() {
+	grep -E '^ *[a-z_]+ +(MaxHeapSize|InitialHeapSize|MaxRAM|ActiveProcessorCount|ParallelGCThreads|ConcGCThreads|CICompilerCount|UseContainerSupport|UseTransparentHugePages|UseG1GC|UseSerialGC) ' | sed 's/  */ /g' || true
+}
+metrics() { tee "$WORK/jvm.raw" | jvm_view; jvm_flags <"$WORK/jvm.raw"; }
 new_job "$DOCX" in.docx
-BASE_METRICS="$(docker run --rm "${LIMITS[@]}" --entrypoint java "$IMG" -XshowSettings:system -version 2>&1 | metrics)"
+BASE_METRICS="$(docker run --rm "${LIMITS[@]}" --entrypoint java "$IMG" -XshowSettings:system -XX:+PrintFlagsFinal -version 2>&1 | metrics)"
 RUN_ENV=()
 RUN_CMD=(/usr/local/bin/document-worker __sandbox-exec)
 while IFS= read -r t; do RUN_CMD+=("$t"); done < <(helper_tokens verapdf)
-RUN_CMD+=(-- /usr/bin/java -XshowSettings:system -version)
+RUN_CMD+=(-- /usr/bin/java -XshowSettings:system -XX:+PrintFlagsFinal -version)
 t0=$(now); run_container V0; t1=$(now)
 SANDBOX_METRICS="$(cat "$WORK/V0.stderr" "$WORK/V0.stdout" | metrics)"
 if [ -n "$BASE_METRICS" ] && [ "$BASE_METRICS" = "$SANDBOX_METRICS" ]; then
-	pass V0 "$(elapsed "$t0" "$t1")" "java -XshowSettings:system Operating System Metrics identical ($(printf '%s' "$BASE_METRICS" | grep -c ':') lines)"
+	pass V0 "$(elapsed "$t0" "$t1")" "JVM cgroup metrics and ergonomic flags identical ($(printf '%s\n' "$BASE_METRICS" | grep -c .) lines)"
 else
-	failed V0 "$(elapsed "$t0" "$t1")" "JVM metrics differ under the ruleset -- without: [$(printf '%s' "$BASE_METRICS" | tr '\n' ';')] with: [$(printf '%s' "$SANDBOX_METRICS" | tr '\n' ';')]"
+	failed V0 "$(elapsed "$t0" "$t1")" "JVM view differs under the ruleset -- without: [$(printf '%s' "$BASE_METRICS" | tr '\n' ';')] with: [$(printf '%s' "$SANDBOX_METRICS" | tr '\n' ';')]"
 fi
 
 # N1: soffice pointed at an identical file outside every grant.

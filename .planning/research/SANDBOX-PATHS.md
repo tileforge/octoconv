@@ -923,67 +923,222 @@ unzip
 file
 <!-- /conf05:probe:engines -->
 
-## document (soffice + veraPDF) — замерено 2026-09-30 (фаза 70)
+## document (soffice + veraPDF) — замерено и доказано 2026-09-30 (фаза 70, план 02)
 
-Два движка одного образа, два ОТДЕЛЬНЫХ набора (D-10): veraPDF не должен получать
-того, что нужно soffice. Замер — `scripts/document-sandbox-measure.sh`: образ
-собирается из этого дерева, оба движка запускаются через боевой формат
-(`document-worker __sandbox-exec rw:... sock:... ro:... -- <движок>`), а каждая
-проверка судит по СОДЕРЖИМОМУ (текст фикстуры внутри `content.xml` /
+Два движка одного образа и два ОТДЕЛЬНЫХ набора (D-10): veraPDF не получает того,
+что нужно soffice, и наоборот. Инструмент — `scripts/document-sandbox-measure.sh`.
+Образ собирается из этого дерева (нативный, arm64 на arm64-сервере; эмулируемый
+образ скрипт отвергает), оба движка запускаются через БОЕВОЙ формат
+(`/usr/local/bin/document-worker __sandbox-exec rw:... sock:... ro:... -- <движок>`),
+а каждая проверка судит по СОДЕРЖИМОМУ: текст фикстуры внутри `content.xml` /
 `word/document.xml`, `%PDF-` и `/GTS_PDFA` для PDF/A, атрибут `isCompliant`
-veraPDF), никогда по коду выхода.
+veraPDF. Код выхода не судится нигде. Набор берётся отсюда же, из блоков conf05 ниже
+(через `scripts/conf05-crosscheck.sh --doc soffice verapdf`), так что документ и
+прогон не могут разойтись. Транскрипты всех прогонов —
+`.planning/phases/70-document-on-amd64/evidence/document-sandbox-measure.txt`.
 
-### Замер 1: кандидаты (первый набор, до сужения)
+### Источники кандидатов
 
-Кандидаты — из `scripts/sandbox-paths-measure.sh trace` для docx→odt, docx→PDF/A
-(`TMPDIR=/job/tmp`) и `verapdf -f 2b --format xml` (`JAVA_OPTS=-Djava.io.tmpdir=… -XX:-UsePerfData`),
-плюс список `execve` из спайка 70-01 (исполняемые файлы в трассе `openat` не
-видны, Ловушки §1-2). `/usr/bin` пока целым каталогом; сужение — следующий замер.
+`scripts/sandbox-paths-measure.sh trace` (docx→odt; docx→PDF/A с суффиксом из
+`internal/convert/opts.go`, `TMPDIR=/job/tmp`; `verapdf -f 2b --format xml` с
+`JAVA_OPTS=-Djava.io.tmpdir=… -XX:-UsePerfData`), результаты трассы с
+резолвом символьных ссылок (Ловушки §7), плюс списки `execve` из спайка 70-01
+(evidence/soffice-ipc-spike.txt): исполняемые файлы в `openat`-трассе не видны
+(Ловушки §1-2). Отсюда первый, широкий набор (`/usr/bin` каталогом, `/etc/fonts`,
+`/proc` и т. д.), который затем СУЖАЛСЯ удалением: каждая запись убиралась по одной,
+и оставалась, только если без неё проверка по содержимому (или по времени, или по
+виду JVM на контейнер) падала.
 
-**Право на сокет и маршрут /tmp.** `soffice.bin` создаёт AF_UNIX-сокет
-`/tmp/OSL_PIPE_<uid>_SingleOfficeIPC_<hash>` (каталог выбирается только из
-`/tmp`, затем `/var/tmp`; `TMPDIR`, `-env:OSL_SOCKET_PATH`, `--nolockcheck` его не
-двигают — evidence/soffice-ipc-spike.txt). Маршрут `scoped-socket` (решение
-пользователя в 70-01): отдельный вид гранта `sock:<каталог>` = только
-`LANDLOCK_ACCESS_FS_MAKE_SOCK`, без чтения, записи, удаления.
+### Право на сокет и маршрут /tmp (D-09, маршрут `scoped-socket`)
 
-**Гипотеза «только сокет» проверена первой и НЕ подтвердилась.** С
-`sock:/tmp` и без `rw:/tmp` bind проходит (сокет создан), но `soffice.bin` тут же
-делает `unlinkat` этого сокета и получает `EACCES` — для unlink нужно
-`LANDLOCK_ACCESS_FS_REMOVE_FILE` на `/tmp`, а его сокет-грант не несёт. Первый
-процесс выходит с кодом 81 (протокол перезапуска), второй не может занять тот же
-путь (`ECONNREFUSED` на осиротевший сокет) и выходит с 1: **все пять конверсий
-(S1-S5) падают**, а в `/tmp` остаётся осиротевший `OSL_PIPE_*`. Ровно вторая
-ветка D-09: `/tmp` выдаётся на чтение-запись **и** остаётся `sock:/tmp`
-(`MAKE_SOCK` в `accessReadWrite` не входит и входить не должен). Тот же набор с
-`rw:/tmp` — ALL PASS, а `/tmp` после конверсии чист (сокет удаляется).
-Следствие для 70-03/70-04: правила фазы 69 для разделяемого writable-`/tmp` —
-concurrency 1, guard, sweep.
+`soffice.bin` создаёт AF_UNIX-сокет `/tmp/OSL_PIPE_<uid>_SingleOfficeIPC_<hash>`
+(каталог выбирается только из `/tmp`, затем `/var/tmp`; `TMPDIR`,
+`-env:OSL_SOCKET_PATH`, `--nolockcheck` и запуск `soffice.bin` напрямую его не
+двигают — evidence/soffice-ipc-spike.txt M1-M6; с закрытыми `/tmp` и `/var/tmp`
+soffice выходит с «no valid pipe path found»). Поэтому `TMPDIR` (который уводит
+остальные scratch-записи soffice в каталог задачи) на сокет не влияет.
+
+Решение пользователя в 70-01: отдельный вид гранта `sock:<каталог>` =
+`LANDLOCK_ACCESS_FS_MAKE_SOCK` и ничего больше (`Paths.Socket`, константа
+`accessMakeSocket`; `accessReadWrite` и `accessReadOnly` не тронуты, тест
+`TestNothingMayCreateSymlinksOrSpecialFiles` проходит без изменений).
+
+**Гипотеза «только сокет» проверена ПЕРВОЙ и не подтвердилась.** С `sock:/tmp` без
+`rw:/tmp` bind проходит (сокет создан), первый процесс `soffice.bin` подключается
+к нему и тут же делает `unlinkat` — `EACCES`: для unlink нужен
+`LANDLOCK_ACCESS_FS_REMOVE_FILE` на `/tmp`, а сокет-грант его не несёт. Он выходит
+с кодом 81 (протокол перезапуска), второй не может занять тот же путь
+(`ECONNREFUSED` на осиротевший сокет) и выходит с 1. **Все конверсии падают**
+(S1-S5, F1, V1, N2 в `final-B2-socket-only`), а в `/tmp` остаётся осиротевший
+`OSL_PIPE_*`. Тот же набор с `rw:/tmp` — `ALL PASS`, `/tmp` после конверсии чист.
+
+**/tmp route: read-write.** `/tmp` выдаётся на чтение-запись И остаётся `sock:/tmp`
+(MAKE_SOCK не входит в `accessReadWrite`: без `sock:` bind падает с EACCES
+даже при `rw:/tmp` — `B-soffice-sock-drop-tmp`; без `rw:` — прогон выше).
+C1 доказывает, что оба гранта несут нагрузку: S1 без обоих не даёт текста.
+Это вторая ветка D-09: для класса действуют правила фазы 69 для разделяемого
+writable-`/tmp` (concurrency 1, guard, sweep) — в 70-03 (код) и 70-04
+(конфигурация). `DOCUMENT_WORKER_CONCURRENCY` остаётся 1, не 2.
+
+**pipe residue: absent** при выбранном маршруте (soffice сам удаляет сокет при
+выходе, `TMP-RESIDUE` всех прогонов read-write — none); при «только сокет» —
+present. Имя сокета зависит от `/etc/passwd`: с ним `OSL_PIPE_65534_SingleOfficeIPC_<hash>`,
+без него (итоговый набор его не выдаёт) `OSL_PIPE_SingleOfficeIPC_<hash>` — sweep в
+70-03 обязан искать `OSL_PIPE_*`, а не имя с uid. Остаток в `/tmp` образа —
+`hsperfdata_root` — не артефакт прогона: его оставляет постустановка JRE при сборке
+(root-владелец, `nobody` туда не пишет); `TMP-RESIDUE` считается относительно него.
+
+### soffice — итоговый набор
+
+Read-write: `/tmp` (каталог задачи — неявно; `/dev/null` НЕ нужен). Socket: `/tmp`.
+
+| Путь | Причина (что падает без него) |
+|---|---|
+| `/usr/lib` | сам движок и все библиотеки (`/lib` — символьная ссылка на `usr/lib`, тот же грант, второй раз не нужен) |
+| `/usr/bin/dash` | `#!/bin/sh` обёртки `soffice` |
+| `/usr/bin/basename`, `/usr/bin/dirname`, `/usr/bin/ls`, `/usr/bin/sed` | обёртка (строки 46-52) разрешает свой каталог через `dirname`, `basename`, `ls -l \| sed`; без любого из них `oosplash: not found`, exit 127 |
+| `/etc/libreoffice` | без реестра конфигурации `soffice` зависает (`uno::RuntimeException`, ни вывода, ни выхода): убит по таймауту 60 с, exit 124 |
+| `/usr/share/fonts` | без шрифтов все конверсии падают |
+| `/dev/urandom` | экспорт PDF (идентификатор файла): S5, F1, V1, N2 падают, S1-S4 (ODF/OOXML) проходят |
+
+`/usr/bin/soffice` (сам движок, символьная ссылка на `/usr/lib/libreoffice/program/soffice`)
+добавляется в ro: отдельно, как остальные движки в `forJobRW`. **`/usr/bin` целиком не
+выдаётся.**
+
+### soffice — таблица удаления (от широкого набора, по одной записи)
+
+Прогоны `soffice-*` в evidence. Формат: убранная запись → какие проверки упали.
+
+| Убрано | Результат | Решение |
+|---|---|---|
+| `/usr/bin` каталогом → семь литеральных бинарников | ALL PASS (только с `ls`: первый набор без `ls` — exit 127) | каталог не выдан |
+| `/usr/bin/dash`, `basename`, `dirname`, `ls`, `sed` | S1-S5, F1, V1, N2 падают | оставлены |
+| `/usr/bin/grep` | ALL PASS | убран: `grep -q` в строке 145 обёртки только при отладочных `--record/--backtrace/--strace/--valgrind` |
+| `/usr/bin/uname` | ALL PASS | убран: `case "$(uname -s)"` даёт эффект только на OpenBSD/NetBSD/AIX, на Linux — пустая ветка |
+| `/usr/bin/gpg`, `gpgconf`, `gpgsm`, `javaldx` | не выдавались, ALL PASS | не нужны (гипотеза A2 подтверждена) |
+| `/lib` | ALL PASS | убран: дубль `/usr/lib` |
+| `/usr/lib` (при выданном `/lib`) | ALL PASS | тот же каталог; в итоговом наборе `/usr/lib` убран → все падают |
+| `/etc/libreoffice` | S1-S5, F1, V1, N2 падают (таймаут) | оставлен |
+| `/etc/fonts`, `/usr/share/fontconfig`, `/var/cache/fontconfig`, `/usr/local/share/fonts` | ALL PASS, F1 тоже | убраны: подстановка Calibri→Carlito, Cambria→Caladea, Arial→LiberationSans сохраняется (механизм не выяснялся; F1 доказывает результат) |
+| `/usr/share/fonts` | S1-S5, F1, V1, N2 падают | оставлен |
+| `/etc/ld.so.cache`, `/etc/localtime`, `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/group` | ALL PASS | убраны (`/etc/passwd`: см. имя сокета выше) |
+| `/proc` целиком | ALL PASS | убран |
+| `/proc` → `/proc/cpuinfo`, `/proc/filesystems` (записи из трассы) | ALL PASS | не нужны и они |
+| `/sys/devices/system/cpu` | ALL PASS | убран |
+| `/dev/urandom` | S5, F1, V1, N2 падают | оставлен |
+| read-write `/dev/null` | ALL PASS | убран |
+| `sock:/tmp` (при `rw:/tmp`) | S1-S5, F1, V1, N2 падают | оставлен |
+| `rw:/tmp` (при `sock:/tmp`) | S1-S5, F1, V1, N2 падают, `OSL_PIPE_*` остаётся | оставлен (маршрут read-write) |
+
+Второй проход, УЖЕ от итогового набора (`B-*` в evidence): убрать любую оставленную
+запись — падает по содержимому (или по времени, или по виду JVM); это то, что держит
+каждую оставленную запись. Итоговый набор целиком (одновременное удаление всех
+«убранных») — `final-A2`, `ALL PASS`.
+
+### veraPDF — итоговый набор
+
+Read-write: `/dev/null` и ТОЛЬКО он (каталог задачи — неявно, `/tmp` не выдаётся: с
+`JAVA_OPTS=-Djava.io.tmpdir=<job>/tmp -XX:-UsePerfData` `TMP-RESIDUE` после проверки —
+none, `hsperfdata_*` нет; `-XX:-UsePerfData` нужен, потому что `hsperfdata` `java.io.tmpdir`
+не двигает).
+
+| Путь | Причина (что падает без него) |
+|---|---|
+| `/usr/lib` | JRE (`/usr/lib/jvm/java-17-openjdk-<arch>`) и библиотеки; V1 и V0 падают. Целиком, а не `/usr/lib/jvm` + `/usr/lib/<multiarch>`: имя multiarch-каталога зависит от архитектуры образа, а grant-список в коде — константа; сужение до архитектурных путей — вне этого плана (остаточная ширина: veraPDF видит и `/usr/lib/libreoffice`) |
+| `/usr/bin/dash` | `#!/bin/sh` скрипта запуска `/opt/verapdf/verapdf` |
+| `/usr/bin/dirname`, `/usr/bin/which` | скрипт запуска (`dirname "$0"`, `which java`); `which` — цепочка `/etc/alternatives/which` → `which.debianutils`, грант ложится на конечный файл |
+| `/opt/verapdf` | jar и скрипт запуска; V1 падает |
+| `/etc/java-17-openjdk` | резолвленная цель `conf/` JVM (Ловушки §7); V1 падает без вывода |
+| `/proc`, `/sys/fs/cgroup` | V0: без них JVM не видит контейнер (см. ниже) |
+| `/dev/random` | V2: без него V1 всё равно верный, но JVM засевает SecureRandom резервным потоковым генератором — 9.9 с вместо 1.6 с |
+
+`/opt/verapdf/verapdf` (сам движок) добавляется в ro: отдельно, как движок в `forJobRW`.
+`/usr/bin/java` НЕ выдаётся: симлинк `/etc/alternatives/java` резолвится в
+`/usr/lib/jvm/...`, уже покрытый `/usr/lib`.
+
+### veraPDF — таблица удаления (от широкого набора, по одной записи)
+
+| Убрано | Результат | Решение |
+|---|---|---|
+| `/usr/bin` каталогом → `dash`, `dirname`, `uname`, `which`, `java` | ALL PASS | каталог не выдан |
+| `/usr/bin/dash`, `dirname`, `which` | V1 падает | оставлены |
+| `/usr/bin/uname`, `/usr/bin/java` | ALL PASS | убраны (`java` — внутри `/usr/lib`; `uname` не нужен) |
+| `/lib` | ALL PASS | убран: дубль `/usr/lib` |
+| `/opt/verapdf`, `/etc/java-17-openjdk` | V1 падает | оставлены |
+| `/etc/host.conf`, `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/ld.so.cache`, `/etc/localtime` | ALL PASS, время V1 прежнее | убраны |
+| `/proc` целиком | V0 падает: JVM видит хост, а не контейнер | оставлен |
+| `/proc` → `cpuinfo`, `meminfo`, `stat`, `net/if_inet6`, `sys/vm/overcommit_memory` (записи трассы без `/proc/self/*`: их путь зависит от pid, статически его не выдать) | V0 падает | оставлен `/proc` целиком |
+| `/sys/fs/cgroup` | V0 падает | оставлен |
+| `/sys/devices/system/cpu`, `/sys/kernel/mm/transparent_hugepage` | V0 (метрики И эргономические значения) совпадает | убраны |
+| `/dev/urandom` | ALL PASS | убран |
+| `/dev/random` | V1 проходит, V2 падает (9.9 с против 1.6 с) | оставлен |
+| read-write `/dev/null` | V1 падает (`cannot create /dev/null`) | оставлен |
+
+### V0: почему JVM-записи судятся видом на контейнер, а не вердиктом
+
+Без `/proc` или `/sys/fs/cgroup` veraPDF всё равно возвращает верный вердикт, но JVM
+внутри контейнера на 1 GiB / 2 CPU перестаёт его видеть. Измерено (V0, `java
+-XshowSettings:system -XX:+PrintFlagsFinal -version` без ruleset и под ним):
+
+| | без ruleset / с итоговым набором | без `/proc` | без `/sys/fs/cgroup` |
+|---|---|---|---|
+| Operating System Metrics | cgroupv2, Effective CPU Count 2, Memory Limit 1.00G | «No metrics available for this platform» | cgroupv2, CPU Count 11, лимиты Unlimited |
+| MaxHeapSize | 268435456 (256 МиБ) | 4206886912 (хост) | 4206886912 (хост) |
+| GC | Serial, ParallelGCThreads 0 | G1, ParallelGCThreads 9 | G1, ParallelGCThreads 9 |
+
+Куча в 4 ГиБ внутри контейнера на 1 ГиБ — путь к OOM-kill, а не к ошибке
+валидации; поэтому эти пути оставлены на основании V0, а не V1. Итоговый набор даёт 26
+совпавших строк.
+
+### F1: что проверка по одному тексту не видит
+
+Замена шрифтов меняет вёрстку, не текст. F1 конвертирует docx с Calibri, Cambria и
+Arial и требует в PDF имена Carlito, Caladea и LiberationSans; без F1 записи
+`/etc/fonts` и соседние нельзя было бы отличить от нужных. F1 проходит и без них —
+по правилу они убраны.
+
+### Действенность (эффективность)
+
+- **N1, soffice на файле вне всех грантов** (идентичная копия фикстуры в `/outside`):
+  вывода нет, текст фикстуры нигде не встречается. **SOFFICE-DENIAL: silent** (exit 0,
+  файла вывода нет — по определению «silent» — exit 0). Ответ на Open Question 1:
+  отказ тихий по коду выхода, но громкий по факту вывода; боевой код
+  (`libreoffice.go`) превращает «exit 0 без файла» в терминальную ошибку `produced no
+  output file`, однако preflight в 70-03 не может опираться на тип ошибки — только на
+  отсутствие вывода с маркером.
+- **N2, veraPDF на PDF/A вне грантов**: `<exceptionMessage>Exception: Couldn't parse
+  stream caused by exception: /outside/in.pdf (Permission denied)</exceptionMessage>`,
+  атрибута `isCompliant` нет. Код выхода 7 — тот же, что у вердикта «не соответствует»;
+  поэтому код выхода veraPDF не является доказательством ни в одну сторону (D-11).
+- **C1** доказывает, что сокет-грант и `rw:/tmp` не декоративны (см. маршрут).
+
+### Что стоит preflight и минимальная фикстура
+
+Preflight-последовательность (docx→odt; PDF/A-экспорт с валидацией; оба отрицательных
+прогона) на итоговом наборе: S1 1.2 с + S5 1.2 с + V1 1.5 с + N1 1.0 с + N2 1.2 с ≈
+6.1 с (5.9-6.3 с по прогонам; холодный старт JVM включён). Минимальный DOCX, который
+LibreOffice 7.4 конвертирует с маркером `octoconv-preflight-0123456789abcdef` в
+`content.xml` и чей PDF/A-экспорт veraPDF признаёт соответствующим: три части —
+`[Content_Types].xml` (Default для `rels` и `xml`, Override для `/word/document.xml` с
+типом WordprocessingML main), `_rels/.rels` (связь officeDocument на
+`word/document.xml`) и `word/document.xml` с одним абзацем; 937 байт, `word/_rels/document.xml.rels`
+не понадобился.
 
 <!-- conf05:soffice:readwrite -->
-/dev/null
 /tmp
 <!-- /conf05:soffice:readwrite -->
 <!-- conf05:soffice:socket -->
 /tmp
 <!-- /conf05:soffice:socket -->
 <!-- conf05:soffice:readonly -->
-/lib
 /usr/lib
-/usr/bin
-/etc/fonts
+/usr/bin/dash
+/usr/bin/basename
+/usr/bin/dirname
+/usr/bin/ls
+/usr/bin/sed
 /etc/libreoffice
-/etc/ld.so.cache
-/etc/localtime
-/etc/nsswitch.conf
-/etc/passwd
-/etc/group
-/proc
-/sys/devices/system/cpu
-/usr/share/fontconfig
 /usr/share/fonts
-/usr/local/share/fonts
-/var/cache/fontconfig
 /dev/urandom
 <!-- /conf05:soffice:readonly -->
 <!-- conf05:soffice:engines -->
@@ -994,23 +1149,14 @@ soffice
 /dev/null
 <!-- /conf05:verapdf:readwrite -->
 <!-- conf05:verapdf:readonly -->
-/lib
 /usr/lib
-/usr/bin
+/usr/bin/dash
+/usr/bin/dirname
+/usr/bin/which
 /opt/verapdf
-/etc/host.conf
-/etc/hosts
-/etc/ld.so.cache
-/etc/localtime
-/etc/nsswitch.conf
-/etc/passwd
-/etc/resolv.conf
 /etc/java-17-openjdk
 /proc
-/sys/devices/system/cpu
 /sys/fs/cgroup
-/sys/kernel/mm/transparent_hugepage
-/dev/urandom
 /dev/random
 <!-- /conf05:verapdf:readonly -->
 <!-- conf05:verapdf:engines -->

@@ -9,7 +9,10 @@
 // "exec: permission denied" the moment a real ruleset was built from it. A
 // path set is a hypothesis until a real engine runs a real job under it.
 //
-// PROBE_RW and PROBE_RO are colon-separated path lists. Before exec, the probe
+// PROBE_RW, PROBE_SOCK and PROBE_RO are colon-separated path lists (PROBE_SOCK
+// names the directories where the engine may create a Unix-domain socket and do
+// nothing else -- the sock: grant, for an engine whose single-instance IPC binds
+// one; leave it unset for every other engine). Before exec, the probe
 // reads a file outside every grant and refuses to continue if it succeeds:
 // a ruleset that permits everything would otherwise report every engine as
 // happily confined.
@@ -61,6 +64,7 @@ func main() {
 	if err := sandbox.Apply(sandbox.Paths{
 		ReadWrite: splitPaths(os.Getenv("PROBE_RW")),
 		ReadOnly:  splitPaths(os.Getenv("PROBE_RO")),
+		Socket:    splitPaths(os.Getenv("PROBE_SOCK")),
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, "apply:", err)
 		os.Exit(3)

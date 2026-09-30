@@ -34,10 +34,13 @@
 #           directory. Sufficiency is the engine's exit status; effectiveness
 #           is that last run failing. This is the phase that decides.
 #
-# Landlock is unavailable to an emulated amd64 process on an arm64 host, so a
-# service pinned with `platform: linux/amd64` (document-worker, for veraPDF)
-# cannot be measured here at all. The script says so rather than reporting an
-# engine that "needs nothing".
+# Landlock is unavailable to an emulated process, so an image whose architecture
+# differs from the docker server's (an amd64 image on an arm64 host) cannot be
+# measured here at all. The script says so rather than reporting an engine that
+# "needs nothing". document-worker was that example until phase 70, when only
+# its verapdf build stage stayed amd64 and the image itself became native; its
+# sufficiency and effectiveness runs live in scripts/document-sandbox-measure.sh,
+# which drives the production helper and judges by content.
 #
 # Usage:
 #   scripts/sandbox-paths-measure.sh trace  <image> <fixture-dir> <cmd...>
@@ -116,8 +119,9 @@ trace)
 verify)
   ro=${1:-}; shift || die "colon-separated read-only path list required"
   [ $# -gt 0 ] || die "command required"
-  # The IMAGE's architecture, not the server's. document-worker is pinned to
-  # linux/amd64, and a probe built for an arm64 server would run natively,
+  # The IMAGE's architecture, not the server's. An image built for another
+  # platform than the server's is emulated, and a probe built for an arm64 server
+  # would run natively,
   # establish Landlock successfully, and leave only the engine emulated -- so
   # the run would report a path set instead of reporting that Landlock is
   # unavailable there, which is the one thing it must say (codex, PR #27).
@@ -134,11 +138,12 @@ verify)
     go build -o "$probe" ./scripts/cmd/sandbox-probe
   trap 'rm -f "$probe"' EXIT
 
-  # PROBE_RW and PROBE_CANARY come from the environment: chromium needs /tmp
+  # PROBE_RW, PROBE_SOCK and PROBE_CANARY come from the environment: chromium needs /tmp
   # writable, and an engine whose set legitimately includes /etc needs a canary
   # that is not inside it.
   docker run --rm -v "$jobdir:/job" \
-    -e PROBE_RW="${PROBE_RW:-/job}" -e PROBE_CANARY="${PROBE_CANARY:-}" -e PROBE_RO="$ro" \
+    -e PROBE_RW="${PROBE_RW:-/job}" -e PROBE_SOCK="${PROBE_SOCK:-}" \
+    -e PROBE_CANARY="${PROBE_CANARY:-}" -e PROBE_RO="$ro" \
     --entrypoint /job/.sandbox-probe "$image" "$@"
   ;;
 
