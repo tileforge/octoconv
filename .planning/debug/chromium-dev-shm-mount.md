@@ -178,6 +178,25 @@ started: |
     --shm-size docker-run flag and gained the "html large-document-without-dev-shm"
     check. G-69-3 closed by 69-05-PLAN.md.
 
+- timestamp: 2026-09-30T19:58:00Z
+  checked: |
+    The negative control this record relies on (the same run minus
+    --disable-dev-shm-usage must fail on /dev/shm) on the Chromium the image installs
+    today, 154.0.8037.57, by strace -ff of seven conditions (flag on/off, no ruleset,
+    production ruleset, production ruleset plus rw:/dev/shm, /dev/shm at 64 MiB), plan
+    70-06.
+  found: |
+    The control stopped failing on Chromium 154: with the flag removed and /dev/shm
+    denied the run exits 0 with the marker, because Chromium 154 never creates anything
+    under /dev/shm in any condition (its shared memory is memfd_create); the flag only
+    removes a statfs("/dev/shm"). The conclusion above (no /dev/shm needed, dropping the
+    mount is safe) still holds, now measured on 154 as well; the control that supported
+    it was rebuilt in 70-06 as an observation with /dev/shm reachable and an inotify
+    observer outside the sandbox. Evidence:
+    .planning/phases/70-document-on-amd64/evidence/chromium-devshm-measure-70-06.txt and
+    .planning/phases/70-document-on-amd64/evidence/liveproof-html-70-06.txt.
+  implication: The "negative control" in the entries above is historical (Chromium 153); the gate no longer depends on a version-specific failure.
+
 ## Resolution
 
 root_cause: |

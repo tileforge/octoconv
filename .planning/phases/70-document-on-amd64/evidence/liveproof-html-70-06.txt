@@ -29,3 +29,35 @@ PASS: html large-document-without-dev-shm
       chromium_live_test.go:480: dev-shm-observe: control=1 production=0
       chromium_live_test.go:481: large-doc: fixture=84543422 bytes pdf=20461106 bytes wall=4.86259096s
 ALL PASS (9 checks)
+
+=== INVERSIONS (Task 2): each run through scripts/sandbox-liveproof.sh html on the tree at 6b88ada plus ONE temporary edit, then reverted (git diff --quiet -- internal/ cmd/ scripts/ held after each) ===
+
+--- (i) observer made blind: internal/convert/chromium_live_test.go  var devShmWatchDir = devShmDir  ->  var devShmWatchDir = "/srv" (a directory nothing writes). Expected: the control fails with 'the method cannot see a /dev/shm dependency'. ---
+exit status of the gate: 1; last line: FAILURES PRESENT (9 checks run)
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (10.35s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:336: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:440: control: created /dev/shm/devshm-control-octoconv-preflight-9df6182f814b0b79 under /dev/shm and the observer saw nothing -- the method cannot see a /dev/shm dependency
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (10.35s)
+FAIL
+FAILURES PRESENT (9 checks run)
+
+--- (ii) drop rw:/dev/shm from the observation ruleset, and (iii) remove --disable-dev-shm-usage from chromiumPrintArgs: NOT RUN. Classification is DEVSHM-NO-FLAG-REACHABLE: unused (evidence/chromium-devshm-measure-70-06.txt D4), so by construction neither can fail on this Chromium: the engine creates nothing under /dev/shm whether or not it can, and the flag only removes a statfs probe. ---
+
+--- (iv) additional inversion, production side: an entry is created under /dev/shm by the test process itself between 'start the production observer' and 'run the production argv' (temporary two lines; the engine is innocent, the observer must still report it). Expected: the production observation fails on the entry seen. ---
+exit status of the gate: 1; last line: FAILURES PRESENT (9 checks run)
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.27s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:336: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:469: production observation: the production argv created 1 entr(ies) under /dev/shm with it reachable: ["inversion-iv-octoconv-preflight-e7d69ddb9c3b9d03"] -- the engine does depend on /dev/shm (G-69-3's no-mount decision is reopened)
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.27s)
+FAIL
+FAILURES PRESENT (9 checks run)
