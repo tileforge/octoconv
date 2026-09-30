@@ -6,6 +6,24 @@ human_approved: 2026-10-01 (user approved human-check items 1-4: measured sets, 
 score: 15/15 must-haves verified
 covered_files:
   - .env.example
+  - .planning/phases/70-document-on-amd64/70-01-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-01-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-02-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-02-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-03-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-03-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-04-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-04-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-05-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-05-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-06-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-06-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-07-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-07-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-08-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-08-SUMMARY.md
+  - .planning/phases/70-document-on-amd64/70-09-PLAN.md
+  - .planning/phases/70-document-on-amd64/70-09-SUMMARY.md
   - Dockerfile.chromium-worker
   - Dockerfile.document-worker
   - cmd/audio-worker/main.go
@@ -41,7 +59,7 @@ covered_files:
   - scripts/document-sandbox-measure.sh
   - scripts/sandbox-liveproof.sh
   - scripts/verapdf-differential.sh
-covered_digest: "v2:sha256:a2808f73c9a00bd3b8f8ca4843a1c4036c017b6be63415b7541a92b59418acc7"
+covered_digest: "v2:sha256:a1de6a0c311a6999289e2ec33907b015354fedce29e75ea17c6a95dbd717cd1f"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
