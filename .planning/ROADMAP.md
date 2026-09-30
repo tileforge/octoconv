@@ -140,7 +140,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion; runs only on `DIVERGENCES: 0`)*
 
-- [ ] 70-02-PLAN.md — право на сокет по выбранному маршруту в `internal/sandbox`, helper-режим document-worker, драйвер `scripts/document-sandbox-measure.sh` (содержимое, не код возврата), наборы soffice и veraPDF замерены и сужены удалением, маршрут `/tmp` по замеру (D-09), раздел document в SANDBOX-PATHS.md
+- [x] 70-02-PLAN.md — право на сокет по выбранному маршруту в `internal/sandbox`, helper-режим document-worker, драйвер `scripts/document-sandbox-measure.sh` (содержимое, не код возврата), наборы soffice и veraPDF замерены и сужены удалением, маршрут `/tmp` по замеру (D-09), раздел document в SANDBOX-PATHS.md
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
