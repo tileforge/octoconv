@@ -39,7 +39,13 @@ RUN apt-get update \
       fonts-crosextra-caladea \
       fonts-liberation2 \
       openjdk-17-jre-headless \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ # The JRE's post-install runs java as root at build time and leaves
+ # /tmp/hsperfdata_root behind. The confined worker sweeps /tmp before every
+ # task (CONF-06) as `nobody`, and /tmp is sticky, so an entry it cannot
+ # remove would make every sweep fail and every task retry forever. Removed in
+ # this same layer, so it is gone from the image, not merely hidden.
+ && rm -rf /tmp/hsperfdata_*
 COPY --from=build /out/document-worker /usr/local/bin/document-worker
 # veraPDF (PDFA-02): PATH B (Debian JRE) was used, not path A. Verified LIVE
 # (23-01) that copying the jlink-trimmed JRE from verapdf/cli straight across

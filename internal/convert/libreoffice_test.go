@@ -115,7 +115,7 @@ func TestValidateDocumentOutput(t *testing.T) {
 	if err := os.WriteFile(odtPath, odtData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateDocumentOutput(context.Background(), odtPath, "odt", false); err != nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, odtPath, "odt", false); err != nil {
 		t.Errorf("validateDocumentOutput(valid odt, %q) = %v, want nil", "odt", err)
 	}
 
@@ -124,7 +124,7 @@ func TestValidateDocumentOutput(t *testing.T) {
 	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateDocumentOutput(context.Background(), emptyPath, "odt", false); err == nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, emptyPath, "odt", false); err == nil {
 		t.Error("validateDocumentOutput(empty, \"odt\") = nil, want error")
 	} else if !strings.Contains(err.Error(), "output is empty") {
 		t.Errorf("validateDocumentOutput(empty) error = %v, want substring \"output is empty\"", err)
@@ -138,7 +138,7 @@ func TestValidateDocumentOutput(t *testing.T) {
 	if err := os.WriteFile(wrongPath, docxData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateDocumentOutput(context.Background(), wrongPath, "odt", false); err == nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, wrongPath, "odt", false); err == nil {
 		t.Error("validateDocumentOutput(docx-as-odt) = nil, want error")
 	} else if !strings.Contains(err.Error(), "output does not match expected container format") {
 		t.Errorf("validateDocumentOutput(mismatch) error = %v, want substring \"output does not match expected container format\"", err)
@@ -149,14 +149,14 @@ func TestValidateDocumentOutput(t *testing.T) {
 	if err := os.WriteFile(pdfValidPath, []byte("%PDF-1.6\n%rest of content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateDocumentOutput(context.Background(), pdfValidPath, "pdf", false); err != nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, pdfValidPath, "pdf", false); err != nil {
 		t.Errorf("validateDocumentOutput(valid pdf, \"pdf\") = %v, want nil", err)
 	}
 	pdfInvalidPath := filepath.Join(dir, "invalid.pdf")
 	if err := os.WriteFile(pdfInvalidPath, []byte("not a pdf"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateDocumentOutput(context.Background(), pdfInvalidPath, "pdf", false); err == nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, pdfInvalidPath, "pdf", false); err == nil {
 		t.Error("validateDocumentOutput(non-pdf content, \"pdf\") = nil, want error")
 	}
 }
@@ -344,7 +344,7 @@ func TestValidatePDFAOutputIntent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := validateDocumentOutput(context.Background(), withoutMarker, "pdf", true)
+	err := validateDocumentOutput(context.Background(), engineExec{}, withoutMarker, "pdf", true)
 	if err == nil {
 		t.Fatal("validateDocumentOutput(marker absent, wantPDFA=true) = nil, want error")
 	}
@@ -352,14 +352,14 @@ func TestValidatePDFAOutputIntent(t *testing.T) {
 		t.Errorf("validateDocumentOutput(marker absent, wantPDFA=true) error = %v, want substring \"OutputIntent\"", err)
 	}
 
-	if err := validateDocumentOutput(context.Background(), withoutMarker, "pdf", false); err != nil {
+	if err := validateDocumentOutput(context.Background(), engineExec{}, withoutMarker, "pdf", false); err != nil {
 		t.Errorf("validateDocumentOutput(marker absent, wantPDFA=false) = %v, want nil (marker ignored)", err)
 	}
 
 	if _, err := exec.LookPath("verapdf"); err != nil {
 		t.Skip("verapdf not on PATH; run inside the document-worker image to exercise the real ValidatePDFA leg")
 	}
-	markerErr := validateDocumentOutput(context.Background(), withMarker, "pdf", true)
+	markerErr := validateDocumentOutput(context.Background(), engineExec{}, withMarker, "pdf", true)
 	if markerErr == nil {
 		t.Fatal("validateDocumentOutput(marker present, wantPDFA=true) = nil, want a real veraPDF rejection (synthetic marker bytes are not a genuine PDF/A document)")
 	}

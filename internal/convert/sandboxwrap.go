@@ -71,7 +71,16 @@ func (s *engineSandbox) confines() bool { return s != nil && s.Confine }
 // spec is a thin alias so converters read as "paths, then spec" rather than
 // repeating the SpecWith call with an empty Limits every time.
 func spec(rw, ro []string) []string {
-	return sandbox.Paths{ReadWrite: rw, ReadOnly: ro}.SpecWith(sandbox.Limits{})
+	return specWithSockets(rw, nil, ro)
+}
+
+// specWithSockets is spec with a third grant kind: the directories beneath
+// which the engine may create a Unix-domain socket and nothing else (a
+// sock: token, sandbox.Paths.Socket). With a nil sock it renders exactly the
+// tokens spec always did, so every class that has no such directory keeps a
+// byte-identical token stream.
+func specWithSockets(rw, sock, ro []string) []string {
+	return sandbox.Paths{ReadWrite: rw, Socket: sock, ReadOnly: ro}.SpecWith(sandbox.Limits{})
 }
 
 // ErrEngineSandboxUnavailable is that status, classified.
@@ -155,6 +164,15 @@ func (s *engineSandbox) forJob(jobDir string, readOnly, engines []string) engine
 // token stream (a single rw: entry, the job directory) stays byte-identical
 // for every class that has no such shared path.
 func (s *engineSandbox) forJobRW(jobDir string, extraRW, readOnly, engines []string) engineExec {
+	return s.forJobRWSock(jobDir, extraRW, nil, readOnly, engines)
+}
+
+// forJobRWSock is forJobRW with a class-specific socket-only set: every entry
+// of sockDirs grants creating a Unix socket beneath it and nothing else -- no
+// read, no write, no unlink (70-01 decision, measured in 70-02). soffice binds
+// its single-instance socket under /tmp whatever TMPDIR says. forJobRW is this
+// function called with a nil sockDirs.
+func (s *engineSandbox) forJobRWSock(jobDir string, extraRW, sockDirs, readOnly, engines []string) engineExec {
 	if !s.confines() {
 		return engineExec{sandbox: s}
 	}
@@ -168,7 +186,7 @@ func (s *engineSandbox) forJobRW(jobDir string, extraRW, readOnly, engines []str
 			ro = append(ro, p)
 		}
 	}
-	return engineExec{sandbox: s, spec: spec(rw, ro)}
+	return engineExec{sandbox: s, spec: specWithSockets(rw, sockDirs, ro)}
 }
 
 // engineEnv is the allowlisted environment an engine gets when its class

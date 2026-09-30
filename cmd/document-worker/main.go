@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,17 +28,93 @@ import (
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// documentSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors probeSandboxDisabledEnv: a
+// deployment gets unconfined engines only by saying so.
+const documentSandboxDisabledEnv = "DOCUMENT_SANDBOX_DISABLED"
+
+// documentConcurrencyEnv names the SAME variable both convert.ConfinedDocument's
+// guard and asynq.Config.Concurrency read below -- a mismatch would let the
+// guard check one value while the server actually ran at another.
+const documentConcurrencyEnv = "DOCUMENT_WORKER_CONCURRENCY"
+
+// documentPreflightTimeout bounds the startup preflight. 70-02 measured the
+// preflight-shaped sequence (two conversions, one validation, both negatives)
+// at 6.0 s on the final sets, cold JVM included (5.9-6.3 s across runs).
+// Twice that, rounded up to the next 10 s, is 20 s; the floor of 60 s is the
+// one every other class's preflight uses, and a cold node is slower than the
+// measuring host.
+const documentPreflightTimeout = 60 * time.Second
+
 func main() {
 	// FIRST, before anything else in this process: when the converter execs
 	// this binary as its sandbox helper, that invocation must establish the
 	// ruleset and exec soffice or verapdf, not connect to Postgres and start a
-	// worker. The rest of the startup sequence lands in phase 70 plan 03.
+	// worker.
 	if sandbox.RunExecModeIfRequested(os.Args) {
 		return
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine soffice and veraPDF must not consume a queue. It would fail every
+	// job -- or, far worse, run the engines unconfined while the deployment
+	// believes otherwise. The paths it grants were MEASURED, not reasoned: see
+	// .planning/research/SANDBOX-PATHS.md and documentsandbox.go. The refusal is
+	// sandbox.ResolveHelper's alone: no architecture or emulation detection of
+	// any kind lives here (D-07).
+	sandboxHelper, err := sandbox.ResolveHelper(documentSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("document sandbox: %v", err)
+	}
+
+	// D-09/CONF-06: soffice's measured ruleset grants the container's shared
+	// /tmp read-write, so a confined worker configured above one task at a time
+	// refuses to start, naming DOCUMENT_WORKER_CONCURRENCY. The default is 1 for
+	// the same reason; scale with replicas. This is the SAME value asynq uses.
+	concurrency := envInt(documentConcurrencyEnv, 1)
+	log.Printf("📄 %s=%d", documentConcurrencyEnv, concurrency)
+	conv, err := convert.ConfinedDocument(sandboxHelper, concurrency, documentConcurrencyEnv)
+	if err != nil {
+		log.Fatalf("document sandbox: %v", err)
+	}
+
+	// Phase 23 (veraPDF validation) D-04/WARNING-3: VERAPDF_TIMEOUT is read
+	// ONLY here (env-only-in-main, mirroring engineTimeout's threading into
+	// NewHandler below) and injected into internal/convert via a setter --
+	// internal/convert never calls os.Getenv directly. Moved up from below the
+	// handler: the preflight runs ValidatePDFA, so the timeout must be set
+	// before it, and before srv.Start(mux), the point at which asynq's worker
+	// goroutines begin concurrently reading verapdfTimeout (this single write
+	// happens-before every concurrent read, no mutex needed).
+	convert.SetVeraPDFTimeout(envDuration("VERAPDF_TIMEOUT", 60*time.Second))
+
+	// Replace, not Register: converters.go already registered the zero-value
+	// LibreOfficeConverter at init, and Register panics on a triple collision.
+	// This is the ONLY registration this process performs.
+	convert.Default.Replace(conv)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engines can read every file in this container", documentSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 document sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves BOTH engines run under their rulesets, not merely that the rules
+	// can be built -- both directions, judged by content, before Postgres or
+	// the queue is touched (CONF-04): soffice is silent when denied and veraPDF
+	// exits the same code for a verdict and a denial, so exit status is never
+	// what decides this.
+	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), documentPreflightTimeout)
+	if err := convert.DocumentPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("document sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -92,20 +169,11 @@ func main() {
 	// constructed or run here, avoiding a double-sweep race between
 	// independent sweep loops recovering the same stranded job.
 
-	// Phase 23 (veraPDF validation) D-04/WARNING-3: VERAPDF_TIMEOUT is read
-	// ONLY here (env-only-in-main, mirroring engineTimeout's threading into
-	// NewHandler above) and injected into internal/convert via a setter --
-	// internal/convert never calls os.Getenv directly. This MUST run before
-	// srv.Start(mux) below: that is the point asynq's worker goroutines
-	// begin concurrently reading verapdfTimeout, so this single write must
-	// happen-before every concurrent read (no mutex needed).
-	convert.SetVeraPDFTimeout(envDuration("VERAPDF_TIMEOUT", 60*time.Second))
-
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(queue.TypeDocumentConvert, worker.NewRunner(h, worker.DocumentDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency:    envInt("DOCUMENT_WORKER_CONCURRENCY", 2),
+		Concurrency:    concurrency,
 		Queues:         map[string]int{queue.QueueDocument: 1},
 		RetryDelayFunc: queue.RetryDelayFunc,
 		// Pattern 2: asynq defaults ShutdownTimeout to 8s, silently capping

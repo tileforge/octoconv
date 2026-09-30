@@ -145,29 +145,46 @@ func validateReport(raw []byte) error {
 	return nil
 }
 
+// verapdfArgs is the one veraPDF argv: production (ValidatePDFA) and the
+// document preflight both build it here, so a preflight that passes has
+// exercised the exact invocation a task makes (the chromiumPrintArgs
+// precedent).
+func verapdfArgs(path string) []string {
+	return []string{"-f", "2b", "--format", "xml", path}
+}
+
 // ValidatePDFA runs real ISO 19005-2b validation (D-05: only ever called
 // AFTER the cheap /GTS_PDFA marker pre-filter in validateDocumentOutput has
-// passed) against the produced PDF at path, via the existing hardened
-// runCommand (Setpgid + process-group kill, D-04) -- no new exec
-// abstraction. The invocation is bounded by effectiveVeraPDFTimeout (its own
-// VERAPDF_TIMEOUT budget, injected via SetVeraPDFTimeout, separate from the
-// outer DOCUMENT_ENGINE_TIMEOUT the caller's ctx already carries --
-// whichever fires first wins, since vctx is derived FROM ctx).
+// passed) against the produced PDF at path. veraPDF runs under the class's
+// OWN ruleset (phase 70, D-10) through x, the job's veraPDF engineExec --
+// separate from, and narrower than, soffice's: no soffice helper binaries and
+// no write beyond the job directory and /dev/null. A zero engineExec runs the
+// engine directly, which is what hermetic tests want. The invocation is
+// bounded by effectiveVeraPDFTimeout (its own VERAPDF_TIMEOUT budget,
+// injected via SetVeraPDFTimeout, separate from the outer
+// DOCUMENT_ENGINE_TIMEOUT the caller's ctx already carries -- whichever fires
+// first wins, since vctx is derived FROM ctx).
 //
 // veraPDF's machine-readable report rides on STDOUT (verified live in
 // scripts/verapdf-measure.sh: `verapdf -f 2b --format xml file.pdf >
-// report.xml`) -- runCommand's captured stdout is parsed regardless of the
-// process's exit code (D-09: veraPDF exits 1 for a non-compliant report,
-// which is a VALID report, not a process failure; exit code alone is never
-// trusted). Only a run that produced NO stdout at all (process never
-// started, or was killed by the timeout before writing a report) skips
-// straight to the fail-closed "validation error" path without attempting to
-// parse an empty buffer.
-func ValidatePDFA(ctx context.Context, path string) error {
+// report.xml`) -- the captured stdout is parsed regardless of the process's
+// exit code (D-09: veraPDF exits non-zero for a non-compliant report, which
+// is a VALID report, not a process failure; D-11: it exits 7 for a verdict
+// and for a denial alike, measured 2026-09-29, so the exit status is never
+// trusted). Only a run that produced NO stdout at all (process never started,
+// the helper could not establish the ruleset, or the timeout killed it before
+// it wrote a report) skips straight to the fail-closed "validation error"
+// path without attempting to parse an empty buffer.
+//
+// A helper exit 78 therefore reaches the worker as ErrEngineSandboxUnavailable
+// wrapped INSIDE the "pdf/a validation error" text (the %w below keeps it
+// reachable); isDocumentTerminal checks that sentinel before it looks at the
+// text, because "pdf/a validation error" is itself a terminal signature.
+func ValidatePDFA(ctx context.Context, x engineExec, path string) error {
 	vctx, cancel := context.WithTimeout(ctx, effectiveVeraPDFTimeout())
 	defer cancel()
 
-	stdout, runErr := runCommand(vctx, "verapdf", "-f", "2b", "--format", "xml", path)
+	stdout, runErr := x.run(vctx, "verapdf", verapdfArgs(path)...)
 	if runErr != nil && len(stdout) == 0 {
 		// D-06: an unverifiable archival claim is a failed archival claim.
 		// %w here preserves a wrapped context.DeadlineExceeded (a

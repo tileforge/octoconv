@@ -30,7 +30,22 @@ var crossPairs = []Pair{
 // LibreOfficeConverter converts office documents to PDF, and between odt/odt-
 // family sibling formats, by shelling out to the `soffice` CLI in headless
 // mode.
-type LibreOfficeConverter struct{}
+//
+// Sandbox is the filesystem sandbox soffice and veraPDF run under; nil (the
+// zero value) runs both engines directly, which is what tests want. A POINTER
+// for the same reason PandocConverter.Sandbox is one: the type stays
+// comparable, so LibreOfficeConverter{}.WithSandbox(nil) still equals the zero
+// value.
+type LibreOfficeConverter struct {
+	// Sandbox is set only by WithSandbox / ConfinedDocument.
+	Sandbox *engineSandbox
+	// sharedTmp is the container's shared /tmp, swept before every task. Set
+	// ONLY by ConfinedDocument, and only for a confined converter whose soffice
+	// ruleset grants /tmp read-write (the route 70-02 measured): the sweep is
+	// safe solely because that same grant holds concurrency to 1
+	// (sharedTmpGuard). Empty means no sweep.
+	sharedTmp string
+}
 
 // Pairs returns one {format, "pdf"} pair per supported source document format,
 // plus the 6 symmetric intra-family cross pairs in crossPairs (D-01).
@@ -51,12 +66,34 @@ func (LibreOfficeConverter) Pairs() []Pair {
 // worker builds outPath as "out."+job.TargetFormat (internal/worker/worker.go)
 // — so Convert is target-agnostic: it drives whichever pair Pairs()
 // advertised. ctx must carry the engine timeout.
-func (LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+//
+// soffice and veraPDF each run under their own ruleset (sofficeExec and
+// verapdfExec), built once here for the whole task and never shared between
+// the two engines (D-10, D-12). Convert hands inPath to soffice directly and
+// never copies it into the job directory, so a Convert on a file outside every
+// grant is a meaningful negative through the production path.
+func (c LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
 	workDir := filepath.Dir(outPath) // caller's per-job workDir; already unique, already cleaned up
+	// The sweep comes first of all: it removes whatever an earlier task left in
+	// the shared /tmp (soffice's own socket included), sparing this job's own
+	// directory. Empty sharedTmp -- unconfined, or a ruleset that grants no
+	// shared /tmp -- means there is nothing to sweep.
+	if c.sharedTmp != "" {
+		if err := sweepSharedTmp(c.sharedTmp, workDir); err != nil {
+			return fmt.Errorf("libreoffice: %w", err)
+		}
+	}
 	profileDir := filepath.Join(workDir, "lo-profile")
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return fmt.Errorf("libreoffice: mkdir profile: %w", err)
 	}
+	// The per-job directory both engines' temp files go to (sofficeEnv and
+	// verapdfEnv point TMPDIR and java.io.tmpdir at it).
+	if err := os.MkdirAll(filepath.Join(workDir, documentEngineTmpDir), 0o700); err != nil {
+		return fmt.Errorf("libreoffice: mkdir engine tmp: %w", err)
+	}
+	sx := c.sofficeExec(workDir)
+	vx := c.verapdfExec(workDir)
 
 	// Garbage opts (e.g. a corrupt jobs.options column) is a deterministic
 	// failure, not a transient one -- DocOptsFromMap applies the same
@@ -106,7 +143,7 @@ func (LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath string,
 		"--outdir", workDir,
 		inPath,
 	}
-	if _, err := runCommand(ctx, "soffice", args...); err != nil {
+	if _, err := sx.run(ctx, "soffice", args...); err != nil {
 		return fmt.Errorf("libreoffice: %w", err)
 	}
 
@@ -127,7 +164,7 @@ func (LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath string,
 		return fmt.Errorf("libreoffice: rename output: %w", err)
 	}
 
-	return validateDocumentOutput(ctx, outPath, targetFormat, isPDFA)
+	return validateDocumentOutput(ctx, vx, outPath, targetFormat, isPDFA)
 }
 
 // Engine reports the document engine class (D-01).
@@ -228,8 +265,10 @@ var gtsPDFAMarker = []byte("/GTS_PDFA")
 // the marker alone was always a non-authoritative sanity check (Pitfall 8),
 // never a substitute for full veraPDF validation. ctx carries the
 // DOCUMENT_ENGINE_TIMEOUT budget the caller (Convert) already holds;
-// ValidatePDFA derives its own bounded sub-context from it (D-04).
-func validateDocumentOutput(ctx context.Context, path, targetFormat string, wantPDFA bool) error {
+// ValidatePDFA derives its own bounded sub-context from it (D-04). vx is the
+// job's veraPDF engineExec (its own, narrower ruleset -- D-10); a zero
+// engineExec runs veraPDF directly.
+func validateDocumentOutput(ctx context.Context, vx engineExec, path, targetFormat string, wantPDFA bool) error {
 	target := NormalizeFormat(targetFormat)
 	if target == "pdf" {
 		if err := validatePDF(path); err != nil {
@@ -252,7 +291,7 @@ func validateDocumentOutput(ctx context.Context, path, targetFormat string, want
 		// signatures ("pdf/a non-compliant", "pdf/a validation error") are
 		// coupled into terminalVeraPDFSignatures (internal/worker/worker.go)
 		// in this SAME commit.
-		if err := ValidatePDFA(ctx, path); err != nil {
+		if err := ValidatePDFA(ctx, vx, path); err != nil {
 			return fmt.Errorf("libreoffice: %w", err)
 		}
 		return nil
