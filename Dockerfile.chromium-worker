@@ -13,6 +13,10 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       tini \
+      # chromium-headless-shell is unpinned on purpose (user decision 2026-09-30:
+      # Debian drops old versions, a pin rots and leaves the browser unpatched);
+      # the html gate logs the version and its /dev/shm control relies on no
+      # version-specific failure.
       chromium-headless-shell \
       fonts-liberation2 \
  # CJK/non-Latin font coverage (e.g. fonts-noto-cjk) is an explicit deferred

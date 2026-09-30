@@ -551,6 +551,17 @@ run_html_large_document_live_test() {
 # the deployed limits (--cpus=2 --memory=2g) with no shared-memory docker
 # flag of any kind: the whole point of this check is that the confined
 # engine needs none.
+#
+# The test's negative control was rebuilt in 70-06. It no longer demands that
+# a run without --disable-dev-shm-usage FAIL on a denied /dev/shm (Chromium 154
+# does not fail there: its shared memory is memfd_create), because a failure
+# is only one thing a denial can cause. Instead the test runs under the
+# production ruleset plus one extra entry, rw:/dev/shm, where /dev/shm is
+# reachable and no fallback can hide a wish for it, and an inotify observer
+# outside the sandbox must see a control program create an entry there and
+# must see the production argv create none. The PASS output carries the
+# engine's version (the image installs chromium-headless-shell unpinned, on
+# purpose) and the observer's counts.
 check_html_large_document_live() {
   local tag=$1 bindir=$2
   shift 2
@@ -580,6 +591,8 @@ check_html_large_document_live() {
   if [ "$ok" = 1 ]; then
     pass "html large-document-without-dev-shm"
     printf '%s\n' "$out" | grep -F "dev-shm:" | head -1 | sed 's/^/  /'
+    printf '%s\n' "$out" | grep -F "chromium:" | head -1 | sed 's/^/  /'
+    printf '%s\n' "$out" | grep -F "dev-shm-observe:" | head -1 | sed 's/^/  /'
     printf '%s\n' "$out" | grep -F "large-doc:" | head -1 | sed 's/^/  /'
   else
     fail "html large-document-without-dev-shm" "${reasons[@]}" "--- full output ---" "$out"

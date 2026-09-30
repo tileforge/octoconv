@@ -210,19 +210,26 @@ func buildLargeDocFixture(t *testing.T, marker string) []byte {
 	return []byte(b.String())
 }
 
-// withoutDisableDevShm returns a copy of args with "--disable-dev-shm-usage"
-// removed -- the negative control's argv (69-05-PLAN.md Task 1.e): the SAME
-// argv chromiumPrintArgs builds, minus the one flag under test, so a real
-// /dev/shm dependency would surface here and nowhere else.
-func withoutDisableDevShm(args []string) []string {
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--disable-dev-shm-usage" {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
+// devShmWatchDir is the directory the observer watches. It is devShmDir; a
+// variable only so a deliberate inversion of the check can point it elsewhere.
+var devShmWatchDir = devShmDir
+
+// devShmDir is the directory the large-document check's observer watches, and
+// the ONE extra writable entry its observation ruleset carries. It exists only
+// in this test's ruleset; htmlReadWrite, the production grant, never names it
+// (G-69-3: the deployment mounts and sizes no /dev/shm for chromium).
+const devShmDir = "/dev/shm"
+
+// devShmObservationExec builds the ruleset the large-document check observes
+// /dev/shm under: exactly what ChromiumConverter.exec builds (forJobRW with
+// htmlReadWrite, htmlReadOnly and htmlEngines, the engineEnv("") allowlist)
+// with one extra writable entry, devShmDir, appended to the shared set. With
+// /dev/shm REACHABLE a run that wants it gets it, so no denial-triggered
+// fallback can hide the wish -- which is what a denied-and-failed control
+// could not promise (70-06, evidence/chromium-devshm-measure-70-06.txt).
+func devShmObservationExec(conv ChromiumConverter, runDir string) engineExec {
+	rw := append(append([]string{}, htmlReadWrite...), devShmDir)
+	return conv.Sandbox.forJobRW(runDir, rw, htmlReadOnly, htmlEngines).withEnv(engineEnv(""))
 }
 
 // logDevShmMount logs this container's actual /dev/shm mount line (or that
@@ -297,11 +304,32 @@ func liveEngineRun(ctx context.Context, e engineExec, name string, args ...strin
 // HTML document, at the deployed limits (--cpus=2 --memory=2g, applied by
 // scripts/sandbox-liveproof.sh), the confined production ChromiumConverter.Convert
 // path needs no /dev/shm -- proven by a method that would see a real /dev/shm
-// dependency if one existed (the negative control below), not merely by
-// reading the code. Never parallel (matches liveConfinedChromium's own D-03
-// concurrency-1 discipline); every file this test writes lives under one
-// t.TempDir() dir, so ConfinedChromium's D-04 shared-/tmp sweep (a sibling
-// test's cleanup, or a future run) never races this one's own fixtures.
+// dependency if one existed (step e), not merely by reading the code. Never
+// parallel (matches liveConfinedChromium's own D-03 concurrency-1 discipline);
+// every file this test writes lives under one t.TempDir() dir, so
+// ConfinedChromium's D-04 shared-/tmp sweep (a sibling test's cleanup, or a
+// future run) never races this one's own fixtures.
+//
+// Step e was rebuilt in 70-06. Phase 69's control ran the engine WITHOUT
+// --disable-dev-shm-usage and demanded that the run FAIL on /dev/shm while the
+// ruleset denied it. That inferred a dependency from a failure, and a failure
+// is only one thing a denial can cause: Chromium 153 failed on the denied
+// /dev/shm, Chromium 154 does not (measured, chromium-devshm-measure-70-06.txt
+// D3: flag off, production ruleset, exit 0, marker present, nothing created
+// under /dev/shm; its shared memory comes from memfd_create), so the control
+// stopped failing and the gate went red on a version bump -- not on a real
+// dependency. What the observation needs is REACHABILITY, not denial: with
+// /dev/shm granted nothing is denied, so no fallback can hide a wish for it,
+// and an inotify watch in this (unconfined) process reports every entry the
+// engine creates there.
+//
+// Control first: the observer must see an entry created under the same
+// observation ruleset, or "the method cannot see a /dev/shm dependency".
+// Measured on this Chromium the engine itself creates nothing under /dev/shm
+// with or without the flag (D4, D6), so the control is a program that does --
+// dash, granted by htmlReadOnly -- and the flag is NOT load-bearing on this
+// version. Then the production argv, unchanged, under the same ruleset must
+// render its marker with no entry seen.
 func TestChromiumLargeDocumentNeedsNoDevShmLive(t *testing.T) {
 	conv := liveConfinedChromium(t)
 
@@ -382,37 +410,73 @@ func TestChromiumLargeDocumentNeedsNoDevShmLive(t *testing.T) {
 		t.Fatalf("stderr run: output missing %s: %v", titleMarker, err)
 	}
 
-	// e. Negative control: the same run, minus --disable-dev-shm-usage -- if
-	// this does not fail on /dev/shm, the method above cannot see a real
-	// /dev/shm dependency and proves nothing.
-	negDir := filepath.Join(dir, "run-negative")
-	if err := os.MkdirAll(negDir, 0o700); err != nil {
-		t.Fatalf("mkdir run-negative: %v", err)
+	// e. Observation with /dev/shm reachable (see the test's doc comment). One
+	// run directory, one ruleset (devShmObservationExec), two runs.
+	obsDir := filepath.Join(dir, "run-observe")
+	if err := os.MkdirAll(obsDir, 0o700); err != nil {
+		t.Fatalf("mkdir run-observe: %v", err)
 	}
-	negOut := filepath.Join(negDir, "neg.pdf")
-	negArgs := withoutDisableDevShm(chromiumPrintArgs(negDir, negOut, "file://"+renderedPath))
-	negCtx, negCancel := context.WithTimeout(context.Background(), htmlLiveEngineTimeout)
-	negExit, negStderr, negSetupFailed, negErr := liveEngineRun(negCtx, conv.exec(negDir), "chromium-headless-shell", negArgs...)
-	negCancel()
-	if negErr != nil {
-		t.Fatalf("negative control: could not start/wait the engine: %v", negErr)
+	obsExec := devShmObservationExec(conv, obsDir)
+
+	// e1. Control: a program that creates an entry under /dev/shm, run through
+	// the same helper and ruleset. The observer must see it.
+	controlName := "devshm-control-" + marker
+	controlPath := filepath.Join(devShmDir, controlName)
+	t.Cleanup(func() { _ = os.Remove(controlPath) })
+	drainControl := startDevShmObserver(t, devShmWatchDir)
+	ctlCtx, ctlCancel := context.WithTimeout(context.Background(), htmlLiveEngineTimeout)
+	ctlExit, ctlStderr, ctlSetupFailed, ctlErr := liveEngineRun(ctlCtx, obsExec, "dash", "-c", ": > "+controlPath)
+	ctlCancel()
+	controlSeen := drainControl()
+	_ = os.Remove(controlPath)
+	if ctlErr != nil {
+		t.Fatalf("control: could not start/wait dash: %v", ctlErr)
 	}
-	if negSetupFailed {
-		t.Fatalf("negative control: the sandbox helper itself failed to set up (exit %d) -- "+
-			"the method cannot see a /dev/shm dependency this way: %s", negExit, negStderr)
+	if ctlSetupFailed || ctlExit != 0 {
+		t.Fatalf("control: dash exited %d (setup failure: %v) under the observation ruleset -- the method cannot see a /dev/shm dependency: %s",
+			ctlExit, ctlSetupFailed, ctlStderr)
 	}
-	if negExit == 0 {
-		t.Fatalf("negative control: engine exited 0 without --disable-dev-shm-usage -- " +
-			"the method cannot see a /dev/shm dependency")
-	}
-	if !bytes.Contains(negStderr, []byte("/dev/shm")) {
-		t.Fatalf("negative control: stderr does not mention /dev/shm -- "+
-			"the method cannot see a /dev/shm dependency: %s", negStderr)
-	}
-	if err := requireAbsent(negOut, []byte(marker)); err != nil {
-		t.Fatalf("negative control: output carries the marker -- "+
-			"the method cannot see a /dev/shm dependency: %v", err)
+	if len(controlSeen) == 0 {
+		t.Fatalf("control: created %s under %s and the observer saw nothing -- the method cannot see a /dev/shm dependency",
+			controlPath, devShmDir)
 	}
 
+	// e2. Production argv, unchanged, under the same ruleset: it must render
+	// the marker and create nothing under /dev/shm.
+	obsOut := filepath.Join(obsDir, "obs.pdf")
+	obsArgs := chromiumPrintArgs(obsDir, obsOut, "file://"+renderedPath)
+	drainProd := startDevShmObserver(t, devShmWatchDir)
+	obsCtx, obsCancel := context.WithTimeout(context.Background(), htmlLiveEngineTimeout)
+	obsExit, obsStderr, obsSetupFailed, obsErr := liveEngineRun(obsCtx, obsExec, "chromium-headless-shell", obsArgs...)
+	obsCancel()
+	prodSeen := drainProd()
+	if obsErr != nil {
+		t.Fatalf("production observation: could not start/wait the engine: %v", obsErr)
+	}
+	if obsSetupFailed {
+		t.Fatalf("production observation: the sandbox helper itself failed to set up (exit %d), not the engine -- stderr: %s",
+			obsExit, obsStderr)
+	}
+	if obsExit != 0 {
+		t.Fatalf("production observation: engine exited %d, want 0 -- stderr: %s", obsExit, obsStderr)
+	}
+	if err := requireOutput(obsOut, titleMarker); err != nil {
+		t.Fatalf("production observation: output missing %s: %v", titleMarker, err)
+	}
+	if len(prodSeen) != 0 {
+		t.Fatalf("production observation: the production argv created %d entr(ies) under %s with it reachable: %q -- "+
+			"the engine does depend on /dev/shm (G-69-3's no-mount decision is reopened)",
+			len(prodSeen), devShmDir, prodSeen)
+	}
+
+	// The engine's version, run directly (unconfined), so a later red gate can
+	// be read against the Chromium it ran on -- the image installs it unpinned
+	// on purpose (Dockerfile.chromium-worker).
+	version, verErr := exec.Command("chromium-headless-shell", "--version").Output()
+	if verErr != nil {
+		t.Fatalf("chromium-headless-shell --version: %v", verErr)
+	}
+	t.Logf("chromium: %s", strings.TrimSpace(string(version)))
+	t.Logf("dev-shm-observe: control=%d production=%d", len(controlSeen), len(prodSeen))
 	t.Logf("large-doc: fixture=%d bytes pdf=%d bytes wall=%s", len(fixture), pdfInfo.Size(), elapsed)
 }
