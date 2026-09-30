@@ -131,6 +131,29 @@ Landlock недоступен — замерено 2026-09-19 на реальн�
 3. Воркер отказывается стартовать без Landlock — включая случай, когда причина
    в эмуляции, а не в ядре
 
+**Plans:** 5 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 70-01-PLAN.md — tracer: нативный образ (на amd64 закреплена только стадия veraPDF), повторяемый дифференциальный прогон veraPDF natively vs emulated с реальным PDF/A из soffice, снятие pin в compose только при `DIVERGENCES: 0` (иначе pin остаётся и допустим только маршрут amd64-host), PDFA e2e на нативном образе; спайк по bind'у сокета soffice.bin; checkpoint: как soffice получает право на сокет (или стоп ради amd64-узла, D-03)
+
+**Wave 2** *(blocked on Wave 1 completion; runs only on `DIVERGENCES: 0`)*
+
+- [ ] 70-02-PLAN.md — право на сокет по выбранному маршруту в `internal/sandbox`, helper-режим document-worker, драйвер `scripts/document-sandbox-measure.sh` (содержимое, не код возврата), наборы soffice и veraPDF замерены и сужены удалением, маршрут `/tmp` по замеру (D-09), раздел document в SANDBOX-PATHS.md
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 70-03-PLAN.md — tracer `document` в коде: два ruleset на задачу, очищенное окружение движков (TMPDIR, JAVA_OPTS), preflight обоих движков по содержимому, отказ до Postgres, `isDocumentTerminal` с sentinel, строка класса в живом гейте (четыре общие проверки)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 70-04-PLAN.md — tracer: эмулируемый amd64-образ отказывается стартовать до Postgres (D-08), проверки маршрута `/tmp` на живом образе; `DOCUMENT_SANDBOX_DISABLED` в compose/.env/чарте, concurrency по маршруту, бюджет startupProbe
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 70-05-PLAN.md — класс целиком: e2e через конфайненный воркер (шим внутри ruleset), инверсии, сверка восьми классов, живой гейт восьми классов на пересобранных образах; CONF-07 и формулировка фазы (D-04), один todo про amd64-прод (D-05), закрытие todo
+
 Phase detail for shipped milestones lives in the collapsed sections below and in
 `.planning/milestones/`.
 
