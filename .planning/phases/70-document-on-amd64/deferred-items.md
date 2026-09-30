@@ -11,3 +11,24 @@ Worked around on this host only, outside the repo: `docker tag cgr.dev/chainguar
 minio/minio:latest` and `... minio/mc:latest` (the chainguard image ships minio, mc and sh).
 No tracked file was changed. A durable fix (pin a reachable minio/mc source in compose and the
 chart) is out of scope for phase 70 and is not attempted here.
+
+## html large-document negative control no longer fails on current Chromium (found in 70-05, 2026-09-30)
+
+`scripts/sandbox-liveproof.sh html` (and so the eight-class gate) ends `FAILURES PRESENT` on
+exactly one check, `html large-document-without-dev-shm`:
+`TestChromiumLargeDocumentNeedsNoDevShmLive` fails at its negative control
+(`chromium_live_test.go:405`: "engine exited 0 without --disable-dev-shm-usage -- the method cannot
+see a /dev/shm dependency"). The production render itself passes; only the control, which is
+supposed to prove the method could see a /dev/shm dependency, no longer sees one.
+
+Not caused by phase 70: the same failure reproduces on a `git worktree` of `705f962` (the phase 69
+tip, before any phase 70 change) built today. `Dockerfile.chromium-worker` installs
+`chromium-headless-shell` from Debian unpinned; the phase 69 measurements ran Chromium 153.0.8010.52
+(69-RESEARCH.md), images built today carry 154.0.8037.57. Likely Chromium 154 falls back to a granted
+path when /dev/shm is denied, so the flag-less run succeeds; not measured further, because the fix
+is html's and out of scope here. The claim html needs no /dev/shm still holds (the confined
+production run passes without it); what is broken is the control's ability to falsify it.
+
+Left as is: no change to chromium_live_test.go, the html ruleset or the script. A durable fix
+belongs to an html follow-up (either a control that cannot be defeated by a fallback, or pinning the
+Chromium version the gate is measured against). The other 39 checks of the 40 pass.
