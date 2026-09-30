@@ -29,7 +29,7 @@
 - [x] Phase 67: Image Confinement & Shared Sandbox — 2026-09-23, PR #28
 - [x] Phase 68: Four Straightforward Engine Classes (completed 2026-09-24)
 - [x] Phase 69: HTML, Probe & the /tmp Decision (completed 2026-09-29)
-- [ ] Phase 70: Document on amd64
+- [x] Phase 70: Document on amd64 (completed 2026-10-01)
 
 ### Phase 67: Image Confinement & Shared Sandbox
 
@@ -137,7 +137,7 @@ veraPDF (в `/opt/verapdf` jar-файлы и скрипт, ELF нет), сдел
 3. Воркер отказывается стартовать без Landlock — включая случай, когда причина
    в эмуляции, а не в ядре
 
-**Plans:** 9 plans (5 + 4 gap closure)
+**Plans:** 9/9 plans complete (5 + 4 gap closure)
 
 Plans:
 **Wave 1**
