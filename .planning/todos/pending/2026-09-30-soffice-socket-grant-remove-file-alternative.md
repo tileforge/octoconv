@@ -3,6 +3,9 @@ created: 2026-09-30
 area: sandbox
 severity: low
 origin: phase 70, gap closure -- user decision 4 (2026-09-30)
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
 ---
 
 # soffice: более узкий грант на сокет вместо `rw:/tmp` (`sock:` = MAKE_SOCK + REMOVE_FILE) — не замерен, не построен

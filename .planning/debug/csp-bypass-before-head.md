@@ -3,6 +3,10 @@ status: diagnosed
 trigger: "DATA_START\nUAT gap G-69-2 (from .planning/phases/69-html-probe-the-tmp-decision/69-UAT.md and 69-REVIEW.md CR-01): The JS-disable CSP injected by injectCSPFirst governs every script in an uploaded HTML document, including a <script> placed before the literal <head>/<html> tag -- goal: find_root_cause_only, confirm/refute EMPIRICALLY against real chromium-headless-shell, do not fix code.\nDATA_END"
 created: 2026-09-27T00:20:00Z
 updated: 2026-09-27T00:52:58Z
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: diagnosed
 ---
 
 ## Current Focus

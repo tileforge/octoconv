@@ -5,6 +5,10 @@ planted: 2026-08-03
 planted_during: post-Phase-52 (PR #5 open, reviewing external tooling)
 trigger_when: when text extraction from born-digital PDFs is asked for, or when OCR routing quality on mixed-content PDFs becomes a complaint — whichever comes first
 scope: Medium
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-021: Adopt pdf-inspector for born-digital PDF extraction and per-page OCR routing

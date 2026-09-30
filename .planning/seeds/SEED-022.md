@@ -5,6 +5,10 @@ planted: 2026-09-01
 planted_during: post-Phase-60 (PR #12 open, reviewing codex findings)
 trigger_when: when a client asks for latex→pdf or md→pdf with real typesetting — or when "pandoc can already do markup, why not PDF" comes up for the second time
 scope: Medium
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-022: Tectonic as a ninth engine class for latex → pdf

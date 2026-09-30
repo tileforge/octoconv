@@ -6,6 +6,10 @@ planted_during: post-v1.9 (design discussion after milestone close)
 revisited: 2026-08-02 (re-raised by operator during v1.12 planning; see the Revisited section)
 trigger_when: when adding a new worker/engine should require ZERO changes to core app code (only new isolated worker code + deploy config), OR when the backlog holds 3+ new engine classes to add
 scope: Large
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-010: Dynamic capability registry (self-registering workers, no API redeploy)
@@ -27,6 +31,7 @@ OctoConv is already dynamic at the *process/queue* level (each engine = its own 
 **Model: named-capability (option A).** The client names the task (`operation=tex2pdf`), not a `(source→target)` pair. One worker may expose several named capabilities; maps onto the existing `operation` column concept.
 
 **`capabilities` table (Postgres):**
+
 ```
 capability      text pk      -- "tex2pdf" (what the client asks for)
 queue           text         -- asynq queue to enqueue to (e.g. "latex")
@@ -36,6 +41,7 @@ opts_schema     jsonb        -- optional: validated opts contract
 last_heartbeat  timestamptz  -- liveness
 status          text         -- active | draining
 ```
+
 Worker on startup: `INSERT … ON CONFLICT (capability) DO UPDATE` (self-advertise) + a heartbeat loop.
 
 **Flow (SAME as today's workers — the API never launches anything):**

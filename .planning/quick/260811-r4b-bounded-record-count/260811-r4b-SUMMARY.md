@@ -12,6 +12,7 @@ provides:
   - "internal/inspect.containsExternalRelationship parses OOXML .rels parts with encoding/xml, recognizing TargetMode=\"External\" under every legal XML serialization (quote character, whitespace, attribute order), not only the single byte sequence the prior version matched"
   - "internal/inspect.findTrackByHandler selects an MP4/MOV/M4A trak by its own mdia -> hdlr -> handler_type (\"vide\"/\"soun\"), bounded by a new maxTrakCandidatesScanned cap, instead of always the first trak encountered"
   - "internal/inspect.findMoovInTail walks multiple candidate \"moov\" byte-sequence occurrences in the tail-anchored search, bounded by maxMoovTailCandidatesScanned, instead of giving up after the first occurrence fails box-header validation"
+
 affects: ["58-synchronous-inspection (the phase this bound and these parsers belong to)"]
 
 tech-stack:
@@ -42,6 +43,10 @@ requirements-completed: [PR9R4-F1-BOUND-COUNTS-RECORDS, PR9R4-F2-XML-ATTR-SERIAL
 
 duration: ~55min
 completed: 2026-08-11
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260811-r4b: Bounded Real-Record ZIP Directory Count + Three Parser Fixes Summary
@@ -124,6 +129,7 @@ See `key-decisions` in frontmatter above. In one line each:
 ## Verification Performed (literal output pasted)
 
 **`go build ./... && go vet ./...`:**
+
 ```
 BUILD_OK
 VET_OK
@@ -132,6 +138,7 @@ VET_OK
 **`gofmt -l internal/api internal/inspect`:** empty (no output), exit 0.
 
 **`go test ./... -count=1 -race`:** every package `ok`, full tail:
+
 ```
 ok  	github.com/apaderin/octoconv/internal/queue	3.403s
 ok  	github.com/apaderin/octoconv/internal/ratelimit	3.207s
@@ -140,6 +147,7 @@ ok  	github.com/apaderin/octoconv/internal/storage	3.817s
 ok  	github.com/apaderin/octoconv/internal/webhook	3.930s
 ok  	github.com/apaderin/octoconv/internal/worker	8.247s
 ```
+
 (`internal/api` and `internal/inspect`, the two touched packages, both `ok` in the same run.)
 
 **Golden fixtures, `git log --oneline -- <file>` for each of the three `pre58_*.golden.json` files:** all three show exactly one commit (`ea3f2c8`), same hash, confirming zero new commits touched them.
@@ -147,6 +155,7 @@ ok  	github.com/apaderin/octoconv/internal/worker	8.247s
 **`git diff --stat go.mod go.sum`:** empty (zero new dependencies).
 
 **Four protected tests, run in isolation by exact name:**
+
 ```
 === RUN   TestInspectZipDirectoryWithinBoundToleratesRealisticOfficeArchive
 --- PASS: TestInspectZipDirectoryWithinBoundToleratesRealisticOfficeArchive (0.01s)
@@ -158,6 +167,7 @@ ok  	github.com/apaderin/octoconv/internal/worker	8.247s
 --- PASS: TestDispatchInspectFamiliesMarksTheTrackerItWasGiven (0.05s)
 PASS
 ```
+
 `git diff --stat internal/api/inspect_handlers_test.go` (against the commit before this plan) shows `214 insertions(+)`, zero deletions -- confirming these four tests were never edited, only new tests added around them.
 
 ### Inversion 1 (Task 1, D-16): revert to round 2's dirBytes-only comparison
@@ -171,12 +181,14 @@ func zipCentralDirectoryExceedsBound(...) bool {
 ```
 
 Actual:
+
 ```
 === RUN   TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize
     inspect_handlers_test.go:611: exceeds = false, want true -- 65,537 REAL central-directory records sit behind a 46-byte lying declared size; a bound that only reads declared fields (round 1's entries, round 2's dirBytes) cannot catch this
 --- FAIL: TestZipDirectoryExceedsStructuralBoundCountsRealRecordsBehindALyingDeclaredSize (0.00s)
 FAIL
 ```
+
 Reverted; `grep -n "INVERSION-TEMP"` returned nothing after; full `internal/api` suite green again.
 
 ### Inversion 2 (Task 2, D-16): revert `containsExternalReference`'s docx/xlsx/pptx branch to the literal byte comparison
@@ -184,6 +196,7 @@ Reverted; `grep -n "INVERSION-TEMP"` returned nothing after; full `internal/api`
 Expected: the single-quoted/spaced-around-`=` subtest of `TestAnalyzeContainerExternalRefRecognizesEveryLegalXMLSerialization` fails; the double-quoted/unspaced subtest still passes.
 
 Actual:
+
 ```
 === RUN   TestAnalyzeContainerExternalRefRecognizesEveryLegalXMLSerialization/single-quoted,_spaces_around_equals
     container_test.go:495: no Finding for CodeExternalReference (got Check {Code:external_reference Status:clean Reason:} instead) -- this serialization must NOT reach a clean verdict
@@ -193,6 +206,7 @@ Actual:
 --- PASS
 --- FAIL: TestAnalyzeContainerExternalRefRecognizesEveryLegalXMLSerialization (0.00s)
 ```
+
 Reverted; `internal/inspect` suite green again.
 
 ### Inversion 3 (Task 2, D-16): revert `findTrackDimensions` to `firstChildBox(moovPayload, "trak", tr)` (first trak, unconditionally)
@@ -200,11 +214,13 @@ Reverted; `internal/inspect` suite green again.
 Expected: `TestAnalyzeMediaVideoDimensionsFoundWhenAudioTrackPrecedesVideoTrack` fails, reporting 0x0.
 
 Actual:
+
 ```
 === RUN   TestAnalyzeMediaVideoDimensionsFoundWhenAudioTrackPrecedesVideoTrack
     media_test.go:406: width = 0x0, want 640 -- the VIDEO track's real dimensions, not the preceding audio track's 0x0
 --- FAIL: TestAnalyzeMediaVideoDimensionsFoundWhenAudioTrackPrecedesVideoTrack (0.00s)
 ```
+
 Reverted; `internal/inspect` suite green again.
 
 ### Inversion 4 (Task 2, D-16): revert `findMoov`'s tail search to the original single-candidate version
@@ -212,11 +228,13 @@ Reverted; `internal/inspect` suite green again.
 Expected: `TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload` fails.
 
 Actual:
+
 ```
 === RUN   TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload
     media_test.go:470: duration_seconds = <nil>, want 5.0 -- an incidental earlier "moov" byte sequence inside mdat's own payload must not stop the search from reaching the REAL moov box that follows it
 --- FAIL: TestAnalyzeMediaFindsMoovDespiteEarlierIncidentalOccurrenceInPayload (0.00s)
 ```
+
 Reverted; `internal/inspect` suite green again.
 
 ### Inversion 5 (candidate-cap itself, D-16, per the plan's "plus one for the ceiling" requirement)
@@ -226,11 +244,13 @@ Disabled `findTrackByHandler`'s own candidate-cap check (`if false && candidates
 Expected: `TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes` fails -- with the cap disabled, the search runs to completion and correctly determines no video track exists, flipping the reason from `work_ceiling_bytes` to `malformed_input`.
 
 Actual:
+
 ```
 === RUN   TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes
     media_test.go:501: width_reason = "malformed_input", want "work_ceiling_bytes" -- OUR OWN candidate cap, not the file's structure, decided this miss
 --- FAIL: TestFindTrackByHandlerCandidateCeilingIsWorkCeilingBytes (0.00s)
 ```
+
 Reverted; `internal/inspect` suite green again; `grep -n "INVERSION-TEMP"` returned nothing.
 
 ## User Setup Required

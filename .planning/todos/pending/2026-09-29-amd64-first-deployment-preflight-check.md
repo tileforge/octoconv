@@ -3,6 +3,9 @@ created: 2026-09-29
 area: deploy
 severity: medium
 origin: phase 70 D-05 -- the one follow-up for amd64 production across all eight confined classes
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
 ---
 
 # Первый деплой на amd64: проверить, что все восемь классов действительно стартуют под Landlock

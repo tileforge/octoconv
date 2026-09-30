@@ -5,6 +5,10 @@ planted: 2026-07-26
 planted_during: post-v1.9 (worker-ideas brainstorm)
 trigger_when: scoping a milestone for a metadata / privacy / file-processing engine (uses the reserved `probe` engine enum value)
 scope: Medium
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-013: Metadata extraction & scrub engine (EXIF/IPTC/XMP)

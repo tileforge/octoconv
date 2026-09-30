@@ -5,6 +5,7 @@ subsystem: api
 tags: [pdf, inspect, security-review, false-negative, denial-of-service, coverage]
 
 # Dependency graph
+
 requires:
   - phase: 58-synchronous-inspection
     provides: internal/inspect's FamilyResult/Check/Coverage three-value status model (D-02a/INSP-03) this task's fixes operate inside
@@ -18,9 +19,11 @@ provides:
   - "container.go: extractXLSXSheetCount (audit finding, unnamed by either review round) gets the identical fix -- declared-size skip and open/read errors now report unknown/work_ceiling_bytes for sheet_count, not malformed_input"
   - "image.go: scanJPEGMetadata/scanPNGMetadata/scanRIFFChunkMetadata report ceilingHit alongside found, closing the gap where maxMetadataMarkerScanIterations exhaustion inside a FULLY-buffered window still reported clean"
   - "media.go (audit finding, never named by either review round): isobmffCharacteristics's mvhd/trak/mdia/minf/stbl/stsd lookups, wavCharacteristics's chunk walk, and ebmlCharacteristics's Info/Duration/Tracks lookups all now distinguish THIS SCAN's own iteration/byte ceiling from a genuine structural fact about the file -- previously all three either misattributed a ceiling to malformed_input (isobmff, wav) or misattributed a genuine structural miss to work_ceiling_bytes unconditionally (ebml, the opposite-direction defect)"
+
 affects: [60-sanitize-verifier, any-future-inspect-followup]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -50,8 +53,13 @@ key-decisions:
 requirements-completed: [PR9R2-F1-OPAQUE-RANGE-QUADRATIC, PR9R2-F2-PDF-LEXICAL-CONTEXT, PR9R2-F3-CONTAINER-READ-ERRORS, PR9R2-F4-IMAGE-ITERATION-CAP]
 
 # Metrics
+
 duration: ~55min
 completed: 2026-08-11
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260810-r2i: Round 2 Inspect Exit-Path Sweep Summary
@@ -278,12 +286,14 @@ Exit-path table for every scanner in `internal/inspect` (`pdf.go`, `container.go
 **Change:** `inOpaqueRange` -> reverted to the original per-occurrence linear scan over `ranges`.
 **Expected:** `TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic` fails (does not return within 5s).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic
     pdf_test.go:568: AnalyzePDF did not return within 5s -- the opaque-range filter is quadratic in occurrences x ranges again
 --- FAIL: TestAnalyzePDFOpaqueRangeFilterIsNotQuadratic (5.01s)
 FAIL
 ```
+
 Reverted; test passes in 0.07-0.08s.
 
 ### T-R2I-02a -- PDF name-boundary check (lexical context)
@@ -291,12 +301,14 @@ Reverted; test passes in 0.07-0.08s.
 **Change:** `scanTokenOccurrences`'s `validBoundary` -> forced `true` unconditionally.
 **Expected:** `TestAnalyzePDFJScriptNameDoesNotMatchJS` fails (a critical Finding is produced for `/JScript`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzePDFJScriptNameDoesNotMatchJS
     pdf_test.go:490: got a critical Finding {Code:pdf_javascript Severity:critical Location:183} for /JScript, which is a different PDF name from /JS -- a substring match without a name-boundary check is exactly codex PR9 round 2's finding
 --- FAIL: TestAnalyzePDFJScriptNameDoesNotMatchJS (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### T-R2I-03a -- container.go f.Open error preservation
@@ -304,12 +316,14 @@ Reverted; full suite green again.
 **Change:** `scanExternalReferences`'s `f.Open` error branch -> reverted to bare `continue`.
 **Expected:** `TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean
     container_test.go:522: Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part could not be opened, so clean is not an honest answer about the file
 --- FAIL: TestAnalyzeContainerUnopenableRelsPartYieldsUnknownNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### T-R2I-03b -- container.go io.ReadAll error preservation
@@ -317,12 +331,14 @@ Reverted; full suite green again.
 **Change:** `scanExternalReferences`'s `readErr != nil` check -> `false && readErr != nil` (disabled).
 **Expected:** `TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean
     container_test.go:588: Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part's read failed partway through, so clean is not an honest answer
 --- FAIL: TestAnalyzeContainerReadErrorMidPartYieldsUnknownNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### T-R2I-04a -- image.go PNG iteration ceiling
@@ -330,12 +346,14 @@ Reverted; full suite green again.
 **Change:** `scanPNGMetadata`'s ceiling branch -> `return "", false, false` (ceilingHit forced false).
 **Expected:** `TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean
     image_test.go:216: check metadata_present status = clean, want unknown
 --- FAIL: TestAnalyzeImagePNGIterationCeilingIsUnknownNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### T-R2I-04b -- image.go JPEG iteration ceiling
@@ -343,12 +361,14 @@ Reverted; full suite green again.
 **Change:** `scanJPEGMetadata`'s ceiling branch -> `return "", false, false` (ceilingHit forced false).
 **Expected:** `TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean
     image_test.go:245: check metadata_present status = clean, want unknown
 --- FAIL: TestAnalyzeImageJPEGIterationCeilingIsUnknownNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Audit finding inversion -- media.go EBML malformed-vs-ceiling collapse
@@ -356,12 +376,14 @@ Reverted; full suite green again.
 **Change:** `ebmlMissReason` -> always `return ReasonWorkCeilingBytes` (the pre-fix behavior).
 **Expected:** `TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling` fails.
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling
     media_test.go:436: duration_seconds_reason = "work_ceiling_bytes", want "malformed_input" -- this tiny file was read and walked in full, with no ceiling of any kind hit; the absence of Info/Duration is a fact about the FILE
 --- FAIL: TestAnalyzeMediaEBMLSmallMalformedFileIsMalformedNotWorkCeiling (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Audit finding inversion -- media.go ISOBMFF child-box iteration ceiling
@@ -369,12 +391,14 @@ Reverted; full suite green again.
 **Change:** `walkTopLevelBoxes`'s ceiling branch -> `return false` (ceilingHit forced false, the pre-fix behavior).
 **Expected:** `TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes` fails.
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes
     media_test.go:353: duration_seconds_reason = "malformed_input", want "work_ceiling_bytes" -- OUR iteration ceiling, not the file's structure, decided this miss
 --- FAIL: TestAnalyzeMediaISOBMFFChildBoxIterationCeilingIsWorkCeilingBytes (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Audit finding inversion -- container.go extractXLSXSheetCount
@@ -382,12 +406,14 @@ Reverted; full suite green again.
 **Change:** `setSheetAndPageCharacteristics`'s xlsx branch -> `if false && ceilingHit` (disabled).
 **Expected:** `TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed` fails.
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed
     container_test.go:378: sheet_count_reason = "malformed_input", want "work_ceiling_bytes" -- this scan's own declared-size skip, not the file's structure, decided this miss
 --- FAIL: TestAnalyzeContainerSheetCountDeclaredSizeSkipIsWorkCeilingNotMalformed (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 **Not separately inverted (occurrence-cap ceiling, PDF):** `TestAnalyzePDFOpaqueOccurrenceCeilingIsUnknownNotClean` was verified to pass on the FIRST implementation attempt (no inversion needed to prove it distinguishes correctly, since the occurrence cap and the boundary check are independent code paths already covered by the two inversions above) -- included in the acceptance criteria as a positive test, not as a third required inversion.

@@ -12,6 +12,7 @@ provides:
   - "inspectSemaphore.acquireOrReject: slot acquisition moved from outer middleware to inside handleInspect, after body intake"
   - "Work-ceiling context for Repo.PreAdmit created after body intake, not at handler entry"
   - "estimateSourceFor: per-request provenance downgrade when a measured engine's configured timeout diverges from its documented measured value"
+
 affects: [58-synchronous-inspection, "phase 60 (sanitize) if it reuses estimate.go's provenance pattern"]
 
 tech-stack:
@@ -46,6 +47,10 @@ requirements-completed: [PR9-F7-ZIP-DIRECTORY-UNBOUNDED, PR9-F8-SEMAPHORE-BEFORE
 
 duration: 55min
 completed: 2026-08-10
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260810-slf: Four Codex PR #9 Findings in internal/api Summary

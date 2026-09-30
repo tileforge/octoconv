@@ -18,6 +18,7 @@
   file) to get past this pre-existing gap and actually exercise the
   templates this plan changed. Not fixed here — out of scope (Rule 3
   scope boundary: pre-existing failure in a file this plan does not touch).
+  status: acknowledged
 
 ## Codex PR#9 round 22 (2026-08-17)
 
@@ -31,6 +32,7 @@
   `maxRelsPartBytes`. Out of scope for a review round: it is a new parser, not
   a correction to an existing one. D-01 governs the interim label — no parser
   written is an honest unknown, not a failure.
+  status: acknowledged
 
 ## Codex PR#9 round 25 (2026-08-18) — recorded, not fixed
 
@@ -61,3 +63,4 @@
   Decide deliberately: either read_failed joins the ceiling reasons in making
   coverage partial (with its own reason value), or the docs state plainly that
   `complete` means "no ceiling was hit", not "everything was inspected".
+  status: acknowledged

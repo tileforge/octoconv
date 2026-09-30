@@ -5,6 +5,7 @@ subsystem: api
 tags: [webhook, mcp, openapi, errcode, redocly]
 
 # Dependency graph
+
 requires:
   - phase: 57-operation-dimension-output-roles
     provides: jobs.Output.Role, D-13 exactly-one-primary invariant, ROLE-02 fix for handleGetJob, the operations key of GET /v1/formats
@@ -13,9 +14,11 @@ provides:
   - internal/jobs.OutputRolePrimary as the single Go declaration of the "primary" role literal
   - internal/mcpserver's FormatsResponse decoding the operations discovery key
   - docs/openapi.yaml with a required, enumerated, drift-guarded Error.code; operation/operations/outputs fields matching the shipped code
+
 affects: [worker, mcpserver, openapi, errcode]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -45,8 +48,13 @@ patterns-established:
 requirements-completed: [PR7-F1-WEBHOOK-ROLE, PR7-F2-MCP-OPERATIONS, PR7-F3-OPENAPI-ERRCODE, PR7-F4-OPENAPI-SHAPES]
 
 # Metrics
+
 duration: 7min
 completed: 2026-08-09
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260809-ul4: Codex PR #7 review fixes Summary
@@ -60,6 +68,7 @@ completed: 2026-08-09
 - **Files modified:** 6 modified, 2 created
 
 ## Accomplishments
+
 - Closed the same defect class ROLE-02/57-06 fixed for `GET /v1/jobs/{id}` on the webhook delivery path: `HandleWebhookDeliver` now selects `download_url` by `jobs.OutputRolePrimary`, never by `outs[0]`
 - Both MCP binaries (via the single shared `internal/mcpserver` package) now decode the `operations` discovery key that `tools.go:68`'s jsonschema already advertised
 - `docs/openapi.yaml`'s `Error` schema now requires `code`, enumerated over the closed `internal/errcode` vocabulary, with a Go test (`openapi_sync_test.go`) that fails if the two ever drift
@@ -77,6 +86,7 @@ Each task was committed atomically:
 _No TDD RED/GREEN split commits — each task's test additions and implementation landed together per this plan's `<action>` wording, and Task 1/Task 2's `<verify>` blocks require both the tests and the implementation before the commit is created._
 
 ## Files Created/Modified
+
 - `internal/jobs/jobs.go` - Added exported `OutputRolePrimary = "primary"` constant above the `Output` type
 - `internal/api/handlers.go` - `outputRolePrimary` now aliases `jobs.OutputRolePrimary` instead of re-declaring the literal
 - `internal/worker/worker.go` - Added `setWebhookDownloadURL` pure helper below `buildTerminalWebhookBody`; `HandleWebhookDeliver`'s done-branch now calls it instead of presigning `outs[0]`
@@ -87,6 +97,7 @@ _No TDD RED/GREEN split commits — each task's test additions and implementatio
 - `internal/errcode/openapi_sync_test.go` - New: set-equality proof between `docs/openapi.yaml`'s `Error.code` enum and `errcode.All()`
 
 ## Decisions Made
+
 - `OutputRolePrimary` lives in `internal/jobs`, not a parallel literal in `internal/worker` — the package that owns the `Output` type and the D-13 exactly-one-primary guard is the correct owner of the vocabulary (matches the plan's stated rationale; this is exactly how the api/worker divergence this plan fixes came about in the first place)
 - `setWebhookDownloadURL` takes an injected `presign func(context.Context, string) (string, error))` closure rather than a `*storage.Client`, making it unit-testable without a live S3/BucketExists round trip
 - `openapi_sync_test.go` reuses `doc_sync_test.go`'s `diffSets` helper (same `errcode_test` package) rather than duplicating it — `go vet` caught the initial duplicate declaration and it was removed before the first test run

@@ -5,15 +5,18 @@ subsystem: ui
 tags: [react, vitest, typescript, sse, retry]
 
 # Dependency graph
+
 requires: []
 provides:
   - "frontend/src/formats.ts pure capability layer (normalizeFormat, sourceFormatOfFilename, targetFormatsFor, targetFormatsOf) mirroring internal/convert NormalizeFormat's alias table"
   - "frontend/src/api.ts bounded-retry core (isRetryableError, getJobWithRetry) for the post-terminal finalize GET"
   - "App.tsx live-progress effect keyed on job id only, identity-gated finalize write, file-derived target selector"
   - "vitest@4.1.10 test infrastructure for the frontend (node environment, no DOM runtime)"
+
 affects: [frontend]
 
 # Tech tracking
+
 tech-stack:
   added: ["vitest@4.1.10 (dev-only, environment: node)"]
   patterns: ["client-side alias table hand-mirrored from a Go source of truth with an explicit doc-comment pointer back to it", "injectable fetchJob/sleep seams for testing async retry logic without fake timers or network stubs", "identity-gated functional setState update (prev.id === id) replacing an effect-lifecycle cancelled flag for async writes that must survive their own triggering state transition"]
@@ -33,8 +36,13 @@ patterns-established:
 requirements-completed: [PR2-F1-FINALIZE-RACE, PR2-F2-FINALIZE-RETRY, PR2-F3-TARGET-FILTER]
 
 # Metrics
+
 duration: 25min
 completed: 2026-08-02
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Phase quick-260802-asr Plan 01: Fix three frontend bugs found in PR#2 review Summary

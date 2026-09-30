@@ -5,6 +5,7 @@ subsystem: testing
 tags: [postgres, pgx, advisory-lock, pg_locks, quota-admission, mutation-testing]
 
 # Dependency graph
+
 requires:
   - phase: 52-quota-enforcement-intra-class-fairness
     provides: admission.go's advisory-locked admission gate and repo.go's guarded transition() this task's tests exercise
@@ -14,9 +15,11 @@ provides:
   - Engine-scoped daily-cap in-flight verification query, made load-bearing via a cross-engine fixture
   - Self-contained db.Migrate call in the repeatable-read isolation test, removing its dependency on test execution order
   - Exact illegal-transition error assertion on repeated Cancel, replacing an err != nil-only check
+
 affects: [52-quota-enforcement-intra-class-fairness, any-future-pr5-review-followup]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -37,8 +40,13 @@ key-decisions:
 requirements-completed: [PR5-CODEX-P2, PR5-CODEX-P3, PR5-CR-MIGRATE, PR5-CR-DEADBRANCH, PR5-CR-WEAKCANCEL]
 
 # Metrics
+
 duration: 35min
 completed: 2026-08-03
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260803-q7u: Fix Test-Integrity Defects Found by Code Review Summary
@@ -86,21 +94,27 @@ _No TDD red/green split -- these are pure test-integrity fixes to existing tests
 ### Finding 1 (Codex P2b) -- daily-cap lock-coverage determinism
 
 **Mutation A -- advisory lock removed** (`admission.go`, `SELECT pg_advisory_xact_lock($1, $2)` commented out):
+
 ```
 fails=0; for i in $(seq 1 10); do go test ./internal/jobs -run TestConcurrentBurstDailyJobsCapAdmitsExactlyOne -count=1 >/dev/null 2>&1 || fails=$((fails+1)); done; echo "mutantA failures: $fails"
 ```
+
 Result: `mutantA failures: 10` (10 of 10). The prior channel-release version of this test measured **1 of 5** failures against the same mutant (okCount observed at 3, 7, 8, 11 on the 4 passing-mutant runs) -- this is the exact defect fixed.
 
 **Mutation B -- `evaluate` hoisted ahead of the lock**:
+
 ```
 fails=0; for i in $(seq 1 3); do go test ./internal/jobs -run TestConcurrentBurstDailyJobsCapAdmitsExactlyOne -count=1 >/dev/null 2>&1 || fails=$((fails+1)); done; echo "mutantB failures: $fails"
 ```
+
 Result: `mutantB failures: 3` (3 of 3). Observed failure: `okCount = 10, want exactly 1` (all 12 goroutines carried a stale pre-lock verdict past the now-decorative lock; okCount varies run to run but is never 1).
 
 **Clean/determinism bar (10 independent runs, post-restore)**:
+
 ```
 fails=0; for i in $(seq 1 10); do go test ./internal/jobs -run TestConcurrentBurstDailyJobsCapAdmitsExactlyOne -count=1 >/dev/null 2>&1 || fails=$((fails+1)); done; echo "clean failures: $fails"
 ```
+
 Result: `clean failures: 0` (ran twice -- once immediately after writing the test, once again as part of the final verification pass).
 
 `admission.go` restored byte-identical after both mutations (`git diff --stat internal/jobs/admission.go` empty, confirmed after each mutation and at final verification).
@@ -108,15 +122,19 @@ Result: `clean failures: 0` (ran twice -- once immediately after writing the tes
 ### Finding 2 (Codex P3) -- status-partition proves coverage, not partition
 
 **Mutation C -- double membership, union unaffected** (`admission.go`, `quotaLedgerStatuses` temporarily appended with `StatusAwaitingUpload` while leaving it in `quotaUnaccountedStatuses`):
+
 ```
 go test ./internal/jobs -run TestEveryJobStatusIsClassifiedForQuotaAccounting -count=1
 ```
+
 Result: `FAIL` -- `ledger vs unaccounted: status(es) [awaiting_upload] appear in BOTH quotaLedgerStatuses and quotaUnaccountedStatuses -- a status must consume quota in exactly one way; move it out of one of these two sets`.
 
 **Proof the OLD test was blind** -- with mutant C still applied, the new disjointness block was temporarily wrapped in `if false { ... }`:
+
 ```
 go test ./internal/jobs -run TestEveryJobStatusIsClassifiedForQuotaAccounting -count=1
 ```
+
 Result: `PASS` -- confirming the pre-existing union-only checks do not, and cannot, catch a double-membership defect. Disjointness block and mutant C both restored; `admission.go` byte-identical (`git diff --stat` empty).
 
 The daily-cap engine-scoping half of this task is Finding 5 below (same test function, same commit).
@@ -126,21 +144,26 @@ The daily-cap engine-scoping half of this task is Finding 5 below (same test fun
 Confirmed true by reading `repo_test.go:14-29` (`newTestRepo` is the only other `db.Migrate` call site) and `admission_test.go`'s `TestAdmissionHoldsUnderRepeatableReadDefault` (builds its own pool via `NewRepo` directly, no migrate call).
 
 **Fix verification -- fresh, unmigrated database, run alone:**
+
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
 DATABASE_URL="${DATABASE_URL%/*}/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
 ```
+
 Result: `--- PASS: TestAdmissionHoldsUnderRepeatableReadDefault`. (No `relation "clients" does not exist` error -- the exact failure reproduced below with the call removed.)
 
 **Mutation F -- `db.Migrate` call removed:**
+
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'DROP DATABASE octoconv_freshgate'
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
 DATABASE_URL="${DATABASE_URL%/*}/octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1 -v
 ```
+
 Result: `FAIL` -- `admission_test.go:998: create test client: ERROR: relation "clients" does not exist (SQLSTATE 42P01)` -- exact reproduction of the reported failure.
 
 Call restored, re-verified PASS against a fresh database, then dropped:
+
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'DROP DATABASE octoconv_freshgate'
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
@@ -153,6 +176,7 @@ The fix used the plan's primary form (`db.Migrate(ctx, pool)` called directly on
 ### Finding 4 (CodeRabbit, relayed) -- dead `ErrConcurrencyLimit` branch
 
 **Confirmed against the code** (not skipped): in the pre-fix `TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher`, the sequence was:
+
 ```go
 if !errors.Is(err, ErrDailyBytesLimit) {
     t.Fatalf(...)   // halts the test (runtime.Goexit) unless err IS ErrDailyBytesLimit
@@ -161,6 +185,7 @@ if errors.Is(err, ErrConcurrencyLimit) {   // unreachable: err is already known 
     t.Fatalf(...)
 }
 ```
+
 `ErrConcurrencyLimit` and `ErrDailyBytesLimit` are distinct unwrapped `errors.New` sentinels (`admission.go`), and `evaluate` returns exactly one verdict sentinel per call -- so the second branch could never fire. Removed; its intent folded into the surviving assertion's failure message.
 
 ### Finding 5 (CodeRabbit, relayed) -- engine-unscoped verification query
@@ -168,15 +193,19 @@ if errors.Is(err, ErrConcurrencyLimit) {   // unreachable: err is already known 
 **Confirmed against the code** (not skipped): the pre-fix query read `WHERE j.client_id = $1 AND j.status IN ('queued', 'active')` with no `j.engine` predicate, while production `evaluate` filters both in-flight terms on `j.engine` (`admission.go`).
 
 **Mutation D, leg 1 -- byte-sum query engine predicate removed:**
+
 ```
 go test ./internal/jobs -run TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher -count=1 -v
 ```
+
 Result: `FAIL` -- `in-flight image bytes = 1500, want exactly 1000` (the cross-engine `document` fixture's 500 bytes leaked in without the engine filter).
 
 **Mutation D, leg 2 -- new count query engine predicate removed:**
+
 ```
 go test ./internal/jobs -run TestDailyCapNoLongerOvershootsWhenConcurrencyIsHigher -count=1 -v
 ```
+
 Result: `FAIL` -- `in-flight image job count = 2, want exactly 1` (the document job counted alongside the image job without the engine filter).
 
 Both predicates restored; `admission.go`/test query both confirmed byte-identical / correct via a clean re-run (`--- PASS`).
@@ -184,15 +213,19 @@ Both predicates restored; `admission.go`/test query both confirmed byte-identica
 ### Mutant G (repo.go, Task 3 Part B) -- Cancel fails for a different reason
 
 `Repo.transition`'s illegal-transition return temporarily replaced with `fmt.Errorf("apply transition: simulated recordUsage failure")`:
+
 ```
 go test ./internal/jobs -run TestCancelRecordsUsageExactlyOnce -count=1 -v
 ```
+
 Result: `FAIL` -- `repeated Cancel error = apply transition: simulated recordUsage failure, want exactly "illegal transition canceled -> canceled for job <uuid>"` (tightened assertion catches it).
 
 With mutant G still applied, the assertion was temporarily loosened back to `err == nil`:
+
 ```
 go test ./internal/jobs -run TestCancelRecordsUsageExactlyOnce -count=1 -v
 ```
+
 Result: `PASS` -- proving the OLD `err != nil`-only check would have silently accepted this exact regression class. Both the assertion and `repo.go` restored; `git diff --stat internal/jobs/repo.go` empty.
 
 ## Final Verification
@@ -205,6 +238,7 @@ go test ./... -count=1         # all packages ok, including internal/jobs
 ```
 
 Fresh-DB single-test bar (re-run once at the end, per the plan's `<verification>` section):
+
 ```
 docker exec octoconv-db psql -U octo -d octo_db -c 'CREATE DATABASE octoconv_freshgate'
 DATABASE_URL=".../octoconv_freshgate" go test ./internal/jobs -run TestAdmissionHoldsUnderRepeatableReadDefault -count=1   # ok
@@ -212,16 +246,20 @@ docker exec octoconv-db psql -U octo -d octo_db -c 'DROP DATABASE octoconv_fresh
 ```
 
 Determinism bar (re-run once at the end, 10 independent invocations):
+
 ```
 fails=0; for i in $(seq 1 10); do go test ./internal/jobs -run TestConcurrentBurstDailyJobsCapAdmitsExactlyOne -count=1 >/dev/null 2>&1 || fails=$((fails+1)); done; echo "final clean failures: $fails"
 ```
+
 Result: `final clean failures: 0`.
 
 No-production-drift bar:
+
 ```
 git status --porcelain                                                          # empty
 git diff --stat internal/jobs/admission.go internal/jobs/repo.go internal/jobs/usage.go go.mod go.sum   # empty
 ```
+
 Both empty. `usage.go` was never touched by this task (no mutation needed it); `go.mod`/`go.sum` untouched (no dependency added, removed, or upgraded).
 
 ## Deviations from Plan

@@ -5,6 +5,10 @@ planted: 2026-09-03
 planted_during: Phase 63 review (v1.14, PR #15 in its sixth review round) — raised by the operator
 trigger_when: v1.15 scoping, or any milestone that proposes a human-facing surface on OctoConv
 scope: Large
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-023: An operator console, and the auth question that gates it

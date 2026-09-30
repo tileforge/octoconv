@@ -11,6 +11,7 @@ provides:
   - "Config.MaxPandocInputBytes: API-side mirror of the worker's PANDOC_MAX_INPUT_BYTES, folded into NewServer's D-07 default map"
   - "readSniffPrefix rune-boundary trim: a size-cap-truncated UTF-8 prefix is judged on complete runes only"
   - "docker-compose/chart/.env.example parity for the now-shared PANDOC_MAX_INPUT_BYTES env var"
+
 affects: [pandoc engine, upload validation, deployment docs]
 
 tech-stack:
@@ -44,6 +45,10 @@ requirements-completed: [PR2-F1, PR2-F2]
 
 duration: ~30min
 completed: 2026-08-02
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260802-9de: Close remaining PR#2 review findings Summary

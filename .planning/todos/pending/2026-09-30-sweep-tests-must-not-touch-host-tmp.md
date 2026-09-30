@@ -3,6 +3,9 @@ created: 2026-09-30
 area: testing
 severity: low
 origin: phase 70, plan 70-07 (Deviation 3) -- recorded at 70-09 at the user's request
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
 ---
 
 # Тест, который строит `ConfinedDocument`/`ConfinedChromium` и доходит до `Convert`, чистит настоящий `/tmp` хоста

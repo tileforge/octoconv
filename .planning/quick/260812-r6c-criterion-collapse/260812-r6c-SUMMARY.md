@@ -1,3 +1,10 @@
+---
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
+---
+
 # Quick Task 260812-r6c: Criterion Collapse — Summary
 
 Sixth review round on PR #9. Both P2 findings confirmed against code and fixed.

@@ -3,6 +3,9 @@ created: 2026-09-30
 area: sandbox
 severity: medium
 origin: phase 70 WR-02 (70-REVIEW.md), plan 70-08
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
 ---
 
 # html держит `/proc` целиком: чужие `cmdline` и `status` читаются, `environ` нет (замерено)

@@ -5,6 +5,10 @@ planted: 2026-07-23
 planted_during: "after v1.8 AV Engine close"
 trigger_when: "when scoping a milestone that adds a new engine class beyond image/document/html/audio/av"
 scope: large
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-006: Archive engine class (zip/unzip)

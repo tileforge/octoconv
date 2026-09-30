@@ -3,6 +3,9 @@ created: 2026-09-30
 area: dev
 severity: medium
 origin: phase 70 deferred-items.md (found in 70-01) -- user decision 5 (2026-09-30)
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
 ---
 
 # Docker Hub больше не отдаёт `minio/minio` и `minio/mc`: перевести compose и chart на образ chainguard
