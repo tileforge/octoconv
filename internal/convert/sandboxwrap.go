@@ -220,15 +220,25 @@ func engineEnv(tmpDir string) []string {
 const sharedTmpDir = "/tmp"
 
 // sharedTmpGuard is D-03: a confined class whose writable set grants
-// sharedTmpDir is safe ONLY when at most one task runs at a time in that
-// container (D-01) -- concurrency above 1 would let two tasks read and write
-// each other's files there. nil when s does not confine, when readWrite
-// does not contain sharedTmpDir at all (the guard is keyed on the GRANT SET,
-// not on a class name, so it applies to any class that ever grants /tmp --
-// CONF-06), or when concurrency is at most 1.
+// sharedTmpDir is safe ONLY when exactly one task runs at a time in that
+// container (D-01). Concurrency above 1 would let two tasks read and write
+// each other's files there, and so would a value below 1: asynq treats
+// Concurrency below 1 as runtime.NumCPU(), not as one. nil when s does not
+// confine, when readWrite does not contain sharedTmpDir at all (the guard is
+// keyed on the GRANT SET, not on a class name, so it applies to any class that
+// ever grants /tmp -- CONF-06), or when concurrency is exactly 1. The value is
+// refused, never clamped: a quiet correction would hide a misconfiguration.
 func sharedTmpGuard(readWrite []string, s *engineSandbox, concurrency int, concurrencyEnv string) error {
-	if !s.confines() || !slices.Contains(readWrite, sharedTmpDir) || concurrency <= 1 {
+	if !s.confines() || !slices.Contains(readWrite, sharedTmpDir) || concurrency == 1 {
 		return nil
+	}
+	if concurrency < 1 {
+		return fmt.Errorf(
+			"%s=%d with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count, "+
+				"so several tasks would run over the container's shared %s, which this class's ruleset "+
+				"grants read-write and each task sweeps; set %s=1 and scale with replicas (CONF-06)",
+			concurrencyEnv, concurrency, sharedTmpDir, concurrencyEnv,
+		)
 	}
 	return fmt.Errorf(
 		"%s=%d with the sandbox enabled: this class's ruleset grants the container's shared %s "+
