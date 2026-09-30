@@ -597,7 +597,14 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
-      DOCUMENT_WORKER_CONCURRENCY: "2"
+      # One task per container: soffice's ruleset grants the shared /tmp
+      # read-write (70-02), and a confined worker refuses to start above 1.
+      # Scale with replicas.
+      DOCUMENT_WORKER_CONCURRENCY: "1"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, never defaulted on; unset means confined, and an
+      # amd64 image emulated on an arm64 host refuses to start (no Landlock).
+      DOCUMENT_SANDBOX_DISABLED: "${DOCUMENT_SANDBOX_DISABLED:-}"
       DOCUMENT_ENGINE_TIMEOUT: "300s"
       # queue.NewClient() (constructed by cmd/document-worker/main.go) also
       # reads the image-side and html-side retry/timeout vars and

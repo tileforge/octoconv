@@ -44,7 +44,10 @@ data:
   INSPECT_MAX_CONCURRENT: "4"
   RATE_LIMIT_INSPECT_RPM: "30"
   WORKER_CONCURRENCY: "4"
-  DOCUMENT_WORKER_CONCURRENCY: "2"
+  # CONF-06/D-09 (phase 70): one task per container -- soffice's ruleset
+  # grants the shared /tmp read-write; a confined worker refuses to start
+  # above 1.
+  DOCUMENT_WORKER_CONCURRENCY: "1"
   # CONF-06/D-01 (phase 69): one task per container -- the ruleset grants
   # the shared /tmp; a confined worker refuses to start above 1.
   HTML_WORKER_CONCURRENCY: "1"
