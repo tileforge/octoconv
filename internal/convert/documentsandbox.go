@@ -162,7 +162,9 @@ func requireNoWhitespaceJobDir(jobDir string) error {
 // (PATH, HOME, LANG, LC_ALL, each when set) plus TMPDIR inside the job
 // directory. The worker's own environment (DATABASE_URL, the S3 keys, ...) is
 // never handed on, and never modified: this builds a list, it does not
-// os.Setenv.
+// os.Setenv. That empties the engine's own /proc/self/environ; soffice's
+// ruleset grants no /proc at all (SANDBOX-PATHS.md "/proc и другие процессы",
+// 70-08), so other processes' entries are out of its reach by the grant.
 func sofficeEnv(jobDir string) []string {
 	return engineEnv(documentPreflightTmpDir(jobDir))
 }
@@ -170,7 +172,11 @@ func sofficeEnv(jobDir string) []string {
 // verapdfEnv is the environment veraPDF runs with: sofficeEnv's list plus
 // JAVA_OPTS, which the veraPDF launcher script passes to the JVM. A
 // document-specific builder, so engineEnv's shared allowlist is not widened
-// for a variable only this class needs.
+// for a variable only this class needs. As for soffice, the scrub empties the
+// engine's own /proc/self/environ. Other processes' entries were measured
+// under the old whole-/proc grant (N3, 70-08): environ denied, cmdline and
+// status open; the three-entry grant above opens none of them
+// (SANDBOX-PATHS.md "/proc и другие процессы").
 func verapdfEnv(jobDir string) []string {
 	tmp := documentPreflightTmpDir(jobDir)
 	return append(sofficeEnv(jobDir), "JAVA_OPTS=-Djava.io.tmpdir="+tmp+" -XX:-UsePerfData")

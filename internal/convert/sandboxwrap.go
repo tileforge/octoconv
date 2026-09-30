@@ -120,8 +120,8 @@ type engineExec struct {
 	// process's environment" -- run's existing runCommandAs path, unchanged.
 	// Non-nil REPLACES the environment entirely: it is not merged with the
 	// process's own, because a merge would still leak whatever the caller
-	// forgot to scrub (html's own DATABASE_URL leak via /proc/self/environ,
-	// engineEnv's doc comment).
+	// forgot to scrub into the engine's own /proc/self/environ (engineEnv's
+	// doc comment says what that does and does not close).
 	env []string
 }
 
@@ -196,10 +196,26 @@ func (s *engineSandbox) forJobRWSock(jobDir string, extraRW, sockDirs, readOnly,
 // job-scoped to point it at can still get the allowlist without a
 // meaningless TMPDIR=.
 //
-// Mirrors tectonicEnv's own allowlist (tectonic.go) -- the same measured
-// leak (a class whose grant includes /proc, and therefore
-// /proc/self/environ, hands the engine DATABASE_URL and the S3 keys unless
-// the environment itself is scrubbed) answered the same way for html.
+// Mirrors tectonicEnv's own allowlist (tectonic.go), the same answer to the
+// same leak.
+//
+// What the scrub closes is the ENGINE's OWN /proc/self/environ: that file is
+// the environment the engine was started with, so handing the worker's on
+// would hand over DATABASE_URL and the S3 keys (measured for tectonic before
+// it was confined, and for html). Replacing the environment empties that file
+// whatever the ruleset grants; tectonic's ruleset, for one, grants no /proc at
+// all (tectonicSystemReadOnly).
+//
+// It does not decide whether a confined engine can open OTHER processes'
+// /proc/<pid>/environ -- the worker's and PID 1's, which do hold the secrets.
+// That depends on the class's /proc grant and was measured, not assumed (N3,
+// scripts/document-sandbox-measure.sh; 70-08, SANDBOX-PATHS.md "/proc и другие
+// процессы"): with /proc granted whole (veraPDF before 70-08, html today)
+// opening them was denied, while the same processes' cmdline and status
+// opened. The denial is at the open of environ itself and is not something the
+// filesystem grant provides (the mechanism is inferred to be Landlock's ptrace
+// check; the denial is what was measured), so a class should not lean on it:
+// its /proc grant is the thing it controls.
 func engineEnv(tmpDir string) []string {
 	keep := []string{"PATH", "HOME", "LANG", "LC_ALL"}
 	env := make([]string, 0, len(keep)+1)

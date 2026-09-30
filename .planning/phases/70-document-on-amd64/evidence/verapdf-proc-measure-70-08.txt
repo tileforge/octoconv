@@ -101,6 +101,27 @@ candC: candB minus every removable entry at once = /proc/cgroups /proc/self/cgro
   PPID=6
   PASS: N3 (0.5s) with the canary proven present unconfined, /proc/1/environ, the parent's environ and /proc/self/root/etc/hostname all denied
 
+HTML: the same N3 probe under html's ruleset (plan 70-08 Task 2; probe only, html's grant is NOT changed)
+Image built from this tree: Dockerfile.chromium-worker (native arm64). Shape as the driver's N3: container entrypoint sh (PID 1) with OCTOCONV_CANARY in its environment, `timeout` as the helper's parent, limits --cpus 2.0 --memory 1g.
+Confined command: /usr/local/bin/chromium-worker __sandbox-exec rw:/tmp/job <html conf05 ro: tokens from `scripts/conf05-crosscheck.sh --doc html`> rw:/tmp rw:/dev/null ro:/usr/bin/chromium-headless-shell -- /usr/bin/dash -c <the driver's N3_OPEN probe>
+(the probe script is the driver's N3 text; run from a scratch script outside the repo, output below verbatim)
+  tokens: rw:/tmp/job ro:/usr/bin/dash ro:/lib ro:/usr/lib ro:/usr/share ro:/usr/local/share ro:/etc/fonts ro:/etc/ld.so.cache ro:/etc/localtime ro:/etc/nsswitch.conf ro:/etc/host.conf ro:/etc/hosts ro:/etc/resolv.conf ro:/proc ro:/sys/devices ro:/dev/urandom rw:/tmp rw:/dev/null ro:/usr/bin/chromium-headless-shell
+  -- unconfined, same container shape
+  CANARY-PRESENT /proc/1/environ
+  CANARY-PRESENT /proc/6/environ
+  PPID=6
+  -- confined: chromium-worker __sandbox-exec <html tokens> -- /usr/bin/dash -c <probe>
+  DENIED /proc/1/environ
+  DENIED /proc/6/environ
+  DENIED /proc/self/root/etc/hostname
+  PROC-OTHER: /proc/1/cmdline opened
+  PROC-OTHER: /proc/6/cmdline opened
+  PROC-OTHER: /proc/6/status opened
+  CONTROL: /proc/self/environ opened
+  CONTROL: /proc/self/cmdline opened
+  PPID=6
+Reading: same pattern as veraPDF's baseline. The canary is proven readable unconfined in PID 1 and the parent; under html's whole-/proc grant their environ is DENIED, their cmdline and status OPEN, the engine's own environ and cmdline open. No environ row opened, so the follow-up todo is severity medium. Not traced: what chromium itself reads under /proc, and its child processes (zygote, renderer, GPU re-execute the binary, so a /proc/self entry resolved in the helper's pid would cover none of them).
+
 == GATES on the narrowed set (repo blocks changed to candC) ==
 scripts/conf05-crosscheck.sh document:
   MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)

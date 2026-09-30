@@ -132,9 +132,11 @@ preflight-набор (`sandbox.Preflight`-подобные проверки, д�
 разделять с job dir ещё один writable-путь сверх самого каталога задачи —
 сегодня использует только `html`, ради `/tmp`), `engineExec.withEnv`/`engineEnv`
 (среда движка ЗАМЕНЯЕТСЯ целиком на allowlist `PATH`/`HOME`/`LANG`/`LC_ALL` +
-опциональный `TMPDIR`, никогда не наследуется процессом-воркером — нужно
-классу, чей grant включает `/proc`, иначе секреты воркера утекли бы через
-`/proc/self/environ`) и общий guard на разделяемый `/tmp`, ключ которого —
+опциональный `TMPDIR`, никогда не наследуется процессом-воркером; это закрывает
+СОБСТВЕННЫЙ `/proc/self/environ` движка, а не чужие `/proc/<pid>/environ` — читаются ли
+они, зависит от гранта `/proc` класса и замерено (N3, раздел «/proc и другие
+процессы» в документе ниже; `tectonic` `/proc` не выдаёт вовсе,
+`tectonicSystemReadOnly`)) и общий guard на разделяемый `/tmp`, ключ которого —
 сам GRANT SET (любой класс, чей writable-набор содержит разделяемый `/tmp`),
 а не имя класса. Allowlist `sandboxcoverage_test.go`'s `sandboxPendingFiles`
 теперь пуст: каждый движковый класс в `internal/convert` идёт через
@@ -374,7 +376,19 @@ octoconv-probe-worker:measure69, 2026-09-25). С этим едут два усл
 
 html-набор включает `/proc` целиком, а значит и `/proc/self/environ`; поэтому
 движок получает окружение из белого списка (`PATH`, `HOME`, `LANG`, `LC_ALL`)
-— тот же ответ, что tectonic дал на ту же замеренную утечку.
+— тот же ответ, что tectonic дал на ту же замеренную утечку. Это закрывает
+собственный `environ` движка; чужие записи `/proc` под тем же грантом замерены
+один раз (N3, 70-08, образ из этого дерева, движок `/usr/bin/dash` через
+`chromium-worker __sandbox-exec`, канарейка в окружении контейнера доказана без
+ruleset): `/proc/1/environ`, `/proc/<ppid>/environ`, `/proc/self/root/etc/hostname` —
+**отказ**; `/proc/1/cmdline`, `/proc/<ppid>/cmdline`, `/proc/<ppid>/status` —
+**открылись**; свои `environ` и `cmdline` — открылись (`evidence/verapdf-proc-measure-70-08.txt`,
+раздел HTML). Там же: сужать html так же, как veraPDF, нельзя по форме дела —
+chromium пере-`exec`ает себя для дочерних процессов (Ловушки §1), и запись
+`/proc/self/...`, резолвленная helper'ом в его pid, не покроет zygote, renderer и GPU:
+у каждого свой pid. Что chromium читает в `/proc`, в этой фазе не трассировалось
+(решение пользователя 3: не перемерять каждый класс). Остаток — в
+`.planning/todos/pending/2026-09-30-proc-grant-other-process-entries.md`.
 
 Внешний файл preflight'а html лежит под `/var/tmp`, потому что файл под `/tmp`
 был бы внутри гранта.
@@ -1156,6 +1170,57 @@ ruleset и под ним, с теми же лимитами, и дополнит
 Трасса: скрипт запуска завершается `exec "$JAVACMD" $JAVA_OPTS ...`, и strace показывает
 два `execve` (скрипт, затем `/usr/bin/java`) в одном pid (`LAUNCHER: exec`), так что записи
 `/proc/self/*` покрывают JVM. Свидетельства: `evidence/verapdf-proc-measure-70-08.txt`.
+
+### /proc и другие процессы (WR-02, 70-08)
+
+Ревью (WR-02) утверждало: JVM под `ro:/proc` читает `/proc/<ppid>/environ` воркера и
+`/proc/1/environ`, то есть `DATABASE_URL` и ключи S3, и очистка окружения этого не
+закрывает. Это было рассуждением. N3 в `scripts/document-sandbox-measure.sh` его
+измеряет: в окружение контейнера кладётся метка-канарейка, её видят и PID 1, и
+родитель helper'а (`timeout`); сначала тот же контейнер без ruleset доказывает, что оба
+файла читаются и метку содержат (иначе отказ ничего не доказывает), затем под ruleset
+veraPDF (движок `/usr/bin/dash`) — попытка открыть.
+
+**Базовый прогон на прежнем гранте (`ro:/proc` целиком), 2026-09-30:**
+
+| Открыть | Результат |
+|---|---|
+| `/proc/1/environ`, `/proc/<ppid>/environ` | **отказ** (без ruleset — метка читается) |
+| `/proc/self/root/etc/hostname` | отказ |
+| `/proc/1/cmdline`, `/proc/<ppid>/cmdline`, `/proc/<ppid>/status` | **открылись** |
+| свои `/proc/self/environ`, `/proc/self/cmdline` (CONTROL) | открылись |
+
+Вывод по измерению, не по рассуждению: чужой `environ` под тем грантом НЕ читался;
+читались `cmdline` и `status` чужих процессов (argv воркера и tini, не среда). Отказ
+не даёт файловый грант (`cmdline` того же процесса открывается), он наступает при
+открытии самого `environ`; механизм — проверка ptrace в Landlock (процесс в домене не
+получает ptrace-доступ к процессу вне его) — **выведен, не измерен**; измерен отказ.
+Поэтому класс не должен на него опираться: на что он влияет — это его собственный
+грант `/proc`.
+
+**Запуск JVM.** Скрипт `/opt/verapdf/verapdf` заканчивается `exec "$JAVACMD" $JAVA_OPTS ...`;
+strace показывает два `execve` (скрипт, затем `/usr/bin/java`) в одном pid, а остальные
+файлы трассы — потоки этого pid (`LAUNCHER: exec`). Поэтому запись `/proc/self/...`,
+которую helper резолвит в СВОЁМ pid при Apply, покрывает JVM — как уже покрывает
+`/proc/self/auxv` и `/proc/self/status` в классе `image`. Доводов «путь зависит от pid,
+статически его не выдать» из 70-02 это не оставляет.
+
+**Исход: сужено.** Кандидат — все записи трассы: `/proc/cgroups`, `cpuinfo`, `meminfo`,
+`stat`, `net/if_inet6`, `sys/vm/overcommit_memory`, `/proc/self/cgroup`,
+`/proc/self/mountinfo`, `/proc/self/coredump_filter`; первый набор без `/proc/cgroups`
+(его читает только Java-часть метрик, трасса без `-XshowSettings` его не показала)
+уронил V0 и V0L. Убирая по одной записи, оставлены три, без каждой из которых
+падают V0 и V0L: `/proc/cgroups`, `/proc/self/cgroup`, `/proc/self/mountinfo`.
+Итоговый набор — `ALL PASS (14 checks)`, V0 и V0L совпали в 26 строках, V1 `isCompliant`,
+V2 без замедления, N3: отказ на `/proc/1/environ`, родительском `environ` и
+`/proc/self/root/etc/hostname`, и теперь `cmdline` и `status` чужих процессов тоже
+отказ (PROC-OTHER). Честная оговорка: куча и GC в production держатся и без
+`/proc/cgroups` (V0/V0L на нём падают только на блоке Operating System Metrics;
+candA дал те же 256 МиБ и Serial); запись оставлена, потому что критерий — совпадение
+вида JVM на контейнер, а метрики читает и `OperatingSystemMXBean`.
+
+Прогоны — `evidence/verapdf-proc-measure-70-08.txt`: BASELINE, LAUNCHER, трасса, candA,
+candB, девять прогонов удаления, candC, затем итоговый полный прогон драйвера.
 
 ### F1: что проверка по одному тексту не видит
 
