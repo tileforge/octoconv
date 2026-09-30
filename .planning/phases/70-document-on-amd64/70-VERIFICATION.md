@@ -1,18 +1,34 @@
 ---
 phase: 70-document-on-amd64
-verified: 2026-09-30T23:30:00Z
-status: gaps_found
-score: 9/11 must-haves verified
+verified: 2026-10-01T01:10:00Z
+status: human_needed
+score: 15/15 must-haves verified
 covered_files:
   - .env.example
+  - Dockerfile.chromium-worker
   - Dockerfile.document-worker
+  - cmd/audio-worker/main.go
+  - cmd/av-worker/main.go
+  - cmd/chromium-worker/main.go
   - cmd/document-worker/main.go
+  - cmd/ocr-worker/main.go
+  - cmd/pandoc-worker/main.go
+  - cmd/probe-worker/main.go
+  - cmd/tectonic-worker/main.go
+  - cmd/worker/main.go
   - deploy/chart/octoconv/templates/configmap.yaml
   - deploy/chart/octoconv/templates/deployment-document-worker.yaml
   - docker-compose.e2e.yml
   - docker-compose.yml
+  - internal/convert/chromium_live_test.go
+  - internal/convert/devshm_observer_linux_test.go
+  - internal/convert/devshm_observer_other_test.go
   - internal/convert/documentsandbox.go
+  - internal/convert/documentsandbox_test.go
+  - internal/convert/htmlsandbox_test.go
   - internal/convert/libreoffice.go
+  - internal/convert/libreoffice_test.go
+  - internal/convert/sandboxexec_test.go
   - internal/convert/sandboxwrap.go
   - internal/convert/verapdf.go
   - internal/e2e/testdata/verapdf-shim/soffice
@@ -24,67 +40,74 @@ covered_files:
   - scripts/document-sandbox-measure.sh
   - scripts/sandbox-liveproof.sh
   - scripts/verapdf-differential.sh
-covered_digest: "v2:sha256:06cef21ca53b811a8b29e4f9c78dae166ffd910a0e57130b1b567e31362b13d7"
+covered_digest: "v2:sha256:a2808f73c9a00bd3b8f8ca4843a1c4036c017b6be63415b7541a92b59418acc7"
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "The eight-class live gate (scripts/sandbox-liveproof.sh image pandoc ocr av audio html probe document) ends ALL PASS (39|40 checks) on images rebuilt from this tree (70-05 must-have 3; ROADMAP goal 'measured and gated on this host')"
-    status: failed
-    reason: "The committed transcript ends `FAILURES PRESENT (40 checks run)`: 39 PASS (all 7 document checks) and 1 FAIL, html `large-document-without-dev-shm` (TestChromiumLargeDocumentNeedsNoDevShmLive negative control: Chromium exits 0 without --disable-dev-shm-usage, so the control cannot see a /dev/shm dependency). Reproduced on the phase-69 tip 705f962 built the same day (evidence/liveproof-8class-70-05.txt lines ~140-205), attributed to unpinned Chromium 153 -> 154 (Dockerfile.chromium-worker installs chromium-headless-shell from Debian unpinned). Not caused by phase 70, but phase 70's acceptance gate is the eight-class gate and it is red. User decision: close via a gap-closure plan, recorded as a gap, not an override."
-    artifacts:
-      - path: "internal/convert/chromium_live_test.go"
-        issue: "line ~405 negative control asserts Chromium fails without --disable-dev-shm-usage; Chromium 154 no longer does"
-      - path: "Dockerfile.chromium-worker"
-        issue: "Chromium version not pinned, so the gate is not reproducible across days"
-      - path: ".planning/phases/70-document-on-amd64/deferred-items.md"
-        issue: "records the failure as deferred to an html follow-up; no later roadmap phase covers it"
-    missing:
-      - "Measure Chromium 154 behaviour with /dev/shm denied (fallback path) and rebuild the negative control so it can falsify 'html needs no /dev/shm', or pin the Chromium version the gate is measured against"
-      - "Re-run the eight-class gate to a final line of ALL PASS (40 checks) on images built from the fixing commit"
-  - truth: "A confined document worker never runs more than one task at a time while soffice's grant includes /tmp read-write; a confined worker configured above 1 refuses to start (70-03 must-have + prohibition; CONF-06 shared-/tmp guarantee)"
-    status: partial
-    reason: "WR-01 confirmed by probe. sharedTmpGuard returns nil for concurrency <= 1 (internal/convert/sandboxwrap.go:230) and envInt passes through any parsed integer (cmd/document-worker/main.go:232), so DOCUMENT_WORKER_CONCURRENCY=0 or -1 is accepted. The same value is handed to asynq.Config.Concurrency (main.go:176), and asynq v0.26.0 server.go maps n < 1 to runtime.NumCPU(). Probe run by the verifier: ConfinedDocument(helper, n, env) refused=false for n=-1, 0, 1 and refused=true only for n=2. A confined document worker then runs NumCPU tasks concurrently over the shared /tmp that soffice may read and write, and each task's pre-run sweep deletes the others' job directories and sockets. The shipped defaults are all 1 (compose, .env.example, ConfigMap), so this is reachable only through a misconfiguration (extraEnv / .env typo), but it is exactly the class of input the guard exists for, and TestConfinedDocument covers 1, 2 and 4 but not 0 or negatives."
-    artifacts:
-      - path: "internal/convert/sandboxwrap.go"
-        issue: "sharedTmpGuard: `concurrency <= 1` returns nil; must treat < 1 as a refusal when confined and /tmp is granted read-write"
-      - path: "cmd/document-worker/main.go"
-        issue: "envInt result reaches both the guard and asynq unclamped"
-      - path: "internal/convert/documentsandbox_test.go"
-        issue: "no 0 / negative concurrency case"
-    missing:
-      - "Refuse concurrency < 1 when the sandbox confines and the grant set contains the shared /tmp (fix in the shared guard; cmd/chromium-worker/main.go has the same shape and benefits), or clamp before both guard and asynq"
-      - "Add 0 and -1 cases to TestConfinedDocument (and the html equivalent)"
+re_verification:
+  previous_status: gaps_found
+  previous_score: 9/11
+  gaps_closed:
+    - "Eight-class live gate red on html large-document-without-dev-shm (closed by 70-06 control rebuild, 70-09 gate ALL PASS (40 checks))"
+    - "WR-01: sharedTmpGuard bypassed for concurrency < 1 (closed by 70-07; refusal, not clamp)"
+  gaps_remaining: []
+  regressions: []
+gaps: []
+deferred: []
 behavior_unverified_items: []
 coincidental_reliance_items: []
 human_verification:
-  - test: "Review the measured soffice and veraPDF sets: document section of .planning/research/SANDBOX-PATHS.md and the removal table in evidence/document-sandbox-measure.txt"
-    expected: "Every kept entry has a failing removal run or the V0 JVM-ergonomics reason; the /tmp route and the socket right match what was measured; veraPDF writes nowhere but the job directory and /dev/null"
-    why_human: "70-02 plan human-check: this record is what the pinned tests and cross-check hold the code to; the user approves the measured set as for every earlier class"
-  - test: "Approve the emulated-amd64 refusal evidence for ROADMAP criterion 3 / CONF-02: evidence/liveproof-document-70-04.txt (the `emulated-amd64-refuses` PASS and its 'landlock is unavailable ... Set DOCUMENT_SANDBOX_DISABLED=true' line, emitted before Postgres) and the refusal texts in 70-03's transcript"
-    expected: "Both refusals name DOCUMENT_SANDBOX_DISABLED and stop before Postgres; the emulated image says landlock is unavailable; the route checks (concurrency-guard, sweeps-shared-tmp) match the read-write /tmp route; count is 7 for the document class"
-    why_human: "70-04 plan human-check: ROADMAP criterion 3 (including emulation) and CONF-02 are proven only by running the built images; the verifier did not rebuild images or start compose and relies on the committed transcript"
-  - test: "Approve the 70-05 evidence set: evidence/liveproof-8class-70-05.txt, e2e-70-05.txt, inversions-70-05.txt and the eight MATCH lines"
-    expected: "Every check passes on images built from the recorded commit 18c805d except the one recorded html failure; every inversion fails for its stated reason; nothing was proven on a cached result"
-    why_human: "70-05 plan human-check: the live proof is the phase's acceptance. The gate is currently red (gap 1), so approval here means 'document is proven, html control failure is tracked by the gap-closure plan'"
-  - test: "Decide the /tmp route residual: soffice holds rw:/tmp (not socket-only) because MAKE_SOCK alone did not suffice; the narrower alternative (sock: grant carrying MAKE_SOCK + REMOVE_FILE) was NOT measured or built (70-02-SUMMARY line ~124)"
-    expected: "User either accepts rw:/tmp with concurrency 1 + sweep (after WR-01 is closed) or asks for the narrower grant as a separate change to the shared wire format"
-    why_human: "Changes the shared sandbox wire-format semantics; 70-02 explicitly reserved it for the user"
-  - test: "Decide WR-02: veraPDF's ro:/proc grant exposes /proc/<ppid>/environ and /proc/1/environ (worker DATABASE_URL, S3 keys) to a compromised JVM running as the same uid; the env scrub only protects /proc/self. Same exposure in html and tectonic"
-    expected: "Either narrow the grant to the files V0 needs (/proc/meminfo, cpuinfo, the helper's own pid dir) and re-run scripts/document-sandbox-measure.sh V0/V2, or record the residual risk explicitly in SANDBOX-PATHS.md and the DEBT entry and correct the engineEnv comment that currently overstates what the scrub closes"
-    why_human: "A security trade-off against a measured requirement (JVM container sizing needs /proc); not a literal violation of CONF-01's wording (the path is granted), so it is advisory here rather than a gap"
+  - test: "Approve the measured soffice and veraPDF sets (70-02), now including the 70-08 narrowing of veraPDF's /proc: SANDBOX-PATHS.md document section, evidence/document-sandbox-measure.txt, evidence/verapdf-proc-measure-70-08.txt"
+    expected: "Every kept entry has a failing removal run or the V0/V0L reason; veraPDF's read-only set is 11 entries with /proc/cgroups, /proc/self/cgroup, /proc/self/mountinfo (each fails V0 and V0L when removed, the other six opened /proc entries do not); the rw:/tmp route and socket right match what was measured; veraPDF writes only the job directory and /dev/null"
+    why_human: "70-02 plan human-check: the user approves the measured set that the pinned tests and the cross-check hold the code to. The set changed after the last approval-ready state (70-08), so approve the final one"
+  - test: "Approve the emulated-amd64 refusal evidence (70-04): evidence/liveproof-document-70-04.txt and, more recent, the `PASS: document emulated-amd64-refuses` block in evidence/liveproof-8class-70-09.txt"
+    expected: "Both refusals name DOCUMENT_SANDBOX_DISABLED and stop before Postgres; the emulated image says `landlock is unavailable on this kernel`; concurrency-guard and sweeps-shared-tmp match the rw:/tmp route; 7 document checks"
+    why_human: "70-04 plan human-check: ROADMAP criterion 3 (including emulation) and CONF-02 are proven only by running the built images; the verifier did not rebuild images or start compose and relies on committed transcripts"
+  - test: "Approve the final evidence set (70-09 human-check), read in this order: evidence/liveproof-8class-70-09.txt (commit 5db6c74 on every class, nine image ids, html's `dev-shm-observe: control=1 production=0`), e2e-70-09.txt, inversions-70-09.txt, then 70-06 (chromium-devshm-measure-70-06.txt, liveproof-html-70-06.txt), 70-07 (startup-guards-70-07.txt) and 70-08 (verapdf-proc-measure-70-08.txt); liveproof-8class-70-05.txt / e2e-70-05.txt / inversions-70-05.txt are the superseded red set"
+    expected: "Gate ends ALL PASS (40 checks), 40 PASS lines, no FAIL / NOT RUN; every inversion fails for its stated reason; nothing proven on a cached result; the 70-05 approval item is replaced by this one"
+    why_human: "The live proof is the phase's acceptance and was not re-run by the verifier (no compose, no image rebuilds by instruction). Not self-approved by the executor"
+  - test: "Accept or reject the html negative-control redesign (70-06): the control is now an inotify observation with /dev/shm reachable, whose control variant is a dash child (not Chromium) that creates one entry; Chromium stays unpinned"
+    expected: "User accepts that the claim 'html needs no /dev/shm' is now held by `production creates 0 entries while the method provably sees 1`, measured on Chromium 154.0.8037.57 (it creates nothing under /dev/shm in any of 7 conditions; shared memory via memfd_create). Known limit: behaviour when memfd_create is denied (seccomp) was not measured; the --disable-dev-shm-usage flag is no longer shown load-bearing (inversions ii and iii could not run on this classification, recorded)"
+    why_human: "A judgment on what the control proves. It replaces phase 69's 'must fail when denied' control, which a Chromium fallback defeated; the user decided 2026-09-30 not to pin Chromium"
+  - test: "Decide the /tmp route residual: soffice holds rw:/tmp because MAKE_SOCK alone did not suffice; the narrower `sock:` grant with MAKE_SOCK + REMOVE_FILE was not measured or built (todo 2026-09-30-soffice-socket-grant-remove-file-alternative.md)"
+    expected: "User accepts rw:/tmp with concurrency exactly 1 (guard now refuses <1 and >1) plus the sweep, or asks for the narrower grant as a separate change to the shared wire format"
+    why_human: "Changes the shared sandbox wire-format semantics; 70-02 reserved it for the user. User decision 4 already routed it to a todo"
+  - test: "Decide the html /proc residual (todo 2026-09-30-proc-grant-other-process-entries.md) and accept the corrected WR-02 finding"
+    expected: "WR-02 as written (same-uid JVM reads worker/PID 1 environ) was measured false even under whole-/proc: N3 with a canary proven readable unconfined shows environ of PID 1 and the parent DENIED, cmdline/status of other processes OPENED (veraPDF baseline and html). veraPDF is narrowed so cmdline/status are now denied too. html keeps ro:/proc (chromium re-execs itself, so /proc/self entries cannot cover children) and still exposes other processes' cmdline/status; severity medium. The denial mechanism (Landlock ptrace check) is inferred, not measured, so N3 should be re-run on the deployment kernel"
+    why_human: "A security trade-off; not a violation of CONF-01's wording; user decision 3 kept html and tectonic out of 70-08's scope"
   - test: "First amd64 deployment: follow .planning/todos/pending/2026-09-29-amd64-first-deployment-preflight-check.md"
-    expected: "All eight confined classes log 'sandbox proven' on a real amd64 node; any class that refuses is re-measured on that node"
-    why_human: "Explicitly out of phase-70 scope (D-05); measurements and gate ran on arm64 only. The amd64 directory-level grants are reasoning, not measurement"
+    expected: "All eight confined classes log 'sandbox proven' on a real amd64 node; any class that refuses is re-measured there"
+    why_human: "Out of phase-70 scope (D-05); measurement and gate ran on arm64 only"
+  - test: "Bookkeeping the orchestrator owns, not a code issue: REQUIREMENTS.md still shows CONF-02/04/05 `[ ]` (In Progress) and CONF-07 `[ ]` (Pending); ROADMAP.md Phase 70 checkbox is open; the pending todos from 70-09 (minio-images-off-docker-hub, sweep-tests-must-not-touch-host-tmp) are user-scheduled follow-ups"
+    expected: "After the user approves the items above, tick CONF-02/04/05/07 and mark Phase 70 complete"
+    why_human: "Status transitions belong to the user's approval"
 ---
 
 # Phase 70: Document on amd64 Verification Report
 
 **Phase Goal (ROADMAP, rewritten per D-04 in 70-05):** `document` under Landlock: both engines, LibreOffice and veraPDF. The amd64 pin was the veraPDF build stage only; the image is native, measured and gated on this host. Criteria: (1) LibreOffice and veraPDF path sets measured with the same tool on the native image, after the veraPDF differential cleared the pin; (2) conversion passes under the ruleset and a file outside is unreachable; (3) the worker refuses to start without Landlock, including when the cause is emulation, not the kernel.
-**Verified:** 2026-09-30
-**Status:** gaps_found
-**Re-verification:** No, initial verification
+**Verified:** 2026-10-01
+**Status:** human_needed
+**Re-verification:** Yes, after gap closure (70-06..70-09). Previous: gaps_found, 9/11.
 
-The document class is confined and proven. The phase is not closed because two must-haves fail: the eight-class acceptance gate is red on one html check (user-decided gap, not an override), and the shared-/tmp concurrency guarantee can be bypassed by a non-positive `DOCUMENT_WORKER_CONCURRENCY`.
+Both gaps are closed against the code and the committed evidence. No FAILED truth remains and no regression was found in the original nine. The status is `human_needed` only because the plans' human-checks (measured sets, emulated refusal, final evidence set) are explicitly reserved for the user and the verifier did not rebuild images or start compose.
+
+## Gap closure
+
+### Gap 1: eight-class gate red on html /dev/shm control - CLOSED
+
+- `evidence/liveproof-8class-70-09.txt`: last line `ALL PASS (40 checks)`; `grep -c '^PASS: '` = 40 (verifier ran it); no `FAIL` or `NOT RUN` line; eight `commit: 5db6c74da4794eee51a10baa59c90fb68d10ffaa` build blocks plus the document one, each with its own image id; `PASS: html large-document-without-dev-shm` present.
+- The commit is the current code: `git diff 5db6c74 HEAD` outside `.planning` is empty (verifier ran it). Everything the gate built is therefore what is in the tree now.
+- Root cause was a control that inferred a dependency from a failure under denial. Chromium 154 falls back to `memfd_create`, so the failure vanished. 70-06 measured seven conditions (`evidence/chromium-devshm-measure-70-06.txt`: 0 creates under /dev/shm in every one), then rebuilt step e of `TestChromiumLargeDocumentNeedsNoDevShmLive` (read by the verifier, `chromium_live_test.go:333-520`): inotify observer outside the sandbox (`devshm_observer_linux_test.go`, IN_Q_OVERFLOW counted as activity, `!linux` stand-in fails rather than skips) over the real `/dev/shm`, a control that must be seen (`created ... observer saw nothing -- the method cannot see a /dev/shm dependency`), then the production argv under the same ruleset must render the marker with zero entries. The PASS line carries `dev-shm-observe: control=1 production=0` and the Chromium version.
+- Failure shown, not assumed: 70-06 inversion (i) blind observer FAILS with the control message; (iv) a stray `/dev/shm` entry FAILS the production assertion. Inversions (ii) and (iii) could not run by construction and are recorded as such. `htmlsandbox.go` and `chromium.go` are unchanged; `htmlReadWrite` does not contain `/dev/shm` (conf05 html MATCH).
+- Chromium stays unpinned by user decision; `Dockerfile.chromium-worker` diff since 18c805d is a 4-line comment only (`chromium-headless-shell=` is absent). The gate no longer depends on a version-specific failure, so a real future `/dev/shm` use would make it red for the right reason.
+
+### Gap 2: WR-01 concurrency < 1 bypassing sharedTmpGuard - CLOSED
+
+- `sharedTmpGuard` (`internal/convert/sandboxwrap.go:247`) now returns nil only for an unconfined sandbox, a writable set without `/tmp`, or `concurrency == 1`; below 1 returns its own refusal naming `<ENV>=<n>` and the shared /tmp; above 1 unchanged. Refused, not clamped (the prohibition in the gap plan).
+- Both entry points share it (`documentsandbox.go:221` ConfinedDocument; ConfinedChromium via the same function). `cmd/document-worker/main.go:78-80,177` and `cmd/chromium-worker/main.go:65-67,150` pass the one `concurrency` value to the guard and to asynq, so the asynq-NumCPU path is unreachable when confined.
+- Tests (run by the verifier, all PASS): `TestSharedTmpGuard` rows `confined_shared_/tmp_concurrency_0` and `_-1`, with controls (unconfined, no-/tmp set stay nil), `TestConfinedDocument`, `TestConfinedChromium`. RED run against the old guard was recorded in 70-07-SUMMARY.
+- Live: `evidence/startup-guards-70-07.txt` part 1, images built from 3be14e2: document and chromium each at 0 and -1 exit 1 with `<VAR>=<n> with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count...`, no `sandbox proven`, no `postgres:` line. The script requires a non-zero exit, so a run that never reached the worker cannot pass (70-07 deviation 4 fixed the first vacuous run). The above-1 text is unchanged, so the gate's `concurrency-guard` check still matches (PASS in the final gate).
+- Probe/pandoc/etc. grant no `/tmp`, so the guard does not apply to them by design (keyed on the grant set).
 
 ## Goal Achievement
 
@@ -92,134 +115,118 @@ The document class is confined and proven. The phase is not closed because two m
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1: soffice and veraPDF path sets measured with the same tool on the native image, after the differential cleared the pin | VERIFIED | `evidence/verapdf-differential.txt` last line `DIVERGENCES: 0`; `evidence/document-sandbox-measure.txt` ends `ALL PASS (12 checks)` with separate soffice/veraPDF sets driven through `/usr/local/bin/document-worker __sandbox-exec`; `scripts/conf05-crosscheck.sh ... document` re-run by verifier prints `MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)` and `MATCH: verapdf readonly (9) engines (1) readwrite (1)`; neither set grants `/usr/bin` as a directory (`internal/convert/documentsandbox.go`) |
-| 2 | SC2: conversion passes under the ruleset and a file outside is unreachable | VERIFIED | Measure transcript: S1/S5/V1 pass by content, `N1 no output carries the fixture text although /outside/in.docx is identical`, `N2 no isCompliant verdict ... (Permission denied)`, `C1` fails without the socket/tmp grant; `evidence/e2e-70-05.txt` TestDocumentConversionE2E, TestPDFAExportE2E, TestPDFANonCompliantE2E pass through the confined worker; `DocumentPreflight` (`documentsandbox.go:263`) judges sufficiency then effectiveness by marker/verdict, never by exit status. Not re-run by the verifier (no compose/images), relies on committed transcripts |
-| 3 | SC3: worker refuses to start without Landlock, including under emulation | VERIFIED | `evidence/liveproof-document-70-04.txt` and the 8-class transcript: `PASS: document refuses-without-landlock`, `PASS: document emulated-amd64-refuses` with `document sandbox: landlock is unavailable ... Set DOCUMENT_SANDBOX_DISABLED=true`, emitted before Postgres; no emulation-detection code (`main.go` uses only `sandbox.ResolveHelper`); startup order helper mode, ResolveHelper, ConfinedDocument, SetVeraPDFTimeout, DocumentPreflight, db.Connect confirmed in `cmd/document-worker/main.go` |
-| 4 | Image is native; the pin covers only the veraPDF build stage; compose carries no document-worker platform key | VERIFIED | `Dockerfile.document-worker:27` `FROM --platform=linux/amd64 verapdf/cli:v1.30.2 AS verapdf`, runtime stage `FROM debian:bookworm-slim` with no platform; the only `platform:` left in `docker-compose.yml` is `asynqmon` (unrelated); unpin happened only after `DIVERGENCES: 0` |
-| 5 | CONF-05: granted sets equal the measured ones and are held by a test | VERIFIED | Eight line-exact MATCH lines re-run by verifier; `TestSofficeReadOnlySetIsTheMeasuredOne` etc. pass; `evidence/inversions-70-05.txt` shows `/tmp/x` added, trailing-slash and neighbour-order inversions each fail |
-| 6 | CONF-04: preflight on the real engines, judged by content | VERIFIED | `DocumentPreflight` code read (marker in `content.xml`, veraPDF `isCompliant` via independent parser, `_ = c.Convert(outside)` not judged on error, `requireOutsideGrants`); live: `🔒 document sandbox proven:` and `preflight-catches-restrict-self` PASS (engine exit 78 surfaces) |
-| 7 | CONF-02 reachability: escape hatch named in the refusal, forwarded, never defaulted to true | VERIFIED | `docker-compose.yml:607` `DOCUMENT_SANDBOX_DISABLED: "${DOCUMENT_SANDBOX_DISABLED:-}"`; `.env.example:90,108` documented, commented out; chart reaches it through `documentWorker.extraEnv`; grep finds no checked-in `DOCUMENT_SANDBOX_DISABLED=true` outside the commented example |
-| 8 | Shared-/tmp guarantee: a confined document worker never runs more than one task while soffice holds rw:/tmp | FAILED (partial) | Gap 2 (WR-01): guard bypassed for concurrency <= 0; verifier probe `concurrency=-1 refused=false`, `0 refused=false`, `1 refused=false`, `2 refused=true`; asynq maps n<1 to NumCPU |
-| 9 | Eight-class live gate ends ALL PASS on images rebuilt from this tree | FAILED | Gap 1: final line `FAILURES PRESENT (40 checks run)`; 39 PASS incl. all 7 document checks; 1 FAIL html `large-document-without-dev-shm`, reproduced on 705f962 |
-| 10 | CONF-07 / ROADMAP wording says what was done and keeps the emulation reason visible | VERIFIED | REQUIREMENTS.md CONF-07 and ROADMAP Phase 70 goal read: stage-only pin, native image, `DIVERGENCES: 0` cited with path, arm64 measurement host, emulated image still refuses, single amd64 todo (D-05) exists |
-| 11 | `internal/convert/exec.go` untouched (D-13); sandbox-unavailable is retryable for document; sandboxPendingFiles empty | VERIFIED | `git diff --exit-code 7744ddf -- internal/convert/exec.go` exit 0; `sandboxPendingFiles = map[string]string{}` (`sandboxcoverage_test.go:68`); inversion 3 shows the retryable test fails when the sentinel check is removed |
+| 1 | SC1: soffice and veraPDF path sets measured with the same tool on the native image, after the differential cleared the pin | VERIFIED | Unchanged from initial report (differential `DIVERGENCES: 0`, measure driver). Regression check: verifier re-ran `scripts/conf05-crosscheck.sh` for all eight classes, eight MATCH lines. veraPDF now 11 read-only entries after 70-08; re-measured by a 14-check driver run (`ALL PASS (14 checks)`, `evidence/verapdf-proc-measure-70-08.txt`) |
+| 2 | SC2: conversion passes under the ruleset and a file outside is unreachable | VERIFIED | Driver N1 (no output carrying the fixture text although `/outside/in.docx` is identical) and N2 (`/outside/in.pdf (Permission denied)`), C1; `evidence/e2e-70-09.txt` on a stack built from 033978c (includes 70-08): 52 `--- PASS`, 0 FAIL/SKIP, TestDocumentConversionE2E, TestPDFAExportE2E (+NoOptsRegression), TestPDFANonCompliantE2E pass through the confined worker. Committed transcripts, not re-run by the verifier |
+| 3 | SC3: worker refuses to start without Landlock, including under emulation | VERIFIED | `PASS: document refuses-without-landlock` and `PASS: document emulated-amd64-refuses` in the 70-09 gate (`landlock is unavailable on this kernel ... Set DOCUMENT_SANDBOX_DISABLED=true`); startup order in `cmd/document-worker/main.go` is helper mode, ResolveHelper, ConfinedDocument, preflight, then db.Connect (concurrency guard now also before Postgres, shown live) |
+| 4 | Image is native; the pin covers only the veraPDF build stage | VERIFIED | No regression: `Dockerfile.document-worker` and compose untouched by 70-06..09 outside the unrelated comment; diff since 18c805d in Dockerfile/compose/deploy is the chromium comment only |
+| 5 | CONF-05: granted sets equal the measured ones and are held by a test | VERIFIED | Eight MATCH lines re-run; `TestSofficeReadOnlySetIsTheMeasuredOne`, `TestVerapdfReadOnlySetIsTheMeasuredOne` PASS; `evidence/inversions-70-09.txt`: `/tmp/x` added to `verapdfReadOnly` fails the pinned test and the cross-check (exit 1), reverted |
+| 6 | CONF-04: preflight on the real engines, judged by content | VERIFIED | `DocumentPreflight` unchanged in logic; now derived from the signal ctx and refuses whitespace TMPDIR first; gate PASS `preflight-catches-restrict-self` (exit 78 surfaces); `🔒 document sandbox proven:` in e2e startup lines |
+| 7 | CONF-02 reachability: escape hatch named, forwarded, never defaulted to true | VERIFIED | Verifier grep: only `.env.example:108` (commented) and a chart comment mention `DOCUMENT_SANDBOX_DISABLED=true`; compose passes `${DOCUMENT_SANDBOX_DISABLED:-}`; e2e overlay does not set it (`yq ... has(...)` false per 70-09) |
+| 8 | Shared-/tmp guarantee: a confined document worker never runs other than one task while soffice holds rw:/tmp | VERIFIED (was FAILED) | Gap 2 closure above; code read, tests run, live refusals at 0 and -1 |
+| 9 | Eight-class live gate ends ALL PASS on images rebuilt from this tree | VERIFIED (was FAILED) | Gap 1 closure above; 40 PASS, final line `ALL PASS (40 checks)`, commit 5db6c74 = current non-.planning tree |
+| 10 | CONF-07 / ROADMAP wording says what was done and keeps the emulation reason visible | VERIFIED | CONF-07 text in REQUIREMENTS.md read (stage-only pin, native image, `DIVERGENCES: 0` path, arm64 host, emulated image still refuses, D-05 todo exists). Checkbox is still open, see human item |
+| 11 | `internal/convert/exec.go` untouched (D-13); sandbox-unavailable retryable for document | VERIFIED | `git diff --exit-code 7744ddf -- internal/convert/exec.go` exit 0 (verifier ran); worker tests PASS |
+| 12 | 70-06: a /dev/shm control a fallback cannot defeat; html gate green; SANDBOX-PATHS html section and the debug record corrected | VERIFIED | See Gap 1. Control observes with /dev/shm reachable; both failing inversions in `liveproof-html-70-06.txt`; `Dockerfile.chromium-worker` not pinned. Judgment on control design is a human item |
+| 13 | 70-07: IN-01 preflight ctx from the signal ctx in all workers; IN-02 whitespace job dir refused with TMPDIR named; IN-03 script hygiene | VERIFIED | IN-01: `grep 'preflightCtx, cancelPreflight :=' cmd/` = 8, no `context.Background()` preflight left; tectonic helpers take ctx and its one real call passes main's ctx. Measured exit 0.31-0.33 s after SIGTERM (was 3.0-3.75 s). IN-02: `requireNoWhitespaceJobDir` used by `libreoffice.go:117` (PDF/A only) and `documentsandbox.go:330` (every preflight); `TestConvertPDFARefusesWhitespaceJobDir` and `TestDocumentPreflightRefusesWhitespaceTMPDIR` PASS; live refusal in 0.6 s (was a 60 s soffice timeout). IN-03: `rest` in the `local` line (`verapdf-differential.sh:174`), EXIT-trap removal logs (`:56`). The differential script itself was not re-run end to end (recorded by the executor) |
+| 14 | 70-08 (WR-02): veraPDF's `ro:/proc` narrowed or the exposure explicitly measured, with comments that do not overstate the scrub | VERIFIED | Outcome NARROWED: `verapdfReadOnly` = `/proc/cgroups`, `/proc/self/cgroup`, `/proc/self/mountinfo` (code read, `documentsandbox.go:80-110`); removal runs show these three fail V0 and V0L, the other six do not; N3 with canary proven readable unconfined; `LAUNCHER: exec` measured so `/proc/self` covers the JVM; driver `ALL PASS (14 checks)` with V0, V0L, N3; conf05 MATCH `verapdf readonly (11)`; `engineEnv`/`sofficeEnv` comments now say the scrub closes the engine's OWN `/proc/self/environ` and cite N3 (`sandboxwrap.go`). soffice and tectonic grant no `/proc`; html deliberately untouched (prohibition), position recorded with a todo |
+| 15 | 70-09: real document jobs pass the confined worker on a rebuilt stack; gate, eight MATCH lines and inversion recorded; WINDOWS entry closed only after the final line; todos recorded | VERIFIED | e2e/gate/inversion evidence read; `.planning/todos/pending/` holds the five todo files the plan names (verifier `ls`); `deferred-items.md` marks the html item resolved with paths. `git diff 033978c HEAD -- internal cmd scripts deploy` empty per summary and consistent with the verifier's own diff against 5db6c74 |
 
-**Score:** 9/11 truths verified (0 present, behavior-unverified)
+**Score:** 15/15 truths verified (0 present, behavior-unverified). Truths 1-11 are the original must-haves; 12-15 are the gap plans' own.
 
 ### Deferred Items
 
-None. ROADMAP.md has no phase after 70 (only backlog 999.1), so neither gap is covered by a later phase. `deferred-items.md` items are tracked there but are not roadmap-scheduled; the html control failure is carried as gap 1 per the user's decision.
+None. ROADMAP.md has no phase after 70 (only backlog 999.1). The todos are user-scheduled follow-ups, not roadmap phases, and neither is needed for any truth above.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `Dockerfile.document-worker` | verapdf stage pinned alone | VERIFIED | line 27 pin, runtime stage native |
-| `scripts/verapdf-differential.sh` | repeatable differential, `DIVERGENCES:` | VERIFIED | 202 lines; evidence ends `DIVERGENCES: 0` |
-| `evidence/soffice-ipc-spike.txt` | bind-path spike with CLASSIFICATION | VERIFIED | present (18 KB); route `scoped-socket` recorded in 70-01-SUMMARY |
-| `internal/sandbox/{sandbox,sandbox_linux,execmode}.go` | socket-only `sock:` grant | VERIFIED | `sandbox` tests pass; inversion 5 (run by executor in linux container) shows MAKE_SOCK in accessReadWrite is caught |
-| `internal/convert/documentsandbox.go` | sets, env, guard, preflight | VERIFIED (guard has gap 2) | `ConfinedDocument`, `DocumentPreflight` present and wired from `main.go` |
-| `internal/convert/libreoffice.go`, `verapdf.go` | engines through `engineExec` | VERIFIED | inversions 1 and 2 show direct `runCommand` is caught |
-| `cmd/document-worker/main.go` | helper mode first; refusal, guard, preflight before Postgres | VERIFIED | order read; concurrency value shared with asynq |
-| `scripts/document-sandbox-measure.sh` | content-judged driver | VERIFIED | transcript `ALL PASS (12 checks)` |
-| `scripts/sandbox-liveproof.sh` | document row, emulated check, NOT RUN accounting | VERIFIED | 7 document PASS lines in the 8-class transcript |
-| `.planning/research/SANDBOX-PATHS.md` | document section and conf05 blocks | VERIFIED | cross-check MATCH |
-| `internal/e2e/testdata/verapdf-shim/soffice` | shim working inside soffice's ruleset | VERIFIED | e2e PASS on stack from 6a8e69e |
-| `.planning/todos/pending/2026-09-29-amd64-first-deployment-preflight-check.md` | single D-05 follow-up | VERIFIED | present; folded todo moved to completed |
+| `internal/convert/sandboxwrap.go` | guard refusing != 1; honest engineEnv comment | VERIFIED | code read |
+| `internal/convert/devshm_observer_{linux,other}_test.go` | inotify observer, non-linux stand-in fails | VERIFIED | read; wired from `chromium_live_test.go` |
+| `internal/convert/chromium_live_test.go` | rebuilt step e | VERIFIED | read |
+| `internal/convert/documentsandbox.go` | narrowed veraPDF set, whitespace check | VERIFIED | read; pinned test passes |
+| `scripts/document-sandbox-measure.sh` | V0L and N3 | VERIFIED | transcript `ALL PASS (14 checks)` |
+| `cmd/*/main.go` (8 workers + tectonic) | preflight from signal ctx | VERIFIED | grep count 8 |
+| evidence files named in the task | present | VERIFIED | all seven present and read (70-06 x2, 70-07, 70-08, 70-09 x3) |
+| five pending todos | present | VERIFIED | `ls` |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 |------|----|-----|--------|---------|
-| `verapdf-differential.sh` | `internal/convert/opts.go` | `pdfaFilterOptionsSuffix` read, not retyped | WIRED | per 70-01 must-have; differential MATCH rows include real soffice PDF/A exports |
-| `docker-compose.yml` | differential | unpin only on `DIVERGENCES: 0` | WIRED | order of commits 6077229 then compose edit; no document-worker platform key |
-| `cmd/document-worker/main.go` | `ConfinedDocument` | same concurrency value asynq uses | WIRED (bypass for <1, gap 2) | main.go:79 and :176 |
-| `libreoffice.go` | `verapdf.go` | job's veraPDF `engineExec` threaded to `ValidatePDFA` | WIRED | build and tests pass |
-| `worker.go` | `sandboxwrap.go` | sentinel checked first in `isDocumentTerminal` | WIRED | retryable test passes; inversion 3 fails |
-| `document-sandbox-measure.sh` | SANDBOX-PATHS.md | rulesets read from conf05 blocks | WIRED | `--doc` calls |
-| `scripts/conf05-crosscheck.sh` | SANDBOX-PATHS.md | eight classes vs Go vars | WIRED | 8 MATCH re-run |
-
-### Data-Flow Trace (Level 4)
-
-Not applicable: no dynamic-data rendering artifacts. The data path that matters (job input through sandboxed soffice/veraPDF to output) is covered by the e2e and measure transcripts above.
+| `cmd/document-worker/main.go` | `ConfinedDocument` and asynq | one `concurrency` value | WIRED | lines 78-80 and 177; guard refuses < 1 and > 1 |
+| `cmd/chromium-worker/main.go` | `ConfinedChromium` and asynq | one `concurrency` value | WIRED | lines 65-67 and 150 |
+| `ConfinedDocument` / `DocumentPreflight` | `requireNoWhitespaceJobDir` | before any engine | WIRED | `documentsandbox.go:330` |
+| `verapdfReadOnly` | SANDBOX-PATHS.md conf05 block | cross-check and pinned test | WIRED | MATCH, inversion fails |
+| `TestChromiumLargeDocumentNeedsNoDevShmLive` | `sandbox-liveproof.sh html` | gate echo of `chromium:` and `dev-shm-observe:` | WIRED | PASS output in the 70-09 transcript |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
 | Build | `GOTOOLCHAIN=go1.26.4 go build ./...` | ok | PASS |
-| Tests | `GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/convert/ ./internal/sandbox/ ./internal/worker/ ./cmd/...` | all packages ok (convert 68s, sandbox, worker, cmd/* ok or no test files) | PASS |
-| D-13 exec.go untouched | `git diff --exit-code 7744ddf -- internal/convert/exec.go` | exit 0 | PASS |
-| CONF-05 eight classes | `scripts/conf05-crosscheck.sh pandoc ocr av audio html probe document` | 8 MATCH lines | PASS |
-| Guard at non-positive concurrency | temp probe test on `ConfinedDocument(helper, n, ...)` (removed afterwards; tree clean) | refused only for n=2 | FAIL (gap 2) |
-| Landlock-effective tests (`access_linux_test.go`) | not runnable on darwin; relies on the executor's linux-container run and the live gate | n/a | SKIP (covered by committed live evidence) |
+| Tests | `GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/convert/ ./internal/sandbox/ ./internal/worker/ ./cmd/...` | convert 63.1s, sandbox, worker, cmd/* all ok | PASS |
+| Vet / fmt | `go vet ./...`, `gofmt -l .` | clean | PASS |
+| Guard at 0 and -1, whitespace refusals, pinned sets | `go test -count=1 -v -run 'TestSharedTmpGuard\|TestConfined...\|TestDocumentPreflightRefusesWhitespaceTMPDIR\|TestConvertPDFARefusesWhitespaceJobDir\|...SetIsTheMeasuredOne'` | all PASS incl. rows 0 and -1 | PASS |
+| D-13 | `git diff --exit-code 7744ddf -- internal/convert/exec.go` | exit 0 | PASS |
+| CONF-05 eight classes | `scripts/conf05-crosscheck.sh pandoc ocr av audio html probe document` | 8 MATCH (soffice 9/1/1/1, verapdf 11/1/1), exit 0 | PASS |
+| Gate transcript integrity | `grep -c '^PASS: '`, last line, FAIL/NOT RUN grep | 40, `ALL PASS (40 checks)`, none | PASS |
+| Code equals what the gate built | `git diff 5db6c74 HEAD -- . ':!.planning'` | empty | PASS |
+| Landlock-effective tests, image builds, e2e, differential | not runnable on darwin / instructed not to rebuild or start compose | committed evidence used | SKIP |
 
 ### Probe Execution
 
 | Probe | Command | Result | Status |
 |-------|---------|--------|--------|
-| `scripts/verapdf-differential.sh` | not re-run (needs docker builds of native and emulated images; instructed not to rebuild) | committed evidence ends `DIVERGENCES: 0` | SKIP, committed evidence used |
-| `scripts/document-sandbox-measure.sh` | not re-run (docker) | committed evidence ends `ALL PASS (12 checks)` | SKIP, committed evidence used |
-| `scripts/sandbox-liveproof.sh ...` | not re-run (docker) | committed evidence `FAILURES PRESENT (40 checks run)` | SKIP, see gap 1 |
+| `scripts/sandbox-liveproof.sh ...` | not re-run (docker; instructed) | committed `ALL PASS (40 checks)` | SKIP, evidence used |
+| `scripts/document-sandbox-measure.sh` | not re-run | committed `ALL PASS (14 checks)` (70-08) | SKIP, evidence used |
+| `scripts/verapdf-differential.sh` | not re-run | committed `DIVERGENCES: 0` (70-01); script edited in 70-07 (IN-03) and not re-run end to end | SKIP, noted |
 
 ### Requirements Coverage
 
 | Requirement | Source Plans | Description | Status | Evidence |
 |-------------|--------------|-------------|--------|----------|
-| CONF-01 | 70-01, 70-02, 70-03, 70-04, 70-05 | each engine class under Landlock, cannot read outside job dir and granted paths | SATISFIED for document (see WR-02 advisory: `/proc` is a granted path but reaches sibling-process environ) | measure N1/N2, e2e, preflight |
-| CONF-02 | 70-03, 70-04, 70-05 | worker refuses to start when confinement needed and unavailable, naming the variable | SATISFIED for document, including emulated amd64 | liveproof transcripts. REQUIREMENTS.md still shows `[ ]` / In Progress |
-| CONF-04 | 70-03, 70-05 | preflight on the real engine judged by output | SATISFIED | `DocumentPreflight`, live proof lines. REQUIREMENTS.md still `[ ]` |
-| CONF-05 | 70-02, 70-03, 70-05 | granted set equals measured set, held by a test | SATISFIED | tests + 8 MATCH. REQUIREMENTS.md still `[ ]` |
-| CONF-07 | 70-01, 70-03, 70-04, 70-05 | document confined, both engines; amd64 question resolved by measurement | SATISFIED for the document class and the unpin; phase acceptance gate red on html (gap 1). REQUIREMENTS.md still `[ ]` / Pending |
+| CONF-01 | 70-01..70-09 | engines confined, cannot read outside job dir and granted paths | SATISFIED for document and html. Advisory (not a gap): html keeps `ro:/proc`; veraPDF narrowed | measure N1/N2/N3, e2e, gate |
+| CONF-02 | 70-03..70-05, 70-07, 70-09 | worker refuses to start when confinement needed and unavailable, naming the variable | SATISFIED incl. emulated amd64 and the concurrency refusal | gate transcript |
+| CONF-04 | 70-03, 70-05, 70-07 | preflight on the real engine judged by output | SATISFIED | preflight code, live lines, SIGTERM and whitespace behaviour |
+| CONF-05 | 70-02, 70-03, 70-05, 70-08, 70-09 | granted set equals measured set, held by a test | SATISFIED | tests, 8 MATCH, inversion |
+| CONF-07 | 70-01, 70-03..70-05, 70-09 | document confined, both engines; amd64 question resolved by measurement | SATISFIED | gate green; wording check |
 
-All five IDs declared in PLAN frontmatter appear in REQUIREMENTS.md; no orphaned Phase 70 requirements. CONF-03 and CONF-06 map to other phases. The REQUIREMENTS.md checkboxes and Traceability status for CONF-02/04/05/07 are still open; update them only after the gaps below close.
+No orphaned Phase 70 requirements; CONF-03 and CONF-06 map to other phases. REQUIREMENTS.md checkboxes for CONF-02/04/05/07 and the ROADMAP Phase 70 checkbox are still open (bookkeeping, human item 8).
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `internal/convert/sandboxwrap.go` | 230 | `concurrency <= 1` accepted as safe | BLOCKER (gap 2) | bypasses the shared-/tmp guard at 0 / negative |
-| `internal/convert/documentsandbox.go` | 92 | `ro:/proc` grants `/proc/<pid>/environ` of same-uid siblings | WARNING (WR-02) | veraPDF JVM could read the worker's DB and S3 secrets if compromised |
-| `cmd/document-worker/main.go` | 109 | preflight context derived from `context.Background()` not the signal ctx (IN-01) | Info | SIGTERM during the ~6 s preflight is delayed |
-| `internal/convert/documentsandbox.go` | 136 | `JAVA_OPTS` tmp path not quoted (IN-02) | Info | whitespace in TMPDIR would fail closed, opaquely |
-| `scripts/verapdf-differential.sh` | 170, 174 | `rest` not local; cleanup of container-owned files (IN-03) | Info | minor hygiene |
-
-Debt-marker scan (`TBD|FIXME|XXX`) on the phase's Go files and scripts was not separately re-run beyond the review; 70-REVIEW.md reports none and no marker was surfaced during reading.
+| - | - | Debt-marker scan (`TBD\|FIXME\|XXX`) over the phase's Go files and scripts | none found | verifier ran it on the files modified by 70-06..70-09 |
+| `cmd/tectonic-worker/main.go` | 346 | `preflightSandbox` has no caller | Info | dead code predating this phase; 70-07 gave it the ctx parameter and left it |
+| `internal/convert/chromium_live_test.go` | 405 | control variant is dash, not Chromium | Info | recorded design decision, human item 4 |
+| `70-07` | - | one `go test ./internal/convert/` failure observed once and not captured | Info | not reproduced: passes in 70-07's later runs and in the verifier's run; cause unnamed, likely load from parallel image builds |
+| error text in SIGTERM-mid-preflight | - | prefix `the engines cannot convert under the sandbox` reads like a sandbox fault when the cause is cancellation | Info | accurate in its tail; one-line follow-up noted by 70-07 |
 
 ### Judgment-tier prohibitions (non-authoritative verifier verdict, human review recommended)
 
 | Prohibition | Verdict | Evidence |
 |-------------|---------|----------|
-| 70-01: no compose unpin without `DIVERGENCES: 0` | held | commit order; last line 0 |
-| 70-01: no choosing/provisioning an amd64 machine | held | none in tree; D-05 todo only |
-| 70-01/02: no widening of `accessReadWrite`/`accessReadOnly` | held | inversion 5; `sandbox` tests pass |
-| 70-02: no path set recorded on exit status or file existence | held | driver judges by content (transcript) |
-| 70-02: no `/usr/bin` directory grant; no soffice `/tmp` rw without a removal run | held; C1 is the removal run | sets in `documentsandbox.go`, C1 PASS |
-| 70-03: no worker secrets in engine env | held | `engineEnv` allowlist; but see WR-02 for `/proc` read path |
-| 70-03: no exit-status evidence in the preflight | held | code read |
-| 70-03: veraPDF writable set = job dir + /dev/null only | held | `verapdfReadWrite = {"/dev/null"}` |
-| 70-03: no more than one task with rw:/tmp | VIOLATED for concurrency < 1 | gap 2 |
-| 70-03/05: no edit to `internal/convert/exec.go` | held | git diff exit 0 |
-| 70-04: no checked-in `DOCUMENT_SANDBOX_DISABLED=true`; no NOT RUN counted as pass | held | greps; emulated check PASS ran on arm64 |
-| 70-05: no cached/stale-image proof; no widened grant to pass a scan | held as recorded; gate evidence is at commit 18c805d and later commits touch only docs (`git diff 18c805d HEAD` outside `.planning` is empty) | transcripts |
-| 70-05: no disabling of the document sandbox in the e2e overlay | held | `docker-compose.e2e.yml` comment, no variable set |
+| 70-06: no Chromium pin, no shm docker flag in the gate, no widening of `htmlReadWrite`/`htmlsandbox.go`/`chromium.go` | held | `chromium-headless-shell=` absent; no `--shm-size`/`--ipc` in the script; conf05 html MATCH; files unchanged since b5e0f3f per 70-06 |
+| 70-07: concurrency refused, never clamped | held | code read |
+| 70-07: no edit to `internal/convert/exec.go` | held | git diff exit 0 |
+| 70-08: no widening of any grant; html/tectonic not narrowed; narrowing judged by V0/V0L, not V1 alone | held | conf05 MATCH; removal tables in the evidence file |
+| 70-08: a denial probe only with a control proving the target readable unconfined | held | `CANARY-PRESENT /proc/1/environ`, `/proc/6/environ` before the `DENIED` rows |
+| 70-09: no stale-image proof; window closed only after the final line; no compose/chart change for MinIO | held | commit and image ids in the transcript; `git diff --quiet b5e0f3f -- docker-compose.yml deploy/` per 70-09 |
+| Earlier prohibitions (no compose unpin before `DIVERGENCES: 0`, no amd64 provisioning, no `DOCUMENT_SANDBOX_DISABLED=true` checked in) | held | unchanged since the initial report; greps above |
 
-These are judgment-tier; the verdicts are an LLM reading, not a proof. Flagged `unverified-prohibition - human review recommended` for the soffice `/tmp` and `/proc` items.
+Flagged `unverified-prohibition - human review recommended` for the soffice `/tmp` residual and the html `/proc` residual (human items 5 and 6).
 
 ### Human Verification Required
 
-See `human_verification` in the frontmatter (six items): approve 70-02 measured sets, 70-04 emulated-refusal evidence, 70-05 evidence set; decide the rw:/tmp vs REMOVE_FILE alternative; decide WR-02; and the first amd64 deployment todo. They do not change the status because gaps_found takes precedence.
+See `human_verification` in the frontmatter (eight items): the three plan human-checks you named (70-02 measured sets, 70-04 emulated refusal, 70-09 final evidence set), plus the html control redesign, the rw:/tmp residual (todo), the html `/proc` residual with the corrected WR-02 finding (todo), the first amd64 deployment todo, and the status bookkeeping after approval. Approving item 3 supersedes the 70-05 approval item of the previous report.
 
 ### Gaps Summary
 
-1. **Eight-class gate is red (html control).** Everything document-specific passed (7/7 checks, e2e, inversions, cross-check), but the phase's acceptance transcript ends `FAILURES PRESENT`. Root cause is outside phase 70's code (unpinned Chromium drift, reproduced on 705f962), and the user has chosen a gap-closure plan: measure Chromium 154 with /dev/shm denied and rebuild the control (or pin Chromium), then re-run the gate to `ALL PASS (40 checks)`.
-2. **Shared-/tmp guard bypass (WR-01).** The guarantee that a confined document worker runs one task at a time holds for the shipped defaults and for any value >= 1, but `DOCUMENT_WORKER_CONCURRENCY=0` or a negative value yields asynq's NumCPU concurrency with no refusal. Small fix in `sharedTmpGuard` (also fixes chromium-worker) plus two test cases. It can be closed in the same gap-closure plan as gap 1 since both touch the shared convert/html area.
-
-Advisory, not a gap: WR-02 (`ro:/proc` exposing `/proc/<ppid>/environ`). The path is a granted, measured one and CONF-01's literal wording is met, so it is a decision item for the user; the `engineEnv` comment should not claim the env scrub closes the secret-leak path while `/proc` is granted.
-
-Bookkeeping left for after the gaps close: REQUIREMENTS.md checkboxes and Traceability for CONF-02/04/05/07, and ROADMAP's Phase 70 checkbox.
+None. Gap 1 (html control, red gate) and gap 2 (WR-01 bypass) are closed against the code: the control cannot be defeated by a fallback and shows failure under two inversions, the gate's last line is `ALL PASS (40 checks)` on images built from the commit whose non-planning tree is the current one, and the guard refuses any concurrency other than exactly 1 when confined with the shared /tmp, proven by unit tests and on both built images. WR-02 was measured rather than assumed: the review's environ claim did not hold, the real exposure (other processes' cmdline and status) is removed for veraPDF and recorded for html. The phase is waiting on your approval of the evidence, not on more code.
 
 ---
 
-_Verified: 2026-09-30_
+_Verified: 2026-10-01_
 _Verifier: Claude (gsd-verifier)_
