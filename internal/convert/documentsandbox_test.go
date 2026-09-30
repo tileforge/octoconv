@@ -211,6 +211,38 @@ func TestDocumentPreflightRefusesAConfinedConverterThatDoesNotSweep(t *testing.T
 	}
 }
 
+// IN-02 at startup: the preflight's job directory lives under TMPDIR, exactly
+// like a production job's, so a TMPDIR with whitespace in it must stop a
+// confined worker from starting, naming TMPDIR -- before any engine runs, and
+// without waiting for soffice to time out on a path it cannot use. The
+// workspace it created is removed again.
+func TestDocumentPreflightRefusesWhitespaceTMPDIR(t *testing.T) {
+	helper, calls := fakeSandboxHelper(t)
+	// Built directly, not through ConfinedDocument, so the per-task sweep is
+	// pointed at a scratch directory: ConfinedDocument wires the sweep to the
+	// real /tmp, and a preflight that got as far as Convert would empty the
+	// host's /tmp.
+	conv := LibreOfficeConverter{}.WithSandbox(helper)
+	conv.sharedTmp = t.TempDir()
+	spaced := filepath.Join(t.TempDir(), "tmp with space")
+	if err := os.MkdirAll(spaced, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", spaced)
+
+	err := DocumentPreflight(context.Background(), conv)
+	if err == nil || !strings.Contains(err.Error(), "TMPDIR") {
+		t.Fatalf("DocumentPreflight err = %v, want a refusal naming TMPDIR", err)
+	}
+	if got := calls(); len(got) != 0 {
+		t.Errorf("DocumentPreflight ran an engine (%d helper call(s)) before refusing", len(got))
+	}
+	left, _ := filepath.Glob(filepath.Join(spaced, "document-preflight-job-*"))
+	if len(left) != 0 {
+		t.Errorf("DocumentPreflight left its workspace behind: %v", left)
+	}
+}
+
 // CONF-04 adjacency: the preflight's outside directory lies beneath no path
 // of either engine's sets -- socket directories included -- and the check that
 // proves it is not vacuous (a directory under /tmp is refused, because both
