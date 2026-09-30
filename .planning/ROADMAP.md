@@ -158,7 +158,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 70-05-PLAN.md — класс целиком: e2e через конфайненный воркер (шим внутри ruleset), инверсии, сверка восьми классов, живой гейт восьми классов на пересобранных образах; CONF-07 и формулировка фазы (D-04), один todo про amd64-прод (D-05), закрытие todo
+- [x] 70-05-PLAN.md — класс целиком: e2e через конфайненный воркер (шим внутри ruleset), инверсии, сверка восьми классов, живой гейт восьми классов на пересобранных образах; CONF-07 и формулировка фазы (D-04), один todo про amd64-прод (D-05), закрытие todo
 
 Phase detail for shipped milestones lives in the collapsed sections below and in
 `.planning/milestones/`.
