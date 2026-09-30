@@ -1102,7 +1102,9 @@ none, `hsperfdata_*` нет; `-XX:-UsePerfData` нужен, потому что 
 | `/usr/bin/dirname`, `/usr/bin/which` | скрипт запуска (`dirname "$0"`, `which java`); `which` — цепочка `/etc/alternatives/which` → `which.debianutils`, грант ложится на конечный файл |
 | `/opt/verapdf` | jar и скрипт запуска; V1 падает |
 | `/etc/java-17-openjdk` | резолвленная цель `conf/` JVM (Ловушки §7); V1 падает без вывода |
-| `/proc`, `/sys/fs/cgroup` | V0: без них JVM не видит контейнер (см. ниже) |
+| `/proc/cgroups` | V0 и V0L: без него Java-часть JVM (`-XshowSettings:system`, `OperatingSystemMXBean`) отвечает «No metrics available for this platform»; куча и GC при этом прежние (70-08, candA). Называет его только трасса с `-XshowSettings` |
+| `/proc/self/cgroup`, `/proc/self/mountinfo` | V0 и V0L: где смонтирован cgroup контейнера. Резолвятся helper'ом в его собственном pid при Apply; покрывают JVM, потому что скрипт запуска заканчивается `exec java` и helper сам делает exec (LAUNCHER: exec, 70-08) |
+| `/sys/fs/cgroup` | V0: без него JVM видит процессоры хоста и лимиты Unlimited (см. ниже) |
 | `/dev/random` | V2: без него V1 всё равно верный, но JVM засевает SecureRandom резервным потоковым генератором — 9.9 с вместо 1.6 с |
 
 `/opt/verapdf/verapdf` (сам движок) добавляется в ro: отдельно, как движок в `forJobRW`.
@@ -1119,8 +1121,12 @@ none, `hsperfdata_*` нет; `-XX:-UsePerfData` нужен, потому что 
 | `/lib` | ALL PASS | убран: дубль `/usr/lib` |
 | `/opt/verapdf`, `/etc/java-17-openjdk` | V1 падает | оставлены |
 | `/etc/host.conf`, `/etc/hosts`, `/etc/resolv.conf`, `/etc/nsswitch.conf`, `/etc/passwd`, `/etc/ld.so.cache`, `/etc/localtime` | ALL PASS, время V1 прежнее | убраны |
-| `/proc` целиком | V0 падает: JVM видит хост, а не контейнер | оставлен |
-| `/proc` → `cpuinfo`, `meminfo`, `stat`, `net/if_inet6`, `sys/vm/overcommit_memory` (записи трассы без `/proc/self/*`: их путь зависит от pid, статически его не выдать) | V0 падает | оставлен `/proc` целиком |
+| `/proc` целиком (70-02) | V0 падает: JVM видит хост, а не контейнер | оставлен в 70-02, **заменён в 70-08** (строки ниже) |
+| `/proc` → `cpuinfo`, `meminfo`, `stat`, `net/if_inet6`, `sys/vm/overcommit_memory` (70-02: записи трассы без `/proc/self/*`, «их путь зависит от pid, статически его не выдать») | V0 падает | оставлен `/proc` целиком в 70-02. 70-08: довод про pid не держится, потому что helper резолвит `/proc/self/*` в своём pid, а скрипт запуска делает exec |
+| `/proc` → все записи трассы (`cgroups`, `cpuinfo`, `meminfo`, `stat`, `net/if_inet6`, `sys/vm/overcommit_memory`, `self/cgroup`, `self/mountinfo`, `self/coredump_filter`) (70-08, candB) | ALL PASS (14), V0, V0L, N3 проходят | отправная точка сужения |
+| из candB: `/proc/cpuinfo`, `/proc/meminfo`, `/proc/stat`, `/proc/net/if_inet6`, `/proc/sys/vm/overcommit_memory`, `/proc/self/coredump_filter` (по одной) | ALL PASS у каждой | убраны |
+| из candB: `/proc/cgroups`, `/proc/self/cgroup`, `/proc/self/mountinfo` (по одной) | V0 и V0L падают, V1/V2/N3 проходят | оставлены |
+| candC (три оставленных, остальное убрано разом) | ALL PASS (14) | итоговый набор |
 | `/sys/fs/cgroup` | V0 падает | оставлен |
 | `/sys/devices/system/cpu`, `/sys/kernel/mm/transparent_hugepage` | V0 (метрики И эргономические значения) совпадает | убраны |
 | `/dev/urandom` | ALL PASS | убран |
@@ -1142,6 +1148,14 @@ none, `hsperfdata_*` нет; `-XX:-UsePerfData` нужен, потому что 
 Куча в 4 ГиБ внутри контейнера на 1 ГиБ — путь к OOM-kill, а не к ошибке
 валидации; поэтому эти пути оставлены на основании V0, а не V1. Итоговый набор даёт 26
 совпавших строк.
+
+**V0L (70-08).** V0 запускает `java` напрямую и не видит, форкает ли боевой скрипт
+запуска JVM. V0L запускает ту же проверку через `/opt/verapdf/verapdf -f 2b --format xml`
+(`JAVA_OPTS` — боевое значение плюс `-XshowSettings:system -XX:+PrintFlagsFinal`), без
+ruleset и под ним, с теми же лимитами, и дополнительно требует `isCompliant="true"`.
+Трасса: скрипт запуска завершается `exec "$JAVACMD" $JAVA_OPTS ...`, и strace показывает
+два `execve` (скрипт, затем `/usr/bin/java`) в одном pid (`LAUNCHER: exec`), так что записи
+`/proc/self/*` покрывают JVM. Свидетельства: `evidence/verapdf-proc-measure-70-08.txt`.
 
 ### F1: что проверка по одному тексту не видит
 
@@ -1208,7 +1222,9 @@ soffice
 /usr/bin/which
 /opt/verapdf
 /etc/java-17-openjdk
-/proc
+/proc/cgroups
+/proc/self/cgroup
+/proc/self/mountinfo
 /sys/fs/cgroup
 /dev/random
 <!-- /conf05:verapdf:readonly -->

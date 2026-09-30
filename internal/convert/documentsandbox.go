@@ -76,14 +76,29 @@ var verapdfReadWrite = []string{
 }
 
 // verapdfReadOnly is what veraPDF reads beyond its own script, the job
-// directory and the null device, narrowed by removal (SANDBOX-PATHS.md, 70-02):
-// the JVM under /usr/lib, the wrapper shell and its two helpers, the veraPDF
-// distribution, the JVM configuration, and the container's own view of its
-// limits (/proc and /sys/fs/cgroup -- without them the JVM sizes itself for
-// the host). /dev/random is kept on a latency measurement: without it the
-// JVM's seeding falls back and every run is seconds slower. A separate, NARROWER
-// grant than soffice's (D-10): none of soffice's helper binaries, no fonts, no
-// LibreOffice configuration.
+// directory and the null device, narrowed by removal (SANDBOX-PATHS.md, 70-02
+// and 70-08): the JVM under /usr/lib, the wrapper shell and its two helpers,
+// the veraPDF distribution, the JVM configuration, and the container's own view
+// of its limits. That view is three /proc entries and /sys/fs/cgroup; without
+// any of them the JVM's Operating System Metrics (-XshowSettings:system) stop
+// matching the container (measured by V0 and V0L in
+// scripts/document-sandbox-measure.sh):
+//   - /proc/cgroups: the JVM's Java-side metrics provider reads it;
+//   - /proc/self/cgroup and /proc/self/mountinfo: where the container's cgroup
+//     is mounted.
+//
+// The two /proc/self entries are resolved by the ruleset's helper in ITS OWN
+// pid when the ruleset is applied. They cover the JVM because the launcher
+// script ends in `exec java` and the helper itself execs the launcher, so all
+// three are one pid (measured: 70-08 LAUNCHER line). A launcher that forked
+// the JVM would leave these two entries naming a process the JVM is not, and
+// V0L would fail. The whole of /proc is not granted: that opened other
+// processes' cmdline and status to the engine (70-08 baseline).
+//
+// /dev/random is kept on a latency measurement: without it the JVM's seeding
+// falls back and every run is seconds slower. A separate, NARROWER grant than
+// soffice's (D-10): none of soffice's helper binaries, no fonts, no LibreOffice
+// configuration.
 var verapdfReadOnly = []string{
 	"/usr/lib",
 	"/usr/bin/dash",
@@ -91,7 +106,9 @@ var verapdfReadOnly = []string{
 	"/usr/bin/which",
 	"/opt/verapdf",
 	"/etc/java-17-openjdk",
-	"/proc",
+	"/proc/cgroups",
+	"/proc/self/cgroup",
+	"/proc/self/mountinfo",
 	"/sys/fs/cgroup",
 	"/dev/random",
 }

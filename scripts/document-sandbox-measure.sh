@@ -21,6 +21,15 @@
 #      validation; it silently changes heap and CPU sizing inside a 1 GiB
 #      container. Removing those reads cannot be judged by V1 alone, so V0
 #      compares `java -XshowSettings:system` under the ruleset and without it.
+#   4. A /proc entry is resolved by the helper in ITS OWN pid at Apply time, so
+#      a `/proc/self` grant names the helper's pid. The JVM is that pid only if
+#      the launcher (a dash script) execs it in place; V0 runs java directly and
+#      cannot see a fork. V0L therefore starts the JVM the way production does,
+#      through /opt/verapdf's launcher.
+#   5. The environment scrub (engineEnv) closes the engine's OWN
+#      /proc/self/environ. Whether a confined same-uid engine can open ANOTHER
+#      process's environ (the worker's DATABASE_URL and S3 keys) depends on the
+#      class's /proc grant: N3 measures it instead of assuming it.
 #
 # Every run gets a fresh host job directory mounted at /tmp/job (beneath /tmp, as
 # in production, where the worker makes job directories under os.TempDir()) and a
@@ -45,9 +54,20 @@
 #   V0 the JVM sees the same container: java -XshowSettings:system Operating
 #      System Metrics and the ergonomic -XX:+PrintFlagsFinal values (heap sizes,
 #      processor and GC thread counts) identical with and without the ruleset
+#   V0L the same comparison with the JVM started by the production launcher
+#      ($VERAPDF_BIN -f 2b --format xml on S5's PDF/A, JAVA_OPTS = the production
+#      value plus -XshowSettings:system -XX:+PrintFlagsFinal), with and without
+#      the ruleset, same limits
 #   N1 soffice on a file outside every grant: no output carries the fixture text;
 #      prints SOFFICE-DENIAL: loud|silent (the exit status is reported, never judged)
 #   N2 veraPDF on a PDF/A outside every grant: no isCompliant verdict
+#   N3 under veraPDF's ruleset (engine: /usr/bin/dash) /proc/1/environ, the
+#      helper's parent's /proc/<ppid>/environ and /proc/self/root/etc/hostname
+#      do not open. First an UNCONFINED run in the same container shape must show
+#      both environ files hold a per-run canary, else the probe proves nothing
+#      and N3 FAILS. PROC-OTHER: lines report, unjudged, whether other processes'
+#      cmdline and status open; CONTROL: lines whether the engine's own
+#      /proc/self/environ and cmdline open (what the grant leaves to itself)
 #   C1 (only when the soffice set has a socket entry or /tmp read-write) S1 with
 #      every sock: token and any rw:/tmp removed must NOT produce the fixture
 #      text: the grant is load-bearing, not decorative
@@ -260,10 +280,10 @@ soffice_cmd() {
 		--convert-to "$convert_to" --outdir /tmp/job "$input")
 }
 
-# verapdf_cmd <input>
+# verapdf_cmd <input> [extra JAVA_OPTS]
 verapdf_cmd() {
 	local t
-	RUN_ENV=(-e "JAVA_OPTS=-Djava.io.tmpdir=/tmp/job/tmp -XX:-UsePerfData")
+	RUN_ENV=(-e "JAVA_OPTS=-Djava.io.tmpdir=/tmp/job/tmp -XX:-UsePerfData${2:+ $2}")
 	RUN_CMD=(/usr/local/bin/document-worker __sandbox-exec)
 	while IFS= read -r t; do RUN_CMD+=("$t"); done < <(helper_tokens verapdf)
 	RUN_CMD+=(-- "$VERAPDF_BIN" -f 2b --format xml "$1")
@@ -396,6 +416,30 @@ else
 	failed V0 "$(elapsed "$t0" "$t1")" "JVM view differs under the ruleset -- without: [$(printf '%s' "$BASE_METRICS" | tr '\n' ';')] with: [$(printf '%s' "$SANDBOX_METRICS" | tr '\n' ';')]"
 fi
 
+# V0L: the same comparison through the PRODUCTION launcher. The launcher is a
+# dash script that ends in `exec "$JAVACMD" $JAVA_OPTS ...`; a /proc/self grant
+# is resolved in the helper's pid, which is the JVM's only if that exec happens
+# in place. V0 starts java directly and cannot see a fork.
+if [ -f "$S5_PDF" ]; then
+	JVM_EXTRA="-XshowSettings:system -XX:+PrintFlagsFinal"
+	new_job "$S5_PDF" in.pdf
+	RUN_ENV=(-e "JAVA_OPTS=-Djava.io.tmpdir=/tmp/job/tmp -XX:-UsePerfData $JVM_EXTRA")
+	RUN_CMD=("$VERAPDF_BIN" -f 2b --format xml /tmp/job/in.pdf)
+	run_container V0L-unconfined
+	BASE_METRICS_L="$(cat "$WORK/V0L-unconfined.stderr" "$WORK/V0L-unconfined.stdout" | metrics)"
+	new_job "$S5_PDF" in.pdf
+	verapdf_cmd /tmp/job/in.pdf "$JVM_EXTRA"
+	t0=$(now); run_container V0L; t1=$(now)
+	SANDBOX_METRICS_L="$(cat "$WORK/V0L.stderr" "$WORK/V0L.stdout" | metrics)"
+	if [ -n "$BASE_METRICS_L" ] && [ "$BASE_METRICS_L" = "$SANDBOX_METRICS_L" ] && grep -q 'isCompliant="true"' "$WORK/V0L.stdout"; then
+		pass V0L "$(elapsed "$t0" "$t1")" "JVM view through the production launcher identical ($(printf '%s\n' "$BASE_METRICS_L" | grep -c .) lines) and the verdict is still isCompliant=\"true\""
+	else
+		failed V0L "$(elapsed "$t0" "$t1")" "JVM view through the launcher differs under the ruleset -- without: [$(printf '%s' "$BASE_METRICS_L" | tr '\n' ';')] with: [$(printf '%s' "$SANDBOX_METRICS_L" | tr '\n' ';')] (exit $RC)"
+	fi
+else
+	failed V0L 0 "S5 produced no PDF/A to validate"
+fi
+
 # N1: soffice pointed at an identical file outside every grant.
 new_job "$DOCX" in.docx
 rm -f "$JOB/in.docx" # the ONLY copy is /outside/in.docx
@@ -435,6 +479,49 @@ if [ -f "$S5_PDF" ]; then
 	fi
 else
 	failed N2 0 "S5 produced no PDF/A to hide"
+fi
+
+# N3: can a confined engine open OTHER processes' environ? The worker (the
+# helper's parent in production) and PID 1 hold DATABASE_URL and the S3 keys.
+# A per-run canary in the container's environment stands in for them. The
+# unconfined run in the same shape has to see the canary in both files, or a
+# "denied" below would prove nothing.
+CANARY="octoconv-canary-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+N3_OPEN='for p in /proc/1/environ /proc/$PPID/environ /proc/self/root/etc/hostname; do
+	if { true < "$p"; } 2>/dev/null; then echo "OPEN $p"; else echo "DENIED $p"; fi
+done
+for p in /proc/1/cmdline /proc/$PPID/cmdline /proc/$PPID/status; do
+	if { true < "$p"; } 2>/dev/null; then echo "PROC-OTHER: $p opened"; else echo "PROC-OTHER: $p denied"; fi
+done
+for p in /proc/self/environ /proc/self/cmdline; do
+	if { true < "$p"; } 2>/dev/null; then echo "CONTROL: $p opened"; else echo "CONTROL: $p denied"; fi
+done
+echo "PPID=$PPID"'
+N3_SEE='for p in /proc/1/environ /proc/$PPID/environ; do
+	if grep -qa "$OCTOCONV_CANARY" "$p" 2>/dev/null; then echo "CANARY-PRESENT $p"; else echo "CANARY-ABSENT $p"; fi
+done
+echo "PPID=$PPID"'
+if [ -f "$S5_PDF" ]; then N3_FIXTURE="$S5_PDF"; else N3_FIXTURE="$DOCX"; fi
+new_job "$N3_FIXTURE" in.pdf
+RUN_ENV=(-e "OCTOCONV_CANARY=$CANARY")
+RUN_CMD=(sh -c "$N3_SEE")
+run_container N3-unconfined
+cat "$WORK/N3-unconfined.stdout"
+new_job "$N3_FIXTURE" in.pdf
+RUN_ENV=(-e "OCTOCONV_CANARY=$CANARY")
+RUN_CMD=(/usr/local/bin/document-worker __sandbox-exec)
+while IFS= read -r t; do RUN_CMD+=("$t"); done < <(helper_tokens verapdf)
+RUN_CMD+=(-- /usr/bin/dash -c "$N3_OPEN")
+t0=$(now); run_container N3; t1=$(now)
+cat "$WORK/N3.stdout"
+if [ "$(grep -c '^CANARY-PRESENT ' "$WORK/N3-unconfined.stdout")" != 2 ]; then
+	failed N3 "$(elapsed "$t0" "$t1")" "the unconfined probe did not see the canary in both /proc/1/environ and the parent's environ: a denial here would prove nothing"
+elif [ "$(grep -cE '^(OPEN|DENIED) ' "$WORK/N3.stdout")" != 3 ]; then
+	failed N3 "$(elapsed "$t0" "$t1")" "the confined probe printed no rows (exit $RC): $(head -c 300 "$WORK/N3.stderr" | tr '\n' ' ')"
+elif grep -q '^OPEN ' "$WORK/N3.stdout"; then
+	failed N3 "$(elapsed "$t0" "$t1")" "a confined engine opened: $(grep '^OPEN ' "$WORK/N3.stdout" | tr '\n' ' ')"
+else
+	pass N3 "$(elapsed "$t0" "$t1")" "with the canary proven present unconfined, /proc/1/environ, the parent's environ and /proc/self/root/etc/hostname all denied"
 fi
 
 # C1: the socket / /tmp grant is load-bearing.

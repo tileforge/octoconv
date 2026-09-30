@@ -63,7 +63,9 @@ func TestVerapdfReadOnlySetIsTheMeasuredOne(t *testing.T) {
 		"/usr/bin/which",
 		"/opt/verapdf",
 		"/etc/java-17-openjdk",
-		"/proc",
+		"/proc/cgroups",
+		"/proc/self/cgroup",
+		"/proc/self/mountinfo",
 		"/sys/fs/cgroup",
 		"/dev/random",
 	})
