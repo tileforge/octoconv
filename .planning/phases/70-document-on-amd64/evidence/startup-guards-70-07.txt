@@ -1,0 +1,47 @@
+# 70-07 startup guards: live evidence
+# Part 1: sharedTmpGuard refuses concurrency below 1 on the built images (Task 1)
+host: Darwin arm64, docker: orbstack aarch64
+commit: 3be14e282923935b0a9ac179ddce272282f70633  (3be14e2 is the guard fix)
+tracked dirt: 0 file(s)
+document image: octoconv-document-worker:plan-70-07-fix  sha256:bde7fe42f7cd8ad695da14bceb41be5fa460371d351ef4a050cc0862ff8147e6
+chromium image: octoconv-chromium-worker:plan-70-07-fix  sha256:a13282d4dd775852d0d041fffa22b3d781974926c433b4bdf734c4e3adf62e97
+Each run: confined (no *_SANDBOX_DISABLED), DATABASE_URL pointing at a dead port, as the gate's run_gated does.
+Each run also asserts: non-zero exit, the refusal line naming <VAR>=<n> with the sandbox enabled, the shared /tmp named.
+
+### document  DOCUMENT_WORKER_CONCURRENCY=0
+$ docker run --rm -e DOCUMENT_WORKER_CONCURRENCY=0 -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate octoconv-document-worker:plan-70-07-fix
+2026/09/30 20:06:42 📄 DOCUMENT_WORKER_CONCURRENCY=0
+2026/09/30 20:06:42 document sandbox: DOCUMENT_WORKER_CONCURRENCY=0 with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count, so several tasks would run over the container's shared /tmp, which this class's ruleset grants read-write and each task sweeps; set DOCUMENT_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+exit status: 1
+check: no 'sandbox proven' line
+check: no 'postgres:' line
+RESULT: PASS
+
+### document  DOCUMENT_WORKER_CONCURRENCY=-1
+$ docker run --rm -e DOCUMENT_WORKER_CONCURRENCY=-1 -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate octoconv-document-worker:plan-70-07-fix
+2026/09/30 20:06:42 📄 DOCUMENT_WORKER_CONCURRENCY=-1
+2026/09/30 20:06:42 document sandbox: DOCUMENT_WORKER_CONCURRENCY=-1 with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count, so several tasks would run over the container's shared /tmp, which this class's ruleset grants read-write and each task sweeps; set DOCUMENT_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+exit status: 1
+check: no 'sandbox proven' line
+check: no 'postgres:' line
+RESULT: PASS
+
+### html  HTML_WORKER_CONCURRENCY=0
+$ docker run --rm -e HTML_WORKER_CONCURRENCY=0 -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate octoconv-chromium-worker:plan-70-07-fix
+2026/09/30 20:06:43 🧵 HTML_WORKER_CONCURRENCY=0
+2026/09/30 20:06:43 html sandbox: HTML_WORKER_CONCURRENCY=0 with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count, so several tasks would run over the container's shared /tmp, which this class's ruleset grants read-write and each task sweeps; set HTML_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+exit status: 1
+check: no 'sandbox proven' line
+check: no 'postgres:' line
+RESULT: PASS
+
+### html  HTML_WORKER_CONCURRENCY=-1
+$ docker run --rm -e HTML_WORKER_CONCURRENCY=-1 -e DATABASE_URL=postgres://gate:gate@127.0.0.1:1/gate octoconv-chromium-worker:plan-70-07-fix
+2026/09/30 20:06:43 🧵 HTML_WORKER_CONCURRENCY=-1
+2026/09/30 20:06:43 html sandbox: HTML_WORKER_CONCURRENCY=-1 with the sandbox enabled: asynq treats a concurrency below 1 as the CPU count, so several tasks would run over the container's shared /tmp, which this class's ruleset grants read-write and each task sweeps; set HTML_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+exit status: 1
+check: no 'sandbox proven' line
+check: no 'postgres:' line
+RESULT: PASS
+
+OVERALL: PASS
