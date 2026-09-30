@@ -16,6 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"unicode"
 )
 
 // sofficeReadWrite is soffice's writable set beyond the job directory,
@@ -116,6 +118,27 @@ const documentPreflightOutsideBase = "/var/tmp"
 // documentPreflightTmpDir is the job-relative temp directory as a path.
 func documentPreflightTmpDir(jobDir string) string {
 	return filepath.Join(jobDir, documentEngineTmpDir)
+}
+
+// requireNoWhitespaceJobDir refuses a job directory whose engine temp path
+// contains whitespace. The veraPDF launcher script expands JAVA_OPTS unquoted,
+// so verapdfEnv's -Djava.io.tmpdir=<dir> would be torn into separate JVM
+// arguments. Quoting inside JAVA_OPTS cannot repair that -- the launcher's
+// shell does not re-parse quotes in an expanded variable -- so the directory
+// is refused with its cause named. Job directories come from os.MkdirTemp("")
+// and so live under TMPDIR; that is where the operator fixes it. soffice fares
+// no better in such a path (measured 70-07: a confined start with a whitespace
+// TMPDIR produced no conversion within the 60 s preflight timeout), which is
+// why the startup preflight applies this check to every confined start, not
+// only to PDF/A jobs.
+func requireNoWhitespaceJobDir(jobDir string) error {
+	tmp := documentPreflightTmpDir(jobDir)
+	if strings.ContainsFunc(tmp, unicode.IsSpace) {
+		return fmt.Errorf("the job directory %q contains whitespace, and the veraPDF launcher "+
+			"word-splits JAVA_OPTS, so -Djava.io.tmpdir would be torn apart; point TMPDIR at a path "+
+			"without whitespace", tmp)
+	}
+	return nil
 }
 
 // sofficeEnv is the environment soffice runs with: the shared allowlist
@@ -278,6 +301,12 @@ func DocumentPreflight(ctx context.Context, c LibreOfficeConverter) error {
 		return err
 	}
 	defer cleanup()
+
+	// Before any engine runs: a TMPDIR the engines cannot use is named here
+	// rather than surfacing as a soffice timeout (IN-02).
+	if err := requireNoWhitespaceJobDir(w.jobDir); err != nil {
+		return err
+	}
 
 	if err := w.requireOutsideGrants(sofficeReadWrite, sofficeSocketDirs, sofficeReadOnly,
 		verapdfReadWrite, verapdfReadOnly); err != nil {

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 )
 
 // documentFormats are the office document formats LibreOffice converts to pdf.
@@ -110,17 +109,13 @@ func (c LibreOfficeConverter) Convert(ctx context.Context, inPath, outPath strin
 	suffix, isPDFA := PDFAFilterOptions(docOpts)
 	// A PDF/A conversion runs veraPDF, whose launcher script expands JAVA_OPTS
 	// unquoted, so a job directory containing whitespace would tear
-	// -Djava.io.tmpdir=<dir> into separate JVM arguments (review IN-02). Quoting
-	// inside JAVA_OPTS cannot repair that -- the launcher's shell does not
-	// re-parse quotes in an expanded variable -- so the job is refused here,
-	// before any engine runs, with the cause named. The startup preflight runs
-	// this same path in a directory under TMPDIR, so a whitespace TMPDIR also
-	// stops a confined worker from starting.
+	// -Djava.io.tmpdir=<dir> into separate JVM arguments (review IN-02). The
+	// job is refused here, before any engine runs, with the cause named. The
+	// startup preflight makes the same check on its own job directory, so a
+	// whitespace TMPDIR also stops a confined worker from starting.
 	if isPDFA {
-		if tmp := documentPreflightTmpDir(workDir); strings.ContainsFunc(tmp, unicode.IsSpace) {
-			return fmt.Errorf("libreoffice: the job directory %q contains whitespace, and the veraPDF launcher "+
-				"word-splits JAVA_OPTS, so -Djava.io.tmpdir would be torn apart; point TMPDIR at a path "+
-				"without whitespace", tmp)
+		if err := requireNoWhitespaceJobDir(workDir); err != nil {
+			return fmt.Errorf("libreoffice: %w", err)
 		}
 	}
 
