@@ -50,7 +50,7 @@ func RunExecModeIfRequested(argv []string) bool {
 
 // RunExecMode applies the confinement described by argv and execs the rest.
 //
-//	<worker> __sandbox-exec cpu:271 rw:/tmp/job ro:/opt/... -- /usr/bin/engine ...
+//	<worker> __sandbox-exec cpu:271 rw:/tmp/job sock:/tmp ro:/opt/... -- /usr/bin/engine ...
 //
 // The ORDER here is load-bearing and is the reason this is not inlined per
 // worker:
@@ -81,7 +81,7 @@ func RunExecMode(argv []string) {
 	// grant, so a ruleset with no rules denies every path on the system. The
 	// engine would fail to open its own binary.
 	restricted := ThreadID()
-	if len(p.ReadOnly)+len(p.ReadWrite) > 0 {
+	if len(p.ReadOnly)+len(p.ReadWrite)+len(p.Socket) > 0 {
 		if err := Apply(p); err != nil {
 			// FAIL CLOSED. Running the engine unconfined because the
 			// confinement could not be established is exactly the outcome this

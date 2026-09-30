@@ -7,17 +7,25 @@
 # Usage:
 #   scripts/conf05-crosscheck.sh [--doc] <class>...
 #
-# Seven classes: pandoc, ocr, av, audio, html, probe (probe's Go file lands
-# in a later plan -- until then this script exits 3 for it, its documented
-# "not there yet" status). html and probe additionally carry a conf05
-# readwrite block (CONF-06's shared-writable-path decision) -- the other
-# four classes' writable set is the job directory alone and have no such
-# block.
+# Eight classes: pandoc, ocr, av, audio, html, probe, soffice, verapdf (probe's
+# Go file landed in a later plan than its measurement, and soffice's and
+# verapdf's -- internal/convert/documentsandbox.go -- lands in phase 70 plan 03:
+# until then this script exits 3 for them, its documented "not there yet"
+# status). The argument `document` expands to `soffice verapdf`: one image, two
+# engines, two separately measured sets (phase 70, D-10). html, probe, soffice
+# and verapdf additionally carry a conf05 readwrite block (CONF-06's
+# shared-writable-path decision; for verapdf it is /dev/null alone) -- the
+# other four classes' writable set is the job directory alone and have no such
+# block. soffice alone carries a conf05 socket block too: the directories
+# beneath which it may create a Unix-domain socket and nothing else (the
+# scoped-socket route chosen in 70-01; class_go_socket_var is the one place
+# that says which class has one).
 #
 # --doc prints what the DOCUMENT says (readonly/engines/readwrite counts and
 # lists) and exits 0 -- no Go file is read. Without --doc, the doc lists are
 # diffed against internal/convert/<class>sandbox.go's var <class>ReadOnly /
-# var <class>Engines / (html, probe only) var <class>ReadWrite.
+# var <class>Engines / (html, probe, soffice, verapdf) var <class>ReadWrite /
+# (soffice only) var sofficeSocketDirs.
 #
 # Exit codes:
 #   0  doc read cleanly (--doc), or doc and Go agree exactly
@@ -40,6 +48,17 @@ if [ "${1:-}" = "--doc" ]; then
 fi
 [ $# -gt 0 ] || die "usage: $0 [--doc] <class>..."
 
+# `document` is the image, not a class: it stands for both of its engines.
+classes=()
+for arg in "$@"; do
+  if [ "$arg" = "document" ]; then
+    classes+=(soffice verapdf)
+  else
+    classes+=("$arg")
+  fi
+done
+set -- "${classes[@]}"
+
 [ -f "$DOC_FILE" ] || die "$DOC_FILE not found (run from the repository root)"
 
 class_go_file() {
@@ -50,7 +69,8 @@ class_go_file() {
     audio)  echo "internal/convert/audiosandbox.go" ;;
     html)   echo "internal/convert/htmlsandbox.go" ;;
     probe)  echo "internal/convert/probesandbox.go" ;;
-    *) die "unknown class: $1 (expected pandoc, ocr, av, audio, html or probe)" ;;
+    soffice|verapdf) echo "internal/convert/documentsandbox.go" ;;
+    *) die "unknown class: $1 (expected pandoc, ocr, av, audio, html, probe, soffice, verapdf or document)" ;;
   esac
 }
 class_go_readonly_var() {
@@ -61,6 +81,8 @@ class_go_readonly_var() {
     audio)  echo "audioReadOnly" ;;
     html)   echo "htmlReadOnly" ;;
     probe)  echo "probeReadOnly" ;;
+    soffice)  echo "sofficeReadOnly" ;;
+    verapdf)  echo "verapdfReadOnly" ;;
   esac
 }
 class_go_engines_var() {
@@ -71,17 +93,34 @@ class_go_engines_var() {
     audio)  echo "audioEngines" ;;
     html)   echo "htmlEngines" ;;
     probe)  echo "probeEngines" ;;
+    soffice)  echo "sofficeEngines" ;;
+    verapdf)  echo "verapdfEngines" ;;
   esac
 }
 # class_go_readwrite_var prints the Go var naming a class's shared writable
-# set BEYOND the job directory (CONF-06) -- html and probe only; empty for
-# every class whose writable set is the job directory alone (pandoc/ocr/av/
-# audio), which the main loop below reads as "no readwrite block for this
-# class", not as an empty passing set.
+# set BEYOND the job directory (CONF-06) -- html, probe, soffice and verapdf
+# only; empty for every class whose writable set is the job directory alone
+# (pandoc/ocr/av/audio), which the main loop below reads as "no readwrite block
+# for this class", not as an empty passing set. A class that has a block and
+# whose set is empty (probe) is read as count 0, and a MISSING block is exit 2.
 class_go_readwrite_var() {
   case "$1" in
-    html)  echo "htmlReadWrite" ;;
-    probe) echo "probeReadWrite" ;;
+    html)    echo "htmlReadWrite" ;;
+    probe)   echo "probeReadWrite" ;;
+    soffice) echo "sofficeReadWrite" ;;
+    verapdf) echo "verapdfReadWrite" ;;
+    *) : ;;
+  esac
+}
+# class_go_socket_var prints the Go var naming the directories beneath which a
+# class may CREATE a Unix-domain socket and do nothing else (Paths.Socket, the
+# sock: token). Only soffice has one -- its single-instance IPC binds
+# /tmp/OSL_PIPE_* (70-01, evidence/soffice-ipc-spike.txt) -- and only on the
+# scoped-socket route the user chose there; on any other route this prints
+# nothing, and the class is compared without a socket block.
+class_go_socket_var() {
+  case "$1" in
+    soffice) echo "sofficeSocketDirs" ;;
     *) : ;;
   esac
 }
@@ -120,6 +159,9 @@ doc_engine_lines() {
 }
 doc_readwrite_lines() {
   extract_doc_block "$1" readwrite | grep '^/' || true
+}
+doc_socket_lines() {
+  extract_doc_block "$1" socket | grep '^/' || true
 }
 
 # extract_go_list prints, one per line, the quoted string elements of
@@ -201,15 +243,33 @@ for class in "$@"; do
     [ -n "$rw_lines" ] && rw_count=$(printf '%s\n' "$rw_lines" | grep -c '^/')
   fi
 
+  # A class with a socket var MUST carry a conf05 socket block, exactly as a
+  # readwrite var requires its block: missing is exit 2, and a block that is
+  # present and empty is an empty set with count 0.
+  sock_var=$(class_go_socket_var "$class")
+  has_sock=0
+  sock_lines=""
+  sock_count=0
+  if [ -n "$sock_var" ]; then
+    has_sock=1
+    require_doc_block "$class" socket \
+      || { echo "error: missing conf05 socket marker block for class: $class" >&2; exit 2; }
+    sock_lines=$(doc_socket_lines "$class")
+    [ -n "$sock_lines" ] && sock_count=$(printf '%s\n' "$sock_lines" | grep -c '^/')
+  fi
+  sock_suffix=""
+  [ "$has_sock" = 1 ] && sock_suffix=" socket ($sock_count)"
+
   if [ "$DOC_MODE" = 1 ]; then
     if [ "$has_rw" = 1 ]; then
-      echo "DOC: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)"
+      echo "DOC: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)$sock_suffix"
     else
-      echo "DOC: $class readonly ($ro_count) engines ($eng_count)"
+      echo "DOC: $class readonly ($ro_count) engines ($eng_count)$sock_suffix"
     fi
     [ -n "$ro_lines" ] && printf '%s\n' "$ro_lines" | sed 's/^/  ro: /'
     [ -n "$eng_lines" ] && printf '%s\n' "$eng_lines" | sed 's/^/  engine: /'
     [ "$has_rw" = 1 ] && [ -n "$rw_lines" ] && printf '%s\n' "$rw_lines" | sed 's/^/  rw: /'
+    [ "$has_sock" = 1 ] && [ -n "$sock_lines" ] && printf '%s\n' "$sock_lines" | sed 's/^/  sock: /'
     continue
   fi
 
@@ -241,7 +301,17 @@ for class in "$@"; do
     rw_diff=$(diff <(printf '%s\n' "$rw_lines") <(printf '%s\n' "$go_rw_raw") || true)
   fi
 
-  if [ -n "$ro_diff" ] || [ -n "$eng_diff" ] || [ -n "$rw_diff" ]; then
+  sock_diff=""
+  if [ "$has_sock" = 1 ]; then
+    go_sock_raw=$(extract_go_list "$go_file" "$sock_var")
+    if [ "$go_sock_raw" = "__NOTFOUND__" ]; then
+      echo "error: var $sock_var not found in $go_file" >&2
+      exit 3
+    fi
+    sock_diff=$(diff <(printf '%s\n' "$sock_lines") <(printf '%s\n' "$go_sock_raw") || true)
+  fi
+
+  if [ -n "$ro_diff" ] || [ -n "$eng_diff" ] || [ -n "$rw_diff" ] || [ -n "$sock_diff" ]; then
     echo "MISMATCH: $class"
     if [ -n "$ro_diff" ]; then
       echo "readonly diff (doc vs go, - doc / + go):"
@@ -255,14 +325,18 @@ for class in "$@"; do
       echo "readwrite diff (doc vs go, - doc / + go):"
       echo "$rw_diff"
     fi
+    if [ -n "$sock_diff" ]; then
+      echo "socket diff (doc vs go, - doc / + go):"
+      echo "$sock_diff"
+    fi
     status=1
     continue
   fi
 
   if [ "$has_rw" = 1 ]; then
-    echo "MATCH: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)"
+    echo "MATCH: $class readonly ($ro_count) engines ($eng_count) readwrite ($rw_count)$sock_suffix"
   else
-    echo "MATCH: $class readonly ($ro_count) engines ($eng_count)"
+    echo "MATCH: $class readonly ($ro_count) engines ($eng_count)$sock_suffix"
   fi
 done
 

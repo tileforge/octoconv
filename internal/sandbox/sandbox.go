@@ -45,6 +45,17 @@ type Paths struct {
 	// precompiled format cache, and the system directories holding the binary
 	// and its shared libraries.
 	ReadOnly []string
+	// Socket is the directories beneath which the engine may CREATE a
+	// Unix-domain socket, and nothing else: no read, no write, no remove, no
+	// execute. It exists for an engine whose single-instance IPC binds one
+	// (LibreOffice binds /tmp/OSL_PIPE_<uid>_SingleOfficeIPC_<hash>, and picks
+	// its directory from /tmp then /var/tmp only). Every other class leaves it
+	// empty, so no class's rendered spec changes.
+	//
+	// A separate list rather than a bit in ReadWrite's mask on purpose: a
+	// read-write grant is the job directory, where client-controlled bytes
+	// land, and creating a socket there is a right no engine has asked for.
+	Socket []string
 }
 
 // Limits are the resource bounds applied alongside the filesystem ruleset.
@@ -79,12 +90,15 @@ func (p Paths) Spec() []string { return p.SpecWith(Limits{}) }
 
 // SpecWith renders the paths and the limits together.
 func (p Paths) SpecWith(l Limits) []string {
-	spec := make([]string, 0, len(p.ReadWrite)+len(p.ReadOnly)+1)
+	spec := make([]string, 0, len(p.ReadWrite)+len(p.Socket)+len(p.ReadOnly)+1)
 	if l.CPUSeconds > 0 {
 		spec = append(spec, "cpu:"+strconv.Itoa(l.CPUSeconds))
 	}
 	for _, path := range p.ReadWrite {
 		spec = append(spec, "rw:"+path)
+	}
+	for _, path := range p.Socket {
+		spec = append(spec, "sock:"+path)
 	}
 	for _, path := range p.ReadOnly {
 		spec = append(spec, "ro:"+path)
@@ -114,6 +128,8 @@ func ParseSpec(argv []string) (Paths, Limits, []string, error) {
 			p.ReadOnly = append(p.ReadOnly, strings.TrimPrefix(argv[i], "ro:"))
 		case strings.HasPrefix(argv[i], "rw:"):
 			p.ReadWrite = append(p.ReadWrite, strings.TrimPrefix(argv[i], "rw:"))
+		case strings.HasPrefix(argv[i], "sock:"):
+			p.Socket = append(p.Socket, strings.TrimPrefix(argv[i], "sock:"))
 		default:
 			return p, l, nil, fmt.Errorf("sandbox: unrecognised argument %q", argv[i])
 		}

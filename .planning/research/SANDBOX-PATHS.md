@@ -101,7 +101,13 @@ argv задачи, а не только главный движок: OCR-пов�
 | Сервис | Платформа | Замер здесь |
 |---|---|---|
 | worker, chromium-worker, audio-worker, av-worker, ocr-worker, pandoc-worker, probe-worker | нативная | **возможен** |
-| document-worker | `platform: linux/amd64` (ради `verapdf/cli`, amd64-only) | **невозможен**, нужен amd64-узел |
+| document-worker | нативная (с фазы 70 в `linux/amd64` закреплён только build-этап `verapdf`, а не образ) | **возможен** — `scripts/document-sandbox-measure.sh` |
+
+document-worker до фазы 70 был примером образа, который здесь замерить нельзя:
+весь образ был закреплён на `linux/amd64` ради `verapdf/cli`, а эмулируемому
+amd64-процессу Landlock недоступен. Фаза 70 сняла закрепление (в `/opt/verapdf`
+только jar-файлы, shell-скрипт и данные), и теперь образ собирается и запускается
+нативно.
 
 ## Что уже внедрено
 
@@ -111,7 +117,7 @@ argv задачи, а не только главный движок: OCR-пов�
 | `image` | да | **да** (эта ветка) |
 | `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
 | `html`, `probe` | да | **да (фаза 69)** |
-| `document` | нельзя на этом хосте | нет (фаза 70) |
+| `document` | да (фаза 70, ниже) | нет (фаза 70, план 03) |
 
 Общая часть вынесена: `sandbox.ResolveHelper` (разрешение хелпера и отказ
 стартовать), `engineSandbox.wrapEngine` (сборка argv), `engineExec.run`/`.stream`
@@ -917,10 +923,101 @@ unzip
 file
 <!-- /conf05:probe:engines -->
 
+## document (soffice + veraPDF) — замерено 2026-09-30 (фаза 70)
+
+Два движка одного образа, два ОТДЕЛЬНЫХ набора (D-10): veraPDF не должен получать
+того, что нужно soffice. Замер — `scripts/document-sandbox-measure.sh`: образ
+собирается из этого дерева, оба движка запускаются через боевой формат
+(`document-worker __sandbox-exec rw:... sock:... ro:... -- <движок>`), а каждая
+проверка судит по СОДЕРЖИМОМУ (текст фикстуры внутри `content.xml` /
+`word/document.xml`, `%PDF-` и `/GTS_PDFA` для PDF/A, атрибут `isCompliant`
+veraPDF), никогда по коду выхода.
+
+### Замер 1: кандидаты (первый набор, до сужения)
+
+Кандидаты — из `scripts/sandbox-paths-measure.sh trace` для docx→odt, docx→PDF/A
+(`TMPDIR=/job/tmp`) и `verapdf -f 2b --format xml` (`JAVA_OPTS=-Djava.io.tmpdir=… -XX:-UsePerfData`),
+плюс список `execve` из спайка 70-01 (исполняемые файлы в трассе `openat` не
+видны, Ловушки §1-2). `/usr/bin` пока целым каталогом; сужение — следующий замер.
+
+**Право на сокет и маршрут /tmp.** `soffice.bin` создаёт AF_UNIX-сокет
+`/tmp/OSL_PIPE_<uid>_SingleOfficeIPC_<hash>` (каталог выбирается только из
+`/tmp`, затем `/var/tmp`; `TMPDIR`, `-env:OSL_SOCKET_PATH`, `--nolockcheck` его не
+двигают — evidence/soffice-ipc-spike.txt). Маршрут `scoped-socket` (решение
+пользователя в 70-01): отдельный вид гранта `sock:<каталог>` = только
+`LANDLOCK_ACCESS_FS_MAKE_SOCK`, без чтения, записи, удаления.
+
+**Гипотеза «только сокет» проверена первой и НЕ подтвердилась.** С
+`sock:/tmp` и без `rw:/tmp` bind проходит (сокет создан), но `soffice.bin` тут же
+делает `unlinkat` этого сокета и получает `EACCES` — для unlink нужно
+`LANDLOCK_ACCESS_FS_REMOVE_FILE` на `/tmp`, а его сокет-грант не несёт. Первый
+процесс выходит с кодом 81 (протокол перезапуска), второй не может занять тот же
+путь (`ECONNREFUSED` на осиротевший сокет) и выходит с 1: **все пять конверсий
+(S1-S5) падают**, а в `/tmp` остаётся осиротевший `OSL_PIPE_*`. Ровно вторая
+ветка D-09: `/tmp` выдаётся на чтение-запись **и** остаётся `sock:/tmp`
+(`MAKE_SOCK` в `accessReadWrite` не входит и входить не должен). Тот же набор с
+`rw:/tmp` — ALL PASS, а `/tmp` после конверсии чист (сокет удаляется).
+Следствие для 70-03/70-04: правила фазы 69 для разделяемого writable-`/tmp` —
+concurrency 1, guard, sweep.
+
+<!-- conf05:soffice:readwrite -->
+/dev/null
+/tmp
+<!-- /conf05:soffice:readwrite -->
+<!-- conf05:soffice:socket -->
+/tmp
+<!-- /conf05:soffice:socket -->
+<!-- conf05:soffice:readonly -->
+/lib
+/usr/lib
+/usr/bin
+/etc/fonts
+/etc/libreoffice
+/etc/ld.so.cache
+/etc/localtime
+/etc/nsswitch.conf
+/etc/passwd
+/etc/group
+/proc
+/sys/devices/system/cpu
+/usr/share/fontconfig
+/usr/share/fonts
+/usr/local/share/fonts
+/var/cache/fontconfig
+/dev/urandom
+<!-- /conf05:soffice:readonly -->
+<!-- conf05:soffice:engines -->
+soffice
+<!-- /conf05:soffice:engines -->
+
+<!-- conf05:verapdf:readwrite -->
+/dev/null
+<!-- /conf05:verapdf:readwrite -->
+<!-- conf05:verapdf:readonly -->
+/lib
+/usr/lib
+/usr/bin
+/opt/verapdf
+/etc/host.conf
+/etc/hosts
+/etc/ld.so.cache
+/etc/localtime
+/etc/nsswitch.conf
+/etc/passwd
+/etc/resolv.conf
+/etc/java-17-openjdk
+/proc
+/sys/devices/system/cpu
+/sys/fs/cgroup
+/sys/kernel/mm/transparent_hugepage
+/dev/urandom
+/dev/random
+<!-- /conf05:verapdf:readonly -->
+<!-- conf05:verapdf:engines -->
+verapdf
+<!-- /conf05:verapdf:engines -->
+
 ## Ещё не замерено
 
-Ничего из нативных. Остался только `document` (LibreOffice + veraPDF), и он
-замеряется не здесь: `platform: linux/amd64`, а эмулируемому amd64 Landlock
-недоступен.
-
-`document` (LibreOffice) — только на amd64-узле, по причине выше.
+Ничего: все классы замерены на нативных образах. `document` (LibreOffice и
+veraPDF) — в разделе выше.

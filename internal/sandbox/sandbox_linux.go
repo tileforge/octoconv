@@ -24,6 +24,12 @@ const (
 	accessReadOnly = unix.LANDLOCK_ACCESS_FS_READ_FILE | unix.LANDLOCK_ACCESS_FS_READ_DIR |
 		unix.LANDLOCK_ACCESS_FS_EXECUTE
 
+	// What a Socket path may do: create a Unix-domain socket beneath itself,
+	// and nothing else. Its own constant, so that no read-write or read-only
+	// grant can ever carry it by accident: it is granted only on a path named
+	// by a sock: token (Paths.Socket).
+	accessMakeSocket = unix.LANDLOCK_ACCESS_FS_MAKE_SOCK
+
 	// The subset that is meaningful on a REGULAR FILE. Landlock refuses a rule
 	// granting a directory-only right on a non-directory with EINVAL, and the
 	// bundle is a single .ttb file -- so without this mask the ruleset cannot
@@ -38,8 +44,9 @@ const (
 
 	// Every access this ruleset takes an opinion about. An access left out of
 	// handledAccess is NOT restricted, so this deliberately lists more than the
-	// two sets above grant -- symlink and device creation are handled here and
-	// granted nowhere.
+	// two sets above grant -- symlink, fifo and device creation are handled here
+	// and granted nowhere. Socket creation is handled everywhere too, and is
+	// granted only by an explicit sock: path (accessMakeSocket).
 	handledAccess = accessReadWrite | accessReadOnly |
 		unix.LANDLOCK_ACCESS_FS_MAKE_SYM | unix.LANDLOCK_ACCESS_FS_MAKE_SOCK |
 		unix.LANDLOCK_ACCESS_FS_MAKE_FIFO | unix.LANDLOCK_ACCESS_FS_MAKE_BLOCK |
@@ -136,6 +143,14 @@ func Apply(p Paths) error {
 	}
 	for _, path := range p.ReadWrite {
 		if err := addPath(int(fd), path, accessReadWrite&handled); err != nil {
+			return err
+		}
+	}
+	// MAKE_SOCK and nothing else. addPath narrows a non-directory to the file
+	// mask, which shares no bit with it, so a sock: token naming a file fails
+	// closed here instead of granting nothing silently.
+	for _, path := range p.Socket {
+		if err := addPath(int(fd), path, accessMakeSocket&handled); err != nil {
 			return err
 		}
 	}
