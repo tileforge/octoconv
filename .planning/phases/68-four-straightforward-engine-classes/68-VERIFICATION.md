@@ -1,11 +1,19 @@
 ---
 phase: 68-four-straightforward-engine-classes
-verified: 2026-09-24T00:00:00Z
+verified: 2026-10-01T00:00:00Z
 status: passed
 score: 8/8 must-haves verified
+behavior_unverified: 0
+overrides_applied: 0
+re_verification:
+  previous_status: passed
+  previous_score: 8/8
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
+  reason: "verification.status read stale: phase 70 changed files this report covered"
 covered_files:
   - ".env.example"
-  - ".planning/REQUIREMENTS.md"
   - ".planning/phases/68-four-straightforward-engine-classes/68-01-PLAN.md"
   - ".planning/phases/68-four-straightforward-engine-classes/68-01-SUMMARY.md"
   - ".planning/phases/68-four-straightforward-engine-classes/68-02-PLAN.md"
@@ -18,6 +26,7 @@ covered_files:
   - ".planning/phases/68-four-straightforward-engine-classes/68-05-SUMMARY.md"
   - ".planning/phases/68-four-straightforward-engine-classes/68-06-PLAN.md"
   - ".planning/phases/68-four-straightforward-engine-classes/68-06-SUMMARY.md"
+  - ".planning/REQUIREMENTS.md"
   - ".planning/research/SANDBOX-PATHS.md"
   - "cmd/audio-worker/main.go"
   - "cmd/av-worker/main.go"
@@ -46,13 +55,14 @@ covered_files:
   - "internal/convert/sandboxpreflight.go"
   - "internal/convert/sandboxwrap.go"
   - "internal/convert/whisper.go"
+  - "internal/sandbox/execmode.go"
+  - "internal/sandbox/sandbox_linux.go"
+  - "internal/sandbox/sandbox.go"
   - "internal/worker/runner.go"
   - "internal/worker/worker.go"
   - "scripts/conf05-crosscheck.sh"
   - "scripts/sandbox-liveproof.sh"
-covered_digest: "v1:sha256:6c08e0bb642992ccb05de92ab67ade46a04623622a8148931043fa0eaf771f12"
-behavior_unverified: 0
-overrides_applied: 0
+covered_digest: "v2:sha256:77095dc059df9a56f1c5503045d92db073c4b9bd215cf90e9b07462d24a8815d"
 ---
 
 # Phase 68: Four Straightforward Engine Classes — Verification Report
@@ -62,23 +72,36 @@ overrides_applied: 0
 извне; наборы путей совпадают с `SANDBOX-PATHS.md` и удерживаются тестом;
 каждый воркер отказывается стартовать без Landlock.
 
-**Verified:** 2026-09-24
+**Verified:** 2026-10-01
 **Status:** passed
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — against the current tree (HEAD `ebcacda`), because phase 70
+changed files this report covered and `verification.status` read `stale`.
 
-**Verification method note:** This session ran on macOS (no Landlock, no
-Docker started per explicit instruction). Every claim that could be checked
-directly against the codebase (source wiring, unit tests, the AST coverage
-test, the conf05 doc/code cross-check, git commit existence, Helm rendering)
-was independently re-run/re-derived rather than taken from SUMMARY prose.
-The one class of claim that genuinely requires a Linux host with Landlock —
-that the kernel actually denies a file outside the job directory, observed
-live in `scripts/sandbox-liveproof.sh` and the rebuilt compose stack — was
-not re-executed here (per task instructions); it was assessed critically by
-cross-checking the SUMMARY's recorded log lines, exit codes and script logic
-against the actual source (log strings match byte-for-byte, the seccomp-
-profile-based checks are structurally non-vacuous, the git commits referenced
-exist). No inconsistency was found anywhere this cross-check could reach.
+## Re-verification scope
+
+The original report (2026-09-24, commit `7c37b30`, 8/8, passed) is carried forward
+only where the current code still says the same thing. Every must-have was
+re-checked against the current tree, and every change to a covered file since
+`7c37b30` was read as a diff (not taken from phase 70's SUMMARYs).
+
+Changes to phase-68 code since `7c37b30` (full `git diff 7c37b30 HEAD`, read):
+
+| File | Change | Effect on phase 68 |
+|------|--------|--------------------|
+| `cmd/{pandoc,ocr,av,audio}-worker/main.go` (70-07) | preflight context derived from the signal `ctx` instead of `context.Background()` | Preflight still runs, still before `db.Connect`, still `log.Fatalf` on error; it now also ends on SIGINT/SIGTERM. Timeouts (30/60/60/120s) unchanged. No regression. |
+| `internal/convert/sandboxwrap.go` (69/70) | adds `forJobRW`/`forJobRWSock`, `engineExec.env`/`withEnv`, `engineEnv`, `sharedTmpGuard`, `specWithSockets` | `forJob` is `forJobRW(jobDir, nil, ...)` and `specWithSockets(rw, nil, ro)` renders the same tokens as before; `run` takes the old `runCommandAs` branch when `e.env == nil`. None of the four phase-68 classes calls `withEnv`, `forJobRW*`, or `sharedTmpGuard` (grep of the 12 class files: zero hits). Unchanged behaviour. |
+| `internal/convert/sandboxpreflight.go` (69) | adds `newPreflightWorkspaceOutside`, `requireOutsideGrants`, `requireAbsent`, `requireContains`, `requireLacks`; `requireDenied` marker branch delegates to `requireAbsent` | `newPreflightWorkspace` == `newPreflightWorkspaceOutside(class, "")` (same `os.TempDir()` default). `requireDenied` judgment for nil marker and marker cases is the same bytes check (missing file = clean denial; marker present = failure). |
+| `internal/convert/progressexec.go` (69) | `engineExec.stream` refuses a non-nil per-exec env | The four phase-68 classes never set `env`; the only streaming class (av) is unaffected. |
+| `internal/convert/ocrsandbox.go` | doc comment only | none |
+| `internal/worker/worker.go` | `isDocumentTerminal` / `isHTMLTerminal` gain the `ErrEngineSandboxUnavailable` check | `isPandocTerminal`/`isOCRTerminal`/`isAVTerminal`/`isAudioTerminal` untouched; html/document now match the pattern phase 68 set. |
+| `internal/sandbox/{sandbox,sandbox_linux,execmode}.go` (70-02) | new `Socket` grant kind (`sock:` token, `MAKE_SOCK` only) | Purely additive: empty `Socket` adds no tokens and no Landlock rules; `RunExecMode` gate widened to `len(ReadOnly)+len(ReadWrite)+len(Socket) > 0`, same outcome when `Socket` is empty. |
+| `internal/convert/sandboxcoverage_test.go` (69/70) | `sandboxPendingFiles` emptied; html/probe/document classes added to the scan | pandoc/ocr/av/audio entries unchanged; the test now covers strictly more. |
+| `docker-compose.yml`, `.env.example`, `scripts/*` | additions for later classes | The four `<CLASS>_SANDBOX_DISABLED` forwards are still present (see truth 6). |
+| `.planning/research/SANDBOX-PATHS.md` | additions for html/probe/document | The four phase-68 `conf05` blocks still match the Go sets (truth 3). |
+
+Files not in that list (`pandoc.go`, `ocr*.go` other than `ocrsandbox.go`, `av*.go`,
+`audio*.go`, `whisper.go`, `exec.go`, `libvips.go`, `runner.go`,
+`pandocsandbox.go`, `avsandbox.go`, `audiosandbox.go`) have no diff since `7c37b30`.
 
 ## Goal Achievement
 
@@ -86,14 +109,14 @@ exist). No inconsistency was found anywhere this cross-check could reach.
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Each of the four classes (pandoc, ocr, av, audio) confines its engine exec(s) under a per-job Landlock ruleset built from `engineExec`/`forJob`, and denies a file outside the job directory | ✓ VERIFIED | Every engine call site in `pandoc.go`, `ocr.go`/`ocrpdf.go`/`ocrguards.go`, `av.go`/`avduration.go`, `whisper.go`/`audioduration.go` routes through `c.exec(outPath).run`/`.stream` (grep-confirmed, no direct `runCommand`/`exec.Command` left). `internal/convert/sandboxcoverage_test.go#TestConfinedClassesExecOnlyThroughTheSandbox` (AST scan of the real package) re-run: PASS. Live-Landlock denial itself is asserted in `scripts/sandbox-liveproof.sh` (`ALL PASS (20 checks)` per 68-06-SUMMARY.md) — log strings (`🔒 <class> sandbox proven: ...`) match the exact source lines in each `cmd/<class>-worker/main.go`, not paraphrased |
-| 2 | The pre-Convert audio duration guard (ffprobe on untrusted input, run from `internal/worker` before `Convert`) and OCR's `pdfinfo`/`pdftotext` guards run under the SAME confined ruleset as the rest of their class, not unconfined | ✓ VERIFIED | `internal/convert/audioduration.go#EnforceMaxDuration` builds its own `engineExec` from `(helper, ...)`; `helper` threads `cmd/audio-worker` → `NewHandler` → `Handler.audioSandboxHelper` → `NewRunner` → `audioPreConvertGuard` → `enforceAudioGuardBeforeConvert` → `convert.EnforceMaxDuration` (grep-traced, all links present). `cmd/audio-worker/main.go` passes the SAME `sandboxHelper` variable to both `WithSandbox` and `NewHandler`. `internal/convert/ocrguards.go#ocrPDFPageCount`/`extractPDFTextLayer` take `x engineExec` and call `x.run("pdfinfo"/"pdftotext", ...)` — confirmed by direct read, not inference |
-| 3 | Each class's granted path/engine set matches `SANDBOX-PATHS.md`'s measured `conf05` blocks, held by a test | ✓ VERIFIED | `scripts/conf05-crosscheck.sh pandoc ocr av audio` re-run: `MATCH` for all four (readonly/engines counts: pandoc 0/1, ocr 7/4, av 7/2, audio 7/3). `go test -count=1 ./internal/convert/` (includes `TestXReadOnlySetIsTheMeasuredOne`/`TestXEnginesAreTheMeasuredOnes` for all four classes) re-run: PASS |
-| 4 | Each of the four workers refuses to start when Landlock confinement is unavailable, naming its own `<CLASS>_SANDBOX_DISABLED` escape hatch | ✓ VERIFIED | `cmd/{pandoc,ocr,av,audio}-worker/main.go` all call `sandbox.ResolveHelper(<class>SandboxDisabledEnv)` first and `log.Fatalf` on error, before any Postgres/Redis/S3 connection — confirmed by direct read of all four files |
-| 5 | Each worker preflights the confined engine on a real conversion, judged by output content, before accepting a job | ✓ VERIFIED | All four `main.go`s call `convert.<Class>Preflight(ctx, conv)` and `log.Fatalf` on error, strictly before `db.Connect`. `PandocPreflight`/`OCRPreflight`/`AVPreflight`/`AudioPreflight` source read directly: every judgment is by output bytes/JSON shape (marker strings, hOCR word, RIFF/WAVE header, `transcription` JSON array), and each ends with a negative run from outside the job directory checked via `requireDenied` |
-| 6 | The escape hatch is reachable from both docker-compose and the Helm chart for all four classes | ✓ VERIFIED | `docker-compose.yml` forwards `PANDOC_SANDBOX_DISABLED`/`OCR_SANDBOX_DISABLED`/`AV_SANDBOX_DISABLED`/`AUDIO_SANDBOX_DISABLED` as `"${VAR:-}"` (grep-confirmed). `helm template` re-run locally with `--set <class>Worker.extraEnv.<VAR>=true`: all four render into their container's `env:` block; the default render (no `--set`) carries none of the four blocks |
-| 7 | The coverage test holds "no unconfined engine exec" as a class invariant across the whole `internal/convert` package, not four hand-checked instances, and the scanner itself is tested | ✓ VERIFIED | `go test -run TestConfinedClassesExecOnlyThroughTheSandbox` and `-run TestEngineCallScannerCatchesALiteralExec` re-run directly against this working tree: both PASS. Read `sandboxcoverage_test.go`'s classification tables — the pending-phase allowlist contains only 5 files (`chromium.go`, `sanitizepdf.go`, `sanitizeverify.go`, `libreoffice.go`, `verapdf.go`), all explicitly phase 69/70, none of pandoc/ocr/av/audio's files |
-| 8 | Requirements CONF-01/02/04/05's phase-68 share (the four classes) is satisfied; no orphaned requirements for this phase | ✓ VERIFIED | `.planning/REQUIREMENTS.md` maps CONF-01/02/04/05 to phases 67-70 jointly (by design — these IDs span the whole confinement milestone); phase 68's plans (01-06) all declare exactly these four IDs and each has a completed SUMMARY. No requirement ID appears in REQUIREMENTS.md's phase-68 mapping without a corresponding plan |
+| 1 | Each of pandoc, ocr, av, audio confines its engine exec(s) under a per-job Landlock ruleset (`engineExec`/`forJob`) and denies a file outside the job directory | ✓ VERIFIED | The four class files have zero direct `runCommand`/`exec.Command` calls (grep: only comment mentions). `TestConfinedClassesExecOnlyThroughTheSandbox` (AST scan, re-run now, PASS) now checks seven groups including these four; `TestEngineCallScannerCatchesALiteralExec` PASS. Denial of a file outside the job directory is asserted by each `<Class>Preflight` and was observed live: `evidence/liveproof-8class-70-09.txt` (images built from `5db6c74`, which has no Go/script/Docker/chart diff against HEAD) — `PASS: {pandoc,ocr,av,audio} {confined-startup,refuses-without-landlock,escape-hatch,preflight-catches-restrict-self}`, `ALL PASS (40 checks)`, plus e2e `TestPandocConversionE2E`, `TestOCRConversionE2E`, `TestAudioConversionE2E` PASS in `e2e-70-09.txt` (no av-class e2e test appears in that transcript; av rests on its live gate checks and unit tests). |
+| 2 | Audio's pre-Convert ffprobe duration guard and OCR's pdfinfo/pdftotext guards run under the same confined ruleset as their class | ✓ VERIFIED | Unchanged files (`audioduration.go`, `ocrguards.go`, `runner.go`); wiring `cmd/audio-worker` → `NewHandler` → `audioSandboxHelper` → `EnforceMaxDuration` still present; `cmd/audio-worker/main.go` passes the one `sandboxHelper` to both `WithSandbox` and `NewHandler`. The audio live preflight line `ffprobe: engine sandbox could not be established ... exit status 78` in the liveproof transcript shows the guard ffprobe goes through the helper. |
+| 3 | Each class's granted path/engine set matches `SANDBOX-PATHS.md`'s measured `conf05` blocks, held by a test | ✓ VERIFIED | `scripts/conf05-crosscheck.sh pandoc ocr av audio` re-run: `MATCH: pandoc readonly (0) engines (1)`, `ocr (7)/(4)`, `av (7)/(2)`, `audio (7)/(3)` — identical to 2026-09-24. `Test{Pandoc,OCR,AV,Audio}{ReadOnlySetIsTheMeasuredOne,EnginesAreTheMeasuredOnes}` re-run, all PASS. Phase 70's own inversion (`evidence/inversions-70-09.txt`) shows the same mechanism failing red when a path is added. |
+| 4 | Each of the four workers refuses to start when Landlock is unavailable, naming its own `<CLASS>_SANDBOX_DISABLED` | ✓ VERIFIED | `cmd/{pandoc,ocr,av,audio}-worker/main.go` each call `sandbox.ResolveHelper(<class>SandboxDisabledEnv)` and `log.Fatalf` before any connection (re-read). Live: `PASS: <class> refuses-without-landlock` for all four in the 40-check transcript. |
+| 5 | Each worker preflights the confined engine on a real conversion, judged by output content, before accepting a job | ✓ VERIFIED | All four `main.go` call `convert.<Class>Preflight(preflightCtx, conv)` then `log.Fatalf`, strictly before `db.Connect` (line order re-read: pandoc 74<83, ocr 106<115, av 111<120, audio 109<118). The 70-07 change only re-parents `preflightCtx` onto the signal context. Live: `PASS: <class> preflight-catches-restrict-self` ×4; the transcript shows each preflight refusing with the engine named when restrict_self is blocked. |
+| 6 | The escape hatch is reachable from docker-compose and the Helm chart for all four classes | ✓ VERIFIED | `docker-compose.yml` still forwards `PANDOC_SANDBOX_DISABLED` (l.1292), `OCR_` (1109), `AV_` (944), `AUDIO_` (819) as `"${VAR:-}"`; `.env.example` documents them. All four `deployment-*-worker.yaml` still have the `extraEnv` block; `helm template --set <class>Worker.extraEnv.<VAR>=true` re-rendered the variable for all four. Live `PASS: <class> escape-hatch` ×4. |
+| 7 | "No unconfined engine exec" is a class invariant over the whole `internal/convert` package, and the scanner is itself tested | ✓ VERIFIED | Both tests re-run, PASS. The pending-file allowlist is now empty (every class confined since phase 70), so the invariant is stricter than at 2026-09-24, where five files were allowlisted. |
+| 8 | CONF-01/02/04/05's phase-68 share is satisfied; no orphaned requirements | ✓ VERIFIED | `.planning/REQUIREMENTS.md` maps CONF-01/02/04/05 to phases 67–70 jointly and marks them complete; phase 68 plans 01–06 declare exactly these IDs, each with a SUMMARY. |
 
 **Score:** 8/8 truths verified (0 present, behavior-unverified)
 
@@ -101,73 +124,69 @@ exist). No inconsistency was found anywhere this cross-check could reach.
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `internal/convert/sandboxwrap.go` | `engineExec`, `forJob`, `run`, `ErrEngineSandboxUnavailable` | ✓ VERIFIED | Present, used by all four classes |
-| `internal/convert/exec.go` | `runCommandAs`/`runCommandCore` | ✓ VERIFIED | Present, engine error shapes name the caller's label |
-| `internal/convert/sandboxpreflight.go` | preflight toolkit (`preflightWorkspace`, `place`, `requireOutput`, `requireDenied`, `preflightMarker`) | ✓ VERIFIED | Present, reused by all four `<Class>Preflight` functions |
-| `internal/convert/pandocsandbox.go` | `pandocReadOnly` (`[]`), `pandocEngines` (`[pandoc]`), `WithSandbox`, `PandocPreflight` | ✓ VERIFIED | Present, matches conf05 |
-| `internal/convert/ocrsandbox.go` | `ocrReadOnly` (7), `ocrEngines` (4), `OCRPreflight`, `ocrPageWorkDir` | ✓ VERIFIED | Present, matches conf05; page render dir confirmed built inside `filepath.Dir(outPath)` |
-| `internal/convert/progressexec.go` | `runCommandStreaming`, `engineExec.stream` | ✓ VERIFIED | Present; FIFO built inside caller-supplied `fifoDir` (the job dir, confirmed at `av.go`'s call site: `filepath.Dir(outPath)`); `-progress` folded into engine argv BEFORE `wrapEngine` |
-| `internal/convert/avsandbox.go` | `avReadOnly` (7), `avEngines` (2), `AVPreflight` | ✓ VERIFIED | Present, matches conf05; preflight forces the streaming re-encode branch (video-only source, no stream-copy shortcut) |
-| `internal/convert/audiosandbox.go` | `audioReadOnly` (7, no model dir), `audioEngines` (3, incl. `ffprobe`), `AudioPreflight` | ✓ VERIFIED | Present, matches conf05; model granted as a file at call time, confirmed in `whisper.go`'s `Convert` |
-| `internal/convert/audioduration.go` | `EnforceMaxDuration(ctx, helper, path, max)` | ✓ VERIFIED | Signature confirmed; builds its own `engineExec` from the helper it's handed |
-| `internal/convert/sandboxcoverage_test.go` | AST coverage test | ✓ VERIFIED | Present, re-run, PASS; classification tables checked directly |
-| `scripts/conf05-crosscheck.sh` | doc-vs-Go cross-check | ✓ VERIFIED | Present, executable, re-run: 4/4 MATCH |
-| `scripts/sandbox-liveproof.sh` | 4-check-per-class live gate | ✓ VERIFIED | Present; logic read directly — non-vacuous seccomp-profile construction per check, not re-executed (no Docker in this session per instructions) |
-| `cmd/{pandoc,ocr,av,audio}-worker/main.go` | refuse-without-Landlock, preflight-before-Postgres, one helper var reused | ✓ VERIFIED | All four confirmed by direct read |
-| `deploy/chart/octoconv/templates/deployment-{pandoc,ocr,av,audio}-worker.yaml` | `extraEnv` block | ✓ VERIFIED | All four confirmed present and confirmed to render via `helm template --set` |
-| `docker-compose.yml`, `.env.example` | escape hatches forwarded/documented | ✓ VERIFIED | Confirmed by grep and by `docker compose config`-equivalent render (helm not applicable here; compose forwarding pattern read directly) |
-| `.planning/research/SANDBOX-PATHS.md` | re-measured sections, conf05 blocks, status table | ✓ VERIFIED | conf05 blocks extracted successfully by the crosscheck script; status table shows `pandoc`/`ocr`/`av`/`audio` as `да (фаза 68)` |
+| `internal/convert/sandboxwrap.go` | `engineExec`, `forJob`, `run`, `ErrEngineSandboxUnavailable` | ✓ VERIFIED | Present; extended by later phases without changing the four classes' path (see scope table) |
+| `internal/convert/exec.go` | `runCommandAs`/`runCommandCore` | ✓ VERIFIED | No diff since `7c37b30` |
+| `internal/convert/sandboxpreflight.go` | preflight toolkit | ✓ VERIFIED | Only additive helpers; existing helpers behave the same |
+| `internal/convert/{pandoc,ocr,av,audio}sandbox.go` | measured sets, `WithSandbox`, `<Class>Preflight` | ✓ VERIFIED | Sets match conf05; only a doc-comment change in `ocrsandbox.go` |
+| `internal/convert/progressexec.go` | `runCommandStreaming`, `engineExec.stream` | ✓ VERIFIED | Only a new refuse-on-env guard, never hit by av |
+| `internal/convert/audioduration.go` | `EnforceMaxDuration(ctx, helper, path, max)` | ✓ VERIFIED | No diff |
+| `internal/convert/sandboxcoverage_test.go` | AST coverage test | ✓ VERIFIED | Re-run PASS; broader than before |
+| `scripts/conf05-crosscheck.sh` | doc-vs-Go cross-check | ✓ VERIFIED | Re-run: 4/4 MATCH (now also handles readwrite/socket for later classes) |
+| `scripts/sandbox-liveproof.sh` | live gate | ✓ VERIFIED | Ran in 70-09 on images from `5db6c74`: ALL PASS (40 checks), 0 NOT RUN |
+| `cmd/{pandoc,ocr,av,audio}-worker/main.go` | refuse-without-Landlock, preflight before Postgres | ✓ VERIFIED | Re-read |
+| chart `deployment-{pandoc,ocr,av,audio}-worker.yaml`, `docker-compose.yml`, `.env.example` | escape hatch | ✓ VERIFIED | Re-checked, helm re-rendered |
 
 ### Key Link Verification
 
-| From | To | Via | Status | Details |
-|------|----|-----|--------|---------|
-| `cmd/pandoc-worker/main.go` | `internal/convert/pandocsandbox.go` | `convert.PandocPreflight(preflightCtx, conv)` before `db.Connect` | ✓ WIRED | Confirmed |
-| `cmd/ocr-worker/main.go` | `internal/convert/ocrsandbox.go` | `convert.OCRPreflight(preflightCtx, conv)` before `db.Connect` | ✓ WIRED | Confirmed |
-| `cmd/av-worker/main.go` | `internal/convert/avsandbox.go` | `convert.AVPreflight(preflightCtx, conv)` before `db.Connect` | ✓ WIRED | Confirmed |
-| `cmd/audio-worker/main.go` | `internal/convert/audiosandbox.go` + `internal/worker/worker.go` | `AudioPreflight` before `db.Connect`; SAME `sandboxHelper` also passed to `NewHandler` | ✓ WIRED | Confirmed — both the converter and the pre-Convert guard receive the identical variable |
-| `internal/worker/runner.go` (`audioPreConvertGuard`) | `internal/convert/audioduration.go` (`EnforceMaxDuration`) | `enforceAudioGuardBeforeConvert(ctx, ..., audioSandboxHelper, ...)` → `convert.EnforceMaxDuration(probeCtx, audioSandboxHelper, inPath, audioMaxDuration)` | ✓ WIRED | Confirmed by direct read of `worker.go:1126` |
-| `internal/convert/ocrpdf.go` (`convertPDF`) | `internal/convert/ocrsandbox.go` (`(OCRConverter).exec`) | `x := c.exec(outPath)` threaded to `ocrPDFGuardStage`, `ocrPDFPage` | ✓ WIRED | Confirmed |
-| `internal/convert/av.go` (`avPrepareConversion`) | `internal/convert/avsandbox.go` (`(AVConverter).exec`) | `x = c.exec(outPath)` threaded to `avProbeSource`, `convertTranscode(WithProgress)`, `convertAudioExtract`, `convertThumbnail` | ✓ WIRED | Confirmed |
-| `internal/worker/worker.go` (4 terminal classifiers) | `internal/convert` (`ErrEngineSandboxUnavailable`) | `errors.Is(err, convert.ErrEngineSandboxUnavailable)` checked before class-prefix text in all of `isAudioTerminal`/`isAVTerminal`/`isOCRTerminal`/`isPandocTerminal` | ✓ WIRED | Confirmed |
-| `scripts/conf05-crosscheck.sh` | `.planning/research/SANDBOX-PATHS.md` + `internal/convert/<class>sandbox.go` | marker-delimited extraction vs. Go var literal parse | ✓ WIRED | Re-run: 4/4 MATCH |
+| From | To | Via | Status |
+|------|----|-----|--------|
+| `cmd/<class>-worker/main.go` | `convert.<Class>Preflight` | called before `db.Connect` | ✓ WIRED |
+| `cmd/audio-worker/main.go` | `NewHandler` → `EnforceMaxDuration` | same `sandboxHelper` as the converter | ✓ WIRED |
+| `internal/worker/worker.go` (4 classifiers) | `convert.ErrEngineSandboxUnavailable` | `errors.Is` first, in pandoc/ocr/av/audio classifiers (untouched) | ✓ WIRED |
+| `scripts/conf05-crosscheck.sh` | `SANDBOX-PATHS.md` ↔ `internal/convert/<class>sandbox.go` | extraction vs Go literal parse | ✓ WIRED (4/4 MATCH) |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Full convert+worker package test suite | `GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/convert/ ./internal/worker/` | `ok` both packages (55.9s, 10.3s) | ✓ PASS |
-| AST coverage test (named) | `go test -run TestConfinedClassesExecOnlyThroughTheSandbox ./internal/convert/ -v` | PASS | ✓ PASS |
-| Coverage scanner self-test (named) | `go test -run TestEngineCallScannerCatchesALiteralExec ./internal/convert/ -v` | PASS, 5/5 subtests | ✓ PASS |
-| conf05 doc-vs-Go cross-check | `scripts/conf05-crosscheck.sh pandoc ocr av audio` | 4/4 `MATCH` | ✓ PASS |
-| Whole-repo build/vet | `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./...` | both exit 0 | ✓ PASS |
-| Helm chart renders the four escape hatches | `helm template ... --set {pandoc,ocr,av,audio}Worker.extraEnv.<VAR>=true` (with required `secrets.*` set) | all four `env:` blocks rendered; default render (no `--set`) has none | ✓ PASS |
-| Live Landlock denial (kernel-level) | `scripts/sandbox-liveproof.sh image pandoc ocr av audio` | not re-run this session (no Docker/Landlock host; instructed not to start Docker) | ? SKIP — assessed via SUMMARY cross-check instead (see note above) |
+| Build and vet | `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./...` | exit 0 / exit 0 | ✓ PASS |
+| Packages | `GOTOOLCHAIN=go1.26.4 go test -count=1 ./internal/convert/ ./internal/sandbox/ ./internal/worker/ ./cmd/...` | all `ok` (convert 91.0s, sandbox 4.7s, worker 16.5s, cmd/* ok or no test files) | ✓ PASS |
+| Coverage + pinned-set tests, named | `go test -count=1 -run 'TestConfinedClassesExecOnlyThroughTheSandbox\|TestEngineCallScannerCatchesALiteralExec\|ReadOnlySetIsTheMeasuredOne\|EnginesAreTheMeasuredOnes' -v ./internal/convert/` | all 19 PASS | ✓ PASS |
+| conf05 cross-check | `scripts/conf05-crosscheck.sh pandoc ocr av audio` | 4/4 MATCH | ✓ PASS |
+| Helm escape hatch | `helm template ... --set {pandoc,ocr,av,audio}Worker.extraEnv.<VAR>=true` | variable rendered for all four | ✓ PASS |
+| Live Landlock, four classes | recorded `evidence/liveproof-8class-70-09.txt` (not re-run: no docker per instruction) | `ALL PASS (40 checks)`, commit `5db6c74`; `git diff 5db6c74 HEAD` over `*.go`, `scripts`, `Dockerfile*`, `docker-compose.yml`, `deploy` is empty | ✓ PASS (recorded, code identical to HEAD) |
 
 ### Requirements Coverage
 
-| Requirement | Source Plan | Description (phase-68 share) | Status | Evidence |
-|---|---|---|---|---|
-| CONF-01 | 68-01..06 | Each of pandoc/ocr/av/audio runs its engine(s) under a per-job Landlock ruleset; the engine cannot read outside the job dir and grant list | ✓ SATISFIED | Truths 1-2, 7 above |
-| CONF-02 | 68-01, 03-06 | Each worker refuses to start when confinement is wanted and unavailable, naming its own env var; reachable from compose and chart | ✓ SATISFIED | Truths 4, 6 above |
-| CONF-04 | 68-01, 03-06 | Each worker preflights on the real engine before taking a job, judged by output, not exit code | ✓ SATISFIED | Truth 5 above |
-| CONF-05 | 68-02..06 | Each class's granted set matches `SANDBOX-PATHS.md`'s measured set, held by a test | ✓ SATISFIED | Truth 3 above |
+| Requirement | Source Plan | Status | Evidence |
+|---|---|---|---|
+| CONF-01 | 68-01..06 | ✓ SATISFIED | Truths 1, 2, 7 |
+| CONF-02 | 68-01, 03–06 | ✓ SATISFIED | Truths 4, 6 |
+| CONF-04 | 68-01, 03–06 | ✓ SATISFIED | Truth 5 |
+| CONF-05 | 68-02..06 | ✓ SATISFIED | Truth 3 |
 
-No orphaned requirements found for phase 68 — all four IDs declared by phase 68's plans (01-06) match REQUIREMENTS.md's phase mapping, and REQUIREMENTS.md's "In Progress" status is expected (these IDs also cover phases 69/70's remaining classes: `html`, `probe`, `document`).
+No orphaned requirements.
 
 ### Anti-Patterns Found
 
-None. Scanned all 27 phase-68-modified/created production and script files (see `covered_files`) for `TBD`/`FIXME`/`XXX` (debt markers — none found), `TODO`/`HACK`/`PLACEHOLDER` (none found outside test scaffolding), empty-implementation and hardcoded-empty-data patterns (none found — every engine call site inspected routes to a real subprocess and a content-judged result).
+None. `TBD`/`FIXME`/`XXX` grep over the 19 phase-68 production files returned nothing.
 
 ### Human Verification Required
 
-None. Every must-have resolved to VERIFIED via direct source inspection, re-run unit/AST tests, a re-run doc-vs-code cross-check script, re-rendered Helm templates, and git commit existence checks. The one item this session could not re-execute directly (live kernel-level Landlock denial via Docker) was assessed critically against the recorded SUMMARY evidence per explicit task instruction, and every specific technical claim within reach of that assessment (log message strings, script logic, referenced test names, referenced commits) checked out consistently — no fabrication or inconsistency found.
+None. The original report recorded no human-verification items and no human approvals
+for phase 68, so there is nothing to carry forward. The one item that cannot be
+re-executed here (live kernel denial needs Linux/Docker) rests on the 70-09
+transcript built from `5db6c74`, whose code is identical to HEAD.
 
 ### Gaps Summary
 
-None. This phase is unusually thoroughly executed: all four engine classes (pandoc, ocr, av, audio) route every engine call — including the two previously-easy-to-miss cases the task specifically flagged (audio's pre-Convert ffprobe duration guard, and OCR's pdfinfo/pdftotext guards) — through one shared, measured, per-job Landlock ruleset; the coverage test makes this a package-wide invariant rather than four hand-checked instances; the preflights judge by content in both directions; the escape hatches are reachable from both deploy targets; and the measured path sets are cross-checked by script against `SANDBOX-PATHS.md`. No blockers, no warnings.
+None. Phase 70's changes to shared code are additive or route phase 68's classes through
+the old path (`env == nil`, `Socket` empty, `outsideBase == ""`), and the two that touch
+their workers (preflight context, empty allowlist) tighten rather than relax. The coverage
+test, pinned-set tests and conf05 cross-check that hold phase 68's invariants pass on the
+current tree.
 
 ---
 
-*Verified: 2026-09-24*
-*Verifier: Claude (gsd-verifier)*
+_Verified: 2026-10-01_
+_Verifier: Claude (gsd-verifier)_
