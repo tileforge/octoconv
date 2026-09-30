@@ -148,7 +148,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 70-04-PLAN.md — tracer: эмулируемый amd64-образ отказывается стартовать до Postgres (D-08), проверки маршрута `/tmp` на живом образе; `DOCUMENT_SANDBOX_DISABLED` в compose/.env/чарте, concurrency по маршруту, бюджет startupProbe
+- [x] 70-04-PLAN.md — tracer: эмулируемый amd64-образ отказывается стартовать до Postgres (D-08), проверки маршрута `/tmp` на живом образе; `DOCUMENT_SANDBOX_DISABLED` в compose/.env/чарте, concurrency по маршруту, бюджет startupProbe
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
