@@ -281,7 +281,9 @@ minio:
   # fsGroup of the MinIO pod, and they are the owner the ownership init
   # container hands the volume to. 65532 is the user of the pinned image;
   # change both when minio.image runs MinIO as another uid/gid. Whole,
-  # non-negative numbers only -- anything else aborts the render.
+  # non-negative numbers only -- any other value aborts the render. A missing
+  # or null key (for example after helm upgrade --reuse-values from a release
+  # made before this block existed) gets the value shown here.
   # The init container only passes on elements owned by root (chown --from=0):
   # a volume that already belongs to another uid, for example 65532 after an
   # earlier migration, is NOT rewritten when you change the uid.
@@ -293,7 +295,7 @@ minio:
     # start on a volume written by the old root image. false renders no init
     # container at all, for a volume the old image never wrote or whose
     # ownership is managed outside the chart; a volume written by root then
-    # stops MinIO at startup again. Only true or false.
+    # stops MinIO at startup again. Only true or false; missing or null is true.
     migrate: true
     # Image of that init container; empty means minio.image. It runs as uid 0
     # with only the CHOWN capability, command in exec form without a shell, and

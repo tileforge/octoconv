@@ -243,6 +243,89 @@ reuse_expect_base "a chart whose values.yaml has no minio.dataOwnership and no m
 for NULLED in minio.dataOwnership.uid=null minio.dataOwnership.migrate=null minio.dataOwnership=null; do
   reuse_expect_base "--set $NULLED on the real chart" "$CHART" --set "$NULLED"
 done
+reuse_chart_without_block() {
+  cp "$CHART/values.yaml" "$REUSE_CHART/values.yaml"
+  yq -i 'del(.minio.dataOwnership) | del(.minio.mcImage)' "$REUSE_CHART/values.yaml"
+}
+reuse_values_file() {
+  printf '%s\n' "$@" > "$REUSE_DIR/extra.yaml"
+}
+for KEY in uid gid migrate image; do
+  cp "$CHART/values.yaml" "$REUSE_CHART/values.yaml"
+  if [ "$(yq ".minio.dataOwnership | has(\"$KEY\")" "$REUSE_CHART/values.yaml")" != "true" ]; then
+    echo "FAIL: values.yaml has no minio.dataOwnership.$KEY to remove -- the comparison below would pass vacuously"
+    exit 1
+  fi
+  yq -i "del(.minio.dataOwnership.$KEY)" "$REUSE_CHART/values.yaml"
+  if [ "$(yq ".minio.dataOwnership | has(\"$KEY\")" "$REUSE_CHART/values.yaml")" != "false" ]; then
+    echo "FAIL: minio.dataOwnership.$KEY is still in the stand-in values.yaml"
+    exit 1
+  fi
+  reuse_expect_base "a chart whose values.yaml lacks minio.dataOwnership.$KEY" "$REUSE_CHART"
+done
+reuse_chart_without_block
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: 1000'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+PART_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532/owner=1000:65532 runAsUser=1000}"
+PART_GOT=$(minio_ownership "$REUSE_DIR/out.yaml")
+PART_DIFF=$(diff "$REUSE_BASE" "$REUSE_DIR/out.yaml" | grep '^[<>]' || true)
+PART_COUNT=$(echo "$PART_DIFF" | grep -c . || true)
+PART_BAD=$(echo "$PART_DIFF" | { grep -vE '^[<>][[:space:]]+(runAsUser: [0-9]+|- "[0-9]+:[0-9]+")$' || true; })
+if [ "$REUSE_RC" -ne 0 ] || [ "$PART_GOT" != "$PART_WANT" ] || [ "$PART_COUNT" -ne 4 ] || [ -n "$PART_BAD" ]; then
+  echo "FAIL: a partial minio.dataOwnership block with only uid: 1000 on a chart without the block did not fill in gid, migrate and image (rc=$REUSE_RC, changed lines=$PART_COUNT)"
+  echo "      want: $PART_WANT"
+  echo "      got:  $PART_GOT"
+  echo "$PART_DIFF" | sed 's/^/        /'
+  sed 's/^/        /' "$REUSE_DIR/err.txt"
+  exit 1
+fi
+echo "OK: only uid: 1000 on a chart without the block gives owner 1000:65532 and changes exactly 4 lines"
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: 0'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+ZERO_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532/owner=0:65532 runAsUser=0}"
+ZERO_GOT=$(minio_ownership "$REUSE_DIR/out.yaml")
+if [ "$REUSE_RC" -ne 0 ] || [ "$ZERO_GOT" != "$ZERO_WANT" ]; then
+  echo "FAIL: uid: 0 was replaced by the default instead of being honoured (rc=$REUSE_RC)"
+  echo "      want: $ZERO_WANT"
+  echo "      got:  $ZERO_GOT"
+  exit 1
+fi
+echo "OK: uid: 0 on a chart without the block is honoured, not replaced by the default"
+reuse_values_file 'minio:' '  dataOwnership:' '    migrate: false'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+FALSE_HAS=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec | has("initContainers")' "$REUSE_DIR/out.yaml" | grep -v '^---$' || true)
+FALSE_UID=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.securityContext.runAsUser' "$REUSE_DIR/out.yaml" | grep -v '^---$' || true)
+if [ "$REUSE_RC" -ne 0 ] || [ "$FALSE_HAS" != "false" ] || [ "$FALSE_UID" != "65532" ]; then
+  echo "FAIL: migrate: false was replaced by the default instead of being honoured (rc=$REUSE_RC, initContainers present=[$FALSE_HAS], runAsUser=[$FALSE_UID])"
+  exit 1
+fi
+echo "OK: migrate: false on a chart without the block is honoured, not replaced by the default"
+reuse_expect_base "--set minio.dataOwnership.uid=null on a chart without the block" "$REUSE_CHART" --set minio.dataOwnership.uid=null
+reuse_expect_base "--set minio.dataOwnership=null on a chart without the block" "$REUSE_CHART" --set minio.dataOwnership=null
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: null'
+reuse_expect_base "a values file with dataOwnership.uid: null on a chart without the block" "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+reuse_values_file 'minio:' '  dataOwnership: {}'
+reuse_expect_base "a values file with dataOwnership: {} on a chart without the block" "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+reuse_must_fail() {
+  local label=$1 key=$2 want=$3 chart=$4
+  shift 4
+  reuse_render "$chart" "$@"
+  if [ "$REUSE_RC" -eq 0 ]; then
+    echo "FAIL: $label rendered successfully -- the bad value was accepted or replaced by the default"
+    exit 1
+  fi
+  if ! grep -q "$key" "$REUSE_DIR/err.txt" || ! grep -q "$want" "$REUSE_DIR/err.txt"; then
+    echo "FAIL: the error for $label does not name [$key] with [$want]:"
+    sed 's/^/        /' "$REUSE_DIR/err.txt"
+    exit 1
+  fi
+  echo "OK: $label rejected (rc=$REUSE_RC)"
+}
+reuse_must_fail "--set minio.dataOwnership.uid=1.5 on a chart without the block" minio.dataOwnership.uid 'must be a whole number' "$REUSE_CHART" --set minio.dataOwnership.uid=1.5
+reuse_must_fail "--set minio.dataOwnership.gid=-1 on a chart without the block" minio.dataOwnership.gid 'must not be negative' "$REUSE_CHART" --set minio.dataOwnership.gid=-1
+reuse_must_fail "--set minio.dataOwnership.migrate=no on a chart without the block" minio.dataOwnership.migrate 'must be true or false' "$REUSE_CHART" --set minio.dataOwnership.migrate=no
+reuse_must_fail "--set minio.dataOwnership=abc on a chart without the block" minio.dataOwnership 'minio.dataOwnership must be a map' "$REUSE_CHART" --set minio.dataOwnership=abc
+reuse_must_fail "--set minio.dataOwnership=abc on the real chart" minio.dataOwnership 'minio.dataOwnership must be a map' "$CHART" --set minio.dataOwnership=abc
 rm -rf "${REUSE_DIR:?}"
 
 echo "### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else"
