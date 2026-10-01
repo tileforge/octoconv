@@ -49,16 +49,17 @@ spec:
         app.kubernetes.io/component: createbucket
     spec:
       restartPolicy: Never
-      # wait-for-minio: bounded poll on MinIO readiness, from the same pinned
-      # image as MinIO itself -- mc is in it. `command` replaces the image's
-      # ENTRYPOINT (/usr/bin/minio), so /bin/sh is what runs mc; HOME is
-      # /home/nonroot, writable, and mc's config lands there (measured in
+      # wait-for-minio: bounded poll on MinIO readiness, from minio.mcImage, or
+      # when that is empty from the pinned MinIO image, which has mc in it.
+      # `command` replaces the image's ENTRYPOINT (/usr/bin/minio), so /bin/sh is
+      # what runs mc; HOME is /home/nonroot, writable, and mc's config lands
+      # there (measured in
       # .planning/quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/evidence/chainguard-minio-measure.txt).
       # `mc ready` fails fast until MinIO answers, so this loop blocks the main
       # container from racing an unready MinIO.
       initContainers:
         - name: wait-for-minio
-          image: {{ .Values.minio.image | quote }}
+          image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /bin/sh
@@ -69,7 +70,7 @@ spec:
           {{- include "octoconv.commonEnv" . | nindent 10 }}
       containers:
         - name: createbucket
-          image: {{ .Values.minio.image | quote }}
+          image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /bin/sh

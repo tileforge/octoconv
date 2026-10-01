@@ -263,6 +263,77 @@ for WANT in http https; do
   echo "OK: s3.useSSL=$SSL renders $COUNT mc aliases, all $WANT://"
 done
 
+echo "### every container that runs mc uses minio.mcImage when set, minio.image when it is empty"
+MINIO_IMAGE=$(yq '.minio.image' "$CHART/values.yaml")
+MC_OVERRIDE="registry.example.invalid/mirror/mc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+mc_rows() {
+  yq 'select(.kind=="Deployment" or .kind=="Job") | .metadata.name as $d | .spec.template.spec | ((.initContainers // []) + .containers)[] | $d + " " + .name + " " + .image + " " + (((.command // []) + (.args // [])) | join(" ") | test("(^|[^a-z])mc (alias|ready|mb|ls)") | tostring)' "$1" | grep -v '^---$'
+}
+MC_PLAIN=$(mktemp)
+MC_SET=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET > "$MC_PLAIN.render"
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.mcImage=$MC_OVERRIDE" > "$MC_SET.render"
+mc_rows "$MC_PLAIN.render" > "$MC_PLAIN"
+mc_rows "$MC_SET.render" > "$MC_SET"
+for ROWS in "$MC_PLAIN" "$MC_SET"; do
+  BLANK=$(awk 'NF != 4 { print }' "$ROWS")
+  if [ -n "$BLANK" ]; then
+    echo "FAIL: container rows without an image (or malformed) in a render:"
+    echo "$BLANK" | sed 's/^/        /'
+    exit 1
+  fi
+  BLIND=$(awk '($2 == "wait-for-minio" || $2 == "createbucket" || $2 == "wait-for-bucket") && $4 != "true" { print }' "$ROWS")
+  if [ -n "$BLIND" ]; then
+    echo "FAIL: the mc classifier missed containers that run mc:"
+    echo "$BLIND" | sed 's/^/        /'
+    exit 1
+  fi
+done
+MC_COUNT=$(awk '$4 == "true"' "$MC_PLAIN" | wc -l | tr -d ' ')
+if [ "$MC_COUNT" -eq 0 ]; then
+  echo "FAIL: no container classified as running mc -- this guard would pass vacuously"
+  exit 1
+fi
+MC_SET_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_SET" | sort)
+MC_PLAIN_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_PLAIN" | sort)
+if [ "$MC_PLAIN_NAMES" != "$MC_SET_NAMES" ]; then
+  echo "FAIL: setting minio.mcImage changed WHICH containers run mc"
+  diff <(echo "$MC_PLAIN_NAMES") <(echo "$MC_SET_NAMES") | sed 's/^/        /' || true
+  exit 1
+fi
+WRONG=$(awk -v want="$MINIO_IMAGE" '$4 == "true" && $3 != want { print }' "$MC_PLAIN")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage empty every mc container must run $MINIO_IMAGE, got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$MC_OVERRIDE" '$4 == "true" && $3 != want { print }' "$MC_SET")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage set every mc container must run $MC_OVERRIDE, got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+LEAK=$(awk -v o="$MC_OVERRIDE" '$4 != "true" && $3 == o { print }' "$MC_SET")
+if [ -n "$LEAK" ]; then
+  echo "FAIL: minio.mcImage reached containers that do not run mc:"
+  echo "$LEAK" | sed 's/^/        /'
+  exit 1
+fi
+MINIO_ROWS=$(awk '$1 == "minio" && ($2 == "minio" || $2 == "migrate-data-ownership")' "$MC_SET")
+if [ "$(echo "$MINIO_ROWS" | grep -c . || true)" -ne 2 ]; then
+  echo "FAIL: expected the minio and migrate-data-ownership containers in the MinIO Deployment, got:"
+  echo "$MINIO_ROWS" | sed 's/^/        /'
+  exit 1
+fi
+MINIO_WRONG=$(echo "$MINIO_ROWS" | awk -v want="$MINIO_IMAGE" '$3 != want { print }')
+if [ -n "$MINIO_WRONG" ]; then
+  echo "FAIL: minio.mcImage must not reach the MinIO server pod, got:"
+  echo "$MINIO_WRONG" | sed 's/^/        /'
+  exit 1
+fi
+rm -f "$MC_PLAIN" "$MC_SET" "$MC_PLAIN.render" "$MC_SET.render"
+echo "OK: $MC_COUNT containers run mc: all minio.image when mcImage is empty, all the override when it is set; the MinIO pod stays on minio.image"
+
 echo "### no extraEnv may override S3_USE_SSL"
 # The scheme is decided at RENDER time from .Values.s3.useSSL, while the
 # application reads S3_USE_SSL from the ConfigMap at RUN time. Those are the

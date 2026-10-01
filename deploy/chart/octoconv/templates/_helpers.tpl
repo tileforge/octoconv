@@ -263,9 +263,9 @@ their own words) and scripts/ci-helm-checks.sh now enforces that mechanically,
 because this is a trap that would otherwise be found once, at 5 minutes of
 timeout, by whoever adds the flag.
 
-Both images are ones the chart already deploys (postgres for pg_isready, the
-digest-pinned MinIO image for mc -- it carries mc, and the createbucket Job
-uses it too), so this adds no new supply-chain surface. The wait-for-bucket
+Both images are ones the chart already deploys (postgres for pg_isready, and
+for mc minio.mcImage, or by default the digest-pinned MinIO image, which
+carries mc; the createbucket Job uses the same one), so this adds no new supply-chain surface. The wait-for-bucket
 commands were run from that image at this container's limits (64Mi, 0.1 CPU)
 against a live MinIO: .planning/quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/evidence/compose-tracer.txt.
 
@@ -307,7 +307,7 @@ initContainers:
         cpu: "100m"
         memory: "64Mi"
   - name: wait-for-bucket
-    image: {{ .Values.minio.image | quote }}
+    image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
     command:
       - /bin/sh

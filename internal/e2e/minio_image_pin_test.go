@@ -14,8 +14,10 @@ import (
 // Docker Hub stopped serving the official MinIO images, so `docker compose up`,
 // `scripts/ci-local.sh e2e` and a fresh chart install died on pull on any
 // machine without a hand-made local alias. One chainguard image carries both
-// minio and mc, so compose and the chart use that single image for the server,
-// the createbucket job and the chart's wait-for-bucket init container.
+// minio and mc, so compose and the chart use that single image for the server
+// and the createbucket job; the chart's mc containers (createbucket and
+// wait-for-bucket) take minio.mcImage when an operator sets it and this image
+// otherwise.
 //
 // The reference is pinned by digest because Chainguard's free tier publishes
 // only :latest, which floats. Compose and the chart must carry the SAME string:
@@ -28,14 +30,16 @@ import (
 // call e2eSetup, so it runs in the offline tier too.
 
 const (
-	minioChartDir     = "../../deploy/chart/octoconv"
-	minioTemplateLine = "image: {{ .Values.minio.image | quote }}"
+	minioChartDir       = "../../deploy/chart/octoconv"
+	minioTemplateLine   = "image: {{ .Values.minio.image | quote }}"
+	minioMCTemplateLine = "image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}"
 )
 
 var (
 	minioImageLineRe = regexp.MustCompile(`^image:\s*(.+)$`)
 	minioPinnedRe    = regexp.MustCompile(`^cgr\.dev/chainguard/minio@sha256:[0-9a-f]{64}$`)
-	minioSepMCKeyRe  = regexp.MustCompile(`mcImage|\.Values\.minio\.mc`)
+	mcImageKeyRe     = regexp.MustCompile(`^mcImage:\s*(.*)$`)
+	mcDigestRe       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 // minioRef is one MinIO image reference found in a file.
@@ -62,6 +66,24 @@ func minioImageRefProblem(ref string) string {
 	default:
 		return "digest is not 64 lowercase hex characters"
 	}
+}
+
+func mcImageRefProblem(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	name, digest, found := strings.Cut(ref, "@")
+	switch {
+	case !found:
+		return "not pinned by digest (a tag floats)"
+	case name == "":
+		return "no image name in front of the digest"
+	case strings.Contains(name[strings.LastIndex(name, "/")+1:], ":"):
+		return "carries a tag in front of the digest (use repository@sha256:...)"
+	case !mcDigestRe.MatchString(digest):
+		return "digest is not sha256: followed by 64 lowercase hex characters"
+	}
+	return ""
 }
 
 // minioImageRefs returns every non-comment `image:` value containing "minio"
@@ -132,9 +154,9 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 		}
 	}
 
-	// Templates: every image: that reads .Values.minio.* must read minio.image
-	// and nothing else. The set of files is derived by walking the directory.
-	tplLines := 0
+	// Templates: every image: that reads .Values.minio.* is exactly the server
+	// form or the mc form. The set of files is derived by walking the directory.
+	serverLines, mcLines := 0, 0
 	tplFiles, err := filepath.Glob(minioChartDir + "/templates/*")
 	if err != nil {
 		t.Fatal(err)
@@ -149,33 +171,56 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 		}
 		for i, raw := range strings.Split(string(b), "\n") {
 			line := strings.TrimSpace(raw)
-			if minioSepMCKeyRe.MatchString(line) {
-				t.Errorf("%s:%d: references a separate mc image key; mc comes from minio.image, and a missing key renders image: \"\" silently", filepath.Base(f), i+1)
-			}
 			if !strings.HasPrefix(line, "image:") || !strings.Contains(line, ".Values.minio.") {
 				continue
 			}
-			tplLines++
-			if line != minioTemplateLine {
-				t.Errorf("%s:%d: %q, want exactly %q", filepath.Base(f), i+1, line, minioTemplateLine)
+			switch line {
+			case minioTemplateLine:
+				serverLines++
+			case minioMCTemplateLine:
+				mcLines++
+			default:
+				t.Errorf("%s:%d: %q, want exactly %q or %q", filepath.Base(f), i+1, line, minioTemplateLine, minioMCTemplateLine)
 			}
 		}
 	}
-	// minio.yaml, wait-for-minio and createbucket in job-createbucket.yaml,
-	// wait-for-bucket in _helpers.tpl.
-	if tplLines < 4 {
-		t.Errorf("found %d MinIO image lines in chart templates, want at least 4", tplLines)
+	// minio and migrate-data-ownership in minio.yaml.
+	if serverLines < 2 {
+		t.Errorf("found %d server image lines in chart templates, want at least 2", serverLines)
 	}
+	// wait-for-minio and createbucket in job-createbucket.yaml, wait-for-bucket in _helpers.tpl.
+	if mcLines < 3 {
+		t.Errorf("found %d mc image lines in chart templates, want at least 3", mcLines)
+	}
+
+	mcKeys := 0
 	for _, f := range valuesFiles {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for i, raw := range strings.Split(string(b), "\n") {
-			if minioSepMCKeyRe.MatchString(raw) {
-				t.Errorf("%s:%d: separate mc image key; mc comes from minio.image", filepath.Base(f), i+1)
+			line := strings.TrimSpace(raw)
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+			m := mcImageKeyRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			mcKeys++
+			v := strings.TrimSpace(m[1])
+			if j := strings.Index(v, " #"); j >= 0 {
+				v = strings.TrimSpace(v[:j])
+			}
+			v = strings.Trim(v, `"'`)
+			if p := mcImageRefProblem(v); p != "" {
+				t.Errorf("%s:%d: mcImage %q: %s", filepath.Base(f), i+1, v, p)
 			}
 		}
+	}
+	if mcKeys < 1 {
+		t.Errorf("found %d mcImage keys in %s/values*.yaml, want at least 1: the scan matched nothing, which is a failure, not a pass", mcKeys, minioChartDir)
 	}
 }
 
@@ -198,6 +243,36 @@ func TestMinioImageRefRejectsUnpinnedForms(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := minioImageRefProblem(c.ref)
+			if c.ok && got != "" {
+				t.Errorf("%q rejected: %s", c.ref, got)
+			}
+			if !c.ok && got == "" {
+				t.Errorf("%q accepted, want rejected", c.ref)
+			}
+		})
+	}
+}
+
+func TestMcImageRefRejectsUnpinnedForms(t *testing.T) {
+	const hex = "fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
+	cases := []struct {
+		name string
+		ref  string
+		ok   bool
+	}{
+		{"empty falls back to minio.image", "", true},
+		{"pinned minio image", "cgr.dev/chainguard/minio@sha256:" + hex, true},
+		{"registry with a port", "registry.example:5000/mirror/mc@sha256:" + hex, true},
+		{"mc latest", "minio/mc:latest", false},
+		{"tag in front of the digest", "registry.example:5000/mirror/mc:RELEASE.2025-08-13T08-35-41Z@sha256:" + hex, false},
+		{"short digest", "registry.example/mirror/mc@sha256:fa23f6a6", false},
+		{"uppercase digest", "registry.example/mirror/mc@sha256:" + strings.ToUpper(hex), false},
+		{"no name in front of the digest", "@sha256:" + hex, false},
+		{"registry with a port, no digest", "registry.example:5000/mirror/mc", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := mcImageRefProblem(c.ref)
 			if c.ok && got != "" {
 				t.Errorf("%q rejected: %s", c.ref, got)
 			}

@@ -267,14 +267,16 @@ redis:
 
 minio:
   # Official MinIO images are no longer served from Docker Hub. One
-  # cgr.dev/chainguard image carries minio, mc and sh, so the MinIO Deployment,
-  # the createbucket Job and the wait-for-bucket init container of every app
-  # Deployment all read this one value. Pinned by digest, never a floating tag
+  # cgr.dev/chainguard image carries minio, mc and sh, so the MinIO Deployment
+  # reads this value, and so do the containers that run mc (the createbucket Job
+  # and the wait-for-bucket init container of every app Deployment) unless
+  # mcImage below is set. Pinned by digest, never a floating tag
   # (D-02: OrbStack re-pulls :latest even from its shared local image store).
   # Same string as docker-compose.yml; the bump procedure is the comment above
   # the minio service there, and internal/e2e/minio_image_pin_test.go keeps the
   # two equal.
   image: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
+  mcImage: ""
   storage: "5Gi"
   rootUser: "minioadmin"
   rootPassword: "minioadmin"
