@@ -1,781 +1,382 @@
-# Architecture Research — v1.13 Inspect & Operations
+# Architecture Research — v1.16 CAD Engine
 
-**Domain:** Internal Go async file-conversion service — subsequent-milestone integration research
-**Researched:** 2026-08-07
-**Confidence:** HIGH (every claim below is grounded in a file read during this research pass; SEED claims were independently re-verified against current code, not assumed)
+**Domain:** Internal Go async file-conversion service — tenth engine class (`cad`), subsequent-milestone integration research
+**Researched:** 2026-10-02
+**Confidence:** HIGH on integration points and on what already exists (every cited `file:line` was read in this pass, tree at `0fc352f`). MEDIUM on FreeCAD/renderer behaviour (not executable here; settled by the evaluation phase). Claims are tagged: **[V]** verified in code, **[P]** established precedent in this repo, **[U]** unverified, must be settled by measurement.
 
-This is not a generic architecture survey. It answers, file by file, how v1.13's five
-workstreams (JobRunner consolidation, the `operation` dimension, output roles, synchronous
-inspect, born-digital routing) land on the actual OctoConv codebase as it exists today
-(post-v1.12, pre-Phase-56).
+Scope: only what the NEW features need — formats step/stp/iges/stl/dxf; `render` → png with closed view/size opts plus a second JSON measurements output; STEP/IGES → STL and DXF → svg/pdf; FreeCAD headless as the geometry engine; renderer chosen by an evaluation phase.
 
 ---
 
-## A. JobRunner consolidation (SEED-020)
+## 1. Answers up front
 
-### What SEED-020 claims vs. what the code shows
+| Question | Answer |
+|---|---|
+| Is a two-output job new? | **No.** `sanitize` (probe, Phase 60) already emits primary (ordinal 0) + `role=report` (ordinal 1) through `EngineDescriptor.SideOutputs` (`internal/worker/runner.go:88-102`, loop `internal/worker/worker.go:1481-1509`, writer `jobs.Repo.AddOutputWithRole` `internal/jobs/repo.go:646`). The hook, the exactly-one-primary guard (`repo.go:277-284`), the `UNIQUE (job_id, ordinal)` retry idempotency (migration 0012) and role-keyed `download_url` selection (`internal/api/handlers.go:1285`, `internal/worker/worker.go:1024-1036`) all exist. **New here:** a role value that is not `report`, an output that exists for ONE operation of the class but not the other, and JSON that originates in a Python script. |
+| Does the new role need a migration? | **Yes, one small one.** `job_outputs.role` is `CHECK (role IN ('primary','report','preview','thumbnail'))` (`internal/db/migrations/0015_operation_and_output_roles.sql`, last statement). New file `0018_cad_output_role.sql` (0017 is the latest) drops/re-adds `job_outputs_role_check` with the new value. **No migration is needed for the engine or the operation:** `'cad'` is in `jobs_engine_check` (0001:48, carried through 0016) and `'render'` is in `jobs_operation_check` (0015). |
+| Usage accounting for two outputs | **No change.** `recordUsage` sums `size_bytes` over ALL `job_outputs` rows with no ordinal/role predicate (`internal/jobs/usage.go:60`), by design (v1.12). The measurements JSON adds a few hundred bytes to `bytes_out`. Admission quotas read `job_inputs` only (`admission.go:379`). |
+| First engine driven by a Python script | **Yes.** Closest precedents: tectonic (input is a program, `cmd/tectonic-worker`), probe (two-pass ghostscript with a PostScript intermediate). Neither runs an interpreter on a **worker-authored** script. Recommendation: `go:embed` the script (precedent: `internal/convert/texresolvable.go:52`), write it into the job directory per job, run it under the same Landlock ruleset as any engine, and make the script↔Go contract two files (`params.json` in, `result.json` out) judged **by content**, never by exit status. See §4.3. |
+| Helper process (Xvfb) | Expressible, with two costs that the evaluation phase must price. (a) Xvfb's socket lives in `/tmp/.X11-unix`, which drags the class into the CONF-06 shared-`/tmp` regime (concurrency exactly 1 + sweep + `sock:` grant), the same regime `html` and `document` live in. (b) There is no long-lived-helper primitive in `engineExec`; the cheap route is ONE `engineExec.run` of `xvfb-run -a <renderer>` so the process-group kill and the single ruleset cover both. A renderer that needs no X (EGL surfaceless / OSMesa / CPU rasteriser) keeps CAD out of both costs. See §4.4. |
+| How do inspect and magic bytes learn CAD? | Two parallel detector chains must be edited in lockstep: `handleCreateJob` (`handlers.go:285-499`) and `detectInspectFormat` (`inspect_handlers.go:606-811`). CAD formats have weak or no magic bytes, so they follow the declared-source-gated structural-matcher pattern (html/latex/md, `handlers.go:347-408`, `inspect_handlers.go:764-772`), not the `Sniff` signature table. `RejectBindings` (`internal/inspect/bindings.go`) must gain every new `reason=` token. `/v1/inspect` offers come from the registry automatically (`estimate.go:321`), so offers appear when triples register. See §5. |
+| Build order | Evaluation phase first, then pure-Go/SQL foundations that can be built and tested without any engine, then ONE atomic engine-class change (the `AllEngines` contract tests make a partial wiring impossible), then render, then ops. See §8. |
 
-| Claim | Verified? | Detail |
+---
+
+## 2. System Overview
+
+```
+ client ──multipart POST /v1/jobs (operation=convert|render, target, opts)──▶ API (chi)
+                                                                              │
+   handleCreateJob: sniff (declared-gated CAD matchers) ─▶ declared==detected ─▶ Gate1 IsKnownOperation
+        ─▶ Gate2 EngineForOp(op, detected, target) ─▶ engine=cad ─▶ size ceiling ─▶ PreAdmit
+        ─▶ opts: ParseCADOpts + ValidateCADApplicability ─▶ S3 upload ─▶ INSERT jobs (queued) ─▶ EnqueueCADConvert
+                                                                              │ asynq queue "cad"
+                                                                              ▼
+ cad-worker (cmd/cad-worker)  Runner.Handle(CADDescriptor) ─▶ MarkActive ─▶ process():
+     LookupOp(job.Operation, src, tgt)  ── convert ─▶ CADConvertConverter ──┐
+                                        └─ render  ─▶ CADRenderConverter  ──┤
+                                                                            ▼
+              engineExec#1 (FreeCAD ruleset)  freecadcmd octoconv_cad.py  ── params.json ─▶ result.json + mesh/stl
+              engineExec#2 (render ruleset)   [xvfb-run -a] f3d | other     ── mesh ─▶ out.png      (render only, 3D)
+                                                                            │
+     out.<target>  ─▶ S3 results/{job}/0-out.<target>  ─▶ AddOutput  (role=primary, DB default)
+     out.<target>.measurements.json ─▶ SideOutputs ─▶ results/{job}/1-… ─▶ AddOutputWithRole(role=<new>)
+     MarkDone (exactly one primary) ─▶ recordUsage in same tx ─▶ finish(): metrics + webhook enqueue
+                                                                            │
+ GET /v1/jobs/{id}: download_url = role==primary; outputs[] (present because len>1) lists every role
+```
+
+The `cad` class reuses, unchanged: the asynq `Runner` skeleton, `jobs.Repo.transition`, `recordUsage`, cancel pub/sub, progress infra (CAD does not implement `ProgressConverter`, so the plain `Convert` fallback in `runConvertWithOptionalProgress` `worker.go:1320` is used), webhook worker, reconciler, quotas, metrics.
+
+---
+
+## 3. Component Responsibilities — NEW vs MODIFIED
+
+### 3.1 NEW
+
+| Component | Responsibility | Location (follow precedent) |
 |---|---|---|
-| `internal/worker/worker.go` is 1989 lines | Confirmed (`wc -l` → 1989; file has no trailing newline, so line-numbered reads show content through line 1990 — same file, off-by-one artifact of the counting method, not a discrepancy) | |
-| Seven handlers, "94 to 163 lines each" | **Partially inaccurate — corrected.** Measured function-body spans (signature line to closing `}`), body only: `HandleImageConvert` 704–782 (79), `HandleDocumentConvert` 798–903 (106), `HandleHTMLConvert` 917–1014 (98), `HandleAudioConvert` 1033–1142 (110), `HandleAVConvert` 1196–1294 (99), `HandleOCRConvert` 1314–1412 (99), `HandlePandocConvert` 1436–1534 (99). Range is **79–110**, not 94–163. Including each function's leading doc comment (12–22 lines) brings the range to **86–127** — still short of 163. This doesn't change SEED-020's conclusion, but the roadmap should cite the corrected 79–110 (body) / 86–127 (with doc comment) figures, not the seed's. |
-| "Phase 51 had to touch 14 symmetric call sites to add a single Prometheus counter" | **Confirmed exactly.** `grep -n "metrics.RecordClientJobOutcome" internal/worker/worker.go` returns exactly 14 lines (2 per handler × 7 handlers: one in the terminal-failure branch, one in the terminal-success tail). |
-| Post-commit hooks are the ×7 tax; transactional concerns already have a home (`Repo.transition`'s `apply` closure) | Confirmed. `recordUsage` (internal/jobs/usage.go) is called from inside `MarkDone`/`MarkFailed`/`Cancel`'s `apply` closures in `internal/jobs/repo.go:204-269`, never adjacent. |
-| `HandleWebhookDeliver` is out of scope | Confirmed — genuinely different shape: no `MarkActive`/terminal-classification skeleton, its own retry/dead-letter bookkeeping via `webhook.Repo.RecordAttempt`/`MarkDeadLetter` (worker.go:1563-1637). |
+| `EngineCAD = "cad"` | Single compile-time engine literal | `internal/convert/convert.go` const block (:20-46) |
+| `OperationRender = "render"` | Constant for an operation the DB already allows | `internal/convert/convert.go` beside `OperationSanitize` (:74) |
+| `CADConvertConverter` | `(convert, step→stl)`, `(convert, iges→stl)`, `(convert, dxf→svg|pdf)`; `Engine()=cad` | `internal/convert/cad.go` |
+| `CADRenderConverter` | `(render, {step,iges,stl,dxf}→png)`; implements `OperationalConverter` (`Operation()=render`); writes the measurements sidecar | `internal/convert/cadrender.go` |
+| CAD opts | `ParseCADOpts` / `CADOptsFromMap` / `ValidateCADApplicability(engine, source, target, o)`; closed `view` vocabulary, closed `size` | `internal/convert/cadopts.go` (shape: `htmlopts.go:60-130`) |
+| CAD sniffers | `LooksLikeSTEPFromPrefix`, `…IGES…`, `…STL…` (size-aware, binary), `…DXF…` (ASCII + binary sentinel) | `internal/convert/cadsniff.go` |
+| Measurements schema + validator | Strict decode of the script's `result.json`, finite-number check, closed `unit` vocabulary, canonical re-encode | `internal/convert/cadmeasure.go` |
+| Embedded script(s) | `go:embed` of `octoconv_cad.py` (and a 2D DXF script if the evaluation picks one) | `internal/convert/cadscripts/*.py` |
+| `cadsandbox.go` | Measured grants per stage, `forJob` builders, `CADPreflight`, shared-`/tmp` guard if needed | `internal/convert/cadsandbox.go` (shape: `documentsandbox.go`, `probesandbox.go`) |
+| `CADDescriptor`, `isCADTerminal`, `cadFailureCode`, `cadSideOutputs` | Retry classification (stage-aware), failure codes, measurements read-back | `internal/worker/descriptors.go` (after `TectonicDescriptor`, :468) |
+| `cmd/cad-worker/main.go` | Worker binary: sandbox helper first, `Replace` configured converters, preflight before Postgres, `NewRunner(h, CADDescriptor)` | clone of `cmd/pandoc-worker/main.go` (:43-81 sandbox+preflight, :205 mux) |
+| Queue plumbing | `TypeCAD…`, `QueueCAD`, `CADRetryDelay`, `CADUniqueTTL`, `NewCADConvertTask`, `Client.EnqueueCADConvert` | `internal/queue/queue.go`, `client.go` |
+| Migration `0018` | Widen `job_outputs_role_check` | `internal/db/migrations/0018_cad_output_role.sql` |
+| `Dockerfile.cad-worker`, compose service, chart Deployment + ScaledObject + values + ConfigMap | Infra | repo root, `deploy/chart/octoconv/templates/` |
+| Measurement scripts | `scripts/cad-timing-measure.sh`, KEDA load proof, extend `sandbox-paths-measure.sh` / `sandbox-liveproof.sh` | `scripts/` |
 
-**One thing SEED-020 does not mention, found during this pass:** the exact same defect
-class PR #4 caught in worker.go is **still live** in `internal/reconciler/reconciler.go:311-312`:
+### 3.2 MODIFIED (small, mostly additive)
 
-```go
-ferr := s.store.MarkFailed(ctx, j.ID, "reconciler_exhausted", ...)
-metrics.RecordReconcilerAction("exhausted")   // <-- unconditional, NOT guarded on ferr
-if job != nil && ferr == nil {
-    metrics.RecordClientJobOutcome(...)        // <-- this one IS correctly guarded
-}
-```
-
-`RecordReconcilerAction("exhausted")` fires even when `MarkFailed` did not commit — a real,
-currently-uncaught instance of the "counter before commit" bug, in a different package than
-the seven handlers SEED-020 names. It should be fixed in the same phase as A (see §G),
-because it's the same bug shape and touches the same "post-commit hook must be exactly one
-call in exactly one place" invariant the refactor exists to establish.
-
-### What is genuinely identical across all seven handlers
-
-The skeleton SEED-020 describes is real and, more importantly, **`process()` (worker.go:1847-1942) is already the single shared orchestration function** — every handler calls the same `h.process(ctx, job)`. The ×7 tax is not in `process()`; it is in the ~80–110-line wrapper repeated around it in each `Handle*Convert`:
-
-1. `queue.ParseConvertPayload` → unparseable payload → `SkipRetry` (identical, 7×)
-2. `h.repo.Get(ctx, jobID)` (identical, 7×)
-3. **Conditional** strict opts re-parse (`*OptsFromMap`) → `MarkFailed("invalid_options", ...)` → `SkipRetry` (6 of 7 handlers — image has none; see table below)
-4. `h.repo.MarkActive(ctx, jobID)` → already active/done/canceled → `SkipRetry` (identical, 7×)
-5. `start := time.Now()`; `h.process(ctx, job)` (identical call, 7×)
-6. On error: `isCanceled` check → `SkipRetry` without `MarkFailed` (identical, 7×)
-7. On terminal error: engine-scoped classifier → `MarkFailed(code, msg, ...)` → `RecordJobOutcome` → guarded `RecordClientJobOutcome` → guarded webhook enqueue → `SkipRetry` (same shape, 7×; only the classifier fn and code/message mapping differ)
-8. On transient error: return unwrapped, no metric (identical, 7×)
-9. On success: `RecordJobOutcome` → `RecordClientJobOutcome` → webhook enqueue (identical, 7×)
-
-### Per-engine differences, as a data shape
-
-| Field | Image | Document | HTML | Audio | AV | OCR | Pandoc |
-|---|---|---|---|---|---|---|---|
-| `queue.Type*Convert` / `queue.Queue*` | `TypeImageConvert`/`QueueImage` | `TypeDocumentConvert`/`QueueDocument` | `TypeHTMLConvert`/`QueueHTML` | `TypeAudioConvert`/`QueueAudio` | `TypeAVConvert`/`QueueAV` | `TypeOCRConvert`/`QueueOCR` | `TypePandocConvert`/`QueuePandoc` |
-| Opts strict re-parse (`D-10` guard) | **none** | `DocOptsFromMap` | `HTMLOptsFromMap` | `AudioOptsFromMap` | `AVOptsFromMap` | `OCROptsFromMap` | `PandocOptsFromMap` |
-| Terminal classifier | `isTerminal` | `isDocumentTerminal` (timeout=terminal) | `isHTMLTerminal` (timeout=terminal) | `isAudioTerminal` (stage-aware, timeout=transient at whisper stage) | `isAVTerminal` (stage-aware, transcode-timeout=transient) | `isOCRTerminal` (timeout=transient, deliberate divergence) | `isPandocTerminal` (timeout=terminal) |
-| Failure-code mapper | inline `"engine_error"` only | inline `"engine_error"` only | inline `"engine_error"` only | inline 2-way (`duration_exceeded` / `engine_error`) | `avFailureCode` (4-way) | `ocrFailureCode` (6-way) | `pandocFailureCode` (3-way) |
-| Pre-`Convert` guard splice inside `process()` | none | none | none | `enforceAudioGuardBeforeConvert`, gated on `job.Engine == convert.EngineAudio` (worker.go:1915) | none (AVConverter self-contains its own duration/resolution guard) | none (OCRConverter self-contains page/box/born-digital guards) | none |
-| Progress reporting wiring | none | none | none | none | `SetProgressThrottle`/`SetProgressWebhook` called from `cmd/av-worker/main.go` | `SetProgressThrottle`/`SetProgressWebhook` called from `cmd/ocr-worker/main.go` | `SetProgressThrottle`/`SetProgressWebhook` called from `cmd/pandoc-worker/main.go` |
-| `metrics.RecordJobOutcome`/`RecordClientJobOutcome` label | `queue.QueueImage` | `queue.QueueDocument` | `queue.QueueHTML` | `queue.QueueAudio` | `queue.QueueAV` | `queue.QueueOCR` | `queue.QueuePandoc` |
-
-**Correction to the milestone context's framing:** "disk guards for av" and "page caps for
-ocr" are **not** handler-level differences — they live entirely inside `AVConverter.Convert`
-and `OCRConverter.Convert` (`internal/convert/av.go`, `internal/convert/ocrguards.go` +
-`ocrpdf.go`), which the shared `process()` invokes uniformly via `registry.Lookup`. The
-handler never branches on them. Likewise "unique-lock TTL" is not a `Handler`/runner concern
-at all — it lives in `internal/queue/queue.go`'s `*UniqueTTL` functions, consumed only by
-`EnqueueXConvert` (producer side) and the reconciler's re-enqueue, never read inside
-`worker.go`. The milestone context's list of "per-engine differences" conflates converter-
-internal guards with handler-level differences; the JobRunner descriptor only needs the four
-rows above (opts parser, terminal classifier, failure-code mapper, progress config), plus the
-one `process()`-level guard splice (today audio-only).
-
-**Also notable for the runner design:** each `cmd/*-worker/main.go` already instantiates
-exactly **one** `Handler` per binary and registers exactly **one** `Handle*Convert` on its
-own `asynq.ServeMux` (verified: `grep mux.HandleFunc cmd/*/main.go` — one match per binary,
-except `cmd/webhook-worker` which registers `HandleWebhookDeliver`). So the runner does not
-need to dispatch across engines within one process — one engine class per binary is already
-the deployment model (Docker/K8s isolation per engine, per CLAUDE.md's Architectural
-Constraints). This means `NewHandler`'s current ~10-parameter constructor, where every
-`cmd/*-worker/main.go` passes several `nil`/`0` values it will never use (visible directly in
-the grep output above — `nil, // webhookRepo — webhook-only; HandleXConvert never reads it`,
-repeated in all six non-webhook worker mains), is itself evidence of the same problem at the
-constructor level, not just inside the handler bodies.
-
-### Proposed runner signature
-
-```go
-// EngineDescriptor is the per-engine-class data SEED-020 asks for — everything that
-// varies across the seven Handle*Convert bodies, as values/functions instead of
-// hand-copied branches.
-type EngineDescriptor struct {
-    Engine string // convert.EngineImage, .EngineDocument, ... — same string as queue.QueueX
-    Type   string // queue.TypeXConvert, for mux registration
-
-    // OptsFromMap is nil for image (no strict re-parse guard exists there today).
-    OptsFromMap func(map[string]any) (any, error)
-
-    // IsTerminal classifies a process() error. Every engine has one; image's is the
-    // shared isTerminal itself.
-    IsTerminal func(error) bool
-
-    // FailureCode maps a terminal error to (code, message). Defaults to
-    // ("engine_error", "unsupported or corrupted input format") when nil.
-    FailureCode func(error) (code, message string)
-
-    // PreConvertGuard splices a guard in front of conv.Convert inside process().
-    // nil for six of seven engines; audio sets enforceAudioGuardBeforeConvert.
-    PreConvertGuard func(ctx context.Context, job *jobs.Job, inPath string) error
-}
-
-// Runner replaces the seven Handle*Convert methods with one generic mux.HandlerFunc,
-// closed over one EngineDescriptor per instance (one Runner per worker binary, mirroring
-// today's one-Handler-per-binary deployment model).
-type Runner struct {
-    h *Handler // unchanged: repo/store/registry/engineTimout/webhookRepo/deliverer/enqueuer/...
-    d EngineDescriptor
-}
-
-func (r *Runner) Handle(ctx context.Context, t *asynq.Task) error { ... }
-```
-
-`cmd/worker/main.go` (etc.) changes from `mux.HandleFunc(queue.TypeImageConvert,
-h.HandleImageConvert)` to `mux.HandleFunc(queue.TypeImageConvert, worker.NewRunner(h,
-worker.ImageDescriptor).Handle)`. `queue.QueueX` labels can be **eliminated entirely** in
-the runner body — `job.Engine` (already loaded by `h.repo.Get`) is byte-identical to
-`queue.QueueX` by construction (`internal/queue/queue.go:38-45`: `QueueImage =
-convert.EngineImage`, etc.) — one fewer thing to keep in sync per engine.
-
-### Post-commit hook: making it structurally one call in one place
-
-The runner's `Handle` method should have **exactly one** call to
-`metrics.RecordJobOutcome`/`RecordClientJobOutcome` and **exactly one** call to
-`EnqueueWebhookDeliver`, both reached only from a single terminal-outcome branch that is
-computed AFTER (never before) the `MarkDone`/`MarkFailed` call's error is checked:
-
-```go
-outcome, ferr := r.finish(ctx, job, processErr) // MarkDone or MarkFailed, returns (status, err)
-if ferr == nil {
-    metrics.RecordJobOutcome(job.Engine, outcome, elapsed)
-    metrics.RecordClientJobOutcome(job.ClientID.String(), job.Engine, outcome)
-    if job.CallbackURL != "" {
-        _ = r.h.enqueuer.EnqueueWebhookDeliver(ctx, job.ID)
-    }
-}
-```
-
-This is what makes "structurally impossible to fire before commit" true: there is no code
-path that reaches the metrics call without first passing through `ferr == nil`, because there
-is only one call site, guarded by one `if`, and no handler-specific copy of that `if` to get
-wrong. The reconciler's own `RecordReconcilerAction("exhausted")` bug found above is a live
-demonstration of what happens when this guard is duplicated by hand instead of centralized —
-the fix belongs in the same phase.
-
-### Tests that pin behavior and must not change
-
-- `internal/metrics/metrics_test.go`: `TestJobDurationLabelsPinned`,
-  `TestQueueDepthLabelsPinned` — guard the KEDA PromQL contract (`{engine,status}` /
-  `{queue,state}` label sets). The runner must keep calling `RecordJobOutcome`/
-  `RecordClientJobOutcome` with the same two-label shape.
-- Every `isXTerminal`/`isCanceled`/`*FailureCode` function has direct unit test coverage in
-  `internal/worker/worker_test.go` (not read line-by-line here, but referenced throughout
-  the doc comments above — e.g. `T-31-08`, `WR-01`/`WR-03` audio comments, `44-CONTEXT.md`
-  OCR references) — these are pure functions and should be extracted **unchanged**, only
-  relocated from package-level funcs into `EngineDescriptor` field values; a refactor that
-  changes their *logic* while moving them is out of scope and risks re-litigating already-
-  settled classification decisions (D-01 through D-15 scattered through worker.go's comments).
-- `internal/reconciler/reconciler_test.go` / `reconciler_soak_test.go` — the engine-routing
-  `switch` (reconciler.go:342-369) is untouched by A; only the metrics-guard fix above
-  touches this file.
-- `internal/jobs/repo_test.go` — `Repo.transition` and its guarantees are explicitly called
-  out in PROJECT.md's milestone framing as an invariant this milestone does not touch; the
-  runner only reorders/consolidates code that calls into it, never the transition machinery
-  itself.
+See the full checklist in §6. The ones that carry judgement rather than mechanical additions: `NormalizeFormat` (new aliases), `handleCreateJob` opts switch (new `case`), the two detector chains, `MIMEType`, `jobs.go` role constant, `mcpserver/client.go:112` and `docs/openapi.yaml:190-220` role descriptions, and three tests that currently assert `render` is rejected (§7).
 
 ---
 
-## B. The `operation` dimension
+## 4. What is genuinely new, and how to handle it
 
-### Confirmed CHECK values (0001_init.sql)
+### 4.1 Two operations in one engine class (`convert` and `render`)
 
-```sql
--- jobs.operation (line 45-46) and presets.operation (line 22-23), identical:
-CHECK (operation IN ('convert', 'extract', 'archive', 'inspect', 'render'))
+**[V]** The registry key is `(operation, from, to)` and `OperationalConverter.Operation()` returns ONE value per converter value (`convert.go:147-163`, `Register` `:246`). `SanitizeConverter` is the only precedent and serves one operation. CAD serves two, so it needs **two converter types** (or one struct with an `op` field registered twice): `Register` panics only on a triple collision, and `(render, step, png)` vs `(convert, step, stl)` cannot collide.
 
--- jobs.engine, as originally shipped (line 47-48):
-CHECK (engine IN ('image', 'document', 'av', 'cad', 'archive', 'probe'))
-```
+Consequences:
 
-`jobs.engine`'s CHECK has been widened four times since, each an `ALTER TABLE ... DROP
-CONSTRAINT jobs_engine_check; ADD CONSTRAINT ...` pair mirroring the same pattern:
-`0005_html_engine.sql` (+html), `0006_audio_engine.sql` (+audio), `0009_ocr_engine.sql`
-(+ocr), `0010_pandoc_engine.sql` (+pandoc). Current live constraint:
+- `cmd/cad-worker` must `Replace` **both** configured converters (the pattern at `cmd/pandoc-worker/main.go:61`). Forgetting one leaves the zero-value placeholder (no sandbox, no ceilings) registered for that operation.
+- `GET /v1/formats` `engines` key lists only `OperationConvert` pairs (`Classes()` `convert.go:385-405`), so `engines.cad` shows `step→stl, iges→stl, dxf→svg, dxf→pdf`; render pairs appear only under `operations.render.cad` (`OperationClasses()` `:413`). That is what the golden pin expects structurally. The `jobs_list_handler.go:46` engine filter derives from `Classes()`, so `cad` is filterable because it has convert pairs.
+- **One asynq task type serves both operations**, because `process()` dispatches through `LookupOp(job.Operation, …)` (`worker.go:1389`) and `enqueueForEngine(ctx, engine, id)` (`handlers.go:1168`) and the reconciler switch (`reconciler.go:388`) key on engine only — they cannot choose a type per operation without a signature change. The repo's own argument (`queue.go:28-32`: "probe:convert for symmetry would put a false operation name into every asynq dashboard") says do not name it `cad:convert`. Recommend a neutral type name (e.g. `cad:job`). Low stakes, but decide it once: `RetryDelayFunc` (`queue.go:528`) dispatches on `t.Type()`.
+- **The descriptor's opts re-parse is operation-blind.** `EngineDescriptor.OptsFromMap func(map[string]any) (any, error)` (`runner.go:48`) receives no job. The render schema (`view`, `size`) and the convert schema (empty) differ. Either (a) `CADOptsFromMap` parses the **union** schema strictly (acceptable: applicability already ran at the API, `ValidateCADApplicability`, and the re-parse is "strictness only", `runner.go:220-231`), or (b) widen the descriptor field to take the job. Recommend (a); it keeps the `Runner` untouched and its pinning tests green.
+- **Opts dispatch in the API is a closed `switch engine`** (`handlers.go:832`) whose `default:` runs `ParseDocOpts`. Probe and tectonic fall into `default` and work only because they take no opts. `cad` **must** get its own `case` or every `view`/`size` request fails as an unknown key. `ValidateCADApplicability` can key on `target == "png"` (only `render` registers png for CAD sources), so the existing `(engine, source, target, opts)` signature suffices and operation need not be threaded.
+- The two engine-keyed maps in `api.go` hold ONE timeout and ONE size ceiling per engine, not per operation (`api.go:429`, `:473`). The single `CAD_ENGINE_TIMEOUT` must cover the worst cell across both operations. See §4.7.
 
-```sql
-CHECK (engine IN ('image', 'document', 'av', 'cad', 'archive', 'probe', 'html', 'audio', 'ocr', 'pandoc'))
-```
+### 4.2 The second output: role, ordinals, accounting, failure ordering
 
-`cad`, `archive`, and `probe` were reserved from day one and remain **unused** — no
-`Converter.Engine()` implementation returns any of them today (verified: `grep -rn
-"func.*Engine() string"` across `internal/convert/*.go` returns exactly seven implementations,
-one per registered converter, matching `AllEngines()`). `probe` is the value SEED-013 and the
-v1.13 milestone scope both name as `sanitize`'s engine class.
+- **Ordinals:** primary is ordinal 0 (`worker.go:1456`, `storage.OutputKey(job.ID, 0, outName)`); side outputs get `i+1` (`worker.go:1487`). `UNIQUE (job_id, ordinal)` (0012) turns an asynq re-attempt into an upsert, so a retry cannot double-count `bytes_out`.
+- **Role:** add `jobs.OutputRoleX` beside `OutputRoleReport` (`internal/jobs/jobs.go:96`). **Name it `measurements`, not `dimensions`:** `internal/convert/dimensions.go` already means "declared pixel dimensions" (the decompression-bomb guard), and a role called `dimensions` will be misread in grep and in review. Do **not** reuse `report`: `docs/openapi.yaml:617` binds `role=report` to the `SanitizeReport` schema, so a client switching on role would parse the wrong shape.
+- **Do not use `preview`/`thumbnail` for the PNG.** `MarkDone` requires exactly one `role='primary'` row (`repo.go:277-284`) and a render job's deliverable IS the PNG, so the PNG is primary. The reserved `preview`/`thumbnail` roles remain for a future "convert + attach preview" capability (this is the SEED-007 contract: fix `operation=render` + closed `view`/`size` + 1280×1280 default on CAD; do not spend the `preview` role on it).
+- **Write path:** `AddOutputWithRole` only; `AddOutput` deliberately never writes `role` (`repo.go:625-662`, and the PR #12 defect described there — a role-bearing struct handed to `AddOutput` silently became a second primary and failed `MarkDone` on every attempt). Reusing the existing hook means this is already correct; a unit test must still go through the repository write, not only the hook.
+- **Hook must be operation-conditional.** `SideOutputs` receives the `*jobs.Job` (`runner.go:102`), so `cadSideOutputs` returns `nil, nil` for `operation=convert` and the measurements for `render`. This also forces a change to `TestOnlyProbeDeclaresSideOutputs` (`internal/worker/probe_sideoutput_test.go:105-128`), which currently fails the build if any descriptor other than probe sets the hook — an intentional pin to update, not to bypass.
+- **Validate before upload, not in the hook.** The hook runs after the primary is uploaded and recorded (`runner.go:99-102`). For probe that ordering is the point. For CAD, malformed JSON from the script should fail the job before any S3 byte moves, so `CADRenderConverter.Convert` should parse + canonicalise `result.json` and write the sidecar `outPath + ".measurements.json"` itself (exact pattern: `SanitizeReportPath`, `internal/convert/sanitizeconverter.go:89-107`); the hook only reads the blob back and treats a missing sidecar as an error (`descriptors.go:402-414`). The `out.*` stem is already worker-owned (`jobs.WorkerOwnedName`, `inputnames.go:117`), so the sidecar cannot collide with a client file (and CAD takes no attachments: `EngineTakesMultipleInputs` is tectonic-only, `convert.go:176`).
+- **Webhook:** `setWebhookDownloadURL` selects the primary only (`worker.go:1024`), so a completed-webhook carries the PNG URL and never the measurements; they are reachable only via `GET /v1/jobs/{id}` `outputs[]`. Keep it that way for this milestone and say so in `openapi.yaml`; widening the webhook body is a contract change.
+- **`GET /v1/jobs/{id}`** needs no code change: it presigns every output and emits `outputs[]` when `len(outs) > 1` (`handlers.go:1246-1310`) with `role` as a raw string. Only the descriptive text in `internal/mcpserver/client.go:112` ("report, preview and thumbnail are secondary artifacts") and `docs/openapi.yaml:190-220` must name the new role.
+- **Measurements contract (the part that needs design, not wiring):** closed JSON, validated in Go, never forwarded raw. Fields to fix up front: `bbox` (min/max per axis), `volume` (null with a reason when not a closed solid or not applicable — DXF is 2D, STL volume is only valid for a watertight mesh), `unit`. **Units honest by source:** STEP/IGES declare units and FreeCAD normalises to mm on import ([U], confirm in evaluation), STL carries none, DXF carries `$INSUNITS` which is often 0/unitless. So `unit` needs a closed vocabulary that includes an explicit `unspecified`, and the converter must not label an STL's numbers as mm. The script must emit with `allow_nan=False` so a NaN/Inf fails the Go strict decode rather than producing a JSON literal that is not JSON.
 
-`jobs.operation` has **never been altered** — it is still exactly the five 0001 values, and
-critically, **`sanitize` is not one of them**. Adding it requires a new migration mirroring
-the `jobs_engine_check` widening pattern (a `jobs_operation_check`-style
-`DROP`/`ADD CONSTRAINT`, presumably also widening `presets.operation`'s identical CHECK for
-symmetry, though presets are out of this milestone's scope unless a sanitize preset is
-wanted).
+### 4.3 First Python-script-driven engine: where the script lives and how it is confined
 
-### `operation` is already fully plumbed at the persistence layer — only the API ignores it
+| Decision | Recommendation | Why |
+|---|---|---|
+| Where the source of truth lives | `go:embed` in `internal/convert/cadscripts/`, written to the job directory (0o400, `O_EXCL`) at the start of `Convert` | One artefact versions the script with the Go code that parses its output; no image/Go skew; `go:embed` already used (`texresolvable.go:52`). Baking it into the image at `/opt/...` would need an `ro:` grant plus a parity check between two artefacts. The job directory is already the only writable path and CAD takes no attachments, so no client file can occupy the name. |
+| How parameters reach it | `params.json` (written by Go from already-validated opts) read by the script from a fixed relative name; **not** argv | FreeCAD documents a `--pass` option so a script can read later arguments from `sys.argv`, but the page that defines its exact semantics could not be fetched in this pass [U]; a params file avoids depending on FreeCAD's argv parsing at all and keeps "discrete argv, no client text" (the `pandocopts` rule). |
+| How the result comes back | `result.json` + the produced file(s), **judged by content** | Project rule (`sandboxpreflight.go:2-12`): exit status lies (ghostscript exits 0 and writes nothing when denied). FreeCADCmd exit behaviour on a script exception is unverified [U]; success = `result.json` present, schema-valid, output non-empty. |
+| Script termination | Script ends with an explicit exit; stdin is `/dev/null` (`runCommandCore` leaves `cmd.Stdin` nil) | FreeCADCmd can fall into its interactive console after a script file [U]; the process-group SIGKILL (`exec.go` `Setpgid`) is the backstop, not the plan. |
+| Environment | `engineExec.withEnv(...)` with the `engineEnv(jobDir)` allowlist (`sandboxwrap.go:219`) **plus** class additions: `HOME` and `TMPDIR` pointing into a job-scoped subdirectory, `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1` | FreeCAD writes user config/cache under `$HOME` at start and exit and temp files under `TMPDIR`. The job directory is the only writable path, so leaving `HOME` as the worker's would either fail or push the class into a wider write grant. The documented precedent is `documentEngineTmpDir` (`documentsandbox.go:121-137`). `engineEnv` copies `HOME` verbatim, so the CAD builder overrides it rather than using the helper as is. |
+| Landlock grants | Measured, not reasoned: `scripts/sandbox-paths-measure.sh` trace → verify, content-judged, then recorded in `.planning/research/SANDBOX-PATHS.md` | Mandatory method for every class (SANDBOX-PATHS.md "Метод", traps 1-8). Expect a large read-only set (Python stdlib, FreeCAD/OpenCASCADE libs, Qt if linked) and an interpreter/wrapper chain whose binaries are `execve`d and so invisible to an `openat` trace (trap 1/2). |
+| What the script can and cannot do | It is OUR code, not client code: nothing in STEP/IGES/STL/DXF reaches `exec`/`eval` unless the script does so | This is why the tectonic "input is a program" treatment (CPU rlimit, starvation detection, terminal-on-timeout) is not automatically needed. The threat is memory/CPU blow-up inside OpenCASCADE parsers and, for DXF, a pure-Python importer; confinement + cgroup + ceilings answer that. |
 
-- `jobs.CreateParams.Operation string` (internal/jobs/repo.go:74) is a real field.
-- `Repo.Create`'s `INSERT INTO jobs (..., operation, ...)` (repo.go:151-154) writes it
-  verbatim.
-- `Repo.Get`'s `SELECT ... operation, ...` (repo.go:435-441) scans it back into `j.Operation`.
-- The **only** place `operation` is ever set is `internal/api/handlers.go:32,730`:
-  `const operationConv = "convert"` ... `Operation: operationConv`. There is exactly one call
-  site, and it is a hardcoded constant — the API never reads a client-supplied operation
-  value at all today.
+Test strategy that fits the repo: pure-Go tests for params writing, result parsing, argv, classification, using a fake engine binary on `PATH` (the `engineExec`/`LookPath` seam resolves by name, `sandboxwrap.go:40-56`); real FreeCAD only in image-level live tests and the preflight. Add a `python3 -m py_compile` (or equivalent) `RUN` in `Dockerfile.cad-worker` so a syntax error in the embedded script fails the image build rather than the first job.
 
-This means B's "minimal change set" is smaller than it looks: the column, the insert, and the
-read path are done. What's missing is (1) the CHECK constraint widening for `sanitize`
-(needed only once sanitize ships, not for `inspect`, which is already in the enum), (2) API
-acceptance of an `operation` form field defaulting to `operationConv`, and (3) making
-`convert.Registry` operation-aware so `(operation, from, to)` can resolve to a *different*
-converter than `(convert, from, to)` for the same `(from, to)` pair (this is what makes
-`sanitize` on `pdf→pdf` distinguishable from a hypothetical future `convert` on `pdf→pdf`).
+### 4.4 Multi-stage pipeline and a renderer helper (Xvfb)
 
-### Making `Registry` operation-aware without breaking existing call sites
+**Multi-stage is established.** OCR (tesseract + pdftoppm + pdfinfo + pdftotext), audio (ffmpeg + whisper), probe (gs ×2, pdfinfo, unzip, file) all run several binaries from one job through `engineExec`. The sandbox-coverage test (`internal/convert/sandboxcoverage_test.go:77-153`) requires every literal binary name a class exec's to be in that class's `…Engines` list and fails on a stale entry.
 
-`convert.Pair` (convert.go:66-71) is `{From, To string}`, and `Registry.m` is `map[Pair]Converter`
-(convert.go:112). `Lookup`/`Supports`/`EngineFor` (convert.go:128-148) all take `(from, to)`
-only. There are dozens of existing callers across `internal/api/handlers.go:397`,
-`internal/worker/worker.go:1888`, `internal/api/formats_handlers.go:21`, and every
-`*_test.go` in `internal/convert`.
+**Two rulesets per job is established.** `document` builds one per engine, each its own measured set (`documentsandbox.go`: soffice vs veraPDF, D-10). Recommend the same for CAD, because the two stages have opposite risk profiles:
 
-The codebase already has a precedent for adding an **optional capability** to `Converter`
-without touching the required three-method interface or any existing implementation:
-`ProgressConverter` (`internal/convert/progress.go:39-45`) is a second, optional interface
-that `AVConverter`/`OCRConverter` implement and everything else doesn't; `process()`
-type-asserts for it (`runConvertWithOptionalProgress`, worker.go:1827-1829) and falls back to
-plain `Convert` when absent. This is the right template for operation-awareness too:
-
-```go
-// OperationalConverter is an optional capability (mirrors ProgressConverter's precedent).
-// A Converter that does not implement it is assumed operation="convert" — every existing
-// converter (image/document/html/audio/av/ocr/pandoc) needs ZERO changes.
-type OperationalConverter interface {
-    Operation() string
-}
-```
-
-`Registry.Register` type-asserts each `Converter` for `OperationalConverter`, defaulting to
-`"convert"` when absent, and keys `r.m` on a widened `Pair{Operation, From, To}` (Operation
-normalized the same defensive way `NormalizeFormat` normalizes formats — lowercase, no
-aliasing needed since the CHECK constraint is the closed set).
-
-To keep **every existing caller byte-unchanged**, `Lookup`/`Supports`/`EngineFor` keep their
-current two-argument signatures and internally delegate to `operationConvert` (mirrors the
-codebase's established convention of adding a new method rather than widening an existing
-signature — see `SetProgressThrottle`/`SetProgressWebhook`'s post-construction-setter
-precedent, worker.go:647-671, explicitly chosen over widening `NewHandler`'s signature for the
-same "existing callers must not change" reason):
-
-```go
-func (r *Registry) Lookup(from, to string) (Converter, bool) { return r.LookupOp("convert", from, to) }
-func (r *Registry) LookupOp(operation, from, to string) (Converter, bool) { ... }
-// Supports/EngineFor mirror the same pattern.
-```
-
-Only two call sites need to move to the `*Op` variant once `operation` is API-accepted:
-`internal/worker/worker.go:1888` (`process()`'s registry lookup, reading `job.Operation`
-instead of assuming convert) and `internal/api/handlers.go:397` (`handleCreateJob`'s
-`EngineFor` call, once it accepts a client-supplied operation). Every other of the ~30+
-existing `Lookup`/`Supports`/`EngineFor` call sites (tests, `formats_handlers.go`) needs zero
-changes.
-
-### `GET /v1/formats` backward compatibility
-
-`Registry.Classes()` (convert.go:150-172) walks `r.m` keyed by `Pair` and groups by
-`c.Engine()` only — it has no operation concept today. `handleListFormats`
-(formats_handlers.go:20-33) renders `{"engines": {engine: {"pairs": [[from,to],...]}}}`. To
-keep this response **byte-identical** for the seven existing (implicitly `convert`) engines,
-`Classes()` should keep grouping the top-level `engines` key by pairs whose `Operation ==
-"convert"` only, and a new, additive top-level key (e.g. `"operations"`) can expose the full
-`(operation → engine → pairs)` tree once a second operation (`sanitize`, and already-reserved
-`inspect`) has registered converters. This mirrors the existing "additive key, old key
-unchanged" idiom already used at `handlers.go:802-804` (`resp["opts"]` only added `if
-len(normalizedOpts) > 0`).
-
-### asynq queue for `sanitize`
-
-`sanitize`'s engine is `probe` (SEED-013's breadcrumb, reserved in the schema since 0001).
-There is **no** existing `QueueProbe`/`TypeProbeConvert` and **no** `cmd/probe-worker` — this
-is a genuinely new, eighth engine class, not a reuse of an existing queue. The correct answer
-per the established 1:1 `Type<Engine>Convert`/`Queue<Engine>` convention
-(`internal/queue/queue.go:19-46`) is a **new** queue, following the exact pattern
-`0009_ocr_engine.sql`/`0010_pandoc_engine.sql` already proved out twice (6th and 7th engine
-classes, both added with zero incident per PROJECT.md's v1.10/v1.11 history).
-
-**On the "KEDA blast radius" framing in the question:** adding an eighth queue is **not**
-high blast radius. Each `deploy/chart/octoconv/templates/scaledobject-*.yaml` file's PromQL
-is self-contained to its own queue name literal (verified:
-`scaledobject-image.yaml:38`: `query: sum(octoconv_queue_depth{queue="image",
-state=~"pending|active|retry"})` — the string `"image"` appears nowhere else in that file or
-any other ScaledObject file). Adding `scaledobject-probe.yaml` touches **zero** existing
-files at the ScaledObject layer. The one place a new queue must be registered centrally is
-`internal/queue/queue.go:813` `AllConvertQueues()` — and even that function's own doc comment
-(queue.go:801-810) explains it exists **precisely so** `cmd/api/main.go`'s queue-depth
-collector never needs a second edit: "`cmd/api/main.go`'s queue-depth collector arg list...
-is VARIADIC... this is the single source of truth." The actual blast radius for adding
-`sanitize`/`probe` is: one migration (widen `jobs_operation_check` and note `probe` is already
-in `jobs_engine_check`), new `queue.go` constants + `AllConvertQueues()` entry, a new
-`cmd/probe-worker`, a new `Enqueuer.EnqueueProbeConvert` interface method + implementation, a
-new `case` in `reconciler.go`'s engine switch (line ~342-369) and `handlers.go`'s engine
-switch (line ~770-792), and one new ScaledObject file. **Renaming or removing** an existing
-queue is the actually-expensive operation (7 PromQL strings + `AllConvertQueues()` +
-reconciler routing) — nothing in v1.13's scope requires that.
-
-### Admission gate and `client_usage_daily` treatment of non-convert operations
-
-Both are **entirely operation-agnostic already, by construction, requiring zero code
-change**:
-
-- `internal/jobs/admission.go`'s `loadQuotaState` (line 293-306) joins `clients` +
-  `client_limits` on `engine` only (`LEFT JOIN client_limits l ON l.client_id = c.id AND
-  l.engine = $2`) — no `operation` predicate anywhere in the file.
-- `evaluate`'s concurrency count (line 320-339) and daily-usage query (line 373-449) both
-  filter `WHERE ... engine = $2` only.
-- `internal/jobs/usage.go`'s `recordUsage` INSERT (line 46-81) has no `operation` reference
-  at all; `client_usage_daily`'s primary key is `(client_id, engine, day, status)` (migration
-  0011, confirmed via the `ON CONFLICT (client_id, engine, day, status)` clause at usage.go:75).
-
-A `sanitize` job with `engine='probe'` automatically gets its own independent
-`client_limits` row keyed `(client_id, 'probe')`, fully isolated from every other engine's
-quota bucket, for free. The one **disclosed limitation**: because the ledger's grain is
-`(client_id, engine, day, status)` with no operation column, if a *second* `probe`-engine
-operation is ever added later, the two operations' consumption would be indistinguishable in
-`client_usage_daily` and in `GET /v1/system/usage` — not a v1.13 problem (only one probe
-operation ships), but worth a one-line note in the roadmap so it isn't silently assumed away
-when SEED-013's "read" half (an `inspect`-operation, `probe`-engine job) is considered later.
-
----
-
-## C. Output roles
-
-### Current schema
-
-`job_outputs` (0001_init.sql:89-101): `id, job_id, ordinal, object_key, filename, format,
-size_bytes, content_type, metadata jsonb, expires_at, created_at`. No `role` column.
-Migration `0012_output_identity_and_retention_index.sql` added `UNIQUE (job_id, ordinal)` and
-`jobs_retention_idx` — it does not touch `role` (didn't exist to touch).
-
-### Minimal additive migration
-
-```sql
-ALTER TABLE job_outputs
-    ADD COLUMN role text NOT NULL DEFAULT 'primary'
-        CHECK (role IN ('primary', 'report', 'preview', 'thumbnail'));
-```
-
-`DEFAULT 'primary'` is what makes this zero-behavior-change: `Repo.AddOutput`'s current
-`INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes,
-content_type) VALUES (...)` (repo.go:410-419) does not list `role` at all — every existing
-call takes the column default automatically, with **no Go code change required** for the
-column to exist safely under every current caller. `jobs.Output` (the Go struct) and
-`AddOutput`'s `ON CONFLICT ... DO UPDATE SET` list only need `Role` added once a caller
-(sanitize's handler) actually wants to set it to `'report'`.
-
-### `GET /v1/jobs/{id}` backward compatibility
-
-`handleGetJob` (handlers.go:856-878) currently does `outs, _ := s.repo.Outputs(ctx, id)` then
-unconditionally presigns `outs[0].ObjectKey` into `resp["download_url"]`. Since ordinal 0 is
-always the primary output today, `outs[0]` and "the primary-role output" are currently
-identical. The additive, backward-compatible change:
-
-1. `download_url` continues to be the presigned URL of the `role == 'primary'` output (in
-   practice still `outs[0]` for every job that has exactly one output).
-2. A new `outputs` array key is added to the response **only when `len(outs) > 1`**, listing
-   `{role, ordinal, format, size_bytes}` per output (presigned lazily, or all eagerly — a
-   phase-56/60-era planning decision, not an architecture question). This mirrors the
-   established idiom at `handlers.go:802-804` (`if len(normalizedOpts) > 0 { resp["opts"] =
-   ... }`) and `handlers.go:872-877` (`error_code`/`error_message` only when non-empty) —
-   this codebase's convention is additive keys guarded on non-emptiness, never a shape change
-   to an existing key. A single-output client's response is **byte-identical**.
-
-### Verifying the byte-accounting claim
-
-The milestone context claims byte accounting already sums over ALL ordinals with no
-predicates. Confirmed by direct read of `internal/jobs/usage.go:59-60`:
-
-```sql
-COALESCE((SELECT sum(size_bytes) FROM job_inputs WHERE job_id = j.id), 0),
-COALESCE((SELECT sum(size_bytes) FROM job_outputs WHERE job_id = j.id), 0),
-```
-
-Neither subquery filters on `ordinal` (and, once added, neither would need to filter on
-`role` either — there is no `WHERE` clause beyond `job_id = j.id`). A `sanitize` job that
-calls `AddOutput` twice (`role='primary'` cleaned file, `role='report'` findings JSON) is
-**already** correctly summed into `client_usage_daily.bytes_out` with zero changes to
-`usage.go` — the claim is verified true, exactly as PROJECT.md's v1.12 retrospective states.
-
----
-
-## D. Synchronous `POST /v1/inspect`
-
-### Where it lives
-
-Following this codebase's established package-per-domain convention (`internal/presets`,
-`internal/webhook`, `internal/jobs`, `internal/convert` are each their own top-level package
-rather than code crammed into `internal/api`), the inspection *logic* — composing sniffers,
-computing risk signals, building the report — belongs in a new **`internal/inspect/`**
-package, not inside `internal/convert` (whose `Converter` interface is about transformation,
-not reporting) and not inside `internal/api` (whose `handlers.go` files are already thin HTTP
-adapters over other packages, e.g. `handleCreateJob` calling into `internal/presets.Resolve`).
-The HTTP handler itself is a new `internal/api/inspect_handlers.go` (mirroring the
-one-file-per-responsibility convention: `formats_handlers.go`, `jobs_list_handler.go`-style
-naming), a thin adapter calling `internal/inspect.Report(...)`.
-
-This also matters for the worker-delegation question below: a package under `internal/`
-(not `internal/api`) can be imported by a future `cmd/*-worker` binary without an import-cycle
-or layering violation, if deep inspection ever needs to run inside a worker container.
-
-### What it reuses from `internal/convert`
-
-| Sniffer | File | Runtime dependency | Usable from the API process today? |
+| Stage | Input trust | Needs | Ruleset |
 |---|---|---|---|
-| Magic-byte format detection | `convert.Sniff` (sniff.go) | pure Go | Yes |
-| ZIP/OOXML structure + macro detection (`cr.HasMacro`, already used at handlers.go:240) | `convert.SniffContainer` | pure Go | Yes |
-| Declared image dimensions (bomb defense) | `convert.Dimensions`/`HasDimensionLimit` | pure Go, zero-dependency (CLAUDE.md Key Decision) | Yes |
-| OLE-CFB legacy/encrypted detection | `convert.IsOLECFB`/`ClassifyCFB` | pure Go, custom bounded parser | Yes |
-| HTML/LaTeX/markup family sniff | `convert.LooksLikeHTML`/`LooksLikeLaTeX`/`LooksLikeText` | pure Go | Yes |
-| PDF page count / page box | `ocrPDFPageCount`/`ocrPDFPageSize` (ocrguards.go) | shells out to `pdfinfo` (poppler-utils) | **No** |
-| Born-digital text-layer detection | `detectBornDigitalPDF` (ocrguards.go:230) | shells out to `pdftotext` (poppler-utils) | **No** |
-| Audio/video duration + codecs | (av/audio converters' ffprobe calls) | shells out to `ffprobe` | **No** |
-| EXIF/GPS/IPTC/XMP metadata | none exists yet (SEED-013's own scope) | would need `exiftool` or a pure-Go parser | **No** |
+| 1 FreeCAD/OpenCASCADE (+ Python) | **Hostile** STEP/IGES/DXF parsed by large C++ and Python code | Python + OCC libs read-only; job dir read-write | Tight: no socket, no shared `/tmp`, no `/dev/dri`, no `/proc` beyond measured entries |
+| 2 Renderer (f3d / FreeCAD offscreen / other) | A mesh our stage 1 produced | GL stack (Mesa llvmpipe or EGL), fonts maybe; possibly Xvfb | Wider, but never sees the original upload |
 
-### Guarantees that do NOT apply to `/v1/inspect`, enumerated
+**Where Xvfb bites, concretely:**
 
-1. **v1.12 admission gate** (`internal/jobs/admission.go`): inspect never creates a `jobs`
-   row, so `admitLocked`/`PreAdmit` never run. There is no per-`(client, engine)`
-   concurrency/daily-byte/daily-job accounting for inspect calls, ever.
-2. **`client_usage_daily` accounting**: `recordUsage` only fires inside
-   `Repo.transition`'s terminal `apply` closures (`MarkDone`/`MarkFailed`/`Cancel`). No job
-   row, no transition, no usage row — an inspect call is invisible to `GET
-   /v1/system/usage` and to daily quota totals.
-3. **The reconciler**: only scans `jobs` rows in `queued`/`active`
-   (`internal/jobs/repo.go:306-331`). A dead API process mid-inspect leaves nothing to
-   recover; the client's only recourse is to retry the HTTP request. No crash-recovery
-   guarantee exists, unlike every async operation.
-4. **Webhooks**: no `callback_url` concept applies; the report is the HTTP response body.
-5. **SSE progress** (`GET /v1/jobs/{id}/events`): no job id is ever minted.
-6. **Guarded status transitions / `job_events` audit trail**: by default, an inspect call
-   leaves zero rows anywhere in Postgres — no audit trail of who inspected what, unless
-   deliberately added (a design choice for the implementing phase, not an architecture
-   given).
-7. **S3 persistence / TTL cleanup**: `handleCreateJob` always uploads to S3 before creating a
-   job row; inspect, being synchronous, should almost certainly never call `storage.Upload`
-   at all — the request body lives only for the HTTP request's lifetime. MinIO's ILM rule
-   never needs to know inspect exists.
-8. **Multi-replica-safe rate limiting**: the existing per-client/IP limiter
-   (`internal/ratelimit`) is explicitly documented (and referenced by `admission.go:24-27`'s
-   own comment) as **only correct under `api.replicas: 1`** — unlike the Postgres-anchored
-   admission gate. Since inspect deliberately bypasses that Postgres-anchored gate, *any*
-   rate control placed on inspect inherits this weakness. This should be a disclosed, explicit
-   limitation in whichever phase ships it, not silently assumed away.
+1. **The socket.** Xvfb's pathname socket is `/tmp/.X11-unix/X<n>`. The repo has the right grant: `sock:` token / `Paths.Socket` / `forJobRWSock` (`sandboxwrap.go:175`, `internal/sandbox/sandbox.go`), measured for soffice. But soffice's measured result was that a socket-only grant on `/tmp` is **not enough** — it unlinks its socket at exit, which needs a remove right, so `/tmp` was granted read-write (`documentsandbox.go:23-41`). Expect the same for Xvfb ([U]). That makes CAD a **CONF-06 shared-/tmp class**: `sharedTmpGuard` (`sandboxwrap.go:247`) refuses to start above concurrency 1, and a pre-task sweep of `/tmp` is mandatory (`htmlsandbox.go:105-135`). Stale `/tmp/.X*-lock` files left by a SIGKILL are exactly what the sweep would have to cover.
+2. **Connecting is not governed today.** The deployment measured Landlock ABI 8; `handledAccess` (`sandbox_linux.go:44-48`) does not name `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`, which controls `connect()` to a pathname socket and arrives only in ABI 9 (kernel-lists material, MEDIUM confidence). So under the current helper the client can reach Xvfb without a grant, and an ABI bump that starts handling the right would suddenly need a new `ro`/path grant for the X socket. Record it as a known coupling.
+3. **Lifecycle.** `engineExec.run` is synchronous and `runCommandCore` kills the whole process group on timeout. `xvfb-run` is a shell script that starts Xvfb, runs the client, and kills Xvfb; as ONE `run` it dies with the group, and one ruleset (inherited across `execve`/`fork`) confines Xvfb, `xauth`, the shell helpers and the renderer. The binaries `xvfb-run` execs internally are not visible to the AST scanner and must be granted by measurement (SANDBOX-PATHS trap 2: wrapper/interpreter chain). The alternative — a Go-managed long-lived Xvfb — needs a new `engineExec.start`-style primitive that does not exist; avoid it. Keep `tini` as PID 1 for reaping (`Dockerfile.document-worker` entrypoint, same reason).
+4. **`/dev/shm`, `/proc`, GPU libs.** Chromium (`htmlReadOnly`) needed all of `/proc` and `/sys/devices`; that class is already tracked as a standing weakness (`.planning/todos/pending/2026-09-30-proc-grant-other-process-entries.md`). A Mesa/Xvfb grant must be narrowed by removal, not copied from html.
 
-### What the API process needs instead
+**Decision rule for the evaluation phase (add to its criteria next to image size):** *does the winning renderer require a shared `/tmp` and a socket?* A renderer that does not (EGL surfaceless, OSMesa, or a CPU rasteriser with no GL at all) avoids the concurrency-1 constraint, the sweep, the `sock:` grant and the Xvfb stale-lock class, and should win a close contest on that ground alone. The measured fact on file is "mesh → PNG through f3d works only under xvfb-run" (PROJECT.md v1.16 context); a software-rasterised path (e.g. a Python mesh rasteriser run inside stage 1's ruleset) is worth including as a fourth candidate precisely because it removes stage 2 entirely [U].
 
-- **Work ceiling**: a per-request `context.WithTimeout` at the top of the handler — inspect
-  is "cheap" almost by definition, so a budget in the single-digit-to-low-tens-of-seconds
-  range, not `ENGINE_TIMEOUT`'s 120s+.
-- **Bounded page sampling**: the milestone text is explicit — "ограниченная выборка страниц с
-  честной пометкой выборочности в отчёте." Mirrors `OCR_MAX_PAGES`'s pattern but scoped to
-  inspect's own (smaller) cap, and the report JSON must carry a `sampled: bool` +
-  `pages_inspected/pages_total` pair so a client can never mistake a partial scan for a
-  complete one.
-- **Request body size cap**: mirrors `http.MaxBytesReader(w, r.Body, s.maxUploadByte)`
-  (handlers.go:118) but with its own, likely smaller, ceiling — inspect never needs to accept
-  a multi-GiB video just to read its header.
-- **Its own rate budget**: a dedicated per-client RPM counter scoped to `/v1/inspect` only,
-  separate from the existing per-client RPM shared across `/v1/*` — so an inspect flood from
-  one client cannot starve that same client's job-creation budget, or vice versa. Same
-  multi-replica caveat as point 8 above applies to this new budget too.
-- **No S3 write, no Postgres write** by default (see points 6-7 above).
+**DXF is a different pipeline, not a fifth format on the 3D one.** It is 2D, has no volume, and its outputs are vector (svg/pdf) plus a raster (png). Decide in the evaluation phase whether DXF → svg is produced by FreeCAD (Draft import/export) or by a lighter 2D library, and where svg → png/pdf rasterisation happens **inside the cad class** (no cross-class dependency: libvips lives in the `image` worker). That choice fixes how many binaries are in `cadEngines` and whether DXF needs its own ruleset.
 
-### Does inspection need worker delegation?
+### 4.5 Preflight (CONF-04) for a two-stage, content-judged class
 
-`Dockerfile.api` (per CLAUDE.md's documented tech stack) is `debian:bookworm-slim` with only
-`ca-certificates` — no `poppler-utils`, no `exiftool`, no `ffmpeg`/`ffprobe`. This is a
-deliberate architectural choice, not an oversight: every engine's binary toolchain lives in
-its *own* worker container (`Dockerfile.worker` = libvips only, `Dockerfile.document-worker`
-= LibreOffice, `Dockerfile.ocr-worker` = tesseract+poppler, `Dockerfile.av-worker` = ffmpeg,
-...), and the API process is the one always-on, publicly-reachable binary that today never
-shells out to untrusted-input tooling at all (`os/exec` + `runCommand`'s hardened
-process-group-kill discipline, `internal/convert/exec.go`, is exclusively a worker-side
-concern).
+The preflight toolkit (`internal/convert/sandboxpreflight.go`) is `place` → sufficiency by content → effectiveness by identical bytes outside the job dir. For CAD:
 
-Given the table above, a meaningful slice of a genuinely useful inspect report — PDF page
-count, born-digital detection, audio/video duration and codecs, EXIF/GPS risk — **cannot**
-run inside the API process as currently built. Two structural options, stated plainly:
+- **Sufficiency (stage 1):** convert a tiny embedded STEP cube of known size through the production `Convert` path and require the validated measurements to equal the known bbox/volume (content, not exit code).
+- **Sufficiency (stage 2):** render it; require a decodable PNG of the requested size that is not blank (a denied GL stack can produce an empty image with exit 0 — the same shape as chromium's blank 652-byte PDF, `htmlsandbox.go:135-145`).
+- **Effectiveness:** run each stage's engine directly against the identical file placed outside the job dir (the html pattern: the negative run cannot go through `Convert`, which copies its input into the job dir, `htmlsandbox.go:185-200`); require no result.
+- `requireOutsideGrants` must pass with the class's real grants; if `/tmp` is granted, use `newPreflightWorkspaceOutside("cad", "/var/tmp")` (`htmlsandbox.go:156`).
+- Extend: `sandboxClassFileEngines` / `sandboxClassFileGroups` / `sandboxGroupEngines` (`sandboxcoverage_test.go:77,107,132`) with the new files and `cadEngines`; `scripts/conf05-crosscheck.sh` (class table at :53-95 pins path sets against the doc); `scripts/sandbox-liveproof.sh` class table (:53). Tectonic is **not** in those two scripts (legacy-confined), so cad would be the ninth entry in a list that today names eight.
 
-- **(a) Add the missing binaries to `Dockerfile.api`.** Simplest, but directly contradicts
-  the established "one engine's toolchain per worker container" isolation pattern, and adds
-  `os/exec` against client-supplied bytes to the one process in this architecture that has no
-  resource ceiling and runs unprivileged only nominally (the worker containers are
-  `USER nobody` with explicit `cpus`/`memory` limits in `docker-compose.yml`; the API
-  container's isolation posture has never had to consider executing untrusted input before).
-- **(b) A genuine synchronous call into a worker.** OctoConv has no existing seam for this —
-  workers today only ever consume from asynq queues, asynchronously. Building one is real new
-  architecture, not a small addition.
+### 4.6 Retry classification must be stage-aware
 
-Given the milestone's own framing (an "explicit work ceiling," not a promise of deep
-inspection for every format), the pragmatic v1.13 answer is a **two-tier report**: Tier 1
-fields (format, size, dimensions, encryption/OLE-CFB/macro/zip-bomb risk signals) computed
-entirely from the pure-Go sniffers already available to the API process, with zero new
-binaries; Tier 2 fields (page count, duration, codecs, deep PDF risk) either omitted with an
-honest `"available": false`-style flag, or enabled only if a later phase adds the specific
-missing binary to `Dockerfile.api` as a disclosed, deliberate exception (mirroring how
-`Dockerfile.worker` already carries `libvips-tools` as its own one exception to an otherwise
-binary-free API-adjacent image). Building seam (b) is a bigger, SEED-worthy undertaking for a
-later milestone, not v1.13 scope.
+Polarity is per-engine and disagrees between neighbours (`descriptors.go:200-216` audio vs av vs ocr vs pandoc; the rule at `runner.go:57-66`: **`IsTerminal` is `func(error) bool`, never a boolean**). Derive CAD from its own failure modes, with distinguishable sentinels from `convert`:
 
----
-
-## E. Born-digital PDF routing (SEED-021)
-
-### Verifying SEED-021's specific code claims
-
-| Claim | Verified? | Evidence |
+| Failure | Verdict | Reason |
 |---|---|---|
-| `pdf` is a source format in exactly one place: `ocrSourceFormats` | **Confirmed.** `internal/convert/ocr.go:34`: `ocrSourceFormats = []string{"jpg", "png", "tiff", "webp", "pdf"}`. Cross-checked via `grep -rn '"pdf"' internal/convert/*.go`: every other hit is `pdf` as a **target** (`chromium.go:19` `{html→pdf}`; `libreoffice.go:35-40,143-148` `{format→pdf}`) or a target-side opts gate (`opts.go:134`, `avopts.go:31`, `htmlopts.go:110` all check `target == "pdf"`), never a source. |
-| `LibreOfficeConverter` only produces `documentFormats → pdf`, never accepts pdf as source | **Confirmed.** `internal/convert/libreoffice.go:14`: `documentFormats = []string{"docx", "odt", "xlsx", "ods", "pptx", "odp"}` — no `pdf`. |
-| `detectBornDigitalPDF` rejects text-based PDFs with `ErrOCRBornDigital` | **Confirmed.** `internal/convert/ocrguards.go:224-239`, threshold `ocrBornDigitalCharThreshold = 16` non-whitespace chars via `pdftotext`. |
-| The comment at `ocrguards.go:227-228` says the rejection is "steering the client to the document engine instead" — but the document engine does not accept pdf as input | **Confirmed, still present, still misleading.** `ocrguards.go:227-228` verbatim: "conservative per D-03: ANY substantial extractable text rejects, steering the client to the document engine instead." Per the two rows above, this advice points nowhere reachable — worth fixing the comment regardless of what else v1.13 does with SEED-021. |
-| So born-digital `PDF → txt` has no path through this service at all | **Confirmed** — OCR refuses it, and no other engine accepts pdf as input, period. |
+| Sandbox cannot be established (`ErrEngineSandboxUnavailable`) | **Transient**, checked first | A property of the node (`descriptors.go:322`, `sandboxwrap.go:297`) |
+| FreeCAD/OCC cannot read the file, empty/degenerate geometry, unsupported entity | Terminal | Deterministic on the bytes |
+| STEP/IGES exceeds complexity or output ceiling (triangle count, output bytes) | Terminal | Property of the file (`CodeOutputTooLarge`, `CodeTooManyPages` precedents) |
+| Stage-1 deadline | Terminal (pandoc/document/tectonic shape): CPU-bound and content-deterministic | Same reasoning as `isPandocTerminal`; revisit if a starved-node signal is added (tectonic `ErrTeXEngineStarved`) |
+| Renderer-stage failure or timeout | **Transient** (OCR/probe shape: an external renderer whose worst case is load) | Decide in the evaluation phase with measured variance |
+| OOM-kill with time remaining | Terminal at concurrency 1 | Tectonic `ErrTeXEngineKilled` argument (`descriptors.go:563-571`) |
+| Non-JSON / schema-invalid `result.json` | Terminal | Script/engine contract breach; deterministic |
 
-### Where the routing decision belongs, and what actually changes in v1.13's scope
+New async failure codes (if any) go in BOTH `allFailureCodes` (`descriptors.go:72`) and `docs/ERROR-CODES.md`; the doc-sync test (`internal/errcode/doc_sync_test.go`) holds them equal. Prefer reusing `CodeOutputTooLarge`, `CodeEngineError`, `CodeInvalidOptions` over inventing vocabulary.
 
-Given `POST /v1/inspect` (§D) is the milestone's new pre-flight surface, the correct place for
-the born-digital fact to first reach the client is **inspect's report**, not a change to
-`EngineFor`/`Registry`. Concretely: inspect's report should include a `text_layer_present:
-bool` field, computed by reusing (exporting) the existing `detectBornDigitalPDF` check, and
-its `(operation, target)` recommendation list should simply **not** offer `(convert, txt)` via
-OCR for a PDF where that field is true (since that job would deterministically fail
-`born_digital` today) — the client learns this *before* submitting a job, rather than after
-burning admission + a queue slot + a worker attempt. This satisfies the milestone's
-"routed by inspect's result, not rejected blindly" framing without requiring any Registry or
-`EngineFor` change, because **the set of `(from, to)` pairs the registry can resolve for pdf
-does not change** — pdf still only resolves through OCR.
+### 4.7 Timeout, ceilings, estimate provenance
 
-Whether `handleCreateJob` should *also* duplicate this check API-side (rejecting a
-born-digital-PDF-to-OCR job at creation time with a structured 422, rather than relying on the
-worker's existing `MarkFailed("born_digital", ...)` after admission) is constrained by the
-same poppler-availability problem as §D: `pdftotext` is not in the API container. The
-lower-risk, dependency-free v1.13 reading is: **inspect is what stops the routing from being
-"blind"** (the client can check first), and `handleCreateJob`'s admission logic is unchanged
-— the worker's existing, already-correct `ErrOCRBornDigital` → `"born_digital"` classification
-(`ocrFailureCode`, worker.go:484-485) remains the enforcement backstop for a client that
-submits without inspecting first. Duplicating the check API-side is a possible future
-enhancement, gated on the same "does poppler belong in the API image" decision as §D, not a
-v1.13 requirement as scoped.
-
-**Adopting `pdf2md` (SEED-021 Opportunity 1) is explicitly out of v1.13's scope** as written
-in PROJECT.md ("Отложено, не выбрано в v1.13" does not list SEED-021's adoption; the milestone
-bullet only promises the routing/reporting improvement above) and SEED-021 itself says to
-"harvest as a spike first, not a phase." If a future milestone does adopt it, `EngineFor`
-would then gain a genuinely new `(pdf, md)` pair via a new converter — but that is not this
-milestone's concern, and no Registry change should be built speculatively for it now.
+- `CAD_ENGINE_TIMEOUT` and `CAD_MAX_INPUT_BYTES` are ONE decision (`api.go:448-452` and `:482-500` state it for tectonic). For STEP/IGES the cost driver is **geometry complexity (NURBS/faces/meshing deflection), not file bytes**, so a byte ceiling is a weak proxy, exactly as page count was for probe. Measure the driver (face count / triangle count) and bound it with a cheap pre-check where one exists: **binary STL declares its triangle count in an 84-byte header, so size must equal `84 + 50·n`** (a free fail-closed bomb check, the analogue of `MAX_IMAGE_PIXELS`); STEP/IGES/DXF have no declared count, so they get the byte ceiling + timeout + cgroup + an output-size cap.
+- Expect the pandoc lesson: a CPU-light-looking engine can be **memory-bound** (4 MiB html OOMKilled a 1 Gi pod, PROJECT.md v1.11). OpenCASCADE meshing is a likely repeat. Plan concurrency 1 and measure peak RSS before fixing the cgroup and the ceiling (Path-B discipline: ceiling derived from the live OOM, not copied).
+- Contract tests force the entries: `engineEstimateSource` (`estimate.go:102`), `engineMeasuredDefaultSeconds` (`:152`; a value there with an unmeasured number is the mislabel `estimateSourceFor` exists to prevent), `defaultEngineTimeouts` (`api.go:429`), `defaultMaxEngineBytes` (`api.go:473`), `engineTimeoutsFromEnv` (`cmd/api/main.go:431-447`). Start `estimate_source` as `unmeasured` and flip it in the same commit as the measured number (the rule stated at `estimate.go:116-118`).
+- A single per-engine timeout must be the **max over both operations**; render (two stages, GL start-up) and a large STEP→STL are different cells. Measure both and take the worst, as pandoc took `html_large→md`.
 
 ---
 
-## F. Structured error codes
+## 5. `/v1/inspect` and magic-byte detection for CAD
 
-### Where fixed strings live today
+### 5.1 What each format actually gives us (all [U] until the sniffers are fuzzed against real exporter output)
 
-- **Synchronous API responses**: `internal/api/handlers.go:1050-1052`'s `writeError(w,
-  status, msg string)` writes `{"error": msg}` with **no** machine-readable code, for roughly
-  twenty distinct hardcoded string literals scattered across `handlers.go` (`"missing target
-  format"`, `"unsupported conversion: X -> Y"`, `"unrecognized file content for X"`, etc.).
-  The **one existing exception** is `writeQuotaError` (handlers.go:1007-1010), which does
-  include `"code": "quota_exceeded"` — and its own doc comment says, verbatim: *"D-10 scopes
-  it to the two 429s in this codebase... the general sweep is SEED-020"* (handlers.go:1006).
-  This is a direct, pre-existing pointer in the code itself confirming where the general
-  error-code work is expected to land.
-- **Worker/async path**: `jobs.error_code`/`jobs.error_message` columns
-  (0001_init.sql:59-60) already exist and are **already** populated with a real taxonomy —
-  `"engine_error"`, `"invalid_options"`, `"duration_exceeded"`, `"timecode_out_of_range"`,
-  `"resolution_exceeded"`, `"no_video_stream"`, `"born_digital"`, `"too_many_pages"`,
-  `"page_too_large"`, `"image_too_large"`, `"unsupported_language"`, `"unsupported_target"`,
-  `"input_too_large"`, `"reconciler_exhausted"` — every one of these already flows through
-  `GET /v1/jobs/{id}`'s `error_code` field (handlers.go:872-874) and the terminal webhook
-  body's `error_code` field (worker.go:1599-1601).
-- **MCP servers**: `internal/mcpserver/client.go:100-101` already carries `ErrorCode
-  string \`json:"error_code,omitempty"\`` / `ErrorMessage string` as typed DTO fields — MCP
-  already consumes the async path's codes **structurally**, not by text-matching.
+| Format | Identifier | Notes |
+|---|---|---|
+| STEP / STP | ASCII `ISO-10303-21;` at the start (optional leading whitespace), then `HEADER;` | 13 bytes, so it does not fit the 12-byte `Sniff` window (`sniff.go` `sniffLen`); use the window matcher. `stp` must alias to `step`. |
+| IGES / IGS | Fixed 80-column ASCII records; column 73 is a section letter, first record is section `S`; columns 74-80 a sequence number | `igs` must alias to `iges`. Hollerith strings can carry 8-bit bytes. |
+| STL | ASCII: `solid` … `facet normal`. Binary: 80-byte header + `uint32` count, total size `84 + 50·count` | **Ambiguity:** many binary STLs begin with the text `solid` in the 80-byte header. Test the size equation FIRST; only then fall back to the ASCII shape. Needs the total `size`, which the matchers already receive (`ValidateSniffPrefix(raw, size)`). |
+| DXF | ASCII: group-code/value line pairs beginning `0` / `SECTION` (optionally preceded by `999` comment pairs); Binary: `AutoCAD Binary DXF\r\n\x1a\x00` | Binary sentinel is 22 bytes. |
 
-**Correction to the milestone framing:** "фронт и оба MCP матчат текстом" is accurate for the
-**synchronous** `writeError` surface, but the **async** job-failure surface is already
-structured and already consumed structurally by MCP. The real gap F needs to close is
-narrower and more precise than the milestone bullet implies: extend the same `error_code`
-treatment the async path already has to the ~20 synchronous `writeError` call sites (e.g.
-`writeError(w, status, code, msg string)`, or a sibling function, with a fixed code constant
-assigned per call site).
+### 5.2 Mechanism: declared-source-gated structural matchers, in both chains
 
-### Verify/refute SEED-020's claim that error codes belong inside JobRunner
+`Sniff` (`sniff.go:44-54`, 12-byte window, closed table) is for formats with real magic. Everything above is weak, so use the html/latex/md pattern: the format is only claimed when the **declared** extension already names it AND a fail-closed structural check passes on a bounded window, otherwise `detected` stays empty and the request falls through to the generic 422 (`handlers.go:491-499`). Because declared must equal detected afterwards (`handlers.go:500-507`), a `.step` file whose bytes are a PNG is still rejected by the earlier `Sniff` (detected=`png`, mismatch). Insert the CAD matchers after the text branches and before OLE-CFB (`handlers.go:394-409`), reading the shared window once (`readSniffWindow`, `inspect_handlers.go:570`; the Phase 59 D-12 "one read, two answers" rule).
 
-**Partially true, partially misleading — both halves stated precisely:**
+Two traps to design around now:
 
-- **True** for the async-path half: `avFailureCode`, `ocrFailureCode`, `pandocFailureCode`,
-  and audio's inline duration-exceeded branch are the async side's structured-error-code
-  implementation, and they already live directly inside (and are called from) each
-  `Handle*Convert`'s terminal branch. Consolidating the seven handlers naturally
-  consolidates these five slightly-divergent mapper functions into one
-  `EngineDescriptor.FailureCode func(error) (code, message string)` field (§A) — doing this
-  as a separate earlier phase really would mean editing the same seven sites twice, exactly
-  as SEED-020 argues.
-- **Not sufficient on its own** for the synchronous-path half: the ~20 `writeError` call
-  sites live in a different package (`internal/api`, not `internal/worker`), on a completely
-  different kind of code path (request validation, not terminal-transition classification).
-  JobRunner consolidation, scoped to `internal/worker/worker.go`, structurally cannot touch
-  them. The roadmap should not read "error codes belong inside JobRunner" as "one phase closes
-  the whole error-code gap" — it closes the async half; the synchronous half needs its own
-  (much cheaper — one package, no ×7 duplication) sweep, which can reasonably be a second
-  workstream in the *same phase* as JobRunner (satisfying SEED-020's "not before it, not as a
-  separate earlier phase" intent) without pretending it's the same code change.
+1. **`ValidateSniffPrefix` is strict** (`markupsniff.go:59-80`: no NUL, valid UTF-8). Real STEP and IGES exporters emit raw 8-bit (Latin-1) in header and string fields; a UTF-8 gate would 422 legitimate files. CAD needs its own envelope: no NUL for the text formats, high bytes tolerated, and the binary formats (binary STL, binary DXF) must bypass the text envelope entirely. [U] — confirm against a corpus of real exporter output (SolidWorks, Fusion, FreeCAD, AutoCAD, LibreCAD).
+2. **Two detectors, one truth.** `detectInspectFormat` mirrors the create chain; an edit to one without the other makes `/v1/inspect` offer `render` for a file `POST /v1/jobs` then 422s, or the reverse. `internal/inspect/bindings.go` `RejectBindings` is checked by `TestRejectBindingsCoverEveryContentValidationReason`, which **scans `handlers.go` for `reason=` tokens**, so any new rejection token (e.g. an STL size/count inconsistency) must be added there or the test fails by name. Both chains also sit under `inspectgate` budgets; the CAD window read must be charged (`tr.Consume`) like the existing four matchers (`inspect_handlers.go:744-782`).
 
-### Verifying the `invalid_options` metrics gap
+### 5.3 What `/v1/inspect` does for a CAD file, with no new analyzer
 
-Confirmed by direct reading: every `MarkFailed(ctx, jobID, "invalid_options", ...)` call site
-(document worker.go:833, html:944, audio:1060, av:1223, ocr:1341, pandoc:1463 — six sites;
-image has none, since it has no opts re-parse guard) is followed immediately by the
-`SkipRetry` return with **no** `metrics.RecordJobOutcome`/`RecordClientJobOutcome` call
-anywhere between the `MarkFailed` and the `return`. `recordUsage` still fires (it's inside
-`MarkFailed`'s own `transition`/`apply` closure, engine-agnostic), so the Postgres rollup is
-intact — only the two Prometheus counters miss these outcomes, exactly as SEED-020 states.
-This is a natural side-effect of the runner design in §A: once there is exactly one
-post-commit metrics call site per engine (reached for every `MarkFailed`, not just the
-"engine ran and then failed" branch), this gap closes as a consequence of the refactor rather
-than as a separate fix.
+- `detectInspectFormat` returns `step`/`iges`/`stl`/`dxf`; `dispatchInspectFamilies` hits its `default:` (`inspect_handlers.go:1365-1470`) and runs no family analyzer; `buildChecks` then reports all 14 closed-vocabulary codes as `not_applicable / format_not_applicable` for a recognised format (`internal/inspect/report.go:142-175`). That is honest: the vocabulary has no CAD codes.
+- `availableOperations` (`estimate.go:321`) walks `OperationClasses()`, so offers for `(convert, stl)` and `(render, png)` appear **as soon as the triples register**, each with the engine's `estimated_max_seconds`, provenance and `available`/`max_bytes` from `maxEngineBytes`. No inspect code change beyond detection.
+- **Not in scope, and should stay out:** CAD findings (non-manifold mesh, unit unknown). Adding a code means extending the closed 14-code vocabulary, `docs/FINDINGS.md`, severity tables and their sync tests. Defer; note that `unit: unspecified` in the measurements output is the honest place to surface the unit gap for now.
+
+### 5.4 Other format-keyed places
+
+- `NormalizeFormat` (`convert.go:182-201`): add `stp→step`, `igs→iges` (same discipline as `jpeg→jpg`, `tex→latex`). **The frontend duplicates this table** (`frontend/src/formats.ts:6-25`, with a test in `formats.test.ts`); update both or `model.stp` is rejected client-side while the server accepts it. `GET /v1/formats` lists normalised names only, so `stp`/`igs` never appear as sources; document that.
+- `MIMEType` (`sniff.go:157`) has no entry for step/iges/stl/dxf/svg; the default is `application/octet-stream`, which is the stored Content-Type for the **input** (`handlers.go:991`) and the **output**. Add entries (`model/stl`, `application/step`, `model/iges`, `image/vnd.dxf`, `image/svg+xml`); `json` and `png`/`pdf` exist. Note SVG delivered from a presigned URL is client-visible text derived from DXF entities (labels, block names); the converter, not the worker, must guarantee it is well-formed and script-free.
+- Registry `Register` panics on collision; none exist: `(convert, dxf, pdf)` vs `document`'s `(convert, docx, pdf)` differ in `from`; `(render, step, png)` is its own operation.
 
 ---
 
-## G. Suggested build order
+## 6. Integration point inventory (the checklist every engine class touches)
 
-```
-Phase 56  A: JobRunner consolidation (worker-side)
-              + F (async half): FailureCode folded into EngineDescriptor
-              + fix reconciler.go:311-312's unguarded RecordReconcilerAction("exhausted")
-          |
-          | (no hard dependency FROM 56, but everything downstream benefits from
-          |  landing on the descriptor-driven runner before adding an 8th handler)
-          v
-Phase 57  B: operation dimension
-              - migration: widen jobs_operation_check (+ presets.operation, if symmetric)
-              - convert.Registry: OperationalConverter optional interface, LookupOp/SupportsOp/EngineForOp
-              - handleCreateJob: accept `operation` form field, default "convert"
-              - process(): read job.Operation instead of assuming convert
-            C: output roles (small, bundled — same "additive schema + registry plumbing,
-               no client-visible behavior yet" shape as B)
-              - migration: job_outputs.role, DEFAULT 'primary'
-              - jobs.Output/AddOutput: thread Role through (unused until sanitize)
-          |
-          v
-Phase 58  D: synchronous POST /v1/inspect
-              - internal/inspect/ package (Tier 1: pure-Go sniffers only)
-              - internal/api/inspect_handlers.go
-              - work ceiling, body cap, dedicated rate budget (disclosed multi-replica caveat)
-              - (depends on B for "available (operation,target) pairs" reporting to be
-                 meaningful; does not depend on C)
-          |
-          v
-Phase 59  E: born-digital routing via inspect
-              - export/reuse detectBornDigitalPDF from internal/inspect
-              - inspect report: text_layer_present field + pair-recommendation suppression
-              - fix the misleading ocrguards.go:227-228 comment regardless
-              - (hard dependency on D existing; no Registry/EngineFor change)
-          |
-          v
-Phase 60  sanitize: first async non-convert operation
-              - migration: widen jobs_engine_check is UNNEEDED (probe already reserved);
-                only jobs_operation_check needed (done in 57) plus a value for "sanitize"
-                if not already covered — VERIFY at execution time whether "sanitize" needs
-                its own enum value distinct from "extract" (0001's five values do not
-                include "sanitize" literally; this needs a decision, not just a migration)
-              - new SanitizeConverter (or similarly named), engine=probe, implementing
-                OperationalConverter.Operation()=="sanitize"
-              - new queue.TypeProbeConvert/QueueProbe + AllConvertQueues() entry
-              - new cmd/probe-worker (own toolchain: macro/JS/attachment strip, EXIF/GPS/IPTC/XMP)
-              - Enqueuer.EnqueueProbeConvert + reconciler.go/handlers.go engine-switch cases
-              - new deploy/chart/octoconv/templates/scaledobject-probe.yaml (additive, zero
-                diff to the existing 7)
-              - uses the Phase-56 EngineDescriptor pattern directly — this becomes the FIRST
-                new engine class added the "right way," not an 8th hand-copied handler
-              - second AddOutput call with role='report' (uses C)
-```
+Legend — **T** = a contract test fails by name until done (derived from `AllEngines()` or from compose/chart); **S** = silent, no test catches a miss (the failure mode of PR #12/#16); **E** = environment/process.
 
-**Independent hygiene tail** (per the milestone's own framing — "не шумящий в диффе основной
-работы"): the three v1.12 debt items touch files with **zero overlap** against A–F's file
-set, and can run in any phase slot, or as their own tiny phase, without blocking or being
-blocked by anything above:
+### 6.1 Go: engine identity and registry
 
-- **52 WR-01** (stuck in-flight job burns daily budget forever, no operator relief besides raw
-  SQL) — touches `internal/jobs/admission.go` and possibly a new `cmd/manage-clients` verb;
-  does not touch `internal/worker`, `internal/convert`, or `internal/api/handlers.go`.
-- **52 WR-09** (self-contradictory quota section in README) — touches only `README.md`.
-- **`PurgeUsage`'s Go-clock cutoff** — confirmed live at `internal/jobs/retention.go:126`:
-  `cutoff := time.Now().UTC().Add(-olderThan)`, while every other v1.12-era time-sensitive
-  read (`admission.go`'s `evaluate`, `usage.go`'s `recordUsage`) derives "today" from
-  Postgres's own `now() AT TIME ZONE 'utc'` specifically to avoid host/DB clock skew — this
-  is a one-line fix (`SELECT now() AT TIME ZONE 'utc'` bound as the cutoff basis, or push the
-  `< $1` comparison into a `(now() AT TIME ZONE 'utc') - $1::interval` SQL expression) confined
-  to `retention.go`.
+| # | File:line | Change | |
+|---|---|---|---|
+| 1 | `internal/convert/convert.go:20-46` | `EngineCAD`; `:84-96` `AllEngines()` add — **only in the same change as everything marked T below** (the const's own doc, `:38-44`, records that adding it earlier broke nine contracts and advertised pairs with no consumer) | T |
+| 2 | `internal/convert/convert.go:74` | `OperationRender` | |
+| 3 | `internal/convert/convert.go:182-201` | aliases `stp`, `igs` | S (frontend copy) |
+| 4 | `internal/convert/converters.go:96` | `Default.Register(CAD…{})` ×2 with **empty/zero config** (refuses to run unconfigured, the tectonic pattern `:84-96`); register LAST in the milestone, after the worker exists | T |
+| 5 | `internal/convert/sniff.go:157` | `MIMEType` entries | S |
+| 6 | `internal/convert/` new files | converters, opts, sniffers, measure, sandbox, scripts (§3.1) | |
+| 7 | `internal/convert/sandboxcoverage_test.go:77,107,132` | classify new files + `cadEngines` | T |
+| 8 | `internal/convert/readme_sync_test.go` + `README.md` | engine-class list | T |
 
-Recommended slot: fold these three into whichever phase has the lightest diff otherwise (56
-or 61 as a standalone tail), per the milestone's own Phase-54 precedent of shipping hygiene
-debt as an explicitly separate, non-noisy phase.
+### 6.2 Go: API
+
+| # | File:line | Change | |
+|---|---|---|---|
+| 9 | `internal/api/handlers.go:285-499` | CAD matchers in the detection chain | S |
+| 10 | `internal/api/handlers.go:832` | `case convert.EngineCAD:` ParseCADOpts + ValidateCADApplicability + normalised `json.Marshal` (exact shape of the HTML case at :865-909) | S (default silently rejects render opts) |
+| 11 | `internal/api/handlers.go:1168-1190` | `enqueueForEngine` case | T (`TestEveryEngineHasAnEnqueueRoute`, `handlers_test.go:3911`) |
+| 12 | `internal/api/api.go:116-133` | `Enqueuer` interface method; fakes in tests | T |
+| 13 | `internal/api/api.go:429` / `:473` | `defaultEngineTimeouts`, `defaultMaxEngineBytes` | T (`estimate_test.go:613-630`) |
+| 14 | `internal/api/estimate.go:102` / `:152` | provenance + measured-default maps | T (`estimate_test.go:341`) |
+| 15 | `cmd/api/main.go:431-447` | `engineTimeoutsFromEnv` entry | T (`cmd/api/enginetimeouts_test.go`) |
+| 16 | `internal/api/inspect_handlers.go:764-772` | CAD matchers in `detectInspectFormat` | S |
+| 17 | `internal/inspect/bindings.go` | new `reason=` tokens | T |
+| 18 | `internal/api/testdata/pre57_formats.golden.json`, `pre58_formats.golden.json`, `frontend/src/formats.test.ts` | add `cad` pairs (tectonic's change did the same, commit `e443c23`) | T |
+| 19 | `docs/openapi.yaml` | formats, render operation, new role, opts schema | T (`openapi_*_sync_test.go`) |
+
+### 6.3 Go: queue, worker, reconciler
+
+| # | File:line | Change | |
+|---|---|---|---|
+| 20 | `internal/queue/queue.go:20-36,49-56` | task type, `QueueCAD = convert.EngineCAD` | |
+| 21 | `internal/queue/queue.go:528` | `RetryDelayFunc` case + `CADRetryDelay` | S (default falls back to asynq's schedule silently) |
+| 22 | `internal/queue/queue.go:854` | `AllConvertQueues()` — the KEDA queue-depth collector arg list | T (`queue_test.go:793`) |
+| 23 | `internal/queue/queue.go:999-1021` | `CADUniqueTTL`, `NewCADConvertTask` | |
+| 24 | `internal/queue/client.go:105-108,167-203,310` | fields, `CAD_MAX_RETRY` / `CAD_ENGINE_TIMEOUT` read in `NewClient`, `EnqueueCADConvert` | **S for the env**: IN-02 — every `queue.NewClient()`-constructing process must carry identical values or the unique-lock TTL silently diverges |
+| 25 | `internal/reconciler/reconciler.go:93,388-406` | `enqueuer` interface + switch case (else `unroutable_engine`, job stranded) | T (`reconciler_test.go:593-616`, needs a fake accessor) |
+| 26 | `internal/worker/descriptors.go` (after :482) | `CADDescriptor`, `isCADTerminal`, `cadFailureCode`, `cadSideOutputs`; add codes to `allFailureCodes` :72 | |
+| 27 | `internal/worker/probe_sideoutput_test.go:105-128` | allow cad to declare `SideOutputs` | T (intentional pin edit) |
+| 28 | `internal/worker/pinning_test.go` | descriptor enumeration if it lists engines | check |
+| 29 | `cmd/cad-worker/main.go` | new; clone `cmd/pandoc-worker/main.go`: `RunExecModeIfRequested` first (:43), `ResolveHelper("CAD_SANDBOX_DISABLED")` (:55), `Replace` both converters (:61), `CADPreflight` before `db.Connect` (:74), `Concurrency` from env, `Queues: {QueueCAD: 1}` | |
+| 30 | `cmd/manage-clients` | engine validation derives from `AllEngines()` | T (automatic) |
+
+### 6.4 Database
+
+| # | File | Change |
+|---|---|---|
+| 31 | `internal/db/migrations/0018_cad_output_role.sql` | `ALTER TABLE job_outputs DROP CONSTRAINT job_outputs_role_check; ADD CONSTRAINT … CHECK (role IN ('primary','report','preview','thumbnail','measurements'))`. Constraint name is Postgres's auto-name for the inline column CHECK (the same assumption 0015/0016 made and confirmed live). Additive, no backfill, no index. Embedded by `internal/db/db.go:32`. |
+| — | `jobs_engine_check`, `jobs_operation_check` | **No change** (`cad`, `render` already present). `client_limits.engine` / `client_usage_daily.engine` carry no allow-list (0016 says so). `presets.operation` is intentionally not widened (0015 divergence #2); keep that. |
+| 32 | `internal/jobs/jobs.go:96` | `OutputRole…` constant; do not let `internal/api` or `internal/worker` declare their own string |
+
+### 6.5 Containers, compose, chart, CI
+
+| # | File | Change | |
+|---|---|---|---|
+| 33 | `Dockerfile.cad-worker` | FreeCAD + chosen renderer, `USER nobody`, `tini` entrypoint if a forking helper exists, pinned versions/checksums (pandoc/tectonic precedent) | |
+| 34 | `docker-compose.yml` | service; **every** `queue.NewClient()`-constructing service gets `CAD_MAX_RETRY` + `CAD_ENGINE_TIMEOUT` | T (`queue/compose_in02_test.go`, infers the service set) |
+| 35 | `.github/workflows/ci.yml`, `.gitignore`, `.env.example` | bake-cache scope for the new service (compose-derived test), worker binary ignore, documented env | T (`internal/e2e/bake_wiring_test.go`) |
+| 36 | `deploy/chart/octoconv/templates/deployment-cad-worker.yaml`, `scaledobject-cad.yaml`, `configmap.yaml`, `values.yaml` (`cadWorker`, `keda.cad`), `_helpers.tpl` (`kedaMinReplicaCount` is class-keyed, `:126`) | per-class literal `queue="cad"` in the ScaledObject (the "additive by construction" claim) | T |
+| 37 | `terminationGracePeriodSeconds` | derive `timeout + 10s asynq ShutdownTimeout margin + 10s SIGKILL margin` | T (`internal/e2e/chart_grace_test.go:41` class→env map) |
+| 38 | `scripts/ci-helm-checks.sh:56-72` | anti-vacuity count 9 → 10, class loop | T |
+| 39 | `scripts/` | `cad-timing-measure.sh`, KEDA scale-from-zero + downscale-survival proofs, sandbox measure/liveproof/crosscheck extension, `.planning/research/SANDBOX-PATHS.md` cad section | E |
+
+### 6.6 Docs
+
+`README.md` (engine list), `docs/ERROR-CODES.md`, `docs/openapi.yaml`, `internal/mcpserver/client.go:112` jsonschema text, `frontend/src/api.ts:33-38` comment. A dedicated `docs/CAD.md` (units, views, measurements schema) is cheap and mirrors `docs/TYPESETTING.md`/`docs/SANITIZE.md`.
 
 ---
 
-## Integration Points (file paths)
+## 7. Existing pins that must change on purpose (not "fix the test")
 
-### New components
+| Pin | Why it breaks | Treatment |
+|---|---|---|
+| `internal/api/handlers_test.go:929` (`"extract","archive","render","bogus"` → 422 unsupported_operation) | `render` becomes a known operation | Drop `render` from the unregistered list; add positive coverage |
+| `internal/api/formats_handlers_test.go:250` (same list) | same | same |
+| `internal/convert/operations_test.go:197` (`IsKnownOperation` false for render) | same | same |
+| `internal/worker/probe_sideoutput_test.go:105` (`TestOnlyProbeDeclaresSideOutputs`) | cad declares the hook | change to an explicit allow-set `{probe, cad}` and keep the "does not spread by accident" intent |
+| `pre57/pre58 formats golden` + frontend `formats.test.ts` | new engine pairs | regenerate/extend with the engine PR, as tectonic did |
+| `scripts/ci-helm-checks.sh` "exactly 9 ScaledObjects" | tenth | update count and loop |
+| `pre60_pinning_test.go` ("other unregistered operations are still rejected") | check whether it lists `render` | verify during the foundations phase |
 
-| Path | Purpose |
+Per the project's own lesson (PITFALLS / memory: *fix the class, not the named instance*): the three `render` assertions are one class; sweep with `grep -rn '"render"' --include='*_test.go'` after the change, do not stop at the three found here.
+
+---
+
+## 8. Suggested build order
+
+Dependencies drive it: the `AllEngines()` contract tests make "add the constant now, wire later" impossible (`convert.go:38-44`), the worker is not shippable without its measured ruleset and preflight (v1.15: confine from the first line, as pandoc did), and the renderer decision gates the image, the second ruleset and the timeout.
+
+| Phase (numbering continues from 70) | Content | Depends on | Why here |
+|---|---|---|---|
+| **71 — Evaluation** | Renderer × FreeCAD invocation contract × DXF 2D path × image size × needs-X-or-not. Deliverables: decision record, `Dockerfile.cad-measure` (precedent `Dockerfile.probe-measure`), candidate path sets from the **trace** phase of `sandbox-paths-measure.sh`, FreeCADCmd facts (`--pass`/argv, exit status on exception, end-of-script behaviour, `$HOME`/`TMPDIR` writes, units on import), measured image size and cold-pull cost, measured STEP→mesh peak RSS. **No production wiring.** | — | Everything downstream (stack, rulesets, shared-/tmp class, timeout, chart resources) is a function of this. SEED-005 already says the first step must be an evaluation phase. |
+| **72 — Contract foundations (engine-free)** | Migration `0018` + role constant; `OperationRender`; aliases; `MIMEType`; `cadopts.go`; `cadsniff.go` + both detector chains + `RejectBindings`; `cadmeasure.go` (schema, validator, canonical encoder, fuzz/negative tests); doc/openapi/mcp/frontend text for the role and formats. **Nothing is registered, `AllEngines()` unchanged**, so nothing is advertised. | 71 (opts vocabulary, units, schema) | Pure Go/SQL, fully testable with no FreeCAD; highest-risk review surface (fail-closed validation, the PR #9-style parser-divergence class) gets its own review round before any engine exists. `/v1/inspect` already recognises CAD formats here and offers nothing, which is the correct state. |
+| **73 — CAD class + `convert` slice, confined** | The atomic engine-class change: `EngineCAD` + `AllEngines()` + queue + enqueue route + reconciler + timeouts/estimate/size maps + compose IN-02 env + README, `cmd/cad-worker`, `Dockerfile.cad-worker`, `CADConvertConverter` (STEP/IGES→STL, FreeCAD stage only), stage-1 ruleset **measured and verified**, `CADPreflight` (stage 1), `isCADTerminal`/failure codes, coverage-test classification, conf05/liveproof extension. Estimate source `unmeasured`. | 72 | Smallest vertical slice that exercises every integration point and the confinement, with no renderer risk. Ruleset + preflight cannot be deferred (the worker must refuse to start unconfined). |
+| **74 — `render` (3D) + measurements** | `CADRenderConverter`, renderer stage and its second ruleset, `view`/`size` opts end to end (API case → persisted opts → `CADOptsFromMap`), measurements sidecar + `cadSideOutputs` + role path through `AddOutputWithRole`, render preflight, the three `render` pins, `TestOnlyProbeDeclaresSideOutputs`. If the renderer needs Xvfb: shared-`/tmp` guard + sweep + `sock:` lands here. | 73 | The two-output behaviour and the renderer risk are isolated in one phase. Needs a test that goes through the **repository write**, not only the hook (the PR #12 defect). |
+| **75 — DXF (2D) pipeline** | `dxf→svg`, `dxf→pdf`, `(render, dxf, png)` on the path chosen in 71; its ruleset if it adds binaries; units from `$INSUNITS`; SVG well-formedness guarantee. | 73 (74 if it shares the rasteriser) | Different toolchain and risk profile from 3D; keeps phase 74 reviewable. Fold into 74 only if 71 picks FreeCAD for 2D as well. |
+| **76 — Measured timeout, chart, KEDA, live gate** | `cad-timing-measure.sh` over both operations, `CAD_ENGINE_TIMEOUT` (max over operations) + size ceiling as one pair, estimate flipped to `measured`, chart Deployment/ScaledObject/values/ConfigMap/grace, `ci-helm-checks` count, KEDA scale-from-zero + downscale-survival on OrbStack, the all-classes live gate extended, docs. Decide `keda.cad.minReplicaCount` explicitly: a multi-GB image makes scale-from-zero cold start the dominant latency (backlog item AVX-02, registry cold-pull). | 74, 75 | Same position as the proven 4-phase template (container + measured timeout, then KEDA last). |
+
+**Phase ordering rationale:** 71 → 72 is research → pure contracts; 72 before 73 because the sniffers and role migration are independent of any engine and are the riskiest code to review; 73 before 74/75 because the confined worker and all contract entries are a prerequisite for any registered triple; 74/75 split by toolchain; 76 last because the timeout is only meaningful once both operations exist.
+
+**Research flags**
+
+| Phase | Flag |
 |---|---|
-| `internal/inspect/` (new package) | Synchronous inspection logic: composes `internal/convert` sniffers, computes risk signals, builds the report, exposes `text_layer_present` for born-digital routing |
-| `internal/api/inspect_handlers.go` | `POST /v1/inspect` HTTP adapter over `internal/inspect` |
-| `internal/worker/runner.go` (or similar) | `EngineDescriptor` type + `Runner` replacing the seven `Handle*Convert` methods |
-| `internal/db/migrations/0015_*.sql` (or next number) | Widen `jobs_operation_check`; add `job_outputs.role` |
-| `internal/db/migrations/0016_*.sql` (or next) | Reserve/confirm `sanitize` operation value once decided (§G Phase 60 open question) |
-| `cmd/probe-worker/` (new binary) | Sanitize engine worker (macro/JS/attachment strip, EXIF/GPS/IPTC/XMP scrub) |
-| `deploy/chart/octoconv/templates/scaledobject-probe.yaml` | 8th ScaledObject, additive |
+| 71 | Entirely research. Must answer the open [U] items listed in §9. |
+| 72 | Needs a real-exporter corpus for the sniffers (Latin-1, binary-STL-starts-with-`solid`, DXF with leading `999`); otherwise standard patterns. |
+| 73 | Standard template once 71 settles the invocation contract; the measured Landlock set is the long pole (expect several trace→verify iterations; SANDBOX-PATHS traps 1-8 all apply to a Python+C++ stack). |
+| 74 | Needs deeper research if Xvfb is chosen (socket removal right, `/proc` narrowing, stale-lock sweep). Standard if the renderer is X-free. |
+| 75 | Needs research (2D toolchain, SVG sanitisation, unit semantics). |
+| 76 | Standard (KEDA/chart template), but resource limits are measured, not copied. |
 
-### Modified components
+---
 
-| Path | Change |
-|---|---|
-| `internal/worker/worker.go` | Seven `Handle*Convert` collapse into `Runner.Handle` + `EngineDescriptor` table; `isXTerminal`/`*FailureCode` functions relocate into descriptors, logic unchanged |
-| `internal/reconciler/reconciler.go` | Fix unguarded `RecordReconcilerAction("exhausted")` at line 311-312; add `probe` case to the engine-routing switch (line ~342-369) once sanitize ships |
-| `internal/convert/convert.go` | `OperationalConverter` optional interface; `Pair` gains `Operation`; `LookupOp`/`SupportsOp`/`EngineForOp` added, existing signatures kept as convert-defaulting wrappers |
-| `internal/api/handlers.go` | `handleCreateJob` accepts `operation` form field (default `operationConv`); `writeError` gains a code parameter across ~20 call sites; engine-routing switch (line ~770-792) gains `probe` case |
-| `internal/api/formats_handlers.go` | `Classes()`/`handleListFormats` gain an additive `operations` key, `engines` key stays convert-only for compatibility |
-| `internal/jobs/repo.go` | `jobs.Output`/`AddOutput` thread `Role` through; `Repo.Get`/`Create` already handle `Operation` — no change needed there |
-| `internal/jobs/retention.go` | `PurgeUsage` cutoff moves from Go clock to Postgres clock (hygiene tail) |
-| `internal/jobs/admission.go` | Operator-relief mechanism for stuck in-flight jobs (52 WR-01, hygiene tail) — no change needed for B/C/D/E, since admission is already engine-only/operation-agnostic |
-| `internal/queue/queue.go` | New `TypeProbeConvert`/`QueueProbe` consts, `NewProbeConvertTask`, `ProbeUniqueTTL`; `AllConvertQueues()` gains one entry |
-| `README.md` | Fix self-contradictory quota section (52 WR-09, hygiene tail) |
-| `internal/convert/ocrguards.go` | Fix misleading "steering the client to the document engine" comment at line 227-228 (independent of whether pdf2md is ever adopted) |
+## 9. Open questions the evaluation phase must close
+
+1. FreeCADCmd: exact `sys.argv` handling with `--pass`; exit status when the script raises; whether it falls into an interactive console after the script; what it writes under `$HOME`/`TMPDIR` at start and exit. (Primary docs page was unreachable in this pass.)
+2. Does the winning renderer need a socket and a shared `/tmp`? (Decides concurrency 1 + sweep + `sock:` for the whole class.)
+3. Units: confirm FreeCAD normalises STEP/IGES to mm on import and what it reports for STL and for DXF with `$INSUNITS=0`. Fixes the closed `unit` vocabulary.
+4. Is `volume` computable for non-solid STEP assemblies and for non-watertight STL, and what is the honest representation (null + reason)?
+5. Peak RSS vs input size/complexity for STEP→STL at the chosen deflection; whether a triangle-count or output-size cap is enforceable inside the script before the write.
+6. DXF 2D path: FreeCAD Draft vs a lighter library; where svg→png/pdf happens without leaving the `cad` class.
+7. Image size and cold-pull time for FreeCAD + renderer on `debian:bookworm-slim` (native arm64 and amd64 — Landlock is unavailable to emulated amd64, SANDBOX-PATHS "Где замер возможен").
+8. Task-type name (`cad:job` vs `cad:convert`) and measurements-role name (`measurements` recommended) — trivial but must be fixed once, because `RetryDelayFunc` and every enum consumer key on them.
+
+---
+
+## 10. Anti-Patterns
+
+- **Adding `cad` to `AllEngines()` before the queue/route/reconciler/timeout entries exist.** It advertises pairs on `GET /v1/formats` with nothing consuming them (the phase-60 sanitize defect); the contract tests catch it, but only if the change is atomic.
+- **Reusing `report` for the measurements.** Breaks the `role=report ⇒ SanitizeReport` binding clients may switch on.
+- **Passing a role to `AddOutput`.** Silently becomes a second primary; `MarkDone` then fails every attempt (PR #12).
+- **Trusting exit status** from FreeCADCmd, the renderer or Xvfb. Judge by content (PNG decodes and is non-blank; `result.json` validates).
+- **Forwarding the script's JSON raw.** Python's default `json.dumps` emits `NaN`/`Infinity`; validate, bound, and re-encode in Go.
+- **One ruleset for both stages "for simplicity".** Hands the hostile-input parser the renderer's wider grants (socket, `/tmp`, GPU/`/proc`), the exact asymmetry `document` avoided with D-10.
+- **Copying html's `/proc` and `/sys/devices` grants** for the renderer. That grant is a tracked weakness; narrow by removal from measurement.
+- **Copying a neighbour's timeout, concurrency or `scaleDownStabilizationSeconds`.** Every prior engine's number came from its own cost driver; CAD's is geometry complexity, not bytes.
+- **Fixing the three `render` test assertions and stopping.** Sweep the class (§7).
+- **Extending the closed inspect vocabulary for CAD in this milestone.** Out of scope; each new code ripples through severities, docs and sync tests.
+
+---
+
+## 11. Scaling Considerations
+
+| Concern | Now (internal clients) | Notes |
+|---|---|---|
+| Throughput | KEDA scale-out per queue; `CAD_WORKER_CONCURRENCY=1` | Memory-bound engines (pandoc precedent) get throughput from replicas, not in-pod parallelism. If Xvfb/shared `/tmp` is in play, concurrency 1 is **enforced** by `sharedTmpGuard`, not a choice. |
+| Cold start | Image is multi-GB (FreeCAD + GL stack) | Scale-from-zero latency is dominated by image pull; set `keda.cad.minReplicaCount` deliberately and measure (AVX-02). |
+| Output size | PNG ≤ size² × channels; STL can be hundreds of MB | Output-size cap before upload (tectonic `ErrTeXOutputTooLarge` precedent); `SideOutput.Body` is in memory, which is fine for a small JSON and the reason a mesh must never be a side output. |
+| Reconciler window | `RECONCILER_ACTIVE_STALE_AFTER` 900s cap | `CAD_ENGINE_TIMEOUT` must sit well under it (all measured timeouts are 65-753s). |
 
 ---
 
 ## Sources
 
-Every claim above is grounded in a file read during this research session:
-`.planning/PROJECT.md`, `.planning/seeds/SEED-020.md`, `.planning/seeds/SEED-021.md`,
-`.planning/seeds/SEED-013.md`, `internal/worker/worker.go` (full, 1990 lines),
-`internal/jobs/repo.go`, `internal/jobs/admission.go`, `internal/jobs/usage.go`,
-`internal/jobs/retention.go`, `internal/convert/convert.go`, `internal/convert/converters.go`,
-`internal/convert/ocrguards.go`, `internal/convert/ocr.go` (grep), `internal/convert/libreoffice.go`
-(grep), `internal/api/handlers.go` (full), `internal/api/api.go`, `internal/api/formats_handlers.go`,
-`internal/queue/queue.go` (full), `internal/metrics/metrics.go` (full),
-`internal/reconciler/reconciler.go` (full), `internal/db/migrations/0001_init.sql` through
-`0014_client_usage_canceled.sql`, `deploy/chart/octoconv/templates/scaledobject-image.yaml`,
-`cmd/*/main.go` (grep for handler registration).
+All **[V]** claims: files read in this pass at `/Users/apaderin/dev/octoconv` (tree `0fc352f`): `internal/worker/{runner,descriptors,worker}.go`, `internal/jobs/{jobs,repo,usage}.go`, `internal/convert/{convert,converters,sandboxwrap,sandboxpreflight,sandboxcoverage_test,htmlsandbox,documentsandbox,probesandbox,pandocsandbox,sanitizeconverter,sniff,markupsniff,htmlopts}.go`, `internal/sandbox/{sandbox,sandbox_linux,execmode,helper}.go`, `internal/api/{handlers,api,estimate,inspect_handlers}.go`, `internal/inspect/{bindings,report}.go`, `internal/queue/{queue,client}.go`, `internal/reconciler/reconciler.go`, `internal/db/migrations/{0012,0015,0016}*.sql`, `cmd/pandoc-worker/main.go`, `cmd/api/main.go`, `deploy/chart/octoconv/**`, `scripts/ci-helm-checks.sh`, `frontend/src/formats.ts`, `.planning/research/SANDBOX-PATHS.md`, `.planning/seeds/SEED-005.md`, `SEED-007.md`, `SEED-017.md`.
 
-No web research was performed for this pass — the question is entirely about this specific
-codebase's current state, which only direct file reading can answer.
+External (MEDIUM, secondary sources, cached via `research-store`):
+- Landlock `LANDLOCK_ACCESS_FS_RESOLVE_UNIX` (controls `connect()`/`sendmsg()` to pathname UNIX sockets) is ABI 9: Linux security-module list patch series, "landlock: Control pathname UNIX domain socket resolution by path" (kernsec.org linux-security-module-archive, 2026-01…04).
+- FreeCAD headless executable `FreeCADCmd`, script files as CLI arguments, `--pass` passes later arguments through to a script: FreeCAD wiki "Headless FreeCAD" / "Start up and Configuration" via search results (primary page blocked; exact `sys.argv` semantics NOT confirmed — treated as [U]).
+- Headless GL options (EGL vs OSMesa) in VTK/ParaView/Open3D docs (general background only; f3d-specific flags NOT verified — [U], evaluation phase).
 
 ---
-*Architecture research for: OctoConv v1.13 "Inspect & Operations" (subsequent milestone, phases continuing from 56)*
-*Researched: 2026-08-07*
+*Architecture research for: OctoConv v1.16 CAD Engine (tenth engine class)*
+*Researched: 2026-10-02*
