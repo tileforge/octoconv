@@ -1,0 +1,70 @@
+=== RED: before the templates and values change
+--- FAIL: TestMinioImagePinnedByDigest (0.17s)
+    minio_image_pin_test.go:193: found 0 mc image lines in chart templates, want at least 3
+    minio_image_pin_test.go:223: found 0 mcImage keys in ../../deploy/chart/octoconv/values*.yaml, want at least 1: the scan matched nothing, which is a failure, not a pass
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	1.742s
+FAIL
+
+=== GREEN
+--- PASS: TestMinioImagePinnedByDigest (0.01s)
+--- PASS: TestMinioImageRefRejectsUnpinnedForms (0.00s)
+--- PASS: TestMcImageRefRejectsUnpinnedForms (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/e2e	0.875s
+gofmt clean
+vet clean
+
+=== new comment lines in the diff vs HEAD (only edits of pre-existing phrases are allowed)
++      # wait-for-minio: bounded poll on MinIO readiness, from minio.mcImage, or
++      # when that is empty from the pinned MinIO image, which has mc in it.
++      # `command` replaces the image's ENTRYPOINT (/usr/bin/minio), so /bin/sh is
++      # what runs mc; HOME is /home/nonroot, writable, and mc's config lands
++      # there (measured in
++  # cgr.dev/chainguard image carries minio, mc and sh, so the MinIO Deployment
++  # reads this value, and so do the containers that run mc (the createbucket Job
++  # and the wait-for-bucket init container of every app Deployment) unless
++  # mcImage below is set. Pinned by digest, never a floating tag
++// minio and mc, so compose and the chart use that single image for the server
++// and the createbucket job; the chart's mc containers (createbucket and
++// wait-for-bucket) take minio.mcImage when an operator sets it and this image
++// otherwise.
++	// Templates: every image: that reads .Values.minio.* is exactly the server
++	// form or the mc form. The set of files is derived by walking the directory.
++	// minio and migrate-data-ownership in minio.yaml.
++	// wait-for-minio and createbucket in job-createbucket.yaml, wait-for-bucket in _helpers.tpl.
+
+=== GATE PROBES after the commit (each file restored with git checkout)
+--- (a) values.yaml mcImage: minio/mc:latest
+--- FAIL: TestMinioImagePinnedByDigest (0.01s)
+    minio_image_pin_test.go:218: values.yaml:279: mcImage "minio/mc:latest": not pinned by digest (a tag floats)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	0.600s
+FAIL
+--- (b) _helpers.tpl wait-for-bucket back on the server form
+--- FAIL: TestMinioImagePinnedByDigest (0.00s)
+    minio_image_pin_test.go:193: found 2 mc image lines in chart templates, want at least 3
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	0.581s
+FAIL
+ci-helm-checks rc=1
+FAIL: with minio.mcImage set every mc container must run registry.example.invalid/mirror/mc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, got:
+        api wait-for-bucket cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 true
+        audio-worker wait-for-bucket cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 true
+        av-worker wait-for-bucket cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 true
+        chromium-worker wait-for-bucket cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 true
+--- (c) job-createbucket.yaml: createbucket loses the default fallback (first mc line only)
+--- FAIL: TestMinioImagePinnedByDigest (0.00s)
+    minio_image_pin_test.go:183: job-createbucket.yaml:73: "image: {{ .Values.minio.mcImage | quote }}", want exactly "image: {{ .Values.minio.image | quote }}" or "image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}"
+    minio_image_pin_test.go:193: found 2 mc image lines in chart templates, want at least 3
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	0.579s
+FAIL
+ci-helm-checks rc=1
+### every container that runs mc uses minio.mcImage when set, minio.image when it is empty
+FAIL: container rows without an image (or malformed) in a render:
+        octoconv-createbucket createbucket  true
+--- restored; tree:
+(empty = clean)
+ok  	github.com/apaderin/octoconv/internal/e2e	0.576s
+ci-helm-checks green rc=0

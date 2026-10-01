@@ -1,0 +1,24 @@
+## ci-helm-checks (unfixed values)
+### minio.dataOwnership.migrate=false drops the init container and changes nothing else
+OK: migrate=false removes the MinIO initContainers key and nothing else
+### minio.dataOwnership.image reaches the init container and nothing else
+OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images
+### a non-boolean minio.dataOwnership.migrate must abort the render
+OK: minio.dataOwnership.migrate=no rejected (rc=1)
+OK: minio.dataOwnership.migrate=false rejected (rc=1)
+OK: a bad uid still aborts the render with migrate=false
+### no chart value may be spliced into an initContainer shell program
+OK: postgres.user reaches the wait initContainer as env, never as program text
+### every mc invocation must use the transport s3.useSSL asks for
+OK: s3.useSSL=false renders 13 mc aliases, all http://
+OK: s3.useSSL=true renders 13 mc aliases, all https://
+### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image
+FAIL: values.yaml minio.mcImage must be a non-empty default, got: ''
+exit=
+## go test
+--- FAIL: TestMinioImagePinnedByDigest (0.01s)
+    minio_image_pin_test.go:315: values.yaml:279: minio.mcImage is empty, want the same pinned image as minio.image (values.yaml:278); a pin bump must update both keys
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	4.762s
+FAIL
+red exit=1

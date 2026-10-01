@@ -152,6 +152,30 @@ docker compose up -d
 | webhook-worker-1/2 | — | sole webhook consumer + reconciler sweeper |
 | asynqmon | `127.0.0.1:8980` | read-only queue dashboard |
 
+> [!NOTE]
+> MinIO runs from `cgr.dev/chainguard/minio`, pinned by digest (Docker Hub no longer serves
+> the official MinIO images). The image carries `mc`, which the bucket-creation job uses, and
+> the process runs as uid 65532. To bump the digest, follow the comment above the `minio`
+> service in `docker-compose.yml`; it updates both compose image lines and the chart's
+> `minio.image` and `minio.mcImage`.
+>
+> A `minio_data` volume written by the old root-run image makes MinIO exit at startup with
+> `Unable to initialize backend: Unable to write to the backend`. Either keep the data and
+> hand the volume to the new user once (with the stack stopped):
+>
+> ```bash
+> docker run --rm -u 0 -v octoconv_minio_data:/data --entrypoint /bin/sh \
+>   cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 \
+>   -c 'chown -R 65532:65532 /data'
+> ```
+>
+> or drop the dev objects with `docker volume rm octoconv_minio_data`.
+>
+> The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to
+> `minio.dataOwnership.uid`/`gid` (65532 by default; the same values set the pod's `runAsUser`, `runAsGroup`
+> and `fsGroup`) before the server starts. `minio.dataOwnership.migrate: false` removes that container, and
+> `minio.dataOwnership.image` (pinned by digest, needs GNU `chown`) replaces `minio.image` for it.
+
 > [!IMPORTANT]
 > The containerized `api` presigns URLs against the internal `minio:9000` endpoint, which
 > your host cannot reach. To download results from your machine, run `api` locally (step 3)

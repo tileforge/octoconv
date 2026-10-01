@@ -182,6 +182,294 @@ if [ -n "$MISSING" ]; then
 fi
 echo "OK: every Deployment carrying the app secret waits for postgres and the bucket ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
 
+echo "### the MinIO pod hands root-owned data to uid 65532 before the server starts"
+minio_ownership() {
+  yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec as $p | ($p.containers[] | select(.name=="minio")) as $s | ($s.volumeMounts[] | select(.name=="minio-data") | .mountPath) as $m | [$p.initContainers // [] | .[] | select(.volumeMounts[].name=="minio-data")] as $i | $i[0] as $c | "inits=" + ($i | length | tostring) + " image=" + (if $c.image == $s.image then "same" else "differs" end) + " mount=" + (if ($c.volumeMounts[] | select(.name=="minio-data") | .mountPath) == $m then "same" else "differs" end) + " target=" + (if $c.command[-1] == $m then "same" else "differs" end) + " flags=" + ([$c.command[] | select(test("^-"))] | join(",")) + " user=" + ($c.securityContext.runAsUser | tostring) + " group=" + ($c.securityContext.runAsGroup | tostring) + " escalation=" + ($c.securityContext.allowPrivilegeEscalation | tostring) + " rorf=" + ($c.securityContext.readOnlyRootFilesystem | tostring) + " drop=" + ($c.securityContext.capabilities.drop | join(",")) + " add=" + ($c.securityContext.capabilities.add | join(",")) + " owner=" + ([$c.command[] | select(test("^[0-9]+:[0-9]+$"))] | join(",")) + " runAsUser=" + ($p.securityContext.runAsUser | tostring) + " runAsGroup=" + ($p.securityContext.runAsGroup | tostring) + " fsGroup=" + ($p.securityContext.fsGroup | tostring)' "$1" 2>&1 | grep -v '^---$' || true
+}
+MIGRATE_WANT="inits=1 image=same mount=same target=same flags=-R,-h,--from=0 user=0 group=0 escalation=false rorf=true drop=ALL add=CHOWN owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532"
+MIGRATE_GOT=$(minio_ownership "$DEFAULT_RENDER")
+if [ -z "$MIGRATE_GOT" ]; then
+  echo "FAIL: no Deployment named minio parsed out of the render -- this guard would pass vacuously"
+  exit 1
+fi
+if [ "$MIGRATE_GOT" != "$MIGRATE_WANT" ]; then
+  echo "FAIL: the MinIO pod's ownership-migration init container has the wrong shape"
+  echo "      want: $MIGRATE_WANT"
+  echo "      got:  $MIGRATE_GOT"
+  exit 1
+fi
+echo "OK: MinIO pod runs one init container from the server image that chowns $(echo "$MIGRATE_WANT" | sed 's/.*owner=\([^ ]*\).*/\1/') over the data mount with only CHOWN"
+
+echo "### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults"
+REUSE_DIR=$(mktemp -d)
+REUSE_CHART="$REUSE_DIR/octoconv"
+REUSE_BASE="$REUSE_DIR/base.yaml"
+cp -R "$CHART" "$REUSE_CHART"
+helm template octoconv "$CHART" -f "$CHART/values-local.yaml" > "$REUSE_BASE"
+if [ "$(minio_ownership "$REUSE_BASE")" != "$MIGRATE_WANT" ] || [ "$(grep -c 'name: wait-for-bucket' "$REUSE_BASE" || true)" -eq 0 ]; then
+  echo "FAIL: the default render with values-local.yaml is not the MinIO pod this section compares against -- every comparison below would pass vacuously"
+  exit 1
+fi
+reuse_render() {
+  local chart=$1
+  shift
+  set +e
+  helm template octoconv "$chart" -f "$CHART/values-local.yaml" "$@" > "$REUSE_DIR/out.yaml" 2> "$REUSE_DIR/err.txt"
+  REUSE_RC=$?
+  set -e
+}
+reuse_expect_base() {
+  local label=$1 chart=$2
+  shift 2
+  reuse_render "$chart" "$@"
+  if [ "$REUSE_RC" -ne 0 ]; then
+    echo "FAIL: $label did not render (rc=$REUSE_RC):"
+    sed 's/^/        /' "$REUSE_DIR/err.txt"
+    exit 1
+  fi
+  if ! cmp -s "$REUSE_BASE" "$REUSE_DIR/out.yaml"; then
+    echo "FAIL: $label rendered differently from the defaults:"
+    diff "$REUSE_BASE" "$REUSE_DIR/out.yaml" | head -40 | sed 's/^/        /' || true
+    exit 1
+  fi
+  echo "OK: $label renders byte-identically to the defaults"
+}
+yq -i 'del(.minio.dataOwnership) | del(.minio.mcImage)' "$REUSE_CHART/values.yaml"
+if [ "$(yq '.minio | has("dataOwnership")' "$REUSE_CHART/values.yaml")" != "false" ] || [ "$(yq '.minio | has("mcImage")' "$REUSE_CHART/values.yaml")" != "false" ] || [ "$(yq '.minio | has("image")' "$REUSE_CHART/values.yaml")" != "true" ]; then
+  echo "FAIL: the stand-in for an older release's values.yaml still has minio.dataOwnership or minio.mcImage, or lost minio.image"
+  exit 1
+fi
+reuse_expect_base "a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage" "$REUSE_CHART"
+for NULLED in minio.dataOwnership.uid=null minio.dataOwnership.migrate=null minio.dataOwnership=null; do
+  reuse_expect_base "--set $NULLED on the real chart" "$CHART" --set "$NULLED"
+done
+reuse_chart_without_block() {
+  cp "$CHART/values.yaml" "$REUSE_CHART/values.yaml"
+  yq -i 'del(.minio.dataOwnership) | del(.minio.mcImage)' "$REUSE_CHART/values.yaml"
+}
+reuse_values_file() {
+  printf '%s\n' "$@" > "$REUSE_DIR/extra.yaml"
+}
+for KEY in uid gid migrate image; do
+  cp "$CHART/values.yaml" "$REUSE_CHART/values.yaml"
+  if [ "$(yq ".minio.dataOwnership | has(\"$KEY\")" "$REUSE_CHART/values.yaml")" != "true" ]; then
+    echo "FAIL: values.yaml has no minio.dataOwnership.$KEY to remove -- the comparison below would pass vacuously"
+    exit 1
+  fi
+  yq -i "del(.minio.dataOwnership.$KEY)" "$REUSE_CHART/values.yaml"
+  if [ "$(yq ".minio.dataOwnership | has(\"$KEY\")" "$REUSE_CHART/values.yaml")" != "false" ]; then
+    echo "FAIL: minio.dataOwnership.$KEY is still in the stand-in values.yaml"
+    exit 1
+  fi
+  reuse_expect_base "a chart whose values.yaml lacks minio.dataOwnership.$KEY" "$REUSE_CHART"
+done
+reuse_chart_without_block
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: 1000'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+PART_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532/owner=1000:65532 runAsUser=1000}"
+PART_GOT=$(minio_ownership "$REUSE_DIR/out.yaml")
+PART_DIFF=$(diff "$REUSE_BASE" "$REUSE_DIR/out.yaml" | grep '^[<>]' || true)
+PART_COUNT=$(echo "$PART_DIFF" | grep -c . || true)
+PART_BAD=$(echo "$PART_DIFF" | { grep -vE '^[<>][[:space:]]+(runAsUser: [0-9]+|- "[0-9]+:[0-9]+")$' || true; })
+if [ "$REUSE_RC" -ne 0 ] || [ "$PART_GOT" != "$PART_WANT" ] || [ "$PART_COUNT" -ne 4 ] || [ -n "$PART_BAD" ]; then
+  echo "FAIL: a partial minio.dataOwnership block with only uid: 1000 on a chart without the block did not fill in gid, migrate and image (rc=$REUSE_RC, changed lines=$PART_COUNT)"
+  echo "      want: $PART_WANT"
+  echo "      got:  $PART_GOT"
+  echo "$PART_DIFF" | sed 's/^/        /'
+  sed 's/^/        /' "$REUSE_DIR/err.txt"
+  exit 1
+fi
+echo "OK: only uid: 1000 on a chart without the block gives owner 1000:65532 and changes exactly 4 lines"
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: 0'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+ZERO_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532/owner=0:65532 runAsUser=0}"
+ZERO_GOT=$(minio_ownership "$REUSE_DIR/out.yaml")
+if [ "$REUSE_RC" -ne 0 ] || [ "$ZERO_GOT" != "$ZERO_WANT" ]; then
+  echo "FAIL: uid: 0 was replaced by the default instead of being honoured (rc=$REUSE_RC)"
+  echo "      want: $ZERO_WANT"
+  echo "      got:  $ZERO_GOT"
+  exit 1
+fi
+echo "OK: uid: 0 on a chart without the block is honoured, not replaced by the default"
+reuse_values_file 'minio:' '  dataOwnership:' '    migrate: false'
+reuse_render "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+FALSE_HAS=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec | has("initContainers")' "$REUSE_DIR/out.yaml" | grep -v '^---$' || true)
+FALSE_UID=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.securityContext.runAsUser' "$REUSE_DIR/out.yaml" | grep -v '^---$' || true)
+if [ "$REUSE_RC" -ne 0 ] || [ "$FALSE_HAS" != "false" ] || [ "$FALSE_UID" != "65532" ]; then
+  echo "FAIL: migrate: false was replaced by the default instead of being honoured (rc=$REUSE_RC, initContainers present=[$FALSE_HAS], runAsUser=[$FALSE_UID])"
+  exit 1
+fi
+echo "OK: migrate: false on a chart without the block is honoured, not replaced by the default"
+reuse_expect_base "--set minio.dataOwnership.uid=null on a chart without the block" "$REUSE_CHART" --set minio.dataOwnership.uid=null
+reuse_expect_base "--set minio.dataOwnership=null on a chart without the block" "$REUSE_CHART" --set minio.dataOwnership=null
+reuse_values_file 'minio:' '  dataOwnership:' '    uid: null'
+reuse_expect_base "a values file with dataOwnership.uid: null on a chart without the block" "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+reuse_values_file 'minio:' '  dataOwnership: {}'
+reuse_expect_base "a values file with dataOwnership: {} on a chart without the block" "$REUSE_CHART" -f "$REUSE_DIR/extra.yaml"
+reuse_must_fail() {
+  local label=$1 key=$2 want=$3 chart=$4
+  shift 4
+  reuse_render "$chart" "$@"
+  if [ "$REUSE_RC" -eq 0 ]; then
+    echo "FAIL: $label rendered successfully -- the bad value was accepted or replaced by the default"
+    exit 1
+  fi
+  if ! grep -q "$key" "$REUSE_DIR/err.txt" || ! grep -q "$want" "$REUSE_DIR/err.txt"; then
+    echo "FAIL: the error for $label does not name [$key] with [$want]:"
+    sed 's/^/        /' "$REUSE_DIR/err.txt"
+    exit 1
+  fi
+  echo "OK: $label rejected (rc=$REUSE_RC)"
+}
+reuse_must_fail "--set minio.dataOwnership.uid=1.5 on a chart without the block" minio.dataOwnership.uid 'must be a whole number' "$REUSE_CHART" --set minio.dataOwnership.uid=1.5
+reuse_must_fail "--set minio.dataOwnership.gid=-1 on a chart without the block" minio.dataOwnership.gid 'must not be negative' "$REUSE_CHART" --set minio.dataOwnership.gid=-1
+reuse_must_fail "--set minio.dataOwnership.migrate=no on a chart without the block" minio.dataOwnership.migrate 'must be true or false' "$REUSE_CHART" --set minio.dataOwnership.migrate=no
+reuse_must_fail "--set minio.dataOwnership=abc on a chart without the block" minio.dataOwnership 'minio.dataOwnership must be a map' "$REUSE_CHART" --set minio.dataOwnership=abc
+reuse_must_fail "--set minio.dataOwnership=abc on the real chart" minio.dataOwnership 'minio.dataOwnership must be a map' "$CHART" --set minio.dataOwnership=abc
+rm -rf "${REUSE_DIR:?}"
+
+echo "### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else"
+OWN_BASE=$(mktemp)
+OWN_SET=$(mktemp)
+OWN_VALUES=$(mktemp)
+OWN_FILE=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET > "$OWN_BASE"
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.uid=1000 --set minio.dataOwnership.gid=2000 > "$OWN_SET"
+OWN_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532/owner=1000:2000 runAsUser=1000 runAsGroup=2000 fsGroup=2000}"
+OWN_GOT=$(minio_ownership "$OWN_SET")
+if [ "$OWN_GOT" != "$OWN_WANT" ]; then
+  echo "FAIL: --set minio.dataOwnership.uid=1000 gid=2000 did not move the pod identity and the chown target together"
+  echo "      want: $OWN_WANT"
+  echo "      got:  $OWN_GOT"
+  exit 1
+fi
+OWN_DIFF=$(diff "$OWN_BASE" "$OWN_SET" | grep '^[<>]' || true)
+OWN_DIFF_COUNT=$(echo "$OWN_DIFF" | grep -c . || true)
+OWN_DIFF_BAD=$(echo "$OWN_DIFF" | { grep -vE '^[<>][[:space:]]+((runAsUser|runAsGroup|fsGroup): [0-9]+|- "[0-9]+:[0-9]+")$' || true; })
+if [ "$OWN_DIFF_COUNT" -ne 8 ] || [ -n "$OWN_DIFF_BAD" ]; then
+  echo "FAIL: expected exactly 8 changed lines (runAsUser, runAsGroup, fsGroup, owner x default/custom), got $OWN_DIFF_COUNT"
+  echo "$OWN_DIFF" | sed 's/^/        /'
+  exit 1
+fi
+printf 'minio:\n  dataOwnership:\n    uid: 1000000\n    gid: 1000001\n' > "$OWN_VALUES"
+helm template octoconv "$CHART" $SECRETS_SET -f "$OWN_VALUES" > "$OWN_FILE"
+OWN_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532/owner=1000000:1000001 runAsUser=1000000 runAsGroup=1000001 fsGroup=1000001}"
+OWN_GOT=$(minio_ownership "$OWN_FILE")
+if [ "$OWN_GOT" != "$OWN_WANT" ]; then
+  echo "FAIL: a values file with uid 1000000 / gid 1000001 did not render as whole numbers"
+  echo "      want: $OWN_WANT"
+  echo "      got:  $OWN_GOT"
+  exit 1
+fi
+rm -f "$OWN_BASE" "$OWN_SET" "$OWN_VALUES" "$OWN_FILE"
+echo "OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves"
+
+echo "### minio.dataOwnership.migrate=false drops the init container and changes nothing else"
+MIG_ON=$(mktemp)
+MIG_OFF=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET > "$MIG_ON"
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.migrate=false > "$MIG_OFF"
+DROP_INIT='(select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec) |= del(.initContainers)'
+MIG_OFF_HAS=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec | has("initContainers")' "$MIG_OFF" | grep -v '^---$' || true)
+if [ "$MIG_OFF_HAS" != "false" ]; then
+  echo "FAIL: with minio.dataOwnership.migrate=false the MinIO Deployment still has an initContainers key (has=[$MIG_OFF_HAS])"
+  exit 1
+fi
+MIG_ON_DROPPED=$(yq "$DROP_INIT" "$MIG_ON")
+MIG_OFF_DROPPED=$(yq "$DROP_INIT" "$MIG_OFF")
+MIG_ON_RAW=$(yq '.' "$MIG_ON")
+if [ "$MIG_ON_DROPPED" = "$MIG_ON_RAW" ]; then
+  echo "FAIL: deleting initContainers from the default render changed nothing -- this guard would pass vacuously"
+  exit 1
+fi
+MIG_DOCS_BEFORE=$(printf '%s\n' "$MIG_ON_RAW" | grep -c '^kind: ' || true)
+MIG_DOCS_AFTER=$(printf '%s\n' "$MIG_ON_DROPPED" | grep -c '^kind: ' || true)
+if [ "$MIG_DOCS_BEFORE" -eq 0 ] || [ "$MIG_DOCS_BEFORE" -ne "$MIG_DOCS_AFTER" ]; then
+  echo "FAIL: document count changed while dropping initContainers (before=$MIG_DOCS_BEFORE after=$MIG_DOCS_AFTER)"
+  exit 1
+fi
+if [ "$MIG_ON_DROPPED" != "$MIG_OFF_DROPPED" ]; then
+  echo "FAIL: migrate=false changed more than the MinIO initContainers key"
+  diff <(printf '%s\n' "$MIG_ON_DROPPED") <(printf '%s\n' "$MIG_OFF_DROPPED") | sed 's/^/        /' || true
+  exit 1
+fi
+MIG_SERVER=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.containers[] | select(.name=="minio") | .image' "$MIG_OFF" | grep -v '^---$' || true)
+if [ "$MIG_SERVER" != "$(yq '.minio.image' "$CHART/values.yaml")" ]; then
+  echo "FAIL: with migrate=false the MinIO server container is not on minio.image, got [$MIG_SERVER]"
+  exit 1
+fi
+rm -f "$MIG_OFF"
+echo "OK: migrate=false removes the MinIO initContainers key and nothing else"
+
+echo "### minio.dataOwnership.image reaches the init container and nothing else"
+OWN_IMAGE="registry.example.invalid/mirror/minio@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+IMG_SET=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.dataOwnership.image=$OWN_IMAGE" > "$IMG_SET"
+IMG_INIT=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.initContainers[] | select(.name=="migrate-data-ownership") | .image' "$IMG_SET" | grep -v '^---$' || true)
+IMG_SERVER=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.containers[] | select(.name=="minio") | .image' "$IMG_SET" | grep -v '^---$' || true)
+if [ "$IMG_INIT" != "$OWN_IMAGE" ]; then
+  echo "FAIL: minio.dataOwnership.image did not reach the init container, got [$IMG_INIT]"
+  exit 1
+fi
+if [ "$IMG_SERVER" != "$(yq '.minio.image' "$CHART/values.yaml")" ]; then
+  echo "FAIL: minio.dataOwnership.image reached the MinIO server container, got [$IMG_SERVER]"
+  exit 1
+fi
+IMG_DIFF=$(diff "$MIG_ON" "$IMG_SET" | grep '^[<>]' || true)
+IMG_DIFF_COUNT=$(echo "$IMG_DIFF" | grep -c . || true)
+IMG_DIFF_NEW=$(echo "$IMG_DIFF" | grep '^>' | sed -E 's/^>[[:space:]]+//' || true)
+if [ "$IMG_DIFF_COUNT" -ne 2 ] || [ "$IMG_DIFF_NEW" != "image: \"$OWN_IMAGE\"" ]; then
+  echo "FAIL: expected exactly one changed line (the init image), got $IMG_DIFF_COUNT:"
+  echo "$IMG_DIFF" | sed 's/^/        /'
+  exit 1
+fi
+IMG_USERS=$(yq 'select(.kind=="Deployment" or .kind=="Job") | .metadata.name as $d | .spec.template.spec | ((.initContainers // []) + .containers)[] | select(.image == "'"$OWN_IMAGE"'") | $d + "/" + .name' "$IMG_SET" | grep -v '^---$' || true)
+if [ "$IMG_USERS" != "minio/migrate-data-ownership" ]; then
+  echo "FAIL: the override must appear in exactly one container, minio/migrate-data-ownership, got:"
+  echo "$IMG_USERS" | sed 's/^/        /'
+  exit 1
+fi
+IMG_WANT="${MIGRATE_WANT/image=same/image=differs}"
+IMG_GOT=$(minio_ownership "$IMG_SET")
+if [ "$IMG_GOT" != "$IMG_WANT" ]; then
+  echo "FAIL: the override changed more of the init container than its image"
+  echo "      want: $IMG_WANT"
+  echo "      got:  $IMG_GOT"
+  exit 1
+fi
+rm -f "$IMG_SET" "$MIG_ON"
+echo "OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images"
+
+echo "### a non-boolean minio.dataOwnership.migrate must abort the render"
+MIG_BAD_OUT=$(mktemp)
+for BAD in '--set|minio.dataOwnership.migrate=no' '--set-string|minio.dataOwnership.migrate=false'; do
+  set +e
+  helm template octoconv "$CHART" $SECRETS_SET "${BAD%%|*}" "${BAD#*|}" > "$MIG_BAD_OUT" 2>&1
+  MIG_RC=$?
+  set -e
+  if [ "$MIG_RC" -eq 0 ]; then
+    echo "FAIL: ${BAD%%|*} ${BAD#*|} rendered successfully -- a string that is truthy in a template condition kept the init container silently"
+    exit 1
+  fi
+  if ! grep -q 'minio.dataOwnership.migrate' "$MIG_BAD_OUT"; then
+    echo "FAIL: the error for ${BAD#*|} does not name minio.dataOwnership.migrate:"
+    sed 's/^/        /' "$MIG_BAD_OUT"
+    exit 1
+  fi
+  echo "OK: ${BAD#*|} rejected (rc=$MIG_RC)"
+done
+set +e
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.migrate=false --set minio.dataOwnership.uid=abc > "$MIG_BAD_OUT" 2>&1
+MIG_RC=$?
+set -e
+if [ "$MIG_RC" -eq 0 ] || ! grep -q 'minio.dataOwnership.uid' "$MIG_BAD_OUT"; then
+  echo "FAIL: migrate=false must not skip the uid validation (rc=$MIG_RC):"
+  sed 's/^/        /' "$MIG_BAD_OUT"
+  exit 1
+fi
+rm -f "$MIG_BAD_OUT"
+echo "OK: a bad uid still aborts the render with migrate=false"
+
 echo "### no chart value may be spliced into an initContainer shell program"
 # Regression test for the review finding on PR #13. `postgres.user: "app;false"`
 # is a legal PostgreSQL role name and legal URI userinfo; interpolated into
@@ -247,6 +535,116 @@ for WANT in http https; do
   fi
   echo "OK: s3.useSSL=$SSL renders $COUNT mc aliases, all $WANT://"
 done
+
+echo "### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image"
+MINIO_IMAGE=$(yq '.minio.image' "$CHART/values.yaml")
+MC_DEFAULT=$(yq '.minio.mcImage' "$CHART/values.yaml")
+MC_OVERRIDE="registry.example.invalid/mirror/mc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SERVER_OTHER="registry.example.invalid/mirror/minio-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+mc_rows() {
+  yq 'select(.kind=="Deployment" or .kind=="Job") | .metadata.name as $d | .spec.template.spec | ((.initContainers // []) + .containers)[] | $d + " " + .name + " " + .image + " " + (((.command // []) + (.args // [])) | join(" ") | test("(^|[^a-z])mc (alias|ready|mb|ls)") | tostring)' "$1" | grep -v '^---$'
+}
+MC_DIR=$(mktemp -d)
+helm template octoconv "$CHART" $SECRETS_SET > "$MC_DIR/plain.render"
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.mcImage=$MC_OVERRIDE" > "$MC_DIR/set.render"
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.image=$SERVER_OTHER" > "$MC_DIR/srv.render"
+cp -R "$CHART" "$MC_DIR/nomc-chart"
+yq -i 'del(.minio.mcImage)' "$MC_DIR/nomc-chart/values.yaml"
+if [ "$(yq '.minio | has("mcImage")' "$MC_DIR/nomc-chart/values.yaml")" != "false" ] || [ "$(yq '.minio | has("image")' "$MC_DIR/nomc-chart/values.yaml")" != "true" ]; then
+  echo "FAIL: the missing-key chart copy must lack minio.mcImage and keep minio.image"
+  exit 1
+fi
+helm template octoconv "$MC_DIR/nomc-chart" $SECRETS_SET --set "minio.image=$SERVER_OTHER" > "$MC_DIR/nomc.render"
+helm template octoconv "$CHART" $SECRETS_SET --set-string "minio.mcImage=" --set "minio.image=$SERVER_OTHER" > "$MC_DIR/empty.render"
+for R in plain set srv nomc empty; do
+  mc_rows "$MC_DIR/$R.render" > "$MC_DIR/$R"
+  BLANK=$(awk 'NF != 4 { print }' "$MC_DIR/$R")
+  if [ -n "$BLANK" ]; then
+    echo "FAIL: container rows without an image (or malformed) in the $R render:"
+    echo "$BLANK" | sed 's/^/        /'
+    exit 1
+  fi
+  BLIND=$(awk '($2 == "wait-for-minio" || $2 == "createbucket" || $2 == "wait-for-bucket") && $4 != "true" { print }' "$MC_DIR/$R")
+  if [ -n "$BLIND" ]; then
+    echo "FAIL: the mc classifier missed containers that run mc in the $R render:"
+    echo "$BLIND" | sed 's/^/        /'
+    exit 1
+  fi
+done
+MC_COUNT=$(awk '$4 == "true"' "$MC_DIR/plain" | wc -l | tr -d ' ')
+if [ "$MC_COUNT" -eq 0 ]; then
+  echo "FAIL: no container classified as running mc -- this guard would pass vacuously"
+  exit 1
+fi
+MC_PLAIN_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_DIR/plain" | sort)
+for R in set srv nomc empty; do
+  NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_DIR/$R" | sort)
+  if [ "$MC_PLAIN_NAMES" != "$NAMES" ]; then
+    echo "FAIL: the $R render changed WHICH containers run mc"
+    diff <(echo "$MC_PLAIN_NAMES") <(echo "$NAMES") | sed 's/^/        /' || true
+    exit 1
+  fi
+done
+if [ -z "$MC_DEFAULT" ] || [ "$MC_DEFAULT" = "null" ]; then
+  echo "FAIL: values.yaml minio.mcImage must be a non-empty default, got: '$MC_DEFAULT'"
+  exit 1
+fi
+WRONG=$(awk -v want="$MC_DEFAULT" '$4 == "true" && $3 != want { print }' "$MC_DIR/plain")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: in the default render every mc container must run minio.mcImage ($MC_DEFAULT), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$MC_DEFAULT" '$4 == "true" && $3 != want { print }' "$MC_DIR/srv")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: overriding only minio.image must leave every mc container on minio.mcImage ($MC_DEFAULT), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+SRV_ROWS=$(awk -v o="$SERVER_OTHER" '$3 == o { print $1 " " $2 }' "$MC_DIR/srv" | sort)
+if [ "$SRV_ROWS" != "$(printf 'minio migrate-data-ownership\nminio minio')" ]; then
+  echo "FAIL: minio.image must reach exactly the minio and migrate-data-ownership containers, got:"
+  echo "$SRV_ROWS" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$MC_OVERRIDE" '$4 == "true" && $3 != want { print }' "$MC_DIR/set")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage set every mc container must run $MC_OVERRIDE, got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+LEAK=$(awk -v o="$MC_OVERRIDE" '$4 != "true" && $3 == o { print }' "$MC_DIR/set")
+if [ -n "$LEAK" ]; then
+  echo "FAIL: minio.mcImage reached containers that do not run mc:"
+  echo "$LEAK" | sed 's/^/        /'
+  exit 1
+fi
+MINIO_ROWS=$(awk '$1 == "minio" && ($2 == "minio" || $2 == "migrate-data-ownership")' "$MC_DIR/set")
+if [ "$(echo "$MINIO_ROWS" | grep -c . || true)" -ne 2 ]; then
+  echo "FAIL: expected the minio and migrate-data-ownership containers in the MinIO Deployment, got:"
+  echo "$MINIO_ROWS" | sed 's/^/        /'
+  exit 1
+fi
+MINIO_WRONG=$(echo "$MINIO_ROWS" | awk -v want="$MINIO_IMAGE" '$3 != want { print }')
+if [ -n "$MINIO_WRONG" ]; then
+  echo "FAIL: minio.mcImage must not reach the MinIO server pod, got:"
+  echo "$MINIO_WRONG" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$SERVER_OTHER" '$4 == "true" && $3 != want { print }' "$MC_DIR/nomc")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage missing every mc container must fall back to minio.image ($SERVER_OTHER), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$SERVER_OTHER" '$4 == "true" && $3 != want { print }' "$MC_DIR/empty")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage empty every mc container must fall back to minio.image ($SERVER_OTHER), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+rm -rf "$MC_DIR"
+echo "OK: $MC_COUNT containers run mc: the pinned minio.mcImage default survives a minio.image-only override, the override wins everywhere and reaches no other container, a missing or empty key falls back to minio.image; the MinIO pod stays on minio.image"
 
 echo "### no extraEnv may override S3_USE_SSL"
 # The scheme is decided at RENDER time from .Values.s3.useSSL, while the
@@ -363,3 +761,58 @@ fi
 echo "$OUT_D" | grep -q 'keda.image.maxReplicaCount'
 echo "$OUT_D" | grep -q 'must be a whole number'
 echo "OK: negative case D failed as expected (rc=$RC_D)"
+
+echo "### invalid minio.dataOwnership.uid/gid must abort the render"
+OWN_BAD_OUT=$(mktemp)
+own_must_fail() {
+  set +e
+  helm template octoconv "$CHART" $SECRETS_SET "$@" > "$OWN_BAD_OUT" 2>&1
+  OWN_RC=$?
+  set -e
+}
+for KEY in uid gid; do
+  for bad in '-1' '1.5' '2.0' 'abc' 'true' '' '1000:0'; do
+    own_must_fail --set "minio.dataOwnership.$KEY=$bad"
+    if [ "$OWN_RC" -eq 0 ]; then
+      echo "FAIL: --set minio.dataOwnership.$KEY=[${bad}] rendered successfully -- the value was accepted or silently coerced"
+      exit 1
+    fi
+    if ! grep -q "minio.dataOwnership.$KEY" "$OWN_BAD_OUT"; then
+      echo "FAIL: the error for minio.dataOwnership.$KEY=[${bad}] does not name the key:"
+      sed 's/^/        /' "$OWN_BAD_OUT"
+      exit 1
+    fi
+    if [ "$bad" = '-1' ]; then
+      WANT_MSG='must not be negative'
+    else
+      WANT_MSG='must be a whole number'
+    fi
+    if ! grep -q "$WANT_MSG" "$OWN_BAD_OUT"; then
+      echo "FAIL: the error for minio.dataOwnership.$KEY=[${bad}] lacks [$WANT_MSG]:"
+      sed 's/^/        /' "$OWN_BAD_OUT"
+      exit 1
+    fi
+    echo "OK: $KEY=[${bad}] rejected (rc=$OWN_RC)"
+  done
+done
+for CASE in 'uid: 1.5|uid|must be a whole number' 'uid: "1000"|uid|must be a whole number' 'gid: -5|gid|must not be negative'; do
+  LINE="${CASE%%|*}"
+  REST="${CASE#*|}"
+  KEY="${REST%%|*}"
+  WANT_MSG="${REST#*|}"
+  OWN_BAD_VALUES=$(mktemp)
+  printf 'minio:\n  dataOwnership:\n    %s\n' "$LINE" > "$OWN_BAD_VALUES"
+  own_must_fail -f "$OWN_BAD_VALUES"
+  rm -f "$OWN_BAD_VALUES"
+  if [ "$OWN_RC" -eq 0 ]; then
+    echo "FAIL: a values file with [$LINE] rendered successfully"
+    exit 1
+  fi
+  if ! grep -q "minio.dataOwnership.$KEY" "$OWN_BAD_OUT" || ! grep -q "$WANT_MSG" "$OWN_BAD_OUT"; then
+    echo "FAIL: the error for a values file with [$LINE] does not name minio.dataOwnership.$KEY with [$WANT_MSG]:"
+    sed 's/^/        /' "$OWN_BAD_OUT"
+    exit 1
+  fi
+  echo "OK: values file [$LINE] rejected (rc=$OWN_RC)"
+done
+rm -f "$OWN_BAD_OUT"

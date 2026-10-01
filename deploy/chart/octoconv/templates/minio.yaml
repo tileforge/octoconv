@@ -5,8 +5,8 @@ RWO PVC, Recreate strategy — same rationale as postgres.yaml).
 TIER-LABEL BOUNDARY: see templates/postgres.yaml — this pod template MUST
 NOT carry octoconv.io/tier: app (reserved for plan 02's app Deployments).
 
-Image is a concrete RELEASE tag (D-02), never :latest — verify pullable at
-execution: `docker pull {{ .Values.minio.image }}`.
+Image is pinned by digest (D-02), never a floating tag — verify it is still
+served: `docker buildx imagetools inspect {{ .Values.minio.image }}`.
 
 Service metadata.name stays the literal "minio" (FQDN contract, D-06: the
 ConfigMap's S3_ENDPOINT is minio.octoconv.svc.cluster.local:9000).
@@ -45,6 +45,48 @@ spec:
         {{- include "octoconv.labels" . | nindent 8 }}
         {{- include "octoconv.selectorLabels" (dict "component" "minio" "root" $) | nindent 8 }}
     spec:
+      {{- $ownership := include "octoconv.minioDataOwnership" $ | fromJson }}
+      # The image runs as uid/gid 65532 (measured). The official image ran as
+      # root, so the owner of the PVC never mattered before. fsGroup makes the
+      # volume root group-writable for minio.dataOwnership.gid on volume types whose ownership
+      # Kubernetes manages, and OnRootMismatch regroups a PVC written by the old
+      # root image once. hostPath / local-path volumes do not apply fsGroup
+      # (local-path creates its directories 0777). NOT verified on a live
+      # cluster -- OrbStack Kubernetes was off; this is only rendered with
+      # helm template.
+      securityContext:
+        runAsUser: {{ $ownership.uid }}
+        runAsGroup: {{ $ownership.gid }}
+        fsGroup: {{ $ownership.gid }}
+        fsGroupChangePolicy: OnRootMismatch
+      {{- if $ownership.migrate }}
+      initContainers:
+        - name: migrate-data-ownership
+          image: {{ $ownership.image | default .Values.minio.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - chown
+            - -R
+            - -h
+            - --from=0
+            - {{ printf "%s:%s" $ownership.uid $ownership.gid | quote }}
+            - /data
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN"]
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+      {{- end }}
       containers:
         - name: minio
           image: {{ .Values.minio.image | quote }}
@@ -67,8 +109,9 @@ spec:
           volumeMounts:
             - name: minio-data
               mountPath: /data
-          # mc is not present in the minio/minio image (only in minio/mc) —
-          # use the HTTP health endpoint instead of compose's `mc ready local` exec.
+          # mc is in this image, but httpGet on /minio/health/ready needs no exec
+          # in the pod, so the probe stays HTTP rather than compose's
+          # `mc ready local`.
           readinessProbe:
             httpGet:
               path: /minio/health/ready

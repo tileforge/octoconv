@@ -263,9 +263,11 @@ their own words) and scripts/ci-helm-checks.sh now enforces that mechanically,
 because this is a trap that would otherwise be found once, at 5 minutes of
 timeout, by whoever adds the flag.
 
-Both images are ones the chart already deploys (postgres for pg_isready, the
-pinned mc image the createbucket Job already uses), so this adds no new
-supply-chain surface.
+Both images are ones the chart already deploys (postgres for pg_isready, and
+for mc minio.mcImage, or by default the digest-pinned MinIO image, which
+carries mc; the createbucket Job uses the same one), so this adds no new supply-chain surface. The wait-for-bucket
+commands were run from that image at this container's limits (64Mi, 0.1 CPU)
+against a live MinIO: .planning/quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/evidence/compose-tracer.txt.
 
 APPLIED TO EVERY POD THAT NEEDS THEM, not just api. All ten entrypoints have
 the same log.Fatalf shape; fixing the one that was reported and leaving nine
@@ -305,7 +307,7 @@ initContainers:
         cpu: "100m"
         memory: "64Mi"
   - name: wait-for-bucket
-    image: {{ .Values.minio.mcImage | quote }}
+    image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
     command:
       - /bin/sh
@@ -328,4 +330,49 @@ initContainers:
       limits:
         cpu: "100m"
         memory: "64Mi"
+{{- end }}
+
+{{/* helm upgrade --reuse-values swaps values.yaml for the previous release's values, so a missing or null key must fall back to these defaults. */}}
+{{- define "octoconv.minioDataOwnership" -}}
+{{- $defaults := dict "uid" 65532 "gid" 65532 "migrate" true "image" "" -}}
+{{- $given := dig "dataOwnership" nil .Values.minio -}}
+{{- if kindIs "invalid" $given -}}
+{{- $given = dict -}}
+{{- end -}}
+{{- if not (kindIs "map" $given) -}}
+{{- fail (printf "minio.dataOwnership must be a map, got %#v (kind %s)" $given (kindOf $given)) -}}
+{{- end -}}
+{{- $out := dict -}}
+{{- range $key := list "uid" "gid" -}}
+{{- $raw := index $given $key -}}
+{{- if kindIs "invalid" $raw -}}
+{{- $raw = index $defaults $key -}}
+{{- end -}}
+{{- $whole := or (kindIs "int" $raw) (kindIs "int64" $raw) -}}
+{{- if kindIs "float64" $raw -}}
+{{- $whole = eq $raw (floor $raw) -}}
+{{- end -}}
+{{- if not $whole -}}
+{{- fail (printf "minio.dataOwnership.%s must be a whole number, got %#v (kind %s)" $key $raw (kindOf $raw)) -}}
+{{- end -}}
+{{- $id := int64 $raw -}}
+{{- if lt $id 0 -}}
+{{- fail (printf "minio.dataOwnership.%s (%d) must not be negative" $key $id) -}}
+{{- end -}}
+{{- $_ := set $out $key (printf "%d" $id) -}}
+{{- end -}}
+{{- $migrate := index $given "migrate" -}}
+{{- if kindIs "invalid" $migrate -}}
+{{- $migrate = index $defaults "migrate" -}}
+{{- end -}}
+{{- if not (kindIs "bool" $migrate) -}}
+{{- fail (printf "minio.dataOwnership.migrate must be true or false, got %#v (kind %s)" $migrate (kindOf $migrate)) -}}
+{{- end -}}
+{{- $_ := set $out "migrate" $migrate -}}
+{{- $image := index $given "image" -}}
+{{- if kindIs "invalid" $image -}}
+{{- $image = index $defaults "image" -}}
+{{- end -}}
+{{- $_ := set $out "image" $image -}}
+{{- toJson $out -}}
 {{- end }}

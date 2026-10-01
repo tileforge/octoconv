@@ -1,0 +1,4 @@
+INV-2: FAIL: overriding only minio.image must leave every mc container on minio.mcImage (cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72), got:
+INV-5:     minio_image_pin_test.go:320: values.yaml:284 minio.mcImage digest "sha256:fa23f6a7f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72" differs from values.yaml:276 minio.image digest "sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"; a pin bump must update both keys
+INV-3: FAIL: with minio.mcImage set every mc container must run registry.example.invalid/mirror/mc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, got:
+INV-4: FAIL: with minio.mcImage missing every mc container must fall back to minio.image (registry.example.invalid/mirror/minio-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb), got:

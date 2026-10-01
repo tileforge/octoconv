@@ -1,0 +1,128 @@
+=== RUN   TestMinioImagePinnedByDigest
+    minio_image_pin_test.go:203: found 0 minio.dataOwnership.image keys in ../../deploy/chart/octoconv/values*.yaml, want at least 1: the scan matched nothing, which is a failure, not a pass
+--- FAIL: TestMinioImagePinnedByDigest (0.01s)
+=== RUN   TestMinioImageRefRejectsUnpinnedForms
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/pinned_index_digest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/old_official_minio_release_tag
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/old_mc_latest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_tag_only
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_latest@digest_(D-02)
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_short_digest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/same_digest,_other_repository
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/same_digest,_docker_hub_repository
+--- PASS: TestMinioImageRefRejectsUnpinnedForms (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/pinned_index_digest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/old_official_minio_release_tag (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/old_mc_latest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_tag_only (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_latest@digest_(D-02) (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_short_digest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/same_digest,_other_repository (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/same_digest,_docker_hub_repository (0.00s)
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/empty_falls_back_to_minio.image
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/pinned_minio_image
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/mirror_with_minio_in_the_name
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/mc_latest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/tag_in_front_of_the_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/short_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/uppercase_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/no_name_in_front_of_the_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port,_no_digest
+--- PASS: TestOverrideImageRefRejectsUnpinnedForms (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/empty_falls_back_to_minio.image (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/pinned_minio_image (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/mirror_with_minio_in_the_name (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/mc_latest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/tag_in_front_of_the_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/short_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/uppercase_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/no_name_in_front_of_the_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port,_no_digest (0.00s)
+=== RUN   TestValuesScalarAtFollowsYAMLPaths
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/block_style
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/flow_style
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/image_under_minio_is_not_dataOwnership.image
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/image_under_prometheus_is_not_dataOwnership.image
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_document
+--- PASS: TestValuesScalarAtFollowsYAMLPaths (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/block_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/flow_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_minio_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_prometheus_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_document (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	4.534s
+FAIL
+
+=== GREEN after chart changes + go mod tidy
+=== RUN   TestMinioImagePinnedByDigest
+--- PASS: TestMinioImagePinnedByDigest (0.01s)
+=== RUN   TestMinioImageRefRejectsUnpinnedForms
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/pinned_index_digest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/old_official_minio_release_tag
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/old_mc_latest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_tag_only
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_latest@digest_(D-02)
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/chainguard_short_digest
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/same_digest,_other_repository
+=== RUN   TestMinioImageRefRejectsUnpinnedForms/same_digest,_docker_hub_repository
+--- PASS: TestMinioImageRefRejectsUnpinnedForms (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/pinned_index_digest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/old_official_minio_release_tag (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/old_mc_latest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_tag_only (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_latest@digest_(D-02) (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/chainguard_short_digest (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/same_digest,_other_repository (0.00s)
+    --- PASS: TestMinioImageRefRejectsUnpinnedForms/same_digest,_docker_hub_repository (0.00s)
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/empty_falls_back_to_minio.image
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/pinned_minio_image
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/mirror_with_minio_in_the_name
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/mc_latest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/tag_in_front_of_the_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/short_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/uppercase_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/no_name_in_front_of_the_digest
+=== RUN   TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port,_no_digest
+--- PASS: TestOverrideImageRefRejectsUnpinnedForms (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/empty_falls_back_to_minio.image (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/pinned_minio_image (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/mirror_with_minio_in_the_name (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/mc_latest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/tag_in_front_of_the_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/short_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/uppercase_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/no_name_in_front_of_the_digest (0.00s)
+    --- PASS: TestOverrideImageRefRejectsUnpinnedForms/registry_with_a_port,_no_digest (0.00s)
+=== RUN   TestValuesScalarAtFollowsYAMLPaths
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/block_style
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/flow_style
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/image_under_minio_is_not_dataOwnership.image
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/image_under_prometheus_is_not_dataOwnership.image
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_document
+--- PASS: TestValuesScalarAtFollowsYAMLPaths (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/block_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/flow_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_minio_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_prometheus_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_document (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/e2e	0.606s

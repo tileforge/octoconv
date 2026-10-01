@@ -266,10 +266,47 @@ redis:
   image: "redis:8"
 
 minio:
-  # Concrete RELEASE tags — never :latest. OrbStack re-pulls :latest even
-  # from its shared local image store (D-02 landmine fix).
-  image: "minio/minio:RELEASE.2025-09-07T16-13-09Z"
-  mcImage: "minio/mc:RELEASE.2025-08-13T08-35-41Z"
+  # Official MinIO images are no longer served from Docker Hub. One
+  # cgr.dev/chainguard image carries minio, mc and sh, so the MinIO Deployment
+  # reads minio.image. Pinned by digest, never a floating tag
+  # (D-02: OrbStack re-pulls :latest even from its shared local image store).
+  # Same string as docker-compose.yml; the bump procedure is the comment above
+  # the minio service there, and internal/e2e/minio_image_pin_test.go keeps the
+  # two equal.
+  image: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
+  # Image of the containers that run mc (the createbucket Job and the
+  # wait-for-bucket init container of every app Deployment). It defaults to the
+  # same pinned image but is independent of minio.image, so overriding
+  # minio.image with a server-only image (no sh, no mc) leaves those containers
+  # working. Empty or missing falls back to minio.image. Any other value must be
+  # pinned as repository@sha256:<64 hex>. A digest bump updates minio.image AND
+  # minio.mcImage; minio_image_pin_test.go requires the two digests to match.
+  mcImage: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
+  # Who owns the MinIO data. uid and gid become runAsUser, runAsGroup and
+  # fsGroup of the MinIO pod, and they are the owner the ownership init
+  # container hands the volume to. 65532 is the user of the pinned image;
+  # change both when minio.image runs MinIO as another uid/gid. Whole,
+  # non-negative numbers only -- any other value aborts the render. A missing
+  # or null key (for example after helm upgrade --reuse-values from a release
+  # made before this block existed) gets the value shown here.
+  # The init container only passes on elements owned by root (chown --from=0):
+  # a volume that already belongs to another uid, for example 65532 after an
+  # earlier migration, is NOT rewritten when you change the uid.
+  dataOwnership:
+    uid: 65532
+    gid: 65532
+    # true runs an init container on the MinIO pod that hands files owned by
+    # root to uid:gid before the server starts, which is what lets MinIO
+    # start on a volume written by the old root image. false renders no init
+    # container at all, for a volume the old image never wrote or whose
+    # ownership is managed outside the chart; a volume written by root then
+    # stops MinIO at startup again. Only true or false; missing or null is true.
+    migrate: true
+    # Image of that init container; empty means minio.image. It runs as uid 0
+    # with only the CHOWN capability, command in exec form without a shell, and
+    # needs GNU chown with --from and -h. When set: repository@sha256:<64 hex>,
+    # no tag.
+    image: ""
   storage: "5Gi"
   rootUser: "minioadmin"
   rootPassword: "minioadmin"
