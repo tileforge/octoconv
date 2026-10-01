@@ -1,0 +1,97 @@
+## (a) init as root (-u 0)
+ready=yes
+Bucket created successfully `p/probe`.
+`/tmp/f.txt` -> `p/probe/f.txt`
+┌───────┬─────────────┬──────────┬─────────┐
+│ Total │ Transferred │ Duration │ Speed   │
+│ 6 B   │ 6 B         │ 00m00s   │ 952 B/s │
+└───────┴─────────────┴──────────┴─────────┘
+write_rc=0
+/data:
+total 0
+drwxrwxrwx 1     0     0 30 Oct  1 01:13 .
+drwxr-xr-x 1     0     0 42 Oct  1 01:13 ..
+drwxrwxrwx 1 65532 65532 88 Oct  1 01:13 .minio.sys
+drwxr-xr-x 1     0     0 10 Oct  1 01:13 probe
+
+/data/.minio.sys:
+total 4
+drwxrwxrwx 1 65532 65532  88 Oct  1 01:13 .
+drwxrwxrwx 1     0     0  30 Oct  1 01:13 ..
+drwxrwxrwx 1 65532 65532  10 Oct  1 01:13 buckets
+drwxrwxrwx 1 65532 65532  28 Oct  1 01:13 config
+-rw-r--r-- 1     0     0 232 Oct  1 01:13 format.json
+drwxrwxrwx 1 65532 65532   0 Jan  1  1970 multipart
+drwxr-xr-x 1     0     0  14 Oct  1 01:13 pool.bin
+drwxr-xr-x 1     0     0  12 Oct  1 01:13 tmp
+rc=0
+
+(note: first run of (b) hung because `mc ready` blocks after the server died; it was killed and the probe script rewritten with a per-call guard. Server log of that first run ended with: FATAL Unable to initialize backend: Unable to write to the backend / HINT: sudo chown -R nonroot. <path>)
+
+## (b) as image user (65532) on the root-written volume
+server process exited before ready (iteration 2)
+ready=no
+server log (first 4 + last 4 lines):
+
+API: SYSTEM.storage
+Time: 01:16:24 UTC 10/01/2026
+Error: unable to rename (/data/.minio.sys/tmp -> /data/.minio.sys/tmp-old/210d4629-6566-4166-929c-c13b84b841d9) file access denied, drive may be faulty, please investigate (*fmt.wrapError)
+...
+FATAL Unable to initialize backend: Unable to write to the backend
+      > Please ensure MinIO binary has write permissions for the backend
+      HINT:
+        Run the following command to add write permissions: `sudo chown -R nonroot. <path> && sudo chmod u+rxw <path>`
+write_rc=n/a
+--- ownership
+/data:
+total 0
+drwxrwxrwx 1     0     0  30 Oct  1 01:13 .
+drwxr-xr-x 1     0     0  42 Oct  1 01:16 ..
+drwxrwxrwx 1 65532 65532 102 Oct  1 01:13 .minio.sys
+drwxr-xr-x 1     0     0  10 Oct  1 01:13 probe
+
+/data/.minio.sys:
+total 4
+drwxrwxrwx 1 65532 65532 102 Oct  1 01:13 .
+drwxrwxrwx 1     0     0  30 Oct  1 01:13 ..
+drwxrwxrwx 1 65532 65532  20 Oct  1 01:13 buckets
+drwxrwxrwx 1 65532 65532  28 Oct  1 01:13 config
+-rw-r--r-- 1     0     0 232 Oct  1 01:13 format.json
+drwxrwxrwx 1 65532 65532   0 Jan  1  1970 multipart
+drwxr-xr-x 1     0     0  14 Oct  1 01:13 pool.bin
+drwxr-xr-x 1     0     0  12 Oct  1 01:13 tmp
+drwxr-xr-x 1 65532 65532   0 Oct  1 01:13 tmp-old
+rc=0
+
+## (c) heal: docker run --rm -u 0 -v VOL:/data --entrypoint /bin/sh REF -c 'chown -R 65532:65532 /data'
+chown_rc=0
+## (c) repeat (b) after heal
+ready=yes
+Bucket created successfully `p/probe`.
+`/tmp/f.txt` -> `p/probe/f.txt`
+┌───────┬─────────────┬──────────┬─────────┐
+│ Total │ Transferred │ Duration │ Speed   │
+│ 6 B   │ 6 B         │ 00m00s   │ 210 B/s │
+└───────┴─────────────┴──────────┴─────────┘
+write_rc=0
+--- ownership
+/data:
+total 0
+drwxrwxrwx 1 65532 65532 30 Oct  1 01:13 .
+drwxr-xr-x 1     0     0 42 Oct  1 01:16 ..
+drwxrwxrwx 1 65532 65532 88 Oct  1 01:16 .minio.sys
+drwxr-xr-x 1 65532 65532 10 Oct  1 01:13 probe
+
+/data/.minio.sys:
+total 4
+drwxrwxrwx 1 65532 65532  88 Oct  1 01:16 .
+drwxrwxrwx 1 65532 65532  30 Oct  1 01:13 ..
+drwxrwxrwx 1 65532 65532  20 Oct  1 01:16 buckets
+drwxrwxrwx 1 65532 65532  28 Oct  1 01:13 config
+-rw-r--r-- 1 65532 65532 232 Oct  1 01:13 format.json
+drwxrwxrwx 1 65532 65532   0 Jan  1  1970 multipart
+drwxr-xr-x 1 65532 65532  14 Oct  1 01:13 pool.bin
+drwxr-xr-x 1 65532 65532  12 Oct  1 01:16 tmp
+rc=0
+octoconv-minio-rootprobe
+volume rm rc=0

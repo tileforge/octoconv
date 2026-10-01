@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v1.15
 status: Awaiting next milestone
 stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-09-30T23:37:15.545Z"
+last_updated: "2026-10-01T01:31:22.211Z"
 last_activity: 2026-10-01
 last_activity_desc: Milestone v1.15 completed and archived
-state_head: 32e174b0a8f690f6ec6b899f67be4fd5c004360c
+state_head: d93424a83e4acdbbeaf3cb4e8ffbea1329f1c0f1
 progress:
   total_phases: 4
   completed_phases: 3
@@ -198,10 +198,11 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260919-fast | Перепроверено утверждение «document-worker не сконфайнить на arm64-хосте» — верно по исходу, неверно по причине, и разница меняет план фазы. Замер пробником (`sandbox.Available()` + настоящий `Apply()` + чтение `/etc/hostname`) в четырёх средах: нативный arm64 конфайнит по-настоящему (DENIED), эмулируемый amd64 — `available=false`, и то же самое в РЕАЛЬНЫХ образах `octoconv-tectonic-worker` и `octoconv-document-worker`. Ядро одно, разница в эмуляции: `landlock_create_ruleset` из amd64-процесса не проходит. Причина не в архитектуре хоста, а в `platform: linux/amd64` у одного из двенадцати сервисов — ради `verapdf/cli`, который публикуется amd64-only. Следствие: семь из восьми классов, включая chromium, разрабатываются здесь; заблокирован один, и снять блокировку можно не трогая Landlock. Записано в todo. Происхождение неверной версии: её нет ни в `MEMORY.md`, ни в todo — она жила только в моём пересказе прошлой сессии и дважды процитирована мной как факт | 2026-09-19 | e08a627 | — |
 | 260920-s3p | Инструмент замера путей для песочницы и первый замеренный набор. `scripts/sandbox-paths-measure.sh` (две фазы) + `scripts/cmd/sandbox-probe`, который ставит кандидатный ruleset и `exec`'ает под ним движок. Ловушка, ради которой нужны обе фазы: трасса `openat` **не видит исполняемый файл движка** — его не открывают, его `execve`'ят, поэтому первый набор для libvips выглядел полным и все пять пар упали с `exec: permission denied` под настоящим ruleset. Результат по `image`: rw — каталог задачи; ro — `/usr/bin/vips`, `/lib`, `/usr/lib`, `/etc/ld.so.cache`, две записи `/proc/self`, `/proc/{filesystems,cpuinfo}`, две записи `/sys/devices/system/cpu`. Из `/etc` больше ничего, `/tmp` не нужен. Достаточность — пять пар форматов `rc=0` с непустым выходом; действенность — тот же движок с входом вне каталога задачи читает файл без ruleset и получает `Permission denied` под ним. Записано в `.planning/research/SANDBOX-PATHS.md`. Взято именно это, потому что лимит Codex исчерпан, а замер ничего не меняет в поведении | 2026-09-20 | PENDING | [260920-s3p-sandbox-path-measure](./quick/260920-s3p-sandbox-path-measure/) |
 | 261001-366 | Unexport sanitizeFile, verifySanitized and validatePDFA; guard exported API against engineExec (Codex P2, PR #30) | 2026-09-30 | 32e174b | [261001-366-unexport-sanitizefile-and-verifysanitize](./quick/261001-366-unexport-sanitizefile-and-verifysanitize/) |
+| 261001-5ec | Move MinIO images off Docker Hub to cgr.dev/chainguard/minio pinned by digest | 2026-10-01 | d93424a | [261001-5ec-move-minio-images-off-docker-hub-to-cgr-](./quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/) |
 
 ### Pending Todos
 
-Ровно пять, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
+Ровно четыре, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
 - **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
   гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
@@ -213,9 +214,6 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - **soffice: более узкий грант на сокет вместо `rw:/tmp`** (`sock:` = MAKE_SOCK + REMOVE_FILE) —
   не замерен и не построен; решение пользователя 2026-09-30 — оставить `rw:/tmp`. См.
   `.planning/todos/pending/2026-09-30-soffice-socket-grant-remove-file-alternative.md`.
-- **Образы MinIO больше не отдаются с Docker Hub:** быстрая задача после милстоуна — перевести
-  compose и chart на `cgr.dev/chainguard/minio`. См.
-  `.planning/todos/pending/2026-09-30-minio-images-off-docker-hub.md`.
 - **Тест, строящий `ConfinedDocument`/`ConfinedChromium` и доходящий до `Convert`, чистит настоящий
   `/tmp` хоста** (находка 70-07). См.
   `.planning/todos/pending/2026-09-30-sweep-tests-must-not-touch-host-tmp.md`.
@@ -224,6 +222,11 @@ Decisions are logged in PROJECT.md Key Decisions table.
 о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
 неконфайнено» закрыт фазами 67-70 →
 `todos/completed/2026-09-06-other-engines-still-unconfined.md`.
+
+Ещё один пункт снят потому, что он сделан (сделано, а не передумано): «образы MinIO больше не
+отдаются с Docker Hub» закрыт быстрой задачей 261001-5ec — compose и chart на
+`cgr.dev/chainguard/minio`, закреплённом по digest →
+`todos/completed/2026-09-30-minio-images-off-docker-hub.md`.
 
 Четыре пункта, стоявшие здесь до 2026-09-19, сняты потому, что они сделаны, а не
 потому, что о них передумали — след сохранён нарочно, чтобы «исчезло из списка»
