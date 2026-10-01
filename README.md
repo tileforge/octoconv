@@ -169,6 +169,8 @@ docker compose up -d
 > ```
 >
 > or drop the dev objects with `docker volume rm octoconv_minio_data`.
+>
+> The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to uid 65532 before the server starts.
 
 > [!IMPORTANT]
 > The containerized `api` presigns URLs against the internal `minio:9000` endpoint, which
