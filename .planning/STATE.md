@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v1.15
 status: Awaiting next milestone
 stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-10-01T01:31:22.211Z"
+last_updated: "2026-10-01T14:21:26.500Z"
 last_activity: 2026-10-01
 last_activity_desc: Milestone v1.15 completed and archived
-state_head: d93424a83e4acdbbeaf3cb4e8ffbea1329f1c0f1
+state_head: 8ee53a802e67f9eff81079137715631a9868d68f
 progress:
   total_phases: 4
   completed_phases: 3
@@ -199,6 +199,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260920-s3p | Инструмент замера путей для песочницы и первый замеренный набор. `scripts/sandbox-paths-measure.sh` (две фазы) + `scripts/cmd/sandbox-probe`, который ставит кандидатный ruleset и `exec`'ает под ним движок. Ловушка, ради которой нужны обе фазы: трасса `openat` **не видит исполняемый файл движка** — его не открывают, его `execve`'ят, поэтому первый набор для libvips выглядел полным и все пять пар упали с `exec: permission denied` под настоящим ruleset. Результат по `image`: rw — каталог задачи; ro — `/usr/bin/vips`, `/lib`, `/usr/lib`, `/etc/ld.so.cache`, две записи `/proc/self`, `/proc/{filesystems,cpuinfo}`, две записи `/sys/devices/system/cpu`. Из `/etc` больше ничего, `/tmp` не нужен. Достаточность — пять пар форматов `rc=0` с непустым выходом; действенность — тот же движок с входом вне каталога задачи читает файл без ruleset и получает `Permission denied` под ним. Записано в `.planning/research/SANDBOX-PATHS.md`. Взято именно это, потому что лимит Codex исчерпан, а замер ничего не меняет в поведении | 2026-09-20 | PENDING | [260920-s3p-sandbox-path-measure](./quick/260920-s3p-sandbox-path-measure/) |
 | 261001-366 | Unexport sanitizeFile, verifySanitized and validatePDFA; guard exported API against engineExec (Codex P2, PR #30) | 2026-09-30 | 32e174b | [261001-366-unexport-sanitizefile-and-verifysanitize](./quick/261001-366-unexport-sanitizefile-and-verifysanitize/) |
 | 261001-5ec | Move MinIO images off Docker Hub to cgr.dev/chainguard/minio pinned by digest | 2026-10-01 | d93424a | [261001-5ec-move-minio-images-off-docker-hub-to-cgr-](./quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/) |
+| 261001-ncn | Chart: migrate root-owned MinIO volume to uid 65532 and keep optional minio.mcImage (Codex P1s, PR 31) | 2026-10-01 | 8ee53a8 | [261001-ncn-chart-migrate-root-owned-minio-volume-an](./quick/261001-ncn-chart-migrate-root-owned-minio-volume-an/) |
 
 ### Pending Todos
 
