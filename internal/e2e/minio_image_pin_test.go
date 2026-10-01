@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // The MinIO image reference, held to docker-compose.yml and the Helm chart.
@@ -33,6 +35,8 @@ const (
 	minioChartDir       = "../../deploy/chart/octoconv"
 	minioTemplateLine   = "image: {{ .Values.minio.image | quote }}"
 	minioMCTemplateLine = "image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}"
+
+	minioOwnershipTemplateLine = "image: {{ .Values.minio.dataOwnership.image | default .Values.minio.image | quote }}"
 )
 
 var (
@@ -68,7 +72,7 @@ func minioImageRefProblem(ref string) string {
 	}
 }
 
-func mcImageRefProblem(ref string) string {
+func overrideImageRefProblem(ref string) string {
 	if ref == "" {
 		return ""
 	}
@@ -84,6 +88,46 @@ func mcImageRefProblem(ref string) string {
 		return "digest is not sha256: followed by 64 lowercase hex characters"
 	}
 	return ""
+}
+
+func valuesScalarAt(data []byte, path ...string) (*yaml.Node, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	n := &doc
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return nil, nil
+		}
+		n = n.Content[0]
+	}
+	for _, key := range path {
+		if n.Kind == yaml.AliasNode {
+			n = n.Alias
+		}
+		if n.Kind != yaml.MappingNode {
+			return nil, nil
+		}
+		var next *yaml.Node
+		for j := 0; j+1 < len(n.Content); j += 2 {
+			if n.Content[j].Value == key {
+				next = n.Content[j+1]
+				break
+			}
+		}
+		if next == nil {
+			return nil, nil
+		}
+		n = next
+	}
+	if n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	if n.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("%s is not a scalar", strings.Join(path, "."))
+	}
+	return n, nil
 }
 
 // minioImageRefs returns every non-comment `image:` value containing "minio"
@@ -131,8 +175,32 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 	for _, f := range composeFiles {
 		composeRefs = append(composeRefs, minioImageRefs(t, f)...)
 	}
+	ownershipKeys := 0
 	for _, f := range valuesFiles {
-		valuesRefs = append(valuesRefs, minioImageRefs(t, f)...)
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node, err := valuesScalarAt(b, "minio", "dataOwnership", "image")
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		skip := 0
+		if node != nil {
+			ownershipKeys++
+			skip = node.Line
+			if p := overrideImageRefProblem(node.Value); p != "" {
+				t.Errorf("%s:%d: minio.dataOwnership.image %q: %s", filepath.Base(f), node.Line, node.Value, p)
+			}
+		}
+		for _, r := range minioImageRefs(t, f) {
+			if r.line != skip {
+				valuesRefs = append(valuesRefs, r)
+			}
+		}
+	}
+	if ownershipKeys < 1 {
+		t.Fatalf("found %d minio.dataOwnership.image keys in %s/values*.yaml, want at least 1: the scan matched nothing, which is a failure, not a pass", ownershipKeys, minioChartDir)
 	}
 	// compose has minio and createbucket; the chart has the single minio.image.
 	if len(composeRefs) < 2 {
@@ -155,8 +223,8 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 	}
 
 	// Templates: every image: that reads .Values.minio.* is exactly the server
-	// form or the mc form. The set of files is derived by walking the directory.
-	serverLines, mcLines := 0, 0
+	// form, the ownership init form or the mc form. The set of files is derived by walking the directory.
+	serverLines, ownershipLines, mcLines := 0, 0, 0
 	tplFiles, err := filepath.Glob(minioChartDir + "/templates/*")
 	if err != nil {
 		t.Fatal(err)
@@ -177,16 +245,21 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 			switch line {
 			case minioTemplateLine:
 				serverLines++
+			case minioOwnershipTemplateLine:
+				ownershipLines++
 			case minioMCTemplateLine:
 				mcLines++
 			default:
-				t.Errorf("%s:%d: %q, want exactly %q or %q", filepath.Base(f), i+1, line, minioTemplateLine, minioMCTemplateLine)
+				t.Errorf("%s:%d: %q, want exactly %q, %q or %q", filepath.Base(f), i+1, line, minioTemplateLine, minioOwnershipTemplateLine, minioMCTemplateLine)
 			}
 		}
 	}
-	// minio and migrate-data-ownership in minio.yaml.
-	if serverLines < 2 {
-		t.Errorf("found %d server image lines in chart templates, want at least 2", serverLines)
+	// the minio container in minio.yaml.
+	if serverLines < 1 {
+		t.Errorf("found %d server image lines in chart templates, want at least 1", serverLines)
+	}
+	if ownershipLines < 1 {
+		t.Errorf("found %d ownership init image lines in chart templates, want at least 1", ownershipLines)
 	}
 	// wait-for-minio and createbucket in job-createbucket.yaml, wait-for-bucket in _helpers.tpl.
 	if mcLines < 3 {
@@ -214,7 +287,7 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 				v = strings.TrimSpace(v[:j])
 			}
 			v = strings.Trim(v, `"'`)
-			if p := mcImageRefProblem(v); p != "" {
+			if p := overrideImageRefProblem(v); p != "" {
 				t.Errorf("%s:%d: mcImage %q: %s", filepath.Base(f), i+1, v, p)
 			}
 		}
@@ -253,7 +326,7 @@ func TestMinioImageRefRejectsUnpinnedForms(t *testing.T) {
 	}
 }
 
-func TestMcImageRefRejectsUnpinnedForms(t *testing.T) {
+func TestOverrideImageRefRejectsUnpinnedForms(t *testing.T) {
 	const hex = "fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
 	cases := []struct {
 		name string
@@ -263,6 +336,7 @@ func TestMcImageRefRejectsUnpinnedForms(t *testing.T) {
 		{"empty falls back to minio.image", "", true},
 		{"pinned minio image", "cgr.dev/chainguard/minio@sha256:" + hex, true},
 		{"registry with a port", "registry.example:5000/mirror/mc@sha256:" + hex, true},
+		{"mirror with minio in the name", "registry.example.invalid/mirror/minio@sha256:" + hex, true},
 		{"mc latest", "minio/mc:latest", false},
 		{"tag in front of the digest", "registry.example:5000/mirror/mc:RELEASE.2025-08-13T08-35-41Z@sha256:" + hex, false},
 		{"short digest", "registry.example/mirror/mc@sha256:fa23f6a6", false},
@@ -272,7 +346,7 @@ func TestMcImageRefRejectsUnpinnedForms(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := mcImageRefProblem(c.ref)
+			got := overrideImageRefProblem(c.ref)
 			if c.ok && got != "" {
 				t.Errorf("%q rejected: %s", c.ref, got)
 			}
@@ -280,5 +354,48 @@ func TestMcImageRefRejectsUnpinnedForms(t *testing.T) {
 				t.Errorf("%q accepted, want rejected", c.ref)
 			}
 		})
+	}
+}
+
+func TestValuesScalarAtFollowsYAMLPaths(t *testing.T) {
+	cases := []struct {
+		name     string
+		doc      string
+		path     []string
+		wantNil  bool
+		wantVal  string
+		wantLine int
+	}{
+		{"block style", "minio:\n  image: a\n  dataOwnership:\n    image: \"mirror/minio@sha256:x\"\n", []string{"minio", "dataOwnership", "image"}, false, "mirror/minio@sha256:x", 4},
+		{"flow style", "minio: {dataOwnership: {image: x}}\n", []string{"minio", "dataOwnership", "image"}, false, "x", 1},
+		{"image under minio is not dataOwnership.image", "minio:\n  image: a\n", []string{"minio", "dataOwnership", "image"}, true, "", 0},
+		{"image under prometheus is not dataOwnership.image", "prometheus:\n  image: p\nminio:\n  dataOwnership:\n    uid: 1\n", []string{"minio", "dataOwnership", "image"}, true, "", 0},
+		{"missing top-level key", "other: 1\n", []string{"minio", "dataOwnership", "image"}, true, "", 0},
+		{"commented key is ignored", "minio:\n  dataOwnership:\n    # image: x\n    uid: 1\n", []string{"minio", "dataOwnership", "image"}, true, "", 0},
+		{"empty value is found", "minio:\n  dataOwnership:\n    image: \"\"\n", []string{"minio", "dataOwnership", "image"}, false, "", 3},
+		{"empty document", "", []string{"minio", "dataOwnership", "image"}, true, "", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n, err := valuesScalarAt([]byte(c.doc), c.path...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.wantNil {
+				if n != nil {
+					t.Fatalf("found %q at line %d, want nothing", n.Value, n.Line)
+				}
+				return
+			}
+			if n == nil {
+				t.Fatal("found nothing, want a scalar")
+			}
+			if n.Value != c.wantVal || n.Line != c.wantLine {
+				t.Errorf("got %q at line %d, want %q at line %d", n.Value, n.Line, c.wantVal, c.wantLine)
+			}
+		})
+	}
+	if _, err := valuesScalarAt([]byte("minio:\n  dataOwnership:\n    image: [a]\n"), "minio", "dataOwnership", "image"); err == nil {
+		t.Error("a sequence at the path was accepted as a scalar")
 	}
 }

@@ -236,6 +236,112 @@ fi
 rm -f "$OWN_BASE" "$OWN_SET" "$OWN_VALUES" "$OWN_FILE"
 echo "OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves"
 
+echo "### minio.dataOwnership.migrate=false drops the init container and changes nothing else"
+MIG_ON=$(mktemp)
+MIG_OFF=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET > "$MIG_ON"
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.migrate=false > "$MIG_OFF"
+DROP_INIT='(select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec) |= del(.initContainers)'
+MIG_OFF_HAS=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec | has("initContainers")' "$MIG_OFF" | grep -v '^---$' || true)
+if [ "$MIG_OFF_HAS" != "false" ]; then
+  echo "FAIL: with minio.dataOwnership.migrate=false the MinIO Deployment still has an initContainers key (has=[$MIG_OFF_HAS])"
+  exit 1
+fi
+MIG_ON_DROPPED=$(yq "$DROP_INIT" "$MIG_ON")
+MIG_OFF_DROPPED=$(yq "$DROP_INIT" "$MIG_OFF")
+MIG_ON_RAW=$(yq '.' "$MIG_ON")
+if [ "$MIG_ON_DROPPED" = "$MIG_ON_RAW" ]; then
+  echo "FAIL: deleting initContainers from the default render changed nothing -- this guard would pass vacuously"
+  exit 1
+fi
+MIG_DOCS_BEFORE=$(printf '%s\n' "$MIG_ON_RAW" | grep -c '^kind: ' || true)
+MIG_DOCS_AFTER=$(printf '%s\n' "$MIG_ON_DROPPED" | grep -c '^kind: ' || true)
+if [ "$MIG_DOCS_BEFORE" -eq 0 ] || [ "$MIG_DOCS_BEFORE" -ne "$MIG_DOCS_AFTER" ]; then
+  echo "FAIL: document count changed while dropping initContainers (before=$MIG_DOCS_BEFORE after=$MIG_DOCS_AFTER)"
+  exit 1
+fi
+if [ "$MIG_ON_DROPPED" != "$MIG_OFF_DROPPED" ]; then
+  echo "FAIL: migrate=false changed more than the MinIO initContainers key"
+  diff <(printf '%s\n' "$MIG_ON_DROPPED") <(printf '%s\n' "$MIG_OFF_DROPPED") | sed 's/^/        /' || true
+  exit 1
+fi
+MIG_SERVER=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.containers[] | select(.name=="minio") | .image' "$MIG_OFF" | grep -v '^---$' || true)
+if [ "$MIG_SERVER" != "$(yq '.minio.image' "$CHART/values.yaml")" ]; then
+  echo "FAIL: with migrate=false the MinIO server container is not on minio.image, got [$MIG_SERVER]"
+  exit 1
+fi
+rm -f "$MIG_OFF"
+echo "OK: migrate=false removes the MinIO initContainers key and nothing else"
+
+echo "### minio.dataOwnership.image reaches the init container and nothing else"
+OWN_IMAGE="registry.example.invalid/mirror/minio@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+IMG_SET=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.dataOwnership.image=$OWN_IMAGE" > "$IMG_SET"
+IMG_INIT=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.initContainers[] | select(.name=="migrate-data-ownership") | .image' "$IMG_SET" | grep -v '^---$' || true)
+IMG_SERVER=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec.containers[] | select(.name=="minio") | .image' "$IMG_SET" | grep -v '^---$' || true)
+if [ "$IMG_INIT" != "$OWN_IMAGE" ]; then
+  echo "FAIL: minio.dataOwnership.image did not reach the init container, got [$IMG_INIT]"
+  exit 1
+fi
+if [ "$IMG_SERVER" != "$(yq '.minio.image' "$CHART/values.yaml")" ]; then
+  echo "FAIL: minio.dataOwnership.image reached the MinIO server container, got [$IMG_SERVER]"
+  exit 1
+fi
+IMG_DIFF=$(diff "$MIG_ON" "$IMG_SET" | grep '^[<>]' || true)
+IMG_DIFF_COUNT=$(echo "$IMG_DIFF" | grep -c . || true)
+IMG_DIFF_NEW=$(echo "$IMG_DIFF" | grep '^>' | sed -E 's/^>[[:space:]]+//' || true)
+if [ "$IMG_DIFF_COUNT" -ne 2 ] || [ "$IMG_DIFF_NEW" != "image: \"$OWN_IMAGE\"" ]; then
+  echo "FAIL: expected exactly one changed line (the init image), got $IMG_DIFF_COUNT:"
+  echo "$IMG_DIFF" | sed 's/^/        /'
+  exit 1
+fi
+IMG_USERS=$(yq 'select(.kind=="Deployment" or .kind=="Job") | .metadata.name as $d | .spec.template.spec | ((.initContainers // []) + .containers)[] | select(.image == "'"$OWN_IMAGE"'") | $d + "/" + .name' "$IMG_SET" | grep -v '^---$' || true)
+if [ "$IMG_USERS" != "minio/migrate-data-ownership" ]; then
+  echo "FAIL: the override must appear in exactly one container, minio/migrate-data-ownership, got:"
+  echo "$IMG_USERS" | sed 's/^/        /'
+  exit 1
+fi
+IMG_WANT="${MIGRATE_WANT/image=same/image=differs}"
+IMG_GOT=$(minio_ownership "$IMG_SET")
+if [ "$IMG_GOT" != "$IMG_WANT" ]; then
+  echo "FAIL: the override changed more of the init container than its image"
+  echo "      want: $IMG_WANT"
+  echo "      got:  $IMG_GOT"
+  exit 1
+fi
+rm -f "$IMG_SET" "$MIG_ON"
+echo "OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images"
+
+echo "### a non-boolean minio.dataOwnership.migrate must abort the render"
+MIG_BAD_OUT=$(mktemp)
+for BAD in '--set|minio.dataOwnership.migrate=no' '--set-string|minio.dataOwnership.migrate=false' '--set|minio.dataOwnership.migrate=null'; do
+  set +e
+  helm template octoconv "$CHART" $SECRETS_SET "${BAD%%|*}" "${BAD#*|}" > "$MIG_BAD_OUT" 2>&1
+  MIG_RC=$?
+  set -e
+  if [ "$MIG_RC" -eq 0 ]; then
+    echo "FAIL: ${BAD%%|*} ${BAD#*|} rendered successfully -- a string that is truthy in a template condition kept the init container silently"
+    exit 1
+  fi
+  if ! grep -q 'minio.dataOwnership.migrate' "$MIG_BAD_OUT"; then
+    echo "FAIL: the error for ${BAD#*|} does not name minio.dataOwnership.migrate:"
+    sed 's/^/        /' "$MIG_BAD_OUT"
+    exit 1
+  fi
+  echo "OK: ${BAD#*|} rejected (rc=$MIG_RC)"
+done
+set +e
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.migrate=false --set minio.dataOwnership.uid=abc > "$MIG_BAD_OUT" 2>&1
+MIG_RC=$?
+set -e
+if [ "$MIG_RC" -eq 0 ] || ! grep -q 'minio.dataOwnership.uid' "$MIG_BAD_OUT"; then
+  echo "FAIL: migrate=false must not skip the uid validation (rc=$MIG_RC):"
+  sed 's/^/        /' "$MIG_BAD_OUT"
+  exit 1
+fi
+rm -f "$MIG_BAD_OUT"
+echo "OK: a bad uid still aborts the render with migrate=false"
+
 echo "### no chart value may be spliced into an initContainer shell program"
 # Regression test for the review finding on PR #13. `postgres.user: "app;false"`
 # is a legal PostgreSQL role name and legal URI userinfo; interpolated into

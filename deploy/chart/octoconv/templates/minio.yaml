@@ -58,9 +58,14 @@ spec:
         runAsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
         fsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
         fsGroupChangePolicy: OnRootMismatch
+      {{- $migrate := dig "dataOwnership" "migrate" nil .Values.minio }}
+      {{- if not (kindIs "bool" $migrate) }}
+      {{- fail (printf "minio.dataOwnership.migrate must be true or false, got %#v (kind %s)" $migrate (kindOf $migrate)) }}
+      {{- end }}
+      {{- if $migrate }}
       initContainers:
         - name: migrate-data-ownership
-          image: {{ .Values.minio.image | quote }}
+          image: {{ .Values.minio.dataOwnership.image | default .Values.minio.image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - chown
@@ -84,6 +89,7 @@ spec:
           volumeMounts:
             - name: minio-data
               mountPath: /data
+      {{- end }}
       containers:
         - name: minio
           image: {{ .Values.minio.image | quote }}

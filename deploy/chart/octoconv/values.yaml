@@ -288,6 +288,18 @@ minio:
   dataOwnership:
     uid: 65532
     gid: 65532
+    # true runs an init container on the MinIO pod that hands files owned by
+    # root to uid:gid before the server starts, which is what lets MinIO
+    # start on a volume written by the old root image. false renders no init
+    # container at all, for a volume the old image never wrote or whose
+    # ownership is managed outside the chart; a volume written by root then
+    # stops MinIO at startup again. Only true or false.
+    migrate: true
+    # Image of that init container; empty means minio.image. It runs as uid 0
+    # with only the CHOWN capability, command in exec form without a shell, and
+    # needs GNU chown with --from and -h. When set: repository@sha256:<64 hex>,
+    # no tag.
+    image: ""
   storage: "5Gi"
   rootUser: "minioadmin"
   rootPassword: "minioadmin"
