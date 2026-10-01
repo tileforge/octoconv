@@ -185,9 +185,25 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 </details>
 
-## Next Milestone
+## Current Milestone: v1.16 CAD Engine
 
-Не определён — запустить `/gsd-new-milestone`. Кандидаты: follow-up из `.planning/todos/pending/` (первый amd64-деплой, MinIO вне Docker Hub, `/proc` у html, узкий сокетный грант soffice), SEED-018 (pipelines), backlog 999.1 (выбор воркеров на установку).
+**Goal:** Десятый engine-класс `cad` — офлайн-рендер превью и замер геометрии для
+step/stp/iges/stl/dxf на FreeCAD headless под тем же Landlock-конфайнментом, что и
+остальные восемь классов.
+
+**Target features:**
+- Оценка рендера без X первой фазой (f3d offscreen EGL/OSMesa vs рендер FreeCAD vs Xvfb под Landlock) — выбор по замеру, с учётом размера образа
+- Форматы step/stp/iges/stl/dxf с fail-closed валидацией по содержимому
+- `render` → png с закрытыми опциями ракурса (фиксированный словарь видов) и размера (по умолчанию 1280×1280)
+- Размеры вторым выходом render-джобы: JSON (bbox, объём) с новой ролью, единицы честно по источнику
+- Конверсии STEP/IGES → STL и dxf → svg/pdf
+- Контракт превью (SEED-007), зафиксированный на CAD
+- `cmd/cad-worker`: очередь, Dockerfile, compose, chart, KEDA, замеренный Landlock-ruleset, preflight, живой гейт
+
+**Key context:** замеры 2026-09-23 (Obsidian `architecture/octoconv-cad-preview.md`):
+FreeCAD headless на bookworm-slim точно считает объём/bbox, меш → PNG через f3d
+работает только под xvfb-run. `dwg` — вне скоупа до решения по лицензии ODA.
+Замена PreviewGenerator и интеграция GSH/OMS — на стороне потребителей.
 
 ## Requirements
 
@@ -267,30 +283,27 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 
 ### Active
 
-<!-- Следующий милстоун не определён. Запустить /gsd:new-milestone — он создаст свежий REQUIREMENTS.md. -->
+Скоуп v1.16 CAD Engine (детальные REQ-ID — в `.planning/REQUIREMENTS.md`):
 
-Скоуп v1.13 Inspect & Operations (детальные REQ-ID — в `.planning/REQUIREMENTS.md` после
-шага requirements):
+- [ ] Оценочная фаза: рендер CAD без X под Landlock, выбор по замеру (SEED-005)
+- [ ] `cad`-класс: step/stp/iges/stl/dxf с fail-closed валидацией по содержимому
+- [ ] `render` → png с закрытыми опциями ракурса и размера; контракт превью на CAD (SEED-007)
+- [ ] Размеры (bbox, объём) вторым выходом render-джобы, единицы по источнику
+- [ ] Конверсии STEP/IGES → STL, dxf → svg/pdf
+- [ ] `cmd/cad-worker` по шаблону класса + замеренный Landlock-ruleset + preflight + живой гейт
 
-- [ ] JobRunner: семь конверсионных хендлеров → один код-путь, пер-энджинные различия как данные (SEED-020)
-- [ ] Структурированные коды ошибок наружу + закрытие `invalid_options` metrics-гэпа (SEED-020)
-- [ ] Синхронный `POST /v1/inspect` с явными границами работы и собственным rate-бюджетом
-- [ ] Born-digital PDF маршрутизируется по результату inspect, а не отвергается вслепую (SEED-021)
-- [ ] Измерение `operation` в API и реестре (`convert` по умолчанию) + `role` у `job_outputs`
-- [ ] `sanitize` как первая асинхронная не-convert операция + отчёт как output с `role=report` (SEED-013)
-- [ ] Хвост долга v1.12: 52 WR-01 (застрявшая джоба и суточный кап), 52 WR-09 (README), `PurgeUsage` на часах Postgres
+Отложено, не выбрано в v1.16:
 
-Отложено, не выбрано в v1.13:
-
-- [ ] SEED-017 (PDF split/merge) — первый конкретный спрос на N входов/выходов, под который учёт байт уже построен
-- [ ] SEED-018 (составные pipeline, parent/child jobs) — следующий шаг после того, как операций станет больше одной
-- [ ] SEED-019 — партиционирование `jobs`/`job_events` вместо удаления строк, если объём перерастёт батчевый purge
-- [ ] SEED-006 (архивы), SEED-014 (оптимизация размера), SEED-007 (превью), SEED-005 (CAD) — новые классы из Notion-волны, после `operation`
-- [ ] FAIR-V2-01 (суб-очереди/weighted-планировщик) — evidence-gated: только если данные OPSV-01 покажут, что admission-капа реально не хватает
+- [ ] Контракт превью (SEED-007) на остальных классах — после того, как он зафиксирован на CAD
+- [ ] SEED-017 (PDF split/merge), SEED-018 (pipelines), SEED-019 (партиционирование)
+- [ ] SEED-006 (архивы), SEED-014 (оптимизация размера), SEED-015 (табличные форматы)
+- [ ] Backlog 999.1 — выбор engine-классов на установку
+- [ ] Хвост v1.15 в `.planning/todos/pending/` (amd64 preflight, `/proc` у html, `sock:` грант soffice, sweep-тесты и `/tmp`)
 
 ### Out of Scope
 
-- CAD-движок — открытый вопрос в спеке (нативные форматы: OSS vs коммерческий SDK vs cloud API), не решён — отложен
+- `dwg` — FreeCAD его не читает, `libredwg-tools` нет в bookworm, ODA File Converter упирается в лицензию на распространение; решение коммерческое, не инженерное (v1.16)
+- Надпись с размерами на PNG превью, RabbitMQ-адаптер под PreviewGenerator — размеры отдаются данными, интеграция GSH/OMS на стороне потребителей (v1.16)
 - Другие классы движков (av/ffmpeg, archive, probe) — следующий этап развития, не этот (HTML→PDF и кросс-конвертация документов переехали в Active скоуп v1.3)
 - Полный контракт ядра (Handler/Capability/Input/Output/Progress) — решено расширять существующий `Converter`/`Registry` вместо рефакторинга (v1.2 — второй движок укладывается в текущую абстракцию)
 - KEDA-автоскейл / полноценная Kubernetes-оркестрация — инфраструктурная задача вне фокуса кодовых фаз
@@ -400,4 +413,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-01 after v1.15 milestone*
+*Last updated: 2026-10-02 after v1.16 milestone start*

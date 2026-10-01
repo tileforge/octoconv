@@ -1,20 +1,16 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.15
-status: Awaiting next milestone
-stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-10-01T22:02:15.501Z"
-last_activity: 2026-10-01
-last_activity_desc: Milestone v1.15 completed and archived
-state_head: f45c7ee2fc442e597698d8fb58211981669299fb
+milestone: v1.16
+milestone_name: CAD Engine
+status: planning
+last_updated: "2026-10-01T22:51:36.926Z"
+last_activity: 2026-10-02
 progress:
-  total_phases: 4
-  completed_phases: 3
-  total_plans: 20
-  completed_plans: 20
-  percent: 75
-milestone_name: Engine Confinement (67–70)
-current_phase: 70
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -28,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-09-29 after Phase 69)
 
 ## Current Position
 
-Phase: Milestone v1.15 complete
+Phase: Not started (defining requirements)
 Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-10-01 — Milestone v1.15 completed and archived
+Status: Defining requirements
+Last activity: 2026-10-02 — Milestone v1.16 started
 
 ## Performance Metrics
 
