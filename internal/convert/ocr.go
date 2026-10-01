@@ -57,6 +57,13 @@ var (
 type OCRConverter struct {
 	MaxImagePixels uint64
 	MaxPages       int
+
+	// Sandbox confines the engine's filesystem access, mirroring
+	// PandocConverter's/LibvipsConverter's own field: zero value runs every
+	// OCR engine directly, which is what every unit test wants and what a
+	// deployment gets only by saying so out loud -- cmd/ocr-worker refuses
+	// to start otherwise.
+	Sandbox *engineSandbox
 }
 
 // Pairs returns every {source, target} combination of ocrSourceFormats x
@@ -240,7 +247,8 @@ func (c OCRConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 
 	outBase := strings.TrimSuffix(outPath, filepath.Ext(outPath))
 	args := ocrTesseractArgs(inPath, outBase, ocrResolvedLanguageArgs(o), configfile)
-	if _, err := runCommand(ctx, "tesseract", args...); err != nil {
+	x := c.exec(outPath)
+	if _, err := x.run(ctx, "tesseract", args...); err != nil {
 		return fmt.Errorf("ocr: tesseract: %w", err)
 	}
 

@@ -1,40 +1,43 @@
 ---
-gsd_state_version: 1.0
+gsd_state_version: "1.0"
 milestone: v1.15
-milestone_name: Engine Confinement
-status: Defining requirements
-stopped_at: context exhaustion at 84% (2026-09-23)
-last_updated: "2026-09-23T15:26:21.905Z"
-last_activity: 2026-09-23 — Milestone v1.15 started
+status: Awaiting next milestone
+stopped_at: Phase 70 complete — all phases complete
+last_updated: "2026-09-30T23:37:15.545Z"
+last_activity: 2026-10-01
+last_activity_desc: Milestone v1.15 completed and archived
+state_head: 32e174b0a8f690f6ec6b899f67be4fd5c004360c
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
-  percent: 25
+  completed_phases: 3
+  total_plans: 20
+  completed_plans: 20
+  percent: 75
+milestone_name: Engine Confinement (67–70)
+current_phase: 70
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-07 after v1.13 milestone start)
+See: .planning/PROJECT.md (updated 2026-09-29 after Phase 69)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** none. v1.14 SHIPPED (2026-09-05) and its debt tail is worked down (PRs #17-#20). Two todos remain, both tex: confining the engine's file reads, and the page-count heuristic. Next milestone not yet chosen.
+**Current focus:** Phase 70 — Document on amd64
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Milestone v1.15 complete
 Plan: —
-Status: Defining requirements
-Last activity: 2026-09-23 — Milestone v1.15 started
+Status: Awaiting next milestone
+Last activity: 2026-10-01 — Milestone v1.15 completed and archived
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 153 (all v1.0–v1.11)
+- Total plans completed: 205 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -96,6 +99,9 @@ Last activity: 2026-09-23 — Milestone v1.15 started
 | 54 | 2 | - | - |
 | 55 | 7 | - | - |
 | 56 | 7 | - | - |
+| 68 | 6 | - | - |
+| 69 | 5 | - | - |
+| 70 | 9 | - | - |
 
 **Recent Trend:**
 
@@ -104,6 +110,21 @@ Last activity: 2026-09-23 — Milestone v1.15 started
 
 *Updated after each plan completion*
 | Phase 55 P05 | 15min | 2 tasks | 2 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 68 P01 | 75min | 3 tasks | 16 files |
+| Phase 68 P02 | 31min | 3 tasks | 3 files |
+| Phase 68 P03 | 25min | 3 tasks | 9 files |
+| Phase 68 P04 | 60min | 3 tasks | 12 files |
+| Phase 68 P05 | ~55min | 3 tasks | 20 files |
+| Phase 68 P06 | 28min | 3 tasks | 4 files |
+| Phase 69 P01 | 95min | 3 tasks | 20 files |
+| Phase 69 P02 | 51min | 3 tasks | 32 files |
+| Phase 69 P03 | 55min | 2 tasks | 3 files |
+| Phase 69 P04 | 50min | 3 tasks | 5 files |
+| Phase 69 P05 | 40 min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -134,6 +155,25 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - **Per-client sub-queue fairness (the design that renames queues and touches all 7 ScaledObject PromQL strings) is explicitly NOT in this roadmap** — deferred (FAIR-V2-01 in REQUIREMENTS.md v2), evidence-gated on Phase 53's operator visibility showing the admission-cap baseline is actually insufficient in practice. Building it speculatively would repeat the SEED-010 rejection pattern already recorded in PROJECT.md, this time risking the KEDA scale-from-zero contract instead of the compile-time engine allowlist.
 - **Coverage: 15/15 v1 requirements mapped, 0 orphans** — see REQUIREMENTS.md Traceability table.
 - [Phase 55]: internal/jobs/admission.go records that quota admission carries no api.replicas:1-only caveat, citing live gate run 20260807T153358Z (10/10 rounds, 167 assertions) by path — Closes ROADMAP Phase 55 SC2 and QUOT-05; mirrors internal/ratelimit's own caveat register, inverted
+- [Phase 68]: 68-01: forJob never grants an input directory separately -- every confined class must materialise its input inside the job directory (mirrors pandoc; binding for plans 03-06)
+- [Phase 68]: 68-01: sandbox-fault sentinel (ErrEngineSandboxUnavailable) checked before class-prefix text in all four engine-scoped terminal classifiers, so a node fault is never misclassified as a client file defect
+- [Phase 68]: 68-02: OCR's proven set keeps /usr/share/fonts (necessary -- without it pdftoppm+tesseract silently degrade to empty OCR text at exit 0) but drops /etc/fonts, /usr/share/fontconfig/conf.avail and the empty /usr/local/share/fonts — necessity-by-removal, judged by content not exit code
+- [Phase 68]: 68-02: audio's model grant moves from the /models directory to the resolved /models/ggml-base.bin file, granted at run time; ffprobe added to the engine set to cover the pre-Convert duration guard — AUDIO_MODEL_PATH is configurable and not known at Go-var-declaration time
+- [Phase 68]: OCR's six engine call sites (spanning ocr.go/ocrpdf.go/ocrguards.go) share one per-job engineExec via an explicit x engineExec parameter, not a Sandbox-field lookup per file — keeps every free function testable with a bare engineExec{} (unconfined), byte-identical to the pre-Phase-68 runCommand calls, and is the shape plan 04 (av, five call sites across two files) reuses directly
+- [Phase 68]: AV: engineExec built once per job in avPrepareConversion and threaded through every ffprobe/ffmpeg call site (probe, transcode, audio-extract, thumbnail)
+- [Phase 68]: AV: progress FIFO directory moved inside the job directory; -progress option folded into the engine's own argv BEFORE sandbox wrapping (engineExec.stream), never after
+- [Phase 68]: AV: EnforceMaxDuration keeps its exported signature this plan (calls probeDuration with engineExec{}); plan 05 threads the audio worker's own sandbox handle into it
+- [Phase 68]: The pre-Convert audio duration guard's ffprobe is confined by threading a sandbox helper through Handler.audioSandboxHelper the same way audioMaxDuration already travels (NewHandler -> NewRunner -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert -> convert.EnforceMaxDuration); cmd/audio-worker hands the converter and NewHandler the SAME helper variable so they cannot disagree.
+- [Phase 68]: Coverage-as-a-class AST test holds all of internal/convert to engineExec routing; conf05-crosscheck all four classes MATCH; docker compose down -v replaced with down (no -v) for the mid-sequence teardown per sandbox/environment constraints — Prevents future unclassified/unconfined engine execs by construction rather than by per-class review; -v teardown avoided to preserve volumes and respect sandbox denial of irreversible destruction
+- [Phase 69]: 69-01: html keeps /tmp read-write (chromium's shared memory, TMPDIR does not move it) -- concurrency capped to 1 while confined, held by a startup guard (D-03) and a pre-task sweep (D-04), not a comment
+- [Phase 69]: 69-01: forJob generalised into forJobRW (a class-shared writable path beyond the job directory); engineExec gained a replaceable, allowlisted environment (withEnv/engineEnv) so a class whose grant includes /proc never leaks secrets via /proc/self/environ
+- [Phase 69]: 69-01: HTMLPreflight judges confinement by the produced PDF's /Title field, never by chromium's exit status (it exits 0 and writes a blank PDF when denied, D-06/D-07); the negative run points the engine itself outside every grant since Convert copies its input into the job directory first
+- [Phase 69]: [Phase 69]: 69-03: three of four required class-closure inversions performed and reverted (isProbeTerminal sentinel removal, /tmp added to probeReadWrite); the fourth (literal exec restored in chromium.go) was blocked by the harness's own security-weakening tool classifier and is tracked as an open item in WINDOWS.md
+- [Phase 69]: 69-04: injectCSPFirst performs no head/html tag search at all -- document-start splice (BOM, HTML whitespace, past a leading doctype's first '>') closes G-69-2
+- [Phase 69]: 69-04: frame-src 'none' and child-src 'none' added to cspNoScriptMeta -- refuses a framed/embedded copy of the raw upload (in.html), a live bypass measured independent of the splice fix
+- [Phase 69]: 69-04: both G-69-2 guards proven load-bearing by live inversion -- pre-fix splice fails exactly 12 of 18 rows, frame-src/child-src removal fails exactly f1/f2
+- [Phase 69]: 69-05: the large-document check's transcript states the /dev/shm size actually in effect (~7.8 GiB, OrbStack default), never the diagnosis session's assumed ~64Mi -- validity rests on the negative control (denied on /dev/shm, not on an exhausted tmpfs), not on that size
+- [Phase 69]: 69-05: G-69-3 closed -- chromium-worker chart/compose/live-gate no longer mount or size /dev/shm; each now cross-references SANDBOX-PATHS.md instead of restating a pre-Landlock rationale
 
 ### Quick Tasks Completed
 
@@ -157,14 +197,33 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 260919-b4n | `.gitignore` не знал бинарников `cmd/`: в корне лежали `api` (39 МБ) и `manage-clients` (14 МБ), один `git add -A` от попадания в историю навсегда. Строка `/tectonic-worker` показывала, что это уже случалось и было починено узко, для одного имени — класс сработал ещё дважды молча. Блок между маркерами покрывает все шестнадцать `cmd/`, а `internal/repohygiene` держит список равным `cmd/` в обе стороны: команда без строки — бинарник, который можно закоммитить; строка без команды — шаблон, который однажды скроет файл, взявший это имя. Третья проверка ловит имя без ведущего `/`, которое заглушило бы `cmd/api` и `internal/api` целиком (проверено `git ls-files`/`check-ignore`, а не рассуждением). Пакет из одних тест-файлов — что Go такой принимает, измерено до того, как на этом строить. Инверсия в три стороны. Бинарники не удалены, `.vscode/` не тронут: это файлы владельца | 2026-09-19 | 5979dfc | [260919-b4n-gitignore-cmd-binaries](./quick/260919-b4n-gitignore-cmd-binaries/) |
 | 260919-fast | Перепроверено утверждение «document-worker не сконфайнить на arm64-хосте» — верно по исходу, неверно по причине, и разница меняет план фазы. Замер пробником (`sandbox.Available()` + настоящий `Apply()` + чтение `/etc/hostname`) в четырёх средах: нативный arm64 конфайнит по-настоящему (DENIED), эмулируемый amd64 — `available=false`, и то же самое в РЕАЛЬНЫХ образах `octoconv-tectonic-worker` и `octoconv-document-worker`. Ядро одно, разница в эмуляции: `landlock_create_ruleset` из amd64-процесса не проходит. Причина не в архитектуре хоста, а в `platform: linux/amd64` у одного из двенадцати сервисов — ради `verapdf/cli`, который публикуется amd64-only. Следствие: семь из восьми классов, включая chromium, разрабатываются здесь; заблокирован один, и снять блокировку можно не трогая Landlock. Записано в todo. Происхождение неверной версии: её нет ни в `MEMORY.md`, ни в todo — она жила только в моём пересказе прошлой сессии и дважды процитирована мной как факт | 2026-09-19 | e08a627 | — |
 | 260920-s3p | Инструмент замера путей для песочницы и первый замеренный набор. `scripts/sandbox-paths-measure.sh` (две фазы) + `scripts/cmd/sandbox-probe`, который ставит кандидатный ruleset и `exec`'ает под ним движок. Ловушка, ради которой нужны обе фазы: трасса `openat` **не видит исполняемый файл движка** — его не открывают, его `execve`'ят, поэтому первый набор для libvips выглядел полным и все пять пар упали с `exec: permission denied` под настоящим ruleset. Результат по `image`: rw — каталог задачи; ro — `/usr/bin/vips`, `/lib`, `/usr/lib`, `/etc/ld.so.cache`, две записи `/proc/self`, `/proc/{filesystems,cpuinfo}`, две записи `/sys/devices/system/cpu`. Из `/etc` больше ничего, `/tmp` не нужен. Достаточность — пять пар форматов `rc=0` с непустым выходом; действенность — тот же движок с входом вне каталога задачи читает файл без ruleset и получает `Permission denied` под ним. Записано в `.planning/research/SANDBOX-PATHS.md`. Взято именно это, потому что лимит Codex исчерпан, а замер ничего не меняет в поведении | 2026-09-20 | PENDING | [260920-s3p-sandbox-path-measure](./quick/260920-s3p-sandbox-path-measure/) |
+| 261001-366 | Unexport sanitizeFile, verifySanitized and validatePDFA; guard exported API against engineExec (Codex P2, PR #30) | 2026-09-30 | 32e174b | [261001-366-unexport-sanitizefile-and-verifysanitize](./quick/261001-366-unexport-sanitizefile-and-verifysanitize/) |
 
 ### Pending Todos
 
-Ровно один, и он совпадает с тем, что лежит в `.planning/todos/pending/`:
+Ровно пять, и они совпадают с тем, что лежит в `.planning/todos/pending/`:
 
-- **Остальные восемь классов движков запускаются неконфайнено.** Landlock есть
-  только у tectonic (PR #21). Groundwork сделан; document-worker не проверить на
-  arm64-хосте. См. `.planning/todos/pending/2026-09-06-other-engines-still-unconfined.md`.
+- **Первый деплой на amd64 проверяет все восемь конфайненных классов.** Замер и живой
+  гейт шли только на arm64; гранты директорийные, так что multiarch-каталоги покрыты
+  конструкцией — это рассуждение, а не замер (D-05, фаза 70). См.
+  `.planning/todos/pending/2026-09-29-amd64-first-deployment-preflight-check.md`.
+- **html держит `/proc` целиком.** `cmdline` и `status` чужих процессов читаются, `environ` нет
+  (замерено в 70-08); сузить так же, как veraPDF, нельзя — chromium пере-`exec`ает себя. См.
+  `.planning/todos/pending/2026-09-30-proc-grant-other-process-entries.md`.
+- **soffice: более узкий грант на сокет вместо `rw:/tmp`** (`sock:` = MAKE_SOCK + REMOVE_FILE) —
+  не замерен и не построен; решение пользователя 2026-09-30 — оставить `rw:/tmp`. См.
+  `.planning/todos/pending/2026-09-30-soffice-socket-grant-remove-file-alternative.md`.
+- **Образы MinIO больше не отдаются с Docker Hub:** быстрая задача после милстоуна — перевести
+  compose и chart на `cgr.dev/chainguard/minio`. См.
+  `.planning/todos/pending/2026-09-30-minio-images-off-docker-hub.md`.
+- **Тест, строящий `ConfinedDocument`/`ConfinedChromium` и доходящий до `Convert`, чистит настоящий
+  `/tmp` хоста** (находка 70-07). См.
+  `.planning/todos/pending/2026-09-30-sweep-tests-must-not-touch-host-tmp.md`.
+
+Пункт, стоявший здесь до 2026-09-30, снят потому, что он сделан, а не потому, что
+о нём передумали (сделано, а не передумано): «остальные классы движков запускаются
+неконфайнено» закрыт фазами 67-70 →
+`todos/completed/2026-09-06-other-engines-still-unconfined.md`.
 
 Четыре пункта, стоявшие здесь до 2026-09-19, сняты потому, что они сделаны, а не
 потому, что о них передумали — след сохранён нарочно, чтобы «исчезло из списка»
@@ -178,7 +237,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 
 ### Blockers/Concerns
 
-None currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
+currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
 
 - Hard-ordered spine: **56 → 57 → 58 → 59**, and **56 + 57 → 60**. Phase 61 (debt tail) is fully independent and can execute in any slot.
 - **Highest-blast-radius risk is Phase 56, and it is not the refactor itself — it is metric-label drift.** The phase touches all 14 metric call sites in the same milestone that adds an `operation` dimension; the natural "let's add an `operation` label while we're here" impulse would break KEDA scale-from-zero for all seven existing engine classes. `TestJobDurationLabelsPinned`/`TestQueueDepthLabelsPinned` must stay green, verified by diff, mirroring FAIR-02's v1.12 method.
@@ -201,6 +260,62 @@ Carried from v1.12:
 - Operational discipline (OrbStack) carried forward: pre-build all images sequentially with non-`latest` tags; never run compose and k8s stacks hot simultaneously (four confirmed daemon wedges on record, per v1.6/v1.7/v1.8 history) — relevant again for Phase 55's live multi-replica run.
 
 ## Deferred Items
+
+Acknowledged and deferred at the v1.15 milestone close on 2026-10-01: 46 items.
+The five todos are the live work from phase 70 (amd64 first deployment, MinIO
+off Docker Hub, html /proc, the narrower soffice socket grant, sweep tests and
+the host /tmp); the rest are the same dormant seeds, historical quick tasks and
+phase-58 deferred items carried since earlier closes, plus one diagnosed debug
+session (csp-bypass-before-head, fixed in 69-04).
+
+| Category | Item | Status | Deferred At | Milestone |
+|----------|------|--------|-------------|-----------|
+| debug_sessions | csp-bypass-before-head | diagnosed | 2026-10-01 | v1.15 |
+| quick_tasks | 260719-2f5-openapi-3-1-api-octoconv-docs-yaak | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260724-26g-actualize-readme-md-to-reflect-v1-2-v1-8 | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260728-0ay-modernize-frontend-spa-to-api-v1-10-with | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-9de-close-remaining-pr-2-review-findings-enf | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-9zc-fix-the-same-mid-rune-utf-8-truncation-i | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260802-asr-fix-three-frontend-bugs-found-in-pr-2-re | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260803-q7u-fix-test-integrity-defects-found-by-code | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260803-tm4-strict-boolean-env-parsing-plus-openapi- | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260804-44i-round-retry-after-up-to-whole-seconds-fo | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260804-47r-fix-flaky-testenforceminfreedisk-exact-b | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260809-ul4-4-codex-pr-7-role-driven-download-url-op | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-r2a-round2-eocd-bound | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-r2i-round2-inspect-exit-paths | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-sle-fix-six-codex-findings-in-internal-inspe | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260810-slf-fix-four-codex-findings-in-internal-api | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r3s-exhaustion-sink | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r4b-bounded-record-count | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260811-r5p-parser-divergence | missing | 2026-10-01 | v1.15 |
+| quick_tasks | 260812-r6c-criterion-collapse | unknown | 2026-10-01 | v1.15 |
+| quick_tasks | 260816-r8m-intake-and-placement | missing | 2026-10-01 | v1.15 |
+| seeds | SEED-004 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-005 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-006 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-007 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-010 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-013 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-014 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-015 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-016 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-017 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-018 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-019 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-021 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-022 | dormant | 2026-10-01 | v1.15 |
+| seeds | SEED-023 | dormant | 2026-10-01 | v1.15 |
+| todos | 2026-09-29-amd64-first-deployment-preflight-check.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-minio-images-off-docker-hub.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-proc-grant-other-process-entries.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-soffice-socket-grant-remove-file-alternative.md | (presence-only) | 2026-10-01 | v1.15 |
+| todos | 2026-09-30-sweep-tests-must-not-touch-host-tmp.md | (presence-only) | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Plan 58-03 - ** helm lint deploy/chart/octoconv / helm template ... with NO -f fails regardless of Phase 58**, pre-existing and out of sco | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Codex PR#9 round 22 (2026-08-17) - **A bounded EPUB external-reference scan** ( container.go , closed in the honest direction by reporting | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 58/deferred-items.md: Codex PR#9 round 25 (2026-08-18) — recorded, not fixed - **Does read_failed make a report's coverage incomplete?** Today it does not. buil | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 09/deferred-items.md: internal/queue/queue_test.go gofmt formatting - **Found during:** 09-02 Task 2 verification ( gofmt -l . run across the whole repo after l | acknowledged | 2026-10-01 | v1.15 |
+| deferred_items | 03/deferred-items.md: Deferred Items — Phase 03 Plan 01 - Pre-existing gofmt violation in internal/queue/queue_test.go line ~50 ( {n: 6, base: schedule[5]}, //  | acknowledged | 2026-10-01 | v1.15 |
 
 Acknowledged and deferred at the v1.13 milestone close on 2026-09-02: 47 items.
 
@@ -264,9 +379,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-23T15:26:21.897Z
-Stopped at: context exhaustion at 84% (2026-09-23)
-Resume file: None
+Last session: 2026-09-29T19:40:04.078Z
+Stopped at: Phase 70 complete — all phases complete
+Resume file: .planning/phases/70-document-on-amd64/70-CONTEXT.md
 
 ## Operator Next Steps
 

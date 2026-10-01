@@ -1,0 +1,37 @@
+# 70-09 Task 2: pinned-set inversion, eight-class cross-check, local gate and helm tiers
+# commit 5db6c74da4794eee51a10baa59c90fb68d10ffaa; toolchain go1.26.4; exec.go vs 7744ddf: unchanged
+
+## inversion: /tmp/x added to verapdfReadOnly (internal/convert/documentsandbox.go)
+$ GOTOOLCHAIN=go1.26.4 go test -count=1 -run TestVerapdfReadOnlySetIsTheMeasuredOne ./internal/convert/
+--- FAIL: TestVerapdfReadOnlySetIsTheMeasuredOne (0.00s)
+    documentsandbox_test.go:59: verapdfReadOnly = ["/usr/lib" "/usr/bin/dash" "/usr/bin/dirname" "/usr/bin/which" "/opt/verapdf" "/etc/java-17-openjdk" "/proc/cgroups" "/proc/self/cgroup" "/proc/self/mountinfo" "/sys/fs/cgroup" "/dev/random" "/tmp/x"], this test knows ["/usr/lib" "/usr/bin/dash" "/usr/bin/dirname" "/usr/bin/which" "/opt/verapdf" "/etc/java-17-openjdk" "/proc/cgroups" "/proc/self/cgroup" "/proc/self/mountinfo" "/sys/fs/cgroup" "/dev/random"] -- re-measure with scripts/document-sandbox-measure.sh and update SANDBOX-PATHS.md rather than editing the expectation
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.611s
+FAIL
+go test exit: non-zero (FAIL, see above)
+$ scripts/conf05-crosscheck.sh verapdf
+MISMATCH: verapdf
+readonly diff (doc vs go, - doc / + go):
+11a12
+> /tmp/x
+crosscheck exit: 1
+(the added line was reverted with git checkout; git diff --quiet -- internal/ cmd/ scripts/ holds)
+
+## scripts/conf05-crosscheck.sh pandoc ocr av audio html probe document (exit 0)
+MATCH: pandoc readonly (0) engines (1)
+MATCH: ocr readonly (7) engines (4)
+MATCH: av readonly (7) engines (2)
+MATCH: audio readonly (7) engines (3)
+MATCH: html readonly (15) engines (1) readwrite (2)
+MATCH: probe readonly (10) engines (4) readwrite (0)
+MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)
+MATCH: verapdf readonly (11) engines (1) readwrite (1)
+
+## GOTOOLCHAIN=go1.26.4 scripts/ci-local.sh gate helm
+=== ci-local 20260930T213012Z ===
+### tier: gate (started 21:30:12 UTC)
+### tier gate: PASS
+### tier: helm (started 21:31:43 UTC)
+### tier helm: PASS
+ci-local 20260930T213012Z summary   commit 5db6c74
+  ALL REQUESTED TIERS PASSED

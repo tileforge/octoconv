@@ -567,11 +567,16 @@ services:
   document-worker:
     # veraPDF (PDFA-02, D-03) is bundled into this image from the pinned
     # verapdf/cli:v1.30.2 Docker Hub image, which is published amd64-only
-    # (verified live against the registry, 23-01) -- pin the whole service
-    # to linux/amd64 so the build (and any arm64 host, e.g. Apple Silicon
-    # dev machines) doesn't accidentally cross-copy incompatible
-    # architecture binaries into the runtime stage.
-    platform: linux/amd64
+    # (verified live against the registry, 23-01). The image is NATIVE: only
+    # the verapdf build stage is pinned to linux/amd64 (see
+    # Dockerfile.document-worker), because only its /opt/verapdf tree is
+    # copied and that tree holds no ELF object. Until phase 70 this whole
+    # service carried a `platform: linux/amd64` pin; it came off after
+    # scripts/verapdf-differential.sh found no divergence between veraPDF in
+    # the native and the emulated image (70-01,
+    # .planning/phases/70-document-on-amd64/evidence/verapdf-differential.txt).
+    # An emulated amd64 process cannot establish Landlock (measured
+    # 2026-09-19), which is why the whole-image pin had to go.
     build:
       context: .
       dockerfile: Dockerfile.document-worker
@@ -592,7 +597,14 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
-      DOCUMENT_WORKER_CONCURRENCY: "2"
+      # One task per container: soffice's ruleset grants the shared /tmp
+      # read-write (70-02), and a confined worker refuses to start above 1.
+      # Scale with replicas.
+      DOCUMENT_WORKER_CONCURRENCY: "1"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, never defaulted on; unset means confined, and an
+      # amd64 image emulated on an arm64 host refuses to start (no Landlock).
+      DOCUMENT_SANDBOX_DISABLED: "${DOCUMENT_SANDBOX_DISABLED:-}"
       DOCUMENT_ENGINE_TIMEOUT: "300s"
       # queue.NewClient() (constructed by cmd/document-worker/main.go) also
       # reads the image-side and html-side retry/timeout vars and
@@ -687,9 +699,16 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
-      HTML_WORKER_CONCURRENCY: "2"
+      # D-01 (CONF-06, phase 69): one task per container -- the ruleset
+      # grants the container's shared /tmp read-write, which is safe only at
+      # concurrency 1; a confined worker refuses to start above it.
+      HTML_WORKER_CONCURRENCY: "1"
       HTML_ENGINE_TIMEOUT: "60s"
       HTML_MAX_RETRY: "3"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      HTML_SANDBOX_DISABLED: "${HTML_SANDBOX_DISABLED:-}"
       # queue.NewClient() (constructed by cmd/chromium-worker/main.go) also
       # reads the image-side and document-side retry/timeout vars
       # unconditionally, even though this process only runs the html engine
@@ -754,11 +773,8 @@ services:
       TECTONIC_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
-    # /dev/shm sizing as a belt-and-suspenders compensating control
-    # alongside the --disable-dev-shm-usage argv flag (D-09/Pitfall C) --
-    # some Chromium internal code paths still touch /dev/shm even with that
-    # flag set.
-    shm_size: "256m"
+    # No /dev/shm sizing needed (G-69-3, measured) -- see
+    # .planning/research/SANDBOX-PATHS.md, html section.
     deploy:
       resources:
         limits:
@@ -766,8 +782,8 @@ services:
           memory: 2g
 
   # whisper.cpp is source-built with -DGGML_NATIVE=OFF, portable across
-  # arm64/amd64 hosts -- no platform: pin needed (chromium-worker precedent,
-  # unlike document-worker's veraPDF-forced amd64 pin).
+  # arm64/amd64 hosts -- no platform: pin needed (chromium-worker precedent;
+  # no platform: pin on any worker since phase 70).
   audio-worker:
     build:
       context: .
@@ -797,6 +813,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      AUDIO_SANDBOX_DISABLED: "${AUDIO_SANDBOX_DISABLED:-}"
       AUDIO_WORKER_CONCURRENCY: "1"
       # RTF-measured (Phase 32 AUD-07, scripts/audio-rtf-measure.sh, p95
       # RTF=0.205853 on this exact --cpus/--memory container), NOT the old
@@ -883,8 +903,8 @@ services:
   # ffmpeg is source-built with a minimal --disable-everything codec set
   # (Dockerfile.av-worker, Phase 36 Plan 02) -- no platform: pin needed
   # (ffmpeg runtime CPU dispatch, 36-RESEARCH.md Pattern 3, mirrors the
-  # audio-worker/chromium-worker precedent, unlike document-worker's
-  # veraPDF-forced amd64 pin).
+  # audio-worker/chromium-worker precedent; no platform: pin on any worker
+  # since phase 70).
   av-worker:
     build:
       context: .
@@ -918,6 +938,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      AV_SANDBOX_DISABLED: "${AV_SANDBOX_DISABLED:-}"
       # RTF-measured (Phase 36 Plan 04, threads=avThreadCount()=2 saturates
       # this service's own cpus=2.0 limit per job -- mirrors
       # AUDIO_WORKER_CONCURRENCY=1's exact provenance, audio-worker above:
@@ -1045,8 +1069,8 @@ services:
 
   # Tesseract/poppler are source-built (Dockerfile.ocr-worker, Phase 45
   # Plan 01) -- no platform: pin needed, same posture as av-worker/
-  # audio-worker/chromium-worker (unlike document-worker's veraPDF-forced
-  # amd64 pin).
+  # audio-worker/chromium-worker (no platform: pin on any worker since
+  # phase 70).
   ocr-worker:
     build:
       context: .
@@ -1079,6 +1103,10 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: octoconv
       S3_USE_SSL: "false"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      OCR_SANDBOX_DISABLED: "${OCR_SANDBOX_DISABLED:-}"
       # D-03 (Phase 45, mirrors AV_WORKER_CONCURRENCY=1/
       # AUDIO_WORKER_CONCURRENCY=1's own measured-not-assumed provenance):
       # one OCR job at a time -- avoids CPU oversubscription/CFS-thrashing
@@ -1190,8 +1218,8 @@ services:
 
   # pandoc is a pinned static-release binary (Dockerfile.pandoc-worker,
   # Phase 49 Plan 01) -- no platform: pin needed, same posture as
-  # av-worker/audio-worker/chromium-worker/ocr-worker (unlike
-  # document-worker's veraPDF-forced amd64 pin). NO TeX toolchain --
+  # av-worker/audio-worker/chromium-worker/ocr-worker (no platform: pin on
+  # any worker since phase 70). NO TeX toolchain --
   # markup<->markup only (->pdf deferred to v2).
   pandoc-worker:
     build:
@@ -1258,6 +1286,10 @@ services:
       # nonetheless match byte-for-byte or the API accepts uploads the
       # worker will certainly reject.
       PANDOC_MAX_INPUT_BYTES: "3145728"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      PANDOC_SANDBOX_DISABLED: "${PANDOC_SANDBOX_DISABLED:-}"
       # MEASURED (49-03-SUMMARY.md, scripts/pandoc-timing-measure.sh run
       # ALL GREEN, arch=arm64, cpus=2.0, memory=1g, N=10/cell, nearest-rank
       # p95, wall-sec/conversion, at the 4 MiB PANDOC_MAX_INPUT_BYTES cap
@@ -1455,6 +1487,10 @@ services:
       # document, inside a 1g cgroup. REASONED, not measured -- the same
       # status as the timeout above.
       PROBE_WORKER_CONCURRENCY: "1"
+      # Same reasoning as IMAGE_SANDBOX_DISABLED on the worker service:
+      # forwarded from .env, not set here -- unset means confined, and the
+      # worker refuses to start if it cannot be.
+      PROBE_SANDBOX_DISABLED: "${PROBE_SANDBOX_DISABLED:-}"
       PROBE_MAX_RETRY: "2"
       # IN-02 (Phase 64): same requirement, tex engine -- queue.NewClient()
       # derives tectonicUniqueTTL from these two unconditionally in EVERY

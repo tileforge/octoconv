@@ -95,3 +95,25 @@ func TestEverythingGrantedIsAlsoHandled(t *testing.T) {
 			accessReadOnly&^handledAccess)
 	}
 }
+
+// TestSocketGrantIsSocketOnly pins the socket right (phase 70, route
+// scoped-socket): creating a socket is granted on a sock: path and NOWHERE
+// else. It is its own constant, equal to MAKE_SOCK exactly, inside what the
+// ruleset handles (or the add_rule fails with EINVAL and the document worker
+// cannot start), and sharing no bit with either general-purpose grant --
+// TestNothingMayCreateSymlinksOrSpecialFiles keeps saying that a job directory
+// and a read-only tree cannot create a socket.
+func TestSocketGrantIsSocketOnly(t *testing.T) {
+	if accessMakeSocket != unix.LANDLOCK_ACCESS_FS_MAKE_SOCK {
+		t.Errorf("accessMakeSocket = %#x, want exactly MAKE_SOCK (%#x): a sock: path would "+
+			"grant more than creating a socket", uint64(accessMakeSocket), uint64(unix.LANDLOCK_ACCESS_FS_MAKE_SOCK))
+	}
+	if handledAccess&accessMakeSocket != accessMakeSocket {
+		t.Error("the socket right is not handled by the ruleset: add_rule would fail with EINVAL, " +
+			"and an unhandled access is not restricted anywhere")
+	}
+	if accessReadWrite&accessMakeSocket != 0 || accessReadOnly&accessMakeSocket != 0 {
+		t.Error("a general-purpose grant carries the socket right: every class's job directory " +
+			"or system tree could then create a socket")
+	}
+}

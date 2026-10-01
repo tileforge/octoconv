@@ -76,7 +76,7 @@ func TestProbeVideoStream_ParsesJSON(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	codec, width, height, err := probeVideoStream(ctx, path)
+	codec, width, height, err := probeVideoStream(ctx, engineExec{}, path)
 	if err != nil {
 		t.Fatalf("probeVideoStream: %v", err)
 	}
@@ -101,13 +101,13 @@ func TestProbeVideoStream_NonVideoFileReturnsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	codec, width, height, err := probeVideoStream(ctx, garbage)
+	codec, width, height, err := probeVideoStream(ctx, engineExec{}, garbage)
 	if err == nil {
 		t.Fatalf("probeVideoStream(garbage) = (%q, %d, %d, nil), want a non-nil error", codec, width, height)
 	}
 }
 
-// TestEnforceMaxResolution_Rejects proves EnforceMaxResolution accepts an
+// TestEnforceMaxResolution_Rejects proves enforceMaxResolution accepts an
 // under-ceiling height and rejects an over-ceiling height with
 // errors.Is(err, ErrAVResolutionExceeded), against a live-generated fixture.
 func TestEnforceMaxResolution_Rejects(t *testing.T) {
@@ -119,13 +119,13 @@ func TestEnforceMaxResolution_Rejects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := EnforceMaxResolution(ctx, path, 1080); err != nil {
-		t.Fatalf("EnforceMaxResolution under a generous ceiling returned error: %v", err)
+	if err := enforceMaxResolution(ctx, engineExec{}, path, 1080); err != nil {
+		t.Fatalf("enforceMaxResolution under a generous ceiling returned error: %v", err)
 	}
 
-	err := EnforceMaxResolution(ctx, path, 240)
+	err := enforceMaxResolution(ctx, engineExec{}, path, 240)
 	if !errors.Is(err, ErrAVResolutionExceeded) {
-		t.Fatalf("EnforceMaxResolution over a tiny ceiling = %v, want errors.Is(err, ErrAVResolutionExceeded)", err)
+		t.Fatalf("enforceMaxResolution over a tiny ceiling = %v, want errors.Is(err, ErrAVResolutionExceeded)", err)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestProbeVideoStreams_NoVideoStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err := probeVideoStreams(ctx, path)
+	_, err := probeVideoStreams(ctx, engineExec{}, path)
 	if err == nil {
 		t.Fatal("probeVideoStreams(audio-only) = nil, want ErrAVNoVideoStream")
 	}
@@ -179,7 +179,7 @@ func TestProbeVideoStream_NoVideoStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, _, _, err := probeVideoStream(ctx, path)
+	_, _, _, err := probeVideoStream(ctx, engineExec{}, path)
 	if err == nil {
 		t.Fatal("probeVideoStream(audio-only) = nil, want ErrAVNoVideoStream")
 	}
@@ -247,7 +247,7 @@ func TestProbeVideoStream_IgnoresCoverArt(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	codec, _, height, err := probeVideoStream(ctx, path)
+	codec, _, height, err := probeVideoStream(ctx, engineExec{}, path)
 	if err != nil {
 		t.Fatalf("probeVideoStream: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestProbeVideoStream_IgnoresCoverArt(t *testing.T) {
 	}
 
 	// The guard must trip on the REAL stream's height, not the thumbnail's.
-	if err := EnforceMaxResolution(ctx, path, 64); !errors.Is(err, ErrAVResolutionExceeded) {
-		t.Errorf("EnforceMaxResolution(ceiling 64) = %v, want ErrAVResolutionExceeded -- a %dpx stream must not hide behind a 32px cover image", err, realHeight)
+	if err := enforceMaxResolution(ctx, engineExec{}, path, 64); !errors.Is(err, ErrAVResolutionExceeded) {
+		t.Errorf("enforceMaxResolution(ceiling 64) = %v, want ErrAVResolutionExceeded -- a %dpx stream must not hide behind a 32px cover image", err, realHeight)
 	}
 }

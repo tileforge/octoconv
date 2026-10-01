@@ -94,7 +94,7 @@ func TestParseVeraPDFReportBatchSummaryFailure(t *testing.T) {
 	}
 }
 
-// TestValidateReportCompliant/NonCompliant/Unparseable prove ValidatePDFA's
+// TestValidateReportCompliant/NonCompliant/Unparseable prove validatePDFA's
 // terminal-error SHAPE (the exact substrings terminalVeraPDFSignatures
 // matches on, internal/worker/worker.go) against the same fixtures/inputs,
 // entirely offline (validateReport never shells out).

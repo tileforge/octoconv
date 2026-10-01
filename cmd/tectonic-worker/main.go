@@ -194,7 +194,7 @@ func main() {
 	// Proves the ENGINE runs under the rules, not merely that the rules can be
 	// built. Done after the converter exists so the preflight uses exactly the
 	// configuration the jobs will.
-	if err := preflightEngine(tectonicConverter, sandboxHelper); err != nil {
+	if err := preflightEngine(ctx, tectonicConverter, sandboxHelper); err != nil {
 		log.Fatalf("tectonic sandbox preflight: %v", err)
 	}
 
@@ -240,6 +240,7 @@ func main() {
 		nil, // signingSecret — webhook-only
 		0,   // presignTTL — webhook-only
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// TectonicConverter does not implement convert.ProgressConverter, so this
@@ -340,8 +341,9 @@ func buildTectonicConverter(bundlePath string, maxOutputBytes int64, sandboxHelp
 const sandboxDisabledEnv = "TECTONIC_SANDBOX_DISABLED"
 
 // preflightSandbox proves the whole mechanism works before any job depends on
-// it: create the ruleset, add a rule, restrict, exec.
-func preflightSandbox(helper []string) error {
+// it: create the ruleset, add a rule, restrict, exec. ctx is the caller's
+// signal context, so SIGINT/SIGTERM ends the check instead of waiting it out.
+func preflightSandbox(ctx context.Context, helper []string) error {
 	// Something that exists in the image, does nothing, and exits 0. Resolved
 	// rather than hardcoded so the check does not itself become the reason a
 	// worker refuses to start.
@@ -351,7 +353,7 @@ func preflightSandbox(helper []string) error {
 	}
 
 	args := append(append([]string{}, helper[1:]...), "ro:/usr", "--", probe)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	out, err := exec.CommandContext(ctx, helper[0], args...).CombinedOutput()
@@ -366,8 +368,9 @@ func preflightSandbox(helper []string) error {
 
 // preflightEngine is the second half: the mechanism working says nothing about
 // whether THIS engine can be executed under the rules this deployment builds.
-func preflightEngine(c convert.TectonicConverter, helper []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+// ctx is the caller's signal context, so SIGINT/SIGTERM ends the check.
+func preflightEngine(ctx context.Context, c convert.TectonicConverter, helper []string) error {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	if err := c.TectonicPreflight(ctx, helper); err != nil {

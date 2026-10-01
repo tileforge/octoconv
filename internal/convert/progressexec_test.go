@@ -2,6 +2,8 @@ package convert
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,6 +35,15 @@ func TestRunCommandStreaming_ArgvHardening(t *testing.T) {
 	}
 }
 
+// directCommand is the command func every DIRECT (unconfined) test below
+// passes to runCommandStreaming: no sandbox wrapping, just the bare engine
+// name and progressStreamArgs(fifoPath, args).
+func directCommand(name string, args []string) func(fifoPath string) (string, []string, error) {
+	return func(fifoPath string) (string, []string, error) {
+		return name, progressStreamArgs(fifoPath, args), nil
+	}
+}
+
 // TestRunCommandStreaming_NeverOpenedFIFO proves the never-opened-FIFO
 // unblock (PROG-05): a command that exits immediately without ever opening
 // the progress FIFO ("true" ignores all arguments, including the injected
@@ -44,7 +55,8 @@ func TestRunCommandStreaming_NeverOpenedFIFO(t *testing.T) {
 	before := settledGoroutines(t)
 
 	var lines []string
-	_, err := runCommandStreaming(context.Background(), func(l string) { lines = append(lines, l) }, "true")
+	_, err := runCommandStreaming(context.Background(), func(l string) { lines = append(lines, l) },
+		t.TempDir(), "true", directCommand("true", nil))
 	if err != nil {
 		t.Fatalf("runCommandStreaming(true) = %v, want nil error", err)
 	}
@@ -91,7 +103,7 @@ func TestRunCommandStreaming_SuccessPath(t *testing.T) {
 		if l == "progress=end" {
 			sawEnd = true
 		}
-	}, "ffmpeg", args...); err != nil {
+	}, dir, "ffmpeg", directCommand("ffmpeg", args)); err != nil {
 		t.Fatalf("runCommandStreaming(ffmpeg transcode) = %v, want nil error", err)
 	}
 
@@ -135,7 +147,7 @@ func TestRunCommandStreaming_SIGKILLMidStream_NoLeak(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		_, err := runCommandStreaming(ctx, func(string) {}, "ffmpeg", args...)
+		_, err := runCommandStreaming(ctx, func(string) {}, dir, "ffmpeg", directCommand("ffmpeg", args))
 		cancel()
 		if err == nil || !strings.Contains(err.Error(), "killed") {
 			t.Fatalf("iter %d: runCommandStreaming = %v, want a %q error", i, err, "killed")
@@ -166,4 +178,172 @@ func settledGoroutines(t *testing.T) int {
 		n = next
 	}
 	return n
+}
+
+// ---- engineExec.stream (Phase 68 Plan 04) ----
+
+// fakeProgressFFmpeg writes a fake ffmpeg to dir/name: it writes non-empty
+// bytes to its own last argument (with the "file:" prefix stripped -- the
+// engine's real output path), and -- when its FIRST argument is
+// "-progress" (the streaming shape progressStreamArgs produces) -- ALSO
+// writes an "out_time_us="/"progress=end" block to the FIFO named by its
+// second argument (again with "file:" stripped), so a test can assert
+// onLine actually receives it.
+func fakeProgressFFmpeg(t *testing.T, dir, name string) {
+	t.Helper()
+	fakeEngine(t, dir, name, `last=""
+for a in "$@"; do last="$a"; done
+out="${last#file:}"
+printf 'fake-ffmpeg-output' > "$out"
+if [ "$1" = "-progress" ]; then
+  fifo="${2#file:}"
+  {
+    printf 'out_time_us=1000000\n'
+    printf 'progress=end\n'
+  } > "$fifo"
+fi
+`)
+}
+
+// TestEngineExecStream_DeliversProgressLinesThroughTheHelper proves
+// engineExec.stream, through a confined helper, delivers the engine's own
+// -progress lines to onLine, and that the recorded helper argv carries
+// "-progress" AFTER the "--" separator (on the ENGINE's own argv) rather
+// than before it (T-68-18): "__sandbox-exec", the rw:/ro: tokens, "--", the
+// resolved fake-ffmpeg path, "-progress", the file:-prefixed fifo path
+// (inside fifoDir, under a ".progress-" directory), then the caller's own
+// args.
+func TestEngineExecStream_DeliversProgressLinesThroughTheHelper(t *testing.T) {
+	helper, calls := fakeSandboxHelper(t)
+	dir := t.TempDir()
+	fakeProgressFFmpeg(t, dir, "fakeffmpeg")
+	pathWith(t, dir)
+
+	s := &engineSandbox{Helper: helper, Confine: true}
+	jobDir := t.TempDir()
+	x := s.forJob(jobDir, []string{"/lib"}, []string{"fakeffmpeg"})
+
+	outPath := filepath.Join(jobDir, "out.mp4")
+	var lines []string
+	if _, err := x.stream(context.Background(), func(l string) { lines = append(lines, l) },
+		jobDir, "fakeffmpeg", []string{"-i", "in.mp4", outPath}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(lines) != 2 || lines[0] != "out_time_us=1000000" || lines[1] != "progress=end" {
+		t.Fatalf("onLine received %v, want [out_time_us=1000000 progress=end]", lines)
+	}
+
+	invocations := calls()
+	if len(invocations) != 1 {
+		t.Fatalf("helper invoked %d time(s), want 1: %v", len(invocations), invocations)
+	}
+	argv := invocations[0]
+	if len(argv) == 0 || argv[0] != "__sandbox-exec" {
+		t.Fatalf("argv[0] = %v, want __sandbox-exec first", argv)
+	}
+	sep := indexOf(argv, "--")
+	if sep < 0 {
+		t.Fatalf("no -- separator in %v", argv)
+	}
+	for _, tok := range argv[1:sep] {
+		if tok == "-progress" {
+			t.Fatalf("argv %v carries -progress BEFORE the -- separator -- it must be part of the engine's own argv, after it", argv)
+		}
+	}
+	var rw string
+	for _, tok := range argv[1:sep] {
+		if strings.HasPrefix(tok, "rw:") {
+			rw = strings.TrimPrefix(tok, "rw:")
+		}
+	}
+	if rw != jobDir {
+		t.Errorf("rw token = %q, want the job directory %q", rw, jobDir)
+	}
+	if filepath.Base(argv[sep+1]) != "fakeffmpeg" {
+		t.Fatalf("command after -- is %q, want the resolved fakeffmpeg path", argv[sep+1])
+	}
+	rest := argv[sep+1:]
+	if len(rest) < 3 || rest[1] != "-progress" {
+		t.Fatalf("engine argv after -- = %v, want [<engine>, -progress, file:..., ...]", rest)
+	}
+	if !strings.HasPrefix(rest[2], "file:"+jobDir) || !strings.Contains(rest[2], ".progress-") {
+		t.Errorf("fifo argument = %q, want a file:-prefixed path inside %q under a .progress- directory", rest[2], jobDir)
+	}
+	if got := rest[3:]; len(got) != 3 || got[0] != "-i" || got[1] != "in.mp4" || got[2] != outPath {
+		t.Errorf("caller args = %v, want [-i in.mp4 %s] preserved after the progress pair", got, outPath)
+	}
+
+	// No ".progress-" entry remains in the job directory once stream has
+	// returned -- the FIFO's own directory is removed on every return path.
+	entries, err := os.ReadDir(jobDir)
+	if err != nil {
+		t.Fatalf("read job dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".progress-") {
+			t.Errorf("job dir %v still contains %q after stream returned, want it removed", jobDir, e.Name())
+		}
+	}
+}
+
+// TestEngineExecStream_UnconfinedRunsDirectlyWithProgressFirst proves an
+// unconfined engineExec{}.stream runs the engine directly, with
+// "-progress" as its OWN first argument (no helper, no "--" separator to
+// speak of).
+func TestEngineExecStream_UnconfinedRunsDirectlyWithProgressFirst(t *testing.T) {
+	dir := t.TempDir()
+	fakeProgressFFmpeg(t, dir, "directffmpeg")
+	pathWith(t, dir)
+
+	var x engineExec
+	fifoDir := t.TempDir()
+	var lines []string
+	if _, err := x.stream(context.Background(), func(l string) { lines = append(lines, l) },
+		fifoDir, "directffmpeg", []string{"-i", "in.mp4", filepath.Join(fifoDir, "out.mp4")}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if len(lines) != 2 || lines[0] != "out_time_us=1000000" || lines[1] != "progress=end" {
+		t.Fatalf("onLine received %v, want [out_time_us=1000000 progress=end] -- the fake engine only "+
+			"writes the fifo block when its OWN first argument is -progress", lines)
+	}
+}
+
+// TestEngineExecStream_SandboxFaultSentinel proves a helper exiting
+// sandbox.SetupExit (78) without ever exec'ing the engine is classified
+// ErrEngineSandboxUnavailable, exactly like engineExec.run.
+func TestEngineExecStream_SandboxFaultSentinel(t *testing.T) {
+	s := &engineSandbox{Helper: failingSandboxHelper(t, 78), Confine: true}
+	jobDir := t.TempDir()
+	x := s.forJob(jobDir, nil, nil)
+
+	_, err := x.stream(context.Background(), func(string) {}, jobDir, "true", nil)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !errors.Is(err, ErrEngineSandboxUnavailable) {
+		t.Errorf("err = %v, want errors.Is ErrEngineSandboxUnavailable", err)
+	}
+}
+
+// TestEngineExecStream_FIFODirectoryRemovedOnFailure proves the FIFO's own
+// directory is removed even when the engine invocation fails outright (no
+// helper at all involved here -- the failure is the engine itself never
+// resolving).
+func TestEngineExecStream_FIFODirectoryRemovedOnFailure(t *testing.T) {
+	var x engineExec
+	fifoDir := t.TempDir()
+	if _, err := x.stream(context.Background(), func(string) {}, fifoDir,
+		"definitely-not-a-real-binary-xyz", nil); err == nil {
+		t.Fatal("expected an error resolving a nonexistent engine")
+	}
+
+	entries, err := os.ReadDir(fifoDir)
+	if err != nil {
+		t.Fatalf("read fifo dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".progress-") {
+			t.Errorf("fifo dir %v still contains %q after a failed stream, want it removed", fifoDir, e.Name())
+		}
+	}
 }

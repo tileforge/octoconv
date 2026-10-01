@@ -14,7 +14,7 @@ import (
 // pdfXrefObjects verifies that every offset it takes actually carries that
 // object's own "N G obj" header, so a chain led astray yields FEWER objects,
 // never wrong ones. But fewer means a forward "/Length 6 0 R" goes unresolved,
-// and VerifySanitized then fails closed ON A VALID FILE -- refusing valid work
+// and verifySanitized then fails closed ON A VALID FILE -- refusing valid work
 // is the defect class this project has paid for most (63-02 removed an entire
 // admission gate for it).
 //

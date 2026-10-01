@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,13 +23,71 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// htmlSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors pandocSandboxDisabledEnv
+// (cmd/pandoc-worker/main.go): a deployment gets an unconfined engine only by
+// saying so.
+const htmlSandboxDisabledEnv = "HTML_SANDBOX_DISABLED"
+
+// htmlConcurrencyEnv names the variable D-03's guard checks -- the SAME
+// variable this file also passes as asynq.Config's Concurrency below, so the
+// guard always evaluates the value the worker will actually run with.
+const htmlConcurrencyEnv = "HTML_WORKER_CONCURRENCY"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec chromium-headless-shell, not connect to Postgres and
+	// start a worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine chromium must not consume a queue. The paths it grants were
+	// MEASURED, not reasoned -- see .planning/research/SANDBOX-PATHS.md's
+	// "html" section and the CONF-06 /tmp decision beside it.
+	sandboxHelper, err := sandbox.ResolveHelper(htmlSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("html sandbox: %v", err)
+	}
+	// D-01: one task per container while confined. A confined worker configured
+	// to anything but 1 (above 1, or below 1, which asynq runs as the CPU count)
+	// refuses to start in ConfinedChromium below.
+	concurrency := envInt(htmlConcurrencyEnv, 1)
+	log.Printf("🧵 %s=%d", htmlConcurrencyEnv, concurrency)
+	conv, err := convert.ConfinedChromium(sandboxHelper, concurrency, htmlConcurrencyEnv)
+	if err != nil {
+		log.Fatalf("html sandbox: %v", err)
+	}
+	convert.Default.Replace(conv)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", htmlSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 html sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the ENGINE runs under the rules, not merely that the rules can be
+	// built -- both directions, by PDF content (D-06/D-07): a conversion
+	// INSIDE the job directory succeeds and carries the marker, and the
+	// identical bytes OUTSIDE it are denied.
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
+	if err := convert.HTMLPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("html sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 html sandbox proven: the engine rendered inside the job directory and was denied a file outside every grant")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -75,6 +134,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleHTMLConvert never reads it
 		0,   // presignTTL — webhook-only; HandleHTMLConvert never reads it
 		0,   // audioMaxDuration — audio-only; HandleHTMLConvert never reads it
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// chromium-worker must NOT run the reconciler sweeper: the stale-job
@@ -87,7 +147,7 @@ func main() {
 	mux.HandleFunc(queue.TypeHTMLConvert, worker.NewRunner(h, worker.HTMLDescriptor).Handle)
 
 	srv := asynq.NewServer(redisOpt, asynq.Config{
-		Concurrency:    envInt("HTML_WORKER_CONCURRENCY", 2),
+		Concurrency:    concurrency,
 		Queues:         map[string]int{queue.QueueHTML: 1},
 		RetryDelayFunc: queue.RetryDelayFunc,
 		// Pattern 2: asynq defaults ShutdownTimeout to 8s, silently capping

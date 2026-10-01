@@ -237,8 +237,8 @@ func TestSanitizeICCEndToEnd(t *testing.T) {
 
 	src := filepath.Join(sanitizeCorpusDir, "icc_multichunk.jpg")
 	out := filepath.Join(t.TempDir(), "out.jpg")
-	if _, err := SanitizeFile(context.Background(), "jpg", src, out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "jpg", src, out); err != nil {
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	blob, err := os.ReadFile(out)
 	if err != nil {

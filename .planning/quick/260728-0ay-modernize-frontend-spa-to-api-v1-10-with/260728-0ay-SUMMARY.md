@@ -12,9 +12,14 @@ key-files:
     - frontend/src/App.tsx
     - frontend/src/styles.css
     - .gitignore
+
 metrics:
   duration: ~20min
   completed: 2026-07-28
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260728-0ay: Modernize frontend SPA to API v1.10 Summary

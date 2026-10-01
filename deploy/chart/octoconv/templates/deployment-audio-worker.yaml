@@ -50,6 +50,20 @@ spec:
           image: "{{ .Values.audioWorker.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: IfNotPresent
           {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.audioWorker.extraEnv }}
+          # extraEnv (Phase 68, mirrors avWorker.extraEnv/ocrWorker.extraEnv):
+          # explicit `env:` entries take precedence over envFrom-sourced
+          # values for the same key -- this is how AUDIO_SANDBOX_DISABLED=true,
+          # the remedy the worker names when it refuses to start, is set.
+          # Intentionally absent from values.yaml so this block renders
+          # nothing in production and an unconfined engine stays a
+          # deliberate act.
+          env:
+            {{- range $k, $v := .Values.audioWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 9090

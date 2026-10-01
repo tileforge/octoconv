@@ -455,7 +455,11 @@ func stripPNGMetadata(src []byte) ([]byte, error) {
 // claimed format: a client that uploads a PNG named .jpg would otherwise get
 // the JPEG walker, which would fail on the signature check and turn a
 // mislabelled file into an error instead of a sanitized one.
-func sanitizeImage(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
+//
+// x is unused: metadata stripping walks the file's own byte structure in
+// pure Go and execs nothing. It carries the parameter only because
+// sanitizeFormats' value type is shared across all six format handlers.
+func sanitizeImage(ctx context.Context, _ engineExec, inPath, outPath string) (SanitizeResult, error) {
 	src, err := os.ReadFile(inPath)
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize image: read: %w", err)

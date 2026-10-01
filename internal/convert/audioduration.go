@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,8 +78,14 @@ func ffprobeDurationArgs(path string) []string {
 		"-protocol_whitelist", "file,crypto", "file:" + path}
 }
 
-func ProbeDuration(ctx context.Context, path string) (time.Duration, error) {
-	out, err := runCommand(ctx, "ffprobe", ffprobeDurationArgs(path)...)
+// probeDuration runs ffprobe through x, the caller's job-scoped engineExec
+// (Phase 68 Plan 04) -- unexported because an exported entry point that runs
+// ffprobe on client input without a sandbox handle is exactly the shape
+// decision 1 closed (T-68-20). EnforceMaxDuration (below) keeps its own
+// signature this plan and calls probeDuration with the zero-value
+// engineExec{} -- plan 05 threads the audio worker's own helper into it.
+func probeDuration(ctx context.Context, x engineExec, path string) (time.Duration, error) {
+	out, err := x.run(ctx, "ffprobe", ffprobeDurationArgs(path)...)
 	if err != nil {
 		return 0, fmt.Errorf("ffprobe: %w", err)
 	}
@@ -93,6 +100,17 @@ func ProbeDuration(ctx context.Context, path string) (time.Duration, error) {
 // is a plain parameter, NOT read from any env var here -- the API layer
 // wires AUDIO_MAX_DURATION_SECONDS in a later out-of-scope phase.
 //
+// Phase 68 Plan 05 (orchestrator decision 1): this guard runs on the
+// client's file BEFORE any other engine does (internal/worker, before
+// Convert ever runs) -- the first engine to read untrusted input for this
+// class -- so it runs under the SAME audio ruleset the converter's own two
+// stages use, built here from helper (nil means unconfined, matching every
+// other engine class's zero-value contract) and this file's own
+// audioReadOnly/audioEngines (audiosandbox.go). helper travels the same way
+// audioMaxDuration already does: cmd/audio-worker -> NewHandler ->
+// Handler.audioSandboxHelper -> NewRunner -> audioPreConvertGuard ->
+// enforceAudioGuardBeforeConvert -> here.
+//
 // Accepted residual risk (T-30, SC5): this guard rejects an oversized
 // DECLARED duration, but cannot detect hallucination-on-silence -- whisper
 // exits 0 with a structurally-valid transcript even on silence/music/noise,
@@ -101,8 +119,9 @@ func ProbeDuration(ctx context.Context, path string) (time.Duration, error) {
 // only per-token confidence available is "p" under -ojf, a token
 // probability, not a segment-level no-speech signal). Do not attempt
 // hallucination detection/mitigation as part of this guard.
-func EnforceMaxDuration(ctx context.Context, path string, max time.Duration) error {
-	d, err := ProbeDuration(ctx, path)
+func EnforceMaxDuration(ctx context.Context, helper []string, path string, max time.Duration) error {
+	x := newEngineSandbox(helper).forJob(filepath.Dir(path), audioReadOnly, audioEngines)
+	d, err := probeDuration(ctx, x, path)
 	if err != nil {
 		return err
 	}

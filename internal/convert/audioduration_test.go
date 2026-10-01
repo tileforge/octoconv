@@ -97,7 +97,7 @@ func TestEnforceMaxDuration_UnderCeilingPasses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := EnforceMaxDuration(ctx, "testdata/audio/sample.wav", time.Hour)
+	err := EnforceMaxDuration(ctx, nil, "testdata/audio/sample.wav", time.Hour)
 	if err != nil {
 		t.Fatalf("EnforceMaxDuration under a generous ceiling returned error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestEnforceMaxDuration_OverCeilingRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := EnforceMaxDuration(ctx, "testdata/audio/sample.wav", 1*time.Millisecond)
+	err := EnforceMaxDuration(ctx, nil, "testdata/audio/sample.wav", 1*time.Millisecond)
 	if !errors.Is(err, ErrAudioDurationExceeded) {
 		t.Fatalf("EnforceMaxDuration over a tiny ceiling = %v, want errors.Is(err, ErrAudioDurationExceeded)", err)
 	}
@@ -128,12 +128,12 @@ func TestProbeDuration_NonAudioFileReturnsError(t *testing.T) {
 	}
 	garbage.Close()
 
-	d, err := ProbeDuration(ctx, garbage.Name())
+	d, err := probeDuration(ctx, engineExec{}, garbage.Name())
 	if err == nil {
-		t.Fatalf("ProbeDuration(garbage) = (%v, nil), want a non-nil error", d)
+		t.Fatalf("probeDuration(garbage) = (%v, nil), want a non-nil error", d)
 	}
 	if d != 0 {
-		t.Fatalf("ProbeDuration(garbage) returned duration=%v alongside an error, want zero-value duration on failure", d)
+		t.Fatalf("probeDuration(garbage) returned duration=%v alongside an error, want zero-value duration on failure", d)
 	}
 }
 
@@ -142,12 +142,12 @@ func TestProbeDuration_KnownFixtureReturnsPlausibleDuration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	d, err := ProbeDuration(ctx, "testdata/audio/sample.wav")
+	d, err := probeDuration(ctx, engineExec{}, "testdata/audio/sample.wav")
 	if err != nil {
-		t.Fatalf("ProbeDuration(sample.wav) error: %v", err)
+		t.Fatalf("probeDuration(sample.wav) error: %v", err)
 	}
 	// sample.wav was generated as a 2-second sine tone (Task 1 fixture).
 	if d < 1*time.Second || d > 3*time.Second {
-		t.Fatalf("ProbeDuration(sample.wav) = %v, want roughly 2s", d)
+		t.Fatalf("probeDuration(sample.wav) = %v, want roughly 2s", d)
 	}
 }

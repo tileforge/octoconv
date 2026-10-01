@@ -280,7 +280,7 @@ A docx whose `word/_rels/document.xml.rels` declares an `oleObject`
 relationship whose `Target` is `document.xml` — the package's own main part.
 `relationshipDrivenDrops` resolves that target and drops it.
 
-Observed on the tree before the fix: `SanitizeFile` **succeeds**, reports
+Observed on the tree before the fix: `sanitizeFile` **succeeds**, reports
 `removed=[vba_macro ole_object embedded_file external_reference
 document_metadata]`, and delivers a package with **no `word/document.xml` at
 all**. It unzips, it carries a well-formed `[Content_Types].xml`, and it opens

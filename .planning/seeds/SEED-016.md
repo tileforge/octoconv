@@ -5,6 +5,10 @@ planted: 2026-08-02
 planted_during: post-v1.11 (asked while v1.12 "Consumer Accounting & Fairness" was being planned)
 trigger_when: when usage data (v1.12 OPSV-01) shows urgent jobs actually suffering behind queued bulk work, OR when a consumer asks to mark specific conversions as urgent
 scope: Medium
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-016: Client-assigned job priority (queue tiers)

@@ -5,6 +5,7 @@ subsystem: api
 tags: [pdf, findings, coverage, inspect, security-review, false-negative]
 
 # Dependency graph
+
 requires:
   - phase: 58-synchronous-inspection
     provides: internal/inspect's FamilyResult/Check/Coverage three-value status model (D-02a/INSP-03) this task's fixes operate inside
@@ -15,9 +16,11 @@ provides:
   - Container external-reference scan now sets ceilingHit when a candidate part is skipped by its own declared size, not only when io.LimitReader cuts a read short
   - Report-wide Coverage now scans characteristic-level "<name>_reason" keys (not only Check.Reason) for the two service-ceiling reasons
   - Unrecognized-format reports now emit unknown/format_unrecognized for the whole vocabulary instead of not_applicable/format_not_applicable
+
 affects: [60-sanitize-verifier, any-future-inspect-followup]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -48,8 +51,13 @@ key-decisions:
 requirements-completed: [PR9-F1-PDF-HEX-ESCAPES, PR9-F2-PDF-STREAM-FALSE-POSITIVE, PR9-F3-IMAGE-WINDOW, PR9-F4-RELS-SKIPPED, PR9-F5-COVERAGE-CHARACTERISTICS, PR9-F6-UNKNOWN-FORMAT]
 
 # Metrics
+
 duration: ~50min
 completed: 2026-08-10
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260810-sle: Fix Six Codex Findings in internal/inspect Summary
@@ -131,6 +139,7 @@ All confirmed exactly as above (`go test ./... -count=1 -race` produced `ok` for
 **Change:** `hexEscape := containsPDFNameHexEscape(head) || ...` → `hexEscape := false`.
 **Expected:** `TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean` and `TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown` fail (report `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzePDFHexEscapedJavaScriptNeverReportsClean
     pdf_test.go:363: code "pdf_javascript" reported StatusClean on a PDF using a hex-escaped name (/Java#53cript) -- an escaped name must never be trusted as absent
@@ -140,6 +149,7 @@ All confirmed exactly as above (`go test ./... -count=1 -race` produced `ok` for
 --- FAIL: TestAnalyzePDFHexEscapedObjStmDowngradesToUnknown (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 1b -- PDF stream-body lexical filtering (T-SLE-02)
@@ -147,12 +157,14 @@ Reverted; full suite green again.
 **Change:** `firstTokenLocationOutsideOpaqueRanges(head, rt.tokens, headOpaque)` → `firstTokenLocation(head, rt.tokens)` (the unrestricted, pre-fix scan).
 **Expected:** `TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean` fails (a critical Finding is produced for the stream-body-only `/JS`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean
     pdf_test.go:410: got a critical Finding {Code:pdf_javascript Severity:critical Location:212} for a /JS token that occurs ONLY inside a stream body
 --- FAIL: TestAnalyzePDFTokenOnlyInsideStreamBodyIsUnknownNotCriticalNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 2a -- container part-size-skip ceiling (T-SLE-04)
@@ -160,12 +172,14 @@ Reverted; full suite green again.
 **Change:** removed `truncatedAnyPart = true` before the `continue` in `scanExternalReferences`'s declared-size-skip branch.
 **Expected:** `TestAnalyzeContainerNeverAllocatesOnDeclaredSize` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeContainerNeverAllocatesOnDeclaredSize
     container_test.go:393: Check(CodeExternalReference).Status = clean, want unknown -- the only candidate part was skipped by its own declared size (this scan's own ceiling), so clean is not an honest answer about the file
 --- FAIL: TestAnalyzeContainerNeverAllocatesOnDeclaredSize (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 2b -- image metadata window truncation (T-SLE-03)
@@ -173,12 +187,14 @@ Reverted; full suite green again.
 **Change:** forced `metaWindowTruncated = false` immediately after `scanImageMetadata` in `AnalyzeImage`.
 **Expected:** `TestAnalyzeImageMetadataPastWindowIsUnknownNotClean` fails (reports `clean`).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeImageMetadataPastWindowIsUnknownNotClean
     image_test.go:188: check metadata_present status = clean, want unknown
 --- FAIL: TestAnalyzeImageMetadataPastWindowIsUnknownNotClean (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 3a -- report coverage from characteristics (T-SLE-05)
@@ -186,12 +202,14 @@ Reverted; full suite green again.
 **Change:** made `buildCoverage`'s characteristics-scanning loop unconditionally `continue` (skip the whole loop body) before the `_reason` suffix check.
 **Expected:** `TestBuildReportCharacteristicCeilingReasonMarksCoveragePartial` fails (`Coverage.Complete` stays `true`).
 **Actual output:**
+
 ```
 === RUN   TestBuildReportCharacteristicCeilingReasonMarksCoveragePartial
     report_test.go:215: Coverage.Complete = true, want false -- duration_seconds_reason admitted work_ceiling_bytes truncation with no accompanying Check
 --- FAIL: TestBuildReportCharacteristicCeilingReasonMarksCoveragePartial (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 3b -- unrecognized-format fallback (T-SLE-06, bonus inversion beyond the plan's single explicit requirement for this task)
@@ -199,6 +217,7 @@ Reverted; full suite green again.
 **Change:** `unrecognizedFormat := format == ""` → `unrecognizedFormat := false && format == ""` (always `false`).
 **Expected:** `TestBuildReportUnrecognizedFormatYieldsUnknownNotNotApplicable` fails (every code reports `not_applicable/format_not_applicable`).
 **Actual output (truncated to first code; all fourteen codes failed identically):**
+
 ```
 === RUN   TestBuildReportUnrecognizedFormatYieldsUnknownNotNotApplicable
     report_test.go:257: code ooxml_macro: status=not_applicable, want unknown -- an unrecognized format cannot honestly claim any code is inapplicable
@@ -207,6 +226,7 @@ Reverted; full suite green again.
     [... repeated for the remaining 13 codes ...]
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ## User Setup Required

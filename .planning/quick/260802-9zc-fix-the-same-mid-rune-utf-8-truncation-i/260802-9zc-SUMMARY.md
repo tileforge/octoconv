@@ -5,6 +5,7 @@ subsystem: convert
 tags: [go, utf8, sniff, html, security, fail-closed]
 
 # Dependency graph
+
 requires:
   - phase: quick-260802-9de
     provides: "readSniffPrefix's truncation-scoped trimPartialTrailingRune fix (PR#2 finding-2), already applied to LooksLikeLaTeX/LooksLikeText"
@@ -12,9 +13,11 @@ provides:
   - "LooksLikeHTML delegates its bounded prefix read + NUL/UTF-8 fail-closed check to the shared readSniffPrefix helper instead of a duplicated copy"
   - "Three new htmlsniff_test.go regression tests: straddling-rune acceptance, invalid-UTF-8-at-cap-boundary rejection, dangling-lead-byte-at-EOF rejection"
   - "markupsniff.go doc prose corrected to name LooksLikeHTML as a readSniffPrefix caller"
+
 affects: [convert, api-upload-gate, pandoc-output-validation]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -35,8 +38,13 @@ patterns-established: []
 requirements-completed: [PR2-F2-HTML]
 
 # Metrics
+
 duration: ~15min
 completed: 2026-08-02
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260802-9zc: Fix LooksLikeHTML's mid-rune UTF-8 truncation defect Summary
@@ -51,6 +59,7 @@ completed: 2026-08-02
 - **Files modified:** 3
 
 ## Accomplishments
+
 - `LooksLikeHTML` (internal/convert/htmlsniff.go) no longer carries its own `make([]byte, ...)` / `ReadAt` / `utf8.Valid` prologue -- it calls `readSniffPrefix(r, size, htmlSniffCap)` and keeps only the BOM/whitespace trim and the marker scan below, byte-for-byte unchanged
 - `unicode/utf8` import dropped from htmlsniff.go (now unused); `bytes` and `io` retained
 - Three new regression tests added to `internal/convert/htmlsniff_test.go`, mirroring the LaTeX/Text precedent in `markupsniff_test.go`
@@ -89,11 +98,13 @@ Each task was committed atomically (single commit per task, per the plan's `<out
 2. **Task 2: Correct the now-stale shared-helper prose and prove both callers unaffected** - `520cb7a` (docs)
 
 ## Files Created/Modified
+
 - `internal/convert/htmlsniff.go` - `LooksLikeHTML` reduced to a single `readSniffPrefix` call + BOM/whitespace trim + marker scan; `unicode/utf8` import dropped; doc comment updated to explain the WHY (duplication caused the original miss)
 - `internal/convert/htmlsniff_test.go` - added `TestLooksLikeHTMLRuneStraddlingSniffCap`, `TestLooksLikeHTMLInvalidUTF8AtSniffCapStillRejected`, `TestLooksLikeHTMLIncompleteRuneAtEOFStillRejected`
 - `internal/convert/markupsniff.go` - `readSniffPrefix`'s doc comment now names `LooksLikeHTML` as a caller; package doc comment clarifies the current dependency direction; function body, trim condition, and `leadByteRuneLen` untouched
 
 ## Decisions Made
+
 - Followed the plan's explicit `<output>` instruction for one commit per task (`fix(...)` for Task 1, `docs(...)` for Task 2) rather than the generic multi-commit RED/GREEN/REFACTOR TDD flow, since this plan's frontmatter `type: execute` with task-level `tdd="true"` is not a whole-plan `type: tdd` gate. The RED-before/GREEN-after observation above satisfies the plan's TDD verification requirement without a separate `test(...)` commit.
 
 ## Deviations from Plan
@@ -101,13 +112,16 @@ Each task was committed atomically (single commit per task, per the plan's `<out
 None - plan executed exactly as written. No Rule 1/2/3/4 auto-fixes were needed; the fix was a pure substitution as scoped.
 
 ## Notes carried into SUMMARY (per plan's `<output>` instructions)
+
 - `pandocValidateOutput`'s existing doc comment (internal/convert/pandoc.go, around line 229) already asserted "every sniffer below (LooksLikeHTML/LooksLikeLaTeX/LooksLikeText) is ITSELF fail-closed on a zero-size input (readSniffPrefix, markupsniff.go)" -- a claim that was imprecise for `LooksLikeHTML` before this change (it had its own separate zero-size guard, not `readSniffPrefix`'s) and becomes literally true as a side effect of this fix. No edit was made to pandoc.go; this is a comment the fix repaired, not one that was broken.
 - All pre-existing `TestLooksLikeHTML*` assertions in `internal/convert/htmlsniff_test.go` (the full table, `TestLooksLikeHTMLEmptyInput`, `TestLooksLikeHTMLNeverPanicsShortReaderAt`, `TestLooksLikeHTMLOversizedInputBoundedRead`) were **not edited** -- only appended to. Confirmed by `go test ./internal/convert/ -run 'TestLooksLikeHTML' -count=1 -v` passing in full.
 
 ## Issues Encountered
+
 None.
 
 ## Verification Performed
+
 - `go test ./internal/convert/ -run 'TestLooksLikeHTML(RuneStraddlingSniffCap|InvalidUTF8AtSniffCapStillRejected|IncompleteRuneAtEOFStillRejected)' -count=1 -v` -- RED before fix, GREEN after
 - `go build ./...` -- clean (proves `unicode/utf8` import was dropped without breaking compilation)
 - `go vet ./internal/convert/` -- clean
@@ -121,6 +135,7 @@ None.
 - `git diff --name-only cedaee68188c0237e6203f15e74d1977eb4bde5c HEAD` -- exactly `internal/convert/htmlsniff.go`, `internal/convert/htmlsniff_test.go`, `internal/convert/markupsniff.go`
 
 ## Next Phase Readiness
+
 This closes the PR2-F2-HTML requirement -- the mid-rune UTF-8 truncation defect no longer has any surviving instance in the sniff family (LooksLikeHTML, LooksLikeLaTeX, LooksLikeText all now share the single `readSniffPrefix` envelope). No blockers. No further action needed on this quick task; the wider sniff-family unification (docsniff.go/SniffContainer) remains explicitly out of scope per this plan's non_goals.
 
 ---

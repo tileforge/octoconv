@@ -1,0 +1,188 @@
+verapdf-proc-measure-70-08.txt -- plan 70-08 (WR-02): what veraPDF's JVM reads under /proc, and what a confined engine can read of OTHER processes
+Measured 2026-09-30 on OrbStack docker, aarch64 server, native arm64 image built from this tree (Dockerfile.document-worker), limits --cpus 2.0 --memory 1g.
+Driver: scripts/document-sandbox-measure.sh (V0L and N3 added by 70-08). Every candidate below is a FULL driver run (14 checks) with VERAPDF_RO replacing the veraPDF read-only list.
+Verdicts are the driver's own PASS/FAIL lines for V0 (JVM view, java direct), V0L (JVM view through the production launcher), V1 (isCompliant), V2 (latency) and N3 (other processes' environ).
+
+== LAUNCHER (how the JVM starts) ==
+The veraPDF launcher, /opt/verapdf/verapdf (#!/bin/sh, dash), ends with the line that starts the JVM:
+    121:exec "$JAVACMD" $JAVA_OPTS  \
+strace -ff (execve,clone,clone3,fork,vfork,open,openat) of the launcher, unconfined, as nobody, same limits (throwaway container, strace installed there only; the image is untouched). Trace with -XshowSettings:system -XX:+PrintFlagsFinal:
+  pid 138 (the launcher's own pid), its execve calls, in order:
+    execve("/opt/verapdf/verapdf", ["/opt/verapdf/verapdf", "-f", "2b", "--format", "xml", "/tmp/job/in.pdf"], 0xffffc4adf540 /* 5 vars */) = 0
+    execve("/usr/bin/java", ["/usr/bin/java", "-Djava.io.tmpdir=/tmp/job/tmp", "-XX:-UsePerfData", "-XshowSettings:system", "-XX:+PrintFlagsFinal", "-clas
+  its children, all short-lived command substitutions:
+    pid 139: execve("/usr/bin/dirname", ["dirname", "/opt/verapdf/verapdf"], 0xaaaa
+    pid 141: execve("/usr/bin/uname", ["uname"], 0xaaaaf7b57d88 /* 5 vars */) = 0
+    pid 142: execve("/usr/bin/which", ["which", "java"], 0xaaaaf7b57820 /* 5 vars *
+  the JVM itself: pid 138 after its second execve; every other trace file is a THREAD of it (clone with CLONE_THREAD).
+  An earlier trace without the showSettings flags (pid 140) showed the same two execve calls in one pid and four command-substitution children.
+LAUNCHER: exec
+
+== TRACE: /proc and /sys entries the JVM opens, started by the launcher (completed calls only; pid-numbered paths folded into /proc/self) ==
+  [-XshowSettings:system -XX:+PrintFlagsFinal -XX:-UsePerfData]
+     1 /proc/cgroups
+     1 /proc/cpuinfo
+     1 /proc/meminfo
+     1 /proc/net/if_inet6
+     3 /proc/self/cgroup
+     2 /proc/self/coredump_filter
+     2 /proc/self/mountinfo
+     1 /proc/stat
+     1 /proc/sys/vm/overcommit_memory
+     1 /sys/devices/system/cpu/online
+     1 /sys/devices/system/cpu/possible
+     1 /sys/fs/cgroup/cgroup.controllers
+    60 /sys/fs/cgroup/cpu.max
+     1 /sys/fs/cgroup/cpu.weight
+     1 /sys/fs/cgroup/cpuset.cpus
+     1 /sys/fs/cgroup/cpuset.cpus.effective
+     1 /sys/fs/cgroup/cpuset.mems
+     1 /sys/fs/cgroup/cpuset.mems.effective
+     1 /sys/fs/cgroup/memory.low
+     3 /sys/fs/cgroup/memory.max
+     1 /sys/fs/cgroup/memory.swap.max
+     1 /sys/fs/cgroup/pids.max
+     1 /sys/kernel/mm/transparent_hugepage/enabled
+     1 /sys/kernel/mm/transparent_hugepage/hpage_pmd_size
+  [production JAVA_OPTS only, earlier trace: the same /proc entries except /proc/cgroups, which only the -XshowSettings Java-side metrics provider reads]
+
+== BASELINE: the unchanged grant (ro:/proc whole) ==
+The review (WR-02) claimed a same-uid confined JVM reads the worker's environ. N3 measures it: a per-run canary is in the container's environment (PID 1 and the helper's parent, here `timeout`, both carry it); the unconfined probe in the same shape proves the canary is readable, then the confined probe (engine /usr/bin/dash, veraPDF's production tokens, /proc granted whole) tries to open the files.
+commit: 3a34778 (driver with V0L/N3, blocks unchanged); all 14 checks: ALL PASS (14 checks)
+  CANARY-PRESENT /proc/1/environ
+  CANARY-PRESENT /proc/6/environ
+  PPID=6
+  DENIED /proc/1/environ
+  DENIED /proc/6/environ
+  DENIED /proc/self/root/etc/hostname
+  PROC-OTHER: /proc/1/cmdline opened
+  PROC-OTHER: /proc/6/cmdline opened
+  PROC-OTHER: /proc/6/status opened
+  CONTROL: /proc/self/environ opened
+  CONTROL: /proc/self/cmdline opened
+  PPID=6
+  PASS: N3 (0.5s) with the canary proven present unconfined, /proc/1/environ, the parent's environ and /proc/self/root/etc/hostname all denied
+  Reading: other processes' environ is DENIED although /proc is granted whole, while the same processes' cmdline and status OPEN and the engine's OWN environ and cmdline open (CONTROL). So the denial is not the filesystem grant; it is at the open of environ itself (environ needs ptrace-read access to the target; cmdline and status do not). A confined process is not in the target's Landlock domain, and Landlock's ptrace hook refuses that -- this mechanism is inferred, the denial is measured.
+  What the whole-/proc grant DOES leave open to a confined engine: other processes' cmdline and status (PROC-OTHER rows above).
+  A first baseline run (before the CONTROL rows were added to N3) gave the same DENIED/opened rows.
+
+== CANDIDATES (each a full driver run; VERAPDF_RO replaces the list, non-/proc entries exactly as verapdfReadOnly: /usr/lib /usr/bin/dash /usr/bin/dirname /usr/bin/which /opt/verapdf /etc/java-17-openjdk /sys/fs/cgroup /dev/random) ==
+candA: PID-independent entries from the trace without /proc/cgroups + /proc/self/cgroup /proc/self/mountinfo /proc/self/coredump_filter
+  entries: /proc/cpuinfo /proc/meminfo /proc/stat /proc/net/if_inet6 /proc/sys/vm/overcommit_memory /proc/self/cgroup /proc/self/mountinfo /proc/self/coredump_filter
+  verdict: PASS V1 PASS V2 FAIL V0 FAIL V0L PASS N3 -> FAILURES PRESENT (14 checks run)
+  V0/V0L: Operating System Metrics 'No metrics available for this platform' under the ruleset; heap/GC flags identical (MaxHeapSize 268435456, Serial): the Java-side metrics provider needs /proc/cgroups, which the trace of THAT run (no -XshowSettings) does not show
+candB: candA + /proc/cgroups (named by the -XshowSettings trace)
+  verdict: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS (14 checks)
+
+== NARROWING BY REMOVAL from candB, one /proc entry at a time ==
+  without /proc/cgroups: PASS V1 PASS V2 FAIL V0 FAIL V0L PASS N3 -> FAILURES PRESENT => KEPT: V0 and V0L fail when removed
+  without /proc/cpuinfo: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+  without /proc/meminfo: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+  without /proc/stat: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+  without /proc/net/if_inet6: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+  without /proc/sys/vm/overcommit_memory: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+  without /proc/self/cgroup: PASS V1 PASS V2 FAIL V0 FAIL V0L PASS N3 -> FAILURES PRESENT => KEPT: V0 and V0L fail when removed
+  without /proc/self/mountinfo: PASS V1 PASS V2 FAIL V0 FAIL V0L PASS N3 -> FAILURES PRESENT => KEPT: V0 and V0L fail when removed
+  without /proc/self/coredump_filter: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS => removable
+
+candC: candB minus every removable entry at once = /proc/cgroups /proc/self/cgroup /proc/self/mountinfo
+  verdict: PASS V1 PASS V2 PASS V0 PASS V0L PASS N3 -> ALL PASS (14 checks)
+  CANARY-PRESENT /proc/1/environ
+  CANARY-PRESENT /proc/6/environ
+  PPID=6
+  DENIED /proc/1/environ
+  DENIED /proc/6/environ
+  DENIED /proc/self/root/etc/hostname
+  PROC-OTHER: /proc/1/cmdline denied
+  PROC-OTHER: /proc/6/cmdline denied
+  PROC-OTHER: /proc/6/status denied
+  CONTROL: /proc/self/environ denied
+  CONTROL: /proc/self/cmdline denied
+  PPID=6
+  PASS: N3 (0.5s) with the canary proven present unconfined, /proc/1/environ, the parent's environ and /proc/self/root/etc/hostname all denied
+
+HTML: the same N3 probe under html's ruleset (plan 70-08 Task 2; probe only, html's grant is NOT changed)
+Image built from this tree: Dockerfile.chromium-worker (native arm64). Shape as the driver's N3: container entrypoint sh (PID 1) with OCTOCONV_CANARY in its environment, `timeout` as the helper's parent, limits --cpus 2.0 --memory 1g.
+Confined command: /usr/local/bin/chromium-worker __sandbox-exec rw:/tmp/job <html conf05 ro: tokens from `scripts/conf05-crosscheck.sh --doc html`> rw:/tmp rw:/dev/null ro:/usr/bin/chromium-headless-shell -- /usr/bin/dash -c <the driver's N3_OPEN probe>
+(the probe script is the driver's N3 text; run from a scratch script outside the repo, output below verbatim)
+  tokens: rw:/tmp/job ro:/usr/bin/dash ro:/lib ro:/usr/lib ro:/usr/share ro:/usr/local/share ro:/etc/fonts ro:/etc/ld.so.cache ro:/etc/localtime ro:/etc/nsswitch.conf ro:/etc/host.conf ro:/etc/hosts ro:/etc/resolv.conf ro:/proc ro:/sys/devices ro:/dev/urandom rw:/tmp rw:/dev/null ro:/usr/bin/chromium-headless-shell
+  -- unconfined, same container shape
+  CANARY-PRESENT /proc/1/environ
+  CANARY-PRESENT /proc/6/environ
+  PPID=6
+  -- confined: chromium-worker __sandbox-exec <html tokens> -- /usr/bin/dash -c <probe>
+  DENIED /proc/1/environ
+  DENIED /proc/6/environ
+  DENIED /proc/self/root/etc/hostname
+  PROC-OTHER: /proc/1/cmdline opened
+  PROC-OTHER: /proc/6/cmdline opened
+  PROC-OTHER: /proc/6/status opened
+  CONTROL: /proc/self/environ opened
+  CONTROL: /proc/self/cmdline opened
+  PPID=6
+Reading: same pattern as veraPDF's baseline. The canary is proven readable unconfined in PID 1 and the parent; under html's whole-/proc grant their environ is DENIED, their cmdline and status OPEN, the engine's own environ and cmdline open. No environ row opened, so the follow-up todo is severity medium. Not traced: what chromium itself reads under /proc, and its child processes (zygote, renderer, GPU re-execute the binary, so a /proc/self entry resolved in the helper's pid would cover none of them).
+
+== GATES on the narrowed set (repo blocks changed to candC) ==
+scripts/conf05-crosscheck.sh document:
+  MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)
+  MATCH: verapdf readonly (11) engines (1) readwrite (1)
+scripts/sandbox-liveproof.sh document (production startup preflight, through the Go path):
+  PASS: document confined-startup
+  PASS: document refuses-without-landlock
+  PASS: document escape-hatch
+  PASS: document preflight-catches-restrict-self
+  PASS: document emulated-amd64-refuses
+  PASS: document concurrency-guard
+  PASS: document sweeps-shared-tmp
+  ALL PASS (7 checks)
+go test -count=1 ./internal/convert/: ok (63s); TestVerapdfReadOnlySetIsTheMeasuredOne expects the same eleven entries, in order.
+
+== FINAL: the full driver run on the narrowed blocks (no OVERRIDE) ==
+commit: 3a34778 tracked-dirt: 4 image: sha256:f96f654161cde193a9b184469c61c92445d0a9ac84ab95540e41d328d684709d arch: arm64 server: arm64
+engines: soffice=/usr/bin/soffice verapdf=/opt/verapdf/verapdf
+image /tmp baseline: <empty> 
+TMP-RESIDUE S1: none
+PASS: S1 (1.4s) in.odt/content.xml carries "Hello from OctoConv E2E fixture" (exit 0, not judged)
+TMP-RESIDUE S2: none
+PASS: S2 (1.1s) in.docx/word/document.xml carries "Hello from OctoConv E2E fixture" (exit 0, not judged)
+TMP-RESIDUE S3: none
+PASS: S3 (1.1s) in.ods/content.xml carries "octoconv" (exit 0, not judged)
+TMP-RESIDUE S4: none
+PASS: S4 (1.2s) in.odp/content.xml carries "Hello from OctoConv E2E fixture" (exit 0, not judged)
+TMP-RESIDUE S5: none
+PASS: S5 (1.1s) in.pdf starts %PDF- and carries /GTS_PDFA (exit 0, not judged)
+TMP-RESIDUE F1: none
+PASS: F1 (1.1s) in.pdf embeds Carlito, Caladea and LiberationSans for Calibri, Cambria and Arial (exit 0, not judged)
+TMP-RESIDUE V1: none
+PASS: V1 (1.5s) isCompliant="true" (exit 0, not judged)
+TMP-RESIDUE V2-unconfined: none
+PASS: V2 (1.5s) veraPDF under the ruleset 1.5s vs 1.6s without (limit 3x + 2s)
+TMP-RESIDUE V0: none
+PASS: V0 (0.6s) JVM cgroup metrics and ergonomic flags identical (26 lines)
+TMP-RESIDUE V0L-unconfined: none
+TMP-RESIDUE V0L: none
+PASS: V0L (1.5s) JVM view through the production launcher identical (26 lines) and the verdict is still isCompliant="true"
+TMP-RESIDUE N1: none
+SOFFICE-DENIAL: silent (exit 0, output file present: 0) stderr: /usr/bin/soffice: 145: grep: Permission denied /usr/bin/soffice: 151: uname: Permission denied Warning: failed to launch javaldx - java may not function correctly  (process:28): dconf-CRITICAL **: 20:37:05.886: unable to create directory '/nonexistent/.cache/dconf': Permission denied.  dconf will no
+PASS: N1 (0.9s) no output carries the fixture text although /outside/in.docx is identical to S1's input
+TMP-RESIDUE N2: none
+PASS: N2 (1.1s) no isCompliant verdict (exit 7, not judged); exceptionMessage: Exception: Couldn't parse stream caused by exception: /outside/in.pdf (Permission denied)
+TMP-RESIDUE N3-unconfined: none
+CANARY-PRESENT /proc/1/environ
+CANARY-PRESENT /proc/6/environ
+PPID=6
+TMP-RESIDUE N3: none
+DENIED /proc/1/environ
+DENIED /proc/6/environ
+DENIED /proc/self/root/etc/hostname
+PROC-OTHER: /proc/1/cmdline denied
+PROC-OTHER: /proc/6/cmdline denied
+PROC-OTHER: /proc/6/status denied
+CONTROL: /proc/self/environ denied
+CONTROL: /proc/self/cmdline denied
+PPID=6
+PASS: N3 (0.5s) with the canary proven present unconfined, /proc/1/environ, the parent's environ and /proc/self/root/etc/hostname all denied
+TMP-RESIDUE C1: none
+PASS: C1 (0.5s) S1 fails without the socket/tmp grant (exit 1): /usr/bin/soffice: 145: grep: Permission denied /usr/bin/soffice: 151: uname: Permission denied Warning: failed to launch javaldx - java may not function correctly  (process:27): dconf-CRITICAL **: 20:
+PREFLIGHT-SHAPED-SECONDS: S1 1.4 + S5 1.1 + V1 1.5 + N1 0.9 + N2 1.1 = 6.0
+ALL PASS (14 checks)

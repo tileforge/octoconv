@@ -1,0 +1,63 @@
+html gate transcript, plan 70-06 Task 1 (rebuilt large-document control)
+Command: scripts/sandbox-liveproof.sh html   (stdout below; run 2026-09-30T19:54Z, macOS arm64 host, OrbStack docker, GOTOOLCHAIN=go1.26.4 via the script)
+Commit under test: 02e8d1c8571417c45cdf9d8ed6eed0cb467fffcb (test(70-06): rebuild the html /dev/shm control ...)
+
+== html: building octoconv-html:sandbox-liveproof-1790798052-70402 from Dockerfile.chromium-worker ==
+commit: 02e8d1c8571417c45cdf9d8ed6eed0cb467fffcb
+tracked dirt: 3 file(s)
+image id: sha256:49d0c077a294423bcaa4b585b75d53836e9e8fa0b5940b2339c92f39ea4c6a6d
+PASS: html confined-startup
+  2026/09/30 19:54:14 🔒 html sandbox: landlock via /usr/local/bin/chromium-worker __sandbox-exec
+  2026/09/30 19:54:14 🔒 html sandbox proven: the engine rendered inside the job directory and was denied a file outside every grant
+  2026/09/30 19:54:14 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: html refuses-without-landlock
+  2026/09/30 19:54:15 html sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set HTML_SANDBOX_DISABLED=true to accept that deliberately
+PASS: html escape-hatch
+  2026/09/30 19:54:16 ⚠️  HTML_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: html preflight-catches-restrict-self
+  2026/09/30 19:54:16 html sandbox preflight: the engine cannot convert under the sandbox: chromium: engine sandbox could not be established: chromium-headless-shell failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+toolchain: go version go1.26.4 darwin/arm64
+PASS: html concurrency-guard
+  2026/09/30 19:54:18 🧵 HTML_WORKER_CONCURRENCY=2
+PASS: html wrapper-as-measured
+PASS: html sweeps-shared-tmp
+PASS: html csp-precedes-every-script
+      chromium_live_test.go:141: csp-live: 18 rows: every control executed its script, every production render blocked it
+PASS: html large-document-without-dev-shm
+      chromium_live_test.go:336: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+      chromium_live_test.go:479: chromium: Chromium 154.0.8037.57
+      chromium_live_test.go:480: dev-shm-observe: control=1 production=0
+      chromium_live_test.go:481: large-doc: fixture=84543422 bytes pdf=20461106 bytes wall=4.86259096s
+ALL PASS (9 checks)
+
+=== INVERSIONS (Task 2): each run through scripts/sandbox-liveproof.sh html on the tree at 6b88ada plus ONE temporary edit, then reverted (git diff --quiet -- internal/ cmd/ scripts/ held after each) ===
+
+--- (i) observer made blind: internal/convert/chromium_live_test.go  var devShmWatchDir = devShmDir  ->  var devShmWatchDir = "/srv" (a directory nothing writes). Expected: the control fails with 'the method cannot see a /dev/shm dependency'. ---
+exit status of the gate: 1; last line: FAILURES PRESENT (9 checks run)
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (10.35s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:336: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:440: control: created /dev/shm/devshm-control-octoconv-preflight-9df6182f814b0b79 under /dev/shm and the observer saw nothing -- the method cannot see a /dev/shm dependency
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (10.35s)
+FAIL
+FAILURES PRESENT (9 checks run)
+
+--- (ii) drop rw:/dev/shm from the observation ruleset, and (iii) remove --disable-dev-shm-usage from chromiumPrintArgs: NOT RUN. Classification is DEVSHM-NO-FLAG-REACHABLE: unused (evidence/chromium-devshm-measure-70-06.txt D4), so by construction neither can fail on this Chromium: the engine creates nothing under /dev/shm whether or not it can, and the flag only removes a statfs probe. ---
+
+--- (iv) additional inversion, production side: an entry is created under /dev/shm by the test process itself between 'start the production observer' and 'run the production argv' (temporary two lines; the engine is innocent, the observer must still report it). Expected: the production observation fails on the entry seen. ---
+exit status of the gate: 1; last line: FAILURES PRESENT (9 checks run)
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.27s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:336: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:469: production observation: the production argv created 1 entr(ies) under /dev/shm with it reachable: ["inversion-iv-octoconv-preflight-e7d69ddb9c3b9d03"] -- the engine does depend on /dev/shm (G-69-3's no-mount decision is reopened)
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.27s)
+FAIL
+FAILURES PRESENT (9 checks run)

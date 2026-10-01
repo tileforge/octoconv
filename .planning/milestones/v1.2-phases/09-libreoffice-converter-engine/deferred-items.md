@@ -6,3 +6,4 @@
 - **Issue:** `gofmt -l .` reports `internal/queue/queue_test.go` as not gofmt-clean
 - **Scope:** Pre-existing, introduced in commit `6af87c1` (Phase 6), unrelated to this plan's `Dockerfile.worker`/`Dockerfile.worker-test` changes
 - **Action:** Not fixed — out of scope per executor Scope Boundary rules ("Only auto-fix issues DIRECTLY caused by the current task's changes"). Flag for a future cleanup pass.
+  status: acknowledged

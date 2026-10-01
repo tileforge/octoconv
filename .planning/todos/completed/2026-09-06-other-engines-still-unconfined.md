@@ -2,7 +2,9 @@
 created: 2026-09-06
 area: convert
 severity: low
+completed: 2026-09-30
 origin: PR #21, while wiring Landlock into the tex engine
+resolution: closed by phases 67-70 -- every engine class runs under Landlock
 ---
 
 # The sandbox exists now, and only one of nine engines uses it
@@ -85,3 +87,19 @@ the denials rather than by reasoning.
 The startup fail-closed and the retryable classification should be lifted with
 it; both are engine-independent decisions that were argued once already in
 `internal/worker/descriptors.go` and `cmd/tectonic-worker`.
+
+## Закрыто (2026-09-30)
+
+Закрыто фазами 67-70: все классы движков теперь запускаются под Landlock —
+tectonic с PR #21, `image` в фазе 67, `pandoc`/`ocr`/`av`/`audio` в фазе 68,
+`html`/`probe` в фазе 69, `document` (LibreOffice и veraPDF) в фазе 70.
+`sandboxPendingFiles` в `internal/convert/sandboxcoverage_test.go` пуст, и тест
+держит это для всего пакета.
+
+Выход, который этот todo называл первым, — «arm64-сборка veraPDF», — оказался
+не сборкой, а закреплением одной build-стадии (70-01): в `/opt/verapdf` jar-файлы
+и shell-скрипт, ELF нет; образ стал нативным, а закрепление снято после
+дифференциального прогона veraPDF без расхождений.
+
+Проверка на amd64 в проде продолжается в
+`.planning/todos/pending/2026-09-29-amd64-first-deployment-preflight-check.md`.

@@ -5,6 +5,10 @@ planted: 2026-07-26
 planted_during: post-v1.9 (worker-ideas brainstorm)
 trigger_when: scoping a milestone that adds a new engine class beyond image/document/html/audio/av/ocr
 scope: Large
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-015: Tabular / data-format engine (csv ↔ xlsx ↔ json ↔ parquet)

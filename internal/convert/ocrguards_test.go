@@ -136,7 +136,7 @@ func TestOCRPDFPageCount_RealBinary(t *testing.T) {
 		t.Skip("pdfinfo not installed, skipping real-binary test")
 	}
 	ctx := context.Background()
-	n, err := ocrPDFPageCount(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
+	n, err := ocrPDFPageCount(ctx, engineExec{}, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
 	if err != nil {
 		t.Fatalf("ocrPDFPageCount error: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestOCRPDFPageSize_RealBinary(t *testing.T) {
 		t.Skip("pdfinfo not installed, skipping real-binary test")
 	}
 	ctx := context.Background()
-	w, h, err := ocrPDFPageSize(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
+	w, h, err := ocrPDFPageSize(ctx, engineExec{}, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
 	if err != nil {
 		t.Fatalf("ocrPDFPageSize error: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestExtractPDFTextLayer_RealBinary(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("born-digital PDF yields a usable layer", func(t *testing.T) {
-		text, n, err := extractPDFTextLayer(ctx, filepath.Join("testdata", "ocr", "born_digital.pdf"))
+		text, n, err := extractPDFTextLayer(ctx, engineExec{}, filepath.Join("testdata", "ocr", "born_digital.pdf"))
 		if err != nil {
 			t.Fatalf("extractPDFTextLayer = %v, want nil", err)
 		}
@@ -254,7 +254,7 @@ func TestExtractPDFTextLayer_RealBinary(t *testing.T) {
 	})
 
 	t.Run("image-only PDF yields no usable layer", func(t *testing.T) {
-		_, n, err := extractPDFTextLayer(ctx, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
+		_, n, err := extractPDFTextLayer(ctx, engineExec{}, filepath.Join("testdata", "ocr", "multipage_image_only.pdf"))
 		if err != nil {
 			t.Fatalf("extractPDFTextLayer = %v, want nil", err)
 		}

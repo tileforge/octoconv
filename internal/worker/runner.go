@@ -155,7 +155,7 @@ type Runner struct {
 func NewRunner(h *Handler, d EngineDescriptor) *Runner {
 	switch {
 	case d.Engine == convert.EngineAudio:
-		h.preConvertGuard = audioPreConvertGuard(h.audioMaxDuration)
+		h.preConvertGuard = audioPreConvertGuard(h.audioMaxDuration, h.audioSandboxHelper)
 	case d.PreConvertGuard != nil:
 		// Generic hook for any future engine whose guard needs no
 		// per-Handler runtime config -- unused today (audio is the only
@@ -167,13 +167,14 @@ func NewRunner(h *Handler, d EngineDescriptor) *Runner {
 }
 
 // audioPreConvertGuard builds a Handler.preConvertGuard-shaped closure
-// bound to a specific duration ceiling, so NewRunner can thread
-// h.audioMaxDuration (a per-Handler, env-configured value) into the
-// unmodified enforceAudioGuardBeforeConvert without changing that
-// function's own signature or body (T-30-08/IN-02's explicit constraint).
-func audioPreConvertGuard(maxDuration time.Duration) func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
+// bound to a specific duration ceiling and sandbox helper, so NewRunner can
+// thread h.audioMaxDuration/h.audioSandboxHelper (per-Handler, env-configured
+// values) into enforceAudioGuardBeforeConvert. helper travels alongside the
+// ceiling for the same reason (Phase 68 Plan 05): both are per-Handler
+// config the package-level EngineDescriptor var cannot see at init time.
+func audioPreConvertGuard(maxDuration time.Duration, helper []string) func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
 	return func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error {
-		return enforceAudioGuardBeforeConvert(ctx, job.Engine, inPath, maxDuration, convertFn)
+		return enforceAudioGuardBeforeConvert(ctx, job.Engine, inPath, maxDuration, helper, convertFn)
 	}
 }
 

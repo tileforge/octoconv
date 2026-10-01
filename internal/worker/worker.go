@@ -119,7 +119,7 @@ var terminalAudioSignatures = []string{
 // terminalVeraPDFSignatures are lowercased error-message substrings that
 // classify a real ISO 19005-2b PDF/A validation failure as deterministically
 // unrecoverable (D-06, phase 23): "pdf/a non-compliant" is emitted by
-// ValidatePDFA (internal/convert/verapdf.go) when veraPDF's machine-readable
+// validatePDFA (internal/convert/verapdf.go) when veraPDF's machine-readable
 // report says isCompliant=false; "pdf/a validation error" is emitted for ANY
 // veraPDF invocation/parse failure (unparseable report, batchSummary failure
 // counters, process start failure) -- fail-closed per D-06: an unverifiable
@@ -234,7 +234,19 @@ func timeoutIsTerminal(err error) bool {
 // Every non-timeout error is classified identically to the image path by
 // delegating (via timeoutIsTerminal) to isTerminal — no document-specific
 // duplication of the no-converter/minio.NoSuchKey/LibreOffice-signature checks.
+//
+// Phase 70: soffice and veraPDF run confined, so a sandbox that could not be
+// established (or a shared /tmp that could not be swept) is a node fault and
+// is checked FIRST -- before the timeout rule and before any signature. This
+// class needs the check stated explicitly: validatePDFA words a veraPDF run
+// that produced no stdout, which is what a helper that never exec'd the
+// engine looks like, as "pdf/a validation error", and that is itself one of
+// terminalVeraPDFSignatures. Without this line a sandbox fault would fail the
+// job terminally instead of being retried on another node.
 func isDocumentTerminal(err error) bool {
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	return timeoutIsTerminal(err)
 }
 
@@ -251,6 +263,19 @@ func isDocumentTerminal(err error) bool {
 // timeoutIsTerminal) to the shared isTerminal (which now also checks
 // terminalChromiumSignatures).
 func isHTMLTerminal(err error) bool {
+	// Phase 69/CONF-06: a node that cannot confine the engine or sweep its
+	// shared /tmp is retried elsewhere, never blamed on the file -- checked
+	// before delegating to timeoutIsTerminal, so this sentinel is never
+	// misclassified even when the wrapped text also carries one of
+	// terminalChromiumSignatures's own substrings (e.g. "stat output").
+	// Every other confined class already has this exact guard at the top of
+	// its own classifier (isPandocTerminal/isOCRTerminal/isAVTerminal/
+	// isAudioTerminal); this was html's own accidental (not stated) safety
+	// until now, since terminalChromiumSignatures happened not to match the
+	// sentinel's own wrapped text.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
 	return timeoutIsTerminal(err)
 }
 
@@ -293,6 +318,12 @@ func isHTMLTerminal(err error) bool {
 // Deliberately does NOT call timeoutIsTerminal.
 func isAudioTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every prefix/substring match below,
+	// including "audio: ffmpeg:", so a node fault never misclassifies as one.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	if errors.Is(err, convert.ErrAudioDurationExceeded) {
@@ -355,6 +386,11 @@ func isAudioTerminal(err error) bool {
 // treatment — keeps the two engines' client-facing contracts symmetric.
 func isAVTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every sentinel/prefix match below.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	// Deterministic guard/output-validation rejections: always terminal,
@@ -431,6 +467,12 @@ var terminalOCRSignatures = []string{
 // other unrecognized shape entirely) falls through to the shared isTerminal.
 func isOCRTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before every substring in
+	// terminalOCRSignatures below, including "pdfinfo:".
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	if errors.Is(err, convert.ErrOCRTooManyPages) ||
@@ -537,6 +579,12 @@ func ocrFailureCode(err error) (code, message string) {
 // isAudioTerminal/isAVTerminal -- never reword another engine's signature.
 func isPandocTerminal(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A node that cannot confine the engine is retried elsewhere, never
+	// blamed on the file -- checked before the "pandoc:" substring match
+	// below, which the sandbox fault's own wrapped text also carries.
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -658,6 +706,16 @@ type Handler struct {
 	// convert.EngineAudio, so image/document/html/webhook workers never read
 	// this field. The real value is wired by the audio worker cmd (Plan 04).
 	audioMaxDuration time.Duration
+	// audioSandboxHelper is the audio worker's own sandbox helper argv
+	// prefix (Phase 68 Plan 05, orchestrator decision 1). nil for every
+	// worker cmd but audio, and nil for audio too when
+	// AUDIO_SANDBOX_DISABLED=true. Threaded the same way audioMaxDuration
+	// already is (cmd/audio-worker -> NewHandler -> this field -> NewRunner
+	// -> audioPreConvertGuard -> enforceAudioGuardBeforeConvert ->
+	// convert.EnforceMaxDuration) so the guard's ffprobe -- the first engine
+	// to read the client's file, before Convert ever runs -- confines under
+	// the SAME ruleset the converter's own two stages use.
+	audioSandboxHelper []string
 	// progressMinInterval / progressMinDeltaPct are the PROG-03 dual-gate
 	// throttle config (D-03), installed via SetProgressThrottle after
 	// construction. progressMinInterval <= 0 (the zero value every worker cmd
@@ -734,7 +792,7 @@ func (h *Handler) SetProgressThrottle(minInterval time.Duration, minDeltaPct int
 // interfaces (D-10 step 1): both concrete types satisfy those interfaces
 // structurally, so no production wiring changes, and no external package
 // gains a way to inject an alternative store (T-56-01).
-func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration) *Handler {
+func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Registry, engineTimeout time.Duration, webhookRepo *webhook.Repo, deliverer *webhook.Deliverer, enqueuer *queue.Client, signingSecret []byte, presignTTL time.Duration, audioMaxDuration time.Duration, audioSandboxHelper []string) *Handler {
 	if engineTimeout == 0 {
 		engineTimeout = 120 * time.Second
 	}
@@ -744,16 +802,17 @@ func NewHandler(repo *jobs.Repo, store *storage.Client, registry *convert.Regist
 		presignTTL = 6 * time.Hour
 	}
 	h := &Handler{
-		repo:             repo,
-		store:            store,
-		registry:         registry,
-		engineTimout:     engineTimeout,
-		webhookRepo:      webhookRepo,
-		deliverer:        deliverer,
-		enqueuer:         enqueuer,
-		signingSecret:    signingSecret,
-		presignTTL:       presignTTL,
-		audioMaxDuration: audioMaxDuration,
+		repo:               repo,
+		store:              store,
+		registry:           registry,
+		engineTimout:       engineTimeout,
+		webhookRepo:        webhookRepo,
+		deliverer:          deliverer,
+		enqueuer:           enqueuer,
+		signingSecret:      signingSecret,
+		presignTTL:         presignTTL,
+		audioMaxDuration:   audioMaxDuration,
+		audioSandboxHelper: audioSandboxHelper,
 	}
 	// processFn defaults to h.process (D-10): the struct literal above cannot
 	// reference h while h is still being constructed, so the method value is
@@ -1077,13 +1136,19 @@ const audioProbeTimeout = 15 * time.Second
 // constructed in a pure unit test. A rejection here surfaces as
 // ErrAudioDurationExceeded, unwrapped, which isAudioTerminal classifies
 // terminal.
-func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, audioMaxDuration time.Duration, convertFn func() error) error {
+func enforceAudioGuardBeforeConvert(ctx context.Context, engine, inPath string, audioMaxDuration time.Duration, audioSandboxHelper []string, convertFn func() error) error {
 	if engine == convert.EngineAudio {
 		// WR-02/T-30-03: derive a short probe-only deadline from the
 		// whole-attempt ctx rather than passing it through — ProbeDuration
 		// must never run under the full AUDIO_ENGINE_TIMEOUT budget.
+		//
+		// audioSandboxHelper (Phase 68 Plan 05, orchestrator decision 1):
+		// this ffprobe call reads the client's file BEFORE Convert ever
+		// runs, so it confines under the same ruleset the converter's own
+		// two stages use -- nil is the zero-value/unconfined contract every
+		// other guard/engine call in this codebase already carries.
 		probeCtx, cancel := context.WithTimeout(ctx, audioProbeTimeout)
-		err := convert.EnforceMaxDuration(probeCtx, inPath, audioMaxDuration)
+		err := convert.EnforceMaxDuration(probeCtx, audioSandboxHelper, inPath, audioMaxDuration)
 		cancel()
 		if err != nil {
 			return err

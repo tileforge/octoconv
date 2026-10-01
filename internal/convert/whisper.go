@@ -157,6 +157,13 @@ type AudioConverter struct {
 	// env-dependent -- consistent with the other converters, which never
 	// read os.Getenv directly.
 	modelPath string
+
+	// Sandbox confines the engine's filesystem access, mirroring
+	// AVConverter's/OCRConverter's/PandocConverter's own field: zero value
+	// runs ffmpeg/whisper-cli directly, which is what every unit test wants
+	// and what a deployment gets only by saying so out loud --
+	// cmd/audio-worker refuses to start otherwise.
+	Sandbox *engineSandbox
 }
 
 // model returns the model path to pass to whisper-cli's -m flag: the
@@ -337,6 +344,15 @@ func (c AudioConverter) Convert(ctx context.Context, inPath, outPath string, opt
 	workDir := filepath.Dir(outPath) // caller's per-job workDir; already unique, already cleaned up
 	normPath := filepath.Join(workDir, "norm.wav")
 
+	// engineExec.forJob is built ONCE per job and shared by both stages
+	// (Phase 68 Plan 05, mirrors AVConverter's/OCRConverter's single-build
+	// pattern): audioReadOnly plus the resolved model FILE (c.model()) is
+	// the read-only grant -- the model is granted as a file, never a
+	// directory, and resolved here (not baked into the static var) because
+	// AUDIO_MODEL_PATH is configurable. audioEngines resolves ffmpeg and
+	// whisper-cli through PATH the same way.
+	x := c.Sandbox.forJob(workDir, append(append([]string{}, audioReadOnly...), c.model()), audioEngines)
+
 	// WR-04: the caller's ctx is a single whole-attempt deadline that also
 	// covered the S3 download (and ffprobe guard) before Convert ran. If an
 	// upstream stage (e.g. a transiently stalled S3 transfer) pre-consumed
@@ -366,7 +382,7 @@ func (c AudioConverter) Convert(ctx context.Context, inPath, outPath string, opt
 	// stage's errors lets the worker-layer classifier (Phase 31,
 	// isAudioTerminal) split ffmpeg-stage failures (malformed input ->
 	// terminal) from whisper-stage failures (likely transient).
-	if _, err := runCommand(ctx, "ffmpeg", ffmpegNormalizeArgs(inPath, normPath)...); err != nil {
+	if _, err := x.run(ctx, "ffmpeg", ffmpegNormalizeArgs(inPath, normPath)...); err != nil {
 		return fmt.Errorf("audio: ffmpeg: %w", err)
 	}
 
@@ -376,7 +392,7 @@ func (c AudioConverter) Convert(ctx context.Context, inPath, outPath string, opt
 	// input-filename-based naming -- RESEARCH.md "Output file naming").
 	outBase := strings.TrimSuffix(outPath, filepath.Ext(outPath))
 	args := whisperArgs(c.model(), normPath, outBase, outFlags, o, audioThreadCount())
-	if _, err := runCommand(ctx, "whisper-cli", args...); err != nil {
+	if _, err := x.run(ctx, "whisper-cli", args...); err != nil {
 		return fmt.Errorf("audio: whisper-cli: %w", err)
 	}
 

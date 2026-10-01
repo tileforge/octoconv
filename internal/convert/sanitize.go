@@ -67,7 +67,7 @@ type SanitizeResult struct {
 // initialized by dependency, not by file name. The cost is that the closed
 // set of sanitizable formats lives here rather than beside each handler,
 // which for a set this document-visible is arguably where it belongs.
-var sanitizeFormats = map[string]func(context.Context, string, string) (SanitizeResult, error){
+var sanitizeFormats = map[string]func(context.Context, engineExec, string, string) (SanitizeResult, error){
 	"pdf": sanitizePDF,
 
 	// The six OOXML formats the API can actually ADMIT. dotm, potm, ppsm and
@@ -93,7 +93,7 @@ var sanitizeFormats = map[string]func(context.Context, string, string) (Sanitize
 	"png": sanitizeImage,
 }
 
-// SanitizeFile sanitizes inPath into outPath, dispatching on the NORMALIZED
+// sanitizeFile sanitizes inPath into outPath, dispatching on the NORMALIZED
 // source format.
 //
 // The format is normalized through NormalizeFormat, the same entry point the
@@ -102,13 +102,28 @@ var sanitizeFormats = map[string]func(context.Context, string, string) (Sanitize
 // sanitizer that silently returns the input unchanged for a format it does not
 // handle is the worst available outcome, because the job goes green and the
 // client believes the file was disarmed.
-func SanitizeFile(ctx context.Context, format, inPath, outPath string) (SanitizeResult, error) {
+//
+// x is the ONE engineExec built for this job (SanitizeConverter.Convert
+// builds it once, before any dispatch) and threaded through every format
+// handler and the verifier below. sanitizeOOXML/sanitizeImage never exec
+// anything and carry x unused -- the map's value type is shared across all
+// six functions, and a caller reaching this function directly (every test)
+// passes engineExec{} for "run the engine unconfined".
+//
+// It is package-private on purpose (Codex P2, PR #30): its x parameter is the
+// package-private engineExec, so an exported version could not be called from
+// outside this package. The only way to make it callable would be an exported
+// variant that fills x itself -- and that would have to pass a zero engineExec,
+// i.e. run the engine with no sandbox, bypassing the Landlock ruleset
+// SanitizeConverter.Convert builds for every job. Production reaches this
+// function only through SanitizeConverter.Convert.
+func sanitizeFile(ctx context.Context, x engineExec, format, inPath, outPath string) (SanitizeResult, error) {
 	norm := NormalizeFormat(format)
 	fn, ok := sanitizeFormats[norm]
 	if !ok {
 		return SanitizeResult{}, fmt.Errorf("sanitize: unsupported format %q", format)
 	}
-	res, err := fn(ctx, inPath, outPath)
+	res, err := fn(ctx, x, inPath, outPath)
 	if err != nil {
 		return SanitizeResult{}, err
 	}
@@ -118,7 +133,7 @@ func SanitizeFile(ctx context.Context, format, inPath, outPath string) (Sanitize
 	// named sanitize and was never checked -- and nothing downstream can tell
 	// that file from a verified one. There is no skip flag for the same
 	// reason (SANI-04, D-07).
-	verified, verr := VerifySanitized(ctx, norm, outPath)
+	verified, verr := verifySanitized(ctx, x, norm, outPath)
 	if verr != nil {
 		// Delete the output before returning. The requirement is that
 		// nothing unverified reaches S3; the strongest form of that is that

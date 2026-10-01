@@ -5,6 +5,7 @@ subsystem: inspect
 tags: [security-review, coverage, tracker, denial-of-service, false-negative, false-positive]
 
 # Dependency graph
+
 requires:
   - phase: 58-synchronous-inspection
     provides: internal/inspect's FamilyResult/Check/Coverage three-value status model (D-02a/INSP-03), and Tracker (budget.go) as the per-operation object this task extends
@@ -17,9 +18,11 @@ provides:
   - "pdf.go:543 fixed: scanPDFOpaqueRanges's three sub-scans report their own ceilingHit; an incomplete opaque-range set downgrades both a found match and a clean verdict to unknown"
   - "media.go:575 fixed: findEBMLDuration tracks TimestampScale's own ceilingHit and refuses to publish a duration computed against the unproven default scale"
   - "container.go:497 fixed: extractXLSXSheetCount reads one extra byte past maxRelsPartBytes to detect the io.LimitReader boundary trap"
+
 affects: [60-sanitize-verifier, any-future-inspect-followup]
 
 # Tech tracking
+
 tech-stack:
   added: []
   patterns:
@@ -53,8 +56,13 @@ key-decisions:
 requirements-completed: [PR9R3-STRUCTURAL-SINK, PR9R3-F1-PAGECOUNT-CEILING, PR9R3-F2-EBML-TIMESTAMPSCALE, PR9R3-F3-LIMITREADER-EOF, PR9R3-F4-OPAQUE-RANGE-EXHAUSTION]
 
 # Metrics
+
 duration: ~2h40min
 completed: 2026-08-11
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260811-r3s: Exhaustion Sink Summary
@@ -240,12 +248,14 @@ PASS
 **Change:** `buildCoverage`'s `tr != nil && tr.Exhausted()` fallback -> `if false && tr != nil && tr.Exhausted() { ... }` (disabled).
 **Expected:** `TestBuildReportCallerMarkedCeilingHitAloneMakesCoverageIncomplete` fails (`Coverage.Complete` stays `true`).
 **Actual output:**
+
 ```
 === RUN   TestBuildReportCallerMarkedCeilingHitAloneMakesCoverageIncomplete
     report_test.go:443: Coverage.Complete = true, want false -- tr.MarkCeilingHit() was called directly and nothing else propagated it, proving the receptacle alone drives Coverage
 --- FAIL: TestBuildReportCallerMarkedCeilingHitAloneMakesCoverageIncomplete (0.00s)
 FAIL
 ```
+
 Reverted; `go test ./internal/inspect/...` green again.
 
 ### Task 2 inversion -- pdf.go:800 (page_count ceiling-before-found)
@@ -253,12 +263,14 @@ Reverted; `go test ./internal/inspect/...` green again.
 **Change:** `extractPDFPageCount`'s check order -> reverted to `if found != nil { return found, "" }` BEFORE the `ceilingHit || truncated` check (pre-fix order).
 **Expected:** `TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale` fails (`page_count` comes back non-nil).
 **Actual output:**
+
 ```
 === RUN   TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale
     pdf_test.go:894: page_count = 99, want nil -- a ceiling-truncated walk must never publish a value it saw along the way as if it were authoritative
 --- FAIL: TestExtractPDFPageCountCeilingHitBeforeFoundIsUnknownNotStale (0.33s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 2 inversion -- media.go:575 (EBML TimestampScale ceilingHit discarded)
@@ -266,6 +278,7 @@ Reverted; full suite green again.
 **Change:** `findEBMLDuration`'s `if tsCeilingHit { return 0, false, true }` -> `if false && tsCeilingHit { ... }` (disabled).
 **Expected:** `TestFindEBMLDurationTimestampScaleCeilingHitYieldsUnknownNotDefaultScale` and `TestAnalyzeMediaEBMLTimestampScaleCeilingHitYieldsUnknownDuration` both fail (a duration is computed against the default scale).
 **Actual output:**
+
 ```
 === RUN   TestFindEBMLDurationTimestampScaleCeilingHitYieldsUnknownNotDefaultScale
     media_test.go:643: findEBMLDuration returned ok=true, dur=0.0125 -- must not compute a duration against an unproven default TimestampScale (its own search was cut short, not proven absent)
@@ -275,6 +288,7 @@ Reverted; full suite green again.
 --- FAIL: TestAnalyzeMediaEBMLTimestampScaleCeilingHitYieldsUnknownDuration (0.00s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 2 inversion -- pdf.go:543 (opaque-range scan ceiling suppresses a found match)
@@ -282,12 +296,14 @@ Reverted; full suite green again.
 **Change:** the `if foundOpaqueCeilingHit { ... }` downgrade in `AnalyzePDF`'s per-code loop -> `if false && foundOpaqueCeilingHit { ... }` (disabled).
 **Expected:** `TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding` fails (a critical `pdf_javascript` Finding is produced).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding
     pdf_test.go:960: got a critical Finding for pdf_javascript -- the opaque-range scan that would have recognized this match sits inside a literal string was itself truncated by its own cap, so this is exactly the false-positive class the literal/hex-string filter exists to close
 --- FAIL: TestAnalyzePDFOpaqueRangeScanCeilingSuppressesFalsePositiveFinding (0.06s)
 FAIL
 ```
+
 Reverted; full suite green again.
 
 ### Task 2 inversion -- container.go:497 (LimitReader boundary trap)
@@ -295,12 +311,14 @@ Reverted; full suite green again.
 **Change:** `extractXLSXSheetCount`'s `io.LimitReader(rc, maxRelsPartBytes+1)` + overflow check -> reverted to `io.LimitReader(rc, maxRelsPartBytes)` with no overflow check (pre-fix shape).
 **Expected:** `TestAnalyzeContainerSheetCountLimitReaderBoundaryIsWorkCeilingNotComplete` fails (a truncated, undercounted `sheet_count` is reported as complete).
 **Actual output:**
+
 ```
 === RUN   TestAnalyzeContainerSheetCountLimitReaderBoundaryIsWorkCeilingNotComplete
     container_test.go:403: sheet_count = 4827, want nil -- the part's real content runs past maxRelsPartBytes even though it DECLARES exactly maxRelsPartBytes; a count computed from the truncated prefix would silently omit sheets past the boundary
 --- FAIL: TestAnalyzeContainerSheetCountLimitReaderBoundaryIsWorkCeilingNotComplete (0.02s)
 FAIL
 ```
+
 (4827 of 10000 real `<sheet/>` elements silently omitted -- exactly the finding's own worked example.) Reverted; full suite green again.
 
 ## Threat Model / Threat Flags

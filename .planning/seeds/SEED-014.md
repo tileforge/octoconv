@@ -5,6 +5,10 @@ planted: 2026-07-26
 planted_during: post-v1.9 (worker-ideas brainstorm)
 trigger_when: scoping a milestone for file optimization / size-reduction (an operation that mutates, not converts, format)
 scope: Medium
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-014: File optimization / size-reduction engine

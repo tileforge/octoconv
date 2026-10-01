@@ -30,6 +30,26 @@ func requireVerifierBinaries(t *testing.T) {
 	}
 }
 
+// copyCorpusFixture copies name from sanitizeCorpusDir into t.TempDir() and
+// returns the copy's path. testdata/sanitize/ is source-controlled and
+// shared across every test in this package; verifyOOXML's extraction
+// directory now lives beside its INPUT (D-05 precondition), so a caller that
+// verifies a corpus file in place would write a scratch directory into the
+// tracked tree instead of a throwaway one.
+func copyCorpusFixture(t *testing.T, name string) string {
+	t.Helper()
+	src := filepath.Join(sanitizeCorpusDir, name)
+	blob, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read corpus fixture %s: %v", src, err)
+	}
+	dst := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(dst, blob, 0o600); err != nil {
+		t.Fatalf("copy corpus fixture %s: %v", src, err)
+	}
+	return dst
+}
+
 // TestVerifierRejectsTheUnsanitizedInput is the calibration test, and it is
 // the most important one in this file.
 //
@@ -53,8 +73,13 @@ func TestVerifierRejectsTheUnsanitizedInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.format, func(t *testing.T) {
-			path := filepath.Join(sanitizeCorpusDir, tc.file)
-			classes, err := VerifySanitized(context.Background(), tc.format, path)
+			// Copied into t.TempDir() rather than read straight from
+			// testdata/sanitize/: verifyOOXML now creates its extraction
+			// directory INSIDE filepath.Dir(path) (D-05 precondition, plan
+			// 69-02) -- reading the corpus fixture in place would write a
+			// scratch directory into the tracked source tree.
+			path := copyCorpusFixture(t, tc.file)
+			classes, err := verifySanitized(context.Background(), engineExec{}, tc.format, path)
 			if err == nil {
 				t.Fatalf("verifier called the UNSANITIZED %s clean (returned %v) -- "+
 					"it cannot prove anything about sanitized output either", tc.file, classes)
@@ -89,10 +114,10 @@ func TestVerifierAcceptsSanitizedOutput(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.format, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "out")
-			res, err := SanitizeFile(context.Background(), tc.format,
+			res, err := sanitizeFile(context.Background(), engineExec{}, tc.format,
 				filepath.Join(sanitizeCorpusDir, tc.file), out)
 			if err != nil {
-				t.Fatalf("SanitizeFile: %v", err)
+				t.Fatalf("sanitizeFile: %v", err)
 			}
 			if len(res.Verified) == 0 {
 				t.Fatal("Verified is empty: the removal ran and nothing confirmed it")
@@ -121,9 +146,9 @@ func TestVerifierOutcomesAreDistinguishable(t *testing.T) {
 	requireGhostscript(t)
 	dirty := filepath.Join(dir, "dirty.pdf")
 	clean := filepath.Join(dir, "clean.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), clean); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	cleanBytes, err := os.ReadFile(clean)
 	if err != nil {
@@ -134,7 +159,7 @@ func TestVerifierOutcomesAreDistinguishable(t *testing.T) {
 	if err := os.WriteFile(dirty, append(cleanBytes, []byte("\n% /JavaScript\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := VerifySanitized(context.Background(), "pdf", dirty); !errors.Is(err, ErrSanitizeResidue) {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "pdf", dirty); !errors.Is(err, ErrSanitizeResidue) {
 		t.Fatalf("want residue on a parseable-but-dirty file, got %v", err)
 	}
 
@@ -143,12 +168,12 @@ func TestVerifierOutcomesAreDistinguishable(t *testing.T) {
 	if err := os.WriteFile(garbage, []byte("this is not a PDF at all"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := VerifySanitized(context.Background(), "pdf", garbage); !errors.Is(err, ErrSanitizeUnverifiable) {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "pdf", garbage); !errors.Is(err, ErrSanitizeUnverifiable) {
 		t.Fatalf("want unverifiable on unparseable bytes, got %v", err)
 	}
 
 	// a format with no verifier registered is unverifiable, never clean.
-	if _, err := VerifySanitized(context.Background(), "tiff", garbage); !errors.Is(err, ErrSanitizeUnverifiable) {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "tiff", garbage); !errors.Is(err, ErrSanitizeUnverifiable) {
 		t.Fatalf("want unverifiable for an unregistered format, got %v", err)
 	}
 }
@@ -162,9 +187,9 @@ func TestVerifierRejectsMultiRevisionOutput(t *testing.T) {
 
 	dir := t.TempDir()
 	clean := filepath.Join(dir, "clean.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), clean); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 
 	base, err := os.ReadFile(clean)
@@ -176,7 +201,7 @@ func TestVerifierRejectsMultiRevisionOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = VerifySanitized(context.Background(), "pdf", twoRevisions)
+	_, err = verifySanitized(context.Background(), engineExec{}, "pdf", twoRevisions)
 	if !errors.Is(err, ErrSanitizeResidue) {
 		t.Fatalf("a two-revision output was not rejected: %v", err)
 	}
@@ -260,7 +285,7 @@ func TestVerifierCatchesRenamedOLEPart(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := VerifySanitized(context.Background(), "docx", path); !errors.Is(err, ErrSanitizeResidue) {
+			if _, err := verifySanitized(context.Background(), engineExec{}, "docx", path); !errors.Is(err, ErrSanitizeResidue) {
 				t.Fatalf("%s: not caught (%v)", tc.why, err)
 			}
 		})
@@ -291,11 +316,11 @@ func TestUnverifiedOutputIsDeleted(t *testing.T) {
 		}
 	})
 
-	sanitizeFormats[fakeFormat] = func(_ context.Context, _, outPath string) (SanitizeResult, error) {
+	sanitizeFormats[fakeFormat] = func(_ context.Context, _ engineExec, _, outPath string) (SanitizeResult, error) {
 		return SanitizeResult{Removed: []ThreatClass{ThreatJavaScript}},
 			os.WriteFile(outPath, []byte("produced output"), 0o600)
 	}
-	verifiers[fakeFormat] = func(_ context.Context, _, _ string) ([]ThreatClass, error) {
+	verifiers[fakeFormat] = func(_ context.Context, _ engineExec, _, _ string) ([]ThreatClass, error) {
 		return nil, ErrSanitizeUnverifiable
 	}
 
@@ -309,8 +334,8 @@ func TestUnverifiedOutputIsDeleted(t *testing.T) {
 	delivered := 0
 	deliver := func(path string) error { delivered++; return nil }
 
-	if _, err := SanitizeFile(context.Background(), fakeFormat, in, out); err == nil {
-		t.Fatal("SanitizeFile returned success despite an unverifiable output")
+	if _, err := sanitizeFile(context.Background(), engineExec{}, fakeFormat, in, out); err == nil {
+		t.Fatal("sanitizeFile returned success despite an unverifiable output")
 	} else if err := deliver(out); err != nil {
 		_ = err // unreachable; kept so the fake has a real call site
 	}
@@ -373,9 +398,9 @@ func TestVerifierDoesNotScanPDFStreamPayloads(t *testing.T) {
 
 	dir := t.TempDir()
 	clean := filepath.Join(dir, "clean.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), clean); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	base, err := os.ReadFile(clean)
 	if err != nil {
@@ -538,7 +563,7 @@ func TestVerifierCatchesRelationshipResidue(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := verifySanitized(context.Background(), engineExec{}, "docx", path)
 			if err == nil {
 				t.Fatalf("the verifier confirmed this package clean; it reports the OOXML " +
 					"classes as verified while being unable to see this residue at all")
@@ -602,7 +627,7 @@ func TestVerifierAcceptsCustomXMLParts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := VerifySanitized(context.Background(), "docx", path); err != nil {
+	if _, err := verifySanitized(context.Background(), engineExec{}, "docx", path); err != nil {
 		t.Errorf("a package with application-defined XML parts was rejected: %v -- the output "+
 			"is deleted on a residue verdict, so this destroys a correct result", err)
 	}
@@ -636,7 +661,7 @@ func TestVerifierRequiresAContentTypesPart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = VerifySanitized(context.Background(), "docx", path)
+	_, err = verifySanitized(context.Background(), engineExec{}, "docx", path)
 	if err == nil {
 		t.Fatal("a package with no [Content_Types].xml verified clean")
 	}
@@ -743,9 +768,9 @@ func TestStreamRangesAgreeWithTheVerifier(t *testing.T) {
 	requireGhostscript(t)
 
 	out := filepath.Join(t.TempDir(), "out.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	raw, err := os.ReadFile(out)
 	if err != nil {
@@ -786,9 +811,9 @@ func TestVerifierCountsRevisionsOutsideStreams(t *testing.T) {
 	requireGhostscript(t)
 
 	out := filepath.Join(t.TempDir(), "out.pdf")
-	if _, err := SanitizeFile(context.Background(), "pdf",
+	if _, err := sanitizeFile(context.Background(), engineExec{}, "pdf",
 		filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
-		t.Fatalf("SanitizeFile: %v", err)
+		t.Fatalf("sanitizeFile: %v", err)
 	}
 	raw, err := os.ReadFile(out)
 	if err != nil {

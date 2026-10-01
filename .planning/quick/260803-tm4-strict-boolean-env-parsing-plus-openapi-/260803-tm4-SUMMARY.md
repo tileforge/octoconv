@@ -12,6 +12,7 @@ provides:
   - "an inline `# comment` trailing a boolean env value no longer silently defeats it at any of the five sites"
   - "docs/openapi.yaml's Error schema correctly scoped to non-429 responses"
   - "52-01-SUMMARY/52-02-PLAN/ROADMAP/STATE synced to the repository's actual Phase 52 completion state"
+
 affects: [api startup, webhook SSRF guard, storage client startup, quota kill-switch, openapi spec, planning docs]
 
 tech-stack:
@@ -54,6 +55,10 @@ requirements-completed: [PR5-CR-BOOLENV, PR5-CR-OPENAPI-ERROR, PR5-CR-PLANDRIFT]
 
 duration: ~35min
 completed: 2026-08-03
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260803-tm4: Strict boolean env parsing + OpenAPI/planning cleanup Summary

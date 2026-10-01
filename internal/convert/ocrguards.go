@@ -62,10 +62,11 @@ func parsePdfinfoPages(out []byte) (int, error) {
 	return 0, errors.New("ocr: pdfinfo output has no Pages line")
 }
 
-// ocrPDFPageCount runs pdfinfo through the hardened runCommand (Setpgid +
-// SIGKILL-on-timeout, exec.go) and parses the declared page count.
-func ocrPDFPageCount(ctx context.Context, pdfPath string) (int, error) {
-	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(pdfPath)...)
+// ocrPDFPageCount runs pdfinfo through the job's engineExec (Landlock-
+// confined when the job is, hardened Setpgid + SIGKILL-on-timeout either
+// way, exec.go) and parses the declared page count.
+func ocrPDFPageCount(ctx context.Context, x engineExec, pdfPath string) (int, error) {
+	out, err := x.run(ctx, "pdfinfo", ocrPageCountArgs(pdfPath)...)
 	if err != nil {
 		return 0, fmt.Errorf("ocr: pdfinfo: %w", err)
 	}
@@ -132,8 +133,8 @@ func enforcePageBoxBound(widthPts, heightPts float64, dpi int, maxPixels uint64)
 // ocrPDFPageSize runs pdfinfo and parses the declared page-box physical
 // size, failing closed via parsePdfinfoPageSize. Plan 04's PDF loop calls
 // this (or a per-page `pdfinfo -f N -l N` variant) before each render.
-func ocrPDFPageSize(ctx context.Context, pdfPath string) (widthPts, heightPts float64, err error) {
-	out, err := runCommand(ctx, "pdfinfo", ocrPageCountArgs(pdfPath)...)
+func ocrPDFPageSize(ctx context.Context, x engineExec, pdfPath string) (widthPts, heightPts float64, err error) {
+	out, err := x.run(ctx, "pdfinfo", ocrPageCountArgs(pdfPath)...)
 	if err != nil {
 		return 0, 0, fmt.Errorf("ocr: pdfinfo: %w", err)
 	}
@@ -266,8 +267,8 @@ func hasUsableTextLayer(nonWhitespace int) bool {
 // alone is the state this phase found the code in: advertised and refused. If
 // that test is ever deleted or weakened, this paragraph goes back to being an
 // unbacked assertion -- treat its removal as a contract change, not a cleanup.
-func extractPDFTextLayer(ctx context.Context, pdfPath string) (text []byte, nonWhitespace int, err error) {
-	out, err := runCommand(ctx, "pdftotext", ocrTextLayerArgs(pdfPath)...)
+func extractPDFTextLayer(ctx context.Context, x engineExec, pdfPath string) (text []byte, nonWhitespace int, err error) {
+	out, err := x.run(ctx, "pdftotext", ocrTextLayerArgs(pdfPath)...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("ocr: pdftotext: %w", err)
 	}

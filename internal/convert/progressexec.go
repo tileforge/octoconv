@@ -51,6 +51,21 @@ func progressStreamArgs(fifoPath string, args []string) []string {
 // FIFO on the SAME "file" protocol every other argv builder in this
 // package already uses (T-41-07).
 //
+// The FIFO's own directory is created INSIDE fifoDir (Phase 68 Plan 04,
+// T-68-19): fifoDir is the caller's job directory, the ONLY path a confined
+// job's ruleset grants write access to -- a directory under the shared
+// system temp dir (this function's pre-Phase-68 behavior) would be denied
+// to a confined engine under Landlock, and would be visible to other jobs
+// sharing that same temp dir even when unconfined. Removed unconditionally
+// on every return path.
+//
+// command is called AFTER the FIFO exists and its read end is already open,
+// with fifoPath so the caller can fold "-progress file:<fifoPath>" into the
+// engine's OWN argv before any sandbox wrapping happens -- see
+// engineExec.stream's doc comment for why that ordering is load-bearing.
+// Every error command returns is passed straight back to the caller,
+// closing the already-open read end first.
+//
 // Leak-safety (T-41-04/PROG-05): the read end is opened O_RDONLY|O_NONBLOCK
 // BEFORE the child is started, so this function can never hang even if the
 // child fails to start or dies before ever touching the FIFO. A FIFO with
@@ -66,16 +81,17 @@ func progressStreamArgs(fifoPath string, args []string) []string {
 // scanDone is joined in BOTH the ctx.Done()/SIGKILL arm and the normal-exit
 // arm, before returning -- the same discipline runCommand already applies
 // to its own reaper goroutine, extended here to the reader.
-func runCommandStreaming(ctx context.Context, onLine func(string), name string, args ...string) ([]byte, error) {
-	tmpDir, err := os.MkdirTemp("", "octoconv-progress-*")
+func runCommandStreaming(ctx context.Context, onLine func(string), fifoDir, label string, command func(fifoPath string) (name string, args []string, err error)) ([]byte, error) {
+	dir, err := os.MkdirTemp(fifoDir, ".progress-")
 	if err != nil {
 		return nil, fmt.Errorf("progress tmpdir: %w", err)
 	}
-	// Server-owned temp dir, never a client-controlled path (T-41-06);
-	// removed unconditionally on every return path.
-	defer os.RemoveAll(tmpDir)
+	// The FIFO's own private directory, always removed on every return path
+	// -- never the caller's whole fifoDir, which is the job directory and
+	// outlives this one invocation.
+	defer os.RemoveAll(dir)
 
-	fifoPath := filepath.Join(tmpDir, "progress.fifo")
+	fifoPath := filepath.Join(dir, "progress.fifo")
 	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
 		return nil, fmt.Errorf("progress fifo: %w", err)
 	}
@@ -89,8 +105,13 @@ func runCommandStreaming(ctx context.Context, onLine func(string), name string, 
 		return nil, fmt.Errorf("progress fifo open: %w", err)
 	}
 
-	finalArgs := progressStreamArgs(fifoPath, args)
-	cmd := exec.Command(name, finalArgs...)
+	name, args, err := command(fifoPath)
+	if err != nil {
+		rd.Close()
+		return nil, err
+	}
+
+	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // mirrors runCommand exactly
 
 	var stdout, stderr bytes.Buffer
@@ -99,7 +120,7 @@ func runCommandStreaming(ctx context.Context, onLine func(string), name string, 
 
 	if err := cmd.Start(); err != nil {
 		rd.Close()
-		return nil, fmt.Errorf("start %s: %w", name, err)
+		return nil, fmt.Errorf("start %s: %w", label, err)
 	}
 
 	// stop tells the reader "the child has been reaped -- the NEXT EOF is
@@ -158,7 +179,7 @@ func runCommandStreaming(ctx context.Context, onLine func(string), name string, 
 		}
 		close(stop)
 		<-scanDone // join before returning -- zero leaked goroutines (PROG-05)
-		return nil, fmt.Errorf("%s killed: %w", name, ctx.Err())
+		return nil, fmt.Errorf("%s killed: %w", label, ctx.Err())
 	case err := <-done:
 		// Same guaranteed-unblock poke on the normal-exit path: ffmpeg
 		// may have exited having never opened the FIFO (e.g. an early
@@ -170,8 +191,34 @@ func runCommandStreaming(ctx context.Context, onLine func(string), name string, 
 		<-scanDone // join BEFORE returning, so the caller's terminal read
 		// of onLine's side effects never races a still-in-flight line
 		if err != nil {
-			return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", name, err, stderr.String())
+			return stdout.Bytes(), fmt.Errorf("%s failed: %w: %s", label, err, stderr.String())
 		}
 		return stdout.Bytes(), nil
 	}
+}
+
+// stream runs name confined under e's ruleset (or directly, for an
+// unconfined engineExec), streaming its -progress feed to onLine via a FIFO
+// created inside fifoDir -- the caller's job directory (Phase 68 Plan 04).
+//
+// The "-progress file:<fifoPath>" option is folded into the ENGINE's own
+// argv (progressStreamArgs) BEFORE wrapEngine wraps the whole thing for the
+// helper -- never the other way around. Helper mode is recognised solely by
+// argv[1] being the exec-mode marker (internal/sandbox/execmode.go,
+// RunExecModeIfRequested): wrapping first and prepending "-progress"
+// afterward would push it in front of "__sandbox-exec", and the worker
+// binary would try to start a second worker process instead of exec'ing
+// ffmpeg. T-68-18.
+func (e engineExec) stream(ctx context.Context, onLine func(string), fifoDir, name string, args []string) ([]byte, error) {
+	// A per-exec environment (html's own replaced-environment shape) is not
+	// wired through runCommandStreaming at all -- refusing loudly here means
+	// a future streaming class that also needs one fails fast at the call
+	// site instead of silently running with the wrong (inherited) environment.
+	if e.env != nil {
+		return nil, fmt.Errorf("engineExec.stream: a per-exec environment is not supported")
+	}
+	out, err := runCommandStreaming(ctx, onLine, fifoDir, name, func(fifoPath string) (string, []string, error) {
+		return e.sandbox.wrapEngine(name, e.spec, progressStreamArgs(fifoPath, args))
+	})
+	return out, e.sandboxFault(err)
 }

@@ -417,7 +417,11 @@ func xmlAttr(s string) string {
 // sanitizeOOXML rebuilds inPath into outPath without the macro project, OLE
 // objects, embedded attachments, document properties or external references,
 // and with the container's own wiring made consistent with what remains.
-func sanitizeOOXML(ctx context.Context, inPath, outPath string) (SanitizeResult, error) {
+//
+// x is unused: this file's rebuild is pure Go (archive/zip), never an
+// external process. It carries the parameter only because sanitizeFormats'
+// value type is shared across all six format handlers.
+func sanitizeOOXML(ctx context.Context, _ engineExec, inPath, outPath string) (SanitizeResult, error) {
 	zr, err := zip.OpenReader(inPath)
 	if err != nil {
 		return SanitizeResult{}, fmt.Errorf("%w: open archive: %v", ErrSanitizeMalformedInput, err)

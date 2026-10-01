@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,14 +25,97 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// avSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors ocrSandboxDisabledEnv
+// (cmd/ocr-worker/main.go): a deployment gets an unconfined engine only by
+// saying so.
+const avSandboxDisabledEnv = "AV_SANDBOX_DISABLED"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec ffmpeg/ffprobe, not connect to Postgres and start a
+	// worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine ffmpeg/ffprobe must not consume a queue. It would fail every
+	// job -- or, far worse, run every engine unconfined while the deployment
+	// believes otherwise. The paths it grants were MEASURED, not reasoned:
+	// see .planning/research/SANDBOX-PATHS.md and avReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(avSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("av sandbox: %v", err)
+	}
+
+	// D-09/Pitfall 4 (Phase 36): build a CONFIGURED, sandbox-wired
+	// AVConverter and re-register it, overriding the zero-value registration
+	// converters.go's init() already performed -- documented last-write-wins
+	// semantics (Registry.Replace, a bare map assignment, converters.go).
+	// This MUST run before srv.Start(mux) below: that is the point asynq's
+	// worker goroutines begin concurrently reading the registered converter,
+	// so this single write must happen-before every concurrent read (no
+	// mutex needed, same happens-before boundary as AUDIO_MODEL_PATH/
+	// AUDIO_THREADS in cmd/audio-worker/main.go).
+	//
+	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
+	// instead of silently last-write-winning -- this deliberate overwrite of
+	// converters.go's own placeholder registration uses Registry.Replace,
+	// which performs the identical unconditional overwrite without the
+	// occupancy check. Using Register here would panic on startup against
+	// the very placeholder this re-registration exists to override.
+	maxDuration := envDurationSeconds("AV_MAX_DURATION_SECONDS", 4*time.Hour)
+	conv := convert.AVConverter{
+		MaxSourceDuration:         maxDuration,
+		MaxSourceResolutionHeight: 4320,
+	}.WithSandbox(sandboxHelper)
+	convert.Default.Replace(conv)
+
+	// D-06 (Phase 36): AV_DISK_SAFETY_FACTOR threads into the disk-space
+	// guard the SAME env-only-in-main + setter convention as
+	// AUDIO_MODEL_PATH/AUDIO_THREADS -- internal/convert never reads any env
+	// var directly. Set BEFORE the preflight below (Phase 68): the guard
+	// stage the preflight's real conversion runs through reads this same
+	// override, so it must already be in place, same happens-before
+	// discipline as everything else in this function.
+	diskSafetyFactor := envFloat("AV_DISK_SAFETY_FACTOR", 3.0)
+	convert.SetAVDiskSafetyFactor(diskSafetyFactor)
+
+	threads, threadSource := resolveAVThreads()
+	log.Printf("🧵 AV_MAX_DURATION_SECONDS=%v AV_DISK_SAFETY_FACTOR=%.2f threads=%d (source=%s)",
+		maxDuration, diskSafetyFactor, threads, threadSource)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engine can read every file in this container", avSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 av sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the engine can actually be EXECUTED under the ruleset, along
+	// the path a real job takes -- the streaming re-encode, progress FIFO
+	// included, not a stream-copy remux or a bare probe (CONF-04) -- and
+	// that the identical bytes OUTSIDE the job directory are denied. 60s,
+	// not PandocPreflight's 30s: this preflight drives a real ffmpeg
+	// transcode, not a single fast pandoc conversion.
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
+	if err := convert.AVPreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("av sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 av sandbox proven: the engine converted inside the job directory and was denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -68,39 +152,6 @@ func main() {
 
 	repo := jobs.NewRepo(pool)
 
-	// D-09/Pitfall 4 (Phase 36): re-register a CONFIGURED AVConverter,
-	// overriding the zero-value registration converters.go's init() already
-	// performed -- documented last-write-wins semantics (Registry.Register
-	// is a bare map assignment, converters.go). This MUST run before
-	// srv.Start(mux) below: that is the point asynq's worker goroutines
-	// begin concurrently reading the registered converter, so this single
-	// write must happen-before every concurrent read (no mutex needed, same
-	// happens-before boundary as AUDIO_MODEL_PATH/AUDIO_THREADS in
-	// cmd/audio-worker/main.go).
-	//
-	// Phase 57, D-09: Registry.Register now PANICS on a triple collision
-	// instead of silently last-write-winning -- this deliberate overwrite of
-	// converters.go's own placeholder registration moved to Registry.Replace,
-	// which performs the identical unconditional overwrite without the
-	// occupancy check. Using Register here would panic on startup against
-	// the very placeholder this re-registration exists to override.
-	maxDuration := envDurationSeconds("AV_MAX_DURATION_SECONDS", 4*time.Hour)
-	convert.Default.Replace(convert.AVConverter{
-		MaxSourceDuration:         maxDuration,
-		MaxSourceResolutionHeight: 4320,
-	})
-
-	// D-06 (Phase 36): AV_DISK_SAFETY_FACTOR threads into the disk-space
-	// guard the SAME env-only-in-main + setter convention as
-	// AUDIO_MODEL_PATH/AUDIO_THREADS -- internal/convert never reads any env
-	// var directly. Must also complete before srv.Start(mux) below.
-	diskSafetyFactor := envFloat("AV_DISK_SAFETY_FACTOR", 3.0)
-	convert.SetAVDiskSafetyFactor(diskSafetyFactor)
-
-	threads, threadSource := resolveAVThreads()
-	log.Printf("🧵 AV_MAX_DURATION_SECONDS=%v AV_DISK_SAFETY_FACTOR=%.2f threads=%d (source=%s)",
-		maxDuration, diskSafetyFactor, threads, threadSource)
-
 	// PROG-03 (Phase 41 Plan 03): the dual-gate progress-write throttle
 	// (D-03) -- env-tunable, mirrors the RTF/timeout env-knob discipline.
 	// Read here (not in internal/worker) and wired via the SAME
@@ -121,6 +172,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleAVConvert never reads it
 		0,   // presignTTL — webhook-only; HandleAVConvert never reads it
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd (worker.go:350-355); AV's duration/resolution guard is self-contained inside AVConverter.Convert, not spliced through this parameter
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// PROG-03: install the throttle BEFORE srv.Start(mux) below -- the point

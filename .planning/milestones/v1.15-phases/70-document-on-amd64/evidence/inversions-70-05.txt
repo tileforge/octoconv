@@ -1,0 +1,69 @@
+# 70-05 Task 2: class-closure inversions (D-12), each edit made temporarily, run, then reverted with
+# `git checkout -- <that file>`; `git diff --quiet -- internal/ cmd/ scripts/` held after each revert.
+# Base commit 6a8e69e, GOTOOLCHAIN=go1.26.4. Each inversion ADDS a line (the original line stays) so the
+# mutant still compiles and the failing output is the guard's own, not a build error.
+
+## 1. literal low-level exec of soffice restored in libreoffice.go
+##    (added before the sx.run call:  _, _ = runCommand(ctx, "soffice", "--version"))
+--- FAIL: TestConfinedClassesExecOnlyThroughTheSandbox (8.95s)
+    sandboxcoverage_test.go:490: libreoffice.go:146: libreoffice.go calls runCommand directly -- class files must route every engine invocation through engineExec.run/.stream, not a low-level runner
+FAIL	github.com/apaderin/octoconv/internal/convert	10.187s
+
+## 2. literal low-level exec of verapdf restored in verapdf.go
+##    (added before the x.run call:  _, _ = runCommand(vctx, "verapdf", "--version"))
+--- FAIL: TestConfinedClassesExecOnlyThroughTheSandbox (8.49s)
+    sandboxcoverage_test.go:490: verapdf.go:187: verapdf.go calls runCommand directly -- class files must route every engine invocation through engineExec.run/.stream, not a low-level runner
+FAIL	github.com/apaderin/octoconv/internal/convert	9.391s
+
+## 3. the sentinel check removed from isDocumentTerminal (internal/worker/worker.go)
+--- FAIL: TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass (0.00s)
+    --- FAIL: TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass/document (0.00s)
+        engine_sandbox_retryable_test.go:50: document classified a sandbox-unavailable fault as terminal even though the text also carries this class's own terminal shape: libreoffice: verapdf: pdf/a validation error: engine sandbox could not be established
+FAIL	github.com/apaderin/octoconv/internal/worker	0.665s
+
+## 4. "/tmp/x" appended to sofficeReadOnly (internal/convert/documentsandbox.go)
+--- FAIL: TestSofficeReadOnlySetIsTheMeasuredOne (0.00s)
+    documentsandbox_test.go:37: sofficeReadOnly = [... "/dev/urandom" "/tmp/x"], this test knows [... "/dev/urandom"] -- re-measure with scripts/document-sandbox-measure.sh and update SANDBOX-PATHS.md rather than editing the expectation
+$ scripts/conf05-crosscheck.sh soffice
+MISMATCH: soffice
+readonly diff (doc vs go, - doc / + go):
+9a10
+> /tmp/x
+(exit 1)
+# reverted: scripts/conf05-crosscheck.sh soffice -> MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)
+
+## 5. scoped-socket route: unix.LANDLOCK_ACCESS_FS_MAKE_SOCK added to accessReadWrite (internal/sandbox/sandbox_linux.go)
+##    linux-only tests, run in golang:1.26-bookworm with GOTOOLCHAIN=go1.26.4 (the host is darwin; the same way 70-02 ran them)
+baseline:  --- PASS: TestNothingMayCreateSymlinksOrSpecialFiles, --- PASS: TestSocketGrantIsSocketOnly
+inverted:
+--- FAIL: TestNothingMayCreateSymlinksOrSpecialFiles (0.00s)
+    access_linux_test.go:59: creating a socket is GRANTED
+--- FAIL: TestSocketGrantIsSocketOnly (0.00s)
+    access_linux_test.go:116: a general-purpose grant carries the socket right: every class's job directory or system tree could then create a socket
+reverted:  ok  github.com/apaderin/octoconv/internal/sandbox
+
+## 6. (CONF-05 adjacency edge) line-exactness of the cross-check, two more temporary edits to sofficeReadOnly, reverted
+trailing slash ("/usr/share/fonts" -> "/usr/share/fonts/"):
+MISMATCH: soffice
+readonly diff (doc vs go, - doc / + go):
+8c8
+< /usr/share/fonts
+---
+> /usr/share/fonts/
+neighbour order (/usr/bin/dirname and /usr/bin/ls swapped):
+MISMATCH: soffice
+readonly diff (doc vs go, - doc / + go):
+4d3
+< /usr/bin/dirname
+5a5
+> /usr/bin/dirname
+
+## eight-class cross-check on the clean tree (commit 6a8e69e, before the .env.example fix)
+MATCH: pandoc readonly (0) engines (1)
+MATCH: ocr readonly (7) engines (4)
+MATCH: av readonly (7) engines (2)
+MATCH: audio readonly (7) engines (3)
+MATCH: html readonly (15) engines (1) readwrite (2)
+MATCH: probe readonly (10) engines (4) readwrite (0)
+MATCH: soffice readonly (9) engines (1) readwrite (1) socket (1)
+MATCH: verapdf readonly (9) engines (1) readwrite (1)

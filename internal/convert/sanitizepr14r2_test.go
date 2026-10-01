@@ -118,7 +118,7 @@ func TestCommentBetweenDictionaryAndStreamKeyword(t *testing.T) {
 // rewriteContentTypes preserves whatever the input wrote, so
 // `ContentType=""` -- or the attribute missing entirely -- survived into the
 // output. A substring match on PartName read that as declared, the XML root
-// check also passed, and SanitizeFile delivered a package whose main part
+// check also passed, and sanitizeFile delivered a package whose main part
 // nothing describes. Office will not open it: exactly the invalid output the
 // check exists to reject.
 func TestEmptyContentTypeIsNotADeclaration(t *testing.T) {
@@ -169,7 +169,7 @@ func TestEmptyContentTypeIsNotADeclaration(t *testing.T) {
 					tc.types + `</Types>`),
 				"word/document.xml": []byte(`<?xml version="1.0"?><document/>`),
 			})
-			_, err := VerifySanitized(context.Background(), "docx", path)
+			_, err := verifySanitized(context.Background(), engineExec{}, "docx", path)
 			if tc.want && err != nil {
 				t.Errorf("a validly declared main part was rejected: %v", err)
 			}

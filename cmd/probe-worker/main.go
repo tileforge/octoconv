@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,14 +29,109 @@ import (
 	"github.com/apaderin/octoconv/internal/db"
 	"github.com/apaderin/octoconv/internal/jobs"
 	"github.com/apaderin/octoconv/internal/queue"
+	"github.com/apaderin/octoconv/internal/sandbox"
 	"github.com/apaderin/octoconv/internal/storage"
 	"github.com/apaderin/octoconv/internal/webhook"
 	"github.com/apaderin/octoconv/internal/worker"
 )
 
+// probeSandboxDisabledEnv is the one value that turns filesystem confinement
+// off, spelled out rather than defaulted -- mirrors pandocSandboxDisabledEnv
+// (cmd/pandoc-worker/main.go): a deployment gets an unconfined engine only
+// by saying so.
+const probeSandboxDisabledEnv = "PROBE_SANDBOX_DISABLED"
+
+// probeConcurrencyEnv names the SAME variable both ProbeConcurrencyGuard and
+// asynq.Config.Concurrency read below -- a mismatch would let the guard
+// check one value while the server actually ran at another.
+const probeConcurrencyEnv = "PROBE_WORKER_CONCURRENCY"
+
 func main() {
+	// FIRST, before anything else in this process: when the converter execs
+	// this binary as its sandbox helper, that invocation must establish the
+	// ruleset and exec gs/pdfinfo/unzip/file, not connect to Postgres and
+	// start a worker.
+	if sandbox.RunExecModeIfRequested(os.Args) {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The filesystem sandbox, decided ONCE at startup: a worker that cannot
+	// confine gs/pdfinfo/unzip/file must not consume a queue. It would fail
+	// every job -- or, far worse, run the engines unconfined while the
+	// deployment believes otherwise. The paths it grants were MEASURED, not
+	// reasoned: see .planning/research/SANDBOX-PATHS.md and probeReadOnly.
+	sandboxHelper, err := sandbox.ResolveHelper(probeSandboxDisabledEnv)
+	if err != nil {
+		log.Fatalf("probe sandbox: %v", err)
+	}
+
+	// CONVERTER RE-REGISTRATION, exactly as ocr-worker/av-worker/pandoc-worker
+	// do it, and the reason this file used to say the opposite is worth
+	// keeping rather than deleting.
+	//
+	// Until Phase 63 this comment read "SanitizeConverter has no such field:
+	// sanitize takes no options and has no per-engine ceiling of its own",
+	// and it was true. PROBE_MAX_PAGES is that ceiling (PROBE-02):
+	// sanitize cost is per PAGE and linear (~2.0 s/page, measured in phase
+	// 60), so an over-long document otherwise burns PROBE_ENGINE_TIMEOUT and
+	// the whole PROBE_MAX_RETRY budget rediscovering the same thing.
+	//
+	// Replace, not Register: Register PANICS on a triple collision since
+	// Phase 57 D-09, and converters.go already registered the zero-value
+	// converter at init. Replace performs the identical unconditional
+	// overwrite without the occupancy check.
+	//
+	// The default is convert.DefaultProbeMaxPages, where the derivation lives
+	// -- ceil(2.0 s/page x 200 pages x 1.5) is also how PROBE_ENGINE_TIMEOUT
+	// was derived, so the two describe one document bound rather than two.
+	//
+	// This is now the ONLY process that reads PROBE_MAX_PAGES. cmd/api read it
+	// too, for an admission gate that was removed after six review rounds
+	// (63-CONTEXT.md D-04, reversed): a page count cannot be derived reliably
+	// from untrusted bytes there, because a page tree is a tree and a long
+	// document declares several correct-but-different counts.
+	//
+	// This is the ONLY registration this process performs -- moved here
+	// (before db.Connect, per D-11's "preflight before Postgres/queue") from
+	// where it used to live further down, so there is exactly one write to
+	// convert.Default in this file.
+	probeMaxPages := envInt("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)
+	conv := buildSanitizeConverter(probeMaxPages).WithSandbox(sandboxHelper)
+
+	// D-05/CONF-06: probe's ruleset grants no shared /tmp at all (measured:
+	// ghostscript honours TMPDIR), so this is a no-op today -- the guard is
+	// keyed on the GRANT SET, not the class name, so it re-arms itself
+	// automatically the moment /tmp is ever re-added to probeReadWrite.
+	concurrency := envInt(probeConcurrencyEnv, 1)
+	if err := convert.ProbeConcurrencyGuard(conv, concurrency, probeConcurrencyEnv); err != nil {
+		log.Fatalf("probe sandbox: %v", err)
+	}
+
+	convert.Default.Replace(conv)
+	log.Printf("📄 PROBE_MAX_PAGES=%d", probeMaxPages)
+	if len(sandboxHelper) == 0 {
+		log.Printf("⚠️  %s=true — the engines can read every file in this container", probeSandboxDisabledEnv)
+	} else {
+		log.Printf("🔒 probe sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+	}
+
+	// Proves the ENGINES run under the rules, not merely that the rules can
+	// be built -- both directions, by content, for all four engines (CONF-04):
+	// gs/pdfinfo/unzip fail LOUDLY when denied, but file(1) exits 0 and
+	// prints a non-MIME answer, so the exit status is never what decides
+	// this.
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 60*time.Second)
+	if err := convert.ProbePreflight(preflightCtx, conv); err != nil {
+		cancelPreflight()
+		log.Fatalf("probe sandbox preflight: %v", err)
+	}
+	cancelPreflight()
+	if len(sandboxHelper) > 0 {
+		log.Printf("🔒 probe sandbox proven: every probe engine ran inside the job directory and was denied a file outside it")
+	}
 
 	pool, err := db.Connect(ctx)
 	if err != nil {
@@ -66,35 +162,6 @@ func main() {
 	defer qc.Close()
 
 	repo := jobs.NewRepo(pool)
-
-	// CONVERTER RE-REGISTRATION, exactly as ocr-worker/av-worker/pandoc-worker
-	// do it, and the reason this file used to say the opposite is worth
-	// keeping rather than deleting.
-	//
-	// Until Phase 63 this comment read "SanitizeConverter has no such field:
-	// sanitize takes no options and has no per-engine ceiling of its own",
-	// and it was true. PROBE_MAX_PAGES is that ceiling (PROBE-02):
-	// sanitize cost is per PAGE and linear (~2.0 s/page, measured in phase
-	// 60), so an over-long document otherwise burns PROBE_ENGINE_TIMEOUT and
-	// the whole PROBE_MAX_RETRY budget rediscovering the same thing.
-	//
-	// Replace, not Register: Register PANICS on a triple collision since
-	// Phase 57 D-09, and converters.go already registered the zero-value
-	// converter at init. Replace performs the identical unconditional
-	// overwrite without the occupancy check.
-	//
-	// The default is convert.DefaultProbeMaxPages, where the derivation lives
-	// -- ceil(2.0 s/page x 200 pages x 1.5) is also how PROBE_ENGINE_TIMEOUT
-	// was derived, so the two describe one document bound rather than two.
-	//
-	// This is now the ONLY process that reads PROBE_MAX_PAGES. cmd/api read it
-	// too, for an admission gate that was removed after six review rounds
-	// (63-CONTEXT.md D-04, reversed): a page count cannot be derived reliably
-	// from untrusted bytes there, because a page tree is a tree and a long
-	// document declares several correct-but-different counts.
-	probeMaxPages := envInt("PROBE_MAX_PAGES", convert.DefaultProbeMaxPages)
-	convert.Default.Replace(buildSanitizeConverter(probeMaxPages))
-	log.Printf("📄 PROBE_MAX_PAGES=%d", probeMaxPages)
 
 	// PROBE_ENGINE_TIMEOUT.
 	//
@@ -132,6 +199,7 @@ func main() {
 		nil, // signingSecret — webhook-only
 		0,   // presignTTL — webhook-only
 		0,   // audioMaxDuration — 0 for every non-audio worker cmd
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// SanitizeConverter does not implement convert.ProgressConverter (the
@@ -163,7 +231,11 @@ func main() {
 		// This is a REASONED default, not a measured one, and it shares that
 		// status with the timeout above. Both are what the operator
 		// checkpoint exists to replace.
-		Concurrency:     envInt("PROBE_WORKER_CONCURRENCY", 1),
+		//
+		// The SAME variable ProbeConcurrencyGuard already checked above --
+		// a mismatch here would let the guard reason about one value while
+		// asynq actually ran at another.
+		Concurrency:     concurrency,
 		Queues:          map[string]int{queue.QueueProbe: 1},
 		RetryDelayFunc:  queue.RetryDelayFunc,
 		ShutdownTimeout: engineTimeout + 10*time.Second,

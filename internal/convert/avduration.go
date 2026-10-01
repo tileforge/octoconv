@@ -76,12 +76,12 @@ func ffprobeStreamArgs(path string) []string {
 }
 
 // probeVideoStreams runs ffprobe as its own short, bounded, killable
-// subprocess (runCommand, exec.go) to read EVERY declared video stream's
-// codec/resolution BEFORE any decode/transcode step runs -- fails closed on
-// an unparseable probe, a container with no video stream at all, or any
-// stream with an implausible (<= 0) width/height.
-func probeVideoStreams(ctx context.Context, path string) ([]avVideoStream, error) {
-	out, err := runCommand(ctx, "ffprobe", ffprobeStreamArgs(path)...)
+// subprocess through the job's engineExec (Phase 68 Plan 04) to read EVERY
+// declared video stream's codec/resolution BEFORE any decode/transcode step
+// runs -- fails closed on an unparseable probe, a container with no video
+// stream at all, or any stream with an implausible (<= 0) width/height.
+func probeVideoStreams(ctx context.Context, x engineExec, path string) ([]avVideoStream, error) {
+	out, err := x.run(ctx, "ffprobe", ffprobeStreamArgs(path)...)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe: %w", err)
 	}
@@ -155,8 +155,8 @@ func avMaxVideoHeight(streams []avVideoStream) int {
 // stream's declared codec and resolution -- the narrow accessor most callers
 // want, layered over probeVideoStreams so the cover-art exclusion applies
 // uniformly.
-func probeVideoStream(ctx context.Context, path string) (codec string, width, height int, err error) {
-	streams, err := probeVideoStreams(ctx, path)
+func probeVideoStream(ctx context.Context, x engineExec, path string) (codec string, width, height int, err error) {
+	streams, err := probeVideoStreams(ctx, x, path)
 	if err != nil {
 		return "", 0, 0, err
 	}
@@ -167,16 +167,19 @@ func probeVideoStream(ctx context.Context, path string) (codec string, width, he
 	return s.CodecName, s.Width, s.Height, nil
 }
 
-// EnforceMaxResolution probes path's declared video resolution and rejects
+// enforceMaxResolution probes path's declared video resolution and rejects
 // it with ErrAVResolutionExceeded when the height exceeds maxHeight --
 // fail-closed BEFORE the expensive decode/transcode stage ever runs
 // (mirrors EnforceMaxDuration's fail-closed shape, audioduration.go);
 // complements the reused duration-guard axis for a multi-axis decode-bomb
 // defense (T-34-07). maxHeight is a plain parameter, NOT read from any env
 // var here -- the API layer wires the actual ceiling in a later
-// out-of-scope phase (mirrors EnforceMaxDuration's own note).
-func EnforceMaxResolution(ctx context.Context, path string, maxHeight int) error {
-	streams, err := probeVideoStreams(ctx, path)
+// out-of-scope phase (mirrors EnforceMaxDuration's own note). Unexported
+// (Phase 68 Plan 04, T-68-20): it has no production caller and an exported
+// entry point that runs ffprobe on client input without a sandbox handle is
+// exactly the shape decision 1 closed.
+func enforceMaxResolution(ctx context.Context, x engineExec, path string, maxHeight int) error {
+	streams, err := probeVideoStreams(ctx, x, path)
 	if err != nil {
 		return err
 	}

@@ -67,3 +67,54 @@ func TestParseSpecRequiresACommand(t *testing.T) {
 		}
 	}
 }
+
+// The socket right is a fourth token kind. It must survive the wire as itself:
+// a sock: token parsed into ReadWrite would grant a job directory that was
+// meant to grant one socket, and one dropped would be an engine that cannot
+// start with no error pointing here.
+func TestSpecRoundTripsSockets(t *testing.T) {
+	want := Paths{
+		ReadWrite: []string{"/tmp/job-1"},
+		Socket:    []string{"/tmp"},
+		ReadOnly:  []string{"/usr/lib", "/etc/ld.so.cache"},
+	}
+	spec := want.Spec()
+	wantSpec := []string{"rw:/tmp/job-1", "sock:/tmp", "ro:/usr/lib", "ro:/etc/ld.so.cache"}
+	if !slices.Equal(spec, wantSpec) {
+		t.Fatalf("Spec() = %v, want %v: sock: tokens go after rw: and before ro:", spec, wantSpec)
+	}
+	got, _, cmd, err := ParseSpec(append(spec, "--", "/bin/true"))
+	if err != nil {
+		t.Fatalf("ParseSpec on Spec's own output: %v", err)
+	}
+	if !slices.Equal(got.Socket, want.Socket) {
+		t.Errorf("Socket = %v, want %v", got.Socket, want.Socket)
+	}
+	if !slices.Equal(got.ReadWrite, want.ReadWrite) || !slices.Equal(got.ReadOnly, want.ReadOnly) {
+		t.Errorf("rw/ro = %v / %v, want %v / %v", got.ReadWrite, got.ReadOnly, want.ReadWrite, want.ReadOnly)
+	}
+	if !slices.Equal(cmd, []string{"/bin/true"}) {
+		t.Errorf("command = %v", cmd)
+	}
+}
+
+func TestParseSpecAcceptsSockToken(t *testing.T) {
+	p, _, _, err := ParseSpec([]string{"sock:/tmp", "--", "/bin/true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Socket, []string{"/tmp"}) || len(p.ReadWrite) != 0 || len(p.ReadOnly) != 0 {
+		t.Fatalf("a sock: token produced Socket=%v ReadWrite=%v ReadOnly=%v; it must grant a socket and nothing else",
+			p.Socket, p.ReadWrite, p.ReadOnly)
+	}
+}
+
+// A Paths with no sockets renders exactly what it rendered before the socket
+// right existed, so every already-confined class's helper argv is unchanged.
+func TestSpecWithoutSocketsIsUnchanged(t *testing.T) {
+	p := Paths{ReadWrite: []string{"/tmp/job-1", "/tmp"}, ReadOnly: []string{"/usr", "/lib"}}
+	want := []string{"cpu:271", "rw:/tmp/job-1", "rw:/tmp", "ro:/usr", "ro:/lib"}
+	if got := p.SpecWith(Limits{CPUSeconds: 271}); !slices.Equal(got, want) {
+		t.Fatalf("SpecWith = %v, want %v", got, want)
+	}
+}

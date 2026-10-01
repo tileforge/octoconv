@@ -85,7 +85,7 @@ func TestPre59PDFToTxtReturnsTheTextLayer(t *testing.T) {
 
 	// The count that chose this route and the bytes that were written must be
 	// the same pdftotext answer (<specifics>).
-	_, want, err := extractPDFTextLayer(ctx, pre59BornDigitalFixture())
+	_, want, err := extractPDFTextLayer(ctx, engineExec{}, pre59BornDigitalFixture())
 	if err != nil {
 		t.Fatalf("reference extraction failed: %v", err)
 	}

@@ -39,7 +39,7 @@ func TestVerifyPDFSurvivesAnUnwritableHome(t *testing.T) {
 	if os.Getenv("OCTOCONV_PDFCPU_HOME_CHILD") == "1" {
 		// In the child: exercise the same entry point the worker uses, on a
 		// REAL PDF. The first version of this test used a file containing "not
-		// a pdf" and passed under inversion -- VerifySanitized rejects it
+		// a pdf" and passed under inversion -- verifySanitized rejects it
 		// before pdfcpu is ever reached, so it proved nothing. Caught by
 		// inverting the fix, which is the only reason it is not still here.
 		src := filepath.Join("testdata", "ocr", "multipage_text.pdf")
@@ -53,7 +53,7 @@ func TestVerifyPDFSurvivesAnUnwritableHome(t *testing.T) {
 		}
 		// Any verdict is acceptable -- this fixture is not a sanitizer OUTPUT,
 		// so it may well be reported as unverifiable. A PANIC is not.
-		_, _ = VerifySanitized(t.Context(), "pdf", path)
+		_, _ = verifySanitized(t.Context(), engineExec{}, "pdf", path)
 		return
 	}
 

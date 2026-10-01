@@ -20,10 +20,12 @@
 # This script's exit code IS the gate: any failed assertion aborts non-zero
 # (set -e) with a loud FAIL message. It builds the image fresh (matching the
 # committed Dockerfile.document-worker exactly) so the measurement is never
-# stale relative to source. veraPDF is amd64-only on Docker Hub (no arm64
-# manifest, 23-01) -- everything below runs under --platform linux/amd64,
-# which on Apple Silicon means Rosetta-class emulation (OrbStack), not qemu;
-# this is recorded in the SUMMARY as a caveat on the raw numbers.
+# stale relative to source. The image is native since phase 70: veraPDF's
+# published image is amd64-only (no arm64 manifest, 23-01), but only its
+# /opt/verapdf tree is copied, so Dockerfile.document-worker pins that build
+# stage alone and the rest of the image builds for the host's own platform.
+# Earlier measurements (23-xx) were taken with the whole image emulated as
+# linux/amd64; numbers from before phase 70 are not comparable.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -44,12 +46,12 @@ NONCOMPLIANT_PDF="internal/convert/testdata/verapdf_noncompliant.pdf"
 # alongside it for PDF/A-2b conformance (Pitfall 7).
 PDFA_SUFFIX='{"SelectPdfVersion":{"type":"long","value":"2"},"EmbedStandardFonts":{"type":"boolean","value":true}}'
 
-echo "=== 1. Build document-worker image (--platform linux/amd64, matches verapdf/cli's only published arch) ==="
-docker build --platform linux/amd64 -f Dockerfile.document-worker -t "$IMAGE_TAG" .
+echo "=== 1. Build document-worker image (native since phase 70; only the verapdf build stage is pinned to linux/amd64) ==="
+docker build -f Dockerfile.document-worker -t "$IMAGE_TAG" .
 
 echo
 echo "=== 2. Start a long-lived measurement container (memory=1g/cpus=2.0, matches docker-compose.yml limits) ==="
-docker run -d --name "$CONTAINER" --platform linux/amd64 \
+docker run -d --name "$CONTAINER" \
 	--memory=1g --cpus=2.0 \
 	--entrypoint sleep "$IMAGE_TAG" infinity >/dev/null
 

@@ -26,7 +26,7 @@ package convert
 // client is about to receive. SANI-04 requires the second, and a client cannot
 // tell them apart if they are merged. A class in `removed` but absent from
 // `verified` means the removal ran and nothing checked it -- which is a state
-// this build cannot reach, because SanitizeFile refuses to return unverified
+// this build cannot reach, because sanitizeFile refuses to return unverified
 // output at all, but the report is still structured so that the distinction is
 // expressible rather than assumed away.
 //

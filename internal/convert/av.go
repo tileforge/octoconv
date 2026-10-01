@@ -55,6 +55,13 @@ var avThumbnailExtractTargets = []string{"jpg", "png", "webp"}
 type AVConverter struct {
 	MaxSourceDuration         time.Duration
 	MaxSourceResolutionHeight int
+
+	// Sandbox confines the engine's filesystem access, mirroring
+	// OCRConverter's/PandocConverter's own field: zero value runs every
+	// ffmpeg/ffprobe invocation directly, which is what every unit test
+	// wants and what a deployment gets only by saying so out loud --
+	// cmd/av-worker refuses to start otherwise.
+	Sandbox *engineSandbox
 }
 
 // Pairs returns the locked pair set (34-RESEARCH.md Open Question 1,
@@ -455,9 +462,12 @@ func ffprobeAudioCodecArgs(path string) []string {
 
 // probeAudioCodec runs ffprobe to read the source's declared audio codec --
 // used by both the transcode path's stream-copy-eligibility check and the
-// audio-extract path's AAC-source->m4a stream-copy check (AVC-03/AVC-05).
-func probeAudioCodec(ctx context.Context, path string) (string, error) {
-	out, err := runCommand(ctx, "ffprobe", ffprobeAudioCodecArgs(path)...)
+// audio-extract path's AAC-source->m4a stream-copy check (AVC-03/AVC-05). x
+// is the job's shared engineExec (Phase 68 Plan 04) -- every ffprobe/ffmpeg
+// call this converter makes on one job's files runs through the SAME
+// ruleset.
+func probeAudioCodec(ctx context.Context, x engineExec, path string) (string, error) {
+	out, err := x.run(ctx, "ffprobe", ffprobeAudioCodecArgs(path)...)
 	if err != nil {
 		return "", fmt.Errorf("ffprobe: %w", err)
 	}
@@ -521,10 +531,15 @@ func validateAVOutput(path, target string) error {
 // "probed EXACTLY ONCE" discipline, now shared rather than duplicated).
 // Every error is already wrapped with the "av:" prefix, so callers return
 // it unwrapped.
-func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath string, opts map[string]any) (targetFormat string, o AVOpts, src avSourceProbe, err error) {
+//
+// x is this job's shared engineExec (Phase 68 Plan 04), built ONCE here
+// from outPath's directory and threaded through every ffmpeg/ffprobe call
+// site this job makes -- the probe stage below AND the caller's own
+// conversion stage afterward share the exact same ruleset.
+func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath string, opts map[string]any) (targetFormat string, o AVOpts, src avSourceProbe, x engineExec, err error) {
 	o, err = AVOptsFromMap(opts)
 	if err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 
 	// Fail fast on an unsupported target BEFORE the guard stage/any
@@ -535,7 +550,7 @@ func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath st
 	switch targetFormat {
 	case "mp4", "webm", "mp3", "wav", "m4a", "jpg", "png", "webp":
 	default:
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: unsupported target format %q", targetFormat)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: unsupported target format %q", targetFormat)
 	}
 
 	// Guard stage (AVE-02/T-34-12): duration + resolution ceilings enforced
@@ -554,15 +569,17 @@ func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath st
 		maxHeight = avMaxSourceResolutionHeight
 	}
 
-	src, err = avProbeSource(ctx, inPath)
+	x = c.exec(outPath)
+
+	src, err = avProbeSource(ctx, x, inPath)
 	if err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 	if err := enforceMaxDurationOf(src.duration, maxDuration); err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 	if err := enforceMaxResolutionOf(src.videoStreams, maxHeight); err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 
 	// Disk-space guard (D-06/T-36-01): fail-closed BEFORE the expensive
@@ -575,13 +592,13 @@ func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath st
 	// exist on disk.
 	fi, err := os.Stat(inPath)
 	if err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 	if err := EnforceMinFreeDisk(filepath.Dir(inPath), fi.Size(), effectiveAVDiskSafetyFactor()); err != nil {
-		return "", AVOpts{}, avSourceProbe{}, fmt.Errorf("av: %w", err)
+		return "", AVOpts{}, avSourceProbe{}, engineExec{}, fmt.Errorf("av: %w", err)
 	}
 
-	return targetFormat, o, src, nil
+	return targetFormat, o, src, x, nil
 }
 
 // Convert dispatches on the target format (transcode/audio-extract/
@@ -592,18 +609,18 @@ func (c AVConverter) avPrepareConversion(ctx context.Context, inPath, outPath st
 // stage -> subprocess stage(s), each wrapped with a distinguishable
 // "av: <stage>:" error prefix.
 func (c AVConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	targetFormat, o, src, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
+	targetFormat, o, src, x, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
 	if err != nil {
 		return err
 	}
 
 	switch targetFormat {
 	case "mp4", "webm":
-		return c.convertTranscode(ctx, inPath, outPath, targetFormat, o, src)
+		return c.convertTranscode(ctx, x, inPath, outPath, targetFormat, o, src)
 	case "mp3", "wav", "m4a":
-		return c.convertAudioExtract(ctx, inPath, outPath, targetFormat, src)
+		return c.convertAudioExtract(ctx, x, inPath, outPath, targetFormat, src)
 	default:
-		return c.convertThumbnail(ctx, inPath, outPath, targetFormat, o, src)
+		return c.convertThumbnail(ctx, x, inPath, outPath, targetFormat, o, src)
 	}
 }
 
@@ -626,7 +643,7 @@ var _ ProgressConverter = AVConverter{}
 // worker's throttle-bypass write, Plan 03), so a mid-stream error simply
 // leaves the sink's last-reported value in place.
 func (c AVConverter) ConvertWithProgress(ctx context.Context, inPath, outPath string, opts map[string]any, sink ProgressSink) error {
-	targetFormat, o, src, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
+	targetFormat, o, src, x, err := c.avPrepareConversion(ctx, inPath, outPath, opts)
 	if err != nil {
 		return err
 	}
@@ -635,15 +652,15 @@ func (c AVConverter) ConvertWithProgress(ctx context.Context, inPath, outPath st
 
 	switch targetFormat {
 	case "mp4", "webm":
-		return c.convertTranscodeWithProgress(ctx, inPath, outPath, targetFormat, o, src, sink)
+		return c.convertTranscodeWithProgress(ctx, x, inPath, outPath, targetFormat, o, src, sink)
 	case "mp3", "wav", "m4a":
 		// Null until terminal (D-02): audio-extract is cheap enough that a
 		// ramp gains nothing, so this stays on the plain runCommand path
 		// with zero sink.Update calls, identically to Convert.
-		return c.convertAudioExtract(ctx, inPath, outPath, targetFormat, src)
+		return c.convertAudioExtract(ctx, x, inPath, outPath, targetFormat, src)
 	default:
 		// Null until terminal (D-02): same rationale as audio-extract.
-		return c.convertThumbnail(ctx, inPath, outPath, targetFormat, o, src)
+		return c.convertThumbnail(ctx, x, inPath, outPath, targetFormat, o, src)
 	}
 }
 
@@ -663,16 +680,19 @@ type avSourceProbe struct {
 }
 
 // avProbeSource runs the whole probe stage under its OWN short timeout,
-// derived from but distinct from the caller's full engine budget (WR-05).
-func avProbeSource(ctx context.Context, inPath string) (avSourceProbe, error) {
+// derived from but distinct from the caller's full engine budget (WR-05). x
+// is the job's shared engineExec (Phase 68 Plan 04) -- every ffprobe call
+// this stage makes runs through the SAME ruleset the caller's own
+// conversion stage will use.
+func avProbeSource(ctx context.Context, x engineExec, inPath string) (avSourceProbe, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, avProbeTimeout)
 	defer cancel()
 
-	dur, err := ProbeDuration(probeCtx, inPath)
+	dur, err := probeDuration(probeCtx, x, inPath)
 	if err != nil {
 		return avSourceProbe{}, err
 	}
-	streams, err := probeVideoStreams(probeCtx, inPath)
+	streams, err := probeVideoStreams(probeCtx, x, inPath)
 	if err != nil {
 		return avSourceProbe{}, err
 	}
@@ -684,7 +704,7 @@ func avProbeSource(ctx context.Context, inPath string) (avSourceProbe, error) {
 	// and the conversion paths handle a video-only source (the transcode
 	// builders map audio optionally, and a stream copy is disqualified
 	// because avStreamCopyLegal cannot match an empty codec).
-	audioCodec, err := probeAudioCodec(probeCtx, inPath)
+	audioCodec, err := probeAudioCodec(probeCtx, x, inPath)
 	if err != nil {
 		return avSourceProbe{}, err
 	}
@@ -730,7 +750,7 @@ func avBuildReencodeArgs(target, inPath, outPath string, o AVOpts, src avSourceP
 // (never on ffmpeg's own muxer acceptance), else full re-encode via
 // avBuildReencodeArgs (transcodeToMP4Args, HEVC-aware, or
 // transcodeToWebMArgs).
-func (c AVConverter) convertTranscode(ctx context.Context, inPath, outPath, target string, o AVOpts, src avSourceProbe) error {
+func (c AVConverter) convertTranscode(ctx context.Context, x engineExec, inPath, outPath, target string, o AVOpts, src avSourceProbe) error {
 	var args []string
 	if avStreamCopyEligible(target, o, src) {
 		args = streamCopyArgs(inPath, outPath, target, src.primary.Index)
@@ -742,7 +762,7 @@ func (c AVConverter) convertTranscode(ctx context.Context, inPath, outPath, targ
 		}
 	}
 
-	if _, err := runCommand(ctx, "ffmpeg", args...); err != nil {
+	if _, err := x.run(ctx, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("%w: %w", ErrAVTranscodeFailed, err)
 	}
 	return validateAVOutput(outPath, target)
@@ -755,9 +775,9 @@ func (c AVConverter) convertTranscode(ctx context.Context, inPath, outPath, targ
 // path -- no decode/encode at all -- delegates straight back to
 // convertTranscode and therefore emits ZERO sink.Update calls, identically
 // to Convert's behavior for that same request shape (D-02).
-func (c AVConverter) convertTranscodeWithProgress(ctx context.Context, inPath, outPath, target string, o AVOpts, src avSourceProbe, sink ProgressSink) error {
+func (c AVConverter) convertTranscodeWithProgress(ctx context.Context, x engineExec, inPath, outPath, target string, o AVOpts, src avSourceProbe, sink ProgressSink) error {
 	if avStreamCopyEligible(target, o, src) {
-		return c.convertTranscode(ctx, inPath, outPath, target, o, src)
+		return c.convertTranscode(ctx, x, inPath, outPath, target, o, src)
 	}
 
 	args, err := avBuildReencodeArgs(target, inPath, outPath, o, src)
@@ -766,7 +786,7 @@ func (c AVConverter) convertTranscodeWithProgress(ctx context.Context, inPath, o
 	}
 
 	onLine := newTranscodeProgressReporter(src.duration.Seconds(), sink)
-	if _, err := runCommandStreaming(ctx, onLine, "ffmpeg", args...); err != nil {
+	if _, err := x.stream(ctx, onLine, filepath.Dir(outPath), "ffmpeg", args); err != nil {
 		return fmt.Errorf("%w: %w", ErrAVTranscodeFailed, err)
 	}
 	return validateAVOutput(outPath, target)
@@ -832,13 +852,13 @@ func avStreamCopyEligible(target string, o AVOpts, src avSourceProbe) bool {
 // subprocess and violated avSourceProbe's own "probed EXACTLY ONCE" invariant,
 // whose whole point is that the guard's decision and the conversion's decision
 // are provably the same decision on the same bytes.
-func (c AVConverter) convertAudioExtract(ctx context.Context, inPath, outPath, target string, src avSourceProbe) error {
+func (c AVConverter) convertAudioExtract(ctx context.Context, x engineExec, inPath, outPath, target string, src avSourceProbe) error {
 	streamCopy := target == "m4a" && src.audioCodec == "aac"
 	args := extractAudioArgs(inPath, outPath, target, streamCopy)
 	if args == nil {
 		return fmt.Errorf("av: unsupported audio-extract target %q", target)
 	}
-	if _, err := runCommand(ctx, "ffmpeg", args...); err != nil {
+	if _, err := x.run(ctx, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("%w: %w", ErrAVAudioExtractFailed, err)
 	}
 	return validateAVOutput(outPath, target)
@@ -856,7 +876,7 @@ func (c AVConverter) convertAudioExtract(ctx context.Context, inPath, outPath, t
 // request can fail here, which is why the sentinel is the input-fault
 // ErrAVTimecodeOutOfRange, not the engine-fault
 // ErrAVOutputMissingOrEmpty (WR-04).
-func (c AVConverter) convertThumbnail(ctx context.Context, inPath, outPath, target string, o AVOpts, src avSourceProbe) error {
+func (c AVConverter) convertThumbnail(ctx context.Context, x engineExec, inPath, outPath, target string, o AVOpts, src avSourceProbe) error {
 	seconds := src.duration.Seconds()
 	var timecode float64
 	if o.Timecode != nil {
@@ -876,7 +896,7 @@ func (c AVConverter) convertThumbnail(ctx context.Context, inPath, outPath, targ
 	if args == nil {
 		return fmt.Errorf("av: unsupported thumbnail target %q", target)
 	}
-	if _, err := runCommand(ctx, "ffmpeg", args...); err != nil {
+	if _, err := x.run(ctx, "ffmpeg", args...); err != nil {
 		return fmt.Errorf("%w: %w", ErrAVThumbnailFailed, err)
 	}
 	return validateAVOutput(outPath, target)

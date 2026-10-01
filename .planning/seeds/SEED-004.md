@@ -2,6 +2,10 @@
 status: dormant
 planted_during: "v1.5 milestone (MCP Access & Document Fidelity), Phase 22 execution, 2026-07-13"
 trigger_when: "Planning the milestone after v1.5 ships — the compose stack is functionally complete (3 engines + webhooks + presets + MCP + CI), so the next infrastructure leap is validating the stated production future: Kubernetes + KEDA"
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-004: Local k8s + KEDA full-stack validation

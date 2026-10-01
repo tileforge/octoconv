@@ -51,6 +51,19 @@ spec:
           image: "{{ .Values.avWorker.image.repository }}:{{ .Values.global.imageTag }}"
           imagePullPolicy: IfNotPresent
           {{- include "octoconv.commonEnv" . | nindent 10 }}
+          {{- if .Values.avWorker.extraEnv }}
+          # extraEnv (Phase 68, mirrors ocrWorker.extraEnv): explicit `env:`
+          # entries take precedence over envFrom-sourced values for the same
+          # key -- this is how AV_SANDBOX_DISABLED=true, the remedy the
+          # worker names when it refuses to start, is set. Intentionally
+          # absent from values.yaml so this block renders nothing in
+          # production and an unconfined engine stays a deliberate act.
+          env:
+            {{- range $k, $v := .Values.avWorker.extraEnv }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: 9090

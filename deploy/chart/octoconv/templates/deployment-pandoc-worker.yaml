@@ -70,7 +70,9 @@ spec:
           # override — it stays explicit because the SC4 depth arithmetic
           # depends on exactly one job per pod. pandocWorker.extraEnv is
           # intentionally absent from values.yaml so this block renders
-          # nothing in production.
+          # nothing in production. This block is also how
+          # PANDOC_SANDBOX_DISABLED=true is set (Phase 68) — the remedy the
+          # worker names when it refuses to start.
           env:
             {{- range $k, $v := .Values.pandocWorker.extraEnv }}
             - name: {{ $k }}

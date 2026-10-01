@@ -64,7 +64,7 @@ func main() {
 
 	// Proves the ENGINE runs under the rules, not merely that the rules can be
 	// built. A kernel can answer the ABI query and still refuse restrict_self.
-	preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 30*time.Second)
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, 30*time.Second)
 	if err := convert.LibvipsPreflight(preflightCtx, sandboxHelper); err != nil {
 		cancelPreflight()
 		log.Fatalf("image sandbox preflight: %v", err)
@@ -121,6 +121,7 @@ func main() {
 		nil, // signingSecret — webhook-only; HandleImageConvert never reads it
 		0,   // presignTTL — webhook-only; HandleImageConvert never reads it
 		0,   // audioMaxDuration — audio-only; HandleImageConvert never reads it
+		nil, // audioSandboxHelper — audio-only
 	)
 
 	// D-03/D-04: the stale-job sweep loop runs solely in cmd/webhook-worker

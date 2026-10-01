@@ -1,0 +1,205 @@
+# 70-05 eight-class live gate: scripts/sandbox-liveproof.sh image pandoc ocr av audio html probe document
+# run at commit 18c805d (tracked tree clean; 'tracked dirt: 3' are the three untracked .gsd/, .vscode/, octoconv.code-workspace), GOTOOLCHAIN=go1.26.4, freshly built images
+== image: building octoconv-image:sandbox-liveproof-1790786141-25757 from Dockerfile.worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:8989e757d17e46b330b9ee3b0f2de88884bb9c7b2d505391c7cb3151a0f81e35
+PASS: image confined-startup
+  2026/09/30 16:36:07 🔒 image sandbox: landlock via /usr/local/bin/worker __sandbox-exec
+  2026/09/30 16:36:07 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: image refuses-without-landlock
+  2026/09/30 16:36:08 image sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set IMAGE_SANDBOX_DISABLED=true to accept that deliberately
+PASS: image escape-hatch
+  2026/09/30 16:36:08 ⚠️  IMAGE_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: image preflight-catches-restrict-self
+  2026/09/30 16:36:09 image sandbox preflight: the engine cannot convert under the sandbox: libvips: /usr/local/bin/worker failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== pandoc: building octoconv-pandoc:sandbox-liveproof-1790786141-25757 from Dockerfile.pandoc-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:19f10e762b002e5935f9851a9e0092bc04e2c263c36a64793739d9a98975e943
+PASS: pandoc confined-startup
+  2026/09/30 16:36:28 🔒 pandoc sandbox: landlock via /usr/local/bin/pandoc-worker __sandbox-exec
+  2026/09/30 16:36:29 🔒 pandoc sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/09/30 16:36:29 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: pandoc refuses-without-landlock
+  2026/09/30 16:36:29 pandoc sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set PANDOC_SANDBOX_DISABLED=true to accept that deliberately
+PASS: pandoc escape-hatch
+  2026/09/30 16:36:30 ⚠️  PANDOC_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: pandoc preflight-catches-restrict-self
+  2026/09/30 16:36:31 pandoc sandbox preflight: the engine cannot convert under the sandbox: pandoc: pandoc: engine sandbox could not be established: pandoc failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== ocr: building octoconv-ocr:sandbox-liveproof-1790786141-25757 from Dockerfile.ocr-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:3d7640d281d0be453100caa84881e415ecea1c07d105c3870e6ec4dcb6b7200b
+PASS: ocr confined-startup
+  2026/09/30 16:36:51 🔒 ocr sandbox: landlock via /usr/local/bin/ocr-worker __sandbox-exec
+  2026/09/30 16:36:52 🔒 ocr sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/09/30 16:36:52 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: ocr refuses-without-landlock
+  2026/09/30 16:36:53 ocr sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set OCR_SANDBOX_DISABLED=true to accept that deliberately
+PASS: ocr escape-hatch
+  2026/09/30 16:36:53 ⚠️  OCR_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: ocr preflight-catches-restrict-self
+  2026/09/30 16:36:54 ocr sandbox preflight: text-layer route: ocr: ocr: pdfinfo: engine sandbox could not be established: pdfinfo failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== av: building octoconv-av:sandbox-liveproof-1790786141-25757 from Dockerfile.av-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:f69cc0e1eb668c5e0738df52e20269fed4521e32092c86607054ec39718a9f90
+PASS: av confined-startup
+  2026/09/30 16:37:16 🔒 av sandbox: landlock via /usr/local/bin/av-worker __sandbox-exec
+  2026/09/30 16:37:16 🔒 av sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/09/30 16:37:16 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: av refuses-without-landlock
+  2026/09/30 16:37:16 av sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set AV_SANDBOX_DISABLED=true to accept that deliberately
+PASS: av escape-hatch
+  2026/09/30 16:37:17 ⚠️  AV_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: av preflight-catches-restrict-self
+  2026/09/30 16:37:18 av sandbox preflight: generate preflight source: engine sandbox could not be established: ffmpeg failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== audio: building octoconv-audio:sandbox-liveproof-1790786141-25757 from Dockerfile.audio-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:deb590c0fd1cc3b066fe53a6cf42d535b577bc971c7eb5ce53a37363adaf26ac
+PASS: audio confined-startup
+  2026/09/30 16:37:37 🔒 audio sandbox: landlock via /usr/local/bin/audio-worker __sandbox-exec
+  2026/09/30 16:37:40 🔒 audio sandbox proven: the engine converted inside the job directory and was denied a file outside it
+  2026/09/30 16:37:40 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: audio refuses-without-landlock
+  2026/09/30 16:37:41 audio sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set AUDIO_SANDBOX_DISABLED=true to accept that deliberately
+PASS: audio escape-hatch
+  2026/09/30 16:37:41 ⚠️  AUDIO_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: audio preflight-catches-restrict-self
+  2026/09/30 16:37:42 audio sandbox preflight: the duration guard cannot probe under the sandbox: ffprobe: engine sandbox could not be established: ffprobe failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== html: building octoconv-html:sandbox-liveproof-1790786141-25757 from Dockerfile.chromium-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:49d0c077a294423bcaa4b585b75d53836e9e8fa0b5940b2339c92f39ea4c6a6d
+PASS: html confined-startup
+  2026/09/30 16:38:02 🔒 html sandbox: landlock via /usr/local/bin/chromium-worker __sandbox-exec
+  2026/09/30 16:38:03 🔒 html sandbox proven: the engine rendered inside the job directory and was denied a file outside every grant
+  2026/09/30 16:38:03 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: html refuses-without-landlock
+  2026/09/30 16:38:03 html sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set HTML_SANDBOX_DISABLED=true to accept that deliberately
+PASS: html escape-hatch
+  2026/09/30 16:38:04 ⚠️  HTML_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: html preflight-catches-restrict-self
+  2026/09/30 16:38:05 html sandbox preflight: the engine cannot convert under the sandbox: chromium: engine sandbox could not be established: chromium-headless-shell failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+toolchain: go version go1.26.4 darwin/arm64
+PASS: html concurrency-guard
+  2026/09/30 16:38:09 🧵 HTML_WORKER_CONCURRENCY=2
+PASS: html wrapper-as-measured
+PASS: html sweeps-shared-tmp
+PASS: html csp-precedes-every-script
+      chromium_live_test.go:141: csp-live: 18 rows: every control executed its script, every production render blocked it
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (16.14s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:308: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:405: negative control: engine exited 0 without --disable-dev-shm-usage -- the method cannot see a /dev/shm dependency
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (16.14s)
+FAIL
+== probe: building octoconv-probe:sandbox-liveproof-1790786141-25757 from Dockerfile.probe-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:3b8b69628495154a57a4f3ddeaa053aaee73f942e7ec76c190e6f2caf8aaf655
+PASS: probe confined-startup
+  2026/09/30 16:38:56 🔒 probe sandbox: landlock via /usr/local/bin/probe-worker __sandbox-exec
+  2026/09/30 16:38:57 🔒 probe sandbox proven: every probe engine ran inside the job directory and was denied a file outside it
+  2026/09/30 16:38:57 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: probe refuses-without-landlock
+  2026/09/30 16:38:57 probe sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set PROBE_SANDBOX_DISABLED=true to accept that deliberately
+PASS: probe escape-hatch
+  2026/09/30 16:38:58 ⚠️  PROBE_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: probe preflight-catches-restrict-self
+  2026/09/30 16:38:58 probe sandbox preflight: pdf route: the engine cannot run under the sandbox: sanitize pdf: page count: engine sandbox could not be established: pdfinfo failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+== document: building octoconv-document:sandbox-liveproof-1790786141-25757 from Dockerfile.document-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:8bfc7b4ba416d57a46f1528134bacc14aa4560de3cfdaf41803f8d77acae3650
+PASS: document confined-startup
+  2026/09/30 16:39:18 🔒 document sandbox: landlock via /usr/local/bin/document-worker __sandbox-exec
+  2026/09/30 16:39:23 🔒 document sandbox proven: soffice and veraPDF ran inside the job directory and were denied a file outside it
+  2026/09/30 16:39:23 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: document refuses-without-landlock
+  2026/09/30 16:39:24 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document escape-hatch
+  2026/09/30 16:39:24 ⚠️  DOCUMENT_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: document preflight-catches-restrict-self
+  2026/09/30 16:39:25 document sandbox preflight: the engines cannot convert under the sandbox: libreoffice: engine sandbox could not be established: soffice failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+emulated image id: sha256:28363c16db22bf8c9c65c6cd9f80cd8803267b77c5090aedd82fdceff8f34a62 (amd64)
+PASS: document emulated-amd64-refuses
+  2026/09/30 16:42:06 document sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set DOCUMENT_SANDBOX_DISABLED=true to accept that deliberately
+PASS: document concurrency-guard
+  2026/09/30 16:42:07 document sandbox: DOCUMENT_WORKER_CONCURRENCY=2 with the sandbox enabled: this class's ruleset grants the container's shared /tmp read-write, so concurrent tasks could read each other's files there; set DOCUMENT_WORKER_CONCURRENCY=1 and scale with replicas (CONF-06)
+PASS: document sweeps-shared-tmp
+FAILURES PRESENT (40 checks run)
+
+# ---- html alone, re-run (same commit, same result) ----
+== html: building octoconv-html:sandbox-liveproof-1790786588-63847 from Dockerfile.chromium-worker ==
+commit: 18c805d209bb15b5975fb254ec0e6e4f39b5a908
+tracked dirt: 3 file(s)
+image id: sha256:49d0c077a294423bcaa4b585b75d53836e9e8fa0b5940b2339c92f39ea4c6a6d
+PASS: html confined-startup
+  2026/09/30 16:43:12 🔒 html sandbox: landlock via /usr/local/bin/chromium-worker __sandbox-exec
+  2026/09/30 16:43:13 🔒 html sandbox proven: the engine rendered inside the job directory and was denied a file outside every grant
+  2026/09/30 16:43:13 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: html refuses-without-landlock
+  2026/09/30 16:43:13 html sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set HTML_SANDBOX_DISABLED=true to accept that deliberately
+PASS: html escape-hatch
+  2026/09/30 16:43:14 ⚠️  HTML_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: html preflight-catches-restrict-self
+  2026/09/30 16:43:14 html sandbox preflight: the engine cannot convert under the sandbox: chromium: engine sandbox could not be established: chromium-headless-shell failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+toolchain: go version go1.26.4 darwin/arm64
+PASS: html concurrency-guard
+  2026/09/30 16:43:17 🧵 HTML_WORKER_CONCURRENCY=2
+PASS: html wrapper-as-measured
+PASS: html sweeps-shared-tmp
+PASS: html csp-precedes-every-script
+      chromium_live_test.go:141: csp-live: 18 rows: every control executed its script, every production render blocked it
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (16.48s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:308: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:405: negative control: engine exited 0 without --disable-dev-shm-usage -- the method cannot see a /dev/shm dependency
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (16.48s)
+FAIL
+FAILURES PRESENT (9 checks run)
+
+# ---- html alone at 705f962 (phase 69 tip, git worktree), same base image today: SAME FAILURE ----
+== html: building octoconv-html:sandbox-liveproof-1790786656-69872 from Dockerfile.chromium-worker ==
+commit: 705f962f27ff4f59baec7322849740524dc8bb69
+tracked dirt: 0 file(s)
+image id: sha256:8dd6b2eef5a531a164dfbbf2065520d41cf6372b1ce4b68bfd0a0592a458899e
+PASS: html confined-startup
+  2026/09/30 16:44:37 🔒 html sandbox: landlock via /usr/local/bin/chromium-worker __sandbox-exec
+  2026/09/30 16:44:38 🔒 html sandbox proven: the engine rendered inside the job directory and was denied a file outside every grant
+  2026/09/30 16:44:38 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: html refuses-without-landlock
+  2026/09/30 16:44:38 html sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set HTML_SANDBOX_DISABLED=true to accept that deliberately
+PASS: html escape-hatch
+  2026/09/30 16:44:39 ⚠️  HTML_SANDBOX_DISABLED=true — the engine can read every file in this container
+PASS: html preflight-catches-restrict-self
+  2026/09/30 16:44:39 html sandbox preflight: the engine cannot convert under the sandbox: chromium: engine sandbox could not be established: chromium-headless-shell failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+toolchain: go version go1.26.4 darwin/arm64
+PASS: html concurrency-guard
+  2026/09/30 16:44:43 🧵 HTML_WORKER_CONCURRENCY=2
+PASS: html wrapper-as-measured
+PASS: html sweeps-shared-tmp
+PASS: html csp-precedes-every-script
+      chromium_live_test.go:141: csp-live: 18 rows: every control executed its script, every production render blocked it
+FAIL: html large-document-without-dev-shm
+  exit status 1, want 0
+  missing '--- PASS: TestChromiumLargeDocumentNeedsNoDevShmLive'
+  --- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.69s)
+  --- full output ---
+  === RUN   TestChromiumLargeDocumentNeedsNoDevShmLive
+    chromium_live_test.go:308: dev-shm: shm /dev/shm tmpfs rw,nosuid,nodev,noexec,relatime,size=8212480k 0 0
+    chromium_live_test.go:405: negative control: engine exited 0 without --disable-dev-shm-usage -- the method cannot see a /dev/shm dependency
+--- FAIL: TestChromiumLargeDocumentNeedsNoDevShmLive (15.69s)
+FAIL
+FAILURES PRESENT (9 checks run)

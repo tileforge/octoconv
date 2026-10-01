@@ -103,8 +103,8 @@ func parsePdfinfoPerPagePageSize(out []byte, page int) (widthPts, heightPts floa
 // parsePdfinfoPerPagePageSize -- called by ocrPDFPage BEFORE that page's
 // pdftoppm render (defense-in-depth over the whole-document page-count cap,
 // T-43-01b).
-func ocrPDFPageSizeForPage(ctx context.Context, pdfPath string, page int) (widthPts, heightPts float64, err error) {
-	out, runErr := runCommand(ctx, "pdfinfo", ocrPDFPageSizeArgs(pdfPath, page)...)
+func ocrPDFPageSizeForPage(ctx context.Context, x engineExec, pdfPath string, page int) (widthPts, heightPts float64, err error) {
+	out, runErr := x.run(ctx, "pdfinfo", ocrPDFPageSizeArgs(pdfPath, page)...)
 	if runErr != nil {
 		return 0, 0, fmt.Errorf("pdfinfo: %w", runErr)
 	}
@@ -166,8 +166,8 @@ type ocrPDFGuardResult struct {
 //
 // Cost is already bounded for the render routes by enforceMaxPages and the
 // per-page enforcePageBoxBound; D-06 adds no new limit because none is needed.
-func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, pdfPath, targetFormat string) (ocrPDFGuardResult, error) {
-	totalPages, err := ocrPDFPageCount(ctx, pdfPath)
+func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, x engineExec, pdfPath, targetFormat string) (ocrPDFGuardResult, error) {
+	totalPages, err := ocrPDFPageCount(ctx, x, pdfPath)
 	if err != nil {
 		return ocrPDFGuardResult{}, fmt.Errorf("ocr: %w", err)
 	}
@@ -184,7 +184,7 @@ func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, pdfPath, targetForma
 		return ocrPDFGuardResult{totalPages: totalPages}, nil
 	}
 
-	text, nonWhitespace, err := extractPDFTextLayer(ctx, pdfPath)
+	text, nonWhitespace, err := extractPDFTextLayer(ctx, x, pdfPath)
 	if err != nil {
 		return ocrPDFGuardResult{}, fmt.Errorf("ocr: %w", err)
 	}
@@ -207,8 +207,8 @@ func (c OCRConverter) ocrPDFGuardStage(ctx context.Context, pdfPath, targetForma
 // function returns, so the per-page loop (convertPDF) never has more than
 // one page's image in flight and never leaks a page's worth of disk state
 // (T-43-01/T-43-07).
-func (c OCRConverter) ocrPDFPage(ctx context.Context, pdfPath, tmpDir string, page int, langArgs []string, configfile, targetFormat string) ([]byte, error) {
-	wPts, hPts, err := ocrPDFPageSizeForPage(ctx, pdfPath, page)
+func (c OCRConverter) ocrPDFPage(ctx context.Context, x engineExec, pdfPath, tmpDir string, page int, langArgs []string, configfile, targetFormat string) ([]byte, error) {
+	wPts, hPts, err := ocrPDFPageSizeForPage(ctx, x, pdfPath, page)
 	if err != nil {
 		return nil, fmt.Errorf("ocr: %w", err)
 	}
@@ -217,7 +217,7 @@ func (c OCRConverter) ocrPDFPage(ctx context.Context, pdfPath, tmpDir string, pa
 	}
 
 	pageImageBase := filepath.Join(tmpDir, "page")
-	if _, err := runCommand(ctx, "pdftoppm", ocrRasterizePageArgs(pdfPath, pageImageBase, page, ocrRasterizeDPI)...); err != nil {
+	if _, err := x.run(ctx, "pdftoppm", ocrRasterizePageArgs(pdfPath, pageImageBase, page, ocrRasterizeDPI)...); err != nil {
 		return nil, fmt.Errorf("ocr: pdftoppm: %w", err)
 	}
 	pageImage := pageImageBase + ".png"
@@ -225,7 +225,7 @@ func (c OCRConverter) ocrPDFPage(ctx context.Context, pdfPath, tmpDir string, pa
 
 	pageOutBase := filepath.Join(tmpDir, "pageout")
 	args := ocrTesseractArgs(pageImage, pageOutBase, langArgs, configfile)
-	if _, err := runCommand(ctx, "tesseract", args...); err != nil {
+	if _, err := x.run(ctx, "tesseract", args...); err != nil {
 		return nil, fmt.Errorf("ocr: tesseract: %w", err)
 	}
 	produced := pageOutBase + ocrTesseractOutputExt(targetFormat)
@@ -244,12 +244,15 @@ func (c OCRConverter) ocrPDFPage(ctx context.Context, pdfPath, tmpDir string, pa
 // txt or feeding hocr/alto fragments to Plan 03's ocrPageMerger. onPage,
 // when non-nil, is invoked after each page completes with that page's own
 // elapsed processing duration -- ConvertWithProgress (Task 3) uses this to
-// drive a page-granular sink.Update ramp; Convert (ocr.go) passes nil. A
-// server-owned temp dir (os.MkdirTemp) holds each page's transient files
-// and is removed unconditionally on every return path -- temp paths are
-// never client-controlled.
+// drive a page-granular sink.Update ramp; Convert (ocr.go) passes nil. Every
+// engine call site shares ONE engineExec (c.exec(outPath), Phase 68), built
+// once from outPath's directory; the per-page render directory
+// (ocrPageWorkDir) lives INSIDE that same job directory -- the only
+// writable path the job's ruleset grants -- and is removed unconditionally
+// on every return path.
 func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFormat, configfile string, o OCROpts, onPage func(page, total int, elapsed time.Duration)) error {
-	guard, err := c.ocrPDFGuardStage(ctx, inPath, targetFormat)
+	x := c.exec(outPath)
+	guard, err := c.ocrPDFGuardStage(ctx, x, inPath, targetFormat)
 	if err != nil {
 		return err
 	}
@@ -265,9 +268,12 @@ func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFor
 	}
 	totalPages := guard.totalPages
 
-	tmpDir, err := os.MkdirTemp("", "octoconv-ocr-pdf-*")
+	// Inside the job directory (filepath.Dir(outPath)) -- the only writable
+	// path the job's ruleset grants. A directory under the system temp dir
+	// would be denied to pdftoppm/tesseract under Landlock.
+	tmpDir, err := ocrPageWorkDir(outPath)
 	if err != nil {
-		return fmt.Errorf("ocr: pdf tmpdir: %w", err)
+		return err
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -281,7 +287,7 @@ func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFor
 
 	for page := 1; page <= totalPages; page++ {
 		start := time.Now()
-		fragment, err := c.ocrPDFPage(ctx, inPath, tmpDir, page, langArgs, configfile, targetFormat)
+		fragment, err := c.ocrPDFPage(ctx, x, inPath, tmpDir, page, langArgs, configfile, targetFormat)
 		if err != nil {
 			return err
 		}

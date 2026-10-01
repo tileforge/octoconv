@@ -5,6 +5,10 @@ planted: 2026-08-03
 planted_during: post-Phase-51 (asked right after the DELETE-based retention purge landed)
 trigger_when: when the DELETE-based purge stops keeping up — measurable as purge sweeps hitting the maxPurgeBatchesPerSweep ceiling every tick, table/index bloat that autovacuum cannot reclaim, or purge duration climbing into the sweep interval
 scope: Large (schema migration across five FK relationships on live tables)
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: dormant
 ---
 
 # SEED-019: Partition `jobs`/`job_events` and drop old partitions instead of deleting rows

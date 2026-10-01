@@ -575,7 +575,7 @@ func TestAVConverter_Transcode_LiveBinary(t *testing.T) {
 	if err := (AVConverter{}).Convert(ctx, src, outPath, nil); err != nil {
 		t.Fatalf("Convert(mov->mp4) = %v, want nil", err)
 	}
-	codec, _, _, err := probeVideoStream(context.Background(), outPath)
+	codec, _, _, err := probeVideoStream(context.Background(), engineExec{}, outPath)
 	if err != nil {
 		t.Fatalf("probeVideoStream(out): %v", err)
 	}
@@ -597,14 +597,14 @@ func TestAVConverter_MP4ToWebM_LiveBinary(t *testing.T) {
 	if err := (AVConverter{}).Convert(ctx, src, outPath, nil); err != nil {
 		t.Fatalf("Convert(mp4->webm) = %v, want nil", err)
 	}
-	videoCodec, _, _, err := probeVideoStream(context.Background(), outPath)
+	videoCodec, _, _, err := probeVideoStream(context.Background(), engineExec{}, outPath)
 	if err != nil {
 		t.Fatalf("probeVideoStream(out): %v", err)
 	}
 	if videoCodec != "vp9" {
 		t.Errorf("output video codec = %q, want vp9", videoCodec)
 	}
-	audioCodec, err := probeAudioCodec(context.Background(), outPath)
+	audioCodec, err := probeAudioCodec(context.Background(), engineExec{}, outPath)
 	if err != nil {
 		t.Fatalf("probeAudioCodec(out): %v", err)
 	}
@@ -629,14 +629,14 @@ func TestAVConverter_VP9SourceToMP4_ReEncodes(t *testing.T) {
 	if err := (AVConverter{}).Convert(ctx, src, outPath, nil); err != nil {
 		t.Fatalf("Convert(webm/vp9/opus->mp4) = %v, want nil", err)
 	}
-	videoCodec, _, _, err := probeVideoStream(context.Background(), outPath)
+	videoCodec, _, _, err := probeVideoStream(context.Background(), engineExec{}, outPath)
 	if err != nil {
 		t.Fatalf("probeVideoStream(out): %v", err)
 	}
 	if videoCodec != "h264" {
 		t.Errorf("output video codec = %q, want h264 (re-encode, not a silent VP9 remux into mp4)", videoCodec)
 	}
-	audioCodec, err := probeAudioCodec(context.Background(), outPath)
+	audioCodec, err := probeAudioCodec(context.Background(), engineExec{}, outPath)
 	if err != nil {
 		t.Fatalf("probeAudioCodec(out): %v", err)
 	}
@@ -676,7 +676,7 @@ func TestAVConverter_AudioExtract_LiveBinary(t *testing.T) {
 		if err := (AVConverter{}).Convert(ctx, src, outPath, nil); err != nil {
 			t.Fatalf("Convert(mp4->m4a, aac source) = %v, want nil", err)
 		}
-		codec, err := probeAudioCodec(context.Background(), outPath)
+		codec, err := probeAudioCodec(context.Background(), engineExec{}, outPath)
 		if err != nil {
 			t.Fatalf("probeAudioCodec(out): %v", err)
 		}
@@ -838,7 +838,7 @@ func TestConvertTranscode_ReencodeSourceResolutionBound(t *testing.T) {
 			primary:    avVideoStream{Index: 0, CodecName: "h265", Height: 2160, Width: 3840},
 			audioCodec: "aac",
 		}
-		err := c.convertTranscode(context.Background(), missing, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, src)
+		err := c.convertTranscode(context.Background(), engineExec{}, missing, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, src)
 		if err == nil {
 			t.Fatal("convertTranscode(2160p source, resolution_height=0) = nil, want a fail-closed error")
 		}
@@ -858,7 +858,7 @@ func TestConvertTranscode_ReencodeSourceResolutionBound(t *testing.T) {
 			primary:    avVideoStream{Index: 0, CodecName: "h265", Height: 1080, Width: 1920},
 			audioCodec: "aac",
 		}
-		err := c.convertTranscode(context.Background(), missing, filepath.Join(dir, "out2.mp4"), "mp4", AVOpts{}, src)
+		err := c.convertTranscode(context.Background(), engineExec{}, missing, filepath.Join(dir, "out2.mp4"), "mp4", AVOpts{}, src)
 		if err == nil {
 			t.Fatal("convertTranscode(1080p source, missing input) = nil, want an ffmpeg-invocation error")
 		}
@@ -882,7 +882,7 @@ func TestConvertTranscode_ReencodeSourceResolutionBound(t *testing.T) {
 			primary:    avVideoStream{Index: 0, CodecName: "h265", Height: 2160, Width: 3840},
 			audioCodec: "aac",
 		}
-		err := c.convertTranscode(context.Background(), missing, filepath.Join(dir, "out3.mp4"), "mp4", AVOpts{ResolutionHeight: 1080}, src)
+		err := c.convertTranscode(context.Background(), engineExec{}, missing, filepath.Join(dir, "out3.mp4"), "mp4", AVOpts{ResolutionHeight: 1080}, src)
 		if err == nil {
 			t.Fatal("convertTranscode(2160p source, resolution_height=1080) = nil, want a fail-closed error (CR-01)")
 		}
@@ -903,7 +903,7 @@ func TestConvertTranscode_ReencodeSourceResolutionBound(t *testing.T) {
 			primary:    avVideoStream{Index: 0, CodecName: "h265", Height: 1080, Width: 3840},
 			audioCodec: "aac",
 		}
-		err := c.convertTranscode(context.Background(), missing, filepath.Join(dir, "out5.mp4"), "mp4", AVOpts{}, src)
+		err := c.convertTranscode(context.Background(), engineExec{}, missing, filepath.Join(dir, "out5.mp4"), "mp4", AVOpts{}, src)
 		if err == nil {
 			t.Fatal("convertTranscode(3840x1080 source, resolution_height=0) = nil, want a fail-closed error (HI-01)")
 		}
@@ -925,7 +925,7 @@ func TestConvertTranscode_ReencodeSourceResolutionBound(t *testing.T) {
 			primary:    avVideoStream{Index: 0, CodecName: "h264", Height: 2160, Width: 3840},
 			audioCodec: "aac",
 		}
-		err := c.convertTranscode(context.Background(), missing, filepath.Join(dir, "out4.mp4"), "mp4", AVOpts{}, src)
+		err := c.convertTranscode(context.Background(), engineExec{}, missing, filepath.Join(dir, "out4.mp4"), "mp4", AVOpts{}, src)
 		if errors.Is(err, ErrAVReencodeResolutionExceeded) {
 			t.Errorf("convertTranscode(h264/aac source, stream-copy eligible) error = %v, want it NOT rejected by the re-encode source-resolution bound", err)
 		}
@@ -997,7 +997,7 @@ func TestAVStageSentinels_Distinguishable(t *testing.T) {
 	}
 
 	t.Run("transcode", func(t *testing.T) {
-		err := c.convertTranscode(ctx, missing, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, src)
+		err := c.convertTranscode(ctx, engineExec{}, missing, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, src)
 		if err == nil {
 			t.Fatal("convertTranscode(missing input) = nil, want error")
 		}
@@ -1010,7 +1010,7 @@ func TestAVStageSentinels_Distinguishable(t *testing.T) {
 	})
 
 	t.Run("audio-extract", func(t *testing.T) {
-		err := c.convertAudioExtract(ctx, missing, filepath.Join(dir, "out.mp3"), "mp3", src)
+		err := c.convertAudioExtract(ctx, engineExec{}, missing, filepath.Join(dir, "out.mp3"), "mp3", src)
 		if err == nil {
 			t.Fatal("convertAudioExtract(missing input) = nil, want error")
 		}
@@ -1023,7 +1023,7 @@ func TestAVStageSentinels_Distinguishable(t *testing.T) {
 	})
 
 	t.Run("thumbnail", func(t *testing.T) {
-		err := c.convertThumbnail(ctx, missing, filepath.Join(dir, "thumb.jpg"), "jpg", AVOpts{}, src)
+		err := c.convertThumbnail(ctx, engineExec{}, missing, filepath.Join(dir, "thumb.jpg"), "jpg", AVOpts{}, src)
 		if err == nil {
 			t.Fatal("convertThumbnail(missing input) = nil, want error")
 		}
@@ -1057,7 +1057,7 @@ func TestAVTranscodeFailed_PreservesDeadlineExceeded(t *testing.T) {
 
 	c := AVConverter{}
 	srcProbe := avSourceProbe{duration: 2 * time.Second, primary: avVideoStream{Index: 0, CodecName: "h264"}, audioCodec: "aac"}
-	err := c.convertTranscode(ctx, src, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, srcProbe)
+	err := c.convertTranscode(ctx, engineExec{}, src, filepath.Join(dir, "out.mp4"), "mp4", AVOpts{}, srcProbe)
 	if err == nil {
 		t.Fatal("convertTranscode(expired ctx) = nil, want error")
 	}
@@ -1085,7 +1085,7 @@ func TestAVProbeSource_NoVideoStream(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	_, probeErr := avProbeSource(ctx, path)
+	_, probeErr := avProbeSource(ctx, engineExec{}, path)
 	if probeErr == nil {
 		t.Fatal("avProbeSource(audio-only source) = nil error, want ErrAVNoVideoStream")
 	}

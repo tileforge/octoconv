@@ -1,0 +1,69 @@
+# 70-05 Task 1: e2e on a stack rebuilt from commit 6a8e69e (docker-compose.yml + docker-compose.e2e.yml), go test -count=1 -v
+--- PASS: TestEveryBakingJobFetchesTheBundle (0.00s)
+--- PASS: TestEveryBakingJobCachesEveryService (0.00s)
+--- PASS: TestChartGraceOutlivesAsynqShutdown (0.00s)
+--- PASS: TestDocumentConversionE2E (12.46s)
+    --- PASS: TestDocumentConversionE2E/sample.docx (2.28s)
+    --- PASS: TestDocumentConversionE2E/sample.xlsx (2.07s)
+    --- PASS: TestDocumentConversionE2E/sample.pptx (2.02s)
+    --- PASS: TestDocumentConversionE2E/sample.odt (2.01s)
+    --- PASS: TestDocumentConversionE2E/sample.ods (2.02s)
+    --- PASS: TestDocumentConversionE2E/sample.odp (2.02s)
+--- PASS: TestCrossFormatConversionE2E (14.12s)
+    --- PASS: TestCrossFormatConversionE2E/sample.docx->odt (2.02s)
+    --- PASS: TestCrossFormatConversionE2E/sample.odt->docx (2.02s)
+    --- PASS: TestCrossFormatConversionE2E/sample.xlsx->ods (2.02s)
+    --- PASS: TestCrossFormatConversionE2E/sample.ods->xlsx (2.01s)
+    --- PASS: TestCrossFormatConversionE2E/sample.pptx->odp (2.02s)
+    --- PASS: TestCrossFormatConversionE2E/sample.odp->pptx (4.02s)
+--- PASS: TestOLECFBRejectionE2E (0.02s)
+    --- PASS: TestOLECFBRejectionE2E/legacy.doc (0.00s)
+    --- PASS: TestOLECFBRejectionE2E/encrypted.docx (0.00s)
+--- PASS: TestPDFAExportE2E (6.08s)
+    --- PASS: TestPDFAExportE2E/PDFA (4.03s)
+    --- PASS: TestPDFAExportE2E/NoOptsRegression (2.04s)
+--- PASS: TestPDFANonCompliantE2E (2.03s)
+--- PASS: TestOptsRejectionE2E (0.01s)
+    --- PASS: TestOptsRejectionE2E/InapplicableTarget (0.00s)
+    --- PASS: TestOptsRejectionE2E/UnknownKey (0.00s)
+--- PASS: TestHTMLConversionE2E (10.10s)
+    --- PASS: TestHTMLConversionE2E/HappyPath (2.01s)
+    --- PASS: TestHTMLConversionE2E/PrintOptsPageSize (4.04s)
+    --- PASS: TestHTMLConversionE2E/PrintOptsBackground (4.03s)
+--- PASS: TestHTMLContentRejectionE2E (0.02s)
+--- PASS: TestHTMLNetworkBlockE2E (5.03s)
+--- PASS: TestImageConversionE2E (2.03s)
+--- PASS: TestAudioConversionE2E (8.04s)
+--- PASS: TestOCRConversionE2E (36.19s)
+    --- PASS: TestOCRConversionE2E/Image_ToTxt (2.02s)
+    --- PASS: TestOCRConversionE2E/MultiPagePDF_ToHOCR (34.16s)
+--- PASS: TestPandocConversionE2E (4.05s)
+    --- PASS: TestPandocConversionE2E/MD_ToHTML (2.02s)
+    --- PASS: TestPandocConversionE2E/MD_ToDOCX (2.02s)
+--- PASS: TestQueueDepthMetricRelocationE2E (0.01s)
+--- PASS: TestMultiFileLaTeXProjectE2E (4.07s)
+--- PASS: TestMultiFileRefusalsE2E (0.02s)
+    --- PASS: TestMultiFileRefusalsE2E/an_attachment_named_for_the_worker's_own_file (0.00s)
+    --- PASS: TestMultiFileRefusalsE2E/two_attachments_sharing_a_name (0.00s)
+    --- PASS: TestMultiFileRefusalsE2E/extra_parts_for_a_conversion_that_takes_one_file (0.00s)
+--- PASS: TestSanitizeCeilingIsTerminalE2E (2.03s)
+--- PASS: TestSanitizeUnderCeilingStillSanitizesE2E (2.03s)
+--- PASS: TestSanitizeOOXMLAndImageThroughTheConfinedWorkerE2E (4.04s)
+    --- PASS: TestSanitizeOOXMLAndImageThroughTheConfinedWorkerE2E/docm (2.01s)
+    --- PASS: TestSanitizeOOXMLAndImageThroughTheConfinedWorkerE2E/jpg (2.01s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/e2e	113.463s
+
+# ci-local e2e tier (non-verbose) transcript tail:
+--- running the E2E suite ---
+ok  	github.com/apaderin/octoconv/internal/e2e	110.847s
+--- tearing down ---
+### tier e2e: PASS
+
+--- tearing down ---
+==============================================================
+ci-local 20260930T161430Z summary   commit 6a8e69e
+  PASS  e2e
+  ALL REQUESTED TIERS PASSED
+transcript: /Users/apaderin/dev/octoconv/.planning/ci-local/ci-local-20260930T161430Z.log
+==============================================================

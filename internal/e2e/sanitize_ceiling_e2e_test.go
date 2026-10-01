@@ -57,9 +57,22 @@ func multiPagePDF(pages int) []byte {
 	return b.Bytes()
 }
 
-// postSanitize submits one sanitize job and returns the raw response, without
-// asserting a status -- the point of two of the tests below is the status.
+// postSanitize submits one sanitize job with target "pdf" and returns the
+// raw response, without asserting a status -- the point of two of the tests
+// below is the status. A thin wrapper over postSanitizeTo (69-03): every
+// pre-69-03 caller sanitizes a PDF, so this keeps their call sites unchanged.
 func postSanitize(t *testing.T, baseURL, apiKey, filename string, data []byte) (int, map[string]any) {
+	t.Helper()
+	return postSanitizeTo(t, baseURL, apiKey, filename, "pdf", data)
+}
+
+// postSanitizeTo submits one sanitize job with the given target and returns
+// the raw response, without asserting a status -- callers that need a
+// specific status assert it themselves. Added in 69-03 so the new OOXML/image
+// sanitize routes (target "docx", target "jpg") can share this helper with
+// the PDF ceiling tests instead of duplicating the multipart-build/POST
+// sequence a third time.
+func postSanitizeTo(t *testing.T, baseURL, apiKey, filename, target string, data []byte) (int, map[string]any) {
 	t.Helper()
 
 	var body bytes.Buffer
@@ -71,7 +84,7 @@ func postSanitize(t *testing.T, baseURL, apiKey, filename string, data []byte) (
 	if _, err := fw.Write(data); err != nil {
 		t.Fatalf("write file part: %v", err)
 	}
-	_ = w.WriteField("target", "pdf")
+	_ = w.WriteField("target", target)
 	_ = w.WriteField("operation", "sanitize")
 	_ = w.Close()
 

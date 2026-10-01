@@ -100,7 +100,7 @@ func (LibvipsConverter) Engine() string { return EngineImage }
 
 // ConfinedLibvips returns a converter that runs vips through helper under the
 // measured ruleset. An empty helper runs the engine directly, which is what
-// LIBVIPS_SANDBOX_DISABLED=true produces and what tests use.
+// IMAGE_SANDBOX_DISABLED=true produces and what tests use.
 func ConfinedLibvips(helper []string) LibvipsConverter {
 	return LibvipsConverter{Sandbox: &engineSandbox{Helper: helper, Confine: len(helper) > 0}}
 }

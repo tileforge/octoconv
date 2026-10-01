@@ -11,6 +11,7 @@ provides:
   - "zipDirectoryExceedsStructuralBound's exceeds decision now reads ONLY the EOCD's declared central-directory byte size (dirBytes, a uint32) -- the entry-count field (a uint16 that wraps at 65536) is read for diagnostics only and never influences the decision"
   - "inspectMaxZipDirBytes is now derived as inspectMaxZipDirEntries * zipCentralDirMinRecordLen (~184 KiB) instead of an independently-chosen flat 4 MiB, so a directory containing more records than the entry ceiling can never declare a small-enough byte size to pass"
   - "ZIP64's 0xFFFFFFFF dirBytes sentinel is treated as exceeding the bound explicitly, not merely because the numeric comparison happens to also reject it"
+
 affects: ["58-synchronous-inspection (the phase this bound belongs to)"]
 
 tech-stack:
@@ -38,6 +39,10 @@ requirements-completed: [PR9R2-F5-EOCD-UINT16-WRAP]
 
 duration: ~20min
 completed: 2026-08-10
+audit_acknowledged:
+  milestone: v1.15
+  at: 2026-09-30
+  status: unknown
 ---
 
 # Quick Task 260810-r2a: Round-2 EOCD Structural Bound Fix Summary
@@ -91,19 +96,23 @@ None - plan executed exactly as written. The plan explicitly offered two options
 ## Verification Performed (literal output pasted)
 
 **`go build ./... && go vet ./...`:**
+
 ```
 BUILD_VET_OK
 ```
+
 (no output from either command; explicit echo confirms both succeeded)
 
 **`gofmt -l internal/api`:** empty (no output)
 
 **`go test ./internal/api/ -count=1 -race`:**
+
 ```
 ok  	github.com/apaderin/octoconv/internal/api	5.154s
 ```
 
 **`go test ./... -count=1 -race`:** every package `ok`, full output tail:
+
 ```
 ok  	github.com/apaderin/octoconv/internal/reconciler	3.573s
 ok  	github.com/apaderin/octoconv/internal/storage	3.662s
@@ -116,9 +125,11 @@ ok  	github.com/apaderin/octoconv/internal/worker	9.373s
 **`git diff --stat -- go.mod go.sum`:** empty (zero new dependencies).
 
 **`grep -n "exceeds =" internal/api/inspect_handlers.go`:**
+
 ```
 479:		exceeds = dirBytes == 0xFFFFFFFF || dirBytes > inspectMaxZipDirBytes
 ```
+
 Confirms the decision depends on `dirBytes` only.
 
 ### Inversion (D-16), performed and reverted

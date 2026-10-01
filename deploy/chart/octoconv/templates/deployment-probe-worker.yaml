@@ -79,7 +79,9 @@ spec:
           # PROBE_WORKER_CONCURRENCY or a candidate PROBE_ENGINE_TIMEOUT
           # without editing the ConfigMap. probeWorker.extraEnv is
           # intentionally absent from values.yaml so this block renders
-          # nothing in production.
+          # nothing in production. This is also how PROBE_SANDBOX_DISABLED=true
+          # is set (Phase 69) -- the remedy the worker names when it refuses
+          # to start unconfined.
           env:
             {{- range $k, $v := .Values.probeWorker.extraEnv }}
             - name: {{ $k }}

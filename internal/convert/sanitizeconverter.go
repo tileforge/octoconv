@@ -52,8 +52,13 @@ import (
 // ocrguards.go's enforceMaxPages already use. converters.go registers the
 // zero value at init; cmd/probe-worker replaces it with the configured one at
 // startup, exactly as cmd/ocr-worker does for OCRConverter.
+//
+// Sandbox mirrors every other confined class (OCRConverter, PandocConverter,
+// ChromiumConverter): a *engineSandbox held by pointer, nil-safe, so
+// WithSandbox(nil) still equals the zero value.
 type SanitizeConverter struct {
 	MaxPages int
+	Sandbox  *engineSandbox
 }
 
 // Engine reports the eighth engine class.
@@ -116,26 +121,35 @@ func (c SanitizeConverter) Convert(ctx context.Context, inPath, outPath string, 
 
 	format := formatFromPath(inPath)
 
-	// PROBE-02: the page ceiling, enforced BEFORE SanitizeFile and therefore
+	// x is this job's ONE engineExec, built ONCE here -- before the page
+	// ceiling and before any format dispatch -- and threaded through both.
+	// probeEngines is a STATIC set (gs, pdfinfo, unzip, file) granted
+	// unconditionally regardless of which format this job actually takes,
+	// exactly as every other multi-call-site class (OCR) builds one ruleset
+	// per job rather than a format-conditional one.
+	x := c.exec(outPath)
+
+	// PROBE-02: the page ceiling, enforced BEFORE sanitizeFile and therefore
 	// before the first ghostscript pass. It lives HERE rather than inside
-	// SanitizeFile for one reason: the bound is CONFIGURATION, held by this
+	// sanitizeFile for one reason: the bound is CONFIGURATION, held by this
 	// converter (the registry entry cmd/probe-worker replaces with the
-	// env-resolved value), and SanitizeFile takes no configuration at all.
-	// Threading it through would have changed that function's signature at
-	// twenty test call sites, none of which are about the ceiling.
+	// env-resolved value), and sanitizeFile takes no configuration at all.
+	// Threading it through changed that function's signature at every one of
+	// its own test call sites -- x engineExec is one of them, added in the
+	// same plan for a different reason (CONF-01), not because of the ceiling.
 	//
 	// Every production path reaches the sanitizer through this method -- the
 	// worker resolves a Converter from the registry and calls Convert -- so
 	// "a caller could forget the gate" is not the same risk it is for
-	// verification, which SanitizeFile keeps inside itself precisely because
+	// verification, which sanitizeFile keeps inside itself precisely because
 	// its callers include this one.
 	if enforce, ok := sanitizePageCeilings[format]; ok {
-		if err := enforce(ctx, inPath, c.MaxPages); err != nil {
+		if err := enforce(ctx, x, inPath, c.MaxPages); err != nil {
 			return err
 		}
 	}
 
-	res, err := SanitizeFile(ctx, format, inPath, outPath)
+	res, err := sanitizeFile(ctx, x, format, inPath, outPath)
 	if err != nil {
 		return err
 	}
@@ -183,7 +197,7 @@ func formatFromPath(path string) string {
 // A map rather than a switch, and a package-level literal rather than init()
 // registration, for the same reasons sanitizeFormats gives above its own
 // declaration.
-var sanitizePageCeilings = map[string]func(ctx context.Context, inPath string, max int) error{
+var sanitizePageCeilings = map[string]func(ctx context.Context, x engineExec, inPath string, max int) error{
 	"pdf": enforcePDFPageCeiling,
 }
 
