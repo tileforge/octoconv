@@ -34,13 +34,13 @@ services:
   # image carries minio, mc and sh, which is why createbucket below runs from it
   # too. It runs as uid/gid 65532, not root. Chainguard's free tier publishes
   # only :latest, so the pin is the digest of the multi-arch image index
-  # (linux/amd64 + linux/arm64). The same string is minio.image in
-  # deploy/chart/octoconv/values.yaml; internal/e2e/minio_image_pin_test.go
-  # keeps the two equal.
+  # (linux/amd64 + linux/arm64). The same string is minio.image and minio.mcImage
+  # in deploy/chart/octoconv/values.yaml; internal/e2e/minio_image_pin_test.go
+  # keeps them equal.
   # To bump: `docker buildx imagetools inspect cgr.dev/chainguard/minio:latest`,
   # take the top Digest (MediaType must be an image index listing both
-  # platforms), replace it in both image: lines here and in values.yaml, then
-  # run `scripts/ci-local.sh helm gate e2e`.
+  # platforms), replace it in both image: lines here and in minio.image and
+  # minio.mcImage in values.yaml, then run `scripts/ci-local.sh helm gate e2e`.
   minio:
     image: cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72
     container_name: octoconv-minio

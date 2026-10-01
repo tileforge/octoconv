@@ -156,7 +156,8 @@ docker compose up -d
 > MinIO runs from `cgr.dev/chainguard/minio`, pinned by digest (Docker Hub no longer serves
 > the official MinIO images). The image carries `mc`, which the bucket-creation job uses, and
 > the process runs as uid 65532. To bump the digest, follow the comment above the `minio`
-> service in `docker-compose.yml`.
+> service in `docker-compose.yml`; it updates both compose image lines and the chart's
+> `minio.image` and `minio.mcImage`.
 >
 > A `minio_data` volume written by the old root-run image makes MinIO exit at startup with
 > `Unable to initialize backend: Unable to write to the backend`. Either keep the data and
