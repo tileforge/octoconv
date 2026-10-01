@@ -264,8 +264,10 @@ because this is a trap that would otherwise be found once, at 5 minutes of
 timeout, by whoever adds the flag.
 
 Both images are ones the chart already deploys (postgres for pg_isready, the
-pinned mc image the createbucket Job already uses), so this adds no new
-supply-chain surface.
+digest-pinned MinIO image for mc -- it carries mc, and the createbucket Job
+uses it too), so this adds no new supply-chain surface. The wait-for-bucket
+commands were run from that image at this container's limits (64Mi, 0.1 CPU)
+against a live MinIO: .planning/quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/evidence/compose-tracer.txt.
 
 APPLIED TO EVERY POD THAT NEEDS THEM, not just api. All ten entrypoints have
 the same log.Fatalf shape; fixing the one that was reported and leaving nine
@@ -305,7 +307,7 @@ initContainers:
         cpu: "100m"
         memory: "64Mi"
   - name: wait-for-bucket
-    image: {{ .Values.minio.mcImage | quote }}
+    image: {{ .Values.minio.image | quote }}
     imagePullPolicy: {{ .Values.image.pullPolicy }}
     command:
       - /bin/sh
