@@ -183,8 +183,11 @@ fi
 echo "OK: every Deployment carrying the app secret waits for postgres and the bucket ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
 
 echo "### the MinIO pod hands root-owned data to uid 65532 before the server starts"
-MIGRATE_WANT="inits=1 image=same mount=same target=same flags=-R,-h,--from=0 user=0 escalation=false rorf=true drop=ALL add=CHOWN owner=65532:65532 fsGroup=65532"
-MIGRATE_GOT=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec as $p | ($p.containers[] | select(.name=="minio")) as $s | ($s.volumeMounts[] | select(.name=="minio-data") | .mountPath) as $m | [$p.initContainers // [] | .[] | select(.volumeMounts[].name=="minio-data")] as $i | $i[0] as $c | "inits=" + ($i | length | tostring) + " image=" + (if $c.image == $s.image then "same" else "differs" end) + " mount=" + (if ($c.volumeMounts[] | select(.name=="minio-data") | .mountPath) == $m then "same" else "differs" end) + " target=" + (if $c.command[-1] == $m then "same" else "differs" end) + " flags=" + ([$c.command[] | select(test("^-"))] | join(",")) + " user=" + ($c.securityContext.runAsUser | tostring) + " escalation=" + ($c.securityContext.allowPrivilegeEscalation | tostring) + " rorf=" + ($c.securityContext.readOnlyRootFilesystem | tostring) + " drop=" + ($c.securityContext.capabilities.drop | join(",")) + " add=" + ($c.securityContext.capabilities.add | join(",")) + " owner=" + ([$c.command[] | select(test("^[0-9]+:[0-9]+$"))] | join(",")) + " fsGroup=" + ($p.securityContext.fsGroup | tostring)' "$DEFAULT_RENDER" 2>&1 | grep -v '^---$' || true)
+minio_ownership() {
+  yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec as $p | ($p.containers[] | select(.name=="minio")) as $s | ($s.volumeMounts[] | select(.name=="minio-data") | .mountPath) as $m | [$p.initContainers // [] | .[] | select(.volumeMounts[].name=="minio-data")] as $i | $i[0] as $c | "inits=" + ($i | length | tostring) + " image=" + (if $c.image == $s.image then "same" else "differs" end) + " mount=" + (if ($c.volumeMounts[] | select(.name=="minio-data") | .mountPath) == $m then "same" else "differs" end) + " target=" + (if $c.command[-1] == $m then "same" else "differs" end) + " flags=" + ([$c.command[] | select(test("^-"))] | join(",")) + " user=" + ($c.securityContext.runAsUser | tostring) + " group=" + ($c.securityContext.runAsGroup | tostring) + " escalation=" + ($c.securityContext.allowPrivilegeEscalation | tostring) + " rorf=" + ($c.securityContext.readOnlyRootFilesystem | tostring) + " drop=" + ($c.securityContext.capabilities.drop | join(",")) + " add=" + ($c.securityContext.capabilities.add | join(",")) + " owner=" + ([$c.command[] | select(test("^[0-9]+:[0-9]+$"))] | join(",")) + " runAsUser=" + ($p.securityContext.runAsUser | tostring) + " runAsGroup=" + ($p.securityContext.runAsGroup | tostring) + " fsGroup=" + ($p.securityContext.fsGroup | tostring)' "$1" 2>&1 | grep -v '^---$' || true
+}
+MIGRATE_WANT="inits=1 image=same mount=same target=same flags=-R,-h,--from=0 user=0 group=0 escalation=false rorf=true drop=ALL add=CHOWN owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532"
+MIGRATE_GOT=$(minio_ownership "$DEFAULT_RENDER")
 if [ -z "$MIGRATE_GOT" ]; then
   echo "FAIL: no Deployment named minio parsed out of the render -- this guard would pass vacuously"
   exit 1
@@ -196,6 +199,42 @@ if [ "$MIGRATE_GOT" != "$MIGRATE_WANT" ]; then
   exit 1
 fi
 echo "OK: MinIO pod runs one init container from the server image that chowns $(echo "$MIGRATE_WANT" | sed 's/.*owner=\([^ ]*\).*/\1/') over the data mount with only CHOWN"
+
+echo "### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else"
+OWN_BASE=$(mktemp)
+OWN_SET=$(mktemp)
+OWN_VALUES=$(mktemp)
+OWN_FILE=$(mktemp)
+helm template octoconv "$CHART" $SECRETS_SET > "$OWN_BASE"
+helm template octoconv "$CHART" $SECRETS_SET --set minio.dataOwnership.uid=1000 --set minio.dataOwnership.gid=2000 > "$OWN_SET"
+OWN_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532/owner=1000:2000 runAsUser=1000 runAsGroup=2000 fsGroup=2000}"
+OWN_GOT=$(minio_ownership "$OWN_SET")
+if [ "$OWN_GOT" != "$OWN_WANT" ]; then
+  echo "FAIL: --set minio.dataOwnership.uid=1000 gid=2000 did not move the pod identity and the chown target together"
+  echo "      want: $OWN_WANT"
+  echo "      got:  $OWN_GOT"
+  exit 1
+fi
+OWN_DIFF=$(diff "$OWN_BASE" "$OWN_SET" | grep '^[<>]' || true)
+OWN_DIFF_COUNT=$(echo "$OWN_DIFF" | grep -c . || true)
+OWN_DIFF_BAD=$(echo "$OWN_DIFF" | { grep -vE '^[<>][[:space:]]+((runAsUser|runAsGroup|fsGroup): [0-9]+|- "[0-9]+:[0-9]+")$' || true; })
+if [ "$OWN_DIFF_COUNT" -ne 8 ] || [ -n "$OWN_DIFF_BAD" ]; then
+  echo "FAIL: expected exactly 8 changed lines (runAsUser, runAsGroup, fsGroup, owner x default/custom), got $OWN_DIFF_COUNT"
+  echo "$OWN_DIFF" | sed 's/^/        /'
+  exit 1
+fi
+printf 'minio:\n  dataOwnership:\n    uid: 1000000\n    gid: 1000001\n' > "$OWN_VALUES"
+helm template octoconv "$CHART" $SECRETS_SET -f "$OWN_VALUES" > "$OWN_FILE"
+OWN_WANT="${MIGRATE_WANT/owner=65532:65532 runAsUser=65532 runAsGroup=65532 fsGroup=65532/owner=1000000:1000001 runAsUser=1000000 runAsGroup=1000001 fsGroup=1000001}"
+OWN_GOT=$(minio_ownership "$OWN_FILE")
+if [ "$OWN_GOT" != "$OWN_WANT" ]; then
+  echo "FAIL: a values file with uid 1000000 / gid 1000001 did not render as whole numbers"
+  echo "      want: $OWN_WANT"
+  echo "      got:  $OWN_GOT"
+  exit 1
+fi
+rm -f "$OWN_BASE" "$OWN_SET" "$OWN_VALUES" "$OWN_FILE"
+echo "OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves"
 
 echo "### no chart value may be spliced into an initContainer shell program"
 # Regression test for the review finding on PR #13. `postgres.user: "app;false"`
@@ -449,3 +488,69 @@ fi
 echo "$OUT_D" | grep -q 'keda.image.maxReplicaCount'
 echo "$OUT_D" | grep -q 'must be a whole number'
 echo "OK: negative case D failed as expected (rc=$RC_D)"
+
+echo "### invalid minio.dataOwnership.uid/gid must abort the render"
+OWN_BAD_OUT=$(mktemp)
+own_must_fail() {
+  set +e
+  helm template octoconv "$CHART" $SECRETS_SET "$@" > "$OWN_BAD_OUT" 2>&1
+  OWN_RC=$?
+  set -e
+}
+for KEY in uid gid; do
+  for bad in '-1' '1.5' '2.0' 'abc' 'true' '' 'null' '1000:0'; do
+    own_must_fail --set "minio.dataOwnership.$KEY=$bad"
+    if [ "$OWN_RC" -eq 0 ]; then
+      echo "FAIL: --set minio.dataOwnership.$KEY=[${bad}] rendered successfully -- the value was accepted or silently coerced"
+      exit 1
+    fi
+    if ! grep -q "minio.dataOwnership.$KEY" "$OWN_BAD_OUT"; then
+      echo "FAIL: the error for minio.dataOwnership.$KEY=[${bad}] does not name the key:"
+      sed 's/^/        /' "$OWN_BAD_OUT"
+      exit 1
+    fi
+    if [ "$bad" = '-1' ]; then
+      WANT_MSG='must not be negative'
+    else
+      WANT_MSG='must be a whole number'
+    fi
+    if ! grep -q "$WANT_MSG" "$OWN_BAD_OUT"; then
+      echo "FAIL: the error for minio.dataOwnership.$KEY=[${bad}] lacks [$WANT_MSG]:"
+      sed 's/^/        /' "$OWN_BAD_OUT"
+      exit 1
+    fi
+    echo "OK: $KEY=[${bad}] rejected (rc=$OWN_RC)"
+  done
+done
+for CASE in 'uid: 1.5|uid|must be a whole number' 'uid: "1000"|uid|must be a whole number' 'gid: -5|gid|must not be negative'; do
+  LINE="${CASE%%|*}"
+  REST="${CASE#*|}"
+  KEY="${REST%%|*}"
+  WANT_MSG="${REST#*|}"
+  OWN_BAD_VALUES=$(mktemp)
+  printf 'minio:\n  dataOwnership:\n    %s\n' "$LINE" > "$OWN_BAD_VALUES"
+  own_must_fail -f "$OWN_BAD_VALUES"
+  rm -f "$OWN_BAD_VALUES"
+  if [ "$OWN_RC" -eq 0 ]; then
+    echo "FAIL: a values file with [$LINE] rendered successfully"
+    exit 1
+  fi
+  if ! grep -q "minio.dataOwnership.$KEY" "$OWN_BAD_OUT" || ! grep -q "$WANT_MSG" "$OWN_BAD_OUT"; then
+    echo "FAIL: the error for a values file with [$LINE] does not name minio.dataOwnership.$KEY with [$WANT_MSG]:"
+    sed 's/^/        /' "$OWN_BAD_OUT"
+    exit 1
+  fi
+  echo "OK: values file [$LINE] rejected (rc=$OWN_RC)"
+done
+own_must_fail --set minio.dataOwnership=null
+if [ "$OWN_RC" -eq 0 ]; then
+  echo "FAIL: --set minio.dataOwnership=null rendered successfully"
+  exit 1
+fi
+if ! grep -q 'minio.dataOwnership.uid' "$OWN_BAD_OUT"; then
+  echo "FAIL: a missing minio.dataOwnership block did not produce the named error:"
+  sed 's/^/        /' "$OWN_BAD_OUT"
+  exit 1
+fi
+rm -f "$OWN_BAD_OUT"
+echo "OK: a missing minio.dataOwnership block is rejected with the key named"

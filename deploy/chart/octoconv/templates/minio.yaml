@@ -47,14 +47,16 @@ spec:
     spec:
       # The image runs as uid/gid 65532 (measured). The official image ran as
       # root, so the owner of the PVC never mattered before. fsGroup makes the
-      # volume root group-writable for 65532 on volume types whose ownership
+      # volume root group-writable for minio.dataOwnership.gid on volume types whose ownership
       # Kubernetes manages, and OnRootMismatch regroups a PVC written by the old
       # root image once. hostPath / local-path volumes do not apply fsGroup
       # (local-path creates its directories 0777). NOT verified on a live
       # cluster -- OrbStack Kubernetes was off; this is only rendered with
       # helm template.
       securityContext:
-        fsGroup: 65532
+        runAsUser: {{ include "octoconv.minioDataOwnershipId" (dict "key" "uid" "root" $) }}
+        runAsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
+        fsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
         fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: migrate-data-ownership
@@ -65,10 +67,11 @@ spec:
             - -R
             - -h
             - --from=0
-            - "65532:65532"
+            - {{ printf "%s:%s" (include "octoconv.minioDataOwnershipId" (dict "key" "uid" "root" $)) (include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $)) | quote }}
             - /data
           securityContext:
             runAsUser: 0
+            runAsGroup: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:

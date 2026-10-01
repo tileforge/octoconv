@@ -331,3 +331,19 @@ initContainers:
         cpu: "100m"
         memory: "64Mi"
 {{- end }}
+
+{{- define "octoconv.minioDataOwnershipId" -}}
+{{- $raw := dig "dataOwnership" .key nil .root.Values.minio -}}
+{{- $whole := or (kindIs "int" $raw) (kindIs "int64" $raw) -}}
+{{- if kindIs "float64" $raw -}}
+{{- $whole = eq $raw (floor $raw) -}}
+{{- end -}}
+{{- if not $whole -}}
+{{- fail (printf "minio.dataOwnership.%s must be a whole number, got %#v (kind %s)" .key $raw (kindOf $raw)) -}}
+{{- end -}}
+{{- $id := int64 $raw -}}
+{{- if lt $id 0 -}}
+{{- fail (printf "minio.dataOwnership.%s (%d) must not be negative" .key $id) -}}
+{{- end -}}
+{{- printf "%d" $id -}}
+{{- end }}

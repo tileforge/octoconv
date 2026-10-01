@@ -277,6 +277,17 @@ minio:
   # two equal.
   image: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
   mcImage: ""
+  # Who owns the MinIO data. uid and gid become runAsUser, runAsGroup and
+  # fsGroup of the MinIO pod, and they are the owner the ownership init
+  # container hands the volume to. 65532 is the user of the pinned image;
+  # change both when minio.image runs MinIO as another uid/gid. Whole,
+  # non-negative numbers only -- anything else aborts the render.
+  # The init container only passes on elements owned by root (chown --from=0):
+  # a volume that already belongs to another uid, for example 65532 after an
+  # earlier migration, is NOT rewritten when you change the uid.
+  dataOwnership:
+    uid: 65532
+    gid: 65532
   storage: "5Gi"
   rootUser: "minioadmin"
   rootPassword: "minioadmin"
