@@ -1,0 +1,9 @@
+2089c2089
+<       # volume root group-writable for 65532 on volume types whose ownership
+---
+>       # volume root group-writable for minio.dataOwnership.gid on volume types whose ownership
+2095a2096,2097
+>         runAsUser: 65532
+>         runAsGroup: 65532
+2110a2113
+>             runAsGroup: 0
