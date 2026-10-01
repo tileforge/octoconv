@@ -268,15 +268,20 @@ redis:
 minio:
   # Official MinIO images are no longer served from Docker Hub. One
   # cgr.dev/chainguard image carries minio, mc and sh, so the MinIO Deployment
-  # reads this value, and so do the containers that run mc (the createbucket Job
-  # and the wait-for-bucket init container of every app Deployment) unless
-  # mcImage below is set. Pinned by digest, never a floating tag
+  # reads minio.image. Pinned by digest, never a floating tag
   # (D-02: OrbStack re-pulls :latest even from its shared local image store).
   # Same string as docker-compose.yml; the bump procedure is the comment above
   # the minio service there, and internal/e2e/minio_image_pin_test.go keeps the
   # two equal.
   image: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
-  mcImage: ""
+  # Image of the containers that run mc (the createbucket Job and the
+  # wait-for-bucket init container of every app Deployment). It defaults to the
+  # same pinned image but is independent of minio.image, so overriding
+  # minio.image with a server-only image (no sh, no mc) leaves those containers
+  # working. Empty or missing falls back to minio.image. Any other value must be
+  # pinned as repository@sha256:<64 hex>. A digest bump updates minio.image AND
+  # minio.mcImage; minio_image_pin_test.go requires the two digests to match.
+  mcImage: "cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72"
   # Who owns the MinIO data. uid and gid become runAsUser, runAsGroup and
   # fsGroup of the MinIO pod, and they are the owner the ownership init
   # container hands the volume to. 65532 is the user of the pinned image;

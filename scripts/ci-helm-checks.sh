@@ -536,63 +536,90 @@ for WANT in http https; do
   echo "OK: s3.useSSL=$SSL renders $COUNT mc aliases, all $WANT://"
 done
 
-echo "### every container that runs mc uses minio.mcImage when set, minio.image when it is empty"
+echo "### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image"
 MINIO_IMAGE=$(yq '.minio.image' "$CHART/values.yaml")
+MC_DEFAULT=$(yq '.minio.mcImage' "$CHART/values.yaml")
 MC_OVERRIDE="registry.example.invalid/mirror/mc@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+SERVER_OTHER="registry.example.invalid/mirror/minio-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 mc_rows() {
   yq 'select(.kind=="Deployment" or .kind=="Job") | .metadata.name as $d | .spec.template.spec | ((.initContainers // []) + .containers)[] | $d + " " + .name + " " + .image + " " + (((.command // []) + (.args // [])) | join(" ") | test("(^|[^a-z])mc (alias|ready|mb|ls)") | tostring)' "$1" | grep -v '^---$'
 }
-MC_PLAIN=$(mktemp)
-MC_SET=$(mktemp)
-helm template octoconv "$CHART" $SECRETS_SET > "$MC_PLAIN.render"
-helm template octoconv "$CHART" $SECRETS_SET --set "minio.mcImage=$MC_OVERRIDE" > "$MC_SET.render"
-mc_rows "$MC_PLAIN.render" > "$MC_PLAIN"
-mc_rows "$MC_SET.render" > "$MC_SET"
-for ROWS in "$MC_PLAIN" "$MC_SET"; do
-  BLANK=$(awk 'NF != 4 { print }' "$ROWS")
+MC_DIR=$(mktemp -d)
+helm template octoconv "$CHART" $SECRETS_SET > "$MC_DIR/plain.render"
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.mcImage=$MC_OVERRIDE" > "$MC_DIR/set.render"
+helm template octoconv "$CHART" $SECRETS_SET --set "minio.image=$SERVER_OTHER" > "$MC_DIR/srv.render"
+cp -R "$CHART" "$MC_DIR/nomc-chart"
+yq -i 'del(.minio.mcImage)' "$MC_DIR/nomc-chart/values.yaml"
+if [ "$(yq '.minio | has("mcImage")' "$MC_DIR/nomc-chart/values.yaml")" != "false" ] || [ "$(yq '.minio | has("image")' "$MC_DIR/nomc-chart/values.yaml")" != "true" ]; then
+  echo "FAIL: the missing-key chart copy must lack minio.mcImage and keep minio.image"
+  exit 1
+fi
+helm template octoconv "$MC_DIR/nomc-chart" $SECRETS_SET --set "minio.image=$SERVER_OTHER" > "$MC_DIR/nomc.render"
+helm template octoconv "$CHART" $SECRETS_SET --set-string "minio.mcImage=" --set "minio.image=$SERVER_OTHER" > "$MC_DIR/empty.render"
+for R in plain set srv nomc empty; do
+  mc_rows "$MC_DIR/$R.render" > "$MC_DIR/$R"
+  BLANK=$(awk 'NF != 4 { print }' "$MC_DIR/$R")
   if [ -n "$BLANK" ]; then
-    echo "FAIL: container rows without an image (or malformed) in a render:"
+    echo "FAIL: container rows without an image (or malformed) in the $R render:"
     echo "$BLANK" | sed 's/^/        /'
     exit 1
   fi
-  BLIND=$(awk '($2 == "wait-for-minio" || $2 == "createbucket" || $2 == "wait-for-bucket") && $4 != "true" { print }' "$ROWS")
+  BLIND=$(awk '($2 == "wait-for-minio" || $2 == "createbucket" || $2 == "wait-for-bucket") && $4 != "true" { print }' "$MC_DIR/$R")
   if [ -n "$BLIND" ]; then
-    echo "FAIL: the mc classifier missed containers that run mc:"
+    echo "FAIL: the mc classifier missed containers that run mc in the $R render:"
     echo "$BLIND" | sed 's/^/        /'
     exit 1
   fi
 done
-MC_COUNT=$(awk '$4 == "true"' "$MC_PLAIN" | wc -l | tr -d ' ')
+MC_COUNT=$(awk '$4 == "true"' "$MC_DIR/plain" | wc -l | tr -d ' ')
 if [ "$MC_COUNT" -eq 0 ]; then
   echo "FAIL: no container classified as running mc -- this guard would pass vacuously"
   exit 1
 fi
-MC_SET_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_SET" | sort)
-MC_PLAIN_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_PLAIN" | sort)
-if [ "$MC_PLAIN_NAMES" != "$MC_SET_NAMES" ]; then
-  echo "FAIL: setting minio.mcImage changed WHICH containers run mc"
-  diff <(echo "$MC_PLAIN_NAMES") <(echo "$MC_SET_NAMES") | sed 's/^/        /' || true
+MC_PLAIN_NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_DIR/plain" | sort)
+for R in set srv nomc empty; do
+  NAMES=$(awk '$4 == "true" { print $1 " " $2 }' "$MC_DIR/$R" | sort)
+  if [ "$MC_PLAIN_NAMES" != "$NAMES" ]; then
+    echo "FAIL: the $R render changed WHICH containers run mc"
+    diff <(echo "$MC_PLAIN_NAMES") <(echo "$NAMES") | sed 's/^/        /' || true
+    exit 1
+  fi
+done
+if [ -z "$MC_DEFAULT" ] || [ "$MC_DEFAULT" = "null" ]; then
+  echo "FAIL: values.yaml minio.mcImage must be a non-empty default, got: '$MC_DEFAULT'"
   exit 1
 fi
-WRONG=$(awk -v want="$MINIO_IMAGE" '$4 == "true" && $3 != want { print }' "$MC_PLAIN")
+WRONG=$(awk -v want="$MC_DEFAULT" '$4 == "true" && $3 != want { print }' "$MC_DIR/plain")
 if [ -n "$WRONG" ]; then
-  echo "FAIL: with minio.mcImage empty every mc container must run $MINIO_IMAGE, got:"
+  echo "FAIL: in the default render every mc container must run minio.mcImage ($MC_DEFAULT), got:"
   echo "$WRONG" | sed 's/^/        /'
   exit 1
 fi
-WRONG=$(awk -v want="$MC_OVERRIDE" '$4 == "true" && $3 != want { print }' "$MC_SET")
+WRONG=$(awk -v want="$MC_DEFAULT" '$4 == "true" && $3 != want { print }' "$MC_DIR/srv")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: overriding only minio.image must leave every mc container on minio.mcImage ($MC_DEFAULT), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+SRV_ROWS=$(awk -v o="$SERVER_OTHER" '$3 == o { print $1 " " $2 }' "$MC_DIR/srv" | sort)
+if [ "$SRV_ROWS" != "$(printf 'minio migrate-data-ownership\nminio minio')" ]; then
+  echo "FAIL: minio.image must reach exactly the minio and migrate-data-ownership containers, got:"
+  echo "$SRV_ROWS" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$MC_OVERRIDE" '$4 == "true" && $3 != want { print }' "$MC_DIR/set")
 if [ -n "$WRONG" ]; then
   echo "FAIL: with minio.mcImage set every mc container must run $MC_OVERRIDE, got:"
   echo "$WRONG" | sed 's/^/        /'
   exit 1
 fi
-LEAK=$(awk -v o="$MC_OVERRIDE" '$4 != "true" && $3 == o { print }' "$MC_SET")
+LEAK=$(awk -v o="$MC_OVERRIDE" '$4 != "true" && $3 == o { print }' "$MC_DIR/set")
 if [ -n "$LEAK" ]; then
   echo "FAIL: minio.mcImage reached containers that do not run mc:"
   echo "$LEAK" | sed 's/^/        /'
   exit 1
 fi
-MINIO_ROWS=$(awk '$1 == "minio" && ($2 == "minio" || $2 == "migrate-data-ownership")' "$MC_SET")
+MINIO_ROWS=$(awk '$1 == "minio" && ($2 == "minio" || $2 == "migrate-data-ownership")' "$MC_DIR/set")
 if [ "$(echo "$MINIO_ROWS" | grep -c . || true)" -ne 2 ]; then
   echo "FAIL: expected the minio and migrate-data-ownership containers in the MinIO Deployment, got:"
   echo "$MINIO_ROWS" | sed 's/^/        /'
@@ -604,8 +631,20 @@ if [ -n "$MINIO_WRONG" ]; then
   echo "$MINIO_WRONG" | sed 's/^/        /'
   exit 1
 fi
-rm -f "$MC_PLAIN" "$MC_SET" "$MC_PLAIN.render" "$MC_SET.render"
-echo "OK: $MC_COUNT containers run mc: all minio.image when mcImage is empty, all the override when it is set; the MinIO pod stays on minio.image"
+WRONG=$(awk -v want="$SERVER_OTHER" '$4 == "true" && $3 != want { print }' "$MC_DIR/nomc")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage missing every mc container must fall back to minio.image ($SERVER_OTHER), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+WRONG=$(awk -v want="$SERVER_OTHER" '$4 == "true" && $3 != want { print }' "$MC_DIR/empty")
+if [ -n "$WRONG" ]; then
+  echo "FAIL: with minio.mcImage empty every mc container must fall back to minio.image ($SERVER_OTHER), got:"
+  echo "$WRONG" | sed 's/^/        /'
+  exit 1
+fi
+rm -rf "$MC_DIR"
+echo "OK: $MC_COUNT containers run mc: the pinned minio.mcImage default survives a minio.image-only override, the override wins everywhere and reaches no other container, a missing or empty key falls back to minio.image; the MinIO pod stays on minio.image"
 
 echo "### no extraEnv may override S3_USE_SSL"
 # The scheme is decided at RENDER time from .Values.s3.useSSL, while the

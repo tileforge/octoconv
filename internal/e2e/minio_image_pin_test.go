@@ -18,8 +18,8 @@ import (
 // machine without a hand-made local alias. One chainguard image carries both
 // minio and mc, so compose and the chart use that single image for the server
 // and the createbucket job; the chart's mc containers (createbucket and
-// wait-for-bucket) take minio.mcImage when an operator sets it and this image
-// otherwise.
+// wait-for-bucket) take minio.mcImage, whose default is this same pinned image,
+// and fall back to minio.image only when that key is missing or empty.
 //
 // The reference is pinned by digest because Chainguard's free tier publishes
 // only :latest, which floats. Compose and the chart must carry the SAME string:
@@ -294,6 +294,31 @@ func TestMinioImagePinnedByDigest(t *testing.T) {
 	}
 	if mcKeys < 1 {
 		t.Errorf("found %d mcImage keys in %s/values*.yaml, want at least 1: the scan matched nothing, which is a failure, not a pass", mcKeys, minioChartDir)
+	}
+
+	vb, err := os.ReadFile(minioChartDir + "/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imgNode, err := valuesScalarAt(vb, "minio", "image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcNode, err := valuesScalarAt(vb, "minio", "mcImage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imgNode == nil || mcNode == nil {
+		t.Fatalf("values.yaml must define both minio.image and minio.mcImage (image=%v, mcImage=%v)", imgNode != nil, mcNode != nil)
+	}
+	if strings.TrimSpace(mcNode.Value) == "" {
+		t.Errorf("values.yaml:%d: minio.mcImage is empty, want the same pinned image as minio.image (values.yaml:%d); a pin bump must update both keys", mcNode.Line, imgNode.Line)
+	} else {
+		_, imgDigest, _ := strings.Cut(imgNode.Value, "@")
+		_, mcDigest, _ := strings.Cut(mcNode.Value, "@")
+		if imgDigest == "" || imgDigest != mcDigest {
+			t.Errorf("values.yaml:%d minio.mcImage digest %q differs from values.yaml:%d minio.image digest %q; a pin bump must update both keys", mcNode.Line, mcDigest, imgNode.Line, imgDigest)
+		}
 	}
 }
 
