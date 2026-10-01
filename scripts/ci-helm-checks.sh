@@ -200,6 +200,51 @@ if [ "$MIGRATE_GOT" != "$MIGRATE_WANT" ]; then
 fi
 echo "OK: MinIO pod runs one init container from the server image that chowns $(echo "$MIGRATE_WANT" | sed 's/.*owner=\([^ ]*\).*/\1/') over the data mount with only CHOWN"
 
+echo "### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults"
+REUSE_DIR=$(mktemp -d)
+REUSE_CHART="$REUSE_DIR/octoconv"
+REUSE_BASE="$REUSE_DIR/base.yaml"
+cp -R "$CHART" "$REUSE_CHART"
+helm template octoconv "$CHART" -f "$CHART/values-local.yaml" > "$REUSE_BASE"
+if [ "$(minio_ownership "$REUSE_BASE")" != "$MIGRATE_WANT" ] || [ "$(grep -c 'name: wait-for-bucket' "$REUSE_BASE" || true)" -eq 0 ]; then
+  echo "FAIL: the default render with values-local.yaml is not the MinIO pod this section compares against -- every comparison below would pass vacuously"
+  exit 1
+fi
+reuse_render() {
+  local chart=$1
+  shift
+  set +e
+  helm template octoconv "$chart" -f "$CHART/values-local.yaml" "$@" > "$REUSE_DIR/out.yaml" 2> "$REUSE_DIR/err.txt"
+  REUSE_RC=$?
+  set -e
+}
+reuse_expect_base() {
+  local label=$1 chart=$2
+  shift 2
+  reuse_render "$chart" "$@"
+  if [ "$REUSE_RC" -ne 0 ]; then
+    echo "FAIL: $label did not render (rc=$REUSE_RC):"
+    sed 's/^/        /' "$REUSE_DIR/err.txt"
+    exit 1
+  fi
+  if ! cmp -s "$REUSE_BASE" "$REUSE_DIR/out.yaml"; then
+    echo "FAIL: $label rendered differently from the defaults:"
+    diff "$REUSE_BASE" "$REUSE_DIR/out.yaml" | head -40 | sed 's/^/        /' || true
+    exit 1
+  fi
+  echo "OK: $label renders byte-identically to the defaults"
+}
+yq -i 'del(.minio.dataOwnership) | del(.minio.mcImage)' "$REUSE_CHART/values.yaml"
+if [ "$(yq '.minio | has("dataOwnership")' "$REUSE_CHART/values.yaml")" != "false" ] || [ "$(yq '.minio | has("mcImage")' "$REUSE_CHART/values.yaml")" != "false" ] || [ "$(yq '.minio | has("image")' "$REUSE_CHART/values.yaml")" != "true" ]; then
+  echo "FAIL: the stand-in for an older release's values.yaml still has minio.dataOwnership or minio.mcImage, or lost minio.image"
+  exit 1
+fi
+reuse_expect_base "a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage" "$REUSE_CHART"
+for NULLED in minio.dataOwnership.uid=null minio.dataOwnership.migrate=null minio.dataOwnership=null; do
+  reuse_expect_base "--set $NULLED on the real chart" "$CHART" --set "$NULLED"
+done
+rm -rf "${REUSE_DIR:?}"
+
 echo "### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else"
 OWN_BASE=$(mktemp)
 OWN_SET=$(mktemp)
@@ -314,7 +359,7 @@ echo "OK: minio.dataOwnership.image changes the init container image only; the s
 
 echo "### a non-boolean minio.dataOwnership.migrate must abort the render"
 MIG_BAD_OUT=$(mktemp)
-for BAD in '--set|minio.dataOwnership.migrate=no' '--set-string|minio.dataOwnership.migrate=false' '--set|minio.dataOwnership.migrate=null'; do
+for BAD in '--set|minio.dataOwnership.migrate=no' '--set-string|minio.dataOwnership.migrate=false'; do
   set +e
   helm template octoconv "$CHART" $SECRETS_SET "${BAD%%|*}" "${BAD#*|}" > "$MIG_BAD_OUT" 2>&1
   MIG_RC=$?
@@ -604,7 +649,7 @@ own_must_fail() {
   set -e
 }
 for KEY in uid gid; do
-  for bad in '-1' '1.5' '2.0' 'abc' 'true' '' 'null' '1000:0'; do
+  for bad in '-1' '1.5' '2.0' 'abc' 'true' '' '1000:0'; do
     own_must_fail --set "minio.dataOwnership.$KEY=$bad"
     if [ "$OWN_RC" -eq 0 ]; then
       echo "FAIL: --set minio.dataOwnership.$KEY=[${bad}] rendered successfully -- the value was accepted or silently coerced"
@@ -648,15 +693,4 @@ for CASE in 'uid: 1.5|uid|must be a whole number' 'uid: "1000"|uid|must be a who
   fi
   echo "OK: values file [$LINE] rejected (rc=$OWN_RC)"
 done
-own_must_fail --set minio.dataOwnership=null
-if [ "$OWN_RC" -eq 0 ]; then
-  echo "FAIL: --set minio.dataOwnership=null rendered successfully"
-  exit 1
-fi
-if ! grep -q 'minio.dataOwnership.uid' "$OWN_BAD_OUT"; then
-  echo "FAIL: a missing minio.dataOwnership block did not produce the named error:"
-  sed 's/^/        /' "$OWN_BAD_OUT"
-  exit 1
-fi
 rm -f "$OWN_BAD_OUT"
-echo "OK: a missing minio.dataOwnership block is rejected with the key named"

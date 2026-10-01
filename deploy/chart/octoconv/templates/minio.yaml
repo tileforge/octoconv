@@ -45,6 +45,7 @@ spec:
         {{- include "octoconv.labels" . | nindent 8 }}
         {{- include "octoconv.selectorLabels" (dict "component" "minio" "root" $) | nindent 8 }}
     spec:
+      {{- $ownership := include "octoconv.minioDataOwnership" $ | fromJson }}
       # The image runs as uid/gid 65532 (measured). The official image ran as
       # root, so the owner of the PVC never mattered before. fsGroup makes the
       # volume root group-writable for minio.dataOwnership.gid on volume types whose ownership
@@ -54,25 +55,21 @@ spec:
       # cluster -- OrbStack Kubernetes was off; this is only rendered with
       # helm template.
       securityContext:
-        runAsUser: {{ include "octoconv.minioDataOwnershipId" (dict "key" "uid" "root" $) }}
-        runAsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
-        fsGroup: {{ include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $) }}
+        runAsUser: {{ $ownership.uid }}
+        runAsGroup: {{ $ownership.gid }}
+        fsGroup: {{ $ownership.gid }}
         fsGroupChangePolicy: OnRootMismatch
-      {{- $migrate := dig "dataOwnership" "migrate" nil .Values.minio }}
-      {{- if not (kindIs "bool" $migrate) }}
-      {{- fail (printf "minio.dataOwnership.migrate must be true or false, got %#v (kind %s)" $migrate (kindOf $migrate)) }}
-      {{- end }}
-      {{- if $migrate }}
+      {{- if $ownership.migrate }}
       initContainers:
         - name: migrate-data-ownership
-          image: {{ .Values.minio.dataOwnership.image | default .Values.minio.image | quote }}
+          image: {{ $ownership.image | default .Values.minio.image | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - chown
             - -R
             - -h
             - --from=0
-            - {{ printf "%s:%s" (include "octoconv.minioDataOwnershipId" (dict "key" "uid" "root" $)) (include "octoconv.minioDataOwnershipId" (dict "key" "gid" "root" $)) | quote }}
+            - {{ printf "%s:%s" $ownership.uid $ownership.gid | quote }}
             - /data
           securityContext:
             runAsUser: 0

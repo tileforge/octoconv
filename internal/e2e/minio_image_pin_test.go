@@ -36,7 +36,7 @@ const (
 	minioTemplateLine   = "image: {{ .Values.minio.image | quote }}"
 	minioMCTemplateLine = "image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}"
 
-	minioOwnershipTemplateLine = "image: {{ .Values.minio.dataOwnership.image | default .Values.minio.image | quote }}"
+	minioOwnershipTemplateLine = "image: {{ $ownership.image | default .Values.minio.image | quote }}"
 )
 
 var (

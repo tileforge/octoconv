@@ -332,18 +332,47 @@ initContainers:
         memory: "64Mi"
 {{- end }}
 
-{{- define "octoconv.minioDataOwnershipId" -}}
-{{- $raw := dig "dataOwnership" .key nil .root.Values.minio -}}
+{{/* helm upgrade --reuse-values swaps values.yaml for the previous release's values, so a missing or null key must fall back to these defaults. */}}
+{{- define "octoconv.minioDataOwnership" -}}
+{{- $defaults := dict "uid" 65532 "gid" 65532 "migrate" true "image" "" -}}
+{{- $given := dig "dataOwnership" nil .Values.minio -}}
+{{- if kindIs "invalid" $given -}}
+{{- $given = dict -}}
+{{- end -}}
+{{- if not (kindIs "map" $given) -}}
+{{- fail (printf "minio.dataOwnership must be a map, got %#v (kind %s)" $given (kindOf $given)) -}}
+{{- end -}}
+{{- $out := dict -}}
+{{- range $key := list "uid" "gid" -}}
+{{- $raw := index $given $key -}}
+{{- if kindIs "invalid" $raw -}}
+{{- $raw = index $defaults $key -}}
+{{- end -}}
 {{- $whole := or (kindIs "int" $raw) (kindIs "int64" $raw) -}}
 {{- if kindIs "float64" $raw -}}
 {{- $whole = eq $raw (floor $raw) -}}
 {{- end -}}
 {{- if not $whole -}}
-{{- fail (printf "minio.dataOwnership.%s must be a whole number, got %#v (kind %s)" .key $raw (kindOf $raw)) -}}
+{{- fail (printf "minio.dataOwnership.%s must be a whole number, got %#v (kind %s)" $key $raw (kindOf $raw)) -}}
 {{- end -}}
 {{- $id := int64 $raw -}}
 {{- if lt $id 0 -}}
-{{- fail (printf "minio.dataOwnership.%s (%d) must not be negative" .key $id) -}}
+{{- fail (printf "minio.dataOwnership.%s (%d) must not be negative" $key $id) -}}
 {{- end -}}
-{{- printf "%d" $id -}}
+{{- $_ := set $out $key (printf "%d" $id) -}}
+{{- end -}}
+{{- $migrate := index $given "migrate" -}}
+{{- if kindIs "invalid" $migrate -}}
+{{- $migrate = index $defaults "migrate" -}}
+{{- end -}}
+{{- if not (kindIs "bool" $migrate) -}}
+{{- fail (printf "minio.dataOwnership.migrate must be true or false, got %#v (kind %s)" $migrate (kindOf $migrate)) -}}
+{{- end -}}
+{{- $_ := set $out "migrate" $migrate -}}
+{{- $image := index $given "image" -}}
+{{- if kindIs "invalid" $image -}}
+{{- $image = index $defaults "image" -}}
+{{- end -}}
+{{- $_ := set $out "image" $image -}}
+{{- toJson $out -}}
 {{- end }}
