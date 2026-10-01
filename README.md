@@ -152,6 +152,24 @@ docker compose up -d
 | webhook-worker-1/2 | — | sole webhook consumer + reconciler sweeper |
 | asynqmon | `127.0.0.1:8980` | read-only queue dashboard |
 
+> [!NOTE]
+> MinIO runs from `cgr.dev/chainguard/minio`, pinned by digest (Docker Hub no longer serves
+> the official MinIO images). The image carries `mc`, which the bucket-creation job uses, and
+> the process runs as uid 65532. To bump the digest, follow the comment above the `minio`
+> service in `docker-compose.yml`.
+>
+> A `minio_data` volume written by the old root-run image makes MinIO exit at startup with
+> `Unable to initialize backend: Unable to write to the backend`. Either keep the data and
+> hand the volume to the new user once (with the stack stopped):
+>
+> ```bash
+> docker run --rm -u 0 -v octoconv_minio_data:/data --entrypoint /bin/sh \
+>   cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72 \
+>   -c 'chown -R 65532:65532 /data'
+> ```
+>
+> or drop the dev objects with `docker volume rm octoconv_minio_data`.
+
 > [!IMPORTANT]
 > The containerized `api` presigns URLs against the internal `minio:9000` endpoint, which
 > your host cannot reach. To download results from your machine, run `api` locally (step 3)

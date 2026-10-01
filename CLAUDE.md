@@ -59,7 +59,7 @@ OctoConv — внутренний асинхронный сервис конве
 - Go 1.26+ (`README.md:44`)
 - Docker + Docker Compose (`README.md:45`)
 - `vips` CLI available locally if running the worker outside Docker (image conversions call `vips copy`, `internal/convert/libvips.go:31`)
-- Docker Compose deployment target (services: `postgres:18`, `redis:8`, `minio/minio:latest`, plus built `api` and `worker` images) — see `docker-compose.yml`
+- Docker Compose deployment target (services: `postgres:18`, `redis:8`, `cgr.dev/chainguard/minio` (pinned by digest), plus built `api` and `worker` images) — see `docker-compose.yml`
 - Non-standard host ports used to avoid local conflicts: Postgres on `5434`, MinIO API/console on `9100`/`9101` (`README.md:66`)
 - Worker container resource-limited (2 CPU / 1 GiB RAM) and runs as unprivileged `nobody` since it shells out to untrusted-input engines (`Dockerfile.worker:16`)
 <!-- GSD:stack-end -->
