@@ -188,7 +188,7 @@ _SEED-001 RESOLVED (транскрипция закрыта v1.7/v1.8). SEED-008
 ## Current Milestone: v1.16 CAD Engine
 
 **Goal:** Десятый engine-класс `cad` — офлайн-рендер превью и замер геометрии для
-step/stp/iges/stl/dxf на FreeCAD headless под тем же Landlock-конфайнментом, что и
+step/stp/iges/stl/dxf (OCCT + VTK/OSMesa, без X) под тем же Landlock-конфайнментом, что и
 остальные восемь классов.
 
 **Target features:**
@@ -202,7 +202,8 @@ step/stp/iges/stl/dxf на FreeCAD headless под тем же Landlock-конф
 
 **Key context:** замеры 2026-09-23 (Obsidian `architecture/octoconv-cad-preview.md`):
 FreeCAD headless на bookworm-slim точно считает объём/bbox, меш → PNG через f3d
-работает только под xvfb-run. `dwg` — вне скоупа до решения по лицензии ODA.
+работает только под xvfb-run. Исследование v1.16 сузило замером: OCCT-колесо
+`cadquery-ocp-novtk` вместо FreeCAD, VTK + OSMesa без X, ezdxf + `rsvg-convert` для DXF. `dwg` — вне скоупа до решения по лицензии ODA.
 Замена PreviewGenerator и интеграция GSH/OMS — на стороне потребителей.
 
 ## Requirements
