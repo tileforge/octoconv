@@ -182,6 +182,21 @@ if [ -n "$MISSING" ]; then
 fi
 echo "OK: every Deployment carrying the app secret waits for postgres and the bucket ($(echo "$TRIPLES" | awk '$2 > 0' | wc -l | tr -d ' ') of them)"
 
+echo "### the MinIO pod hands root-owned data to uid 65532 before the server starts"
+MIGRATE_WANT="inits=1 image=same mount=same target=same flags=-R,-h,--from=0 user=0 escalation=false rorf=true drop=ALL add=CHOWN owner=65532:65532 fsGroup=65532"
+MIGRATE_GOT=$(yq 'select(.kind=="Deployment" and .metadata.name=="minio") | .spec.template.spec as $p | ($p.containers[] | select(.name=="minio")) as $s | ($s.volumeMounts[] | select(.name=="minio-data") | .mountPath) as $m | [$p.initContainers // [] | .[] | select(.volumeMounts[].name=="minio-data")] as $i | $i[0] as $c | "inits=" + ($i | length | tostring) + " image=" + (if $c.image == $s.image then "same" else "differs" end) + " mount=" + (if ($c.volumeMounts[] | select(.name=="minio-data") | .mountPath) == $m then "same" else "differs" end) + " target=" + (if $c.command[-1] == $m then "same" else "differs" end) + " flags=" + ([$c.command[] | select(test("^-"))] | join(",")) + " user=" + ($c.securityContext.runAsUser | tostring) + " escalation=" + ($c.securityContext.allowPrivilegeEscalation | tostring) + " rorf=" + ($c.securityContext.readOnlyRootFilesystem | tostring) + " drop=" + ($c.securityContext.capabilities.drop | join(",")) + " add=" + ($c.securityContext.capabilities.add | join(",")) + " owner=" + ([$c.command[] | select(test("^[0-9]+:[0-9]+$"))] | join(",")) + " fsGroup=" + ($p.securityContext.fsGroup | tostring)' "$DEFAULT_RENDER" 2>&1 | grep -v '^---$' || true)
+if [ -z "$MIGRATE_GOT" ]; then
+  echo "FAIL: no Deployment named minio parsed out of the render -- this guard would pass vacuously"
+  exit 1
+fi
+if [ "$MIGRATE_GOT" != "$MIGRATE_WANT" ]; then
+  echo "FAIL: the MinIO pod's ownership-migration init container has the wrong shape"
+  echo "      want: $MIGRATE_WANT"
+  echo "      got:  $MIGRATE_GOT"
+  exit 1
+fi
+echo "OK: MinIO pod runs one init container from the server image that chowns $(echo "$MIGRATE_WANT" | sed 's/.*owner=\([^ ]*\).*/\1/') over the data mount with only CHOWN"
+
 echo "### no chart value may be spliced into an initContainer shell program"
 # Regression test for the review finding on PR #13. `postgres.user: "app;false"`
 # is a legal PostgreSQL role name and legal URI userinfo; interpolated into
