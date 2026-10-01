@@ -170,7 +170,10 @@ docker compose up -d
 >
 > or drop the dev objects with `docker volume rm octoconv_minio_data`.
 >
-> The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to uid 65532 before the server starts.
+> The Helm chart needs no manual step: an init container on the MinIO pod hands root-owned files to
+> `minio.dataOwnership.uid`/`gid` (65532 by default; the same values set the pod's `runAsUser`, `runAsGroup`
+> and `fsGroup`) before the server starts. `minio.dataOwnership.migrate: false` removes that container, and
+> `minio.dataOwnership.image` (pinned by digest, needs GNU `chown`) replaces `minio.image` for it.
 
 > [!IMPORTANT]
 > The containerized `api` presigns URLs against the internal `minio:9000` endpoint, which
