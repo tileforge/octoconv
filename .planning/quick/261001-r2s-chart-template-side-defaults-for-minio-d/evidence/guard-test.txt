@@ -1,0 +1,23 @@
+### RED: test against changed template, old constant
+--- FAIL: TestMinioImagePinnedByDigest (0.01s)
+    minio_image_pin_test.go:253: minio.yaml:65: "image: {{ $ownership.image | default .Values.minio.image | quote }}", want exactly "image: {{ .Values.minio.image | quote }}", "image: {{ .Values.minio.dataOwnership.image | default .Values.minio.image | quote }}" or "image: {{ .Values.minio.mcImage | default .Values.minio.image | quote }}"
+    minio_image_pin_test.go:262: found 0 ownership init image lines in chart templates, want at least 1
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/e2e	1.447s
+FAIL
+### GREEN: constant updated
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found
+=== RUN   TestValuesScalarAtFollowsYAMLPaths/empty_document
+--- PASS: TestValuesScalarAtFollowsYAMLPaths (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/block_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/flow_style (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_minio_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/image_under_prometheus_is_not_dataOwnership.image (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/missing_top-level_key (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/commented_key_is_ignored (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_value_is_found (0.00s)
+    --- PASS: TestValuesScalarAtFollowsYAMLPaths/empty_document (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/e2e	1.399s

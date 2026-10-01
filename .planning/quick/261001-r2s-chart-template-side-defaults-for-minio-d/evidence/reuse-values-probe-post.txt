@@ -1,0 +1,18 @@
+helm: v4.3.0+gbec5b06  yq: yq (https://github.com/mikefarah/yq/) version v4.54.1  python3: Python 3.14.7  HEAD: 93ed971  mode: post
+stub on 127.0.0.1:18471
+control --reset-then-reuse-values: rc=0
+--reuse-values: rc=0
+--reuse-values stderr (without level=INFO):
+.chart.values.minio has dataOwnership: false
+.chart.values.minio keys: image,mcImage,rootPassword,rootUser,storage
+manifest: real helm upgrade --reuse-values == simulation (byte-identical, 2651 lines)
+hook images equal (2 images)
+--- reuse-values pod, for the PR note ---
+server image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+init image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+pod runAsUser: 65532
+chown owner: 65532:65532
+wait-for-bucket image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+--- reset-then-reuse-values pod ---
+server image: cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72
+RESULT: PASS

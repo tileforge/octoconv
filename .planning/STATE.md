@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 milestone: v1.15
 status: Awaiting next milestone
 stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-10-01T16:22:29.468Z"
+last_updated: "2026-10-01T17:01:59.984Z"
 last_activity: 2026-10-01
 last_activity_desc: Milestone v1.15 completed and archived
-state_head: 128c086d0aaf6b498f0e17925c5b640bec569fac
+state_head: f91b24f066b4ff36764546775a866a1e5d45e905
 progress:
   total_phases: 4
   completed_phases: 3
@@ -201,6 +201,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261001-5ec | Move MinIO images off Docker Hub to cgr.dev/chainguard/minio pinned by digest | 2026-10-01 | d93424a | [261001-5ec-move-minio-images-off-docker-hub-to-cgr-](./quick/261001-5ec-move-minio-images-off-docker-hub-to-cgr-/) |
 | 261001-ncn | Chart: migrate root-owned MinIO volume to uid 65532 and keep optional minio.mcImage (Codex P1s, PR 31) | 2026-10-01 | 8ee53a8 | [261001-ncn-chart-migrate-root-owned-minio-volume-an](./quick/261001-ncn-chart-migrate-root-owned-minio-volume-an/) |
 | 261001-q68 | Chart: configurable MinIO data ownership migration (uid/gid, migrate toggle, image) - Codex P1 r2, PR 31 | 2026-10-01 | 128c086 | [261001-q68-chart-configurable-minio-data-ownership-](./quick/261001-q68-chart-configurable-minio-data-ownership-/) |
+| 261001-r2s | Chart: template-side MinIO data-ownership defaults under helm upgrade --reuse-values (Codex P1 r3, PR 31) | 2026-10-01 | f91b24f | [261001-r2s-chart-template-side-defaults-for-minio-d](./quick/261001-r2s-chart-template-side-defaults-for-minio-d/) |
 
 ### Pending Todos
 

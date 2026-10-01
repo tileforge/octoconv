@@ -1,0 +1,37 @@
+### helm lint (default values)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### helm lint (capacity-floor overlay)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### render both variants
+### anti-vacuity gate: exactly 9 ScaledObjects must render in BOTH files, checked before any diff or isolation claim
+OK: 9 ScaledObjects in both renders
+### per-class isolation (SC2): the eight non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small
+OK: document unchanged
+OK: html unchanged
+OK: audio unchanged
+OK: av unchanged
+OK: ocr unchanged
+OK: pandoc unchanged
+OK: probe unchanged
+OK: tectonic unchanged
+OK: image changed (expected)
+### rendered VALUE assertions (SC1/D-05): every check above is a SHAPE check -- a chart that silently clamped the operator's floor of 2 down to 1 (removing the D-05 fallback effect entirely) would still pass all of them. These assert the actual rendered numbers.
+OK: image renders 0/1 by default and 2/2 under the capacity-floor overlay
+### whole-chart isolation scope (SC2): every differing line in the full-chart diff must be a minReplicaCount:/replicas: line, and the diff must be non-empty
+OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines
+### every Deployment that gets the app secret must wait for BOTH startup deps
+OK: every Deployment carrying the app secret waits for postgres and the bucket (11 of them)
+### the MinIO pod hands root-owned data to uid 65532 before the server starts
+OK: MinIO pod runs one init container from the server image that chowns 65532:65532 over the data mount with only CHOWN
+### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults
+FAIL: a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage did not render (rc=1):
+        Error: execution error at (octoconv/templates/minio.yaml:57:22): minio.dataOwnership.uid must be a whole number, got <nil> (kind invalid)
+        
+        Use --debug flag to render out invalid YAML
+rc=1
