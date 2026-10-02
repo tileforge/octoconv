@@ -100,12 +100,59 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| EVAL-01 | Phase 71 | Pending |
+| EVAL-02 | Phase 71 | Pending |
+| EVAL-03 | Phase 71 | Pending |
+| EVAL-04 | Phase 71 | Pending |
+| CADIN-01 | Phase 72 | Pending |
+| CADIN-02 | Phase 72 | Pending |
+| CADIN-03 | Phase 72 | Pending |
+| MEAS-05 | Phase 72 | Pending |
+| CADIN-04 | Phase 73 | Pending |
+| CCONV-01 | Phase 73 | Pending |
+| CADW-01 | Phase 73 | Pending |
+| CADW-02 | Phase 73 | Pending |
+| CADW-03 | Phase 73 | Pending |
+| RNDR-01 | Phase 74 | Pending |
+| RNDR-02 | Phase 74 | Pending |
+| RNDR-03 | Phase 74 | Pending |
+| RNDR-04 | Phase 74 | Pending |
+| RNDR-05 | Phase 74 | Pending |
+| MEAS-01 | Phase 74 | Pending |
+| MEAS-02 | Phase 74 | Pending |
+| MEAS-03 | Phase 74 | Pending |
+| MEAS-04 | Phase 74 | Pending |
+| RNDR-06 | Phase 75 | Pending |
+| CCONV-02 | Phase 75 | Pending |
+| CCONV-03 | Phase 75 | Pending |
+| CADW-04 | Phase 76 | Pending |
+| CADW-05 | Phase 76 | Pending |
+| CADW-06 | Phase 76 | Pending |
+| PREV-01 | Phase 76 | Pending |
+
+Каждое требование записано в одной фазе — той, где впервые строится механизм.
+Пять формулировок охватывают несколько классов входа или стадий движка и
+расширяются в более поздних фазах отдельными критериями (см. `ROADMAP.md`):
+CADIN-04 (DXF-бомбы — фаза 75), CADW-02 (стадии render и DXF — фазы 74 и 75),
+CADW-03 (стадия render — фаза 74), MEAS-01 и MEAS-03 (DXF `render` — фаза 75).
+Эти критерии проверяются верификатором расширяющей фазы, а не считаются
+закрытыми вместе с фазой-владельцем.
 
 **Coverage:**
 - v1 requirements: 29 total
-- Mapped to phases: 0
-- Unmapped: 29 ⚠️
+- Mapped to phases: 29 ✓
+- Unmapped: 0
+
+| Phase | Requirements | Count |
+|-------|--------------|-------|
+| 71 | EVAL-01..04 | 4 |
+| 72 | CADIN-01..03, MEAS-05 | 4 |
+| 73 | CADIN-04, CCONV-01, CADW-01..03 | 5 |
+| 74 | RNDR-01..05, MEAS-01..04 | 9 |
+| 75 | RNDR-06, CCONV-02, CCONV-03 | 3 |
+| 76 | CADW-04..06, PREV-01 | 4 |
+| | **Итого** | **29** |
 
 ---
 *Requirements defined: 2026-10-02*
-*Last updated: 2026-10-02 after initial definition*
+*Last updated: 2026-10-02 after roadmap creation (traceability filled)*
