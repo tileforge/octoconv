@@ -2,9 +2,14 @@
 gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
+current_phase: 71
+current_phase_name: Evaluation Gate
 status: planning
-last_updated: "2026-10-01T23:53:13.000Z"
+stopped_at: Phase 71 context gathered
+last_updated: "2026-10-02T00:30:51.356Z"
 last_activity: 2026-10-02
+last_activity_desc: roadmap v1.16 создан (6 фаз, 29/29 требований привязаны)
+state_head: c434f562535356cbbf70353fe730798790ce642a
 progress:
   total_phases: 6
   completed_phases: 0
@@ -407,9 +412,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-01T23:53:13.000Z
-Stopped at: roadmap v1.16 создан — фаза 71 (Evaluation Gate) готова к планированию
-Resume file: None
+Last session: 2026-10-02T00:30:51.332Z
+Stopped at: Phase 71 context gathered
+Resume file: .planning/phases/71-evaluation-gate/71-CONTEXT.md
 
 ## Operator Next Steps
 
