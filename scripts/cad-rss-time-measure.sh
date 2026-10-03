@@ -9,8 +9,13 @@
 #
 # Usage:
 #   scripts/cad-rss-time-measure.sh [--ocp V] [--variant NAME] [--memory 1g,2g,4g]
-#       [--cpus 2] [--repeats N] [--ops mesh,render] [--budget-s N]
-#       [--confine-ro PATH:PATH:...] [--out FILE] FILE-OR-DIR...
+#       [--cpus 2] [--repeats N] [--budget-s N] [--confine-ro PATH:PATH:...] [--out FILE]
+#       [--ops mesh,render,stlstats,dxf,rsvg-png,rsvg-pdf] [--quality draft|standard|fine]
+#       [--parallel on|off|affinity] FILE-OR-DIR...
+#
+# Operations by format: step and iges take mesh and render, stl takes stlstats
+# and render, dxf takes dxf (SVG through ezdxf), rsvg-png and rsvg-pdf (the SVG
+# comes from an unmeasured dxf run). Other pairs print a SKIP line.
 #
 # Exit codes: 64 usage, 69 docker missing, 1 a cell produced no WRAP line or
 # there were no rows.
@@ -27,6 +32,8 @@ MEMS=1g,2g,4g
 CPUS=2
 REPEATS=1
 OPS=mesh,render
+QUALITY=standard
+PARALLEL=on
 BUDGET=${OCTOCONV_CAD_CELL_BUDGET:-900}
 CONFINE=""
 OUT=cad-rss-time-measurement.txt
@@ -45,6 +52,8 @@ while [ $# -gt 0 ]; do
     --cpus) CPUS=${2:?}; shift 2 ;;
     --repeats) REPEATS=${2:?}; shift 2 ;;
     --ops) OPS=${2:?}; shift 2 ;;
+    --quality) QUALITY=${2:?}; shift 2 ;;
+    --parallel) PARALLEL=${2:?}; shift 2 ;;
     --budget-s) BUDGET=${2:?}; shift 2 ;;
     --confine-ro) CONFINE=${2:?}; shift 2 ;;
     --out) OUT=${2:?}; shift 2 ;;
@@ -55,6 +64,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ ${#INPUTS[@]} -gt 0 ] || usage
+case "$QUALITY" in draft|standard|fine) ;; *) echo "error: --quality must be draft, standard or fine" >&2; exit 64 ;; esac
+case "$PARALLEL" in on|off|affinity) ;; *) echo "error: --parallel must be on, off or affinity" >&2; exit 64 ;; esac
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "error: docker is required" >&2
@@ -159,47 +170,80 @@ for file in "${FILES[@]}"; do
   IFS=, read -r -a mems <<< "$MEMS"
   for op in "${ops[@]}"; do
     case "$fmt:$op" in
-      step:mesh|step:render|stl:render) ;;
-      *) emit "SKIP,src=$src,name=$name,fmt=$fmt,op=$op,reason=not-supported-by-tracer-helpers"; continue ;;
+      step:mesh|step:render|iges:mesh|iges:render|stl:render|stl:stlstats|dxf:dxf|dxf:rsvg-png|dxf:rsvg-pdf) ;;
+      *) emit "SKIP,src=$src,name=$name,fmt=$fmt,op=$op,reason=op-not-for-format"; continue ;;
     esac
     for mem in "${mems[@]}"; do
       rep=1
       while [ "$rep" -le "$REPEATS" ]; do
         CELL=$((CELL + 1))
-        jobdir=$(newdir)
-        pix=-
-        premesh_ok=1
-        in_ext=$ext
-        if [ "$op" = mesh ]; then
-          inner=("${PY[@]}" "$LIB/cad_mesh.py" mesh "/job/in.$ext" /job)
-        else
-          if [ "$fmt" = step ]; then
-            pre=$(newdir)
-            if docker_cell "$mem" "$pre" "$file" "$ext" 0 "${PY[@]}" "$LIB/cad_mesh.py" mesh "/job/in.$ext" /job >/dev/null 2>&1 \
-               && [ -f "$pre/part.stl" ]; then
-              cp "$pre/part.stl" "$jobdir/part.stl"
-            else
-              premesh_ok=0
-            fi
-            rm -rf "$pre"
-            stl_in=/job/part.stl
-          else
-            stl_in="/job/in.$ext"
-          fi
-          inner=("${PY[@]}" "$LIB/cad_render.py" "$stl_in" /job/render.png)
-        fi
-        if [ -n "$CONFINE" ]; then
-          inner=(/probe/sandbox-probe "${inner[@]}")
-          confined=1
-        else
-          confined=0
-        fi
-
+        attempt=1
         wrap=""
-        if [ "$premesh_ok" = 1 ]; then
-          wrap=$(docker_cell "$mem" "$jobdir" "$file" "$ext" "$emit_text" \
-                   "${PY[@]}" "$LIB/measure_wrap.py" --budget-s "$BUDGET" --outdir /job -- "${inner[@]}" \
-                 | grep -a '^WRAP,' | tail -n 1 || true)
+        while [ "$attempt" -le 3 ] && [ -z "$wrap" ]; do
+          jobdir=$(newdir)
+          pix=-
+          premesh_ok=1
+          case "$op" in
+            mesh)
+              inner=("${PY[@]}" "$LIB/cad_mesh.py" mesh "/job/in.$ext" /job --quality "$QUALITY" --parallel "$PARALLEL") ;;
+            stlstats)
+              inner=("${PY[@]}" "$LIB/cad_mesh.py" stlstats "/job/in.$ext" /job) ;;
+            dxf)
+              inner=("${PY[@]}" "$LIB/cad_dxf.py" "/job/in.$ext" /job) ;;
+            rsvg-png|rsvg-pdf)
+              pre=$(newdir)
+              if docker_cell "$mem" "$pre" "$file" "$ext" 0 "${PY[@]}" "$LIB/cad_dxf.py" "/job/in.$ext" /job >/dev/null 2>&1 \
+                 && [ -f "$pre/out.svg" ]; then
+                cp "$pre/out.svg" "$jobdir/out.svg"
+              else
+                premesh_ok=0
+              fi
+              rm -rf "$pre"
+              if [ "$op" = rsvg-png ]; then
+                inner=(rsvg-convert -f png -w 1280 -h 1280 --keep-aspect-ratio -b '#FFFFFF' /job/out.svg -o /job/out.png)
+              else
+                inner=(rsvg-convert -f pdf /job/out.svg -o /job/out.pdf)
+              fi ;;
+            render)
+              if [ "$fmt" = step ] || [ "$fmt" = iges ]; then
+                pre=$(newdir)
+                if docker_cell "$mem" "$pre" "$file" "$ext" 0 "${PY[@]}" "$LIB/cad_mesh.py" mesh "/job/in.$ext" /job \
+                     --quality "$QUALITY" --parallel "$PARALLEL" >/dev/null 2>&1 \
+                   && [ -f "$pre/part.stl" ]; then
+                  cp "$pre/part.stl" "$jobdir/part.stl"
+                else
+                  premesh_ok=0
+                fi
+                rm -rf "$pre"
+                stl_in=/job/part.stl
+              else
+                stl_in="/job/in.$ext"
+              fi
+              inner=("${PY[@]}" "$LIB/cad_render.py" "$stl_in" /job/render.png) ;;
+          esac
+          if [ -n "$CONFINE" ]; then
+            inner=(/probe/sandbox-probe "${inner[@]}")
+            confined=1
+          else
+            confined=0
+          fi
+
+          if [ "$premesh_ok" = 1 ]; then
+            wrap=$(docker_cell "$mem" "$jobdir" "$file" "$ext" "$emit_text" \
+                     "${PY[@]}" "$LIB/measure_wrap.py" --budget-s "$BUDGET" --outdir /job -- "${inner[@]}" \
+                   | grep -a '^WRAP,' | tail -n 1 || true)
+          fi
+          if [ -z "$wrap" ]; then
+            echo "retry: cell $CELL (op=$op mem=$mem rep=$rep) attempt $attempt produced no WRAP line" >&2
+            rm -rf "$jobdir"
+            attempt=$((attempt + 1))
+          fi
+        done
+
+        if [ -z "$wrap" ] && [ "$premesh_ok" = 0 ]; then
+          emit "SKIP,src=$src,name=$name,fmt=$fmt,op=$op,mem=$mem,rep=$rep,reason=prestep-failed-3-attempts"
+          rep=$((rep + 1))
+          continue
         fi
 
         if [ -z "$wrap" ]; then
@@ -215,17 +259,26 @@ for file in "${FILES[@]}"; do
         out=${wrap#*,out=}
         rc=$(printf '%s' "$head" | sed -n 's/^rc=\([0-9]*\),.*/\1/p')
 
-        if [ "$op" = render ]; then
-          pix=fail
-          if [ "$rc" = 0 ] && [ -f "$jobdir/render.png" ]; then
-            pixline=$(docker run --rm --network none --user nobody -v "$jobdir:/job:ro" "$TAG" \
-                        "${PY[@]}" "$LIB/pixelcheck.py" single /job/render.png 2>/dev/null | grep -a '^PIX,' | tail -n 1 || true)
-            if [ -n "$pixline" ]; then
-              emit "$pixline"
-              case "$pixline" in *,ok=1) pix=ok ;; esac
-            fi
-          fi
-        fi
+        case "$op" in
+          render|rsvg-png)
+            pix=fail
+            if [ "$op" = render ]; then png=/job/render.png; pmode=part; else png=/job/out.png; pmode=drawing; fi
+            if [ "$rc" = 0 ] && [ -f "$jobdir/${png#/job/}" ]; then
+              pixline=$(docker run --rm --network none --user nobody -v "$jobdir:/job:ro" "$TAG" \
+                          "${PY[@]}" "$LIB/pixelcheck.py" single "$png" --mode "$pmode" 2>/dev/null | grep -a '^PIX,' | tail -n 1 || true)
+              if [ -n "$pixline" ]; then
+                emit "$pixline"
+                case "$pixline" in *,ok=1) pix=ok ;; esac
+              fi
+            fi ;;
+          rsvg-pdf)
+            pix=fail
+            if [ "$rc" = 0 ] && [ -s "$jobdir/out.pdf" ]; then
+              magic=$(head -c 5 "$jobdir/out.pdf")
+              emit "PDFCHK,bytes=$(wc -c < "$jobdir/out.pdf" | tr -d ' '),magic=$([ "$magic" = "%PDF-" ] && echo ok || echo bad)"
+              [ "$magic" = "%PDF-" ] && pix=ok
+            fi ;;
+        esac
 
         emit "ROW,src=$src,name=$name,sha=$sha,fmt=$fmt,bytes=$bytes,op=$op,ocp=$OCP,variant=$VARIANT,mem=$mem,cpus=$CPUS,confined=$confined,rep=$rep,$head,pix=$pix,out=$out"
 

@@ -16,9 +16,11 @@ import sys
 import time
 
 OUT_KEYS = (
-    "solids", "closed_solids", "volume", "volume_null_reason", "unit_text",
-    "unit_fileunits", "triangles", "bbox_diag", "text0", "t_render_s",
-    "t_total_s",
+    "solids", "closed_solids", "volume", "area", "volume_null_reason", "unit_text",
+    "unit_fileunits", "unit_agree", "triangles", "watertight", "bbox_diag", "bbox_source",
+    "text0", "text0_decoding",
+    "insunits", "codepage", "acadver", "bbox2d", "skipped_types", "auditor_errors",
+    "svg_counts", "t_render_s", "t_total_s",
 )
 
 
@@ -53,6 +55,16 @@ def threads(pid):
     return 0
 
 
+def fmt_value(v):
+    if v is None:
+        return "null"
+    if isinstance(v, dict):
+        v = "+".join("%s-%s" % kv for kv in sorted(v.items()))
+    elif isinstance(v, (list, tuple)):
+        v = "+".join(str(x) if not isinstance(x, float) else "%.4g" % x for x in v)
+    return re.sub(r"[,;:=\s]", "_", str(v)) or "empty"
+
+
 def compact(outdir):
     if not outdir:
         return "-"
@@ -67,9 +79,8 @@ def compact(outdir):
             continue
         parts = []
         for k in OUT_KEYS:
-            if k in data and data[k] is not None:
-                v = re.sub(r"[,;:=\s]", "_", str(data[k]))
-                parts.append("%s:%s" % (k, v))
+            if k in data:
+                parts.append("%s:%s" % (k, fmt_value(data[k])))
         if parts:
             return ";".join(parts)
     return "-"
