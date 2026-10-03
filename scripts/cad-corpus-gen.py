@@ -3,6 +3,8 @@
 
 Usage:
     scripts/cad-corpus-gen.py [--out-dir DIR] [--check-only]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate
+        --targets LIST [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -11,6 +13,7 @@ Generation needs OCP and runs inside the measurement image:
 """
 
 import argparse
+import hashlib
 import math
 import os
 import re
@@ -827,12 +830,601 @@ def read_back(out_dir):
     return report, problems
 
 
+MIB = 1024 * 1024
+DEFAULT_SCALED = os.path.join(
+    os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
+    "scaled",
+)
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate")
+STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
+STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
+STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
+DXF_NORMALIZED_NUMERIC = {"$TDCREATE", "$TDUCREATE", "$TDUPDATE", "$TDUUPDATE", "$TDINDWG", "$TDUSRTIMER"}
+DXF_NORMALIZED_GUID = {"$FINGERPRINTGUID", "$VERSIONGUID"}
+NIL_GUID = "{00000000-0000-0000-0000-000000000000}"
+
+
+def parse_targets(text):
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        out.append(int(part))
+    if not out:
+        raise SystemExit("--targets is empty")
+    return out
+
+
+def stem_of(path):
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", stem)
+
+
+def sha_of(blob):
+    return hashlib.sha256(blob).hexdigest()
+
+
+def scaled_line(kind, label, size, digest, check, extra=""):
+    print("SCALED,kind=%s,target=%s,bytes=%d,sha=%s,check=%s%s" % (kind, label, size, digest, check, extra), flush=True)
+
+
+def write_blob(path, blob):
+    with open(path, "wb") as fh:
+        fh.write(blob)
+
+
+def step_sections(blob):
+    data_at = blob.find(b"DATA;")
+    end_at = blob.rfind(b"ENDSEC;")
+    if data_at < 0 or end_at < data_at:
+        raise SystemExit("step-copies: the base has no DATA section")
+    data_start = data_at + len(b"DATA;")
+    return blob[:data_start], blob[data_start:end_at], blob[end_at:]
+
+
+def step_renumber(data, offset):
+    if offset == 0:
+        return data
+
+    def swap(match):
+        if match.group(1) is None:
+            return match.group(0)
+        return b"#%d" % (int(match.group(1)) + offset)
+
+    return STEP_TOKEN.sub(swap, data)
+
+
+def step_max_id(data):
+    top = 0
+    for match in STEP_TOKEN.finditer(data):
+        if match.group(1) is not None:
+            top = max(top, int(match.group(1)))
+    return top
+
+
+def ocp_step_solids_volume(path):
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopExp import TopExp_Explorer
+    reader = STEPControl_Reader()
+    if reader.ReadFile(path) != IFSelect_RetDone:
+        raise SystemExit("OCP could not read %s" % path)
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    solids = 0
+    volume = 0.0
+    explorer = TopExp_Explorer(shape, TopAbs_SOLID)
+    while explorer.More():
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(explorer.Current(), props)
+        volume += props.Mass()
+        solids += 1
+        explorer.Next()
+    return solids, volume
+
+
+def scale_step_copies(base_path, targets, out_dir):
+    with open(base_path, "rb") as fh:
+        base = fh.read()
+    head, data, tail = step_sections(base)
+    max_id = step_max_id(data)
+    base_defs = sum(1 for _ in STEP_DEF.finditer(data))
+    copies = {}
+
+    def copy_of(k):
+        if k not in copies:
+            copies[k] = step_renumber(data, k * max_id)
+        return copies[k]
+
+    failures = 0
+    ocp_checked = False
+    base_ocp = None
+    stem = stem_of(base_path)
+    for target in targets:
+        want = target * MIB
+        k = 0
+        total = len(head) + len(tail)
+        while total + len(copy_of(k)) // 2 < want:
+            total += len(copy_of(k))
+            k += 1
+        if k < 2:
+            print("SCALED_SKIP,kind=step-copies,target=%dMiB,reason=target_below_two_copies_of_base,base_bytes=%d" % (target, len(base)), flush=True)
+            continue
+        blob = head + b"".join(copy_of(i) for i in range(k)) + tail
+        name = "step-copies-%s-%dMiB.step" % (stem, target)
+        path = os.path.join(out_dir, name)
+        write_blob(path, blob)
+        defs = sum(1 for _ in STEP_DEF.finditer(blob, len(head)))
+        top = step_max_id(blob[len(head):len(blob) - len(tail)])
+        problems = []
+        if defs != k * base_defs:
+            problems.append("entities %d != %d x %d" % (defs, k, base_defs))
+        if top != k * max_id:
+            problems.append("max id %d != %d x %d" % (top, k, max_id))
+        if blob[:len(head)] != head or not blob.endswith(tail):
+            problems.append("header or trailer changed")
+        method = "struct"
+        if not ocp_checked and len(blob) <= 24 * MIB:
+            try:
+                base_solids, base_volume = ocp_step_solids_volume(base_path)
+                solids, volume = ocp_step_solids_volume(path)
+            except ImportError:
+                solids = volume = None
+            if solids is not None:
+                ocp_checked = True
+                method = "struct+ocp-volume"
+                if solids != k * base_solids or abs(volume - k * base_volume) > 1e-6 * max(1.0, abs(k * base_volume)):
+                    problems.append("ocp solids %d volume %.6f != %d x (%d, %.6f)" % (solids, volume, k, base_solids, base_volume))
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("step-copies", "%dMiB" % target, len(blob), sha_of(blob), "ok",
+                    ",base=%s,k=%d,entities=%d,method=%s,file=%s" % (os.path.basename(base_path), k, defs, method, name))
+    return failures
+
+
+def scale_step_nauo(base_path, targets, out_dir):
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.STEPCAFControl import STEPCAFControl_Writer
+    from OCP.STEPControl import STEPControl_AsIs, STEPControl_Reader
+    from OCP.TCollection import TCollection_ExtendedString
+    from OCP.TDataStd import TDataStd_Name
+    from OCP.TDocStd import TDocStd_Document
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.XCAFApp import XCAFApp_Application
+    from OCP.XCAFDoc import XCAFDoc_DocumentTool
+    from OCP.gp import gp_Trsf, gp_Vec
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(base_path) != IFSelect_RetDone:
+        raise SystemExit("step-nauo: OCP could not read the base")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    stem = stem_of(base_path)
+    failures = 0
+    for count in targets:
+        app = XCAFApp_Application.GetApplication_s()
+        doc = TDocStd_Document(TCollection_ExtendedString("XmlOcaf"))
+        app.InitDocument(doc)
+        tool = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+        part = tool.AddShape(shape, False)
+        TDataStd_Name.Set_s(part, TCollection_ExtendedString("prototype"))
+        asm = tool.NewShape()
+        TDataStd_Name.Set_s(asm, TCollection_ExtendedString("assembly"))
+        side = max(1, int(round(count ** (1.0 / 3.0))))
+        for i in range(count):
+            trsf = gp_Trsf()
+            trsf.SetTranslation(gp_Vec(200.0 * (i % side), 200.0 * ((i // side) % side), 200.0 * (i // (side * side))))
+            tool.AddComponent(asm, part, TopLoc_Location(trsf))
+        tool.UpdateAssemblies()
+        writer = STEPCAFControl_Writer()
+        writer.Transfer(doc, STEPControl_AsIs)
+        name = "step-nauo-%s-n%d.step" % (stem, count)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = os.path.join(tmp, "assembly.step")
+            writer.Write(tmp_path)
+            with open(tmp_path, "rb") as fh:
+                blob = normalize_step(fh.read())
+        found = sum(1 for _ in STEP_NAUO.finditer(blob))
+        if found != count:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %d NEXT_ASSEMBLY_USAGE_OCCURRENCE, expected %d" % (name, found, count), file=sys.stderr)
+            continue
+        write_blob(os.path.join(out_dir, name), blob)
+        scaled_line("step-nauo", "n%d" % count, len(blob), sha_of(blob), "ok",
+                    ",base=%s,instances=%d,nauo=%d,file=%s" % (os.path.basename(base_path), count, found, name))
+    return failures
+
+
+def read_binary_stl(path):
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    if len(blob) < 84:
+        raise SystemExit("the base STL is shorter than its header")
+    count = struct.unpack("<I", blob[80:84])[0]
+    if len(blob) != 84 + 50 * count:
+        raise SystemExit("the base is not a binary STL of 84 + 50 x n bytes")
+    return blob, count
+
+
+def stl_pitch(blob, count):
+    lo = [float("inf")] * 3
+    hi = [float("-inf")] * 3
+    for rec in struct.iter_unpack("<12fH", blob[84:84 + 50 * count]):
+        for v in range(3):
+            base = 3 + 3 * v
+            for axis in range(3):
+                value = rec[base + axis]
+                if value < lo[axis]:
+                    lo[axis] = value
+                if value > hi[axis]:
+                    hi[axis] = value
+    return [max(1.0, (hi[a] - lo[a]) * 1.05) for a in range(3)]
+
+
+def tile_triangles(blob, count, pitch, total):
+    side = max(1, int(math.ceil(math.sqrt(math.ceil(total / count)))))
+    emitted = 0
+    tile = 0
+    while emitted < total:
+        shift_x = (tile % side) * pitch[0]
+        shift_y = (tile // side) * pitch[1]
+        for rec in struct.iter_unpack("<12fH", blob[84:84 + 50 * count]):
+            if emitted >= total:
+                return
+            vals = list(rec)
+            if tile:
+                for v in range(3):
+                    vals[3 + 3 * v] += shift_x
+                    vals[4 + 3 * v] += shift_y
+            yield vals
+            emitted += 1
+        tile += 1
+
+
+def scale_stl_tile(base_path, targets, out_dir):
+    blob, count = read_binary_stl(base_path)
+    pitch = stl_pitch(blob, count)
+    stem = stem_of(base_path)
+    failures = 0
+    for target in targets:
+        tiles = max(1, round(target * MIB / len(blob)))
+        if tiles < 2:
+            print("SCALED_SKIP,kind=stl-tile,target=%dMiB,reason=target_below_two_tiles_of_base,base_bytes=%d" % (target, len(blob)), flush=True)
+            continue
+        total = tiles * count
+        header = (b"octoconv cad-corpus-gen stl-tile " + os.path.basename(base_path).encode("ascii", "replace"))[:80]
+        header = header + b"\x00" * (80 - len(header))
+        name = "stl-tile-%s-%dMiB.stl" % (stem, target)
+        path = os.path.join(out_dir, name)
+        digest = hashlib.sha256()
+        with open(path, "wb") as fh:
+            part = header + struct.pack("<I", total)
+            fh.write(part)
+            digest.update(part)
+            pending = bytearray()
+            for vals in tile_triangles(blob, count, pitch, total):
+                pending += struct.pack("<12fH", *vals)
+                if len(pending) >= 1 << 22:
+                    fh.write(pending)
+                    digest.update(pending)
+                    pending = bytearray()
+            fh.write(pending)
+            digest.update(pending)
+        size = os.path.getsize(path)
+        problems = []
+        if size != 84 + 50 * total:
+            problems.append("size %d != 84 + 50 x %d" % (size, total))
+        with open(path, "rb") as fh:
+            head = fh.read(84 + 50 * min(count, 64))
+        if struct.unpack("<I", head[80:84])[0] != total:
+            problems.append("count field differs from %d" % total)
+        if head[84:84 + 50 * min(count, 64)] != blob[84:84 + 50 * min(count, 64)]:
+            problems.append("first tile differs from the base")
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("stl-tile", "%dMiB" % target, size, digest.hexdigest(), "ok",
+                    ",base=%s,tiles=%d,triangles=%d,file=%s" % (os.path.basename(base_path), tiles, total, name))
+    return failures
+
+
+def ascii_facet(vals):
+    return (
+        "facet normal %.6e %.6e %.6e\n  outer loop\n    vertex %.6e %.6e %.6e\n    vertex %.6e %.6e %.6e\n"
+        "    vertex %.6e %.6e %.6e\n  endloop\nendfacet\n" % tuple(vals[:12])
+    )
+
+
+def scale_stl_ascii(base_path, targets, out_dir):
+    blob, count = read_binary_stl(base_path)
+    pitch = stl_pitch(blob, count)
+    stem = stem_of(base_path)
+    failures = 0
+    for target in targets:
+        want = target * MIB
+        name = "stl-ascii-%s-%dMiB.stl" % (stem, target)
+        path = os.path.join(out_dir, name)
+        digest = hashlib.sha256()
+        total_bytes = 0
+        facets = 0
+        first = None
+        horizon = max(count, int(want / 200) + 2)
+        with open(path, "wb") as fh:
+            part = b"solid octoconv\n"
+            fh.write(part)
+            digest.update(part)
+            total_bytes += len(part)
+            pending = bytearray()
+            for vals in tile_triangles(blob, count, pitch, horizon * 2):
+                text = ascii_facet(vals)
+                if first is None:
+                    first = text
+                data = text.encode("ascii")
+                if total_bytes + len(pending) + len(data) + len(b"endsolid octoconv\n") > want:
+                    break
+                pending += data
+                facets += 1
+                if len(pending) >= 1 << 22:
+                    fh.write(pending)
+                    digest.update(pending)
+                    total_bytes += len(pending)
+                    pending = bytearray()
+            tail = b"endsolid octoconv\n"
+            pending += tail
+            fh.write(pending)
+            digest.update(pending)
+            total_bytes += len(pending)
+        size = os.path.getsize(path)
+        problems = []
+        found = 0
+        with open(path, "rb") as fh:
+            head = fh.read(len(b"solid octoconv\n") + len(first.encode("ascii")))
+            fh.seek(0)
+            for line in fh:
+                if line.lstrip().startswith(b"facet normal"):
+                    found += 1
+        if found != facets:
+            problems.append("%d facets read back, %d written" % (found, facets))
+        if size > want or want - size > 400:
+            problems.append("size %d is not within one facet of %d" % (size, want))
+        if not head.startswith(b"solid octoconv\n" + first.encode("ascii")):
+            problems.append("first facet differs")
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("stl-ascii", "%dMiB" % target, size, digest.hexdigest(), "ok",
+                    ",base=%s,triangles=%d,file=%s" % (os.path.basename(base_path), facets, name))
+    return failures
+
+
+def dxf_split(blob):
+    lines = blob.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
+def dxf_pairs_of(lines):
+    return [(lines[i], lines[i + 1]) for i in range(0, len(lines) - 1, 2)]
+
+
+def dxf_normalize(pairs):
+    out = []
+    in_header = False
+    var = None
+    for code_raw, value in pairs:
+        try:
+            code = int(code_raw.strip())
+        except ValueError:
+            out.append((code_raw, value))
+            continue
+        text = value.strip().decode("latin-1")
+        if code == 0:
+            in_header = False
+            var = None
+        if code == 2 and text == "HEADER" and out and out[-1][1].strip() == b"SECTION":
+            in_header = True
+        if in_header and code == 9:
+            var = text
+        elif in_header and var in DXF_NORMALIZED_NUMERIC:
+            value = b"0.0"
+            var = None
+        elif in_header and var in DXF_NORMALIZED_GUID:
+            value = NIL_GUID.encode("ascii")
+            var = None
+        out.append((code_raw, value))
+    return out
+
+
+def dxf_entity_range(pairs):
+    start = end = None
+    for i, (code_raw, value) in enumerate(pairs):
+        if code_raw.strip() != b"0":
+            continue
+        if value.strip() == b"SECTION" and i + 1 < len(pairs) and pairs[i + 1][1].strip() == b"ENTITIES":
+            start = i + 2
+        elif start is not None and end is None and value.strip() == b"ENDSEC":
+            end = i
+    if start is None or end is None:
+        raise SystemExit("dxf-replicate: the base has no ENTITIES section")
+    return start, end
+
+
+def dxf_records(pairs):
+    records = []
+    current = []
+    for pair in pairs:
+        if pair[0].strip() == b"0" and current:
+            records.append(current)
+            current = []
+        current.append(pair)
+    if current:
+        records.append(current)
+    return records
+
+
+def dxf_handle_seed(pairs):
+    for i, (code_raw, value) in enumerate(pairs):
+        if code_raw.strip() == b"9" and value.strip() == b"$HANDSEED" and i + 1 < len(pairs):
+            return i + 1, int(pairs[i + 1][1].strip(), 16)
+    return None, None
+
+
+def dxf_shift(code, value, offset):
+    if code in (10, 11, 12, 13, 14, 15, 16):
+        try:
+            return b"%.12g" % (float(value) + offset)
+        except ValueError:
+            return value
+    return value
+
+
+def scale_dxf_replicate(base_path, targets, out_dir):
+    with open(base_path, "rb") as fh:
+        base = fh.read()
+    nl = b"\r\n" if b"\r\n" in base else b"\n"
+    lines = [ln.rstrip(b"\r") for ln in dxf_split(base)]
+    pairs = dxf_normalize(dxf_pairs_of(lines))
+    start, end = dxf_entity_range(pairs)
+    records = dxf_records(pairs[start:end])
+    seed_index, seed = dxf_handle_seed(pairs)
+    if seed is None:
+        raise SystemExit("dxf-replicate: the base has no $HANDSEED")
+    handles_per_copy = sum(1 for rec in records for code_raw, _ in rec if code_raw.strip() == b"5")
+    head_pairs = pairs[:start]
+    tail_pairs = pairs[end:]
+
+    def render(pair_list):
+        return b"".join(code_raw.rstrip(b"\r") + nl + value.rstrip(b"\r") + nl for code_raw, value in pair_list)
+
+    base_entities = len(records)
+    stem = stem_of(base_path)
+    failures = 0
+    entities_bytes = len(render([p for rec in records for p in rec]))
+    fixed = len(base) - entities_bytes
+    verified = False
+    for target in targets:
+        copies = max(1, int(round((target * MIB - fixed) / entities_bytes)))
+        if copies < 2:
+            print("SCALED_SKIP,kind=dxf-replicate,target=%dMiB,reason=target_below_two_copies_of_modelspace,base_bytes=%d" % (target, len(base)), flush=True)
+            continue
+        new_seed = seed + copies * handles_per_copy + 1
+        head = list(head_pairs)
+        head[seed_index] = (head[seed_index][0], b"%X" % new_seed)
+        name = "dxf-replicate-%s-%dMiB.dxf" % (stem, target)
+        path = os.path.join(out_dir, name)
+        counter = seed + 1
+        with open(path, "wb") as fh:
+            digest = hashlib.sha256()
+            part = render(head)
+            fh.write(part)
+            digest.update(part)
+            for k in range(copies):
+                shift = 1000.0 * k
+                chunk = []
+                for rec in records:
+                    for code_raw, value in rec:
+                        code = int(code_raw.strip()) if code_raw.strip().lstrip(b"-").isdigit() else None
+                        if code == 5 and k:
+                            value = b"%X" % counter
+                            counter += 1
+                        elif k and code is not None:
+                            value = dxf_shift(code, value, shift)
+                        chunk.append((code_raw, value))
+                part = render(chunk)
+                fh.write(part)
+                digest.update(part)
+            part = render(tail_pairs)
+            fh.write(part)
+            digest.update(part)
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            out_blob = fh.read()
+        out_lines = [ln.rstrip(b"\r") for ln in dxf_split(out_blob)]
+        out_pairs = dxf_pairs_of(out_lines)
+        o_start, o_end = dxf_entity_range(out_pairs)
+        out_records = dxf_records(out_pairs[o_start:o_end])
+        problems = []
+        if len(out_records) != copies * base_entities:
+            problems.append("%d entities, expected %d x %d" % (len(out_records), copies, base_entities))
+        handles = [value.strip() for rec in out_records for code_raw, value in rec if code_raw.strip() == b"5"]
+        if len(set(handles)) != len(handles):
+            problems.append("duplicate handles")
+        kinds_in = {}
+        kinds_out = {}
+        for rec in records:
+            kinds_in[rec[0][1].strip()] = kinds_in.get(rec[0][1].strip(), 0) + 1
+        for rec in out_records:
+            kinds_out[rec[0][1].strip()] = kinds_out.get(rec[0][1].strip(), 0) + 1
+        for kind_name, n in kinds_in.items():
+            if kinds_out.get(kind_name, 0) != copies * n:
+                problems.append("%s count %d, expected %d" % (kind_name.decode("ascii", "replace"), kinds_out.get(kind_name, 0), copies * n))
+        method = "struct"
+        if not verified and size <= 24 * MIB:
+            try:
+                import ezdxf
+            except ImportError:
+                ezdxf = None
+            if ezdxf is not None:
+                doc = ezdxf.readfile(path)
+                base_doc = ezdxf.readfile(base_path)
+                if len(doc.modelspace()) != copies * len(base_doc.modelspace()):
+                    problems.append("ezdxf reads %d modelspace entities, expected %d x %d" % (len(doc.modelspace()), copies, len(base_doc.modelspace())))
+                verified = True
+                method = "struct+ezdxf"
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("dxf-replicate", "%dMiB" % target, size, digest.hexdigest(), "ok",
+                    ",base=%s,copies=%d,entities=%d,method=%s,file=%s" % (os.path.basename(base_path), copies, len(out_records), method, name))
+    return failures
+
+
+def run_scaled(args):
+    if args.kind not in KINDS:
+        raise SystemExit("--kind must be one of %s" % ", ".join(KINDS))
+    if not args.targets:
+        raise SystemExit("--targets is required with --scaled-from")
+    if not os.path.isfile(args.scaled_from):
+        raise SystemExit("--scaled-from: no such file")
+    out_dir = args.scaled_dir or DEFAULT_SCALED
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except FileExistsError:
+        pass
+    targets = parse_targets(args.targets)
+    runner = {
+        "step-copies": scale_step_copies,
+        "step-nauo": scale_step_nauo,
+        "stl-tile": scale_stl_tile,
+        "stl-ascii": scale_stl_ascii,
+        "dxf-replicate": scale_dxf_replicate,
+    }[args.kind]
+    return 1 if runner(args.scaled_from, targets, out_dir) else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out-dir", default=DEFAULT_OUT)
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
+    ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate")
+    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo")
+    ap.add_argument("--scaled-dir", help="output directory for scaled files")
     args = ap.parse_args()
+
+    if args.scaled_from:
+        return run_scaled(args)
 
     if not args.check_only:
         try:

@@ -671,6 +671,113 @@ Checked and not taken: FreeCAD-library `Electronics Parts/Cameras/Wide-170-Angle
 
 ---
 
+## Derived (not committed)
+
+Deterministic scalings of real files by `scripts/cad-corpus-gen.py --scaled-from FILE --kind K --targets LIST --scaled-dir DIR`, written to `$OCTOCONV_CAD_CACHE/scaled`, never committed, and honestly synthetic: they exist because no open STEP or STL above about 52 MB was found and no open ASCII STL above 2 MiB (D-05). Two runs produce byte-identical files (the sha256 values below were identical on the repeated runs). The licence of a derived file is the licence of its base.
+
+Every run prints one line per rung, `SCALED,kind=..,target=..,bytes=..,sha=..,check=ok`, and exits non-zero if a check fails. Checks: **step-copies** entity count equals k x base, maximum id equals k x base maximum, header and trailer unchanged, and on the smallest rung of each series OCP reads k x the base solids and k x the base volume (relative 1e-6); **step-nauo** the number of NEXT_ASSEMBLY_USAGE_OCCURRENCE in the text equals N; **stl-tile** size equals 84 + 50 x triangles, the count field agrees and the first tile equals the base; **stl-ascii** the facet count read back equals the facets written and the size is within 400 bytes of the target, first facet checked; **dxf-replicate** entity counts per type equal K x base, handles are unique and ezdxf reads the smallest rung with K x the base modelspace length.
+
+Generator command (shared prefix, the measurement image of the time; the image tag changes whenever `scripts/cad-measure` changes):
+
+```
+docker run --rm --network none --cpus 2 --memory 6g --memory-swap 6g -v "$PWD:/src:ro" -v "$OCTOCONV_CAD_CACHE/scaled:/scaled" -v "$OCTOCONV_CAD_CACHE/fetched:/fetched:ro" -w /src octoconv-cad-measure:ocp7.9.3.1.1-full-16d52a0d41e3 /opt/venv/bin/python -I -B scripts/cad-corpus-gen.py --scaled-from BASE --kind KIND --targets LIST --scaled-dir /scaled
+```
+
+### step-copies from LinearSlide-MGN15x-Block.step
+
+- Base: `public/LinearSlide-MGN15x-Block.step` (committed)
+- Base licence: CC-BY-3.0, attribution to k2-mirror and FreeCAD-library is inherited
+- What: Text replication of the DATA section with every `#n` reference renumbered by `i x max id`, header and trailer kept. A small base so that the ladder starts at 1 MiB and the geometry per MiB is a simple single part (5948 triangles per copy).
+- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step --kind step-copies --targets 1,2,5,10,20,40,80,150,200`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| 1MiB | k=2 | 1094537 | 9bea6097ff46f036d3a8c84044e9b7f5166c5d3e07570831be9df13c4853b355 |
+| 2MiB | k=4 | 2212957 | 909da73eea4b1cff734bbcf7f52cbddd8d78bf7d2de840b1b6ab82c15371bee4 |
+| 5MiB | k=9 | 5011396 | d7568636bb7c72477a6811f479561f13794a0eb023f07ae6ed690aaa5e8eb3b5 |
+| 10MiB | k=18 | 10262824 | 3a71f9da1fd0bae74f537209d66b36125c9fdf958abfdcb3ddc2939131b84d5d |
+| 20MiB | k=36 | 20765680 | 6530ac5cd90c7dde4b70907fb90a565c34d0485c68b92ae90f0de33c5ba5f63e |
+| 40MiB | k=72 | 41771392 | d974832f3ab7579afc53ee41879b51e2b1b63cf61913c4698128728ac3f0be07 |
+| 80MiB | k=142 | 83903158 | 18e415e040bef94f4de0ac8e3c93d2d15f835bd58cdac92db6d2e98a2e586dd4 |
+| 150MiB | k=263 | 157443812 | 06c54759d5dc2f4bb38564f3677a28bdd5e2be3a44ec682fb83873adf21a4eff |
+| 200MiB | k=349 | 209712376 | ec6721113e6376b7738b8653241debec8d178bd2f575151d51419c672dcdf611 |
+
+### step-copies from freecad-mit-e-vent-t-slot.step
+
+- Base: `freecad-mit-e-vent-t-slot.step` (fetched; 9044371 bytes, the largest file of the Mechanical, Medical and Generic categories in the manifest; a SolidWorks 2019 assembly with 102 NAUO, 22 products, 25 solids)
+- Base licence: CC-BY-3.0, attribution to berserkdesign (xolotl-hub) and FreeCAD-library is inherited
+- What: The same replication on a heavy real base, so the RSS multiplier per MiB comes from real assembly geometry (each copy also carries its 102 NAUO). Targets below two copies of the base (1, 2, 5, 10 MiB) are not generated: the real files of that size are in the manifest.
+- Command: the shared prefix above with `--scaled-from /fetched/freecad-mit-e-vent-t-slot.step --kind step-copies --targets 20,40,80,150,200`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| 20MiB | k=2 | 18279614 | 1b026cafc43d4a05bc413489be08c6c1a0b47d2da6ae0c7bc7cece7637972f7c |
+| 40MiB | k=5 | 46055501 | 1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841 |
+| 80MiB | k=9 | 83090017 | e5d6dbbe5bc0658eda63753da20a16d1e3b7da911dd9d95034c57119b3cde06d |
+| 150MiB | k=17 | 158260464 | 90f70871e205896bbb792663029ff8395c59de35282e70faabe0f84bfdafe116 |
+| 200MiB | k=22 | 205507679 | 06f270b622d4fd2db908978b026b38173dd0b5ff825bf034560e0e354d674ca2 |
+
+### step-nauo from LinearSlide-MGN15x-Block.step
+
+- Base: `public/LinearSlide-MGN15x-Block.step` (committed)
+- Base licence: CC-BY-3.0, attribution to k2-mirror and FreeCAD-library is inherited
+- What: One prototype read with STEPControl_Reader and placed N times through XCAF (STEPCAFControl_Writer) on a cubic grid with a 200 mm pitch. The geometry is written once, the file stays small while the instance count grows: the bomb vector of Pitfall 8, kept apart from the copies series.
+- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 10,100,1000,10000,100000`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| n10 | instances=10 | 544463 | 2944fbbb904fdca56eba23be3c067c35a2f7a0a8f49c02ebaeb717c10f42a6b7 |
+| n100 | instances=100 | 599248 | fe4eea9efa59c93cde84d547c6b6f19a9976c6c3e62a9b08be30c14d57aac4b6 |
+| n1000 | instances=1000 | 1154281 | fc05817ffcc9eac684af650138fd4c0feaa2d0b8d5e59a1306131ac7b6b78ffd |
+| n10000 | instances=10000 | 6757254 | 297e9ba579e472f91a9790b03363ac22ffc7b7cae2c85cd8dfe20419d13c0158 |
+| n100000 | instances=100000 | 64740150 | 97ee6e9c88708d1189725a3dc619b2acf4b4ccc4a09383fa9eddc7ac550e647c |
+
+### stl-tile from nasa-sls-block1.stl
+
+- Base: `nasa-sls-block1.stl` (fetched; 13721684 bytes, 274432 triangles)
+- Base licence: PD (NASA)
+- What: Binary tiles on a grid with a pitch of 1.05 bounding-box extents; size is exactly 84 + 50 x triangles. Targets of 100 and 200 MiB only, below that the real NASA files are in the manifest.
+- Command: the shared prefix above with `--scaled-from /fetched/nasa-sls-block1.stl --kind stl-tile --targets 100,200`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| 100MiB | tiles=8 (2195456 triangles) | 109772884 | bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788 |
+| 200MiB | tiles=15 (4116480 triangles) | 205824084 | 2045f91fb675dc99f4dd6dee717bea623afc84bab709726576e4662491454b6c |
+
+### stl-ascii from nasa-sls-block1.stl
+
+- Base: `nasa-sls-block1.stl` (fetched)
+- Base licence: PD (NASA)
+- What: The first N triangles of the same tiling sequence as the binary ladder, written as ASCII with `%.6e`; the size lands within one facet (at most 400 bytes) below the target. This is the only source of ASCII STL above 2 MiB.
+- Command: the shared prefix above with `--scaled-from /fetched/nasa-sls-block1.stl --kind stl-ascii --targets 1,5,10,25,50,100,200`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| 1MiB | 4396 facets | 1048506 | 77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0 |
+| 5MiB | 21988 facets | 5242783 | f9fb45d9fe49096181cd0fd60152ed8f5aa88173f03ecacef9c27eb86d704184 |
+| 10MiB | 43836 facets | 10485616 | ef31bbfafbb92b6f37933497813fc971b041617288913fd0080f3e063a9360d9 |
+| 25MiB | 109544 facets | 26214361 | 8e58ee5b3de24a523d3341eb02d382d40bfeb347cb070e78d2aeeca3ff7ea169 |
+| 50MiB | 219538 facets | 52428718 | 71295dc849c0bd6dda68c59dfb95d8e906513a33c298607352c4f50c4b3546c5 |
+| 100MiB | 440762 facets | 104857386 | a137dabd88d19f138259630b5d517d5bddb0ead66e0a5b9d2619ca6fbe7f5bb5 |
+| 200MiB | 883037 facets | 209715040 | d42f47a7e934a6dff57601307035a372e141936b1f41f8d7f189149b3b7f3de7 |
+
+### dxf-replicate from uncommon.dxf
+
+- Base: `public/uncommon.dxf` (committed)
+- Base licence: MIT, Copyright (c) 2020 Manfred Moitzi (notice in this document)
+- What: The ENTITIES section is repeated N times with x shifted by 1000 x copy index on group codes 10 to 16, handles (group 5) renumbered from $HANDSEED + 1, $HANDSEED updated, and `$TD*` and GUID header variables set to constants. Blocks, tables and objects are not repeated, so every copy of an INSERT or DIMENSION points at the same block.
+- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/uncommon.dxf --kind dxf-replicate --targets 2,5,10,20,50`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| 2MiB | copies=24 (2568 entities) | 2050076 | 48cacc1f3f4d09c9546ec0d7977d7c5e73af3eef053557ea5d2a9a0221d919d8 |
+| 5MiB | copies=66 (7062 entities) | 5171642 | 6db807ae96e58e71922ba43497b37ad290b84582b37deda03171e005fc195b7b |
+| 10MiB | copies=136 (14552 entities) | 10376517 | 76764005e785ac2a736b61284fb91c3fa6b35378ccc2f96272c998f64738ad09 |
+| 20MiB | copies=275 (29425 entities) | 20716171 | cda9dd00f6462a6c95db3108af78a98437695c6b185a59a1f857c93388ec1c6d |
+| 50MiB | copies=692 (74044 entities) | 51745292 | 5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652 |
+
+---
+
 ## Coverage
 
 Each EVAL-02 category with the files that close it. Kinds: **real** is a file written by someone else's software and found in an open source, **synthetic** is the output of `scripts/cad-corpus-gen.py` without `--scaled-from`, **derived** is a deterministic scaling of a real file (see Derived).
