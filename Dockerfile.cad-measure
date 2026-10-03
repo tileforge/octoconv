@@ -1,0 +1,26 @@
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS venv
+ARG OCP_VERSION=7.9.3.1.1
+ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+COPY scripts/cad-measure/requirements-*.txt /req/
+RUN /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --require-hashes \
+      -r /req/requirements-common.txt \
+ && /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes \
+      -r /req/requirements-ocp-${OCP_VERSION}.txt \
+ && /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes \
+      -r /req/requirements-vtk.txt
+
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      python3 libosmesa6 libgl1 libx11-6 librsvg2-bin fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=venv /opt/venv /opt/venv
+COPY scripts/cad-measure/*.py /opt/cad-measure/
+RUN /opt/venv/bin/python -m compileall -q /opt/cad-measure
+RUN /opt/venv/bin/python -I -B -c "import OCP, vtkmodules.all, ezdxf"
+USER nobody
