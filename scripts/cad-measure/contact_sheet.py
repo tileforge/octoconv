@@ -2,7 +2,7 @@
 """contact_sheet.py -- tile PNGs into a labelled rows x columns grid.
 
 Usage:
-    contact_sheet.py --out PNG --rows R1,R2 --cols C1,C2 PNG...
+    contact_sheet.py --out PNG --rows R1,R2 --cols C1,C2 [--title TEXT] PNG...
 
 The PNG arguments are taken row by row. A path that does not exist is drawn
 as an empty cell marked MISSING.
@@ -25,6 +25,7 @@ def main(argv):
     ap.add_argument("--out", required=True)
     ap.add_argument("--rows", required=True)
     ap.add_argument("--cols", required=True)
+    ap.add_argument("--title", default="")
     ap.add_argument("pngs", nargs="+")
     args = ap.parse_args(argv[1:])
     rows = args.rows.split(",")
@@ -36,14 +37,17 @@ def main(argv):
 
     font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
     label_w = max(int(font.getlength(r)) for r in rows) + 2 * GAP
-    head_h = FONT_SIZE + 2 * GAP
-    width = label_w + len(cols) * (THUMB + GAP)
+    title_h = FONT_SIZE + 2 * GAP if args.title else 0
+    head_h = title_h + FONT_SIZE + 2 * GAP
+    width = max(label_w + len(cols) * (THUMB + GAP), int(font.getlength(args.title)) + 2 * GAP)
     height = head_h + len(rows) * (THUMB + GAP)
     sheet = Image.new("RGB", (width, height), (255, 255, 255))
     draw = ImageDraw.Draw(sheet)
 
+    if args.title:
+        draw.text((GAP, GAP), args.title, fill=(160, 0, 0), font=font)
     for c, name in enumerate(cols):
-        draw.text((label_w + c * (THUMB + GAP) + GAP, GAP), name, fill=(0, 0, 0), font=font)
+        draw.text((label_w + c * (THUMB + GAP) + GAP, title_h + GAP), name, fill=(0, 0, 0), font=font)
     for r, name in enumerate(rows):
         draw.text((GAP, head_h + r * (THUMB + GAP) + THUMB // 2), name, fill=(0, 0, 0), font=font)
 
