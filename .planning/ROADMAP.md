@@ -100,7 +100,7 @@ Phase detail for shipped milestones lives in the collapsed sections below and in
 
 Plans:
 **Wave 1**
-- [ ] 71-01-PLAN.md — hash-pinned lock-файлы колёс, legitimacy gate (просмотр пользователем) и выбор исхода D-18
+- [x] 71-01-PLAN.md — hash-pinned lock-файлы колёс, legitimacy gate (просмотр пользователем) и выбор исхода D-18
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 71-02-PLAN.md — tracer: одна реальная STEP-деталь через измерительный образ, OCP, VTK, пиксельный судья, RSS при `--cpus=2` и Landlock; детерминированный генератор синтетики
