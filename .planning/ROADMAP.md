@@ -71,6 +71,7 @@ Phase detail for shipped milestones lives in the collapsed sections below and in
 ## Phase Details
 
 ### Phase 71: Evaluation Gate
+
 **Goal**: Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на
 настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по
 прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа,
@@ -95,9 +96,35 @@ Phase detail for shipped milestones lives in the collapsed sections below and in
   5. Продакшен-проводки нет: `AllEngines()`, `/v1/formats`, `/v1/inspect`,
      очереди и чарт не изменились — фаза оставляет только записи решений,
      измерительные скрипты, измерительный Dockerfile и корпус
-**Plans**: TBD
+**Plans:** 8 plans in 8 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [ ] 71-01-PLAN.md — hash-pinned lock-файлы колёс, legitimacy gate (просмотр пользователем) и выбор исхода D-18
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 71-02-PLAN.md — tracer: одна реальная STEP-деталь через измерительный образ, OCP, VTK, пиксельный судья, RSS при `--cpus=2` и Landlock; детерминированный генератор синтетики
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 71-03-PLAN.md — публичный корпус с лицензиями и PROVENANCE, манифест и загрузчик по sha256, лестница выше 40 МБ, счётчики D-10, приватный каталог
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 71-04-PLAN.md — хелперы: единицы с происхождением, null-объём с причиной, 2D-путь DXF, рендер во всех ракурсах с пиксельными критериями и контактными листами
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 71-05-PLAN.md — f3d как ориентир (эмулированный amd64) и приёмка рендера пользователем по контактным листам (D-11)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 71-06-PLAN.md — RSS и время до обрыва по форматам и лимитам, оба пина OCP, потоки, тесселяция, RSS Go-воркера, вывод лимита пода и потолков
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 71-07-PLAN.md — трасса библиотек на всех операциях, обрезка VTK по сгенерированному keep-list (D-17), исход D-18 и лицензии колеса OCP, матрица Landlock четырёх хелперов
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 71-08-PLAN.md — размер образа и cold pull, `71-DECISION.md` с проверяемыми ссылками на evidence, гейт отсутствия продакшен-проводки (критерий 5)
 
 ### Phase 72: Engine-Free Contract Foundations
+
 **Goal**: Самая рискованная для ревью поверхность — fail-closed валидация
 CAD-содержимого и контракт measurements — готова и доказана тестами до того, как
 существует хоть один движок. Класс не зарегистрирован и ничего не рекламируется.
@@ -126,6 +153,7 @@ CAD-содержимого и контракт measurements — готова и 
 **Plans**: TBD
 
 ### Phase 73: CAD Class & Convert Slice, Confined
+
 **Goal**: Класс `cad` появляется в API целиком и сразу под замеренным
 Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, preflight и
 классификацию ошибок. Самый узкий вертикальный срез, который задевает каждую
@@ -156,6 +184,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 **Plans**: TBD
 
 ### Phase 74: 3D Render & Measurements
+
 **Goal**: Клиент получает PNG-превью детали и вместе с ним честные размеры; два
 выхода одной джобы видны оба или не виден ни один.
 **Depends on**: Phase 73
@@ -189,6 +218,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 **Plans**: TBD
 
 ### Phase 75: DXF 2D Pipeline
+
 **Goal**: Клиент получает векторный чертёж и превью DXF через другой тулчейн
 (ezdxf + rsvg-convert) под тем же конфайнментом; выход, собранный из
 недоверенного текста, безопасен по построению.
@@ -216,6 +246,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 **Plans**: TBD
 
 ### Phase 76: Measured Bounds, KEDA Proof & Client Docs
+
 **Goal**: Границы класса измерены, а не скопированы; класс доказан вживую на
 образах из финального коммита; контракт превью и клиентская документация
 записаны и привязаны к коду.
