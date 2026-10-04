@@ -190,11 +190,15 @@ def iges_text_facts(path):
 
 
 def file_units_step(reader):
-    from OCP.TColStd import TColStd_SequenceOfAsciiString
+    # cadquery-ocp 8.0 moved the sequence class from OCP.TColStd to OCP.collections
     try:
-        length = TColStd_SequenceOfAsciiString()
-        angle = TColStd_SequenceOfAsciiString()
-        solid_angle = TColStd_SequenceOfAsciiString()
+        from OCP.TColStd import TColStd_SequenceOfAsciiString as AsciiSequence
+    except ImportError:
+        from OCP.collections import Sequence_TCollection_AsciiString as AsciiSequence
+    try:
+        length = AsciiSequence()
+        angle = AsciiSequence()
+        solid_angle = AsciiSequence()
         reader.FileUnits(length, angle, solid_angle)
         names = [length.Value(i).ToCString() for i in range(1, length.Length() + 1)]
         return normalize_unit(names[0]) if names else "none"

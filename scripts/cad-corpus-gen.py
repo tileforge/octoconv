@@ -3,7 +3,7 @@
 
 Usage:
     scripts/cad-corpus-gen.py [--out-dir DIR] [--check-only]
-    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|iges-from-step
         --targets LIST [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
@@ -835,7 +835,7 @@ DEFAULT_SCALED = os.path.join(
     os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
     "scaled",
 )
-KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate")
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step")
 STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
 STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
 STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
@@ -1389,6 +1389,90 @@ def scale_dxf_replicate(base_path, targets, out_dir):
     return failures
 
 
+def scale_dxf_minsert(base_path, targets, out_dir):
+    # ezdxf writes the OBJECTS section in set order, so the bytes depend on the hash seed
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        raise SystemExit("dxf-minsert: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+    import ezdxf
+
+    ezdxf.options.write_fixed_meta_data_for_testing = True
+    stem = stem_of(base_path)
+    failures = 0
+    for n in targets:
+        if n < 1:
+            raise SystemExit("dxf-minsert: a target is an expanded instance count of at least 1")
+        cols = int(math.isqrt(n))
+        while cols > 1 and n % cols:
+            cols -= 1
+        rows = n // cols
+        doc = ezdxf.new("R2018")
+        block = doc.blocks.new("CELL")
+        block.add_circle((0.0, 0.0), 3.0)
+        block.add_line((-4.0, 0.0), (4.0, 0.0))
+        block.add_line((0.0, -4.0), (0.0, 4.0))
+        block.add_lwpolyline([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)], close=True)
+        block.add_text("A", height=1.0).set_placement((1.0, 1.0))
+        doc.modelspace().add_blockref(
+            "CELL", (0.0, 0.0),
+            dxfattribs={"column_count": cols, "row_count": rows, "column_spacing": 12.0, "row_spacing": 12.0})
+        name = "dxf-minsert-%s-n%d.dxf" % (stem, n)
+        path = os.path.join(out_dir, name)
+        doc.saveas(path)
+        with open(path, "rb") as fh:
+            blob = fh.read()
+        problems = []
+        back = ezdxf.readfile(path)
+        inserts = [e for e in back.modelspace() if e.dxftype() == "INSERT"]
+        if len(inserts) != 1:
+            problems.append("%d INSERT entities, expected 1" % len(inserts))
+        elif inserts[0].dxf.column_count * inserts[0].dxf.row_count != n:
+            problems.append("grid %d x %d, expected %d cells" % (inserts[0].dxf.column_count, inserts[0].dxf.row_count, n))
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("dxf-minsert", "n%d" % n, len(blob), hashlib.sha256(blob).hexdigest(), "ok",
+                    ",expanded=%d,cols=%d,rows=%d,block_entities=5,file=%s" % (n, cols, rows, name))
+    return failures
+
+
+def scale_iges_from_step(base_path, targets, out_dir):
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.IGESControl import IGESControl_Writer
+    from OCP.STEPControl import STEPControl_Reader
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(base_path) != IFSelect_RetDone:
+        raise SystemExit("iges-from-step: OCP cannot read the STEP base")
+    reader.TransferRoots()
+    shape = reader.OneShape()
+    writer = IGESControl_Writer("MM", 0)
+    writer.AddShape(shape)
+    writer.ComputeModel()
+    name = "iges-%s.igs" % stem_of(base_path)
+    path = os.path.join(out_dir, name)
+    if not writer.Write(path):
+        raise SystemExit("iges-from-step: OCP could not write %s" % name)
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    stamped = re.sub(rb"15H[0-9]{8}\.[0-9]{6}", b"15H20000101.000000", blob)
+    with open(path, "wb") as fh:
+        fh.write(stamped)
+    lines = stamped.split(b"\n")
+    lines = [ln for ln in lines if ln.strip()]
+    problems = []
+    if not lines or b"T0000001" not in lines[-1]:
+        problems.append("no terminate section")
+    if not any(len(ln.rstrip(b"\r")) >= 73 and ln.rstrip(b"\r")[72:73] == b"D" for ln in lines):
+        problems.append("no directory entries")
+    if problems:
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    scaled_line("iges-from-step", "x1", len(stamped), hashlib.sha256(stamped).hexdigest(), "ok",
+                ",base=%s,file=%s" % (os.path.basename(base_path), name))
+    return 0
+
+
 def run_scaled(args):
     if args.kind not in KINDS:
         raise SystemExit("--kind must be one of %s" % ", ".join(KINDS))
@@ -1408,6 +1492,8 @@ def run_scaled(args):
         "stl-tile": scale_stl_tile,
         "stl-ascii": scale_stl_ascii,
         "dxf-replicate": scale_dxf_replicate,
+        "dxf-minsert": scale_dxf_minsert,
+        "iges-from-step": scale_iges_from_step,
     }[args.kind]
     return 1 if runner(args.scaled_from, targets, out_dir) else 0
 
@@ -1419,7 +1505,7 @@ def main():
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
     ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate")
-    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo")
+    ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
     args = ap.parse_args()
 

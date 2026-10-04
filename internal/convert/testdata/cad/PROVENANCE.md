@@ -722,13 +722,15 @@ docker run --rm --network none --cpus 2 --memory 6g --memory-swap 6g -v "$PWD:/s
 - Base: `public/LinearSlide-MGN15x-Block.step` (committed)
 - Base licence: CC-BY-3.0, attribution to k2-mirror and FreeCAD-library is inherited
 - What: One prototype read with STEPControl_Reader and placed N times through XCAF (STEPCAFControl_Writer) on a cubic grid with a 200 mm pitch. The geometry is written once, the file stays small while the instance count grows: the bomb vector of Pitfall 8, kept apart from the copies series.
-- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 10,100,1000,10000,100000`
+- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 10,100,1000,2500,5000,10000,100000` (2500 and 5000 were added in 71-06 to bracket the memory break between 1000 and 10000 instances)
 
 | Target | Coefficient | Bytes | sha256 |
 |---|---|---|---|
 | n10 | instances=10 | 544463 | 2944fbbb904fdca56eba23be3c067c35a2f7a0a8f49c02ebaeb717c10f42a6b7 |
 | n100 | instances=100 | 599248 | fe4eea9efa59c93cde84d547c6b6f19a9976c6c3e62a9b08be30c14d57aac4b6 |
 | n1000 | instances=1000 | 1154281 | fc05817ffcc9eac684af650138fd4c0feaa2d0b8d5e59a1306131ac7b6b78ffd |
+| n2500 | instances=2500 | 2087270 | c7a5e41ddc15b9ecf964eb28204ed5284a02b14ab7248ff7a7b9a7f787f05ebe |
+| n5000 | instances=5000 | 3642601 | e97dd239cf51440c467225f39dc3eda7ad948e579ac297e90b74b38323400b5a |
 | n10000 | instances=10000 | 6757254 | 297e9ba579e472f91a9790b03363ac22ffc7b7cae2c85cd8dfe20419d13c0158 |
 | n100000 | instances=100000 | 64740150 | 97ee6e9c88708d1189725a3dc619b2acf4b4ccc4a09383fa9eddc7ac550e647c |
 
@@ -766,7 +768,7 @@ docker run --rm --network none --cpus 2 --memory 6g --memory-swap 6g -v "$PWD:/s
 - Base: `public/uncommon.dxf` (committed)
 - Base licence: MIT, Copyright (c) 2020 Manfred Moitzi (notice in this document)
 - What: The ENTITIES section is repeated N times with x shifted by 1000 x copy index on group codes 10 to 16, handles (group 5) renumbered from $HANDSEED + 1, $HANDSEED updated, and `$TD*` and GUID header variables set to constants. Blocks, tables and objects are not repeated, so every copy of an INSERT or DIMENSION points at the same block.
-- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/uncommon.dxf --kind dxf-replicate --targets 2,5,10,20,50`
+- Command: the shared prefix above with `--scaled-from internal/convert/testdata/cad/public/uncommon.dxf --kind dxf-replicate --targets 2,5,10,20,50,100,200` (the 100 and 200 MiB rungs were added in 71-06 so that a ladder reaches the 100 MiB bar of D-05)
 
 | Target | Coefficient | Bytes | sha256 |
 |---|---|---|---|
@@ -775,6 +777,38 @@ docker run --rm --network none --cpus 2 --memory 6g --memory-swap 6g -v "$PWD:/s
 | 10MiB | copies=136 (14552 entities) | 10376517 | 76764005e785ac2a736b61284fb91c3fa6b35378ccc2f96272c998f64738ad09 |
 | 20MiB | copies=275 (29425 entities) | 20716171 | cda9dd00f6462a6c95db3108af78a98437695c6b185a59a1f857c93388ec1c6d |
 | 50MiB | copies=692 (74044 entities) | 51745292 | 5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652 |
+| 100MiB | copies=1387 (148409 entities) | 103540757 | 23a0f58a7636cab8b3945aaae5d7a6d9626226dfa4c6c430875f415983dfc3a4 |
+| 200MiB | copies=2778 (297246 entities) | 207242589 | 59d3f5f76542910dd335f0840ecdaeb064ec6fafb11fe4cb6ab9f6af43fb1882 |
+
+### dxf-minsert (synthetic, no base content)
+
+- Base: `public/uncommon.dxf` (committed) supplies only the file-name stem; the content is generated
+- Licence: generated (no third-party content)
+- What: One MINSERT of a five-entity block (circle, two lines, a closed polyline, one text) on a grid of `columns x rows` cells with a 12-unit pitch, written by ezdxf R2018 with fixed metadata. The file stays near 16 KB while the number of expanded inserts grows: the expansion vector of D-10 that no real corpus file has (none of the public DXF files has a MINSERT). Added in 71-06.
+- Command: the shared prefix above with `-e PYTHONHASHSEED=0`, `python -B` instead of `python -I -B` (ezdxf writes OBJECTS in set order, so the bytes depend on the hash seed; the generator exits when the seed is not 0) and `--scaled-from internal/convert/testdata/cad/public/uncommon.dxf --kind dxf-minsert --targets 100,1000,10000,100000,1000000,10000000`
+
+| Target | Coefficient | Bytes | sha256 |
+|---|---|---|---|
+| n100 | cells=100 (10 x 10) | 16269 | d08db976478b21224a30ad44bd2da376402cbf3bedb44e1afc4867b0dc8afc6c |
+| n1000 | cells=1000 (25 x 40) | 16269 | 29a84ae6fecdd0cf70d68a8380b519766c162792a0110ef96fae67ada61ea6f1 |
+| n10000 | cells=10000 (100 x 100) | 16271 | 4de9da67164d23919be1c7aa4bde9bf91462a77208611572b11a8badf3424808 |
+| n100000 | cells=100000 (250 x 400) | 16271 | 5c6d7b4e3189129adede259242b1375805760034ef26bf9255cec682f94d7e6b |
+| n1000000 | cells=1000000 (1000 x 1000) | 16273 | b4eb2b8cd7bcea941ea214489f307d12e1c9b654fc06f65a9d333ad32dbd5400 |
+| n10000000 | cells=10000000 (3125 x 3200) | 16273 | 936e05beeeb408cb9252a6e34e9e63b6aaba3069b570e5b24aebff039f5a411f |
+
+### iges-from-step from the step-copies-freecad-mit-e-vent-t-slot series
+
+- Base: `step-copies-freecad-mit-e-vent-t-slot-{20,40,80,150}MiB.step` (derived, see above), whose base is `freecad-mit-e-vent-t-slot.step` (fetched)
+- Base licence: inherited from the STEP base (see its entry under Fetched)
+- What: The STEP file read with STEPControl_Reader and written by IGESControl_Writer in millimetres (faces and surfaces, the writer default, as the real IGES files of the corpus are surface-and-curve files); the two generation timestamps in the global section are replaced by `15H20000101.000000` so that two runs agree byte for byte (checked on a small file). IGES is about six times the size of its STEP source. Added in 71-06; the generator has no other IGES scaling mode.
+- Command: the shared prefix above with `-e PYTHONHASHSEED=0` and `--scaled-from /scaled/step-copies-freecad-mit-e-vent-t-slot-NNMiB.step --kind iges-from-step --targets 1`
+
+| Source rung | Bytes | sha256 |
+|---|---|---|
+| 20MiB | 114920208 | 1d7262cb13b81da4e871570e23a710cb747e006799a3877a8d06db31d11be720 |
+| 40MiB | 287323362 | 6e68f397a560816d791241a6f7a169930cdf2526b5b28fecb2c9be2c8050b2d7 |
+| 80MiB | 517266243 | 25f6edbba4008781b835cf68089dcadcbe63a0f8db8a3ffd6b66627fc0f38338 |
+| 150MiB | 977152005 | e2829781eb6cdafbfebfc19b941530b09acbccdb266f5a8056158a0b8725e5ea |
 
 ---
 
