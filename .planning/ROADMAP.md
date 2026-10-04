@@ -121,7 +121,7 @@ Plans:
 - [x] 71-07-PLAN.md — трасса библиотек на всех операциях, обрезка VTK по сгенерированному keep-list (D-17), исход D-18 и лицензии колеса OCP, матрица Landlock четырёх хелперов
 
 **Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 71-08-PLAN.md — размер образа и cold pull, `71-DECISION.md` с проверяемыми ссылками на evidence, гейт отсутствия продакшен-проводки (критерий 5)
+- [x] 71-08-PLAN.md — размер образа и cold pull, `71-DECISION.md` с проверяемыми ссылками на evidence, гейт отсутствия продакшен-проводки (критерий 5)
 
 ### Phase 72: Engine-Free Contract Foundations
 
