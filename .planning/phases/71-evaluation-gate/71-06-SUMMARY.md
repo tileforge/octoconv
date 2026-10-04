@@ -55,18 +55,20 @@ key-decisions:
   - "Cap candidates: render triangles 4266184, STEP entities 759890, NAUO 2042, DXF expanded inserts 172677 (D-07 worst multiplier; measured last fit and first OOM are printed next to each value)"
   - "Threads at --cpus 2: LP_NUM_THREADS=2, OCCT inParallel=off, by the planner's 10 percent rule"
   - "Tessellation constants stay at the STACK.md start values (0.004/0.5, 0.001/0.35, 0.0003/0.2)"
-  - "OCP pin: the formula prints 8.0.1.0.0 (threshold b only) and the line says needs_user_confirmation=1; OPEN, see Pending decision"
+  - "OCP pin: 7.9.3.1.1 by user decision (PIN_DECISION); the formula result 8.0.1.0.0 (threshold b only) is kept as PIN_FORMULA"
 
 requirements-completed: [EVAL-03]
 ---
 
 # Phase 71 Plan 06: RSS and time to the break, limits by formula Summary
 
-Peak RSS and wall time were measured per (file, operation, memory limit) in one container each at `--cpus 2` up to the first OOM or timeout on both OCP pins; from them the pod memory limit (4 GiB), the per-format input ceilings, four cap candidates, the thread settings and the tessellation constants were derived with the formula printed, and the Go worker RSS was measured on a live process (24.9 MiB, not the assumed 60). One decision is open and is the user's: the OCP pin.
+Peak RSS and wall time were measured per (file, operation, memory limit) in one container each at `--cpus 2` up to the first OOM or timeout on both OCP pins; from them the pod memory limit (4 GiB), the per-format input ceilings, four cap candidates, the thread settings and the tessellation constants were derived with the formula printed, and the Go worker RSS was measured on a live process (24.9 MiB, not the assumed 60). The OCP pin is 7.9.3.1.1 by user decision (the formula printed 8.0.1.0.0).
 
-## Pending decision (needs the user)
+## Decision: OCP pin 7.9.3.1.1 (user)
 
-**OCP pin: 7.9.3.1.1 or 8.0.1.0.0.** `71-06-limits.txt` currently carries the formula result `PIN_DECISION,choice=8.0.1.0.0` and says `needs_user_confirmation=1`. 71-07 reads `choice=` from that file, so settle it before 71-07 starts.
+The user chose **7.9.3.1.1** over the formula result **8.0.1.0.0**. `71-06-limits.txt` now has `PIN_DECISION,choice=7.9.3.1.1` (user decision) and `PIN_FORMULA,choice=8.0.1.0.0`; it was regenerated with `python3 scripts/cad-derive-limits.py EVIDENCE_DIR --pin 7.9.3.1.1` and `LIMITS-OK` still prints. Nothing else in the file changed.
+
+User's reasoning: the 8.0 gain is not robust, 8.0 adds libjasper, libbz2 and Imath to the licence set, and it needs the `cad_mesh.py` compat shim.
 
 | Threshold (planner's) | Value | Met |
 |---|---|---|
@@ -74,14 +76,11 @@ Peak RSS and wall time were measured per (file, operation, memory limit) in one 
 | (b) k_worst STEP mesh at least 15% lower | 7.9: 27.30, 8.0: 22.14, change 18.9% with rss_eff = max(child, cg_peak) | yes |
 | (c) mesh wall sum at least 20% lower over 53 common files | 2449.7 s against 2304.3 s, 5.9% (median per-file ratio 0.931 over 24 files of 2 s or more) | no |
 
-Why this is not a clean switch (`PIN_ROBUSTNESS` line):
+Why (b) was not a clean switch (`PIN_ROBUSTNESS` line):
 
-- (b) flips with the RSS definition: with `ru_maxrss` only the change is 4.8%, with `memory.peak` only 8.8%, with the plan's max of the two 18.9%. The difference is a lower baseline of about 16 MiB in 8.0 (floor 262 against 276 MiB by `ru_maxrss`) and one rung (`step-copies-freecad ... 20MiB`), not a lower slope.
-- The slope at 40 to 200 MiB is the same: 14.81 MiB per MiB on 7.9 and 14.88 on 8.0. At 150 and 200 MiB the two pins differ by under 1%.
-- 8.0 adds libjasper, libbz2 and Imath to the licence set (V3/V4); 7.9.3.1.1 is the plan's default.
-- Both pins read every corpus file and give the same triangle counts (a handful of files differ by a few triangles). 8.0 is faster on mesh by 5 to 13% on mid-size STEP, slower by 14% on one 115 MB IGES.
-
-To record the user's choice: `python3 scripts/cad-derive-limits.py .planning/phases/71-evaluation-gate/evidence --pin 7.9.3.1.1 > .planning/phases/71-evaluation-gate/evidence/71-06-limits.txt` (then `PIN_DECISION` carries the choice and `PIN_FORMULA` keeps the formula result). Nothing else in the file depends on the pin.
+- (b) flips with the RSS definition: 4.8% with `ru_maxrss` only, 8.8% with `memory.peak` only, 18.9% with the plan's max of the two. The difference is a baseline about 16 MiB lower in 8.0 (floor 262 against 276 MiB by `ru_maxrss`), not a lower slope.
+- The slope at 40 to 200 MiB is the same: 14.81 MiB per MiB on 7.9 and 14.88 on 8.0.
+- Both pins read every corpus file with the same triangle counts (a handful differ by a few triangles). 8.0 is faster on mesh by 5 to 13% on mid-size STEP and slower by 14% on one 115 MB IGES.
 
 ## Accomplishments
 
