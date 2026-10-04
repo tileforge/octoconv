@@ -590,5 +590,219 @@ done'
   exit 0
 fi
 
-echo "error: $CMD is not implemented in this version" >&2
+if [ "$CMD" = licences ]; then
+  D18=$(sed -n 's/^D-18 outcome: //p' "$REPO_ROOT/.planning/phases/71-evaluation-gate/71-01-SUMMARY.md")
+  case "$D18" in
+    record) ;;
+    patchelf) echo "error: the patchelf outcome needs the venv-nofreeimage stage, which this script does not build; 71-01-SUMMARY.md records 'record'" >&2; exit 64 ;;
+    *) echo "error: no D-18 outcome in 71-01-SUMMARY.md (found '$D18')" >&2; exit 1 ;;
+  esac
+  TRACE_EVID="$EVID/71-07-libtrace.txt"
+  [ -s "$TRACE_EVID" ] || { echo "error: $TRACE_EVID is missing; run libs first" >&2; exit 1; }
+  TAG_PIN=$(cad_build_image "$PIN" full)
+  TAG_OTHER=$(cad_build_image "$OTHER" full)
+  cad_require_native "$TAG_PIN" || exit 1
+  cad_require_native "$TAG_OTHER" || exit 1
+
+  emit "# Plan 71-07 licence record of the OCP wheel libraries (EVAL-04, D-18 outcome: $D18)"
+  emit "# Engineering record only. The licences are NOT legally cleared; the lawyer flag below stays open and does not block the phase."
+  cad_evidence_header "$TAG_PIN" 2 2g | tee -a "$OUT"
+  emit "HDR,pin=$PIN,other_pin=$OTHER,d18_outcome=$D18"
+
+  INV_PY='import json, os, sys
+SITE = "/opt/venv/lib/python3.11/site-packages"
+pin = os.environ["PIN"]
+libs = SITE + "/cadquery_ocp_novtk.libs"
+dist = SITE + "/cadquery_ocp_novtk-%s.dist-info" % pin
+with open(dist + "/METADATA") as fh:
+    for line in fh:
+        if line.startswith("License:"):
+            print("META|License|" + line.split(":", 1)[1].strip())
+for name in sorted(os.listdir(libs)):
+    print("LIBFILE|%s|%d" % (name, os.path.getsize(libs + "/" + name)))
+sbom = json.load(open(dist + "/sboms/auditwheel.cdx.json"))
+licensed = 0
+seen = set()
+for c in sbom["components"]:
+    if c.get("licenses"):
+        licensed += 1
+    key = (c["name"], c.get("version", ""))
+    if key not in seen:
+        seen.add(key)
+        print("SBOM|%s|%s|%s" % (c["name"], c.get("version", ""), c.get("purl", "")))
+print("SBOMLIC|%d|%d" % (licensed, len(sbom["components"])))'
+
+  component_of_file() {
+    case "$1" in
+      libTK*) echo OCCT ;;
+      libfreeimage*) echo FreeImage ;;
+      libraw*) echo LibRaw ;;
+      libjasper*) echo JasPer ;;
+      libIlmImf*|libIex*|libIlmThread*|libHalf*|libImath*) echo OpenEXR ;;
+      libjpegxr*|libjxrglue*) echo jxrlib ;;
+      libjpeg-*|libjpeg.*) echo libjpeg-turbo ;;
+      libopenjp2*) echo openjpeg ;;
+      libpng16*) echo libpng ;;
+      libtiff*) echo libtiff ;;
+      libwebp*) echo libwebp ;;
+      libfontconfig*) echo fontconfig ;;
+      libfreetype*) echo freetype ;;
+      libjbig*) echo jbigkit ;;
+      liblcms2*) echo lcms2 ;;
+      liblzma*) echo xz ;;
+      libuuid*) echo libuuid ;;
+      libzstd*) echo zstd ;;
+      libgomp*) echo libgomp ;;
+      libbz2*) echo bzip2 ;;
+      libfmt*) echo fmt ;;
+      libz-*|libz.*) echo zlib ;;
+      *) echo "UNMAPPED:$1" ;;
+    esac
+  }
+  component_of_sbom() {
+    case "$1" in
+      libfreeimage3|freeimage) echo FreeImage ;;
+      libraw19|LibRaw) echo LibRaw ;;
+      jasper-libs) echo JasPer ;;
+      libilmbase24|libopenexr24|ilmbase|OpenEXR-libs) echo OpenEXR ;;
+      libwebp6|libwebpmux3|libwebp) echo libwebp ;;
+      libfontconfig1|fontconfig) echo fontconfig ;;
+      libtiff5) echo libtiff ;;
+      libopenjp2-7|openjpeg2) echo openjpeg ;;
+      libjbig0) echo jbigkit ;;
+      liblcms2-2|lcms2) echo lcms2 ;;
+      libfreetype6|freetype) echo freetype ;;
+      libjxr0|jxrlib) echo jxrlib ;;
+      libpng16-16|libpng) echo libpng ;;
+      libjpeg-turbo8|libjpeg-turbo) echo libjpeg-turbo ;;
+      bzip2-libs) echo bzip2 ;;
+      fmt) echo fmt ;;
+      libgomp) echo libgomp ;;
+      libuuid) echo libuuid ;;
+      xz-libs) echo xz ;;
+      cadquery_ocp_novtk) echo OCP ;;
+      *) echo "UNMAPPED:$1" ;;
+    esac
+  }
+
+  : > "$WORK/components.tsv"
+  for ocp_tag in "$PIN|$TAG_PIN" "$OTHER|$TAG_OTHER"; do
+    ocp=${ocp_tag%%|*}; tag=${ocp_tag#*|}
+    docker run --rm --network none --entrypoint "${PY[0]}" -e "PIN=$ocp" "$tag" "${PY[@]:1}" -c "$INV_PY" > "$WORK/inv.$ocp"
+    emit "INVENTORY,ocp=$ocp,wheel=cadquery_ocp_novtk,metadata_license=$(sed -n 's/^META|License|//p' "$WORK/inv.$ocp")"
+    emit "SBOM_FIELD,ocp=$ocp,components_with_licenses=$(sed -n 's/^SBOMLIC|\([0-9]*\)|.*/\1/p' "$WORK/inv.$ocp"),components_total=$(sed -n 's/^SBOMLIC|[0-9]*|//p' "$WORK/inv.$ocp"),note=the licenses field of auditwheel.cdx.json is empty; licences come from upstream (V8)"
+    : > "$WORK/sbomver.$ocp"
+    grep '^SBOM|' "$WORK/inv.$ocp" | while IFS='|' read -r _ name version purl; do
+      comp=$(component_of_sbom "$name")
+      printf '%s|%s|%s\n' "$comp" "$name" "$version" >> "$WORK/sbomver.$ocp"
+      emit "SBOM_COMPONENT,ocp=$ocp,name=$name,version=$version,component=$comp,purl=$purl"
+      printf '%s\t%s\n' "$ocp" "$comp" >> "$WORK/components.tsv"
+    done
+    occt_ver=$(grep '^LIBFILE|libTKernel' "$WORK/inv.$ocp" | sed 's/^LIBFILE|libTKernel[^|]*\.so\.\([0-9.]*\)|.*/\1/')
+    printf '%s\t%s\n' "$ocp" OCP >> "$WORK/components.tsv"
+    grep '^LIBFILE|' "$WORK/inv.$ocp" | while IFS='|' read -r _ file bytes; do
+      comp=$(component_of_file "$file")
+      ver=$(awk -F'|' -v c="$comp" '$1 == c { print $3; exit }' "$WORK/sbomver.$ocp")
+      [ "$comp" != OCCT ] || ver=$occt_ver
+      [ -n "$ver" ] || ver=not_in_sbom
+      if grep -q "^UNLOADED,ocp=$ocp,file=$file," "$TRACE_EVID"; then loaded=0
+      elif grep -qE "^LIBTRACE,op=import,input=import-OCP,ocp=$ocp,.*,ocp_libs_loaded=[1-9]" "$TRACE_EVID"; then loaded=1
+      else loaded=0; fi
+      emit "WHEEL_LIB,ocp=$ocp,file=$file,bytes=$bytes,component=$comp,component_version=$ver,loaded=$loaded"
+      printf '%s\t%s\n' "$ocp" "$comp" >> "$WORK/components.tsv"
+    done
+    printf '%s\t%s\n' "$ocp" "$occt_ver" > "$WORK/occtver.$ocp"
+  done
+
+  flat() { sed 's/<[^>]*>//g' | tr '\n' ' ' | tr -s ' \t'; }
+  LICENCE_SEEN="$WORK/licence.seen"; : > "$LICENCE_SEEN"
+  licence_row() {
+    local comp=$1 licence=$2 url=$3 regex=$4 note=$5 ocps=$6 key status body
+    key="$comp|$url"
+    grep -Fxq "$key" "$LICENCE_SEEN" && return 0
+    printf '%s\n' "$key" >> "$LICENCE_SEEN"
+    body=$(curl -fsSL -m 40 "$url" 2>/dev/null | flat || true)
+    if [ -n "$body" ] && printf '%s' "$body" | grep -Eqi "$regex"; then
+      status=VERIFIED
+    else
+      status=ASSUMED
+      note="$note; upstream text did not match at fetch time or was unreachable"
+    fi
+    emit "LICENCE,component=$comp,licence=$licence,source=$url,status=$status,ocp=$ocps,note=$(printf '%s' "$note" | tr ',' ';')"
+  }
+  pins_of() { awk -F'\t' -v c="$1" '$2 == c { print $1 }' "$WORK/components.tsv" | sort -u | paste -sd+ -; }
+  has_component() { awk -F'\t' -v c="$1" '$2 == c { f = 1 } END { exit !f }' "$WORK/components.tsv"; }
+
+  OCCT_V_PIN=$(cut -f2 "$WORK/occtver.$PIN"); OCCT_V_OTHER=$(cut -f2 "$WORK/occtver.$OTHER")
+  for pair in "$PIN|$OCCT_V_PIN" "$OTHER|$OCCT_V_OTHER"; do
+    ocp=${pair%%|*}; v=${pair#*|}; tagv="V$(printf '%s' "$v" | tr . _)"
+    licence_row OCCT "LGPL-2.1+Open-CASCADE-exception-1.0" \
+      "https://raw.githubusercontent.com/Open-Cascade-SAS/OCCT/$tagv/OCCT_LGPL_EXCEPTION.txt" \
+      'Open CASCADE exception \(version 1\.0\) to GNU LGPL version 2\.1' \
+      "exception text read at tag $tagv: object code incorporating material from OCCT header files may be distributed under terms of your choice provided supporting documentation gives prominent notice that it uses or is based on Open CASCADE Technology" "$ocp"
+  done
+  licence_row OCP "Apache-2.0" "https://raw.githubusercontent.com/CadQuery/OCP/master/LICENSE" 'Apache License' \
+    "wheel METADATA License: $(sed -n 's/^META|License|//p' "$WORK/inv.$PIN") (read from the installed dist-info)" "$(pins_of OCP)"
+  licence_row FreeImage "GPL-2.0/GPL-3.0/FIPL-1.0" "https://freeimage.sourceforge.io/license.html" \
+    'GNU General Public License, version 2\.0.*FreeImage Public License' \
+    "dual licence chosen by the user of the library; the wheel carries Ubuntu libfreeimage3 3.18.0 and AlmaLinux freeimage 3.17.0 builds" "$(pins_of FreeImage)"
+  licence_row LibRaw "LGPL-2.1/CDDL-1.0" "https://raw.githubusercontent.com/LibRaw/LibRaw/0.19.5/COPYRIGHT" \
+    'LESSER GENERAL PUBLIC LICENSE version 2\.1.*COMMON DEVELOPMENT AND DISTRIBUTION LICENSE' \
+    "one of two licences as you choose; tag 0.19.5 is the SBOM version on both pins" "$(pins_of LibRaw)"
+  if has_component JasPer; then
+    licence_row JasPer "JasPer-2.0" "https://raw.githubusercontent.com/jasper-software/jasper/version-2.0.14/LICENSE" \
+      'JasPer License Version 2\.0' "present only in the wheel of $OTHER if the inventory above lists libjasper; SBOM jasper-libs 2.0.14" "$(pins_of JasPer)"
+  fi
+  has_component OpenEXR && licence_row OpenEXR "BSD-3-Clause" "https://raw.githubusercontent.com/AcademySoftwareFoundation/openexr/v2.3.0/LICENSE" \
+    'Redistribution and use in source and binary forms.*Industrial Light' "IlmBase Half Iex IlmThread IlmImf Imath libraries; tag v2.3.0" "$(pins_of OpenEXR)"
+  has_component libjpeg-turbo && licence_row libjpeg-turbo "IJG+BSD-3-Clause+Zlib" "https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/main/LICENSE.md" \
+    'Independent JPEG Group' "ref main" "$(pins_of libjpeg-turbo)"
+  has_component libpng && licence_row libpng "libpng-2.0" "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.37/LICENSE" \
+    'PNG Reference Library License' "tag v1.6.37" "$(pins_of libpng)"
+  has_component libtiff && licence_row libtiff "libtiff-BSD-like" "https://gitlab.com/libtiff/libtiff/-/raw/master/LICENSE.md" \
+    'Permission to use, copy, modify, distribute' "ref master" "$(pins_of libtiff)"
+  has_component lcms2 && licence_row lcms2 "MIT" "https://raw.githubusercontent.com/mm2/Little-CMS/master/LICENSE" \
+    'Permission is hereby granted' "ref master" "$(pins_of lcms2)"
+  has_component openjpeg && licence_row openjpeg "BSD-2-Clause" "https://raw.githubusercontent.com/uclouvain/openjpeg/master/LICENSE" \
+    'Redistribution and use in source and binary forms' "ref master" "$(pins_of openjpeg)"
+  has_component libwebp && licence_row libwebp "BSD-3-Clause" "https://raw.githubusercontent.com/webmproject/libwebp/main/COPYING" \
+    'Redistribution and use in source and binary forms' "ref main" "$(pins_of libwebp)"
+  has_component jxrlib && licence_row jxrlib "BSD-2-Clause" "https://raw.githubusercontent.com/4creators/jxrlib/master/LICENSE" \
+    'Redistribution' "ref master" "$(pins_of jxrlib)"
+  has_component freetype && licence_row freetype "FTL-or-GPL-2.0" "https://freetype.org/license.html" \
+    'FreeType comes with two licenses' "ref project page" "$(pins_of freetype)"
+  has_component fontconfig && licence_row fontconfig "HPND-sell-variant" "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/raw/main/COPYING" \
+    'Permission to use, copy, modify, distribute' "ref main" "$(pins_of fontconfig)"
+  has_component bzip2 && licence_row bzip2 "bzip2-1.0.6" "https://sourceware.org/git/?p=bzip2.git;a=blob_plain;f=LICENSE;hb=HEAD" \
+    'This program, "bzip2"' "ref HEAD" "$(pins_of bzip2)"
+  has_component zlib && licence_row zlib "Zlib" "https://raw.githubusercontent.com/madler/zlib/master/LICENSE" 'zlib' "ref master" "$(pins_of zlib)"
+  has_component jbigkit && licence_row jbigkit "GPL-2.0" "https://www.cl.cam.ac.uk/~mgk25/jbigkit/" \
+    'free software under the.*General Public License' "libjbig0 in the wheel; the project page links the GPL v2 text and offers a commercial licence; an or-later grant is not stated on the page" "$(pins_of jbigkit)"
+  has_component xz && licence_row xz "0BSD+public-domain" "https://raw.githubusercontent.com/tukaani-project/xz/master/COPYING" \
+    'public domain|0BSD' "ref master" "$(pins_of xz)"
+  has_component zstd && licence_row zstd "BSD-3-Clause/GPL-2.0" "https://raw.githubusercontent.com/facebook/zstd/dev/LICENSE" \
+    'BSD License' "ref dev" "$(pins_of zstd)"
+  has_component libuuid && licence_row libuuid "BSD-3-Clause" "https://raw.githubusercontent.com/util-linux/util-linux/master/libuuid/COPYING" \
+    'Modified BSD License' "ref master; the COPYING file points to COPYING.BSD-3-Clause" "$(pins_of libuuid)"
+  has_component libgomp && licence_row libgomp "GPL-3.0+GCC-Runtime-Library-Exception" "https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING.RUNTIME" \
+    'GCC RUNTIME LIBRARY EXCEPTION' "ref master" "$(pins_of libgomp)"
+  has_component fmt && licence_row fmt "MIT" "https://raw.githubusercontent.com/fmtlib/fmt/master/LICENSE" 'Permission is hereby granted' "ref master" "$(pins_of fmt)"
+  awk -F'\t' '$2 ~ /^UNMAPPED:/ { print $2 }' "$WORK/components.tsv" | sort -u | while IFS= read -r u; do
+    emit "LICENCE,component=$u,licence=unknown,source=none,status=ASSUMED,ocp=-,note=no mapping from the file name to a component"
+  done
+
+  LOADED_LINE=$(grep '^D18_TRACE,' "$TRACE_EVID" | sed 's/^D18_TRACE,//' | tr '\n' ';')
+  emit "D18_OUTCOME,choice=$D18,pin=$PIN,removed=none,reason=loaded_at_import,experiment=not_run,lawyer_ok=needed"
+  emit "RECORD,begin=draft engineering record for 71-DECISION.md (plan 71-08)"
+  emit "RECORD,loading=libfreeimage and libraw are loaded at import OCP through DT_NEEDED (libTKService -> libfreeimage -> libraw) on every operation that imports OCP, on both pins; libjasper only on 8.0.1.0.0 (libraw -> libjasper); render, dxf, rsvg-convert and stlstats load none of the three (measured: $LOADED_LINE)"
+  emit "RECORD,consequence=loaded is not the same as called (assumption A1: only the patchelf experiment answers whether the code paths are used); the D-18 condition 'unused libraries are removed' finds nothing removable on the trace, so the libraries stay and the licences are recorded"
+  emit "RECORD,use=только внутреннее использование, образ не распространяется вовне"
+  emit "RECORD,assumption_A2=ASSUMPTION: internal use without distribution does not trigger mandatory copyleft obligations (GPL/LGPL/CDDL terms of FreeImage, LibRaw, jbigkit, libgomp); this is a working assumption, not a legal finding"
+  emit "RECORD,statuses=every LICENCE row carries VERIFIED (the expected licence text was found at the source URL at fetch time) or ASSUMED (not found or not reachable); VERIFIED identifies the licence, it does not clear the use"
+  emit "RECORD,legal=the libraries are not legally cleared; a lawyer review is requested and does not block the phase"
+  emit "LAWYER_OK=needed,blocking=no"
+  emit "NEED_CHECK=нужен OK юриста"
+  exit 0
+fi
+
 exit 64
