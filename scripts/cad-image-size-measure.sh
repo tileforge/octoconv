@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-# cad-image-size-measure.sh -- Phase 71 (EVAL-03, D-15) size and cold pull of the CAD measurement image.
-#
-# Measures, for the pinned OCP image in the pruned (final) and full variants: the uncompressed size, the
-# compressed size from the registry manifest per layer, and the wall time of a pull into an empty throwaway
-# docker daemon through a local registry:2. The pull is over loopback, so its time is download-free
-# decompression and extraction, not network time; the network time is computed per bandwidth.
-#
-# Usage: scripts/cad-image-size-measure.sh [--port 5055] [--repeats 3] [--out FILE]
-# Exit:  64 usage, 69 no docker, 1 a measurement failed.
-
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/cad-measure/common.sh
 . "$SCRIPT_DIR/cad-measure/common.sh"
 
 PORT=5055
@@ -154,6 +143,7 @@ done
 
 start_dind() {
   local ready=0
+  # dockerd treats every registry except localhost as TLS-only unless it is listed here
   docker run -d --name "$DIND" --privileged --network "$NET" -v /var/lib/docker \
     --entrypoint dockerd "$DIND_IMAGE" \
     --host=unix:///var/run/docker.sock --insecure-registry "$REG_IN_NET" >/dev/null
