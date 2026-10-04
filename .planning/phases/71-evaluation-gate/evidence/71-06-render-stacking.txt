@@ -1,0 +1,4 @@
+HDR,tool=cad-render-stacking-probe.py,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8,cpus=2,memory=4g,host_noise=12,date_utc=2026-10-04T09:49:03Z
+INPUT,file=step-copies-LinearSlide-MGN15x-Block-20MiB.step,sha=6530ac5cd90c7dde4b70907fb90a565c34d0485c68b92ae90f0de33c5ba5f63e,copies_expected=36,triangles_per_copy=5948
+STACKING,variant=stacked,triangles=214128,copies=36,wall_s=61.57,t_total_s=61.238,t_render_s=1.048
+STACKING,variant=unstacked,triangles=214128,copies=36,wall_s=1.18,t_total_s=0.834,t_render_s=0.396

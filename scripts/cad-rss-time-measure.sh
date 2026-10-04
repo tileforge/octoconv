@@ -16,6 +16,7 @@
 #       [--floor-from FILE] [--floor-frac 0.40] [--premesh-mem 4g] FILE-OR-DIR...
 #   scripts/cad-rss-time-measure.sh --pin-compare EVIDENCE-OCP-A EVIDENCE-OCP-B
 #   scripts/cad-rss-time-measure.sh --threads-decision EVIDENCE
+#   scripts/cad-rss-time-measure.sh --quality-summary EVIDENCE
 #
 # Operations by format: step and iges take mesh and render, stl takes stlstats
 # and render, dxf takes dxf (SVG through ezdxf), rsvg-png and rsvg-pdf (the SVG
@@ -68,6 +69,7 @@ PREMEM=4g
 PIN_A=""
 PIN_B=""
 THREADS_FILE=""
+QUALITY_FILE=""
 INPUTS=()
 
 usage() {
@@ -150,6 +152,46 @@ pin_compare() {
   exit 0
 }
 
+quality_summary() {
+  local f=$1
+  [ -s "$f" ] || { echo "error: the evidence file is empty" >&2; exit 64; }
+  {
+    awk -F, '
+      function kv(s, k,    n, i, parts) {
+        n = split(s, parts, ",")
+        for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
+        return ""
+      }
+      function outkv(o, k,    n, i, parts) {
+        n = split(o, parts, ";")
+        for (i = 1; i <= n; i++) if (index(parts[i], k ":") == 1) return substr(parts[i], length(k) + 2)
+        return ""
+      }
+      /^ROW,/ {
+        head = $0; sub(/,out=.*$/, "", head); out = $0; sub(/^.*,out=/, "", out)
+        if (kv(head, "op") != "mesh" || kv(head, "rc") != "0") next
+        key = kv(head, "quality") "|" kv(head, "name")
+        if (!(key in tri)) { tri[key] = outkv(out, "triangles"); lin[key] = outkv(out, "lin_deflection") }
+      }
+      /^DIST,/ {
+        key = kv($0, "quality") "|" kv($0, "name")
+        if (!(key in seen)) { seen[key] = 1; keys[++nk] = key }
+        op = kv($0, "op")
+        wall[key, op] = kv($0, "wall_median"); rss[key, op] = kv($0, "rss_max_mib")
+        bytes[key] = kv($0, "bytes")
+      }
+      END {
+        for (i = 1; i <= nk; i++) {
+          k = keys[i]; split(k, kp, "|")
+          t = tri[k]
+          printf "QUALITY_ROW,level=%s,name=%s,input_bytes=%s,triangles=%s,stl_bytes=%d,mesh_wall_median_s=%s,mesh_rss_max_mib=%s,render_wall_median_s=%s,render_rss_max_mib=%s\n",
+            kp[1], kp[2], bytes[k], t, 84 + 50 * t, wall[k, "mesh"], rss[k, "mesh"], wall[k, "render"], rss[k, "render"]
+        }
+      }' "$f"
+  } | tee -a "$f"
+  exit 0
+}
+
 threads_decision() {
   local f=$1
   [ -s "$f" ] || { echo "error: the evidence file is empty" >&2; exit 64; }
@@ -226,6 +268,7 @@ while [ $# -gt 0 ]; do
     --premesh-mem) PREMEM=${2:?}; shift 2 ;;
     --pin-compare) PIN_A=${2:?}; PIN_B=${3:?}; shift 3 ;;
     --threads-decision) THREADS_FILE=${2:?}; shift 2 ;;
+    --quality-summary) QUALITY_FILE=${2:?}; shift 2 ;;
     -h|--help) usage ;;
     --) shift; while [ $# -gt 0 ]; do INPUTS+=("$1"); shift; done ;;
     -*) echo "error: unknown option $1" >&2; usage ;;
@@ -235,6 +278,7 @@ done
 
 [ -z "$PIN_A" ] || pin_compare "$PIN_A" "$PIN_B"
 [ -z "$THREADS_FILE" ] || threads_decision "$THREADS_FILE"
+[ -z "$QUALITY_FILE" ] || quality_summary "$QUALITY_FILE"
 
 [ ${#INPUTS[@]} -gt 0 ] || [ "$INCLUDE_PRIVATE" = 1 ] || usage
 case "$QUALITY" in draft|standard|fine) ;; *) echo "error: --quality must be draft, standard or fine" >&2; exit 64 ;; esac
@@ -606,7 +650,6 @@ measure_cell() {
   local attempt=1 wrap="" jobdir="" pix pre_ok inner stl_in confined=0 state=na cstate=ok
   CELL_STOP=""
   CELL_FLAKE=0
-  CELL_ROW_RC=""
   while [ "$attempt" -le 3 ] && [ -z "$wrap" ]; do
     jobdir=$(newdir)
     pix=-
@@ -699,7 +742,6 @@ measure_cell() {
   head=${wrap%%,out=*}
   out=${wrap#*,out=}
   rc=$(field "$head" rc)
-  CELL_ROW_RC=$rc
 
   case "$op" in
     render|rsvg-png)

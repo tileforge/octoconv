@@ -1,0 +1,193 @@
+HDR,date_utc=2026-10-04T09:11:42Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=on,lp_threads=default,resume=1
+NOISE,containers=12,top_cpu=1.74
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=20.62,utime_s=23.08,stime_s=0.37,child_rss_mib=561,cg_peak_mib=650,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=20.81,utime_s=23.61,stime_s=0.25,child_rss_mib=555,cg_peak_mib=419,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=19.94,utime_s=22.50,stime_s=0.24,child_rss_mib=565,cg_peak_mib=423,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,name=freecad-mit-e-vent-t-slot.step,fmt=step,bytes=9044371,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=19.94,wall_median=20.62,wall_p95=20.81,wall_max=20.81,rss_max_mib=650,usersys_median=23.45,threads_max=11,par=on,lp=default,quality=standard,series=real
+NOISE,containers=12,top_cpu=2.28
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=104.34,utime_s=125.95,stime_s=1.18,child_rss_mib=1189,cg_peak_mib=1256,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=103.09,utime_s=122.08,stime_s=0.99,child_rss_mib=1218,cg_peak_mib=1244,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=101.61,utime_s=120.77,stime_s=1.08,child_rss_mib=1199,cg_peak_mib=1250,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,fmt=step,bytes=46055501,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=101.61,wall_median=103.09,wall_p95=104.34,wall_max=104.34,rss_max_mib=1256,usersys_median=123.07,threads_max=11,par=on,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+HDR,date_utc=2026-10-04T09:18:04Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=off,lp_threads=default,resume=1
+NOISE,containers=12,top_cpu=48.69
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=22.18,utime_s=21.96,stime_s=0.18,child_rss_mib=391,cg_peak_mib=346,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=21.61,utime_s=21.42,stime_s=0.14,child_rss_mib=418,cg_peak_mib=285,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=22.30,utime_s=22.02,stime_s=0.22,child_rss_mib=307,cg_peak_mib=371,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,name=freecad-mit-e-vent-t-slot.step,fmt=step,bytes=9044371,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=21.61,wall_median=22.18,wall_p95=22.30,wall_max=22.30,rss_max_mib=418,usersys_median=22.14,threads_max=1,par=off,lp=default,quality=standard,series=real
+NOISE,containers=12,top_cpu=1.63
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=104.18,utime_s=103.48,stime_s=0.60,child_rss_mib=642,cg_peak_mib=716,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=104.03,utime_s=103.48,stime_s=0.49,child_rss_mib=643,cg_peak_mib=714,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=104.01,utime_s=103.26,stime_s=0.64,child_rss_mib=640,cg_peak_mib=693,oom_kill=0,timeout=0,threads_max=1,pix=-,cstate=ok,par=off,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,fmt=step,bytes=46055501,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=104.01,wall_median=104.03,wall_p95=104.18,wall_max=104.18,rss_max_mib=716,usersys_median=103.97,threads_max=1,par=off,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+HDR,date_utc=2026-10-04T09:24:34Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=affinity,lp_threads=default,resume=1
+NOISE,containers=12,top_cpu=2.84
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=19.38,utime_s=21.30,stime_s=0.24,child_rss_mib=559,cg_peak_mib=469,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=19.66,utime_s=21.75,stime_s=0.19,child_rss_mib=544,cg_peak_mib=436,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=freecad-mit-e-vent-t-slot.step,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,fmt=step,bytes=9044371,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=19.55,utime_s=21.66,stime_s=0.18,child_rss_mib=566,cg_peak_mib=424,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=real,out=solids:138;closed_solids:138;volume:5708043.858520186;area:1761995.9118435772;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:436842;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=fffd0d64ae1dfe2a599bd870a2c49e1911a3d2ff713d189b359e624061baea9e,name=freecad-mit-e-vent-t-slot.step,fmt=step,bytes=9044371,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=19.38,wall_median=19.55,wall_p95=19.66,wall_max=19.66,rss_max_mib=566,usersys_median=21.84,threads_max=11,par=affinity,lp=default,quality=standard,series=real
+NOISE,containers=12,top_cpu=43.45
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=97.43,utime_s=113.09,stime_s=0.79,child_rss_mib=1199,cg_peak_mib=1267,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=99.41,utime_s=116.20,stime_s=0.99,child_rss_mib=1252,cg_peak_mib=1317,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+ROW,src=public,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,fmt=step,bytes=46055501,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=100.47,utime_s=118.09,stime_s=0.90,child_rss_mib=1255,cg_peak_mib=1293,oom_kill=0,timeout=0,threads_max=11,pix=-,cstate=ok,par=affinity,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot,out=solids:690;closed_solids:690;volume:28540219.29260108;area:8809979.559217894;volume_null_reason:null;unit_text:mm;unit_fileunits:mm;unit_agree:1;triangles:2184210;bbox_diag:811.522296;bbox_source:shape;text0:Copy_of_47065T239_ALUMINUM_T-SLOTTED_FRAMING_EXTRUSION^3-30-20_CAD_Assembly_47065T239;text0_decoding:utf-8
+DIST,sha=1a3c924ee500e4e1ec5bf8c6568cc26f228d9e4b2a79be869f5b9f2d02961841,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,fmt=step,bytes=46055501,op=mesh,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=97.43,wall_median=99.41,wall_p95=100.47,wall_max=100.47,rss_max_mib=1317,usersys_median=117.19,threads_max=11,par=affinity,lp=default,quality=standard,series=step-copies-freecad-mit-e-vent-t-slot
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+HDR,date_utc=2026-10-04T09:30:42Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=on,lp_threads=1,resume=1
+NOISE,containers=12,top_cpu=41.11
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=4.40,utime_s=4.43,stime_s=0.44,child_rss_mib=657,cg_peak_mib=940,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=real,out=triangles:1040838;t_render_s:0.796;t_total_s:3.87
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=4.02,utime_s=4.19,stime_s=0.11,child_rss_mib=657,cg_peak_mib=538,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=real,out=triangles:1040838;t_render_s:0.791;t_total_s:3.694
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=4.05,utime_s=4.32,stime_s=0.11,child_rss_mib=657,cg_peak_mib=538,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=real,out=triangles:1040838;t_render_s:0.809;t_total_s:3.687
+DIST,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,name=nasa-pillars-of-creation-full.stl,fmt=stl,bytes=52041984,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=4.02,wall_median=4.05,wall_p95=4.40,wall_max=4.40,rss_max_mib=940,usersys_median=4.43,threads_max=13,par=on,lp=1,quality=standard,series=real
+NOISE,containers=12,top_cpu=1.62
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=5.82,utime_s=5.99,stime_s=0.38,child_rss_mib=1107,cg_peak_mib=990,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:1.321;t_total_s:5.502
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=5.72,utime_s=6.01,stime_s=0.24,child_rss_mib=1107,cg_peak_mib=1093,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:1.369;t_total_s:5.332
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=5.62,utime_s=6.01,stime_s=0.21,child_rss_mib=1107,cg_peak_mib=988,oom_kill=0,timeout=0,threads_max=13,pix=ok,cstate=ok,par=on,lp=1,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:1.344;t_total_s:5.261
+DIST,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,name=stl-tile-nasa-sls-block1-100MiB.stl,fmt=stl,bytes=109772884,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=5.62,wall_median=5.72,wall_p95=5.82,wall_max=5.82,rss_max_mib=1107,usersys_median=6.25,threads_max=13,par=on,lp=1,quality=standard,series=stl-tile-nasa-sls-block1
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+HDR,date_utc=2026-10-04T09:31:27Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=on,lp_threads=2,resume=1
+NOISE,containers=12,top_cpu=2.50
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=3.68,utime_s=4.28,stime_s=0.15,child_rss_mib=613,cg_peak_mib=544,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=real,out=triangles:1040838;t_render_s:0.611;t_total_s:3.382
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=3.73,utime_s=4.43,stime_s=0.12,child_rss_mib=622,cg_peak_mib=502,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=real,out=triangles:1040838;t_render_s:0.61;t_total_s:3.361
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=3.71,utime_s=4.38,stime_s=0.12,child_rss_mib=622,cg_peak_mib=502,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=real,out=triangles:1040838;t_render_s:0.643;t_total_s:3.369
+DIST,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,name=nasa-pillars-of-creation-full.stl,fmt=stl,bytes=52041984,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=3.68,wall_median=3.71,wall_p95=3.73,wall_max=3.73,rss_max_mib=622,usersys_median=4.50,threads_max=15,par=on,lp=2,quality=standard,series=real
+NOISE,containers=12,top_cpu=3.06
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=4.89,utime_s=5.97,stime_s=0.31,child_rss_mib=1035,cg_peak_mib=916,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.951;t_total_s:4.548
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=4.98,utime_s=5.98,stime_s=0.34,child_rss_mib=1035,cg_peak_mib=1113,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.958;t_total_s:4.638
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=4.92,utime_s=6.03,stime_s=0.27,child_rss_mib=1017,cg_peak_mib=898,oom_kill=0,timeout=0,threads_max=15,pix=ok,cstate=ok,par=on,lp=2,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.918;t_total_s:4.563
+DIST,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,name=stl-tile-nasa-sls-block1-100MiB.stl,fmt=stl,bytes=109772884,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=4.89,wall_median=4.92,wall_p95=4.98,wall_max=4.98,rss_max_mib=1113,usersys_median=6.30,threads_max=15,par=on,lp=2,quality=standard,series=stl-tile-nasa-sls-block1
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+HDR,date_utc=2026-10-04T09:32:08Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-32f07542eda8
+HDR,image_id=sha256:4af34c360379f4edf8792a5e031c55d124c2a644d38b635ef5e3458f3fe07715
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=4g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,ladder=0,repeats=3,budget_s=900,quality=standard,parallel=on,lp_threads=default,resume=1
+NOISE,containers=12,top_cpu=18.07
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=3.90,utime_s=4.67,stime_s=0.14,child_rss_mib=577,cg_peak_mib=508,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=real,out=triangles:1040838;t_render_s:0.604;t_total_s:3.53
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=3.78,utime_s=4.56,stime_s=0.14,child_rss_mib=577,cg_peak_mib=459,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=real,out=triangles:1040838;t_render_s:0.624;t_total_s:3.456
+PIX,frac=0.2074,margin_px=167,dark=0.0018,bbox=228:276:1051:1112,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=nasa-pillars-of-creation-full.stl,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,fmt=stl,bytes=52041984,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=3.67,utime_s=4.42,stime_s=0.11,child_rss_mib=577,cg_peak_mib=458,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=real,out=triangles:1040838;t_render_s:0.583;t_total_s:3.332
+DIST,sha=d6c9f77a9b5f9a9c7c60a1f8ed7d2dc875d70ba205ae4896bad4f98da594f522,name=nasa-pillars-of-creation-full.stl,fmt=stl,bytes=52041984,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=3.67,wall_median=3.78,wall_p95=3.90,wall_max=3.90,rss_max_mib=577,usersys_median=4.70,threads_max=33,par=on,lp=default,quality=standard,series=real
+NOISE,containers=12,top_cpu=4.62
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,wall_s=5.09,utime_s=6.54,stime_s=0.24,child_rss_mib=873,cg_peak_mib=754,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.962;t_total_s:4.724
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=2,rc=0,wall_s=5.09,utime_s=6.47,stime_s=0.31,child_rss_mib=873,cg_peak_mib=820,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.944;t_total_s:4.763
+PIX,frac=0.2289,margin_px=76,dark=0.0136,bbox=300:140:901:1203,w=1280,h=1280,mode=part,ok=1
+ROW,src=public,name=stl-tile-nasa-sls-block1-100MiB.stl,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,fmt=stl,bytes=109772884,op=render,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=3,rc=0,wall_s=5.06,utime_s=6.56,stime_s=0.20,child_rss_mib=872,cg_peak_mib=793,oom_kill=0,timeout=0,threads_max=33,pix=ok,cstate=ok,par=on,lp=default,quality=standard,series=stl-tile-nasa-sls-block1,out=triangles:2195456;t_render_s:0.971;t_total_s:4.658
+DIST,sha=bd4a03ed375f191d3f3af81ae852093c8862585aaa8a0f9eca7ba594b728c788,name=stl-tile-nasa-sls-block1-100MiB.stl,fmt=stl,bytes=109772884,op=render,mem=4g,ocp=7.9.3.1.1,n=3,n_failed=0,wall_min=5.06,wall_median=5.09,wall_p95=5.09,wall_max=5.09,rss_max_mib=873,usersys_median=6.78,threads_max=33,par=on,lp=default,quality=standard,series=stl-tile-nasa-sls-block1
+SUMMARY,rows=6,failed=0,oom=0,timeout=0,flakes=0,resumed_skips=0
+THREADS_ROW,op=mesh,variant=on,name=freecad-mit-e-vent-t-slot.step,bytes=9044371,n=3,wall_median=20.62,wall_min=19.94,wall_max=20.81,usersys_median=23.45,threads_max=11,rss_max_mib=650
+THREADS_ROW,op=mesh,variant=on,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,bytes=46055501,n=3,wall_median=103.09,wall_min=101.61,wall_max=104.34,usersys_median=123.07,threads_max=11,rss_max_mib=1256
+THREADS_ROW,op=mesh,variant=off,name=freecad-mit-e-vent-t-slot.step,bytes=9044371,n=3,wall_median=22.18,wall_min=21.61,wall_max=22.30,usersys_median=22.14,threads_max=1,rss_max_mib=418
+THREADS_ROW,op=mesh,variant=off,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,bytes=46055501,n=3,wall_median=104.03,wall_min=104.01,wall_max=104.18,usersys_median=103.97,threads_max=1,rss_max_mib=716
+THREADS_ROW,op=mesh,variant=affinity,name=freecad-mit-e-vent-t-slot.step,bytes=9044371,n=3,wall_median=19.55,wall_min=19.38,wall_max=19.66,usersys_median=21.84,threads_max=11,rss_max_mib=566
+THREADS_ROW,op=mesh,variant=affinity,name=step-copies-freecad-mit-e-vent-t-slot-40MiB.step,bytes=46055501,n=3,wall_median=99.41,wall_min=97.43,wall_max=100.47,usersys_median=117.19,threads_max=11,rss_max_mib=1317
+THREADS_ROW,op=render,variant=1,name=nasa-pillars-of-creation-full.stl,bytes=52041984,n=3,wall_median=4.05,wall_min=4.02,wall_max=4.40,usersys_median=4.43,threads_max=13,rss_max_mib=940
+THREADS_ROW,op=render,variant=1,name=stl-tile-nasa-sls-block1-100MiB.stl,bytes=109772884,n=3,wall_median=5.72,wall_min=5.62,wall_max=5.82,usersys_median=6.25,threads_max=13,rss_max_mib=1107
+THREADS_ROW,op=render,variant=2,name=nasa-pillars-of-creation-full.stl,bytes=52041984,n=3,wall_median=3.71,wall_min=3.68,wall_max=3.73,usersys_median=4.50,threads_max=15,rss_max_mib=622
+THREADS_ROW,op=render,variant=2,name=stl-tile-nasa-sls-block1-100MiB.stl,bytes=109772884,n=3,wall_median=4.92,wall_min=4.89,wall_max=4.98,usersys_median=6.30,threads_max=15,rss_max_mib=1113
+THREADS_ROW,op=render,variant=default,name=nasa-pillars-of-creation-full.stl,bytes=52041984,n=3,wall_median=3.78,wall_min=3.67,wall_max=3.90,usersys_median=4.70,threads_max=33,rss_max_mib=577
+THREADS_ROW,op=render,variant=default,name=stl-tile-nasa-sls-block1-100MiB.stl,bytes=109772884,n=3,wall_median=5.09,wall_min=5.06,wall_max=5.09,usersys_median=6.78,threads_max=33,rss_max_mib=873
+THREADS_DECISION,lp_num_threads=2,occt_parallel=off,reason=cpus=2 4g, sums of per-input median wall over the heavy inputs; mesh: on:wall_sum=123.71/usersys_sum=146.52/threads_max=11/inputs=2 off:wall_sum=126.21/usersys_sum=126.11/threads_max=1/inputs=2 affinity:wall_sum=118.96/usersys_sum=139.03/threads_max=11/inputs=2  fastest=mesh|affinity within 10% of the fastest: tie broken by lower user+sys then threads; picked mesh|off; render: 1:wall_sum=9.77/usersys_sum=10.68/threads_max=13/inputs=2 2:wall_sum=8.63/usersys_sum=10.80/threads_max=15/inputs=2 default:wall_sum=8.87/usersys_sum=11.48/threads_max=33/inputs=2  fastest=render|2 within 10% of the fastest: tie broken by lower user+sys then threads; picked render|2
