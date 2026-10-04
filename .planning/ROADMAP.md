@@ -29,14 +29,14 @@ measurements, самая рискованная для ревью — собир
 
 | # | Фаза | Требования | Состояние |
 |---|---|---|---|
-| 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ○ следующая |
-| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ○ |
+| 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ✓ 2026-10-04 |
+| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ○ следующая |
 | 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ |
 | 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ |
 | 75 | DXF: 2D-конвейер | RNDR-06, CCONV-02, CCONV-03 | ○ |
 | 76 | Замеренные границы, KEDA, живой гейт, контракт превью и документация | CADW-04..06, PREV-01 | ○ |
 
-- [ ] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода
+- [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
 - [ ] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка
 - [ ] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок
 - [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
@@ -96,7 +96,7 @@ Phase detail for shipped milestones lives in the collapsed sections below and in
   5. Продакшен-проводки нет: `AllEngines()`, `/v1/formats`, `/v1/inspect`,
      очереди и чарт не изменились — фаза оставляет только записи решений,
      измерительные скрипты, измерительный Dockerfile и корпус
-**Plans:** 8 plans in 8 waves (последовательно)
+**Plans:** 8/8 plans complete in 8 waves (последовательно)
 
 Plans:
 **Wave 1**
@@ -278,7 +278,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 71. Evaluation Gate | 0/TBD | Not started | - |
+| 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
 | 72. Engine-Free Contract Foundations | 0/TBD | Not started | - |
 | 73. CAD Class & Convert Slice, Confined | 0/TBD | Not started | - |
 | 74. 3D Render & Measurements | 0/TBD | Not started | - |
