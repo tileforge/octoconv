@@ -166,7 +166,7 @@ Plans:
 - [x] 72-06-PLAN.md — отказы подключены к созданию джобы (422) и к inspect (sentinel-форматы), привязки причин, тест согласия по каждой фикстуре
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 72-07-PLAN.md — дифференциальный прогон против OCP и ezdxf, закоммиченная таблица расхождений, golden под TestSniffCADGolden; гейт фазы
+- [x] 72-07-PLAN.md — дифференциальный прогон против OCP и ezdxf, закоммиченная таблица расхождений, golden под TestSniffCADGolden; гейт фазы
 
 ### Phase 73: CAD Class & Convert Slice, Confined
 
