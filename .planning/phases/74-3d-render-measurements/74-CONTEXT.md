@@ -94,3 +94,28 @@ Out of scope:
 
 ---
 *Phase: 74-3d-render-measurements · Context gathered: 2026-10-05*
+
+<research_resolutions>
+## Resolutions after research (2026-10-05, auto-selected recommendations under the user's delegation)
+
+These supersede any conflicting D-xx.
+
+- **R-01 (render timeout):** render = 480 s. The engine timeout becomes 886 s, which stays under the fleet reconciler's 900 s window; pod grace is 906 s. Do NOT raise `RECONCILER_ACTIVE_STALE_AFTER` fleet-wide. A render *timeout* is deterministic, so it is **terminal** `cad_too_complex`, with a distinct sentinel and message. This refines D-03: other render-stage failures (process crash, sandbox) stay retryable. Stacked-duplicate inputs above about 40 MiB stay bounded only by this timeout until the phase 76 render guard; record a GAP.
+- **R-02 (size and triangle cap):** the size ceiling is 2048. The triangle cap is lowered to **3,806,000** so the 70% rule holds at 2048 px, instead of 4,014,975. Wave 0 must re-measure the 2048-px cost at `LP_NUM_THREADS=2` on the production image and re-derive the cap from that measurement. A different number in the evidence wins over 3,806,000. Add the STL byte ceiling derived from the cap, about 191 MiB as research proposes, re-derived after Wave 0.
+- **R-03 (options):** the closed render options are `view`, `size`, `quality`, `background` and **`assume_unit`**; MEAS-04 requires `assume_unit`. Convert accepts only `quality`. `quality` on an STL source gives `opts_not_applicable`.
+- **R-04 (units):** convert measurements back to the declared unit in Go, using the factor table (mm 1, cm 10, m 1000, inch 25.4, foot 304.8, micrometre 0.001). Never report mm with `unit_source: declared`. For `nist_ctc_05` (lowercase `CBU:inch`), Wave 0 probes the scale OCP actually applied, and the code divides by that factor. If the probe cannot establish the factor, report the document unit as `unspecified` with source `none` and record a GAP, rather than asserting a scale.
+- **R-05 (edge vocab):**
+  - A declared unit outside the vocabulary becomes `unit=unspecified`, `unit_source=none`, and the raw text goes into a diagnostic log (not the document).
+  - A zero-volume watertight or closed mesh is reported with reason `invalid_solid`. Allow `invalid_solid` for STL as an **additive** change to the vocabulary, updating `docs/MEASUREMENTS.md` and the doc-sync test in the same commit. Never report 0.
+- **R-06 (render rejection code):** reuse `cad_empty_result` with a new sentinel and message for a PNG that fails the pixel judge. No new wire code.
+- **R-07 (atomic outputs):** follow the research design.
+  - Add `Repo.AddOutputs`, one transaction for both rows.
+  - Order: validate both artefacts in memory, upload both objects, call `AddOutputs`, then `MarkDone`.
+  - The DB-gated inversion test includes a naive-sequence control, so it can fail against the naive version.
+  - Add worker, hook and webhook tests as research lists.
+- **R-08 (guard and STL):** Go skips cad-guard for STL; the guard helper stays unchanged. STL area is computed in chunks.
+- **R-09 (render Landlock):** add a separate `cadRenderReadOnly` slice, measured on the production image. Its paths may equal the mesh set, but the exec grant is `cad-render`. "No OCP in render" is enforced by the helper's imports, and a test greps the helper for OCP imports.
+- **R-10 (vtk legitimacy):** vtk 9.7.1 is hash-locked and was user-approved at the 71 legitimacy gate. A `checkpoint:human-verify` for it may be answered by the orchestrator under the delegation, quoting the 71 approval. Verify that the hashes are byte-equal to `requirements-vtk.txt`.
+- **R-11 (port fidelity):** the production `cad-render` is a verbatim port of the 71 `cad_render.py` render paths. The pruned keep-list was collected from those paths. Run prune-identity against the 71 renders as a gate.
+- **R-12 (build on the P1 fix):** plans build on the tree after the PR #34 P1 fix (mesh completeness, the `incomplete` verdict, `requireSTLMatchesVerdict`) lands.
+</research_resolutions>
