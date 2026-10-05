@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -174,6 +175,7 @@ type Server struct {
 	// av engine class gains the larger allowance. A key absent from this map
 	// is NOT rejected: the map gates known engines, it does not allowlist.
 	maxEngineBytes map[string]int64
+	maxFormatBytes map[string]map[string]int64
 	// maxImagePixels is intentionally uint64 — WIDER than maxUploadByte's
 	// int64 — because it is compared against a product of two uint32
 	// declared dimensions (Pitfall 1); an adversarial max-uint32 x max-uint32
@@ -302,6 +304,7 @@ type Config struct {
 	// and MaxPandocInputBytes has no effect when this map is supplied
 	// directly.
 	MaxEngineBytes     map[string]int64
+	MaxFormatBytes     map[string]map[string]int64
 	PresignTTL         time.Duration
 	IPRateLimitRPM     int
 	ClientRateLimitRPM int
@@ -504,6 +507,28 @@ var defaultMaxEngineBytes = map[string]int64{
 	convert.EngineTectonic: 2 << 20,
 }
 
+var defaultMaxFormatBytes = map[string]map[string]int64{
+	convert.EngineCAD: {
+		"step": convert.CADMaxSTEPBytes,
+		"iges": convert.CADMaxIGESBytes,
+	},
+}
+
+func (s *Server) sizeLimit(engine, format string) (limit int64, perFormat, gated bool) {
+	if l, ok := s.maxFormatBytes[engine][format]; ok {
+		return l, true, true
+	}
+	l, ok := s.maxEngineBytes[engine]
+	return l, false, ok
+}
+
+func formatLimitMessage(format string, limit int64) string {
+	if limit%(1<<20) == 0 {
+		return format + " file exceeds the " + strconv.FormatInt(limit>>20, 10) + " MiB limit for this conversion"
+	}
+	return format + " file exceeds the " + strconv.FormatInt(limit, 10) + " bytes limit for this conversion"
+}
+
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {
 	if cfg.PresignTTL == 0 {
 		cfg.PresignTTL = 15 * time.Minute
@@ -531,6 +556,15 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		}
 		if cfg.MaxPandocInputBytes > 0 {
 			cfg.MaxEngineBytes[convert.EnginePandoc] = cfg.MaxPandocInputBytes
+		}
+	}
+	if cfg.MaxFormatBytes == nil {
+		cfg.MaxFormatBytes = make(map[string]map[string]int64, len(defaultMaxFormatBytes))
+		for engine, formats := range defaultMaxFormatBytes {
+			cfg.MaxFormatBytes[engine] = make(map[string]int64, len(formats))
+			for format, def := range formats {
+				cfg.MaxFormatBytes[engine][format] = def
+			}
 		}
 	}
 	if cfg.IPRateLimitRPM == 0 {
@@ -609,6 +643,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		health:                       health,
 		maxUploadByte:                cfg.MaxUploadBytes,
 		maxEngineBytes:               cfg.MaxEngineBytes,
+		maxFormatBytes:               cfg.MaxFormatBytes,
 		maxImagePixels:               cfg.MaxImagePixels,
 		maxDocumentUncompressedBytes: cfg.MaxDocumentUncompressedBytes,
 		presignTTL:                   cfg.PresignTTL,

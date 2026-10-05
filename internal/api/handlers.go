@@ -700,7 +700,13 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// The ceiling applies to the TOTAL, and it has to: the tex timeout is
 	// derived from source size (64-05), so a project split across five parts
 	// costs what its bytes cost regardless of how they arrived.
-	if limit, ok := s.maxEngineBytes[engine]; ok && totalBytes > limit {
+	if limit, perFormat, gated := s.sizeLimit(engine, detected); gated && totalBytes > limit {
+		if perFormat {
+			log.Printf("content validation rejected: client_id=%s filename=%q reason=format_size_limit engine=%s format=%s size=%d parts=%d limit=%d", client.ID, filename, engine, detected, totalBytes, len(attachments)+1, limit)
+			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge,
+				formatLimitMessage(detected, limit))
+			return
+		}
 		log.Printf("content validation rejected: client_id=%s filename=%q reason=engine_size_limit engine=%s size=%d parts=%d limit=%d", client.ID, filename, engine, totalBytes, len(attachments)+1, limit)
 		writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge,
 			"file exceeds size limit for this conversion type")

@@ -350,7 +350,7 @@ func (s *Server) availableOperations(ctx context.Context, clientID uuid.UUID, de
 		// two readers, the same discipline D-03 applies to the finding
 		// vocabulary. The comparison is `>` here because it is `>` there:
 		// a file exactly at the limit is accepted by both.
-		limit, gated := s.maxEngineBytes[p.engine]
+		limit, _, gated := s.sizeLimit(p.engine, detected)
 		available := true
 		unavailableReason := ""
 		if gated && sizeBytes > limit {
