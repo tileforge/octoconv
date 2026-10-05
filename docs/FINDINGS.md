@@ -229,7 +229,7 @@ in the measurement, not established agreement.
 
 ## Binding to existing job-creation rejections (D-04)
 
-`handleCreateJob` (`internal/api/handlers.go`) rejects nineteen classes of
+`handleCreateJob` (`internal/api/handlers.go`) rejects twenty-three classes of
 content-validation failure with a `400`/`413`/`422` response, predating this findings vocabulary.
 `internal/inspect/bindings.go` (`RejectBindings`) declares, for every one of those
 `reason=` log tokens, whether the rejection is a statement about the FILE (a finding code from
@@ -262,6 +262,10 @@ either with the prose (PR #20 review).
 | `unsafe_filename` | not a finding — `errcode.invalid_request` (an attachment name that cannot be a plain file in the job's directory) |
 | `reserved_filename` | not a finding — `errcode.invalid_request` (an attachment named for a file the worker or the engine writes: the `in.*`/`out.*` stems) |
 | `duplicate_filename` | not a finding — `errcode.invalid_request` (two parts sharing a name would overwrite each other) |
+| `truncated_cad_file` | not a finding — `errcode.truncated_cad_file` (the upload starts like a CAD format and its structure ends early; inspect reports the same string as its format) |
+| `ambiguous_stl` | not a finding — `errcode.ambiguous_stl` (an STL that is valid as both ASCII and binary; inspect reports the same string as its format) |
+| `binary_dxf_unsupported` | not a finding — `errcode.binary_dxf_unsupported` (a binary DXF, which this service does not read; inspect reports the same string as its format) |
+| `dwg_unsupported` | not a finding — `errcode.dwg_unsupported` (a DWG, which this service does not read; inspect reports the same string as its format) |
 
 **Migrating `handleCreateJob` onto this vocabulary is NOT done in this phase.** This section
 declares the correspondence and proves it stays complete

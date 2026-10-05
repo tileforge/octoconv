@@ -13,7 +13,7 @@ package errcode
 // Sync error codes, one per class of 4xx/429 rejection (D-02). Granularity is
 // by failure CLASS, not by call site — do not add a new constant per
 // writeError message string; only per distinguishable client-actionable
-// class. The list is closed at seventeen codes.
+// class. The list is closed at twenty-one codes.
 const (
 	InvalidRequest        = "invalid_request"        // generic request/form validation: missing target, preset+target conflict, unrecognized source format, invalid callback_url, bad job id, invalid status/engine filter, invalid client_id, invalid period filter, invalid JSON body, invalid preset name
 	UnsupportedConversion = "unsupported_conversion" // the (source,target) pair is not served by any engine
@@ -68,6 +68,11 @@ const (
 	// this code either way. TestSyncAndAsyncShareUnsupportedPackage pins it.
 	UnsupportedPackage = "unsupported_package"
 
+	TruncatedCADFile     = "truncated_cad_file"
+	AmbiguousSTL         = "ambiguous_stl"
+	BinaryDXFUnsupported = "binary_dxf_unsupported"
+	DWGUnsupported       = "dwg_unsupported"
+
 	InternalError = "internal_error" // 5xx: anything the client cannot act on
 )
 
@@ -90,6 +95,10 @@ var all = []string{
 	RateLimited,
 	InspectBusy,
 	UnsupportedPackage,
+	TruncatedCADFile,
+	AmbiguousSTL,
+	BinaryDXFUnsupported,
+	DWGUnsupported,
 	InternalError,
 }
 

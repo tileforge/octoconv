@@ -13,6 +13,8 @@ describe('normalizeFormat', () => {
     expect(normalizeFormat('tif')).toBe('tiff');
     expect(normalizeFormat('htm')).toBe('html');
     expect(normalizeFormat('tex')).toBe('latex');
+    expect(normalizeFormat('stp')).toBe('step');
+    expect(normalizeFormat('igs')).toBe('iges');
   });
 
   it('is identity for unaliased formats', () => {
@@ -31,6 +33,8 @@ describe('sourceFormatOfFilename', () => {
     expect(sourceFormatOfFilename('paper.tex')).toBe('latex');
     expect(sourceFormatOfFilename('page.HTM')).toBe('html');
     expect(sourceFormatOfFilename('scan.TIF')).toBe('tiff');
+    expect(sourceFormatOfFilename('part.STP')).toBe('step');
+    expect(sourceFormatOfFilename('part.igs')).toBe('iges');
   });
 
   it('uses the last dot when the filename has multiple dots', () => {

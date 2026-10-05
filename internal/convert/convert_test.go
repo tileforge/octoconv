@@ -299,3 +299,36 @@ func TestRunCommandFailure(t *testing.T) {
 		t.Fatal("expected error from `false`, got nil")
 	}
 }
+
+func TestDefaultRegistersNoCADPair(t *testing.T) {
+	cad := map[string]bool{
+		"step": true, "stp": true, "iges": true, "igs": true,
+		"stl": true, "dxf": true, "dwg": true,
+	}
+
+	walked := 0
+	check := func(where, class string, pairs []Pair) {
+		if class == "cad" {
+			t.Errorf("%s registers a %q class", where, class)
+		}
+		for _, p := range pairs {
+			walked++
+			if cad[p.From] || cad[p.To] {
+				t.Errorf("%s registers CAD pair %s -> %s under %q", where, p.From, p.To, class)
+			}
+		}
+	}
+
+	for class, pairs := range Default.Classes() {
+		check("Classes", class, pairs)
+	}
+	for op, classes := range Default.OperationClasses() {
+		for class, pairs := range classes {
+			check("OperationClasses["+op+"]", class, pairs)
+		}
+	}
+
+	if walked == 0 {
+		t.Fatal("walked zero registered pairs; the guard would be vacuous")
+	}
+}

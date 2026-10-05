@@ -675,9 +675,9 @@ if [ "$CMD" = prune-check ]; then
       emit "PRUNE_SKIP,input=$name,reason=mesh-gave-no-stl-after-3-attempts"
       FAILED=1
     fi
-  done < <(find "$CORPUS" -type f \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' \) | LC_ALL=C sort)
+  done < <(find "$CORPUS" -type f ! -path '*/reject/*' \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' \) | LC_ALL=C sort)
   while IFS= read -r f; do add_input "$(basename "$f")" "$f" 2g corpus; done \
-    < <(find "$CORPUS" -type f -iname '*.stl' | LC_ALL=C sort)
+    < <(find "$CORPUS" -type f ! -path '*/reject/*' -iname '*.stl' | LC_ALL=C sort)
   FETCHED_EXPECTED=$(awk -F'\t' 'NR > 1 && NF > 0' "$REPO_ROOT/scripts/cad-corpus-manifest.tsv" | wc -l | tr -d ' ')
   FETCHED_FOUND=0
   if [ -d "$CAD_CACHE_DIR/fetched" ]; then

@@ -2148,6 +2148,77 @@ func TestGetJob_DownloadURLResolvesToPrimaryNotOrdinalZero(t *testing.T) {
 	}
 }
 
+func TestGetJob_DownloadURLNeverMeasurements(t *testing.T) {
+	get := func(t *testing.T, outputs []jobs.Output, urls map[string]string) map[string]any {
+		t.Helper()
+		id := uuid.New()
+		resolver := newFakeResolver()
+		repo := &fakeRepo{
+			getJob:  &jobs.Job{ID: id, ClientID: resolver.client.ID, Status: jobs.StatusDone},
+			outputs: outputs,
+		}
+		store := &fakeStorage{presignByKey: urls}
+		srv := NewServer(repo, store, &fakeQueue{}, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, resolver, healthyDeps(), Config{MaxUploadBytes: 1 << 20})
+
+		req := authed(httptest.NewRequest(http.MethodGet, "/v1/jobs/"+id.String(), nil))
+		rec := httptest.NewRecorder()
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+		}
+		return resp
+	}
+
+	t.Run("measurements_sorts_before_primary", func(t *testing.T) {
+		measKey := "results/x/0-measurements.json"
+		primaryKey := "results/x/1-out.png"
+		resp := get(t, []jobs.Output{
+			{Ordinal: 0, ObjectKey: measKey, Format: "json", SizeBytes: 111, Role: jobs.OutputRoleMeasurements},
+			{Ordinal: 1, ObjectKey: primaryKey, Format: "png", SizeBytes: 222, Role: jobs.OutputRolePrimary},
+		}, map[string]string{
+			measKey:    "https://example/measurements",
+			primaryKey: "https://example/primary",
+		})
+
+		if resp["download_url"] != "https://example/primary" {
+			t.Fatalf("download_url = %v, want the primary output's url (https://example/primary)", resp["download_url"])
+		}
+		outputsList, ok := resp["outputs"].([]any)
+		if !ok || len(outputsList) != 2 {
+			t.Fatalf("outputs = %v, want a 2-element list", resp["outputs"])
+		}
+		first, ok := outputsList[0].(map[string]any)
+		if !ok {
+			t.Fatalf("outputs[0] is not an object: %v", outputsList[0])
+		}
+		if first["role"] != jobs.OutputRoleMeasurements {
+			t.Errorf("outputs[0].role = %v, want %q", first["role"], jobs.OutputRoleMeasurements)
+		}
+		if first["ordinal"] != float64(0) {
+			t.Errorf("outputs[0].ordinal = %v, want 0", first["ordinal"])
+		}
+		if first["url"] != "https://example/measurements" {
+			t.Errorf("outputs[0].url = %v, want the measurements output's own url", first["url"])
+		}
+	})
+
+	t.Run("only_measurements_has_no_download_url", func(t *testing.T) {
+		measKey := "results/x/0-measurements.json"
+		resp := get(t, []jobs.Output{
+			{Ordinal: 0, ObjectKey: measKey, Format: "json", SizeBytes: 111, Role: jobs.OutputRoleMeasurements},
+		}, map[string]string{measKey: "https://example/measurements"})
+
+		if v, ok := resp["download_url"]; ok {
+			t.Fatalf("download_url = %v, want the key absent when the only output is measurements", v)
+		}
+	})
+}
+
 // TestGetJob_SingleOutputHasNoOutputsKey pins SC4: a done job with exactly
 // one output has no "outputs" key at all (not an empty array), keeping a
 // single-output convert job's response byte-shape unchanged from

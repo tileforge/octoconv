@@ -45,7 +45,7 @@ count_container() {
   if [ "$names" = "names" ]; then flag="--names"; fi
   docker run --rm --network none --cpus "$CPUS" --memory "$MEMORY" --memory-swap "$MEMORY" \
     -v "$mount:/corpus:ro" --entrypoint sh "$TAG" -c \
-    "find /corpus -type f ! -name '*.md' | LC_ALL=C sort | tr '\\n' '\\0' | xargs -0 -r /opt/venv/bin/python -I -B /opt/cad-measure/counters.py $flag"
+    "find /corpus -type f ! -name '*.md' ! -path '*/reject/*' | LC_ALL=C sort | tr '\\n' '\\0' | xargs -0 -r /opt/venv/bin/python -I -B /opt/cad-measure/counters.py $flag"
 }
 
 public_group() {
@@ -54,7 +54,7 @@ public_group() {
     echo "error: group $group: $dir is missing; fetch or generate the corpus first, an inventory of nothing is not an inventory" >&2
     exit 1
   fi
-  total=$(find "$dir" -type f ! -name '*.md' | wc -l | tr -d ' ')
+  total=$(find "$dir" -type f ! -name '*.md' ! -path '*/reject/*' | wc -l | tr -d ' ')
   if [ "$total" -lt 1 ]; then
     echo "error: group $group has no files in $dir; an inventory of nothing is not an inventory" >&2
     exit 1

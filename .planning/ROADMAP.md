@@ -30,14 +30,14 @@ measurements, самая рискованная для ревью — собир
 | # | Фаза | Требования | Состояние |
 |---|---|---|---|
 | 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ✓ 2026-10-04 |
-| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ○ следующая |
-| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ |
+| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ✓ 2026-10-05 |
+| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ следующая |
 | 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ |
 | 75 | DXF: 2D-конвейер | RNDR-06, CCONV-02, CCONV-03 | ○ |
 | 76 | Замеренные границы, KEDA, живой гейт, контракт превью и документация | CADW-04..06, PREV-01 | ○ |
 
 - [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
-- [ ] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка
+- [x] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка (completed 2026-10-05)
 - [ ] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок
 - [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
 - [ ] **Phase 75: DXF 2D Pipeline** - dxf → svg/pdf и `render` dxf → png через ezdxf + rsvg-convert
@@ -150,23 +150,23 @@ CAD-содержимого и контракт measurements — готова и 
   5. Ничего не рекламируется: `AllEngines()` не изменён, `/v1/formats` не
      показывает пар `cad`; алиасы `stp`/`igs` нормализуются (включая копию во
      фронтенде)
-**Plans:** 7 plans in 4 waves (последовательно)
+**Plans:** 7/7 plans complete in 4 waves (последовательно)
 
 Plans:
 **Wave 1**
-- [ ] 72-01-PLAN.md — tracer: валидный STEP/STP через один CAD-детектор в создании джобы и в inspect; 15 фикстур отказов закоммичены раньше правил, которые их судят
-- [ ] 72-02-PLAN.md — контракт measurements: `schema` `octoconv.measurements/v1`, закрытые словари, fail-closed валидатор, `docs/MEASUREMENTS.md` с тестом сверки
-- [ ] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
+- [x] 72-01-PLAN.md — tracer: валидный STEP/STP через один CAD-детектор в создании джобы и в inspect; 15 фикстур отказов закоммичены раньше правил, которые их судят
+- [x] 72-02-PLAN.md — контракт measurements: `schema` `octoconv.measurements/v1`, закрытые словари, fail-closed валидатор, `docs/MEASUREMENTS.md` с тестом сверки
+- [x] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
-- [ ] 72-05-PLAN.md — алиасы `stp`/`igs` в Go и во фронтенде с тестом сверки; guard-тесты «ничего CAD не рекламируется»
+- [x] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
+- [x] 72-05-PLAN.md — алиасы `stp`/`igs` в Go и во фронтенде с тестом сверки; guard-тесты «ничего CAD не рекламируется»
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 72-06-PLAN.md — отказы подключены к созданию джобы (422) и к inspect (sentinel-форматы), привязки причин, тест согласия по каждой фикстуре
+- [x] 72-06-PLAN.md — отказы подключены к созданию джобы (422) и к inspect (sentinel-форматы), привязки причин, тест согласия по каждой фикстуре
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 72-07-PLAN.md — дифференциальный прогон против OCP и ezdxf, закоммиченная таблица расхождений, golden под TestSniffCADGolden; гейт фазы
+- [x] 72-07-PLAN.md — дифференциальный прогон против OCP и ezdxf, закоммиченная таблица расхождений, golden под TestSniffCADGolden; гейт фазы
 
 ### Phase 73: CAD Class & Convert Slice, Confined
 
@@ -197,7 +197,26 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
      нечитаемый, пустой, сверх потолка вход и таймаут стадии mesh — терминальные с
      отдельным кодом, без цикла ретраев; убийство воркера посреди джобы не
      оставляет живых процессов движка и не держит джобу до полного таймаута
-**Plans**: TBD
+**Plans:** 6 plans in 6 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [ ] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
 
 ### Phase 74: 3D Render & Measurements
 
@@ -295,7 +314,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
-| 72. Engine-Free Contract Foundations | 0/TBD | Not started | - |
+| 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
 | 73. CAD Class & Convert Slice, Confined | 0/TBD | Not started | - |
 | 74. 3D Render & Measurements | 0/TBD | Not started | - |
 | 75. DXF 2D Pipeline | 0/TBD | Not started | - |

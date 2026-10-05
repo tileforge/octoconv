@@ -177,27 +177,28 @@ func EngineTakesMultipleInputs(engine string) bool {
 	return engine == EngineTectonic
 }
 
+var formatAliases = map[string]string{
+	"jpeg": "jpg",
+	"tif":  "tiff",
+	"htm":  "html",
+	// `.tex` is THE conventional LaTeX extension; `.latex` is rare. Without
+	// this alias a normal paper.tex normalized to "tex", which matches no
+	// registered pair, so every real LaTeX upload 422'd as unsupported and
+	// handlers.go's `source == "latex"` content-detection branch was
+	// unreachable. Same alias discipline as jpeg->jpg / tif->tiff / htm->html.
+	"tex": "latex",
+	"stp": "step",
+	"igs": "iges",
+}
+
 // NormalizeFormat lowercases a format/extension and folds common aliases so the
 // registry has a single canonical key per format.
 func NormalizeFormat(f string) string {
 	f = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f), "."))
-	switch f {
-	case "jpeg":
-		return "jpg"
-	case "tif":
-		return "tiff"
-	case "htm":
-		return "html"
-	case "tex":
-		// `.tex` is THE conventional LaTeX extension; `.latex` is rare. Without
-		// this alias a normal paper.tex normalized to "tex", which matches no
-		// registered pair, so every real LaTeX upload 422'd as unsupported and
-		// handlers.go's `source == "latex"` content-detection branch was
-		// unreachable. Same alias discipline as jpeg->jpg / tif->tiff / htm->html.
-		return "latex"
-	default:
-		return f
+	if canonical, ok := formatAliases[f]; ok {
+		return canonical
 	}
+	return f
 }
 
 // opKey is the registry's internal map key: a normalized (operation, from,

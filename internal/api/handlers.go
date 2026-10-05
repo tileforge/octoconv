@@ -406,6 +406,34 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// just because the extension claims md/rst/org.
 		detected = source
 	}
+	if detected == "" && convert.IsCADDeclared(source) {
+		if head, tail, cerr := convert.ReadCADWindows(file, header.Size); cerr == nil {
+			res := convert.SniffCADWindows(head, tail, header.Size, source)
+			switch res.Rejection {
+			case convert.CADRejectTruncated:
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=truncated_cad_file format=%s", client.ID, filename, res.Format)
+				writeError(w, http.StatusUnprocessableEntity, errcode.TruncatedCADFile,
+					"truncated or incomplete "+res.Format+" file")
+				return
+			case convert.CADRejectAmbiguousSTL:
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=ambiguous_stl format=%s", client.ID, filename, res.Format)
+				writeError(w, http.StatusUnprocessableEntity, errcode.AmbiguousSTL,
+					"stl file is valid as both ascii and binary; re-export as binary stl")
+				return
+			case convert.CADRejectBinaryDXF:
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=binary_dxf_unsupported format=%s", client.ID, filename, res.Format)
+				writeError(w, http.StatusUnprocessableEntity, errcode.BinaryDXFUnsupported,
+					"binary dxf is not supported; re-export as ascii dxf")
+				return
+			case convert.CADRejectDWG:
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=dwg_unsupported format=%s", client.ID, filename, res.Format)
+				writeError(w, http.StatusUnprocessableEntity, errcode.DWGUnsupported,
+					"dwg is not supported; re-export as dxf")
+				return
+			}
+			detected = res.Format
+		}
+	}
 	if detected == "" && convert.IsOLECFB(file) {
 		// D-06 (22-cfb-classification): legacy binary Office (.doc/.xls/.ppt)
 		// and password-protected OOXML ("Agile Encryption") share the

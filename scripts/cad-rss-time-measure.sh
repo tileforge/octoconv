@@ -810,7 +810,7 @@ abspath() {
 }
 
 list_cad_files() {
-  find "$1" -type f \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' \
+  find "$1" -type f ! -path '*/reject/*' \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' \
     -o -iname '*.igs' -o -iname '*.stl' -o -iname '*.dxf' \)
 }
 

@@ -159,6 +159,17 @@ var inspectPublicSentinelFormats = []string{
 	inspectZipTooLargeFormat,
 	inspectZipReadFailedFormat,
 	inspectZipMalformedFormat,
+	errcode.TruncatedCADFile,
+	errcode.AmbiguousSTL,
+	errcode.BinaryDXFUnsupported,
+	errcode.DWGUnsupported,
+}
+
+var cadRejectionCode = map[convert.CADRejection]string{
+	convert.CADRejectTruncated:    errcode.TruncatedCADFile,
+	convert.CADRejectAmbiguousSTL: errcode.AmbiguousSTL,
+	convert.CADRejectBinaryDXF:    errcode.BinaryDXFUnsupported,
+	convert.CADRejectDWG:          errcode.DWGUnsupported,
 }
 
 // inspectInternalOnlyFormats are sentinels that must NEVER reach the wire.
@@ -769,6 +780,26 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string,
 					detected = "latex"
 				case (declaredFormat == "md" || declaredFormat == "rst" || declaredFormat == "org") && convert.LooksLikeTextFromPrefix(prefix):
 					detected = declaredFormat
+				}
+			}
+			if detected == "" && convert.IsCADDeclared(declaredFormat) {
+				head := window[:min(len(window), convert.CADHeadBytes)]
+				var tail []byte
+				var tailErr error
+				if int64(len(window)) == size {
+					tail = window[max(len(window)-convert.CADTailBytes, 0):]
+				} else if tail, tailErr = convert.ReadCADTail(file, size); tailErr == nil {
+					tr.Consume(int64(len(tail)))
+				}
+				if tailErr != nil {
+					sniffReadFailed = true
+				} else {
+					res := convert.SniffCADWindows(head, tail, size, declaredFormat)
+					if res.Rejection == convert.CADRejectNone {
+						detected = res.Format
+					} else {
+						detected = cadRejectionCode[res.Rejection]
+					}
 				}
 			}
 			// IsOLECFB works on RAW bytes, deliberately not on the validated
@@ -1540,6 +1571,14 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		// sibling sentinel.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
+		}}
+	case detected == errcode.TruncatedCADFile || detected == errcode.AmbiguousSTL:
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
+		}}
+	case detected == errcode.BinaryDXFUnsupported || detected == errcode.DWGUnsupported:
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonParserUnavailable},
 		}}
 	case detected == "":
 		// PR9R27 (inspect_handlers.go:1393): an UNRECOGNIZED upload is not the
