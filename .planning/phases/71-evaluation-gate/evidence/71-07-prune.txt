@@ -1,8 +1,8 @@
 # Plan 71-07 prune check: the pruned image of one build against the full image (D-17)
-HDR,date_utc=2026-10-04T10:23:08Z
+HDR,date_utc=2026-10-05T04:55:41Z
 HDR,server_arch=arm64
-HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-pruned-0d09b7ba39ad
-HDR,image_id=sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d
+HDR,image_id=sha256:08117b26d4d07fe95f0fe3f83db64fb28908b306421e5be91a118da99550e9e9
 HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
 HDR,python=Python 3.11.2
 HDR,ocp=7.9.3.1.1
@@ -14,8 +14,8 @@ HDR,cpus=2
 HDR,memory=2g
 HDR,host_noise=12
 HDR,go=go version go1.27.1 darwin/arm64
-HDR,pin=7.9.3.1.1,lp_threads=2,occt_parallel=off,keeplist_sha256=99620f5ab1fb9585cd5d4712326a3ff6c41de776a446583002e8dd3d5d6aafb6
-PRUNE_BUILD,pin=7.9.3.1.1,full=octoconv-cad-measure:ocp7.9.3.1.1-full-0d09b7ba39ad,pruned=octoconv-cad-measure:ocp7.9.3.1.1-pruned-0d09b7ba39ad,full_id=sha256:cce9074fe38062f4a666bcf14c038822093a458d36a9dc7a3ad9b2b32641535c,pruned_id=sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01
+HDR,pin=7.9.3.1.1,lp_threads=2,occt_parallel=off,keeplist_sha256=6675b90bae9c8f65e20d64780d600903ee8277c120f9ef585f3355f3b2e32bcf
+PRUNE_BUILD,pin=7.9.3.1.1,full=octoconv-cad-measure:ocp7.9.3.1.1-full-dc621b94ee5d,pruned=octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d,full_id=sha256:14fb36c95e55625fa9b04416d576eb9bd1f8f2d4cee97a4cbb8ba552d4e2f58c,pruned_id=sha256:08117b26d4d07fe95f0fe3f83db64fb28908b306421e5be91a118da99550e9e9
 PRUNE_SIZE,vtk_full_mib=564.1,vtk_pruned_mib=288.7,image_full_mib=1358.3,image_pruned_mib=1083.0,delta_vtk_mib=275.4,delta_image_mib=275.3,gap_mib=0.0,gap_pct_of_delta_vtk=0.01,whiteout_free=1
 PRUNE_PNG,input=mesh-2020_corner_bracket-Corner.step,view=iso,size=1280,bg=white,same=1,lp=2,sha=e25ced36c7de7537
 PRUNE_PNG,input=mesh-2020_corner_bracket-Corner.step,view=front,size=1280,bg=white,same=1,lp=2,sha=ea5c9b79ebaec534

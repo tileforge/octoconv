@@ -1,8 +1,8 @@
 # Plan 71-07 library trace: which wheel libraries load on which operation (D-18 measurement)
-HDR,date_utc=2026-10-04T10:21:07Z
+HDR,date_utc=2026-10-05T04:54:19Z
 HDR,server_arch=arm64
-HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-0d09b7ba39ad
-HDR,image_id=sha256:cce9074fe38062f4a666bcf14c038822093a458d36a9dc7a3ad9b2b32641535c
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-dc621b94ee5d
+HDR,image_id=sha256:14fb36c95e55625fa9b04416d576eb9bd1f8f2d4cee97a4cbb8ba552d4e2f58c
 HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
 HDR,python=Python 3.11.2
 HDR,ocp=7.9.3.1.1
@@ -14,7 +14,7 @@ HDR,cpus=2
 HDR,memory=2g
 HDR,host_noise=12
 HDR,go=go version go1.27.1 darwin/arm64
-HDR,pin=7.9.3.1.1,other_pin=8.0.1.0.0,lp_threads=2,occt_parallel=off,other_image=octoconv-cad-measure:ocp8.0.1.0.0-full-0d09b7ba39ad
+HDR,pin=7.9.3.1.1,other_pin=8.0.1.0.0,lp_threads=2,occt_parallel=off,other_image=octoconv-cad-measure:ocp8.0.1.0.0-full-dc621b94ee5d
 NEEDED,ocp=7.9.3.1.1,from=OCP/OCP.cpython-311-aarch64-linux-gnu.so,to=libTKOffset-a5626715.so.7.9.3
 NEEDED,ocp=7.9.3.1.1,from=OCP/OCP.cpython-311-aarch64-linux-gnu.so,to=libTKFeat-9cc94541.so.7.9.3
 NEEDED,ocp=7.9.3.1.1,from=OCP/OCP.cpython-311-aarch64-linux-gnu.so,to=libTKOpenGl-e1bf8497.so.7.9.3

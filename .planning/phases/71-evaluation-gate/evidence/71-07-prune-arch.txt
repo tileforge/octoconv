@@ -1,0 +1,27 @@
+# Phase 71 image rebuild check: iso renders of five real parts, old image against new image
+HDR,date_utc=2026-10-05T05:09:56Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d
+HDR,image_id=sha256:08117b26d4d07fe95f0fe3f83db64fb28908b306421e5be91a118da99550e9e9
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=2g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,old=octoconv-cad-measure:ocp7.9.3.1.1-pruned-0d09b7ba39ad,old_id=sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01
+HDR,new=octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d,new_id=sha256:08117b26d4d07fe95f0fe3f83db64fb28908b306421e5be91a118da99550e9e9
+HDR,lp_threads=2,occt_parallel=off,view=iso,size=1280,background=white
+IMAGE_BYTES,old=1135587708,new=1135589363,delta_bytes=1655,old_mib=1083.0,new_mib=1083.0,old_layers=6,new_layers=6
+TREE_SHA,old=93b80e4e775a6e3af18cf2dc2f4d11be76d7ac899605fb407153b90263423491,new=93b80e4e775a6e3af18cf2dc2f4d11be76d7ac899605fb407153b90263423491,scope=/opt/venv and /opt/cad-measure without vtk_keeplist and pyc of the helpers
+IDENTITY_PNG,part=LinearSlide-MGN15x-Block.step,same=1,stl_bytes=297484,sha_old=5552a98c14d564501c623cca0f68f556293b3a61290ef58a5e0328506dec196f,sha_new=5552a98c14d564501c623cca0f68f556293b3a61290ef58a5e0328506dec196f
+IDENTITY_PNG,part=LM8UU.step,same=1,stl_bytes=82284,sha_old=6aa5264ee996e35ac479ab4f398d7fa4ab18eedf5f0d9728500c7560b7a4bc99,sha_new=6aa5264ee996e35ac479ab4f398d7fa4ab18eedf5f0d9728500c7560b7a4bc99
+IDENTITY_PNG,part=SC8UU.step,same=1,stl_bytes=137684,sha_old=fdab266b7e069586f8b7ccf59dc3f9b8e57be3ed7c7f1765c9b82dcb0280f709,sha_new=fdab266b7e069586f8b7ccf59dc3f9b8e57be3ed7c7f1765c9b82dcb0280f709
+IDENTITY_PNG,part=V-Slot-20x20-100mm.step,same=1,stl_bytes=52884,sha_old=15fd5a7de7bf6c4689382a5348c2c9f4b6fd09945f3f23d9b1713a516e9edff7,sha_new=15fd5a7de7bf6c4689382a5348c2c9f4b6fd09945f3f23d9b1713a516e9edff7
+IDENTITY_PNG,part=2020_corner_bracket-Corner.step,same=1,stl_bytes=47484,sha_old=e25ced36c7de753745fa93fd89400d0524ab960d2b5575512ea1578cedc40a1b,sha_new=e25ced36c7de753745fa93fd89400d0524ab960d2b5575512ea1578cedc40a1b
+IDENTITY,parts=5,identical=5,different=0,failed=0

@@ -5,15 +5,25 @@ Usage:
     vtk_keeplist.py collect --vtk-version V --out FILE MAPS...
     vtk_keeplist.py prune --keeplist FILE --site DIR
 
+Entries are architecture-neutral: the ".cpython-311-<arch>-linux-gnu" tag of an
+extension module is dropped when collecting and when matching, so one list serves
+arm64 and amd64.
+
 Exit codes: 1 stale keep-list or nothing collected, 64 usage.
 """
 
 import argparse
 import os
+import re
 import sys
 
 SCOPE_DIRS = ("vtkmodules", "vtk.libs")
 SITE_MARK = "/site-packages/"
+EXT_TAG = re.compile(r"\.cpython-[0-9]+[a-z]*-[A-Za-z0-9_]+-linux-gnu(?=\.so)")
+
+
+def normalize(rel):
+    return EXT_TAG.sub("", rel)
 
 
 def relative_entry(path):
@@ -25,7 +35,7 @@ def relative_entry(path):
     top = rel.split("/", 1)[0]
     if top not in SCOPE_DIRS or ".so" not in rel.rsplit("/", 1)[-1]:
         return None
-    return rel
+    return normalize(rel)
 
 
 def collect(args):
@@ -67,27 +77,33 @@ def prune(args):
         print("keep-list stale: generated for vtk %s, installed %s" % (version, installed), file=sys.stderr)
         return 1
     site = os.path.realpath(args.site)
-    for entry in entries:
-        if not os.path.exists(os.path.join(site, entry)):
-            print("keep-list stale: missing %s" % entry, file=sys.stderr)
-            return 1
-    keep = set(entries)
-    kept = removed = freed = 0
+    keep = {normalize(entry) for entry in entries}
+    present = set()
+    candidates = []
     for scope in scopes:
-        root = os.path.join(site, scope)
-        for dirpath, _dirs, files in os.walk(root):
+        for dirpath, _dirs, files in os.walk(os.path.join(site, scope)):
             for name in files:
                 if ".so" not in name:
                     continue
                 full = os.path.join(dirpath, name)
-                rel = os.path.relpath(os.path.realpath(full), site)
-                if rel in keep or os.path.relpath(full, site) in keep:
-                    kept += 1
-                    continue
-                size = os.lstat(full).st_size
-                os.unlink(full)
-                removed += 1
-                freed += size
+                candidates.append(full)
+                if os.path.exists(full):
+                    present.add(normalize(os.path.relpath(full, site)))
+    missing = sorted(keep - present)
+    if missing:
+        print("keep-list stale: missing %s" % missing[0], file=sys.stderr)
+        return 1
+    kept = removed = freed = 0
+    for full in candidates:
+        rel = normalize(os.path.relpath(full, site))
+        real = normalize(os.path.relpath(os.path.realpath(full), site))
+        if rel in keep or real in keep:
+            kept += 1
+            continue
+        size = os.lstat(full).st_size
+        os.unlink(full)
+        removed += 1
+        freed += size
     print("PRUNED,kept=%d,removed=%d,bytes_removed=%d" % (kept, removed, freed))
     return 0
 
