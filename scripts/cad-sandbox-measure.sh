@@ -79,6 +79,10 @@ note() { printf '%s\n' "$*" >> "$OUT"; printf '%s\n' "$*" >&2; }
 TAG=$(cad_build_image "$PIN" pruned)
 cad_require_native "$TAG" || exit 1
 IMAGE_ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
+if [ "$RECHECK" = 1 ] && ! grep -q "^HDR,pin=$PIN,variant=pruned,lp_threads=$LP,occt_parallel=$PAR,image_arch=$IMAGE_ARCH," "$MAIN_EVIDENCE"; then
+  echo "error: $MAIN_EVIDENCE was not measured at pin $PIN, lp_threads $LP, occt_parallel $PAR on $IMAGE_ARCH; its minimal sets say nothing about this configuration" >&2
+  exit 1
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-landlock.XXXXXX")
 trap 'rm -rf "$WORK" "${TMPDIR:-/tmp}/cad-minimal.$$"' EXIT

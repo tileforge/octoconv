@@ -430,6 +430,14 @@ for name in sorted(os.listdir(LIBS)):
     if [ -s "$file" ]; then grep -cE "$pat" "$file" || true; else echo 0; fi
   }
 
+  ldd_hits() {
+    local n
+    n=$(docker run --rm --network none --entrypoint sh "$1" -c \
+      "l=\$(ldd $2) || exit 3; printf '%s\n' \"\$l\" | grep -cE 'libfreeimage|libraw|libjasper' || true")
+    case "$n" in ''|*[!0-9]*) echo "error: ldd of $2 gave no count" >&2; exit 1 ;; esac
+    printf '%s\n' "$n"
+  }
+
   trace_op() {
     local op=$1 input=$2 ocp=$3 tag=$4 expect=$5 infile=$6 ext=$7 maps=$8
     shift 8
@@ -498,8 +506,8 @@ for name in sorted(os.listdir(LIBS)):
     grep '^LIBFILE,' "$WORK/elf.$ocp" | sed 's/^.*,file=\([^,]*\),.*/\1/' | sort -u > "$WORK/libfiles.$ocp"
     : > "$WORK/loaded.$ocp"
     emit "LIBFILES,ocp=$ocp,count=$(wc -l < "$WORK/libfiles.$ocp" | tr -d ' '),bytes=$(grep '^LIBFILE,' "$WORK/elf.$ocp" | sed 's/.*,bytes=//' | awk '{s += $1} END {print s}')"
-    emit "LDD,ocp=$ocp,freeimage_in_ocp_ldd=$(docker run --rm --network none --entrypoint sh "$tag" -c \
-      "ldd $SITE/OCP/OCP.cpython-311-*.so 2>/dev/null | grep -cE 'libfreeimage|libraw|libjasper' || true")"
+    LDD_N=$(ldd_hits "$tag" "$SITE/OCP/OCP.cpython-311-*.so")
+    emit "LDD,ocp=$ocp,freeimage_in_ocp_ldd=$LDD_N"
   done
 
   run_ocp_ops() {
@@ -584,8 +592,8 @@ PYEOF
     trace_op rsvg-pdf "$name" "$PIN" "$TAG_PIN" 0 "$SVGDIR/$name.svg" svg 0 \
       rsvg-convert -f pdf /job/in.svg -o /job/out.pdf
   done
-  emit "LDD_RSVG,freeimage_libraw_jasper_in_ldd=$(docker run --rm --network none --entrypoint sh "$TAG_PIN" -c \
-    "ldd /usr/bin/rsvg-convert | grep -cE 'libfreeimage|libraw|libjasper' || true")"
+  LDD_N=$(ldd_hits "$TAG_PIN" /usr/bin/rsvg-convert)
+  emit "LDD_RSVG,freeimage_libraw_jasper_in_ldd=$LDD_N"
 
   for ocp in "$PIN" "$OTHER"; do
     sort -u "$WORK/loaded.$ocp" > "$WORK/loaded.$ocp.u"
@@ -832,6 +840,8 @@ if [ "$CMD" = licences ]; then
   esac
   TRACE_EVID="$EVID/71-07-libtrace.txt"
   [ -s "$TRACE_EVID" ] || { echo "error: $TRACE_EVID is missing; run libs first" >&2; exit 1; }
+  grep -q "^HDR,pin=$PIN,other_pin=$OTHER," "$TRACE_EVID" ||
+    { echo "error: $TRACE_EVID was traced for another pin pair than $PIN and $OTHER; run libs first" >&2; exit 1; }
   TAG_PIN=$(cad_build_image "$PIN" full)
   TAG_OTHER=$(cad_build_image "$OTHER" full)
   cad_require_native "$TAG_PIN" || exit 1
