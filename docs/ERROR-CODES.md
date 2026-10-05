@@ -121,7 +121,7 @@ CAD content checks run only for uploads whose extension is `step`, `stp`, `iges`
 
 ## Asynchronous job-failure codes (`error_code`)
 
-Fifteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D-04; `unsupported_package` was added by Phase 64 for the tex engine). Source:
+Nineteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D-04; `unsupported_package` was added by Phase 64 for the tex engine; `cad_too_complex`, `cad_unreadable`, `cad_empty_result` and `cad_mesh_timeout` were added by Phase 73 for the cad engine). Source:
 `internal/worker/descriptors.go` (`AllFailureCodes()`), with per-engine mapping logic in
 `internal/worker/worker.go` (`avFailureCode`, `ocrFailureCode`, `pandocFailureCode`,
 `audioFailureCode`) and the sole non-`internal/worker` emitter in
@@ -129,7 +129,7 @@ Fifteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D
 
 | Code | Emitted by | Meaning |
 |------|-----------|---------|
-| `engine_error` | All seven engine classes (image, document, HTML, audio, AV, OCR, pandoc) | Deliberate catch-all: unsupported or corrupted input format, or any terminal engine failure with no more specific mapping. Used identically by all seven engines and frozen against renaming (D-05) — do not add a finer-grained replacement for one engine class without adding the equivalent for all seven |
+| `engine_error` | All engine classes except where a finer code below names the outcome | Deliberate catch-all: unsupported or corrupted input format, or any terminal engine failure with no more specific mapping. Frozen against renaming (D-05). The cad engine does not use it for an unreadable file, an empty result or a timeout: those have their own `cad_*` codes because the client's action differs, and a client must never have to parse `message` to tell them apart |
 | `invalid_options` | All six opts-guarded engines (document, HTML, audio, AV, OCR, pandoc — not image, which has no opts re-parse guard) | Persisted `opts` failed re-validation inside the worker. Same code string as the sync `invalid_options` above — one code space (D-03) |
 | `duration_exceeded` | audio, AV | Declared audio/video duration exceeds the configured maximum (`AudioDescriptor`/`AVDescriptor` share this sentinel deliberately, keeping the two engines' client-facing contracts symmetric) |
 | `timecode_out_of_range` | AV | An explicit thumbnail timecode requested via `opts` exceeds the source's actual duration — a client fault, deliberately not clamped |
@@ -140,9 +140,13 @@ Fifteen codes (fourteen were frozen unchanged during Phase 56's consolidation, D
 | `image_too_large` | OCR | Image dimensions exceed the configured maximum |
 | `unsupported_language` | OCR | The requested OCR language is not in the supported set |
 | `unsupported_target` | OCR, pandoc | The requested target format/conversion is not supported by that engine |
-| `input_too_large` | pandoc | Input exceeds the configured `PANDOC_MAX_INPUT_BYTES` cap, rejected before the subprocess runs |
+| `input_too_large` | pandoc, cad | pandoc: input exceeds the configured `PANDOC_MAX_INPUT_BYTES` cap, rejected before the subprocess runs. cad: the file exceeds the per-format size ceiling (63 MiB for STEP, 135 MiB for IGES), re-checked in the worker before any engine runs. TERMINAL — the same bytes exceed the same ceiling on every attempt |
 | `unsupported_package` | tectonic | The document loads a `\usepackage` the shipped TeX bundle cannot resolve. Extracted from the engine's own `! LaTeX Error: File \`x.sty\' not found.` line, so the failure names the package rather than the file. TERMINAL — a missing package is missing on every attempt. Same code string as the sync `unsupported_package` above — one code space (D-03), and the API's bounded preamble scan is exactly why both sides emit it |
 | `output_too_large` | tectonic | The document typeset successfully and the resulting PDF exceeds `TECTONIC_MAX_OUTPUT_BYTES` (32 MiB by default). The input ceiling does not bound this: TeX ships pages out as it goes, so 198 bytes of source measured 6 040 163 bytes of PDF in 16 seconds, while the largest legitimate document measured — 2 MiB of source, 745 pages — produces 1 914 057. TERMINAL: the same source ships the same pages on every attempt |
+| `cad_too_complex` | cad | The model is beyond what this deployment converts: too many entities or assembly instances for the pre-read guard, the reader ran out of memory, or the engine was killed before it finished. TERMINAL — the same model costs the same on every attempt. Simplify the model or split it into smaller parts |
+| `cad_unreadable` | cad | The file is not readable as the CAD data its extension claims: a structure the reader refuses, values the reader cannot parse, or a reader that died on a signal. TERMINAL. Re-export the file from the source application |
+| `cad_empty_result` | cad | The file was read but yielded no geometry that can be meshed (no solid or surface, or a mesh with no triangles). TERMINAL. Check that the export contains solids or surfaces and not only wireframe or annotation data |
+| `cad_mesh_timeout` | cad | Tessellation did not finish within the mesh stage's time limit. Distinct from `cad_too_complex` so a model that is slow to mesh is visible as such in aggregates. TERMINAL. Simplify the model or export it with fewer details |
 | `reconciler_exhausted` | `internal/reconciler` (NOT an engine worker) | The reconciler's stale-job recovery exhausted its retry budget for this job; the job is marked `failed` by the reconciler itself rather than by any engine's `process()` |
 
 ## Historical job-failure codes (no longer produced)

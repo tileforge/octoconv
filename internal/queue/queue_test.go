@@ -1087,3 +1087,67 @@ func TestEnqueueWebhookDeliverDuplicate(t *testing.T) {
 		}
 	}
 }
+
+func TestCADJobTaskRoundTrip(t *testing.T) {
+	id := uuid.New()
+	ttl := CADUniqueTTL(2, convert.CADDefaultEngineTimeout)
+	task, err := NewCADJobTask(id, 2, ttl)
+	if err != nil {
+		t.Fatalf("NewCADJobTask: %v", err)
+	}
+	if task.Type() != "cad:job" || task.Type() != TypeCADJob {
+		t.Errorf("task type = %q, want cad:job", task.Type())
+	}
+	if QueueCAD != "cad" {
+		t.Errorf("QueueCAD = %q, want cad", QueueCAD)
+	}
+	p, err := ParseConvertPayload(task.Payload())
+	if err != nil {
+		t.Fatalf("ParseConvertPayload: %v", err)
+	}
+	if p.JobID != id {
+		t.Errorf("job id = %s, want %s", p.JobID, id)
+	}
+}
+
+func TestRetryDelayFuncRoutesCADJob(t *testing.T) {
+	cadTask := asynq.NewTask(TypeCADJob, nil)
+	for _, n := range []int{-1, 0, 1, 5, 99} {
+		if got, want := RetryDelayFunc(n, nil, cadTask), CADRetryDelay(n, nil, nil); got != want {
+			t.Errorf("RetryDelayFunc(cad, %d) = %v, want %v", n, got, want)
+		}
+	}
+	if got, want := RetryDelayFunc(0, nil, cadTask), 5*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(cad, 0) = %v, want %v, the shared schedule rather than asynq's default", got, want)
+	}
+}
+
+func TestCADUniqueTTL(t *testing.T) {
+	const maxRetry = 2
+	timeout := convert.CADDefaultEngineTimeout
+	want := 3*timeout + cadBackoffSum(maxRetry) + uniqueTTLSafetyMargin
+	if got := CADUniqueTTL(maxRetry, timeout); got != want {
+		t.Errorf("CADUniqueTTL(%d, %v) = %v, want %v", maxRetry, timeout, got, want)
+	}
+	if got, want := cadBackoffSum(maxRetry), CADRetryDelay(0, nil, nil)+CADRetryDelay(1, nil, nil); got != want {
+		t.Errorf("cadBackoffSum(%d) = %v, want %v", maxRetry, got, want)
+	}
+	if CADUniqueTTL(maxRetry, 2*timeout) <= CADUniqueTTL(maxRetry, timeout) {
+		t.Error("CADUniqueTTL does not grow with the engine timeout")
+	}
+	if CADUniqueTTL(maxRetry+1, timeout) <= CADUniqueTTL(maxRetry, timeout) {
+		t.Error("CADUniqueTTL does not grow with the retry budget")
+	}
+}
+
+func TestCADQueueIsNotYetExposed(t *testing.T) {
+	got := AllConvertQueues()
+	if len(got) != 9 {
+		t.Errorf("AllConvertQueues() has %d queues, want 9", len(got))
+	}
+	for _, q := range got {
+		if q == QueueCAD {
+			t.Errorf("AllConvertQueues() contains %q before the class is exposed", QueueCAD)
+		}
+	}
+}

@@ -58,6 +58,10 @@ const (
 	// program, so the only one where output size is not bounded by input size.
 	CodeOutputTooLarge      = "output_too_large"
 	CodeReconcilerExhausted = "reconciler_exhausted"
+	CodeCADTooComplex       = "cad_too_complex"
+	CodeCADUnreadable       = "cad_unreadable"
+	CodeCADEmptyResult      = "cad_empty_result"
+	CodeCADMeshTimeout      = "cad_mesh_timeout"
 )
 
 // allFailureCodes enumerates every code this build can still produce.
@@ -85,6 +89,10 @@ var allFailureCodes = []string{
 	CodeOutputTooLarge,
 	CodeReconcilerExhausted,
 	CodeUnsupportedPackage,
+	CodeCADTooComplex,
+	CodeCADUnreadable,
+	CodeCADEmptyResult,
+	CodeCADMeshTimeout,
 }
 
 // CodeBornDigital is HISTORICAL as of Phase 59 and is not in allFailureCodes.
@@ -655,4 +663,52 @@ func tectonicFailureCode(err error) (code, message string) {
 		return CodeEngineError, "the document has undefined references or citations; the PDF would show ?? in their place"
 	}
 	return CodeEngineError, "the document could not be typeset"
+}
+
+var CADDescriptor = EngineDescriptor{
+	Engine: convert.EngineCAD,
+	Type:   queue.TypeCADJob,
+	OptsFromMap: func(m map[string]any) (any, error) {
+		return convert.CADOptsFromMap(m)
+	},
+	IsTerminal:  isCADTerminal,
+	FailureCode: cadFailureCode,
+}
+
+func isCADTerminal(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, convert.ErrEngineSandboxUnavailable) {
+		return false
+	}
+	for _, sentinel := range []error{
+		convert.ErrCADInputTooLarge,
+		convert.ErrCADTooComplex,
+		convert.ErrCADUnreadable,
+		convert.ErrCADEmptyResult,
+		convert.ErrCADMeshTimeout,
+		convert.ErrCADEngineKilled,
+	} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return isTerminal(err)
+}
+
+func cadFailureCode(err error) (code, message string) {
+	switch {
+	case errors.Is(err, convert.ErrCADInputTooLarge):
+		return CodeInputTooLarge, "the CAD file exceeds the maximum size this deployment accepts for its format"
+	case errors.Is(err, convert.ErrCADTooComplex), errors.Is(err, convert.ErrCADEngineKilled):
+		return CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"
+	case errors.Is(err, convert.ErrCADUnreadable):
+		return CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"
+	case errors.Is(err, convert.ErrCADEmptyResult):
+		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
+	case errors.Is(err, convert.ErrCADMeshTimeout):
+		return CodeCADMeshTimeout, "the model took too long to convert to a mesh; simplify it or export fewer details"
+	}
+	return CodeEngineError, "unsupported or corrupted input format"
 }
