@@ -1,0 +1,7 @@
+# Phase 71 amd64 prune build proof (emulated, not a measurement)
+HDR,date_utc=2026-10-05T05:13:26Z,server_arch=arm64,ocp=7.9.3.1.1,platform=linux/amd64
+HDR,keeplist_sha256=6675b90bae9c8f65e20d64780d600903ee8277c120f9ef585f3355f3b2e32bcf,head=589b298
+AMD64_PRUNE,list=old,rev=589b298,result=refused,build_rc=1,message=keep-list stale: missing vtkmodules/vtkCommonCore.cpython-311-aarch64-linux-gnu.so
+AMD64_PRUNE,list=new,result=built,PRUNED,kept=77,removed=299,bytes_removed=279846920,import_check=ok,image_arch=amd64,image_id=sha256:e1d27471cd722d9f02d94f5927f88f819c4406e2458bce6b7414086645ad7d24,size_bytes=1130621743
+AMD64_KEPT,entries=77,kept=77,all_listed_modules_present=1
+AMD64_SUMMARY,failed=0

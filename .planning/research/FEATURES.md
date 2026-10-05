@@ -1,193 +1,277 @@
 # Feature Research
 
-**Domain:** File-processing / document-processing API (inspection, sanitization/CDR, operation modeling, structured errors, PDF classification)
-**Researched:** 2026-08-07
-**Confidence:** MEDIUM-HIGH (verified via WebSearch against official docs, GitHub READMEs, and RFC text; two claims remain LOW and are flagged inline)
+**Domain:** CAD preview + measurement service (headless render of STEP/IGES/STL/DXF to PNG, dimensions report, STEP/IGES to STL, DXF to SVG/PDF) inside an existing async conversion platform
+**Researched:** 2026-10-02
+**Milestone:** v1.16 CAD Engine (tenth engine class `cad`)
+**Confidence:** MEDIUM. Format semantics (STL layout, DXF `$INSUNITS`, OCCT unit handling, f3d options, FreeCAD view axes) are verified against official docs. Kernel behaviour on open shells, bbox tightness, memory/time cost on 40 MB STEP, and ezdxf licensing are MEDIUM/LOW and flagged inline as measurement or decision gates.
 
 ## Context: what already exists (do not re-derive)
 
-Before the landscape below, three load-bearing facts from reading the codebase, since they change what "table stakes" costs in this project specifically:
+Facts from reading the repo and the two Obsidian notes that change what "table stakes" costs here:
 
-- **Probing infrastructure already exists**, scattered across converters as pre-flight guards, not exposed as an API: `internal/convert/avduration.go` (`probeVideoStreams`/`probeVideoStream`, ffprobe JSON via `runCommand`), `internal/convert/audioduration.go` (ffprobe duration), `internal/convert/ocrguards.go` (`pdfinfo` page count + page-box size, `pdftotext`-based `detectBornDigitalPDF` with a fixed 16-non-whitespace-char threshold), `internal/convert/Sniff`/`SniffContainer`/`SniffVideo`/`SniffAudio`/`Dimensions` (magic-byte format detection, ZIP-central-directory macro/bomb detection, declared-pixel-dimension decompression-bomb guard), `internal/convert/cfb.go` (`ClassifyCFB`: legacy binary Office vs encrypted vs unknown). **A synchronous `POST /v1/inspect` is therefore an aggregation/exposure problem, not a green-field parsing problem** — the hard part is response-shape design and a new sync rate budget, not writing new probes.
-- **`operation` and `job_outputs.role`-shaped needs are already reserved but unused**: `0001_init.sql`'s `operation` CHECK already allows `convert|extract|archive|inspect|render` (not yet `sanitize` — needs a migration), `engine` CHECK already allows `probe` (reserved, unused). `job_outputs` has no `role` column yet — this is new schema surface.
-- **`cr.HasMacro` already exists and is already fail-closed-reject-only** (`internal/api/handlers.go:238-245`, via `SniffContainer`): today an OOXML file with a macro is unconditionally rejected before it ever reaches a converter. Sanitize's "strip macros" is a **new, second code path** with the opposite policy (remove-then-proceed instead of reject) — it must not silently loosen the existing reject-on-convert behavior; the two behaviors coexist by `operation`.
+- **`job_outputs.role` is a DB-level closed set** `('primary','report','preview','thumbnail')` (migration `0015`). `handleGetJob` already returns an `outputs[]` array with `role` per entry and selects `download_url` by role `primary` only. `Repo.MarkDone` counts exactly one `primary` row (D-13 guard). `AddOutputWithRole` is the only writer of a non-default role. So: the PNG is the `primary` output, the dimensions JSON needs ONE new role value (CHECK widening migration + Go constant next to `OutputRolePrimary`/`OutputRoleReport`). `report` is already claimed by the sanitize report schema and means "describes the job"; reusing it would force consumers to switch on `operation` to parse it, so a dedicated role (suggested `dimensions`) is cleaner.
+- **`operation` enum already contains `render`** (`0015` CHECK); `engine` CHECK already reserves `cad`. No enum work needed for those two.
+- **Closed validated opts precedent**: `AVOpts` (`internal/convert/avopts.go`) - strict-parse typed struct, every field validated against a closed allowlist, client bytes never reach argv, applicability gating per target (`avThumbnailTargets`). `view`/`size`/`background` follow exactly this shape.
+- **Registry is `(operation, from, to)` triples**, `Register` panics on collision; `POST /v1/inspect` lists available triples per detected format, so new CAD triples appear in inspect for free once registered. New CAD formats need fail-closed content sniffers (precedent: `SniffAudio`, `SniffVideo`, `markupsniff`).
+- **Measured-not-guessed timeouts and caps** (OCR/pandoc/audio precedent): `CAD_ENGINE_TIMEOUT`, input cap and any triangle cap must come from a timing/memory gate with a Path-B lever, not be copied from the consumer's 60 s / 40 MB.
+- **Consumer being replaced (PreviewGenerator)**: Fusion 360 GUI, 1280x1280 PNG, `isFitView = True`, view orientation parameter, "Size: X x Y x Z mm" overlay (OUT of scope), `part_volume`; skips <500 B, >40 MB, DXF/DWG >5 MB; up to 60 s/file. At the consumer (GSH) the PNG is turned into `thumbnail`/`preview_small`/`preview_large` derivatives by ImageMagick, which matters for the background decision below.
 
 ## Feature Landscape
 
-### Table Stakes (Users/Requirements Expect These)
+### Table Stakes (Users Expect These)
+
+#### A. Render (`render` to PNG)
 
 | Feature | Why Expected | Complexity | Notes |
 |---------|--------------|------------|-------|
-| Inspect returns the **detected** format via magic bytes, not the declared/extension one | Every comparable probe API (Tika `/detect`, ffprobe, exiftool, pdf-inspector) leads with "what is this file, for real" — OctoConv's own `POST /v1/jobs` already treats extension-vs-content honesty as a hard gate (D-01/D-04 in handlers.go); an inspect endpoint that trusted the extension would be a regression vs. the existing convert path | LOW | Reuses `convert.Sniff`/`SniffContainer`/`SniffVideo`/`SniffAudio`/`ClassifyCFB` verbatim — same detection chain `handleCreateJob` already runs, factored out for a read-only caller |
-| Format-appropriate structural characteristics (size always; pages for PDF/office; duration+resolution+codec for av; duration for audio; pixel dimensions for images) | ffprobe and exiftool both omit fields that don't apply rather than emitting null/0 for every dimension on every file type — a well-formed inspection response is per-format-shaped, not one flat schema forced onto every file | MEDIUM | ffprobe/pdfinfo probes already exist per-engine (see Context above); the work is dispatching by detected format and shaping a **response envelope** that only includes applicable fields — same discipline `GET /v1/jobs` already uses for `progress_pct`/`eta_seconds` (present but null when not applicable) |
-| A typed, machine-readable **findings/risk list**, not free-text | Cloudmersive Advanced Scan returns categorized findings (embedded macros, XXE, zip bomb, encrypted, invalid file, scripts) as discrete typed items, not a paragraph; Glasswall's File Analysis Report lists active content removed as structured entries; VirusTotal's `stats` object is a tally by category, not prose. This project's own convention (`ClassifyCFB`, `cr.HasMacro`) already distinguishes finding *kinds* internally — inspect should surface that taxonomy, not stringify it | MEDIUM | Each finding needs at minimum: a `code` (stable enum, e.g. `macro_present`, `js_embedded`, `external_reference`, `encrypted`, `bomb_shaped`), a `severity` tier, and — where meaningful — a `location` (page number / part path). Reuses existing detectors (`HasMacro`, `ClassifyCFB`, dimension/uncompressed-size checks) as the finding source, does not invent new detection logic |
-| Explicit three-way status per check: **checked-and-clean** vs **not-applicable/unsupported-for-this-format** vs **could-not-determine** | This is the single most commonly *missing* property in home-grown inspection APIs and the reason VirusTotal separates `undetected` from `timeout` from per-engine unsupported-type responses — collapsing "we checked, found nothing" and "we didn't check" into the same `false`/absent value is a documented ambiguity that erodes trust in every other finding in the same report | MEDIUM | Needs an explicit tri-state per risk category the report claims to evaluate (not per file overall) — e.g. `macro_check: {status: "clean"|"not_applicable"|"unknown", ...}`. This is new design surface; no existing OctoConv code models a tri-state today (current code is binary reject/pass) |
-| Honest **partial-analysis / sampling disclosure** when a bound is hit | pdf-inspector's own `detect-pdf` samples content streams rather than parsing exhaustively and reports a `confidence_score`; ffprobe's `probe_score` is the same idea for container-format guesses. SEED-021 already commits to "ограниченная выборка страниц с честной пометкой выборочности" as an explicit requirement for born-digital PDF classification — this is not optional polish, it's already promised in the milestone framing | MEDIUM | A report produced under a page/size cap must say so (`sampled: true`, `pages_checked: N of M`) rather than silently truncating and presenting a full-confidence-looking result. Directly reuses the existing `pdfinfo` page-count cap pattern from `ocrguards.go` |
-| Sanitize table-stakes removal set for PDF: **JavaScript, embedded files/attachments, launch actions, and external references (URIs in annotations/forms)** | This is the intersection across every CDR vendor surveyed (OPSWAT Deep CDR, Glasswall) and open-source (Dangerzone rasterize-and-rebuild strips ALL active content by construction) — a PDF sanitizer that leaves embedded JS or file attachments untouched is not credibly "sanitized" by any industry definition found | HIGH | New engine surface: nothing in `internal/convert` today parses/rewrites PDF *content* (only `pdfinfo`/`pdftotext` for metadata-adjacent reads and `pdftoppm` for rasterization in the OCR path) — this is genuinely new tooling, not an exposure of existing probes, unlike inspect |
-| Sanitize table-stakes removal set for Office (OOXML): **VBA macros (including p-code, not just source) and embedded objects/OLE packages** | OPSWAT explicitly calls out stripping "both macro source code and p-code" (VBA stomping defense) as the baseline, not an advanced feature — a sanitizer that only strips the visible macro source and leaves compiled p-code is a known-bypassable half-measure | HIGH | `cr.HasMacro` (existing, via `SniffContainer`'s ZIP-central-directory inspection) already detects macro *presence* — sanitize needs to go from detection to **removal-and-rewrite** of the ZIP/OOXML part structure, which is new write-path code, not a reuse of the existing read-only detector |
-| Sanitize table-stakes removal set for images embedded in either PDF or Office: **EXIF/GPS/IPTC/XMP metadata** | Every consumer-facing "strip metadata before sharing" tool (exiftool-based scrubbers, the milestone's own SEED-013) treats GPS/camera/author metadata as the headline privacy win — this is the most-cited real-world leak vector in every source surveyed | MEDIUM | No existing OctoConv code parses/rewrites EXIF/XMP; SEED-013 was scoped around `exiftool` specifically as the tool of choice — a new hardened `runCommand` invocation of `exiftool`, following the `ffprobe`/`pdfinfo` precedent exactly (same sandboxing discipline, `Setpgid`+timeout) |
-| A sanitize **report** listing what was found and removed, delivered as a second job output (`role=report`) | Glasswall's File Analysis Report and OPSWAT's Deep CDR both ship a report alongside the cleaned file as standard, not optional — a CDR/sanitize operation that silently mutates a file with no accounting of what changed is the specific failure mode security teams distrust CDR products for ("did it actually do anything, and what did I lose?") | MEDIUM (given the `operation`/`role` groundwork already required by this milestone) | This is the first real consumer of the new `job_outputs.role` column the milestone already commits to adding — report as JSON (or JSON embedded in the job's output metadata jsonb) mirrors `job_outputs.metadata jsonb` already existing in the schema (`0001_init.sql:98`) |
-| `GET /v1/jobs/{id}` returns **all** outputs with their roles when a job produced more than one, not just the first | Once `role` exists (`primary`/`report`/`preview`/`thumbnail`), a consumer needs to distinguish "the actual result" from "the report" without guessing by ordinal — `handleGetJob` today (`internal/api/handlers.go:858-870`) unconditionally takes `outs[0]` and presigns only that one; this becomes wrong the moment sanitize ships a second output | LOW-MEDIUM | Requires iterating `s.repo.Outputs` and returning an array (or map by role) instead of `outs[0]` — a response-shape change to an existing, already-shipped endpoint, so it must stay backward compatible for `convert` jobs (single `primary` output should look the same as today's `download_url`, or the change is a breaking one for MCP/existing clients) |
-| Sanitize is a **separate, explicit `operation`**, never an implicit side effect of `convert` | Every operation-modeling precedent surveyed (CloudConvert's distinct task types: convert / optimize / get-metadata / write-metadata / add-watermark / merge / archive; Tika's separate `/detect` vs `/meta` endpoints) treats "do something other than format-change" as its own addressable action, never a hidden flag on convert. The milestone's own framing is explicit about this ("Отдельная операция, не неявное поведение конвертации") | LOW (given JobRunner groundwork) | `operation` is already a column with the right CHECK values reserved; the work is registry lookup keyed by `(operation, from, to)` instead of `(from, to)`, which the milestone's JobRunner refactor is already positioned to introduce |
-| Machine-readable error `code` on every terminal failure and every 4xx, not just the two 429 paths that have it today | The service already ships `quota_exceeded` and `rate_limited` as machine-readable codes — Stripe's convention (a stable, documented `code` string alongside human `message`, with a doc-linkable enumeration) is the de facto baseline every API consumer now expects, and having it on 2 of N error paths while the rest are fixed English strings is an inconsistent, half-finished contract that both MCP servers already have to work around by string-matching | MEDIUM-HIGH | This is exactly SEED-020's stated scope ("Наружу — машиночитаемые коды ошибок вместо фиксированных строк, которые фронт и оба MCP матчат текстом") — the JobRunner consolidation is what makes a **complete, non-duplicated** enumeration tractable; retrofitting codes onto all seven existing handler copies independently would be the exact ×7-tariff problem the milestone explicitly names |
-| Error response is stable enough to build client logic against: same `code` for the same failure class across engines | An error taxonomy is only useful if `code` values are engine-independent where the failure class is the same (e.g. `unsupported_conversion` must mean the same thing whether it was image, document, or av) — Stripe explicitly documents this as "an enumeration of all possible error codes... ensures consistency" | LOW (design decision, not implementation cost) | Purely a naming-convention decision at JobRunner design time; no new infrastructure |
-| Born-digital PDF stops being an unconditional dead end for text extraction | SEED-021 documents, with code references, that `pdf` is currently a source format in exactly one place (`ocrSourceFormats`) and is rejected outright by `detectBornDigitalPDF` with a comment steering users to a document engine that does not accept PDF input — this is a confirmed, verified capability hole, not a hypothesis | MEDIUM (Opportunity 1 of SEED-021: a new source→target pair for a bounded scope, not per-page routing) | Directly dependent on the `operation`/registry work above (a new `(from=pdf, to=md/txt)` entry) and on picking *some* tool for born-digital text extraction (SEED-021 evaluated `pdf2md`/`detect-pdf`, but the milestone's own scope note does not commit to that specific tool — treat the tool choice as an open phase-level decision, not settled by this research) |
+| Closed view vocabulary: `iso` (default), `front`, `back`, `top`, `bottom`, `left`, `right` | Every CAD viewer (FreeCAD, Fusion, SolidWorks, Onshape) exposes exactly these 6 orthographic faces + 1 axonometric; PreviewGenerator already has a view-orientation parameter | LOW | Closed enum, strict-parse, no raw camera vectors from the client. See "View conventions" below for the axis contract. HIGH confidence on vocabulary, MEDIUM on exact iso vector. |
+| Fixed axis convention: right-handed, Z-up, view names relative to the FILE's own axes | CAD and STEP/IGES/DXF are Z-up; f3d defaults to `--up +Y`, so leaving the renderer default would turn every part on its side | LOW | Must pass explicit up (`--camera-view-up` / `--up +Z`). STL carries no orientation metadata: a Y-up STL from a game/three.js exporter will render "lying down"; do NOT auto-detect up, document it. |
+| Fit-to-view with margin, centered on the bbox centre | Fusion `isFitView=True` is the baseline consumers saw; unfitted renders crop or shrink the part | LOW-MED | Fit by projected bbox (all 8 corners) per view, not one global radius, else `top` of a flat plate is tiny. Fixed margin (~5-10%) as server constant. f3d auto-fit exists but `--camera-position` OVERRIDES direction and zoom (man page), so choose one mechanism and test every view for cropping. |
+| Size option, default 1280x1280, closed bounds | Consumer contract is exactly 1280x1280; opts closed by project rule | LOW | Either closed enum (e.g. 256/512/1024/1280/2048) or integer range with hard min/max. Prefer a short enum (matches `avResolutionHeights` precedent). Square only at first; non-square is a feature nobody asked for. |
+| Opaque neutral background by default | GSH feeds the PNG through ImageMagick derivatives; a transparent PNG flattened to JPEG goes BLACK unless the consumer composites | LOW | Default opaque light background (white/light grey), not f3d's default `#333333`. Transparent is the differentiator below. |
+| Shaded solid, neutral single colour, smooth normals, headlight-style lighting | Users expect "a clean grey part", not wireframe or flat triangles | LOW-MED | Tessellation quality is a fixed server constant relative to bbox diagonal (relative linear deflection; angular tolerance), NOT a client opt. Faceted-looking cylinders are the #1 visual complaint. |
+| Tessellation of B-rep (STEP/IGES) before rendering | f3d/VTK render meshes, not B-rep; STL needs none | MED | Stage-1 geometry kernel (FreeCAD/OCCT) then stage-2 renderer. Same tessellation code path as STEP/IGES to STL conversion: build once, reuse. |
+| Whole-assembly rendering as ONE image | A STEP file is usually an assembly; the preview must show everything | LOW | Merge all solids/shells/faces into one mesh. No per-part toggling. |
+| Headless, offline, deterministic, no GPU, no display server visible to the confinement | Core platform constraints (Landlock, offline) | HIGH (stack phase) | Measured: f3d needs Xvfb on bookworm (note 2026-09-23). Renderer choice is the STACK/eval phase; for features the contract is just "PNG at the requested size". Deterministic output (same input + opts to same bytes or at least same pixels) enables test fixtures. |
+| Fail-closed content validation for all five formats | Project invariant; formats are attacker-controlled | MED | STEP: `ISO-10303-21;` start + `HEADER;`/`DATA;`/`END-ISO-10303-21;` structure. IGES: fixed 80-column records, section letters at col 73 (`S`,`G`,`D`,`P`,`T`), terminate record. STL: see section C. DXF: ASCII `0\nSECTION` (optional leading BOM / `999` comment groups) or binary sentinel `AutoCAD Binary DXF\r\n\x1a\x00`. Detect **DWG** (`AC10xx` magic) explicitly and reject with a distinct "dwg not supported" error, not a generic unknown-format 422. |
+| Input size caps per format, enforced before parsing | Parser memory/time is attacker-chosen | LOW | Start from consumer parity (40 MB STEP/IGES/STL, 5 MB DXF) as env-configurable defaults, then confirm by memory/timing gate (pandoc precedent: memory-bound, Path-B lowered the cap). Do NOT copy the 500 B floor (see anti-features). |
+| Transient/terminal retry classification | Platform invariant | LOW-MED | Geometry-kernel timeout on a given file is deterministic: terminal (document/pandoc precedent). Renderer-stage timeout/crash is transient. Stage-aware like `isAVTerminal`. |
+| Stable error codes for CAD failures | Platform invariant (`internal/errcode`) | LOW | New codes: unsupported format incl. dwg, no geometry found, input too large, geometry unreadable, render failed. Closed set, documented in `docs/ERROR-CODES.md`. |
 
-### Differentiators (Sets OctoConv Apart From a Bare Convert Service)
+#### B. Dimensions report (second output of `render`, new role)
+
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| Axis-aligned bbox in file coordinates: `min[3]`, `max[3]`, `size[3]` | This is exactly what the consumer's "Size: X x Y x Z mm" overlay was built from | LOW-MED | **Must be a TIGHT bbox.** OCCT's default shape bbox (`BRepBndLib::Add`, FreeCAD `Shape.BoundBox`) can be loose for curved/NURBS faces (uses poles/tolerance). Use the optimal/tight variant (FreeCAD `Shape.optimalBoundingBox`, MEDIUM confidence the API exists in the pinned build) and add a fixture test with a rotated cylinder/sphere whose analytic bbox is known. Label it `bbox_kind: "axis_aligned"` (it overstates the true envelope of a rotated part). |
+| Volume where, and only where, it is defined | `part_volume` is what the consumer prices on; a wrong number is worse than no number | MED | Volume is computed only for sources with closed solid geometry (see matrix below). Everything else returns `volume: null` with a closed reason code, never `0`. Note a measured baseline: box 20x10x5 gives exactly 1000.0. |
+| `units` block with explicit provenance (see "Honest units semantics") | Project's stated honesty requirement; the consumer overlay silently printed "mm" for everything | MED | Per-format rules below. Every measured quantity names its unit or says it has none. |
+| Solid / body count and an assembly-ish indicator | A volume is only interpretable if you know whether it sums 1 or 50 bodies | LOW | `solid_count` (B-rep), `shell_count`, `component_count`/`triangle_count` for meshes. `volume` for multi-solid input = SUM of solid volumes (no boolean union): overlapping solids double count, and instanced parts count once per instance. State this in the contract. |
+| Per-quantity status, no single boolean verdict | Project lesson from sanitize/inspect: report only what was verified, closed vocabularies, no `ok`/`clean` flag | LOW-MED | e.g. `volume: {value, unit, status: "computed"}` or `{value: null, status: "unavailable", reason: "no_solid_geometry" | "mesh_not_closed" | "two_dimensional_source" | "invalid_geometry"}`. The report is produced even when volume is unavailable; the JOB fails only if the PNG cannot be produced. |
+| Schema version field + closed reason vocabulary documented in `docs/` | Same discipline as `docs/FINDINGS.md`/`ERROR-CODES.md` | LOW | Doc-sync test (existing pattern) binds Go constants to the doc table. |
+| JSON stored as a second `job_outputs` row with the new role, exposed in `outputs[]` | Reuses the role mechanism built in v1.13 | LOW | Needs CHECK widening migration + `OutputRoleDimensions` const + `AddOutputWithRole` call. Terminal webhook must keep selecting `primary` only (existing invariant). |
+| 2D (DXF) report: x/y bbox only, `volume: null, reason: two_dimensional_source` | Scope statement | LOW | Compute extents from entities, NOT from `$EXTMIN/$EXTMAX` (header values are frequently stale or at their `1e20` defaults; MEDIUM confidence, from ezdxf practice). |
+
+**Dimensions availability matrix (what each source can honestly report)**
+
+| Source | bbox | volume | surface area | Unit provenance | Notes |
+|--------|------|--------|--------------|-----------------|-------|
+| STEP (solids) | 3D tight | yes (sum of solids) | yes | declared in file; OCCT converts to mm on read | Assemblies resolved to instances by OCCT; PMI/colours/layers ignored. |
+| STEP (surfaces/wires only, no solids) | 3D | null (`no_solid_geometry`) | faces only | as above | Seen in practice from surface modellers. |
+| IGES (typical: trimmed surfaces) | 3D | null (`no_solid_geometry`) unless file has real B-rep solid (entity 186) | yes | declared in Global Section, param 14 flag | Do not trust `Shape.Volume` on an open shell: OCCT will return a number. Gate on `Shape.Solids` non-empty AND valid. |
+| IGES with closed shell but no solid entity | 3D | null by default | yes | as above | Sewing to a solid is a differentiator (HIGH risk), not default. |
+| STL, closed and consistently oriented | 3D | yes (signed-tetra sum) | yes | NONE | Volume valid only if every edge is shared by exactly two triangles. |
+| STL, open / non-manifold / self-intersecting | 3D | null (`mesh_not_closed`) | yes | NONE | Check manifoldness explicitly before trusting the sum. |
+| DXF | 2D (x,y) | null (`two_dimensional_source`) | null | `$INSUNITS` | If entities have non-zero Z, still report x/y only and add a closed note that Z was ignored. |
+
+#### C. Format semantics the engine must get right
+
+| Feature | Why Expected | Complexity | Notes |
+|---------|--------------|------------|-------|
+| STL ASCII vs binary detection by size equation, never by the `solid` prefix | Binary STL files starting with `solid` exist in the wild (header text is free); naive sniff parses a binary file as text | LOW-MED | Rule (verified): treat as binary iff `filesize == 84 + 50*N` where N = little-endian uint32 at offset 80; otherwise if it starts with `solid` and contains `facet normal`/`endsolid`, ASCII; otherwise reject. Check size equation BEFORE trusting N for any allocation (header can lie; matches the project's "an unexamined input never gets an optimistic answer" lesson). |
+| STL sanity: N>0, finite coordinates, triangle cap | NaN/Inf make bbox/fit undefined; N=0 renders nothing | LOW | Reject with a stable code; never emit a blank PNG as "success". |
+| STL has NO units; report `unspecified`, never invent mm | Explicit scope requirement | LOW | See honest-units section. |
+| STEP/IGES unit handling via the kernel's unit-aware import | Files declare units (`SI_UNIT` with prefix, `CONVERSION_BASED_UNIT` e.g. inch for STEP; Global-Section flag/name for IGES); OCCT converts geometry to mm and can report the declared unit (`STEPControl_Reader::FileUnits`, verified) | LOW-MED | Report `unit: "mm"` (the unit of the numbers) plus `declared_unit` (what the file said). Mixed unit contexts in one STEP: kernel converts per shape; report the list. |
+| DXF 2D vs 3D content detection | DXF is mostly 2D drafting but can carry 3D (3DFACE, MESH, polyface POLYLINE, SURFACE, 3DSOLID/BODY/REGION as proprietary ACIS) | MED | Closed finding: `acis_entities_ignored` (3DSOLID/BODY/REGION cannot be read by OSS tools; do not pretend to render them). 3D wireframe DXF renders top-down only (ezdxf projects 3D to XY; verified). |
+| DXF model space is what gets rendered/converted | Paper-space layouts hold title blocks and viewports that point back at model space; model space holds the geometry | MED | Default: model space, fit to its entity extents. Fallback: if model space is empty and a paper layout has entities (some exporters), use the first non-empty layout and record `layout_used`. |
+| DXF layers: honour on/off and frozen; render every visible layer | CAD users expect hidden layers to stay hidden | LOW-MED | ACI colour 7 means white-or-black depending on background: on a white page it must render BLACK (classic white-on-white failure). Library handles it if the background is told. |
+| DXF units from `$INSUNITS`, not `$MEASUREMENT` | `$INSUNITS` defines modelspace units; `$MEASUREMENT` only selects imperial/metric linetypes/hatches (verified) | LOW | Code table (verified): 0 unitless, 1 in, 2 ft, 3 mi, 4 mm, 5 cm, 6 m, 7 km, 8 uin, 9 mil, 10 yd, 13 micron, 14 dm, ... Old R12 files have no `$INSUNITS` at all: same as 0. |
+| `dxf to svg` and `dxf to pdf` as VECTOR outputs, content-fit page | Users expect lines/arcs/circles/splines/text/hatches to stay vector, correct Y orientation (DXF is Y-up, SVG is Y-down), linetypes and lineweights preserved | MED | Page = content extents + margin ("auto"). SVG `viewBox` from extents. Scale fidelity (1:1 print) is NOT promised. Text uses substitute fonts (SHX fonts are not available), say so in docs. Library choice (ezdxf drawing add-on has SVG and PDF backends, but its PDF backend needs PyMuPDF which is AGPL-licensed; verify with the owner before adopting, or rasterless alternatives) is a STACK decision. |
+| `step/stp/iges to stl` as one merged binary STL, in mm | Standard CAD to mesh conversion | MED | Same tessellation as render stage. STL cannot carry units, so the contract is "millimetres, always" (documented), even for an inch STEP: numbers differ by 25.4x from the source's native values, which downstream consumers must know. ASCII STL output is not offered. |
+| `stp` treated as alias of `step` | Same format, two extensions; `NormalizeFormat` already does this for `jpeg`/`tif` | LOW | One registry entry, alias in normalization, sniff by content only. |
+
+### View conventions (the axis contract to write into the docs)
+
+Camera positions relative to the part's own right-handed, Z-up axes (matches FreeCAD standard views; HIGH confidence on FreeCAD `Front` looking along +Y, MEDIUM on the exact iso vector):
+
+| View | Camera sits at | Looks toward | Screen up | Screen right |
+|------|----------------|--------------|-----------|--------------|
+| `front` | -Y | +Y | +Z | +X |
+| `back` | +Y | -Y | +Z | -X |
+| `right` | +X | -X | +Z | +Y |
+| `left` | -X | +X | +Z | -Y |
+| `top` | +Z | -Z | +Y | +X |
+| `bottom` | -Z | +Z | -Y | +X |
+| `iso` | (+1, -1, +1) direction from centre | toward centre | +Z | front-right-top corner visible |
+
+First-angle vs third-angle projection: **not applicable** to a single-view preview. It only decides how several orthographic views are ARRANGED on a drawing sheet (ISO/European first-angle vs ANSI/US third-angle); each individual view (front, top, right) is the same picture in both systems. Do not expose a projection-angle option; naming a view is enough.
+
+Perspective vs orthographic: fix one globally. Recommendation for engineering parts: orthographic (parallel edges stay parallel, sizes comparable across views), but confirm the chosen renderer exposes it (LOW confidence it does in the pinned f3d). Not a client option.
+
+### Honest units semantics (per format, the contract)
+
+Principle: every number names its unit or says it has none; provenance says where the unit came from; the service never silently upgrades "unknown" to mm.
+
+```
+"units": {
+  "length": "mm" | "unspecified",
+  "source": "declared" | "unspecified",
+  "declared": "mm" | "inch" | "cm" | "m" | ... | null
+}
+```
+(Field names are illustrative; the reason/provenance vocabularies must be closed and doc-synced.)
+
+| Source | What is reported | `length` | `source` | Notes |
+|--------|------------------|----------|----------|-------|
+| STEP | Values converted to mm by the kernel; original declared unit reported | `mm` | `declared` | If the file declares no usable length unit (broken exporter), report `unspecified`: the kernel assumes mm, which is an assumption, not a fact. Volume unit is `mm^3` only when `length` is `mm`. |
+| IGES | Same as STEP, from Global Section flag (1 in, 2 mm, 3 named in param 15, 4 ft, 5 mi, 6 m, 7 km, 8 mil, 9 micron, 10 cm, 11 microinch) | `mm` | `declared` | The flag is known to be unreliable in practice; it is still "declared". Flag 3 needs the unit-name parameter. |
+| STL | Raw coordinates, no conversion | `unspecified` | `unspecified` | Volume reported as cubic model units, `volume_unit: "unspecified^3"` or equivalent; never `mm^3`. |
+| DXF | Raw coordinates in `$INSUNITS` unit | from code table (e.g. `mm`, `inch`, `m`) or `unspecified` for 0/absent | `declared` / `unspecified` | No conversion applied (units describe, not transform). Do not infer from `$MEASUREMENT` or from magnitude. |
+
+### Differentiators (Competitive Advantage)
 
 | Feature | Value Proposition | Complexity | Notes |
-|---------|--------------------|------------|-------|
-| Inspect reports the client's **available `(operation, target)` pairs with duration estimate and quota check for this specific file**, not just format facts | This is *not* something Tika/ffprobe/exiftool do — those are pure introspection tools with no downstream job system. Because OctoConv already has quota/duration data (`client_limits`, per-engine timing history), inspect can answer "if I convert this, will it be admitted, and how long will it take" in one round trip, which is a genuinely differentiated capability tied to this project's own v1.12 accounting work | MEDIUM-HIGH | Needs read-only quota-check reuse (existing `PreAdmit`/`evaluate()` logic, called without mutating state) and duration estimation (no existing per-file duration predictor exists yet — this is new, and the milestone text itself flags it needs a measured, not guessed, basis) |
-| Sanitize report doubles as an **audit trail artifact** (`role=report` output retained per the existing TTL/retention policy, queryable via the same presigned-URL mechanism as any other output) | Most CDR products treat the report as a UI-only artifact; making it a first-class, retrievable job output with the same guarantees (S3 object, TTL, presigned GET) as the primary result is a natural extension of an already-async, already-observable pipeline that a point CDR tool bolted onto a mail gateway does not offer | LOW (given `role` groundwork) | Falls out "for free" once `job_outputs.role` exists and `GET /v1/jobs/{id}` returns multiple outputs — no separate delivery mechanism needed |
-| Per-page routing for mixed PDFs (SEED-021 Opportunity 2: TextBased/Scanned/ImageBased/Mixed classification with per-page OCR routing, rather than a whole-document accept/reject) | The current heuristic (a single non-whitespace character threshold against the whole document) is confirmed by SEED-021 to reject a 200-page PDF with only 10 scanned pages wholesale — per-page classification with routing is a genuine quality upgrade over the binary reject-only status quo that comparable products (per pdf-inspector's own README) treat as their whole value proposition | HIGH | SEED-021 itself flags this as NOT settled: "The resolution is that the guard's ordering is what is load-bearing, not its current whole-document verdict" plus an explicitly undefined merging contract (page-order, non-duplication, target-format asymmetry between Markdown and hOCR/ALTO). This is differentiator-tier and should very likely be deferred past v1.13's Opportunity-1-only scope, exactly as SEED-021 itself recommends ("Harvest as a spike first, not a phase") |
-| Confidence-scored classification exposed to the client (not just used internally to route) | Exposing `confidence_score`/`sampled` fields in the inspect response (rather than only using them internally to decide routing) lets a client build its own policy on top of borderline cases — a genuine API-design differentiator over CDR/inspection products that hide their confidence internally and only expose a final verdict | LOW (once the underlying classification exists) | Pure exposure decision on top of whatever classifier ships; costs almost nothing beyond the table-stakes classification work already required |
+|---------|-------------------|------------|-------|
+| `assume_unit` opt (closed enum `mm|cm|m|inch`) for sources with no units, recorded as `source: "client_assumed"` | The real consumer wants mm for STL/DXF-without-units; this lets it say so without the service lying | LOW-MED | Provenance stays honest (same idea as `inspect`'s estimate carrying its origin). Only applies when source unit is unspecified; rejected (422) otherwise to avoid unit-override of declared units. |
+| `background: opaque|transparent` (closed) | Transparent PNG for UI overlays | LOW | f3d `--no-background` exists. Default stays opaque (see table stakes). |
+| Surface area in the dimensions report | Cheap once the shape is loaded (`Shape.Area`), useful for coating/finishing quotes | LOW | Closed-shell/face area is valid even for surface-only IGES. Closed-mesh area for STL. |
+| `quality: draft|standard|fine` (closed) for STEP/IGES to STL and render tessellation | Lets a consumer trade file size for smoothness | LOW-MED | Maps to server constants for relative deflection. Cap resulting triangle count. |
+| Mesh health findings for STL: `mesh_not_closed`, `non_manifold_edges`, `inverted_orientation`, `degenerate_triangles` as closed codes | Explains WHY volume is null; helps users fix files | MED | Verify the mesh checks the kernel provides in the pinned build (FreeCAD Mesh has `isSolid`/`hasNonManifolds`/`hasSelfIntersections` style methods; MEDIUM confidence). If all normals are inverted but mesh is closed, take the absolute volume and say so. |
+| Per-body breakdown (`bodies[]` with bbox + volume) | Assemblies: see what makes up the total | MED | Defer; only the totals plus `solid_count` ship first. |
+| Feature-edge outlines (silhouette + crease edges, not triangle edges) | Much more legible technical look | MED-HIGH | f3d `--edges` draws ALL cell boundaries: on a tessellated STEP that is a triangle wireframe. Needs angle-threshold feature edges or a post pass. Leave default off. |
+| Ambient occlusion / anti-aliasing quality pass (f3d `--ambient-occlusion`, `--anti-aliasing`) | Better-looking previews | LOW | Fixed server constants, but each costs render time under software GL: decide by measurement. |
+| Closed `layout: model|first_paper` opt for DXF svg/pdf | Handles paper-space-only drawings explicitly | LOW | Never an arbitrary layout NAME (open client string, breaks closed-opts rule). Auto-fallback in table stakes covers most cases. |
+| Closed `page: auto|a4|a3` for DXF pdf | Printable output | LOW-MED | Scale-to-fit with margins; still no 1:1 promise. |
+| IGES sewing to solid (when shells are closed) so volume can be reported | Many IGES parts are closed surface sets and users still expect a volume | HIGH | Sewing tolerance sensitivity, silent wrong volumes. Defer unless a consumer asks. |
 
-### Anti-Features (Commonly Built, Commonly Regretted)
+### Anti-Features (Commonly Requested, Often Problematic)
 
-| Feature | Why It Seems Good | Why It's a Trap Here | Better Approach |
-|---------|--------------------|------------------------|------------------|
-| Claiming sanitize output is "guaranteed malware-free" or "100% safe" | Marketing language every CDR vendor page uses informally, and a natural temptation for a report UI that says "0 threats found" | Deep Instinct and multiple industry sources are explicit that CDR "cannot sanitize... most image files," "does not determine or detect malware's functionality," and known commercial CDR has itself been found susceptible to malware — a sanitize report that implies certainty is a **false guarantee**, and this project's own culture (explicit "false guarantees to avoid claiming" framing in the research brief) treats honesty about limits as a first-class requirement, matching how PROJECT.md already documents deliberate rejections rather than papering over gaps | Report language should describe what was *checked and removed*, scoped to the specific threat classes this sanitizer targets (macros/JS/embedded files/external refs/EXIF), and explicitly NOT claim general malware-freedom. This is a copy/requirements-wording decision, near-zero engineering cost, but must be a stated requirement or it *will* drift into overclaiming during implementation |
-| "Best-effort" rasterize-and-rebuild (Dangerzone-style: convert every page to pixels + OCR text layer) as the sanitize strategy for this milestone | It is the most defensible security posture in the entire survey — Dangerzone's output "contains only images and an OCR text layer — no JavaScript, no macros, no embedded objects, no metadata from the original," a strictly stronger guarantee than selective removal | It is **lossy by construction**: selectable/copyable text becomes an approximate OCR layer, vector graphics/forms become raster images, and — the sharpest point from the research questions — any load-bearing interactivity (form field JavaScript validation, fillable form fields themselves) is destroyed, not preserved-minus-threat. The milestone explicitly scopes sanitize as `pdf→pdf` and office→office preserving usability ("удаление... плюс отчёт" implies a targeted-removal, not a rebuild-from-pixels, contract), and OCR-based rasterization would also silently duplicate/compete with the existing OCR engine class rather than complement it | Targeted removal (strip macros/JS/embedded-files/external-refs/EXIF, keep the document's actual structure/text/forms intact) is the correct v1.13 scope — this is the CDR mainstream approach (OPSWAT/Glasswall), not the rasterize-everything approach; Dangerzone-style rasterization is a legitimate FUTURE differentiator (strictly higher assurance) but must be a distinct, explicitly-named operation if ever added, never silently substituted for "sanitize" |
-| Silently repairing/"fixing" a form's JavaScript instead of removing it, to preserve validation behavior | Feels more user-friendly than breaking a form that depended on script-based validation | No CDR product surveyed attempts semantic rewriting of removed script logic — Glasswall's own vocabulary explicitly separates "remediation" (structural repair) from "sanitization" (removal) and does not claim to reconstruct removed *behavior*, only removed *structure*. Attempting to guess a safe replacement for stripped validation logic is exactly the kind of complexity that produces subtly-broken output nobody asked for, and it re-introduces a code-execution-adjacent surface (rewriting active content) inside the sanitizer meant to remove active content | Remove and report; the report explicitly names the form/field affected so the consumer (an internal service, per this project's audience) can decide whether to re-add validation client-side. This is the honest CDR-industry-standard answer to the research brief's own question about "load-bearing JavaScript" |
-| A single flat `code` string as the *entire* error contract, replacing structured content wholesale (no RFC 9457 envelope) | Simplest possible change, matches the two existing 429 examples exactly, ships fast | A bare `{"error": "...", "code": "..."}` shape (today's pattern) has no place for a stable `type` URI, no `instance` for correlation/log-lookup, and no extensibility point for future per-error context (e.g., which `opts` field failed) — RFC 9457's own design goal is exactly this: a shared envelope that individual error kinds extend. Committing forever to the bare shape now makes a future migration to the standardized envelope a breaking change for every existing client (including both MCP servers) instead of an additive one | Adopt the RFC 9457-shaped envelope (`type`/`title`/`status`/`detail`/`instance` as optional standard members) **plus** a stable `code` extension member from day one — this satisfies "a flat code string" (what's needed today) while leaving room to add `type`/`instance` later without a breaking change; the existing `quota_exceeded`/`rate_limited` 429s should be the FIRST bodies migrated into the new shape, not left as a permanently-inconsistent legacy pair |
-| A dynamic, per-request-discoverable capability/finding taxonomy (i.e., inventing new finding `code`s or error `code`s on the fly rather than a closed, versioned enum) | Feels flexible — new risk types or error conditions can be added without a "breaking" schema bump | This project has *already rejected* dynamic-registry patterns twice for the analogous engine-capability problem (SEED-010, rejected three times per PROJECT.md, most recently in this very milestone's Key Context) for exactly this reason: a compile-time closed allowlist is a *security and consumer-stability* property, not merely a convenience. An open-ended `code` namespace would let a bug or a hasty PR silently introduce a new machine-readable contract surface without review, and would make "documented enumeration" (a stated requirement in the research question) meaningless | A closed, versioned Go-level enum for both finding codes and error codes, exactly mirroring how `StatusQueued`/`StatusActive` etc. are already modeled as `PascalCase` string consts tied to a DB CHECK constraint — new codes are a reviewed code change, not a runtime-discoverable set |
-| Treating `inspect`'s risk findings as authoritative enough to skip the existing fail-closed magic-byte/macro/bomb rejection gates on the subsequent `POST /v1/jobs` call | Feels efficient: "the client already inspected, why re-check on create?" | TOCTOU: the file (or a maliciously different file reusing the same claimed identity) could differ between the `inspect` call and the later `convert`/`sanitize` job creation — `inspect` is stateless and does not pin the uploaded bytes to anything. This project's own codebase treats exactly this class of race as load-bearing (the preset TOCTOU re-check at `handlers.go:701-723` is a direct precedent for taking races seriously rather than assuming "checked once" implies "still true later") | `inspect` and job creation remain fully independent validation paths; `POST /v1/jobs`/the sanitize handler must re-run its own fail-closed checks unconditionally, exactly as today, regardless of what an earlier `inspect` call reported |
+| Feature | Why Requested | Why Problematic | Alternative |
+|---------|---------------|-----------------|-------------|
+| "Size: X x Y x Z mm" text overlay on the PNG | The old service did it | Out of scope per milestone; burns unit claims into pixels (an STL becomes "mm" by fiat), cannot be machine-read, collides with consumer thumbnail cropping | Dimensions as a data output (JSON, new role); the consumer draws overlays |
+| Client-supplied camera vectors / arbitrary angles / zoom | "Just let me pick the angle" | Breaks the closed-opts invariant; fit-to-view maths becomes the client's problem | Closed view enum; add a view to the enum when a real need appears |
+| First/third-angle projection option, multi-view sheet (front+top+right on one image) | Looks like a drawing | A drawing-layout problem, not a preview problem; per-view contract already complete | Separate jobs per view |
+| Copying the consumer's 500 B minimum and "skip silently" behaviour | Parity with PreviewGenerator | A valid one-triangle binary STL is 134 B; silent skip with no response was PreviewGenerator's worst trait (consumer got nothing and no error) | Structural fail-closed validation; every rejection is a stable error code |
+| Silent success on garbage (blank PNG, bbox of nothing, `volume: 0`) | "Always return something" | The lesson recorded repeatedly in project memory: a scan of nothing is never clean | Typed failure, or `null` + reason |
+| Inventing mm for unit-less sources by default | Consumers want a number | Unit-less STL in inches would quote 25.4x wrong silently | `unspecified` by default; opt-in `assume_unit` with provenance |
+| Trusting `$EXTMIN/$EXTMAX` or `Shape.Volume` without checking the underlying condition | Easy, fast | Header extents are often stale; `Volume` on open IGES shells returns a number that means nothing | Compute extents from entities; gate volume on valid closed solids / closed manifold mesh |
+| DWG support | Fusion/AcmeCAD path handled DWG | Out of scope: FreeCAD cannot read it, `libredwg-tools` absent in bookworm, ODA licence unresolved (commercial decision) | Explicit "dwg not supported" error code so consumers can route elsewhere |
+| ACIS 3DSOLID in DXF / PMI / STEP colours and per-part appearance | "Complete" CAD fidelity | ACIS is proprietary; colour round-trip is lost by mesh intermediates; large surface area for little value | Neutral single-colour render; closed finding naming what was ignored |
+| Per-part STL export of assemblies, BOM trees, assembly structure JSON | Natural next ask | Whole new product (structure traversal, naming, instance dedupe) | One merged STL; `solid_count` only |
+| Raster output formats beyond PNG, ASCII STL output, DXF export, STEP export | Format creep | Each multiplies sniff/validate/test surface | Out of milestone; add by explicit request |
+| Overriding a declared unit via `assume_unit` | "The file says inch but it is mm" | Lets one client silently re-scale; makes provenance meaningless | `assume_unit` only fills a gap; never overrides `declared` |
 
 ## Feature Dependencies
 
 ```
-[operation dimension: registry keyed by (operation, from, to)]
-    └──requires──> [JobRunner / SEED-020 consolidation]   (stated explicitly as milestone foundation)
-    └──requires──> [migration: operation CHECK must add 'sanitize' — not present in 0001_init.sql today]
+Fail-closed sniffers (step/iges/stl/dxf, dwg-reject)
+    └──required by──> every operation (create-job gate, inspect triples)
 
-[job_outputs.role column]
-    └──requires──> [new migration] (role does not exist in 0001_init.sql; only ordinal exists)
-    └──enables──> [sanitize report as a second, addressable output]
-    └──enables──> [GET /v1/jobs/{id} multi-output response] ──breaking-change-risk──> [existing convert-only clients / both MCP servers]
+Registry triples (render|convert, from, to)  ──auto──> /v1/inspect available triples
 
-[sanitize operation: pdf→pdf, office→office]
-    └──requires──> [operation dimension above]
-    └──requires──> [job_outputs.role above]
-    └──requires──> [NEW PDF content-rewrite tooling]        (no existing OctoConv code parses/rewrites PDF object streams)
-    └──requires──> [NEW OOXML macro/embedded-object-strip tooling] (existing SniffContainer only DETECTS macros, does not remove them)
-    └──requires──> [NEW EXIF/XMP-strip tooling, likely exiftool]   (SEED-013's scoped tool choice)
-    └──enhances──> [existing cr.HasMacro reject-on-convert path]   (coexists, does not replace — convert still rejects; sanitize is the opt-in alternative)
+Closed opts (view/size/background/assume_unit/quality)
+    └──requires──> ParseCADOpts strict parser + per-target applicability (AVOpts precedent)
+    └──view applies only to 3D sources (step/stp/iges/stl); rejected for dxf
 
-[POST /v1/inspect]
-    └──reuses──> [existing Sniff/SniffContainer/SniffVideo/SniffAudio/ClassifyCFB]
-    └──reuses──> [existing ffprobe/pdfinfo/pdftotext probe functions, currently embedded in converter guard code]
-    └──requires──> [NEW sync-path rate budget]  (explicitly flagged in milestone: "минует v1.12 admission-гейт")
-    └──requires──> [NEW response-envelope design: findings taxonomy, tri-state check status, sampling disclosure]
-    └──enhances──> [SEED-021 Opportunity 1: born-digital PDF routing]  (inspect becomes the router, per milestone framing)
+Geometry kernel load (FreeCAD/OCCT) ──> tessellation ──> render stage ──> PNG (role primary)
+                              └──────> measurement ──> dimensions JSON (NEW role)
+Tessellation ──shared by──> STEP/IGES to STL conversion
 
-[SEED-021 Opportunity 1: pdf as a source format for text extraction]
-    └──requires──> [operation/registry dimension above]  (new (from=pdf,to=md|txt) pair needs somewhere to register)
-    └──requires──> [tool selection — NOT settled by this research; SEED-021 evaluated pdf2md but milestone scope doesn't commit]
-    └──conflicts-with (if attempted in same milestone)──> [SEED-021 Opportunity 2: per-page Mixed-PDF routing]
-         reason: Opportunity 2 has an explicitly unresolved merging contract (page order, non-duplication,
-         Markdown-vs-hOCR target-format asymmetry) and an unresolved guard-ordering question the seed itself
-         flags as unfinished design, not implementation — treat as a distinct future phase, not bundled here
+New output role `dimensions`
+    └──requires──> CHECK widening migration + Go const + AddOutputWithRole call
+    └──requires──> handleGetJob outputs[] already role-keyed (exists)
+    └──must not disturb──> D-13 exactly-one-primary guard, terminal webhook primary-only
 
-[Structured error codes]
-    └──requires──> [JobRunner / SEED-020 consolidation]  (stated explicitly — retrofitting per-handler is the ×7 tariff)
-    └──enhances──> [existing quota_exceeded/rate_limited 429 codes]  (should be the first bodies migrated to the new envelope)
-    └──conflicts-with──> [ad-hoc/dynamic code namespace]  (must stay closed/versioned, per SEED-010 precedent)
+Honest-units contract
+    └──requires──> per-format unit extraction (STEP/IGES FileUnits, DXF $INSUNITS, STL none)
+    └──enhanced by──> assume_unit opt
+
+dxf to svg/pdf ──independent of──> 3D kernel path (2D library path, its own sniff/limits)
+
+Measured CAD_ENGINE_TIMEOUT / caps ──requires──> corpus incl. large STEP, dense STL, big DXF
+Confined renderer (Xvfb vs offscreen EGL/OSMesa) ──gates──> render feature at all
 ```
 
 ### Dependency Notes
 
-- **Sanitize requires new tooling, inspect mostly does not.** The two headline v1.13 features look similar ("read a file, report on it") but sit at opposite ends of the build-cost spectrum: inspect is an aggregation/exposure layer over probes that already exist inside converter guard code; sanitize needs three genuinely new capabilities (PDF content rewrite, OOXML macro/object strip, EXIF/XMP strip) that exist nowhere in the codebase today. Do not let inspect's low cost create false confidence about sanitize's cost, or vice versa.
-- **`operation` dimension and `job_outputs.role` are both schema changes that gate everything else.** Neither exists today in the exact shape needed (`operation` CHECK lacks `sanitize`; `role` column doesn't exist at all) — both are prerequisites, not incidental, for sanitize's report output and for inspect's clean "this is a read-only operation" framing.
-- **The `GET /v1/jobs/{id}` response-shape change is the one place backward compatibility must be actively verified, not assumed.** Today's handler always returns a single `download_url` for `outs[0]`; once `role` exists, a decision is required (and should be a testable requirement) about whether a plain `convert` job's response shape stays byte-identical or whether all clients (including both existing MCP tools) must be updated for a new multi-output shape.
-- **SEED-021's two opportunities must not be conflated into one requirement.** Opportunity 1 (pdf→md/txt for born-digital PDFs) is scoped, bounded, and directly serves this milestone's stated goal ("born-digital PDF перестаёт быть тупиком"). Opportunity 2 (per-page Mixed-PDF routing) is, by the seed's own admission, still missing a merging contract and a resolved guard-ordering design — pulling it into v1.13 without that design work first would be scope creep the seed itself warns against ("Harvest as a spike first, not a phase").
-- **Structured error codes conflict with any dynamic/runtime-discoverable code namespace.** This is a direct precedent transfer from SEED-010's repeated rejection (engine capability registry) — the same "compile-time closed set over runtime flexibility" argument applies to error/finding codes for the same reason: consumer stability and reviewability outrank convenience.
+- **Render depends on the evaluation-phase renderer choice:** if the renderer needs Xvfb sockets under `/tmp`, the Landlock ruleset and `sharedTmpGuard` (concurrency exactly 1) rules from v1.15 apply; the feature list is unchanged but the phase sequencing must put the evaluation first.
+- **Dimensions JSON requires the DB role migration before the worker can write it**, so migration lands in the same phase as the render pipeline, not after.
+- **STEP/IGES to STL and render share tessellation:** build once; define the deflection constants once.
+- **DXF render to PNG is an open scope question.** The milestone lists dxf for svg/pdf and a 2D bbox "with dimensions", but dimensions are the second output of a `render` job. If dxf `render` is supported, the PNG should come from the same 2D drawing pipeline (not the 3D renderer) and `view` must be rejected for it. If it is not, a DXF client cannot get its bbox at all. Recommend supporting dxf `render` to PNG with fixed top-down and flagging this for requirements.
+- **`view` conflicts with 2D sources:** applicability validation (AVOpts `avThumbnailTargets` shape) must reject `view` for dxf rather than ignore it.
 
 ## MVP Definition
 
-### Launch With (v1.13, per already-locked milestone scope)
+### Launch With (v1.16 core)
 
-- [ ] JobRunner + structured error `code` on every terminal failure and 4xx (SEED-020) — foundation; without it, every other feature below re-introduces the ×7-tariff problem the milestone exists to remove
-- [ ] `operation` dimension: registry keyed by `(operation, from, to)`, `convert` remains default, zero behavior change for existing clients — required by both `inspect` and `sanitize` below
-- [ ] `job_outputs.role` column (`primary`/`report`/`preview`/`thumbnail`) — required by sanitize's report output
-- [ ] `POST /v1/inspect`: detected format, format-appropriate characteristics, typed findings list with tri-state check status, sampling/confidence disclosure, available `(operation, target)` pairs with quota/duration check, own sync rate budget — the milestone's headline capability
-- [ ] `sanitize` operation for `pdf→pdf` and office→office: strip macros (source + p-code), JS, embedded files/objects, external references, EXIF/GPS/IPTC/XMP; ships a `role=report` second output describing exactly what was found/removed, worded to avoid "guaranteed safe" claims
-- [ ] Born-digital PDF routing (SEED-021 Opportunity 1 only): `pdf` becomes a valid source format for a bounded text-extraction target, replacing today's unconditional reject-and-dead-end comment
+- [ ] Evaluation gate result: confined headless renderer chosen by measurement (blocks everything else)
+- [ ] Sniffers + caps + error codes for step/stp/iges/stl/dxf, explicit dwg rejection
+- [ ] `render` step/stp/iges/stl to PNG: `view` enum (7), `size`, default 1280x1280, opaque background, fit-to-view, neutral shading, fixed tessellation constants
+- [ ] Dimensions JSON second output (new role): tight bbox, volume with closed reason codes, solid/triangle counts, honest `units` block per format
+- [ ] STEP/IGES to STL (merged binary, mm)
+- [ ] DXF to SVG and PDF (model space, visible layers, content-fit page, `$INSUNITS` provenance)
+- [ ] `cmd/cad-worker`, queue, Dockerfile, compose, chart, KEDA, measured Landlock ruleset, preflight, measured timeout/caps, live gate
+- [ ] SEED-007 preview contract documented on CAD: output role, fixed default size, closed views, failure semantics (typed, never silent), dimensions as a separate role
 
-### Add After Validation (v1.x, natural next steps once the above ships)
+### Add After Validation (v1.x)
 
-- [ ] `GET /v1/jobs/{id}` returning ALL outputs with roles (not just `outs[0]`) as a general capability, once sanitize proves the pattern with its report output — currently scoped narrowly enough to ship inside v1.13, but the general multi-output response contract (beyond sanitize's specific report) should be validated against real client usage before widening further
-- [ ] Migrating the existing `quota_exceeded`/`rate_limited` 429 bodies into the new structured-error envelope, so the whole error surface is consistent rather than "new codes are structured, old ones aren't"
-- [ ] Exposing inspect's confidence/sampling fields more richly to clients as a genuine differentiator (already planned as table-stakes honesty; the *richness* of exposure — e.g., letting a client tune the sampling bound — is a v1.x refinement)
+- [ ] `assume_unit` - trigger: first consumer complaint about `unspecified` on STL/DXF
+- [ ] Surface area field - trigger: finishing/coating quote request
+- [ ] `background: transparent`, `quality` enum - trigger: UI overlay or file-size complaints
+- [ ] STL mesh health findings - trigger: users asking why volume is null
+- [ ] DXF `layout`/`page` opts
 
-### Future Consideration (v2+, explicitly deferred)
+### Future Consideration (v2+)
 
-- [ ] SEED-021 Opportunity 2: per-page Mixed-PDF classification and routing, plus its unresolved merging contract (page order, non-duplication, Markdown-vs-hOCR target asymmetry) — needs its own spike per the seed's own recommendation, not a phase inside v1.13
-- [ ] Dangerzone-style rasterize-and-rebuild as an alternative, strictly-higher-assurance sanitize mode — legitimate future differentiator, but must ship as a distinctly-named operation, never silently substituted for targeted-removal sanitize
-- [ ] Client-tunable inspect sampling bounds / deeper per-format characteristic extraction (e.g., font/CJK inventories, embedded-color-profile inspection) — nice-to-have breadth, not needed to satisfy the milestone's stated goal
+- [ ] Per-body breakdown, feature-edge outlines, IGES sewing, DWG (after the ODA licence decision), SEED-007 contract on the other engine classes
 
 ## Feature Prioritization Matrix
 
 | Feature | User Value | Implementation Cost | Priority |
-|---------|------------|----------------------|----------|
-| JobRunner + structured error codes (SEED-020) | HIGH | HIGH | P1 |
-| `operation` dimension + registry | HIGH | MEDIUM | P1 |
-| `job_outputs.role` column | MEDIUM (enabling) | LOW | P1 |
-| `POST /v1/inspect` (format/characteristics/findings/tri-state/sampling/quota-check) | HIGH | MEDIUM | P1 |
-| `sanitize` operation (PDF + Office, removal set + report) | HIGH | HIGH | P1 |
-| Born-digital PDF routing (SEED-021 Opp. 1) | MEDIUM-HIGH | MEDIUM | P1 |
-| Multi-output `GET /v1/jobs/{id}` response (general, beyond sanitize) | MEDIUM | LOW-MEDIUM | P2 |
-| Migrate existing 429 bodies to new error envelope | MEDIUM (consistency) | LOW | P2 |
-| Richer inspect confidence/sampling exposure | LOW-MEDIUM | LOW | P2 |
-| Per-page Mixed-PDF routing (SEED-021 Opp. 2) | MEDIUM | HIGH | P3 |
-| Rasterize-and-rebuild sanitize mode (Dangerzone-style) | LOW-MEDIUM (niche) | HIGH | P3 |
+|---------|------------|---------------------|----------|
+| Confined headless render to PNG with closed views + fit | HIGH | HIGH | P1 |
+| Fail-closed sniffers/caps/error codes (5 formats + dwg reject) | HIGH | MED | P1 |
+| Dimensions JSON (tight bbox, volume + reasons, counts) | HIGH | MED | P1 |
+| Honest units block per format | HIGH | MED | P1 |
+| STEP/IGES to STL | HIGH | MED | P1 |
+| DXF to SVG/PDF | MEDIUM-HIGH | MED | P1 |
+| Worker/queue/chart/KEDA/Landlock/live gate | HIGH | HIGH | P1 |
+| `assume_unit` | MEDIUM | LOW-MED | P2 |
+| Surface area | MEDIUM | LOW | P2 |
+| `background`, `quality` | LOW-MED | LOW | P2 |
+| STL mesh health findings | MEDIUM | MED | P2 |
+| DXF `layout`/`page` | LOW | LOW-MED | P3 |
+| Feature-edge outlines, per-body breakdown | LOW-MED | MED-HIGH | P3 |
+| IGES sewing to solid | MEDIUM | HIGH | P3 |
 
-**Priority key:**
-- P1: In the already-locked v1.13 scope
-- P2: Natural, low-risk follow-on once v1.13 ships
-- P3: Requires its own design spike or is explicitly out of scope per the seeds' own recommendations
+## Sensible limits (starting points; all must be confirmed by the measurement gate)
 
-## Competitor / Comparable-Product Feature Analysis
+| Limit | Starting value | Basis | Confidence |
+|-------|----------------|-------|------------|
+| Max input bytes STEP/IGES/STL | 40 MiB | Consumer's current ceiling | MEDIUM (parity); real cap from memory gate, expect a Path-B reduction as with pandoc (memory, not time, was the binding constraint) |
+| Max input bytes DXF | 5 MiB | Consumer's current ceiling (a limit of the commercial converter, not necessarily of the new path) | MEDIUM; can be raised if the 2D path measures well |
+| Min input bytes | none (structural validation instead) | One-triangle STL is 134 B | HIGH |
+| Triangle cap (STL input, and tessellated output) | decide by measurement; a few million is the order of magnitude where software-GL render time dominates | No authoritative source found | LOW |
+| End-to-end time per job | measured; consumer saw up to 60 s/file on Fusion | Use the project's timing-gate formula (p95 x factor under CAP 900 s) | LOW until measured |
+| Concurrency | 1 per container until memory is measured | OCCT STEP parse memory scales with entity count; pandoc precedent | MEDIUM |
 
-| Feature | Apache Tika | ffprobe | pdf-inspector | VirusTotal / Cloudmersive | OPSWAT / Glasswall (Deep CDR) | Dangerzone | OctoConv v1.13 approach |
-|---------|-------------|---------|----------------|-----------------------------|-------------------------------|------------|---------------------------|
-| Detect vs. deep-analyze split | `/detect` (cheap MIME) vs `/meta` (full parse), two endpoints | N/A (always full probe) | Classification is itself the cheap, sampled step | Multi-engine tally distinguishes "checked" from "unsupported/timeout" | N/A (report is the deep-analysis output) | N/A (always full rasterize) | One endpoint (`/v1/inspect`), but internally layered: magic-byte detect always runs, characteristic/finding extraction is per-format-dispatched — mirrors Tika's split internally without exposing two endpoints |
-| Confidence / partial-analysis signal | Not typically surfaced | `probe_score` on container-format guesses | `confidence_score` (0.0-1.0) + explicit per-page sampling | Per-engine consensus tally IS the confidence signal | Risk *level*, not a numeric confidence | N/A (rasterize removes ambiguity by construction) | Explicit `sampled`/`pages_checked`-style disclosure, direct SEED-021 commitment |
-| Findings taxonomy | N/A (metadata-only, not risk-oriented) | N/A | Classification enum only, not a general findings list | Typed categories (macro, XXE, zip bomb, encrypted, script, invalid file) | Structured list: active content removed + structural repairs | N/A (everything is removed, no findings list needed) | Typed `code`+`severity`+`location` findings, closed enum, reused from existing detectors (`HasMacro`, `ClassifyCFB`, bomb/dimension checks) |
-| Report as retrievable artifact | N/A | N/A | N/A | Report IS the API response (no separate file) | Yes — File Analysis Report alongside cleaned file | No explicit "report", only the cleaned file | `role=report` second job output, reuses existing S3/presigned-URL/TTL machinery — genuinely differentiated by being a first-class async job output rather than a synchronous side document |
-| Sanitize strategy | N/A | N/A | N/A | N/A (scan-only, no remediation) | Targeted removal (macros/scripts/embedded objects), structure preserved | Full rasterize-and-rebuild, structure NOT preserved | Targeted removal (OPSWAT/Glasswall-style), matches milestone's `pdf→pdf`/office→office structure-preserving framing — NOT the Dangerzone rasterize approach |
-| Operation modeling | Separate endpoints per concern | N/A (single-purpose tool) | Separate CLI binaries (`detect-pdf`, `pdf2md`) | Separate API products (scan vs. other Cloudmersive APIs) | Configurable policy within one "clean" action | Single action (convert-to-safe-PDF) | Single job-creation endpoint, `operation` as an explicit field distinguishing convert/inspect/sanitize — closer to CloudConvert's single `/v2/tasks` endpoint with a task-type field than to Tika's per-concern endpoints |
-| Error contract | HTTP status + minimal body | N/A (CLI exit codes) | N/A (CLI) | JSON error object, not RFC-9457-shaped in examples found | N/A | N/A | RFC 9457-shaped envelope (`type`/`title`/`status`/`detail`/`instance` as optional members) + stable `code` extension member, extending today's `quota_exceeded`/`rate_limited` pattern rather than replacing it |
+## Competitor / Reference Analysis
+
+| Feature | PreviewGenerator (Fusion + AcmeCAD) | Typical online quoting/preview services (Xometry-style upload analysis, Autodesk viewer pipelines) | Our approach |
+|---------|-------------------------------------|---------------------------------------------------------------------------------------------------|--------------|
+| Views | one view param, fit-to-view | fixed standard views + interactive | closed enum of 7, fit-to-view per view |
+| Dimensions | `part_volume` + overlay text, always "mm" | bbox, volume, surface area, units auto-detected with user override | data JSON, units provenance, null+reason where undefined |
+| Failure behaviour | no reply at all | typed error to user | stable error codes, never silent |
+| Limits | 500 B / 40 MB / 5 MB DXF / 60 s | similar order | env-configurable, measured |
+| Units on STL | implicitly mm | usually prompts or assumes mm | `unspecified` unless `assume_unit` |
+
+Online-service rows are MEDIUM/LOW confidence (general knowledge of the category, not a specific verified product page).
 
 ## Sources
 
-- [Tika Server documentation (4.0.0-SNAPSHOT)](https://tika.apache.org/docs/4.0.0-SNAPSHOT/using-tika/server/index.html) — MEDIUM confidence (official docs, but exact `/meta` JSON shape not independently confirmed against a live server in this research pass)
-- [TikaServer wiki (Apache Software Foundation)](https://cwiki.apache.org/confluence/display/TIKA/TikaServer)
-- [ffprobe Documentation (ffmpeg.org)](https://ffmpeg.org/ffprobe.html) — HIGH confidence, cross-verified against this project's own `internal/convert/avduration.go` which already parses ffprobe JSON in production
-- [Using ffprobe to get info from a file in JSON format (GitHub Gist)](https://gist.github.com/nrk/2286511)
-- [CloudConvert API v2 documentation](https://cloudconvert.com/api/v2) — HIGH confidence (official docs)
-- [CloudConvert Thumbnails / Merge / Archive / Command API pages](https://cloudconvert.com/api/v2/thumbnails)
-- [RFC 9457: Problem Details for HTTP APIs (IETF)](https://www.rfc-editor.org/rfc/rfc9457.html) — HIGH confidence, primary source
-- [OPSWAT Deep CDR Technology overview](https://www.opswat.com/technologies/deep-cdr) — HIGH confidence (vendor primary source, cross-referenced across multiple OPSWAT pages)
-- [OPSWAT: Deep CDR prevents VBA Stomping](https://www.opswat.com/blog/deep-cdr-prevents-advanced-maldoc-techniques-vba-stomping)
-- [Dangerzone: About / GitHub README (freedomofpress/dangerzone)](https://github.com/freedomofpress/dangerzone) — HIGH confidence, open-source primary source
-- [Dangerzone official site](https://dangerzone.rocks/about/)
-- [Glasswall CDR documentation: "What is Glasswall CDR?"](https://docs.glasswall.com/docs/about-glasswall-cdr) — MEDIUM-HIGH confidence (vendor docs)
-- [Glasswall: What is Content Disarm and Reconstruction (CDR)?](https://www.glasswall.com/blog/what-is-content-disarm-and-reconstruction-cdr)
-- [ExifTool GPS/metadata removal usage (Rob Allen, akrabat.com)](https://akrabat.com/use-exiftool-to-remove-private-data-in-images/) — MEDIUM confidence (community source, standard exiftool flag behavior, consistent with exiftool's own well-known documented CLI syntax)
-- [firecrawl/pdf-inspector GitHub repository](https://github.com/firecrawl/pdf-inspector) — MEDIUM confidence (README-derived; classification enum names TextBased/Scanned/ImageBased/Mixed and confidence_score/pages_needing_ocr fields corroborated by SEED-021's own independent code-level citation of the same project)
-- [Deep Instinct: Top-3 Drawbacks of CDR for Malware Prevention](https://www.deepinstinct.com/blog/top-3-drawbacks-of-content-disarm-reconstruction-cdr-for-malware-prevention) — MEDIUM confidence (single vendor's competitive-positioning blog, but claims are specific/falsifiable and consistent with Wikipedia's CDR overview)
-- [Content Disarm and Reconstruction — Wikipedia](https://en.wikipedia.org/wiki/Content_Disarm_and_Reconstruction)
-- [VirusTotal API v3 Overview (docs.virustotal.com)](https://docs.virustotal.com/reference/overview) — MEDIUM confidence (search-summarized, not directly fetched; `last_analysis_stats` field names are widely corroborated across independent third-party integration docs found)
-- [Cloudmersive Virus Scan / Advanced Scan API](https://cloudmersive.com/virus-api) — MEDIUM confidence (vendor docs, feature-category claims only, not exact response schema)
-- [Stripe API error codes documentation](https://docs.stripe.com/error-codes) — HIGH confidence (official docs)
-- [Transloadit Robots / Assembly Instructions documentation](https://transloadit.com/docs/robots/) — MEDIUM confidence (search-summarized; step-naming and `result`/`group_by_original` conventions corroborated across multiple official Transloadit doc pages)
-
-### Claims flagged LOW confidence (not independently verified against a live endpoint in this research pass)
-
-- Exact JSON field names in Apache Tika's `/meta` response body (search results describe format options — CSV/JSON/RDF — but not a field-by-field schema)
-- CloudConvert's exact `get-metadata`/`write-metadata` task response schema (confirmed the task types exist; did not fetch a live example response)
-- pdf-inspector's exact `--json` output field names for `detect-pdf` (WebFetch summarized from the README rather than a raw schema/example; SEED-021 independently cites the same four-class enum and confidence score, which corroborates but does not fully verify the field names)
+- Local: `/Users/apaderin/dev/notes/architecture/octoconv-cad-preview.md` (measurements 2026-09-23, HIGH, project-owned)
+- Local: `/Users/apaderin/dev/notes/architecture/gsh-cad-preview-integration.md` (PreviewGenerator behaviour and limits, HIGH)
+- Local: `internal/jobs/jobs.go`, `internal/db/migrations/0015_operation_and_output_roles.sql`, `internal/convert/avopts.go`, `internal/inspect/findings.go`, `internal/api/handlers.go` (existing role, opts and inspect mechanisms, HIGH)
+- ezdxf units concept (modelspace units from `$INSUNITS`, `$MEASUREMENT` independent, no implicit unit conversion): https://ezdxf.readthedocs.io/en/stable/concepts/units.html (HIGH)
+- ezdxf drawing add-on (SVG/PDF/Matplotlib/HPGL backends, no 3D rendering, PyMuPDF for PDF, layout support): https://ezdxf.readthedocs.io/en/stable/addons/drawing.html (HIGH for capabilities; the AGPL status of PyMuPDF is from general knowledge, MEDIUM, verify)
+- `$INSUNITS` code table (via ezdxf docs / search results): https://ezdxf.readthedocs.io/en/stable/concepts/units.html (HIGH)
+- OCCT units on STEP import (convert to mm, `STEPControl_Reader::FileUnits`): https://occt3d.com/dev/content/units-step-files/index.html and https://dev.opencascade.org/doc/occt-7.8.0/refman/html/classSTEPControl__Reader.html (MEDIUM-HIGH)
+- IGES unit flag (param 14: 1 in, 2 mm): https://dev.opencascade.org/doc/occt-7.8.0/refman/html/classIGESData__BasicEditor.html and PTC IGES Linear Unit page (MEDIUM; full flag table 3-11 from the IGES spec, memory, verify)
+- STL binary/ASCII ambiguity and `84 + 50*N` size check: https://graphics.rwth-aachen.de:9000/OpenMesh/OpenMesh/issues/47, https://lists.ros.org/pipermail/ros-users/2011-January/061948.html, https://www.3dmag.com/?p=13897 (MEDIUM-HIGH)
+- f3d man page (options `--camera-position`, `--camera-direction`, `--camera-view-up`, `--resolution`, `--no-background`, `--up` default +Y, `--edges`, `--anti-aliasing`, `--ambient-occlusion`): https://man.archlinux.org/man/f3d.1.en (HIGH for option existence)
+- FreeCAD standard views (Front looks along +Y, Z up, Isometric view): https://wiki.freecad.org/Std_ViewFront, https://wiki.freecad.org/Std_ViewIsometric (HIGH for front, MEDIUM for iso vector)
+- FreeCAD/OCCT shell validity (solid = closed shell with coherent orientation; check `isValid()`/`Solids`/`Volume`): FreeCAD tracker and OCCT forum threads from search results (MEDIUM)
+- Not verified: tight-bbox API availability in the pinned FreeCAD (`optimalBoundingBox`), f3d orthographic option, mesh health method names, STEP memory/time at 40 MB, triangle-count render cost.
 
 ---
-*Feature research for: OctoConv v1.13 Inspect & Operations*
-*Researched: 2026-08-07*
+*Feature research for: CAD preview and measurement engine class (v1.16)*
+*Researched: 2026-10-02*

@@ -1,0 +1,58 @@
+Plan 71-02 Task 1 tracer evidence
+subject: internal/convert/testdata/cad/public/LinearSlide-MGN15x-Block.step
+command: scripts/cad-rss-time-measure.sh --memory 2g --repeats 1 --ops mesh,render [--confine-ro $LANDLOCK_RO] internal/convert/testdata/cad/public
+pixel thresholds are preliminary (assumption A6), calibrated in plan 71-04
+rss note: cg_peak_mib (cgroup memory.peak) and child_rss_mib (ru_maxrss) are different instruments and do not order consistently on small inputs; both recorded, the larger one is used for headroom
+
+# run 1: unconfined
+HDR,date_utc=2026-10-03T20:31:08Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-0e0672165074
+HDR,image_id=sha256:f92301ca21f2fc56aeecd91845786616c60587c635751761e0494294f421cfbb
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=2g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+ROW,src=public,name=LinearSlide-MGN15x-Block.step,sha=26a68f070dea1515d1ce9ef80b54bcec865d87bc4cebb6898ff0d936d4216d45,fmt=step,bytes=535327,op=mesh,ocp=7.9.3.1.1,variant=full,mem=2g,cpus=2,confined=0,rep=1,rc=0,wall_s=0.91,utime_s=0.84,stime_s=0.06,child_rss_mib=270,cg_peak_mib=129,oom_kill=0,timeout=0,threads_max=11,pix=-,out=solids:1;closed_solids:1;volume:17567.97550756556;unit_text:MILLI_METRE;unit_fileunits:millimetre;triangles:5948;bbox_diag:72.690027;text0:MGN15H001
+PIX,frac=0.2768,margin_px=78,dark=0.0046,bbox=134:249:1201:1013,w=1280,h=1280,ok=1
+ROW,src=public,name=LinearSlide-MGN15x-Block.step,sha=26a68f070dea1515d1ce9ef80b54bcec865d87bc4cebb6898ff0d936d4216d45,fmt=step,bytes=535327,op=render,ocp=7.9.3.1.1,variant=full,mem=2g,cpus=2,confined=0,rep=1,rc=0,wall_s=1.52,utime_s=1.95,stime_s=0.15,child_rss_mib=312,cg_peak_mib=433,oom_kill=0,timeout=0,threads_max=33,pix=ok,out=triangles:5944;t_render_s:0.918;t_total_s:1.168
+SUMMARY,rows=2,failed=0,oom=0,timeout=0
+
+# run 2: Landlock via sandbox-probe
+HDR,date_utc=2026-10-03T20:31:15Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-0e0672165074
+HDR,image_id=sha256:f92301ca21f2fc56aeecd91845786616c60587c635751761e0494294f421cfbb
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=2g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,confine_ro=/opt/venv:/opt/cad-measure:/usr/lib/python3.11:/lib:/usr/lib:/etc/ld.so.cache:/proc/self:/proc/cpuinfo:/proc/sys/vm/overcommit_memory:/sys/devices/system/cpu:/usr/bin/python3.11
+ROW,src=public,name=LinearSlide-MGN15x-Block.step,sha=26a68f070dea1515d1ce9ef80b54bcec865d87bc4cebb6898ff0d936d4216d45,fmt=step,bytes=535327,op=mesh,ocp=7.9.3.1.1,variant=full,mem=2g,cpus=2,confined=1,rep=1,rc=0,wall_s=0.80,utime_s=0.76,stime_s=0.06,child_rss_mib=271,cg_peak_mib=129,oom_kill=0,timeout=0,threads_max=11,pix=-,out=solids:1;closed_solids:1;volume:17567.97550756556;unit_text:MILLI_METRE;unit_fileunits:millimetre;triangles:5948;bbox_diag:72.690027;text0:MGN15H001
+PIX,frac=0.2768,margin_px=78,dark=0.0046,bbox=134:249:1201:1013,w=1280,h=1280,ok=1
+ROW,src=public,name=LinearSlide-MGN15x-Block.step,sha=26a68f070dea1515d1ce9ef80b54bcec865d87bc4cebb6898ff0d936d4216d45,fmt=step,bytes=535327,op=render,ocp=7.9.3.1.1,variant=full,mem=2g,cpus=2,confined=1,rep=1,rc=0,wall_s=1.49,utime_s=1.88,stime_s=0.06,child_rss_mib=313,cg_peak_mib=196,oom_kill=0,timeout=0,threads_max=33,pix=ok,out=triangles:5944;t_render_s:0.923;t_total_s:1.199
+SUMMARY,rows=2,failed=0,oom=0,timeout=0
+
+# candidate read-only grant set for the tracer (trace of cad_mesh.py and cad_render.py plus the python3.11 interpreter added by hand); a candidate, not a grant: the full matrix is plan 71-07
+LANDLOCK_RO=/opt/venv:/opt/cad-measure:/usr/lib/python3.11:/lib:/usr/lib:/etc/ld.so.cache:/proc/self:/proc/cpuinfo:/proc/sys/vm/overcommit_memory:/sys/devices/system/cpu:/usr/bin/python3.11
+
+# negative control: the same probe and grants, a read outside them
+docker run --user nobody -e PROBE_RO=$LANDLOCK_RO -e PROBE_RW=/job ... /probe/sandbox-probe /opt/venv/bin/python -I -B -c "open('/etc/passwd').read()"
+PermissionError: [Errno 13] Permission denied: '/etc/passwd'
+
+# private-source control: a copy of the part outside the repository and the cache
+ROW lines printed src=private,name=- and no product text (text0) in out=; matches of the copy's file name or of the product name in the output file: 0

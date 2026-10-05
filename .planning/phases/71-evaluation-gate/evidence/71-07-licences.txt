@@ -1,0 +1,234 @@
+# Plan 71-07 licence record of the OCP wheel libraries (EVAL-04, D-18 outcome: record)
+# Engineering record only. The licences are NOT legally cleared; the lawyer flag below stays open and does not block the phase.
+HDR,date_utc=2026-10-04T10:42:57Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-0d09b7ba39ad
+HDR,image_id=sha256:cce9074fe38062f4a666bcf14c038822093a458d36a9dc7a3ad9b2b32641535c
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=2g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,pin=7.9.3.1.1,other_pin=8.0.1.0.0,d18_outcome=record
+INVENTORY,ocp=7.9.3.1.1,wheel=cadquery_ocp_novtk,metadata_license=Apache-2.0
+SBOM_FIELD,ocp=7.9.3.1.1,components_with_licenses=0,components_total=19,note=the licenses field of auditwheel.cdx.json is empty; licences come from upstream (V8)
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=cadquery_ocp_novtk,version=7.9.3.1.1,component=OCP,purl=pkg:pypi/cadquery_ocp_novtk@7.9.3.1.1?file_name=cadquery_ocp_novtk-7.9.3.1.1-cp311-cp311-manylinux_2_31_aarch64.whl
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libilmbase24,version=2.3.0-6build1,component=OpenEXR,purl=pkg:deb/ubuntu/libilmbase24@2.3.0-6build1
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libwebp6,version=0.6.1-2ubuntu0.20.04.3,component=libwebp,purl=pkg:deb/ubuntu/libwebp6@0.6.1-2ubuntu0.20.04.3
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libfontconfig1,version=2.13.1-2ubuntu3,component=fontconfig,purl=pkg:deb/ubuntu/libfontconfig1@2.13.1-2ubuntu3
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libraw19,version=0.19.5-1ubuntu1.4,component=LibRaw,purl=pkg:deb/ubuntu/libraw19@0.19.5-1ubuntu1.4
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libtiff5,version=4.1.0+git191117-2ubuntu0.20.04.14,component=libtiff,purl=pkg:deb/ubuntu/libtiff5@4.1.0%2Bgit191117-2ubuntu0.20.04.14
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libopenexr24,version=2.3.0-6ubuntu0.5,component=OpenEXR,purl=pkg:deb/ubuntu/libopenexr24@2.3.0-6ubuntu0.5
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libopenjp2-7,version=2.3.1-1ubuntu4.20.04.4,component=openjpeg,purl=pkg:deb/ubuntu/libopenjp2-7@2.3.1-1ubuntu4.20.04.4
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libjbig0,version=2.1-3.1ubuntu0.20.04.1,component=jbigkit,purl=pkg:deb/ubuntu/libjbig0@2.1-3.1ubuntu0.20.04.1
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libwebpmux3,version=0.6.1-2ubuntu0.20.04.3,component=libwebp,purl=pkg:deb/ubuntu/libwebpmux3@0.6.1-2ubuntu0.20.04.3
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=liblcms2-2,version=2.9-4,component=lcms2,purl=pkg:deb/ubuntu/liblcms2-2@2.9-4
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libfreetype6,version=2.10.1-2ubuntu0.4,component=freetype,purl=pkg:deb/ubuntu/libfreetype6@2.10.1-2ubuntu0.4
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libjxr0,version=1.1-6build1,component=jxrlib,purl=pkg:deb/ubuntu/libjxr0@1.1-6build1
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libfreeimage3,version=3.18.0+ds2-1ubuntu3.1,component=FreeImage,purl=pkg:deb/ubuntu/libfreeimage3@3.18.0%2Bds2-1ubuntu3.1
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libpng16-16,version=1.6.37-2,component=libpng,purl=pkg:deb/ubuntu/libpng16-16@1.6.37-2
+SBOM_COMPONENT,ocp=7.9.3.1.1,name=libjpeg-turbo8,version=2.0.3-0ubuntu1.20.04.3,component=libjpeg-turbo,purl=pkg:deb/ubuntu/libjpeg-turbo8@2.0.3-0ubuntu1.20.04.3
+WHEEL_LIB,ocp=7.9.3.1.1,file=libHalf-caf2cfbb.so.24.0.0,bytes=394977,component=OpenEXR,component_version=2.3.0-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libIex-2_3-012d99d6.so.24.0.0,bytes=219353,component=OpenEXR,component_version=2.3.0-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libIlmImf-2_3-e84d6b4b.so.24.0.0,bytes=3471897,component=OpenEXR,component_version=2.3.0-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libIlmThread-2_3-42f3b71e.so.24.0.0,bytes=266985,component=OpenEXR,component_version=2.3.0-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBO-cd07e569.so.7.9.3,bytes=2521745,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBRep-c804842c.so.7.9.3,bytes=1410689,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBin-968c0073.so.7.9.3,bytes=419105,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBinL-5959d8fa.so.7.9.3,bytes=576129,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBinTObj-22020b5e.so.7.9.3,bytes=275345,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBinXCAF-8b545ce5.so.7.9.3,bytes=421993,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKBool-29d6032b.so.7.9.3,bytes=4160169,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKCAF-0dfb9e8b.so.7.9.3,bytes=775385,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKCDF-f63ebe1e.so.7.9.3,bytes=568633,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDE-9a326038.so.7.9.3,bytes=341385,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDEGLTF-66e1fea1.so.7.9.3,bytes=697417,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDEIGES-555d00df.so.7.9.3,bytes=5418385,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDESTEP-85d002ca.so.7.9.3,bytes=10613305,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDESTL-7ca37fad.so.7.9.3,bytes=341145,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKDEVRML-e6bef452.so.7.9.3,bytes=983777,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKExpress-5c7cb3ae.so.7.9.3,bytes=981129,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKFeat-9cc94541.so.7.9.3,bytes=1037017,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKFillet-0c46bdde.so.7.9.3,bytes=2858817,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKG2d-a0e8740e.so.7.9.3,bytes=636705,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKG3d-8f15ef88.so.7.9.3,bytes=1618593,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKGeomAlgo-04531e6b.so.7.9.3,bytes=5909769,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKGeomBase-0a93250c.so.7.9.3,bytes=5903113,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKHLR-32b47474.so.7.9.3,bytes=1476409,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKLCAF-11c70734.so.7.9.3,bytes=1342537,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKMath-3653f84d.so.7.9.3,bytes=2721697,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKMesh-042c4ea9.so.7.9.3,bytes=1326329,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKMeshVS-861979b2.so.7.9.3,bytes=632345,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKOffset-a5626715.so.7.9.3,bytes=1821801,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKOpenGl-e1bf8497.so.7.9.3,bytes=1937425,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKPrim-aa92e91a.so.7.9.3,bytes=631177,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKRWMesh-c1a9a87a.so.7.9.3,bytes=413529,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKService-3d33d1cf.so.7.9.3,bytes=1685289,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKShHealing-f17280b0.so.7.9.3,bytes=2847721,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKStd-fb319cf1.so.7.9.3,bytes=1656241,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKStdL-acfb65fc.so.7.9.3,bytes=853753,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKTObj-0c04a85e.so.7.9.3,bytes=492481,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKTopAlgo-9c5c1e80.so.7.9.3,bytes=3369457,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKV3d-7328b449.so.7.9.3,bytes=4014465,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKVCAF-2845763c.so.7.9.3,bytes=424305,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXCAF-4963d73e.so.7.9.3,bytes=1340681,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXSBase-d48ca726.so.7.9.3,bytes=2840809,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXml-faafd095.so.7.9.3,bytes=418945,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXmlL-868c1aa8.so.7.9.3,bytes=640625,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXmlTObj-b8782311.so.7.9.3,bytes=274345,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKXmlXCAF-b9661b3e.so.7.9.3,bytes=420745,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libTKernel-ccddd665.so.7.9.3,bytes=2148865,component=OCCT,component_version=7.9.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libfontconfig-8ee924d8.so.1.12.0,bytes=530169,component=fontconfig,component_version=2.13.1-2ubuntu3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libfreeimage-3-4329e704.18.0.so,bytes=937505,component=FreeImage,component_version=3.18.0+ds2-1ubuntu3.1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libfreetype-87a8a749.so.6.17.1,bytes=922537,component=freetype,component_version=2.10.1-2ubuntu0.4,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libgomp-895fcd56.so.1.0.0,bytes=1716737,component=libgomp,component_version=not_in_sbom,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libjbig-9afaf6ad.so.0,bytes=132473,component=jbigkit,component_version=2.1-3.1ubuntu0.20.04.1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libjpeg-5e14f091.so.8.2.2,bytes=331217,component=libjpeg-turbo,component_version=2.0.3-0ubuntu1.20.04.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libjpegxr-a1be58b4.so.1.1,bytes=266713,component=jxrlib,component_version=1.1-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libjxrglue-d1b67592.so.1.1,bytes=337553,component=jxrlib,component_version=1.1-6build1,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=liblcms2-a2fb3248.so.2.0.8,bytes=467329,component=lcms2,component_version=2.9-4,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=liblzma-66fc3e29.so.5,bytes=397321,component=xz,component_version=not_in_sbom,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libopenjp2-57108286.so.2.3.1,bytes=395569,component=openjpeg,component_version=2.3.1-1ubuntu4.20.04.4,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libpng16-14ba485f.so.16.37.0,bytes=334297,component=libpng,component_version=1.6.37-2,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libraw-985e3cba.so.19.0.2,bytes=1132929,component=LibRaw,component_version=0.19.5-1ubuntu1.4,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libtiff-a0b90811.so.5.5.0,bytes=727641,component=libtiff,component_version=4.1.0+git191117-2ubuntu0.20.04.14,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libuuid-6dc113ef.so.1.3.0,bytes=198537,component=libuuid,component_version=not_in_sbom,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libwebp-700338d5.so.6.0.2,bytes=395817,component=libwebp,component_version=0.6.1-2ubuntu0.20.04.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libwebpmux-b9b19d75.so.3.0.1,bytes=264993,component=libwebp,component_version=0.6.1-2ubuntu0.20.04.3,loaded=1
+WHEEL_LIB,ocp=7.9.3.1.1,file=libzstd-e7808cb1.so.1.5.7,bytes=1195417,component=zstd,component_version=not_in_sbom,loaded=1
+INVENTORY,ocp=8.0.1.0.0,wheel=cadquery_ocp_novtk,metadata_license=Apache-2.0
+SBOM_FIELD,ocp=8.0.1.0.0,components_with_licenses=0,components_total=25,note=the licenses field of auditwheel.cdx.json is empty; licences come from upstream (V8)
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=cadquery_ocp_novtk,version=8.0.1.0.0,component=OCP,purl=pkg:pypi/cadquery_ocp_novtk@8.0.1.0.0?file_name=cadquery_ocp_novtk-8.0.1.0.0-cp311-cp311-manylinux_2_28_aarch64.whl
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=LibRaw,version=0.19.5-6.el8_10,component=LibRaw,purl=pkg:rpm/almalinux/LibRaw@0.19.5-6.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=OpenEXR-libs,version=2.2.0-12.el8_10.1,component=OpenEXR,purl=pkg:rpm/almalinux/OpenEXR-libs@2.2.0-12.el8_10.1
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=bzip2-libs,version=1.0.6-28.el8_10,component=bzip2,purl=pkg:rpm/almalinux/bzip2-libs@1.0.6-28.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=fmt,version=6.2.1-1.el8,component=fmt,purl=pkg:rpm/almalinux/fmt@6.2.1-1.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=fontconfig,version=2.13.1-4.el8,component=fontconfig,purl=pkg:rpm/almalinux/fontconfig@2.13.1-4.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=freeimage,version=3.17.0-5.el8,component=FreeImage,purl=pkg:rpm/almalinux/freeimage@3.17.0-5.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=freetype,version=2.9.1-10.el8_10,component=freetype,purl=pkg:rpm/almalinux/freetype@2.9.1-10.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=ilmbase,version=2.2.0-13.el8,component=OpenEXR,purl=pkg:rpm/almalinux/ilmbase@2.2.0-13.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=jasper-libs,version=2.0.14-6.el8_10,component=JasPer,purl=pkg:rpm/almalinux/jasper-libs@2.0.14-6.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=jxrlib,version=1.1-1.el8,component=jxrlib,purl=pkg:rpm/almalinux/jxrlib@1.1-1.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=lcms2,version=2.9-2.el8,component=lcms2,purl=pkg:rpm/almalinux/lcms2@2.9-2.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=libgomp,version=8.5.0-28.el8_10.alma.1,component=libgomp,purl=pkg:rpm/almalinux/libgomp@8.5.0-28.el8_10.alma.1
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=libjpeg-turbo,version=1.5.3-14.el8_10,component=libjpeg-turbo,purl=pkg:rpm/almalinux/libjpeg-turbo@1.5.3-14.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=libpng,version=1.6.34-11.el8_10,component=libpng,purl=pkg:rpm/almalinux/libpng@1.6.34-11.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=libuuid,version=2.32.1-48.el8_10,component=libuuid,purl=pkg:rpm/almalinux/libuuid@2.32.1-48.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=libwebp,version=1.0.0-11.el8_10,component=libwebp,purl=pkg:rpm/almalinux/libwebp@1.0.0-11.el8_10
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=openjpeg2,version=2.4.0-5.el8,component=openjpeg,purl=pkg:rpm/almalinux/openjpeg2@2.4.0-5.el8
+SBOM_COMPONENT,ocp=8.0.1.0.0,name=xz-libs,version=5.2.4-4.el8_6,component=xz,purl=pkg:rpm/almalinux/xz-libs@5.2.4-4.el8_6
+WHEEL_LIB,ocp=8.0.1.0.0,file=libHalf-215f6293.so.12.0.0,bytes=462497,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libIex-2_2-e67f5543.so.12.0.0,bytes=286577,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libIexMath-2_2-6db02319.so.12.0.0,bytes=331185,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libIlmImf-2_2-71e77976.so.22.0.0,bytes=3737873,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libIlmThread-2_2-37ac1b46.so.12.0.0,bytes=333593,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libImath-2_2-c51653e7.so.12.0.0,bytes=334457,component=OpenEXR,component_version=2.2.0-12.el8_10.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBO-04610858.so.8.0.1,bytes=2803065,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBRep-3d57af64.so.8.0.1,bytes=3364249,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBin-59c6f95f.so.8.0.1,bytes=570281,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBinL-8edfead5.so.8.0.1,bytes=707633,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBinTObj-af2940f1.so.8.0.1,bytes=473577,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBinXCAF-561bc183.so.8.0.1,bytes=488857,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKBool-c2b34102.so.8.0.1,bytes=4507433,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKCAF-82912dfb.so.8.0.1,bytes=1122425,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKCDF-ed7e4846.so.8.0.1,bytes=785137,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDE-f6a93484.so.8.0.1,bytes=563081,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDECascade-7389125a.so.8.0.1,bytes=475201,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDEGLTF-7d7a2d6c.so.8.0.1,bytes=833873,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDEIGES-9d0f1b0f.so.8.0.1,bytes=5772233,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDEOBJ-993fe09d.so.8.0.1,bytes=550457,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDEPLY-31ce0fc8.so.8.0.1,bytes=474617,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDESTEP-b21275ae.so.8.0.1,bytes=11461033,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDESTL-1696ea53.so.8.0.1,bytes=476041,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKDEVRML-b8e13609.so.8.0.1,bytes=1182753,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKExpress-93dcceee.so.8.0.1,bytes=1116217,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKFeat-93bbece8.so.8.0.1,bytes=1450513,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKFillet-153df0be.so.8.0.1,bytes=3270601,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKG2d-a8ccf24b.so.8.0.1,bytes=905673,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKG3d-1f61d7a6.so.8.0.1,bytes=2448025,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKGeomAlgo-56477aaf.so.8.0.1,bytes=6526201,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKGeomBase-b21d2a75.so.8.0.1,bytes=6454569,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKHLR-5f9bf6e0.so.8.0.1,bytes=1826289,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKHelix-30667f07.so.8.0.1,bytes=472353,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKLCAF-5f1f32f9.so.8.0.1,bytes=1493209,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKMath-4c3b5db8.so.8.0.1,bytes=2975505,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKMesh-bdc4bc6f.so.8.0.1,bytes=1542145,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKMeshVS-2bfbbd56.so.8.0.1,bytes=764457,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKOffset-badb3124.so.8.0.1,bytes=2019129,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKOpenGl-de6e15fc.so.8.0.1,bytes=2071177,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKPrim-1f46d645.so.8.0.1,bytes=696665,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKRWMesh-3170e6c9.so.8.0.1,bytes=545305,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKService-e57c1642.so.8.0.1,bytes=1815257,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKShHealing-a4dfa422.so.8.0.1,bytes=3065897,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKStd-26a366e4.so.8.0.1,bytes=1877777,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKStdL-d1735cfa.so.8.0.1,bytes=1005465,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKTObj-709139b3.so.8.0.1,bytes=624393,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKTopAlgo-e2220fb5.so.8.0.1,bytes=3780441,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKV3d-be9c3803.so.8.0.1,bytes=4230961,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKVCAF-45c1936c.so.8.0.1,bytes=645593,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXCAF-42c4c79a.so.8.0.1,bytes=1538193,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXMesh-1c7f5a9e.so.8.0.1,bytes=462353,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXSBase-9b9c2932.so.8.0.1,bytes=3124529,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXml-38adcc68.so.8.0.1,bytes=551041,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXmlL-f0939aaf.so.8.0.1,bytes=1053721,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXmlTObj-b9a5ad30.so.8.0.1,bytes=472681,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKXmlXCAF-52c5ce6e.so.8.0.1,bytes=553305,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libTKernel-917d66c5.so.8.0.1,bytes=2298089,component=OCCT,component_version=8.0.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libbz2-549b318a.so.1.0.6,bytes=199873,component=bzip2,component_version=1.0.6-28.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libfmt-0e46b6d2.so.6.2.1,bytes=434809,component=fmt,component_version=6.2.1-1.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libfontconfig-5453315f.so.1.12.0,bytes=597481,component=fontconfig,component_version=2.13.1-4.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libfreeimage-3-25d0793e.17.0.so,bytes=1091833,component=FreeImage,component_version=3.17.0-5.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libfreetype-3d5bd152.so.6.16.1,bytes=989737,component=freetype,component_version=2.9.1-10.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libgomp-a49a47f9.so.1.0.0,bytes=405825,component=libgomp,component_version=8.5.0-28.el8_10.alma.1,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libjasper-d8a83ae9.so.4.0.0,bytes=599033,component=JasPer,component_version=2.0.14-6.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libjpeg-ee25248c.so.62.2.0,bytes=398417,component=libjpeg-turbo,component_version=1.5.3-14.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libjpegxr-424f3983.so.0.0.0,bytes=399561,component=jxrlib,component_version=1.1-1.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libjxrglue-a216b148.so.0.0.0,bytes=404785,component=jxrlib,component_version=1.1-1.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=liblcms2-97d0f024.so.2.0.8,bytes=534625,component=lcms2,component_version=2.9-2.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=liblzma-6f9d2abe.so.5.2.4,bytes=332753,component=xz,component_version=5.2.4-4.el8_6,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libopenjp2-ab59a899.so.2.4.0,bytes=532753,component=openjpeg,component_version=2.4.0-5.el8,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libpng16-7d02d0a0.so.16.34.0,bytes=401065,component=libpng,component_version=1.6.34-11.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libraw-d8c07843.so.19.0.2,bytes=1200553,component=LibRaw,component_version=0.19.5-6.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libtiff-b7a9398c.so.5.3.0,bytes=794001,component=libtiff,component_version=not_in_sbom,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libuuid-8f146a21.so.1.3.0,bytes=199977,component=libuuid,component_version=2.32.1-48.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libwebp-2e73b720.so.7.0.2,bytes=463161,component=libwebp,component_version=1.0.0-11.el8_10,loaded=1
+WHEEL_LIB,ocp=8.0.1.0.0,file=libwebpmux-7b10df51.so.3.0.2,bytes=332425,component=libwebp,component_version=1.0.0-11.el8_10,loaded=1
+LICENCE,component=OCCT,licence=LGPL-2.1+Open-CASCADE-exception-1.0,source=https://raw.githubusercontent.com/Open-Cascade-SAS/OCCT/V7_9_3/OCCT_LGPL_EXCEPTION.txt,status=VERIFIED,ocp=7.9.3.1.1,note=exception text read at tag V7_9_3: object code incorporating material from OCCT header files may be distributed under terms of your choice provided supporting documentation gives prominent notice that it uses or is based on Open CASCADE Technology
+LICENCE,component=OCCT,licence=LGPL-2.1+Open-CASCADE-exception-1.0,source=https://raw.githubusercontent.com/Open-Cascade-SAS/OCCT/V8_0_1/OCCT_LGPL_EXCEPTION.txt,status=VERIFIED,ocp=8.0.1.0.0,note=exception text read at tag V8_0_1: object code incorporating material from OCCT header files may be distributed under terms of your choice provided supporting documentation gives prominent notice that it uses or is based on Open CASCADE Technology
+LICENCE,component=OCP,licence=Apache-2.0,source=https://raw.githubusercontent.com/CadQuery/OCP/master/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=wheel METADATA License: Apache-2.0 (read from the installed dist-info)
+LICENCE,component=FreeImage,licence=GPL-2.0/GPL-3.0/FIPL-1.0,source=https://freeimage.sourceforge.io/license.html,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=dual licence chosen by the user of the library; the wheel carries Ubuntu libfreeimage3 3.18.0 and AlmaLinux freeimage 3.17.0 builds
+LICENCE,component=LibRaw,licence=LGPL-2.1/CDDL-1.0,source=https://raw.githubusercontent.com/LibRaw/LibRaw/0.19.5/COPYRIGHT,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=one of two licences as you choose; tag 0.19.5 is the SBOM version on both pins
+LICENCE,component=JasPer,licence=JasPer-2.0,source=https://raw.githubusercontent.com/jasper-software/jasper/version-2.0.14/LICENSE,status=VERIFIED,ocp=8.0.1.0.0,note=present only in the wheel of 8.0.1.0.0 if the inventory above lists libjasper; SBOM jasper-libs 2.0.14
+LICENCE,component=OpenEXR,licence=BSD-3-Clause,source=https://raw.githubusercontent.com/AcademySoftwareFoundation/openexr/v2.3.0/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=IlmBase Half Iex IlmThread IlmImf Imath libraries; tag v2.3.0
+LICENCE,component=libjpeg-turbo,licence=IJG+BSD-3-Clause+Zlib,source=https://raw.githubusercontent.com/libjpeg-turbo/libjpeg-turbo/main/LICENSE.md,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref main
+LICENCE,component=libpng,licence=libpng-2.0,source=https://raw.githubusercontent.com/pnggroup/libpng/v1.6.37/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=tag v1.6.37
+LICENCE,component=libtiff,licence=libtiff-BSD-like,source=https://gitlab.com/libtiff/libtiff/-/raw/master/LICENSE.md,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=lcms2,licence=MIT,source=https://raw.githubusercontent.com/mm2/Little-CMS/master/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=openjpeg,licence=BSD-2-Clause,source=https://raw.githubusercontent.com/uclouvain/openjpeg/master/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=libwebp,licence=BSD-3-Clause,source=https://raw.githubusercontent.com/webmproject/libwebp/main/COPYING,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref main
+LICENCE,component=jxrlib,licence=BSD-2-Clause,source=https://raw.githubusercontent.com/4creators/jxrlib/master/LICENSE,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=freetype,licence=FTL-or-GPL-2.0,source=https://freetype.org/license.html,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref project page
+LICENCE,component=fontconfig,licence=HPND-sell-variant,source=https://gitlab.freedesktop.org/fontconfig/fontconfig/-/raw/main/COPYING,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref main
+LICENCE,component=bzip2,licence=bzip2-1.0.6,source=https://sourceware.org/git/?p=bzip2.git;a=blob_plain;f=LICENSE;hb=HEAD,status=VERIFIED,ocp=8.0.1.0.0,note=ref HEAD
+LICENCE,component=jbigkit,licence=GPL-2.0,source=https://www.cl.cam.ac.uk/~mgk25/jbigkit/,status=VERIFIED,ocp=7.9.3.1.1,note=libjbig0 in the wheel; the project page links the GPL v2 text and offers a commercial licence; an or-later grant is not stated on the page
+LICENCE,component=xz,licence=0BSD+public-domain,source=https://raw.githubusercontent.com/tukaani-project/xz/master/COPYING,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=zstd,licence=BSD-3-Clause/GPL-2.0,source=https://raw.githubusercontent.com/facebook/zstd/dev/LICENSE,status=VERIFIED,ocp=7.9.3.1.1,note=ref dev
+LICENCE,component=libuuid,licence=BSD-3-Clause,source=https://raw.githubusercontent.com/util-linux/util-linux/master/libuuid/COPYING,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master; the COPYING file points to COPYING.BSD-3-Clause
+LICENCE,component=libgomp,licence=GPL-3.0+GCC-Runtime-Library-Exception,source=https://raw.githubusercontent.com/gcc-mirror/gcc/master/COPYING.RUNTIME,status=VERIFIED,ocp=7.9.3.1.1+8.0.1.0.0,note=ref master
+LICENCE,component=fmt,licence=MIT,source=https://raw.githubusercontent.com/fmtlib/fmt/master/LICENSE,status=VERIFIED,ocp=8.0.1.0.0,note=ref master
+D18_OUTCOME,choice=record,pin=7.9.3.1.1,removed=none,reason=loaded_at_import,experiment=not_run,lawyer_ok=needed
+RECORD,begin=draft engineering record for 71-DECISION.md (plan 71-08)
+RECORD,loading=libfreeimage and libraw are loaded at import OCP through DT_NEEDED (libTKService -> libfreeimage -> libraw) on every operation that imports OCP, on both pins; libjasper only on 8.0.1.0.0 (libraw -> libjasper); render, dxf, rsvg-convert and stlstats load none of the three (measured: ocp=7.9.3.1.1,ops=38,freeimage_ops=7,libraw_ops=7,libjasper_ops=0,ocp_free_ops=stlstats+render-view+render-transparent+render-512+render-2048+render-lp1+render-lpN+render-degenerate+render-exit2+render-exit3-unreachable+dxf+rsvg-png+rsvg-pdf;ocp=8.0.1.0.0,ops=9,freeimage_ops=7,libraw_ops=7,libjasper_ops=7,ocp_free_ops=stlstats;)
+RECORD,consequence=loaded is not the same as called (assumption A1: only the patchelf experiment answers whether the code paths are used); the D-18 condition 'unused libraries are removed' finds nothing removable on the trace, so the libraries stay and the licences are recorded
+RECORD,use=только внутреннее использование, образ не распространяется вовне
+RECORD,assumption_A2=ASSUMPTION: internal use without distribution does not trigger mandatory copyleft obligations (GPL/LGPL/CDDL terms of FreeImage, LibRaw, jbigkit, libgomp); this is a working assumption, not a legal finding
+RECORD,statuses=every LICENCE row carries VERIFIED (the expected licence text was found at the source URL at fetch time) or ASSUMED (not found or not reachable); VERIFIED identifies the licence, it does not clear the use
+RECORD,legal=the libraries are not legally cleared; a lawyer review is requested and does not block the phase
+LAWYER_OK=needed,blocking=no
+NEED_CHECK=нужен OK юриста

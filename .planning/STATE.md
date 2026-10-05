@@ -1,43 +1,46 @@
 ---
 gsd_state_version: "1.0"
-milestone: v1.15
-status: Awaiting next milestone
-stopped_at: Phase 70 complete — all phases complete
-last_updated: "2026-10-01T22:02:15.501Z"
-last_activity: 2026-10-01
-last_activity_desc: Milestone v1.15 completed and archived
-state_head: f45c7ee2fc442e597698d8fb58211981669299fb
+milestone: v1.16
+milestone_name: CAD Engine
+current_phase: 72
+current_phase_name: Engine-Free Contract Foundations
+status: planning
+stopped_at: Phase 71 complete, ready to plan Phase 72
+last_updated: "2026-10-04T11:53:48.191Z"
+last_activity: 2026-10-04
+last_activity_desc: Phase 71 complete, transitioned to Phase 72
+state_head: d66939d1e6b67409a6ba108a843d8e05b63099e0
 progress:
-  total_phases: 4
-  completed_phases: 3
-  total_plans: 20
-  completed_plans: 20
-  percent: 75
-milestone_name: Engine Confinement (67–70)
-current_phase: 70
+  total_phases: 6
+  completed_phases: 1
+  total_plans: 8
+  completed_plans: 8
+  percent: 17
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-09-29 after Phase 69)
+See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 70 — Document on amd64
+**Current focus:** Phase 71 — Evaluation Gate
 
 ## Current Position
 
-Phase: Milestone v1.15 complete
-Plan: —
-Status: Awaiting next milestone
-Last activity: 2026-10-01 — Milestone v1.15 completed and archived
+Phase: 72 — Engine-Free Contract Foundations
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-04 — Phase 71 complete, transitioned to Phase 72
+
+Progress: [██░░░░░░░░] 17% (0/6 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 205 (all v1.0–v1.11)
+- Total plans completed: 213 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -102,6 +105,7 @@ Last activity: 2026-10-01 — Milestone v1.15 completed and archived
 | 68 | 6 | - | - |
 | 69 | 5 | - | - |
 | 70 | 9 | - | - |
+| 71 | 8 | - | - |
 
 **Recent Trend:**
 
@@ -131,6 +135,19 @@ Last activity: 2026-10-01 — Milestone v1.15 completed and archived
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
+
+**v1.16-specific roadmap decisions (recorded at roadmap creation, 2026-10-02):**
+
+- **Нумерация продолжается с 71** (последняя фаза v1.15 — 70): шесть фаз, 71–76. Конфиг держит `granularity: coarse`, и шесть фаз — это сознательно выше «coarse», по форме работы: ни одна из шести не тонкая, у каждой свой профиль риска. Если нужно сжать: 72+73 (контракт + класс) → пять фаз, 74+75 (3D + DXF) → четыре; цена — смешение ревью снифферов с ревью конфайнмента и смешение двух тулчейнов в одной фазе.
+- **Замер — первой фазой и без продакшен-проводки (71).** Контрактные тесты `AllEngines()` запрещают «константа сейчас, проводка потом», а ruleset'ы, таймаут, ресурсы пода и константы ракурса зависят от чисел, которые прототип не дал (реальный корпус, RSS, размер образа, потоки llvmpipe/OCP).
+- **Контракт без движка (72) строго перед классом (73).** Снифферы и схема measurements — самая рискованная для ревью поверхность и целиком Go/SQL; ничего не регистрируется, `/v1/inspect` узнаёт формат, но ничего не предлагает — корректное промежуточное состояние.
+- **`AllEngines()` меняется атомарно в одной фазе (73)** — вместе с очередью, enqueue-маршрутом, реконсилером, картами таймаутов/оценок/размеров, compose, Deployment и ScaledObject. Отличие от SUMMARY: Deployment/ScaledObject приходят в 73, а не в 76, иначе API объявил бы класс без воркера в k8s (дефект backlog 999.1). В 76 остаются замеренные ресурсы, scale-from-zero и `minReplicaCount`.
+- **Требования, охватывающие несколько стадий или входов, привязаны к фазе-владельцу** (CADIN-04, CADW-02, CADW-03 → 73; MEAS-01, MEAS-03 → 74), а в фазах 74/75 для своей стадии/входа записан отдельный критерий «расширяет …». Верификатор этих фаз проверяет критерий, а не считает требование закрытым с фазой-владельцем (урок «verify against the goal, not the requirement text»).
+- **PREV-01 (контракт превью) — в фазе 76, а не 74.** Контракт записывается, когда известно всё, что CAD заставил решить, включая DXF, и честно помечено «не зафиксировано»; DXF-рендер (75) укладывается в то, что решено в 74, а не пересматривает его.
+- **DXF `render` → png (RNDR-06) в скоупе по решению пользователя**: без него клиент DXF не получил бы 2D bbox вообще — measurements являются вторым выходом именно `render`-джобы.
+- **`quality`, `background: transparent`, `assume_unit` и площадь поверхности — в скоупе v1.16** (RNDR-04, RNDR-05, MEAS-04, MEAS-02), а не отложены в v1.x, как предлагал FEATURES.md.
+- **Имена, рекомендованные исследованием, подтверждаются при планировании 72/73:** задача asynq `cad:job`, роль выхода `measurements` (не `dimensions` — занято пиксельными размерами; не `report` — привязана к `SanitizeReport`), миграция `0018`. Пин OCP 7.9.3 против 8.0.1 решается в 71.
+- **Coverage: 29/29 v1 requirements mapped, 0 orphans** — см. Traceability в REQUIREMENTS.md.
 
 **v1.13-specific roadmap decisions (recorded at roadmap creation, 2026-08-07):**
 
@@ -243,6 +260,16 @@ Decisions are logged in PROJECT.md Key Decisions table.
   `GET /v1/system/usage` в `internal/api/routes.go`
 
 ### Blockers/Concerns
+
+Старт фазы 71 ничем не заблокирован. **v1.16 sequencing and risks carried into the roadmap:**
+
+- Жёсткая цепочка: **71 → 72 → 73 → 74 → 76**; фаза 75 зависит от 74 (общий путь второго выхода `measurements`), а её половина convert (dxf → svg/pdf) — только от 73.
+- **Самый длинный шест — замер Landlock-набора в 73**: python + C++ стек, `execve` не виден в трассе `openat`, трассы прототипа сняты на trixie, а не на образе bookworm. Эмулированный amd64 Landlock не получает — замер только на нативной архитектуре.
+- **Самая рискованная для ревью поверхность — снифферы в 72.** Расхождение сниффера с настоящим ридером — класс дефекта, а не экземпляр: закрывается дифференциальным тестом с таблицей расхождений на реальном корпусе экспортёров (Latin-1/cp1251, бинарный STL с заголовком `solid`, IGES без переводов строк, DXF с `999`), а не ещё одним умным сравнением.
+- **Память STEP не измерена**: единственный синтетический образец дал ~18× размера файла и 1.2 ГБ RSS. Потолок входа и `CAD_WORKER_CONCURRENCY=1` выводятся из корпуса в 71; урок pandoc OOM (v1.11) применим к OCCT.
+- **Образ ~1.1 ГБ — самый большой во флоте**, cold pull доминирует scale-from-zero (AVX-02 в backlog так и не измерен). `keda.cad.minReplicaCount` решается осознанно в 76 по замеру из 71.
+- **Оператор-gated:** 71 (замеры на настоящем образе), 73 (трассы Landlock), 76 (живой гейт и KEDA на OrbStack — образы собирать последовательно с тегами не-`latest`, не гонять compose и k8s одновременно: четыре подтверждённых клина демона).
+- **Явные не-цели v1.16 (не поднимать заново):** `dwg` (лицензия ODA — коммерческое решение), FreeCAD/f3d/Xvfb в образе, надпись с размерами на PNG, интеграция GSH/OMS и замена PreviewGenerator, `volume: 0` и додуманные `mm`, SEED-010 (динамический реестр).
 
 currently blocking. **v1.13 sequencing and risks carried into the roadmap:**
 
@@ -386,10 +413,10 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-09-29T19:40:04.078Z
-Stopped at: Phase 70 complete — all phases complete
-Resume file: .planning/phases/70-document-on-amd64/70-CONTEXT.md
+Last session: 2026-10-02T00:30:51.332Z
+Stopped at: Phase 71 complete, ready to plan Phase 72
+Resume file: .planning/phases/71-evaluation-gate/71-CONTEXT.md
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Спланировать фазу 71: `/gsd-plan-phase 71` (фаза-исследование: корпус, рамка кадра VTK, реальный RSS, потоки llvmpipe/OCP при cgroup-квоте)

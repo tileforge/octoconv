@@ -1,0 +1,150 @@
+# Plan 71-05 f3d yardstick
+# f3d runs as emulated linux/amd64 without Landlock: timings are pessimistic, not a basis for a decision, and nothing here is a sandbox proof
+APPROVAL,item=libssl3,scope=one-off octoconv-f3d-yardstick image only,source=digest-pinned bookworm-slim apt,reason=f3d needs libcrypto.so.3,approved_by=user via coordinator relay,not_in=Dockerfile.cad-measure and production images
+DEVIATION,item=f3d-asset,chose=F3D-3.5.0-Linux-x86_64.tar.gz,instead_of=F3D-3.5.0-Linux-x86_64.tar.xz,reason=bookworm-slim has no xz and xz-utils would be another unpinned package
+DEVIATION,item=contact_sheet.py,change=optional --title caption,reason=plan requires a caption on the sheet
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp310-cp310-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp310-cp310-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp311-cp311-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp311-cp311-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp312-cp312-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp312-cp312-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp313-cp313-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp313-cp313-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314t-macosx_14_0_arm64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-3.5.0-cp314-cp314t-win_amd64.whl
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64-raytracing.deb
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64-raytracing.tar.gz
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64-raytracing.tar.xz
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64.deb
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64.tar.gz
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Linux-x86_64.tar.xz
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-macOS-arm64-raytracing.dmg
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-macOS-arm64.dmg
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-macOS-x86_64-raytracing.dmg
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-macOS-x86_64.dmg
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Windows-x86_64-raytracing.exe
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Windows-x86_64-raytracing.zip
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Windows-x86_64.exe
+F3D_ASSET_NAME,release=v3.5.0,name=F3D-3.5.0-Windows-x86_64.zip
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-android-v3.5.0-arm64-v8a.apk
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-android-v3.5.0-armeabi-v7a.apk
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-android-v3.5.0-x86.apk
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-android-v3.5.0-x86_64.apk
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-lfs-data.zip
+F3D_ASSET_NAME,release=v3.5.0,name=f3d-web-3.5.0.tgz
+F3D_ASSETS,release=v3.5.0,linux_x86_64=1,linux_arm64=0
+F3D_LATEST,release=v3.5.0
+F3D_PIN,version=3.5.0,asset=F3D-3.5.0-Linux-x86_64.tar.gz,sha256=3e4590c709e6ecd14ec3088527dd625f1ed79b970009eb3a4baef9b410650f10,api_digest=sha256:3e4590c709e6ecd14ec3088527dd625f1ed79b970009eb3a4baef9b410650f10
+F3D_TARBALL,sha256=3e4590c709e6ecd14ec3088527dd625f1ed79b970009eb3a4baef9b410650f10,bytes=86803419,verified=1
+# measurement image header (VTK side, native)
+HDR,date_utc=2026-10-03T23:33:19Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-48d9162df359
+HDR,image_id=sha256:5adaf4c003a7cf79f9a5bb14b6a632f978d0a5c96fd51cf9988f68905c553fa4
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=2
+HDR,memory=2g
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,f3d_image=octoconv-f3d-yardstick:11b1ac717bfc
+HDR,f3d_image_id=sha256:7e2a86eee367de56473f5f0d2802e09c93d365275303adb168130735b032ccb1
+HDR,f3d_image_arch=amd64
+HDR,f3d_version=F3D 3.5.0
+HDR,f3d_backends=Rendering backends:;cocoa: unavailable;egl: unavailable;glx: unavailable;osmesa: available;wgl: unavailable;
+F3D_FLAG,name=--no-config,present=1
+F3D_FLAG,name=--rendering-backend,present=1
+F3D_FLAG,name=--resolution,present=1
+F3D_FLAG,name=--up,present=1
+F3D_FLAG,name=--camera-orthographic,present=1
+F3D_FLAG,name=--grid,present=1
+F3D_FLAG,name=--axis,present=1
+F3D_FLAG,name=--filename,present=1
+F3D_FLAG,name=--metadata,present=1
+F3D_FLAG,name=--background-color,present=1
+F3D_FLAG,name=--camera-direction,present=1
+F3D_FLAG,name=--camera-view-up,present=1
+F3D_FLAG,name=--output,present=1
+F3D_NOTE,top view uses --up=+Y because f3d ignores --camera-view-up when the direction is parallel to --up (measured: with --up=+Z the part is rotated 90 degrees against VTK)
+F3D_NOTE,--edges is not used: f3d --edges draws every triangle edge, VTK draws feature edges only, so the default f3d look is the fair comparison
+MESH,item=slide,quality=standard,wall_ms=1171,src=LinearSlide-MGN15x-Block.step
+VTK,item=slide,view=iso,wall_ms=1538,arch=native
+F3D,item=slide,view=iso,wall_ms=3325,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=slide,view=iso,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=-1,1,-1 --camera-view-up=0,0,1
+F3DPIX,item=slide,view=iso,informative=1,frac=0.2872,margin_px=66,dark=0.0000,bbox=124:242:1213:1020,w=1280,h=1280,mode=part,ok=0
+VTK,item=slide,view=front,wall_ms=1291,arch=native
+F3D,item=slide,view=front,wall_ms=3291,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=slide,view=front,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=0,1,0 --camera-view-up=0,0,1
+F3DPIX,item=slide,view=front,informative=1,frac=0.2418,margin_px=63,dark=0.0000,bbox=63:409:1215:870,w=1280,h=1280,mode=part,ok=0
+VTK,item=slide,view=top,wall_ms=1239,arch=native
+F3D,item=slide,view=top,wall_ms=3216,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=slide,view=top,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Y --camera-direction=0,0,-1 --camera-view-up=0,1,0
+F3DPIX,item=slide,view=top,informative=1,frac=0.3769,margin_px=63,dark=0.0000,bbox=352:64:927:1216,w=1280,h=1280,mode=part,ok=0
+MESH,item=corner,quality=standard,wall_ms=1201,src=2020_corner_bracket-Corner.step
+VTK,item=corner,view=iso,wall_ms=1305,arch=native
+F3D,item=corner,view=iso,wall_ms=3209,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=corner,view=iso,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=-1,1,-1 --camera-view-up=0,0,1
+F3DPIX,item=corner,view=iso,informative=1,frac=0.3986,margin_px=79,dark=0.0000,bbox=167:79:1087:1185,w=1280,h=1280,mode=part,ok=0
+VTK,item=corner,view=front,wall_ms=1122,arch=native
+F3D,item=corner,view=front,wall_ms=3626,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=corner,view=front,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=0,1,0 --camera-view-up=0,0,1
+F3DPIX,item=corner,view=front,informative=1,frac=0.5478,margin_px=64,dark=0.0000,bbox=173:64:1106:1215,w=1280,h=1280,mode=part,ok=0
+VTK,item=corner,view=top,wall_ms=1247,arch=native
+F3D,item=corner,view=top,wall_ms=3391,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=corner,view=top,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Y --camera-direction=0,0,-1 --camera-view-up=0,1,0
+F3DPIX,item=corner,view=top,informative=1,frac=0.5478,margin_px=64,dark=0.0000,bbox=173:64:1106:1215,w=1280,h=1280,mode=part,ok=0
+MESH,item=lm8uu,quality=standard,wall_ms=1059,src=LM8UU.step
+VTK,item=lm8uu,view=iso,wall_ms=1258,arch=native
+F3D,item=lm8uu,view=iso,wall_ms=3403,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=lm8uu,view=iso,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=-1,1,-1 --camera-view-up=0,0,1
+F3DPIX,item=lm8uu,view=iso,informative=1,frac=0.3991,margin_px=83,dark=0.0000,bbox=83:163:1196:1115,w=1280,h=1280,mode=part,ok=0
+VTK,item=lm8uu,view=front,wall_ms=1151,arch=native
+F3D,item=lm8uu,view=front,wall_ms=3322,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=lm8uu,view=front,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=0,1,0 --camera-view-up=0,0,1
+F3DPIX,item=lm8uu,view=front,informative=1,frac=0.4553,margin_px=64,dark=0.0000,bbox=64:64:1215:1215,w=1280,h=1280,mode=part,ok=0
+VTK,item=lm8uu,view=top,wall_ms=1331,arch=native
+F3D,item=lm8uu,view=top,wall_ms=3694,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=lm8uu,view=top,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Y --camera-direction=0,0,-1 --camera-view-up=0,1,0
+F3DPIX,item=lm8uu,view=top,informative=1,frac=0.5006,margin_px=64,dark=0.0039,bbox=280:64:999:1215,w=1280,h=1280,mode=part,ok=1
+MESH,item=sc8uu_assy,quality=standard,wall_ms=1089,src=SC8UU.step
+VTK,item=sc8uu_assy,view=iso,wall_ms=1192,arch=native
+F3D,item=sc8uu_assy,view=iso,wall_ms=3752,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=sc8uu_assy,view=iso,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=-1,1,-1 --camera-view-up=0,0,1
+F3DPIX,item=sc8uu_assy,view=iso,informative=1,frac=0.4733,margin_px=64,dark=0.0000,bbox=64:187:1215:1195,w=1280,h=1280,mode=part,ok=0
+VTK,item=sc8uu_assy,view=front,wall_ms=1228,arch=native
+F3D,item=sc8uu_assy,view=front,wall_ms=3451,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=sc8uu_assy,view=front,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=0,1,0 --camera-view-up=0,0,1
+F3DPIX,item=sc8uu_assy,view=front,informative=1,frac=0.3872,margin_px=64,dark=0.0000,bbox=64:267:1215:1012,w=1280,h=1280,mode=part,ok=0
+VTK,item=sc8uu_assy,view=top,wall_ms=1407,arch=native
+F3D,item=sc8uu_assy,view=top,wall_ms=3616,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=sc8uu_assy,view=top,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Y --camera-direction=0,0,-1 --camera-view-up=0,1,0
+F3DPIX,item=sc8uu_assy,view=top,informative=1,frac=0.6807,margin_px=64,dark=0.0000,bbox=64:131:1215:1148,w=1280,h=1280,mode=part,ok=0
+MESH,item=hubble,source=stl-input
+VTK,item=hubble,view=iso,wall_ms=1359,arch=native
+F3D,item=hubble,view=iso,wall_ms=3255,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=hubble,view=iso,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=-1,1,-1 --camera-view-up=0,0,1
+F3DPIX,item=hubble,view=iso,informative=1,frac=0.1771,margin_px=122,dark=0.0005,bbox=154:414:1157:1078,w=1280,h=1280,mode=part,ok=0
+VTK,item=hubble,view=front,wall_ms=1296,arch=native
+F3D,item=hubble,view=front,wall_ms=3254,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=hubble,view=front,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Z --camera-direction=0,1,0 --camera-view-up=0,0,1
+F3DPIX,item=hubble,view=front,informative=1,frac=0.2444,margin_px=63,dark=0.0022,bbox=63:298:1216:981,w=1280,h=1280,mode=part,ok=1
+VTK,item=hubble,view=top,wall_ms=1256,arch=native
+F3D,item=hubble,view=top,wall_ms=3326,arch=emulated-amd64,note=emulation-pessimistic-not-a-basis-for-a-decision
+F3DCMD,item=hubble,view=top,cmd=docker run --rm --platform linux/amd64 --network none --cpus 2 --memory 2g --memory-swap 2g --user nobody -e HOME=/job -e XDG_CACHE_HOME=/job/.cache -v STLDIR:/in:ro -v OUTDIR:/job octoconv-f3d-yardstick:11b1ac717bfc f3d /in/part.stl --output=/job/render.png --no-config --rendering-backend=osmesa --resolution=1280,1280 --background-color=1,1,1 --camera-orthographic --grid=false --axis=false --filename=false --metadata=false --up=+Y --camera-direction=0,0,-1 --camera-view-up=0,1,0
+F3DPIX,item=hubble,view=top,informative=1,frac=0.2467,margin_px=64,dark=0.0001,bbox=219:64:1060:1215,w=1280,h=1280,mode=part,ok=0
+SHEET,file=71-05-contact-f3d.png,bytes=592374,title=f3d 3.5.0, emulated amd64, no Landlock - yardstick only
+F3D_SUMMARY,parts=5,fail=0,retries=0

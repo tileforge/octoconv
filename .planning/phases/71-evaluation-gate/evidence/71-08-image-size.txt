@@ -1,0 +1,63 @@
+HDR,date_utc=2026-10-04T11:25:43Z
+HDR,server_arch=arm64
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-pruned-0d09b7ba39ad
+HDR,image_id=sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2
+HDR,ocp=7.9.3.1.1
+HDR,vtk=9.7.1
+HDR,ezdxf=1.4.4
+HDR,mesa=22.3.6-1+deb12u2
+HDR,rsvg=rsvg-convert version 2.54.7
+HDR,cpus=na
+HDR,memory=na
+HDR,host_noise=12
+HDR,go=go version go1.27.1 darwin/arm64
+HDR,pin=7.9.3.1.1
+HDR,script=scripts/cad-image-size-measure.sh,repeats=3,port=5055
+REGISTRY,image=registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373,port=5055
+IMAGE_SIZE,variant=pruned,ocp=7.9.3.1.1,image_id=sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01,uncompressed_mib=1083.0,compressed_mib=299.3,layers=6,uncompressed_bytes=1135587708,compressed_bytes=313870924
+LAYER,variant=pruned,digest=sha256:fe02713d74d1f0c5c0432b1807258062993165c63137f2bbaca39e7951de5a05,compressed_bytes=29230297
+LAYER,variant=pruned,digest=sha256:17b30791f26fca778456081e78c668e34e4b6678b9362e57a92fb08458aa4f96,compressed_bytes=105889001
+LAYER,variant=pruned,digest=sha256:d508630f64dfa9a8d14784a3b12e998f3aa1e974ec68a9bb8e5b7e16505dc1c4,compressed_bytes=178678880
+LAYER,variant=pruned,digest=sha256:f5d7180f7a4e06685b7cd864088c97f93d2c5237941d2965f2ef36aeb8a6bd2f,compressed_bytes=17626
+LAYER,variant=pruned,digest=sha256:a011ebb8f0f1a72edbd78adb0ce7032fbcc33b16359ad3b13969cebc8c72a75a,compressed_bytes=54754
+LAYER,variant=pruned,digest=sha256:bf281faa5a775d17d41db966cad55475744834dd51c54b783943e8c55ee1770b,compressed_bytes=366
+IMAGE_SIZE,variant=full,ocp=7.9.3.1.1,image_id=sha256:cce9074fe38062f4a666bcf14c038822093a458d36a9dc7a3ad9b2b32641535c,uncompressed_mib=1358.3,compressed_mib=366.7,layers=6,uncompressed_bytes=1424310060,compressed_bytes=384504486
+LAYER,variant=full,digest=sha256:fe02713d74d1f0c5c0432b1807258062993165c63137f2bbaca39e7951de5a05,compressed_bytes=29230297
+LAYER,variant=full,digest=sha256:17b30791f26fca778456081e78c668e34e4b6678b9362e57a92fb08458aa4f96,compressed_bytes=105889001
+LAYER,variant=full,digest=sha256:d9a1cd235994f6237bfa58dd1a02a6791f3109b700e493f66d612fd02077a7db,compressed_bytes=249312440
+LAYER,variant=full,digest=sha256:5de6f9e06d31dc42dc2f4ac46d084db72aa885b4c483bf42fbaaa3165f748601,compressed_bytes=17627
+LAYER,variant=full,digest=sha256:56ad00d57693c302771ed86906c068b8cf9ac28d19c4a9f070a7764455d43da1,compressed_bytes=54753
+LAYER,variant=full,digest=sha256:e4b3235ccb5dcee72cb5bbd7ba02c2f85bbbdb6e2c4917006259a9a8c8617d0a,compressed_bytes=368
+DIND,image=docker@sha256:7dcdfc4a20246236f558175182ccace1eb15a41bd3eb119dd2284f393498b7c1,network=octoconv-cad-pull,privileged=1,volume=anonymous,fresh_daemon_per_pull=1
+DIND,storage_driver=overlayfs,driver_status=driver-type io.containerd.snapshotter.v1,docker=29.8.2
+COLD_PULL,variant=pruned,rep=1,wall_s=6.38,layers=6,fetched=6,already_exists=0,medium=loopback,measures=download+decompress+extract over loopback not network
+COLD_PULL,variant=pruned,rep=2,wall_s=7.11,layers=6,fetched=6,already_exists=0,medium=loopback,measures=download+decompress+extract over loopback not network
+COLD_PULL,variant=pruned,rep=3,wall_s=6.04,layers=6,fetched=6,already_exists=0,medium=loopback,measures=download+decompress+extract over loopback not network
+COLD_PULL_DIST,variant=pruned,n=3,wall_min=6.04,wall_median=6.38,wall_max=7.11
+COLD_PULL,variant=full,rep=1,wall_s=7.75,layers=6,fetched=6,already_exists=0,medium=loopback,measures=download+decompress+extract over loopback not network
+COLD_PULL_DIST,variant=full,n=1,wall_min=7.75,wall_median=7.75,wall_max=7.75
+PULL_CALC,variant=pruned,compressed_mib=299.3,bandwidth_mbit=100,transfer_s=25.1,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+PULL_CALC,variant=pruned,compressed_mib=299.3,bandwidth_mbit=1000,transfer_s=2.5,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+PULL_CALC,variant=pruned,compressed_mib=299.3,bandwidth_mbit=10000,transfer_s=0.3,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+PULL_CALC,variant=full,compressed_mib=366.7,bandwidth_mbit=100,transfer_s=30.8,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+PULL_CALC,variant=full,compressed_mib=366.7,bandwidth_mbit=1000,transfer_s=3.1,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+PULL_CALC,variant=full,compressed_mib=366.7,bandwidth_mbit=10000,transfer_s=0.3,label=рассчитано,note=compressed bytes * 8 / bandwidth; node time is about transfer_s plus the unpack time of COLD_PULL
+FLEET,image=cgr.dev/chainguard/minio@sha256:fa23f6a6f62645654530ff94aa077d1cc0d0e44c8f1cce02ab039873612edc72,uncompressed_mib=153.1,note=as found on the host, not rebuilt
+FLEET,image=hibiken/asynqmon:0.7.2,uncompressed_mib=24.2,note=as found on the host, not rebuilt
+FLEET,image=octoconv-api,uncompressed_mib=136.6,note=as found on the host, not rebuilt
+FLEET,image=octoconv-audio-worker,uncompressed_mib=655.1,note=as found on the host, not rebuilt
+FLEET,image=octoconv-av-worker,uncompressed_mib=154.5,note=as found on the host, not rebuilt
+FLEET,image=octoconv-chromium-worker,uncompressed_mib=650.3,note=as found on the host, not rebuilt
+FLEET,image=octoconv-document-worker,uncompressed_mib=733.0,note=as found on the host, not rebuilt
+FLEET,image=octoconv-ocr-worker,uncompressed_mib=424.1,note=as found on the host, not rebuilt
+FLEET,image=octoconv-pandoc-worker,uncompressed_mib=306.7,note=as found on the host, not rebuilt
+FLEET,image=octoconv-probe-worker,uncompressed_mib=222.5,note=as found on the host, not rebuilt
+FLEET,image=octoconv-tectonic-worker,uncompressed_mib=443.5,note=as found on the host, not rebuilt
+FLEET,image=octoconv-webhook-worker-1,uncompressed_mib=134.4,note=as found on the host, not rebuilt
+FLEET,image=octoconv-webhook-worker-2,uncompressed_mib=134.4,note=as found on the host, not rebuilt
+FLEET,image=octoconv-worker,uncompressed_mib=297.1,note=as found on the host, not rebuilt
+FLEET,image=postgres:18,uncompressed_mib=457.1,note=as found on the host, not rebuilt
+FLEET,image=redis:8,uncompressed_mib=156.1,note=as found on the host, not rebuilt
+D15,threshold=none,renderer_choice_unchanged=1,phase76_input=keda.cad.minReplicaCount

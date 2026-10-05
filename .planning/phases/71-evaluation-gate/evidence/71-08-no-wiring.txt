@@ -1,0 +1,50 @@
+# Plan 71-08 criterion 5: no production wiring
+WIRING_BASE,commit=4e595c09e236453498abc8229abc3208b10169e6,head=ba22957077514c3657990e4b63e43938f4aaae84,date_utc=2026-10-04T11:32:42Z,toolchain=go version go1.26.4 darwin/arm64
+WIRING_PATHS,paths=internal cmd deploy frontend docs README.md go.mod go.sum docker-compose.yml docker-compose.e2e.yml .github .dockerignore .gitignore Dockerfile.*,excluded=internal/convert/testdata/cad/ and Dockerfile.cad-measure
+WIRING_LIST,files_in_scope_before_exclusion=39,testdata_cad=38,dockerfile_cad_measure=1,other=0
+WIRING_SCRIPTS,existing_scripts_modified_deleted_or_renamed=0
+WIRING_REVERSE,untracked_file_in_internal=detected,file_in_testdata_outside_cad=detected,note=both probe files were created and removed again at 2026-10-04; the gate listed each of them
+# go test (GOTOOLCHAIN=go1.26.4) -run AllEngines|READMEEngineClasses|ListFormats|Pre57Golden|InspectOperationSpec|InspectSentinel|ConvertPayloadRoundTrip -count=1 -v
+=== RUN   TestAllEnginesCoversEveryEngineClass
+--- PASS: TestAllEnginesCoversEveryEngineClass (0.00s)
+=== RUN   TestREADMEEngineClassesMatchAllEngines
+--- PASS: TestREADMEEngineClassesMatchAllEngines (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/convert	1.123s
+=== RUN   TestListFormats_RegistryDerived
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000001] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 602.666µs
+--- PASS: TestListFormats_RegistryDerived (0.00s)
+=== RUN   TestListFormats_Unauthenticated401
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000002] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 401 76B in 26.166µs
+--- PASS: TestListFormats_Unauthenticated401 (0.00s)
+=== RUN   TestListFormats_EnginesKeyUnchanged
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000003] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 122.958µs
+--- PASS: TestListFormats_EnginesKeyUnchanged (0.00s)
+=== RUN   TestListFormats_OperationsTreeDerivedFromRegistry
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000004] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 116.875µs
+--- PASS: TestListFormats_OperationsTreeDerivedFromRegistry (0.00s)
+=== RUN   TestListFormats_NoOperationOutsideRegistry
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000005] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 100.375µs
+--- PASS: TestListFormats_NoOperationOutsideRegistry (0.00s)
+=== RUN   TestPre57GoldenListFormats
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000006] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 108.708µs
+--- PASS: TestPre57GoldenListFormats (0.00s)
+=== RUN   TestPre57GoldenGetJobSingleOutput
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000007] "GET http://example.com/v1/jobs/00000000-0000-0000-0000-000000000057 HTTP/1.1" from 192.0.2.1 - 200 179B in 34.25µs
+--- PASS: TestPre57GoldenGetJobSingleOutput (0.00s)
+=== RUN   TestInspectOperationSpecDeclaresDeterministicAvailability
+--- PASS: TestInspectOperationSpecDeclaresDeterministicAvailability (0.00s)
+=== RUN   TestInspectOperationSpecUnavailableReasonEnumMatchesGo
+--- PASS: TestInspectOperationSpecUnavailableReasonEnumMatchesGo (0.00s)
+=== RUN   TestInspectSentinelFormatsMatchTheContract
+--- PASS: TestInspectSentinelFormatsMatchTheContract (0.00s)
+=== RUN   TestPre58GoldenListFormats
+2026/10/04 14:32:21 [АндрейП�/w8IVuu1CeO-000008] "GET http://example.com/v1/formats HTTP/1.1" from 192.0.2.1 - 200 5054B in 177.083µs
+--- PASS: TestPre58GoldenListFormats (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/api	1.065s
+=== RUN   TestConvertPayloadRoundTrip
+--- PASS: TestConvertPayloadRoundTrip (0.00s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/queue	1.572s
+NO-WIRING
