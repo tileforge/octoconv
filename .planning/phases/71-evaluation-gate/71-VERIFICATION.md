@@ -1,6 +1,6 @@
 ---
 phase: 71-evaluation-gate
-verified: 2026-10-05T05:38:19Z
+verified: 2026-10-05T06:34:39Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -71,6 +71,7 @@ covered_files:
   - scripts/cad-measure/requirements-ocp-7.9.3.1.1.txt
   - scripts/cad-measure/requirements-ocp-8.0.1.0.0.txt
   - scripts/cad-measure/requirements-vtk.txt
+  - scripts/cad-measure/verdicts.sh
   - scripts/cad-measure/vtk-keeplist.txt
   - scripts/cad-measure/vtk_keeplist.py
   - scripts/cad-prune-amd64-check.sh
@@ -80,7 +81,7 @@ covered_files:
   - scripts/cad-rss-time-measure.sh
   - scripts/cad-sandbox-measure.sh
   - scripts/cad-vtk-keeplist-test.py
-covered_digest: "v3:sha256:320c43d83c765c344f259cd31adacdd74777ddaf72e51ec3084bd74f47ed2293"
+covered_digest: "v3:sha256:242af638292d78a21e217126084f57f813b1d112c8bbeb42fe9dfcc48fb64c9a"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -89,7 +90,7 @@ re_verification:
   gaps_closed: []
   gaps_remaining: []
   regressions: []
-  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457); round 5: the deriver refuses to run without an explicit pin decision (655f863), plan 71-06 verify command and SUMMARY invocation corrected (56bc497)"
+  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457); round 5: the deriver refuses to run without an explicit pin decision (655f863), plan 71-06 verify command and SUMMARY invocation corrected (56bc497); round 6: resume header classification, PRUNE_OTHER completeness, configuration-completeness and vacuous-success sweeps (8987eba..957df95, new scripts/cad-measure/verdicts.sh)"
 gaps: []
 residual_non_blocking:
   - item: "Legal OK for libfreeimage / libraw / libjasper (GPL/LGPL/CDDL class) is NOT obtained"
@@ -107,8 +108,8 @@ residual_non_blocking:
 **Phase Goal:** Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа, лимиты входа, лицензии), известны до того, как написана строка продакшен-кода.
 **Verified:** 2026-10-04
 **Status:** passed (with the non-blocking residuals listed above; see "Criterion 4 judgement")
-**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457; sixth pass after round-5 fixes 655f863, 56bc497)
-**Branch / head:** gsd/phase-71-evaluation-gate @ 56bc497 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
+**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457; sixth pass after round-5 fixes 655f863, 56bc497; seventh pass after the round-6 sweep 8987eba..957df95)
+**Branch / head:** gsd/phase-71-evaluation-gate @ 957df95 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
 
 ## Goal Achievement
 
@@ -174,12 +175,18 @@ Not applicable: no rendered dynamic data; the artifacts are evidence files and s
 | Deriver pin guard | `cad-derive-limits.py evidence` (no flag); `--formula-pin`; each also with `--out` on an existing file | no flag: exit 2, empty stdout, message naming `--pin`/`--formula-pin`; `--formula-pin`: exit 2, refuses because a user PIN_DECISION 7.9.3.1.1 is recorded; `--out` target left byte-identical after both refusals, no temp file left; `--pin 7.9.3.1.1` regeneration identical | PASS |
 | Old vs new deriver on the real evidence | all 98 4g points at par=off,lp=2 compared, 65970c7 vs c877f33 | one point flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (ok 514 MiB -> fail); nothing else | PASS |
 | Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` | `SELF_TEST,cases=32,failed=0` | PASS |
-| Resume config check on the real 4g ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt --ocp 7.9.3.1.1 --variant full --memory 4g` | default config: `status=rejected,rc=65` (parallel off vs on, lp 2 vs default); with `--parallel off --lp-threads 2`: `status=accepted` | PASS |
+| Resume config check on the real 4g ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt --ocp 7.9.3.1.1 --variant full --memory 4g --parallel off --lp-threads 2` | without `--expect-image`: `RESUME_CONFIG_MISMATCH,key=image,file=...full-0d09b7ba39ad,current=...full-dc621b94ee5d` and `rejected,rc=65` (the file was written on the 0d09b7ba39ad build, the current build is dc621b94ee5d); with `--expect-image octoconv-cad-measure:ocp7.9.3.1.1-full-0d09b7ba39ad`: `accepted`. All 4 sessions of this ladder carry the one image tag | PASS |
+| Resume check on the par=on history ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1.txt ... --expect-image ...0d09b7ba39ad` | `rejected,rc=65`: the file spans two image builds (`full-32f07542eda8` x3 and `full-48d9162df359` x3 HDR blocks); it can no longer be resumed. Acceptable for a history file: no summary number derives from it, and `cad-derive-limits.py` still reads it as history (regeneration byte-identical) | PASS (recorded) |
 | Keep-list matcher | `python3 scripts/cad-vtk-keeplist-test.py` | `KEEPLIST_TEST,cases=10,failed=0`; `vtk-keeplist.txt` has 77 entries, 0 `aarch64`/`x86_64` tags, sha256 equals `keeplist_sha256` in `71-07-prune.txt` and `71-07-prune-amd64.txt` | PASS |
 | PRUNE-OK gate (plan 71-07) | verify command line 1, run as written | `PRUNE-OK` | PASS |
 | STALE-REFUSED gate (plan 71-07) | verify command line 2 on the existing `...-full-dc621b94ee5d` image with a keep-list for vtk 9.7.0 | `STALE-REFUSED` | PASS |
 | DECISION-OK gate (plan 71-08) | verify command from `71-08-PLAN.md` | `DECISION-OK` | PASS |
-| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 56bc497) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,failed_output_verdict_not_counted_as_ok=1,pin_decision_explicit=1,recorded_user_pin_not_reversed=1,out_untouched_on_refusal=1` | PASS |
+| Verdict self-test | `scripts/cad-measure/verdicts.sh --self-test` | `SELF_TEST,cases=44,failed=0` | PASS |
+| Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` (was 32 cases) | `SELF_TEST,cases=78,failed=0` | PASS |
+| libs / prune-check verdict self-test | `scripts/cad-image-trace.sh self-test` (no docker) | `SELF_TEST,cases=41,failed=0` | PASS |
+| Modified plan verify commands, run as written | 71-02 SELF-CHECK-FIRES; 71-03 PROVENANCE-COMPLETE and TAMPER-DETECTED; 71-07 PRUNE-OK and STALE-REFUSED; 71-08 DECISION-OK and NO-WIRING (TMPDIR in scratch); 71-06 LIMITS-OK on a scratch copy | all print their marker (`SELF-CHECK-FIRES`, `PROVENANCE-COMPLETE`, `TAMPER-DETECTED`, `PRUNE-OK`, `STALE-REFUSED`, `DECISION-OK`, `NO-WIRING`, `LIMITS-OK`); LIMITS regeneration byte-identical | PASS |
+| 71-05 F3D-OK command | its three grep conditions on the committed `71-05-f3d.txt` and contact sheet (the yardstick itself not re-run: it rebuilds the evidence under emulation) | `F3D_ASSETS`, `F3D_SUMMARY,parts=5,fail=0,retries=0`, non-empty PNG all present | PASS (greps only) |
+| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 957df95) | `SELF-CHECK-OK,...,out_untouched_on_refusal=1,foreign_ladder_row_refused=1,go_worker_validated=1,missing_format_class_refused=1,pin_without_common_files_unevaluated=1` (all earlier flags still present) | PASS |
 | Committed corpus hashes | sha256 of 37 files vs `PROVENANCE.md` | 0 mismatch | PASS |
 | Multi-hour measurements | not re-run (per instruction) | - | SKIP |
 
@@ -229,6 +236,10 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 - W17 (new, round 4). The Landlock candidate sets in DECISION name `/usr/lib/aarch64-linux-gnu` (cad_mesh, cad_render, cad_dxf, rsvg-convert). On amd64 the multiarch library directory is `x86_64-linux-gnu`, so these sets are arm64-specific; phase 73 must derive or parametrise them per architecture and re-measure on amd64. DECISION labels them candidates, not grants, but does not say they are arch-bound. Warning, not a gap.
 - W18 (new, round 4). Carry-over on the new image tag: `71-08-image-size.txt` (compressed 299.3 MiB, cold pull median 6.38 s), the Landlock matrix and the 4g ladders were measured on `...-0d09b7ba39ad`; the final tag is `...-dc621b94ee5d` (image_id sha256:08117b26d4d0...). Evidence for equivalence: `71-07-prune-arch.txt` `TREE_SHA` equal for `/opt/venv` and `/opt/cad-measure` (excluding the keep-list source and helper pyc), `IMAGE_BYTES` 1135587708 vs 1135589363 (+1655 B, both 1083.0 MiB, 6 layers), `IDENTITY identical=5,different=0,failed=0`, and `71-07-prune.txt` regenerated on the new tag (564.1 -> 288.7 MiB, 196/196 PNG, 48/48 rows, STALE_TEST detected). DECISION states plainly that compressed size and cold pull are carried over, "рассчитано по равному содержимому, не замерено заново". Judgement: honest and acceptable. The only changed bytes are one Python source file in one layer, so a re-pull would differ by well under the measurement noise (cold pull n=3 spread 6.04-7.11 s); the number is still a measurement of the previous tag, and the evidence HDR still names it. Re-measure if the image changes again for any other reason.
 - W19 (new, round 4). The `nofreeimage` build variant (pointing to a non-existent Dockerfile stage) is gone from `common.sh` and `cad-image-size-measure.sh` (no occurrence left in scripts); D-18 stays `record` and the `patchelf` experiment still was not run (A1 open). Resume now refuses a file written under another configuration (exit 65) and keys cells by the full configuration, which closes the way a mixed-config ladder could be produced; `--self-test` passes 32 cases. No residual.
+
+- W20 (new, round 6). Class sweep (configuration completeness and vacuous success, 8987eba..957df95, 16 files, new `scripts/cad-measure/verdicts.sh`). I read the diff of every gate change and the verdict functions: each now additionally requires a positive count that equals the expected count (identity, render PNGs, Landlock helpers, F3D renders, kept modules, readings, inventory groups, PRUNE_OTHER rows plus accounted skips on both sides, resume header fields, ladder rows of the selected configuration, an image pair of one pin), and returns non-zero on missing, empty or hidden-rc input. No condition was removed without a stricter replacement. `--self-test`/`self-test` suites total 44 + 78 + 41 cases, all pass. The committed evidence is non-vacuous: PRUNE_IDENTITY 196/196, PRUNE_OTHER rows=48 same=48 diff=0 (no PRUNE_SKIP line), STALE_TEST x2 detected, EXPECTATION match=1, KEEPLIST_REGEN same=1 entries=77 maps_files=17, LDD counts 2 and 3 (nonzero), D18_TRACE ops 38 and 9, IDENTITY 5/5, AMD64_KEPT 77/77, LANDLOCK_SUMMARY helpers=4 inputs=34 sufficient=34, RENDER_SUMMARY parts=5 pngs=108 (equals the new expected-count formula, (7+4)*5+7*6+3+8), F3D_SUMMARY parts=5 (15 pairs), GO_WORKER readings 24.2/24.9, INV 37/17/33. No evidence file changed in this round and no number in DECISION moved.
+- W21 (new, round 6). The committed `PRUNE_OTHER` line (and the other summary lines above) come from the pre-sweep script versions, so they lack the new fields (`expected=`, `prestep_skipped=`, `runs_ok=1`, `expected_renders=`). The executor reports that a real re-run of the new prune-check gives rows=48 plus 1 known pre-step skip (49), consistent with the committed rows=48; that re-run is not committed as evidence and I did not repeat it (a 49-pair comparison of two images). The committed lines still satisfy the (stricter) plan verify commands. Residual, low: if the evidence is regenerated, the `PRUNE_OTHER` line will carry the extra fields and `prestep_skipped=1`.
+- W22 (new, round 6). Resume now refuses a changed confinement, image build or any unclassified header field. Consequence recorded: `71-06-ladder-4g-ocp7.9.3.1.1.txt` (par=on history) spans two image builds and cannot be resumed; the par=off,lp=2 ladder, the one that feeds every number, is a single image tag across its 4 sessions and can be resumed only with `--expect-image ...0d09b7ba39ad` (the image tag moved to dc621b94ee5d in round 4 without changing the installed tree, see W18). No residual.
 
 ### Human Verification Required
 
