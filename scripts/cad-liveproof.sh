@@ -4,10 +4,42 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 
+usage() {
+	cat <<'USAGE'
+usage: scripts/cad-liveproof.sh [--out FILE]
+
+Runs the CAD live proof against the compose stack of this checkout and writes
+one evidence line per check to FILE (relative to the repository root, default
+.planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt).
+Starts only the services that are not running and stops only those.
+USAGE
+}
+
+EVID=".planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--out)
+		[ $# -ge 2 ] || {
+			usage >&2
+			exit 64
+		}
+		EVID=$2
+		shift 2
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		usage >&2
+		exit 64
+		;;
+	esac
+done
+
 API_BASE="${CAD_LIVEPROOF_API_BASE:-http://127.0.0.1:8090}"
 DB_URL="${CAD_LIVEPROOF_DATABASE_URL:-postgres://octo:octo-pass@127.0.0.1:5434/octo_db}"
 SALT="${CAD_LIVEPROOF_API_KEY_SALT:-dev-only-change-me-in-real-deploys}"
-EVID=".planning/phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt"
 CNAME=octoconv-cad-worker
 SERVICES="postgres redis minio api cad-worker"
 CORPUS=internal/convert/testdata/cad
@@ -17,7 +49,8 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-go1.26.4}"
 W=""
 STARTED_BY_ME=""
 FINISHED=""
-N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_REJECT=0 N_BOMB=0 N_CANCEL=0 N_KILL=0
+N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_QUALITY=0 N_RENDER=0 N_VIEWS=0 N_MEAS=0 N_OPTS_REJECT=0 N_REJECT=0 N_BOMB=0
+N_RENDER_RETRY=0 N_MESH_SIGNAL=0 N_EMPTY=0 N_CANCEL_RENDER=0 N_CANCEL=0 N_KILL=0 N_IMAGE=0
 
 log() { echo "$*" >&2; }
 ev() { echo "$*" | tee -a "$EVID"; }
@@ -62,15 +95,21 @@ fi
 [ -z "${CAD_SANDBOX_DISABLED:-}" ] || fail "CAD_SANDBOX_DISABLED is set in the environment; the proof needs the confined worker"
 DISK_GIB=$(df -k / | awk 'NR==2 { printf "%d", $4 / 1048576 }')
 [ "$DISK_GIB" -ge 6 ] || fail "free disk is ${DISK_GIB} GiB, below the 6 GiB floor"
-for f in synthetic/units_inch.step public/nist_ctc_05_asme1_ap242-e1.stp public/nist-d2mi-827-9999-906.stp public/LinearSlide-MGN15x-Block.step; do
+for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surfaces_only.iges public/nist_ctc_05_asme1_ap242-e1.stp public/nist-d2mi-827-9999-906.stp public/LinearSlide-MGN15x-Block.step public/nasa-hubble-all-pieces.stl; do
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
+
+LARGE_STL=$(ls -S "$ROOT"/$CORPUS/public/*.stl "$FETCHED"/*.stl | head -1)
+[ -f "$LARGE_STL" ] || fail "no STL found for the render retry"
 
 mkdir -p "$(dirname "$EVID")"
 : > "$EVID"
 W=$(mktemp -d)
 chmod 755 "$W"
+mkdir -p "$W/bin"
+go build -o "$W/bin/cad-pixel-judge" ./scripts/cmd/cad-pixel-judge || fail "cannot build cad-pixel-judge"
+go build -o "$W/bin/cad-measurements-check" ./scripts/cmd/cad-measurements-check || fail "cannot build cad-measurements-check"
 
 RUNNING=$(docker compose ps --status running --services 2>/dev/null || true)
 for s in $SERVICES; do
@@ -99,16 +138,22 @@ CAD_IMAGE=$(docker inspect -f '{{.Image}}' "$CNAME")
 API_CID=$(docker compose ps -q api)
 ENGINE_TIMEOUT_RAW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CNAME" | sed -n 's/^CAD_ENGINE_TIMEOUT=//p')
 ENGINE_TIMEOUT=${ENGINE_TIMEOUT_RAW%s}
+RENDER_TIMEOUT_RAW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CNAME" | sed -n 's/^CAD_RENDER_TIMEOUT=//p')
+RENDER_TIMEOUT=${RENDER_TIMEOUT_RAW%s}
 SANDBOX_ENV=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$CNAME" | sed -n 's/^CAD_SANDBOX_DISABLED=//p')
 [ -z "$SANDBOX_ENV" ] || fail "the cad-worker container has CAD_SANDBOX_DISABLED=$SANDBOX_ENV"
 case "$ENGINE_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_ENGINE_TIMEOUT from the container (got '$ENGINE_TIMEOUT_RAW')" ;; esac
+case "$RENDER_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_RENDER_TIMEOUT from the container (got '$RENDER_TIMEOUT_RAW')" ;; esac
 
 ev "HDR,date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ev "HDR,commit=$(git rev-parse HEAD)"
-ev "HDR,tracked_dirt=$(git status --short --untracked-files=no -- . ":(exclude)$EVID" | wc -l | tr -d ' ')"
+DIRT=$(git status --short --untracked-files=no | awk -v e="$EVID" '$2 != e { print $2 }')
+ev "HDR,tracked_dirt=$(printf '%s' "$DIRT" | grep -c . || true)"
+ev "HDR,tracked_dirt_paths=$(printf '%s' "$DIRT" | tr '\n' ';' | sed 's/;$//')"
 ev "HDR,api_image_id=$(docker inspect -f '{{.Image}}' "$API_CID")"
 ev "HDR,cad_worker_image_id=$CAD_IMAGE"
 ev "HDR,cad_engine_timeout_s=$ENGINE_TIMEOUT"
+ev "HDR,cad_render_timeout_s=$RENDER_TIMEOUT"
 ev "HDR,sandbox_disabled=false"
 ev "HDR,started_by_run=$(echo "${STARTED_BY_ME:-none}" | tr -s ' ' | sed 's/^ //' | tr ' ' ';')"
 ev "HDR,server_arch=$(docker version --format '{{.Server.Arch}}')"
@@ -133,7 +178,14 @@ http() {
 }
 
 create_job() {
-	HTTP=$(http "$W/create.json" -X POST "$API_BASE/v1/jobs" -F "target=$3" -F "file=@$1;filename=$2")
+	local args=(-F "target=$3" -F "file=@$1;filename=$2")
+	if [ -n "${4:-}" ]; then
+		args+=(-F "operation=$4")
+	fi
+	if [ -n "${5:-}" ]; then
+		args+=(-F "opts=$5")
+	fi
+	HTTP=$(http "$W/create.json" -X POST "$API_BASE/v1/jobs" "${args[@]}")
 	JOB_ID=$(jq -r '.job_id // empty' "$W/create.json" 2>/dev/null || true)
 }
 
@@ -160,13 +212,19 @@ output_facts() {
 	psqlq "select count(*), count(*) filter (where role = 'primary'), coalesce(max(size_bytes), 0), coalesce(max(format), '') from job_outputs where job_id = '$1'"
 }
 
+fetch_url() {
+	docker compose exec -T cad-worker /usr/bin/python3 -c \
+		'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1]).read())' "$1" > "$2"
+}
+
 download_output() {
 	local url out=$1
 	url=$(jq -r '.download_url // empty' "$W/job.json")
 	[ -n "$url" ] || return 1
-	docker compose exec -T cad-worker /usr/bin/python3 -c \
-		'import sys, urllib.request; sys.stdout.buffer.write(urllib.request.urlopen(sys.argv[1]).read())' "$url" > "$out"
+	fetch_url "$url" "$out"
 }
+
+role_url() { jq -r --arg r "$1" '[.outputs[]? | select(.role == $r) | .url][0] // empty' "$W/job.json"; }
 
 judge() {
 	local stl=$1 line rc=0
@@ -176,18 +234,21 @@ judge() {
 	JUDGE_RC=$rc
 }
 
-mesh_pids() {
+proc_pids() {
 	docker exec "$CNAME" sh -c '
 		for d in /proc/[0-9]*; do
 			p=${d#/proc/}
 			c=$(cat "$d/comm" 2>/dev/null) || continue
 			case "$c" in
-			cad-mesh) echo "$p" ;;
-			python*) grep -qa cad-mesh "$d/cmdline" 2>/dev/null && echo "$p" ;;
+			"$1") echo "$p" ;;
+			python*) grep -qa "$1" "$d/cmdline" 2>/dev/null && echo "$p" ;;
 			esac
 		done
-		true' 2>/dev/null | tr '\n' ' ' || true
+		true' sh "$1" 2>/dev/null | tr '\n' ' ' || true
 }
+
+mesh_pids() { proc_pids cad-mesh; }
+render_pids() { proc_pids cad-render; }
 
 mesh_census() {
 	docker exec "$CNAME" sh -c '
@@ -238,20 +299,30 @@ CAD_FORMATS='["step","stp","iges","igs","stl","dxf","dwg"]'
 TOUCHING=$(jq -c --argjson f "$CAD_FORMATS" '[.engines | to_entries[] | .key as $e | .value.pairs[] | select(any(.[]; . as $x | $f | index($x))) | [$e, .[0], .[1]]] | sort' "$FORMATS_JSON")
 OPS_TOUCHING=$(jq -c --argjson f "$CAD_FORMATS" '[.operations | to_entries[] | .key as $o | .value | to_entries[] | .key as $e | .value.pairs[] | select(any(.[]; . as $x | $f | index($x))) | [$o, $e, .[0], .[1]]] | sort' "$FORMATS_JSON")
 [ "$TOUCHING" = '[["cad","iges","stl"],["cad","step","stl"]]' ] || fail "engines touching cad formats: $TOUCHING"
-[ "$OPS_TOUCHING" = '[["convert","cad","iges","stl"],["convert","cad","step","stl"]]' ] || fail "operations touching cad formats: $OPS_TOUCHING"
-ev "FORMATS,cad_pairs=iges>stl;step>stl,other_pairs_touching_cad_formats=0,operations_convert_cad=2,result=ok"
+WANT_OPS='[["convert","cad","iges","stl"],["convert","cad","step","stl"],["render","cad","iges","png"],["render","cad","step","png"],["render","cad","stl","png"]]'
+[ "$OPS_TOUCHING" = "$WANT_OPS" ] || fail "operations touching cad formats: $OPS_TOUCHING"
+ev "FORMATS,convert_cad_pairs=iges>stl;step>stl,render_cad_pairs=iges>png;step>png;stl>png,other_pairs_touching_cad_formats=0,operations_convert_cad=2,operations_render_cad=3,result=ok"
 N_FORMATS=1
 
-CODE=$(http "$W/inspect.json" -X POST "$API_BASE/v1/inspect" -F "file=@$CORPUS/synthetic/units_inch.step;filename=units_inch.step")
-[ "$CODE" = 200 ] || fail "POST /v1/inspect returned $CODE: $(cat "$W/inspect.json")"
-OFFER=$(jq -c '[.operations[] | select(.target == "stl" and .engine == "cad")] | .[0] // empty' "$W/inspect.json")
-[ -n "$OFFER" ] || fail "inspect offers no step->stl on engine cad: $(jq -c .operations "$W/inspect.json")"
-[ "$(jq -r .format "$W/inspect.json")" = step ] || fail "inspect format is $(jq -r .format "$W/inspect.json"), want step"
-[ "$(echo "$OFFER" | jq -r .estimate_source)" = unmeasured ] || fail "estimate_source is $(echo "$OFFER" | jq -r .estimate_source), want unmeasured"
-[ "$(echo "$OFFER" | jq -r .max_bytes)" = 66060288 ] || fail "max_bytes is $(echo "$OFFER" | jq -r .max_bytes), want 66060288"
-[ "$(echo "$OFFER" | jq -r .available)" = true ] || fail "the cad offer is not available: $OFFER"
-ev "INSPECT,format=step,operation=$(echo "$OFFER" | jq -r .operation),target=stl,engine=cad,estimate_source=unmeasured,estimated_max_seconds=$(echo "$OFFER" | jq -r .estimated_max_seconds),max_bytes=66060288,available=true,result=ok"
-N_INSPECT=1
+inspect_offers() {
+	local file=$1 upname=$2 fmt=$3 op=$4 target=$5 want_max=$6 offer
+	CODE=$(http "$W/inspect.json" -X POST "$API_BASE/v1/inspect" -F "file=@$file;filename=$upname")
+	[ "$CODE" = 200 ] || fail "POST /v1/inspect returned $CODE: $(cat "$W/inspect.json")"
+	[ "$(jq -r .format "$W/inspect.json")" = "$fmt" ] || fail "inspect format of $upname is $(jq -r .format "$W/inspect.json"), want $fmt"
+	offer=$(jq -c --arg op "$op" --arg t "$target" '[.operations[] | select(.operation == $op and .target == $t and .engine == "cad")] | .[0] // empty' "$W/inspect.json")
+	[ -n "$offer" ] || fail "inspect of $upname offers no $op $fmt->$target on engine cad: $(jq -c .operations "$W/inspect.json")"
+	[ "$(echo "$offer" | jq -r .estimate_source)" = unmeasured ] || fail "estimate_source of $upname $op is $(echo "$offer" | jq -r .estimate_source), want unmeasured"
+	[ "$(echo "$offer" | jq -r .max_bytes)" = "$want_max" ] || fail "max_bytes of $upname $op is $(echo "$offer" | jq -r .max_bytes), want $want_max"
+	[ "$(echo "$offer" | jq -r .available)" = true ] || fail "the cad offer of $upname $op is not available: $offer"
+	ev "INSPECT,format=$fmt,operation=$op,target=$target,engine=cad,estimate_source=unmeasured,estimated_max_seconds=$(echo "$offer" | jq -r .estimated_max_seconds),max_bytes=$want_max,available=true,result=ok"
+	N_INSPECT=$((N_INSPECT + 1))
+}
+
+inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step convert stl 66060288
+inspect_offers "$CORPUS/synthetic/units_inch.step" units_inch.step step render png 66060288
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges convert stl 141557760
+inspect_offers "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges iges render png 141557760
+inspect_offers "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl stl render png 190840832
 
 convert_one() {
 	local label=$1 file=$2 upname=$3
@@ -285,6 +356,230 @@ convert_one nist_ctc_05_stp "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" nist
 convert_one nist_d2mi_906_stp "$CORPUS/public/nist-d2mi-827-9999-906.stp" nist-d2mi-827-9999-906.stp --step-source "$CORPUS/public/nist-d2mi-827-9999-906.stp"
 convert_one festo_valve_igs "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.igs
 convert_one festo_valve_iges "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.iges
+
+png_judge() {
+	local line rc=0
+	line=$("$W/bin/cad-pixel-judge" --size "$2" --background "$3" "$1" 2>"$W/judge.err") || rc=$?
+	PJ_LINE=$(printf '%s' "$line" | sed -e 's/^GOJUDGE,png=[^,]*,//')
+	if [ "$rc" != 0 ]; then
+		PJ_LINE="$PJ_LINE,err=$(tr '\n' ' ' < "$W/judge.err" | sed 's/,/;/g')"
+	fi
+	PJ_RC=$rc
+}
+
+meas_check() {
+	local line rc=0
+	line=$("$W/bin/cad-measurements-check" "$1") || rc=$?
+	MC_LINE=$(printf '%s' "$line" | sed 's/^MEAS,//')
+	MC_RC=$rc
+}
+
+mfield() { printf '%s' "$2" | tr ',' '\n' | sed -n "s/^$1=//p" | head -1; }
+
+ratio_is() { awk -v a="$1" -v b="$2" -v w="$3" 'BEGIN { d = a / b - w; if (d < 0) d = -d; exit !(d <= 0.03 * w) }'; }
+
+near() { awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; if (d < 0) d = -d; m = b < 0 ? -b : b; if (m < 1) m = 1; exit !(d <= 0.0001 * m) }'; }
+
+render_start() {
+	R_T0=$(now)
+	create_job "$2" "$3" png render "${4:-}"
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "RENDER $1: create returned $HTTP: $(cat "$W/create.json")"
+}
+
+render_finish() {
+	local label=$1 facts roles
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	R_SECS=$(elapsed "$R_T0" "$(now)")
+	[ "$JOB_STATUS" = done ] || fail "RENDER $label: job $JOB_ID ended $JOB_STATUS: $(cat "$W/job.json")"
+	facts=$(psqlq "select count(*), count(*) filter (where role = 'primary' and ordinal = 0 and format = 'png'), count(*) filter (where role = 'measurements' and ordinal = 1 and format = 'json') from job_outputs where job_id = '$JOB_ID'")
+	[ "$facts" = 2,1,1 ] || fail "RENDER $label: job_outputs facts '$facts', want 2,1,1 (rows, primary png at 0, measurements json at 1)"
+	roles=$(jq -c '[.outputs | sort_by(.ordinal)[] | [.role, .ordinal, .format]]' "$W/job.json")
+	[ "$roles" = '[["primary",0,"png"],["measurements",1,"json"]]' ] || fail "RENDER $label: the response outputs are $roles"
+	PNG_URL=$(role_url primary)
+	MEAS_URL=$(role_url measurements)
+	[ -n "$PNG_URL" ] && [ -n "$MEAS_URL" ] || fail "RENDER $label: the response gives no url for a role"
+	[ "$(jq -r .download_url "$W/job.json")" = "$PNG_URL" ] || fail "RENDER $label: download_url is not the primary output url"
+	R_PNG="$W/$label.png"
+	R_JSON="$W/$label.measurements.json"
+	fetch_url "$PNG_URL" "$R_PNG" || fail "RENDER $label: cannot fetch the primary url"
+	fetch_url "$MEAS_URL" "$R_JSON" || fail "RENDER $label: cannot fetch the measurements url"
+	[ "$(head -c 8 "$R_PNG" | od -An -tx1 | tr -d ' \n')" = 89504e470d0a1a0a ] || fail "RENDER $label: the download_url body does not start with the PNG signature"
+	[ "$(wc -c < "$R_PNG" | tr -d ' ')" = "$(jq -r '[.outputs[] | select(.role == "primary") | .size_bytes][0]' "$W/job.json")" ] || fail "RENDER $label: PNG size differs from the response"
+	[ "$(wc -c < "$R_JSON" | tr -d ' ')" = "$(jq -r '[.outputs[] | select(.role == "measurements") | .size_bytes][0]' "$W/job.json")" ] || fail "RENDER $label: measurements size differs from the response"
+}
+
+render_job() {
+	render_start "$@"
+	render_finish "$1"
+}
+
+render_judged() {
+	png_judge "$R_PNG" "$2" "$3"
+	[ "$PJ_RC" = 0 ] || fail "RENDER $1: the pixel judge rejected the PNG: $PJ_LINE"
+	meas_check "$R_JSON"
+	[ "$MC_RC" = 0 ] || fail "RENDER $1: the measurements body failed Validate: $MC_LINE"
+}
+
+render_one() {
+	local label=$1 file=$2 upname=$3
+	render_job "$label" "$file" "$upname"
+	render_judged "$label" 1280 opaque
+	ev "RENDER,name=$label,upload=$upname,job=$JOB_ID,seconds=$R_SECS,outputs=2,roles=primary@0;measurements@1,png_bytes=$(wc -c < "$R_PNG" | tr -d ' '),png_sha256=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1),measurements_bytes=$(wc -c < "$R_JSON" | tr -d ' '),judge=ok,$PJ_LINE,measurements=valid,$MC_LINE"
+	N_RENDER=$((N_RENDER + 1))
+}
+
+render_one units_inch_step "$CORPUS/synthetic/units_inch.step" units_inch.step
+render_one nist_ctc_05_stp "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" nist_ctc_05_asme1_ap242-e1.stp
+render_one festo_valve_igs "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.igs
+render_one festo_valve_iges "$FETCHED/freecad-festo-valve-5-2.igs" freecad-festo-valve-5-2.iges
+render_one stl_ascii_box_stl "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl
+
+VIEW_SHAS=""
+for view in iso front top; do
+	render_job "view_$view" "$CORPUS/synthetic/units_inch.step" units_inch.step "{\"view\":\"$view\"}"
+	render_judged "view_$view" 1280 opaque
+	VSHA=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1)
+	VIEW_SHAS="$VIEW_SHAS $VSHA"
+	BOX_W=$(printf '%s' "$PJ_LINE" | sed -n 's/.*box=\([0-9]*\)x\([0-9]*\).*/\1/p')
+	BOX_H=$(printf '%s' "$PJ_LINE" | sed -n 's/.*box=\([0-9]*\)x\([0-9]*\).*/\2/p')
+	case "$view" in
+	front) ratio_is "$BOX_H" "$BOX_W" 0.5 || fail "VIEWS: the front view of the 2 x 3 x 1 inch box (X across, Z up) is ${BOX_W}x${BOX_H}, want height/width 0.5" ;;
+	top) ratio_is "$BOX_H" "$BOX_W" 1.5 || fail "VIEWS: the top view of the 2 x 3 x 1 inch box (X across, Y up) is ${BOX_W}x${BOX_H}, want height/width 1.5" ;;
+	esac
+	ev "VIEWS,name=view_$view,job=$JOB_ID,png_sha256=$VSHA,box=${BOX_W}x${BOX_H},h_over_w=$(awk -v h="$BOX_H" -v w="$BOX_W" 'BEGIN { printf "%.3f", h / w }'),judge=ok,$PJ_LINE"
+	N_VIEWS=$((N_VIEWS + 1))
+done
+[ "$(printf '%s\n' $VIEW_SHAS | sort -u | wc -l | tr -d ' ')" = 3 ] || fail "VIEWS: iso, front and top of one part are not three different images:$VIEW_SHAS"
+ev "VIEWS,name=distinct,views=iso;front;top,distinct_sha256=3,front_h_over_w=0.5,top_h_over_w=1.5,z_up=1,result=ok"
+N_VIEWS=$((N_VIEWS + 1))
+
+render_job size_2048 "$CORPUS/synthetic/units_inch.step" units_inch.step '{"size":2048}'
+render_judged size_2048 2048 opaque
+[ "$(mfield w "$PJ_LINE")" = 2048 ] && [ "$(mfield h "$PJ_LINE")" = 2048 ] || fail "VIEWS: size 2048 gave $(mfield w "$PJ_LINE") x $(mfield h "$PJ_LINE")"
+ev "VIEWS,name=size_2048,job=$JOB_ID,png_sha256=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1),judge=ok,$PJ_LINE"
+N_VIEWS=$((N_VIEWS + 1))
+
+render_job background_transparent "$CORPUS/synthetic/units_inch.step" units_inch.step '{"background":"transparent"}'
+png_judge "$R_PNG" 1280 transparent
+[ "$PJ_RC" = 0 ] || fail "VIEWS: the transparent render was rejected by the pixel judge: $PJ_LINE"
+[ "$(mfield alpha "$PJ_LINE")" = 1 ] || fail "VIEWS: the transparent render carries no alpha channel: $PJ_LINE"
+png_judge "$R_PNG" 1280 opaque
+[ "$PJ_RC" != 0 ] || fail "VIEWS: the transparent render passes the opaque judge, so its background is not alpha 0"
+png_judge "$R_PNG" 1280 transparent
+ev "VIEWS,name=background_transparent,job=$JOB_ID,png_sha256=$(shasum -a 256 "$R_PNG" | cut -d' ' -f1),judge=ok,$PJ_LINE"
+N_VIEWS=$((N_VIEWS + 1))
+
+meas_case() {
+	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_ext=$7 w_vol=$8 w_area=$9 w_reason=${10} opts="" got i
+	if [ -n "$assume" ]; then
+		opts="{\"assume_unit\":\"$assume\"}"
+	fi
+	render_job "meas_$name" "$file" "$upname" "$opts"
+	meas_check "$R_JSON"
+	[ "$MC_RC" = 0 ] || fail "MEAS $name: the measurements body failed Validate: $MC_LINE"
+	png_judge "$R_PNG" 1280 opaque
+	[ "$PJ_RC" = 0 ] || fail "MEAS $name: the pixel judge rejected the PNG: $PJ_LINE"
+	if [ "$w_unit" != any ]; then
+		[ "$(mfield unit "$MC_LINE")" = "$w_unit" ] || fail "MEAS $name: unit $(mfield unit "$MC_LINE"), want $w_unit"
+		[ "$(mfield unit_source "$MC_LINE")" = "$w_src" ] || fail "MEAS $name: unit_source $(mfield unit_source "$MC_LINE"), want $w_src"
+	fi
+	if [ "$w_ext" != any ]; then
+		got=$(mfield extents "$MC_LINE")
+		for i in 1 2 3; do
+			near "$(echo "$got" | cut -d: -f$i)" "$(echo "$w_ext" | cut -d: -f$i)" || fail "MEAS $name: extents $got, want $w_ext"
+		done
+	fi
+	for pair in "volume:$w_vol" "area:$w_area"; do
+		got=$(mfield "${pair%%:*}" "$MC_LINE")
+		if [ "${pair#*:}" = null ]; then
+			[ "$got" = null ] || fail "MEAS $name: ${pair%%:*} is $got, want null"
+		else
+			near "$got" "${pair#*:}" || fail "MEAS $name: ${pair%%:*} is $got, want ${pair#*:}"
+		fi
+	done
+	[ "$(mfield reason "$MC_LINE")" = "$w_reason" ] || fail "MEAS $name: reason $(mfield reason "$MC_LINE"), want $w_reason"
+	ev "MEAS,name=$name,upload=$upname,assume_unit=${assume:-none},job=$JOB_ID,$MC_LINE,expected_unit=$w_unit,expected_volume=$w_vol,expected_area=$w_area,result=ok"
+	N_MEAS=$((N_MEAS + 1))
+}
+
+meas_case units_inch "$CORPUS/synthetic/units_inch.step" units_inch.step "" inch declared 1:2:3 6 22 none
+meas_case units_inch_assume_mm "$CORPUS/synthetic/units_inch.step" units_inch.step mm inch declared 1:2:3 6 22 none
+meas_case stl_ascii_box "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl "" unspecified none 10:20:30 6000 2200 none
+meas_case stl_ascii_box_assume_mm "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl mm mm client_assumed 10:20:30 6000 2200 none
+meas_case surfaces_only_iges "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges "" any any any null null no_solids
+meas_case nasa_hubble_stl "$CORPUS/public/nasa-hubble-all-pieces.stl" nasa-hubble-all-pieces.stl "" unspecified none any null null stl_not_watertight
+
+quality_one() {
+	local q=$1 stl
+	create_job "$CORPUS/public/LinearSlide-MGN15x-Block.step" LinearSlide-MGN15x-Block.step stl convert "{\"quality\":\"$q\"}"
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "QUALITY $q: create returned $HTTP: $(cat "$W/create.json")"
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	[ "$JOB_STATUS" = done ] || fail "QUALITY $q: job $JOB_ID ended $JOB_STATUS: $(cat "$W/job.json")"
+	stl="$W/quality_$q.stl"
+	download_output "$stl" || fail "QUALITY $q: no download_url on the done job"
+	judge "$stl"
+	[ "$JUDGE_RC" = 0 ] || fail "QUALITY $q: judge failed: $JUDGE_FIELDS"
+	Q_TRI=$(mfield triangles "$JUDGE_FIELDS")
+	[ -n "$Q_TRI" ] || fail "QUALITY $q: the judge reported no triangle count: $JUDGE_FIELDS"
+	Q_JOB=$JOB_ID
+}
+
+quality_one draft
+TRI_DRAFT=$Q_TRI
+quality_one standard
+TRI_STANDARD=$Q_TRI
+quality_one fine
+TRI_FINE=$Q_TRI
+[ "$TRI_DRAFT" -le "$TRI_STANDARD" ] && [ "$TRI_STANDARD" -le "$TRI_FINE" ] && [ "$TRI_DRAFT" -lt "$TRI_FINE" ] || fail "QUALITY: triangles draft=$TRI_DRAFT standard=$TRI_STANDARD fine=$TRI_FINE are not non-decreasing and distinct at the ends"
+render_job quality_fine "$CORPUS/public/LinearSlide-MGN15x-Block.step" LinearSlide-MGN15x-Block.step '{"quality":"fine"}'
+render_judged quality_fine 1280 opaque
+ev "QUALITY,name=LinearSlide-MGN15x-Block.step,draft=$TRI_DRAFT,standard=$TRI_STANDARD,fine=$TRI_FINE,non_decreasing=1,render_fine_job=$JOB_ID,render_fine=done,render_fine_judge=ok,result=ok"
+N_QUALITY=1
+
+reject_opts() {
+	local name=$1 op=$2 target=$3 file=$4 upname=$5 opts=$6 want=$7 before after
+	local args=(-F "target=$target" -F "file=@$file;filename=$upname" -F "opts=$opts")
+	if [ -n "$op" ]; then
+		args+=(-F "operation=$op")
+	fi
+	before=$(psqlq "select count(*) from jobs")
+	CODE=$(http "$W/rej.json" -X POST "$API_BASE/v1/jobs" "${args[@]}")
+	[ "$CODE" = 422 ] && [ "$(jq -r .code "$W/rej.json")" = "$want" ] || fail "OPTS_REJECT $name: got $CODE $(cat "$W/rej.json"), want 422 $want"
+	[ "$(jq 'has("job_id")' "$W/rej.json")" = false ] || fail "OPTS_REJECT $name: the response carries a job_id"
+	after=$(psqlq "select count(*) from jobs")
+	[ "$before" = "$after" ] || fail "OPTS_REJECT $name: jobs rows moved $before -> $after"
+	ev "OPTS_REJECT,name=$name,operation=${op:-convert},target=$target,upload=$upname,http=422,code=$want,jobs_created=0,result=ok"
+	N_OPTS_REJECT=$((N_OPTS_REJECT + 1))
+}
+
+BOXSTEP="$CORPUS/synthetic/units_inch.step"
+reject_opts view_unknown render png "$BOXSTEP" units_inch.step '{"view":"sideways"}' invalid_options
+reject_opts size_255 render png "$BOXSTEP" units_inch.step '{"size":255}' invalid_options
+reject_opts size_2049 render png "$BOXSTEP" units_inch.step '{"size":2049}' invalid_options
+reject_opts size_string render png "$BOXSTEP" units_inch.step '{"size":"1280"}' invalid_options
+reject_opts quality_unknown render png "$BOXSTEP" units_inch.step '{"quality":"ultra"}' invalid_options
+reject_opts background_unknown render png "$BOXSTEP" units_inch.step '{"background":"green"}' invalid_options
+reject_opts key_unknown render png "$BOXSTEP" units_inch.step '{"colour":"red"}' invalid_options
+reject_opts render_key_on_convert convert stl "$BOXSTEP" units_inch.step '{"view":"top"}' opts_not_applicable
+reject_opts quality_on_stl_render render png "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl '{"quality":"fine"}' opts_not_applicable
+
+python3 - "$W/empty.stl" <<'PY'
+import struct, sys
+body = b"\0" * 80 + struct.pack("<I", 4)
+for _ in range(4):
+    body += struct.pack("<12fH", 0, 0, 1, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0)
+open(sys.argv[1], "wb").write(body)
+PY
+create_job "$W/empty.stl" zero_extent.stl png render
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "EMPTY: create returned $HTTP: $(cat "$W/create.json")"
+wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+[ "$JOB_STATUS" = failed ] || fail "EMPTY: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+[ "$(jq -r '.error_code // empty' "$W/job.json")" = cad_empty_result ] || fail "EMPTY: error_code is $(jq -r '.error_code // empty' "$W/job.json"), want cad_empty_result"
+EMPTY_OUTPUTS=$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")
+[ "$EMPTY_OUTPUTS" = 0 ] || fail "EMPTY: $EMPTY_OUTPUTS output rows exist"
+[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "EMPTY: the failed job exposes download_url or outputs"
+ev "EMPTY,job=$JOB_ID,input=zero_extent.stl,bytes=$(wc -c < "$W/empty.stl" | tr -d ' '),status=failed,code=cad_empty_result,outputs=0,download_url=absent,result=ok"
+N_EMPTY=1
 
 python3 - "$W/lying.stl" <<'PY'
 import struct, sys
@@ -374,6 +669,110 @@ bomb_one s1_coord_1e300.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one s1_coord_1e999.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one s1_coord_nan.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one partial_face.step cad_unreadable "$ENGINE_TIMEOUT"
+
+cat > "$W/watch.sh" <<'WATCH'
+echo ready
+n=$1
+sig=$2
+i=0
+while [ "$i" -lt 12000 ]; do
+	for d in /proc/[0-9]*; do
+		p=${d#/proc/}
+		[ "$p" = "$$" ] && continue
+		c=$(cat "$d/comm" 2>/dev/null) || continue
+		hit=""
+		case "$c" in
+		"$n") hit=1 ;;
+		python*) grep -qa "$n" "$d/cmdline" 2>/dev/null && hit=1 ;;
+		esac
+		if [ -n "$hit" ]; then
+			echo "$p $c"
+			kill -s "$sig" "$p"
+			exit 0
+		fi
+	done
+	i=$((i + 1))
+	sleep 0.05
+done
+exit 3
+WATCH
+
+inject_start() {
+	: > "$3"
+	docker exec -i "$CNAME" sh -s "$1" "$2" < "$W/watch.sh" > "$3" 2>&1 &
+	INJ_BG=$!
+	INJ_OUT=$3
+	for _ in $(seq 1 100); do
+		grep -q '^ready' "$3" 2>/dev/null && return 0
+		sleep 0.1
+	done
+	return 1
+}
+
+inject_wait() {
+	wait "$INJ_BG" || return 1
+	INJ_HIT=$(sed -n 2p "$INJ_OUT")
+	INJ_HIT_PID=${INJ_HIT%% *}
+	[ -n "$INJ_HIT_PID" ]
+}
+
+job_events() { psqlq "select string_agg(coalesce(from_status, '-') || '>' || to_status, ';' order by id) from job_events where job_id = '$1'"; }
+
+LARGE_NAME=$(basename "$LARGE_STL")
+LARGE_BYTES=$(wc -c < "$LARGE_STL" | tr -d ' ')
+
+inject_start cad-render TERM "$W/inj_render.out" || fail "RENDER_RETRY: the signal watcher did not start"
+render_start render_retry "$LARGE_STL" "$LARGE_NAME"
+inject_wait || fail "RENDER_RETRY: no cad-render process was found to signal for job $JOB_ID"
+RETRY_HIT=$INJ_HIT
+render_finish render_retry
+render_judged render_retry 1280 opaque
+RETRY_EVENTS=$(job_events "$JOB_ID")
+case ";$RETRY_EVENTS;" in *";active>active;"*) ;; *) fail "RENDER_RETRY: job $JOB_ID events '$RETRY_EVENTS' show no retry" ;; esac
+ev "RENDER_RETRY,job=$JOB_ID,input=$LARGE_NAME,bytes=$LARGE_BYTES,signal=TERM,target=cad-render,hit=$(echo "$RETRY_HIT" | tr ' ' ':'),status=done,retried=1,events=$RETRY_EVENTS,seconds=$R_SECS,outputs=2,judge=ok,measurements=valid,result=ok"
+N_RENDER_RETRY=1
+
+inject_start cad-mesh TERM "$W/inj_mesh.out" || fail "MESH_SIGNAL: the signal watcher did not start"
+create_job "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" nist_ctc_05_asme1_ap242-e1.stp png render
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "MESH_SIGNAL: create returned $HTTP: $(cat "$W/create.json")"
+inject_wait || fail "MESH_SIGNAL: no cad-mesh process was found to signal for job $JOB_ID"
+MESH_HIT=$INJ_HIT
+wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+[ "$JOB_STATUS" = failed ] || fail "MESH_SIGNAL: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+MESH_CODE=$(jq -r '.error_code // empty' "$W/job.json")
+[ -n "$MESH_CODE" ] || fail "MESH_SIGNAL: the failed job has no error_code"
+MESH_EVENTS=$(job_events "$JOB_ID")
+case ";$MESH_EVENTS;" in *";active>active;"*) fail "MESH_SIGNAL: job $JOB_ID was retried: $MESH_EVENTS" ;; esac
+[ "$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")" = 0 ] || fail "MESH_SIGNAL: output rows exist for a failed job"
+ev "MESH_SIGNAL,job=$JOB_ID,input=nist_ctc_05_asme1_ap242-e1.stp,signal=TERM,target=cad-mesh,hit=$(echo "$MESH_HIT" | tr ' ' ':'),status=failed,code=$MESH_CODE,retried=0,events=$MESH_EVENTS,outputs=0,result=ok"
+N_MESH_SIGNAL=1
+
+inject_start cad-render 0 "$W/inj_cancel.out" || fail "CANCEL_RENDER: the watcher did not start"
+create_job "$LARGE_STL" "$LARGE_NAME" png render
+[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "CANCEL_RENDER: create returned $HTTP: $(cat "$W/create.json")"
+CR_JOB=$JOB_ID
+inject_wait || fail "CANCEL_RENDER: no cad-render process ever appeared for job $CR_JOB"
+CR_PID=$INJ_HIT_PID
+T_CANCEL=$(now)
+CODE=$(http "$W/cancel.json" -X POST "$API_BASE/v1/jobs/$CR_JOB/cancel")
+[ "$CODE" = 200 ] && [ "$(jq -r .status "$W/cancel.json")" = canceled ] || fail "CANCEL_RENDER: cancel returned $CODE $(cat "$W/cancel.json")"
+GONE=0
+for _ in $(seq 1 24); do
+	case " $(render_pids) " in *" $CR_PID "*) ;; *)
+		GONE=1
+		break
+		;;
+	esac
+	sleep 0.25
+done
+GONE_S=$(elapsed "$T_CANCEL" "$(now)")
+[ "$GONE" = 1 ] && within "$GONE_S" 5 || fail "CANCEL_RENDER: cad-render pid $CR_PID still alive ${GONE_S}s after cancel"
+wait_job "$CR_JOB" 30
+[ "$JOB_STATUS" = canceled ] || fail "CANCEL_RENDER: job reads $JOB_STATUS, want canceled"
+[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "CANCEL_RENDER: a canceled job exposes download_url or outputs"
+[ "$(psqlq "select count(*) from job_outputs where job_id = '$CR_JOB'")" = 0 ] || fail "CANCEL_RENDER: output rows exist for a canceled job"
+ev "CANCEL_RENDER,job=$CR_JOB,input=$LARGE_NAME,render_pid=$CR_PID,pid_gone=1,gone_s=$GONE_S,status=canceled,download_url=absent,outputs=0,result=ok"
+N_CANCEL_RENDER=1
 
 NAUO_NAME=step-nauo-LinearSlide-MGN15x-Block-n1000.step
 NAUO_SHA=$(shasum -a 256 "$NAUO1000" | cut -d' ' -f1)
@@ -465,5 +864,14 @@ EVENTS=$(psqlq "select string_agg(coalesce(from_status, '-') || '>' || to_status
 ev "WORKER_KILL,job=$KILL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,killed_mesh_pids=$(echo $KILLED_PIDS | tr ' ' ';'),restart=$RESTART_VIA,restarted_after_s=$BACK_S,started_at_before=$PRE_STARTED,started_at_after=$RESTARTED_AT,orphans=0,fresh_mesh_at_restart=$FRESH_MESH,kill_to_done_s=$KILL_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,events=$EVENTS,judge=ok,$JUDGE_FIELDS"
 N_KILL=1
 
-ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,reject=$N_REJECT,bomb=$N_BOMB,cancel=$N_CANCEL,worker_kill=$N_KILL"
+IMG_SIZE=$(docker image inspect -f '{{.Size}}' "$CAD_IMAGE")
+P73_ID=$(sed -n 's/^HDR,cad_worker_image_id=//p' .planning/phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt | head -1)
+P73_SIZE=absent
+if [ -n "$P73_ID" ] && docker image inspect "$P73_ID" >/dev/null 2>&1; then
+	P73_SIZE=$(docker image inspect -f '{{.Size}}' "$P73_ID")
+fi
+ev "IMAGE,cad_worker_image_id=$CAD_IMAGE,cad_worker_size_bytes=$IMG_SIZE,phase73_image_id=${P73_ID:-unknown},phase73_size_bytes=$P73_SIZE"
+N_IMAGE=1
+
+ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE"
 FINISHED=1
