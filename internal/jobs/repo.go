@@ -622,6 +622,17 @@ func (r *Repo) AddOutput(ctx context.Context, jobID uuid.UUID, o Output) error {
 	return nil
 }
 
+const upsertOutputWithRoleSQL = `
+		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (job_id, ordinal) DO UPDATE SET
+			object_key   = EXCLUDED.object_key,
+			filename     = EXCLUDED.filename,
+			format       = EXCLUDED.format,
+			size_bytes   = EXCLUDED.size_bytes,
+			content_type = EXCLUDED.content_type,
+			role         = EXCLUDED.role`
+
 // AddOutputWithRole is the dedicated write path AddOutput's doc comment above
 // required before any caller could store a non-primary output (D-16). It is
 // the ONLY place in this package that writes job_outputs.role.
@@ -648,21 +659,32 @@ func (r *Repo) AddOutputWithRole(ctx context.Context, jobID uuid.UUID, o Output)
 		return fmt.Errorf("AddOutputWithRole called with an empty role for job %s ordinal %d: "+
 			"use AddOutput when the DB default is what you want", jobID, o.Ordinal)
 	}
-	_, err := r.pool.Exec(ctx, `
-		INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (job_id, ordinal) DO UPDATE SET
-			object_key   = EXCLUDED.object_key,
-			filename     = EXCLUDED.filename,
-			format       = EXCLUDED.format,
-			size_bytes   = EXCLUDED.size_bytes,
-			content_type = EXCLUDED.content_type,
-			role         = EXCLUDED.role`,
+	_, err := r.pool.Exec(ctx, upsertOutputWithRoleSQL,
 		jobID, o.Ordinal, o.ObjectKey, o.Filename, o.Format, o.SizeBytes, o.ContentType, o.Role)
 	if err != nil {
 		return fmt.Errorf("insert job_output with role: %w", err)
 	}
 	return nil
+}
+
+func (r *Repo) AddOutputs(ctx context.Context, jobID uuid.UUID, outs []Output) error {
+	if len(outs) == 0 {
+		return fmt.Errorf("AddOutputs called with no outputs for job %s", jobID)
+	}
+	for _, o := range outs {
+		if o.Role == "" {
+			return fmt.Errorf("AddOutputs called with an empty role for job %s ordinal %d", jobID, o.Ordinal)
+		}
+	}
+	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		for _, o := range outs {
+			if _, err := tx.Exec(ctx, upsertOutputWithRoleSQL,
+				jobID, o.Ordinal, o.ObjectKey, o.Filename, o.Format, o.SizeBytes, o.ContentType, o.Role); err != nil {
+				return fmt.Errorf("insert job_output ordinal %d: %w", o.Ordinal, err)
+			}
+		}
+		return nil
+	})
 }
 
 // Get loads a job by id. Returns ErrNotFound if it does not exist.
