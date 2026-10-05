@@ -477,6 +477,218 @@ identity() {
   [ "$ok" = 1 ]
 }
 
+wrap_field() {
+  grep '^WRAP,' "$2" | tail -n 1 | tr ',' '\n' | sed -n "s/^$1=//p" | head -n 1
+}
+
+gen_heavy() {
+  local outdir=$1
+  docker run --rm --network none --cpus 2 --memory 4g --memory-swap 4g --user nobody -e HOME=/tmp -e LANG=C.UTF-8 \
+    -v "$REPO_ROOT:/src:ro" -v "$CORPUS/public:/base:ro" -v "$outdir:/out" -w /src \
+    --entrypoint "${PYV[0]}" "$TAG" "${PYV[@]:1}" scripts/cad-corpus-gen.py \
+    --scaled-from /base/LinearSlide-MGN15x-Block.step --kind step-nauo --targets 1000 --scaled-dir /out >&2
+}
+
+cost_row() {
+  local label=$1 stl=$2 size=$3 rep=$4 triangles=$5 job wrapout rc_w=0 pix v
+  disk_guard
+  job=$(new_job "$WORK")
+  wrapout="$WORK/wrap.out"
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2 \
+    -v "$WORK/wrap:/wrap:ro" -v "$job:/job" -v "$stl:/job/in.stl:ro" --entrypoint "${PYV[0]}" "$TAG" \
+    "${PYV[@]:1}" /wrap/measure_wrap.py --budget-s 300 --outdir /job -- \
+    /usr/local/bin/cad-render --view iso --size "$size" --background opaque /job/in.stl /job/out.png \
+    > "$wrapout" 2> "$WORK/wrap.err" </dev/null || rc_w=$?
+  pix=fail
+  if [ -s "$job/out.png" ] && pix_ok "$(pix_of "$job/out.png" single)"; then pix=ok; fi
+  v=$(verdict_fields "$job/child.log" iso "$size" opaque)
+  printf 'COST_ROW,file=%s,sha256=%s,stl_records=%s,size=%s,rep=%s,rc=%s,wall_s=%s,child_rss_mib=%s,cg_peak_mib=%s,oom_kill=%s,pix=%s,wrap_rc=%s,%s\n' \
+    "$label" "$(sha_of "$stl")" "$triangles" "$size" "$rep" "$(wrap_field rc "$wrapout")" "$(wrap_field wall_s "$wrapout")" \
+    "$(wrap_field child_rss_mib "$wrapout")" "$(wrap_field cg_peak_mib "$wrapout")" "$(wrap_field oom_kill "$wrapout")" "$pix" "$rc_w" "$v"
+  rm -rf "$job"
+}
+
+derive_cost() {
+  python3 - "$1" <<'PY'
+import math
+import sys
+from decimal import Decimal, ROUND_FLOOR
+
+LIMIT_MIB = Decimal("2867.2")
+BASE_MIB = Decimal("517.0")
+PARSE_MIB = Decimal("24.9")
+PER_MTRI = Decimal("579.16")
+CAP_MAX = 4014975
+MIB = 1048576
+
+rows = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        if line.startswith("COST_ROW,"):
+            rows.append(dict(kv.split("=", 1) for kv in line.strip().split(",")[1:] if "=" in kv))
+
+def peak(r):
+    vals = []
+    for k in ("child_rss_mib", "cg_peak_mib"):
+        try:
+            vals.append(int(r[k]))
+        except (KeyError, ValueError):
+            pass
+    return max(vals) if vals else None
+
+files = sorted({r["file"] for r in rows})
+heavy = [r for r in rows if r["file"].startswith("step-nauo") and r["size"] == "2048"]
+stop = []
+for r in heavy:
+    p = peak(r)
+    if r.get("rc") != "0" or r.get("pix") != "ok" or p is None or Decimal(p) > LIMIT_MIB:
+        stop.append("rep=%s,rc=%s,pix=%s,peak=%s" % (r.get("rep"), r.get("rc"), r.get("pix"), p))
+if not heavy or stop:
+    print("STOP,reason=heavy_2048_outside_the_70_percent_line,rows=%s" % ("+".join(stop) or "none"))
+    sys.exit(3)
+frames = []
+parts = []
+for f in files:
+    p2 = [peak(r) for r in rows if r["file"] == f and r["size"] == "2048"]
+    p1 = [peak(r) for r in rows if r["file"] == f and r["size"] == "1280"]
+    if None in p2 or None in p1 or not p1 or not p2:
+        print("STOP,reason=peak_missing,file=%s" % f)
+        sys.exit(3)
+    frames.append(max(p2) - max(p1))
+    parts.append("%s:max2048=%d-max1280=%d" % (f, max(p2), max(p1)))
+frame = max(0, max(frames))
+cap_raw = int(((LIMIT_MIB - BASE_MIB - PARSE_MIB - Decimal(frame)) / PER_MTRI * Decimal(1000000)).to_integral_value(rounding=ROUND_FLOOR))
+cap = min(cap_raw, CAP_MAX)
+ceiling = ((cap * 50 + 84) // MIB) * MIB
+print("DERIVED,key=cad_frame_cost_2048_mib,value=%d,formula=max_over_files(max_peak_2048-max_peak_1280)_at_least_0,inputs=%s" % (frame, ";".join(parts)))
+print("DERIVED,key=cad_render_triangle_cap,value=%d,formula=floor((2867.2-517.0-24.9-%d)/579.16*1e6)=%d_clamped_to_%d,inputs=frame_mib=%d" % (cap, frame, cap_raw, CAP_MAX, frame))
+print("DERIVED,key=cad_stl_ceiling_bytes,value=%d,formula=floor((%d*50+84)/1048576)*1048576,inputs=cap=%d;mib=%d" % (ceiling, cap, cap, ceiling // MIB))
+PY
+}
+
+cost() {
+  setup
+  local ok=1 light heavy heavy_src heavy_sha regen_sha want_sha name size rep tri_l tri_h out rc
+  mkdir -p "$WORK/wrap" "$WORK/gen"
+  chmod 0755 "$WORK/wrap"
+  chmod 0777 "$WORK/gen"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+  header_lines cost "$TAG" >> "$LINES"
+  grep -q 'triangles:5944' "$EVID71/71-04-render.txt" || fail "no 5944-triangle row in 71-04-render.txt"
+  light="$WORK/light.stl"
+  mesh_prod "$CORPUS/public/LinearSlide-MGN15x-Block.step" step "$light" || fail "mesh of the 5944-triangle part failed"
+  tri_l=$(( ($(wc -c < "$light" | tr -d ' ') - 84) / 50 ))
+
+  name=step-nauo-LinearSlide-MGN15x-Block-n1000.step
+  want_sha=$(grep -m1 "^ROW,.*,name=$name,sha=" "$EVID71/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt" | sed -n 's/.*,sha=\([0-9a-f]*\),.*/\1/p')
+  [ -n "$want_sha" ] || fail "no 71 ROW for $name"
+  gen_heavy "$WORK/gen" || fail "step-nauo generation failed"
+  regen_sha=$(sha_of "$WORK/gen/$name")
+  rm -f "$WORK/gen/$name"
+  heavy_src="$CAD_CACHE/scaled/$name"
+  [ -f "$heavy_src" ] || fail "the 71 input $heavy_src is missing and the regenerated file has sha $regen_sha, not $want_sha"
+  heavy_sha=$(sha_of "$heavy_src")
+  [ "$heavy_sha" = "$want_sha" ] || fail "cached $name sha $heavy_sha differs from the 71 row $want_sha"
+  printf 'HDR,stage=cost,heavy_input=%s,heavy_sha256=%s,sha_equals_71_row=1,source=71_scaled_cache,regenerated_sha256=%s,regenerated_equals_71_row=%s,lp_num_threads=2,view=iso,background=opaque\n' \
+    "$name" "$heavy_sha" "$regen_sha" "$([ "$regen_sha" = "$want_sha" ] && echo 1 || echo 0)" >> "$LINES"
+  heavy="$WORK/heavy.stl"
+  mesh_prod "$heavy_src" step "$heavy" || fail "mesh of the heavy part failed"
+  tri_h=$(( ($(wc -c < "$heavy" | tr -d ' ') - 84) / 50 ))
+  printf 'HDR,stage=cost,heavy_stl_records=%s,heavy_stl_bytes=%s,71_vtk_triangles=3816000\n' "$tri_h" "$(wc -c < "$heavy" | tr -d ' ')" >> "$LINES"
+
+  for spec in "LinearSlide-MGN15x-Block.step:$light:$tri_l" "$name:$heavy:$tri_h"; do
+    out=${spec%%:*}
+    rest=${spec#*:}
+    for size in 1280 2048; do
+      for rep in 1 2; do
+        cost_row "$out" "${rest%%:*}" "$size" "$rep" "${rest##*:}" >> "$LINES"
+      done
+    done
+  done
+  rm -f "$heavy"
+
+  rc=0
+  derive_cost "$LINES" > "$WORK/derived.txt" || rc=$?
+  cat "$WORK/derived.txt" >> "$LINES"
+  if [ "$rc" != 0 ]; then ok=0; fi
+  awk -F, '/^COST_ROW,/{n++; if($0 !~ /,rc=0,/ || $0 !~ /,pix=ok,/) bad++; if($0 ~ /^COST_ROW,file=LinearSlide/ && $0 !~ /,triangles=5944$/) bad++} END{printf "SUMMARY,stage=cost,rows=%d,bad_rows=%d\n", n, bad+0}' "$LINES" >> "$LINES"
+  evid_put "$LINES" '^HDR,stage=cost,|^COST_ROW,|^DERIVED,key=(cad_frame_cost_2048_mib|cad_render_triangle_cap|cad_stl_ceiling_bytes),|^STOP,|^SUMMARY,stage=cost,'
+  cat "$LINES" | grep -v '^HDR'
+  [ "$ok" = 1 ] || return "$rc"
+  grep -q 'bad_rows=0$' "$LINES"
+}
+
+units() {
+  setup
+  local ok=1 files f rc=0
+  cp "$UNIT_PY" "$WORK/cad-unit-probe.py"
+  chmod 0644 "$WORK/cad-unit-probe.py"
+  header_lines units "$TAG" >> "$LINES"
+  files=(synthetic/units_inch.step public/nist-d2mi-827-9999-906.stp public/nist_ctc_05_asme1_ap242-e1.stp public/LM8UU.step synthetic/legacy_cp1251.step)
+  local args=()
+  for f in "${files[@]}"; do args+=("/corpus/$f"); done
+  docker run --rm "${LIMITS[@]}" -e HOME=/tmp -e LANG=C.UTF-8 -e LP_NUM_THREADS=2 \
+    -v "$CORPUS:/corpus:ro" -v "$WORK:/u:ro" --entrypoint "${PYV[0]}" "$TAG" \
+    "${PYV[@]:1}" /u/cad-unit-probe.py "${args[@]}" > "$WORK/units.out" 2> "$WORK/units.err" </dev/null || rc=$?
+  [ "$rc" = 0 ] || { cat "$WORK/units.err" >&2; fail "unit probe failed rc=$rc"; }
+  grep '^UNIT_ROW,' "$WORK/units.out" >> "$LINES"
+  python3 - "$WORK/units.out" >> "$LINES" <<'PY' || ok=0
+import sys
+
+rows = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        if line.startswith("UNIT_ROW,"):
+            rows.append(dict(kv.split("=", 1) for kv in line.strip().split(",")[1:] if "=" in kv))
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+def near(a, b):
+    return a is not None and b is not None and abs(a - b) <= 1e-6 * abs(b)
+
+control = next((r for r in rows if r["file"] == "units_inch.step"), None)
+control_ratio = num(control["ratio"]) if control else None
+control_ok = near(control_ratio, 25.4)
+print("UNITS_CONTROL,file=units_inch.step,ratio=%s,expected=25.4,tolerance=1e-6_relative,result=%s" % (control_ratio, "ok" if control_ok else "fail"))
+
+sources = (("model_length_unit", "model_length_unit"), ("fileunits", "fileunits_factor"), ("text_unit", "text_factor"))
+chosen = "none"
+detail = []
+for name, key in sources:
+    failing = [r["file"] for r in rows if not near(num(r.get(key)), num(r.get("ratio")))]
+    qualifies = not failing
+    detail.append("%s=%s" % (name, "qualifies" if qualifies else "fails_on_" + "+".join(failing)))
+    for r in rows:
+        ratio = num(r.get("ratio"))
+        clean = near(ratio, 1.0) or near(ratio, 25.4)
+        if r["file"] in failing and num(r.get(key)) is not None and ratio is not None and not clean:
+            print("GAP,key=unit_ratio_mismatch,value=%s,reason=source %s gives %s but the measured ratio is %s, which is no unit factor; the ratio compares the OCP vertex bbox with the VERTEX_POINT bbox of the text and is not a pure unit measurement on this file" % (r["file"], name, r.get(key), r["ratio"]))
+    if qualifies and chosen == "none":
+        chosen = name
+print("DERIVED,key=cad_unit_factor_source,value=%s,formula=first_source_in_order_whose_factor_equals_the_measured_ratio_within_1e-6_relative_on_every_STEP_row,inputs=%s" % (chosen, ";".join(detail)))
+
+ctc = next((r for r in rows if r["file"].startswith("nist_ctc_05")), None)
+ratio = num(ctc["ratio"]) if ctc else None
+value = "undetermined"
+for cand in (1.0, 25.4):
+    if near(ratio, cand):
+        value = "%g" % cand
+print("DERIVED,key=nist_ctc_05_factor,value=%s,formula=ratio_rounded_to_nearest_of_1_or_25.4_when_within_1e-6_relative_else_undetermined,inputs=ratio=%s" % (value, ratio))
+if chosen == "none" or value == "undetermined":
+    print("GAP,key=unit_factor_source,value=%s,reason=plan 74-02 reports such files as unspecified with source none (R-04); ctc_05=%s" % (chosen, value))
+print("GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (73 GAP)")
+sys.exit(0 if control_ok else 1)
+PY
+  printf 'SUMMARY,stage=units,rows=%s,control=%s\n' "$(grep -c '^UNIT_ROW,' "$LINES" || true)" "$(grep -o '^UNITS_CONTROL.*result=[a-z]*' "$LINES" | sed 's/.*result=//')" >> "$LINES"
+  evid_put "$LINES" '^HDR,stage=units,|^UNIT_ROW,|^UNITS_CONTROL,|^DERIVED,key=(cad_unit_factor_source|nist_ctc_05_factor),|^GAP,|^SUMMARY,stage=units,'
+  grep -v '^HDR' "$LINES"
+  [ "$ok" = 1 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
@@ -491,5 +703,7 @@ done
 case "$MODE" in
   tracer) tracer ;;
   identity) identity ;;
+  cost) cost ;;
+  units) units ;;
   *) usage ;;
 esac

@@ -30,3 +30,47 @@ IDENTITY_PNG,part=SC8UU.step,same=1,stl_bytes=137684,sha_old=fdab266b7e069586f8b
 IDENTITY_PNG,part=V-Slot-20x20-100mm.step,same=1,stl_bytes=52884,sha_old=15fd5a7de7bf6c4689382a5348c2c9f4b6fd09945f3f23d9b1713a516e9edff7,sha_new=15fd5a7de7bf6c4689382a5348c2c9f4b6fd09945f3f23d9b1713a516e9edff7
 IDENTITY_PNG,part=2020_corner_bracket-Corner.step,same=1,stl_bytes=47484,sha_old=e25ced36c7de753745fa93fd89400d0524ab960d2b5575512ea1578cedc40a1b,sha_new=e25ced36c7de753745fa93fd89400d0524ab960d2b5575512ea1578cedc40a1b
 IDENTITY,parts=5,identical=5,different=0,failed=0,expected=5
+HDR,stage=cost,date_utc=2026-10-05T13:23:41Z
+HDR,stage=cost,commit=44cdf780cadd07d6b14d6d3a45260eb68916f643,tracked_dirt=2
+HDR,stage=cost,image=octoconv-cad-worker:engine74-8f27f5a40a67
+HDR,stage=cost,image_id=sha256:d35d3c8e81d5fd40ebe1e1df33b52b9f4c44e7f93ac5b1bba542d147bd90cee4
+HDR,stage=cost,server_arch=arm64
+HDR,stage=cost,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,stage=cost,libosmesa6_new=22.3.6-1+deb12u2,libosmesa6_71=22.3.6-1+deb12u2
+HDR,stage=cost,limits=cpus2_memory4g_network_none_user_nobody,env=HOME=/job_LANG=C.UTF-8_TMPDIR=/job_LP_NUM_THREADS=2
+HDR,stage=cost,heavy_input=step-nauo-LinearSlide-MGN15x-Block-n1000.step,heavy_sha256=fc05817ffcc9eac684af650138fd4c0feaa2d0b8d5e59a1306131ac7b6b78ffd,sha_equals_71_row=1,source=71_scaled_cache,regenerated_sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f,regenerated_equals_71_row=0,lp_num_threads=2,view=iso,background=opaque
+HDR,stage=cost,heavy_stl_records=3820000,heavy_stl_bytes=191000084,71_vtk_triangles=3816000
+COST_ROW,file=LinearSlide-MGN15x-Block.step,sha256=50857c6fb78b5d4a88b51663ad4f6901d0990040d9562eff70ef641270075ce5,stl_records=5948,size=1280,rep=1,rc=0,wall_s=1.24,child_rss_mib=272,cg_peak_mib=513,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=5944
+COST_ROW,file=LinearSlide-MGN15x-Block.step,sha256=50857c6fb78b5d4a88b51663ad4f6901d0990040d9562eff70ef641270075ce5,stl_records=5948,size=1280,rep=2,rc=0,wall_s=0.94,child_rss_mib=273,cg_peak_mib=154,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=5944
+COST_ROW,file=LinearSlide-MGN15x-Block.step,sha256=50857c6fb78b5d4a88b51663ad4f6901d0990040d9562eff70ef641270075ce5,stl_records=5948,size=2048,rep=1,rc=0,wall_s=1.24,child_rss_mib=393,cg_peak_mib=275,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=5944
+COST_ROW,file=LinearSlide-MGN15x-Block.step,sha256=50857c6fb78b5d4a88b51663ad4f6901d0990040d9562eff70ef641270075ce5,stl_records=5948,size=2048,rep=2,rc=0,wall_s=1.31,child_rss_mib=393,cg_peak_mib=275,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=5944
+COST_ROW,file=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=7c54cfe7114a3f07b084546d2da907109ce5b32cbd92c4527b7ee5697207efc1,stl_records=3820000,size=1280,rep=1,rc=0,wall_s=11.13,child_rss_mib=1580,cg_peak_mib=1465,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=3816000
+COST_ROW,file=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=7c54cfe7114a3f07b084546d2da907109ce5b32cbd92c4527b7ee5697207efc1,stl_records=3820000,size=1280,rep=2,rc=0,wall_s=11.12,child_rss_mib=1580,cg_peak_mib=1648,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=3816000
+COST_ROW,file=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=7c54cfe7114a3f07b084546d2da907109ce5b32cbd92c4527b7ee5697207efc1,stl_records=3820000,size=2048,rep=1,rc=0,wall_s=11.39,child_rss_mib=1752,cg_peak_mib=1633,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=3816000
+COST_ROW,file=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=7c54cfe7114a3f07b084546d2da907109ce5b32cbd92c4527b7ee5697207efc1,stl_records=3820000,size=2048,rep=2,rc=0,wall_s=12.31,child_rss_mib=1752,cg_peak_mib=1641,oom_kill=0,pix=ok,wrap_rc=0,verdict=ok,verdict_match=1,triangles=3816000
+DERIVED,key=cad_frame_cost_2048_mib,value=104,formula=max_over_files(max_peak_2048-max_peak_1280)_at_least_0,inputs=LinearSlide-MGN15x-Block.step:max2048=393-max1280=513;step-nauo-LinearSlide-MGN15x-Block-n1000.step:max2048=1752-max1280=1648
+DERIVED,key=cad_render_triangle_cap,value=3835382,formula=floor((2867.2-517.0-24.9-104)/579.16*1e6)=3835382_clamped_to_4014975,inputs=frame_mib=104
+DERIVED,key=cad_stl_ceiling_bytes,value=190840832,formula=floor((3835382*50+84)/1048576)*1048576,inputs=cap=3835382;mib=182
+SUMMARY,stage=cost,rows=8,bad_rows=0
+HDR,stage=units,date_utc=2026-10-05T13:25:31Z
+HDR,stage=units,commit=44cdf780cadd07d6b14d6d3a45260eb68916f643,tracked_dirt=2
+HDR,stage=units,image=octoconv-cad-worker:engine74-8f27f5a40a67
+HDR,stage=units,image_id=sha256:d35d3c8e81d5fd40ebe1e1df33b52b9f4c44e7f93ac5b1bba542d147bd90cee4
+HDR,stage=units,server_arch=arm64
+HDR,stage=units,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,stage=units,libosmesa6_new=22.3.6-1+deb12u2,libosmesa6_71=22.3.6-1+deb12u2
+HDR,stage=units,limits=cpus2_memory4g_network_none_user_nobody,env=HOME=/job_LANG=C.UTF-8_TMPDIR=/job_LP_NUM_THREADS=2
+UNIT_ROW,file=units_inch.step,text_unit=inch,text_factor=25.4,fileunits=inch,fileunits_factor=25.4,model_length_unit=1.0,vertices=48,ocp_diag=95.0380976240581,text_diag=3.7416573867739413,ratio=25.399999999999995,err_text=na,err_fileunits=na,err_model=na
+UNIT_ROW,file=nist-d2mi-827-9999-906.stp,text_unit=inch,text_factor=25.4,fileunits=inch,fileunits_factor=25.4,model_length_unit=1.0,vertices=832,ocp_diag=125.42518199675852,text_diag=4.92428939670487,ratio=25.47071707050521,err_text=na,err_fileunits=na,err_model=na
+UNIT_ROW,file=nist_ctc_05_asme1_ap242-e1.stp,text_unit=inch,text_factor=25.4,fileunits=unknown,fileunits_factor=na,model_length_unit=1.0,vertices=1587,ocp_diag=841.5846436930749,text_diag=33.13325368870374,ratio=25.4,err_text=na,err_fileunits=na,err_model=na
+UNIT_ROW,file=LM8UU.step,text_unit=mm,text_factor=1.0,fileunits=mm,fileunits_factor=1.0,model_length_unit=1.0,vertices=112,ocp_diag=24.253865671269807,text_diag=24.253865671269807,ratio=1.0,err_text=na,err_fileunits=na,err_model=na
+UNIT_ROW,file=legacy_cp1251.step,text_unit=mm,text_factor=1.0,fileunits=mm,fileunits_factor=1.0,model_length_unit=1.0,vertices=48,ocp_diag=3.7416573867739413,text_diag=3.7416573867739413,ratio=1.0,err_text=na,err_fileunits=na,err_model=na
+UNITS_CONTROL,file=units_inch.step,ratio=25.399999999999995,expected=25.4,tolerance=1e-6_relative,result=ok
+GAP,key=unit_ratio_mismatch,value=nist-d2mi-827-9999-906.stp,reason=source model_length_unit gives 1.0 but the measured ratio is 25.47071707050521, which is no unit factor; the ratio compares the OCP vertex bbox with the VERTEX_POINT bbox of the text and is not a pure unit measurement on this file
+GAP,key=unit_ratio_mismatch,value=nist-d2mi-827-9999-906.stp,reason=source fileunits gives 25.4 but the measured ratio is 25.47071707050521, which is no unit factor; the ratio compares the OCP vertex bbox with the VERTEX_POINT bbox of the text and is not a pure unit measurement on this file
+GAP,key=unit_ratio_mismatch,value=nist-d2mi-827-9999-906.stp,reason=source text_unit gives 25.4 but the measured ratio is 25.47071707050521, which is no unit factor; the ratio compares the OCP vertex bbox with the VERTEX_POINT bbox of the text and is not a pure unit measurement on this file
+DERIVED,key=cad_unit_factor_source,value=none,formula=first_source_in_order_whose_factor_equals_the_measured_ratio_within_1e-6_relative_on_every_STEP_row,inputs=model_length_unit=fails_on_units_inch.step+nist-d2mi-827-9999-906.stp+nist_ctc_05_asme1_ap242-e1.stp;fileunits=fails_on_nist-d2mi-827-9999-906.stp+nist_ctc_05_asme1_ap242-e1.stp;text_unit=fails_on_nist-d2mi-827-9999-906.stp
+DERIVED,key=nist_ctc_05_factor,value=25.4,formula=ratio_rounded_to_nearest_of_1_or_25.4_when_within_1e-6_relative_else_undetermined,inputs=ratio=25.4
+GAP,key=unit_factor_source,value=none,reason=plan 74-02 reports such files as unspecified with source none (R-04); ctc_05=25.4
+GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (73 GAP)
+SUMMARY,stage=units,rows=5,control=ok
