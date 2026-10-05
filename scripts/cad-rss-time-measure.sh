@@ -16,6 +16,7 @@
 #       [--floor-from FILE] [--floor-frac 0.40] [--premesh-mem 4g] FILE-OR-DIR...
 #   scripts/cad-rss-time-measure.sh --check-resume FILE [--ocp V] [--variant NAME] [--memory M]
 #       [--cpus N] [--parallel P] [--lp-threads N|default] [--quality Q] [--budget-s N]
+#       [--confine-ro PATH:PATH:...] [--expect-image TAG] [--expect-image-id ID]
 #   scripts/cad-rss-time-measure.sh --self-test
 #   scripts/cad-rss-time-measure.sh --pin-compare EVIDENCE-OCP-A EVIDENCE-OCP-B
 #   scripts/cad-rss-time-measure.sh --threads-decision EVIDENCE
@@ -32,11 +33,23 @@
 #              (committed and fetched files), or "private".
 # --resume F   append to F and skip the cells F already has a ROW for; a series
 #              F already stopped stays stopped. F is refused (exit 65) when any
-#              header block of F differs from this run in ocp, variant, memory,
-#              cpus, parallel, lp-threads, quality or budget-s. The row keys and
-#              the stop keys carry the whole configuration as well.
+#              header block of F differs from this run in a compared header
+#              field (RESUME_COMPARED_FIELDS: image tag, image id, server arch,
+#              ocp, cpus, memory, confine_ro, budget_s, quality, parallel,
+#              lp_threads), when a block lacks one, or when a block carries a
+#              header field that is neither compared nor in RESUME_FREE_FIELDS.
+#              The free fields may differ between blocks: date_utc and
+#              host_noise are per-run readings, go, kernel, python, vtk, ezdxf,
+#              mesa and rsvg are readings of the host or fixed by the image id,
+#              repeats is carried by the rep in every row key, ladder does not
+#              change what a cell measures, resume is the flag itself. The row
+#              keys and the stop keys carry ocp, variant, memory, cpus,
+#              parallel, lp, quality and confined as well.
 # --check-resume F  parse F and report whether --resume F would be accepted for
-#              the configuration given; no docker, no measurement.
+#              the configuration given; no docker, no measurement. The image
+#              tag expected is the one the current inputs hash to; give
+#              --expect-image TAG, and --expect-image-id ID to check the image
+#              id too, to ask about another build.
 # --self-test  run the resume checks on synthetic and committed evidence files.
 # --max-wall-s stop cleanly (exit 75) before the next cell once N seconds have
 #              passed, so a long run goes in chunks of a few hours.
@@ -81,6 +94,10 @@ PIN_B=""
 THREADS_FILE=""
 QUALITY_FILE=""
 CHECK_RESUME=""
+EXPECT_IMAGE=""
+EXPECT_IMAGE_ID=""
+EXPECT_ARCH=""
+CONFINED=0
 SELF_TEST=0
 INPUTS=()
 
@@ -257,66 +274,122 @@ threads_decision() {
   exit 0
 }
 
+RESUME_COMPARED_FIELDS="image image_id server_arch ocp cpus memory confine_ro budget_s quality parallel lp_threads"
+RESUME_FREE_FIELDS="date_utc host_noise go kernel python vtk ezdxf mesa rsvg ladder repeats resume"
+
+resume_expect() {
+  printf 'image=%s\n' "$EXPECT_IMAGE"
+  [ -z "$EXPECT_IMAGE_ID" ] || printf 'image_id=%s\n' "$EXPECT_IMAGE_ID"
+  [ -z "$EXPECT_ARCH" ] || printf 'server_arch=%s\n' "$EXPECT_ARCH"
+  printf 'ocp=%s\ncpus=%s\nmemory=%s\nconfine_ro=%s\n' "$OCP" "$CPUS" "$MEMS" "$CONFINE"
+  printf 'budget_s=%s\nquality=%s\nparallel=%s\nlp_threads=%s\n' "$BUDGET" "$QUALITY" "$PARALLEL" "$LP"
+}
+
 resume_scan() {
   local mode=$1 f=$2
-  awk -F, -v MODE="$mode" -v DK="${DONE_KEYS:-/dev/null}" -v SK="${STOPPED:-/dev/null}" \
-    -v OCP="$OCP" -v VAR="$VARIANT" -v MEM="$MEMS" -v CPUS="$CPUS" -v PAR="$PARALLEL" -v LP="$LP" \
-    -v Q="$QUALITY" -v BUD="$BUDGET" '
+  RESUME_EXPECT=$(resume_expect) RESUME_FREE="$RESUME_COMPARED_FIELDS $RESUME_FREE_FIELDS" \
+  awk -F, -v MODE="$mode" -v DK="${DONE_KEYS:-/dev/null}" -v SK="${STOPPED:-/dev/null}" '
     function kv(s, k,    n, i, parts) {
       n = split(s, parts, ",")
       for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
       return ""
     }
-    function hdr(key,    v) { v = $0; sub("^HDR," key "=", "", v); return v }
-    function note(k, got, cur) {
-      seen[k] = 1
-      if (MODE == "check" && got != cur && !((k SUBSEP got) in said)) {
+    function note(k, got) {
+      got_k[k] = got
+      if (MODE == "check" && (k in want) && got != want[k] && !((k SUBSEP got) in said)) {
         said[k SUBSEP got] = 1
         bad++
-        printf "RESUME_CONFIG_MISMATCH,key=%s,file=%s,current=%s\n", k, got, cur > "/dev/stderr"
+        printf "RESUME_CONFIG_MISMATCH,key=%s,file=%s,current=%s\n", k, got, want[k] > "/dev/stderr"
       }
     }
+    function field(piece, k, v, p) {
+      p = index(piece, "=")
+      k = substr(piece, 1, p - 1); v = substr(piece, p + 1)
+      if (!(k in want) && !(k in free) && MODE == "check" && !((k SUBSEP "unclassified") in said)) {
+        said[k SUBSEP "unclassified"] = 1
+        bad++
+        printf "RESUME_CONFIG_MISMATCH,key=%s,file=%s,current=unclassified-header-field\n", k, v > "/dev/stderr"
+      }
+      note(k, v)
+    }
+    function endblock(   i, k) {
+      if (!inblock) return
+      for (i = 1; i <= nord; i++) {
+        k = order[i]
+        if (!(k in got_k) && want[k] != "" && MODE == "check") {
+          bad++
+          printf "RESUME_CONFIG_MISMATCH,key=%s,file=missing,current=%s\n", k, want[k] > "/dev/stderr"
+        }
+      }
+      delete got_k
+    }
+    function hdrline(line,    n, i, parts, cur, curk) {
+      sub(/^HDR,/, "", line)
+      n = split(line, parts, ",")
+      cur = ""
+      for (i = 1; i <= n; i++) {
+        if (parts[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+          if (cur != "") field(cur)
+          cur = parts[i]
+        } else {
+          cur = cur "," parts[i]
+        }
+      }
+      if (cur != "") field(cur)
+    }
     function orblock(v, b) { return (v == "") ? b : v }
-    /^HDR,image=/ { v = hdr("image"); sub(/^[^:]*:ocp[^-]*-/, "", v); sub(/-[0-9a-f]+$/, "", v); b_var = v; note("variant", v, VAR) }
-    /^HDR,ocp=/ { b_ocp = hdr("ocp"); note("ocp", b_ocp, OCP) }
-    /^HDR,cpus=/ { b_cpus = hdr("cpus"); note("cpus", b_cpus, CPUS) }
-    /^HDR,memory=/ { note("memory", hdr("memory"), MEM) }
-    /^HDR,ladder=/ {
-      b_par = kv($0, "parallel"); b_lp = kv($0, "lp_threads"); b_q = kv($0, "quality")
-      note("budget_s", kv($0, "budget_s"), BUD); note("quality", b_q, Q)
-      note("parallel", b_par, PAR); note("lp_threads", b_lp, LP)
+    BEGIN {
+      n = split(ENVIRON["RESUME_EXPECT"], lines, "\n")
+      for (i = 1; i <= n; i++) {
+        if (lines[i] == "") continue
+        p = index(lines[i], "=")
+        k = substr(lines[i], 1, p - 1)
+        want[k] = substr(lines[i], p + 1)
+        order[++nord] = k
+      }
+      n = split(ENVIRON["RESUME_FREE"], fr, " ")
+      for (i = 1; i <= n; i++) free[fr[i]] = 1
+    }
+    /^HDR,date_utc=/ { endblock(); inblock = 1; blocks++; b_conf = 0 }
+    /^HDR,/ {
+      hdrline($0)
+      if ($0 ~ /^HDR,confine_ro=/) b_conf = 1
+      if ($0 ~ /^HDR,image=/) { v = $0; sub(/^HDR,image=/, "", v); sub(/^[^:]*:ocp[^-]*-/, "", v); sub(/-[0-9a-f]+$/, "", v); b_var = v }
+      if ($0 ~ /^HDR,ocp=/) { v = $0; sub(/^HDR,ocp=/, "", v); b_ocp = v }
+      if ($0 ~ /^HDR,cpus=/) { v = $0; sub(/^HDR,cpus=/, "", v); b_cpus = v }
+      if ($0 ~ /^HDR,ladder=/) { b_par = kv($0, "parallel"); b_lp = kv($0, "lp_threads"); b_q = kv($0, "quality") }
     }
     MODE == "load" && /^ROW,/ {
       head = $0; sub(/,out=.*$/, "", head)
-      printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"sha"), kv(head,"op"), kv(head,"ocp"), kv(head,"variant"), kv(head,"mem"), kv(head,"cpus"), kv(head,"rep"), kv(head,"par"), kv(head,"lp"), kv(head,"quality") >> DK
+      printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"sha"), kv(head,"op"), kv(head,"ocp"), kv(head,"variant"), kv(head,"mem"), kv(head,"cpus"), kv(head,"rep"), kv(head,"par"), kv(head,"lp"), kv(head,"quality"), kv(head,"confined") >> DK
       oom = kv(head, "oom_kill"); to = kv(head, "timeout"); rc = kv(head, "rc")
       if ((oom != "0" && oom != "na" && oom != "") || to == "1" || rc == "137")
-        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"fmt"), kv(head,"op"), kv(head,"mem"), kv(head,"ocp"), kv(head,"variant"), kv(head,"cpus"), kv(head,"par"), kv(head,"lp"), kv(head,"quality"), kv(head,"series"), kv(head,"bytes") >> SK
+        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"fmt"), kv(head,"op"), kv(head,"mem"), kv(head,"ocp"), kv(head,"variant"), kv(head,"cpus"), kv(head,"par"), kv(head,"lp"), kv(head,"quality"), kv(head,"confined"), kv(head,"series"), kv(head,"bytes") >> SK
     }
     MODE == "load" && /^LADDER_STOP,/ {
       if (kv($0, "reason") == "oom" || kv($0, "reason") == "timeout")
-        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv($0,"fmt"), kv($0,"op"), kv($0,"mem"), orblock(kv($0,"ocp"), b_ocp), orblock(kv($0,"variant"), b_var), orblock(kv($0,"cpus"), b_cpus), orblock(kv($0,"par"), b_par), orblock(kv($0,"lp"), b_lp), orblock(kv($0,"quality"), b_q), kv($0,"series"), kv($0,"at_bytes") >> SK
+        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv($0,"fmt"), kv($0,"op"), kv($0,"mem"), orblock(kv($0,"ocp"), b_ocp), orblock(kv($0,"variant"), b_var), orblock(kv($0,"cpus"), b_cpus), orblock(kv($0,"par"), b_par), orblock(kv($0,"lp"), b_lp), orblock(kv($0,"quality"), b_q), orblock(kv($0,"confined"), b_conf), kv($0,"series"), kv($0,"at_bytes") >> SK
     }
     END {
       if (MODE != "check") exit 0
-      split("variant ocp memory cpus budget_s quality parallel lp_threads", need, " ")
-      for (i = 1; i in need; i++) if (!(need[i] in seen)) { bad++; printf "RESUME_CONFIG_MISMATCH,key=%s,file=missing,current=present\n", need[i] > "/dev/stderr" }
+      endblock()
+      if (blocks == 0) { bad++; printf "RESUME_CONFIG_MISMATCH,key=header,file=missing,current=present\n" > "/dev/stderr" }
       exit (bad > 0)
     }' "$f"
 }
 
 stop_prefix() {
-  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$1" "$2" "$3" "$OCP" "$VARIANT" "$CPUS" "$PARALLEL" "$LP" "$QUALITY" "$4"
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$1" "$2" "$3" "$OCP" "$VARIANT" "$CPUS" "$PARALLEL" "$LP" "$QUALITY" "$CONFINED" "$4"
 }
 is_stopped_any() { grep -Fq "$(stop_prefix "$1" "$2" "$3" "$4")|" "$STOPPED"; }
 is_stopped() {
   awk -F'|' -v k="$(stop_prefix "$1" "$2" "$3" "$4")" -v b="$5" '
-    { key = $1; for (i = 2; i <= 10; i++) key = key "|" $i }
-    key == k && b + 0 >= $11 + 0 { found = 1 }
+    { key = $1; for (i = 2; i <= 11; i++) key = key "|" $i }
+    key == k && b + 0 >= $12 + 0 { found = 1 }
     END { exit !found }' "$STOPPED"
 }
 mark_stopped() { printf '%s|%s\n' "$(stop_prefix "$1" "$2" "$3" "$4")" "$5" >> "$STOPPED"; }
-is_done() { grep -Fxq "$1|$2|$OCP|$VARIANT|$3|$CPUS|$4|$PARALLEL|$LP|$QUALITY" "$DONE_KEYS"; }
+is_done() { grep -Fxq "$1|$2|$OCP|$VARIANT|$3|$CPUS|$4|$PARALLEL|$LP|$QUALITY|$CONFINED" "$DONE_KEYS"; }
 
 check_resume_file() {
   local f=$1
@@ -331,6 +404,8 @@ self_test() {
   STOPPED="$d/stopped.keys"
   evid="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
   OCP=7.9.3.1.1; VARIANT=full; MEMS=4g; CPUS=2; PARALLEL=on; LP=default; QUALITY=standard; BUDGET=900
+  CONFINE=""; CONFINED=0
+  EXPECT_IMAGE=octoconv-cad-measure:ocp7.9.3.1.1-full-aaaaaaaaaaaa; EXPECT_IMAGE_ID=""; EXPECT_ARCH=""
 
   expect() {
     local want=$1 label=$2 got=0
@@ -344,10 +419,35 @@ self_test() {
     fails=$((fails + 1))
   }
   in_cfg() { ( eval "$1"; shift; "$@" ); }
+  mismatch_keys() {
+    local err rc=0
+    err=$("$@" 2>&1 >/dev/null) || rc=$?
+    printf '%s\n' "$err" | sed -n 's/^RESUME_CONFIG_MISMATCH,key=\([^,]*\),.*/\1/p' | LC_ALL=C sort -u | tr '\n' ' '
+  }
+  expect_keys() {
+    local want=$1 label=$2 got
+    shift 2
+    got=$(mismatch_keys "$@")
+    n=$((n + 1))
+    [ "$got" = "$want " ] && return 0
+    echo "SELF_TEST_FAIL,case=$label,want_keys=$want,got_keys=$got" >&2
+    fails=$((fails + 1))
+  }
+  hdr_fields_classified() {
+    local f missing=0 known
+    known=" $RESUME_COMPARED_FIELDS $RESUME_FREE_FIELDS "
+    for f in $({ grep -hE '(printf|emit)[^#]*HDR,' "$REPO_ROOT/scripts/cad-measure/common.sh" "$REPO_ROOT/scripts/cad-rss-time-measure.sh" | grep -oE '(HDR|,)[a-z_]+=' | sed -E 's/^(HDR)?,?//; s/=$//'
+                grep -hE 'for k, p in' "$REPO_ROOT/scripts/cad-measure/common.sh" | grep -oE '\("[a-z]+"' | tr -d '("'; } | LC_ALL=C sort -u); do
+      case "$known" in *" $f "*) ;; *) echo "HDR field $f is neither compared nor allow-listed" >&2; missing=1 ;; esac
+    done
+    [ "$missing" = 0 ]
+  }
 
   cat > "$d/synthetic.txt" <<SYN
 HDR,date_utc=2026-01-01T00:00:00Z
+HDR,server_arch=arm64
 HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-aaaaaaaaaaaa
+HDR,image_id=sha256:aaaa
 HDR,ocp=7.9.3.1.1
 HDR,cpus=2
 HDR,memory=4g
@@ -363,21 +463,54 @@ SYN
   expect no cpus-differs in_cfg 'CPUS=4' check_resume_file "$d/synthetic.txt"
   expect no memory-differs in_cfg 'MEMS=1g,4g' check_resume_file "$d/synthetic.txt"
   expect no ocp-differs in_cfg 'OCP=8.0.1.0.0' check_resume_file "$d/synthetic.txt"
-  expect no variant-differs in_cfg 'VARIANT=pruned' check_resume_file "$d/synthetic.txt"
+  expect no variant-differs in_cfg 'VARIANT=pruned; EXPECT_IMAGE=octoconv-cad-measure:ocp7.9.3.1.1-pruned-aaaaaaaaaaaa' check_resume_file "$d/synthetic.txt"
   expect no budget-differs in_cfg 'BUDGET=600' check_resume_file "$d/synthetic.txt"
 
-  { cat "$d/synthetic.txt"; sed -n '1,6p' "$d/synthetic.txt" | sed 's/^HDR,cpus=2/HDR,cpus=4/'; } > "$d/two-blocks.txt"
+  { cat "$d/synthetic.txt"; grep '^HDR,' "$d/synthetic.txt" | sed 's/^HDR,cpus=2/HDR,cpus=4/'; } > "$d/two-blocks.txt"
   expect no second-block-differs check_resume_file "$d/two-blocks.txt"
   grep -v '^HDR,ladder=' "$d/synthetic.txt" > "$d/no-ladder-hdr.txt"
   expect no header-missing check_resume_file "$d/no-ladder-hdr.txt"
 
+  expect ok image-id-same in_cfg 'EXPECT_IMAGE_ID=sha256:aaaa' check_resume_file "$d/synthetic.txt"
+  expect no image-id-differs in_cfg 'EXPECT_IMAGE_ID=sha256:bbbb' check_resume_file "$d/synthetic.txt"
+  expect no image-tag-differs in_cfg 'EXPECT_IMAGE=octoconv-cad-measure:ocp7.9.3.1.1-full-bbbbbbbbbbbb' check_resume_file "$d/synthetic.txt"
+  expect no arch-differs in_cfg 'EXPECT_ARCH=amd64' check_resume_file "$d/synthetic.txt"
+  expect ok arch-same in_cfg 'EXPECT_ARCH=arm64' check_resume_file "$d/synthetic.txt"
+  expect no confine-added-on-unconfined-file in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' check_resume_file "$d/synthetic.txt"
+  expect_keys confine_ro confine-added-names-confine_ro in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' check_resume_file "$d/synthetic.txt"
+  sed 's|^HDR,cpus=2|HDR,confine_ro=/opt/venv:/lib\nHDR,cpus=2|' "$d/synthetic.txt" > "$d/confined.txt"
+  grep -q '^HDR,confine_ro=/opt/venv:/lib$' "$d/confined.txt" || { echo "SELF_TEST_FAIL,case=confined-fixture" >&2; fails=$((fails + 1)); }
+  expect ok confined-file-same-confinement in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' check_resume_file "$d/confined.txt"
+  expect no confined-file-resumed-unconfined check_resume_file "$d/confined.txt"
+  expect no confined-file-other-paths in_cfg 'CONFINE=/opt/venv; CONFINED=1' check_resume_file "$d/confined.txt"
+  { cat "$d/confined.txt"; grep '^HDR,' "$d/synthetic.txt"; } > "$d/confined-then-bare.txt"
+  expect no second-block-lost-confinement in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' check_resume_file "$d/confined-then-bare.txt"
+  sed 's|^HDR,cpus=2|HDR,newfield=1\nHDR,cpus=2|' "$d/synthetic.txt" > "$d/unclassified.txt"
+  expect no unclassified-header-field check_resume_file "$d/unclassified.txt"
+  sed 's|^HDR,date_utc=.*|HDR,date_utc=2027-02-02T00:00:00Z\nHDR,host_noise=99\nHDR,go=go version go9|; s|repeats=3|repeats=9|; s|resume=0|resume=1|; s|ladder=1|ladder=0|' "$d/synthetic.txt" > "$d/free.txt"
+  expect ok allow-listed-fields-may-differ check_resume_file "$d/free.txt"
+  expect ok hdr-fields-all-classified hdr_fields_classified
+
   resume_scan load "$d/synthetic.txt"
   expect ok done-same-config is_done s1 mesh 4g 1
+  expect no done-other-confinement in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' is_done s1 mesh 4g 1
+  expect no stop-other-confinement in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' is_stopped step mesh 4g real 200
   expect no done-other-parallel in_cfg 'PARALLEL=off' is_done s1 mesh 4g 1
   expect no done-other-cpus in_cfg 'CPUS=4' is_done s1 mesh 4g 1
   expect no done-other-lp in_cfg 'LP=2' is_done s1 mesh 4g 1
   expect no done-other-quality in_cfg 'QUALITY=fine' is_done s1 mesh 4g 1
   expect no done-other-variant in_cfg 'VARIANT=pruned' is_done s1 mesh 4g 1
+  : > "$DONE_KEYS"; : > "$STOPPED"
+  sed 's/confined=0/confined=1/' "$d/confined.txt" > "$d/confined-rows.txt"
+  resume_scan load "$d/confined-rows.txt"
+  expect ok confined-row-done-when-confined in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' is_done s1 mesh 4g 1
+  expect no confined-row-not-done-when-unconfined is_done s1 mesh 4g 1
+  expect ok confined-stop-row-when-confined in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' is_stopped step mesh 4g real 200
+  expect no confined-stop-row-not-stop-when-unconfined is_stopped step mesh 4g real 200
+  expect ok confined-block-stop-line-inherits-confinement in_cfg 'CONFINE=/opt/venv:/lib; CONFINED=1' is_stopped iges mesh 4g real 400
+  expect no confined-block-stop-line-not-stop-when-unconfined is_stopped iges mesh 4g real 400
+  : > "$DONE_KEYS"; : > "$STOPPED"
+  resume_scan load "$d/synthetic.txt"
   expect ok stop-same-config is_stopped step mesh 4g real 200
   expect ok stop-larger-rung is_stopped step mesh 4g real 250
   expect no stop-smaller-rung is_stopped step mesh 4g real 150
@@ -393,12 +526,21 @@ SYN
   a="$evid/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt"
   b="$evid/71-06-ladder-4g-ocp7.9.3.1.1.txt"
   if [ -s "$a" ] && [ -s "$b" ]; then
-    expect ok committed-par-off-lp2-own-config in_cfg 'PARALLEL=off; LP=2' check_resume_file "$a"
-    expect no committed-par-off-lp2-as-par-on in_cfg 'PARALLEL=on; LP=default' check_resume_file "$a"
-    expect ok committed-par-on-own-config in_cfg 'PARALLEL=on; LP=default' check_resume_file "$b"
-    expect no committed-par-on-as-par-off in_cfg 'PARALLEL=off; LP=2' check_resume_file "$b"
+    local ta tb1 tb2
+    ta=$(sed -n 's/^HDR,image=//p' "$a" | sed -n 1p)
+    tb1=$(sed -n 's/^HDR,image=//p' "$b" | sed -n 1p)
+    tb2=$(sed -n 's/^HDR,image=//p' "$b" | tail -n 1)
+    expect ok committed-par-off-lp2-own-config in_cfg "PARALLEL=off; LP=2; EXPECT_IMAGE=$ta" check_resume_file "$a"
+    expect no committed-par-off-lp2-as-par-on in_cfg "PARALLEL=on; LP=default; EXPECT_IMAGE=$ta" check_resume_file "$a"
+    expect no committed-par-off-lp2-current-image in_cfg "PARALLEL=off; LP=2; EXPECT_IMAGE=$(cad_image_tag 7.9.3.1.1 full)" check_resume_file "$a"
+    expect no committed-par-on-as-par-off in_cfg "PARALLEL=off; LP=2; EXPECT_IMAGE=$tb2" check_resume_file "$b"
+    if [ "$tb1" != "$tb2" ]; then
+      expect_keys image committed-par-on-spans-two-image-builds in_cfg "EXPECT_IMAGE=$tb2" check_resume_file "$b"
+    else
+      expect ok committed-par-on-own-config in_cfg "EXPECT_IMAGE=$tb1" check_resume_file "$b"
+    fi
   else
-    echo "SELF_TEST_NOTE,committed_evidence=absent,skipped=4"
+    echo "SELF_TEST_NOTE,committed_evidence=absent,skipped=5"
   fi
 
   rm -rf "$d"
@@ -431,6 +573,8 @@ while [ $# -gt 0 ]; do
     --threads-decision) THREADS_FILE=${2:?}; shift 2 ;;
     --quality-summary) QUALITY_FILE=${2:?}; shift 2 ;;
     --check-resume) CHECK_RESUME=${2:?}; shift 2 ;;
+    --expect-image) EXPECT_IMAGE=${2:?}; shift 2 ;;
+    --expect-image-id) EXPECT_IMAGE_ID=${2:?}; shift 2 ;;
     --self-test) SELF_TEST=1; shift ;;
     -h|--help) usage ;;
     --) shift; while [ $# -gt 0 ]; do INPUTS+=("$1"); shift; done ;;
@@ -444,6 +588,12 @@ done
 [ -z "$QUALITY_FILE" ] || quality_summary "$QUALITY_FILE"
 [ "$SELF_TEST" = 0 ] || { self_test; exit $?; }
 
+[ -z "$CONFINE" ] || CONFINED=1
+if [ -z "$CHECK_RESUME" ] && { [ -n "$EXPECT_IMAGE" ] || [ -n "$EXPECT_IMAGE_ID" ]; }; then
+  echo "error: --expect-image and --expect-image-id go with --check-resume only" >&2
+  exit 64
+fi
+[ -n "$EXPECT_IMAGE" ] || EXPECT_IMAGE=$(cad_image_tag "$OCP" "$VARIANT")
 case "$QUALITY" in draft|standard|fine) ;; *) echo "error: --quality must be draft, standard or fine" >&2; exit 64 ;; esac
 case "$PARALLEL" in on|off|affinity) ;; *) echo "error: --parallel must be on, off or affinity" >&2; exit 64 ;; esac
 case "$LP" in default) ;; *[!0-9]*|'') echo "error: --lp-threads must be a positive integer or default" >&2; exit 64 ;; esac
@@ -466,7 +616,7 @@ if [ -n "$RESUME" ] && [ -s "$RESUME" ]; then
   resume_rc=0
   check_resume_file "$RESUME" || resume_rc=$?
   if [ "$resume_rc" != 0 ]; then
-    echo "error: $RESUME was measured under a different configuration than this run; resume only with the same ocp, variant, memory, cpus, parallel, lp-threads, quality and budget-s" >&2
+    echo "error: $RESUME was measured under a different configuration than this run; resume only with the same image build, ocp, variant, memory, cpus, confine-ro, parallel, lp-threads, quality and budget-s" >&2
     exit 65
   fi
 fi
@@ -535,6 +685,17 @@ emit() { printf '%s\n' "$*" | tee -a "$OUT"; }
 TAG=$(cad_build_image "$OCP" "$VARIANT")
 cad_require_native "$TAG" || exit 1
 IMAGE_ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
+EXPECT_IMAGE=$TAG
+EXPECT_IMAGE_ID=$(docker image inspect "$TAG" --format '{{.Id}}')
+EXPECT_ARCH=$(docker version --format '{{.Server.Arch}}')
+if [ -n "$RESUME" ] && [ -s "$RESUME" ]; then
+  resume_rc=0
+  check_resume_file "$RESUME" || resume_rc=$?
+  if [ "$resume_rc" != 0 ]; then
+    echo "error: $RESUME was measured on another image id or architecture than the image this run uses" >&2
+    exit 65
+  fi
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-measure.XXXXXX")
 trap 'rm -rf "$WORK" "$SORTED"' EXIT
@@ -692,7 +853,7 @@ dist_line() {
     }' "$OUT"
 }
 
-CFG_TAIL="variant=$VARIANT,cpus=$CPUS,par=$PARALLEL,lp=$LP,quality=$QUALITY"
+CFG_TAIL="variant=$VARIANT,cpus=$CPUS,par=$PARALLEL,lp=$LP,quality=$QUALITY,confined=$CONFINED"
 COMBOS="$WORK/combos.tsv"
 : > "$COMBOS"
 
