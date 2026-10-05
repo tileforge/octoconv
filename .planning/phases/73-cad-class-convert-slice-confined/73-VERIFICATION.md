@@ -1,6 +1,6 @@
 ---
 phase: 73-cad-class-convert-slice-confined
-verified: 2026-10-05T14:10:00Z
+verified: 2026-10-05T14:40:00Z
 status: passed
 score: 16/16 must-haves verified
 covered_files:
@@ -56,9 +56,10 @@ covered_files:
   - scripts/cad-liveproof.sh
   - scripts/cad-measure/requirements-common.txt
   - scripts/cad-measure/requirements-ocp-7.9.3.1.1.txt
+  - scripts/cad-spike.sh
   - scripts/ci-helm-checks.sh
   - scripts/conf05-crosscheck.sh
-covered_digest: "v3:sha256:2c53d2b41509f8884eedab24431fd1bcb7cab61a2deac9abf7e5d9b7db84e27b"
+covered_digest: "v3:sha256:a5593f997ded49e9302af22534aa5cc5a8e3424c487ba58daded7b7c5f62d1c9"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification: null
@@ -103,7 +104,7 @@ re_verification: null
 | 13 | Units are mm; IGES ceiling 135 MiB supersedes 71's 155 MiB with derivation; STEP ceiling 63 MiB | VERIFIED | `cad.go`: `CADMaxIGESBytes = 135 << 20` (141557760), `CADMaxSTEPBytes = 63 << 20` (66060288), both equal to the DERIVED rows in `73-01-spikes.txt`. Derivation checked: IGES points 135.4 MiB -> 2703 MiB peak (<= 2867 = 70 % of 4096), 148.0 MiB -> 2925 MiB (over), so the largest clean row floors to 135 MiB; the GAP row `iges_ceiling_supersedes_71` states the supersession. STEP: largest measured copy row 61.6 MiB at 1150 MiB, so 71's 63 MiB is kept. Live REJECT `step_63mib_plus_1` -> `413 payload_too_large` naming the format. Documented in `ERROR-CODES.md` and `.env.example`. |
 | 14 | Timeouts derived with arithmetic shown | VERIFIED | Recomputed from the DERIVED rows: guard 30 s (3 x 0.32 s largest count wall, under 30); mesh 316 s = max(316, ceil(1.5 x 84.62) = 127), 316 = ceil(210.63 x 1.5) from the 71 ladder; I/O 60 s (assumption, labelled); engine 30+316+60 = 406 s; pod grace 406+20 = 426 s. Compose and chart use 406/426; `ShutdownTimeout` = engine+10 s; `ValidateCADTimeouts` enforces guard+mesh+I/O <= engine; 406 s is under the 900 s reconciler cap. `.env.example` shows the sum and says "DERIVED, not measured"; the estimate is labelled `unmeasured`. |
 | 15 | `exec.go` unchanged; supply chain limited to approved hashes plus ca-certificates | VERIFIED | `git diff main..HEAD -- internal/convert/exec.go` empty. `Dockerfile.cad-worker`: base pinned by digest `sha256:3783cc...` (same as 71), apt `python3 python3-venv` (build stage only) and `python3 libgl1 libx11-6 ca-certificates` in the engine stage, all in the 71 list plus ca-certificates; pip with `--only-binary --no-deps --require-hashes`. `requirements-mesh.txt` has 3 pins (`numpy==2.4.6`, `cadquery-ocp-novtk==7.9.3.1.1`, `cadquery-ocp-proxy==7.9.3.1.1`) and 75 hashes, all 75 present in `scripts/cad-measure/requirements-common.txt` + `requirements-ocp-7.9.3.1.1.txt` (`comm -23` empty). No vtk, ezdxf or font packages. |
-| 16 | No code comments outside the allowed exceptions | VERIFIED (advisory) | New Go, Python helper, Dockerfile, compose and chart files contain no comments (only the `//go:embed` directive). Added-line scan finds comments only in edited pre-existing comment blocks (`convert.go` AllEngines doc, `reconciler.go`, test comments updated for the new count) and in shell script header blocks (see Anti-Patterns). |
+| 16 | No code comments outside the allowed exceptions | VERIFIED | New Go, Python helper, Dockerfile, compose and chart files contain no comments (only the `//go:embed` directive). Added-line scan finds comments only in edited pre-existing comment blocks (`convert.go` AllEngines doc, `reconciler.go`, test comments updated for the new count); the shell script header blocks were removed in 8da1ffd (see Anti-Patterns). |
 
 **Score:** 16/16 truths verified (0 present, behavior-unverified)
 
@@ -158,7 +159,7 @@ No orphaned requirements: ROADMAP and REQUIREMENTS traceability map exactly CADI
 
 | File | Line | Pattern | Severity | Impact |
 | ---- | ---- | ------- | -------- | ------ |
-| `scripts/cad-spike.sh`, `scripts/cad-liveproof.sh` | file headers (24 and 11 lines) | usage / purpose header blocks in new shell scripts | Warning | Not Go or helper code; they are usage text matching the existing script-header convention, but they exceed the "no comments by default" rule if read strictly. No behavior impact. |
+| `scripts/cad-spike.sh`, `scripts/cad-liveproof.sh` | file headers | usage / purpose header blocks in new shell scripts | RESOLVED (8da1ffd) | Both files now have no comment lines except the shebang; the cad-spike usage text moved into a heredoc in `usage()`. Re-checked: `bash -n` passes on both, `cad-spike.sh` with no arguments prints the usage and exits 64, `cad-spike.sh rules --check` exits 0. |
 | `.env.example` | CAD section | multi-line derivation comment | Info | Configuration documentation file, not code; it is where the derivation arithmetic is meant to be readable. |
 
 No debt markers, no stubs, no empty implementations in the phase's code.
