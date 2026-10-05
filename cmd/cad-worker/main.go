@@ -62,10 +62,11 @@ func main() {
 	}
 
 	convert.Default.Replace(conv)
+	convert.Default.Replace(convert.CADRenderConverter{CADConverter: conv})
 	if len(sandboxHelper) == 0 {
 		log.Printf("⚠️  %s=true — the engines can read every file in this container", cadSandboxDisabledEnv)
 	} else {
-		log.Printf("🔒 cad sandbox: landlock via %s", strings.Join(sandboxHelper, " "))
+		log.Printf("🔒 cad sandbox: landlock via %s (convert and render)", strings.Join(sandboxHelper, " "))
 	}
 
 	preflightCtx, cancelPreflight := context.WithTimeout(ctx, cadPreflightTimeout)

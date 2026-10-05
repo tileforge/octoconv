@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -77,18 +79,82 @@ func TestCreateJobCADQualityStoredNormalized(t *testing.T) {
 	}
 }
 
-func TestCreateJobRenderStaysUnregistered(t *testing.T) {
-	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+func postCADRender(t *testing.T, repo *fakeRepo, store *fakeStorage, q *fakeQueue, filename string, data []byte, opts string) *httptest.ResponseRecorder {
+	t.Helper()
 	srv, _ := newTestServer(repo, store, q)
-	body, ct := multipartBodyWithOperation(t, "in.step", "png", "render", readCADFixture(t, "public/LM8UU.step"))
-	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
-	req.Header.Set("Content-Type", ct)
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	fw, err := w.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write(data)
+	_ = w.WriteField("target", "png")
+	_ = w.WriteField("operation", "render")
+	if opts != "" {
+		_ = w.WriteField("opts", opts)
+	}
+	_ = w.Close()
+	req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", &b))
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	rec := httptest.NewRecorder()
 	srv.Routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), errcode.UnsupportedOperation) {
-		t.Fatalf("render before registration = %d %s, want 422 unsupported_operation", rec.Code, rec.Body.String())
+	return rec
+}
+
+func assertRenderRefusedBeforeAnySideEffect(t *testing.T, rec *httptest.ResponseRecorder, repo *fakeRepo, store *fakeStorage, q *fakeQueue, code string) {
+	t.Helper()
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
 	}
-	if repo.created != nil || store.uploadCalls != 0 || q.enqueueCalls != 0 {
-		t.Error("an unregistered render must not upload, create or enqueue")
+	if !strings.Contains(rec.Body.String(), `"code":"`+code+`"`) {
+		t.Errorf("body = %s, want code %s", rec.Body.String(), code)
+	}
+	if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+		t.Errorf("a refused render must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+	}
+}
+
+func TestCreateJobRenderInvalidViewIsInvalidOptions(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postCADRender(t, repo, store, q, "in.step", readCADFixture(t, "public/LM8UU.step"), `{"view":"diagonal"}`)
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.InvalidOptions)
+}
+
+func TestCreateJobRenderOfAnSTLWithQualityIsOptsNotApplicable(t *testing.T) {
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	rec := postCADRender(t, repo, store, q, "in.stl", readCADFixture(t, "public/nasa-hubble-all-pieces.stl"), `{"quality":"fine"}`)
+	assertRenderRefusedBeforeAnySideEffect(t, rec, repo, store, q, errcode.OptsNotApplicable)
+}
+
+func TestCreateJobRenderIsAcceptedForEachCADSource(t *testing.T) {
+	cases := []struct {
+		name     string
+		filename string
+		fixture  string
+		opts     string
+		want     map[string]any
+	}{
+		{"step", "in.step", "public/LM8UU.step", ` { "size" : 512, "view":"top" }`, map[string]any{"size": float64(512), "view": "top"}},
+		{"iges", "in.iges", "synthetic/surfaces_only.iges", `{"quality":"draft"}`, map[string]any{"quality": "draft"}},
+		{"stl", "in.stl", "public/nasa-hubble-all-pieces.stl", `{"background":"transparent"}`, map[string]any{"background": "transparent"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			rec := postCADRender(t, repo, store, q, tc.filename, readCADFixture(t, tc.fixture), tc.opts)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+			}
+			if repo.created == nil || repo.created.Operation != "render" || repo.created.TargetFormat != "png" || repo.created.Engine != "cad" {
+				t.Fatalf("created = %+v, want a cad render job targeting png", repo.created)
+			}
+			if !reflect.DeepEqual(repo.created.Opts, tc.want) {
+				t.Errorf("stored opts = %#v, want %#v", repo.created.Opts, tc.want)
+			}
+			if q.enqueueCalls != 1 {
+				t.Errorf("enqueueCalls = %d, want 1", q.enqueueCalls)
+			}
+		})
 	}
 }

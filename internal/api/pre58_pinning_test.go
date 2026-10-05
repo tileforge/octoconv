@@ -148,7 +148,7 @@ func TestPre58GoldenListFormats(t *testing.T) {
 //     here, and that claim is what Phase 57's Classes() filter was written to
 //     make true.
 //   - operations.convert must be byte-identical.
-//   - operations may gain "sanitize" and nothing else.
+//   - operations may gain "sanitize" and "render" and nothing else.
 func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
 	t.Helper()
 	const path = "testdata/pre58_formats.golden.json"
@@ -212,10 +212,15 @@ func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
 		if _, pinned := goldenTop.Operations[key]; pinned {
 			continue
 		}
-		if key != "sanitize" {
-			t.Errorf("operations gained key %q, which is outside the single permitted exception "+
+		if key != "sanitize" && key != convert.OperationRender {
+			t.Errorf("operations gained key %q, which is outside the permitted exceptions "+
 				"listed at the top of this file", key)
 		}
+	}
+	if _, ok := liveTop.Operations[convert.OperationRender]; !ok {
+		t.Errorf("the live body has no %q operation -- this comparator permits it, so its absence "+
+			"means the permission is hiding a regression rather than permitting an addition",
+			convert.OperationRender)
 	}
 	for key := range goldenTop.Operations {
 		if _, still := liveTop.Operations[key]; !still {

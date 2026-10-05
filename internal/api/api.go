@@ -514,6 +514,7 @@ var defaultMaxFormatBytes = map[string]map[string]int64{
 	convert.EngineCAD: {
 		"step": convert.CADMaxSTEPBytes,
 		"iges": convert.CADMaxIGESBytes,
+		"stl":  convert.CADMaxSTLBytes,
 	},
 }
 

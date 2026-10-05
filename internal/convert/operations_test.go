@@ -168,12 +168,12 @@ func TestReplaceOverwritesWithoutPanic(t *testing.T) {
 //
 // Phase 60 is the moment this returned a second value, exactly as the note
 // here predicted: converters.go now registers SanitizeConverter. The
-// assertion below moved from "one operation" to "these two, in this order"
+// assertion below moved from "one operation" to "these three, in this order"
 // rather than to "at least one" -- a length check that stops naming its
 // expected contents stops being able to fail.
 func TestOperationsDerivedFromRegistry(t *testing.T) {
 	ops := Default.Operations()
-	want := []string{OperationConvert, OperationSanitize} // Operations() sorts
+	want := []string{OperationConvert, OperationRender, OperationSanitize} // Operations() sorts
 	if len(ops) != len(want) {
 		t.Fatalf("Default.Operations() = %v, want %v", ops, want)
 	}
@@ -194,7 +194,7 @@ func TestOperationsDerivedFromRegistry(t *testing.T) {
 	// (OperationConvert's own doc comment) now that sanitize is real: a
 	// registered operation is the case where a normalization slip would
 	// actually reach jobs.operation.
-	for _, bad := range []string{"extract", "archive", "inspect", "render", "", "Convert", "Sanitize"} {
+	for _, bad := range []string{"extract", "archive", "inspect", "", "Convert", "Sanitize", "Render"} {
 		if Default.IsKnownOperation(bad) {
 			t.Errorf("Default.IsKnownOperation(%q) = true, want false", bad)
 		}
@@ -202,7 +202,7 @@ func TestOperationsDerivedFromRegistry(t *testing.T) {
 }
 
 // TestOneOperationPerEngineClass proves the D-14 invariant: every engine
-// class registered in Default serves exactly one operation. This invariant
+// class registered in Default serves exactly one operation, except cad (convert and render). This invariant
 // is what keeps the reconciler's job.Engine routing switch, the unique-lock
 // TTL lookup, queue names, all seven ScaledObjects' PromQL, and the
 // client_limits(client_id, engine)/client_usage_daily(client_id, engine,
@@ -222,6 +222,12 @@ func TestOneOperationPerEngineClass(t *testing.T) {
 	}
 
 	for engine, ops := range byEngine {
+		if engine == EngineCAD {
+			if len(ops) != 2 || !ops[OperationConvert] || !ops[OperationRender] {
+				t.Errorf("engine %q serves %v, want exactly convert and render", engine, ops)
+			}
+			continue
+		}
 		if len(ops) != 1 {
 			opList := make([]string, 0, len(ops))
 			for op := range ops {

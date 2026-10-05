@@ -133,8 +133,11 @@ func TestCADFormatCeilingDefaultsPinnedToConvertConstants(t *testing.T) {
 	if got := srv.maxFormatBytes[convert.EngineCAD]["iges"]; got != convert.CADMaxIGESBytes {
 		t.Errorf("cad iges ceiling = %d, want convert.CADMaxIGESBytes = %d", got, int64(convert.CADMaxIGESBytes))
 	}
-	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 2 {
-		t.Errorf("maxFormatBytes = %v, want exactly cad: step and iges", srv.maxFormatBytes)
+	if got := srv.maxFormatBytes[convert.EngineCAD]["stl"]; got != convert.CADMaxSTLBytes {
+		t.Errorf("cad stl ceiling = %d, want convert.CADMaxSTLBytes = %d", got, int64(convert.CADMaxSTLBytes))
+	}
+	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 3 {
+		t.Errorf("maxFormatBytes = %v, want exactly cad: step, iges and stl", srv.maxFormatBytes)
 	}
 }
 
@@ -284,28 +287,50 @@ func TestCADCeilingsAtTheDefaults(t *testing.T) {
 }
 
 func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
-	srv := newCADCeilingServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
-	rep := postCADInspect(t, srv, "LM8UU.step", readCADFixture(t, "public/LM8UU.step"))
-	found := false
-	for _, o := range rep.Operations {
-		if o.Engine != convert.EngineCAD {
-			continue
-		}
-		found = true
-		if o.Target != "stl" || o.Operation != convert.OperationConvert {
-			t.Errorf("offer %+v: want convert -> stl", o)
-		}
-		if o.MaxBytes != convert.CADMaxSTEPBytes {
-			t.Errorf("offer %+v: MaxBytes = %d, want %d", o, o.MaxBytes, int64(convert.CADMaxSTEPBytes))
-		}
-		if !o.Available {
-			t.Errorf("offer %+v: a small step file must be available", o)
-		}
-		if o.EstimateSource != EstimateSourceUnmeasured {
-			t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
-		}
+	cases := []struct {
+		name       string
+		filename   string
+		fixture    string
+		ceiling    int64
+		wantTarget map[string]string
+	}{
+		{"step", "LM8UU.step", "public/LM8UU.step", convert.CADMaxSTEPBytes,
+			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+		{"iges", "surfaces_only.iges", "synthetic/surfaces_only.iges", convert.CADMaxIGESBytes,
+			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+		{"stl", "hubble.stl", "public/nasa-hubble-all-pieces.stl", convert.CADMaxSTLBytes,
+			map[string]string{convert.OperationRender: "png"}},
 	}
-	if !found {
-		t.Fatalf("no cad offer for a step file; operations=%+v", rep.Operations)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newCADCeilingServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+			rep := postCADInspect(t, srv, tc.filename, readCADFixture(t, tc.fixture))
+			seen := map[string]bool{}
+			for _, o := range rep.Operations {
+				if o.Engine != convert.EngineCAD {
+					continue
+				}
+				want, ok := tc.wantTarget[o.Operation]
+				if !ok || o.Target != want {
+					t.Errorf("offer %+v: unexpected cad offer for a %s file, want %v", o, tc.name, tc.wantTarget)
+					continue
+				}
+				seen[o.Operation] = true
+				if o.MaxBytes != tc.ceiling {
+					t.Errorf("offer %+v: MaxBytes = %d, want %d", o, o.MaxBytes, tc.ceiling)
+				}
+				if !o.Available {
+					t.Errorf("offer %+v: a small %s file must be available", o, tc.name)
+				}
+				if o.EstimateSource != EstimateSourceUnmeasured {
+					t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
+				}
+			}
+			for op := range tc.wantTarget {
+				if !seen[op] {
+					t.Errorf("no cad %s offer for a %s file; operations=%+v", op, tc.name, rep.Operations)
+				}
+			}
+		})
 	}
 }

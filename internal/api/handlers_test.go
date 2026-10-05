@@ -926,14 +926,14 @@ func TestCreateJob_OperationExplicitConvertIdenticalToAbsent(t *testing.T) {
 // all must be rejected 422 unsupported_operation strictly before
 // s.storage.Upload and s.repo.Create, with the queue untouched.
 //
-// "sanitize" left this list in Phase 60: it now has registered triples, so
-// using it here would test the pair gate rather than the operation gate. The
-// three replacements are the values still reserved in the jobs.operation
+// "sanitize" left this list in Phase 60 and "render" in Phase 74: both now
+// have registered triples, so using them here would test the pair gate rather
+// than the operation gate. The three replacements are the values still reserved in the jobs.operation
 // CHECK constraint with no converter behind them, plus "bogus", which no
 // build will ever register -- keeping both kinds means the test still
 // distinguishes "reserved but unimplemented" from "not a value at all".
 func TestCreateJob_UnknownOperationRejectedBeforeStorageAndCreate(t *testing.T) {
-	for _, operation := range []string{"extract", "archive", "render", "bogus"} {
+	for _, operation := range []string{"extract", "archive", "inspect", "bogus"} {
 		t.Run(operation, func(t *testing.T) {
 			repo := &fakeRepo{}
 			store := &fakeStorage{}
@@ -4132,6 +4132,33 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("cad_render_routes_to_the_cad_queue", func(t *testing.T) {
+		repo := &fakeRepo{}
+		store := &fakeStorage{}
+		queue := &fakeQueue{}
+		srv, _ := newTestServer(repo, store, queue)
+
+		body, ct := multipartBodyWithOperation(t, "in.step", "png", "render", readCADFixture(t, "public/LM8UU.step"))
+		req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+		req.Header.Set("Content-Type", ct)
+		rec := httptest.NewRecorder()
+
+		srv.Routes().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+		}
+		if repo.created == nil || repo.created.Engine != convert.EngineCAD || repo.created.Operation != "render" {
+			t.Fatalf("job = %+v, want a cad render job", repo.created)
+		}
+		if queue.enqueuedCAD != repo.createdID {
+			t.Fatalf("cad enqueue id = %s, want %s", queue.enqueuedCAD, repo.createdID)
+		}
+		if queue.enqueuedImage != uuid.Nil {
+			t.Fatalf("a render job must not reach the image queue: %s", queue.enqueuedImage)
+		}
+	})
 
 	// AVT-01 routing split (ROADMAP success criterion 2): the SAME source
 	// format (mp4) resolves to two DIFFERENT engines depending on target --
