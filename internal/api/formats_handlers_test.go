@@ -253,3 +253,54 @@ func TestListFormats_NoOperationOutsideRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestListFormats_AdvertisesNoCADFormat(t *testing.T) {
+	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	req := authed(httptest.NewRequest(http.MethodGet, "/v1/formats", nil))
+	rec := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Engines map[string]struct {
+			Pairs [][]string `json:"pairs"`
+		} `json:"engines"`
+		Operations map[string]map[string]struct {
+			Pairs [][]string `json:"pairs"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+	if len(resp.Engines) == 0 {
+		t.Fatalf("decoded engines map is empty; body=%s", rec.Body.String())
+	}
+
+	cad := map[string]bool{
+		"step": true, "stp": true, "iges": true, "igs": true,
+		"stl": true, "dxf": true, "dwg": true,
+	}
+	check := func(where, class string, pairs [][]string) {
+		if class == "cad" {
+			t.Errorf("%s advertises a %q class", where, class)
+		}
+		for _, pair := range pairs {
+			for _, format := range pair {
+				if cad[format] {
+					t.Errorf("%s advertises CAD format %q in pair %v under %q", where, format, pair, class)
+				}
+			}
+		}
+	}
+	for class, e := range resp.Engines {
+		check("engines", class, e.Pairs)
+	}
+	for op, classes := range resp.Operations {
+		for class, e := range classes {
+			check("operations."+op, class, e.Pairs)
+		}
+	}
+}
