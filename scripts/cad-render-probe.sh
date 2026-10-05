@@ -18,6 +18,11 @@ WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
 GEN_PY="$REPO_ROOT/scripts/cad-corpus-gen.py"
 UNIT_PY="$REPO_ROOT/scripts/cad-unit-probe.py"
 GO_TOOLCHAIN=go1.26.4
+BASE_HELPER_REV=e3cab948c8a5a29d06791d1caa87c921aa01ecce
+WALL_LIMIT_S=210
+RSS_LIMIT_MIB=2867.2
+STEP_COPIES_TARGET=65
+STEP_COPIES_SHA_73=d5dc17ee0168ec32d3b6d85c54ae37d8f428c9bc164762b39d1e10ea729fc47e
 MIN_FREE_GIB=6
 LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
 PYV=(/opt/venv/bin/python -I -B)
@@ -33,6 +38,7 @@ Usage:
   scripts/cad-render-probe.sh identity [--out FILE]
   scripts/cad-render-probe.sh cost     [--out FILE]
   scripts/cad-render-probe.sh units    [--out FILE]
+  scripts/cad-render-probe.sh mesh     [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, mesh two real STEP files with
           cad-mesh, render each STL with cad-render under a real Landlock ruleset (iso 1280
@@ -48,9 +54,14 @@ cost      render the 5944-triangle part and the heaviest in-cap 71 STL at 1280 a
 units     measure the scale OCP applied to inch STEP against the file's own coordinates and
           derive the runtime source of that factor.
 
+mesh      run cad-mesh --measure on the corpus and the stats path on STL files on the engine
+          image, order the triangle counts of the three qualities, prove the standard STL is
+          byte-identical to the pre-change helper, and measure wall and memory at the STEP
+          and STL ceilings. Writes evidence/74-02-mesh.txt.
+
 Every mode rewrites its own lines in the evidence file (default
-.planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt) and removes the
-image tags it built. Needs a native arm64 docker server, go and python3.
+.planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt, mesh mode
+74-02-mesh.txt) and removes the image tags it built. Needs a native arm64 docker server, go and python3.
 Exit codes: 64 usage, 69 a tool is missing, 1 a check failed.
 USAGE
   exit 64
@@ -689,6 +700,346 @@ PY
   [ "$ok" = 1 ]
 }
 
+run_mesh() {
+  local src=$1 fmt=$2 job=$3
+  shift 3
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2 \
+    -v "$job:/job" -v "$src:/job/in.$fmt:ro" "$TAG" \
+    /usr/local/bin/cad-mesh --format "$fmt" "$@" /job/in.$fmt /job/out.stl \
+    > "$job/stdout.txt" 2> "$job/stderr.txt" </dev/null
+}
+
+run_stats() {
+  local src=$1 job=$2
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job \
+    -v "$job:/job" -v "$src:/job/in.stl:ro" "$TAG" \
+    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl \
+    > "$job/stdout.txt" 2> "$job/stderr.txt" </dev/null
+}
+
+draft_row() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json
+import math
+import sys
+
+label, path, rc, kind = sys.argv[1:5]
+EXPECT = {
+    "units_inch.step": {"volume": 98322.38, "area": 14193.51, "tol": 0.01, "applied_factor": 25.4, "declared_unit": "inch"},
+    "nist_ctc_05_asme1_ap242-e1.stp": {"applied_factor": 25.4, "declared_unit": "inch"},
+    "LM8UU.step": {"applied_factor": 1.0, "declared_unit": "mm", "positive": True},
+    "legacy_cp1251.step": {"applied_factor": 1.0, "declared_unit": "mm"},
+    "open_shell.step": {"reason": "no_solids"},
+    "single_face.step": {"reason": "no_solids"},
+    "stl_ascii_box.stl": {"volume": 6000.0, "area": 2200.0, "tol": 1e-6, "relative": True},
+    "nasa-hubble-all-pieces.stl": {"reason": "stl_not_watertight"},
+}
+problems = []
+try:
+    with open(path) as fh:
+        d = json.load(fh)
+except (OSError, ValueError):
+    print("rc=%s,detail=no_draft,result=fail" % rc)
+    sys.exit(0)
+vol, area, reason = d.get("volume"), d.get("area"), d.get("null_reason", "")
+if (vol is None) != (area is None) or (vol is None) != (reason != ""):
+    problems.append("null_pairing")
+if vol is not None and not (math.isfinite(vol) and vol > 0 and math.isfinite(area) and area > 0):
+    problems.append("volume_area_not_positive")
+if d.get("format") != kind:
+    problems.append("format")
+box = d.get("bbox", {})
+lo, hi = box.get("min", []), box.get("max", [])
+if len(lo) != 3 or len(hi) != 3 or not all(math.isfinite(x) for x in lo + hi) or any(a > b for a, b in zip(lo, hi)):
+    problems.append("bbox")
+if d.get("solids") is not None and d.get("closed_solids", 0) > d["solids"]:
+    problems.append("closed_gt_solids")
+exp = EXPECT.get(label, {})
+tol = exp.get("tol", 0.0)
+for key in ("volume", "area"):
+    if key in exp:
+        got = d.get(key)
+        bound = tol * exp[key] if exp.get("relative") else tol
+        if got is None or abs(got - exp[key]) > bound:
+            problems.append("%s_expected_%s" % (key, exp[key]))
+if "applied_factor" in exp and (d.get("applied_factor") is None or abs(d["applied_factor"] - exp["applied_factor"]) > 1e-9):
+    problems.append("applied_factor")
+if "declared_unit" in exp and d.get("declared_unit") != exp["declared_unit"]:
+    problems.append("declared_unit")
+if "reason" in exp and reason != exp["reason"]:
+    problems.append("reason_expected_" + exp["reason"])
+if exp.get("positive") and vol is None:
+    problems.append("volume_missing")
+if rc != "0":
+    problems.append("rc")
+
+
+def fmt(x):
+    return "null" if x is None else repr(x)
+
+
+print("rc=%s,solids=%s,closed=%s,volume=%s,area=%s,reason=%s,declared_unit=%s,declared_raw=%s,applied_factor=%s,bbox=%s|%s,triangles=%s,detail=%s,result=%s" % (
+    rc, fmt(d.get("solids")), fmt(d.get("closed_solids")), fmt(vol), fmt(area), reason or "none", d.get("declared_unit") or "none",
+    (d.get("declared_unit_raw") or "none").replace(",", "_").replace(" ", "_"), fmt(d.get("applied_factor")),
+    ";".join(repr(x) for x in lo), ";".join(repr(x) for x in hi), d.get("triangles"),
+    "+".join(problems) or "none", "fail" if problems else "ok"))
+PY
+}
+
+stl_triangles() { echo $(( ($(wc -c < "$1" | tr -d ' ') - 84) / 50 )); }
+
+mesh_draft_rows() {
+  local rel fmt label job rc row
+  for rel in synthetic/units_inch.step synthetic/legacy_cp1251.step public/LM8UU.step \
+    public/nist_ctc_05_asme1_ap242-e1.stp synthetic/degenerate_plate.step synthetic/open_shell.step \
+    synthetic/single_face.step synthetic/surfaces_only.iges public/nist-d2mi-827-9999-906.stp; do
+    disk_guard
+    label=$(basename "$rel")
+    case "$label" in *.iges) fmt=iges ;; *) fmt=step ;; esac
+    job=$(new_job "$WORK")
+    rc=0
+    run_mesh "$CORPUS/$rel" "$fmt" "$job" --measure /job/draft.json || rc=$?
+    row=$(draft_row "$label" "$job/draft.json" "$rc" "$fmt")
+    printf 'DRAFT,file=%s,%s\n' "$label" "$row" >> "$LINES"
+    case "$row" in *result=ok) ;; *) tail -n 5 "$job/stderr.txt" >&2 ;; esac
+    rm -rf "$job"
+  done
+}
+
+mesh_stats_rows() {
+  local rel label job rc row
+  for rel in synthetic/stl_ascii_box.stl synthetic/stl_binary_solid_header.stl public/nasa-hubble-all-pieces.stl; do
+    label=$(basename "$rel")
+    job=$(new_job "$WORK")
+    rc=0
+    run_stats "$CORPUS/$rel" "$job" || rc=$?
+    row=$(draft_row "$label" "$job/draft.json" "$rc" stl)
+    printf 'STATS,file=%s,%s\n' "$label" "$row" >> "$LINES"
+    case "$row" in *result=ok) ;; *) tail -n 5 "$job/stderr.txt" >&2 ;; esac
+    rm -rf "$job"
+  done
+}
+
+mesh_quality_rows() {
+  local spec label job q rc counts tri res
+  for spec in public/LinearSlide-MGN15x-Block.step synthetic/degenerate_plate.step; do
+    label=$(basename "$spec")
+    counts=""
+    res=ok
+    for q in draft standard fine; do
+      disk_guard
+      job=$(new_job "$WORK")
+      rc=0
+      run_mesh "$CORPUS/$spec" step "$job" --quality "$q" || rc=$?
+      if [ "$rc" = 0 ] && [ -s "$job/out.stl" ]; then tri=$(stl_triangles "$job/out.stl"); else tri=na; res=fail; fi
+      counts="$counts $tri"
+      rm -rf "$job"
+    done
+    set -- $counts
+    if [ "$res" = ok ] && ! { [ "$1" -le "$2" ] && [ "$2" -le "$3" ]; }; then res=fail; fi
+    printf 'QUALITY,file=%s,draft=%s,standard=%s,fine=%s,result=%s\n' "$label" "$1" "$2" "$3" "$res" >> "$LINES"
+  done
+}
+
+mesh_identity_rows() {
+  local spec label jn jo rc_n rc_o sha_n sha_o res
+  mkdir -p "$WORK/old"
+  chmod 0755 "$WORK/old"
+  git show "$BASE_HELPER_REV:cmd/cad-worker/helper/cad-mesh" > "$WORK/old/cad-mesh"
+  chmod 0755 "$WORK/old/cad-mesh"
+  for spec in synthetic/units_inch.step public/LM8UU.step; do
+    label=$(basename "$spec")
+    jn=$(new_job "$WORK")
+    jo=$(new_job "$WORK")
+    rc_n=0
+    rc_o=0
+    run_mesh "$CORPUS/$spec" step "$jn" --quality standard --measure /job/draft.json || rc_n=$?
+    docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2 \
+      -v "$jo:/job" -v "$CORPUS/$spec:/job/in.step:ro" -v "$WORK/old:/old:ro" --entrypoint "${PYV[0]}" "$TAG" \
+      "${PYV[@]:1}" /old/cad-mesh --format step /job/in.step /job/out.stl > /dev/null 2>&1 </dev/null || rc_o=$?
+    res=fail
+    sha_n=none
+    sha_o=none
+    if [ "$rc_n" = 0 ] && [ "$rc_o" = 0 ] && [ -s "$jn/out.stl" ] && [ -s "$jo/out.stl" ]; then
+      sha_n=$(sha_of "$jn/out.stl")
+      sha_o=$(sha_of "$jo/out.stl")
+      [ "$sha_n" = "$sha_o" ] && res=ok
+    fi
+    printf 'IDENTITY_STL,file=%s,base_rev=%s,rc_new=%s,rc_old=%s,stl_bytes=%s,sha_old=%s,sha_new=%s,result=%s\n' \
+      "$label" "$BASE_HELPER_REV" "$rc_n" "$rc_o" "$( [ -f "$jn/out.stl" ] && wc -c < "$jn/out.stl" | tr -d ' ' || echo 0 )" "$sha_o" "$sha_n" "$res" >> "$LINES"
+    rm -rf "$jn"
+    rm -rf "$jo"
+  done
+}
+
+prep_wrap() {
+  mkdir -p "$WORK/wrap" "$WORK/gen"
+  chmod 0755 "$WORK/wrap"
+  chmod 0777 "$WORK/gen"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+}
+
+verdict_of() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+last = ""
+try:
+    with open(sys.argv[1], "rb") as fh:
+        for raw in fh:
+            line = raw.decode("ascii", "replace")
+            if line.startswith("CADVERDICT "):
+                last = line
+    o = json.loads(last[len("CADVERDICT "):])
+    print("verdict=%s,triangles=%s" % (o.get("verdict"), o.get("triangles")))
+except (OSError, ValueError):
+    print("verdict=none,triangles=na")
+PY
+}
+
+mesh_wall_row() {
+  local src name sha job wrapout rc_w=0 wall peak rss oom v res=ok
+  prep_wrap
+  name="step-copies-freecad-mit-e-vent-t-slot-${STEP_COPIES_TARGET}MiB.step"
+  docker run --rm --network none --cpus 2 --memory 4g --memory-swap 4g --user nobody -e HOME=/tmp -e LANG=C.UTF-8 \
+    -v "$REPO_ROOT:/src:ro" -v "$CAD_CACHE/fetched:/base:ro" -v "$WORK/gen:/out" -w /src \
+    --entrypoint "${PYV[0]}" "$TAG" "${PYV[@]:1}" scripts/cad-corpus-gen.py \
+    --scaled-from /base/freecad-mit-e-vent-t-slot.step --kind step-copies --targets "$STEP_COPIES_TARGET" --scaled-dir /out >&2 \
+    || fail "step-copies generation failed"
+  src="$WORK/gen/$name"
+  [ -f "$src" ] || fail "$name was not generated"
+  sha=$(sha_of "$src")
+  job=$(new_job "$WORK")
+  wrapout="$WORK/wrap.out"
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2 \
+    -v "$WORK/wrap:/wrap:ro" -v "$job:/job" -v "$src:/job/in.step:ro" --entrypoint "${PYV[0]}" "$TAG" \
+    "${PYV[@]:1}" /wrap/measure_wrap.py --budget-s 400 --outdir /job -- \
+    /usr/local/bin/cad-mesh --format step --measure /job/draft.json /job/in.step /job/out.stl \
+    > "$wrapout" 2> "$WORK/wrap.err" </dev/null || rc_w=$?
+  wall=$(wrap_field wall_s "$wrapout")
+  peak=$(wrap_field cg_peak_mib "$wrapout")
+  rss=$(wrap_field child_rss_mib "$wrapout")
+  oom=$(wrap_field oom_kill "$wrapout")
+  v=$(verdict_of "$job/child.log")
+  [ "$(wrap_field rc "$wrapout")" = 0 ] && [ "$rc_w" = 0 ] || res=fail
+  [ "$oom" = 0 ] || res=fail
+  case "$v" in verdict=ok,*) ;; *) res=fail ;; esac
+  python3 -c "import sys; sys.exit(0 if float(sys.argv[1] or 9999) <= $WALL_LIMIT_S else 1)" "$wall" || res=fail
+  [ -s "$job/draft.json" ] || res=fail
+  printf 'WALL,file=%s,bytes=%s,sha256=%s,sha_equals_73_row=%s,rc=%s,wall_s=%s,limit_s=%s,child_rss_mib=%s,cg_peak_mib=%s,oom_kill=%s,%s,draft_bytes=%s,result=%s\n' \
+    "$name" "$(wc -c < "$src" | tr -d ' ')" "$sha" "$([ "$sha" = "$STEP_COPIES_SHA_73" ] && echo 1 || echo 0)" "$(wrap_field rc "$wrapout")" "$wall" "$WALL_LIMIT_S" "$rss" "$peak" "$oom" "$v" \
+    "$( [ -f "$job/draft.json" ] && wc -c < "$job/draft.json" | tr -d ' ' || echo 0 )" "$res" >> "$LINES"
+  rm -f "$src"
+  rm -rf "$job"
+  [ "$res" = ok ] || WALL_STOP=1
+}
+
+tile_stl() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import math
+import struct
+import sys
+
+base, out, ceiling = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(base, "rb") as fh:
+    blob = fh.read()
+count = struct.unpack("<I", blob[80:84])[0]
+recs = [list(struct.unpack("<12fH", blob[84 + 50 * i:134 + 50 * i])) for i in range(count)]
+span = [0.0, 0.0]
+for axis in (0, 1):
+    vals = [r[3 + 3 * v + axis] for r in recs for v in range(3)]
+    span[axis] = max(1.0, (max(vals) - min(vals)) * 2.0)
+tiles = (ceiling - 84) // (50 * count)
+side = int(math.ceil(math.sqrt(tiles)))
+with open(out, "wb") as fh:
+    fh.write(b"octoconv probe tile".ljust(80, b"\0") + struct.pack("<I", tiles * count))
+    for t in range(tiles):
+        dx, dy = (t % side) * span[0], (t // side) * span[1]
+        buf = bytearray()
+        for r in recs:
+            v = list(r)
+            for k in range(3):
+                v[3 + 3 * k] += dx
+                v[4 + 3 * k] += dy
+            buf += struct.pack("<12fH", *v)
+        fh.write(buf)
+print(tiles * count)
+PY
+}
+
+draft_tail() {
+  python3 - "$1" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    print("reason=%s,volume=%s" % (d["null_reason"] or "none", d["volume"]))
+except (OSError, ValueError, KeyError):
+    print("reason=no_draft,volume=na")
+PY
+}
+
+mesh_rss_row() {
+  local ceiling tile job wrapout rc_w=0 expect peak rss v res=ok bytes oom rc
+  ceiling=$(sed -n 's/^DERIVED,key=cad_stl_ceiling_bytes,value=\([0-9]*\),.*/\1/p' "$PHASE_DIR/evidence/74-01-wave0.txt")
+  [ -n "$ceiling" ] || fail "cad_stl_ceiling_bytes is missing from 74-01-wave0.txt"
+  job=$(new_job "$WORK")
+  run_mesh "$CORPUS/synthetic/units_inch.step" step "$job" || fail "tile base mesh failed"
+  tile="$WORK/ceiling-tile.stl"
+  expect=$(tile_stl "$job/out.stl" "$tile" "$ceiling")
+  rm -rf "$job"
+  bytes=$(wc -c < "$tile" | tr -d ' ')
+  job=$(new_job "$WORK")
+  wrapout="$WORK/wrap.out"
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job \
+    -v "$WORK/wrap:/wrap:ro" -v "$job:/job" -v "$tile:/job/in.stl:ro" --entrypoint "${PYV[0]}" "$TAG" \
+    "${PYV[@]:1}" /wrap/measure_wrap.py --budget-s 400 --outdir /job -- \
+    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl \
+    > "$wrapout" 2> "$WORK/wrap.err" </dev/null || rc_w=$?
+  rss=$(wrap_field child_rss_mib "$wrapout")
+  peak=$(wrap_field cg_peak_mib "$wrapout")
+  oom=$(wrap_field oom_kill "$wrapout")
+  rc=$(wrap_field rc "$wrapout")
+  v=$(verdict_of "$job/child.log")
+  [ "$rc" = 0 ] && [ "$rc_w" = 0 ] && [ "$oom" = 0 ] || res=fail
+  [ "$v" = "verdict=ok,triangles=$expect" ] || res=fail
+  python3 -c "import sys; sys.exit(0 if max(float(sys.argv[1] or 99999), float(sys.argv[2] or 99999)) <= $RSS_LIMIT_MIB else 1)" "$rss" "$peak" || res=fail
+  printf 'STATS_RSS,bytes=%s,ceiling_bytes=%s,triangles_expected=%s,rc=%s,wall_s=%s,child_rss_mib=%s,cg_peak_mib=%s,limit_mib=%s,oom_kill=%s,%s,%s,result=%s\n' \
+    "$bytes" "$ceiling" "$expect" "$rc" "$(wrap_field wall_s "$wrapout")" "$rss" "$peak" "$RSS_LIMIT_MIB" "$oom" "$v" \
+    "$(draft_tail "$job/draft.json")" "$res" >> "$LINES"
+  rm -f "$tile"
+  rm -rf "$job"
+}
+
+mesh() {
+  setup
+  local bad rows
+  WALL_STOP=0
+  header_lines mesh "$TAG" >> "$LINES"
+  mesh_draft_rows
+  mesh_stats_rows
+  mesh_quality_rows
+  mesh_identity_rows
+  mesh_wall_row
+  mesh_rss_row
+  rows=$(grep -cE '^(DRAFT|STATS|QUALITY|IDENTITY_STL|WALL|STATS_RSS),' "$LINES" || true)
+  bad=$(grep -E '^(DRAFT|STATS|QUALITY|IDENTITY_STL|WALL|STATS_RSS),' "$LINES" | grep -vc 'result=ok' || true)
+  if [ "$WALL_STOP" = 1 ]; then
+    printf 'STOP,reason=mesh_measure_wall_or_budget_not_ok,limit_s=%s\n' "$WALL_LIMIT_S" >> "$LINES"
+  fi
+  if [ "$bad" = 0 ]; then
+    printf 'SUMMARY,result=ok,stage=mesh,rows=%s,bad_rows=0\n' "$rows" >> "$LINES"
+  else
+    printf 'SUMMARY,result=fail,stage=mesh,rows=%s,bad_rows=%s\n' "$rows" "$bad" >> "$LINES"
+  fi
+  evid_put "$LINES" '^(HDR|DRAFT|STATS|QUALITY|IDENTITY_STL|WALL|STATS_RSS|STOP|SUMMARY),'
+  grep -v '^HDR' "$LINES"
+  [ "$bad" = 0 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
@@ -698,6 +1049,7 @@ while [ $# -gt 0 ]; do
     *) usage ;;
   esac
 done
+[ "$MODE" != mesh ] || EVID="$PHASE_DIR/evidence/74-02-mesh.txt"
 [ -z "$OUT_OVERRIDE" ] || EVID=$OUT_OVERRIDE
 
 case "$MODE" in
@@ -705,5 +1057,6 @@ case "$MODE" in
   identity) identity ;;
   cost) cost ;;
   units) units ;;
+  mesh) mesh ;;
   *) usage ;;
 esac
