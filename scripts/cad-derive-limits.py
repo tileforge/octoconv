@@ -137,8 +137,9 @@ class Cell:
 
 
 class Evidence:
-    def __init__(self, directory):
+    def __init__(self, directory, config=None):
         self.dir = directory
+        self.config = config
         self.cnt = {}
         self.private = []
         self.go = None
@@ -148,28 +149,51 @@ class Evidence:
         self.meta = {}
         self.cells = {}
         self.skip_lines = []
+        self.stops = []
+        self.row_configs = {}
+        self.cell_configs = {}
         for path in sorted(glob.glob(os.path.join(directory, "71-06-ladder-*.txt"))):
-            self.sources.append(os.path.basename(path))
+            base = os.path.basename(path)
             file_ocp = PIN_A
+            file_cfg = ("on", "default")
+            used_here = False
             for line in read_lines(path):
                 if line.startswith("HDR,ocp="):
                     file_ocp = line[len("HDR,ocp="):].strip()
+                elif line.startswith("HDR,ladder="):
+                    h = split_fields(line[len("HDR,"):])
+                    file_cfg = (h.get("parallel", "on"), h.get("lp_threads", "default"))
                 elif line.startswith("ROW,"):
                     r = parse_row(line)
+                    cfg = (r.get("par", "on"), r.get("lp", "default"))
+                    key = (r["ocp"], r["mem"], r["sha"], r["op"])
+                    self.cell_configs.setdefault(key, set()).add(cfg)
+                    ck = (base, r["ocp"], r["mem"], cfg)
+                    self.row_configs[ck] = self.row_configs.get(ck, 0) + 1
+                    if config is not None and cfg != config:
+                        continue
+                    used_here = True
                     sha = r["sha"]
                     self.meta.setdefault(sha, {
                         "name": r["name"] if r.get("src") == "public" else "-",
                         "series": r.get("series", "real"), "bytes": r["bytes"], "fmt": r["fmt"],
                         "src": r.get("src"),
                     })
-                    key = (r["ocp"], r["mem"], sha, r["op"])
                     self.cells.setdefault(key, Cell()).rows.append(r)
                 elif line.startswith("SKIP,") and "reason=prestep-failed-" in line:
+                    if config is not None and file_cfg != config:
+                        continue
                     f = split_fields(line[len("SKIP,"):])
                     f["_ocp"] = file_ocp
                     self.skip_lines.append(f)
+                elif line.startswith("LADDER_STOP,"):
+                    if config is not None and file_cfg != config:
+                        continue
+                    self.stops.append(split_fields(line[len("LADDER_STOP,"):]))
                 elif line.startswith("PRIVATE_CORPUS,"):
                     self.private.append(line)
+            if used_here:
+                self.sources.append(base)
         by_name = {}
         for sha, m in self.meta.items():
             if m["name"] != "-":
@@ -317,21 +341,17 @@ def cliffs(ev, klass, limit_mib, ocp=PIN_A):
 def top_rung_from_stops(ev, klass, limit_mib, ocp=PIN_A):
     mem = MEM_NAME[limit_mib]
     reached = {}
-    for path in glob.glob(os.path.join(ev.dir, "71-06-ladder-*.txt")):
-        for line in read_lines(path):
-            if not line.startswith("LADDER_STOP,"):
-                continue
-            s = split_fields(line[len("LADDER_STOP,"):])
-            if s.get("ocp") != ocp or s.get("mem") != mem or s.get("reason") != "top":
-                continue
-            series = s.get("series", "")
-            if counter_series(series):
-                continue
-            fmt = s["fmt"]
-            c = ("stl_ascii" if series.startswith("stl-ascii") else "stl_binary") if fmt == "stl" else fmt
-            if c == klass:
-                ops = reached.setdefault(series, {})
-                ops[s["op"]] = max(ops.get(s["op"], 0), int(s["at_bytes"]))
+    for s in ev.stops:
+        if s.get("ocp") != ocp or s.get("mem") != mem or s.get("reason") != "top":
+            continue
+        series = s.get("series", "")
+        if counter_series(series):
+            continue
+        fmt = s["fmt"]
+        c = ("stl_ascii" if series.startswith("stl-ascii") else "stl_binary") if fmt == "stl" else fmt
+        if c == klass:
+            ops = reached.setdefault(series, {})
+            ops[s["op"]] = max(ops.get(s["op"], 0), int(s["at_bytes"]))
     top = 0
     for ops in reached.values():
         if all(op in ops for op in PIPELINE[klass]):
@@ -399,14 +419,27 @@ def cap_line(label, pts, floor, go, limit, unit, scale, extra=""):
                 "%d" % (MARGIN * breach["n"]) if breach else "-", int(top), tmo, extra, spread))
 
 
+def selected_config(directory):
+    path = os.path.join(directory, "71-06-threads.txt")
+    if not os.path.exists(path):
+        return None, "no 71-06-threads.txt; the selected thread settings are not known"
+    chosen = None
+    for line in read_lines(path):
+        if line.startswith("THREADS_DECISION,"):
+            chosen = split_fields(line[len("THREADS_DECISION,"):])
+    if chosen is None or "lp_num_threads" not in chosen or "occt_parallel" not in chosen:
+        return None, "no THREADS_DECISION line with lp_num_threads and occt_parallel in 71-06-threads.txt"
+    return (chosen["occt_parallel"], chosen["lp_num_threads"]), None
+
+
 def self_check():
     import tempfile
 
-    def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x"):
+    def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x", par="on", lp="default"):
         return ("ROW,src=public,name=%s,sha=%s,fmt=step,bytes=%d,op=%s,ocp=%s,variant=full,mem=4g,cpus=2,confined=0,rep=1,"
                 "rc=%d,wall_s=1.0,utime_s=1.0,stime_s=0.1,child_rss_mib=%.1f,cg_peak_mib=%.1f,oom_kill=0,timeout=%d,"
-                "threads_max=2,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=%s,out=-" % (
-                    name, sha, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, series))
+                "threads_max=2,pix=-,cstate=ok,par=%s,lp=%s,quality=standard,series=%s,out=-" % (
+                    name, sha, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, par, lp, series))
 
     lines = []
     for sha, name, mib, ops in (
@@ -444,10 +477,31 @@ def self_check():
         done = {p["name"]: p for p in Evidence(tmp).points(PIN_A, "4g", "step")}
         if done["mesh-only"]["status"] != "ok":
             failures.append("the same point with its render measured must become ok")
+    with tempfile.TemporaryDirectory() as tmp:
+        for fname, par, lp, rss in (("71-06-ladder-4g-old.txt", "on", "default", 800.0),
+                                    ("71-06-ladder-4g-new.txt", "off", "2", 1000.0)):
+            with open(os.path.join(tmp, fname), "w", encoding="utf-8") as fh:
+                fh.write("HDR,ocp=%s\nHDR,ladder=1,repeats=1,budget_s=900,quality=standard,parallel=%s,lp_threads=%s,resume=0\n" % (
+                    PIN_A, par, lp))
+                for op in ("mesh", "render"):
+                    fh.write(row("b" * 64, "mid", 40, op, 0, rss, 0, "step-copies-x", par, lp) + "\n")
+                fh.write("LADDER_STOP,fmt=step,op=mesh,mem=4g,ocp=%s,series=step-copies-x,reason=top,at_bytes=%d\n" % (PIN_A, 40 * MIB))
+                fh.write("LADDER_STOP,fmt=step,op=render,mem=4g,ocp=%s,series=step-copies-x,reason=top,at_bytes=%d\n" % (
+                    PIN_A, (40 if par == "on" else 30) * MIB))
+        sel = Evidence(tmp, ("off", "2"))
+        pt = sel.points(PIN_A, "4g", "step")
+        if len(pt) != 1 or pt[0]["peak"] != 1000.0:
+            failures.append("rows of another configuration must not enter the selected view")
+        if top_rung_from_stops(sel, "step", 4096) != 30 * MIB:
+            failures.append("stop lines of another configuration must not enter the selected view")
+        if sel.sources != ["71-06-ladder-4g-new.txt"]:
+            failures.append("a file with no row of the selected configuration must not be listed as a source")
+        if not any(len(v) > 1 for v in sel.cell_configs.values()):
+            failures.append("a cell measured at two configurations must be reported")
     for msg in failures:
         print("SELF-CHECK-FAIL,%s" % msg)
     if not failures:
-        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1")
+        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,other_configuration_rows_excluded=1")
     return 1 if failures else 0
 
 
@@ -462,10 +516,17 @@ def main():
     if len(args) != 1 or not os.path.isdir(args[0]):
         print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
         return 64
-    ev = Evidence(args[0])
-    if not ev.cells:
-        print("error: no ROW lines in the ladder evidence", file=sys.stderr)
+    config, cfg_err = selected_config(args[0])
+    if config is None:
+        print("error: %s" % cfg_err, file=sys.stderr)
         return 1
+    ev = Evidence(args[0], config)
+    if not any(k[1] == "4g" and k[0] == PIN_A for k in ev.cells):
+        print("error: no %s 4g ladder rows with par=%s lp=%s; the limits are not derived from rows of another "
+              "configuration (run the 4g ladder with --parallel %s --lp-threads %s)" % (
+                  PIN_A, config[0], config[1], config[0], config[1]), file=sys.stderr)
+        return 1
+    mixed = sorted(k for k, v in ev.cell_configs.items() if len(v) > 1 and config in v)
     if ev.go is None:
         print("error: no GO_WORKER line; the Go worker RSS is not measured", file=sys.stderr)
         return 1
@@ -475,6 +536,14 @@ def main():
 
     print("HDR,tool=cad-derive-limits.py,budget=%.2f,limits_mib=%s,ocp_curve=%s,mem_curve=4g,rss_eff=max(child_rss_mib;cg_peak_mib),sources=%s" % (
         BUDGET, "/".join(map(str, LIMITS)), PIN_A, "+".join(ev.sources)))
+    used_rows = sum(n for (_f, _o, _m, c), n in ev.row_configs.items() if c == config)
+    other_rows = sum(n for (_f, _o, _m, c), n in ev.row_configs.items() if c != config)
+    print("CONFIG,selected=par=%s;lp=%s,source=THREADS_DECISION in 71-06-threads.txt,rows_used=%d,rows_excluded_other_config=%d,"
+          "cells_measured_at_two_configs_kept_apart=%d,rule=a number is derived only from rows tagged with the selected configuration" % (
+              config[0], config[1], used_rows, other_rows, len(mixed)))
+    for (fname, ocp, mem, cfg), n in sorted(ev.row_configs.items()):
+        print("CONFIG_ROWS,file=%s,ocp=%s,mem=%s,par=%s,lp=%s,rows=%d,used=%s" % (
+            fname, ocp, mem, cfg[0], cfg[1], n, "yes" if cfg == config else "no"))
     print("PRIVATE_CORPUS,files=%d,status=%s" % (private_n, "measured" if private_n else private_note))
     print("GO_WORKER,vmhwm_after_job_mib=%s,vmrss_idle_mib=%s,analogue=image-class Go worker not cad-worker" % (
         ev.go["vmhwm_after_job_mib"], ev.go["vmrss_idle_mib"]))
@@ -568,6 +637,17 @@ def main():
     reason += "; fleet default is 1Gi (2Gi for one service) so this value is a recorded deviation from it (D-06)"
     print("MEMORY_LIMIT_DECISION,limit_mib=%d,reason=%s" % (chosen, reason))
     L = chosen
+    kw_step = derived["step"][1]
+    if kw_step is not None:
+        for smaller in LIMITS:
+            if smaller >= chosen:
+                continue
+            need = (BUDGET * smaller - derived["step"][0]["floor"] - go) / YARDSTICK_STEP_MIB
+            print("L_SENSITIVITY,limit_mib=%d,step_size_max=%.1f,yardstick_mib=%d,step_k_worst_must_be_at_most=%.3f,"
+                  "measured_k_worst=%.3f,measured_over_needed=%.2f,floor_mib=%s,basis=4g rows at the selected configuration; "
+                  "the 1g and 2g ladders were measured at par=on lp=default and take no part in this number" % (
+                      smaller, size_max(smaller, derived["step"][0]["floor"], go, kw_step["k"]), YARDSTICK_STEP_MIB, need,
+                      kw_step["k"], kw_step["k"] / need, fmt1(derived["step"][0]["floor"])))
 
     for klass in CLASSES:
         d, kw = derived[klass]
@@ -577,8 +657,13 @@ def main():
         ceiling = max(0, int(sm))
         cl, top_measured = cliffs(ev, klass, L)
         top_stop = top_rung_from_stops(ev, klass, L)
+        cliff_cfg = ""
+        if not any(k[0] == PIN_A and k[1] == MEM_NAME[L] for k in ev.cells):
+            cliff_cfg = ",cliff_evidence=none-at-the-selected-configuration-at-%s" % MEM_NAME[L]
         top = max(top_measured, top_stop)
         parts = []
+        if cliff_cfg:
+            parts.append(cliff_cfg.lstrip(","))
         co, ct = cl["oom"], cl["timeout"]
         if co is not None:
             ratio = ceiling * MIB / co["bytes"]
@@ -685,7 +770,10 @@ def main():
     for c in caps:
         print(c)
 
-    for line in pin_decision(ev, override):
+    ev_formula = Evidence(args[0], ("on", "default"))
+    print("PIN_CONFIG,rows=par=on;lp=default,reason=the 8.0.1.0.0 ladder exists only at this configuration; "
+          "both pins are compared on rows of the same configuration and no row of another is mixed in")
+    for line in pin_decision(ev_formula, override):
         print(line)
     for line in ev.threads:
         print(line)
