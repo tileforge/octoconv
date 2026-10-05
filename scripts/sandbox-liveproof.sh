@@ -11,13 +11,13 @@
 # confined by any converter -- so a class that lands later extends the
 # CONVERTER, never this script.
 #
-# The document class adds three checks of its own after the four generic
-# ones (70-04): emulated-amd64-refuses -- the SAME Dockerfile built for
-# linux/amd64 and run emulated must refuse to start before Postgres, naming
-# DOCUMENT_SANDBOX_DISABLED; and, because 70-02 measured the read-write /tmp
-# route, concurrency-guard and sweeps-shared-tmp. The emulation check needs an
-# arm64 docker server: on an amd64 one nothing is emulated, so it prints
-# "NOT RUN:", is never counted as a pass, and the final line says how many
+# The document and cad classes add emulated-amd64-refuses after the four
+# generic ones: the SAME Dockerfile built for linux/amd64 and run emulated
+# must refuse to start before Postgres, naming the class's own *_SANDBOX_DISABLED
+# variable. The document class also adds, because 70-02 measured the read-write
+# /tmp route, concurrency-guard and sweeps-shared-tmp (70-04). The emulation
+# check needs an arm64 docker server: on an amd64 one nothing is emulated, so it
+# prints "NOT RUN:", is never counted as a pass, and the final line says how many
 # checks did not run.
 #
 # A UNIQUE tag per run, not :latest: a shared tag can be overwritten by a
@@ -689,15 +689,15 @@ check_document_sweeps_shared_tmp() {
   fi
 }
 
-# check_document_emulated_amd64_refuses (D-07, D-08): the SAME Dockerfile,
+# check_emulated_amd64_refuses (D-07, D-08): the SAME Dockerfile,
 # built for linux/amd64 and run emulated, cannot establish Landlock, so the
 # worker must refuse before Postgres with sandbox.ResolveHelper's own message
-# naming DOCUMENT_SANDBOX_DISABLED. No seccomp profile and no escape hatch:
+# naming the class's *_SANDBOX_DISABLED variable. No seccomp profile and no escape hatch:
 # whatever refuses here is the emulation itself. On an amd64 docker server
 # nothing is emulated, so the check is NOT RUN -- never a pass.
-check_document_emulated_amd64_refuses() {
-  local dockerfile=$1 envvar=$2
-  shift 2
+check_emulated_amd64_refuses() {
+  local class=$1 dockerfile=$2 envvar=$3
+  shift 3
   local extra=("$@")
 
   local server_arch
@@ -705,30 +705,30 @@ check_document_emulated_amd64_refuses() {
   [ -n "$server_arch" ] || die "cannot read the docker server's architecture"
   case "$server_arch" in
     amd64|x86_64)
-      not_run "document emulated-amd64-refuses (the docker server is amd64: nothing is emulated here)"
+      not_run "${class} emulated-amd64-refuses (the docker server is amd64: nothing is emulated here)"
       return
       ;;
   esac
 
-  local tag2="octoconv-document:sandbox-liveproof-amd64-${RUN_ID}"
+  local tag2="octoconv-${class}:sandbox-liveproof-amd64-${RUN_ID}"
   local build_log; build_log=$(mktemp)
   if ! docker build --platform linux/amd64 -f "$dockerfile" -t "$tag2" . >"$build_log" 2>&1; then
     cat "$build_log"
     rm -f "$build_log"
-    die "amd64 build failed for class document (${dockerfile})"
+    die "amd64 build failed for class ${class} (${dockerfile})"
   fi
   rm -f "$build_log"
   echo "emulated image id: $(docker image inspect "$tag2" --format '{{.Id}}') ($(docker image inspect "$tag2" --format '{{.Architecture}}'))"
 
   local result out status
-  result=$(run_gated document emulated "" "$tag2" --platform linux/amd64 ${extra[@]+"${extra[@]}"})
+  result=$(run_gated "$class" emulated "" "$tag2" --platform linux/amd64 ${extra[@]+"${extra[@]}"})
   status=${result%%$'\x1e'*}
   out=${result#*$'\x1e'}
   docker rmi -f "$tag2" >/dev/null 2>&1 || true
 
   local ok=1 reasons=()
-  printf '%s\n' "$out" | grep -qF "document sandbox: landlock is unavailable" \
-    || { ok=0; reasons+=("missing 'document sandbox: landlock is unavailable' in the refusal"); }
+  printf '%s\n' "$out" | grep -qF "${class} sandbox: landlock is unavailable" \
+    || { ok=0; reasons+=("missing '${class} sandbox: landlock is unavailable' in the refusal"); }
   printf '%s\n' "$out" | grep -qF "Set ${envvar}=true" \
     || { ok=0; reasons+=("refusal does not name Set ${envvar}=true as the remedy"); }
   printf '%s\n' "$out" | grep -qF "🔒" \
@@ -739,10 +739,10 @@ check_document_emulated_amd64_refuses() {
     || { ok=0; reasons+=("exit status 0, want non-zero"); }
 
   if [ "$ok" = 1 ]; then
-    pass "document emulated-amd64-refuses"
+    pass "${class} emulated-amd64-refuses"
     printf '%s\n' "$out" | grep -F "landlock is unavailable" | head -1 | sed 's/^/  /'
   else
-    fail "document emulated-amd64-refuses" "${reasons[@]}" "--- full output ---" "$out"
+    fail "${class} emulated-amd64-refuses" "${reasons[@]}" "--- full output ---" "$out"
   fi
 }
 
@@ -768,7 +768,7 @@ for class in "$@"; do
   rm -f "$build_log"
 
   echo "commit: $(git rev-parse HEAD)"
-  echo "tracked dirt: $(git status --short | wc -l | tr -d ' ') file(s)"
+  echo "tracked dirt: $(git status --short --untracked-files=no | wc -l | tr -d ' ') file(s)"
   echo "image id: $(docker image inspect "$tag" --format '{{.Id}}')"
 
   check_confined_startup "$class" "$bin" "$expects_proven" "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
@@ -802,8 +802,11 @@ for class in "$@"; do
     rm -rf "$bindir"
   fi
 
+  if [ "$class" = "document" ] || [ "$class" = "cad" ]; then
+    check_emulated_amd64_refuses "$class" "$dockerfile" "$envvar" ${extra_run_args[@]+"${extra_run_args[@]}"}
+  fi
+
   if [ "$class" = "document" ]; then
-    check_document_emulated_amd64_refuses "$dockerfile" "$envvar" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_document_concurrency_guard "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
     check_document_sweeps_shared_tmp "$tag" ${extra_run_args[@]+"${extra_run_args[@]}"}
   fi
