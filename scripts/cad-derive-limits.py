@@ -3,11 +3,14 @@
 per-format input ceilings, cap candidates and the OCP pin from the measurement evidence.
 
 Usage:
-    python3 scripts/cad-derive-limits.py EVIDENCE_DIR [--pin 7.9.3.1.1|8.0.1.0.0]
+    python3 scripts/cad-derive-limits.py EVIDENCE_DIR (--pin 7.9.3.1.1|8.0.1.0.0 | --formula-pin) [--out FILE]
     python3 scripts/cad-derive-limits.py --self-check
 
---pin records a decision taken outside the formula: PIN_DECISION carries it and PIN_FORMULA keeps
-the formula result.
+The pin is never implicit. --pin records a decision taken outside the formula: PIN_DECISION carries it
+and PIN_FORMULA keeps the formula result. --formula-pin takes the formula result and is refused while
+EVIDENCE_DIR/71-06-limits.txt records a user pin decision. A run with neither flag is refused with exit 2.
+--out FILE writes the output atomically after a successful derivation, so a refusal or a failure leaves
+FILE intact; a shell redirection truncates its target before this script starts and cannot be protected.
 
 Reads (EVIDENCE_DIR): 71-06-ladder-4g-ocp*.txt, 71-06-ladder-2g.txt, 71-06-ladder-1g.txt,
 71-06-go-worker-rss.txt, 71-06-threads.txt, 71-06-quality.txt, 71-03-corpus-inventory.txt.
@@ -35,6 +38,7 @@ MEM_NAME = {1024: "1g", 2048: "2g", 4096: "4g"}
 YARDSTICK_STEP_MIB = 40
 MARGIN = 0.80
 KDIVERGE = 0.25
+LIMITS_NAME = "71-06-limits.txt"
 PIN_A = "7.9.3.1.1"
 PIN_B = "8.0.1.0.0"
 PIN_K_DROP = 0.15
@@ -634,25 +638,139 @@ def self_check():
         if bad_cell.rss() is not None or bad_cell.wall() is not None:
             failures.append("a cell with rc=0 and pix=fail must give no rss and no wall")
 
+    with tempfile.TemporaryDirectory() as tmp:
+        user_line = ("PIN_DECISION,choice=%s,reason=user decision overrides the formula result %s (formula line above)" % (PIN_A, PIN_B))
+        _o, rc_none, _e = parse_args([tmp])
+        if rc_none != 2:
+            failures.append("a run with neither --pin nor --formula-pin must be refused with exit 2, got %s" % rc_none)
+        _o, rc_pin, _e = parse_args([tmp, "--pin", PIN_A])
+        if rc_pin != 0:
+            failures.append("--pin %s must be accepted, got %s" % (PIN_A, rc_pin))
+        _o, rc_bad, _e = parse_args([tmp, "--pin", "9.9"])
+        if rc_bad != 64:
+            failures.append("an unknown --pin value must be a usage error, got %s" % rc_bad)
+        _o, rc_both, _e = parse_args([tmp, "--pin", PIN_A, "--formula-pin"])
+        if rc_both != 64:
+            failures.append("--pin together with --formula-pin must be a usage error, got %s" % rc_both)
+        _o, rc_free, _e = parse_args([tmp, "--formula-pin"])
+        if rc_free != 0:
+            failures.append("--formula-pin with no recorded user decision must be accepted, got %s" % rc_free)
+        limits = os.path.join(tmp, LIMITS_NAME)
+        with open(limits, "w", encoding="utf-8") as fh:
+            fh.write("PIN_FORMULA,choice=%s,reason=x\n%s\n" % (PIN_B, user_line))
+        _o, rc_rev, msg_rev = parse_args([tmp, "--formula-pin"])
+        if rc_rev != 2 or not (msg_rev or "").endswith("pass --pin %s" % PIN_A):
+            failures.append("--formula-pin must be refused with exit 2 and name the recorded pin while a user decision is recorded, got %s" % rc_rev)
+        _o, rc_none2, msg_none2 = parse_args([tmp])
+        if rc_none2 != 2 or "the recorded user decision is %s" % PIN_A not in (msg_none2 or ""):
+            failures.append("a run with no pin flag must name the recorded user decision in its refusal, got %s" % rc_none2)
+        _o, rc_keep, _e = parse_args([tmp, "--pin", PIN_A])
+        if rc_keep != 0:
+            failures.append("--pin must stay accepted while a user decision is recorded, got %s" % rc_keep)
+        before = open(limits, encoding="utf-8").read()
+        import contextlib
+        import io
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            rc_refused = main([tmp, "--formula-pin", "--out", limits])
+            after_refused = open(limits, encoding="utf-8").read()
+            rc_failed = main([tmp, "--pin", PIN_A, "--out", limits])
+            after_failed = open(limits, encoding="utf-8").read()
+        if rc_refused != 2 or after_refused != before:
+            failures.append("a refused run with --out must leave the output file untouched")
+        if rc_failed != 1 or after_failed != before:
+            failures.append("a failed derivation with --out must leave the output file untouched")
+        if [n for n in os.listdir(tmp) if ".tmp." in n]:
+            failures.append("--out must not leave a temporary file behind")
+
     for msg in failures:
         print("SELF-CHECK-FAIL,%s" % msg)
     if not failures:
         print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,"
-              "failed_output_verdict_not_counted_as_ok=1")
+              "failed_output_verdict_not_counted_as_ok=1,pin_decision_explicit=1,recorded_user_pin_not_reversed=1,out_untouched_on_refusal=1")
     return 1 if failures else 0
 
 
-def main():
-    args = sys.argv[1:]
+def parse_args(args):
+    opts = {"pin": None, "formula": False, "out": None, "dir": None}
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--pin", "--out"):
+            if i + 1 >= len(args):
+                return None, 64, "%s needs a value" % a
+            opts[a[2:]] = args[i + 1]
+            i += 2
+        elif a == "--formula-pin":
+            opts["formula"] = True
+            i += 1
+        elif a.startswith("--") or opts["dir"] is not None:
+            return None, 64, "unexpected argument %s" % a
+        else:
+            opts["dir"] = a
+            i += 1
+    if opts["dir"] is None or not os.path.isdir(opts["dir"]):
+        return None, 64, "EVIDENCE_DIR is missing or not a directory"
+    if opts["pin"] is not None and opts["pin"] not in (PIN_A, PIN_B):
+        return None, 64, "--pin must be %s or %s" % (PIN_A, PIN_B)
+    if opts["pin"] is not None and opts["formula"]:
+        return None, 64, "--pin and --formula-pin are mutually exclusive"
+    if opts["pin"] is None and not opts["formula"]:
+        return None, 2, ("refusing to derive without an explicit pin decision: pass --pin %s|%s to record it "
+                         "(the recorded user decision is %s), or --formula-pin to take the formula result" % (
+                             PIN_A, PIN_B, recorded_user_pin(opts["dir"]) or "none"))
+    if opts["formula"]:
+        recorded = recorded_user_pin(opts["dir"])
+        if recorded:
+            return None, 2, ("refusing --formula-pin: %s records a user pin decision %s that the formula result "
+                             "would reverse; pass --pin %s" % (LIMITS_NAME, recorded, recorded))
+    return opts, 0, None
+
+
+def recorded_user_pin(directory):
+    path = os.path.join(directory, LIMITS_NAME)
+    if not os.path.exists(path):
+        return None
+    for line in read_lines(path):
+        if line.startswith("PIN_DECISION,choice=") and ",reason=user decision overrides" in line:
+            return line[len("PIN_DECISION,choice="):].split(",", 1)[0]
+    return None
+
+
+def main(args=None):
+    if args is None:
+        args = sys.argv[1:]
     if args == ["--self-check"]:
         return self_check()
-    override = None
-    if len(args) == 3 and args[1] == "--pin" and args[2] in (PIN_A, PIN_B):
-        override = args[2]
-        args = args[:1]
-    if len(args) != 1 or not os.path.isdir(args[0]):
-        print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
-        return 64
+    opts, rc, err = parse_args(args)
+    if opts is None:
+        print("error: %s" % err, file=sys.stderr)
+        if rc == 64:
+            print(__doc__.strip().split("\n\n")[1], file=sys.stderr)
+        return rc
+    if opts["out"] is None:
+        return derive(opts["dir"], opts["pin"])
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = derive(opts["dir"], opts["pin"])
+    if rc != 0:
+        return rc
+    tmp = "%s.tmp.%d" % (opts["out"], os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(buf.getvalue())
+        os.replace(tmp, opts["out"])
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    return 0
+
+
+def derive(evidence_dir, override):
+    args = [evidence_dir]
     config, cfg_err = selected_config(args[0])
     if config is None:
         print("error: %s" % cfg_err, file=sys.stderr)
