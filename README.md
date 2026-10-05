@@ -471,6 +471,7 @@ documented list — including how each measured limit was derived.
 | [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
 | [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |
 | [`docs/FINDINGS.md`](docs/FINDINGS.md) | The inspection findings vocabulary |
+| [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) | The measurements JSON contract: schema, closed vocabularies, validation rules; no engine emits it yet |
 
 ## MCP servers
 
