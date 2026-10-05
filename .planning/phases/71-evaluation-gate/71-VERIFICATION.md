@@ -1,6 +1,6 @@
 ---
 phase: 71-evaluation-gate
-verified: 2026-10-05T04:36:46Z
+verified: 2026-10-05T05:22:54Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -42,6 +42,8 @@ covered_files:
   - .planning/phases/71-evaluation-gate/evidence/71-07-landlock.txt
   - .planning/phases/71-evaluation-gate/evidence/71-07-libtrace.txt
   - .planning/phases/71-evaluation-gate/evidence/71-07-licences.txt
+  - .planning/phases/71-evaluation-gate/evidence/71-07-prune-amd64.txt
+  - .planning/phases/71-evaluation-gate/evidence/71-07-prune-arch.txt
   - .planning/phases/71-evaluation-gate/evidence/71-07-prune.txt
   - .planning/phases/71-evaluation-gate/evidence/71-08-image-size.txt
   - .planning/phases/71-evaluation-gate/evidence/71-08-no-wiring.txt
@@ -71,11 +73,14 @@ covered_files:
   - scripts/cad-measure/requirements-vtk.txt
   - scripts/cad-measure/vtk-keeplist.txt
   - scripts/cad-measure/vtk_keeplist.py
+  - scripts/cad-prune-amd64-check.sh
+  - scripts/cad-prune-identity.sh
   - scripts/cad-render-measure.sh
   - scripts/cad-render-stacking-probe.py
   - scripts/cad-rss-time-measure.sh
   - scripts/cad-sandbox-measure.sh
-covered_digest: "v3:sha256:1cf24376443207031b2cd85e4368a14e1e079fda744ce5e956ad09cc53e394ff"
+  - scripts/cad-vtk-keeplist-test.py
+covered_digest: "v3:sha256:19bbd866935a06ac92b0243341a532d0591516168be9017a75df5030339f3a45"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -84,7 +89,7 @@ re_verification:
   gaps_closed: []
   gaps_remaining: []
   regressions: []
-  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877)"
+  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457)"
 gaps: []
 residual_non_blocking:
   - item: "Legal OK for libfreeimage / libraw / libjasper (GPL/LGPL/CDDL class) is NOT obtained"
@@ -102,8 +107,8 @@ residual_non_blocking:
 **Phase Goal:** Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа, лимиты входа, лицензии), известны до того, как написана строка продакшен-кода.
 **Verified:** 2026-10-04
 **Status:** passed (with the non-blocking residuals listed above; see "Criterion 4 judgement")
-**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33)
-**Branch / head:** gsd/phase-71-evaluation-gate @ c877f33 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
+**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457)
+**Branch / head:** gsd/phase-71-evaluation-gate @ 8c14457 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
 
 ## Goal Achievement
 
@@ -167,7 +172,13 @@ Not applicable: no rendered dynamic data; the artifacts are evidence files and s
 | Limits derivation | `python3 scripts/cad-derive-limits.py evidence --pin 7.9.3.1.1` vs committed `71-06-limits.txt` | identical (re-run after fixes) | PASS |
 | Plan 71-06 literal LIMITS-OK command | run against a scratch copy of the evidence directory (so the real file is not overwritten): without `--pin` and with `--pin 7.9.3.1.1` | both print `LIMITS-OK`; the `--pin` variant is byte-identical to the committed `71-06-limits.txt`; the literal one writes `PIN_DECISION,choice=8.0.1.0.0` (the formula result) | PASS (see W16) |
 | Old vs new deriver on the real evidence | all 98 4g points at par=off,lp=2 compared, 65970c7 vs c877f33 | one point flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (ok 514 MiB -> fail); nothing else | PASS |
-| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at c877f33) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,failed_output_verdict_not_counted_as_ok=1` | PASS |
+| Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` | `SELF_TEST,cases=32,failed=0` | PASS |
+| Resume config check on the real 4g ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt --ocp 7.9.3.1.1 --variant full --memory 4g` | default config: `status=rejected,rc=65` (parallel off vs on, lp 2 vs default); with `--parallel off --lp-threads 2`: `status=accepted` | PASS |
+| Keep-list matcher | `python3 scripts/cad-vtk-keeplist-test.py` | `KEEPLIST_TEST,cases=10,failed=0`; `vtk-keeplist.txt` has 77 entries, 0 `aarch64`/`x86_64` tags, sha256 equals `keeplist_sha256` in `71-07-prune.txt` and `71-07-prune-amd64.txt` | PASS |
+| PRUNE-OK gate (plan 71-07) | verify command line 1, run as written | `PRUNE-OK` | PASS |
+| STALE-REFUSED gate (plan 71-07) | verify command line 2 on the existing `...-full-dc621b94ee5d` image with a keep-list for vtk 9.7.0 | `STALE-REFUSED` | PASS |
+| DECISION-OK gate (plan 71-08) | verify command from `71-08-PLAN.md` | `DECISION-OK` | PASS |
+| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 8c14457) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,failed_output_verdict_not_counted_as_ok=1` | PASS |
 | Committed corpus hashes | sha256 of 37 files vs `PROVENANCE.md` | 0 mismatch | PASS |
 | Multi-hour measurements | not re-run (per instruction) | - | SKIP |
 
@@ -194,7 +205,7 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 
 ### Warnings (non-blocking, all disclosed in DECISION unless noted)
 
-- W1. Ladder RSS/time was measured on the `full` image variant (`HDR,image=...-full-0d09b7ba39ad`, image_id sha256:cce9074fe380) in every ladder, including the new par=off,lp=2 re-measure; the shipped candidate is `pruned`. Pruning removes only never-mapped VTK modules and PNG output is byte-identical (196/196, 48/48 other rows), so the RSS impact should be nil, but it was not re-measured and DECISION states the image only as `full` in the header. Phase 76 should confirm on the pruned image. STILL APPLIES.
+- W1. Ladder RSS/time was measured on the `full` image variant (`HDR,image=...-full-0d09b7ba39ad`, image_id sha256:cce9074fe380) in every ladder, including the new par=off,lp=2 re-measure; the shipped candidate is `pruned`. Pruning removes only never-mapped VTK modules and PNG output is byte-identical (196/196, 48/48 other rows), so the RSS impact should be nil, but it was not re-measured and DECISION states the image only as `full` in the header. Phase 76 should confirm on the pruned image. STILL APPLIES. Round 4: the final pruned image is now `...-pruned-dc621b94ee5d`; the ladders and Landlock evidence were taken on the `0d09b7ba39ad` tags, bridged by `71-07-prune-arch.txt#TREE_SHA` (see W18).
 - W2. STL ceilings 277 / 877 MiB (ASCII was 1353 before round 3) lie above the highest measured rung (196 / 199 MiB): extrapolation, flagged in DECISION. After the re-measure DXF (118) and STEP (63) are inside the measured range (DXF top rung 197.6 MiB passes at 2497 MiB, 150 s). STEP 63 MiB is 0.79 of the stacked-copies render cliff (80 MiB), the 20% margin holds only because the ceiling fell from 73; the 64 MiB fallback is above 63, so a render time guard (phase 76) is still required. STILL APPLIES (changed numbers).
 - W10 (new). STEP ceiling 63 and DXF ceiling 118 are set by worst-file points near the floor (STEP: derived 1.04 MiB file, peak 517 vs floor 478, k 37.362; DXF: derived 2 MiB file, peak 160 vs floor 115, k 23.017), not by large-file growth. The real 9 MB STEP gives k 32.3 and about 73 MiB; DXF at 100 MiB gives k near 12.5 and about 218 MiB. DECISION says this plainly and keeps the more conservative D-07 result, so the shift 73->63 / 217->118 is not a thread-setting effect. Conservative, not a defect, but phases 73/75 should not read 63/118 as measured cliffs.
 - W11 (new). `usable()` still admits `partial` points in the k_worst fit (STEP `partial_pipelines=4`). A partial peak is a lower bound, so it can only understate k and none of the four governs; it is excluded from FIT, cliffs and top_rung, which was the P2 defect. Residual, not blocking.
@@ -202,7 +213,7 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 - W13 (new). The 2g/1g ladders, the 8.0.1.0.0 pin comparison, and the threads/quality pipeline peaks (896/669 MiB, `71-06-quality.txt`) remain at `par=on,lp=default`; DECISION labels them history and none of the DECISION summary numbers derives from them. The new ladder was resumed over about 13 hours on a noisy host (12 foreign containers), later series single-repeat.
 - W3. Success criterion 1 says "OCP wheel versus fallback options". The record compares only the two OCP pins; no alternative geometry core was measured, and DECISION does not state in one sentence that none was needed because OCP met every gate. The conclusion is defensible (nothing failed), the sentence is missing.
 - W4. Private PreviewGenerator flow: `files=0`; limits/caps/time are not validated against real company files ("не замерено", not "чисто").
-- W5. amd64 and native f3d not measured (f3d has no linux-arm64 build); image size/cold pull are arm64 only.
+- W5. amd64 and native f3d not measured (f3d has no linux-arm64 build); image size/cold pull/RSS/Landlock are arm64 only. CHANGED in round 4: an amd64 build of the pruned image under emulation now succeeds (`71-07-prune-amd64.txt`: old keep-list refused with `keep-list stale: missing ...aarch64...so`, new list `kept=77,removed=299,import_check=ok,size_bytes=1130621743`). That is build proof, not a measurement; emulation gives no Landlock and no valid RSS/time, so the amd64 gap stays open for measurement and only the build blocker is removed. The 1130621743-byte amd64 size should not be quoted as a measured image size.
 - W6. Legal OK open; assumptions A1, A2, A5, A8 remain assumptions (patchelf experiment not run).
 - W7. Render of stacked identical copies takes 61.57 s vs 1.18 s for the same triangle count; no cap stops it; handed to phase 76 explicitly.
 - W8. Pod memory 4096 MiB deviates from fleet 1Gi/2Gi; recorded with derivation (D-06).
@@ -213,6 +224,10 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 
 - W15 (new, round 3). `3f20984` counts a cell as ok only when its output verdicts hold (pix=ok for render/rsvg-png/rsvg-pdf, triangles > 0, dxf bbox2d/svg_counts, cstate ok); failures print `INVALID_OUTPUT`. On the real evidence exactly one of 98 points flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (`rc=0, pix=fail`, frac 0.0022, cg_peak 514 MiB, rss 271), a truncated thin non-watertight prefix; the first ladder shows the same `pix=fail`. It had been feeding the STL ASCII floor (514 instead of 272, `floor_points` 2 -> 1), so the ceiling moves 1353 -> 877 (k 1.720 -> 2.930, STL k divergence 65.5%, separate ceilings kept); no other format and no cap changes, L stays 4096. Regeneration of `71-06-limits.txt` is byte-identical and all DECISION numbers (877, 143.3/388.0/877.2, 272.0, 2.930, 65.5%) match the evidence line. Finding for phase 74: the frac-only pixel check rejects a real but thin part, so the production render check must not copy this threshold; the render itself neither failed nor was empty. Caveat: the ASCII floor now rests on one point (`stl_ascii_box.stl`, 272 MiB) and lower floor and higher k move together, so the ceiling stays conservative; 877 is still extrapolated above the 199 MiB measured rung.
 - W16 (new, round 3). Gate deviation: the literal `LIMITS-OK` command in `71-06-PLAN.md` regenerates without `--pin`, and run on the real evidence directory it would overwrite `71-06-limits.txt` with `PIN_DECISION,choice=8.0.1.0.0` (formula result), reversing the user's recorded choice of 7.9.3.1.1. The plan's own regex accepts either pin, and I ran both variants against a scratch copy: both print `LIMITS-OK`, and the `--pin 7.9.3.1.1` variant reproduces the committed file byte for byte. The executor's substitute (`--pin 7.9.3.1.1` plus the same grep checks) therefore checks the same properties and is the right one; the plan text is stale. Acceptable, no residual; the plan command should not be run in place.
+
+- W17 (new, round 4). The Landlock candidate sets in DECISION name `/usr/lib/aarch64-linux-gnu` (cad_mesh, cad_render, cad_dxf, rsvg-convert). On amd64 the multiarch library directory is `x86_64-linux-gnu`, so these sets are arm64-specific; phase 73 must derive or parametrise them per architecture and re-measure on amd64. DECISION labels them candidates, not grants, but does not say they are arch-bound. Warning, not a gap.
+- W18 (new, round 4). Carry-over on the new image tag: `71-08-image-size.txt` (compressed 299.3 MiB, cold pull median 6.38 s), the Landlock matrix and the 4g ladders were measured on `...-0d09b7ba39ad`; the final tag is `...-dc621b94ee5d` (image_id sha256:08117b26d4d0...). Evidence for equivalence: `71-07-prune-arch.txt` `TREE_SHA` equal for `/opt/venv` and `/opt/cad-measure` (excluding the keep-list source and helper pyc), `IMAGE_BYTES` 1135587708 vs 1135589363 (+1655 B, both 1083.0 MiB, 6 layers), `IDENTITY identical=5,different=0,failed=0`, and `71-07-prune.txt` regenerated on the new tag (564.1 -> 288.7 MiB, 196/196 PNG, 48/48 rows, STALE_TEST detected). DECISION states plainly that compressed size and cold pull are carried over, "рассчитано по равному содержимому, не замерено заново". Judgement: honest and acceptable. The only changed bytes are one Python source file in one layer, so a re-pull would differ by well under the measurement noise (cold pull n=3 spread 6.04-7.11 s); the number is still a measurement of the previous tag, and the evidence HDR still names it. Re-measure if the image changes again for any other reason.
+- W19 (new, round 4). The `nofreeimage` build variant (pointing to a non-existent Dockerfile stage) is gone from `common.sh` and `cad-image-size-measure.sh` (no occurrence left in scripts); D-18 stays `record` and the `patchelf` experiment still was not run (A1 open). Resume now refuses a file written under another configuration (exit 65) and keys cells by the full configuration, which closes the way a mixed-config ladder could be produced; `--self-test` passes 32 cases. No residual.
 
 ### Human Verification Required
 
