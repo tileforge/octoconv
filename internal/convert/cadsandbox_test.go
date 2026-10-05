@@ -133,19 +133,19 @@ func TestCADPreflightFixtureCountMatchesTheRealGuard(t *testing.T) {
 
 func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 	for _, n := range []int{0, 2, -1} {
-		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 		if err == nil || !strings.Contains(err.Error(), "CAD_WORKER_CONCURRENCY") {
 			t.Errorf("concurrency %d: err = %v, want a refusal naming CAD_WORKER_CONCURRENCY", n, err)
 		}
 	}
-	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 	if err != nil {
 		t.Fatalf("concurrency 1: %v", err)
 	}
-	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout {
+	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout || c.RenderTimeout != CADDefaultRenderTimeout {
 		t.Errorf("ConfinedCAD = %+v, want a confined converter carrying the given stage timeouts", c)
 	}
-	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 	if err != nil || open.Sandbox.confines() {
 		t.Errorf("ConfinedCAD with no helper = %+v, %v, want an unconfined converter", open, err)
 	}
@@ -153,27 +153,42 @@ func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 
 func TestValidateCADTimeouts(t *testing.T) {
 	s := time.Second
-	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout); err != nil {
+	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout); err != nil {
 		t.Errorf("the defaults: %v", err)
 	}
+	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 886*s); err != nil {
+		t.Errorf("30+316+480 against 886: %v", err)
+	}
 	cases := []struct {
-		name                string
-		guard, mesh, engine time.Duration
-		want                string
+		name                        string
+		guard, mesh, render, engine time.Duration
+		want                        string
 	}{
-		{"zero guard", 0, 316 * s, 406 * s, "CAD_GUARD_TIMEOUT"},
-		{"negative mesh", 30 * s, -s, 406 * s, "CAD_MESH_TIMEOUT"},
-		{"zero engine", 30 * s, 316 * s, 0, "CAD_ENGINE_TIMEOUT"},
-		{"stages and allowance exceed the engine", 30 * s, 316 * s, 405 * s, "CAD_ENGINE_TIMEOUT"},
-		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 406 * s, "CAD_MESH_TIMEOUT"},
+		{"zero guard", 0, 316 * s, 480 * s, 886 * s, "CAD_GUARD_TIMEOUT"},
+		{"negative mesh", 30 * s, -s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
+		{"zero render", 30 * s, 316 * s, 0, 886 * s, "CAD_RENDER_TIMEOUT"},
+		{"zero engine", 30 * s, 316 * s, 480 * s, 0, "CAD_ENGINE_TIMEOUT"},
+		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 886 * s, "CAD_RENDER_TIMEOUT"},
+		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 885 * s, "CAD_ENGINE_TIMEOUT"},
+		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.engine)
+			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.render, tc.engine)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want one naming %s", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCADEngineTimeoutStaysUnderTheReconcilerWindow(t *testing.T) {
+	const window = 900 * time.Second
+	if CADDefaultEngineTimeout >= window {
+		t.Errorf("CADDefaultEngineTimeout = %s, must stay under the %s RECONCILER_ACTIVE_STALE_AFTER window or the reconciler re-enqueues live cad jobs", CADDefaultEngineTimeout, window)
+	}
+	if grace := CADDefaultEngineTimeout + 20*time.Second; grace >= window+10*time.Second || grace != 906*time.Second {
+		t.Errorf("pod grace = %s, want 906s (engine + 20s)", grace)
 	}
 }
 

@@ -25,8 +25,9 @@ const (
 	CADMaxNAUO              = 1518
 	CADDefaultGuardTimeout  = 30 * time.Second
 	CADDefaultMeshTimeout   = 316 * time.Second
+	CADDefaultRenderTimeout = 480 * time.Second
 	CADIOAllowance          = 60 * time.Second
-	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADIOAllowance
+	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADDefaultRenderTimeout + CADIOAllowance
 
 	cadOutputLimit   = 1 << 20
 	cadVerdictPrefix = "CADVERDICT "
@@ -49,8 +50,9 @@ var (
 
 type CADConverter struct {
 	Sandbox      *engineSandbox
-	GuardTimeout time.Duration
-	MeshTimeout  time.Duration
+	GuardTimeout  time.Duration
+	MeshTimeout   time.Duration
+	RenderTimeout time.Duration
 }
 
 func (CADConverter) Pairs() []Pair {
@@ -78,6 +80,13 @@ func (c CADConverter) meshTimeout() time.Duration {
 		return c.MeshTimeout
 	}
 	return CADDefaultMeshTimeout
+}
+
+func (c CADConverter) renderTimeout() time.Duration {
+	if c.RenderTimeout > 0 {
+		return c.RenderTimeout
+	}
+	return CADDefaultRenderTimeout
 }
 
 func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {

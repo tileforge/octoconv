@@ -154,16 +154,17 @@ func TestCADPinnedConstantsComeFromTheEvidence(t *testing.T) {
 		{"CADMaxNAUO", CADMaxNAUO, 1518, decision},
 		{"CADDefaultGuardTimeout", int64(CADDefaultGuardTimeout / time.Second), 30, spikes + " cad_guard_timeout_s"},
 		{"CADDefaultMeshTimeout", int64(CADDefaultMeshTimeout / time.Second), 316, spikes + " cad_mesh_timeout_s"},
+		{"CADDefaultRenderTimeout", int64(CADDefaultRenderTimeout / time.Second), 480, ".planning/phases/74-3d-render-measurements/74-RESEARCH.md Render stage timeout (chosen under the 900 s window, not measured)"},
 		{"CADIOAllowance", int64(CADIOAllowance / time.Second), 60, spikes + " cad_io_allowance_s"},
-		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 406, spikes + " cad_engine_timeout_s"},
+		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 886, "30 + 316 + 480 + 60"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d: re-derive it from %s rather than editing the expectation", c.name, c.got, c.want, c.source)
 		}
 	}
-	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADIOAllowance {
-		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + io allowance (%s)", spikes)
+	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance {
+		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + render + io allowance (%s)", spikes)
 	}
 }
 

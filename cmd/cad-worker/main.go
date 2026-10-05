@@ -54,6 +54,7 @@ func main() {
 		cadConcurrencyEnv,
 		envDuration("CAD_GUARD_TIMEOUT", convert.CADDefaultGuardTimeout),
 		envDuration("CAD_MESH_TIMEOUT", convert.CADDefaultMeshTimeout),
+		envDuration("CAD_RENDER_TIMEOUT", convert.CADDefaultRenderTimeout),
 		engineTimeout,
 	)
 	if err != nil {

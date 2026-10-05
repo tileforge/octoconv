@@ -58,31 +58,31 @@ func (c CADConverter) WithSandbox(helper []string) CADConverter {
 	return c
 }
 
-func ValidateCADTimeouts(guard, mesh, engine time.Duration) error {
+func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
 	for _, v := range []struct {
 		name  string
 		value time.Duration
-	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_ENGINE_TIMEOUT", engine}} {
+	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render}, {"CAD_ENGINE_TIMEOUT", engine}} {
 		if v.value <= 0 {
 			return fmt.Errorf("%s=%s must be positive", v.name, v.value)
 		}
 	}
-	if guard+mesh+CADIOAllowance > engine {
-		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
-			"the attempt deadline would cut a stage short of its own limit", guard, mesh, CADIOAllowance, engine)
+	if guard+mesh+render+CADIOAllowance > engine {
+		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + CAD_RENDER_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
+			"the attempt deadline would cut a stage short of its own limit", guard, mesh, render, CADIOAllowance, engine)
 	}
 	return nil
 }
 
-func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, engine time.Duration) (CADConverter, error) {
+func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, engine time.Duration) (CADConverter, error) {
 	if concurrency != 1 {
 		return CADConverter{}, fmt.Errorf("%s=%d: the cad pod limit was derived for one job at a time; set %s=1 and scale with replicas",
 			concurrencyEnv, concurrency, concurrencyEnv)
 	}
-	if err := ValidateCADTimeouts(guard, mesh, engine); err != nil {
+	if err := ValidateCADTimeouts(guard, mesh, render, engine); err != nil {
 		return CADConverter{}, err
 	}
-	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh}.WithSandbox(helper)
+	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render}.WithSandbox(helper)
 	return c, nil
 }
 

@@ -223,11 +223,12 @@ data:
   # rather than subtle; that is not a reason to arrange for it. DEBT-05's
   # "every process carries the full surface" applies to knobs, not to paths
   # into one image's filesystem.
-  CAD_ENGINE_TIMEOUT: "406s"
+  CAD_ENGINE_TIMEOUT: "886s"
   CAD_MAX_RETRY: "2"
   CAD_WORKER_CONCURRENCY: "1"
   CAD_GUARD_TIMEOUT: "30s"
   CAD_MESH_TIMEOUT: "316s"
+  CAD_RENDER_TIMEOUT: "480s"
   VERAPDF_TIMEOUT: "60s"
   WEBHOOK_PRESIGN_TTL: "6h"
   RECONCILER_QUEUED_STALE_AFTER: "90s"
