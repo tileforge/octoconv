@@ -1,6 +1,6 @@
 ---
 phase: 71-evaluation-gate
-verified: 2026-10-05T03:58:52Z
+verified: 2026-10-05T04:14:46Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -75,7 +75,7 @@ covered_files:
   - scripts/cad-render-stacking-probe.py
   - scripts/cad-rss-time-measure.sh
   - scripts/cad-sandbox-measure.sh
-covered_digest: "v3:sha256:c73349abf088259a77b18bebfd9c03e99a7840fcbf3512b96355fecd51a20196"
+covered_digest: "v3:sha256:8cf7da8778588a61612329bd5ccae3118f8c08adb281d1ecbd0af03767218848"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -84,7 +84,7 @@ re_verification:
   gaps_closed: []
   gaps_remaining: []
   regressions: []
-  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e"
+  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2"
 gaps: []
 residual_non_blocking:
   - item: "Legal OK for libfreeimage / libraw / libjasper (GPL/LGPL/CDDL class) is NOT obtained"
@@ -102,8 +102,8 @@ residual_non_blocking:
 **Phase Goal:** Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа, лимиты входа, лицензии), известны до того, как написана строка продакшен-кода.
 **Verified:** 2026-10-04
 **Status:** passed (with the non-blocking residuals listed above; see "Criterion 4 judgement")
-**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers)
-**Branch / head:** gsd/phase-71-evaluation-gate @ cfb136e (plus later phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
+**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2)
+**Branch / head:** gsd/phase-71-evaluation-gate @ 628c7f2 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
 
 ## Goal Achievement
 
@@ -165,7 +165,7 @@ Not applicable: no rendered dynamic data; the artifacts are evidence files and s
 | Synthetic generator self-check | `python3 scripts/cad-corpus-gen.py --check-only` | self-check passed | PASS |
 | Fetched corpus checksums | `bash scripts/cad-corpus-fetch.sh --check` | 17 files ok | PASS |
 | Limits derivation | `python3 scripts/cad-derive-limits.py evidence --pin 7.9.3.1.1` vs committed `71-06-limits.txt` | identical (re-run after fixes) | PASS |
-| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,other_configuration_rows_excluded=1` | PASS |
+| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 628c7f2) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1` | PASS |
 | Committed corpus hashes | sha256 of 37 files vs `PROVENANCE.md` | 0 mismatch | PASS |
 | Multi-hour measurements | not re-run (per instruction) | - | SKIP |
 
@@ -205,6 +205,9 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 - W7. Render of stacked identical copies takes 61.57 s vs 1.18 s for the same triangle count; no cap stops it; handed to phase 76 explicitly.
 - W8. Pod memory 4096 MiB deviates from fleet 1Gi/2Gi; recorded with derivation (D-06).
 - W9. Renderer approval and lock approval reached executors through the coordinator relay rather than directly; disclosed in `71-05-SUMMARY.md` and DECISION.
+
+
+- W14 (new, round 2). `628c7f2` makes `complete` require a measured status (ok/oom/timeout) for every required operation, so a point whose operation is represented only by a SKIP `prestep-failed-rc3` cell is partial, not complete. Verified: `--self-check` now prints `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1` (new case covers a skipped-rc3 point and a skipped-oom point, FIT and cliff top rung); regeneration of `71-06-limits.txt` is byte-identical (diff empty); comparing the old and new deriver on the real evidence, exactly one point flips, `3dsolids.dxf` (complete True -> False, status stays `fail`; the file with nothing drawable), so no DECISION number moves. No residual.
 
 ### Human Verification Required
 
