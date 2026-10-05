@@ -14,6 +14,9 @@
 #       [--parallel on|off|affinity] [--lp-threads N|default]
 #       [--ladder] [--include-private] [--resume FILE] [--max-wall-s N]
 #       [--floor-from FILE] [--floor-frac 0.40] [--premesh-mem 4g] FILE-OR-DIR...
+#   scripts/cad-rss-time-measure.sh --check-resume FILE [--ocp V] [--variant NAME] [--memory M]
+#       [--cpus N] [--parallel P] [--lp-threads N|default] [--quality Q] [--budget-s N]
+#   scripts/cad-rss-time-measure.sh --self-test
 #   scripts/cad-rss-time-measure.sh --pin-compare EVIDENCE-OCP-A EVIDENCE-OCP-B
 #   scripts/cad-rss-time-measure.sh --threads-decision EVIDENCE
 #   scripts/cad-rss-time-measure.sh --quality-summary EVIDENCE
@@ -28,7 +31,13 @@
 #              rung ran. A series is a scaled generator family, or "real"
 #              (committed and fetched files), or "private".
 # --resume F   append to F and skip the cells F already has a ROW for; a series
-#              F already stopped stays stopped.
+#              F already stopped stays stopped. F is refused (exit 65) when any
+#              header block of F differs from this run in ocp, variant, memory,
+#              cpus, parallel, lp-threads, quality or budget-s. The row keys and
+#              the stop keys carry the whole configuration as well.
+# --check-resume F  parse F and report whether --resume F would be accepted for
+#              the configuration given; no docker, no measurement.
+# --self-test  run the resume checks on synthetic and committed evidence files.
 # --max-wall-s stop cleanly (exit 75) before the next cell once N seconds have
 #              passed, so a long run goes in chunks of a few hours.
 # --floor-from skip a cell whose RSS in the 4g rows of FILE is below
@@ -38,8 +47,9 @@
 # inside the cell budget; a failed pre-step is a SKIP and, in a ladder, a stop
 # when it was an oom or a timeout.
 #
-# Exit codes: 64 usage, 69 docker missing, 75 chunk ended by --max-wall-s,
-# 1 a cell produced no WRAP line or there were no rows.
+# Exit codes: 64 usage, 65 resume file written under another configuration,
+# 69 docker missing, 75 chunk ended by --max-wall-s, 1 a cell produced no WRAP
+# line or there were no rows.
 
 set -euo pipefail
 
@@ -70,6 +80,8 @@ PIN_A=""
 PIN_B=""
 THREADS_FILE=""
 QUALITY_FILE=""
+CHECK_RESUME=""
+SELF_TEST=0
 INPUTS=()
 
 usage() {
@@ -245,6 +257,155 @@ threads_decision() {
   exit 0
 }
 
+resume_scan() {
+  local mode=$1 f=$2
+  awk -F, -v MODE="$mode" -v DK="${DONE_KEYS:-/dev/null}" -v SK="${STOPPED:-/dev/null}" \
+    -v OCP="$OCP" -v VAR="$VARIANT" -v MEM="$MEMS" -v CPUS="$CPUS" -v PAR="$PARALLEL" -v LP="$LP" \
+    -v Q="$QUALITY" -v BUD="$BUDGET" '
+    function kv(s, k,    n, i, parts) {
+      n = split(s, parts, ",")
+      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
+      return ""
+    }
+    function hdr(key,    v) { v = $0; sub("^HDR," key "=", "", v); return v }
+    function note(k, got, cur) {
+      seen[k] = 1
+      if (MODE == "check" && got != cur && !((k SUBSEP got) in said)) {
+        said[k SUBSEP got] = 1
+        bad++
+        printf "RESUME_CONFIG_MISMATCH,key=%s,file=%s,current=%s\n", k, got, cur > "/dev/stderr"
+      }
+    }
+    function orblock(v, b) { return (v == "") ? b : v }
+    /^HDR,image=/ { v = hdr("image"); sub(/^[^:]*:ocp[^-]*-/, "", v); sub(/-[0-9a-f]+$/, "", v); b_var = v; note("variant", v, VAR) }
+    /^HDR,ocp=/ { b_ocp = hdr("ocp"); note("ocp", b_ocp, OCP) }
+    /^HDR,cpus=/ { b_cpus = hdr("cpus"); note("cpus", b_cpus, CPUS) }
+    /^HDR,memory=/ { note("memory", hdr("memory"), MEM) }
+    /^HDR,ladder=/ {
+      b_par = kv($0, "parallel"); b_lp = kv($0, "lp_threads"); b_q = kv($0, "quality")
+      note("budget_s", kv($0, "budget_s"), BUD); note("quality", b_q, Q)
+      note("parallel", b_par, PAR); note("lp_threads", b_lp, LP)
+    }
+    MODE == "load" && /^ROW,/ {
+      head = $0; sub(/,out=.*$/, "", head)
+      printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"sha"), kv(head,"op"), kv(head,"ocp"), kv(head,"variant"), kv(head,"mem"), kv(head,"cpus"), kv(head,"rep"), kv(head,"par"), kv(head,"lp"), kv(head,"quality") >> DK
+      oom = kv(head, "oom_kill"); to = kv(head, "timeout"); rc = kv(head, "rc")
+      if ((oom != "0" && oom != "na" && oom != "") || to == "1" || rc == "137")
+        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"fmt"), kv(head,"op"), kv(head,"mem"), kv(head,"ocp"), kv(head,"variant"), kv(head,"cpus"), kv(head,"par"), kv(head,"lp"), kv(head,"quality"), kv(head,"series"), kv(head,"bytes") >> SK
+    }
+    MODE == "load" && /^LADDER_STOP,/ {
+      if (kv($0, "reason") == "oom" || kv($0, "reason") == "timeout")
+        printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv($0,"fmt"), kv($0,"op"), kv($0,"mem"), orblock(kv($0,"ocp"), b_ocp), orblock(kv($0,"variant"), b_var), orblock(kv($0,"cpus"), b_cpus), orblock(kv($0,"par"), b_par), orblock(kv($0,"lp"), b_lp), orblock(kv($0,"quality"), b_q), kv($0,"series"), kv($0,"at_bytes") >> SK
+    }
+    END {
+      if (MODE != "check") exit 0
+      split("variant ocp memory cpus budget_s quality parallel lp_threads", need, " ")
+      for (i = 1; i in need; i++) if (!(need[i] in seen)) { bad++; printf "RESUME_CONFIG_MISMATCH,key=%s,file=missing,current=present\n", need[i] > "/dev/stderr" }
+      exit (bad > 0)
+    }' "$f"
+}
+
+stop_prefix() {
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$1" "$2" "$3" "$OCP" "$VARIANT" "$CPUS" "$PARALLEL" "$LP" "$QUALITY" "$4"
+}
+is_stopped_any() { grep -Fq "$(stop_prefix "$1" "$2" "$3" "$4")|" "$STOPPED"; }
+is_stopped() {
+  awk -F'|' -v k="$(stop_prefix "$1" "$2" "$3" "$4")" -v b="$5" '
+    { key = $1; for (i = 2; i <= 10; i++) key = key "|" $i }
+    key == k && b + 0 >= $11 + 0 { found = 1 }
+    END { exit !found }' "$STOPPED"
+}
+mark_stopped() { printf '%s|%s\n' "$(stop_prefix "$1" "$2" "$3" "$4")" "$5" >> "$STOPPED"; }
+is_done() { grep -Fxq "$1|$2|$OCP|$VARIANT|$3|$CPUS|$4|$PARALLEL|$LP|$QUALITY" "$DONE_KEYS"; }
+
+check_resume_file() {
+  local f=$1
+  [ -f "$f" ] || { echo "error: no such resume file" >&2; return 64; }
+  resume_scan check "$f" || return 65
+}
+
+self_test() {
+  local d fails=0 n=0 evid a b
+  d=$(mktemp -d "${TMPDIR:-/tmp}/cad-resume-selftest.XXXXXX")
+  DONE_KEYS="$d/done.keys"
+  STOPPED="$d/stopped.keys"
+  evid="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+  OCP=7.9.3.1.1; VARIANT=full; MEMS=4g; CPUS=2; PARALLEL=on; LP=default; QUALITY=standard; BUDGET=900
+
+  expect() {
+    local want=$1 label=$2 got=0
+    shift 2
+    "$@" >/dev/null 2>&1 || got=$?
+    n=$((n + 1))
+    if { [ "$want" = ok ] && [ "$got" = 0 ]; } || { [ "$want" = no ] && [ "$got" != 0 ]; }; then
+      return 0
+    fi
+    echo "SELF_TEST_FAIL,case=$label,want=$want,rc=$got" >&2
+    fails=$((fails + 1))
+  }
+  in_cfg() { ( eval "$1"; shift; "$@" ); }
+
+  cat > "$d/synthetic.txt" <<SYN
+HDR,date_utc=2026-01-01T00:00:00Z
+HDR,image=octoconv-cad-measure:ocp7.9.3.1.1-full-aaaaaaaaaaaa
+HDR,ocp=7.9.3.1.1
+HDR,cpus=2
+HDR,memory=4g
+HDR,ladder=1,repeats=3,budget_s=900,quality=standard,parallel=on,lp_threads=default,resume=0
+ROW,src=public,name=a.step,sha=s1,fmt=step,bytes=100,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,oom_kill=0,timeout=0,pix=-,par=on,lp=default,quality=standard,series=real,out=-
+ROW,src=public,name=b.step,sha=s2,fmt=step,bytes=200,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=137,oom_kill=0,timeout=1,pix=-,par=on,lp=default,quality=standard,series=real,out=-
+LADDER_STOP,fmt=iges,op=mesh,mem=4g,ocp=7.9.3.1.1,series=real,reason=oom,at_bytes=300
+SYN
+  expect ok same-config check_resume_file "$d/synthetic.txt"
+  expect no parallel-differs in_cfg 'PARALLEL=off' check_resume_file "$d/synthetic.txt"
+  expect no lp-differs in_cfg 'LP=2' check_resume_file "$d/synthetic.txt"
+  expect no quality-differs in_cfg 'QUALITY=fine' check_resume_file "$d/synthetic.txt"
+  expect no cpus-differs in_cfg 'CPUS=4' check_resume_file "$d/synthetic.txt"
+  expect no memory-differs in_cfg 'MEMS=1g,4g' check_resume_file "$d/synthetic.txt"
+  expect no ocp-differs in_cfg 'OCP=8.0.1.0.0' check_resume_file "$d/synthetic.txt"
+  expect no variant-differs in_cfg 'VARIANT=pruned' check_resume_file "$d/synthetic.txt"
+  expect no budget-differs in_cfg 'BUDGET=600' check_resume_file "$d/synthetic.txt"
+
+  { cat "$d/synthetic.txt"; sed -n '1,6p' "$d/synthetic.txt" | sed 's/^HDR,cpus=2/HDR,cpus=4/'; } > "$d/two-blocks.txt"
+  expect no second-block-differs check_resume_file "$d/two-blocks.txt"
+  grep -v '^HDR,ladder=' "$d/synthetic.txt" > "$d/no-ladder-hdr.txt"
+  expect no header-missing check_resume_file "$d/no-ladder-hdr.txt"
+
+  resume_scan load "$d/synthetic.txt"
+  expect ok done-same-config is_done s1 mesh 4g 1
+  expect no done-other-parallel in_cfg 'PARALLEL=off' is_done s1 mesh 4g 1
+  expect no done-other-cpus in_cfg 'CPUS=4' is_done s1 mesh 4g 1
+  expect no done-other-lp in_cfg 'LP=2' is_done s1 mesh 4g 1
+  expect no done-other-quality in_cfg 'QUALITY=fine' is_done s1 mesh 4g 1
+  expect no done-other-variant in_cfg 'VARIANT=pruned' is_done s1 mesh 4g 1
+  expect ok stop-same-config is_stopped step mesh 4g real 200
+  expect ok stop-larger-rung is_stopped step mesh 4g real 250
+  expect no stop-smaller-rung is_stopped step mesh 4g real 150
+  expect ok stop-ladder-line-inherits-header is_stopped iges mesh 4g real 400
+  expect no stop-other-parallel in_cfg 'PARALLEL=off' is_stopped step mesh 4g real 200
+  expect no stop-other-cpus in_cfg 'CPUS=4' is_stopped step mesh 4g real 200
+  expect no stop-other-lp in_cfg 'LP=2' is_stopped step mesh 4g real 200
+  expect no stop-other-quality in_cfg 'QUALITY=fine' is_stopped step mesh 4g real 200
+  expect no stop-other-variant in_cfg 'VARIANT=pruned' is_stopped step mesh 4g real 200
+  expect no stop-any-other-parallel in_cfg 'PARALLEL=off' is_stopped_any step mesh 4g real
+  expect ok stop-any-same-config is_stopped_any step mesh 4g real
+
+  a="$evid/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt"
+  b="$evid/71-06-ladder-4g-ocp7.9.3.1.1.txt"
+  if [ -s "$a" ] && [ -s "$b" ]; then
+    expect ok committed-par-off-lp2-own-config in_cfg 'PARALLEL=off; LP=2' check_resume_file "$a"
+    expect no committed-par-off-lp2-as-par-on in_cfg 'PARALLEL=on; LP=default' check_resume_file "$a"
+    expect ok committed-par-on-own-config in_cfg 'PARALLEL=on; LP=default' check_resume_file "$b"
+    expect no committed-par-on-as-par-off in_cfg 'PARALLEL=off; LP=2' check_resume_file "$b"
+  else
+    echo "SELF_TEST_NOTE,committed_evidence=absent,skipped=4"
+  fi
+
+  rm -rf "$d"
+  echo "SELF_TEST,cases=$n,failed=$fails"
+  [ "$fails" = 0 ]
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --ocp) OCP=${2:?}; shift 2 ;;
@@ -269,6 +430,8 @@ while [ $# -gt 0 ]; do
     --pin-compare) PIN_A=${2:?}; PIN_B=${3:?}; shift 3 ;;
     --threads-decision) THREADS_FILE=${2:?}; shift 2 ;;
     --quality-summary) QUALITY_FILE=${2:?}; shift 2 ;;
+    --check-resume) CHECK_RESUME=${2:?}; shift 2 ;;
+    --self-test) SELF_TEST=1; shift ;;
     -h|--help) usage ;;
     --) shift; while [ $# -gt 0 ]; do INPUTS+=("$1"); shift; done ;;
     -*) echo "error: unknown option $1" >&2; usage ;;
@@ -279,16 +442,33 @@ done
 [ -z "$PIN_A" ] || pin_compare "$PIN_A" "$PIN_B"
 [ -z "$THREADS_FILE" ] || threads_decision "$THREADS_FILE"
 [ -z "$QUALITY_FILE" ] || quality_summary "$QUALITY_FILE"
+[ "$SELF_TEST" = 0 ] || { self_test; exit $?; }
 
-[ ${#INPUTS[@]} -gt 0 ] || [ "$INCLUDE_PRIVATE" = 1 ] || usage
 case "$QUALITY" in draft|standard|fine) ;; *) echo "error: --quality must be draft, standard or fine" >&2; exit 64 ;; esac
 case "$PARALLEL" in on|off|affinity) ;; *) echo "error: --parallel must be on, off or affinity" >&2; exit 64 ;; esac
 case "$LP" in default) ;; *[!0-9]*|'') echo "error: --lp-threads must be a positive integer or default" >&2; exit 64 ;; esac
+if [ -n "$CHECK_RESUME" ]; then
+  rc=0
+  check_resume_file "$CHECK_RESUME" || rc=$?
+  if [ "$rc" = 0 ]; then echo "RESUME_CONFIG,file=$(basename "$CHECK_RESUME"),status=accepted"
+  else echo "RESUME_CONFIG,file=$(basename "$CHECK_RESUME"),status=rejected,rc=$rc"; fi
+  exit "$rc"
+fi
+[ ${#INPUTS[@]} -gt 0 ] || [ "$INCLUDE_PRIVATE" = 1 ] || usage
 [ -z "$FLOOR_FROM" ] || [ -s "$FLOOR_FROM" ] || { echo "error: --floor-from file is empty or missing" >&2; exit 64; }
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "error: docker is required" >&2
   exit 69
+fi
+
+if [ -n "$RESUME" ] && [ -s "$RESUME" ]; then
+  resume_rc=0
+  check_resume_file "$RESUME" || resume_rc=$?
+  if [ "$resume_rc" != 0 ]; then
+    echo "error: $RESUME was measured under a different configuration than this run; resume only with the same ocp, variant, memory, cpus, parallel, lp-threads, quality and budget-s" >&2
+    exit 65
+  fi
 fi
 
 abspath() {
@@ -385,23 +565,7 @@ STOPPED="$WORK/stopped.keys"
 : > "$DONE_KEYS"
 : > "$STOPPED"
 if [ -n "$RESUME" ] && [ -s "$OUT" ]; then
-  awk -F, '
-    function kv(s, k,    n, i, parts) {
-      n = split(s, parts, ",")
-      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
-      return ""
-    }
-    /^ROW,/ {
-      head = $0; sub(/,out=.*$/, "", head)
-      printf "%s|%s|%s|%s|%s|%s|%s|%s|%s\n", kv(head,"sha"), kv(head,"op"), kv(head,"ocp"), kv(head,"variant"), kv(head,"mem"), kv(head,"rep"), kv(head,"par"), kv(head,"lp"), kv(head,"quality") > "'"$DONE_KEYS"'"
-      oom = kv(head, "oom_kill"); to = kv(head, "timeout"); rc = kv(head, "rc")
-      if ((oom != "0" && oom != "na" && oom != "") || to == "1" || rc == "137")
-        printf "%s|%s|%s|%s|%s|%s\n", kv(head,"fmt"), kv(head,"op"), kv(head,"mem"), kv(head,"ocp"), kv(head,"series"), kv(head,"bytes") > "'"$STOPPED"'"
-    }
-    /^LADDER_STOP,/ {
-      if (kv($0, "reason") == "oom" || kv($0, "reason") == "timeout")
-        printf "%s|%s|%s|%s|%s|%s\n", kv($0,"fmt"), kv($0,"op"), kv($0,"mem"), kv($0,"ocp"), kv($0,"series"), kv($0,"at_bytes") > "'"$STOPPED"'"
-    }' "$OUT"
+  resume_scan load "$OUT"
 fi
 
 FLOOR_TSV="$WORK/floor.tsv"
@@ -486,16 +650,6 @@ stop_reason() {
   fi
 }
 
-is_stopped_any() { grep -Fq "$1|$2|$3|$OCP|$4|" "$STOPPED"; }
-is_stopped() {
-  awk -F'|' -v k="$1|$2|$3|$OCP|$4" -v b="$5" '
-    ($1 "|" $2 "|" $3 "|" $4 "|" $5) == k && b + 0 >= $6 + 0 { found = 1 }
-    END { exit !found }' "$STOPPED"
-}
-mark_stopped() { printf '%s|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$OCP" "$4" "$5" >> "$STOPPED"; }
-
-is_done() { grep -Fxq "$1|$2|$OCP|$VARIANT|$3|$4|$PARALLEL|$LP|$QUALITY" "$DONE_KEYS"; }
-
 below_floor() {
   local sha=$1 op=$2 mem=$3 rss lim
   [ -n "$FLOOR_FROM" ] || return 1
@@ -538,6 +692,7 @@ dist_line() {
     }' "$OUT"
 }
 
+CFG_TAIL="variant=$VARIANT,cpus=$CPUS,par=$PARALLEL,lp=$LP,quality=$QUALITY"
 COMBOS="$WORK/combos.tsv"
 : > "$COMBOS"
 
@@ -550,9 +705,9 @@ flush_series() {
   while IFS='|' read -r fmt op mem top ran skipped; do
     if ! is_stopped_any "$fmt" "$op" "$mem" "$series"; then
       if [ "$ran" -gt 0 ]; then
-        emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=top,at_bytes=$top"
+        emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=top,at_bytes=$top,$CFG_TAIL"
       else
-        emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=top,at_bytes=$top,floor_skipped=$skipped"
+        emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=top,at_bytes=$top,floor_skipped=$skipped,$CFG_TAIL"
       fi
     fi
   done
@@ -847,7 +1002,7 @@ while IFS="$(printf '\t')" read -r -u 3 series bytes origin file; do
         if [ "$CELL_STOP" = prestep ]; then
           emit "SKIP,src=$src,name=$name,fmt=$fmt,op=$op,mem=$mem,rep=$rep,reason=prestep-failed-$PRE_REASON"
           if [ "$LADDER" = 1 ] && { [ "$PRE_REASON" = oom ] || [ "$PRE_REASON" = timeout ]; }; then
-            emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=$PRE_REASON,at_bytes=$bytes,via=prestep"
+            emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=$PRE_REASON,at_bytes=$bytes,via=prestep,$CFG_TAIL"
             mark_stopped "$fmt" "$op" "$mem" "$series" "$bytes"
           fi
           break
@@ -860,7 +1015,7 @@ while IFS="$(printf '\t')" read -r -u 3 series bytes origin file; do
           continue
         fi
         if [ -n "$CELL_STOP" ] && [ "$LADDER" = 1 ]; then
-          emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=$CELL_STOP,at_bytes=$bytes"
+          emit "LADDER_STOP,fmt=$fmt,op=$op,mem=$mem,ocp=$OCP,series=$series,reason=$CELL_STOP,at_bytes=$bytes,$CFG_TAIL"
           mark_stopped "$fmt" "$op" "$mem" "$series" "$bytes"
           break
         fi
