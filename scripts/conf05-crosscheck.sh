@@ -7,14 +7,14 @@
 # Usage:
 #   scripts/conf05-crosscheck.sh [--doc] <class>...
 #
-# Ten classes: pandoc, ocr, av, audio, html, probe, soffice, verapdf, cadguard,
-# cadmesh (probe's
+# Eleven classes: pandoc, ocr, av, audio, html, probe, soffice, verapdf, cadguard,
+# cadmesh, cadrender (probe's
 # Go file landed in a later plan than its measurement, and soffice's and
 # verapdf's -- internal/convert/documentsandbox.go -- lands in phase 70 plan 03:
 # until then this script exits 3 for them, its documented "not there yet"
 # status). The argument `document` expands to `soffice verapdf`: one image, two
 # engines, two separately measured sets (phase 70, D-10). The argument `cad`
-# expands to `cadguard cadmesh` -- two stages, two separately measured sets,
+# expands to `cadguard cadmesh cadrender` -- three stages, three separately measured sets,
 # internal/convert/cadsandbox.go -- and adds one comparison of the
 # conf05:cad:multiarch block with the Go map cadMultiarchLib. html, probe, soffice
 # and verapdf additionally carry a conf05 readwrite block (CONF-06's
@@ -60,7 +60,7 @@ for arg in "$@"; do
   if [ "$arg" = "document" ]; then
     classes+=(soffice verapdf)
   elif [ "$arg" = "cad" ]; then
-    classes+=(cadguard cadmesh)
+    classes+=(cadguard cadmesh cadrender)
     CAD_MULTIARCH=1
   else
     classes+=("$arg")
@@ -79,8 +79,8 @@ class_go_file() {
     html)   echo "internal/convert/htmlsandbox.go" ;;
     probe)  echo "internal/convert/probesandbox.go" ;;
     soffice|verapdf) echo "internal/convert/documentsandbox.go" ;;
-    cadguard|cadmesh) echo "internal/convert/cadsandbox.go" ;;
-    *) die "unknown class: $1 (expected pandoc, ocr, av, audio, html, probe, soffice, verapdf, cadguard, cadmesh, document or cad)" ;;
+    cadguard|cadmesh|cadrender) echo "internal/convert/cadsandbox.go" ;;
+    *) die "unknown class: $1 (expected pandoc, ocr, av, audio, html, probe, soffice, verapdf, cadguard, cadmesh, cadrender, document or cad)" ;;
   esac
 }
 class_go_readonly_var() {
@@ -95,6 +95,7 @@ class_go_readonly_var() {
     verapdf)  echo "verapdfReadOnly" ;;
     cadguard) echo "cadGuardReadOnly" ;;
     cadmesh)  echo "cadMeshReadOnly" ;;
+    cadrender) echo "cadRenderReadOnly" ;;
   esac
 }
 class_go_engines_var() {
@@ -109,6 +110,7 @@ class_go_engines_var() {
     verapdf)  echo "verapdfEngines" ;;
     cadguard) echo "cadGuardEngines" ;;
     cadmesh)  echo "cadMeshEngines" ;;
+    cadrender) echo "cadRenderEngines" ;;
   esac
 }
 # class_go_readwrite_var prints the Go var naming a class's shared writable

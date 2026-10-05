@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -194,7 +195,7 @@ func TestCADEngineTimeoutStaysUnderTheReconcilerWindow(t *testing.T) {
 
 func TestCADSetsAreTheMeasuredOnes(t *testing.T) {
 	const remeasure = "these are the sets scripts/cad-worker-sandbox-measure.sh measured on the production engine image " +
-		"(evidence/73-03-landlock.txt, SANDBOX-PATHS.md section cad); re-measure with that script and update the " +
+		"(evidence/74-06-landlock.txt, SANDBOX-PATHS.md section cad); re-run scripts/cad-worker-sandbox-measure.sh and update the " +
 		"document, the Go vars and this pin together rather than editing the expectation"
 	pins := []struct {
 		name      string
@@ -202,8 +203,10 @@ func TestCADSetsAreTheMeasuredOnes(t *testing.T) {
 	}{
 		{"cadMeshReadOnly", cadMeshReadOnly, []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11"}},
 		{"cadGuardReadOnly", cadGuardReadOnly, []string{"/usr/bin/python3.11", "/usr/lib/python3.11"}},
+		{"cadRenderReadOnly", cadRenderReadOnly, []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11"}},
 		{"cadMeshEngines", cadMeshEngines, []string{"cad-mesh"}},
 		{"cadGuardEngines", cadGuardEngines, []string{"cad-guard"}},
+		{"cadRenderEngines", cadRenderEngines, []string{"cad-render"}},
 	}
 	for _, p := range pins {
 		if !slices.Equal(p.got, p.want) {
@@ -225,7 +228,7 @@ func TestCADGuardSetHasNoPathToTheReader(t *testing.T) {
 }
 
 func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
-	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly} {
+	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly} {
 		for _, p := range set {
 			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
 				if p == banned || strings.HasPrefix(p, banned+"/") {
@@ -234,6 +237,33 @@ func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestCADRenderHelperImportsNoOpenCascade(t *testing.T) {
+	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-render")
+	if err != nil {
+		t.Fatal(err)
+	}
+	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
+	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC)\b|__import__|importlib`)
+	vtk, imports := 0, 0
+	for i, line := range strings.Split(string(raw), "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
+			continue
+		}
+		imports++
+		if strings.Contains(code, "vtkmodules") {
+			vtk++
+		}
+		if forbidden.MatchString(code) {
+			t.Errorf("cad-render line %d imports %q: the render stage must not reach OpenCascade; its separate exec grant "+
+				"is what keeps OCP out, and a path set cannot (R-09)", i+1, strings.TrimSpace(line))
+		}
+	}
+	if imports == 0 || vtk == 0 {
+		t.Fatalf("read %d import lines and %d from vtkmodules: the check would pass on a helper it did not read", imports, vtk)
 	}
 }
 
