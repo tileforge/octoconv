@@ -1,6 +1,6 @@
 ---
 phase: 71-evaluation-gate
-verified: 2026-10-05T05:22:54Z
+verified: 2026-10-05T05:38:19Z
 status: passed
 score: 7/7 must-haves verified
 covered_files:
@@ -80,7 +80,7 @@ covered_files:
   - scripts/cad-rss-time-measure.sh
   - scripts/cad-sandbox-measure.sh
   - scripts/cad-vtk-keeplist-test.py
-covered_digest: "v3:sha256:19bbd866935a06ac92b0243341a532d0591516168be9017a75df5030339f3a45"
+covered_digest: "v3:sha256:320c43d83c765c344f259cd31adacdd74777ddaf72e51ec3084bd74f47ed2293"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
@@ -89,7 +89,7 @@ re_verification:
   gaps_closed: []
   gaps_remaining: []
   regressions: []
-  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457)"
+  trigger: "Codex review of PR #32 (P1: limits from rows of another thread config; P2: partial pipeline counted as ok), fixed in 3a8a2d1, cdca1e5, 6107a69, cfb136e; round 2: a SKIP-only prestep-failed-rc3 cell made a point complete, fixed in 628c7f2; round 3: rc=0 with a failed output verdict (pix=fail) counted as ok, fixed in 3f20984, numbers regenerated in c877f33 (STL ASCII ceiling 1353 -> 877); round 4: nofreeimage variant removed (f69acd8), resume config guard (589b298), architecture-neutral VTK keep-list and new image tag dc621b94ee5d (106801a), records (8c14457); round 5: the deriver refuses to run without an explicit pin decision (655f863), plan 71-06 verify command and SUMMARY invocation corrected (56bc497)"
 gaps: []
 residual_non_blocking:
   - item: "Legal OK for libfreeimage / libraw / libjasper (GPL/LGPL/CDDL class) is NOT obtained"
@@ -107,8 +107,8 @@ residual_non_blocking:
 **Phase Goal:** Выбор ядра геометрии, рендерера и 2D-пути DXF сделан по замеру на настоящем образе `debian:bookworm-slim` на нативной архитектуре, а не по прототипу; числа, от которых зависит всё остальное (RSS, время, размер образа, лимиты входа, лицензии), известны до того, как написана строка продакшен-кода.
 **Verified:** 2026-10-04
 **Status:** passed (with the non-blocking residuals listed above; see "Criterion 4 judgement")
-**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457)
-**Branch / head:** gsd/phase-71-evaluation-gate @ 8c14457 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
+**Re-verification:** Yes - after Codex review fixes on PR #32 (first pass d66939d was `passed` 7/7 on the pre-fix numbers; second pass da625c6 after P1/P2; third pass after round-2 fix 628c7f2; fourth pass after round-3 fixes 3f20984 and c877f33; fifth pass after round-4 fixes f69acd8, 589b298, 106801a, 8c14457; sixth pass after round-5 fixes 655f863, 56bc497)
+**Branch / head:** gsd/phase-71-evaluation-gate @ 56bc497 (plus phase 72 planning commits, planning files only); base for criterion 5: 4e595c0
 
 ## Goal Achievement
 
@@ -170,7 +170,8 @@ Not applicable: no rendered dynamic data; the artifacts are evidence files and s
 | Synthetic generator self-check | `python3 scripts/cad-corpus-gen.py --check-only` | self-check passed | PASS |
 | Fetched corpus checksums | `bash scripts/cad-corpus-fetch.sh --check` | 17 files ok | PASS |
 | Limits derivation | `python3 scripts/cad-derive-limits.py evidence --pin 7.9.3.1.1` vs committed `71-06-limits.txt` | identical (re-run after fixes) | PASS |
-| Plan 71-06 literal LIMITS-OK command | run against a scratch copy of the evidence directory (so the real file is not overwritten): without `--pin` and with `--pin 7.9.3.1.1` | both print `LIMITS-OK`; the `--pin` variant is byte-identical to the committed `71-06-limits.txt`; the literal one writes `PIN_DECISION,choice=8.0.1.0.0` (the formula result) | PASS (see W16) |
+| Plan 71-06 LIMITS-OK command (corrected in 56bc497: `--pin 7.9.3.1.1 --out`, exactly one `PIN_DECISION,choice=7.9.3.1.1`, a `PIN_FORMULA` line) | run as written against a scratch copy of the evidence directory | `LIMITS-OK`; the regenerated file equals the committed `71-06-limits.txt` byte for byte | PASS (W16 resolved) |
+| Deriver pin guard | `cad-derive-limits.py evidence` (no flag); `--formula-pin`; each also with `--out` on an existing file | no flag: exit 2, empty stdout, message naming `--pin`/`--formula-pin`; `--formula-pin`: exit 2, refuses because a user PIN_DECISION 7.9.3.1.1 is recorded; `--out` target left byte-identical after both refusals, no temp file left; `--pin 7.9.3.1.1` regeneration identical | PASS |
 | Old vs new deriver on the real evidence | all 98 4g points at par=off,lp=2 compared, 65970c7 vs c877f33 | one point flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (ok 514 MiB -> fail); nothing else | PASS |
 | Resume guard self-test | `scripts/cad-rss-time-measure.sh --self-test` | `SELF_TEST,cases=32,failed=0` | PASS |
 | Resume config check on the real 4g ladder | `--check-resume 71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt --ocp 7.9.3.1.1 --variant full --memory 4g` | default config: `status=rejected,rc=65` (parallel off vs on, lp 2 vs default); with `--parallel off --lp-threads 2`: `status=accepted` | PASS |
@@ -178,7 +179,7 @@ Not applicable: no rendered dynamic data; the artifacts are evidence files and s
 | PRUNE-OK gate (plan 71-07) | verify command line 1, run as written | `PRUNE-OK` | PASS |
 | STALE-REFUSED gate (plan 71-07) | verify command line 2 on the existing `...-full-dc621b94ee5d` image with a keep-list for vtk 9.7.0 | `STALE-REFUSED` | PASS |
 | DECISION-OK gate (plan 71-08) | verify command from `71-08-PLAN.md` | `DECISION-OK` | PASS |
-| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 8c14457) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,failed_output_verdict_not_counted_as_ok=1` | PASS |
+| Deriver self-test | `python3 scripts/cad-derive-limits.py --self-check` (re-run at 56bc497) | `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,failed_output_verdict_not_counted_as_ok=1,pin_decision_explicit=1,recorded_user_pin_not_reversed=1,out_untouched_on_refusal=1` | PASS |
 | Committed corpus hashes | sha256 of 37 files vs `PROVENANCE.md` | 0 mismatch | PASS |
 | Multi-hour measurements | not re-run (per instruction) | - | SKIP |
 
@@ -223,7 +224,7 @@ All four IDs appear in PLAN frontmatter and in REQUIREMENTS.md (traceability tab
 - W14 (new, round 2). `628c7f2` makes `complete` require a measured status (ok/oom/timeout) for every required operation, so a point whose operation is represented only by a SKIP `prestep-failed-rc3` cell is partial, not complete. Verified: `--self-check` now prints `SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1` (new case covers a skipped-rc3 point and a skipped-oom point, FIT and cliff top rung); regeneration of `71-06-limits.txt` is byte-identical (diff empty); comparing the old and new deriver on the real evidence, exactly one point flips, `3dsolids.dxf` (complete True -> False, status stays `fail`; the file with nothing drawable), so no DECISION number moves. No residual.
 
 - W15 (new, round 3). `3f20984` counts a cell as ok only when its output verdicts hold (pix=ok for render/rsvg-png/rsvg-pdf, triangles > 0, dxf bbox2d/svg_counts, cstate ok); failures print `INVALID_OUTPUT`. On the real evidence exactly one of 98 points flips: `stl-ascii-nasa-sls-block1-1MiB.stl` render (`rc=0, pix=fail`, frac 0.0022, cg_peak 514 MiB, rss 271), a truncated thin non-watertight prefix; the first ladder shows the same `pix=fail`. It had been feeding the STL ASCII floor (514 instead of 272, `floor_points` 2 -> 1), so the ceiling moves 1353 -> 877 (k 1.720 -> 2.930, STL k divergence 65.5%, separate ceilings kept); no other format and no cap changes, L stays 4096. Regeneration of `71-06-limits.txt` is byte-identical and all DECISION numbers (877, 143.3/388.0/877.2, 272.0, 2.930, 65.5%) match the evidence line. Finding for phase 74: the frac-only pixel check rejects a real but thin part, so the production render check must not copy this threshold; the render itself neither failed nor was empty. Caveat: the ASCII floor now rests on one point (`stl_ascii_box.stl`, 272 MiB) and lower floor and higher k move together, so the ceiling stays conservative; 877 is still extrapolated above the 199 MiB measured rung.
-- W16 (new, round 3). Gate deviation: the literal `LIMITS-OK` command in `71-06-PLAN.md` regenerates without `--pin`, and run on the real evidence directory it would overwrite `71-06-limits.txt` with `PIN_DECISION,choice=8.0.1.0.0` (formula result), reversing the user's recorded choice of 7.9.3.1.1. The plan's own regex accepts either pin, and I ran both variants against a scratch copy: both print `LIMITS-OK`, and the `--pin 7.9.3.1.1` variant reproduces the committed file byte for byte. The executor's substitute (`--pin 7.9.3.1.1` plus the same grep checks) therefore checks the same properties and is the right one; the plan text is stale. Acceptable, no residual; the plan command should not be run in place.
+- W16 (round 3, RESOLVED in round 5). The literal `LIMITS-OK` command in `71-06-plan` used to regenerate without `--pin` and, run in place, would have overwritten `71-06-limits.txt` with `PIN_DECISION,choice=8.0.1.0.0`, reversing the user's recorded choice of 7.9.3.1.1. `655f863` makes the deriver refuse to run without `--pin` or `--formula-pin` (exit 2) and refuse `--formula-pin` while a user PIN_DECISION is recorded; `--out` writes atomically and leaves the target untouched on refusal. `56bc497` changes the plan command to `--pin 7.9.3.1.1 --out` and to assert the single exact `PIN_DECISION,choice=7.9.3.1.1` plus a `PIN_FORMULA` line; the SUMMARY invocation was swept the same way. Verified as listed in the spot-check table; the plan command is now safe to run in place. No residual.
 
 - W17 (new, round 4). The Landlock candidate sets in DECISION name `/usr/lib/aarch64-linux-gnu` (cad_mesh, cad_render, cad_dxf, rsvg-convert). On amd64 the multiarch library directory is `x86_64-linux-gnu`, so these sets are arm64-specific; phase 73 must derive or parametrise them per architecture and re-measure on amd64. DECISION labels them candidates, not grants, but does not say they are arch-bound. Warning, not a gap.
 - W18 (new, round 4). Carry-over on the new image tag: `71-08-image-size.txt` (compressed 299.3 MiB, cold pull median 6.38 s), the Landlock matrix and the 4g ladders were measured on `...-0d09b7ba39ad`; the final tag is `...-dc621b94ee5d` (image_id sha256:08117b26d4d0...). Evidence for equivalence: `71-07-prune-arch.txt` `TREE_SHA` equal for `/opt/venv` and `/opt/cad-measure` (excluding the keep-list source and helper pyc), `IMAGE_BYTES` 1135587708 vs 1135589363 (+1655 B, both 1083.0 MiB, 6 layers), `IDENTITY identical=5,different=0,failed=0`, and `71-07-prune.txt` regenerated on the new tag (564.1 -> 288.7 MiB, 196/196 PNG, 48/48 rows, STALE_TEST detected). DECISION states plainly that compressed size and cold pull are carried over, "рассчитано по равному содержимому, не замерено заново". Judgement: honest and acceptable. The only changed bytes are one Python source file in one layer, so a re-pull would differ by well under the measurement noise (cold pull n=3 spread 6.04-7.11 s); the number is still a measurement of the previous tag, and the evidence HDR still names it. Re-measure if the image changes again for any other reason.
