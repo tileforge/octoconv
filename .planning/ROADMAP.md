@@ -31,14 +31,14 @@ measurements, самая рискованная для ревью — собир
 |---|---|---|---|
 | 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ✓ 2026-10-04 |
 | 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ✓ 2026-10-05 |
-| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ следующая |
-| 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ |
+| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ✓ 2026-10-05 |
+| 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ следующая |
 | 75 | DXF: 2D-конвейер | RNDR-06, CCONV-02, CCONV-03 | ○ |
 | 76 | Замеренные границы, KEDA, живой гейт, контракт превью и документация | CADW-04..06, PREV-01 | ○ |
 
 - [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
 - [x] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка (completed 2026-10-05)
-- [ ] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок
+- [x] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок (completed 2026-10-05)
 - [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
 - [ ] **Phase 75: DXF 2D Pipeline** - dxf → svg/pdf и `render` dxf → png через ezdxf + rsvg-convert
 - [ ] **Phase 76: Measured Bounds, KEDA Proof & Client Docs** - замеренный таймаут, scale-from-zero, живой гейт всех классов, контракт превью и клиентская документация
@@ -197,7 +197,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
      нечитаемый, пустой, сверх потолка вход и таймаут стадии mesh — терминальные с
      отдельным кодом, без цикла ретраев; убийство воркера посреди джобы не
      оставляет живых процессов движка и не держит джобу до полного таймаута
-**Plans:** 6 plans in 6 waves (последовательно)
+**Plans:** 6/6 plans complete in 6 waves (последовательно)
 
 Plans:
 **Wave 1**
@@ -315,7 +315,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
 | 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
-| 73. CAD Class & Convert Slice, Confined | 0/TBD | Not started | - |
+| 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 0/TBD | Not started | - |
 | 75. DXF 2D Pipeline | 0/TBD | Not started | - |
 | 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |

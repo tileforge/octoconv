@@ -33,7 +33,7 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 - [x] **CADIN-01**: `step`/`stp`/`iges`/`igs`/`stl`/`dxf` распознаются по содержимому fail-closed одной и той же логикой при создании джобы и в `POST /v1/inspect`; legacy 8-bit файлы не отвергаются за кодировку
 - [x] **CADIN-02**: Обрезанный STEP/IGES/DXF, STL, который проходит и как ASCII, и как бинарный, и бинарный DXF отвергаются 422 с отдельными кодами — расхождение сниффера с настоящим ридером закрыто дифференциальным тестом
 - [x] **CADIN-03**: `dwg` распознаётся по сигнатуре и отвергается отдельным кодом «dwg не поддерживается», а не как неизвестный формат
-- [ ] **CADIN-04**: Вход-бомба (самоссылающийся STEP, гигантское число треугольников, MINSERT, нечисловые координаты) завершает джобу терминальной ошибкой в замеренных границах памяти и времени, а не OOM-киллом воркера
+- [x] **CADIN-04**: Вход-бомба (самоссылающийся STEP, гигантское число треугольников, MINSERT, нечисловые координаты) завершает джобу терминальной ошибкой в замеренных границах памяти и времени, а не OOM-киллом воркера
 
 ### Render (RNDR)
 
@@ -54,7 +54,7 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 
 ### Conversions (CCONV)
 
-- [ ] **CCONV-01**: `step`/`iges` → `stl`: один бинарный STL в миллиметрах
+- [x] **CCONV-01**: `step`/`iges` → `stl`: один бинарный STL в миллиметрах
 - [ ] **CCONV-02**: `dxf` → `svg`: вектор, model space, видимые слои, текст не теряется; в SVG нет скриптов, `foreignObject` и внешних ссылок
 - [ ] **CCONV-03**: `dxf` → `pdf`
 
@@ -64,9 +64,9 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 
 ### Worker (CADW)
 
-- [ ] **CADW-01**: `cmd/cad-worker` со своей очередью, Dockerfile, compose, Helm-чартом и KEDA ScaledObject; `cad` появляется в API только целиком — одним атомарным изменением `AllEngines()`
-- [ ] **CADW-02**: Каждый этап движка работает под своим замеренным Landlock-ruleset; наборы путей записаны в `SANDBOX-PATHS.md` и удерживаются тестом; воркер без Landlock не стартует; preflight на реальном движке судит по выходу
-- [ ] **CADW-03**: Ошибки классифицируются transient/terminal по этапам; убийство посреди джобы не оставляет живых процессов и не держит джобу до полного таймаута
+- [x] **CADW-01**: `cmd/cad-worker` со своей очередью, Dockerfile, compose, Helm-чартом и KEDA ScaledObject; `cad` появляется в API только целиком — одним атомарным изменением `AllEngines()`
+- [x] **CADW-02**: Каждый этап движка работает под своим замеренным Landlock-ruleset; наборы путей записаны в `SANDBOX-PATHS.md` и удерживаются тестом; воркер без Landlock не стартует; preflight на реальном движке судит по выходу
+- [x] **CADW-03**: Ошибки классифицируются transient/terminal по этапам; убийство посреди джобы не оставляет живых процессов и не держит джобу до полного таймаута
 - [ ] **CADW-04**: `CAD_ENGINE_TIMEOUT` замерен по обеим операциям и спарен с потолком размера входа; оценка времени в inspect помечена как замеренная
 - [ ] **CADW-05**: Живой гейт всех классов, включая `cad`, проходит на образах из финального коммита; scale-from-zero `cad` через KEDA доказан; `minReplicaCount` для `cad` выбран осознанно
 - [ ] **CADW-06**: Клиентская документация: `docs/CAD.md`, коды ошибок, OpenAPI, MCP-описания и таблица форматов фронтенда
@@ -108,11 +108,11 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 | CADIN-02 | Phase 72 | Complete |
 | CADIN-03 | Phase 72 | Complete |
 | MEAS-05 | Phase 72 | Complete |
-| CADIN-04 | Phase 73 | Pending |
-| CCONV-01 | Phase 73 | Pending |
-| CADW-01 | Phase 73 | Pending |
-| CADW-02 | Phase 73 | Pending |
-| CADW-03 | Phase 73 | Pending |
+| CADIN-04 | Phase 73 | Complete |
+| CCONV-01 | Phase 73 | Complete |
+| CADW-01 | Phase 73 | Complete |
+| CADW-02 | Phase 73 | Complete |
+| CADW-03 | Phase 73 | Complete |
 | RNDR-01 | Phase 74 | Pending |
 | RNDR-02 | Phase 74 | Pending |
 | RNDR-03 | Phase 74 | Pending |
