@@ -65,6 +65,7 @@ var RejectBindings = map[string]RejectBinding{
 	// the tex ceiling exists: cost is linear in source size, so a project
 	// split across parts costs what its bytes cost.
 	"engine_size_limit": {ErrCode: errcode.PayloadTooLarge},
+	"format_size_limit": {ErrCode: errcode.PayloadTooLarge},
 	// multiple_inputs: extra "file" parts were sent to a conversion that takes
 	// one file. A property of the REQUEST's shape against the engine's
 	// capability, not of any file's content -- and refused rather than ignored,
