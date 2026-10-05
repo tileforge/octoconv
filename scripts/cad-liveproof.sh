@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Live proof of the cad class on this repository's compose stack, judged by
-# content and by the worker container's own OOM and restart counters.
-#
-# Usage: scripts/cad-liveproof.sh
-# Env overrides: CAD_LIVEPROOF_API_BASE, CAD_LIVEPROOF_DATABASE_URL,
-# CAD_LIVEPROOF_API_KEY_SALT. Exit 0 only on ALL PASS. Writes
-# .planning/phases/73-cad-class-convert-slice-confined/evidence/73-06-liveproof.txt
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

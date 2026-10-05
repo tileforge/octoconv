@@ -1,28 +1,4 @@
 #!/usr/bin/env bash
-# cad-spike.sh -- phase 73 plan 01: the cad tracer and the OCP bomb spikes.
-#
-# Usage:
-#   scripts/cad-spike.sh tracer
-#   scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5,S5I]
-#   scripts/cad-spike.sh rules [--check]
-#   scripts/cad-spike.sh finish
-#
-# tracer   build the production engine image, run cad-mesh on the three inch STEP
-#          files under a real Landlock ruleset, judge the STL by content and prove
-#          that the same bytes outside the job directory yield no STL.
-# spikes   run every bomb shape against the real OCP reader in that image, one cell
-#          at a time (--cpus 2 --memory 4g, --network none, 400 s per cell), and write
-#          the observations, then the RULE and DERIVED lines computed from them, to
-#          the evidence file.
-#          --only reruns the listed sections and keeps the other rows of the evidence file.
-# rules    print the RULE and DERIVED lines computed from the evidence rows;
-#          --check fails when the lines in the evidence file differ from them.
-#
-# finish   recompute the GAP, LOADCHECK_SUMMARY, RULE, DERIVED and SUMMARY lines of the
-#          evidence file from its ROW and LOADCHECK lines, without running anything.
-#
-# Needs a native docker server (an emulated image cannot establish Landlock).
-# Exit codes: 64 usage, 69 docker or go missing, 1 a check failed.
 
 set -euo pipefail
 export LC_ALL=C
@@ -59,7 +35,27 @@ GO_TOOLCHAIN=go1.26.4
 LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
 
 usage() {
-  sed -n '/^# Usage:/,/^# Needs/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  cat >&2 <<'USAGE'
+Usage:
+  scripts/cad-spike.sh tracer
+  scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5,S5I]
+  scripts/cad-spike.sh rules [--check]
+  scripts/cad-spike.sh finish
+
+tracer   build the production engine image, run cad-mesh on the three inch STEP
+         files under a real Landlock ruleset, judge the STL by content and prove
+         that the same bytes outside the job directory yield no STL.
+spikes   run every bomb shape against the real OCP reader in that image, one cell
+         at a time, and write the observations, then the RULE and DERIVED lines
+         computed from them, to the evidence file.
+         --only reruns the listed sections and keeps the other rows.
+rules    print the RULE and DERIVED lines computed from the evidence rows;
+         --check fails when the lines in the evidence file differ from them.
+finish   recompute the GAP, LOADCHECK_SUMMARY, RULE, DERIVED and SUMMARY lines
+         from the ROW and LOADCHECK lines, without running anything.
+
+Needs a native docker server. Exit codes: 64 usage, 69 docker or go missing, 1 a check failed.
+USAGE
   exit 64
 }
 
