@@ -38,6 +38,7 @@ LOW_MIB = 1.0
 NOISE_FRAC = 0.20
 D05_TOP_MIB = 100
 COUNTER_SERIES = ("step-nauo", "dxf-minsert")
+MEASURED = ("ok", "oom", "timeout")
 
 PIPELINE = {
     "step": ("mesh", "render"),
@@ -250,7 +251,7 @@ class Evidence:
         if not ops:
             return None
         statuses = [c.status() for c in ops.values()]
-        complete = len(ops) == len(PIPELINE[klass])
+        complete = len(ops) == len(PIPELINE[klass]) and all(st in MEASURED for st in statuses)
         if "oom" in statuses:
             status = "oom"
         elif "timeout" in statuses:
@@ -478,6 +479,28 @@ def self_check():
         if done["mesh-only"]["status"] != "ok":
             failures.append("the same point with its render measured must become ok")
     with tempfile.TemporaryDirectory() as tmp:
+        skip_lines = [row("a" * 64, "tiny", 0.4, op, 0, 100.0, 0, "real") for op in ("mesh", "render")]
+        for op in ("mesh", "render"):
+            skip_lines.append(row("b" * 64, "mid", 40, op, 0, 800.0, 0))
+        skip_lines.append(row("e" * 64, "skipped", 90, "mesh", 0, 1200.0, 0))
+        skip_lines.append("SKIP,src=public,fmt=step,op=render,mem=4g,rep=1,name=skipped,reason=prestep-failed-rc3")
+        skip_lines.append(row("f" * 64, "skip-oom", 95, "mesh", 0, 1300.0, 0))
+        skip_lines.append("SKIP,src=public,fmt=step,op=render,mem=4g,rep=1,name=skip-oom,reason=prestep-failed-oom")
+        with open(os.path.join(tmp, "71-06-ladder-4g-skips.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(["HDR,ocp=%s" % PIN_A] + skip_lines) + "\n")
+        sk = Evidence(tmp)
+        by_skip = {p["name"]: p for p in sk.points(PIN_A, "4g", "step")}
+        if by_skip["skipped"]["status"] == "ok" or by_skip["skipped"]["complete"]:
+            failures.append("a required operation represented only by a prestep-failed-rc3 skip must not make the point ok or complete, got %s" % by_skip["skipped"]["status"])
+        if by_skip["skip-oom"]["status"] != "oom":
+            failures.append("a required operation skipped as prestep-failed-oom must make the point oom, got %s" % by_skip["skip-oom"]["status"])
+        fit_s, fit_spt = fit_rung(sk, "step", 4096, 0.0)
+        if fit_spt is None or fit_spt["name"] != "mid":
+            failures.append("FIT must not climb onto a point whose operation was skipped, got %s" % (fit_spt["name"] if fit_spt else None))
+        _cl, top_s = cliffs(sk, "step", 4096)
+        if top_s != int(40 * MIB):
+            failures.append("the cliff top rung must not climb onto a point whose operation was skipped, got %d" % top_s)
+    with tempfile.TemporaryDirectory() as tmp:
         for fname, par, lp, rss in (("71-06-ladder-4g-old.txt", "on", "default", 800.0),
                                     ("71-06-ladder-4g-new.txt", "off", "2", 1000.0)):
             with open(os.path.join(tmp, fname), "w", encoding="utf-8") as fh:
@@ -501,7 +524,7 @@ def self_check():
     for msg in failures:
         print("SELF-CHECK-FAIL,%s" % msg)
     if not failures:
-        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,other_configuration_rows_excluded=1")
+        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1")
     return 1 if failures else 0
 
 
