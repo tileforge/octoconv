@@ -34,7 +34,15 @@ var cadGuardReadOnly = []string{
 	"/usr/lib/python3.11",
 }
 
+var cadRenderReadOnly = []string{
+	"/opt/venv",
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+}
+
 var cadMeshEngines = []string{"cad-mesh"}
+
+var cadRenderEngines = []string{"cad-render"}
 
 var cadGuardEngines = []string{"cad-guard"}
 
@@ -136,7 +144,7 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 	}
 
 	outInside := filepath.Join(w.jobDir, "out.stl")
-	meshVerdict, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside)
+	meshVerdict, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside, "standard", "")
 	if err != nil {
 		return fmt.Errorf("the cad mesh stage cannot mesh a file inside the job directory under its sandbox: %w", err)
 	}
@@ -168,7 +176,7 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 	}
 
 	outOutside := filepath.Join(w.jobDir, "neg.stl")
-	_, meshErr := c.meshStage(ctx, w.jobDir, "step", outside, outOutside)
+	_, meshErr := c.meshStage(ctx, w.jobDir, "step", outside, outOutside, "standard", "")
 	if err := requireCADDenied("cad mesh", meshErr); err != nil {
 		return err
 	}
