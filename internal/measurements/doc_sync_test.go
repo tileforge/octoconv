@@ -122,3 +122,113 @@ func TestMeasurementsDocNamesSchema(t *testing.T) {
 		t.Fatalf("docs/MEASUREMENTS.md does not name the schema `%s`", Schema)
 	}
 }
+
+var solidCountRules = map[string]func(solids, closed int) bool{
+	"none":                             func(solids, closed int) bool { return true },
+	"solids = 0":                       func(solids, closed int) bool { return solids == 0 },
+	"solids > 0 and closed_solids = 0": func(solids, closed int) bool { return solids > 0 && closed == 0 },
+	"closed_solids > 0":                func(solids, closed int) bool { return closed > 0 },
+}
+
+type nullReasonRow struct {
+	reason  string
+	formats []string
+	counts  string
+}
+
+func extractNullReasonRows(t *testing.T, doc string) []nullReasonRow {
+	t.Helper()
+	var rows []nullReasonRow
+	inSection := false
+	for _, line := range strings.Split(doc, "\n") {
+		if strings.HasPrefix(line, "## Null reasons") {
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(line, "## ") {
+			break
+		}
+		if !inSection || codeRowPattern.FindStringSubmatch(line) == nil {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) < 5 {
+			t.Fatalf("Null reasons row has %d cells, want reason, formats, solid counts and observed: %q", len(cells), line)
+		}
+		row := nullReasonRow{
+			reason: strings.Trim(strings.TrimSpace(cells[1]), "`"),
+			counts: strings.TrimSpace(strings.ReplaceAll(cells[3], "`", "")),
+		}
+		for _, f := range strings.Split(strings.ReplaceAll(cells[2], "`", ""), ",") {
+			row.formats = append(row.formats, strings.TrimSpace(f))
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func probeDocument(format string, solids, closed int, reason string) Document {
+	d := Document{
+		Schema: Schema, Format: format, Unit: UnitMM, UnitSource: SourceDeclared,
+		BBox:             BBox{Min: []float64{0, 0, 0}, Max: []float64{1, 2, 3}},
+		VolumeNullReason: reason, AreaNullReason: reason,
+	}
+	switch format {
+	case FormatSTL:
+		d.Unit, d.UnitSource = UnitUnspecified, SourceNone
+	case FormatDXF:
+		d.BBox = BBox{Min: []float64{0, 0}, Max: []float64{4, 5}}
+	case FormatSTEP, FormatIGES:
+		d.Solids, d.ClosedSolids = &solids, &closed
+	}
+	return d
+}
+
+func TestMeasurementsDocNullReasonTableMatchesBehaviour(t *testing.T) {
+	rows := extractNullReasonRows(t, readMeasurementsDoc(t))
+	if len(rows) == 0 {
+		t.Fatal("extracted zero rows under \"## Null reasons\": the table format in docs/MEASUREMENTS.md changed in a way this parser no longer understands")
+	}
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[row.reason] = true
+		rule, ok := solidCountRules[row.counts]
+		if !ok {
+			t.Fatalf("%s: the Solid counts cell %q is not one of the forms this test understands", row.reason, row.counts)
+		}
+		accepted, rejected := 0, 0
+		for _, format := range AllFormats() {
+			listed := false
+			for _, f := range row.formats {
+				listed = listed || f == format
+			}
+			cad := format == FormatSTEP || format == FormatIGES
+			for solids := 0; solids <= 3; solids++ {
+				for closed := 0; closed <= solids; closed++ {
+					if !cad && (solids > 0 || closed > 0) {
+						continue
+					}
+					want := listed && (!cad || rule(solids, closed))
+					err := probeDocument(format, solids, closed, row.reason).Validate()
+					if (err == nil) != want {
+						t.Errorf("%s on %s with solids %d and closed_solids %d: doc says valid=%v (formats %v, counts %q), Validate returned %v",
+							row.reason, format, solids, closed, want, row.formats, row.counts, err)
+					}
+					if err == nil {
+						accepted++
+					} else {
+						rejected++
+					}
+				}
+			}
+		}
+		if accepted == 0 || rejected == 0 {
+			t.Errorf("%s: the probe saw %d accepted and %d rejected combinations; a table that never discriminates proves nothing", row.reason, accepted, rejected)
+		}
+	}
+	for _, r := range AllNullReasons() {
+		if !seen[r] {
+			t.Errorf("%q is declared in Go but has no row in the Null reasons table", r)
+		}
+	}
+}
