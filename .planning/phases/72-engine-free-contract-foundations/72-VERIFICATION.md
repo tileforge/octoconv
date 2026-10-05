@@ -1,6 +1,6 @@
 ---
 phase: 72-engine-free-contract-foundations
-verified: 2026-10-05T06:05:00Z
+verified: 2026-10-05T07:20:00Z
 status: passed
 score: 5/5 must-haves verified
 covered_files:
@@ -42,27 +42,88 @@ covered_files:
   - internal/inspect/bindings.go
   - internal/jobs/jobs.go
   - internal/jobs/output_role_test.go
+  - internal/measurements/consistency_test.go
   - internal/measurements/doc_sync_test.go
   - internal/measurements/measurements.go
   - internal/measurements/measurements_test.go
+  - internal/measurements/testdata/helpers-71-04-rows.txt
   - internal/worker/webhook_role_test.go
   - scripts/cad-corpus-gen.py
   - scripts/cad-sniff-differential.sh
   - scripts/cad-sniff-reader.py
   - scripts/cmd/cad-sniff/main.go
-covered_digest: "v3:sha256:bcb17cc38e03f56b61eec2924a13c6f09b1699ed3eb205416f91ebd056fa3573"
+covered_digest: "v3:sha256:0d5e40dfab9777c6cebc727cbef05090860aaa724c603a3a31bac37aa02149a1"
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: passed
+  previous_score: 5/5
+  gaps_closed: []
+  gaps_remaining: []
+  regressions: []
+  trigger: "Codex P2 on PR #33: measurements validator accepted documents whose null reasons contradict their own counts (fixes adddbfe, 202c615)"
 ---
 
 # Phase 72: Engine-Free Contract Foundations Verification Report
 
 **Phase Goal:** The review-riskiest surface, fail-closed validation of CAD content plus the measurements contract, is ready and proven by tests before any engine exists. The class is not registered and nothing is advertised.
-**Verified:** 2026-10-05T06:05:00Z
+**Verified:** 2026-10-05T07:20:00Z
 **Status:** passed
-**Re-verification:** No, initial verification
+**Re-verification:** Yes, after the Codex P2 fix on PR #33 (adddbfe, 202c615); the initial 5/5 verification is kept below
 
 Starting hypothesis was that tasks were completed and the goal missed. Each truth below was checked against code, tests that were re-run, and the committed evidence, not against SUMMARY claims. No truth fell.
+
+## Re-verification after the Codex P2 fix (adddbfe, 202c615)
+
+**Result:** still 5/5, status `passed`. No regression, no new gap. One warning on the STL pairing, below.
+
+The branch was rebased onto the phase-71 tip in the meantime, so note 1 of the first report is closed: `scripts/cad-derive-limits.py` now carries 71's pin change and the 72 commits sit on top. Phase 72 itself still does not touch that file.
+
+### What the fix changes (read in `internal/measurements/measurements.go`, not from the SUMMARY)
+
+- `cadCountRules` checks a null reason against the document's own counts for `step` and `iges`: `no_solids` needs `solids` 0; `open_shell` and `invalid_solid` need `solids` above 0 and `closed_solids` 0; `negative_volume` needs `closed_solids` above 0. This matches the helper's own branches in `scripts/cad-measure/cad_mesh.py` (`closed == 0` selects `no_solids`, `open_shell` or `invalid_solid`; a negative volume with closed solids selects `negative_volume`).
+- Volume and area are null together with equal reasons, or numbers together, for every format.
+- A positive volume needs extent on every bbox axis; a `step` or `iges` bbox is never a single point. The helper already exits 3 on a zero-size box, so that rule restates a helper refusal.
+- Truth 4 is intact: the original rejections (0, NaN, Inf, overflow, out-of-vocabulary, schema) are untouched and their tests pass. The fix only narrows what is accepted.
+
+### Gates re-run
+
+| Check | Result |
+|-------|--------|
+| `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./...`, `gofmt -l` | clean |
+| `go test -count=1 ./...` | every package `ok` |
+| `go test -v ./internal/measurements` | 23 tests PASS, including `TestNullReasonAgainstSolidCounts`, `TestAreaNullReasonAgainstSolidCounts`, `TestCodexContradictoryDocuments`, `TestVolumeAndAreaTravelTogether`, `TestPositiveVolumeNeedsExtentOnEveryAxis`, `TestCADBBoxIsNotAPoint`, `TestNullReasonFormatMatrix`, `TestPhase71HelperRowsValidate`, `TestMeasurementsDocNullReasonTableMatchesBehaviour` |
+| `npm --prefix frontend run test` | 37 of 37 |
+| Doc-sync mutation: `negative_volume` Solid counts cell changed from `closed_solids` > 0 to `solids` = 0 | `TestMeasurementsDocNullReasonTableMatchesBehaviour` fails, naming the contradicted cases; file restored byte-identical |
+| Doc-sync mutation: `no_solids` cell changed to `solids` > 0 | fails on an unrecognized cell form; restored |
+| Comment scan of the fix's added Go lines | no `//` or `/*` lines added |
+
+### Is any observed real helper combination rejected? No, with caveats
+
+`testdata/helpers-71-04-rows.txt` has 36 rows. Its name set equals the rc=0 mesh, stlstats and dxf rows of `.planning/phases/71-evaluation-gate/evidence/71-04-helpers.txt` (36 each, identical name lists). `TestPhase71HelperRowsValidate` builds a document per row and validates it; all pass. It also asserts that the key combinations (`step null`, `iges no_solids`, `step no_solids`, `stl null`, `stl stl_not_watertight`, four DXF unit cases) are present, so it cannot pass vacuously. Checked against the helper rows: `degenerate_plate.step` (volume 1000, area 20040, 0.1 thick) and `degenerate_rod.step` (volume 157.08, about 2 x 2 x 200) have extent on every axis; `open_shell.step`, `single_face.step` and `surfaces_only.iges` are `no_solids` with solids 0.
+
+Caveats on the strength of that proof:
+- The fixture keeps only `bbox_diag`, so the test builds a cube from it. The "extent on every axis" rule is never exercised against a real thin bbox. A positive volume cannot physically have zero extent and both thin real shapes above have it, so the risk is low, but the test does not prove it.
+- The one mixed case the helper's code can produce (some solids closed, positive volume, no reason) is accepted; the helper emits no other solid-count combination.
+
+### Judgement on applying volume/area pairing to STL (WARNING, not a blocker)
+
+Facts, from the helper source and a throwaway probe test (deleted):
+- `stlstats` in `cad_mesh.py` emits `volume` and `volume_null_reason` and no area at all. No real STL combination ever carried an area.
+- The `area` key was already required by the 72-02 validator before this fix, so a helper-shaped STL document (volume, no area key) was already rejected with "area: missing". The fix does not newly make real STL output inexpressible. My first verification did not test this.
+- What the fix adds for STL: volume as a number with a null area is rejected, and a null volume with a computed area is rejected. Before, a numeric volume with a null area and `stl_not_watertight` was accepted, which was incoherent because the reason does not describe a watertight mesh. Pairing removes that incoherence.
+- The cost: a non-watertight mesh can never report a surface area although a triangle-area sum is well defined for it, and a watertight STL document needs an area that no phase-71 evidence ever measured. `TestPhase71HelperRowsValidate` supplies `stlAreaStandIn = 2200.0` for watertight STL rows, so for STL it proves only that the helper's volume and reason fields are accepted, not that a real STL document validates.
+- The doc's rationale for pairing (the producer derives both from the same closed solids) is true for `step` and `iges`, where `cad_mesh.py` sets both in one branch, and is not true for STL. `docs/MEASUREMENTS.md` does not tell the Phase 74 producer that it must compute an STL area.
+
+Call: defensible and fail-closed, and it fits the goal (a stricter contract before any engine exists), so it does not change the status. It is an unevidenced extension of a CAD-only fact. Before Phase 74 plans, either restrict the pairing and equal-reason rule to `step` and `iges` and let STL carry an independent area, or keep it and state in `docs/MEASUREMENTS.md` that the STL producer computes area from triangles for watertight meshes and nulls both otherwise. Either is a small contract decision; leaving it unrecorded risks Phase 74 meeting it as a validator rejection.
+
+### Fingerprint
+
+Refreshed with `verification.fingerprint` (phase directory first, xargs -0). It now also covers `internal/measurements/consistency_test.go` and `internal/measurements/testdata/helpers-71-04-rows.txt`; the changed `measurements.go`, `doc_sync_test.go`, `docs/MEASUREMENTS.md` and the 72-02 plan and summary are re-hashed. 48 files in total.
+
+---
+
+# Initial verification (unchanged, kept for the record)
 
 ## Goal Achievement
 
@@ -183,5 +244,5 @@ No gaps. The riskiest review surface (the CAD detector, its four rejection codes
 
 ---
 
-_Verified: 2026-10-05T06:05:00Z_
+_Verified: 2026-10-05T07:20:00Z_
 _Verifier: Claude (gsd-verifier)_
