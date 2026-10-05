@@ -1,0 +1,292 @@
+package convert
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+)
+
+const (
+	CADMaxSTEPBytes         = 63 << 20
+	CADMaxIGESBytes         = 135 << 20
+	CADMaxSTEPEntities      = 754762
+	CADMaxNAUO              = 1518
+	CADDefaultGuardTimeout  = 30 * time.Second
+	CADDefaultMeshTimeout   = 316 * time.Second
+	CADIOAllowance          = 60 * time.Second
+	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADIOAllowance
+
+	cadOutputLimit   = 1 << 20
+	cadVerdictPrefix = "CADVERDICT "
+	cadStageGuard    = "guard"
+	cadStageMesh     = "mesh"
+	stlHeaderBytes   = 84
+	stlTriangleBytes = 50
+	stlBlockTriangle = 4096
+)
+
+var (
+	ErrCADInputTooLarge = errors.New("cad: the input exceeds this deployment's size ceiling")
+	ErrCADTooComplex    = errors.New("cad: the model is too complex to convert")
+	ErrCADUnreadable    = errors.New("cad: the file could not be read as CAD data")
+	ErrCADEmptyResult   = errors.New("cad: the conversion produced no geometry")
+	ErrCADMeshTimeout   = errors.New("cad: the mesh stage did not finish within the time limit")
+	ErrCADEngineKilled  = errors.New("cad: the engine was killed before it finished")
+)
+
+func CADOptsFromMap(m map[string]any) (any, error) {
+	if len(m) > 0 {
+		return nil, fmt.Errorf("cad takes no options, got %d", len(m))
+	}
+	return nil, nil
+}
+
+type CADConverter struct {
+	Sandbox      *engineSandbox
+	GuardTimeout time.Duration
+	MeshTimeout  time.Duration
+}
+
+func (CADConverter) Pairs() []Pair {
+	return []Pair{{From: "step", To: "stl"}, {From: "iges", To: "stl"}}
+}
+
+func (CADConverter) Engine() string { return EngineCAD }
+
+func cadMaxBytes(format string) int64 {
+	if format == "iges" {
+		return CADMaxIGESBytes
+	}
+	return CADMaxSTEPBytes
+}
+
+func (c CADConverter) guardTimeout() time.Duration {
+	if c.GuardTimeout > 0 {
+		return c.GuardTimeout
+	}
+	return CADDefaultGuardTimeout
+}
+
+func (c CADConverter) meshTimeout() time.Duration {
+	if c.MeshTimeout > 0 {
+		return c.MeshTimeout
+	}
+	return CADDefaultMeshTimeout
+}
+
+func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
+	if _, err := CADOptsFromMap(opts); err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	format := NormalizeFormat(filepath.Ext(inPath))
+	if target := NormalizeFormat(filepath.Ext(outPath)); (format != "step" && format != "iges") || target != "stl" {
+		return fmt.Errorf("cad: unsupported conversion %s -> %s", format, target)
+	}
+	info, err := os.Stat(inPath)
+	if err != nil {
+		return fmt.Errorf("cad: stat input: %w", err)
+	}
+	if ceiling := cadMaxBytes(format); info.Size() > ceiling {
+		return fmt.Errorf("cad: %w: %s input is %d bytes against a %d-byte ceiling", ErrCADInputTooLarge, format, info.Size(), ceiling)
+	}
+
+	jobDir := filepath.Dir(outPath)
+	if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
+		return err
+	}
+	if _, err := c.meshStage(ctx, jobDir, format, inPath, outPath); err != nil {
+		return err
+	}
+	if _, _, err := judgeBinarySTL(outPath); err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	return nil
+}
+
+func (c CADConverter) guardStage(ctx context.Context, jobDir, format, inPath string) (cadVerdict, error) {
+	x, err := c.cadStage(jobDir, cadGuardReadOnly, cadGuardEngines)
+	if err != nil {
+		return cadVerdict{}, err
+	}
+	timeout := c.guardTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-guard",
+		"--format", format,
+		"--max-entities", strconv.Itoa(CADMaxSTEPEntities),
+		"--max-nauo", strconv.Itoa(CADMaxNAUO),
+		inPath)
+	return classifyCADStage(cadStageGuard, ctx, stageCtx, timeout, out, cpu, err)
+}
+
+func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, outPath string) (cadVerdict, error) {
+	x, err := c.cadStage(jobDir, cadMeshReadOnly, cadMeshEngines)
+	if err != nil {
+		return cadVerdict{}, err
+	}
+	timeout := c.meshTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", "--format", format, inPath, outPath)
+	return classifyCADStage(cadStageMesh, ctx, stageCtx, timeout, out, cpu, err)
+}
+
+type cadVerdict struct {
+	Stage     string `json:"stage"`
+	Verdict   string `json:"verdict"`
+	Reason    string `json:"reason"`
+	Triangles int    `json:"triangles"`
+	Entities  *int   `json:"entities"`
+}
+
+func parseCADVerdict(stage string, out []byte) (cadVerdict, bool) {
+	var last []byte
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		line = bytes.TrimRight(line, "\r")
+		if bytes.HasPrefix(line, []byte(cadVerdictPrefix)) {
+			last = line
+		}
+	}
+	if last == nil {
+		return cadVerdict{}, false
+	}
+	var v cadVerdict
+	if err := json.Unmarshal(last[len(cadVerdictPrefix):], &v); err != nil || v.Stage != stage {
+		return cadVerdict{}, false
+	}
+	return v, true
+}
+
+func cadSignal(err error) (syscall.Signal, bool) {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return 0, false
+	}
+	st, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !st.Signaled() {
+		return 0, false
+	}
+	return st.Signal(), true
+}
+
+func classifyCADStage(stage string, parent, stageCtx context.Context, timeout time.Duration, out []byte, cpu engineCPU, err error) (cadVerdict, error) {
+	if errors.Is(err, ErrEngineSandboxUnavailable) {
+		return cadVerdict{}, fmt.Errorf("cad %s: %w", stage, err)
+	}
+	if v, ok := parseCADVerdict(stage, out); ok {
+		switch v.Verdict {
+		case "ok":
+			if err == nil {
+				return v, nil
+			}
+		case "too_complex":
+			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADTooComplex, v.Reason)
+		case "unreadable":
+			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADUnreadable, v.Reason)
+		case "empty":
+			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADEmptyResult, v.Reason)
+		}
+	}
+	if err != nil && parent.Err() == nil && errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
+		if stage == cadStageMesh {
+			return cadVerdict{}, fmt.Errorf("cad mesh: %w: no result within %s, engine cpu %.1fs: %v",
+				ErrCADMeshTimeout, timeout, cpu.Total().Seconds(), err)
+		}
+		return cadVerdict{}, fmt.Errorf("cad %s: no verdict within the %s stage deadline: %w", stage, timeout, err)
+	}
+	if parent.Err() != nil {
+		cause := err
+		if cause == nil {
+			cause = parent.Err()
+		}
+		return cadVerdict{}, fmt.Errorf("cad %s: %w", stage, cause)
+	}
+	if sig, signalled := cadSignal(err); signalled {
+		if sig == syscall.SIGKILL {
+			return cadVerdict{}, fmt.Errorf("cad %s: %w: %v", stage, ErrCADEngineKilled, err)
+		}
+		return cadVerdict{}, fmt.Errorf("cad %s: %w: the reader died on signal %s", stage, ErrCADUnreadable, sig)
+	}
+	if err != nil {
+		return cadVerdict{}, fmt.Errorf("cad %s: no verdict: %w", stage, err)
+	}
+	return cadVerdict{}, fmt.Errorf("cad %s: exited 0 without a verdict", stage)
+}
+
+type stlBounds struct {
+	Min [3]float64
+	Max [3]float64
+}
+
+func (b stlBounds) Extents() [3]float64 {
+	return [3]float64{b.Max[0] - b.Min[0], b.Max[1] - b.Min[1], b.Max[2] - b.Min[2]}
+}
+
+func judgeBinarySTL(path string) (int, stlBounds, error) {
+	var bounds stlBounds
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, bounds, fmt.Errorf("%w: no STL at %s: %v", ErrCADEmptyResult, path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, bounds, fmt.Errorf("%w: stat STL: %v", ErrCADEmptyResult, err)
+	}
+	if info.Size() < stlHeaderBytes {
+		return 0, bounds, fmt.Errorf("%w: STL is %d bytes, shorter than its %d-byte header", ErrCADEmptyResult, info.Size(), stlHeaderBytes)
+	}
+	r := bufio.NewReaderSize(f, 1<<20)
+	header := make([]byte, stlHeaderBytes)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return 0, bounds, fmt.Errorf("%w: read STL header: %v", ErrCADEmptyResult, err)
+	}
+	n := int64(binary.LittleEndian.Uint32(header[80:]))
+	if n == 0 {
+		return 0, bounds, fmt.Errorf("%w: STL declares 0 triangles", ErrCADEmptyResult)
+	}
+	if want := stlHeaderBytes + stlTriangleBytes*n; info.Size() != want {
+		return 0, bounds, fmt.Errorf("%w: STL is %d bytes, %d triangles need exactly %d", ErrCADEmptyResult, info.Size(), n, want)
+	}
+	first := true
+	block := make([]byte, stlBlockTriangle*stlTriangleBytes)
+	for remaining := n; remaining > 0; {
+		count := min(remaining, int64(stlBlockTriangle))
+		buf := block[:count*stlTriangleBytes]
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return 0, bounds, fmt.Errorf("%w: read STL triangles: %v", ErrCADEmptyResult, err)
+		}
+		for t := int64(0); t < count; t++ {
+			tri := buf[t*stlTriangleBytes:]
+			for v := 0; v < 3; v++ {
+				for axis := 0; axis < 3; axis++ {
+					x := float64(math.Float32frombits(binary.LittleEndian.Uint32(tri[12+v*12+axis*4:])))
+					if math.IsNaN(x) || math.IsInf(x, 0) {
+						return 0, bounds, fmt.Errorf("%w: STL has a non-finite vertex coordinate", ErrCADEmptyResult)
+					}
+					if first || x < bounds.Min[axis] {
+						bounds.Min[axis] = x
+					}
+					if first || x > bounds.Max[axis] {
+						bounds.Max[axis] = x
+					}
+				}
+				first = false
+			}
+		}
+		remaining -= count
+	}
+	return int(n), bounds, nil
+}

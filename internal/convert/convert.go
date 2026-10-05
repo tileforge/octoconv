@@ -43,6 +43,7 @@ const (
 	// That is the defect phase 60 shipped with sanitize; here the contracts
 	// caught it in minutes.
 	EngineTectonic = "tectonic"
+	EngineCAD      = "cad"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one
