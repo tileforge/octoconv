@@ -3,10 +3,23 @@
 #
 # Usage:
 #   scripts/cad-spike.sh tracer
+#   scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5]
+#   scripts/cad-spike.sh rules [--check]
+#   scripts/cad-spike.sh finish
 #
 # tracer   build the production engine image, run cad-mesh on the three inch STEP
 #          files under a real Landlock ruleset, judge the STL by content and prove
 #          that the same bytes outside the job directory yield no STL.
+# spikes   run every bomb shape against the real OCP reader in that image, one cell
+#          at a time (--cpus 2 --memory 4g, --network none, 400 s per cell), and write
+#          the observations, then the RULE and DERIVED lines computed from them, to
+#          the evidence file.
+#          --only reruns the listed sections and keeps the other rows of the evidence file.
+# rules    print the RULE and DERIVED lines computed from the evidence rows;
+#          --check fails when the lines in the evidence file differ from them.
+#
+# finish   recompute the GAP, LOADCHECK_SUMMARY, RULE, DERIVED and SUMMARY lines of the
+#          evidence file from its ROW and LOADCHECK lines, without running anything.
 #
 # Needs a native docker server (an emulated image cannot establish Landlock).
 # Exit codes: 64 usage, 69 docker or go missing, 1 a check failed.
@@ -27,6 +40,18 @@ SUBSET="$REPO_ROOT/cmd/cad-worker/requirements-mesh.txt"
 HELPER="$REPO_ROOT/cmd/cad-worker/helper/cad-mesh"
 DOCKERFILE="$REPO_ROOT/Dockerfile.cad-worker"
 JUDGE="$REPO_ROOT/scripts/cad-stl-judge.py"
+SPIKE_PY="$REPO_ROOT/scripts/cad-spike.py"
+WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
+CORPUS_GEN="$REPO_ROOT/scripts/cad-corpus-gen.py"
+CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
+SPIKE_CACHE="$CAD_CACHE/spike73"
+CELL_BUDGET_S=400
+MIN_FREE_GIB=7
+MIB=1048576
+STEP_CEILING_BYTES=$((63 * MIB))
+IGES_CEILING_BYTES=$((155 * MIB))
+HIER_FILE_LIMIT_BYTES=$((512 * MIB))
+HIER_MAX_K=16
 LOCK_COMMON_SHA=9d391daad60a17595077c7aa68f16890c95511a617dbb209fefaf0b5b69a78da
 LOCK_OCP_SHA=72b833ac43ac4cdab8fbb694ed9b2954472f2c1ab09b4ebc32684bf2387147df
 BASE_DIGEST=sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
@@ -277,11 +302,405 @@ tracer() {
   return 1
 }
 
+free_gib() {
+  df -k / | awk 'NR == 2 { print int($4 / 1048576) }'
+}
+
+disk_guard() {
+  local free
+  free=$(free_gib)
+  if [ "$free" -lt "$MIN_FREE_GIB" ]; then
+    echo "STOP,reason=disk_below_threshold,free_gib=$free,threshold_gib=$MIN_FREE_GIB" >&2
+    exit 3
+  fi
+}
+
+format_of() {
+  case "$1" in
+    *.step|*.stp) echo step ;;
+    *.igs|*.iges) echo iges ;;
+    *) echo "error: unknown CAD extension $1" >&2; return 1 ;;
+  esac
+}
+
+CELL_JOB=""
+
+cell() {
+  local mode=$1 fmt=$2 input=$3 regex=${4:-0} entry flags
+  disk_guard
+  CELL_JOB=$(new_job "$WORK")
+  if [ "$mode" = read ]; then
+    entry=/opt/venv/bin/python
+    flags=(-I -B)
+    inner=(/opt/venv/bin/python -I -B /spike/cad-spike.py read --format "$fmt" /in/input /job)
+  else
+    entry=/usr/bin/python3
+    flags=(-IB)
+    inner=(/usr/bin/python3 -IB /spike/cad-spike.py count --format "$fmt" /in/input)
+    [ "$regex" = 1 ] && inner+=(--with-regex)
+  fi
+  docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e LP_NUM_THREADS=2 \
+    -v "$WORK/spike:/spike:ro" -v "$CELL_JOB:/job" -v "$input:/in/input:ro" \
+    --entrypoint "$entry" "$TAG" "${flags[@]}" /spike/measure_wrap.py --budget-s "$CELL_BUDGET_S" --outdir /job -- "${inner[@]}" \
+    > "$WORK/wrap.out" 2> "$WORK/wrap.err" </dev/null || true
+}
+
+emit() {
+  printf '%s\n' "$1" | tee -a "$SPIKES_OUT"
+}
+
+emit_row() {
+  local spike=$1 input=$2 fmt=$3 count_json=$4
+  shift 4
+  local args=(--spike "$spike" --format "$fmt" --input "$input" --image-id "$IMAGE_ID" --wrap-file "$WORK/wrap.out" --read-json "$CELL_JOB/read.json")
+  [ -n "$count_json" ] && args+=(--count-json "$count_json")
+  local extra
+  for extra in "$@"; do args+=(--extra "$extra"); done
+  emit "$(python3 "$SPIKE_PY" rowline "${args[@]}")"
+}
+
+wrap_field() {
+  sed -n "s/^WRAP,.*[,]$1=\\([^,]*\\).*/\\1/p" "$WORK/wrap.out" | tail -n 1
+}
+
+cell_stopped() {
+  local oom
+  oom=$(wrap_field oom_kill)
+  [ "$(wrap_field timeout)" = 1 ] && return 0
+  case "$oom" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$oom" -gt 0 ]
+}
+
+spike_s0() {
+  local f fmt name first=1
+  local files=()
+  for f in "$CORPUS"/public/*.step "$CORPUS"/public/*.stp "$CORPUS"/public/*.igs "$CORPUS"/public/*.iges \
+           "$CORPUS"/synthetic/*.step "$CORPUS"/synthetic/*.iges \
+           "$CAD_CACHE"/fetched/*.step "$CAD_CACHE"/fetched/*.stp "$CAD_CACHE"/fetched/*.igs "$CAD_CACHE"/fetched/*.iges; do
+    [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -gt 0 ] || fail "no corpus files"
+  for f in "${files[@]}"; do
+    fmt=$(format_of "$f")
+    case "$f" in
+      "$CORPUS"/*) name="${f#"$CORPUS"/}" ;;
+      *) name="fetched/$(basename "$f")" ;;
+    esac
+    cell read "$fmt" "$f"
+    if [ "$first" = 1 ] && [ -s "$CELL_JOB/read.json" ]; then
+      first=0
+      python3 "$SPIKE_PY" binding --read-json "$CELL_JOB/read.json" | while IFS= read -r line; do emit "$line"; done
+    fi
+    emit "$(python3 "$SPIKE_PY" loadcheck --name "$name" --read-json "$CELL_JOB/read.json")"
+    rm -rf "$CELL_JOB"
+  done
+}
+
+spike_simple() {
+  local spike=$1 pattern=$2 f
+  for f in "$SPIKE_CACHE"/$pattern; do
+    [ -f "$f" ] || continue
+    cell read step "$f"
+    emit_row "$spike" "$f" step ""
+    rm -rf "$CELL_JOB"
+  done
+}
+
+spike_s4() {
+  local f cj
+  for f in "$SPIKE_CACHE"/s4_*.step; do
+    [ -f "$f" ] || continue
+    cj="$WORK/s4-count.json"
+    python3 "$SPIKE_PY" count --format step --with-regex "$f" > "$cj"
+    cell read step "$f"
+    emit_row S4 "$f" step "$cj"
+    rm -rf "$CELL_JOB"
+  done
+}
+
+spike_s3() {
+  local kind k out gj instances stop leaf
+  leaf=/corpus/public/LinearSlide-MGN15x-Block.step
+  for kind in nauo mapped; do
+    k=4
+    stop=0
+    while [ "$k" -le "$HIER_MAX_K" ] && [ "$stop" = 0 ]; do
+      disk_guard
+      out="$SPIKE_CACHE/hier_${kind}_K$(printf '%02d' "$k").step"
+      gj="$WORK/hier-gen.json"
+      rm -f "$out" "$gj"
+      instances=$((1 << k))
+      CELL_JOB=$(new_job "$WORK")
+      docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e LP_NUM_THREADS=2 \
+        -v "$WORK/spike:/spike:ro" -v "$CELL_JOB:/job" -v "$CORPUS:/corpus:ro" -v "$SPIKE_CACHE:/gen" \
+        --entrypoint /opt/venv/bin/python "$TAG" -I -B /spike/measure_wrap.py --budget-s "$CELL_BUDGET_S" --outdir /job -- \
+        /opt/venv/bin/python -I -B /spike/cad-spike.py gen-hierarchy --kind "$kind" --levels "$k" --leaf "$leaf" "/gen/$(basename "$out")" \
+        > "$WORK/wrap.out" 2> "$WORK/wrap.err" </dev/null || true
+      cp "$CELL_JOB/child.log" "$gj" 2>/dev/null || : > "$gj"
+      if [ ! -s "$out" ]; then
+        emit_row S3 "$out" step "" "kind=$kind" "K=$k" "instances=$instances" "op=gen"
+        rm -rf "$CELL_JOB"
+        stop=1
+        continue
+      fi
+      if [ "$(wc -c < "$out" | tr -d ' ')" -gt "$HIER_FILE_LIMIT_BYTES" ]; then
+        emit "ROW,spike=S3,kind=$kind,K=$k,instances=$instances,op=skip,reason=generated_file_above_512MiB,bytes=$(wc -c < "$out" | tr -d ' '),image_id=$IMAGE_ID"
+        rm -rf "$CELL_JOB" "$out"
+        stop=1
+        continue
+      fi
+      rm -rf "$CELL_JOB"
+      cell read step "$out"
+      emit_row S3 "$out" step "$gj" "kind=$kind" "K=$k" "instances=$instances" "op=mesh"
+      cell_stopped && stop=1
+      rm -rf "$CELL_JOB" "$out"
+      k=$((k + 1))
+    done
+  done
+}
+
+gen_corpus() {
+  local base=$1 basedir=$2 kind=$3 target=$4
+  docker run --rm --network none --cpus 2 --memory 4g --memory-swap 4g --user nobody -e HOME=/tmp -e LANG=C.UTF-8 \
+    -v "$REPO_ROOT:/src:ro" -v "$basedir:/base:ro" -v "$SPIKE_CACHE:/out" -w /src \
+    --entrypoint /opt/venv/bin/python "$TAG" -I -B scripts/cad-corpus-gen.py \
+    --scaled-from "/base/$base" --kind "$kind" --targets "$target" --scaled-dir /out >&2
+}
+
+make_s5_files() {
+  local t out size limit tries best_size seen
+  t=$(python3 "$SPIKE_PY" copies-target --base "$CAD_CACHE/fetched/freecad-mit-e-vent-t-slot.step" --limit-bytes "$STEP_CEILING_BYTES" | sed -n 's/.*target=\([0-9]*\),.*/\1/p')
+  [ -n "$t" ] || fail "no step-copies target under the ceiling"
+  gen_corpus freecad-mit-e-vent-t-slot.step "$CAD_CACHE/fetched" step-copies "$t"
+  S5_STEP="$SPIKE_CACHE/step-copies-freecad-mit-e-vent-t-slot-${t}MiB.step"
+  [ "$(wc -c < "$S5_STEP" | tr -d ' ')" -le "$STEP_CEILING_BYTES" ] || fail "step copies file above 63 MiB"
+
+  gen_corpus LinearSlide-MGN15x-Block.step "$CORPUS/public" step-nauo 1518
+  S5_NAUO="$SPIKE_CACHE/step-nauo-LinearSlide-MGN15x-Block-n1518.step"
+  [ -f "$S5_NAUO" ] || fail "step-nauo 1518 missing"
+
+  limit=24500000
+  S5_IGES=""
+  best_size=0
+  seen=" "
+  tries=0
+  while [ "$tries" -lt 4 ]; do
+    t=$(python3 "$SPIKE_PY" copies-target --base "$CORPUS/public/LinearSlide-MGN15x-Block.step" --limit-bytes "$limit" | sed -n 's/.*target=\([0-9]*\),.*/\1/p')
+    case "$seen" in *" $t "*) break ;; esac
+    seen="$seen$t "
+    gen_corpus LinearSlide-MGN15x-Block.step "$CORPUS/public" step-copies "$t"
+    gen_corpus "step-copies-LinearSlide-MGN15x-Block-${t}MiB.step" "$SPIKE_CACHE" iges-from-step 1 || true
+    out="$SPIKE_CACHE/iges-step-copies-LinearSlide-MGN15x-Block-${t}MiB.igs"
+    [ -f "$out" ] || fail "iges copies file missing"
+    size=$(wc -c < "$out" | tr -d ' ')
+    if [ "$size" -le "$IGES_CEILING_BYTES" ] && [ "$size" -gt "$best_size" ]; then
+      S5_IGES=$out
+      best_size=$size
+    fi
+    if [ "$size" -le "$IGES_CEILING_BYTES" ] && [ $((size * 100)) -ge $((IGES_CEILING_BYTES * 93)) ]; then
+      break
+    fi
+    limit=$((limit * IGES_CEILING_BYTES * 985 / (size * 1000)))
+    tries=$((tries + 1))
+  done
+  [ -n "$S5_IGES" ] || fail "no IGES copies file at or below 155 MiB"
+}
+
+spike_s3m() {
+  local k out gj stop=0
+  k=4
+  while [ "$k" -le "$HIER_MAX_K" ] && [ "$stop" = 0 ]; do
+    disk_guard
+    out="$SPIKE_CACHE/hier_mappedtext_K$(printf '%02d' "$k").step"
+    gj="$WORK/hier-gen.json"
+    python3 "$SPIKE_PY" gen-mapped-text --levels "$k" "$out" > "$gj"
+    cell read step "$out"
+    emit_row S3 "$out" step "$gj" "kind=mapped_text" "K=$k" "instances=$((1 << k))" "op=mesh"
+    cell_stopped && stop=1
+    rm -rf "$CELL_JOB" "$out"
+    k=$((k + 1))
+  done
+}
+
+spike_s5() {
+  local f fmt series
+  make_s5_files
+  for f in "$S5_STEP:step:step_copies_63MiB" "$S5_NAUO:step:step_nauo_1518" "$S5_IGES:iges:iges_copies_155MiB"; do
+    series=${f##*:}
+    fmt=${f#*:}
+    fmt=${fmt%%:*}
+    f=${f%%:*}
+    cell count "$fmt" "$f"
+    emit_row S5 "$f" "$fmt" "$CELL_JOB/child.log" "op=count" "series=$series"
+    rm -rf "$CELL_JOB"
+    cell read "$fmt" "$f"
+    emit_row S5 "$f" "$fmt" "" "op=mesh" "series=$series"
+    rm -rf "$CELL_JOB"
+  done
+}
+
+finish_evidence() {
+  local complete=$1 keep body rules_file
+  mkdir -p "$(dirname "$EVID")"
+  keep=$(mktemp "${TMPDIR:-/tmp}/cad-spike-keep.XXXXXX")
+  body=$(mktemp "${TMPDIR:-/tmp}/cad-spike-body.XXXXXX")
+  rules_file=$(mktemp "${TMPDIR:-/tmp}/cad-spike-rules.XXXXXX")
+  if [ -f "$EVID" ]; then
+    grep -e '^HDR,stage=tracer,' -e '^LOCK,' -e '^TRACER,' "$EVID" > "$keep" || true
+  fi
+  { cat "$keep"; cat "$SPIKES_HDR"; cat "$SPIKES_OUT"; } > "$body"
+  if [ "$complete" = 1 ]; then
+    printf 'GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (R-01)\n' >> "$body"
+    python3 "$SPIKE_PY" rules "$body" > "$rules_file"
+    cat "$rules_file" >> "$body"
+    printf 'SUMMARY,rows=%s,rules=5,derived=5,gaps=1\n' "$(grep -c '^ROW,' "$body")" >> "$body"
+  else
+    printf 'HDR,stage=spikes,complete=0\n' >> "$body"
+  fi
+  cp "$body" "$EVID"
+  rm -f "$keep" "$body" "$rules_file"
+}
+
+want() {
+  [ -z "$ONLY" ] && return 0
+  case ",$ONLY," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+drop_sections() {
+  local section
+  for section in $(printf '%s' "$ONLY" | tr ',' ' '); do
+    case "$section" in
+      S0) grep -v -e '^BINDING,' -e '^LOADCHECK,' "$1" > "$1.tmp" || true ;;
+      S1|S2|S4|S5) grep -v "^ROW,spike=$section," "$1" > "$1.tmp" || true ;;
+      S3) awk '!(/^ROW,spike=S3,/ && (/,kind=nauo,/ || /,kind=mapped,/))' "$1" > "$1.tmp" ;;
+      S3M) awk '!(/^ROW,spike=S3,/ && /,kind=mapped_text,/)' "$1" > "$1.tmp" ;;
+      *) fail "unknown section $section" ;;
+    esac
+    mv "$1.tmp" "$1"
+  done
+}
+
+spikes() {
+  ONLY=""
+  if [ "${1:-}" = --only ]; then
+    ONLY=${2:?--only needs a list}
+    shift 2
+  fi
+  need_tools
+  [ "$(docker version --format '{{.Server.Arch}}')" = arm64 ] || fail "docker server is not arm64"
+  local running
+  running=$(docker ps --format '{{.Image}}')
+  if printf '%s\n' "$running" | grep -q octoconv-cad; then fail "another CAD measurement container is running"; fi
+  [ "$(ls "$CAD_CACHE/fetched" 2>/dev/null | wc -l | tr -d ' ')" = 17 ] || fail "the phase 71 fetched corpus is not present (17 files); run scripts/cad-corpus-fetch.sh"
+  disk_guard
+
+  lock_check > /dev/null || fail "lock check"
+  TAG=$(ensure_image)
+  cad_require_native "$TAG" || fail "image is not native"
+  IMAGE_ID=$(docker image inspect "$TAG" --format '{{.Id}}')
+
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-spike.XXXXXX")
+  chmod 0755 "$WORK"
+  mkdir -p "$WORK/spike" "$SPIKE_CACHE"
+  chmod 0755 "$WORK/spike"
+  chmod 0777 "$SPIKE_CACHE"
+  cp "$SPIKE_PY" "$WRAP_PY" "$WORK/spike/"
+  chmod 0644 "$WORK/spike/"*
+  SPIKES_OUT="$WORK/spikes-rows.txt"
+  SPIKES_HDR="$WORK/spikes-hdr.txt"
+  : > "$SPIKES_OUT"
+  local hdr_stage=spikes
+  if [ -n "$ONLY" ]; then
+    [ -f "$EVID" ] || fail "no evidence file to append to"
+    grep -E '^(BINDING|LOADCHECK|ROW),' "$EVID" > "$SPIKES_OUT" || true
+    drop_sections "$SPIKES_OUT"
+    grep '^HDR,stage=spikes' "$EVID" > "$SPIKES_HDR.old" || true
+    hdr_stage=spikes_append
+  else
+    : > "$SPIKES_HDR.old"
+  fi
+  {
+    cat "$SPIKES_HDR.old"
+    printf 'HDR,stage=%s,only=%s\n' "$hdr_stage" "${ONLY:-all}"
+    printf 'HDR,stage=%s,date_utc=%s\n' "$hdr_stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'HDR,stage=%s,commit=%s\n' "$hdr_stage" "$(git rev-parse HEAD)"
+    printf 'HDR,stage=%s,image=%s\n' "$hdr_stage" "$TAG"
+    printf 'HDR,stage=%s,image_id=%s\n' "$hdr_stage" "$IMAGE_ID"
+    printf 'HDR,stage=%s,server_arch=%s\n' "$hdr_stage" "$(docker version --format '{{.Server.Arch}}')"
+    printf 'HDR,stage=%s,kernel=%s\n' "$hdr_stage" "$(docker run --rm --network none --entrypoint uname "$TAG" -r)"
+    printf 'HDR,stage=%s,python=%s\n' "$hdr_stage" "$(docker run --rm --network none --entrypoint /opt/venv/bin/python "$TAG" -I -B --version 2>&1 | tr ' ' '_')"
+    printf 'HDR,stage=%s,ocp=%s\n' "$hdr_stage" "$(docker run --rm --network none --entrypoint /opt/venv/bin/python "$TAG" -I -B -c 'import importlib.metadata as m; print(m.version("cadquery-ocp-novtk"))')"
+    printf 'HDR,stage=%s,limits=cpus2_memory4g_memswap4g_network_none_user_nobody_lp2\n' "$hdr_stage"
+    printf 'HDR,stage=%s,cell_budget_s=%s\n' "$hdr_stage" "$CELL_BUDGET_S"
+    printf 'HDR,stage=%s,host_containers=%s\n' "$hdr_stage" "$(docker ps -q | wc -l | tr -d ' ')"
+    printf 'HDR,stage=%s,free_gib_at_start=%s\n' "$hdr_stage" "$(free_gib)"
+  } > "$SPIKES_HDR"
+  trap 'finish_evidence 0; docker rmi "$TAG" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+
+  python3 "$SPIKE_PY" gen-bombs "$SPIKE_CACHE" > "$WORK/bombs.txt"
+
+  if want S0; then spike_s0; fi
+  if want S1; then spike_simple S1 's1_*.step'; fi
+  if want S2; then spike_simple S2 's2_*.step'; fi
+  if want S4; then spike_s4; fi
+  if want S3; then spike_s3; fi
+  if want S3M; then spike_s3m; fi
+  if want S5; then spike_s5; fi
+
+  trap - EXIT
+  finish_evidence 1
+  docker rmi "$TAG" >/dev/null 2>&1 || true
+  rm -rf "$WORK"
+
+  if ! python3 "$SPIKE_PY" rules "$EVID" --check; then fail "rules --check after the run"; fi
+  local stops
+  if ! stops=$(python3 "$SPIKE_PY" stops "$EVID"); then
+    printf '%s\n' "$stops"
+    echo "SPIKES-STOP: a stop condition of the plan holds; return a checkpoint, do not commit" >&2
+    return 2
+  fi
+  echo SPIKES-OK
+}
+
+finish_mode() {
+  local body rules_file
+  need_tools
+  [ -f "$EVID" ] || fail "no evidence file $EVID"
+  body=$(mktemp "${TMPDIR:-/tmp}/cad-spike-body.XXXXXX")
+  rules_file=$(mktemp "${TMPDIR:-/tmp}/cad-spike-rules.XXXXXX")
+  grep -v -e '^RULE,' -e '^DERIVED,' -e '^SUMMARY,' -e '^LOADCHECK_SUMMARY,' -e '^GAP,' -e '^HDR,stage=spikes,complete=0' "$EVID" > "$body" || true
+  printf 'GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (R-01)\n' >> "$body"
+  python3 "$SPIKE_PY" rules "$body" > "$rules_file"
+  cat "$rules_file" >> "$body"
+  printf 'SUMMARY,rows=%s,rules=5,derived=5,gaps=1\n' "$(grep -c '^ROW,' "$body")" >> "$body"
+  cp "$body" "$EVID"
+  rm -f "$body" "$rules_file"
+  python3 "$SPIKE_PY" rules "$EVID" --check
+}
+
+rules_mode() {
+  need_tools
+  [ -f "$EVID" ] || fail "no evidence file $EVID"
+  case "${1:-}" in
+    "") python3 "$SPIKE_PY" rules "$EVID" ;;
+    --check) python3 "$SPIKE_PY" rules "$EVID" --check ;;
+    *) usage ;;
+  esac
+}
+
 [ $# -ge 1 ] || usage
 mode=$1
 shift
 case "$mode" in
   tracer) tracer "$@" ;;
+  spikes) spikes "$@" ;;
+  rules) rules_mode "$@" ;;
+  finish) finish_mode "$@" ;;
   -h|--help) usage ;;
   *) echo "error: unknown mode $mode" >&2; usage ;;
 esac
