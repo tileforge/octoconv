@@ -51,6 +51,13 @@ var reasonsByFormat = map[string][]string{
 	FormatDXF:  {ReasonNotApplicable2D},
 }
 
+var cadCountRules = map[string]func(solids, closed int) bool{
+	ReasonNoSolids:       func(solids, closed int) bool { return solids == 0 },
+	ReasonOpenShell:      func(solids, closed int) bool { return solids > 0 && closed == 0 },
+	ReasonInvalidSolid:   func(solids, closed int) bool { return solids > 0 && closed == 0 },
+	ReasonNegativeVolume: func(solids, closed int) bool { return closed > 0 },
+}
+
 func AllUnits() []string       { return slices.Clone(units) }
 func AllUnitSources() []string { return slices.Clone(unitSources) }
 func AllNullReasons() []string { return slices.Clone(nullReasons) }
@@ -157,7 +164,10 @@ func (d Document) Validate() error {
 	}
 
 	cad := d.Format == FormatSTEP || d.Format == FormatIGES
-	closed := 0
+	if cad && d.bboxAxes() == 0 {
+		return invalid("bbox", "min equals max on every axis: a point is not a measured shape")
+	}
+	solids, closed := 0, 0
 	if cad {
 		if d.Solids == nil {
 			return invalid("solids", "missing for format %s", d.Format)
@@ -174,7 +184,7 @@ func (d Document) Validate() error {
 		if *d.ClosedSolids > *d.Solids {
 			return invalid("closed_solids", "%d exceeds solids %d", *d.ClosedSolids, *d.Solids)
 		}
-		closed = *d.ClosedSolids
+		solids, closed = *d.Solids, *d.ClosedSolids
 	} else {
 		if d.Solids != nil {
 			return invalid("solids", "not allowed for format %s", d.Format)
@@ -184,10 +194,36 @@ func (d Document) Validate() error {
 		}
 	}
 
-	if err := d.validateQuantity("volume", d.Volume, d.VolumeNullReason, cad, closed); err != nil {
+	if err := d.validateQuantity("volume", d.Volume, d.VolumeNullReason, cad, solids, closed); err != nil {
 		return err
 	}
-	return d.validateQuantity("area", d.Area, d.AreaNullReason, cad, closed)
+	if err := d.validateQuantity("area", d.Area, d.AreaNullReason, cad, solids, closed); err != nil {
+		return err
+	}
+	if (d.Volume == nil) != (d.Area == nil) {
+		return invalid("area", "volume and area are both null or both numbers, got volume %s and area %s", presence(d.Volume), presence(d.Area))
+	}
+	if d.Volume == nil && d.VolumeNullReason != d.AreaNullReason {
+		return invalid("area_null_reason", "%q differs from volume_null_reason %q: both describe the same shape", d.AreaNullReason, d.VolumeNullReason)
+	}
+	return nil
+}
+
+func presence(v *float64) string {
+	if v == nil {
+		return "null"
+	}
+	return "a number"
+}
+
+func (d Document) bboxAxes() int {
+	n := 0
+	for i := range d.BBox.Min {
+		if d.BBox.Max[i] > d.BBox.Min[i] {
+			n++
+		}
+	}
+	return n
 }
 
 func (d Document) validateBBox(dims int) error {
@@ -215,7 +251,7 @@ func (d Document) validateBBox(dims int) error {
 	return nil
 }
 
-func (d Document) validateQuantity(name string, v *float64, reason string, cad bool, closed int) error {
+func (d Document) validateQuantity(name string, v *float64, reason string, cad bool, solids, closed int) error {
 	reasonField := name + "_null_reason"
 	if (v == nil) != (reason != "") {
 		if v == nil {
@@ -230,6 +266,9 @@ func (d Document) validateQuantity(name string, v *float64, reason string, cad b
 		if !slices.Contains(reasonsByFormat[d.Format], reason) {
 			return invalid(reasonField, "%q is not allowed for format %s", reason, d.Format)
 		}
+		if rule, ok := cadCountRules[reason]; ok && cad && !rule(solids, closed) {
+			return invalid(reasonField, "%q contradicts solids %d and closed_solids %d", reason, solids, closed)
+		}
 		return nil
 	}
 	if d.Format == FormatDXF {
@@ -243,6 +282,9 @@ func (d Document) validateQuantity(name string, v *float64, reason string, cad b
 	}
 	if cad && closed < 1 {
 		return invalid(name, "a positive value needs at least one closed solid")
+	}
+	if name == "volume" && d.bboxAxes() < len(d.BBox.Min) {
+		return invalid(name, "a positive volume needs a bbox with extent on all %d axes, got %d", len(d.BBox.Min), d.bboxAxes())
 	}
 	return nil
 }
