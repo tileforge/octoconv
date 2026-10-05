@@ -1002,6 +1002,50 @@ func TestEnqueuePandocConvert(t *testing.T) {
 	}
 }
 
+func TestEnqueueCADJob(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set; skipping integration test")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	id := uuid.New()
+	if err := cl.EnqueueCADJob(context.Background(), id); err != nil {
+		t.Fatalf("EnqueueCADJob: %v", err)
+	}
+
+	opt, _ := RedisOpt()
+	insp := asynq.NewInspector(opt)
+	defer insp.Close()
+
+	infos, err := insp.ListPendingTasks(QueueCAD)
+	if err != nil {
+		t.Fatalf("ListPendingTasks: %v", err)
+	}
+	found := false
+	for _, ti := range infos {
+		p, err := ParseConvertPayload(ti.Payload)
+		if err == nil && p.JobID == id {
+			found = true
+			if ti.Type != TypeCADJob {
+				t.Errorf("enqueued type = %q, want %q", ti.Type, TypeCADJob)
+			}
+			if ti.MaxRetry != cl.cadMaxRetry {
+				t.Errorf("enqueued MaxRetry = %d, want %d", ti.MaxRetry, cl.cadMaxRetry)
+			}
+			_ = insp.DeleteTask(QueueCAD, ti.ID)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueCAD)
+	}
+}
+
 // TestEnqueueImageConvert enqueues a task and confirms it lands in the image
 // queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
 func TestEnqueueImageConvert(t *testing.T) {
@@ -1140,14 +1184,18 @@ func TestCADUniqueTTL(t *testing.T) {
 	}
 }
 
-func TestCADQueueIsNotYetExposed(t *testing.T) {
+func TestCADQueueIsExposed(t *testing.T) {
 	got := AllConvertQueues()
-	if len(got) != 9 {
-		t.Errorf("AllConvertQueues() has %d queues, want 9", len(got))
+	if len(got) != 10 {
+		t.Errorf("AllConvertQueues() has %d queues, want 10", len(got))
 	}
+	count := 0
 	for _, q := range got {
 		if q == QueueCAD {
-			t.Errorf("AllConvertQueues() contains %q before the class is exposed", QueueCAD)
+			count++
 		}
+	}
+	if count != 1 {
+		t.Errorf("AllConvertQueues() contains %q %d times, want exactly 1", QueueCAD, count)
 	}
 }

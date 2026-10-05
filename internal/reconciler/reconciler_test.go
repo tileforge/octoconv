@@ -168,6 +168,8 @@ type fakeEnqueuer struct {
 	probeCalls         []uuid.UUID
 	enqueueTectonicErr error
 	tectonicCalls      []uuid.UUID
+	enqueueCADErr      error
+	cadCalls           []uuid.UUID
 }
 
 func (f *fakeEnqueuer) EnqueueImageConvert(ctx context.Context, id uuid.UUID) error {
@@ -238,6 +240,13 @@ func (f *fakeEnqueuer) EnqueueTectonicConvert(ctx context.Context, id uuid.UUID)
 	defer f.mu.Unlock()
 	f.tectonicCalls = append(f.tectonicCalls, id)
 	return f.enqueueTectonicErr
+}
+
+func (f *fakeEnqueuer) EnqueueCADJob(ctx context.Context, id uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cadCalls = append(f.cadCalls, id)
+	return f.enqueueCADErr
 }
 
 // imageCallIDs returns a locked snapshot copy of imageCalls — used by the
@@ -318,6 +327,12 @@ func (f *fakeEnqueuer) tectonicCallIDs() []uuid.UUID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]uuid.UUID(nil), f.tectonicCalls...)
+}
+
+func (f *fakeEnqueuer) cadCallIDs() []uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]uuid.UUID(nil), f.cadCalls...)
 }
 
 // pandocCallIDs returns a locked snapshot copy of pandocCalls.
@@ -604,6 +619,7 @@ func TestSweepRoutesEveryEngineConstant(t *testing.T) {
 		convert.EnginePandoc:   (*fakeEnqueuer).pandocCallIDs,
 		convert.EngineProbe:    (*fakeEnqueuer).probeCallIDs,
 		convert.EngineTectonic: (*fakeEnqueuer).tectonicCallIDs,
+		convert.EngineCAD:      (*fakeEnqueuer).cadCallIDs,
 	}
 
 	var cases []struct {
@@ -696,16 +712,16 @@ func TestSweepAudioZeroSpuriousRecoveryUnderRepeatedTicks(t *testing.T) {
 	}
 }
 
-// TestSweepSkipsUnknownEngine uses "cad" as its unrecognized-engine fixture
+// TestSweepSkipsUnknownEngine uses "archive" as its unrecognized-engine fixture
 // (not "av" -- av gained its own routing case in this plan, per D-06/T-35-17,
-// and is now covered separately by TestSweepRoutesAVJobsToAVQueue). cad
+// and is now covered separately by TestSweepRoutesAVJobsToAVQueue). archive
 // remains genuinely out of scope (see the fail-closed default's comment in
 // reconciler.go), so it is still a valid fixture for the "never guess"
 // behavior this test guards.
 func TestSweepSkipsUnknownEngine(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "cad"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusActive, Engine: "archive"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}
@@ -1078,7 +1094,7 @@ func TestSweepExhaustedActionGuardedOnMarkFailed(t *testing.T) {
 func TestSweepUnroutableEngineActionStillUnguarded(t *testing.T) {
 	id := uuid.New()
 	store := &fakeStore{
-		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "cad"}},
+		stale:         []jobs.StaleJob{{ID: id, Status: jobs.StatusQueued, Engine: "archive"}},
 		recoveryCount: map[uuid.UUID]int{id: 0},
 	}
 	enq := &fakeEnqueuer{}

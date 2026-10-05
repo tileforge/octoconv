@@ -365,6 +365,7 @@ var envExampleEngineVar = map[string]string{
 	// would go on reporting success for the eight it does cover, which is the
 	// shape of "a scan of nothing is clean".
 	convert.EngineTectonic: "TECTONIC_ENGINE_TIMEOUT",
+	convert.EngineCAD:      "CAD_ENGINE_TIMEOUT",
 }
 
 // envExampleClaimsMeasured decides what .env.example's own prose says about

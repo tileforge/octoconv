@@ -209,6 +209,12 @@ func MIMEType(format string) string {
 		return "application/x-latex"
 	case "epub":
 		return "application/epub+zip"
+	case "step":
+		return "model/step"
+	case "iges":
+		return "model/iges"
+	case "stl":
+		return "model/stl"
 	case "mp3":
 		return "audio/mpeg"
 	case "wav":

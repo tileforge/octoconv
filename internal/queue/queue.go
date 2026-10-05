@@ -856,7 +856,7 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 // convert.go's Engine* constants (or vice versa). Plan 04 rewires
 // cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic}
+	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic, QueueCAD}
 }
 
 // probeBackoffSum sums ProbeRetryDelay(i) for i in [0, maxRetry).

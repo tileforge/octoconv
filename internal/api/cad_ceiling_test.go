@@ -3,8 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -183,5 +186,126 @@ func TestCADLyingSTLRefusedAtCreateWithoutUploadOrEnqueue(t *testing.T) {
 	}
 	if q.enqueueCalls != 0 {
 		t.Errorf("enqueueCalls = %d, want 0", q.enqueueCalls)
+	}
+}
+
+func cadStepPaddedTo(t *testing.T, size int) []byte {
+	t.Helper()
+	src := readCADFixture(t, "public/nist_stc_06_asme1_ap242-e3.stp")
+	i := bytes.Index(src, []byte("DATA;"))
+	if i < 0 {
+		t.Fatal("no DATA; line in nist_stc_06_asme1_ap242-e3.stp")
+	}
+	i += len("DATA;")
+	for i < len(src) && src[i] != '\n' {
+		i++
+	}
+	i++
+	out := make([]byte, 0, size)
+	out = append(out, src[:i]...)
+	out = append(out, bytes.Repeat([]byte{'\n'}, size-len(src))...)
+	return append(out, src[i:]...)
+}
+
+func cadIGESPaddedTo(t *testing.T, size int) []byte {
+	t.Helper()
+	src := readCADFixture(t, "synthetic/surfaces_only.iges")
+	lines := strings.Split(strings.TrimRight(string(src), "\n"), "\n")
+	last := lines[len(lines)-1]
+	var counts [3]int
+	for i, from := range []int{9, 17, 25} {
+		n, err := strconv.Atoi(strings.TrimSpace(last[from : from+7]))
+		if err != nil {
+			t.Fatalf("parse the terminate record %q: %v", last[:32], err)
+		}
+		counts[i] = n
+	}
+	extra := (size - len(src) + 80) / 81
+	var b strings.Builder
+	b.Grow(size + 1024)
+	b.WriteString(lines[0] + "\n")
+	pad := strings.Repeat(" ", 72)
+	for k := 0; k < extra; k++ {
+		fmt.Fprintf(&b, "%sS%07d\n", pad, k+2)
+	}
+	for _, l := range lines[1 : len(lines)-1] {
+		b.WriteString(l + "\n")
+	}
+	fmt.Fprintf(&b, "%-72sT0000001\n", fmt.Sprintf("S%7dG%7dD%7dP%7d", 1+extra, counts[0], counts[1], counts[2]))
+	return []byte(b.String())
+}
+
+func newCADCeilingServer(repo *fakeRepo, store *fakeStorage, q *fakeQueue) *Server {
+	return NewServer(repo, store, q, defaultFakePresetRepo(), defaultFakePresetAdmin(), &fakeUsageRepo{}, &fakeLimitsRepo{}, newFakeResolver(), healthyDeps(), Config{
+		MaxUploadBytes:        256 << 20,
+		InspectMaxUploadBytes: 256 << 20,
+		InspectMaxWorkBytes:   256 << 20,
+	})
+}
+
+func TestCADCeilingsAtTheDefaults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds inputs above 63 MiB and 135 MiB")
+	}
+	cases := []struct {
+		name     string
+		filename string
+		data     func(t *testing.T) []byte
+		message  string
+	}{
+		{"step", "big.step", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, "step file exceeds the 63 MiB limit for this conversion"},
+		{"stp_alias", "big.stp", func(t *testing.T) []byte { return cadStepPaddedTo(t, convert.CADMaxSTEPBytes+1) }, "step file exceeds the 63 MiB limit for this conversion"},
+		{"iges", "big.iges", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, "iges file exceeds the 135 MiB limit for this conversion"},
+		{"igs_alias", "big.igs", func(t *testing.T) []byte { return cadIGESPaddedTo(t, convert.CADMaxIGESBytes+1) }, "iges file exceeds the 135 MiB limit for this conversion"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.data(t)
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			srv := newCADCeilingServer(repo, store, q)
+
+			body, ct := multipartBody(t, tc.filename, "stl", data)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body=%.300s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), `"code":"`+errcode.PayloadTooLarge+`"`) || !strings.Contains(rec.Body.String(), tc.message) {
+				t.Errorf("body = %s, want code %s and message %q", rec.Body.String(), errcode.PayloadTooLarge, tc.message)
+			}
+			if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+				t.Errorf("a refused file must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+			}
+		})
+	}
+}
+
+func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
+	srv := newCADCeilingServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
+	rep := postCADInspect(t, srv, "LM8UU.step", readCADFixture(t, "public/LM8UU.step"))
+	found := false
+	for _, o := range rep.Operations {
+		if o.Engine != convert.EngineCAD {
+			continue
+		}
+		found = true
+		if o.Target != "stl" || o.Operation != convert.OperationConvert {
+			t.Errorf("offer %+v: want convert -> stl", o)
+		}
+		if o.MaxBytes != convert.CADMaxSTEPBytes {
+			t.Errorf("offer %+v: MaxBytes = %d, want %d", o, o.MaxBytes, int64(convert.CADMaxSTEPBytes))
+		}
+		if !o.Available {
+			t.Errorf("offer %+v: a small step file must be available", o)
+		}
+		if o.EstimateSource != EstimateSourceUnmeasured {
+			t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
+		}
+	}
+	if !found {
+		t.Fatalf("no cad offer for a step file; operations=%+v", rep.Operations)
 	}
 }

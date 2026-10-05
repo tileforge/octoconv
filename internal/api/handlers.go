@@ -1219,6 +1219,8 @@ func (s *Server) enqueueForEngine(ctx context.Context, engine string, id uuid.UU
 		return true, s.queue.EnqueueProbeSanitize(ctx, id)
 	case convert.EngineTectonic:
 		return true, s.queue.EnqueueTectonicConvert(ctx, id)
+	case convert.EngineCAD:
+		return true, s.queue.EnqueueCADJob(ctx, id)
 	}
 	return false, nil
 }

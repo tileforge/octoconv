@@ -62,6 +62,7 @@ Every job carries an **operation** as well as a format pair. `convert` is the de
 | `pandoc` | `md` `rst` `org` `latex` `html` `docx` `epub`, across a curated allowlist | pandoc |
 | `probe` | `sanitize`: `pdf` `docx` `xlsx` `pptx` `jpg` `png` rebuilt in the same format, and `docm` `xlsm` `pptm` rebuilt into their macro-free extension; also serves `POST /v1/inspect` | in-process |
 | `tectonic` | `latex` → `pdf`, single file or multi-file project | [tectonic][tectonic] |
+| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres | OCCT through cadquery-ocp |
 
 `GET /v1/formats` returns this table as the service itself sees it — derived from the
 converter registry, never hand-maintained.
@@ -105,6 +106,7 @@ cmd/
   pandoc-worker/      — markup-family conversion (pandoc)
   probe-worker/       — sanitize operation
   tectonic-worker/    — LaTeX → PDF, Landlock-confined
+  cad-worker/         — STEP and IGES → STL (OCCT), Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep
   mcp-server/         — stdio MCP server
   mcp-http/           — streamable-HTTP MCP server for in-cluster use
@@ -330,7 +332,7 @@ loudly instead of writing a limit no job can ever match:
      internal/convert/readme_sync_test.go. Add a class in Go and this list must follow;
      the count is deliberately not written out, so a new engine cannot make this
      paragraph false from a commit that never touches the README. -->
-`image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`
+`image`, `document`, `html`, `audio`, `av`, `ocr`, `pandoc`, `probe`, `tectonic`, `cad`
 
 `clear-limit` and `show-limits` deliberately do not validate the engine — a row written
 before that check existed must still be listable and removable through the CLI.

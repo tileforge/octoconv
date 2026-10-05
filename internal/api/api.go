@@ -129,6 +129,7 @@ type Enqueuer interface {
 	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueueCADJob(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -453,6 +454,7 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	// holding at 2 MiB. Changing either alone breaks the pair -- exactly what
 	// PROBE_MAX_PAGES=200 and PROBE_ENGINE_TIMEOUT=600s are to each other.
 	convert.EngineTectonic: 271 * time.Second,
+	convert.EngineCAD:      convert.CADDefaultEngineTimeout,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into
@@ -505,6 +507,7 @@ var defaultMaxEngineBytes = map[string]int64{
 	// NOT about memory, unlike pandoc's 3 MiB: the 2 MiB run peaked well inside
 	// the 1 GiB cgroup. This is a bound on TIME.
 	convert.EngineTectonic: 2 << 20,
+	convert.EngineCAD:      convert.CADMaxIGESBytes,
 }
 
 var defaultMaxFormatBytes = map[string]map[string]int64{

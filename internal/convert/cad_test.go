@@ -116,7 +116,7 @@ func (f cadFixture) goodMesh(t *testing.T) string {
 
 func cadOKGuard() string { return cadSay("guard", "ok", "", 0) }
 
-func TestCADConverterIsInvisibleAndComparable(t *testing.T) {
+func TestCADConverterIsRegisteredAndComparable(t *testing.T) {
 	c := CADConverter{}
 	if got := c.Pairs(); len(got) != 2 || got[0] != (Pair{"step", "stl"}) || got[1] != (Pair{"iges", "stl"}) {
 		t.Errorf("Pairs() = %v, want exactly step->stl and iges->stl", got)
@@ -127,11 +127,11 @@ func TestCADConverterIsInvisibleAndComparable(t *testing.T) {
 	if c != (CADConverter{}) {
 		t.Error("CADConverter values must compare equal with ==")
 	}
-	if len(AllEngines()) != 9 || slices.Contains(AllEngines(), EngineCAD) {
-		t.Errorf("AllEngines() = %v, want nine classes without cad", AllEngines())
+	if len(AllEngines()) != 10 || !slices.Contains(AllEngines(), EngineCAD) {
+		t.Errorf("AllEngines() = %v, want ten classes including cad", AllEngines())
 	}
-	if Default.Supports("step", "stl") || Default.Supports("iges", "stl") {
-		t.Error("Default registers a cad pair")
+	if !Default.Supports("step", "stl") || !Default.Supports("iges", "stl") {
+		t.Error("Default does not register the cad pairs")
 	}
 }
 

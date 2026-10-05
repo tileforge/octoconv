@@ -196,6 +196,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # PR#2 finding-1: unlike PANDOC_MAX_RETRY/PANDOC_ENGINE_TIMEOUT above
       # (which are IN-02 queue.NewClient() parity values), this one is read
@@ -322,6 +324,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -453,6 +457,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -574,6 +580,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
 
@@ -682,6 +690,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       VERAPDF_TIMEOUT: "60s"
       METRICS_ADDR: "127.0.0.1:9090"
@@ -784,6 +794,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     # No /dev/shm sizing needed (G-69-3, measured) -- see
@@ -903,6 +915,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
     deploy:
@@ -1050,6 +1064,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       METRICS_ADDR: "127.0.0.1:9090"
       # PUSH-02 (Phase 42): av-worker signs + fires opt-in inline progress
@@ -1195,6 +1211,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       PANDOC_ENGINE_TIMEOUT: "65s" # measured, 49-03 -- see pandoc-worker service comment
       # queue.NewClient() (constructed by cmd/ocr-worker/main.go) also reads
       # every OTHER engine class's retry/timeout vars unconditionally, even
@@ -1351,6 +1369,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       # queue.NewClient() (constructed by cmd/pandoc-worker/main.go) also
       # reads every OTHER engine class's retry/timeout vars unconditionally,
       # even though this process only runs the pandoc engine (DEBT-05).
@@ -1519,6 +1539,8 @@ services:
       # engine's own rerun maximum. Full derivation in .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       # PROBE_MAX_PAGES (Phase 63, PROBE-02): pdfinfo counts the pages here,
       # before the first ghostscript pass, and the rejection is TERMINAL -- the
       # deliberate opposite of the timeout above, which stays transient because
@@ -1627,6 +1649,8 @@ services:
       # measured at: see .env.example.
       TECTONIC_ENGINE_TIMEOUT: "271s" # measured, see .env.example
       TECTONIC_MAX_RETRY: "2"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
       # What one document may COST, as opposed to how long it may occupy
       # the clock. Interpolated from .env so the documented
       # `cp .env.example .env && docker compose up` path can actually
@@ -1676,6 +1700,59 @@ services:
           # measurement must run at exactly these limits to mean anything.
           cpus: "2.0"
           memory: 1g
+
+  cad-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.cad-worker
+    container_name: octoconv-cad-worker
+    restart: always
+    stop_grace_period: 426s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://octo:octo-pass@postgres:5432/octo_db
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: octoconv
+      S3_USE_SSL: "false"
+      CAD_WORKER_CONCURRENCY: "1"
+      CAD_ENGINE_TIMEOUT: "406s"
+      CAD_MAX_RETRY: "2"
+      CAD_GUARD_TIMEOUT: "30s"
+      CAD_MESH_TIMEOUT: "316s"
+      CAD_SANDBOX_DISABLED: "${CAD_SANDBOX_DISABLED:-}"
+      IMAGE_MAX_RETRY: "4"
+      ENGINE_TIMEOUT: "120s"
+      DOCUMENT_MAX_RETRY: "3"
+      DOCUMENT_ENGINE_TIMEOUT: "300s"
+      HTML_MAX_RETRY: "3"
+      HTML_ENGINE_TIMEOUT: "60s"
+      AUDIO_MAX_RETRY: "3"
+      AUDIO_ENGINE_TIMEOUT: "742s"
+      AV_MAX_RETRY: "2"
+      AV_ENGINE_TIMEOUT: "753s"
+      OCR_MAX_RETRY: "2"
+      OCR_ENGINE_TIMEOUT: "744s"
+      PANDOC_MAX_RETRY: "2"
+      PANDOC_ENGINE_TIMEOUT: "65s"
+      PROBE_ENGINE_TIMEOUT: "600s"
+      PROBE_MAX_RETRY: "2"
+      TECTONIC_ENGINE_TIMEOUT: "271s"
+      TECTONIC_MAX_RETRY: "2"
+      METRICS_ADDR: "127.0.0.1:9090"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
 
   # Read-only asynq queue-inspection dashboard (OBS-03). Bound to 127.0.0.1
   # only, never 0.0.0.0 — no auth layer needed since it's unreachable outside

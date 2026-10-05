@@ -224,6 +224,7 @@ type fakeQueue struct {
 	enqueuedPandoc   uuid.UUID
 	enqueuedProbe    uuid.UUID
 	enqueuedTectonic uuid.UUID
+	enqueuedCAD      uuid.UUID
 	// enqueueCalls counts every Enqueue* invocation across all seven engine
 	// methods, so a quota test can assert "never enqueued" with an exact
 	// integer (52-04).
@@ -280,6 +281,12 @@ func (f *fakeQueue) EnqueueProbeSanitize(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeQueue) EnqueueTectonicConvert(_ context.Context, id uuid.UUID) error {
 	f.enqueuedTectonic = id
+	f.enqueueCalls++
+	return nil
+}
+
+func (f *fakeQueue) EnqueueCADJob(_ context.Context, id uuid.UUID) error {
+	f.enqueuedCAD = id
 	f.enqueueCalls++
 	return nil
 }
@@ -4014,6 +4021,31 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	}
 }
 
+func TestCreateJobCADTakesNoOptions(t *testing.T) {
+	for _, opts := range []string{`{"scale":2}`, `{"pdf_profile":"pdf/a-2b"}`} {
+		t.Run(opts, func(t *testing.T) {
+			repo, store, queue := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			srv, _ := newTestServer(repo, store, queue)
+
+			body, ct := multipartBodyWithOpts(t, "in.step", "stl", readCADFixture(t, "public/LM8UU.step"), opts)
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+			}
+			if store.uploaded || store.uploadCalls != 0 {
+				t.Error("rejected opts must not reach storage.Upload")
+			}
+			if queue.enqueueCalls != 0 || queue.enqueuedCAD != uuid.Nil {
+				t.Errorf("rejected opts must not enqueue: enqueueCalls=%d enqueuedCAD=%s", queue.enqueueCalls, queue.enqueuedCAD)
+			}
+		})
+	}
+}
+
 func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 	type fixture struct {
 		filename string
@@ -4035,6 +4067,7 @@ func TestCreateJobRoutesEveryEngineToItsQueue(t *testing.T) {
 		// negative half -- every other engine's accessor must stay uuid.Nil --
 		// and a separate test would assert only the positive half.
 		{convert.EngineTectonic, fixture{"in.tex", "pdf", func(*testing.T) []byte { return latexFixture() }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedTectonic }},
+		{convert.EngineCAD, fixture{"in.step", "stl", func(t *testing.T) []byte { return readCADFixture(t, "public/LM8UU.step") }}, func(q *fakeQueue) uuid.UUID { return q.enqueuedCAD }},
 	}
 
 	allAccessors := make(map[string]func(*fakeQueue) uuid.UUID, len(cases))

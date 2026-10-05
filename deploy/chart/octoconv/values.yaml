@@ -217,6 +217,16 @@ tectonicWorker:
       cpu: "2"
       memory: "1Gi"
 
+cadWorker:
+  image:
+    repository: "octoconv-cad-worker"
+  replicas: 1
+  terminationGracePeriodSeconds: 426
+  resources:
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+
 chromiumWorker:
   image:
     repository: "octoconv-chromium-worker"
@@ -507,4 +517,11 @@ keda:
     # OTHER way on its own measurement (180s -> 600s, profile -> 900s), which is
     # why this is recorded as a checked outcome and not as agreement.
     scaleDownStabilizationSeconds: null
+    minReplicaCount: 0
+  cad:
+    threshold: "1"
+    maxReplicaCount: 2
+    pollingInterval: 10
+    cooldownPeriod: 90
+    scaleDownStabilizationSeconds: 900
     minReplicaCount: 0

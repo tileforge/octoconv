@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
+
+	"github.com/apaderin/octoconv/internal/convert"
 )
 
 // Client enqueues conversion tasks. Wraps an asynq.Client.
@@ -106,6 +108,8 @@ type Client struct {
 	// queue) equivalents.
 	tectonicMaxRetry  int
 	tectonicUniqueTTL time.Duration
+	cadMaxRetry       int
+	cadUniqueTTL      time.Duration
 }
 
 // NewClient builds a queue client from REDIS_ADDR, IMAGE_MAX_RETRY (default
@@ -180,6 +184,8 @@ func NewClient() (*Client, error) {
 	// (IN-02) -- a value that reaches one process and not another does not
 	// error, it silently produces duplicate processing.
 	tectonicEngineTimeout := envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second)
+	cadMaxRetry := envInt("CAD_MAX_RETRY", 2)
+	cadEngineTimeout := envDuration("CAD_ENGINE_TIMEOUT", convert.CADDefaultEngineTimeout)
 	return &Client{
 		c:                 asynq.NewClient(opt),
 		imageMaxRetry:     imageMaxRetry,
@@ -201,6 +207,8 @@ func NewClient() (*Client, error) {
 		probeUniqueTTL:    ProbeUniqueTTL(probeMaxRetry, probeEngineTimeout),
 		tectonicMaxRetry:  tectonicMaxRetry,
 		tectonicUniqueTTL: TectonicUniqueTTL(tectonicMaxRetry, tectonicEngineTimeout),
+		cadMaxRetry:       cadMaxRetry,
+		cadUniqueTTL:      CADUniqueTTL(cadMaxRetry, cadEngineTimeout),
 	}, nil
 }
 
@@ -314,6 +322,17 @@ func (c *Client) EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) er
 	}
 	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
 		return fmt.Errorf("enqueue tectonic convert %s: %w", jobID, err)
+	}
+	return nil
+}
+
+func (c *Client) EnqueueCADJob(ctx context.Context, jobID uuid.UUID) error {
+	task, err := NewCADJobTask(jobID, c.cadMaxRetry, c.cadUniqueTTL)
+	if err != nil {
+		return err
+	}
+	if _, err := c.c.EnqueueContext(ctx, task); err != nil {
+		return fmt.Errorf("enqueue cad job %s: %w", jobID, err)
 	}
 	return nil
 }
