@@ -89,7 +89,7 @@ instead of about their document. Both name the offending package in `message`.
 
 ## Synchronous error codes (HTTP 4xx / 429)
 
-Seventeen codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
+Twenty-one codes, one per class of rejection (D-02). Granularity is by failure CLASS, not by
 `writeError` call site — the specific detail of what went wrong always lives in `message`,
 never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 
@@ -110,8 +110,14 @@ never encoded as a finer-grained code. Source: `internal/errcode/errcode.go`.
 | `quota_exceeded` | 429 | v1.12 admission-gate quota rejection — this exact string is already on the wire and frozen (ERRC-V2-01 predates this phase) | Respect the accompanying `Retry-After` header; this is distinct from `rate_limited` and never a client bug |
 | `rate_limited` | 429 | `internal/ratelimit` per-client or pre-auth IP rate limit — this exact string is already on the wire and frozen | Respect the accompanying `Retry-After` header; back off and retry later |
 | `unsupported_package` | 422 | The `.tex` preamble loads a `\usepackage` this deployment's TeX bundle cannot resolve; refused before the upload is stored. Same code string as the async `unsupported_package` below — one code space (D-03). NOT `invalid_request`: the request is well-formed and the document is valid LaTeX; it is this deployment's bundle that cannot serve it | `message` names the package: remove that `\usepackage`, or ask for the bundle to be extended. Do not retry unmodified. Note the API's scan is bounded, so a package hidden past the window (or behind `\input`/a macro) is refused later, in the job's `error_code`, with this same code |
+| `truncated_cad_file` | 422 | A STEP, IGES, DXF or STL upload starts like its format but its structure ends early: no `END-ISO-10303-21;` or no `HEADER;` for STEP, IGES section counts that do not match the records, no DXF `0`/`EOF` pair, or an STL whose size does not equal 84 + 50 x triangle count and that is not a complete ASCII STL. One code for every format (D-02); the format is named in `message` | Upload the complete file; do not retry unmodified |
+| `ambiguous_stl` | 422 | An STL that is valid both as binary (size equals 84 + 50 x triangle count) and as ASCII (`solid` ... `endsolid`), so no reader can be chosen safely | Re-export as plain binary STL |
+| `binary_dxf_unsupported` | 422 | A DXF in the binary encoding (AutoCAD Binary DXF sentinel) | Re-export as ASCII DXF |
+| `dwg_unsupported` | 422 | A DWG file (`AC10xx` signature) | Re-export as DXF |
 | `inspect_busy` | 429 | The service has exhausted its bounded concurrency budget for synchronous `inspect` parsing right now and refuses to accept another one immediately — the request is neither queued nor parsed (58-CONTEXT.md D-06, mechanism 2); distinct from `rate_limited` (own request rate) and `quota_exceeded` (own daily/concurrent job budget) — this is the service's own capacity, not the client's | Respect the accompanying `Retry-After` header; retry later unchanged — do not reduce file size or alter the request, this is not a property of the request |
 | `internal_error` | 5xx | Anything the client cannot act on (unexpected server-side failure) | Retry later or escalate; do not attempt to parse `message` for a remediation |
+
+CAD content checks run only for uploads whose extension is `step`, `stp`, `iges`, `igs`, `stl`, `dxf` or `dwg`. Compressed or binary-flag IGES, pre-R2.5 DWG signatures with a dot (`AC1.40`, `AC2.10`), a binary STL uploaded under another CAD extension, and CAD content under a non-CAD extension are not recognized and get `invalid_request` (unrecognized content). While no CAD engine is registered, a valid CAD file is answered `unsupported_conversion`.
 
 ## Asynchronous job-failure codes (`error_code`)
 

@@ -130,6 +130,10 @@ components:
             - rate_limited
             - inspect_busy
             - unsupported_package
+            - truncated_cad_file
+            - ambiguous_stl
+            - binary_dxf_unsupported
+            - dwg_unsupported
             - internal_error
       required: [error, code]
 
