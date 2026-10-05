@@ -76,7 +76,7 @@ func main() {
 	}
 	cancelPreflight()
 	if len(sandboxHelper) > 0 {
-		log.Printf("🔒 cad sandbox proven: cad-guard and cad-mesh ran inside the job directory and were denied a file outside it")
+		log.Printf("🔒 cad sandbox proven: cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it")
 	}
 
 	pool, err := db.Connect(ctx)

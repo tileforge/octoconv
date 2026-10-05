@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/apaderin/octoconv/internal/measurements"
 )
 
 type cadPreflightFakes struct {
@@ -18,6 +21,23 @@ type cadPreflightFakes struct {
 	meshInsideSTL []byte
 	meshTriangles int
 	meshOutside   string
+	draft         cadMeasureDraft
+	renderFrame   func(t *testing.T, size int, transparent bool) []byte
+	renderOutside string
+}
+
+func inchBoxDraft() cadMeasureDraft {
+	return cadMeasureDraft{
+		Format:        "step",
+		DeclaredUnit:  "inch",
+		AppliedFactor: floatp(25.4),
+		BBox:          measurements.BBox{Min: []float64{0, 0, 0}, Max: []float64{25.4, 50.8, 76.2}},
+		Solids:        intp(1),
+		ClosedSolids:  intp(1),
+		Volume:        floatp(6 * 25.4 * 25.4 * 25.4),
+		Area:          floatp(22 * 25.4 * 25.4),
+		Triangles:     12,
+	}
 }
 
 func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
@@ -32,6 +52,9 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		meshInsideSTL: cadBoxSTL(25.4, 50.8, 76.2),
 		meshTriangles: 12,
 		meshOutside:   "deny",
+		draft:         inchBoxDraft(),
+		renderFrame:   renderPNGBytes,
+		renderOutside: "deny",
 	}
 }
 
@@ -49,12 +72,35 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	}
 	fakeEngine(t, dir, "cad-guard", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
 
-	meshOK := fmt.Sprintf("cp '%s' \"$4\"\n%s", stl, cadSayTriangles("mesh", "ok", "", p.meshTriangles, 0))
+	draftJSON, err := json.Marshal(p.draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := filepath.Join(dir, "draft.json")
+	if err := os.WriteFile(draft, draftJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meshOK := fmt.Sprintf("cp '%s' \"$4\"\nif [ -n \"$8\" ]; then cp '%s' \"$8\"; fi\n%s", stl, draft, cadSayTriangles("mesh", "ok", "", p.meshTriangles, 0))
 	meshOutside := cadSay("mesh", "unreadable", "read_failed", 2)
 	if p.meshOutside == "leak" {
 		meshOutside = meshOK
 	}
 	fakeEngine(t, dir, "cad-mesh", fmt.Sprintf("case \"$3\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", meshOK, meshOutside))
+
+	size := cadPreflightFrame
+	for _, tr := range []bool{false, true} {
+		frame := filepath.Join(dir, fmt.Sprintf("frame-%v.png", tr))
+		if err := os.WriteFile(frame, p.renderFrame(t, size, tr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	renderDraw := "case \"$6\" in\ntransparent) cp '" + filepath.Join(dir, "frame-true.png") + "' \"$8\";;\n*) cp '" + filepath.Join(dir, "frame-false.png") + "' \"$8\";;\nesac\n" +
+		`printf 'CADVERDICT {"stage":"render","verdict":"ok","reason":"","triangles":12,"view":"%s","size":%s,"background":"%s"}\n' "$2" "$4" "$6"` + "\nexit 0\n"
+	renderOutside := cadSay("render", "unreadable", "read_failed", 2)
+	if p.renderOutside == "leak" {
+		renderOutside = renderDraw
+	}
+	fakeEngine(t, dir, "cad-render", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", renderDraw, renderOutside))
 	pathWith(t, dir)
 
 	helper, _ := fakeSandboxHelper(t)
@@ -95,6 +141,15 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"inch output scaled twice", func(p *cadPreflightFakes) { p.meshInsideSTL = cadBoxSTL(645.16, 1290.32, 1935.48) }, []string{"units"}},
 		{"the mesh reports a different triangle count than its file", func(p *cadPreflightFakes) { p.meshTriangles = 11 }, []string{"mesh", "verdict"}},
 		{"the guard counts a different number of entities", func(p *cadPreflightFakes) { p.guardEntities++ }, []string{"guard", "entities"}},
+		{"the render meshes a blank frame", func(p *cadPreflightFakes) {
+			p.renderFrame = func(t *testing.T, size int, _ bool) []byte { return blankPNGBytes(t, size) }
+		}, []string{"pixel judge"}},
+		{"the render draws the outside file", func(p *cadPreflightFakes) { p.renderOutside = "leak" }, []string{"render", "confinement"}},
+		{"the measured unit is not inch", func(p *cadPreflightFakes) { p.draft.DeclaredUnit, p.draft.AppliedFactor = "mm", floatp(1) }, []string{"units", "inch"}},
+		{"the volume is not the inch box volume", func(p *cadPreflightFakes) { *p.draft.Volume *= 2 }, []string{"units", "volume"}},
+		{"the area is not the inch box area", func(p *cadPreflightFakes) { *p.draft.Area *= 2 }, []string{"units", "area"}},
+		{"the extents are not 1 2 3", func(p *cadPreflightFakes) { p.draft.BBox.Max = []float64{25.4, 50.8, 25.4} }, []string{"units", "extents"}},
+		{"the unit is not declared", func(p *cadPreflightFakes) { p.draft.DeclaredUnit = "" }, []string{"units"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +165,39 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCADPreflightDoesNotTakeASandboxFailureOnTheOutsideRenderForADenial(t *testing.T) {
+	p := newCADPreflightFakes(t)
+	c := p.converter(t)
+	helper, _ := fakeSandboxHelper(t)
+	wrapper := filepath.Join(t.TempDir(), "refuse-outside-render.sh")
+	body := fmt.Sprintf("#!/bin/bash\nfor a in \"$@\"; do\n  case \"$a\" in\n    */out.stl) case \"$*\" in *cad-preflight-outside-*cad-render*|*cad-render*cad-preflight-outside-*) exit 78;; esac;;\n  esac\ndone\nexec %q \"$@\"\n", helper[0])
+	if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c = c.WithSandbox([]string{wrapper, helper[1]})
+	err := CADPreflight(context.Background(), c)
+	if err == nil {
+		t.Fatal("CADPreflight accepted a sandbox that could not be established for the outside render")
+	}
+	if !strings.Contains(err.Error(), "the cad render stage could not establish its sandbox") {
+		t.Errorf("error %q does not name the render stage as the one without a sandbox", err)
+	}
+}
+
+func TestCADRenderReadOnlyIsGrantedToNoOutsideDirectory(t *testing.T) {
+	w, cleanup, err := newPreflightWorkspace("cad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := w.requireOutsideGrants(cadRenderReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.requireOutsideGrants([]string{w.outsideDir}); err == nil {
+		t.Fatal("requireOutsideGrants accepted a grant that covers the outside directory")
 	}
 }
 
