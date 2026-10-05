@@ -123,6 +123,41 @@ func TestJudgeCADPNGAcceptsW15ThinBand(t *testing.T) {
 	}
 }
 
+func TestJudgeCADPNGAcceptsW15ThinFrameAt256WithFewerPixelsThanItsExtent(t *testing.T) {
+	img := pixFrame(256, pixWhite)
+	pixRect(img, 118, 25, 118, 89, pixDark)
+	pixRect(img, 137, 110, 137, 230, pixLight)
+	f, err := pixJudge(t, pixEncode(t, img), 256, "opaque")
+	if err != nil {
+		t.Fatalf("W15 at 256 rejected: %v", err)
+	}
+	if f.Mode != "thin" || f.Count != 186 || f.DarkCount != 65 || f.BoxW != 20 || f.BoxH != 206 || f.Margin != 25 {
+		t.Errorf("facts = %+v, want thin, 186 part pixels, 65 dark, 20 x 206, margin 25", f)
+	}
+	if f.Count >= max(f.BoxW, f.BoxH) {
+		t.Errorf("count %d is not below the %d px extent: the case no longer exercises the span check", f.Count, max(f.BoxW, f.BoxH))
+	}
+}
+
+func TestJudgeCADPNGRejectsSparseNoise(t *testing.T) {
+	scattered := pixFrame(256, pixWhite)
+	for _, p := range [][2]int{{30, 30}, {225, 30}, {30, 225}, {225, 225}, {128, 128}} {
+		scattered.SetNRGBA(p[0], p[1], pixDark)
+	}
+	_, err := pixJudge(t, pixEncode(t, scattered), 256, "opaque")
+	requireRejected(t, err, "J4")
+
+	dotted := pixFrame(256, pixWhite)
+	for y := 25; y <= 230; y += 20 {
+		dotted.SetNRGBA(128, y, pixDark)
+	}
+	f, err := pixJudge(t, pixEncode(t, dotted), 256, "opaque")
+	requireRejected(t, err, "J4")
+	if float64(f.BoxW)/float64(f.BoxH) >= cadThinAspectMax {
+		t.Errorf("box %d x %d is not thin: the dotted line must fail on dark density, not on aspect", f.BoxW, f.BoxH)
+	}
+}
+
 func TestJudgeCADPNGAcceptsEdgeOnSliver(t *testing.T) {
 	img := pixFrame(1280, pixWhite)
 	pixRect(img, 77, 639, 1202, 640, pixDark)

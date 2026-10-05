@@ -171,9 +171,6 @@ func cadJudgeFacts(f *CADPixelFacts, size int, background string, opaquePx int) 
 		return fmt.Errorf("%w: J1 the frame holds no part pixels", ErrCADRenderRejected)
 	}
 	long, short := max(f.BoxW, f.BoxH), min(f.BoxW, f.BoxH)
-	if f.Count < long {
-		return fmt.Errorf("%w: J1 %d part pixels cannot span a %d px extent", ErrCADRenderRejected, f.Count, long)
-	}
 	if float64(long) < cadExtentMin*float64(size) {
 		return fmt.Errorf("%w: J2 the long side is %d px of a %d px frame", ErrCADRenderRejected, long, size)
 	}
@@ -183,6 +180,9 @@ func cadJudgeFacts(f *CADPixelFacts, size int, background string, opaquePx int) 
 	aspect := float64(short) / float64(long)
 	switch {
 	case f.Frac >= cadBlobFracMin && f.Frac <= cadBlobFracMax && f.Dark >= cadBlobDarkMin:
+		if f.Count < long {
+			return fmt.Errorf("%w: J1 %d part pixels cannot span a %d px extent", ErrCADRenderRejected, f.Count, long)
+		}
 		f.Mode = "blob"
 	case aspect < cadThinAspectMax && float64(f.DarkCount) >= cadThinDarkPerLongSide*float64(long):
 		f.Mode = "thin"
