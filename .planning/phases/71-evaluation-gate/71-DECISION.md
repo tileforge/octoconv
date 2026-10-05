@@ -11,9 +11,19 @@
 (нативная, OrbStack), kernel 7.0.14-orbstack-00380-ga7e0a2dc9535, image_id
 sha256:79f5f6f41f8529a05378e4e81867f0fcd73883be1438b50e1a238dbf8ae91d01, OCP 7.9.3.1.1, vtk 9.7.1, ezdxf 1.4.4,
 mesa 22.3.6-1+deb12u2, rsvg-convert 2.54.7, Python 3.11.2, `debian:bookworm-slim` по digest
-(`evidence/71-01-lock.txt#BASE_IMAGE`), USER nobody. Замеры RSS и времени - `--cpus 2`, лимит памяти на контейнер
-(`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#HDR`). Хост шумный: 12 контейнеров чужих проектов работали всё время
-(`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#NOISE`).
+(`evidence/71-01-lock.txt#BASE_IMAGE`), USER nobody. Замеры RSS и времени для лимитов - `--cpus 2`, лимит памяти на контейнер, пин
+7.9.3.1.1, **`occt_parallel=off`, `LP_NUM_THREADS=2`** (выбранные настройки), образ `full` image_id
+sha256:cce9074fe380 (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#HDR`). Хост шумный: 12 контейнеров
+чужих проектов работали всё время (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#NOISE`).
+
+**Конфигурация строк evidence.** Все лимиты, потолки и капы ниже выведены только из строк с тегами `par=off,lp=2`
+(`evidence/71-06-limits.txt#CONFIG`: 448 строк использовано, 662 строки другой конфигурации исключены).
+Первый замер 4 GiB (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`), лестницы 2 GiB и 1 GiB
+(`evidence/71-06-ladder-2g.txt`, `evidence/71-06-ladder-1g.txt`) и лестница пина 8.0.1.0.0
+(`evidence/71-06-ladder-4g-ocp8.0.1.0.0.txt`) сняты при `par=on,lp=default`: это история, ни одно число
+сводки из них не получено. Причина перемера (замечание ревью PR #32, решение пользователя): при `lp=2` RSS
+рендера выше (1113 против 873 MiB на STL 100 MiB в `evidence/71-06-threads.txt`), а при `par=off` RSS меша
+ниже, поэтому прежние лимиты рендера были оптимистичны.
 
 ## Сводка DECISION (машиночитаемая)
 
@@ -22,18 +32,19 @@ DECISION,key=ocp_pin,value=7.9.3.1.1,evidence=evidence/71-06-limits.txt#PIN_DECI
 DECISION,key=renderer,value=vtk-9.7.1+osmesa,evidence=evidence/71-04-render.txt#RENDER_SUMMARY
 DECISION,key=renderer_user_approval,value=approved_2026-10-04,evidence=71-05-SUMMARY.md#User acceptance (D-11 step 2); evidence/71-05-contact-f3d.png
 DECISION,key=dxf_path,value=ezdxf-svg+rsvg-convert,evidence=evidence/71-04-helpers.txt#SUMMARY
-DECISION,key=memory_limit_mib,value=4096,evidence=evidence/71-06-limits.txt#MEMORY_LIMIT_DECISION
-DECISION,key=ceiling_step_mib,value=73,evidence=evidence/71-06-limits.txt#CEILING
-DECISION,key=ceiling_iges_mib,value=137,evidence=evidence/71-06-limits.txt#CEILING
-DECISION,key=ceiling_stl_binary_mib,value=278,evidence=evidence/71-06-limits.txt#CEILING
-DECISION,key=ceiling_stl_ascii_mib,value=1363,evidence=evidence/71-06-limits.txt#CEILING
-DECISION,key=ceiling_dxf_mib,value=217,evidence=evidence/71-06-limits.txt#CEILING
-DECISION,key=cap_render_triangles,value=4266184,evidence=evidence/71-06-limits.txt#CAP
-DECISION,key=cap_step_entities,value=759890,evidence=evidence/71-06-limits.txt#CAP
-DECISION,key=cap_nauo,value=2042,evidence=evidence/71-06-limits.txt#CAP
-DECISION,key=cap_dxf_expanded_inserts,value=172677,evidence=evidence/71-06-limits.txt#CAP
-DECISION,key=lp_num_threads,value=2,evidence=evidence/71-06-limits.txt#THREADS_DECISION
-DECISION,key=occt_parallel,value=off,evidence=evidence/71-06-limits.txt#THREADS_DECISION
+DECISION,key=memory_limit_mib,value=4096,evidence=evidence/71-06-limits.txt#MEMORY_LIMIT_DECISION; evidence/71-06-limits.txt#L_SENSITIVITY
+DECISION,key=ceiling_step_mib,value=63,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=ceiling_iges_mib,value=155,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=ceiling_stl_binary_mib,value=277,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=ceiling_stl_ascii_mib,value=1353,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=ceiling_dxf_mib,value=118,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=cap_render_triangles,value=4014975,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=cap_step_entities,value=754762,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=cap_nauo,value=1518,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=cap_dxf_expanded_inserts,value=170031,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=lp_num_threads,value=2,evidence=evidence/71-06-limits.txt#THREADS_DECISION; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#HDR
+DECISION,key=occt_parallel,value=off,evidence=evidence/71-06-limits.txt#THREADS_DECISION; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#HDR
+DECISION,key=limits_config,value=par=off;lp=2,evidence=evidence/71-06-limits.txt#CONFIG; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#HDR
 DECISION,key=quality_draft,value=0.004/0.5,evidence=evidence/71-06-limits.txt#QUALITY
 DECISION,key=quality_standard,value=0.001/0.35,evidence=evidence/71-06-limits.txt#QUALITY
 DECISION,key=quality_fine,value=0.0003/0.2,evidence=evidence/71-06-limits.txt#QUALITY
@@ -56,14 +67,16 @@ DECISION,key=commit_threshold,value=2MiB-per-file;15MiB-total;ASSUMED-A5,evidenc
 | Ядро геометрии | колесо `cadquery-ocp-novtk` **7.9.3.1.1** | пользователь, вопреки результату формулы (8.0.1.0.0) |
 | Рендерер | VTK 9.7.1 + OSMesa, f3d только ориентир | пользователь (`approved`, контактные листы), D-11 |
 | 2D-путь DXF | ezdxf -> SVG -> `rsvg-convert` | по замеру |
-| Лимит памяти пода `cad` | 4096 MiB (во флоте 1Gi, один сервис 2Gi) | по формуле D-06/D-07 |
+| Лимит памяти пода `cad` | 4096 MiB (во флоте 1Gi, один сервис 2Gi) | по формуле D-06/D-07 на строках `par=off,lp=2`; не меняется при перемере (`L_SENSITIVITY`) |
+| Конфигурация замера лимитов | 4 GiB перемерен при `occt_parallel=off`, `LP_NUM_THREADS=2` (ревью PR #32, P1) | пользователь: «перемерить 4g на 7.9.3.1.1» |
 | D-18 | `record`: библиотеки остаются, лицензии записаны | пользователь (`evidence/71-01-decisions.txt`) |
 | `libssl3` в разовом образе f3d | допущен только там | пользователь |
 | Lock-файлы Python | допущены, установка только `pip --require-hashes` | пользователь |
 
 Открыто и переходит дальше (подробности в разделах ниже): нужен OK юриста (не блокирует); защита времени
 рендера в фазе 76 (стек копий: 61,6 с против 1,2 с); приватный поток не замерен; наборы Landlock зависят от
-`lp=2` и `parallel=off`; лимит 4 GiB отклоняется от флотского 1Gi; amd64 не замерен.
+`lp=2` и `parallel=off`; лимит 4 GiB отклоняется от флотского 1Gi; лестницы 2 GiB и 1 GiB и сравнение пинов сняты при
+`par=on,lp=default` (история); amd64 не замерен.
 
 ## Ядро (EVAL-01)
 
@@ -76,7 +89,10 @@ DECISION,key=commit_threshold,value=2MiB-per-file;15MiB-total;ASSUMED-A5,evidenc
 | (b) k_worst STEP-меша минимум на 15% ниже | 7.9: 27.305, 8.0: 22.144, разница 18.9% | да, но не устойчиво |
 | (c) сумма времени мешера минимум на 20% ниже по 53 общим файлам | 2449.73 с против 2304.32 с, 5.9% | нет |
 
-Источник: `evidence/71-06-limits.txt#PIN_FORMULA`. Порог (b) зависит от определения RSS
+Источник: `evidence/71-06-limits.txt#PIN_FORMULA`. Пороги посчитаны по строкам `par=on,lp=default` обоих пинов
+(`evidence/71-06-limits.txt#PIN_CONFIG`): лестница 8.0.1.0.0 есть только в этой конфигурации, и пины сравниваются на
+строках одной конфигурации; перемер 4 GiB при `par=off,lp=2` в сравнение не входит и результат формулы не меняет
+(`PIN_FORMULA`, `PIN_ROBUSTNESS` совпали с прежними байт в байт). Порог (b) зависит от определения RSS
 (`evidence/71-06-limits.txt#PIN_ROBUSTNESS`): 18.9% по max(`ru_maxrss`, `memory.peak`), 4.8% только по `ru_maxrss`,
 8.8% только по `memory.peak`; наклон на 40-200 MiB одинаков (14.81 MiB на MiB у 7.9.3.1.1 и 14.88 у 8.0.1.0.0),
 разница - в базе около 16 MiB. Причины пользователя: выигрыш не устойчив, 8.0 добавляет `libjasper`, `libbz2` и
@@ -126,8 +142,8 @@ views_differ=4,determinism=identical` (`evidence/71-04-render.txt#RENDER_SUMMARY
 с `content=identical`; `evidence/71-07-landlock.txt#LANDLOCK_SUMMARY`).
 
 Время при `--cpus=2`: 35 реальных рендеров 1280 px - от 0.84 до 1.04 с стенного времени, child RSS 270-274 MiB
-(`evidence/71-04-render.txt#REN`); тяжёлые реальные входы - медиана 4.09 с для STL 52 MB и 2.27 с для STEP 9 MB
-на 436842 треугольников (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#DIST`). **Оговорка для фазы 76:** на файле из
+(`evidence/71-04-render.txt#REN`); тяжёлые реальные входы при `lp=2` - медиана 3.61 с для STL 52 MB и 2.20 с для STEP 9 MB
+на 436842 треугольников (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#DIST`). **Оговорка для фазы 76:** на файле из
 36 совпадающих копий детали тот же рендер занимает 61.57 с, а с разнесёнными копиями 1.18 с при тех же 214128
 треугольниках (`evidence/71-06-render-stacking.txt#STACKING`); время уходит до самого рендера VTK
 (`t_total_s` 61.238 против `t_render_s` 1.048). Ни кап по размеру, ни кап по треугольникам такой вход не
@@ -151,7 +167,7 @@ f3d допущен пользователем (`evidence/71-05-f3d.txt#APPROVAL`
 | не проходит пиксельные критерии | `evidence/71-04-render.txt#RENDER_SUMMARY`: `fail=0` из 108 PNG | не наступило |
 | не проходит приёмку пользователя | `71-05-SUMMARY.md`: `approved` | не наступило |
 | недетерминирован в пределах архитектуры | `evidence/71-04-render.txt#RENDER_SUMMARY`: `determinism=identical`; `evidence/71-07-prune.txt#PRUNE_IDENTITY` | не наступило |
-| не укладывается по времени при `--cpus=2` | `evidence/71-04-render.txt#REN`: до 1.04 с; `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#DIST`: до 4.23 с (p95 тяжёлого STL); исключение - стек копий (выше) | не наступило для обычных входов; стек копий передан фазе 76 |
+| не укладывается по времени при `--cpus=2` | `evidence/71-04-render.txt#REN`: до 1.04 с; `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#DIST`: до 3.73 с (p95 тяжёлого STL); исключение - стек копий (выше) | не наступило для обычных входов; стек копий передан фазе 76 |
 
 ## 2D-путь DXF (EVAL-01)
 
@@ -186,36 +202,67 @@ not cad-worker`); допущение A7 (около 60 MiB) заменено з�
 
 | Формат | floor | Go | k_worst, MiB/MiB | худший файл (sha256, префикс) | size_max при 1 / 2 / 4 GiB | Потолок при 4 GiB |
 |---|---|---|---|---|---|---|
-| STEP | 479.0 | 24.9 | 32.115 | `freecad-mit-e-vent-t-slot.step`, 9044371 байт (fffd0d64ae1d) | 6.6 / 28.9 / 73.6 | **73 MiB** |
-| IGES | 272.0 | 24.9 | 18.709 | `freecad-festo-valve-5-2.igs`, 11321208 байт (0ab66a4ad85b) | 22.4 / 60.8 / 137.4 | **137 MiB** |
-| STL бинарный | 481.0 | 24.9 | 8.493 | плитка 196 MiB (2045f91fb675) | 24.8 / 109.2 / 278.0 | **278 MiB** |
-| STL ASCII | 518.0 | 24.9 | 1.705 | производный 200 MiB (d42f47a7e934) | 102.0 / 522.4 / 1363.2 | **1363 MiB** |
-| DXF | 114.0 | 24.9 | 12.568 | производный 100 MiB (23a0f58a7636) | 46.0 / 103.0 / 217.1 | **217 MiB** |
+| STEP | 478.0 | 24.9 | 37.362 | `step-copies-LinearSlide-MGN15x-Block-1MiB.step`, 1094537 байт (9bea6097ff46) | 5.7 / 24.9 / 63.3 | **63 MiB** |
+| IGES | 272.0 | 24.9 | 16.486 | `freecad-festo-valve-5-2.igs`, 11321208 байт (0ab66a4ad85b) | 25.5 / 68.9 / 155.9 | **155 MiB** |
+| STL бинарный | 480.0 | 24.9 | 8.498 | плитка 196 MiB (2045f91fb675) | 24.9 / 109.3 / 278.0 | **277 MiB** (277.97 вниз) |
+| STL ASCII | 514.0 | 24.9 | 1.720 | производный 200 MiB (d42f47a7e934) | 103.4 / 520.2 / 1353.7 | **1353 MiB** |
+| DXF | 115.0 | 24.9 | 23.017 | `dxf-replicate-uncommon-2MiB.dxf`, 2050076 байт (48cacc1f3f4d) | 25.1 / 56.2 / 118.5 | **118 MiB** |
 
-Пример подстановки, STEP: `(0.70 x 4096 - 479.0 - 24.9) / 32.115 = 73.6`, вниз до 73 MiB
+Источник строк: `evidence/71-06-limits.txt#LIMIT`, `evidence/71-06-limits.txt#CEILING` (строки `par=off,lp=2`).
+
+**Прежние значения при `par=on,lp=default` (история, `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`):** потолки STEP 73, IGES 137,
+STL бинарный 278, STL ASCII 1363, DXF 217 MiB; k_worst 32.115 / 18.709 / 8.493 / 1.705 / 12.568; floor 479 / 272 / 481 /
+518 / 114. Меш при `par=off` ниже по RSS (копии freecad 150.9 MiB: 2908 -> 2378 MiB; IGES 274 MiB: 3131 -> 2569), рендер
+при `lp=2` выше (STL-плитка 100 MiB: 837 -> 1114; STL-плитка 196 MiB: 1527 -> 1692; копии freecad 150.9 MiB: 2663 ->
+3131 MiB; IGES 274 MiB: 1370 -> 1737).
+
+**Честная оговорка: сдвиги у STEP (73 -> 63) и DXF (217 -> 118) идут не от настройки потоков.** Формула берёт
+худший файл от 1 MiB. Новый худший STEP-файл - производный 1.04 MiB с пиком 517 MiB при floor 478 MiB, то есть
+39 MiB над floor на 1 MiB: точка у floor, `worst_point_governs=yes` (`k_median` 7.103). Реальный STEP 9 MB даёт
+(757 - 478) / 8.63 = 32.3 MiB/MiB и потолок около 73 MiB (при `par=off,lp=2`: меш 418, рендер 757 MiB,
+`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#DIST`). У DXF худший файл теперь 2 MiB с пиком 160 MiB при floor
+115 MiB; ezdxf и `rsvg-convert` от `par` и `lp` не зависят, поэтому 217 -> 118 это шум `memory.peak` (включает page
+cache) на файле у floor; сама ступень 100 MiB даёт 1350 MiB при 1355 прежде, k около 12.5, потолок около 218. Правило D-07
+(худший файл, максимум `ru_maxrss` и `memory.peak`) не менялось, поэтому в сводке стоят более консервативные 63 и 118;
+подтверждено измерением: STEP полный конвейер проходит до 150.9 MiB, DXF до 197.6 MiB при 2497 MiB.
+
+Пример подстановки, STEP: `(0.70 x 4096 - 478.0 - 24.9) / 37.362 = 63.3`, вниз до 63 MiB
 (`evidence/71-06-limits.txt#CEILING`). STL бинарный и ASCII имеют отдельные потолки: множители k расходятся на
-79.9% при пороге 25% (`evidence/71-06-limits.txt#STL_K`).
+79.8% при пороге 25% (`evidence/71-06-limits.txt#STL_K`).
 
 Лимит пода (D-06): **4096 MiB.** Наименьший из 1/2/4 GiB, при котором потолок STEP достигает 40 MiB (ориентир
-PreviewGenerator): size_max STEP 6.6 / 28.9 / 73.6 MiB при 1 / 2 / 4 GiB; при 1 GiB бинарный STL 24.8 MiB
+PreviewGenerator): size_max STEP 5.7 / 24.9 / 63.3 MiB при 1 / 2 / 4 GiB; при 1 GiB бинарный STL 24.9 MiB
 оказывается ниже реального файла 49.6 MiB (`evidence/71-06-limits.txt#MEMORY_LIMIT_DECISION`,
 `evidence/71-06-limits.txt#REAL_MAX`). **Это отклонение от флотских 1Gi (у одного сервиса 2Gi,
 `deploy/chart/octoconv/values.yaml`), записанное с выводом.** Цена: у пода cad в четыре раза больше памяти, чем у
 типового воркера флота, это вход для размера узлов и `keda.cad.minReplicaCount` в фазе 76. Лимит выведен при
 `--cpus 2`; при другом `cpu` числа не переносятся.
 
-D-09: потолок STEP при 4 GiB (73 MiB) выше 40 MiB, поэтому формулировка «принимаем замеренный потолок ниже 40 МБ»
+**Обоснование выбора L после перемера.** L выбирается по формуле на кривой 4 GiB, снятой при `par=off,lp=2`, а не по
+лестницам 2 GiB и 1 GiB (они при `par=on,lp=default` и в число не входят). Строки `L_SENSITIVITY`
+(`evidence/71-06-limits.txt#L_SENSITIVITY`): для 2 GiB потолку STEP 40 MiB нужен k_worst не выше 23.267 против
+измеренных 37.362 (в 1.61 раза выше); для 1 GiB нужен не выше 5.347 (в 6.99 раза). Даже реальный STEP 9 MB с k 32.3
+не проходит 2 GiB, так что выбор L не зависит от шума у floor и от того, что 2g/1g снимались при прежних настройках:
+L = 4096 остаётся. Лестницы 2 GiB и 1 GiB остаются историей находки обрывов (`reason=oom`) и по `LADDER_STOP` в числа
+не превращаются.
+
+D-09: потолок STEP при 4 GiB (63 MiB) выше 40 MiB, поэтому формулировка «принимаем замеренный потолок ниже 40 МБ»
 не применяется. Применяется замеренный потолок, а большие файлы получают честный 413/422, а не OOM-килл.
 **Оговорка:** потолок STEP лежит близко к временному обрыву рендера на стеке копий (обрыв при 80 MiB,
-`ceiling_over_timeout_cliff=0.91`, `timeout_margin_80=FLAG`); если контроль времени фазы 76 не закроет стек копий,
-строка предлагает 64 MiB (`recommended_ceiling_mib_if_the_timeout_cliff_applies=64`,
-`evidence/71-06-limits.txt#CEILING`).
+`ceiling_over_timeout_cliff=0.79`, `timeout_margin_80=ok`, до перемера было 0.91 и `FLAG`); запас 20% выполнен
+только потому, что потолок снизился с 73 до 63 MiB. Если контроль времени фазы 76 не закроет стек копий,
+строка по-прежнему предлагает 64 MiB (`recommended_ceiling_mib_if_the_timeout_cliff_applies=64`,
+`evidence/71-06-limits.txt#CEILING`), то есть выше нового потолка 63 MiB: контроль времени всё равно нужен.
 
-Где потолок только частично измерен: для STL бинарного, STL ASCII и DXF потолки по формуле лежат выше верхней
-ступени лестницы на 4 GiB без обрыва, измеренный потолок 196, 199 и 197 MiB (`beyond_top_rung=1`,
-`measured_ceiling_mib`); числа 278, 1363 и 217 выше этих ступеней - экстраполяция. У IGES обрыв по OOM на
-493.3 MiB, потолок 137 MiB составляет 0.28 от него (`ceiling_over_oom_cliff=0.28`). У STEP верхняя ступень
-200 MiB, потолок внутри измеренной области.
+Где потолок только частично измерен: для STL бинарного и STL ASCII потолки по формуле лежат выше верхней
+ступени лестницы на 4 GiB без обрыва, измеренный потолок 196 и 199 MiB (`beyond_top_rung=1`,
+`measured_ceiling_mib`); числа 277 и 1353 выше этих ступеней - экстраполяция. DXF после перемера (118 MiB) лежит
+ниже верхней ступени 197.6 MiB и целиком внутри измеренной области. У IGES обрыв по OOM на 493.3 MiB, потолок
+155 MiB составляет 0.31 от него (`ceiling_over_oom_cliff=0.31`). У STEP меш доходит до 209.7 MiB (LinearSlide) и
+205.5 MiB (freecad), но полный конвейер (меш и рендер) проходит только до 150.9 MiB (`top_rung_mib=150.9`): у рядов
+LinearSlide рендер оборвался по времени на 80 MiB, у freecad на 205.5 MiB, и точки без рендера в `top_rung` и в
+`FIT` не входят (`partial`: конвейер замерен не целиком, правка по ревью PR #32, P2). Потолок 63 MiB внутри измеренной
+области.
 
 Доля реального потока выше потолка: **реальный поток не замерен** (`evidence/71-06-limits.txt#PRIVATE_CORPUS`,
 `files=0`). Наибольшие реальные файлы публичного корпуса лежат ниже всех потолков: STEP 17.4 MiB, IGES 10.8 MiB,
@@ -223,11 +270,13 @@ STL бинарный 49.6 MiB, DXF 0.3 MiB, реального ASCII STL выш�
 Всё выше этих размеров - производные файлы (стопки копий, плитки, тиражированное пространство модели, один
 прототип много раз). Пустое «приватное» поле - это «не проверялось», а не «чисто».
 
-Обрывы на лестнице (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#LADDER_STOP`, `evidence/71-06-ladder-2g.txt#LADDER_STOP`,
-`evidence/71-06-ladder-1g.txt#LADDER_STOP`): обрывы по памяти найдены при 1 и 2 GiB для STEP, бинарного STL, DXF и
-IGES; при 4 GiB: STEP-меш до 209.7 MiB без обрыва, рендер STEP-копий упирается во время (80 MiB и 200 MiB, таймаут
-ячейки 900 с, причина - стек копий), `step-nauo` рендер падает по OOM при 5000 экземпляров, IGES по OOM на
-493 MiB, `dxf-minsert` обрывается на 1000000 ячеек. Пик RSS конвейера при 4 GiB: `memory.peak` включает page cache,
+Обрывы на лестнице (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP`; при `par=on,lp=default`:
+`evidence/71-06-ladder-2g.txt#LADDER_STOP`, `evidence/71-06-ladder-1g.txt#LADDER_STOP`): обрывы по памяти найдены при 1 и 2 GiB для STEP, бинарного STL, DXF и
+IGES; при 4 GiB (`par=off,lp=2`): STEP-меш до 209.7 MiB без обрыва, рендер STEP-копий упирается во время (80 MiB у
+LinearSlide и 205.5 MiB у freecad, таймаут ячейки 900 с, причина - стек копий), `step-nauo` рендер падает по OOM при 5000
+экземплярах, IGES по OOM на 493 MiB, `dxf-minsert` обрывается на 1000000 ячеек. Цена `par=off` по времени: меш
+`step-nauo` на 10000 экземплярах теперь обрывается по таймауту 900 с (при `par=on` проходил за 518.6 с), меш копий
+freecad 150.9 MiB 381 с вместо 332 с, IGES 274 MiB 157 с вместо 136 с. Пик RSS конвейера при 4 GiB: `memory.peak` включает page cache,
 первый повтор ячейки может показывать RSS заметно выше `ru_maxrss`; берётся большее, поэтому floor и множители
 консервативны.
 
@@ -248,13 +297,20 @@ IGES; при 4 GiB: STEP-меш до 209.7 MiB без обрыва, рендер
 
 | Счётчик | Кандидат | Вывод | Последняя ступень с запасом | Первый OOM |
 |---|---|---|---|---|
-| треугольники рендера | 4266184 | 544.82 MiB на млн треугольников по худшему файлу, `(0.70 x 4096 - 518.0 - 24.9) / 544.82` | 8.8 млн | 16.1 млн (файл на 5000 экземпляров) |
-| сущности STEP | 759890 | 3110.05 MiB на млн сущностей, худший файл 9 MB | 3.92 млн (стопки копий) | нет |
-| экземпляры NAUO | 2042 | 1.16 MiB на экземпляр при n=1000 | 2500 | 5000 (рендер) |
-| развёрнутые вставки DXF (столбцы x строки MINSERT) | 172677 | 0.02 MiB на вставку | 100000 (116.8 с, 1694 MiB) | 1000000 |
+| треугольники рендера | 4014975 | 579.16 MiB на млн треугольников по худшему файлу (копии freecad 20 MiB, 873.7 тыс. треугольников, пик рендера 1023 MiB при `lp=2`), `(0.70 x 4096 - 517.0 - 24.9) / 579.16` | 8.8 млн | 16.1 млн (файл на 5000 экземпляров) |
+| сущности STEP | 754762 | 3132.51 MiB на млн сущностей, худший файл 9 MB | 1.51 млн (полный конвейер, стопки копий) | нет |
+| экземпляры NAUO | 1518 | 1.56 MiB на экземпляр при n=1000 | 2500 | 5000 (рендер) |
+| развёрнутые вставки DXF (столбцы x строки MINSERT) | 170031 | 0.02 MiB на вставку | 100000 (78.3 с, 1719 MiB) | 1000000 |
 
-Оговорки: у NAUO узкое место - время (стенное время меша 52.9 с на 1000, 121.2 с на 2500, 518.6 с на 10000
-экземпляров), память ломается на рендере; в публичном корпусе нет ни одного MINSERT, кап DXF выведен из
+Прежние кандидаты при `par=on,lp=default` (история): 4266184 / 759890 / 2042 / 172677 (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`).
+Кап треугольников стал ниже из-за `lp=2` (рендер при `lp=2` ест больше памяти), кап NAUO - из-за множителя 1.56 против 1.16
+MiB на экземпляр при n=1000 (меш при `par=off` на том же файле даёт 2035 MiB пика). Последняя ступень сущностей STEP
+стала 1.51 млн вместо 3.92 млн: точки без замеренного рендера (стопки LinearSlide 150 и 200 MiB) больше не считаются
+пройденным конвейером (`partial`); значение капа от этого не меняется (оно линейное).
+
+Оговорки: у NAUO узкое место - время (стенное время меша при `par=off` 56.4 с на 1000, 123.4 с на 2500, 249.4 с на 5000;
+10000 экземпляров обрываются по таймауту 900 с, при `par=on` меш на 10000 проходил за 518.6 с), память ломается на
+рендере; в публичном корпусе нет ни одного MINSERT, кап DXF выведен из
 сгенерированной серии `dxf-minsert` (максимум INSERT в реальных файлах - 7); таймауты ячейки в значения капов не
 входят. Все четыре кандидата считаются при `cpus=2` и 4096 MiB.
 
@@ -266,12 +322,17 @@ IGES; при 4 GiB: STEP-меш до 209.7 MiB без обрыва, рендер
   меньше потоков. Меш: параллельно 123.71 с, выключено 126.21 с, affinity 118.96 с по сумме; `user+sys` 146.52 /
   126.11 / 139.03 с; потоков 11 / 1 / 11. Рендер: `LP_NUM_THREADS` 1 / 2 / по умолчанию - 9.77 / 8.63 / 8.87 с,
   значение 1 медленнее на 13%, значение 2 лучше по `user+sys` (10.80 против 11.48 с) и по потокам (15 против 33).
+  Выбор потоков не пересматривался. Цена выбора по памяти (`evidence/71-06-threads.txt#THREADS_ROW`,
+  `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#DIST`): `lp=2` поднимает RSS рендера (STL 100 MiB 873 -> 1113 MiB),
+  `par=off` опускает RSS меша и удлиняет меш на больших входах (см. «Память и потолки»); перемер 4 GiB учёл обе
+  стороны.
 - Константы тесселяции остаются стартовыми значениями из `STACK.md` (`evidence/71-06-limits.txt#QUALITY`):
   draft 0.004 / 0.5, standard 0.001 / 0.35, fine 0.0003 / 0.2. На самом тяжёлом реальном STEP (9 MB) fine даёт
-  820472 треугольников (19.2% капа рендера), пик конвейера 896 MiB (31% бюджета 4g, 2867 MiB), draft - 273208
+  820472 треугольников (20.4% капа рендера 4014975; до перемера 19.2% от 4266184), пик конвейера 896 MiB (31% бюджета 4g, 2867 MiB), draft - 273208
   треугольников и 669 MiB; вырожденные фикстуры дают 2 / 100 / 12 треугольников и все 63 рендера проходят
   пиксельный критерий (`evidence/71-06-quality.txt#QUALITY_ROW`). Замечаний на чекпоинте 71-05 не было.
-  Три строки `QUALITY` составлены вручную из `QUALITY_ROW` и капа (`evidence/71-06-quality.txt#QUALITY`).
+  Три строки `QUALITY` составлены вручную из `QUALITY_ROW` и капа (`evidence/71-06-quality.txt#QUALITY`). Пики конвейера
+  этого пункта (896 и 669 MiB) сняты при `par=on,lp=default` и не перемерялись; доли от капа и бюджета - ориентир.
 - **Наборы Landlock ниже получены именно с `LP_NUM_THREADS=2` и `occt_parallel=off`.** При других настройках
   могут понадобиться `/sys/devices/system/cpu` и `/proc/cpuinfo`.
 
@@ -480,7 +541,7 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
 | A7 | RSS Go-воркера около 60 MiB | закрыто замером: 24.9 MiB (воркер класса image как аналог) | `evidence/71-06-go-worker-rss.txt#GO_WORKER` |
 | A8 | происхождение файлов FreeCAD-library не нарушает CC-BY 3.0 | остаётся допущением (по файлам не проверено) | `internal/convert/testdata/cad/PROVENANCE.md` |
 | A9 | имена пакетов существуют, хеши колёс подтверждены | закрыто замером (хеши aarch64 совпали с независимым замером) и одобрено пользователем | `evidence/71-01-lock.txt#CROSSCHECK` |
-| A10 | лестница размеров поймает обрыв | закрыто частично: обрывы пойманы при 1 и 2 GiB и на IGES, NAUO, MINSERT; на 4 GiB STEP-меш, STL и DXF не ломаются до верхней ступени 200 MiB, потолки выше неё - экстраполяция | `evidence/71-06-limits.txt#CEILING`, `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#LADDER_STOP` |
+| A10 | лестница размеров поймает обрыв | закрыто частично: обрывы пойманы при 1 и 2 GiB и на IGES, NAUO, MINSERT; на 4 GiB (`par=off,lp=2`) STEP-меш, STL и DXF не ломаются до верхней ступени около 200 MiB, полный конвейер STEP проходит до 150.9 MiB; потолки STL выше верхней ступени - экстраполяция | `evidence/71-06-limits.txt#CEILING`, `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP` |
 
 ## Не замерено
 
@@ -493,10 +554,15 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
 - **Повторы у потолка при 2 и 1 GiB:** обе серии шли с одним повтором; ступени, которые проходят при 90% лимита,
   одиночные замеры. Реальные файлы с пиком RSS при 4 GiB ниже 40% лимита пропущены (`--floor-from`) и принятые
   проходящими выведены, а не измерены (`evidence/71-06-ladder-2g.txt#LADDER_STOP`, поле `floor_skipped`).
-- **Потолки выше верхней ступени 4 GiB** для STL бинарного, ASCII и DXF - экстраполяция (раздел «Память и потолки»).
+- **Потолки выше верхней ступени 4 GiB** для STL бинарного и ASCII - экстраполяция (раздел «Память и потолки»).
 - **Время рендера на входах со стеком копий** - известный риск без кода защиты (фаза 76).
+- **Лестницы 2 GiB, 1 GiB и пина 8.0.1.0.0 при `par=off,lp=2`:** не перемерялись (решение пользователя: только 4 GiB на
+  7.9.3.1.1). Они остаются историей `par=on,lp=default` (`evidence/71-06-limits.txt#CONFIG_ROWS`), в числа не входят;
+  выбор L = 4096 от них не зависит (`evidence/71-06-limits.txt#L_SENSITIVITY`).
+- **Сдвиги потолков STEP (73 -> 63) и DXF (217 -> 118)** идут от точек у floor под правилом худшего файла, а не от
+  настройки потоков (раздел «Память и потолки»); реальный наклон даёт около 73 и 218 MiB.
 - **Шум хоста:** единичные замеры времени и сравнение пина по порогу (c) несут шум соседних контейнеров;
-  сравнение 5.9% лежит внутри него (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#NOISE`).
+  сравнение 5.9% лежит внутри него (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#NOISE`; перемер 4 GiB: `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#NOISE`, 137 запусков, сосед в среднем 14.4% ядра, пик 143.6%).
 - **Cold pull** `full`: один прогон, не распределение (n=1); сеть не замерена, только рассчитана.
 - **Отклонения планов, записанные в SUMMARY:** `71-04-SUMMARY.md` (нет `text_fonts.dxf` в корпусе),
   `71-06-SUMMARY.md` (три строки `QUALITY` составлены вручную), `71-07-SUMMARY.md` (выход 3 `cad_render` недостижим из
@@ -515,7 +581,7 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
 | D-02 | Корпус, Память и потолки | `evidence/71-03-corpus-inventory.txt#PRIVATE_CORPUS` | покрыто формулировкой «реальный поток не замерен» |
 | D-03 | Корпус | `evidence/71-03-corpus-inventory.txt#INV` | покрыто |
 | D-04 | Корпус | `internal/convert/testdata/cad/PROVENANCE.md` | покрыто |
-| D-05 | Память и потолки | `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt#LADDER_STOP` | покрыто (потолки выше верхней ступени помечены) |
+| D-05 | Память и потолки | `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP` | покрыто (потолки выше верхней ступени помечены) |
 | D-06 | Память и потолки | `evidence/71-06-limits.txt#MEMORY_LIMIT_DECISION` | покрыто |
 | D-07 | Память и потолки | `evidence/71-06-limits.txt#LIMIT` | покрыто |
 | D-08 | Память и потолки | `evidence/71-06-limits.txt#CEILING` | покрыто |
@@ -562,7 +628,8 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
   `evidence/71-03-corpus-inventory.txt`, `evidence/71-04-helpers.txt`, `evidence/71-04-render.txt`,
   `evidence/71-04-contact-views.png`, `evidence/71-04-contact-robustness.png`, `evidence/71-04-contact-quality.png`,
   `evidence/71-04-contact-dxf.png`, `evidence/71-05-f3d.txt`, `evidence/71-05-contact-f3d.png`,
-  `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`, `evidence/71-06-ladder-4g-ocp8.0.1.0.0.txt`,
+  `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt` (источник лимитов), `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt` (история
+  `par=on,lp=default`), `evidence/71-06-ladder-4g-ocp8.0.1.0.0.txt`,
   `evidence/71-06-ladder-2g.txt`, `evidence/71-06-ladder-1g.txt`, `evidence/71-06-threads.txt`,
   `evidence/71-06-quality.txt`, `evidence/71-06-go-worker-rss.txt`, `evidence/71-06-render-stacking.txt`,
   `evidence/71-06-limits.txt`, `evidence/71-07-libtrace.txt`, `evidence/71-07-prune.txt`,

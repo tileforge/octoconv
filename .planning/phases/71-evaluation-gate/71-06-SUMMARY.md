@@ -224,3 +224,52 @@ None beyond the plan's register. T-71-15: `--include-private` rows carry `name=-
 - evidence 71-06-ladder-4g-ocp7.9.3.1.1, 71-06-ladder-4g-ocp8.0.1.0.0, 71-06-ladder-2g, 71-06-ladder-1g, 71-06-threads, 71-06-quality, 71-06-go-worker-rss, 71-06-render-stacking, 71-06-limits: present
 - commits 98d444e, 93df429, ad3e7a0 on gsd/phase-71-evaluation-gate; ledger count 3
 - gates printed `LADDER-OK`, `MEASURES-OK`, `LIMITS-OK`; `git diff --exit-code 4e595c0 -- deploy` clean; `git diff --name-only 4e595c0 -- internal cmd deploy docker-compose.yml | grep -v '^internal/convert/testdata/cad/'` empty; `internal/convert/exec.go` untouched; `grep -E '^ROW,src=private,name=[^-]'` over the evidence is empty
+
+## Addendum: Codex review of PR #32 (P1 and P2), 2026-10-05
+
+Two findings on the limit derivation, both closed after phase verification.
+
+**P2: an incomplete pipeline counted as ok** (`scripts/cad-derive-limits.py`, `3a8a2d1`). A ladder point whose other operation had already stopped (the STEP render timed out at 80 MiB while the mesh went on to 150 and 200 MiB) was `ok` on its mesh cell alone and fed the FIT rung, the cliff top rung, the top-rung-from-`LADDER_STOP` calculation and the entity-cap fit. A point is now `ok` only when every operation of its pipeline was measured, otherwise `partial`. A partial point stays in `k_worst` as a lower bound (it can only raise k) and is excluded from FIT, the cliff top rung, top-rung stops (every pipeline op needs a `reason=top` line in the series) and the cap fits. `python3 scripts/cad-derive-limits.py --self-check` rebuilds the 80/150 MiB case on synthetic rows and prints `SELF-CHECK-OK`; restoring the old status rule makes it fail on three assertions. On the old evidence the fix moved only: FIT step at 4 GiB 150.2 to 79.2 MiB, CEILING step `top_rung_mib` 200.0 to 150.9, `step_entities` `last_fit_n` 3922062 to 1514122; no ceiling or cap value.
+
+**P1: limits derived from rows of another thread configuration** (`cdca1e5`, `6107a69`). Every row of the 4g, 2g, 1g and 8.0 ladders was tagged `par=on,lp=default` while the decision selects `occt_parallel=off`, `LP_NUM_THREADS=2`; render RSS is higher at `lp=2` (STL 100 MiB 873 to 1113 MiB in `71-06-threads.txt`), so the render-driven limits were optimistic. User decision (relayed): re-run only the 4 GiB ladder for pin 7.9.3.1.1 at the selected settings; not the 2g/1g ladders and not the 8.0 pin.
+- **Re-measure.** `evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt`, same corpus and rungs, `--ladder --repeats 3` on committed and fetched files, `--repeats 1` on the scaled series, `--parallel off --lp-threads 2`, `--cpus 2`, 900 s cell budget, image `full` `cce9074fe380`. 448 ROW lines (the first file has 450), 0 FLAKE, every rc 137 is an `oom_kill` or a timeout, the same cells fail as before. The Mac slept during the first resume chunk and the OrbStack engine hung; the cell it hung on wrote no row and was re-run after the engine recovered, so no row spans the sleep. Host noise: 12 containers throughout, neighbour CPU at the 137 file starts mean 14.4%, peak 143.6%.
+- **Derivation.** `cad-derive-limits.py` reads the selected `par`/`lp` from `THREADS_DECISION`, uses only rows (and `SKIP`/`LADDER_STOP` lines, through the file's `HDR,ladder` line) with those tags and refuses when no 4g row has them (`CONFIG` and `CONFIG_ROWS` lines show used and excluded rows). The pin formula is computed on `par=on,lp=default` rows of both pins (`PIN_CONFIG`) because 8.0.1.0.0 exists only there; `PIN_FORMULA` and `PIN_ROBUSTNESS` are byte-identical to before and `PIN_DECISION` stays 7.9.3.1.1 by the user.
+- **Effect of the configuration** on the same files (`rss_eff`): mesh with `par=off` is lower (freecad copies 150.9 MiB 2908 to 2378 MiB, IGES 274 MiB 3131 to 2569) and slower on large inputs (381 s against 332 s, 157 s against 136 s; `step-nauo` mesh at 10000 instances now times out at 900 s against 518.6 s); render with `lp=2` is higher (STL tile 100 MiB 837 to 1114, 196 MiB 1527 to 1692, freecad copies 150.9 MiB 2663 to 3131, IGES 274 MiB 1370 to 1737). The 9 MB real STEP is flat (render 756 to 757 MiB).
+
+### Before and after (4 GiB, `cpus=2`; before = `par=on,lp=default`, after = `par=off,lp=2`)
+
+| Item | Before | After |
+|---|---|---|
+| Memory limit | 4096 | 4096 (unchanged) |
+| STEP floor MiB / k_worst | 479.0 / 32.115 | 478.0 / 37.362 |
+| STEP ceiling | 73 | 63 |
+| STEP size_max 1 / 2 / 4 GiB | 6.6 / 28.9 / 73.6 | 5.7 / 24.9 / 63.3 |
+| STEP ceiling over timeout cliff | 0.91, FLAG | 0.79, ok |
+| STEP `top_rung_mib` / FIT at 4 GiB | 200.0 / 150.2 (with the P2 bug) | 150.9 / 79.2 |
+| IGES floor / k_worst | 272.0 / 18.709 | 272.0 / 16.486 |
+| IGES ceiling | 137 | 155 |
+| IGES ceiling over OOM cliff | 0.28 | 0.31 |
+| STL binary floor / k_worst | 481.0 / 8.493 | 480.0 / 8.498 |
+| STL binary ceiling | 278 | 277 |
+| STL ASCII floor / k_worst | 518.0 / 1.705 | 514.0 / 1.720 |
+| STL ASCII ceiling | 1363 | 1353 |
+| DXF floor / k_worst | 114.0 / 12.568 | 115.0 / 23.017 |
+| DXF ceiling | 217 | 118 |
+| Cap render triangles | 4266184 (544.82 MiB per M) | 4014975 (579.16 MiB per M) |
+| Cap STEP entities | 759890 (last fit 3.92 M) | 754762 (last fit 1.51 M) |
+| Cap NAUO instances | 2042 (1.16 MiB each) | 1518 (1.56 MiB each) |
+| Cap DXF expanded inserts | 172677 | 170031 |
+| STL k divergence | 79.9% | 79.8% (separate ceilings kept) |
+
+Last fit and first OOM for triangles (8.8 M, 16.1 M), NAUO (2500, 5000) and DXF inserts (100000, 1000000) are unchanged.
+
+### Honest flags
+
+- **The STEP (73 to 63) and DXF (217 to 118) shifts are not caused by the thread configuration.** The worst-file rule now picks a 1.04 MiB STEP file (peak 517 against floor 478 MiB, `worst_point_governs=yes`) and a 2 MiB DXF file (peak 160 against floor 115 MiB). ezdxf and `rsvg-convert` do not depend on `par` or `lp`, so the DXF change is `memory.peak` noise (page cache) at a floor-adjacent point. The real 9 MB STEP gives k 32.3 and a ceiling near 73, the 100 MiB DXF rung gives k 12.5 and a ceiling near 218. The D-07 rule was not changed, so the more conservative 63 and 118 stand; measured fits are 150.9 MiB (STEP full pipeline) and 197.6 MiB (DXF).
+- **The STEP timeout margin (0.79) passes only because the ceiling dropped**; the time guard in phase 76 is still needed (`recommended_ceiling_mib_if_the_timeout_cliff_applies=64`).
+- **L stays 4096 by `L_SENSITIVITY`.** The 2 GiB limit would need STEP k_worst at most 23.267 against the measured 37.362 (1.61 times higher; even the real file's 32.3 fails); 1 GiB would need at most 5.347. The 1g and 2g ladders (`par=on,lp=default`) and the 8.0 pin ladder were not re-run; they are history and take no part in any number.
+- **Not re-measured at the selected configuration:** the 71-06 threads/quality pipeline peaks (896 and 669 MiB), the 8.0.1.0.0 comparison (the pin formula is evaluated on `par=on,lp=default` rows of both pins).
+
+### Addendum commits
+
+`3a8a2d1` fix(71-06) P2; `cdca1e5` feat(71-06) config-filtered derivation; `6107a69` feat(71-06) re-measure evidence and regenerated limits; the `71-DECISION.md` and this addendum follow in a `docs(71)` commit.
