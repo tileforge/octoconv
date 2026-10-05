@@ -154,9 +154,9 @@ CAD-содержимого и контракт measurements — готова и 
 
 Plans:
 **Wave 1**
-- [ ] 72-01-PLAN.md — tracer: валидный STEP/STP через один CAD-детектор в создании джобы и в inspect; 15 фикстур отказов закоммичены раньше правил, которые их судят
-- [ ] 72-02-PLAN.md — контракт measurements: `schema` `octoconv.measurements/v1`, закрытые словари, fail-closed валидатор, `docs/MEASUREMENTS.md` с тестом сверки
-- [ ] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
+- [x] 72-01-PLAN.md — tracer: валидный STEP/STP через один CAD-детектор в создании джобы и в inspect; 15 фикстур отказов закоммичены раньше правил, которые их судят
+- [x] 72-02-PLAN.md — контракт measurements: `schema` `octoconv.measurements/v1`, закрытые словари, fail-closed валидатор, `docs/MEASUREMENTS.md` с тестом сверки
+- [x] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
