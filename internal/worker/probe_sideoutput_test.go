@@ -103,7 +103,7 @@ func TestProbeSideOutputsFailsWhenTheReportIsMissing(t *testing.T) {
 }
 
 // TestOnlyProbeDeclaresSideOutputs keeps the hook from spreading by accident.
-// Seven engines have nothing to report alongside their result, and the day one
+// Only probe and cad report alongside their result, and the day another
 // of them grows a side output should be a deliberate edit here.
 func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 	for _, d := range []struct {
@@ -124,6 +124,9 @@ func TestOnlyProbeDeclaresSideOutputs(t *testing.T) {
 	}
 	if ProbeDescriptor.SideOutputs == nil {
 		t.Error("ProbeDescriptor declares no SideOutputs -- the sanitize report would never be stored")
+	}
+	if CADDescriptor.SideOutputs == nil {
+		t.Error("CADDescriptor declares no SideOutputs -- the render measurements would never be stored")
 	}
 }
 

@@ -2214,6 +2214,30 @@ func TestGetJob_DownloadURLNeverMeasurements(t *testing.T) {
 		}
 	})
 
+	t.Run("measurements_after_primary", func(t *testing.T) {
+		primaryKey := "results/x/0-out.png"
+		measKey := "results/x/1-measurements.json"
+		resp := get(t, []jobs.Output{
+			{Ordinal: 0, ObjectKey: primaryKey, Format: "png", SizeBytes: 222, Role: jobs.OutputRolePrimary},
+			{Ordinal: 1, ObjectKey: measKey, Format: "json", SizeBytes: 111, Role: jobs.OutputRoleMeasurements},
+		}, map[string]string{
+			measKey:    "https://example/measurements",
+			primaryKey: "https://example/primary",
+		})
+
+		if resp["download_url"] != "https://example/primary" {
+			t.Fatalf("download_url = %v, want the primary output's url (https://example/primary)", resp["download_url"])
+		}
+		outputsList, ok := resp["outputs"].([]any)
+		if !ok || len(outputsList) != 2 {
+			t.Fatalf("outputs = %v, want a 2-element list", resp["outputs"])
+		}
+		second, _ := outputsList[1].(map[string]any)
+		if second["role"] != jobs.OutputRoleMeasurements || second["ordinal"] != float64(1) {
+			t.Errorf("outputs[1] = %v, want the measurements row at ordinal 1", second)
+		}
+	})
+
 	t.Run("only_measurements_has_no_download_url", func(t *testing.T) {
 		measKey := "results/x/0-measurements.json"
 		resp := get(t, []jobs.Output{

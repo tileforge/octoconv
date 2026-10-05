@@ -141,6 +141,10 @@ func (r *pinRepo) AddOutputWithRole(_ context.Context, _ uuid.UUID, _ jobs.Outpu
 	return nil
 }
 
+func (r *pinRepo) AddOutputs(_ context.Context, _ uuid.UUID, _ []jobs.Output) error {
+	return nil
+}
+
 func (r *pinRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
 	return nil
 }

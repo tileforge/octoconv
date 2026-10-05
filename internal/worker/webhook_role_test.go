@@ -111,6 +111,27 @@ func TestSetWebhookDownloadURL_NeverSelectsMeasurements(t *testing.T) {
 		}
 	})
 
+	t.Run("measurements_after_primary", func(t *testing.T) {
+		outs := []jobs.Output{
+			{Ordinal: 0, ObjectKey: "results/J/0-out.png", Role: jobs.OutputRolePrimary},
+			{Ordinal: 1, ObjectKey: "results/J/1-measurements.json", Role: jobs.OutputRoleMeasurements},
+		}
+		var calls []string
+		body := map[string]any{}
+
+		if err := setWebhookDownloadURL(context.Background(), body, outs, stubPresign(&calls)); err != nil {
+			t.Fatalf("setWebhookDownloadURL returned error: %v", err)
+		}
+
+		const wantURL = "https://s3.test/results/J/0-out.png"
+		if got, _ := body["download_url"].(string); got != wantURL {
+			t.Fatalf("download_url = %q, want %q", got, wantURL)
+		}
+		if len(calls) != 1 || calls[0] != "results/J/0-out.png" {
+			t.Fatalf("presign calls = %v, want exactly one call with the primary output's key", calls)
+		}
+	})
+
 	t.Run("only_measurements_omits_key", func(t *testing.T) {
 		outs := []jobs.Output{
 			{Ordinal: 0, ObjectKey: "results/J/0-measurements.json", Role: jobs.OutputRoleMeasurements},

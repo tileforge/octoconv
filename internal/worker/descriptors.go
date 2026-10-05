@@ -10,6 +10,7 @@ import (
 	"github.com/apaderin/octoconv/internal/jobs"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/measurements"
 	"github.com/apaderin/octoconv/internal/queue"
 )
 
@@ -673,6 +674,27 @@ var CADDescriptor = EngineDescriptor{
 	},
 	IsTerminal:  isCADTerminal,
 	FailureCode: cadFailureCode,
+	SideOutputs: cadSideOutputs,
+}
+
+func cadSideOutputs(_ context.Context, job *jobs.Job, outPath string) ([]SideOutput, error) {
+	if job.Operation != convert.OperationRender {
+		return nil, nil
+	}
+	blob, err := os.ReadFile(convert.CADMeasurementsPath(outPath))
+	if err != nil {
+		return nil, fmt.Errorf("%w: measurements missing beside the render: %v", convert.ErrCADMeasurementsInvalid, err)
+	}
+	if _, err := measurements.Validate(blob); err != nil {
+		return nil, fmt.Errorf("%w: %v", convert.ErrCADMeasurementsInvalid, err)
+	}
+	return []SideOutput{{
+		Role:        jobs.OutputRoleMeasurements,
+		Filename:    "measurements.json",
+		Format:      "json",
+		ContentType: "application/json",
+		Body:        blob,
+	}}, nil
 }
 
 func isCADTerminal(err error) bool {

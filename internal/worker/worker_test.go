@@ -1306,6 +1306,10 @@ func (r *opGateRepo) AddOutputWithRole(_ context.Context, _ uuid.UUID, _ jobs.Ou
 	return nil
 }
 
+func (r *opGateRepo) AddOutputs(_ context.Context, _ uuid.UUID, _ []jobs.Output) error {
+	return nil
+}
+
 func (r *opGateRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
 	r.addOutputCalls++
 	return nil
