@@ -47,7 +47,7 @@ var (
 var reasonsByFormat = map[string][]string{
 	FormatSTEP: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
 	FormatIGES: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
-	FormatSTL:  {ReasonSTLNotWatertight, ReasonNegativeVolume},
+	FormatSTL:  {ReasonSTLNotWatertight, ReasonInvalidSolid, ReasonNegativeVolume},
 	FormatDXF:  {ReasonNotApplicable2D},
 }
 
