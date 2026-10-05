@@ -159,6 +159,17 @@ var inspectPublicSentinelFormats = []string{
 	inspectZipTooLargeFormat,
 	inspectZipReadFailedFormat,
 	inspectZipMalformedFormat,
+	errcode.TruncatedCADFile,
+	errcode.AmbiguousSTL,
+	errcode.BinaryDXFUnsupported,
+	errcode.DWGUnsupported,
+}
+
+var cadRejectionCode = map[convert.CADRejection]string{
+	convert.CADRejectTruncated:    errcode.TruncatedCADFile,
+	convert.CADRejectAmbiguousSTL: errcode.AmbiguousSTL,
+	convert.CADRejectBinaryDXF:    errcode.BinaryDXFUnsupported,
+	convert.CADRejectDWG:          errcode.DWGUnsupported,
 }
 
 // inspectInternalOnlyFormats are sentinels that must NEVER reach the wire.
@@ -782,8 +793,13 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string,
 				}
 				if tailErr != nil {
 					sniffReadFailed = true
-				} else if res := convert.SniffCADWindows(head, tail, size, declaredFormat); res.Rejection == convert.CADRejectNone {
-					detected = res.Format
+				} else {
+					res := convert.SniffCADWindows(head, tail, size, declaredFormat)
+					if res.Rejection == convert.CADRejectNone {
+						detected = res.Format
+					} else {
+						detected = cadRejectionCode[res.Rejection]
+					}
 				}
 			}
 			// IsOLECFB works on RAW bytes, deliberately not on the validated
@@ -1555,6 +1571,14 @@ func extensionMismatchFamilyResult(detected, declaredFormat string) inspect.Fami
 		// sibling sentinel.
 		return inspect.FamilyResult{Checks: []inspect.Check{
 			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
+		}}
+	case detected == errcode.TruncatedCADFile || detected == errcode.AmbiguousSTL:
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonMalformedInput},
+		}}
+	case detected == errcode.BinaryDXFUnsupported || detected == errcode.DWGUnsupported:
+		return inspect.FamilyResult{Checks: []inspect.Check{
+			{Code: inspect.CodeExtensionMismatch, Status: inspect.StatusUnknown, Reason: inspect.ReasonParserUnavailable},
 		}}
 	case detected == "":
 		// PR9R27 (inspect_handlers.go:1393): an UNRECOGNIZED upload is not the

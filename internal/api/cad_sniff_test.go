@@ -3,12 +3,16 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/errcode"
@@ -231,5 +235,202 @@ func TestCADCreateRejections(t *testing.T) {
 				t.Errorf("error %q echoes the filename", resp["error"])
 			}
 		})
+	}
+}
+
+func TestCADRejectionCodeMapComplete(t *testing.T) {
+	all := convert.AllCADRejections()
+	if len(cadRejectionCode) != len(all) {
+		t.Fatalf("cadRejectionCode has %d entries, want %d", len(cadRejectionCode), len(all))
+	}
+	for _, rej := range all {
+		code, ok := cadRejectionCode[rej]
+		if !ok {
+			t.Errorf("rejection %q has no code", rej)
+			continue
+		}
+		if !errcode.IsKnown(code) {
+			t.Errorf("rejection %q maps to %q, which errcode does not know", rej, code)
+		}
+		if !slices.Contains(inspectPublicSentinelFormats, code) {
+			t.Errorf("rejection %q maps to %q, which is not a public inspect sentinel", rej, code)
+		}
+	}
+}
+
+func TestCADSentinelsDocumentedInInspectFormat(t *testing.T) {
+	raw, err := os.ReadFile(inspectOfferSpecPath)
+	if err != nil {
+		t.Fatalf("read openapi: %v", err)
+	}
+	spec := string(raw)
+	start := strings.Index(spec, "\n    InspectReport:")
+	if start < 0 {
+		t.Fatal("InspectReport schema not found")
+	}
+	end := strings.Index(spec[start:], "\n        declared_format:")
+	if end < 0 {
+		t.Fatal("declared_format not found after InspectReport")
+	}
+	section := spec[start : start+end]
+	for _, code := range cadRejectionCode {
+		if !strings.Contains(section, "`"+code+"`") {
+			t.Errorf("InspectReport.format description does not name %s", code)
+		}
+	}
+}
+
+type cadAgreeInput struct {
+	name string
+	file string
+	data []byte
+}
+
+func cadAgreementInputs(t *testing.T) ([]cadAgreeInput, int) {
+	t.Helper()
+	var inputs []cadAgreeInput
+	files := 0
+	for _, dir := range []string{"public", "synthetic", "reject"} {
+		entries, err := os.ReadDir(filepath.Join("..", "convert", "testdata", "cad", dir))
+		if err != nil {
+			t.Fatalf("read %s: %v", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) == ".md" {
+				continue
+			}
+			files++
+			inputs = append(inputs, cadAgreeInput{
+				name: dir + "/" + e.Name(),
+				file: e.Name(),
+				data: readCADFixture(t, filepath.Join(dir, e.Name())),
+			})
+		}
+	}
+	lm := readCADFixture(t, "public/LM8UU.step")
+	iges := readCADFixture(t, "synthetic/surfaces_only.iges")
+	crlf := bytes.ReplaceAll(bytes.ReplaceAll(iges, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
+	inputs = append(inputs,
+		cadAgreeInput{"memory/aaaa.dxf", "x.dxf", bytes.Repeat([]byte("A"), 1000)},
+		cadAgreeInput{"memory/aaaa.step", "x.step", bytes.Repeat([]byte("A"), 1000)},
+		cadAgreeInput{"memory/half_LM8UU.step", "half.step", lm[:len(lm)/2]},
+		cadAgreeInput{"memory/crlf_surfaces_only.igs", "crlf.igs", crlf},
+	)
+	return inputs, files
+}
+
+func TestCADCreateInspectAgree(t *testing.T) {
+	srv := newCADTestServer(t)
+	inputs, files := cadAgreementInputs(t)
+	if files < 52 {
+		t.Fatalf("read %d corpus files, want at least 52", files)
+	}
+
+	wantReason := map[string]inspect.Reason{
+		errcode.TruncatedCADFile:     inspect.ReasonMalformedInput,
+		errcode.AmbiguousSTL:         inspect.ReasonMalformedInput,
+		errcode.BinaryDXFUnsupported: inspect.ReasonParserUnavailable,
+		errcode.DWGUnsupported:       inspect.ReasonParserUnavailable,
+	}
+	for _, in := range inputs {
+		t.Run(in.name, func(t *testing.T) {
+			status, resp := postCADCreate(t, srv, in.file, in.data)
+			if status != http.StatusUnprocessableEntity {
+				t.Fatalf("create status = %d, want 422; resp=%v", status, resp)
+			}
+			rep := postCADInspect(t, srv, in.file, in.data)
+			var mismatch *inspect.Check
+			for i := range rep.Checks {
+				if rep.Checks[i].Code == inspect.CodeExtensionMismatch {
+					mismatch = &rep.Checks[i]
+				}
+			}
+			for _, f := range rep.Findings {
+				if f.Code == inspect.CodeExtensionMismatch {
+					t.Fatalf("extension_mismatch is a finding for %s; format=%q", in.name, rep.Format)
+				}
+			}
+			if mismatch == nil {
+				t.Fatalf("no extension_mismatch check for %s", in.name)
+			}
+			code := resp["code"]
+			switch code {
+			case errcode.TruncatedCADFile, errcode.AmbiguousSTL, errcode.BinaryDXFUnsupported, errcode.DWGUnsupported:
+				if rep.Format != code {
+					t.Errorf("create code %q but inspect format %q", code, rep.Format)
+				}
+				if mismatch.Status != inspect.StatusUnknown || mismatch.Reason != wantReason[code] {
+					t.Errorf("extension_mismatch = %+v, want unknown/%s", *mismatch, wantReason[code])
+				}
+			case errcode.UnsupportedConversion:
+				want := convert.NormalizeFormat(filepath.Ext(in.file))
+				if rep.Format != want {
+					t.Errorf("create accepted the content as %s but inspect format = %q", want, rep.Format)
+				}
+				if mismatch.Status != inspect.StatusClean {
+					t.Errorf("extension_mismatch = %+v, want clean", *mismatch)
+				}
+			case errcode.InvalidRequest:
+				if rep.Format != "" {
+					t.Errorf("create found no verdict but inspect format = %q", rep.Format)
+				}
+				if mismatch.Status != inspect.StatusUnknown || mismatch.Reason != inspect.ReasonFormatUnrecognized {
+					t.Errorf("extension_mismatch = %+v, want unknown/format_unrecognized", *mismatch)
+				}
+			default:
+				t.Errorf("create answered code %q, which this test does not classify", code)
+			}
+		})
+	}
+}
+
+type failingTailMultipartFile struct {
+	*bytes.Reader
+	failFrom int64
+	failErr  error
+}
+
+func (f *failingTailMultipartFile) ReadAt(p []byte, off int64) (int, error) {
+	if off >= f.failFrom {
+		return 0, f.failErr
+	}
+	return f.Reader.ReadAt(p, off)
+}
+
+func (f *failingTailMultipartFile) Close() error { return nil }
+
+var _ io.ReaderAt = (*failingTailMultipartFile)(nil)
+
+func TestInspectCADTailReadFailureIsReadFailed(t *testing.T) {
+	data := paddedSTEP(t)
+	file := &failingTailMultipartFile{
+		Reader:   bytes.NewReader(data),
+		failFrom: convert.SniffWindowBytes,
+		failErr:  errors.New("simulated tail read failure"),
+	}
+
+	detected, sniffed, sniffedZip := detectInspectFormat(file, int64(len(data)), "step", inspect.NewTracker(inspect.Budget{}))
+	if detected != inspectSniffReadFailedFormat {
+		t.Fatalf("detected = %q, want %q", detected, inspectSniffReadFailedFormat)
+	}
+
+	tr := inspect.NewTracker(inspect.Budget{MaxBytes: 64 << 20, MaxDuration: time.Minute})
+	families := dispatchInspectFamilies(detected, sniffed, sniffedZip, file, int64(len(data)), tr)
+	families = append(families, extensionMismatchFamilyResult(detected, "step"))
+	report := inspect.BuildReport(reportFormat(detected), "step", int64(len(data)), tr, families...)
+	if report.Format != "" {
+		t.Errorf("report format = %q, want empty", report.Format)
+	}
+	sawReadFailed := false
+	for _, c := range report.Checks {
+		if c.Reason == inspect.ReasonFormatUnrecognized {
+			t.Errorf("check %+v is format_unrecognized for a read failure", c)
+		}
+		if c.Reason == inspect.ReasonReadFailed {
+			sawReadFailed = true
+		}
+	}
+	if !sawReadFailed {
+		t.Errorf("no read_failed check in %+v", report.Checks)
 	}
 }

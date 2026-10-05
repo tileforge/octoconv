@@ -564,6 +564,20 @@ components:
             * `zip_malformed` -- every byte needed was read and the central
               directory itself does not parse (checks carry
               malformed_input).
+
+            Four more values are sentinels for a CAD upload this service
+            recognized and refused. They are the same strings POST
+            /v1/jobs returns as its 422 code, so one string names one
+            verdict on both endpoints; this endpoint still answers 200:
+
+            * `truncated_cad_file` -- the upload starts like a CAD format
+              and its structure ends early (checks carry malformed_input).
+            * `ambiguous_stl` -- an STL that is valid as both ASCII and
+              binary (checks carry malformed_input).
+            * `binary_dxf_unsupported` -- a binary DXF, which this service
+              does not read (checks carry parser_unavailable).
+            * `dwg_unsupported` -- a DWG, which this service does not read
+              (checks carry parser_unavailable).
         declared_format:
           type: string
           description: >-
