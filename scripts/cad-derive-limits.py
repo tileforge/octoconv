@@ -15,6 +15,11 @@ Prints LIMIT, FIT, CEILING, CAP, MEMORY_LIMIT_DECISION, PIN_DECISION, THREADS_DE
 QUALITY lines, each with its formula and the numbers substituted into it. Nothing is taken
 from a number outside the evidence; the 40 MiB comparison point is printed as a yardstick.
 
+A cell counts as ok only when every row has rc=0 and its output verdicts hold: cstate=ok, pix=ok for
+render, rsvg-png and rsvg-pdf, triangles above zero for mesh, stlstats and render, bbox2d and svg_counts
+for dxf. A cell with rc=0 and a failed verdict is fail and feeds no floor, FIT, cliff or cap; each is
+printed as INVALID_OUTPUT.
+
 Stdlib only; runs on the host.
 """
 
@@ -39,6 +44,8 @@ NOISE_FRAC = 0.20
 D05_TOP_MIB = 100
 COUNTER_SERIES = ("step-nauo", "dxf-minsert")
 MEASURED = ("ok", "oom", "timeout")
+PIX_OPS = ("render", "rsvg-png", "rsvg-pdf")
+TRIANGLE_OPS = ("mesh", "stlstats", "render")
 
 PIPELINE = {
     "step": ("mesh", "render"),
@@ -89,6 +96,29 @@ def read_lines(path):
         return [ln.rstrip("\n") for ln in fh]
 
 
+def positive(value):
+    n = num(value)
+    return n is not None and n > 0
+
+
+def verdict_failures(f):
+    op = f["op"]
+    out = f["_out"]
+    bad = []
+    if f.get("cstate") != "ok":
+        bad.append("cstate")
+    if op in PIX_OPS and f.get("pix") != "ok":
+        bad.append("pix")
+    if op in TRIANGLE_OPS and not positive(out.get("triangles")):
+        bad.append("triangles")
+    if op == "dxf":
+        if out.get("bbox2d") in (None, "", "null"):
+            bad.append("bbox2d")
+        if "svg_counts" not in out:
+            bad.append("svg_counts")
+    return bad
+
+
 def parse_row(line):
     body = line[len("ROW,"):]
     head, sep, out = body.partition(",out=")
@@ -102,6 +132,8 @@ def parse_row(line):
     f["rss"] = max(vals) if vals else None
     f["oom"] = f.get("oom_kill", "0") not in ("0", "na", "")
     f["timeout"] = f.get("timeout") == "1"
+    f["bad"] = verdict_failures(f)
+    f["valid"] = f["rc"] == 0 and not f["bad"]
     return f
 
 
@@ -122,18 +154,18 @@ class Cell:
                 return "oom"
             if reason.endswith("-timeout"):
                 return "timeout"
-        if self.rows and all(r["rc"] == 0 for r in self.rows):
+        if self.rows and all(r["valid"] for r in self.rows):
             return "ok"
         if self.rows:
             return "fail"
         return None
 
     def rss(self):
-        vals = [r["rss"] for r in self.rows if r["rc"] == 0 and r["rss"] is not None]
+        vals = [r["rss"] for r in self.rows if r["valid"] and r["rss"] is not None]
         return max(vals) if vals else None
 
     def wall(self):
-        vals = [r["wall_s"] for r in self.rows if r["rc"] == 0 and r["wall_s"] is not None]
+        vals = [r["wall_s"] for r in self.rows if r["valid"] and r["wall_s"] is not None]
         return statistics.median_low(vals) if vals else None
 
 
@@ -436,11 +468,23 @@ def selected_config(directory):
 def self_check():
     import tempfile
 
-    def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x", par="on", lp="default"):
-        return ("ROW,src=public,name=%s,sha=%s,fmt=step,bytes=%d,op=%s,ocp=%s,variant=full,mem=4g,cpus=2,confined=0,rep=1,"
+    default_out = {
+        "mesh": "solids:1;triangles:100",
+        "stlstats": "triangles:100;watertight:1",
+        "render": "triangles:100",
+        "dxf": "bbox2d:0+0+1+1;svg_counts:external_href-0+foreignObject-0+script-0",
+    }
+
+    def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x", par="on", lp="default",
+            fmt="step", pix=None, cstate="ok", out=None):
+        if pix is None:
+            pix = "ok" if op in PIX_OPS else "-"
+        if out is None:
+            out = default_out.get(op, "-")
+        return ("ROW,src=public,name=%s,sha=%s,fmt=%s,bytes=%d,op=%s,ocp=%s,variant=full,mem=4g,cpus=2,confined=0,rep=1,"
                 "rc=%d,wall_s=1.0,utime_s=1.0,stime_s=0.1,child_rss_mib=%.1f,cg_peak_mib=%.1f,oom_kill=0,timeout=%d,"
-                "threads_max=2,pix=-,cstate=ok,par=%s,lp=%s,quality=standard,series=%s,out=-" % (
-                    name, sha, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, par, lp, series))
+                "threads_max=2,pix=%s,cstate=%s,par=%s,lp=%s,quality=standard,series=%s,out=%s" % (
+                    name, sha, fmt, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, pix, cstate, par, lp, series, out))
 
     lines = []
     for sha, name, mib, ops in (
@@ -521,10 +565,80 @@ def self_check():
             failures.append("a file with no row of the selected configuration must not be listed as a source")
         if not any(len(v) > 1 for v in sel.cell_configs.values()):
             failures.append("a cell measured at two configurations must be reported")
+    with tempfile.TemporaryDirectory() as tmp:
+        vlines = []
+        vlines += [row("a" * 64, "good-tiny", 0.4, op, 0, 100.0, series="real") for op in ("mesh", "render")]
+        vlines += [row("b" * 64, "pix-fail", 0.5, "mesh", 0, 100.0, series="real"),
+                   row("b" * 64, "pix-fail", 0.5, "render", 0, 900.0, series="real", pix="fail")]
+        vlines += [row("c" * 64, "zero-tri", 0.5, "mesh", 0, 900.0, series="real", out="triangles:0"),
+                   row("c" * 64, "zero-tri", 0.5, "render", 0, 100.0, series="real")]
+        vlines += [row("d" * 64, "no-tri-field", 0.5, "mesh", 0, 900.0, series="real", out="-"),
+                   row("d" * 64, "no-tri-field", 0.5, "render", 0, 100.0, series="real")]
+        vlines += [row("e" * 64, "cstate-bad", 0.5, "mesh", 0, 100.0, series="real"),
+                   row("e" * 64, "cstate-bad", 0.5, "render", 0, 900.0, series="real", cstate="wraplost-exitna_oomfalse")]
+        vlines += [row("f" * 64, "render-zero-tri", 0.5, "mesh", 0, 100.0, series="real"),
+                   row("f" * 64, "render-zero-tri", 0.5, "render", 0, 900.0, series="real", out="triangles:0")]
+        vlines += [row("1" * 64, "shell-only", 0.5, "mesh", 0, 130.0, series="real",
+                       out="solids:0;volume:null;volume_null_reason:no_solids;unit_agree:0;triangles:12"),
+                   row("1" * 64, "shell-only", 0.5, "render", 0, 110.0, series="real")]
+        vlines += [row("2" * 64, "asc-ok", 0.5, "stlstats", 0, 40.0, series="stl-ascii-real", fmt="stl",
+                       out="volume:null;volume_null_reason:stl_not_watertight;triangles:12;watertight:0"),
+                   row("2" * 64, "asc-ok", 0.5, "render", 0, 80.0, series="stl-ascii-real", fmt="stl")]
+        vlines += [row("3" * 64, "asc-zero", 0.5, "stlstats", 0, 900.0, series="stl-ascii-real", fmt="stl", out="triangles:0;watertight:0"),
+                   row("3" * 64, "asc-zero", 0.5, "render", 0, 80.0, series="stl-ascii-real", fmt="stl")]
+        vlines += [row("4" * 64, "asc-pix", 0.5, "stlstats", 0, 40.0, series="stl-ascii-real", fmt="stl"),
+                   row("4" * 64, "asc-pix", 0.5, "render", 0, 900.0, series="stl-ascii-real", fmt="stl", pix="fail")]
+        dxf_ok = [row("5" * 64, "dxf-ok", 0.3, op, 0, 60.0, series="real", fmt="dxf") for op in ("dxf", "rsvg-png", "rsvg-pdf")]
+        vlines += dxf_ok
+        vlines += [row("6" * 64, "dxf-nobbox", 0.3, "dxf", 0, 900.0, series="real", fmt="dxf",
+                       out="bbox2d:null;svg_counts:external_href-0+foreignObject-0+script-0"),
+                   row("6" * 64, "dxf-nobbox", 0.3, "rsvg-png", 0, 60.0, series="real", fmt="dxf"),
+                   row("6" * 64, "dxf-nobbox", 0.3, "rsvg-pdf", 0, 60.0, series="real", fmt="dxf")]
+        vlines += [row("7" * 64, "dxf-nosvg", 0.3, "dxf", 0, 900.0, series="real", fmt="dxf", out="bbox2d:0+0+1+1"),
+                   row("7" * 64, "dxf-nosvg", 0.3, "rsvg-png", 0, 60.0, series="real", fmt="dxf"),
+                   row("7" * 64, "dxf-nosvg", 0.3, "rsvg-pdf", 0, 60.0, series="real", fmt="dxf")]
+        vlines += [row("8" * 64, "png-fail", 0.3, "dxf", 0, 60.0, series="real", fmt="dxf"),
+                   row("8" * 64, "png-fail", 0.3, "rsvg-png", 0, 900.0, series="real", fmt="dxf", pix="fail"),
+                   row("8" * 64, "png-fail", 0.3, "rsvg-pdf", 0, 60.0, series="real", fmt="dxf")]
+        vlines += [row("9" * 64, "pdf-fail", 0.3, "dxf", 0, 60.0, series="real", fmt="dxf"),
+                   row("9" * 64, "pdf-fail", 0.3, "rsvg-png", 0, 60.0, series="real", fmt="dxf"),
+                   row("9" * 64, "pdf-fail", 0.3, "rsvg-pdf", 0, 900.0, series="real", fmt="dxf", pix="fail")]
+        vlines += [row("0" * 64, "png-nopix", 0.3, "dxf", 0, 60.0, series="real", fmt="dxf"),
+                   row("0" * 64, "png-nopix", 0.3, "rsvg-png", 0, 900.0, series="real", fmt="dxf", pix="-"),
+                   row("0" * 64, "png-nopix", 0.3, "rsvg-pdf", 0, 60.0, series="real", fmt="dxf")]
+        with open(os.path.join(tmp, "71-06-ladder-4g-verdicts.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(["HDR,ocp=%s" % PIN_A] + vlines) + "\n")
+        vev = Evidence(tmp)
+        vby = {}
+        for klass in ("step", "stl_ascii", "dxf"):
+            for p in vev.points(PIN_A, "4g", klass):
+                vby[p["name"]] = p
+        expect = {"good-tiny": "ok", "pix-fail": "fail", "zero-tri": "fail", "no-tri-field": "fail", "cstate-bad": "fail",
+                  "render-zero-tri": "fail", "shell-only": "ok", "asc-ok": "ok", "asc-zero": "fail", "asc-pix": "fail",
+                  "dxf-ok": "ok", "dxf-nobbox": "fail", "dxf-nosvg": "fail", "png-fail": "fail", "pdf-fail": "fail",
+                  "png-nopix": "fail"}
+        for name, want in expect.items():
+            got = vby[name]["status"] if name in vby else None
+            if got != want:
+                failures.append("point %s must be %s (rc=0 with a failed output verdict is fail, informational verdicts stay ok), got %s" % (name, want, got))
+        step_floor = derive_class(vev, PIN_A, "step")["floor"]
+        if step_floor != 130.0:
+            failures.append("the step floor must come from the ok points only (130.0), got %s" % step_floor)
+        asc_floor = derive_class(vev, PIN_A, "stl_ascii")["floor"]
+        if asc_floor != 80.0:
+            failures.append("the stl_ascii floor must come from the ok points only (80.0), got %s" % asc_floor)
+        dxf_floor = derive_class(vev, PIN_A, "dxf")["floor"]
+        if dxf_floor != 60.0:
+            failures.append("the dxf floor must come from the ok points only (60.0), got %s" % dxf_floor)
+        bad_cell = vev.cells[(PIN_A, "4g", "b" * 64, "render")]
+        if bad_cell.rss() is not None or bad_cell.wall() is not None:
+            failures.append("a cell with rc=0 and pix=fail must give no rss and no wall")
+
     for msg in failures:
         print("SELF-CHECK-FAIL,%s" % msg)
     if not failures:
-        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1")
+        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,"
+              "failed_output_verdict_not_counted_as_ok=1")
     return 1 if failures else 0
 
 
@@ -571,6 +685,15 @@ def main():
     print("GO_WORKER,vmhwm_after_job_mib=%s,vmrss_idle_mib=%s,analogue=image-class Go worker not cad-worker" % (
         ev.go["vmhwm_after_job_mib"], ev.go["vmrss_idle_mib"]))
     print("YARDSTICK,step_mib=%d,source=PreviewGenerator,use=comparison point for D-06 only and not a ceiling source" % YARDSTICK_STEP_MIB)
+    def invalid_order(item):
+        (ocp, mem, sha, op), _cell = item
+        return (ocp, mem, ev.meta[sha]["bytes"], ev.meta[sha]["name"], op)
+
+    for (ocp, mem, sha, op), cell in sorted(ev.cells.items(), key=invalid_order):
+        bad = sorted({v for r in cell.rows if r["rc"] == 0 for v in r["bad"]})
+        if bad:
+            print("INVALID_OUTPUT,ocp=%s,mem=%s,op=%s,name=%s,sha=%s,bytes=%d,failed_verdicts=%s,status=fail,rule=rc=0 with a failed output verdict is not ok and feeds no floor FIT cliff or cap" % (
+                ocp, mem, op, ev.meta[sha]["name"], sha, ev.meta[sha]["bytes"], "+".join(bad)))
     if ev.unmapped_skips:
         print("NOTE,unmapped_prestep_skips=%d,reason=private or unnamed file, not attributable to a size" % ev.unmapped_skips)
 
@@ -806,7 +929,7 @@ def main():
 
 
 def rss_of(cell, mode):
-    rows = [r for r in cell.rows if r["rc"] == 0]
+    rows = [r for r in cell.rows if r["valid"]]
     if mode == "child":
         vals = [r["child_rss_mib"] for r in rows if r["child_rss_mib"] is not None]
     elif mode == "cg":
