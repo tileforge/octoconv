@@ -116,7 +116,7 @@ Why (b) was not a clean switch (`PIN_ROBUSTNESS` line):
 
 ### Task 3 (`ad3e7a0`, gate `LIMITS-OK`)
 
-`python3 scripts/cad-derive-limits.py EVIDENCE_DIR` is reproducible (a second run is byte-identical). Substituted numbers, 4 GiB:
+`python3 scripts/cad-derive-limits.py EVIDENCE_DIR --pin 7.9.3.1.1` is reproducible (a second run is byte-identical). Substituted numbers, 4 GiB:
 
 | Format | floor MiB | Go MiB | k_worst MiB/MiB | worst file (sha prefix) | size_max 1 / 2 / 4 GiB | CEILING at 4 GiB |
 |---|---|---|---|---|---|---|
