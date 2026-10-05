@@ -327,6 +327,31 @@ threads_decision() {
   exit 0
 }
 
+floor_rows() {
+  awk -F, -v OCP="$OCP" -v VAR="$VARIANT" -v CPUS="$CPUS" -v PAR="$PARALLEL" -v LP="$LP" -v Q="$QUALITY" -v CONF="$CONFINED" -v COUNTS="$2" '
+    function kv(s, k,    n, i, parts) {
+      n = split(s, parts, ",")
+      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
+      return ""
+    }
+    function num(x) { return (x ~ /^[0-9.]+$/) ? x + 0 : -1 }
+    /^ROW,/ {
+      head = $0; sub(/,out=.*$/, "", head)
+      if (kv(head, "mem") != "4g") next
+      if (kv(head, "ocp") != OCP || kv(head, "variant") != VAR || kv(head, "cpus") != CPUS || kv(head, "par") != PAR || kv(head, "lp") != LP || kv(head, "quality") != Q || kv(head, "confined") != CONF) { other++; next }
+      used++
+      key = kv(head, "sha") "|" kv(head, "op")
+      if (kv(head, "rc") != "0") { r = 99999999 } else {
+        c = num(kv(head, "child_rss_mib")); g = num(kv(head, "cg_peak_mib")); r = (c > g) ? c : g
+      }
+      if (!(key in best) || r > best[key]) best[key] = r
+    }
+    END {
+      for (k in best) printf "%s|%s\n", k, best[k]
+      printf "%d %d\n", used + 0, other + 0 > COUNTS
+    }' "$1"
+}
+
 RESUME_COMPARED_FIELDS="image image_id server_arch ocp cpus memory confine_ro budget_s quality parallel lp_threads"
 RESUME_FREE_FIELDS="date_utc host_noise go kernel python vtk ezdxf mesa rsvg ladder repeats resume"
 
@@ -554,6 +579,26 @@ SYN
   expect no done-other-quality in_cfg 'QUALITY=fine' is_done s1 mesh 4g 1
   expect no done-other-variant in_cfg 'VARIANT=pruned' is_done s1 mesh 4g 1
   in_sub() { ( "$@" ); }
+  floor_row() {
+    printf 'ROW,src=public,name=a.step,sha=s1,fmt=step,bytes=100,op=mesh,ocp=%s,variant=%s,mem=%s,cpus=%s,confined=%s,rep=1,rc=0,child_rss_mib=%s,cg_peak_mib=10,par=%s,lp=%s,quality=%s,series=real,out=-\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+  }
+  {
+    floor_row 7.9.3.1.1 full 4g 2 0 300 on default standard
+    floor_row 8.0.1.0.0 full 4g 2 0 900 on default standard
+    floor_row 7.9.3.1.1 pruned 4g 2 0 901 on default standard
+    floor_row 7.9.3.1.1 full 4g 2 1 902 on default standard
+    floor_row 7.9.3.1.1 full 4g 2 0 903 off default standard
+    floor_row 7.9.3.1.1 full 4g 2 0 904 on default fine
+    floor_row 7.9.3.1.1 full 4g 4 0 905 on default standard
+    floor_row 7.9.3.1.1 full 4g 2 0 906 on 2 standard
+    floor_row 7.9.3.1.1 full 2g 2 0 907 on default standard
+  } > "$d/floor-src.txt"
+  floor_rows "$d/floor-src.txt" "$d/floor.counts" > "$d/floor.tsv"
+  [ "$(cat "$d/floor.tsv")" = "s1|mesh|300" ] || { echo "SELF_TEST_FAIL,case=floor-uses-only-rows-of-this-configuration,got=$(cat "$d/floor.tsv")" >&2; fails=$((fails + 1)); }
+  [ "$(cat "$d/floor.counts")" = "1 7" ] || { echo "SELF_TEST_FAIL,case=floor-counts,got=$(cat "$d/floor.counts")" >&2; fails=$((fails + 1)); }
+  ( OCP=9.9; floor_rows "$d/floor-src.txt" "$d/floor9.counts" > "$d/floor9.tsv" )
+  [ "$(cat "$d/floor9.counts")" = "0 8" ] || { echo "SELF_TEST_FAIL,case=floor-no-row-of-this-ocp,got=$(cat "$d/floor9.counts")" >&2; fails=$((fails + 1)); }
+  n=$((n + 3))
   dist() {
     printf 'DIST,sha=%s,name=%s,fmt=step,bytes=100,op=%s,mem=%s,ocp=7.9.3.1.1,n=%s,n_failed=%s,wall_min=1,wall_median=%s,wall_p95=1,wall_max=1,rss_max_mib=100,usersys_median=%s,threads_max=2,par=%s,lp=%s,quality=%s,series=real\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$7" "$8" "$9" "${10}"
   }
@@ -869,23 +914,13 @@ fi
 FLOOR_TSV="$WORK/floor.tsv"
 : > "$FLOOR_TSV"
 if [ -n "$FLOOR_FROM" ]; then
-  awk -F, '
-    function kv(s, k,    n, i, parts) {
-      n = split(s, parts, ",")
-      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
-      return ""
-    }
-    function num(x) { return (x ~ /^[0-9.]+$/) ? x + 0 : -1 }
-    /^ROW,/ {
-      head = $0; sub(/,out=.*$/, "", head)
-      if (kv(head, "mem") != "4g") next
-      key = kv(head, "sha") "|" kv(head, "op")
-      if (kv(head, "rc") != "0") { r = 99999999 } else {
-        c = num(kv(head, "child_rss_mib")); g = num(kv(head, "cg_peak_mib")); r = (c > g) ? c : g
-      }
-      if (!(key in best) || r > best[key]) best[key] = r
-    }
-    END { for (k in best) printf "%s|%s\n", k, best[k] }' "$FLOOR_FROM" > "$FLOOR_TSV"
+  floor_rows "$FLOOR_FROM" "$WORK/floor.counts" > "$FLOOR_TSV"
+  read -r FLOOR_USED FLOOR_OTHER < "$WORK/floor.counts"
+  emit "FLOOR,from=$(basename "$FLOOR_FROM"),frac=$FLOOR_FRAC,rows_used=$FLOOR_USED,rows_of_another_configuration=$FLOOR_OTHER"
+  if [ "$FLOOR_USED" -lt 1 ]; then
+    echo "error: $FLOOR_FROM has no 4g row at this run's ocp, variant, cpus, parallel, lp-threads, quality and confinement; a floor from nothing would skip nothing and say so nowhere" >&2
+    exit 64
+  fi
 fi
 
 PY=(/opt/venv/bin/python -I -B)
