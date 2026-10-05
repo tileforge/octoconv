@@ -16,6 +16,18 @@ mesa 22.3.6-1+deb12u2, rsvg-convert 2.54.7, Python 3.11.2, `debian:bookworm-slim
 sha256:cce9074fe380 (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#HDR`). Хост шумный: 12 контейнеров
 чужих проектов работали всё время (`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#NOISE`).
 
+**Образ pruned после правки keep-list (PR 32, замечание Codex).** Финальный образ теперь
+`octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d`, image_id
+sha256:08117b26d4d07fe95f0fe3f83db64fb28908b306421e5be91a118da99550e9e9; `full` той же сборки -
+`octoconv-cad-measure:ocp7.9.3.1.1-full-dc621b94ee5d`. Предыдущий тег `...-pruned-0d09b7ba39ad` (image_id
+sha256:79f5f6f41f85, на нём сняты `evidence/71-08-image-size.txt` и все числа размера ниже) остался на хосте. Размер
+не изменился: 1135589363 против 1135587708 байт (+1655 байт - исходник `vtk_keeplist.py`), оба 1083.0 MiB, 6 слоёв
+в обоих (`evidence/71-07-prune-arch.txt#IMAGE_BYTES`); хеш всех файлов `/opt/venv` и `/opt/cad-measure` без
+`vtk_keeplist` и pyc хелперов совпал (`evidence/71-07-prune-arch.txt#TREE_SHA`), поэтому сжатый размер и cold pull
+не пересняты и остаются числами предыдущего тега (рассчитано по равному содержимому, не замерено заново). Пять
+iso-рендеров реальных деталей побайтно равны на старом и новом образе
+(`evidence/71-07-prune-arch.txt#IDENTITY`: `identical=5,different=0,failed=0`).
+
 **Конфигурация строк evidence.** Все лимиты, потолки и капы ниже выведены только из строк с тегами `par=off,lp=2`
 (`evidence/71-06-limits.txt#CONFIG`: 448 строк использовано, 662 строки другой конфигурации исключены).
 Первый замер 4 GiB (`evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`), лестницы 2 GiB и 1 GiB
@@ -370,7 +382,8 @@ MiB на экземпляр при n=1000 (меш при `par=off` на том �
 (`evidence/71-08-image-size.txt#PULL_CALC`, сжатые байты x 8 / полоса, рассчитано): для pruned 25.1 с при 100 Мбит/с,
 2.5 с при 1 Гбит/с, 0.3 с при 10 Гбит/с; для full 30.8 / 3.1 / 0.3 с. Полное время холодного узла примерно равно
 сетевому времени плюс распаковка из `COLD_PULL`; это оценка, а не замер сети. Образ собран и замерен на arm64;
-размер amd64-сборки не замерен.
+размер amd64-сборки не замерен. Сборка amd64 под эмуляцией (не замер) проходит обрезку и проверку импорта
+(`evidence/71-07-prune-amd64.txt#AMD64_PRUNE`).
 
 Сравнение с флотом на этом хосте (как есть, не пересобиралось, `evidence/71-08-image-size.txt#FLEET`): самый
 большой образ флота - `octoconv-document-worker` 733.0 MiB, затем `octoconv-audio-worker` 655.1 и
@@ -382,7 +395,16 @@ MiB на экземпляр при n=1000 (меш при `par=off` на том �
 
 **Обрезка VTK по keep-list (D-17).** `scripts/cad-measure/vtk_keeplist.py collect` собирает список из
 `/proc/self/maps` всех веток рендера: 77 записей `vtkmodules/`, повторная генерация побайтно равна
-(`evidence/71-07-libtrace.txt#KEEPLIST_REGEN`, `evidence/71-07-libtrace.txt#COLLECTED`). `prune` режет VTK в
+(`evidence/71-07-libtrace.txt#KEEPLIST_REGEN`, `evidence/71-07-libtrace.txt#COLLECTED`). Список не зависит от
+архитектуры: тег `.cpython-311-<arch>-linux-gnu` у модулей расширения отбрасывается и при сборке списка, и при
+сопоставлении в `prune` (раньше список требовал точные пути `aarch64`, и сборка amd64 падала на `prune`).
+Устаревший список по-прежнему отклоняется (другая версия VTK, записанный модуль отсутствует в дереве). Сборка amd64
+под эмуляцией: прежний список отклонён (`keep-list stale: missing
+vtkmodules/vtkCommonCore.cpython-311-aarch64-linux-gnu.so`), текущий проходит `prune` (`kept=77,removed=299`) и
+проверку импорта (`evidence/71-07-prune-amd64.txt#AMD64_PRUNE`, `#AMD64_KEPT`); матчер также проверен на
+синтетических деревьях arm64 и amd64 (`scripts/cad-vtk-keeplist-test.py`, `KEEPLIST_TEST,cases=10,failed=0`).
+Числа ниже получены на arm64 и воспроизведены на новом теге (`evidence/71-07-prune.txt` пересоздан: те же
+564.1 -> 288.7 MiB, 196/196, 48/48). `prune` режет VTK в
 стадии venv до `COPY`: 564.1 -> 288.7 MiB, образ 1358.3 -> 1083.0 MiB, слоя с whiteout нет
 (`evidence/71-07-prune.txt#PRUNE_SIZE`). 196 из 196 PNG полного и обрезанного образов побайтно равны
 (`evidence/71-07-prune.txt#PRUNE_IDENTITY`), 48 из 48 строк остальных операций совпали
@@ -403,7 +425,9 @@ MiB на экземпляр при n=1000 (меш при `par=off` на том �
 
 **Выбор пользователя по D-18: `record`** (`evidence/71-01-decisions.txt`, `71-01-SUMMARY.md`): библиотеки остаются,
 пишется инженерная запись, эксперимент `patchelf` не проводился (`experiment=not_run`). «Загружена» не значит
-«вызывается» (допущение A1 остаётся допущением: ответить может только эксперимент `patchelf`).
+«вызывается» (допущение A1 остаётся допущением: ответить может только эксперимент `patchelf`). Ветка `patchelf`
+не выбрана, стадия `venv-nofreeimage` не собиралась, вариант сборки `nofreeimage` удалён из
+`scripts/cad-measure/common.sh` и `scripts/cad-image-size-measure.sh` (он вёл на несуществующую стадию).
 
 Таблица лицензий (`evidence/71-07-licences.txt#LICENCE`; VERIFIED - ожидаемый текст лицензии найден по адресу
 источника во время выборки, это опознание лицензии, а не разрешение на использование):
@@ -557,11 +581,13 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
 ## Не замерено
 
 - **amd64.** Гейта на amd64 нет, выбор amd64-хоста за пользователем (фаза 70, D-03/D-05); эмуляция не даёт Landlock,
-  такой замер считается за отсутствие замера. Размер образа и cold pull замерены только для arm64.
+  такой замер считается за отсутствие замера. Размер образа и cold pull замерены только для arm64. Одно изменилось:
+  сборка образа pruned под amd64 (эмуляция) теперь проходит, потому что keep-list не привязан к архитектуре
+  (`evidence/71-07-prune-amd64.txt`); это доказательство сборки, а не замер.
 - **Приватный поток** - реальный поток не замерен (раздел «Корпус»).
 - **f3d** на нативном arm64 и под Landlock: сборки нет (`evidence/71-05-f3d.txt#F3D_ASSETS`).
 - **Юридическая чистота лицензий** - нужен OK юриста (раздел «Лицензии»).
-- **Эксперимент `patchelf`** - не проводился (D-18 выбран как `record`).
+- **Эксперимент `patchelf`** - не проводился (D-18 выбран как `record`); вариант сборки `nofreeimage` удалён.
 - **Повторы у потолка при 2 и 1 GiB:** обе серии шли с одним повтором; ступени, которые проходят при 90% лимита,
   одиночные замеры. Реальные файлы с пиком RSS при 4 GiB ниже 40% лимита пропущены (`--floor-from`) и принятые
   проходящими выведены, а не измерены (`evidence/71-06-ladder-2g.txt#LADDER_STOP`, поле `floor_skipped`).
@@ -631,7 +657,8 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
   `scripts/cad-corpus-fetch.sh`, `scripts/cad-corpus-manifest.tsv`, `scripts/cad-corpus-inventory.sh`,
   `scripts/cad-f3d-yardstick.sh`, `scripts/cad-go-worker-rss.sh`, `scripts/cad-derive-limits.py`,
   `scripts/cad-render-stacking-probe.py`, `scripts/cad-image-trace.sh`, `scripts/cad-sandbox-measure.sh`,
-  `scripts/cad-image-size-measure.sh`.
+  `scripts/cad-image-size-measure.sh`, `scripts/cad-prune-identity.sh`, `scripts/cad-prune-amd64-check.sh`,
+  `scripts/cad-vtk-keeplist-test.py`.
 - **Образ:** `Dockerfile.cad-measure` (стадии `venv`, `venv-pruned`, `venv-selected`).
 - **Корпус:** `internal/convert/testdata/cad/` (`public/`, `synthetic/`, `PROVENANCE.md`); большие файлы - кэш вне
   репозитория (`OCTOCONV_CAD_CACHE`), приватный каталог - `OCTOCONV_CAD_PRIVATE_CORPUS`, не коммитится.
@@ -644,5 +671,6 @@ feature edges 30, заливка 0.8:0.8:0.8, FXAA включён.
   `evidence/71-06-ladder-2g.txt`, `evidence/71-06-ladder-1g.txt`, `evidence/71-06-threads.txt`,
   `evidence/71-06-quality.txt`, `evidence/71-06-go-worker-rss.txt`, `evidence/71-06-render-stacking.txt`,
   `evidence/71-06-limits.txt`, `evidence/71-07-libtrace.txt`, `evidence/71-07-prune.txt`,
+  `evidence/71-07-prune-arch.txt`, `evidence/71-07-prune-amd64.txt`,
   `evidence/71-07-licences.txt`, `evidence/71-07-landlock.txt`, `evidence/71-08-image-size.txt`,
   `evidence/71-08-no-wiring.txt`.

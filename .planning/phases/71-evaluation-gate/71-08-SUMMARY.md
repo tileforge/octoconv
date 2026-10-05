@@ -95,7 +95,7 @@ The last measurement of phase 71 (size and cold pull of the pruned and full CAD 
 - **Commit:** ba22957
 
 **3. [Rule 1 - Bug] Plan said the nofreeimage variant is compared if it exists**
-- It does not exist (D-18 outcome is `record`, no `venv-nofreeimage` stage), so the script compares pruned and full only; the check is by image presence, not by flag.
+- It does not exist (D-18 outcome is `record`, no `venv-nofreeimage` stage), so the script compares pruned and full only; the check is by image presence, not by flag. After the PR 32 review the presence check and the `nofreeimage` mapping in `common.sh` were removed altogether (the variant advertised a stage that was never built).
 
 ### Other notes
 
@@ -116,6 +116,12 @@ None.
 ## Threat Flags
 
 None beyond the plan's register. T-71-23: dind is pinned by digest, mounts no host directory (anonymous volume only), is attached only to `octoconv-cad-pull`, publishes no port, and is removed with its volume in the EXIT trap; the gate shows no leftover container. T-71-24: the DECISION summary is machine-checked against evidence and every cited evidence file is tracked. T-71-25: the gate and guard tests are green on go1.26.4 and were proven in both directions. T-71-26: the record takes only numbers, sha256 and the `PRIVATE_CORPUS` status. T-71-SC: both third-party images are pinned by index digest and recorded in the evidence; no pip, npm or cargo package was installed.
+
+## Addendum: image tag after the PR 32 keep-list fix
+
+- The final image is now `octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d` (image id `08117b26d4d0`); `evidence/71-08-image-size.txt` was measured on the previous tag `...-pruned-0d09b7ba39ad` (image id `79f5f6f41f85`), which was kept.
+- The size is unchanged: 1135589363 against 1135587708 bytes (+1655 bytes, the `vtk_keeplist.py` source), both 1083.0 MiB, 6 layers each; the hash of `/opt/venv` and `/opt/cad-measure` (without `vtk_keeplist` and the helper pyc files) is equal and the five iso renders are byte-identical (`evidence/71-07-prune-arch.txt`). Compressed size and cold pull were not re-measured, so those numbers are the previous tag's; the registry and `docker:dind` run was skipped as the content is identical.
+- amd64 image size and cold pull remain not measured; an emulated amd64 build now passes the prune (`evidence/71-07-prune-amd64.txt`), which is a build proof only.
 
 ## Self-Check: PASSED
 

@@ -14,7 +14,7 @@ requires:
     provides: D-18 outcome "record", approved lock files
 provides:
   - scripts/cad-measure/vtk_keeplist.py (collect from process maps, prune with refusal on a stale list)
-  - scripts/cad-measure/vtk-keeplist.txt (77 generated entries, vtk_version=9.7.1)
+  - scripts/cad-measure/vtk-keeplist.txt (77 generated entries, vtk_version=9.7.1; architecture-neutral after the PR 32 fix, see the addendum)
   - Dockerfile.cad-measure stages venv-pruned and venv-selected (ARG VENV_STAGE), variant mapping in common.sh
   - scripts/cad-image-trace.sh libs | prune-check | licences
   - scripts/cad-sandbox-measure.sh (candidate and minimal Landlock sets, content-judged sufficiency, effectiveness, removal table, --recheck)
@@ -125,7 +125,7 @@ On the pinned image (OCP 7.9.3.1.1, native arm64, USER nobody) the VTK tree shri
 - **DT_NEEDED chain** is read by a small ELF parser run in the image (exact direct edges, `from` and `to`) rather than `ldd` (which flattens the tree); `ldd` is kept as a count (`LDD` lines).
 - **Library flags** use LD_DEBUG `file=` names and the maps file separately (`fi_ld`, `fi_maps`, ...); `freeimage` is their union. All 17 libs-run render maps are kept with a counter, because the first run overwrote the seven views into one file.
 - **TRACE lines** list the paths outside `/opt/venv`, `/opt/cad-measure` and `/usr/lib/python3*` and give a count for the Python tree (about 190 to 220 `.pyc` and module files per input), to keep the evidence readable; the full lists were used to build the candidates.
-- **The patchelf branch of Task 2** is not implemented: the recorded outcome is `record`, and `licences` exits 64 with a message if the outcome line ever says `patchelf`.
+- **The patchelf branch of Task 2** is not implemented: the recorded outcome is `record`, and `licences` exits 64 with a message if the outcome line ever says `patchelf`. The `nofreeimage` variant that `common.sh` mapped to a `venv-nofreeimage` stage never had that stage and was removed after the PR 32 review (see the addendum); the patchelf branch was not taken.
 - **Pruning check inputs**: the fetched files are 17 (six STEP/IGES, four NIST, seven NASA STL), all rendered iso at 4g.
 
 ## Auth Gates
@@ -146,6 +146,14 @@ None beyond the plan's register: strace is installed only in the disposable trac
 - A lawyer review remains open and does not block (`LAWYER_OK=needed,blocking=no`); jbigkit (GPL-2.0, in the 7.9.3.1.1 wheel) and libgomp (GPL-3.0 with the GCC runtime exception) are copyleft components named in the record beside FreeImage and LibRaw.
 - Pruned image size is 1083.0 MiB uncompressed on this host; cold pull and total image size are measured in 71-08.
 - Candidate sets are derived with `LP_NUM_THREADS=2` passed by `--lp-threads` and `--parallel off`; with different threading settings `/sys/devices/system/cpu` and `/proc/cpuinfo` may become necessary, and `/usr/share/fonts` should be revisited if the font package set changes.
+
+## Addendum: PR 32 review (keep-list architecture, nofreeimage variant)
+
+- **The keep-list named arm64 paths.** The committed list required `vtkmodules/<mod>.cpython-311-aarch64-linux-gnu.so`, and `vtk_keeplist.py prune` exits on the first absent entry, so no amd64 build could pass the prune. `vtk_keeplist.py` now drops the `.cpython-<n>-<arch>-linux-gnu` tag when collecting and when matching (`normalize`), and the committed `vtk-keeplist.txt` carries `vtkmodules/<mod>.so` (77 entries, 23 renamed, `vtk_version=9.7.1`). A version mismatch is still refused and a listed module that is absent from the tree still exits 1 with `keep-list stale: missing ...`; an old arch-specific list still matches its own architecture.
+- **New image tags** (OCP 7.9.3.1.1, native arm64): `octoconv-cad-measure:ocp7.9.3.1.1-pruned-dc621b94ee5d` (image id `08117b26d4d0`) and `...-full-dc621b94ee5d`, built with `common.sh build` one after the other; the `...-0d09b7ba39ad` images were not deleted. `libs` was re-run: the regenerated list from the real arm64 maps is byte-identical to the normalized committed list (`KEEPLIST_REGEN,same=1,entries=77,maps_files=17`). `prune-check` was re-run on the new tag: `PRUNE_SIZE` unchanged (564.1 -> 288.7 MiB, image 1358.3 -> 1083.0 MiB, `whiteout_free=1`), `PRUNE_IDENTITY,pngs=196,identical=196,different=0,failed=0`, `PRUNE_OTHER,rows=48,same=48,diff=0`, both `STALE_TEST` cases detected; the plan gates `PRUNE-OK` and `STALE-REFUSED` pass on the new image.
+- **Identity against the previous pruned image** (`scripts/cad-prune-identity.sh`, `evidence/71-07-prune-arch.txt`): iso renders of five real parts (LinearSlide-MGN15x-Block, LM8UU, SC8UU, V-Slot-20x20-100mm, 2020_corner_bracket-Corner; 1280, white, `LP_NUM_THREADS=2`) are byte-identical, `IDENTITY,parts=5,identical=5,different=0,failed=0`. The tree hash of `/opt/venv` and `/opt/cad-measure` (without `vtk_keeplist` and the helper pyc files) is equal (`TREE_SHA`), and the image is 1135589363 bytes against 1135587708 (+1655 bytes, the source of `vtk_keeplist.py`), 6 layers in both (`IMAGE_BYTES`).
+- **amd64** (`scripts/cad-prune-amd64-check.sh`, `evidence/71-07-prune-amd64.txt`): built under OrbStack emulation in about two minutes, so no fallback was needed. With the previous list the build is refused (`keep-list stale: missing vtkmodules/vtkCommonCore.cpython-311-aarch64-linux-gnu.so`); with the new list `PRUNED,kept=77,removed=299,bytes_removed=279846920` and the import check of the final stage passes (`image_arch=amd64`). This is a build proof; an emulated image is still not a measurement. `scripts/cad-vtk-keeplist-test.py` additionally covers the matcher over synthetic arm64 and amd64 trees (`KEEPLIST_TEST,cases=10,failed=0`), including a synthetic amd64 tree pruned with the committed list.
+- **`nofreeimage` removed.** `common.sh` no longer lists the variant (`build OCP nofreeimage` exits 64 as an unknown variant), `scripts/cad-image-size-measure.sh` no longer looks for such an image, and the `licences` message for a `patchelf` outcome no longer points at a stage. The D-18 outcome stays `record`; the patchelf branch was not taken.
 
 ## Self-Check: PASSED
 
