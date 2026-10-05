@@ -771,6 +771,21 @@ func detectInspectFormat(file multipart.File, size int64, declaredFormat string,
 					detected = declaredFormat
 				}
 			}
+			if detected == "" && convert.IsCADDeclared(declaredFormat) {
+				head := window[:min(len(window), convert.CADHeadBytes)]
+				var tail []byte
+				var tailErr error
+				if int64(len(window)) == size {
+					tail = window[max(len(window)-convert.CADTailBytes, 0):]
+				} else if tail, tailErr = convert.ReadCADTail(file, size); tailErr == nil {
+					tr.Consume(int64(len(tail)))
+				}
+				if tailErr != nil {
+					sniffReadFailed = true
+				} else if res := convert.SniffCADWindows(head, tail, size, declaredFormat); res.Rejection == convert.CADRejectNone {
+					detected = res.Format
+				}
+			}
 			// IsOLECFB works on RAW bytes, deliberately not on the validated
 			// prefix: the signature is binary throughout, so the text
 			// envelope would (correctly, for its own purpose) reject it

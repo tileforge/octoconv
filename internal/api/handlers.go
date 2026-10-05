@@ -406,6 +406,13 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		// just because the extension claims md/rst/org.
 		detected = source
 	}
+	if detected == "" && convert.IsCADDeclared(source) {
+		if head, tail, cerr := convert.ReadCADWindows(file, header.Size); cerr == nil {
+			if res := convert.SniffCADWindows(head, tail, header.Size, source); res.Rejection == convert.CADRejectNone {
+				detected = res.Format
+			}
+		}
+	}
 	if detected == "" && convert.IsOLECFB(file) {
 		// D-06 (22-cfb-classification): legacy binary Office (.doc/.xls/.ppt)
 		// and password-protected OOXML ("Agile Encryption") share the
