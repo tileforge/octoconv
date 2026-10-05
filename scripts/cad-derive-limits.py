@@ -4,6 +4,7 @@ per-format input ceilings, cap candidates and the OCP pin from the measurement e
 
 Usage:
     python3 scripts/cad-derive-limits.py EVIDENCE_DIR [--pin 7.9.3.1.1|8.0.1.0.0]
+    python3 scripts/cad-derive-limits.py --self-check
 
 --pin records a decision taken outside the formula: PIN_DECISION carries it and PIN_FORMULA keeps
 the formula result.
@@ -232,8 +233,10 @@ class Evidence:
             status = "timeout"
         elif "fail" in statuses:
             status = "fail"
-        else:
+        elif complete:
             status = "ok"
+        else:
+            status = "partial"
         rss_vals = [c.rss() for c in ops.values() if c.rss() is not None]
         m = self.meta[sha]
         return {
@@ -259,7 +262,7 @@ def fmt1(x):
 
 
 def usable(p):
-    return p["status"] in ("ok", "timeout") and p["peak"] is not None
+    return p["status"] in ("ok", "timeout", "partial") and p["peak"] is not None
 
 
 def derive_class(ev, ocp, klass, mem="4g"):
@@ -279,6 +282,16 @@ def k_worst(d):
     best = max(d["size_pts"], key=lambda p: p["k"])
     ks = sorted(p["k"] for p in d["size_pts"])
     return {"k": best["k"], "pt": best, "k_median": statistics.median(ks), "k_min": ks[0], "n": len(ks)}
+
+
+def fit_rung(ev, klass, limit, go, ocp=PIN_A):
+    fit, fit_pt = 0.0, None
+    for p in ev.points(ocp, "4g", klass):
+        if counter_series(p["series"]) or p["status"] != "ok" or p["peak"] is None:
+            continue
+        if p["peak"] + go <= BUDGET * limit and p["mib"] > fit:
+            fit, fit_pt = p["mib"], p
+    return fit, fit_pt
 
 
 def size_max(limit, floor, go, k):
@@ -303,7 +316,7 @@ def cliffs(ev, klass, limit_mib, ocp=PIN_A):
 
 def top_rung_from_stops(ev, klass, limit_mib, ocp=PIN_A):
     mem = MEM_NAME[limit_mib]
-    top = 0
+    reached = {}
     for path in glob.glob(os.path.join(ev.dir, "71-06-ladder-*.txt")):
         for line in read_lines(path):
             if not line.startswith("LADDER_STOP,"):
@@ -317,7 +330,12 @@ def top_rung_from_stops(ev, klass, limit_mib, ocp=PIN_A):
             fmt = s["fmt"]
             c = ("stl_ascii" if series.startswith("stl-ascii") else "stl_binary") if fmt == "stl" else fmt
             if c == klass:
-                top = max(top, int(s["at_bytes"]))
+                ops = reached.setdefault(series, {})
+                ops[s["op"]] = max(ops.get(s["op"], 0), int(s["at_bytes"]))
+    top = 0
+    for ops in reached.values():
+        if all(op in ops for op in PIPELINE[klass]):
+            top = max(top, min(ops[op] for op in PIPELINE[klass]))
     return top
 
 
@@ -381,8 +399,62 @@ def cap_line(label, pts, floor, go, limit, unit, scale, extra=""):
                 "%d" % (MARGIN * breach["n"]) if breach else "-", int(top), tmo, extra, spread))
 
 
+def self_check():
+    import tempfile
+
+    def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x"):
+        return ("ROW,src=public,name=%s,sha=%s,fmt=step,bytes=%d,op=%s,ocp=%s,variant=full,mem=4g,cpus=2,confined=0,rep=1,"
+                "rc=%d,wall_s=1.0,utime_s=1.0,stime_s=0.1,child_rss_mib=%.1f,cg_peak_mib=%.1f,oom_kill=0,timeout=%d,"
+                "threads_max=2,pix=-,cstate=ok,par=on,lp=default,quality=standard,series=%s,out=-" % (
+                    name, sha, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, series))
+
+    lines = []
+    for sha, name, mib, ops in (
+            ("a" * 64, "tiny", 0.4, (("mesh", 0, 100.0, 0), ("render", 0, 120.0, 0))),
+            ("b" * 64, "mid", 40, (("mesh", 0, 800.0, 0), ("render", 0, 600.0, 0))),
+            ("c" * 64, "slow", 80, (("mesh", 0, 1500.0, 0), ("render", 137, 900.0, 1))),
+            ("d" * 64, "mesh-only", 150, (("mesh", 0, 2000.0, 0),))):
+        for op, rc, rss, to in ops:
+            lines.append(row(sha, name, mib, op, rc, rss, to, "real" if mib < 1 else "step-copies-x"))
+    failures = []
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "71-06-ladder-4g-selfcheck.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(["HDR,ocp=%s" % PIN_A] + lines) + "\n")
+        ev = Evidence(tmp)
+        by = {p["name"]: p for p in ev.points(PIN_A, "4g", "step")}
+        if by["mid"]["status"] != "ok" or not by["mid"]["complete"]:
+            failures.append("a point with mesh and render must be ok")
+        if by["mesh-only"]["status"] != "partial" or by["mesh-only"]["complete"]:
+            failures.append("a point with mesh but no render must be partial, got %s" % by["mesh-only"]["status"])
+        if by["slow"]["status"] != "timeout":
+            failures.append("a point whose render timed out must be timeout, got %s" % by["slow"]["status"])
+        fit, fit_pt = fit_rung(ev, "step", 4096, 0.0)
+        if fit_pt is None or fit_pt["name"] != "mid":
+            failures.append("FIT must stop at the last complete pipeline (mid), got %s" % (fit_pt["name"] if fit_pt else None))
+        _cl, top = cliffs(ev, "step", 4096)
+        if top != int(40 * MIB):
+            failures.append("cliff top rung must be the last complete pipeline, got %d" % top)
+        with open(os.path.join(tmp, "71-06-ladder-4g-selfcheck.txt"), "a", encoding="utf-8") as fh:
+            fh.write("LADDER_STOP,fmt=step,op=mesh,mem=4g,ocp=%s,series=step-copies-x,reason=top,at_bytes=%d\n" % (PIN_A, 150 * MIB))
+            fh.write("LADDER_STOP,fmt=step,op=render,mem=4g,ocp=%s,series=step-copies-x,reason=timeout,at_bytes=%d\n" % (PIN_A, 80 * MIB))
+        if top_rung_from_stops(Evidence(tmp), "step", 4096) != 0:
+            failures.append("a top stop of one operation must not make the whole pipeline reach the top rung")
+        with open(os.path.join(tmp, "71-06-ladder-4g-selfcheck.txt"), "a", encoding="utf-8") as fh:
+            fh.write(row("d" * 64, "mesh-only", 150, "render", 0, 700.0) + "\n")
+        done = {p["name"]: p for p in Evidence(tmp).points(PIN_A, "4g", "step")}
+        if done["mesh-only"]["status"] != "ok":
+            failures.append("the same point with its render measured must become ok")
+    for msg in failures:
+        print("SELF-CHECK-FAIL,%s" % msg)
+    if not failures:
+        print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1")
+    return 1 if failures else 0
+
+
 def main():
     args = sys.argv[1:]
+    if args == ["--self-check"]:
+        return self_check()
     override = None
     if len(args) == 3 and args[1] == "--pin" and args[2] in (PIN_A, PIN_B):
         override = args[2]
@@ -444,13 +516,7 @@ def main():
         if kw is None:
             continue
         for L in LIMITS:
-            fit = 0.0
-            fit_pt = None
-            for p in ev.points(PIN_A, "4g", klass):
-                if counter_series(p["series"]) or p["status"] != "ok" or p["peak"] is None:
-                    continue
-                if p["peak"] + go <= BUDGET * L and p["mib"] > fit:
-                    fit, fit_pt = p["mib"], p
+            fit, fit_pt = fit_rung(ev, klass, L, go)
             print("FIT,fmt=%s,limit_mib=%d,largest_fitting_rung_mib=%s,rung_peak_mib=%s,rule=peak+go<=%.2f*L at the 4g curve,measured_not_modelled=1" % (
                 klass, L, fmt1(fit), fmt1(fit_pt["peak"]) if fit_pt else "-", BUDGET))
 
