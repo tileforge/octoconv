@@ -108,8 +108,9 @@ usage() {
 
 pin_compare() {
   local a=$1 b=$2
+  local out rc=0
   [ -s "$a" ] && [ -s "$b" ] || { echo "error: both evidence files are required" >&2; exit 64; }
-  {
+  out=$(
     echo "PIN_COMPARE_BEGIN,a=$(basename "$a"),b=$(basename "$b")"
     awk -F, -v A="$(basename "$a")" -v B="$(basename "$b")" '
       function kv(s, k,    n, i, p, parts) {
@@ -138,6 +139,11 @@ pin_compare() {
         f = kv(head, "fmt")
         if (f != "step" && f != "iges") next
         if (kv(head, "mem") != "4g") next
+        cfg = "variant=" kv(head, "variant") ",cpus=" kv(head, "cpus") ",par=" kv(head, "par") ",lp=" kv(head, "lp") ",quality=" kv(head, "quality") ",confined=" kv(head, "confined")
+        if (!(side in sidecfg)) sidecfg[side] = cfg
+        else if (sidecfg[side] != cfg) { bad++; printf "PIN_COMPARE_REFUSED,reason=file %s mixes rows of two configurations (%s | %s)\n", (side == "a" ? A : B), sidecfg[side], cfg > "/dev/stderr" }
+        if ((side in ocps) && ocps[side] != kv(head, "ocp")) { bad++; printf "PIN_COMPARE_REFUSED,reason=file %s mixes two ocp versions\n", (side == "a" ? A : B) > "/dev/stderr" }
+        ocps[side] = kv(head, "ocp")
         sha = kv(head, "sha")
         if (!(sha in seen)) { seen[sha] = 1; order[++n] = sha }
         name[sha] = kv(head, "name"); fmt[sha] = f; bytes[sha] = kv(head, "bytes")
@@ -165,8 +171,14 @@ pin_compare() {
         return arr[int((cnt + 1) / 2)]
       }
       END {
+        if (n == 0) { printf "PIN_COMPARE_REFUSED,reason=no step or iges mesh row at 4g in either file\n" > "/dev/stderr"; exit 65 }
+        if (!("a" in sidecfg) || !("b" in sidecfg)) { printf "PIN_COMPARE_REFUSED,reason=one file has no step or iges mesh row at 4g\n" > "/dev/stderr"; exit 65 }
+        if (sidecfg["a"] != sidecfg["b"]) { printf "PIN_COMPARE_REFUSED,reason=the two files were measured at different configurations (%s | %s)\n", sidecfg["a"], sidecfg["b"] > "/dev/stderr"; exit 65 }
+        if (ocps["a"] == ocps["b"]) { printf "PIN_COMPARE_REFUSED,reason=both files carry ocp %s; a pin comparison needs two pins\n", ocps["a"] > "/dev/stderr"; exit 65 }
+        if (bad > 0) exit 65
         for (i = 1; i <= n; i++) {
           s = order[i]; ka = "a" SUBSEP s; kb = "b" SUBSEP s
+          if (!(ka in runs) || !(kb in runs)) { printf "PIN_COMPARE_REFUSED,reason=file %s has no row on one of the sides\n", name[s] > "/dev/stderr"; exit 65 }
           printf "PIN_COMPARE,name=%s,sha=%s,fmt=%s,bytes=%s,", name[s], s, fmt[s], bytes[s]
           printf "rss_a_mib=%s,wall_a_median=%s,ok_a=%d/%d,fail_a=%s,tri_a=%s,vol_a=%s,solids_a=%s,",
             (ok[ka] ? rss[ka] : "-"), median(ka), ok[ka], runs[ka], (fail[ka] ? fail[ka] : "-"),
@@ -177,14 +189,19 @@ pin_compare() {
         }
         print "PIN_COMPARE_END,files=" n
       }' "$a" "$b"
-  } | tee -a "$b"
+  ) || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "error: the pin comparison was refused (exit $rc); nothing was appended to $b" >&2
+    exit "$rc"
+  fi
+  printf '%s\n' "$out" | tee -a "$b"
   exit 0
 }
 
 quality_summary() {
-  local f=$1
+  local f=$1 out rc=0
   [ -s "$f" ] || { echo "error: the evidence file is empty" >&2; exit 64; }
-  {
+  out=$(
     awk -F, '
       function kv(s, k,    n, i, parts) {
         n = split(s, parts, ",")
@@ -204,12 +221,22 @@ quality_summary() {
       }
       /^DIST,/ {
         key = kv($0, "quality") "|" kv($0, "name")
+        cfg = "mem=" kv($0, "mem") ",ocp=" kv($0, "ocp") ",par=" kv($0, "par") ",lp=" kv($0, "lp")
+        if (dcfg == "") dcfg = cfg
+        else if (dcfg != cfg) { printf "QUALITY_REFUSED,reason=DIST lines of two configurations (%s | %s)\n", dcfg, cfg > "/dev/stderr"; bad++ }
+        if (kv($0, "n_failed") != "0" || kv($0, "n") + 0 < 1) { printf "QUALITY_REFUSED,reason=DIST line with failed or no repeats (name=%s,op=%s,n=%s,n_failed=%s)\n", kv($0, "name"), kv($0, "op"), kv($0, "n"), kv($0, "n_failed") > "/dev/stderr"; bad++ }
         if (!(key in seen)) { seen[key] = 1; keys[++nk] = key }
         op = kv($0, "op")
         wall[key, op] = kv($0, "wall_median"); rss[key, op] = kv($0, "rss_max_mib")
         bytes[key] = kv($0, "bytes")
       }
       END {
+        if (nk == 0) { printf "QUALITY_REFUSED,reason=no DIST line in the evidence file\n" > "/dev/stderr"; exit 65 }
+        for (i = 1; i <= nk; i++) {
+          k = keys[i]
+          if (!((k, "mesh") in wall) || !((k, "render") in wall) || !(k in tri) || tri[k] == "") { printf "QUALITY_REFUSED,reason=%s lacks a mesh DIST, a render DIST or a triangle count\n", k > "/dev/stderr"; bad++ }
+        }
+        if (bad > 0) exit 65
         for (i = 1; i <= nk; i++) {
           k = keys[i]; split(k, kp, "|")
           t = tri[k]
@@ -217,14 +244,19 @@ quality_summary() {
             kp[1], kp[2], bytes[k], t, 84 + 50 * t, wall[k, "mesh"], rss[k, "mesh"], wall[k, "render"], rss[k, "render"]
         }
       }' "$f"
-  } | tee -a "$f"
+  ) || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "error: the quality summary was refused (exit $rc); nothing was appended to $f" >&2
+    exit "$rc"
+  fi
+  printf '%s\n' "$out" | tee -a "$f"
   exit 0
 }
 
 threads_decision() {
-  local f=$1
+  local f=$1 out rc=0
   [ -s "$f" ] || { echo "error: the evidence file is empty" >&2; exit 64; }
-  {
+  out=$(
     awk -F, -v TOL=0.10 '
       function kv(s, k,    n, i, parts) {
         n = split(s, parts, ",")
@@ -235,6 +267,14 @@ threads_decision() {
         op = kv($0, "op"); par = kv($0, "par"); lp = kv($0, "lp")
         v = (op == "mesh") ? par : lp
         key = op "|" v
+        cfg = "mem=" kv($0, "mem") ",ocp=" kv($0, "ocp") ",quality=" kv($0, "quality")
+        if (dcfg == "") dcfg = cfg
+        else if (dcfg != cfg) { printf "THREADS_REFUSED,reason=DIST lines of two configurations (%s | %s)\n", dcfg, cfg > "/dev/stderr"; bad++ }
+        if ((op == "mesh" && lp != "default") || (op == "render" && par != "on")) { printf "THREADS_REFUSED,reason=%s DIST line varies the other axis too (par=%s,lp=%s)\n", op, par, lp > "/dev/stderr"; bad++ }
+        if (kv($0, "n_failed") != "0" || kv($0, "n") + 0 < 1) { printf "THREADS_REFUSED,reason=DIST line with failed or no repeats (name=%s,op=%s,n=%s,n_failed=%s)\n", kv($0, "name"), op, kv($0, "n"), kv($0, "n_failed") > "/dev/stderr"; bad++ }
+        sha = kv($0, "sha")
+        if (!((key, sha) in inset)) { inset[key, sha] = 1; setn[key]++ }
+        opshas[op SUBSEP sha] = 1
         if (!(key in seen)) { seen[key] = 1; keys[++nk] = key }
         w[key] += kv($0, "wall_median"); u[key] += kv($0, "usersys_median")
         t = kv($0, "threads_max") + 0; if (t > th[key]) th[key] = t
@@ -244,6 +284,14 @@ threads_decision() {
           kv($0, "usersys_median"), kv($0, "threads_max"), kv($0, "rss_max_mib")
       }
       END {
+        if (nk == 0) { printf "THREADS_REFUSED,reason=no DIST line in the evidence file\n" > "/dev/stderr"; exit 65 }
+        for (o = 1; o <= 2; o++) {
+          op = (o == 1) ? "mesh" : "render"
+          nv = 0; ninp = 0
+          for (i = 1; i <= nk; i++) { split(keys[i], kp, "|"); if (kp[1] != op) continue; nv++; if (nv == 1) ninp = setn[keys[i]]; else if (setn[keys[i]] != ninp) { printf "THREADS_REFUSED,reason=%s variants were measured over different input sets (%s has %d inputs, expected %d)\n", op, keys[i], setn[keys[i]], ninp > "/dev/stderr"; bad++ } }
+          if (nv < 2) { printf "THREADS_REFUSED,reason=%s has %d variant(s) in the evidence, a decision needs at least two\n", op, nv > "/dev/stderr"; bad++ }
+        }
+        if (bad > 0) exit 65
         for (o = 1; o <= 2; o++) {
           op = (o == 1) ? "mesh" : "render"
           best = ""; bw = -1
@@ -270,7 +318,12 @@ threads_decision() {
         printf "THREADS_DECISION,lp_num_threads=%s,occt_parallel=%s,reason=cpus=2 4g, sums of per-input median wall over the heavy inputs; mesh: %s; render: %s\n",
           choice["render"], choice["mesh"], why["mesh"], why["render"]
       }' "$f"
-  } | tee -a "$f"
+  ) || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "error: the threads decision was refused (exit $rc); nothing was appended to $f" >&2
+    exit "$rc"
+  fi
+  printf '%s\n' "$out" | tee -a "$f"
   exit 0
 }
 
@@ -500,6 +553,90 @@ SYN
   expect no done-other-lp in_cfg 'LP=2' is_done s1 mesh 4g 1
   expect no done-other-quality in_cfg 'QUALITY=fine' is_done s1 mesh 4g 1
   expect no done-other-variant in_cfg 'VARIANT=pruned' is_done s1 mesh 4g 1
+  in_sub() { ( "$@" ); }
+  dist() {
+    printf 'DIST,sha=%s,name=%s,fmt=step,bytes=100,op=%s,mem=%s,ocp=7.9.3.1.1,n=%s,n_failed=%s,wall_min=1,wall_median=%s,wall_p95=1,wall_max=1,rss_max_mib=100,usersys_median=%s,threads_max=2,par=%s,lp=%s,quality=%s,series=real\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$7" "$8" "$9" "${10}"
+  }
+  threads_fixture() {
+    local f=$1 mem=${2:-4g} nfail=${3:-0}
+    {
+      printf 'HDR,date_utc=2026-01-01T00:00:00Z\n'
+      for sha in s1 s2; do
+        dist $sha $sha.step mesh "$mem" 3 "$nfail" 20 on default standard
+        dist $sha $sha.step mesh "$mem" 3 0 22 off default standard
+        dist $sha $sha.stl render "$mem" 3 0 4 on 1 standard
+        dist $sha $sha.stl render "$mem" 3 0 3 on 2 standard
+      done
+    } > "$f"
+  }
+  threads_fixture "$d/th-ok.txt"
+  expect ok threads-decision-good-fixture in_sub threads_decision "$d/th-ok.txt"
+  grep -q '^THREADS_DECISION,lp_num_threads=2,occt_parallel=on,' "$d/th-ok.txt" || { echo "SELF_TEST_FAIL,case=threads-decision-value" >&2; fails=$((fails + 1)); }
+  printf 'HDR,date_utc=2026-01-01T00:00:00Z\n' > "$d/th-empty.txt"
+  expect no threads-decision-no-dist-lines in_sub threads_decision "$d/th-empty.txt"
+  [ "$(grep -c '^THREADS_DECISION' "$d/th-empty.txt")" = 0 ] || { echo "SELF_TEST_FAIL,case=threads-decision-empty-appended" >&2; fails=$((fails + 1)); }
+  threads_fixture "$d/th-fail.txt" 4g 1
+  expect no threads-decision-failed-repeat in_sub threads_decision "$d/th-fail.txt"
+  threads_fixture "$d/th-mem.txt"
+  dist s3 s3.step mesh 2g 3 0 20 on default standard >> "$d/th-mem.txt"
+  expect no threads-decision-two-memory-limits in_sub threads_decision "$d/th-mem.txt"
+  threads_fixture "$d/th-mem2.txt"
+  sed 's/^\(DIST,sha=s2,.*op=render,\)mem=4g/\1mem=2g/' "$d/th-mem2.txt" > "$d/th-mem3.txt"
+  grep -q 'op=render,mem=2g' "$d/th-mem3.txt" || { echo "SELF_TEST_FAIL,case=threads-mem-fixture" >&2; fails=$((fails + 1)); }
+  expect no threads-decision-same-sets-other-memory in_sub threads_decision "$d/th-mem3.txt"
+  threads_fixture "$d/th-sets.txt"
+  grep -v 'sha=s2,.*op=mesh.*par=off' "$d/th-sets.txt" > "$d/th-sets2.txt"
+  expect no threads-decision-different-input-sets in_sub threads_decision "$d/th-sets2.txt"
+  threads_fixture "$d/th-axis.txt"
+  dist s1 s1.step mesh 4g 3 0 20 on 2 standard >> "$d/th-axis.txt"
+  expect no threads-decision-mesh-row-varies-lp in_sub threads_decision "$d/th-axis.txt"
+  grep -v 'op=render' "$d/th-ok.txt" | grep '^DIST' > "$d/th-onlymesh.txt"
+  expect no threads-decision-one-op-only in_sub threads_decision "$d/th-onlymesh.txt"
+
+  quality_fixture() {
+    local f=$1 nfail=${2:-0} lvl
+    {
+      printf 'HDR,date_utc=2026-01-01T00:00:00Z\n'
+      for lvl in draft standard fine; do
+        printf 'ROW,src=public,name=a.step,sha=s1,fmt=step,bytes=100,op=mesh,ocp=7.9.3.1.1,variant=full,mem=4g,cpus=2,confined=0,rep=1,rc=0,quality=%s,par=on,lp=default,series=real,out=triangles:10;lin_deflection:0.1\n' "$lvl"
+        dist s1 a.step mesh 4g 3 "$nfail" 2 on default "$lvl"
+        dist s1 a.step render 4g 3 0 2 on default "$lvl"
+      done
+    } > "$f"
+  }
+  quality_fixture "$d/q-ok.txt"
+  expect ok quality-summary-good-fixture in_sub quality_summary "$d/q-ok.txt"
+  [ "$(grep -c '^QUALITY_ROW' "$d/q-ok.txt")" = 3 ] || { echo "SELF_TEST_FAIL,case=quality-summary-rows" >&2; fails=$((fails + 1)); }
+  printf 'HDR,date_utc=2026-01-01T00:00:00Z\n' > "$d/q-empty.txt"
+  expect no quality-summary-no-dist-lines in_sub quality_summary "$d/q-empty.txt"
+  quality_fixture "$d/q-fail.txt" 1
+  expect no quality-summary-failed-repeat in_sub quality_summary "$d/q-fail.txt"
+  quality_fixture "$d/q-norender.txt"
+  grep -v 'op=render' "$d/q-norender.txt" > "$d/q-norender2.txt"
+  expect no quality-summary-no-render-dist in_sub quality_summary "$d/q-norender2.txt"
+
+  pin_row() {
+    printf 'ROW,src=public,name=%s,sha=%s,fmt=step,bytes=100,op=mesh,ocp=%s,variant=full,mem=4g,cpus=2,confined=%s,rep=1,rc=0,wall_s=1.0,child_rss_mib=100,cg_peak_mib=90,par=%s,lp=default,quality=standard,series=real,out=triangles:10;volume:1;solids:1\n' "$1" "$2" "$3" "$4" "$5"
+  }
+  { pin_row a.step s1 7.9.3.1.1 0 on; pin_row b.step s2 7.9.3.1.1 0 on; } > "$d/pin-a.txt"
+  { pin_row a.step s1 8.0.1.0.0 0 on; pin_row b.step s2 8.0.1.0.0 0 on; } > "$d/pin-b.txt"
+  cp "$d/pin-b.txt" "$d/pin-b-run.txt"
+  expect ok pin-compare-good-fixture in_sub pin_compare "$d/pin-a.txt" "$d/pin-b-run.txt"
+  grep -q '^PIN_COMPARE_END,files=2$' "$d/pin-b-run.txt" || { echo "SELF_TEST_FAIL,case=pin-compare-files" >&2; fails=$((fails + 1)); }
+  { pin_row a.step s1 8.0.1.0.0 1 on; pin_row b.step s2 8.0.1.0.0 1 on; } > "$d/pin-b-conf.txt"
+  expect no pin-compare-confined-against-unconfined in_sub pin_compare "$d/pin-a.txt" "$d/pin-b-conf.txt"
+  { pin_row a.step s1 8.0.1.0.0 0 off; pin_row b.step s2 8.0.1.0.0 0 off; } > "$d/pin-b-par.txt"
+  expect no pin-compare-other-parallel in_sub pin_compare "$d/pin-a.txt" "$d/pin-b-par.txt"
+  { pin_row a.step s1 8.0.1.0.0 0 on; pin_row b.step s2 8.0.1.0.0 0 off; } > "$d/pin-b-mix.txt"
+  expect no pin-compare-file-mixes-configs in_sub pin_compare "$d/pin-a.txt" "$d/pin-b-mix.txt"
+  cp "$d/pin-a.txt" "$d/pin-a2.txt"
+  expect no pin-compare-same-pin-twice in_sub pin_compare "$d/pin-a.txt" "$d/pin-a2.txt"
+  printf 'HDR,date_utc=2026-01-01T00:00:00Z\n' > "$d/pin-none.txt"
+  expect no pin-compare-no-rows in_sub pin_compare "$d/pin-none.txt" "$d/pin-none.txt"
+  expect no pin-compare-one-side-empty in_sub pin_compare "$d/pin-a.txt" "$d/pin-none.txt"
+  { pin_row a.step s1 8.0.1.0.0 0 on; } > "$d/pin-b-short.txt"
+  expect no pin-compare-file-missing-on-one-side in_sub pin_compare "$d/pin-a.txt" "$d/pin-b-short.txt"
+
   : > "$DONE_KEYS"; : > "$STOPPED"
   sed 's/confined=0/confined=1/' "$d/confined.txt" > "$d/confined-rows.txt"
   resume_scan load "$d/confined-rows.txt"
