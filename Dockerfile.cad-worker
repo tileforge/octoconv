@@ -15,6 +15,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=venv /opt/venv /opt/venv
 COPY cmd/cad-worker/helper/cad-mesh /usr/local/bin/cad-mesh
-RUN chmod 0755 /usr/local/bin/cad-mesh
+COPY cmd/cad-worker/helper/cad-guard /usr/local/bin/cad-guard
+RUN chmod 0755 /usr/local/bin/cad-mesh /usr/local/bin/cad-guard
 RUN /opt/venv/bin/python -I -B -c "import OCP.STEPControl, OCP.IGESControl, OCP.BRepMesh, OCP.StlAPI, OCP.BRepBndLib, OCP.Interface"
 USER nobody

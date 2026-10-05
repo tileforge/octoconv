@@ -1,0 +1,131 @@
+# Plan 73-03: Landlock sets of the cad-guard and cad-mesh stages, measured on the production engine image
+HDR,date_utc=2026-10-05T08:56:55Z
+HDR,server_arch=arm64,image_arch=arm64,image=octoconv-cad-worker:measure-72d99caaba5b
+HDR,image_id=sha256:566f27bbf72150d24a607fc9aabda98b9e229f8a7ac5cc10934d349982a3be30,user=nobody
+HDR,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,python=Python 3.11.2,ocp=7.9.3.1.1
+HDR,guard_interp=/usr/bin/python3.11,mesh_interp=/usr/bin/python3.11,multiarch=aarch64-linux-gnu
+HDR,cpus=2,memory=4g,network=none,env=HOME=/job;LANG=C.UTF-8;TMPDIR=/job;LP_NUM_THREADS=2;PATH=image,rw=/job,canary=/etc/hostname
+HDR,go=go version go1.26.4 darwin/arm64,host_noise=12
+REF,stage=guard,input=units_inch,fmt=step,verdict=ok,sig=71ed7ab68248e2ef,attempts=1
+REF,stage=mesh,input=units_inch,fmt=step,verdict=ok,sig=9100d7feac234c8a,attempts=1
+REF,stage=guard,input=LM8UU,fmt=step,verdict=ok,sig=990fb353c21bed30,attempts=1
+REF,stage=mesh,input=LM8UU,fmt=step,verdict=ok,sig=03a7e26a30db7ad8,attempts=1
+REF,stage=guard,input=nist_ctc_05,fmt=step,verdict=ok,sig=ddf9b98a194f7f1d,attempts=1
+REF,stage=mesh,input=nist_ctc_05,fmt=step,verdict=ok,sig=9c81777542120baa,attempts=1
+REF,stage=guard,input=nist_d2mi_906,fmt=step,verdict=ok,sig=cbdbf19fb411dde9,attempts=1
+REF,stage=mesh,input=nist_d2mi_906,fmt=step,verdict=ok,sig=9086031431e89faa,attempts=1
+REF,stage=guard,input=vslot_finite_box,fmt=step,verdict=ok,sig=21e090bcb8dc4e6d,attempts=1
+REF,stage=mesh,input=vslot_finite_box,fmt=step,verdict=ok,sig=3da8f00f173987cb,attempts=1
+REF,stage=guard,input=legacy_cp1251,fmt=step,verdict=ok,sig=540cb78e143a5c65,attempts=1
+REF,stage=mesh,input=legacy_cp1251,fmt=step,verdict=ok,sig=99cac7fcfd2fa675,attempts=1
+REF,stage=guard,input=assembly_nauo4,fmt=step,verdict=ok,sig=eb2a022db3e0a195,attempts=1
+REF,stage=mesh,input=assembly_nauo4,fmt=step,verdict=ok,sig=3e150ff4485f424e,attempts=1
+REF,stage=guard,input=surfaces_only,fmt=iges,verdict=ok,sig=33442a36a8af27eb,attempts=1
+REF,stage=mesh,input=surfaces_only,fmt=iges,verdict=ok,sig=97b5299b6847329f,attempts=1
+REF,stage=guard,input=iges_no_newlines,fmt=iges,verdict=ok,sig=33442a36a8af27eb,attempts=1
+REF,stage=mesh,input=iges_no_newlines,fmt=iges,verdict=ok,sig=97b5299b6847329f,attempts=1
+REF,stage=guard,input=festo_igs,fmt=iges,verdict=ok,sig=64a11cbffefa1a79,attempts=1
+REF,stage=mesh,input=festo_igs,fmt=iges,verdict=ok,sig=7ed55eb194abdd5b,attempts=1
+TRACE,stage=guard,input=units_inch,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=LM8UU,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=nist_ctc_05,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=nist_d2mi_906,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=vslot_finite_box,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=legacy_cp1251,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=assembly_nauo4,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=surfaces_only,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=iges_no_newlines,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TRACE,stage=guard,input=festo_igs,paths=52,python_tree_paths=40,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-guard:/usr/local/lib/python3.11/dist-packages
+TMP_NEED,stage=guard,none
+CANDIDATE,stage=guard,rw=/job,ro=/etc/ld.so.cache:/usr/bin/python3.11:/usr/lib/aarch64-linux-gnu:/usr/lib/locale:/usr/lib/python3:/usr/lib/python3.11:/usr/local/bin/cad-guard:/usr/local/lib/python3.11:/usr/share/zoneinfo
+TRACE,stage=mesh,input=units_inch,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=LM8UU,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=nist_ctc_05,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=nist_d2mi_906,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=vslot_finite_box,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=legacy_cp1251,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=assembly_nauo4,paths=148,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=surfaces_only,paths=150,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/etc/nsswitch.conf:/etc/passwd:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=iges_no_newlines,paths=150,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/etc/nsswitch.conf:/etc/passwd:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TRACE,stage=mesh,input=festo_igs,paths=150,python_tree_paths=123,list=/etc/ld.so.cache:/etc/localtime=>/usr/share/zoneinfo/Etc/UTC:/etc/nsswitch.conf:/etc/passwd:/sys/devices/system/cpu/possible:/usr/lib/locale/C.utf8/LC_CTYPE:/usr/local/bin/cad-mesh
+TMP_NEED,stage=mesh,none
+CANDIDATE,stage=mesh,rw=/job,ro=/etc/ld.so.cache:/etc/nsswitch.conf:/etc/passwd:/opt/venv:/sys/devices/system/cpu:/usr/bin/python3.11:/usr/lib/aarch64-linux-gnu:/usr/lib/locale:/usr/lib/python3.11:/usr/local/bin/cad-mesh:/usr/share/zoneinfo
+SUFFICIENT,stage=guard,input=units_inch,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=LM8UU,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=nist_ctc_05,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=nist_d2mi_906,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=vslot_finite_box,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=legacy_cp1251,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=assembly_nauo4,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=surfaces_only,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=iges_no_newlines,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=festo_igs,set=candidate,result=identical,confined_rc=0,attempts=1
+ARGV,stage=guard,input=outside/units_inch,argv=/usr/local/bin/cad-guard --format step --max-entities 754762 --max-nauo 1518 /outside/in.step
+EFFECT,stage=guard,set=candidate,input=outside/units_inch,unconfined=ok,result=denied,stl_produced=no,confined_rc=2,canary=/etc/hostname,confined_signature=CADVERDICT {"reason":"cannot_count";"stage":"guard";"verdict
+SUFFICIENT,stage=mesh,input=units_inch,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=LM8UU,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=nist_ctc_05,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=nist_d2mi_906,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=vslot_finite_box,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=legacy_cp1251,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=assembly_nauo4,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=surfaces_only,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=iges_no_newlines,set=candidate,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=festo_igs,set=candidate,result=identical,confined_rc=0,attempts=1
+ARGV,stage=mesh,input=outside/units_inch,argv=/usr/local/bin/cad-mesh --format step /outside/in.step /job/out.stl
+EFFECT,stage=mesh,set=candidate,input=outside/units_inch,unconfined=ok,result=denied,stl_produced=no,confined_rc=2,canary=/etc/hostname,confined_signature=CADVERDICT {"load_fails":-1;"reason":"read_failed";"stage":"
+REMOVAL,stage=guard,entry=/etc/ld.so.cache,result=removable,detail=every input identical without it
+REMOVAL,stage=guard,entry=/usr/bin/python3.11,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=guard,entry=/usr/lib/aarch64-linux-gnu,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=guard,entry=/usr/lib/locale,result=removable,detail=every input identical without it
+REMOVAL,stage=guard,entry=/usr/lib/python3,result=removable,detail=every input identical without it
+REMOVAL,stage=guard,entry=/usr/lib/python3.11,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=guard,entry=/usr/local/bin/cad-guard,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=guard,entry=/usr/local/lib/python3.11,result=removable,detail=every input identical without it
+REMOVAL,stage=guard,entry=/usr/share/zoneinfo,result=removable,detail=every input identical without it
+SUFFICIENT,stage=guard,input=units_inch,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=LM8UU,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=nist_ctc_05,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=nist_d2mi_906,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=vslot_finite_box,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=legacy_cp1251,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=assembly_nauo4,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=surfaces_only,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=iges_no_newlines,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=guard,input=festo_igs,set=measured,result=identical,confined_rc=0,attempts=1
+ARGV,stage=guard,input=outside/units_inch,argv=/usr/local/bin/cad-guard --format step --max-entities 754762 --max-nauo 1518 /outside/in.step
+EFFECT,stage=guard,set=measured,input=outside/units_inch,unconfined=ok,result=denied,stl_produced=no,confined_rc=2,canary=/etc/hostname,confined_signature=CADVERDICT {"reason":"cannot_count";"stage":"guard";"verdict
+NEGATIVE_CONTROL,stage=guard,dropped=/usr/lib/python3.11,first_changed=units_inch:missing,result=failed_as_expected
+MEASURED,stage=guard,ro=/usr/bin/python3.11:/usr/lib/python3.11,engines=cad-guard,multiarch=/usr/lib/aarch64-linux-gnu
+PROC_SYS_TMP,stage=guard,entries=none
+REMOVAL,stage=mesh,entry=/etc/ld.so.cache,result=removable,detail=every input identical without it
+REMOVAL,stage=mesh,entry=/etc/nsswitch.conf,result=removable,detail=every input identical without it
+REMOVAL,stage=mesh,entry=/etc/passwd,result=removable,detail=every input identical without it
+REMOVAL,stage=mesh,entry=/opt/venv,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=mesh,entry=/sys/devices/system/cpu,result=removable,detail=every input identical without it
+REMOVAL,stage=mesh,entry=/usr/bin/python3.11,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=mesh,entry=/usr/lib/aarch64-linux-gnu,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=mesh,entry=/usr/lib/locale,result=removable,detail=every input identical without it
+REMOVAL,stage=mesh,entry=/usr/lib/python3.11,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=mesh,entry=/usr/local/bin/cad-mesh,result=load-bearing,first_changed=units_inch:missing
+REMOVAL,stage=mesh,entry=/usr/share/zoneinfo,result=removable,detail=every input identical without it
+SUFFICIENT,stage=mesh,input=units_inch,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=LM8UU,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=nist_ctc_05,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=nist_d2mi_906,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=vslot_finite_box,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=legacy_cp1251,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=assembly_nauo4,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=surfaces_only,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=iges_no_newlines,set=measured,result=identical,confined_rc=0,attempts=1
+SUFFICIENT,stage=mesh,input=festo_igs,set=measured,result=identical,confined_rc=0,attempts=1
+ARGV,stage=mesh,input=outside/units_inch,argv=/usr/local/bin/cad-mesh --format step /outside/in.step /job/out.stl
+EFFECT,stage=mesh,set=measured,input=outside/units_inch,unconfined=ok,result=denied,stl_produced=no,confined_rc=2,canary=/etc/hostname,confined_signature=CADVERDICT {"load_fails":-1;"reason":"read_failed";"stage":"
+NEGATIVE_CONTROL,stage=mesh,dropped=/opt/venv,first_changed=units_inch:missing,result=failed_as_expected
+MEASURED,stage=mesh,ro=/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11,engines=cad-mesh,multiarch=/usr/lib/aarch64-linux-gnu
+PROC_SYS_TMP,stage=mesh,entries=none
+EFFECT,stage=guard,set=measured,target=/opt/venv/pyvenv.cfg,unconfined=READ,result=denied,confined_rc=0,canary=/etc/hostname
+AMD64,image_arch=amd64,server_arch=arm64,image=octoconv-cad-worker:measure-72d99caaba5b-amd64,kind=build_proof,landlock=not_measured,triplet_dir=present,multiarch=x86_64-linux-gnu,entries_present=5,smoke=ok,guard=ok,mesh_triangles=12,unconfined=1,emulated=1
+MULTIARCH,arm64=aarch64-linux-gnu,amd64=x86_64-linux-gnu,amd64_status=derived,go_map=match
+SUMMARY,stages=2,inputs=10,sufficient=40,different=0,leaked=0,effect_denied=5,negative_controls=2,removal_rows=20,proc_sys_tmp=none
