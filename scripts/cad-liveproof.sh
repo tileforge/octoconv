@@ -194,6 +194,26 @@ mesh_pids() {
 		true' 2>/dev/null | tr '\n' ' ' || true
 }
 
+mesh_census() {
+	docker exec "$CNAME" sh -c '
+		start() { set -- $(sed "s/^.*) //" /proc/$1/stat); echo "${20}"; }
+		init=$(start 1)
+		old=0
+		new=0
+		for d in /proc/[0-9]*; do
+			p=${d#/proc/}
+			c=$(cat "$d/comm" 2>/dev/null) || continue
+			case "$c" in
+			cad-mesh) ;;
+			python*) grep -qa cad-mesh "$d/cmdline" 2>/dev/null || continue ;;
+			*) continue ;;
+			esac
+			s=$(start "$p") || continue
+			if [ "$s" -lt "$init" ]; then old=$((old + 1)); else new=$((new + 1)); fi
+		done
+		echo "$old $new"' 2>/dev/null || true
+}
+
 wait_mesh() {
 	local pids=""
 	for _ in $(seq 1 240); do
@@ -418,11 +438,13 @@ else
 	RESTART_VIA=restart_policy
 fi
 [ "$(docker inspect -f '{{.State.Running}}' "$CNAME")" = true ] || fail "WORKER_KILL: the cad-worker is not running after the kill"
-ORPHANS=$(mesh_pids)
+CENSUS=$(mesh_census)
 T_BACK=$(now)
-ORPHAN_COUNT=$(echo $ORPHANS | wc -w | tr -d ' ')
 BACK_S=$(elapsed "$T_KILL" "$T_BACK")
-[ "$ORPHAN_COUNT" = 0 ] || fail "WORKER_KILL: cad-mesh pid(s) [$ORPHANS] in the restarted container ${BACK_S}s after the kill"
+[ -n "$CENSUS" ] || fail "WORKER_KILL: could not read the restarted container's process table"
+ORPHAN_COUNT=${CENSUS% *}
+FRESH_MESH=${CENSUS#* }
+[ "$ORPHAN_COUNT" = 0 ] || fail "WORKER_KILL: $ORPHAN_COUNT cad-mesh process(es) older than the restarted container's init ${BACK_S}s after the kill"
 RESTARTED_AT=$(docker inspect -f '{{.State.StartedAt}}' "$CNAME")
 for _ in $(seq 1 60); do
 	curl -fsS -o /dev/null "$API_BASE/healthz" 2>/dev/null && break
@@ -442,7 +464,7 @@ download_output "$KSTL" || fail "WORKER_KILL: no download_url on the done job"
 judge "$KSTL"
 [ "$JUDGE_RC" = 0 ] || fail "WORKER_KILL: judge failed: $JUDGE_FIELDS"
 EVENTS=$(psqlq "select string_agg(coalesce(from_status, '-') || '>' || to_status, ';' order by id) from job_events where job_id = '$KILL_JOB'" || true)
-ev "WORKER_KILL,job=$KILL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,killed_mesh_pids=$(echo $KILLED_PIDS | tr ' ' ';'),restart=$RESTART_VIA,restarted_after_s=$BACK_S,started_at_before=$PRE_STARTED,started_at_after=$RESTARTED_AT,orphans=0,kill_to_done_s=$KILL_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,events=$EVENTS,judge=ok,$JUDGE_FIELDS"
+ev "WORKER_KILL,job=$KILL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,killed_mesh_pids=$(echo $KILLED_PIDS | tr ' ' ';'),restart=$RESTART_VIA,restarted_after_s=$BACK_S,started_at_before=$PRE_STARTED,started_at_after=$RESTARTED_AT,orphans=0,fresh_mesh_at_restart=$FRESH_MESH,kill_to_done_s=$KILL_TO_DONE,cad_engine_timeout_s=$ENGINE_TIMEOUT,reconciler_running=0,status=done,events=$EVENTS,judge=ok,$JUDGE_FIELDS"
 N_KILL=1
 
 ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,reject=$N_REJECT,bomb=$N_BOMB,cancel=$N_CANCEL,worker_kill=$N_KILL"
