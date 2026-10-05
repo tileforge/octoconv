@@ -689,6 +689,9 @@ func isCADTerminal(err error) bool {
 		convert.ErrCADEmptyResult,
 		convert.ErrCADMeshTimeout,
 		convert.ErrCADEngineKilled,
+		convert.ErrCADRenderTimeout,
+		convert.ErrCADRenderRejected,
+		convert.ErrCADMeasurementsInvalid,
 	} {
 		if errors.Is(err, sentinel) {
 			return true
@@ -709,6 +712,14 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):
 		return CodeCADMeshTimeout, "the model took too long to convert to a mesh; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRenderTimeout):
+		return CodeCADTooComplex, "the model took too long to render; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRenderRejected):
+		return CodeCADEmptyResult, "the rendered preview shows no recognisable part"
+	case errors.Is(err, convert.ErrCADMeasurementsInvalid):
+		return CodeEngineError, "the measurements of this model could not be produced"
+	case errors.Is(err, convert.ErrCADRenderFailed):
+		return CodeEngineError, "the preview could not be rendered"
 	}
 	return CodeEngineError, "unsupported or corrupted input format"
 }
