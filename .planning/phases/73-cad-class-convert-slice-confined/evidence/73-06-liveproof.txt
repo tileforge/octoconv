@@ -1,0 +1,34 @@
+HDR,date_utc=2026-10-05T12:45:58Z
+HDR,commit=87b7ff0997129dce0d066d35fbd170ce03c29b8b
+HDR,tracked_dirt=0
+HDR,api_image_id=sha256:9293c04532df0ca3e1743de9d91b93e1bd980a01c16d16c736f0c4927abb9a08
+HDR,cad_worker_image_id=sha256:84b6710ac45f76024337eda14ae8747aefb0ea2d3ffd1e465860b5d8f9c678cc
+HDR,cad_engine_timeout_s=406
+HDR,sandbox_disabled=false
+HDR,started_by_run=postgres;redis;minio;api;cad-worker
+HDR,server_arch=arm64
+HDR,disk_free_gib=18
+FORMATS,cad_pairs=iges>stl;step>stl,other_pairs_touching_cad_formats=0,operations_convert_cad=2,result=ok
+INSPECT,format=step,operation=convert,target=stl,engine=cad,estimate_source=unmeasured,estimated_max_seconds=406,max_bytes=66060288,available=true,result=ok
+CONVERT,name=units_inch_step,upload=units_inch.step,job=7e6e8da4-f0c0-4ee2-b68b-9e68ab7d4363,seconds=2.4,outputs=1,primary=1,bytes=684,sha256=07ccabf8692ee980d9b8deb72689b2d140239f9bc4c303de7e16ae001b5633fa,judge=ok,triangles=12,diag=95.038095,extents=25.400000:50.799999:76.199997,result=ok,reason=
+CONVERT,name=nist_ctc_05_stp,upload=nist_ctc_05_asme1_ap242-e1.stp,job=df9eec4e-5536-4028-83fe-bcf6c624bcce,seconds=2.6,outputs=1,primary=1,bytes=472584,sha256=5507ead0655c4e14286e60fdce9148cbb03c1318985b1d70d6d6be3958e9fca6,judge=ok,triangles=9450,diag=907.161442,extents=482.600006:527.049988:558.799988,vertex_diag=33.133254,factor=25.4,result=ok,reason=
+CONVERT,name=nist_d2mi_906_stp,upload=nist-d2mi-827-9999-906.stp,job=5d891e7c-fae0-493e-be93-83eb4e171ef0,seconds=2.3,outputs=1,primary=1,bytes=343584,sha256=b4816d7145758fe7a2ac31ea8ff49e652e432deb4cca4b17649dfdc035e72518,judge=ok,triangles=6870,diag=125.425182,extents=19.507200:69.545197:102.539803,vertex_diag=4.924289,factor=25.4,result=ok,reason=
+CONVERT,name=festo_valve_igs,upload=freecad-festo-valve-5-2.igs,job=64e7ae0f-f376-4e8a-8fd7-ffab172ac75b,seconds=6.5,outputs=1,primary=1,bytes=3269684,sha256=b9a802a3efea99fee2a5758308e771880fed7d4c400a61b9e88535bda6eef83c,judge=ok,triangles=65392,diag=418.014905,extents=138.500000:168.000004:356.833588,result=ok,reason=
+CONVERT,name=festo_valve_iges,upload=freecad-festo-valve-5-2.iges,job=aa0c1a40-2c6c-4591-b9ea-7be7dc97e687,seconds=6.5,outputs=1,primary=1,bytes=3269684,sha256=b9a802a3efea99fee2a5758308e771880fed7d4c400a61b9e88535bda6eef83c,judge=ok,triangles=65392,diag=418.014905,extents=138.500000:168.000004:356.833588,result=ok,reason=
+REJECT,name=lying_count_stl,bytes=134,http=422,code=truncated_cad_file,result=ok
+REJECT,name=step_63mib_plus_1,bytes=66060289,http=413,code=payload_too_large,message=step file exceeds the 63 MiB limit for this conversion,result=ok
+BOMB,name=flood_entities_754763.step,bytes=27077097,sha256=863619c7a9f54bc43869d374d04d76f67346f3add76cd49042c7b77b65612b8c,job=253272c9-559c-4bc1-97b3-4abda7d920af,status=failed,code=cad_too_complex,seconds=2.6,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=flood_nauo_1519.step,bytes=103023,sha256=9c2120b0422a540b20dd9d6b0982df237a1e4b3f21fe245c1f53437491f8e4dd,job=db80ecee-b59b-4794-829e-3bc5f551565b,status=failed,code=cad_too_complex,seconds=2.2,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=hier_nauo_K12.step,bytes=41885,sha256=7bee488b8bfa7463ef9e981793c1927c9089a67b57f4359f26cbed4e52ebac20,job=3e695c6e-087e-49a5-ad08-99ed71a2ebe7,status=failed,code=cad_too_complex,seconds=2.3,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=hier_mappedtext_K12.step,bytes=20072,sha256=572b4381259fe4a3861f41ae73dfbb72f3864d60321c41e0ca3f8b2953f8c0f0,job=3d7b97d3-e838-49e8-98fb-220d994acc01,status=failed,code=cad_too_complex,seconds=0.2,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s2_self_ref.step,bytes=18593,sha256=f6e063ff1714af3048de6437d1372fec6121466a58f59beaebe1053b455e065c,job=c3db2390-fbd7-4e2a-9915-68224b44b976,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s2_cycle2.step,bytes=18594,sha256=dad01ad33ecea23b94b64590c8f02809071303e85bccfd5fce30c0f7213ab350,job=4c7efb31-36a8-4639-9579-4260666338e7,status=failed,code=cad_unreadable,seconds=2.2,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_abc.step,bytes=15568,sha256=675e8f9518b0b3a3157a1831240a97f7b71c0f72f5f5250ca3c55b7c82466031,job=f71fdb08-146d-406d-9912-62402d613e6e,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_dblminus.step,bytes=15568,sha256=413a2aeba1c46a57f3bcfcf8d0cfd87b041c646a9f387ea5632819c75dd305a6,job=bee77622-ae4b-440a-b47d-1d0a2b32f9ad,status=failed,code=cad_unreadable,seconds=2.2,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_1e300.step,bytes=15570,sha256=b676206c3d1fba645c3b1bc701967a4dd3e86e5cb3a9dfff28d2c94cf0bd172d,job=de3063d3-c696-4086-ac8f-cab755c7c484,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_1e999.step,bytes=15570,sha256=4b0251b5ae1392f5c08ee1bd00d151a5f5bbe6ea5fdf62b663f3227642fdbb2d,job=3c502511-5614-4a8f-bde0-7be88fd11d30,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_nan.step,bytes=15568,sha256=fa2456023045da9429dc91b8c87467493cb12e1ad22d4a89c46901ad461163ea,job=3aa55a7f-4b93-4e7d-b432-caeb2055d4ae,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=partial_face.step,bytes=15566,sha256=cdd7c4a2d4ffa7a3417f1ae9ac91454ffa91b472bfe959464ddbd97dbfb25ffc,job=6b242395-75c1-42df-b8f0-739b09cb71d4,status=failed,code=cad_unreadable,seconds=2.3,bound_s=406,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+CANCEL,job=525b5003-dc32-4824-98c3-036404761059,input=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f,mesh_pids=314,pid_gone=1,gone_s=0.2,status=canceled,download_url=absent,result=ok
+WORKER_KILL,job=6deb762b-d2d0-4902-a0fa-35926d2debd2,input=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f,killed_mesh_pids=356,restart=compose_up,restarted_after_s=41.6,started_at_before=2026-10-05T12:45:55.019543478Z,started_at_after=2026-10-05T12:47:53.739632764Z,orphans=0,fresh_mesh_at_restart=1,kill_to_done_s=112.1,cad_engine_timeout_s=406,reconciler_running=0,status=done,events=->queued;queued>active;active>active;active>done,judge=ok,triangles=3820000,diag=3180.717518,extents=1812.800049:1832.000000:1863.999977,result=ok,reason=
+SUMMARY,result=ALL PASS,formats=1,inspect=1,convert=5,reject=2,bomb=12,cancel=1,worker_kill=1

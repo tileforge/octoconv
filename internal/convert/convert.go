@@ -43,6 +43,7 @@ const (
 	// That is the defect phase 60 shipped with sanitize; here the contracts
 	// caught it in minutes.
 	EngineTectonic = "tectonic"
+	EngineCAD      = "cad"
 )
 
 // OperationConvert is the default job operation -- "convert a file from one
@@ -73,12 +74,12 @@ const OperationConvert = "convert"
 // that a registry fact rather than a convention the handler has to remember.
 const OperationSanitize = "sanitize"
 
-// AllEngines returns the nine engine classes in a fixed, documented order --
+// AllEngines returns the ten engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
-// EnginePandoc, EngineProbe, EngineTectonic. The order is stable because callers (cmd/manage-clients) use
+// EnginePandoc, EngineProbe, EngineTectonic, EngineCAD. The order is stable because callers (cmd/manage-clients) use
 // it to render operator-facing error text; a fresh slice is constructed on
 // every call so a caller can never mutate the source of truth through the
-// returned slice. Adding an eighth engine class means adding it here as well
+// returned slice. Adding an eleventh engine class means adding it here as well
 // as to the const block above -- TestAllEnginesCoversEveryEngineClass fails
 // if the two ever diverge from the registry.
 func AllEngines() []string {
@@ -92,6 +93,7 @@ func AllEngines() []string {
 		EnginePandoc,
 		EngineProbe,
 		EngineTectonic,
+		EngineCAD,
 	}
 }
 

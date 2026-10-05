@@ -96,6 +96,8 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return verapdfEngines, true
 	case "documentsandbox.go":
 		return sandboxUnion(sofficeEngines, verapdfEngines), true
+	case "cad.go", "cadsandbox.go":
+		return sandboxUnion(cadGuardEngines, cadMeshEngines), true
 	}
 	return nil, false
 }
@@ -122,6 +124,8 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"probe"}
 	case "libreoffice.go", "verapdf.go", "documentsandbox.go":
 		return []string{"document"}
+	case "cad.go", "cadsandbox.go":
+		return []string{"cad"}
 	}
 	return nil
 }
@@ -145,6 +149,8 @@ func sandboxGroupEngines(group string) []string {
 		return probeEngines
 	case "document":
 		return sandboxUnion(sofficeEngines, verapdfEngines)
+	case "cad":
+		return sandboxUnion(cadGuardEngines, cadMeshEngines)
 	}
 	return nil
 }
@@ -326,6 +332,9 @@ func sandboxScan(t testing.TB, fset *token.FileSet, files []*ast.File, cfg sandb
 			if method == "stream" {
 				nameArgIdx = 3 // stream(ctx, onLine, fifoDir, name, args)
 			}
+			if method == "runBounded" {
+				nameArgIdx = 2
+			}
 			if nameArgIdx >= len(call.Args) {
 				violate(call.Pos(), "%s calls engineExec.%s with too few arguments to find the name", base, method)
 				return
@@ -388,7 +397,7 @@ func sandboxScan(t testing.TB, fset *token.FileSet, files []*ast.File, cfg sandb
 			}
 
 			if recvName, ok := sandboxSelectionReceiverName(info, sel); ok && recvName == "engineExec" &&
-				(sel.Sel.Name == "run" || sel.Sel.Name == "stream") {
+				(sel.Sel.Name == "run" || sel.Sel.Name == "stream" || sel.Sel.Name == "runBounded") {
 				reportEngineExecCall(sel.Sel.Name, call)
 			}
 			return true
@@ -493,13 +502,13 @@ func TestConfinedClassesExecOnlyThroughTheSandbox(t *testing.T) {
 	// Non-vacuity: the scan actually visited (and found engine calls in)
 	// the four files 68-RESEARCH.md names as the confirming evidence for
 	// each class's own converter.
-	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go", "libreoffice.go", "verapdf.go"} {
+	for _, base := range []string{"pandoc.go", "ocrguards.go", "av.go", "whisper.go", "chromium.go", "sanitizepdf.go", "sanitizeverify.go", "libreoffice.go", "verapdf.go", "cad.go"} {
 		if report.callsByFile[base] == 0 {
 			t.Errorf("found zero engineExec calls in %s -- the scanner is not actually parsing this file (non-vacuity check)", base)
 		}
 	}
 
-	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe", "document"} {
+	for _, group := range []string{"pandoc", "ocr", "av", "audio", "html", "probe", "document", "cad"} {
 		want := sandboxGroupEngines(group)
 		if len(want) == 0 {
 			t.Fatalf("class %s: sandboxGroupEngines returned nothing -- the group is misconfigured", group)
@@ -545,6 +554,10 @@ func (e engineExec) stream(ctx context.Context, onLine func(string), fifoDir, na
 	return nil, nil
 }
 
+func (e engineExec) runBounded(ctx context.Context, limit int, name string, args ...string) ([]byte, int, error) {
+	return nil, 0, nil
+}
+
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return nil, nil
 }
@@ -574,6 +587,33 @@ import "context"
 
 func doIt(ctx context.Context, x engineExec, name string) {
 	x.run(ctx, name)
+}
+`
+
+const sandboxSyntheticBoundedNonLiteral = `package synth
+
+import "context"
+
+func doIt(ctx context.Context, x engineExec, name string) {
+	x.runBounded(ctx, 1, name)
+}
+`
+
+const sandboxSyntheticBoundedUngranted = `package synth
+
+import "context"
+
+func doIt(ctx context.Context, x engineExec) {
+	x.runBounded(ctx, 1, "notallowed")
+}
+`
+
+const sandboxSyntheticBoundedCorrect = `package synth
+
+import "context"
+
+func doIt(ctx context.Context, x engineExec) {
+	x.runBounded(ctx, 1, "allowedengine")
 }
 `
 
@@ -665,6 +705,30 @@ func TestEngineCallScannerCatchesALiteralExec(t *testing.T) {
 			map[string]bool{}, nil)
 		if len(v) == 0 {
 			t.Error("want a violation for an unclassified file calling exec.Command, got none")
+		}
+	})
+
+	t.Run("non-literal name passed to runBounded", func(t *testing.T) {
+		v := sandboxRunSyntheticScenario(t, "classfile.go", sandboxSyntheticBoundedNonLiteral,
+			map[string]bool{"classfile.go": true}, []string{"allowedengine"})
+		if len(v) == 0 {
+			t.Error("want a violation for a non-literal name passed to engineExec.runBounded, got none")
+		}
+	})
+
+	t.Run("runBounded engine not in the class's engines list", func(t *testing.T) {
+		v := sandboxRunSyntheticScenario(t, "classfile.go", sandboxSyntheticBoundedUngranted,
+			map[string]bool{"classfile.go": true}, []string{"allowedengine"})
+		if len(v) == 0 {
+			t.Error("want a violation for runBounded exec'ing an engine outside the class's engines list, got none")
+		}
+	})
+
+	t.Run("a correct runBounded class file yields no violation", func(t *testing.T) {
+		v := sandboxRunSyntheticScenario(t, "classfile.go", sandboxSyntheticBoundedCorrect,
+			map[string]bool{"classfile.go": true}, []string{"allowedengine"})
+		if len(v) != 0 {
+			t.Errorf("want zero violations for a correctly-routed runBounded class file, got %v", v)
 		}
 	})
 

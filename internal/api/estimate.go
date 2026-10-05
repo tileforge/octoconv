@@ -132,6 +132,7 @@ var engineEstimateSource = map[string]EstimateSource{
 	// after it (90s -> 65s) and probe after that (180s -> 600s); this entry
 	// flipped in the same commit as the number, never before.
 	convert.EngineTectonic: EstimateSourceMeasured,
+	convert.EngineCAD:      EstimateSourceUnmeasured,
 }
 
 // engineMeasuredDefaultSeconds records the EXACT upper-bound value each
@@ -350,7 +351,7 @@ func (s *Server) availableOperations(ctx context.Context, clientID uuid.UUID, de
 		// two readers, the same discipline D-03 applies to the finding
 		// vocabulary. The comparison is `>` here because it is `>` there:
 		// a file exactly at the limit is accepted by both.
-		limit, gated := s.maxEngineBytes[p.engine]
+		limit, _, gated := s.sizeLimit(p.engine, detected)
 		available := true
 		unavailableReason := ""
 		if gated && sizeBytes > limit {

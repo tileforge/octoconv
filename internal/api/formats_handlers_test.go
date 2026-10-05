@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/apaderin/octoconv/internal/convert"
@@ -97,7 +98,21 @@ func TestListFormats_EnginesKeyUnchanged(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	respBody := rec.Body.Bytes()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &top); err != nil {
+		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
+	}
+	if !bytes.Contains(top["engines"], []byte(`"`+convert.EngineCAD+`"`)) {
+		t.Fatalf("the live engines map has no %q engine; stripping it below would hide a regression", convert.EngineCAD)
+	}
+	top["engines"] = withoutEngine(t, top["engines"], convert.EngineCAD)
+	var stripped bytes.Buffer
+	enc := json.NewEncoder(&stripped)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(top); err != nil {
+		t.Fatalf("re-encode response: %v", err)
+	}
+	respBody := stripped.Bytes()
 
 	if !bytes.HasPrefix(respBody, trimmed) {
 		t.Fatalf("response is not a byte-identical prefix of the response for the engines render\ngolden prefix: %s\nresponse:      %s", trimmed, respBody)
@@ -254,7 +269,7 @@ func TestListFormats_NoOperationOutsideRegistry(t *testing.T) {
 	}
 }
 
-func TestListFormats_AdvertisesNoCADFormat(t *testing.T) {
+func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 	srv, _ := newTestServer(&fakeRepo{}, &fakeStorage{}, &fakeQueue{})
 	req := authed(httptest.NewRequest(http.MethodGet, "/v1/formats", nil))
 	rec := httptest.NewRecorder()
@@ -283,16 +298,25 @@ func TestListFormats_AdvertisesNoCADFormat(t *testing.T) {
 		"step": true, "stp": true, "iges": true, "igs": true,
 		"stl": true, "dxf": true, "dwg": true,
 	}
+	allowed := map[string]bool{"step>stl": true, "iges>stl": true}
+	found := map[string]bool{}
 	check := func(where, class string, pairs [][]string) {
-		if class == "cad" {
-			t.Errorf("%s advertises a %q class", where, class)
-		}
 		for _, pair := range pairs {
+			touches := class == convert.EngineCAD
 			for _, format := range pair {
 				if cad[format] {
-					t.Errorf("%s advertises CAD format %q in pair %v under %q", where, format, pair, class)
+					touches = true
 				}
 			}
+			if !touches {
+				continue
+			}
+			key := strings.Join(pair, ">")
+			if !allowed[key] || class != convert.EngineCAD {
+				t.Errorf("%s advertises CAD pair %v under %q, want only step -> stl and iges -> stl under cad", where, pair, class)
+				continue
+			}
+			found[where+"|"+key] = true
 		}
 	}
 	for class, e := range resp.Engines {
@@ -301,6 +325,13 @@ func TestListFormats_AdvertisesNoCADFormat(t *testing.T) {
 	for op, classes := range resp.Operations {
 		for class, e := range classes {
 			check("operations."+op, class, e.Pairs)
+		}
+	}
+	for _, where := range []string{"engines", "operations.convert"} {
+		for key := range allowed {
+			if !found[where+"|"+key] {
+				t.Errorf("%s does not advertise %s under cad", where, key)
+			}
 		}
 	}
 }

@@ -191,14 +191,15 @@ func TestAllEnginesCoversEveryEngineClass(t *testing.T) {
 		EnginePandoc:   true,
 		EngineProbe:    true,
 		EngineTectonic: true,
+		EngineCAD:      true,
 	}
 
 	got := AllEngines()
 	// Spelled out rather than derived from want: deriving it would make the
 	// assertion vacuous, and the point is that adding an engine class is a
-	// decision taken in two places at once. Nine as of Phase 64 (tex).
-	if len(got) != 9 {
-		t.Fatalf("len(AllEngines()) = %d, want exactly 9", len(got))
+	// decision taken in two places at once. Ten as of Phase 73 (cad).
+	if len(got) != 10 {
+		t.Fatalf("len(AllEngines()) = %d, want exactly 10", len(got))
 	}
 
 	seen := make(map[string]int, len(got))
@@ -300,35 +301,46 @@ func TestRunCommandFailure(t *testing.T) {
 	}
 }
 
-func TestDefaultRegistersNoCADPair(t *testing.T) {
+func TestDefaultRegistersOnlyAllowlistedCADPairs(t *testing.T) {
 	cad := map[string]bool{
 		"step": true, "stp": true, "iges": true, "igs": true,
 		"stl": true, "dxf": true, "dwg": true,
 	}
+	allowed := map[string]bool{"step>stl": true, "iges>stl": true}
 
 	walked := 0
-	check := func(where, class string, pairs []Pair) {
-		if class == "cad" {
-			t.Errorf("%s registers a %q class", where, class)
-		}
+	found := map[string]bool{}
+	check := func(where, op, class string, pairs []Pair) {
 		for _, p := range pairs {
 			walked++
-			if cad[p.From] || cad[p.To] {
-				t.Errorf("%s registers CAD pair %s -> %s under %q", where, p.From, p.To, class)
+			touches := cad[p.From] || cad[p.To] || class == EngineCAD
+			if !touches {
+				continue
 			}
+			key := p.From + ">" + p.To
+			if op != OperationConvert || class != EngineCAD || !allowed[key] {
+				t.Errorf("%s registers CAD pair %s -> %s under operation %q class %q, want only (convert, cad, step, stl) and (convert, cad, iges, stl)", where, p.From, p.To, op, class)
+				continue
+			}
+			found[key] = true
 		}
 	}
 
 	for class, pairs := range Default.Classes() {
-		check("Classes", class, pairs)
+		check("Classes", OperationConvert, class, pairs)
 	}
 	for op, classes := range Default.OperationClasses() {
 		for class, pairs := range classes {
-			check("OperationClasses["+op+"]", class, pairs)
+			check("OperationClasses["+op+"]", op, class, pairs)
 		}
 	}
 
 	if walked == 0 {
 		t.Fatal("walked zero registered pairs; the guard would be vacuous")
+	}
+	for key := range allowed {
+		if !found[key] {
+			t.Errorf("allowlisted CAD pair %s is not registered", key)
+		}
 	}
 }

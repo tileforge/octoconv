@@ -1,0 +1,187 @@
+#!/opt/venv/bin/python -IB
+import argparse
+import json
+import os
+import sys
+
+FINITE_LIMIT = 1e12
+LINEAR_DEFLECTION = 0.001
+ANGULAR_DEFLECTION = 0.35
+EXIT_UNREADABLE = 2
+EXIT_EMPTY = 3
+EXIT_TOO_COMPLEX = 4
+EXIT_USAGE = 64
+NOT_EVALUATED = -1
+NUMERIC_FAIL_MARKERS = ("not a Real", "not an Integer")
+MESH_FAILURE_FLAGS = ("OpenWire", "SelfIntersectingWire", "Failure", "UnorientedWire", "TooFewPoints", "UserBreak")
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write("cad-mesh: %s\n" % message)
+        sys.exit(EXIT_USAGE)
+
+
+def box_diag(box):
+    lo, hi = box.CornerMin(), box.CornerMax()
+    return ((hi.X() - lo.X()) ** 2 + (hi.Y() - lo.Y()) ** 2 + (hi.Z() - lo.Z()) ** 2) ** 0.5
+
+
+def verdict(fd, verdict_name, reason, triangles=0, load_fails=NOT_EVALUATED):
+    obj = {"stage": "mesh", "verdict": verdict_name, "reason": reason, "triangles": triangles, "load_fails": load_fails}
+    os.write(fd, ("CADVERDICT " + json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n").encode("ascii"))
+
+
+def finite_box(shape):
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.Bnd import Bnd_Box
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if not box.IsVoid() and box_diag(box) <= FINITE_LIMIT:
+        return box
+    box = Bnd_Box()
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        fbox = Bnd_Box()
+        BRepBndLib.AddOptimal_s(faces.Current(), fbox, False, False)
+        if not fbox.IsVoid() and box_diag(fbox) <= FINITE_LIMIT:
+            box.Add(fbox)
+        faces.Next()
+    return box
+
+
+def mesh_failure_mask():
+    from OCP.IMeshData import IMeshData_Status
+
+    mask = 0
+    for name in MESH_FAILURE_FLAGS:
+        mask |= getattr(IMeshData_Status, "IMeshData_" + name).value
+    return mask
+
+
+def face_survey(shape):
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    faces = meshed = triangles = 0
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        faces += 1
+        triangulation = BRep_Tool.Triangulation_s(TopoDS.Face_s(explorer.Current()), TopLoc_Location())
+        if triangulation is not None and triangulation.NbTriangles() > 0:
+            meshed += 1
+            triangles += triangulation.NbTriangles()
+        explorer.Next()
+    return faces, meshed, triangles
+
+
+def load_check(reader):
+    checks = reader.WS().ModelCheckList(False)
+    fails = 0
+    numeric = 0
+    checks.Start()
+    while checks.More():
+        check = checks.Value()
+        fails += check.NbFails()
+        for i in range(1, check.NbFails() + 1):
+            text = check.Fail(i).ToCString()
+            if any(marker in text for marker in NUMERIC_FAIL_MARKERS):
+                numeric += 1
+        checks.Next()
+    return fails, numeric
+
+
+def run(fmt, src, out, fd):
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.IGESControl import IGESControl_Reader
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.StlAPI import StlAPI_Writer
+
+    reader = IGESControl_Reader() if fmt == "iges" else STEPControl_Reader()
+    if not Interface_Static.SetCVal_s("xstep.cascade.unit", "MM"):
+        sys.stderr.write("cad-mesh: cannot pin xstep.cascade.unit\n")
+        return 1
+    fails = NOT_EVALUATED
+    try:
+        if reader.ReadFile(src) != IFSelect_RetDone:
+            verdict(fd, "unreadable", "read_failed", load_fails=fails)
+            return EXIT_UNREADABLE
+        fails, numeric = load_check(reader)
+        if numeric > 0:
+            verdict(fd, "unreadable", "load_check_fail", load_fails=fails)
+            return EXIT_UNREADABLE
+        reader.TransferRoots()
+        shape = reader.OneShape()
+        if shape.IsNull():
+            verdict(fd, "unreadable", "no_shape", load_fails=fails)
+            return EXIT_UNREADABLE
+
+        box = finite_box(shape)
+        if box.IsVoid():
+            verdict(fd, "empty", "empty_bbox", load_fails=fails)
+            return EXIT_EMPTY
+        diag = box_diag(box)
+        if diag <= 0:
+            verdict(fd, "empty", "zero_size", load_fails=fails)
+            return EXIT_EMPTY
+
+        mesher = BRepMesh_IncrementalMesh(shape, LINEAR_DEFLECTION * diag, False, ANGULAR_DEFLECTION, False)
+        flags = mesher.GetStatusFlags()
+        faces, meshed, expected = face_survey(shape)
+        if meshed == 0:
+            verdict(fd, "empty", "no_triangles", load_fails=fails)
+            return EXIT_EMPTY
+        if not mesher.IsDone() or flags & mesh_failure_mask():
+            sys.stderr.write("cad-mesh: mesher done=%s flags=%d faces=%d meshed=%d\n" % (mesher.IsDone(), flags, faces, meshed))
+            verdict(fd, "incomplete", "mesh_status", load_fails=fails)
+            return EXIT_UNREADABLE
+        if meshed != faces:
+            sys.stderr.write("cad-mesh: faces=%d meshed=%d\n" % (faces, meshed))
+            verdict(fd, "incomplete", "face_not_triangulated", load_fails=fails)
+            return EXIT_UNREADABLE
+        writer = StlAPI_Writer()
+        writer.ASCIIMode = False
+        if not writer.Write(shape, out):
+            verdict(fd, "empty", "write_failed", load_fails=fails)
+            return EXIT_EMPTY
+        size = os.path.getsize(out)
+        triangles = (size - 84) // 50
+        if triangles <= 0:
+            verdict(fd, "empty", "no_triangles", load_fails=fails)
+            return EXIT_EMPTY
+        if size != 84 + 50 * triangles or triangles != expected:
+            sys.stderr.write("cad-mesh: stl bytes=%d triangles=%d mesh triangles=%d\n" % (size, triangles, expected))
+            verdict(fd, "incomplete", "stl_count_mismatch", load_fails=fails)
+            return EXIT_UNREADABLE
+        verdict(fd, "ok", "", triangles, fails)
+        return 0
+    except MemoryError:
+        verdict(fd, "too_complex", "out_of_memory", load_fails=fails)
+        return EXIT_TOO_COMPLEX
+    except Exception as exc:
+        sys.stderr.write("cad-mesh: %s: %s\n" % (exc.__class__.__name__, exc))
+        verdict(fd, "unreadable", "reader_exception", load_fails=fails)
+        return EXIT_UNREADABLE
+
+
+def main():
+    ap = Parser(prog="cad-mesh", add_help=False)
+    ap.add_argument("--format", required=True, choices=("step", "iges"))
+    ap.add_argument("src")
+    ap.add_argument("out")
+    args = ap.parse_args()
+    fd = os.dup(1)
+    os.dup2(2, 1)
+    return run(args.format, args.src, args.out, fd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

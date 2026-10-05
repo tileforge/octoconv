@@ -31,14 +31,14 @@ measurements, самая рискованная для ревью — собир
 |---|---|---|---|
 | 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ✓ 2026-10-04 |
 | 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ✓ 2026-10-05 |
-| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ следующая |
-| 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ |
+| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ✓ 2026-10-05 |
+| 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ следующая |
 | 75 | DXF: 2D-конвейер | RNDR-06, CCONV-02, CCONV-03 | ○ |
 | 76 | Замеренные границы, KEDA, живой гейт, контракт превью и документация | CADW-04..06, PREV-01 | ○ |
 
 - [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
 - [x] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка (completed 2026-10-05)
-- [ ] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок
+- [x] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок (completed 2026-10-05)
 - [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
 - [ ] **Phase 75: DXF 2D Pipeline** - dxf → svg/pdf и `render` dxf → png через ezdxf + rsvg-convert
 - [ ] **Phase 76: Measured Bounds, KEDA Proof & Client Docs** - замеренный таймаут, scale-from-zero, живой гейт всех классов, контракт превью и клиентская документация
@@ -197,26 +197,26 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
      нечитаемый, пустой, сверх потолка вход и таймаут стадии mesh — терминальные с
      отдельным кодом, без цикла ретраев; убийство воркера посреди джобы не
      оставляет живых процессов движка и не держит джобу до полного таймаута
-**Plans:** 6 plans in 6 waves (последовательно)
+**Plans:** 6/6 plans complete in 6 waves (последовательно)
 
 Plans:
 **Wave 1**
-- [ ] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
+- [x] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
+- [x] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
+- [x] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
+- [x] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
+- [x] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
+- [x] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
 
 ### Phase 74: 3D Render & Measurements
 
@@ -315,7 +315,7 @@ Plans:
 |-------|----------------|--------|-----------|
 | 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
 | 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
-| 73. CAD Class & Convert Slice, Confined | 0/TBD | Not started | - |
+| 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 0/TBD | Not started | - |
 | 75. DXF 2D Pipeline | 0/TBD | Not started | - |
 | 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |

@@ -33,6 +33,7 @@ const (
 	// TypeTectonicConvert is the ninth class and back to the "<engine>:
 	// <operation>" convention probe departed from: tectonic serves convert.
 	TypeTectonicConvert = "tectonic:convert"
+	TypeCADJob          = "cad:job"
 )
 
 // Queue names. asynq routes tasks to a queue per engine class so workers and
@@ -53,6 +54,7 @@ const (
 	QueuePandoc   = convert.EnginePandoc
 	QueueProbe    = convert.EngineProbe
 	QueueTectonic = convert.EngineTectonic
+	QueueCAD      = convert.EngineCAD
 )
 
 // ConvertPayload is the task payload. It carries only the job id — all task
@@ -547,6 +549,8 @@ func RetryDelayFunc(n int, e error, t *asynq.Task) time.Duration {
 		return ProbeRetryDelay(n, e, t)
 	case TypeTectonicConvert:
 		return TectonicRetryDelay(n, e, t)
+	case TypeCADJob:
+		return CADRetryDelay(n, e, t)
 	default:
 		return asynq.DefaultRetryDelayFunc(n, e, t)
 	}
@@ -852,7 +856,7 @@ func PandocUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
 // convert.go's Engine* constants (or vice versa). Plan 04 rewires
 // cmd/api/main.go to spread this helper.
 func AllConvertQueues() []string {
-	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic}
+	return []string{QueueImage, QueueDocument, QueueHTML, QueueAudio, QueueAV, QueueOCR, QueuePandoc, QueueProbe, QueueTectonic, QueueCAD}
 }
 
 // probeBackoffSum sums ProbeRetryDelay(i) for i in [0, maxRetry).
@@ -1017,6 +1021,34 @@ func NewTectonicConvertTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Durati
 	}
 	return asynq.NewTask(TypeTectonicConvert, b,
 		asynq.Queue(QueueTectonic),
+		asynq.MaxRetry(maxRetry),
+		asynq.Unique(uniqueTTL),
+	), nil
+}
+
+func CADRetryDelay(n int, e error, t *asynq.Task) time.Duration {
+	return ProbeRetryDelay(n, e, t)
+}
+
+func cadBackoffSum(maxRetry int) time.Duration {
+	var sum time.Duration
+	for i := 0; i < maxRetry; i++ {
+		sum += CADRetryDelay(i, nil, nil)
+	}
+	return sum
+}
+
+func CADUniqueTTL(maxRetry int, engineTimeout time.Duration) time.Duration {
+	return time.Duration(maxRetry+1)*engineTimeout + cadBackoffSum(maxRetry) + uniqueTTLSafetyMargin
+}
+
+func NewCADJobTask(jobID uuid.UUID, maxRetry int, uniqueTTL time.Duration) (*asynq.Task, error) {
+	b, err := json.Marshal(ConvertPayload{JobID: jobID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal convert payload: %w", err)
+	}
+	return asynq.NewTask(TypeCADJob, b,
+		asynq.Queue(QueueCAD),
 		asynq.MaxRetry(maxRetry),
 		asynq.Unique(uniqueTTL),
 	), nil

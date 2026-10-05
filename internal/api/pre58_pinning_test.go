@@ -185,12 +185,12 @@ func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
 	// LIVE body instead and the remainder must still be byte-identical, so a
 	// change to any existing engine's pairs fails exactly as before and only
 	// the addition is tolerated.
-	liveEngines := withoutEngine(t, liveTop.Engines, convert.EngineTectonic)
+	liveEngines := withoutEngine(t, withoutEngine(t, liveTop.Engines, convert.EngineTectonic), convert.EngineCAD)
 	if !bytes.Equal(goldenTop.Engines, liveEngines) {
 		t.Errorf("engines changed beyond the permitted addition (D-15 pinning violation)"+
 			"\ngot:  %s\nwant: %s", liveEngines, goldenTop.Engines)
 	}
-	liveConvert := withoutEngine(t, liveTop.Operations["convert"], convert.EngineTectonic)
+	liveConvert := withoutEngine(t, withoutEngine(t, liveTop.Operations["convert"], convert.EngineTectonic), convert.EngineCAD)
 	if !bytes.Equal(goldenTop.Operations["convert"], liveConvert) {
 		t.Errorf("operations.convert changed beyond the tectonic addition (D-15 pinning violation)"+
 			"\ngot:  %s\nwant: %s", liveConvert, goldenTop.Operations["convert"])
@@ -202,6 +202,11 @@ func assertFormatsGolden58ModuloSanitize(t *testing.T, got []byte) {
 		t.Errorf("the live body has no %q engine -- this comparator strips one, so its absence "+
 			"means the strip is hiding a regression rather than permitting an addition",
 			convert.EngineTectonic)
+	}
+	if !bytes.Contains(liveTop.Engines, []byte(`"`+convert.EngineCAD+`"`)) {
+		t.Errorf("the live body has no %q engine -- this comparator strips one, so its absence "+
+			"means the strip is hiding a regression rather than permitting an addition",
+			convert.EngineCAD)
 	}
 	for key := range liveTop.Operations {
 		if _, pinned := goldenTop.Operations[key]; pinned {

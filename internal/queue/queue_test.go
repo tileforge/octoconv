@@ -1002,6 +1002,50 @@ func TestEnqueuePandocConvert(t *testing.T) {
 	}
 }
 
+func TestEnqueueCADJob(t *testing.T) {
+	if os.Getenv("REDIS_ADDR") == "" {
+		t.Skip("REDIS_ADDR not set; skipping integration test")
+	}
+
+	cl, err := NewClient()
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer cl.Close()
+
+	id := uuid.New()
+	if err := cl.EnqueueCADJob(context.Background(), id); err != nil {
+		t.Fatalf("EnqueueCADJob: %v", err)
+	}
+
+	opt, _ := RedisOpt()
+	insp := asynq.NewInspector(opt)
+	defer insp.Close()
+
+	infos, err := insp.ListPendingTasks(QueueCAD)
+	if err != nil {
+		t.Fatalf("ListPendingTasks: %v", err)
+	}
+	found := false
+	for _, ti := range infos {
+		p, err := ParseConvertPayload(ti.Payload)
+		if err == nil && p.JobID == id {
+			found = true
+			if ti.Type != TypeCADJob {
+				t.Errorf("enqueued type = %q, want %q", ti.Type, TypeCADJob)
+			}
+			if ti.MaxRetry != cl.cadMaxRetry {
+				t.Errorf("enqueued MaxRetry = %d, want %d", ti.MaxRetry, cl.cadMaxRetry)
+			}
+			_ = insp.DeleteTask(QueueCAD, ti.ID)
+			break
+		}
+	}
+	if !found {
+		t.Errorf("enqueued task for job %s not found in queue %q", id, QueueCAD)
+	}
+}
+
 // TestEnqueueImageConvert enqueues a task and confirms it lands in the image
 // queue. Requires a live Redis (REDIS_ADDR); skipped otherwise.
 func TestEnqueueImageConvert(t *testing.T) {
@@ -1085,5 +1129,73 @@ func TestEnqueueWebhookDeliverDuplicate(t *testing.T) {
 			_ = insp.DeleteTask(QueueWebhook, ti.ID)
 			break
 		}
+	}
+}
+
+func TestCADJobTaskRoundTrip(t *testing.T) {
+	id := uuid.New()
+	ttl := CADUniqueTTL(2, convert.CADDefaultEngineTimeout)
+	task, err := NewCADJobTask(id, 2, ttl)
+	if err != nil {
+		t.Fatalf("NewCADJobTask: %v", err)
+	}
+	if task.Type() != "cad:job" || task.Type() != TypeCADJob {
+		t.Errorf("task type = %q, want cad:job", task.Type())
+	}
+	if QueueCAD != "cad" {
+		t.Errorf("QueueCAD = %q, want cad", QueueCAD)
+	}
+	p, err := ParseConvertPayload(task.Payload())
+	if err != nil {
+		t.Fatalf("ParseConvertPayload: %v", err)
+	}
+	if p.JobID != id {
+		t.Errorf("job id = %s, want %s", p.JobID, id)
+	}
+}
+
+func TestRetryDelayFuncRoutesCADJob(t *testing.T) {
+	cadTask := asynq.NewTask(TypeCADJob, nil)
+	for _, n := range []int{-1, 0, 1, 5, 99} {
+		if got, want := RetryDelayFunc(n, nil, cadTask), CADRetryDelay(n, nil, nil); got != want {
+			t.Errorf("RetryDelayFunc(cad, %d) = %v, want %v", n, got, want)
+		}
+	}
+	if got, want := RetryDelayFunc(0, nil, cadTask), 5*time.Second; got != want {
+		t.Errorf("RetryDelayFunc(cad, 0) = %v, want %v, the shared schedule rather than asynq's default", got, want)
+	}
+}
+
+func TestCADUniqueTTL(t *testing.T) {
+	const maxRetry = 2
+	timeout := convert.CADDefaultEngineTimeout
+	want := 3*timeout + cadBackoffSum(maxRetry) + uniqueTTLSafetyMargin
+	if got := CADUniqueTTL(maxRetry, timeout); got != want {
+		t.Errorf("CADUniqueTTL(%d, %v) = %v, want %v", maxRetry, timeout, got, want)
+	}
+	if got, want := cadBackoffSum(maxRetry), CADRetryDelay(0, nil, nil)+CADRetryDelay(1, nil, nil); got != want {
+		t.Errorf("cadBackoffSum(%d) = %v, want %v", maxRetry, got, want)
+	}
+	if CADUniqueTTL(maxRetry, 2*timeout) <= CADUniqueTTL(maxRetry, timeout) {
+		t.Error("CADUniqueTTL does not grow with the engine timeout")
+	}
+	if CADUniqueTTL(maxRetry+1, timeout) <= CADUniqueTTL(maxRetry, timeout) {
+		t.Error("CADUniqueTTL does not grow with the retry budget")
+	}
+}
+
+func TestCADQueueIsExposed(t *testing.T) {
+	got := AllConvertQueues()
+	if len(got) != 10 {
+		t.Errorf("AllConvertQueues() has %d queues, want 10", len(got))
+	}
+	count := 0
+	for _, q := range got {
+		if q == QueueCAD {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("AllConvertQueues() contains %q %d times, want exactly 1", QueueCAD, count)
 	}
 }

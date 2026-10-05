@@ -253,6 +253,7 @@ either with the prose (PR #20 review).
 | `unrecognized_content` | not a finding — `errcode.invalid_request` (format could not be identified at all) |
 | `dimensions_unknown` | not a finding — `errcode.invalid_request` (a failed characteristic extraction, not a risk signal) |
 | `engine_size_limit` | not a finding — `errcode.payload_too_large` (server configuration, not file content) |
+| `format_size_limit` | not a finding — `errcode.payload_too_large` (server configuration, not file content; a per-format ceiling inside one engine class) |
 | `invalid_opts` | not a finding — `errcode.invalid_options` (a property of the request's `opts` field) |
 | `opts_not_applicable` | not a finding — `errcode.opts_not_applicable` (a property of the request's `opts` field) |
 | `opts_too_large` | not a finding — `errcode.payload_too_large` (a property of the request's `opts` field) |

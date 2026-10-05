@@ -94,4 +94,5 @@ func init() {
 	// that stops being true this line fails at init rather than silently taking
 	// pandoc's route away.
 	Default.Register(TectonicConverter{})
+	Default.Register(CADConverter{})
 }

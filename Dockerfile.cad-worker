@@ -1,0 +1,33 @@
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS venv
+ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv
+COPY cmd/cad-worker/requirements-mesh.txt /req/requirements-mesh.txt
+RUN /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes \
+      -r /req/requirements-mesh.txt
+
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS engine
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 libgl1 libx11-6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=venv /opt/venv /opt/venv
+COPY cmd/cad-worker/helper/cad-mesh /usr/local/bin/cad-mesh
+COPY cmd/cad-worker/helper/cad-guard /usr/local/bin/cad-guard
+RUN chmod 0755 /usr/local/bin/cad-mesh /usr/local/bin/cad-guard
+RUN /opt/venv/bin/python -I -B -c "import OCP.STEPControl, OCP.IGESControl, OCP.BRepMesh, OCP.StlAPI, OCP.BRepBndLib, OCP.Interface, OCP.IMeshData, OCP.BRep, OCP.TopLoc, OCP.TopoDS"
+USER nobody
+
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/cad-worker ./cmd/cad-worker
+
+FROM engine
+COPY --from=build /out/cad-worker /usr/local/bin/cad-worker
+USER nobody
+ENTRYPOINT ["/usr/local/bin/cad-worker"]

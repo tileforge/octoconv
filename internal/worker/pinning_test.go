@@ -1479,3 +1479,149 @@ func TestPinnedProbePageCeilingAndTimeoutAreOpposites(t *testing.T) {
 		}
 	})
 }
+
+func TestPinnedCADFailureVerdicts(t *testing.T) {
+	cadHandle := func(h *Handler, ctx context.Context, task *asynq.Task) error {
+		return NewRunner(h, CADDescriptor).Handle(ctx, task)
+	}
+
+	terminal := []struct {
+		name     string
+		sentinel error
+		wrapped  error
+		code     string
+		message  string
+	}{
+		{"input over the ceiling", convert.ErrCADInputTooLarge,
+			fmt.Errorf("cad: %w: step input is 70000000 bytes against a 66060288-byte ceiling", convert.ErrCADInputTooLarge),
+			CodeInputTooLarge, "the CAD file exceeds the maximum size this deployment accepts for its format"},
+		{"too complex", convert.ErrCADTooComplex,
+			fmt.Errorf("cad guard: %w: entities_over_cap", convert.ErrCADTooComplex),
+			CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"},
+		{"engine killed", convert.ErrCADEngineKilled,
+			fmt.Errorf("cad mesh: %w: signal: killed", convert.ErrCADEngineKilled),
+			CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"},
+		{"unreadable", convert.ErrCADUnreadable,
+			fmt.Errorf("cad guard: %w: no_data_section", convert.ErrCADUnreadable),
+			CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"},
+		{"empty result", convert.ErrCADEmptyResult,
+			fmt.Errorf("%w: STL declares 0 triangles", convert.ErrCADEmptyResult),
+			CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"},
+		{"mesh timeout", convert.ErrCADMeshTimeout,
+			fmt.Errorf("cad mesh: %w: 90s, 89.1s of CPU: %v", convert.ErrCADMeshTimeout, context.DeadlineExceeded),
+			CodeCADMeshTimeout, "the model took too long to convert to a mesh; simplify it or export fewer details"},
+	}
+	for _, tc := range terminal {
+		t.Run(tc.name+" is terminal with its own code on the first attempt", func(t *testing.T) {
+			job, jobID := newPinJob("")
+			calls := []string{}
+			repo := &pinRepo{job: job, calls: &calls}
+			h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+			h.processFn = func(context.Context, *jobs.Job) error {
+				return fmt.Errorf("convert: %w", tc.wrapped)
+			}
+
+			err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Fatalf("err = %v, want SkipRetry -- the same file reaches the same verdict on every attempt", err)
+			}
+			if len(repo.markFailed) != 1 {
+				t.Fatalf("MarkFailed calls = %d, want 1 on the FIRST attempt", len(repo.markFailed))
+			}
+			if got := repo.markFailed[0].code; got != tc.code {
+				t.Fatalf("MarkFailed code = %q, want %q", got, tc.code)
+			}
+			if got := repo.markFailed[0].message; got != tc.message {
+				t.Fatalf("MarkFailed message = %q, want %q", got, tc.message)
+			}
+		})
+	}
+
+	t.Run("a sandbox fault wrapping a terminal-looking error retries and marks nothing", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("cad guard: %w: %w: unrecoverable error",
+				convert.ErrEngineSandboxUnavailable, convert.ErrCADUnreadable))
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a node that cannot establish the sandbox says "+
+				"nothing about the file", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a node fault must not tell the client their file is broken",
+				len(repo.markFailed))
+		}
+	})
+
+	t.Run("an attempt deadline outside the engine stays retryable", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("upload %q: %w", "results/x/0-out.stl", context.DeadlineExceeded)
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a stalled S3 transfer is not a CAD file that failed", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 on a retryable attempt", len(repo.markFailed))
+		}
+	})
+
+	t.Run("cancellation is not a file failure", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("cad mesh: %w", context.Canceled))
+		}
+
+		_ = cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 -- a canceled job is not a failed file", len(repo.markFailed))
+		}
+	})
+
+	t.Run("persisted options are refused, not ignored", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		job.Opts = map[string]any{"quality": 80}
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			t.Fatal("process() ran for a job whose persisted options were never accepted")
+			return nil
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if !errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v, want SkipRetry -- a corrupt options column cannot fix itself on retry", err)
+		}
+		if len(repo.markFailed) != 1 {
+			t.Fatalf("MarkFailed calls = %d, want 1", len(repo.markFailed))
+		}
+		if got := repo.markFailed[0].code; got != CodeInvalidOptions {
+			t.Fatalf("MarkFailed code = %q, want %q", got, CodeInvalidOptions)
+		}
+	})
+
+	t.Run("a plain engine failure with no sentinel keeps the shared verdict", func(t *testing.T) {
+		if got, _ := cadFailureCode(errors.New("exit status 1")); got != CodeEngineError {
+			t.Fatalf("cadFailureCode(plain) = %q, want %q", got, CodeEngineError)
+		}
+	})
+}

@@ -91,6 +91,7 @@ type enqueuer interface {
 	EnqueuePandocConvert(ctx context.Context, id uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, id uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, id uuid.UUID) error
+	EnqueueCADJob(ctx context.Context, id uuid.UUID) error
 }
 
 // Sweeper periodically scans for stale jobs and recovers or exhausts them.
@@ -393,8 +394,10 @@ func (s *Sweeper) sweep(ctx context.Context) {
 			// TestSweepRoutesEveryEngineConstant exists -- it failed the moment
 			// tectonic joined AllEngines, which is the whole point of it.
 			enqueueErr = s.enq.EnqueueTectonicConvert(ctx, j.ID)
+		case convert.EngineCAD:
+			enqueueErr = s.enq.EnqueueCADJob(ctx, j.ID)
 		default:
-			// Fail closed (T-10-03): cad/archive are out of scope this
+			// Fail closed (T-10-03): archive is out of scope this
 			// milestone and a corrupted/unrecognized engine value must never
 			// be guessed at. Do NOT enqueue and do NOT RequeueStale — either
 			// would risk running the job through the wrong engine's worker

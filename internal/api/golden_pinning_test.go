@@ -72,6 +72,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
 )
 
@@ -135,6 +136,11 @@ func TestPre57GoldenListFormats(t *testing.T) {
 	if !ok {
 		t.Fatalf(`response missing "engines" key; body=%s`, rec.Body.String())
 	}
+
+	if !bytes.Contains(enginesOnly, []byte(`"`+convert.EngineCAD+`"`)) {
+		t.Fatalf("the live engines map has no %q engine; stripping it below would hide a regression", convert.EngineCAD)
+	}
+	enginesOnly = withoutEngine(t, enginesOnly, convert.EngineCAD)
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

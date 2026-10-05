@@ -445,6 +445,7 @@ func engineTimeoutsFromEnv() map[string]time.Duration {
 		// exactly (IN-02): a mismatch would not error, it would silently
 		// produce duplicate processing.
 		convert.EngineTectonic: envDuration("TECTONIC_ENGINE_TIMEOUT", 271*time.Second),
+		convert.EngineCAD:      envDuration("CAD_ENGINE_TIMEOUT", convert.CADDefaultEngineTimeout),
 	}
 }
 

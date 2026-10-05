@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -128,6 +129,7 @@ type Enqueuer interface {
 	EnqueuePandocConvert(ctx context.Context, jobID uuid.UUID) error
 	EnqueueProbeSanitize(ctx context.Context, jobID uuid.UUID) error
 	EnqueueTectonicConvert(ctx context.Context, jobID uuid.UUID) error
+	EnqueueCADJob(ctx context.Context, jobID uuid.UUID) error
 }
 
 // Pinger is a narrow, read-only reachability probe for a single dependency,
@@ -174,6 +176,7 @@ type Server struct {
 	// av engine class gains the larger allowance. A key absent from this map
 	// is NOT rejected: the map gates known engines, it does not allowlist.
 	maxEngineBytes map[string]int64
+	maxFormatBytes map[string]map[string]int64
 	// maxImagePixels is intentionally uint64 — WIDER than maxUploadByte's
 	// int64 — because it is compared against a product of two uint32
 	// declared dimensions (Pitfall 1); an adversarial max-uint32 x max-uint32
@@ -302,6 +305,7 @@ type Config struct {
 	// and MaxPandocInputBytes has no effect when this map is supplied
 	// directly.
 	MaxEngineBytes     map[string]int64
+	MaxFormatBytes     map[string]map[string]int64
 	PresignTTL         time.Duration
 	IPRateLimitRPM     int
 	ClientRateLimitRPM int
@@ -450,6 +454,7 @@ var defaultEngineTimeouts = map[string]time.Duration{
 	// holding at 2 MiB. Changing either alone breaks the pair -- exactly what
 	// PROBE_MAX_PAGES=200 and PROBE_ENGINE_TIMEOUT=600s are to each other.
 	convert.EngineTectonic: 271 * time.Second,
+	convert.EngineCAD:      convert.CADDefaultEngineTimeout,
 }
 
 // defaultMaxEngineBytes is the per-engine upload ceiling, merged into
@@ -502,6 +507,29 @@ var defaultMaxEngineBytes = map[string]int64{
 	// NOT about memory, unlike pandoc's 3 MiB: the 2 MiB run peaked well inside
 	// the 1 GiB cgroup. This is a bound on TIME.
 	convert.EngineTectonic: 2 << 20,
+	convert.EngineCAD:      convert.CADMaxIGESBytes,
+}
+
+var defaultMaxFormatBytes = map[string]map[string]int64{
+	convert.EngineCAD: {
+		"step": convert.CADMaxSTEPBytes,
+		"iges": convert.CADMaxIGESBytes,
+	},
+}
+
+func (s *Server) sizeLimit(engine, format string) (limit int64, perFormat, gated bool) {
+	if l, ok := s.maxFormatBytes[engine][format]; ok {
+		return l, true, true
+	}
+	l, ok := s.maxEngineBytes[engine]
+	return l, false, ok
+}
+
+func formatLimitMessage(format string, limit int64) string {
+	if limit%(1<<20) == 0 {
+		return format + " file exceeds the " + strconv.FormatInt(limit>>20, 10) + " MiB limit for this conversion"
+	}
+	return format + " file exceeds the " + strconv.FormatInt(limit, 10) + " bytes limit for this conversion"
 }
 
 func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, presetAdmin PresetAdmin, usage UsageRepo, limits LimitsRepo, resolver auth.ClientResolver, health HealthDeps, cfg Config) *Server {
@@ -531,6 +559,15 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		}
 		if cfg.MaxPandocInputBytes > 0 {
 			cfg.MaxEngineBytes[convert.EnginePandoc] = cfg.MaxPandocInputBytes
+		}
+	}
+	if cfg.MaxFormatBytes == nil {
+		cfg.MaxFormatBytes = make(map[string]map[string]int64, len(defaultMaxFormatBytes))
+		for engine, formats := range defaultMaxFormatBytes {
+			cfg.MaxFormatBytes[engine] = make(map[string]int64, len(formats))
+			for format, def := range formats {
+				cfg.MaxFormatBytes[engine][format] = def
+			}
 		}
 	}
 	if cfg.IPRateLimitRPM == 0 {
@@ -609,6 +646,7 @@ func NewServer(repo Repo, storage Storage, queue Enqueuer, presets PresetRepo, p
 		health:                       health,
 		maxUploadByte:                cfg.MaxUploadBytes,
 		maxEngineBytes:               cfg.MaxEngineBytes,
+		maxFormatBytes:               cfg.MaxFormatBytes,
 		maxImagePixels:               cfg.MaxImagePixels,
 		maxDocumentUncompressedBytes: cfg.MaxDocumentUncompressedBytes,
 		presignTTL:                   cfg.PresignTTL,

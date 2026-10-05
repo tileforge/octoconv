@@ -304,3 +304,12 @@ func (e engineExec) sandboxFault(err error) error {
 	}
 	return err
 }
+
+func (e engineExec) runBounded(ctx context.Context, limit int, name string, args ...string) ([]byte, engineCPU, error) {
+	cmdName, cmdArgs, err := e.sandbox.wrapEngine(name, e.spec, args)
+	if err != nil {
+		return nil, engineCPU{}, err
+	}
+	out, cpu, err := runCommandCore(ctx, limit, e.env, name, cmdName, cmdArgs...)
+	return out, cpu, e.sandboxFault(err)
+}
