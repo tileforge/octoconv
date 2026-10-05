@@ -201,13 +201,13 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 
 Plans:
 **Wave 1**
-- [ ] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
+- [x] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
+- [x] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
+- [x] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
