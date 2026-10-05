@@ -95,6 +95,8 @@ const OutputRolePrimary = "primary"
 // it does not define the set.
 const OutputRoleReport = "report"
 
+const OutputRoleMeasurements = "measurements"
+
 // Output is a row of the job_outputs table. Role comes from job_outputs.role;
 // its default (OutputRolePrimary) is supplied by the database (0015_operation_and_output_roles.sql,
 // D-16), never by this Go layer.

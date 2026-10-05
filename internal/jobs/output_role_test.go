@@ -116,7 +116,7 @@ func TestOutputRoleDefaultAppliesToPreExistingRows(t *testing.T) {
 // TestOutputRoleRejectsValueOutsideAllowlist proves the CHECK is closed at
 // the database level: no free-text role value is admitted, even via a raw
 // SQL path that bypasses the Go layer entirely (T-57-09's mitigation
-// evidence). All four legal values must still insert cleanly on distinct
+// evidence). All five legal values must still insert cleanly on distinct
 // ordinals of the same job.
 func TestOutputRoleRejectsValueOutsideAllowlist(t *testing.T) {
 	r := newTestRepo(t)
@@ -140,7 +140,7 @@ func TestOutputRoleRejectsValueOutsideAllowlist(t *testing.T) {
 		t.Fatalf("error %q does not mention job_outputs_role_check", err.Error())
 	}
 
-	legal := []string{"primary", "report", "preview", "thumbnail"}
+	legal := []string{"primary", "report", "preview", "thumbnail", "measurements"}
 	for i, role := range legal {
 		if _, err := r.pool.Exec(ctx, `
 			INSERT INTO job_outputs (job_id, ordinal, object_key, filename, format, size_bytes, content_type, role)
@@ -314,6 +314,89 @@ func TestMarkDoneRejectsJobWithOnlyReportOutput(t *testing.T) {
 
 	if err := r.MarkDone(ctx, jobID, 0); err == nil {
 		t.Fatal("MarkDone on a job with only a report output must error, got nil")
+	}
+
+	var status string
+	if err := r.pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		t.Fatalf("query job status: %v", err)
+	}
+	if status != StatusActive {
+		t.Fatalf("status = %q, want %q", status, StatusActive)
+	}
+}
+
+func TestMarkDoneAcceptsPrimaryPlusMeasurements(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "cad")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.AddOutputWithRole(ctx, jobID, Output{
+		Ordinal:     0,
+		ObjectKey:   "results/meas/" + jobID.String() + "-0-out.png",
+		Filename:    "out.png",
+		Format:      "png",
+		SizeBytes:   10,
+		ContentType: "image/png",
+		Role:        OutputRolePrimary,
+	}); err != nil {
+		t.Fatalf("AddOutputWithRole(primary): %v", err)
+	}
+	if err := r.AddOutputWithRole(ctx, jobID, Output{
+		Ordinal:     1,
+		ObjectKey:   "results/meas/" + jobID.String() + "-1-measurements.json",
+		Filename:    "measurements.json",
+		Format:      "json",
+		SizeBytes:   5,
+		ContentType: "application/json",
+		Role:        OutputRoleMeasurements,
+	}); err != nil {
+		t.Fatalf("AddOutputWithRole(measurements): %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err != nil {
+		t.Fatalf("MarkDone on a primary+measurements job: %v", err)
+	}
+
+	outs, err := r.Outputs(ctx, jobID)
+	if err != nil {
+		t.Fatalf("Outputs: %v", err)
+	}
+	if len(outs) != 2 {
+		t.Fatalf("len(outs) = %d, want 2", len(outs))
+	}
+	if outs[0].Role != OutputRolePrimary {
+		t.Errorf("ordinal 0 role = %q, want %q", outs[0].Role, OutputRolePrimary)
+	}
+	if outs[1].Role != OutputRoleMeasurements {
+		t.Errorf("ordinal 1 role = %q, want %q", outs[1].Role, OutputRoleMeasurements)
+	}
+}
+
+func TestMarkDoneRejectsJobWithOnlyMeasurementsOutput(t *testing.T) {
+	r := newTestRepo(t)
+	ctx := context.Background()
+	jobID := createTestJob(t, r, createTestClient(t, r), "cad")
+
+	if err := r.MarkActive(ctx, jobID); err != nil {
+		t.Fatalf("MarkActive: %v", err)
+	}
+	if err := r.AddOutputWithRole(ctx, jobID, Output{
+		Ordinal:     0,
+		ObjectKey:   "results/meas/" + jobID.String() + "-0-measurements.json",
+		Filename:    "measurements.json",
+		Format:      "json",
+		SizeBytes:   5,
+		ContentType: "application/json",
+		Role:        OutputRoleMeasurements,
+	}); err != nil {
+		t.Fatalf("AddOutputWithRole(measurements): %v", err)
+	}
+
+	if err := r.MarkDone(ctx, jobID, 0); err == nil {
+		t.Fatal("MarkDone on a job with only a measurements output must error, got nil")
 	}
 
 	var status string
