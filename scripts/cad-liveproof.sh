@@ -317,6 +317,8 @@ mkdir -p "$BOMBS"
 chmod 777 "$BOMBS"
 python3 scripts/cad-spike.py gen-bombs "$BOMBS" --flood-entities 754763 --flood-nauo 1519 >/dev/null
 python3 scripts/cad-spike.py gen-mapped-text --levels 12 "$BOMBS/hier_mappedtext_K12.step" >/dev/null
+sed "s/^#35 = DIRECTION('',(1\\.,0\\.,-0\\.));\$/#35 = DIRECTION('',(0.,0.,0.));/" "$CORPUS/synthetic/units_inch.step" >"$BOMBS/partial_face.step"
+! cmp -s "$CORPUS/synthetic/units_inch.step" "$BOMBS/partial_face.step" || fail "the partial_face.step fixture equals its source"
 image_python() {
 	docker run --rm --network none --cpus 2 --memory 4g --memory-swap 4g --user nobody -e HOME=/tmp -e LANG=C.UTF-8 \
 		-v "$ROOT:/src:ro" -v "$ROOT/$CORPUS/public:/base:ro" -v "$W/out:/out" -w /src \
@@ -369,6 +371,7 @@ bomb_one s1_coord_dblminus.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one s1_coord_1e300.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one s1_coord_1e999.step cad_unreadable "$ENGINE_TIMEOUT"
 bomb_one s1_coord_nan.step cad_unreadable "$ENGINE_TIMEOUT"
+bomb_one partial_face.step cad_unreadable "$ENGINE_TIMEOUT"
 
 NAUO_NAME=step-nauo-LinearSlide-MGN15x-Block-n1000.step
 NAUO_SHA=$(shasum -a 256 "$NAUO1000" | cut -d' ' -f1)
