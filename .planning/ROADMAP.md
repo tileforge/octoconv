@@ -210,13 +210,13 @@ Plans:
 - [x] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
+- [x] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
+- [x] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
+- [x] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
 
 ### Phase 74: 3D Render & Measurements
 
