@@ -103,7 +103,7 @@ case "$ENGINE_TIMEOUT" in '' | *[!0-9]*) fail "cannot read CAD_ENGINE_TIMEOUT fr
 
 ev "HDR,date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ev "HDR,commit=$(git rev-parse HEAD)"
-ev "HDR,tracked_dirt=$(git status --short --untracked-files=no | wc -l | tr -d ' ')"
+ev "HDR,tracked_dirt=$(git status --short --untracked-files=no -- . ":(exclude)$EVID" | wc -l | tr -d ' ')"
 ev "HDR,api_image_id=$(docker inspect -f '{{.Image}}' "$API_CID")"
 ev "HDR,cad_worker_image_id=$CAD_IMAGE"
 ev "HDR,cad_engine_timeout_s=$ENGINE_TIMEOUT"
