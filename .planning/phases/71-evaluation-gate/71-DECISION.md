@@ -36,7 +36,7 @@ DECISION,key=memory_limit_mib,value=4096,evidence=evidence/71-06-limits.txt#MEMO
 DECISION,key=ceiling_step_mib,value=63,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
 DECISION,key=ceiling_iges_mib,value=155,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
 DECISION,key=ceiling_stl_binary_mib,value=277,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
-DECISION,key=ceiling_stl_ascii_mib,value=1353,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
+DECISION,key=ceiling_stl_ascii_mib,value=877,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
 DECISION,key=ceiling_dxf_mib,value=118,evidence=evidence/71-06-limits.txt#CEILING; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
 DECISION,key=cap_render_triangles,value=4014975,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
 DECISION,key=cap_step_entities,value=754762,evidence=evidence/71-06-limits.txt#CAP; evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#LADDER_STOP
@@ -205,14 +205,14 @@ not cad-worker`); допущение A7 (около 60 MiB) заменено з�
 | STEP | 478.0 | 24.9 | 37.362 | `step-copies-LinearSlide-MGN15x-Block-1MiB.step`, 1094537 байт (9bea6097ff46) | 5.7 / 24.9 / 63.3 | **63 MiB** |
 | IGES | 272.0 | 24.9 | 16.486 | `freecad-festo-valve-5-2.igs`, 11321208 байт (0ab66a4ad85b) | 25.5 / 68.9 / 155.9 | **155 MiB** |
 | STL бинарный | 480.0 | 24.9 | 8.498 | плитка 196 MiB (2045f91fb675) | 24.9 / 109.3 / 278.0 | **277 MiB** (277.97 вниз) |
-| STL ASCII | 514.0 | 24.9 | 1.720 | производный 200 MiB (d42f47a7e934) | 103.4 / 520.2 / 1353.7 | **1353 MiB** |
+| STL ASCII | 272.0 | 24.9 | 2.930 | производный 200 MiB (d42f47a7e934) | 143.3 / 388.0 / 877.2 | **877 MiB** |
 | DXF | 115.0 | 24.9 | 23.017 | `dxf-replicate-uncommon-2MiB.dxf`, 2050076 байт (48cacc1f3f4d) | 25.1 / 56.2 / 118.5 | **118 MiB** |
 
 Источник строк: `evidence/71-06-limits.txt#LIMIT`, `evidence/71-06-limits.txt#CEILING` (строки `par=off,lp=2`).
 
 **Прежние значения при `par=on,lp=default` (история, `evidence/71-06-ladder-4g-ocp7.9.3.1.1.txt`):** потолки STEP 73, IGES 137,
-STL бинарный 278, STL ASCII 1363, DXF 217 MiB; k_worst 32.115 / 18.709 / 8.493 / 1.705 / 12.568; floor 479 / 272 / 481 /
-518 / 114. Меш при `par=off` ниже по RSS (копии freecad 150.9 MiB: 2908 -> 2378 MiB; IGES 274 MiB: 3131 -> 2569), рендер
+STL бинарный 278, STL ASCII 875, DXF 217 MiB; k_worst 32.115 / 18.709 / 8.493 / 2.935 / 12.568; floor 479 / 272 / 481 /
+272 / 114 (STL ASCII пересчитан по правилу «rc=0 и pix=ok», до правки стояли 1363, k 1.705, floor 518). Меш при `par=off` ниже по RSS (копии freecad 150.9 MiB: 2908 -> 2378 MiB; IGES 274 MiB: 3131 -> 2569), рендер
 при `lp=2` выше (STL-плитка 100 MiB: 837 -> 1114; STL-плитка 196 MiB: 1527 -> 1692; копии freecad 150.9 MiB: 2663 ->
 3131 MiB; IGES 274 MiB: 1370 -> 1737).
 
@@ -226,9 +226,20 @@ cache) на файле у floor; сама ступень 100 MiB даёт 1350 M
 (худший файл, максимум `ru_maxrss` и `memory.peak`) не менялось, поэтому в сводке стоят более консервативные 63 и 118;
 подтверждено измерением: STEP полный конвейер проходит до 150.9 MiB, DXF до 197.6 MiB при 2497 MiB.
 
+**Правка по ревью PR #32 (Codex P1, «Reject rows whose pixel validation failed»): потолок STL ASCII 1353 -> 877 MiB.**
+Прежний `Cell.status()` считал `ok` любой замер с `rc=0`, даже если в той же строке `pix=fail`. Так срез `stl-ascii-nasa-sls-block1-1MiB.stl`
+(render, 4 GiB, `par=off,lp=2`: `rc=0`, `pix=fail`, `cg_peak_mib=514`) попал в floor STL ASCII (514.0 вместо 272.0) и занизил
+потолок. Теперь замер считается `ok` только при `rc=0` и успешных вердиктах вывода (таблица в `71-06-SUMMARY.md`, раздел
+Addendum 2); строка с отказом печатается как `INVALID_OUTPUT` (`evidence/71-06-limits.txt#INVALID_OUTPUT`) и не попадает в floor,
+FIT, обрывы и капы. Изменилось одно число формата: floor 514.0 -> 272.0, k_worst 1.720 -> 2.930, потолок 1353 -> 877; L = 4096
+и остальные потолки, капы, FIT и `L_SENSITIVITY` не изменились. Причина отказа: срез состоит из первых 4396 треугольников
+`nasa-sls-block1`, на кадре вертикальная полоса 93 x 1030 пикселей (`frac=0.0022` при пороге 0.02; `mode=part`, правило «сливера» не
+сработало, `proj_aspect` в evidence не записан), то есть рендер не пуст и не упал, а `pixelcheck.py` отвергает тонкую, но настоящую деталь
+(`evidence/71-06-ladder-4g-ocp7.9.3.1.1-par-off-lp2.txt#PIX`, строка перед `ROW` этого файла).
+
 Пример подстановки, STEP: `(0.70 x 4096 - 478.0 - 24.9) / 37.362 = 63.3`, вниз до 63 MiB
 (`evidence/71-06-limits.txt#CEILING`). STL бинарный и ASCII имеют отдельные потолки: множители k расходятся на
-79.8% при пороге 25% (`evidence/71-06-limits.txt#STL_K`).
+65.5% при пороге 25% (`evidence/71-06-limits.txt#STL_K`; до правки 79.8%, вывод тот же).
 
 Лимит пода (D-06): **4096 MiB.** Наименьший из 1/2/4 GiB, при котором потолок STEP достигает 40 MiB (ориентир
 PreviewGenerator): size_max STEP 5.7 / 24.9 / 63.3 MiB при 1 / 2 / 4 GiB; при 1 GiB бинарный STL 24.9 MiB
@@ -256,7 +267,7 @@ D-09: потолок STEP при 4 GiB (63 MiB) выше 40 MiB, поэтому 
 
 Где потолок только частично измерен: для STL бинарного и STL ASCII потолки по формуле лежат выше верхней
 ступени лестницы на 4 GiB без обрыва, измеренный потолок 196 и 199 MiB (`beyond_top_rung=1`,
-`measured_ceiling_mib`); числа 277 и 1353 выше этих ступеней - экстраполяция. DXF после перемера (118 MiB) лежит
+`measured_ceiling_mib`); числа 277 и 877 выше этих ступеней - экстраполяция. DXF после перемера (118 MiB) лежит
 ниже верхней ступени 197.6 MiB и целиком внутри измеренной области. У IGES обрыв по OOM на 493.3 MiB, потолок
 155 MiB составляет 0.31 от него (`ceiling_over_oom_cliff=0.31`). У STEP меш доходит до 209.7 MiB (LinearSlide) и
 205.5 MiB (freecad), но полный конвейер (меш и рендер) проходит только до 150.9 MiB (`top_rung_mib=150.9`): у рядов

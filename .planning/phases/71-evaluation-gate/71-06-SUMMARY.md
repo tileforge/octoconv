@@ -273,3 +273,90 @@ Last fit and first OOM for triangles (8.8 M, 16.1 M), NAUO (2500, 5000) and DXF 
 ### Addendum commits
 
 `3a8a2d1` fix(71-06) P2; `cdca1e5` feat(71-06) config-filtered derivation; `6107a69` feat(71-06) re-measure evidence and regenerated limits; the `71-DECISION.md` and this addendum follow in a `docs(71)` commit.
+
+## Addendum 2: Codex review of PR #32, P1 "Reject rows whose pixel validation failed", 2026-10-05
+
+**Finding.** `Cell.status()` treated every `rc=0` row as ok, including a render row that records `pix=fail`. In the selected 4 GiB view `stl-ascii-nasa-sls-block1-1MiB.stl` (render, `rc=0`, `pix=fail`, peak 514 MiB) counted as an ok pipeline, became the STL ASCII floor and moved the STL ASCII ceiling to 1353 MiB. The finding is correct: with that point excluded the ceiling is 877 MiB. Fixed in `scripts/cad-derive-limits.py` (the `fix(71-06)` commit of this addendum); the class was swept, not only the named row.
+
+### Class sweep: every ROW field that records an output verdict
+
+Fields come from `scripts/cad-rss-time-measure.sh` (`pix`, `cstate`, `out=`) and the helpers' `out=` keys (`cad_mesh.py`, `cad_dxf.py`, `cad_render.py`). Verdict failures are counted over all five ladder files (`rc=0` rows: mesh 364, render 332, stlstats 89, dxf 91, rsvg-png 93, rsvg-pdf 91); informational rows are counted in the selected 4g `par=off,lp=2` file (the `par=on` 4g file differs by a few rows of the same files).
+
+| ROW field | Meaning | Decision | `rc=0` rows failing it in the evidence |
+|---|---|---|---|
+| `pix=` (render, rsvg-png) | `pixelcheck.py single` verdict on the PNG; `fail` when the PNG is missing or `ok=0` | **required `ok`** | 3, all the same file (1g, 4g `par=on`, 4g `par=off,lp=2`) |
+| `pix=` (rsvg-pdf) | `PDFCHK`: non-empty file with magic `%PDF-` | **required `ok`** | 0 |
+| `cstate=` | `ok` or `wraplost-*` (WRAP line lost, row synthesised as rc 137) | **required `ok`** | 0 (1110 of 1110 are `ok`) |
+| `triangles` (mesh, stlstats, render) | triangle count of the produced or read mesh | **required present and above 0** (empty output); a missing field fails, it does not pass | 0 |
+| `bbox2d` (dxf) | extents of the drawn model space; `null` means nothing drawn | **required not null** | 0 |
+| `svg_counts` (dxf) | written only when `out.svg` was produced | **required present** | 0 |
+| `volume`, `area`, `volume_null_reason=no_solids`, `solids:0`, `closed_solids:0` (mesh) | volume of closed solids; null for surface-only and open-shell geometry | informational | 20 mesh rows per ladder file, all with triangles above 0 (`surfaces_only.iges`, `iges_no_newlines.iges`, `open_shell.step`, `single_face.step`, `freecad-mk8-hotend.iges`, `freecad-festo-valve-5-2.igs`, two derived IGES copies) |
+| `unit_agree=0` (mesh) | OCP `FileUnits` differs from the unit read from the file text | informational | 3 rows, `nist_ctc_05_asme1_ap242-e1.stp` (878030 bytes) |
+| `watertight`, `volume_null_reason=stl_not_watertight` (stlstats) | property of the input, which is what stlstats reports | informational | 27 of 42 stlstats rows per ladder file |
+| `auditor_errors`, `skipped_types`, `svg_counts` values, `text0_decoding=latin-1-fallback`, `bbox_source=finite_faces` | diagnostics of the input, or an observation for phase 75 | informational | `auditor_errors` and `svg_counts` values are 0 on every row; `skipped_types` non-empty (3DSOLID) on 10 dxf rows; fallback decoding 6 rows; `finite_faces` 3 rows |
+
+Why the informational ones are not verdicts: `71-04-SUMMARY.md` defines `unit_agree` as a flag "never trusted alone" (the unit is taken from the file text) and `no_solids` as the expected reason for surface-only inputs, whose meshes are valid; `71-DECISION.md` records `svg_counts` as an observation for phase 75. A `no_solids` mesh has triangles above 0 and is a real RSS measurement. Sensitivity, not applied: if `unit_agree=0` also failed a mesh cell, only `nist_ctc_05` would leave the STEP floor points (19 to 18) and the pin comparison (53 to 52 common files); no floor, k_worst, ceiling, cap or pin result changes.
+
+**Required verdicts per operation** (a cell is `ok` only if every row has `rc=0`, `cstate=ok` and these hold):
+
+| Operation | Required verdicts |
+|---|---|
+| mesh | `triangles` above 0 |
+| stlstats | `triangles` above 0 |
+| render | `pix=ok` and `triangles` above 0 |
+| dxf | `bbox2d` not null and `svg_counts` present |
+| rsvg-png | `pix=ok` |
+| rsvg-pdf | `pix=ok` (PDF magic) |
+
+A cell with `rc=0` and a failed verdict is `fail`: excluded from floors, FIT, cliffs, the top-rung calculation and the caps, and its `rss()` and `wall()` are empty. `rc=137` and timeout keep their precedence (`oom`, `timeout`). The rc=0 verdict failures are printed as `INVALID_OUTPUT` lines in `71-06-limits.txt`, so an excluded cell is visible. The selected view has exactly one.
+
+### Why the render failed
+
+`stl-ascii-nasa-sls-block1-1MiB.stl` fails `pix` identically in all three ladders that contain it: 1g (`par=on,lp=default`), 4g `par=on,lp=default` and 4g `par=off,lp=2`. The PIX line is the same in all three: `frac=0.0022,margin_px=124,dark=0.0005,bbox=594:124:686:1153,w=1280,h=1280,mode=part,ok=0`. It is not an empty frame and not a crash: `rc=0`, 4396 triangles, a non-empty render.
+
+Cause: this file is the 1 MiB rung of the `stl-ascii` series built from `nasa-sls-block1.stl` (`cad-corpus-gen.py`, `scale_stl_ascii`), which writes the first 4396 facets of the base mesh and stops at the byte budget. A prefix of the facets is a thin, non-watertight strip of the rocket: the frame holds a vertical band 93 x 1030 pixels, 0.22% of the frame against `FRAC_MIN` 2%. The sliver rule did not fire (`mode=part`; it needs a projected aspect below 0.02 and `proj_aspect` is not in the evidence), so the part rule rejected a thin but real shape. `frac` grows with the prefix: 5 MiB 0.0261, 10 MiB 0.0322, 25 MiB 0.0569, 50 MiB 0.0712, 100 MiB 0.1105, 200 MiB 0.1535; the 5 MiB rung passes by 0.006. The unscaled `nasa-sls-block1.stl` has `frac=0.0791`.
+
+This is not a defect in the renderer, but it is a finding for phase 74: the part check `FRAC_MIN=0.02` with a sliver exception only below aspect 0.02 rejects genuine thin parts (image aspect here about 0.09). A production quality gate must not reuse a frac-only criterion without an aspect or projected-extent rule, or it will reject real thin STL files (rails, plates seen edge-on). The 1 MiB slice is also a poor derived corpus point (a truncated part), another reason to keep it out of the floor.
+
+The same row is in the old `par=on,lp=default` evidence, so the history numbers moved too (below).
+
+### Self-check and mutation tests
+
+`python3 scripts/cad-derive-limits.py --self-check` now builds 16 synthetic points (step, stl_ascii, dxf) and asserts: `pix=fail` (render, rsvg-png, rsvg-pdf) and `pix=-` on a pix operation, `triangles:0` and a missing `triangles` field (mesh, stlstats, render), `bbox2d:null`, a missing `svg_counts` and `cstate=wraplost-*` are each `fail`; the step (130.0), stl_ascii (80.0) and dxf (60.0) floors come from the ok points only (the failed points carry a peak of 900); `rss()` and `wall()` of a failed cell are empty; and the informational verdicts (`no_solids`, `unit_agree:0`, `stl_not_watertight`) stay `ok`.
+
+Mutation results (scratch copies of the script, one change each):
+
+| Mutation | Result |
+|---|---|
+| the old `Cell.status` (`rc == 0` only) with the new self-check | 16 failures |
+| `pix` verdict removed | 9 failures (4 pix points, 3 floors, rss/wall) |
+| `triangles` verdict removed | 6 failures |
+| `bbox2d` verdict removed | 2 failures |
+| `svg_counts` verdict removed | 2 failures |
+| `cstate` verdict removed | 2 failures |
+| `rss()` and `wall()` back to `rc == 0` | 1 failure |
+
+### Before and after (4 GiB, `par=off,lp=2`, `cpus=2`)
+
+Only the STL ASCII lines moved. `MEMORY_LIMIT_DECISION` (4096), `L_SENSITIVITY`, every FIT line, the STEP, IGES, STL binary and DXF `LIMIT` and `CEILING` lines, all four `CAP` values, `PIN_FORMULA`, `PIN_ROBUSTNESS` and `PIN_DECISION` are byte-identical.
+
+| Item | Before | After |
+|---|---|---|
+| STL ASCII floor MiB (floor points) | 514.0 (2) | 272.0 (1: `stl_ascii_box.stl`) |
+| STL ASCII k_worst | 1.720 | 2.930 |
+| STL ASCII k_median / k_min | -5.520 / -47.601 | 1.740 / 0.800 |
+| STL ASCII size_max 1 / 2 / 4 GiB | 103.4 / 520.2 / 1353.7 | 143.3 / 388.0 / 877.2 |
+| **STL ASCII ceiling** | **1353** | **877** |
+| STL k divergence | 79.8% | 65.5% (separate ceilings kept, threshold 25%) |
+| Cap render triangles | 4014975; point 4396 `ok:514.0` | 4014975 (unchanged, `floor_render` 517.0 comes from another point); point 4396 `fail:-` |
+| L, STEP / IGES / STL binary / DXF ceilings, other caps, FIT, L_SENSITIVITY | unchanged | unchanged |
+
+The old `k_median` and `k_min` were negative because the 514 floor sat above the peaks of 272 MiB points. The 877 MiB ceiling is still above the highest measured rung (199 MiB), so it stays an extrapolation flagged in `71-DECISION.md`.
+
+**Points that flipped:** one. `stl-ascii-nasa-sls-block1-1MiB.stl` at 4g, render: `ok` to `fail` (point status `fail`, `INVALID_OUTPUT`). Its 1g and 4g `par=on` rows are outside the selected view, so they affect only the history numbers. No other point changed status.
+
+**History numbers at `par=on,lp=default`** (first addendum, recomputed with the same rule on `71-06-ladder-4g-ocp7.9.3.1.1.txt`): STL ASCII floor 518.0 to 272.0, k_worst 1.705 to 2.935, ceiling 1363 to 875; STEP 73, IGES 137, STL binary 278, DXF 217 unchanged. `71-DECISION.md` carries the recomputed history; the tables above in this file keep the pre-fix values as written then.
+
+### Gates
+
+`--self-check` prints `SELF-CHECK-OK`; `LIMITS-OK`, `DECISION-OK` and `NO-WIRING` print; the regenerated `71-06-limits.txt` is byte-identical on a rerun; `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./... && go test ./...` pass in the worktree (run before the docs commit).
