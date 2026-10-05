@@ -1,0 +1,309 @@
+#!/usr/bin/python3 -IB
+import argparse
+import json
+import mmap
+import os
+import re
+import stat
+import sys
+
+CHUNK = 16 << 20
+STRUCTURAL_TERMINATORS = 3
+RECORD_WIDTH = 80
+NAUO_TOKEN = b"NEXT_ASSEMBLY_USAGE_OCCURRENCE"
+MAPPED_TOKEN = b"MAPPED_ITEM"
+REPRESENTATION_TOKEN = b"REPRESENTATION"
+REPRESENTATION_MAP = b"REPRESENTATION_MAP"
+EXIT_OK = 0
+EXIT_UNREADABLE = 2
+EXIT_TOO_COMPLEX = 4
+EXIT_USAGE = 64
+DATA_SECTION = re.compile(rb"(?<![A-Za-z0-9_])DATA[ \t\r\n]{0,16};")
+TOKENS = re.compile(rb"'(?:[^']|'')*'|/\*.*?\*/|[(),]|[^'(),/]+|/", re.S)
+STATEMENT_HEAD = re.compile(rb"(?:\s|/\*.*?\*/)*#(\d+)\s*=", re.S)
+ENTITY_REF = re.compile(rb"^#(\d+)$")
+ENTITY_REFS = re.compile(rb"#(\d+)")
+OPEN_PAREN = re.compile(rb"\s*\(")
+IDENTIFIER = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+IDENTIFIER_LIMIT = 256
+PARAM_BUDGET = 4096
+ITEMS_BUDGET = 4000000
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write("cad-guard: %s\n" % message)
+        sys.exit(EXIT_USAGE)
+
+
+class Finding(Exception):
+    def __init__(self, verdict, reason, counters):
+        Exception.__init__(self, reason)
+        self.verdict = verdict
+        self.reason = reason
+        self.counters = counters
+
+
+def count_entities(fh, max_entities):
+    carry = b""
+    count = 0
+    found = False
+    while True:
+        block = fh.read(CHUNK)
+        if not block:
+            break
+        if not found:
+            buf = carry + block
+            hit = DATA_SECTION.search(buf)
+            if hit is None:
+                carry = buf[-32:]
+                continue
+            found = True
+            block = buf[hit.start():]
+        count += block.count(b";")
+        if count - STRUCTURAL_TERMINATORS > max_entities:
+            return found, count - STRUCTURAL_TERMINATORS
+    return found, max(count - STRUCTURAL_TERMINATORS, 0)
+
+
+def find_tokens(mm, token, limit):
+    positions = []
+    pos = mm.find(token)
+    while pos != -1:
+        positions.append(pos)
+        if len(positions) > limit:
+            break
+        pos = mm.find(token, pos + len(token))
+    return positions
+
+
+def params(mm, pos, want, budget):
+    out = []
+    cur = []
+    depth = 0
+    for m in TOKENS.finditer(mm, pos):
+        budget -= 1
+        if budget < 0:
+            return None
+        tok = m.group()
+        if depth == 0:
+            if tok == b"(":
+                depth = 1
+            elif tok.strip() or tok.startswith(b"'"):
+                return None
+            continue
+        if tok == b"(":
+            depth += 1
+            cur.append(tok)
+        elif tok == b")":
+            depth -= 1
+            if depth == 0:
+                out.append(b"".join(cur).strip())
+                return out
+            cur.append(tok)
+        elif tok == b"," and depth == 1:
+            out.append(b"".join(cur).strip())
+            cur = []
+            if len(out) >= want:
+                return out
+        elif tok.startswith(b"/*"):
+            continue
+        else:
+            cur.append(tok)
+    return None
+
+
+def statement_id(mm, pos):
+    start = mm.rfind(b";", 0, pos) + 1
+    head = STATEMENT_HEAD.match(mm, start)
+    if head is None or head.end() > pos:
+        return None
+    return int(head.group(1))
+
+
+def identifier_bounds(mm, pos, length):
+    start = pos
+    while start > 0 and pos - start < IDENTIFIER_LIMIT and mm[start - 1] in IDENTIFIER:
+        start -= 1
+    end = pos + length
+    size = len(mm)
+    while end < size and end - pos < IDENTIFIER_LIMIT and mm[end] in IDENTIFIER:
+        end += 1
+    return start, end
+
+
+def nauo_edges(mm, positions):
+    edges = []
+    for pos in positions:
+        found = params(mm, pos + len(NAUO_TOKEN), 5, PARAM_BUDGET)
+        if found is None or len(found) < 5:
+            continue
+        relating = ENTITY_REF.match(found[3])
+        related = ENTITY_REF.match(found[4])
+        if relating and related:
+            edges.append((int(relating.group(1)), int(related.group(1))))
+    return edges
+
+
+def mapped_item_edges(mm):
+    items = {}
+    for pos in find_tokens(mm, MAPPED_TOKEN, 1 << 62):
+        if pos > 0 and mm[pos - 1] in IDENTIFIER:
+            continue
+        if not OPEN_PAREN.match(mm, pos + len(MAPPED_TOKEN)):
+            continue
+        found = params(mm, pos + len(MAPPED_TOKEN), 2, PARAM_BUDGET)
+        if found is None or len(found) < 2:
+            continue
+        source = ENTITY_REF.match(found[1])
+        ident = statement_id(mm, pos)
+        if source and ident is not None:
+            items[ident] = int(source.group(1))
+    if not items:
+        return []
+    maps = {}
+    containers = []
+    pos = mm.find(REPRESENTATION_TOKEN)
+    while pos != -1:
+        start, end = identifier_bounds(mm, pos, len(REPRESENTATION_TOKEN))
+        name = mm[start:end]
+        if OPEN_PAREN.match(mm, end):
+            ident = statement_id(mm, start)
+            if name == REPRESENTATION_MAP:
+                found = params(mm, end, 2, PARAM_BUDGET)
+                if found is not None and len(found) >= 2 and ident is not None:
+                    target = ENTITY_REF.match(found[1])
+                    if target:
+                        maps[ident] = int(target.group(1))
+            elif ident is not None:
+                found = params(mm, end, 2, ITEMS_BUDGET)
+                if found is not None and len(found) >= 2:
+                    held = [items[int(r)] for r in ENTITY_REFS.findall(found[1]) if int(r) in items]
+                    if held:
+                        containers.append((ident, held))
+        pos = mm.find(REPRESENTATION_TOKEN, max(end, pos + len(REPRESENTATION_TOKEN)))
+    edges = []
+    for ident, held in containers:
+        for source in held:
+            target = maps.get(source)
+            if target is not None:
+                edges.append((ident, target))
+    return edges
+
+
+def expanded_instances(edges, cap):
+    saturated = cap + 1
+    children = {}
+    indegree = {}
+    for parent, child in edges:
+        children.setdefault(parent, []).append(child)
+        indegree[child] = indegree.get(child, 0) + 1
+        indegree.setdefault(parent, 0)
+    remaining = dict(indegree)
+    paths = {node: (1 if degree == 0 else 0) for node, degree in indegree.items()}
+    ready = [node for node, degree in indegree.items() if degree == 0]
+    order = sorted(indegree)
+    cursor = 0
+    done = set()
+    total = 0
+    while len(done) < len(indegree):
+        if not ready:
+            while order[cursor] in done:
+                cursor += 1
+            ready.append(order[cursor])
+        node = ready.pop()
+        if node in done:
+            continue
+        done.add(node)
+        if indegree[node] > 0:
+            total += paths[node]
+            if total > cap:
+                return saturated
+        for child in children.get(node, ()):
+            if child in done:
+                continue
+            paths[child] = min(saturated, paths[child] + paths[node])
+            remaining[child] -= 1
+            if remaining[child] == 0:
+                ready.append(child)
+    return total
+
+
+def scan_step(path, max_entities, max_nauo):
+    counters = {}
+    with open(path, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise Finding("unreadable", "cannot_count", counters)
+        found, entities = count_entities(fh, max_entities)
+        counters["entities"] = entities
+        if not found:
+            raise Finding("unreadable", "no_data_section", counters)
+        if entities > max_entities:
+            raise Finding("too_complex", "entities_over_cap", counters)
+        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            positions = find_tokens(mm, NAUO_TOKEN, max_nauo)
+            counters["nauo"] = len(positions)
+            if len(positions) > max_nauo:
+                raise Finding("too_complex", "nauo_over_cap", counters)
+            if positions:
+                expanded = expanded_instances(nauo_edges(mm, positions), max_nauo)
+                counters["expanded"] = expanded
+                if expanded > max_nauo:
+                    raise Finding("too_complex", "expansion_over_cap", counters)
+            if mm.find(MAPPED_TOKEN) != -1:
+                expanded = expanded_instances(mapped_item_edges(mm), max_nauo)
+                counters["expanded"] = max(expanded, counters.get("expanded", 0))
+                if expanded > max_nauo:
+                    raise Finding("too_complex", "mapped_item_expansion_over_cap", counters)
+    return counters
+
+
+def scan_iges(path):
+    counters = {}
+    size = 0
+    with open(path, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise Finding("unreadable", "cannot_count", counters)
+        while True:
+            block = fh.read(CHUNK)
+            if not block:
+                break
+            size += len(block) - block.count(b"\n") - block.count(b"\r")
+    if size == 0:
+        raise Finding("unreadable", "cannot_count", counters)
+    counters["records"] = (size + RECORD_WIDTH - 1) // RECORD_WIDTH
+    return counters
+
+
+def emit(verdict, reason, counters):
+    obj = {"stage": "guard", "verdict": verdict, "reason": reason}
+    obj.update(counters)
+    sys.stdout.write("CADVERDICT " + json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    ap = Parser(prog="cad-guard", add_help=False)
+    ap.add_argument("--format", required=True, choices=("step", "iges"))
+    ap.add_argument("--max-entities", required=True, type=int)
+    ap.add_argument("--max-nauo", required=True, type=int)
+    ap.add_argument("src")
+    args = ap.parse_args()
+    try:
+        if args.format == "iges":
+            counters = scan_iges(args.src)
+        else:
+            counters = scan_step(args.src, args.max_entities, args.max_nauo)
+    except Finding as finding:
+        emit(finding.verdict, finding.reason, finding.counters)
+        return EXIT_TOO_COMPLEX if finding.verdict == "too_complex" else EXIT_UNREADABLE
+    except Exception as exc:
+        sys.stderr.write("cad-guard: %s: %s\n" % (exc.__class__.__name__, exc))
+        emit("unreadable", "cannot_count", {})
+        return EXIT_UNREADABLE
+    emit("ok", "", counters)
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

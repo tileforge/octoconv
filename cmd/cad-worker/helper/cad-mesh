@@ -9,7 +9,10 @@ LINEAR_DEFLECTION = 0.001
 ANGULAR_DEFLECTION = 0.35
 EXIT_UNREADABLE = 2
 EXIT_EMPTY = 3
+EXIT_TOO_COMPLEX = 4
 EXIT_USAGE = 64
+NOT_EVALUATED = -1
+NUMERIC_FAIL_MARKERS = ("not a Real", "not an Integer")
 
 
 class Parser(argparse.ArgumentParser):
@@ -23,8 +26,8 @@ def box_diag(box):
     return ((hi.X() - lo.X()) ** 2 + (hi.Y() - lo.Y()) ** 2 + (hi.Z() - lo.Z()) ** 2) ** 0.5
 
 
-def verdict(fd, verdict_name, reason, triangles=0):
-    obj = {"stage": "mesh", "verdict": verdict_name, "reason": reason, "triangles": triangles}
+def verdict(fd, verdict_name, reason, triangles=0, load_fails=NOT_EVALUATED):
+    obj = {"stage": "mesh", "verdict": verdict_name, "reason": reason, "triangles": triangles, "load_fails": load_fails}
     os.write(fd, ("CADVERDICT " + json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n").encode("ascii"))
 
 
@@ -49,6 +52,22 @@ def finite_box(shape):
     return box
 
 
+def load_check(reader):
+    checks = reader.WS().ModelCheckList(False)
+    fails = 0
+    numeric = 0
+    checks.Start()
+    while checks.More():
+        check = checks.Value()
+        fails += check.NbFails()
+        for i in range(1, check.NbFails() + 1):
+            text = check.Fail(i).ToCString()
+            if any(marker in text for marker in NUMERIC_FAIL_MARKERS):
+                numeric += 1
+        checks.Next()
+    return fails, numeric
+
+
 def run(fmt, src, out, fd):
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.IFSelect import IFSelect_RetDone
@@ -61,46 +80,49 @@ def run(fmt, src, out, fd):
     if not Interface_Static.SetCVal_s("xstep.cascade.unit", "MM"):
         sys.stderr.write("cad-mesh: cannot pin xstep.cascade.unit\n")
         return 1
+    fails = NOT_EVALUATED
     try:
         if reader.ReadFile(src) != IFSelect_RetDone:
-            verdict(fd, "unreadable", "read_failed")
+            verdict(fd, "unreadable", "read_failed", load_fails=fails)
+            return EXIT_UNREADABLE
+        fails, numeric = load_check(reader)
+        if numeric > 0:
+            verdict(fd, "unreadable", "load_check_fail", load_fails=fails)
             return EXIT_UNREADABLE
         reader.TransferRoots()
         shape = reader.OneShape()
-    except Exception as exc:
-        sys.stderr.write("cad-mesh: read: %s\n" % exc)
-        verdict(fd, "unreadable", "read_failed")
-        return EXIT_UNREADABLE
-    if shape.IsNull():
-        verdict(fd, "unreadable", "no_shape")
-        return EXIT_UNREADABLE
+        if shape.IsNull():
+            verdict(fd, "unreadable", "no_shape", load_fails=fails)
+            return EXIT_UNREADABLE
 
-    box = finite_box(shape)
-    if box.IsVoid():
-        verdict(fd, "empty", "empty_bbox")
-        return EXIT_EMPTY
-    diag = box_diag(box)
-    if diag <= 0:
-        verdict(fd, "empty", "zero_size")
-        return EXIT_EMPTY
+        box = finite_box(shape)
+        if box.IsVoid():
+            verdict(fd, "empty", "empty_bbox", load_fails=fails)
+            return EXIT_EMPTY
+        diag = box_diag(box)
+        if diag <= 0:
+            verdict(fd, "empty", "zero_size", load_fails=fails)
+            return EXIT_EMPTY
 
-    try:
         BRepMesh_IncrementalMesh(shape, LINEAR_DEFLECTION * diag, False, ANGULAR_DEFLECTION, False)
         writer = StlAPI_Writer()
         writer.ASCIIMode = False
-        written = writer.Write(shape, out)
+        if not writer.Write(shape, out):
+            verdict(fd, "empty", "write_failed", load_fails=fails)
+            return EXIT_EMPTY
+        triangles = (os.path.getsize(out) - 84) // 50
+        if triangles <= 0:
+            verdict(fd, "empty", "no_triangles", load_fails=fails)
+            return EXIT_EMPTY
+        verdict(fd, "ok", "", triangles, fails)
+        return 0
+    except MemoryError:
+        verdict(fd, "too_complex", "out_of_memory", load_fails=fails)
+        return EXIT_TOO_COMPLEX
     except Exception as exc:
-        sys.stderr.write("cad-mesh: mesh: %s\n" % exc)
-        written = False
-    if not written:
-        verdict(fd, "empty", "write_failed")
-        return EXIT_EMPTY
-    triangles = (os.path.getsize(out) - 84) // 50
-    if triangles <= 0:
-        verdict(fd, "empty", "no_triangles")
-        return EXIT_EMPTY
-    verdict(fd, "ok", "", triangles)
-    return 0
+        sys.stderr.write("cad-mesh: %s: %s\n" % (exc.__class__.__name__, exc))
+        verdict(fd, "unreadable", "reader_exception", load_fails=fails)
+        return EXIT_UNREADABLE
 
 
 def main():
