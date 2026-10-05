@@ -2,9 +2,10 @@ import type { FormatsResponse } from './api';
 
 /**
  * normalizeFormat hand-mirrors `internal/convert/convert.go` `NormalizeFormat`
- * (lines 52-71): trim whitespace, strip one leading `.`, lowercase, then fold
- * the same alias table (`jpeg->jpg`, `tif->tiff`, `htm->html`, `tex->latex`),
- * identity for everything else. The two tables MUST be kept in sync — a
+ * (held equal by `TestFormatAliasesMatchFrontend`): trim whitespace, strip one
+ * leading `.`, lowercase, then fold the same alias table (`jpeg->jpg`,
+ * `tif->tiff`, `htm->html`, `tex->latex`, `stp->step`, `igs->iges`), identity
+ * for everything else. The two tables MUST be kept in sync — a
  * client that instead matches raw file extensions against pair sources would
  * wrongly reject `photo.jpeg` and `paper.tex` even though the server accepts
  * both via this exact alias.
@@ -23,6 +24,10 @@ export function normalizeFormat(raw: string): string {
       return 'html';
     case 'tex':
       return 'latex';
+    case 'stp':
+      return 'step';
+    case 'igs':
+      return 'iges';
     default:
       return lower;
   }
