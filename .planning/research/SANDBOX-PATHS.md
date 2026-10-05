@@ -118,6 +118,7 @@ amd64-процессу Landlock недоступен. Фаза 70 сняла з�
 | `pandoc`, `ocr`, `av`, `audio` | да | **да (фаза 68)** |
 | `html`, `probe` | да | **да (фаза 69)** |
 | `document` | да (фаза 70, ниже) | **да (фаза 70)** |
+| `cad` (guard + mesh) | да (фаза 73, ниже) | наборы лежат в `cadsandbox.go`; класс не зарегистрирован |
 
 Общая часть вынесена: `sandbox.ResolveHelper` (разрешение хелпера и отказ
 стартовать), `engineSandbox.wrapEngine` (сборка argv), `engineExec.run`/`.stream`
@@ -1297,7 +1298,131 @@ soffice
 verapdf
 <!-- /conf05:verapdf:engines -->
 
+## cad (cad-guard + cad-mesh) — замерено и доказано 2026-10-05 (фаза 73, план 03)
+
+Две стадии одного образа и два ОТДЕЛЬНЫХ набора (D-12): guard первым читает
+недоверенные байты и не должен иметь пути к OCP, поэтому `/opt/venv` в его наборе нет;
+mesh запускает OCP. Инструмент — `scripts/cad-worker-sandbox-measure.sh`. Образ — БОЕВОЙ
+engine-этап `Dockerfile.cad-worker` (id `sha256:566f27bbf72150d24a607fc9aabda98b9e229f8a7ac5cc10934d349982a3be30`,
+Python 3.11.2, cadquery-ocp-novtk 7.9.3.1.1, `USER nobody`, нативный arm64 на arm64-сервере,
+ядро 7.0.14-orbstack), а не образ замеров фазы 71 (VTK, OSMesa, шрифты, другой путь к
+helper'у). Набор фазы 71 был только кандидатом: из него в плане 73-02 посеяны
+Go-переменные, а этот прогон проверяет их заново на том, что поедет в продакшен, боевыми
+helper'ами и боевым argv. Транскрипт —
+`.planning/phases/73-cad-class-convert-slice-confined/evidence/73-03-landlock.txt`.
+
+### Метод
+
+Метод тот же, что в разделе «Метод, и почему одной фазы мало»; конкретно:
+
+- **Матрица**, обе стадии на каждом входе: STEP `units_inch`, `LM8UU`, `nist_ctc_05`,
+  `nist-d2mi-827-9999-906`, `V-Slot-20x20-100mm` (путь конечного бокса), `legacy_cp1251`,
+  `assembly_nauo4`; IGES `surfaces_only`, `iges_no_newlines`, `freecad-festo-valve-5-2.igs`.
+  Десять входов, двадцать эталонных прогонов.
+- **argv и среда боевые.** guard: `/usr/local/bin/cad-guard --format step|iges --max-entities 754762
+  --max-nauo 1518 /job/in.EXT`; mesh: `/usr/local/bin/cad-mesh --format step|iges /job/in.EXT /job/out.stl`.
+  Среда ровно `HOME=/job`, `LANG=C.UTF-8`, `PATH` образа, `TMPDIR=/job`, `LP_NUM_THREADS=2`;
+  `--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody`; записываемый набор — один
+  `/job`.
+- **Кандидаты** — `scripts/sandbox-paths-measure.sh trace` по каждому входу каждой стадии
+  (девять и одиннадцать записей после схлопывания), плюс руками то, чего `openat`-трасса не
+  видит: собственный исполняемый файл стадии, интерпретатор, который ядро запускает по
+  shebang (`/usr/bin/python3.11` — и для `/usr/bin/python3`, и через `/opt/venv/bin/python`),
+  и каталог multiarch-библиотек образа.
+- **Достаточность** судится по СОДЕРЖИМОМУ против прогона без ruleset: для guard — последняя
+  строка `CADVERDICT` целиком (счётчики входят), для mesh — она же плюс sha256 STL. Код
+  выхода не судится нигде: отказ Landlock — это rc=2 без текста, и по коду он неотличим от
+  обычного отказа движка.
+- **Действенность**: тот же `units_inch` вне всех грантов (`/outside`, смонтирован только для
+  чтения). Проба читает канарейку `/etc/hostname` до ruleset и отказывается продолжать, если
+  не прочла.
+- **Удаление по одной записи** из широкого набора, каждый раз полная матрица стадии;
+  `removable` — только если ВСЕ десять входов остались идентичными, иначе `load-bearing`
+  с первым изменившимся входом. Набор — это load-bearing записи.
+- **Отрицательный контроль** на каждой стадии: набор без одной load-bearing записи обязан
+  провалить достаточность — доказательство, что судья умеет падать.
+
+### Таблицы удаления
+
+| Стадия | Запись | Итог |
+|---|---|---|
+| guard | `/etc/ld.so.cache` | removable |
+| guard | `/usr/lib/locale` | removable |
+| guard | `/usr/lib/python3` | removable |
+| guard | `/usr/local/lib/python3.11` | removable |
+| guard | `/usr/share/zoneinfo` | removable |
+| guard | `/usr/bin/python3.11` | **load-bearing** (интерпретатор) |
+| guard | `/usr/lib/python3.11` | **load-bearing** (стандартная библиотека) |
+| guard | `/usr/local/bin/cad-guard` | **load-bearing** (движок) |
+| guard | `/usr/lib/aarch64-linux-gnu` | **load-bearing** (multiarch) |
+| mesh | `/etc/ld.so.cache` | removable |
+| mesh | `/etc/nsswitch.conf` | removable |
+| mesh | `/etc/passwd` | removable |
+| mesh | `/sys/devices/system/cpu` | removable |
+| mesh | `/usr/lib/locale` | removable |
+| mesh | `/usr/share/zoneinfo` | removable |
+| mesh | `/opt/venv` | **load-bearing** (OCP и shebang `/opt/venv/bin/python`) |
+| mesh | `/usr/bin/python3.11` | **load-bearing** (интерпретатор) |
+| mesh | `/usr/lib/python3.11` | **load-bearing** (стандартная библиотека) |
+| mesh | `/usr/local/bin/cad-mesh` | **load-bearing** (движок) |
+| mesh | `/usr/lib/aarch64-linux-gnu` | **load-bearing** (multiarch) |
+
+Взаимодействия нет: набор из одних load-bearing записей даёт ту же матрицу (двадцать из
+двадцати идентичны) — отдельная строка достаточности на каждую стадию в evidence. Ни
+`/tmp`, ни `/proc`, ни `/sys` ни в одном из двух наборов нет: `/sys/devices/system/cpu`
+mesh читает (трасса видит `/sys/devices/system/cpu/possible`), но без него результат тот
+же, и запись убрана. Общего записываемого пути нет, `TMPDIR=/job`.
+
+### Действенность и отрицательные контроли
+
+- **guard вне грантов**: без ruleset ok; под набором вердикт `unreadable/cannot_count`, ok
+  нет. **mesh вне грантов**: без ruleset ok и STL; под набором `unreadable/read_failed`,
+  STL нет. Та же проверка выполнена и на широком кандидате, и на итоговом наборе.
+- **guard не достаёт до OCP**: под итоговым набором guard читает `/opt/venv/pyvenv.cfg`
+  — без ruleset файл читается, под ruleset `PermissionError`.
+- **Отрицательные контроли**: guard без `/usr/lib/python3.11` и mesh без `/opt/venv` падают
+  на первом входе (`missing`, вердикта нет) — `failed_as_expected`.
+- **Достаточность** по двадцати парам стадия-вход на кандидате и на итоговом наборе:
+  сорок проверок, ни одна не отличается. Повторный прогон `--recheck` (по одному STEP и
+  одному IGES на стадию, без ruleset и с ним) заканчивается `RECHECK-OK`.
+
+### Архитектура (R-05)
+
+Каталог multiarch-библиотек в плоские наборы НЕ входит: он выбирается во время работы
+по `runtime.GOARCH` через `cadMultiarchLib`, а архитектура, которой в карте нет, отказывает
+строить ruleset (71 W17), а не пропускает запись. Замерено только на нативном arm64
+(`/usr/lib/aarch64-linux-gnu`, load-bearing в обеих таблицах). amd64 здесь —
+**доказательство сборки, а не замер Landlock** (эмулируемому процессу Landlock недоступен;
+замер amd64 отложен по контексту фазы): тот же Dockerfile собран под `linux/amd64`,
+в образе есть `/usr/lib/x86_64-linux-gnu`, на месте все пять записей наборов
+(`/opt/venv`, `/usr/bin/python3.11`, `/usr/lib/python3.11` и оба движка), import-smoke
+проходит, guard даёт ok, а mesh — двенадцать треугольников на `units_inch.step` (без
+ruleset, в эмуляции). Строка amd64 в карте — выведена, не замерена.
+
+<!-- conf05:cadguard:readonly -->
+/usr/bin/python3.11
+/usr/lib/python3.11
+<!-- /conf05:cadguard:readonly -->
+<!-- conf05:cadguard:engines -->
+cad-guard
+<!-- /conf05:cadguard:engines -->
+
+<!-- conf05:cadmesh:readonly -->
+/opt/venv
+/usr/bin/python3.11
+/usr/lib/python3.11
+<!-- /conf05:cadmesh:readonly -->
+<!-- conf05:cadmesh:engines -->
+cad-mesh
+<!-- /conf05:cadmesh:engines -->
+
+<!-- conf05:cad:multiarch -->
+amd64 x86_64-linux-gnu
+arm64 aarch64-linux-gnu
+<!-- /conf05:cad:multiarch -->
+
 ## Ещё не замерено
 
 Ничего: все классы замерены на нативных образах. `document` (LibreOffice и
-veraPDF) — в разделе выше.
+veraPDF) — в разделе выше. `cad` замерен на нативном arm64; amd64 для него —
+доказательство сборки, а не замер (раздел `cad` выше).

@@ -174,8 +174,10 @@ func TestValidateCADTimeouts(t *testing.T) {
 	}
 }
 
-func TestCADSetsMatchWhatPlan7302Seeded(t *testing.T) {
-	const remeasure = "re-measure with scripts/cad-worker-sandbox-measure.sh (plan 73-03) rather than editing the expectation"
+func TestCADSetsAreTheMeasuredOnes(t *testing.T) {
+	const remeasure = "these are the sets scripts/cad-worker-sandbox-measure.sh measured on the production engine image " +
+		"(evidence/73-03-landlock.txt, SANDBOX-PATHS.md section cad); re-measure with that script and update the " +
+		"document, the Go vars and this pin together rather than editing the expectation"
 	pins := []struct {
 		name      string
 		got, want []string
@@ -192,6 +194,28 @@ func TestCADSetsMatchWhatPlan7302Seeded(t *testing.T) {
 	}
 	if len(cadMultiarchLib) != 2 || cadMultiarchLib["arm64"] != "aarch64-linux-gnu" || cadMultiarchLib["amd64"] != "x86_64-linux-gnu" {
 		t.Errorf("cadMultiarchLib = %v: %s", cadMultiarchLib, remeasure)
+	}
+}
+
+func TestCADGuardSetHasNoPathToTheReader(t *testing.T) {
+	for _, p := range cadGuardReadOnly {
+		if p == "/opt/venv" || strings.HasPrefix(p, "/opt/venv/") {
+			t.Errorf("cadGuardReadOnly grants %s: the stage that reads hostile bytes first must not reach OCP; "+
+				"re-measure with scripts/cad-worker-sandbox-measure.sh rather than widening the set", p)
+		}
+	}
+}
+
+func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
+	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly} {
+		for _, p := range set {
+			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
+				if p == banned || strings.HasPrefix(p, banned+"/") {
+					t.Errorf("%s grants %s: the measured sets carry none of /tmp, /proc, /sys; "+
+						"a removal row of scripts/cad-worker-sandbox-measure.sh has to mark it load-bearing first", name, p)
+				}
+			}
+		}
 	}
 }
 

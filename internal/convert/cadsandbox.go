@@ -23,9 +23,16 @@ const (
 
 var cadPreflightExtents = [3]float64{25.4, 50.8, 76.2}
 
-var cadMeshReadOnly = []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11"}
+var cadMeshReadOnly = []string{
+	"/opt/venv",
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+}
 
-var cadGuardReadOnly = []string{"/usr/bin/python3.11", "/usr/lib/python3.11"}
+var cadGuardReadOnly = []string{
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+}
 
 var cadMeshEngines = []string{"cad-mesh"}
 
