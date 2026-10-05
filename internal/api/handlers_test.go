@@ -4045,7 +4045,7 @@ func TestEveryEngineHasAnEnqueueRoute(t *testing.T) {
 	}
 }
 
-func TestCreateJobCADTakesNoOptions(t *testing.T) {
+func TestCreateJobCADRejectsOtherEnginesOptions(t *testing.T) {
 	for _, opts := range []string{`{"scale":2}`, `{"pdf_profile":"pdf/a-2b"}`} {
 		t.Run(opts, func(t *testing.T) {
 			repo, store, queue := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
