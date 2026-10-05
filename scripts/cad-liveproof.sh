@@ -80,6 +80,7 @@ if echo "$RUNNING" | grep -qx webhook-worker; then
 	fail "webhook-worker (the reconciler host) is running; WORKER_KILL needs it absent"
 fi
 log "starting the stack (not running before:${STARTED_BY_ME:- none})"
+UP_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 docker compose up -d --build postgres redis minio createbucket api cad-worker >&2
 
 for _ in $(seq 1 60); do
@@ -88,10 +89,11 @@ for _ in $(seq 1 60); do
 done
 curl -fsS -o /dev/null "$API_BASE/healthz" || fail "api /healthz not reachable at $API_BASE"
 for _ in $(seq 1 60); do
-	docker compose logs --no-color cad-worker 2>/dev/null | grep -q "cad sandbox proven" && break
+	WORKER_LOG=$(docker compose logs --no-color --since "$UP_AT" cad-worker 2>/dev/null || true)
+	case "$WORKER_LOG" in *"cad sandbox proven"*) break ;; esac
 	sleep 2
 done
-docker compose logs --no-color cad-worker 2>/dev/null | grep -q "cad sandbox proven" || fail "cad-worker never logged 'cad sandbox proven'"
+case "$WORKER_LOG" in *"cad sandbox proven"*) ;; *) fail "cad-worker never logged 'cad sandbox proven' since $UP_AT" ;; esac
 
 CAD_IMAGE=$(docker inspect -f '{{.Image}}' "$CNAME")
 API_CID=$(docker compose ps -q api)
