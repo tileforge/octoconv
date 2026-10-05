@@ -14,9 +14,9 @@ affects: [74, 76]
 actuals:
   tokens: 9200
   tasks: 2
-  commits: 5
+  commits: 12
 plan_head_before: c707553ec02a42304aa34e306d059d43a885c31a
-plan_head_after: f5fc5e95e2840378b19e2e64cfde3f01a73c6ca2
+plan_head_after: 10f0fd9
 tech-stack:
   added: []
   patterns:
@@ -41,12 +41,13 @@ status: complete
 
 # Phase 73 Plan 06: Live proofs on the final tree Summary
 
-**The cad class is proven on a running system built from the final tree: the real image confines both engines and refuses to start without Landlock (natively and under amd64 emulation), step, stp, iges and igs jobs return exactly one millimetre STL judged by content, eleven bomb inputs end as terminal coded failures with the worker never OOMKilled or restarted, a cancel kills `cad-mesh` in 0.3 s, and a SIGKILLed worker lets the job finish through the asynq lease in 112.7 s.**
+**The cad class is proven on a running system built from the final tree: the real image confines both engines and refuses to start without Landlock (natively and under amd64 emulation), step, stp, iges and igs jobs return exactly one millimetre STL judged by content, twelve bomb inputs (the eleven of the first run plus a partially meshed face) end as terminal coded failures with the worker never OOMKilled or restarted, a cancel kills `cad-mesh` in 0.2 s, and a SIGKILLed worker lets the job finish through the asynq lease in 112.1 s.**
 
 ## Accomplishments
 
-- **Task 1: the final image proven confined.** `check_document_emulated_amd64_refuses` became `check_emulated_amd64_refuses CLASS DOCKERFILE ENVVAR`, called for document and cad (document's check name and messages are unchanged). `scripts/sandbox-liveproof.sh cad` on commit `922025f` (tracked dirt 0): `cad confined-startup`, `cad refuses-without-landlock`, `cad escape-hatch`, `cad preflight-catches-restrict-self`, `cad emulated-amd64-refuses`, `ALL PASS (5 checks)`, no NOT RUN. The emulated amd64 run printed `cad sandbox: landlock is unavailable ... Set CAD_SANDBOX_DISABLED=true`, no lock line, no Postgres attempt. `scripts/sandbox-liveproof.sh document` after the refactor: `ALL PASS (7 checks)` (same seven names as before).
-- **Task 2: the live compose proof.** `scripts/cad-liveproof.sh` on commit `ce195dd` (tracked dirt 0, cad-worker image `sha256:8eb376b1...`, `CAD_ENGINE_TIMEOUT` 406 s): `SUMMARY,result=ALL PASS,formats=1,inspect=1,convert=5,reject=2,bomb=11,cancel=1,worker_kill=1`.
+- **Task 1: the final image proven confined.** `check_document_emulated_amd64_refuses` became `check_emulated_amd64_refuses CLASS DOCKERFILE ENVVAR`, called for document and cad (document's check name and messages are unchanged). `scripts/sandbox-liveproof.sh cad` on commit `922025f` (tracked dirt 0): `cad confined-startup`, `cad refuses-without-landlock`, `cad escape-hatch`, `cad preflight-catches-restrict-self`, `cad emulated-amd64-refuses`, `ALL PASS (5 checks)`, no NOT RUN. Re-run after the Codex P1 fix on `8023836` (image `sha256:d0c691d4...`): the same five checks, `ALL PASS (5 checks)` (see Task 3). The emulated amd64 run printed `cad sandbox: landlock is unavailable ... Set CAD_SANDBOX_DISABLED=true`, no lock line, no Postgres attempt. `scripts/sandbox-liveproof.sh document` after the refactor: `ALL PASS (7 checks)` (same seven names as before).
+- **Task 2: the live compose proof.** `scripts/cad-liveproof.sh` was first run on commit `ce195dd` (cad-worker image `sha256:8eb376b1...`, bomb=11). After the Codex P1 fix (`cad-mesh` refuses partial meshing, `e3cab94`) it was re-run on commit `87b7ff0` (tracked dirt 0, cad-worker image `sha256:84b6710a...`, `CAD_ENGINE_TIMEOUT` 406 s): `SUMMARY,result=ALL PASS,formats=1,inspect=1,convert=5,reject=2,bomb=12,cancel=1,worker_kill=1`. No code under `cmd/`, `internal/` or any Dockerfile changed between `e3cab94` and `87b7ff0`, so the evidence file is for the final code. The first run's evidence is superseded.
+- **Task 3: the partial-mesh fix, proven.** `evidence/73-06-partial-mesh.txt` (`scripts/cad-partial-mesh-proof.sh`, commit `29c15ad`, real OCP 7.9.3.1.1): the pre-fix helper writes 10 of 12 triangles as `ok` for `partial_face.step`; the new helper exits 2 with `incomplete/mesh_status` and no STL; the intact fixture gives 12 triangles in both. The mesh Landlock set was re-checked on the fixed engine stage (`LANDLOCK_RECHECK-OK,cases=4`), and `sandbox-liveproof.sh cad` was re-run on `8023836` (`ALL PASS (5 checks)`).
 
 ## Evidence lines mapped to success criteria and requirements
 
@@ -56,9 +57,9 @@ status: complete
 | `INSPECT` | units_inch.step offers `step>stl` on cad, `estimate_source=unmeasured`, `max_bytes=66060288` | SC1 | CADW-01 |
 | `CONVERT` x5 | `.step`, `.stp`, `.igs`, `.iges` jobs done in 2.3 to 9.4 s; each has exactly one `job_outputs` row, role primary, format stl; downloaded size equals `size_bytes`; judge ok. units_inch.step: 12 triangles, extents 25.400000:50.799999:76.199997. NIST ctc_05 (9450 triangles) and d2mi (6870) inside their vertex-box band with factor 25.4. IGES valve: 65392 triangles, valid. | SC1 | CCONV-01 |
 | `REJECT` x2 | lying-count binary STL: 422 `truncated_cad_file`; STEP of 63 MiB + 1 byte: 413 `payload_too_large`, "step file exceeds the 63 MiB limit for this conversion" | SC3 | CADIN-04 |
-| `BOMB` x11 | all `status=failed`, `oom_killed=false`, `restart_count=0`, StartedAt unchanged, `oom_kill=0` after every one. Entity flood (754763), NAUO flood (1519), NAUO doubling hierarchy K12 and mapped-item doubling K12: `cad_too_complex` in 2.3, 2.4, 2.3 and 0.1 s (bound 30 s). Self-reference, cycle, and non-numeric coordinates `abc`, `--1`, `1E300`, `1E999`, `NaN`: `cad_unreadable` in 2.3 to 5.4 s (bound 406 s) | SC3 | CADIN-04 |
-| `CANCEL` | job active, `cad-mesh` visible (pid 326), cancel 200, pid gone 0.3 s later (bound 5 s), job `canceled`, no `download_url` | SC4 | CADW-03 |
-| `WORKER_KILL` | `docker kill --signal KILL` mid-mesh (pid 353); container back 42.1 s later; 0 `cad-mesh` processes older than the restarted container's init; job events `->queued;queued>active;active>active;active>done`; kill-to-done 112.7 s against 406 s; webhook-worker (the reconciler host) not running; STL judged ok (3820000 triangles) | SC4 | CADW-03 |
+| `BOMB` x12 | all `status=failed`, `oom_killed=false`, `restart_count=0`, StartedAt unchanged, `oom_kill=0` after every one. Entity flood (754763), NAUO flood (1519), NAUO doubling hierarchy K12 and mapped-item doubling K12: `cad_too_complex` in 2.6, 2.2, 2.3 and 0.2 s (bound 30 s). Self-reference, cycle, non-numeric coordinates `abc`, `--1`, `1E300`, `1E999`, `NaN`, and `partial_face.step` (a face the mesher cannot triangulate): `cad_unreadable` in 2.2 to 2.3 s (bound 406 s) | SC3 | CADIN-04 |
+| `CANCEL` | job active, `cad-mesh` visible (pid 314), cancel 200, pid gone 0.2 s later (bound 5 s), job `canceled`, no `download_url` | SC4 | CADW-03 |
+| `WORKER_KILL` | `docker kill --signal KILL` mid-mesh (pid 356); container back 41.6 s later; 0 `cad-mesh` processes older than the restarted container's init; job events `->queued;queued>active;active>active;active>done`; kill-to-done 112.1 s against 406 s; webhook-worker (the reconciler host) not running; STL judged ok (3820000 triangles) | SC4 | CADW-03 |
 | sandbox transcript | the five cad checks above | SC2 | CADW-02 |
 
 The expected codes for the structural bombs came from `evidence/73-01-spikes.txt` (RULE `load_check=numeric_strict`, `assembly_cycle=reader_handles`, `expansion=guard_bounds_expanded_instances`) and the cad-guard and cad-mesh code of plan 73-04: shape-null self-reference and cycle end `cad_unreadable` (`no_shape`), numeric load failures end `cad_unreadable` (`load_check_fail`) before `TransferRoots`, so the NaN input that ran 400 s in the 73-01 reader spike now ends in 2.3 s.
@@ -69,7 +70,14 @@ The expected codes for the structural bombs came from `evidence/73-01-spikes.txt
 2. **Task 1b: sandbox evidence** - `17cf183` (test)
 3. **Task 2a: cad-liveproof.sh** - `cfa7663` (feat)
 4. **Deviation fix: orphan census** - `ce195dd` (fix)
-5. **Task 2b: live evidence** - `f5fc5e9` (test)
+5. **Task 2b: live evidence** - `f5fc5e9` (test), superseded by `10f0fd9`
+6. **Codex P1 fix: refuse partial meshing** - `e3cab94` (fix, plan 73-02 code)
+7. **Partial-mesh fixture in the live proof** - `8023836` (test)
+8. **Sandbox live proof re-run on the fix** - `29c15ad` (test)
+9. **Partial-mesh proof on the real OCP reader** - `1af40cb` (test)
+10. **Live proof leaves its own evidence file out of the dirt count** - `5c0f080` (test)
+11. **Startup log read without a SIGPIPE race** - `87b7ff0` (test)
+12. **Cad live proof re-run on the fix** - `10f0fd9` (test)
 
 All SSH-signed (`G`), no trailer.
 
@@ -119,5 +127,5 @@ None beyond the register. T-73-17: only the six services of this repository's co
 ## Self-Check: PASSED
 
 - FOUND: scripts/cad-liveproof.sh, evidence/73-06-liveproof.txt (`SUMMARY,result=ALL PASS`), evidence/73-06-sandbox-liveproof.txt (`ALL PASS (5 checks)`)
-- FOUND commits 922025f, 17cf183, cfa7663, ce195dd, f5fc5e9 (ancestors of HEAD)
+- FOUND commits 922025f, 17cf183, cfa7663, ce195dd, f5fc5e9, e3cab94, 8023836, 29c15ad, 1af40cb, 5c0f080, 87b7ff0, 10f0fd9 (ancestors of HEAD); evidence/73-06-partial-mesh.txt (`SUMMARY,result=ALL PASS`)
 - `git rev-list --count c707553..HEAD` was 5 before this summary's own commit

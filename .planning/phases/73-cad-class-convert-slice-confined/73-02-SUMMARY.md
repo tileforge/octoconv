@@ -8,7 +8,7 @@ requires:
     provides: RULE and DERIVED lines of evidence/73-01-spikes.txt, the CADVERDICT contract, cad-mesh
 provides:
   - cmd/cad-worker/helper/cad-guard, the stdlib-only pre-pass that runs before OCP sees the bytes
-  - cad-mesh with load_fails, numeric-class load-check refusal, out_of_memory and reader_exception verdicts
+  - cad-mesh with load_fails, numeric-class load-check refusal, out_of_memory, reader_exception and (after the Codex P1 fix) incomplete verdicts
   - CADConverter (guard stage, mesh stage, Go-side STL judgment, six sentinels), nothing registered
   - engineExec.runBounded, CADPreflight, ConfinedCAD, ValidateCADTimeouts
 affects: [73-03, 73-04, 73-05, 73-06]
@@ -109,7 +109,7 @@ None.
 
 - `1..2` stays the recorded GAP from 73-01 and is not handled.
 - IGES has no entity cap and no expansion rule: 71 measured none and none was invented. Only the byte ceiling and the stage deadlines bound it.
-- The cad-mesh load-check and exception paths have no Go test (no OCP on the host); they are covered by the smoke runs above and the 73-03 re-measurement.
+- Closed after this plan: the cad-mesh paths are now covered by `internal/convert/cadmesh_test.go` (17 cases against a fake OCP in `testdata/cadmesh-fake/run.py`) and by the real-OCP proof `evidence/73-06-partial-mesh.txt`. The Codex P1 fix (`e3cab94`) added the `incomplete` verdict (`mesh_status`, `face_not_triangulated`, `stl_count_mismatch`, mapped to `cad_unreadable`), `requireSTLMatchesVerdict` in Go and the same check in `CADPreflight`.
 - The four sandbox sets are the 71 candidate translated to the production layout, unmeasured on the production image until 73-03.
 
 ## Threat Flags
