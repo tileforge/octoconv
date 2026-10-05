@@ -150,7 +150,23 @@ CAD-содержимого и контракт measurements — готова и 
   5. Ничего не рекламируется: `AllEngines()` не изменён, `/v1/formats` не
      показывает пар `cad`; алиасы `stp`/`igs` нормализуются (включая копию во
      фронтенде)
-**Plans**: TBD
+**Plans:** 7 plans in 4 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [ ] 72-01-PLAN.md — tracer: валидный STEP/STP через один CAD-детектор в создании джобы и в inspect; 15 фикстур отказов закоммичены раньше правил, которые их судят
+- [ ] 72-02-PLAN.md — контракт measurements: `schema` `octoconv.measurements/v1`, закрытые словари, fail-closed валидатор, `docs/MEASUREMENTS.md` с тестом сверки
+- [ ] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
+- [ ] 72-05-PLAN.md — алиасы `stp`/`igs` в Go и во фронтенде с тестом сверки; guard-тесты «ничего CAD не рекламируется»
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 72-06-PLAN.md — отказы подключены к созданию джобы (422) и к inspect (sentinel-форматы), привязки причин, тест согласия по каждой фикстуре
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 72-07-PLAN.md — дифференциальный прогон против OCP и ezdxf, закоммиченная таблица расхождений, golden под TestSniffCADGolden; гейт фазы
 
 ### Phase 73: CAD Class & Convert Slice, Confined
 
