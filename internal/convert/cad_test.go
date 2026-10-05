@@ -167,14 +167,29 @@ func TestCADPinnedConstantsComeFromTheEvidence(t *testing.T) {
 	}
 }
 
-func TestCADOptsFromMapTakesNothing(t *testing.T) {
+func TestCADOptsFromMapEmptyAndUnion(t *testing.T) {
 	for _, m := range []map[string]any{nil, {}} {
-		if _, err := CADOptsFromMap(m); err != nil {
-			t.Errorf("CADOptsFromMap(%v) = %v, want nil", m, err)
+		if o, err := CADOptsFromMap(m); err != nil || !o.isZero() {
+			t.Errorf("CADOptsFromMap(%v) = %+v, %v, want zero and nil", m, o, err)
 		}
 	}
 	if _, err := CADOptsFromMap(map[string]any{"units": "in"}); err == nil {
-		t.Error("CADOptsFromMap with an option returned nil, want an error")
+		t.Error("CADOptsFromMap with an unknown option returned nil, want an error")
+	}
+}
+
+func TestCADConvertAcceptsQualityOnlyOptions(t *testing.T) {
+	c := CADConverter{}
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.step")
+	out := filepath.Join(dir, "out.stl")
+	err := c.Convert(context.Background(), in, out, map[string]any{"view": "top"})
+	if err == nil || !strings.Contains(err.Error(), "only quality applies") {
+		t.Errorf("Convert with a render key = %v, want the only-quality refusal", err)
+	}
+	err = c.Convert(context.Background(), in, out, map[string]any{"quality": "ultra"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported quality") {
+		t.Errorf("Convert with a bad quality = %v, want the unsupported-quality refusal", err)
 	}
 }
 

@@ -74,6 +74,8 @@ const OperationConvert = "convert"
 // that a registry fact rather than a convention the handler has to remember.
 const OperationSanitize = "sanitize"
 
+const OperationRender = "render"
+
 // AllEngines returns the ten engine classes in a fixed, documented order --
 // EngineImage, EngineDocument, EngineHTML, EngineAudio, EngineAV, EngineOCR,
 // EnginePandoc, EngineProbe, EngineTectonic, EngineCAD. The order is stable because callers (cmd/manage-clients) use

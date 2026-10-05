@@ -38,20 +38,14 @@ const (
 )
 
 var (
-	ErrCADInputTooLarge = errors.New("cad: the input exceeds this deployment's size ceiling")
-	ErrCADTooComplex    = errors.New("cad: the model is too complex to convert")
-	ErrCADUnreadable    = errors.New("cad: the file could not be read as CAD data")
-	ErrCADEmptyResult   = errors.New("cad: the conversion produced no geometry")
-	ErrCADMeshTimeout   = errors.New("cad: the mesh stage did not finish within the time limit")
-	ErrCADEngineKilled  = errors.New("cad: the engine was killed before it finished")
+	ErrCADInputTooLarge  = errors.New("cad: the input exceeds this deployment's size ceiling")
+	ErrCADTooComplex     = errors.New("cad: the model is too complex to convert")
+	ErrCADUnreadable     = errors.New("cad: the file could not be read as CAD data")
+	ErrCADEmptyResult    = errors.New("cad: the conversion produced no geometry")
+	ErrCADMeshTimeout    = errors.New("cad: the mesh stage did not finish within the time limit")
+	ErrCADEngineKilled   = errors.New("cad: the engine was killed before it finished")
+	ErrCADRenderRejected = errors.New("cad: the rendered image failed the content check")
 )
-
-func CADOptsFromMap(m map[string]any) (any, error) {
-	if len(m) > 0 {
-		return nil, fmt.Errorf("cad takes no options, got %d", len(m))
-	}
-	return nil, nil
-}
 
 type CADConverter struct {
 	Sandbox      *engineSandbox
@@ -87,7 +81,11 @@ func (c CADConverter) meshTimeout() time.Duration {
 }
 
 func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	if _, err := CADOptsFromMap(opts); err != nil {
+	o, err := CADOptsFromMap(opts)
+	if err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	if err := ValidateCADApplicability(EngineCAD, OperationConvert, "", "", o); err != nil {
 		return fmt.Errorf("cad: %w", err)
 	}
 	format := NormalizeFormat(filepath.Ext(inPath))

@@ -992,6 +992,23 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
 				return
 			}
+		case convert.EngineCAD:
+			cadOpts, err := convert.ParseCADOpts([]byte(rawOpts))
+			if err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=invalid_opts", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, errcode.InvalidOptions, "invalid opts")
+				return
+			}
+			if err := convert.ValidateCADApplicability(engine, operation, detected, target, cadOpts); err != nil {
+				log.Printf("content validation rejected: client_id=%s filename=%q reason=opts_not_applicable", client.ID, filename)
+				writeError(w, http.StatusUnprocessableEntity, errcode.OptsNotApplicable, "opts not applicable to this conversion")
+				return
+			}
+			normalizedRaw, err = json.Marshal(cadOpts)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, errcode.InternalError, "failed to normalize opts")
+				return
+			}
 		default:
 			docOpts, err := convert.ParseDocOpts([]byte(rawOpts))
 			if err != nil {
