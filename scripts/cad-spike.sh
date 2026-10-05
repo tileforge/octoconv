@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/cad-spike.sh tracer
-#   scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5]
+#   scripts/cad-spike.sh spikes [--only S0,S1,S2,S3,S3M,S4,S5,S5I]
 #   scripts/cad-spike.sh rules [--check]
 #   scripts/cad-spike.sh finish
 #
@@ -541,6 +541,22 @@ spike_s5() {
   done
 }
 
+spike_s5i() {
+  local target t step out
+  for target in 60 90 105 120 135; do
+    disk_guard
+    t=$(( (target * 181 + 74) / 148 ))
+    gen_corpus LinearSlide-MGN15x-Block.step "$CORPUS/public" step-copies "$t"
+    step="$SPIKE_CACHE/step-copies-LinearSlide-MGN15x-Block-${t}MiB.step"
+    gen_corpus "$(basename "$step")" "$SPIKE_CACHE" iges-from-step 1 || true
+    out="$SPIKE_CACHE/iges-step-copies-LinearSlide-MGN15x-Block-${t}MiB.igs"
+    [ -f "$out" ] || fail "iges ladder file missing"
+    cell read iges "$out"
+    emit_row S5 "$out" iges "" "op=mesh" "series=iges_ladder_${target}MiB"
+    rm -rf "$CELL_JOB" "$out" "$step"
+  done
+}
+
 finish_evidence() {
   local complete=$1 keep body rules_file
   mkdir -p "$(dirname "$EVID")"
@@ -552,10 +568,9 @@ finish_evidence() {
   fi
   { cat "$keep"; cat "$SPIKES_HDR"; cat "$SPIKES_OUT"; } > "$body"
   if [ "$complete" = 1 ]; then
-    printf 'GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (R-01)\n' >> "$body"
     python3 "$SPIKE_PY" rules "$body" > "$rules_file"
     cat "$rules_file" >> "$body"
-    printf 'SUMMARY,rows=%s,rules=5,derived=5,gaps=1\n' "$(grep -c '^ROW,' "$body")" >> "$body"
+    printf 'SUMMARY,rows=%s,rules=%s,derived=%s,gaps=%s\n' "$(grep -c '^ROW,' "$body")" "$(grep -c '^RULE,' "$body")" "$(grep -c '^DERIVED,' "$body")" "$(grep -c '^GAP,' "$body")" >> "$body"
   else
     printf 'HDR,stage=spikes,complete=0\n' >> "$body"
   fi
@@ -576,7 +591,9 @@ drop_sections() {
   for section in $(printf '%s' "$ONLY" | tr ',' ' '); do
     case "$section" in
       S0) grep -v -e '^BINDING,' -e '^LOADCHECK,' "$1" > "$1.tmp" || true ;;
-      S1|S2|S4|S5) grep -v "^ROW,spike=$section," "$1" > "$1.tmp" || true ;;
+      S1|S2|S4) grep -v "^ROW,spike=$section," "$1" > "$1.tmp" || true ;;
+      S5) awk '!(/^ROW,spike=S5,/ && !/,series=iges_ladder_/)' "$1" > "$1.tmp" ;;
+      S5I) awk '!(/^ROW,spike=S5,/ && /,series=iges_ladder_/)' "$1" > "$1.tmp" ;;
       S3) awk '!(/^ROW,spike=S3,/ && (/,kind=nauo,/ || /,kind=mapped,/))' "$1" > "$1.tmp" ;;
       S3M) awk '!(/^ROW,spike=S3,/ && /,kind=mapped_text,/)' "$1" > "$1.tmp" ;;
       *) fail "unknown section $section" ;;
@@ -651,6 +668,7 @@ spikes() {
   if want S3; then spike_s3; fi
   if want S3M; then spike_s3m; fi
   if want S5; then spike_s5; fi
+  if want S5I; then spike_s5i; fi
 
   trap - EXIT
   finish_evidence 1
@@ -674,10 +692,9 @@ finish_mode() {
   body=$(mktemp "${TMPDIR:-/tmp}/cad-spike-body.XXXXXX")
   rules_file=$(mktemp "${TMPDIR:-/tmp}/cad-spike-rules.XXXXXX")
   grep -v -e '^RULE,' -e '^DERIVED,' -e '^SUMMARY,' -e '^LOADCHECK_SUMMARY,' -e '^GAP,' -e '^HDR,stage=spikes,complete=0' "$EVID" > "$body" || true
-  printf 'GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (R-01)\n' >> "$body"
   python3 "$SPIKE_PY" rules "$body" > "$rules_file"
   cat "$rules_file" >> "$body"
-  printf 'SUMMARY,rows=%s,rules=5,derived=5,gaps=1\n' "$(grep -c '^ROW,' "$body")" >> "$body"
+  printf 'SUMMARY,rows=%s,rules=%s,derived=%s,gaps=%s\n' "$(grep -c '^ROW,' "$body")" "$(grep -c '^RULE,' "$body")" "$(grep -c '^DERIVED,' "$body")" "$(grep -c '^GAP,' "$body")" >> "$body"
   cp "$body" "$EVID"
   rm -f "$body" "$rules_file"
   python3 "$SPIKE_PY" rules "$EVID" --check

@@ -22,6 +22,10 @@ TIMEOUT_FLOOR_S = 316
 GUARD_FLOOR_S = 30
 IO_ALLOWANCE_S = 60
 POD_GRACE_PAD_S = 20
+MIB = 1048576
+PEAK_LIMIT_MIB = 2867
+IGES_71_CEILING = 155 * MIB
+STEP_71_CEILING = 63 * MIB
 RULE_KEYS = ("load_check", "assembly_cycle", "expansion", "mapped_item", "entity_counter")
 DERIVED_KEYS = ("cad_guard_timeout_s", "cad_mesh_timeout_s", "cad_io_allowance_s", "cad_engine_timeout_s", "cad_pod_grace_s")
 
@@ -642,22 +646,81 @@ def max_wall(rows, op):
 
 def summarize_loadcheck(checks):
     with_fails = 0
+    with_numeric = 0
     unknown = 0
     for check in checks:
         fails = num(check.get("fails"))
-        if check.get("status") != "IFSelect_RetDone" or fails is None:
+        numeric = num(check.get("fails_numeric"))
+        if check.get("status") != "IFSelect_RetDone" or fails is None or numeric is None:
             unknown += 1
-        elif fails > 0:
+            continue
+        if fails > 0:
             with_fails += 1
-    return len(checks), with_fails, unknown
+        if numeric > 0:
+            with_numeric += 1
+    return len(checks), with_fails, with_numeric, unknown
+
+
+def s1_classes(rows):
+    numeric = []
+    accepted = []
+    unexplained = []
+    ended = []
+    for r in rows:
+        if r.get("spike") != "S1":
+            continue
+        name = r.get("name")
+        if (num(r.get("load_fails_numeric")) or 0) > 0:
+            numeric.append(name)
+        elif r.get("shape") == "ok" and (num(r.get("triangles")) or 0) > 0:
+            entries = (num(r.get("load_fails")) or 0) + (num(r.get("load_warns")) or 0) + (num(r.get("load_fails_global")) or 0)
+            (accepted if entries == 0 else unexplained).append(name)
+        else:
+            ended.append(name)
+    return numeric, accepted, unexplained, ended
+
+
+def iges_ceiling(rows):
+    points = []
+    for r in rows:
+        if r.get("spike") == "S5" and r.get("op") == "mesh" and r.get("fmt") == "iges":
+            size, peak = num(r.get("bytes")), num(r.get("cg_peak_mib"))
+            clean = r.get("rc") == "0" and r.get("timeout") == "0" and r.get("oom_kill") == "0"
+            if size is not None and peak is not None:
+                points.append((size, peak, clean))
+    points.sort()
+    passing = [p for p in points if p[2] and p[1] <= PEAK_LIMIT_MIB]
+    best = max((p[0] for p in passing), default=0)
+    ceiling = min(int(best // MIB) * MIB, IGES_71_CEILING)
+    return ceiling, points
+
+
+def step_ceiling(rows):
+    points = []
+    for r in rows:
+        if r.get("spike") == "S5" and r.get("op") == "mesh" and r.get("fmt") == "step" and str(r.get("series", "")).startswith("step_copies"):
+            size, peak = num(r.get("bytes")), num(r.get("cg_peak_mib"))
+            clean = r.get("rc") == "0" and r.get("timeout") == "0" and r.get("oom_kill") == "0"
+            if size is not None and peak is not None and clean:
+                points.append((size, peak))
+    top = max(points, default=None)
+    keep = top is not None and top[1] <= PEAK_LIMIT_MIB and top[0] <= STEP_71_CEILING
+    return (STEP_71_CEILING if keep else 0), top
 
 
 def compute_rules(rows, checks):
     lines = []
-    files, with_fails, unknown = summarize_loadcheck(checks)
-    strict = with_fails == 0 and unknown == 0
-    lines.append("RULE,key=load_check,value=%s,inputs=files=%d;with_fails=%d;unknown=%d" % (
-        "strict" if strict else "diagnostic", files, with_fails, unknown))
+    files, with_fails, with_numeric, unknown = summarize_loadcheck(checks)
+    numeric_bombs, accepted, unexplained, ended = s1_classes(rows)
+    if with_fails == 0 and unknown == 0:
+        load_value = "strict"
+    elif with_numeric == 0 and unknown == 0 and numeric_bombs and not unexplained:
+        load_value = "numeric_strict"
+    else:
+        load_value = "diagnostic"
+    s1_total = len(numeric_bombs) + len(accepted) + len(unexplained) + len(ended)
+    lines.append("RULE,key=load_check,value=%s,inputs=files=%d;with_fails=%d;with_numeric_fails=%d;unknown=%d;s1_numeric_hits=%d;s1_total=%d;s1_reader_accepted=%d;s1_unexplained=%d" % (
+        load_value, files, with_fails, with_numeric, unknown, len(numeric_bombs), s1_total, len(accepted), len(unexplained)))
     s2 = [r for r in rows if r.get("spike") == "S2"]
     handled = bool(s2) and all(
         r.get("rc") in ("0", "2") and r.get("timeout") == "0" and r.get("oom_kill") == "0" and (num(r.get("wall_s")) or 1e9) < 30
@@ -691,14 +754,29 @@ def compute_rules(rows, checks):
     lines.append("DERIVED,key=cad_io_allowance_s,value=%d,formula=assumption_A7,inputs=none_measured" % IO_ALLOWANCE_S)
     lines.append("DERIVED,key=cad_engine_timeout_s,value=%d,formula=guard+mesh+io,inputs=guard=%d;mesh=%d;io=%d" % (engine, guard, mesh, IO_ALLOWANCE_S))
     lines.append("DERIVED,key=cad_pod_grace_s,value=%d,formula=engine+20,inputs=engine=%d" % (engine + POD_GRACE_PAD_S, engine))
+    iges, iges_points = iges_ceiling(rows)
+    pts = ";".join("%.1fMiB:%dMiB%s" % (p[0] / MIB, p[1], "" if p[2] else ":unclean") for p in iges_points)
+    lines.append("DERIVED,key=cad_iges_ceiling_bytes,value=%d,formula=largest_measured_clean_iges_mesh_row_with_cgroup_peak_le_%dMiB_floored_to_MiB_capped_at_155MiB_no_upward_extrapolation,inputs=mib=%d;points_size:peak=%s" % (
+        iges, PEAK_LIMIT_MIB, iges // MIB, pts or "none"))
+    step, step_top = step_ceiling(rows)
+    lines.append("DERIVED,key=cad_step_ceiling_bytes,value=%d,formula=71_ceiling_63MiB_kept_when_the_largest_measured_step_copies_row_at_or_below_it_has_cgroup_peak_le_%dMiB,inputs=largest_measured=%s" % (
+        step, PEAK_LIMIT_MIB, "none" if step_top is None else "%.1fMiB:%dMiB" % (step_top[0] / MIB, step_top[1])))
+    lines.append("GAP,key=iges_inch_scaling,value=unproven,reason=no inch IGES in the corpus (R-01)")
+    if accepted:
+        base = next((r.get("bbox_diag") for r in rows if r.get("spike") == "S4" and r.get("triangles") == "12"), None)
+        diag = next((r.get("bbox_diag") for r in rows if r.get("spike") == "S1" and r.get("name") in accepted), None)
+        lines.append("GAP,key=lexer_accepts_double_dot_real,value=reader_accepted,reason=OCCT reads 1..2 with no load-check entry; files=%s; bbox_diag %s against baseline %s; no text scan by decision" % (
+            "+".join(accepted), diag, base))
+    lines.append("GAP,key=iges_ceiling_supersedes_71,value=%dMiB,reason=the 71 value of 155 MiB breaks the D-07 70 percent line of %d MiB on the production helper; this derived value supersedes it for the production engine" % (
+        iges // MIB, PEAK_LIMIT_MIB))
     return lines
 
 
 def cmd_rules(args):
     rows, checks = load_evidence(args.evidence)
     computed = compute_rules(rows, checks)
-    files, with_fails, unknown = summarize_loadcheck(checks)
-    summary = "LOADCHECK_SUMMARY,files=%d,with_fails=%d,unknown=%d" % (files, with_fails, unknown)
+    files, with_fails, with_numeric, unknown = summarize_loadcheck(checks)
+    summary = "LOADCHECK_SUMMARY,files=%d,with_fails=%d,with_numeric_fails=%d,unknown=%d" % (files, with_fails, with_numeric, unknown)
     if not args.check:
         print(summary)
         for line in computed:
@@ -709,7 +787,7 @@ def cmd_rules(args):
     with open(args.evidence) as fh:
         for line in fh:
             line = line.rstrip("\n")
-            if line.startswith("RULE,") or line.startswith("DERIVED,"):
+            if line.startswith(("RULE,", "DERIVED,", "GAP,")):
                 existing.append(line)
             elif line.startswith("LOADCHECK_SUMMARY,"):
                 have_summary = line
@@ -721,7 +799,7 @@ def cmd_rules(args):
     for line in sorted(set(computed) - set(existing)):
         problems.append("+ " + line)
     if len(existing) != len(computed):
-        problems.append("count: have %d RULE/DERIVED lines, computed %d" % (len(existing), len(computed)))
+        problems.append("count: have %d RULE/DERIVED/GAP lines, computed %d" % (len(existing), len(computed)))
     if problems:
         print("\n".join(problems))
         return 1
