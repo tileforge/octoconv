@@ -68,6 +68,11 @@ func cadLine(stage, verdict, reason string) string {
 	return fmt.Sprintf(`CADVERDICT {"stage":"%s","verdict":"%s","reason":"%s","triangles":12,"entities":353}`, stage, verdict, reason)
 }
 
+func cadSayTriangles(stage, verdict, reason string, triangles, exit int) string {
+	line := fmt.Sprintf(`CADVERDICT {"stage":"%s","verdict":"%s","reason":"%s","triangles":%d,"entities":353}`, stage, verdict, reason, triangles)
+	return fmt.Sprintf("printf '%%s\\n' '%s'\nexit %d\n", line, exit)
+}
+
 func cadSay(stage, verdict, reason string, exit int) string {
 	return fmt.Sprintf("printf '%%s\\n' '%s'\nexit %d\n", cadLine(stage, verdict, reason), exit)
 }
@@ -287,6 +292,11 @@ func TestCADMeshVerdictsAndTheSTLJudgment(t *testing.T) {
 	}{
 		{"unreadable", ErrCADUnreadable, func(cadFixture, *testing.T) string { return cadSay("mesh", "unreadable", "read_failed", 2) }},
 		{"empty", ErrCADEmptyResult, func(cadFixture, *testing.T) string { return cadSay("mesh", "empty", "zero_size", 3) }},
+		{"incomplete mesh status", ErrCADUnreadable, func(cadFixture, *testing.T) string { return cadSay("mesh", "incomplete", "mesh_status", 2) }},
+		{"incomplete untriangulated face", ErrCADUnreadable, func(f cadFixture, t *testing.T) string {
+			stl := f.writeSTL(t, "partial.stl", cadBoxSTL(1, 2, 3))
+			return fmt.Sprintf("cp '%s' \"$4\"\n%s", stl, cadSay("mesh", "incomplete", "face_not_triangulated", 2))
+		}},
 		{"too_complex", ErrCADTooComplex, func(cadFixture, *testing.T) string { return cadSay("mesh", "too_complex", "out_of_memory", 4) }},
 		{"ok with a good STL", nil, func(f cadFixture, t *testing.T) string { return f.goodMesh(t) }},
 		{"ok with a trailing byte", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
@@ -308,6 +318,24 @@ func TestCADMeshVerdictsAndTheSTLJudgment(t *testing.T) {
 		{"ok with an infinite vertex", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
 			p := f.writeSTL(t, "bad.stl", cadStlWithVertex(float32(math.Inf(-1))))
 			return fmt.Sprintf("cp '%s' \"$4\"\n%s", p, cadSay("mesh", "ok", "", 0))
+		}},
+		{"ok with fewer file triangles than the helper reported", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
+			p := f.writeSTL(t, "box.stl", cadBoxSTL(1, 2, 3))
+			return fmt.Sprintf("cp '%s' \"$4\"\n%s", p, cadSayTriangles("mesh", "ok", "", 13, 0))
+		}},
+		{"ok with more file triangles than the helper reported", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
+			p := f.writeSTL(t, "box.stl", cadBoxSTL(1, 2, 3))
+			return fmt.Sprintf("cp '%s' \"$4\"\n%s", p, cadSayTriangles("mesh", "ok", "", 11, 0))
+		}},
+		{"ok with a well-formed short STL and a longer helper count", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
+			short := cadBoxSTL(1, 2, 3)[:stlHeaderBytes+stlTriangleBytes*11]
+			binary.LittleEndian.PutUint32(short[80:], 11)
+			p := f.writeSTL(t, "box.stl", short)
+			return fmt.Sprintf("cp '%s' \"$4\"\n%s", p, cadSayTriangles("mesh", "ok", "", 12, 0))
+		}},
+		{"ok with no helper triangle count", ErrCADEmptyResult, func(f cadFixture, t *testing.T) string {
+			p := f.writeSTL(t, "box.stl", cadBoxSTL(1, 2, 3))
+			return fmt.Sprintf("cp '%s' \"$4\"\n%s", p, cadSayTriangles("mesh", "ok", "", 0, 0))
 		}},
 		{"ok with no STL at all", ErrCADEmptyResult, func(cadFixture, *testing.T) string { return cadSay("mesh", "ok", "", 0) }},
 	}

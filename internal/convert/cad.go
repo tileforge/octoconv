@@ -106,11 +106,20 @@ func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 	if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
 		return err
 	}
-	if _, err := c.meshStage(ctx, jobDir, format, inPath, outPath); err != nil {
+	verdict, err := c.meshStage(ctx, jobDir, format, inPath, outPath)
+	if err != nil {
 		return err
 	}
-	if _, _, err := judgeBinarySTL(outPath); err != nil {
+	n, _, err := judgeBinarySTL(outPath)
+	if err != nil {
 		return fmt.Errorf("cad: %w", err)
+	}
+	return requireSTLMatchesVerdict(n, verdict)
+}
+
+func requireSTLMatchesVerdict(n int, v cadVerdict) error {
+	if n != v.Triangles {
+		return fmt.Errorf("cad: %w: the STL holds %d triangles, the mesh stage reported %d", ErrCADEmptyResult, n, v.Triangles)
 	}
 	return nil
 }
@@ -193,7 +202,7 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 			}
 		case "too_complex":
 			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADTooComplex, v.Reason)
-		case "unreadable":
+		case "unreadable", "incomplete":
 			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADUnreadable, v.Reason)
 		case "empty":
 			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADEmptyResult, v.Reason)

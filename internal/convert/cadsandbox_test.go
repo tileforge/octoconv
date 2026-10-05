@@ -15,6 +15,7 @@ type cadPreflightFakes struct {
 	guardEntities int
 	guardOutside  string
 	meshInsideSTL []byte
+	meshTriangles int
 	meshOutside   string
 }
 
@@ -28,6 +29,7 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		guardEntities: n,
 		guardOutside:  "unreadable",
 		meshInsideSTL: cadBoxSTL(25.4, 50.8, 76.2),
+		meshTriangles: 12,
 		meshOutside:   "deny",
 	}
 }
@@ -46,7 +48,7 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	}
 	fakeEngine(t, dir, "cad-guard", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
 
-	meshOK := fmt.Sprintf("cp '%s' \"$4\"\n%s", stl, cadSay("mesh", "ok", "", 0))
+	meshOK := fmt.Sprintf("cp '%s' \"$4\"\n%s", stl, cadSayTriangles("mesh", "ok", "", p.meshTriangles, 0))
 	meshOutside := cadSay("mesh", "unreadable", "read_failed", 2)
 	if p.meshOutside == "leak" {
 		meshOutside = meshOK
@@ -90,6 +92,7 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"the mesh meshes the outside file", func(p *cadPreflightFakes) { p.meshOutside = "leak" }, []string{"mesh", "outside"}},
 		{"unscaled inch output", func(p *cadPreflightFakes) { p.meshInsideSTL = cadBoxSTL(1, 2, 3) }, []string{"units"}},
 		{"inch output scaled twice", func(p *cadPreflightFakes) { p.meshInsideSTL = cadBoxSTL(645.16, 1290.32, 1935.48) }, []string{"units"}},
+		{"the mesh reports a different triangle count than its file", func(p *cadPreflightFakes) { p.meshTriangles = 11 }, []string{"mesh", "verdict"}},
 		{"the guard counts a different number of entities", func(p *cadPreflightFakes) { p.guardEntities++ }, []string{"guard", "entities"}},
 	}
 	for _, tc := range cases {

@@ -13,6 +13,7 @@ EXIT_TOO_COMPLEX = 4
 EXIT_USAGE = 64
 NOT_EVALUATED = -1
 NUMERIC_FAIL_MARKERS = ("not a Real", "not an Integer")
+MESH_FAILURE_FLAGS = ("OpenWire", "SelfIntersectingWire", "Failure", "UnorientedWire", "TooFewPoints", "UserBreak")
 
 
 class Parser(argparse.ArgumentParser):
@@ -50,6 +51,34 @@ def finite_box(shape):
             box.Add(fbox)
         faces.Next()
     return box
+
+
+def mesh_failure_mask():
+    from OCP.IMeshData import IMeshData_Status
+
+    mask = 0
+    for name in MESH_FAILURE_FLAGS:
+        mask |= getattr(IMeshData_Status, "IMeshData_" + name).value
+    return mask
+
+
+def face_survey(shape):
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+
+    faces = meshed = triangles = 0
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        faces += 1
+        triangulation = BRep_Tool.Triangulation_s(TopoDS.Face_s(explorer.Current()), TopLoc_Location())
+        if triangulation is not None and triangulation.NbTriangles() > 0:
+            meshed += 1
+            triangles += triangulation.NbTriangles()
+        explorer.Next()
+    return faces, meshed, triangles
 
 
 def load_check(reader):
@@ -104,16 +133,34 @@ def run(fmt, src, out, fd):
             verdict(fd, "empty", "zero_size", load_fails=fails)
             return EXIT_EMPTY
 
-        BRepMesh_IncrementalMesh(shape, LINEAR_DEFLECTION * diag, False, ANGULAR_DEFLECTION, False)
+        mesher = BRepMesh_IncrementalMesh(shape, LINEAR_DEFLECTION * diag, False, ANGULAR_DEFLECTION, False)
+        flags = mesher.GetStatusFlags()
+        faces, meshed, expected = face_survey(shape)
+        if meshed == 0:
+            verdict(fd, "empty", "no_triangles", load_fails=fails)
+            return EXIT_EMPTY
+        if not mesher.IsDone() or flags & mesh_failure_mask():
+            sys.stderr.write("cad-mesh: mesher done=%s flags=%d faces=%d meshed=%d\n" % (mesher.IsDone(), flags, faces, meshed))
+            verdict(fd, "incomplete", "mesh_status", load_fails=fails)
+            return EXIT_UNREADABLE
+        if meshed != faces:
+            sys.stderr.write("cad-mesh: faces=%d meshed=%d\n" % (faces, meshed))
+            verdict(fd, "incomplete", "face_not_triangulated", load_fails=fails)
+            return EXIT_UNREADABLE
         writer = StlAPI_Writer()
         writer.ASCIIMode = False
         if not writer.Write(shape, out):
             verdict(fd, "empty", "write_failed", load_fails=fails)
             return EXIT_EMPTY
-        triangles = (os.path.getsize(out) - 84) // 50
+        size = os.path.getsize(out)
+        triangles = (size - 84) // 50
         if triangles <= 0:
             verdict(fd, "empty", "no_triangles", load_fails=fails)
             return EXIT_EMPTY
+        if size != 84 + 50 * triangles or triangles != expected:
+            sys.stderr.write("cad-mesh: stl bytes=%d triangles=%d mesh triangles=%d\n" % (size, triangles, expected))
+            verdict(fd, "incomplete", "stl_count_mismatch", load_fails=fails)
+            return EXIT_UNREADABLE
         verdict(fd, "ok", "", triangles, fails)
         return 0
     except MemoryError:

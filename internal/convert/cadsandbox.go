@@ -136,12 +136,16 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 	}
 
 	outInside := filepath.Join(w.jobDir, "out.stl")
-	if _, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside); err != nil {
+	meshVerdict, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside)
+	if err != nil {
 		return fmt.Errorf("the cad mesh stage cannot mesh a file inside the job directory under its sandbox: %w", err)
 	}
 	n, bounds, err := judgeBinarySTL(outInside)
 	if err != nil {
 		return fmt.Errorf("the cad mesh stage output inside the job directory is not a usable STL: %w", err)
+	}
+	if err := requireSTLMatchesVerdict(n, meshVerdict); err != nil {
+		return fmt.Errorf("the cad mesh stage output inside the job directory disagrees with its own verdict: %w", err)
 	}
 	if n != cadPreflightTriangles {
 		return fmt.Errorf("the cad mesh stage produced %d triangles for the fixture, want %d", n, cadPreflightTriangles)

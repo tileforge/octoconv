@@ -17,7 +17,7 @@ COPY --from=venv /opt/venv /opt/venv
 COPY cmd/cad-worker/helper/cad-mesh /usr/local/bin/cad-mesh
 COPY cmd/cad-worker/helper/cad-guard /usr/local/bin/cad-guard
 RUN chmod 0755 /usr/local/bin/cad-mesh /usr/local/bin/cad-guard
-RUN /opt/venv/bin/python -I -B -c "import OCP.STEPControl, OCP.IGESControl, OCP.BRepMesh, OCP.StlAPI, OCP.BRepBndLib, OCP.Interface"
+RUN /opt/venv/bin/python -I -B -c "import OCP.STEPControl, OCP.IGESControl, OCP.BRepMesh, OCP.StlAPI, OCP.BRepBndLib, OCP.Interface, OCP.IMeshData, OCP.BRep, OCP.TopLoc, OCP.TopoDS"
 USER nobody
 
 FROM golang:1.26-bookworm AS build
