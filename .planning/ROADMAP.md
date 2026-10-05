@@ -250,7 +250,16 @@ Plans:
      записанным в `SANDBOX-PATHS.md` и удерживаемым тестом; preflight судит по
      пикселям; сбой стадии рендера повторяемый, сбой стадии mesh — терминальный
      (расширяет CADW-02, CADW-03)
-**Plans**: TBD
+**Plans**: 7 plans
+
+Plans:
+- [ ] 74-01-PLAN.md — Wave 0: vtk legitimacy checkpoint, cad-render in the pruned production image (tracer, prune identity), 2048 px cost, cap, STL ceiling and unit-factor probes
+- [ ] 74-02-PLAN.md — cad-mesh measures, quality and STL stats; draft to measurements document in the declared unit; invalid_solid for STL
+- [ ] 74-03-PLAN.md — closed CAD options at API and worker; Go pixel judge with the thin-part rule
+- [ ] 74-04-PLAN.md — 886 s timeout budget everywhere; CADRenderConverter (unregistered); render failure classification
+- [ ] 74-05-PLAN.md — Repo.AddOutputs with inversion; atomic two-output process(); render exposed in one commit
+- [ ] 74-06-PLAN.md — render and mesh Landlock sets measured and crosschecked; judge calibrated against pixelcheck; preflight proves render
+- [ ] 74-07-PLAN.md — live proof of render and measurements end to end
 
 ### Phase 75: DXF 2D Pipeline
 
