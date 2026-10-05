@@ -20,6 +20,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 F3D_VERSION=3.5.0
 F3D_ASSET=F3D-3.5.0-Linux-x86_64.tar.gz
@@ -277,6 +278,7 @@ pixel_tool() {
 NAMES=()
 FILES=()
 F3D_OK=0
+VTK_OK=0
 for rec in "${PARTS[@]}"; do
   name=${rec%%|*}
   path=${rec#*|}
@@ -308,6 +310,7 @@ for rec in "${PARTS[@]}"; do
     CELL_VIEW=$v
     if retry_run vtk_cell render.png "vtk-$name-$v"; then
       cp "$CELL_DIR/render.png" "$PNG/vtk_${name}_$v.png"
+      VTK_OK=$((VTK_OK + 1))
       emit "VTK,item=$name,view=$v,wall_ms=$CELL_WALL_MS,arch=native"
       rm -rf "$CELL_DIR"
     else
@@ -342,11 +345,13 @@ for v in "${VIEWS[@]}"; do
 done
 rows=$(IFS=,; printf '%s' "${NAMES[*]}")
 attempt=1
+SHEET_OK=0
 while [ "$attempt" -le 2 ]; do
   if docker run --rm --network none --user nobody -v "$PNG:/png:ro" -v "$SHEETS:/out" "$TAG" \
        "${PY[@]}" "$LIB/contact_sheet.py" --out /out/sheet.png --rows "$rows" --cols "$cols" \
        --title "$TITLE" "${FILES[@]}" >/dev/null && [ -s "$SHEETS/sheet.png" ]; then
     cp "$SHEETS/sheet.png" "$SHEET_OUT"
+    SHEET_OK=1
     emit "SHEET,file=$(basename "$SHEET_OUT"),bytes=$(wc -c < "$SHEET_OUT" | tr -d ' '),title=$TITLE"
     break
   fi
@@ -354,12 +359,15 @@ while [ "$attempt" -le 2 ]; do
   emit "RETRY,what=sheet,attempt=$attempt"
   attempt=$((attempt + 1))
 done
-if [ ! -s "$SHEET_OUT" ]; then
+if [ "$SHEET_OK" != 1 ]; then
   emit "SHEET,status=failed"
   FAIL=$((FAIL + 1))
 fi
 
-emit "F3D_SUMMARY,parts=${#NAMES[@]},fail=$FAIL,retries=$RETRIES"
-if [ "$FAIL" -gt 0 ]; then
+EXPECT_RENDERS=$(( ${#NAMES[@]} * ${#VIEWS[@]} ))
+if f3d_verdict "$FAIL" "$VTK_OK" "$F3D_OK" "$EXPECT_RENDERS" "$SHEET_OK"; then
+  emit "F3D_SUMMARY,parts=${#NAMES[@]},fail=$FAIL,retries=$RETRIES,vtk_renders=$VTK_OK,f3d_renders=$F3D_OK,expected_renders=$EXPECT_RENDERS,sheet=1"
+else
+  emit "F3D_SUMMARY,status=FAILED,parts=${#NAMES[@]},fail=$FAIL,retries=$RETRIES,vtk_renders=$VTK_OK,f3d_renders=$F3D_OK,expected_renders=$EXPECT_RENDERS,sheet=$SHEET_OK"
   exit 1
 fi

@@ -51,10 +51,14 @@ count_container() {
 public_group() {
   local group=$1 dir=$2 total
   if [ ! -d "$dir" ]; then
-    printf 'INV,group=%s,files=0,status=directory missing\n' "$group" >> "$BODY"
-    return 0
+    echo "error: group $group: $dir is missing; fetch or generate the corpus first, an inventory of nothing is not an inventory" >&2
+    exit 1
   fi
   total=$(find "$dir" -type f ! -name '*.md' | wc -l | tr -d ' ')
+  if [ "$total" -lt 1 ]; then
+    echo "error: group $group has no files in $dir; an inventory of nothing is not an inventory" >&2
+    exit 1
+  fi
   printf 'INV,group=%s,files=%s\n' "$group" "$total" >> "$BODY"
   if [ "$total" -gt 0 ]; then
     count_container "$dir" names > "$WORK/group.txt"

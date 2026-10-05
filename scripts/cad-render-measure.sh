@@ -20,6 +20,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 OCP=7.9.3.1.1
 VARIANT=full
@@ -103,6 +104,7 @@ RETRIES=0
 VIEWS_EXPECTED=0
 VIEWS_DIFFER=0
 DETERMINISM=identical
+DETERMINISM_RUNS=0
 PARTS=0
 ROBUST_DONE=0
 DRAWINGS_DONE=0
@@ -302,6 +304,7 @@ for rec in "${REAL[@]}"; do
   ensure_mesh "$name" "$path" standard || continue
   if [ -f "$PNG/${name}_iso_1280.png" ] && render_one "${name}_iso_1280_rerun" "$name" determinism iso 1280 white default "$STL_DIR" standard; then
     sline=$(pixel_tool same "/png/${name}_iso_1280.png" "/png/${name}_iso_1280_rerun.png")
+    DETERMINISM_RUNS=$((DETERMINISM_RUNS + 1))
     emit "SAME,item=$name,kind=determinism,${sline#SAME,}"
     case "$sline" in *,ok=1) ;; *) DETERMINISM=DIFFERENT; FAIL=$((FAIL + 1)) ;; esac
   fi
@@ -423,9 +426,12 @@ awk -F, '
   END { printf "CALOBS,real_pngs=%d,frac_min=%.4f,frac_max=%.4f,dark_min=%.4f,margin_px_min=%d\n", n, fmin, fmax, dmin, mmin }
 ' "$OUTFILE" | tee -a "$OUTFILE"
 
-emit "RENDER_INFO,views_expected=$VIEWS_EXPECTED,robust_parts=$ROBUST_DONE,drawings=$DRAWINGS_DONE,retries=$RETRIES"
-emit "RENDER_SUMMARY,parts=$PARTS,pngs=$PNGS,fail=$FAIL,views_differ=$VIEWS_DIFFER,determinism=$DETERMINISM"
-
-if [ "$PARTS" -eq 0 ] || [ "$FAIL" -gt 0 ] || [ "$DETERMINISM" != identical ]; then
+emit "RENDER_INFO,views_expected=$VIEWS_EXPECTED,robust_parts=$ROBUST_DONE,drawings=$DRAWINGS_DONE,retries=$RETRIES,determinism_runs=$DETERMINISM_RUNS"
+EXPECT_PNGS=$(( ((${#VIEWS[@]} + 4) * ${#REAL[@]}) + (${#VIEWS[@]} * ${#ROBUST[@]}) + 3 + ${#DRAWINGS[@]} ))
+if render_verdict "$PARTS" "$ROBUST_DONE" "$DRAWINGS_DONE" "$PNGS" "$FAIL" "$DETERMINISM_RUNS" "$DETERMINISM" \
+     "${#REAL[@]}" "${#ROBUST[@]}" "${#DRAWINGS[@]}" "$EXPECT_PNGS"; then
+  emit "RENDER_SUMMARY,parts=$PARTS,pngs=$PNGS,fail=$FAIL,views_differ=$VIEWS_DIFFER,determinism=$DETERMINISM"
+else
+  emit "RENDER_SUMMARY,status=FAILED,parts=$PARTS,expected_parts=${#REAL[@]},pngs=$PNGS,expected_pngs=$EXPECT_PNGS,fail=$FAIL,views_differ=$VIEWS_DIFFER,determinism=$DETERMINISM,determinism_runs=$DETERMINISM_RUNS"
   exit 1
 fi

@@ -17,6 +17,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 OUT=go-worker-rss.txt
 TIMEOUT_S=300
@@ -111,5 +112,6 @@ AFTER_RSS=$(vm_kib VmRSS)
 AFTER_HWM=$(vm_kib VmHWM)
 emit "JOB,status=${STATUS:-timeout},seconds=$JOB_S,target=webp"
 [ "$STATUS" = "done" ] || { echo "error: job ended as '${STATUS:-timeout}'" >&2; exit 1; }
+positive_reading "$IDLE_RSS" "$IDLE_HWM" "$AFTER_RSS" "$AFTER_HWM" || { echo "error: a /proc/1/status reading after the job is empty or zero" >&2; exit 1; }
 
 emit "GO_WORKER,service=worker,vmrss_idle_mib=$(mib "$IDLE_RSS"),vmhwm_after_job_mib=$(mib "$AFTER_HWM"),job_status=done,vmrss_after_job_mib=$(mib "$AFTER_RSS"),analogue=image-class_Go_worker_not_cad-worker"
