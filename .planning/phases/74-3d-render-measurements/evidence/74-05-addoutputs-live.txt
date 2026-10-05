@@ -1,0 +1,23 @@
+== 74-05 AddOutputs on a live Postgres ==
+commit: 1950f68ba8c93264c540cf080e2bd68e5180b087
+tracked dirt: 0 file(s)
+toolchain: go version go1.26.4 darwin/arm64
+postgres: compose service postgres (postgres:18 healthy), DATABASE_URL from .env.example (localhost:5434/octo_db)
+server: PostgreSQL 18.4 (Debian 18.4-1.pgdg13+1) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit
+$ go run ./cmd/migrate
+2026/10/06 01:09:37 migrations applied
+$ go test -v -count=1 -run TestAddOutputs ./internal/jobs/
+=== RUN   TestAddOutputsWritesBothRowsInOneTransaction
+2026/10/06 01:09:38 job active job_id=4689e85a-1ee5-426a-89a5-eb3592f3c46c correlation_id="" engine=cad target=webp from_status=queued client_id=b9786a3d-39fc-4b9c-8cc2-0aa516a59c1c
+2026/10/06 01:09:38 job done job_id=4689e85a-1ee5-426a-89a5-eb3592f3c46c correlation_id="" engine=cad target=webp from_status=active client_id=b9786a3d-39fc-4b9c-8cc2-0aa516a59c1c duration_ms=0
+--- PASS: TestAddOutputsWritesBothRowsInOneTransaction (0.11s)
+=== RUN   TestAddOutputsRollsBackWhenTheSecondRowFails
+2026/10/06 01:09:39 job active job_id=17ba0dca-d55d-40d1-84f8-90d4fc983cc6 correlation_id="" engine=cad target=webp from_status=queued client_id=f36429eb-c79a-4b78-b3f6-866c95e26765
+2026/10/06 01:09:39 job active job_id=d9f5d5a0-82ad-417d-881f-a002c3ab1d62 correlation_id="" engine=cad target=webp from_status=queued client_id=f36429eb-c79a-4b78-b3f6-866c95e26765
+--- PASS: TestAddOutputsRollsBackWhenTheSecondRowFails (0.04s)
+=== RUN   TestAddOutputsRejectsEmptyInputWithoutWriting
+--- PASS: TestAddOutputsRejectsEmptyInputWithoutWriting (0.02s)
+PASS
+ok  	github.com/apaderin/octoconv/internal/jobs	0.944s
+go test exit: 0
+NOTE: postgres (container octoconv-db) was started alone with docker compose up -d --no-deps postgres for this run and stopped afterwards with docker compose stop postgres
