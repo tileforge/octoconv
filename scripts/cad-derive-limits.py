@@ -50,6 +50,12 @@ COUNTER_SERIES = ("step-nauo", "dxf-minsert")
 MEASURED = ("ok", "oom", "timeout")
 PIX_OPS = ("render", "rsvg-png", "rsvg-pdf")
 TRIANGLE_OPS = ("mesh", "stlstats", "render")
+LADDER_ROW_FIXED = (("variant", "full"), ("cpus", "2"), ("quality", "standard"), ("confined", "0"))
+REQUIRED_CLASSES = ("step", "iges", "dxf", "stl_binary", "stl_ascii")
+
+
+class EvidenceError(Exception):
+    pass
 
 PIPELINE = {
     "step": ("mesh", "render"),
@@ -202,6 +208,11 @@ class Evidence:
                     file_cfg = (h.get("parallel", "on"), h.get("lp_threads", "default"))
                 elif line.startswith("ROW,"):
                     r = parse_row(line)
+                    foreign = [(k, r.get(k, "")) for k, want in LADDER_ROW_FIXED if r.get(k, "") != want]
+                    if foreign:
+                        raise EvidenceError("%s: a ladder row of %s carries %s; the derivation is defined for %s only, so the row is refused, not skipped" % (
+                            base, r.get("name", "?"), ",".join("%s=%s" % kv for kv in foreign),
+                            ",".join("%s=%s" % kv for kv in LADDER_ROW_FIXED)))
                     cfg = (r.get("par", "on"), r.get("lp", "default"))
                     key = (r["ocp"], r["mem"], r["sha"], r["op"])
                     self.cell_configs.setdefault(key, set()).add(cfg)
@@ -456,6 +467,17 @@ def cap_line(label, pts, floor, go, limit, unit, scale, extra=""):
                 "%d" % (MARGIN * breach["n"]) if breach else "-", int(top), tmo, extra, spread))
 
 
+def go_rss(go):
+    value = num(go.get("vmhwm_after_job_mib")) if go else None
+    if value is None or value <= 0 or go.get("job_status") != "done":
+        return None
+    return value
+
+
+def missing_classes(ev):
+    return [k for k in REQUIRED_CLASSES if k_worst(derive_class(ev, PIN_A, k)) is None]
+
+
 def selected_config(directory):
     path = os.path.join(directory, "71-06-threads.txt")
     if not os.path.exists(path):
@@ -480,15 +502,15 @@ def self_check():
     }
 
     def row(sha, name, mib, op, rc=0, rss=100.0, timeout=0, series="step-copies-x", par="on", lp="default",
-            fmt="step", pix=None, cstate="ok", out=None):
+            fmt="step", pix=None, cstate="ok", out=None, ocp=PIN_A, variant="full", cpus=2, quality="standard", confined=0):
         if pix is None:
             pix = "ok" if op in PIX_OPS else "-"
         if out is None:
             out = default_out.get(op, "-")
-        return ("ROW,src=public,name=%s,sha=%s,fmt=%s,bytes=%d,op=%s,ocp=%s,variant=full,mem=4g,cpus=2,confined=0,rep=1,"
+        return ("ROW,src=public,name=%s,sha=%s,fmt=%s,bytes=%d,op=%s,ocp=%s,variant=%s,mem=4g,cpus=%s,confined=%s,rep=1,"
                 "rc=%d,wall_s=1.0,utime_s=1.0,stime_s=0.1,child_rss_mib=%.1f,cg_peak_mib=%.1f,oom_kill=0,timeout=%d,"
-                "threads_max=2,pix=%s,cstate=%s,par=%s,lp=%s,quality=standard,series=%s,out=%s" % (
-                    name, sha, fmt, int(mib * MIB), op, PIN_A, rc, rss, rss, timeout, pix, cstate, par, lp, series, out))
+                "threads_max=2,pix=%s,cstate=%s,par=%s,lp=%s,quality=%s,series=%s,out=%s" % (
+                    name, sha, fmt, int(mib * MIB), op, ocp, variant, cpus, confined, rc, rss, rss, timeout, pix, cstate, par, lp, quality, series, out))
 
     lines = []
     for sha, name, mib, ops in (
@@ -638,6 +660,50 @@ def self_check():
         if bad_cell.rss() is not None or bad_cell.wall() is not None:
             failures.append("a cell with rc=0 and pix=fail must give no rss and no wall")
 
+
+    for label, kwargs in (("variant", {"variant": "pruned"}), ("cpus", {"cpus": 4}), ("quality", {"quality": "fine"}),
+                          ("confined", {"confined": 1})):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "71-06-ladder-4g-foreign.txt"), "w", encoding="utf-8") as fh:
+                fh.write("\n".join(["HDR,ocp=%s" % PIN_A, row("a" * 64, "tiny", 0.4, "mesh", series="real"),
+                                    row("b" * 64, "other", 0.4, "mesh", series="real", **kwargs)]) + "\n")
+            try:
+                Evidence(tmp)
+                failures.append("a ladder row with another %s must be refused" % label)
+            except EvidenceError:
+                pass
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "71-06-ladder-4g-clean.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(["HDR,ocp=%s" % PIN_A, row("a" * 64, "tiny", 0.4, "mesh", series="real")]) + "\n")
+        try:
+            Evidence(tmp)
+        except EvidenceError:
+            failures.append("a ladder row at the fixed configuration must be accepted")
+
+    for label, go, want in (("measured", {"vmhwm_after_job_mib": "24.9", "job_status": "done"}, 24.9),
+                            ("zero", {"vmhwm_after_job_mib": "0.0", "job_status": "done"}, None),
+                            ("missing value", {"job_status": "done"}, None),
+                            ("failed job", {"vmhwm_after_job_mib": "24.9", "job_status": "failed"}, None),
+                            ("no line", None, None)):
+        if go_rss(go) != want:
+            failures.append("go_rss must be %s for a %s GO_WORKER line, got %s" % (want, label, go_rss(go)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        with open(os.path.join(tmp, "71-06-ladder-4g-partial-corpus.txt"), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(["HDR,ocp=%s" % PIN_A] + [row("a" * 64, "tiny", 0.4, op, series="real") for op in ("mesh", "render")]
+                                + [row("b" * 64, "mid", 40, op) for op in ("mesh", "render")]) + "\n")
+        gap = missing_classes(Evidence(tmp))
+        if gap != ["iges", "dxf", "stl_binary", "stl_ascii"]:
+            failures.append("a corpus with step points only must name the four other classes as missing, got %s" % gap)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for fname, ocp, sha, name in (("71-06-ladder-4g-a.txt", PIN_A, "a" * 64, "only-a"), ("71-06-ladder-4g-b.txt", PIN_B, "b" * 64, "only-b")):
+            with open(os.path.join(tmp, fname), "w", encoding="utf-8") as fh:
+                fh.write("\n".join(["HDR,ocp=%s" % ocp] + [row(sha, name, 5, op, ocp=ocp, series="real") for op in ("mesh",)]) + "\n")
+        lines = pin_decision(Evidence(tmp, ("on", "default")))
+        if len(lines) != 1 or "not evaluated" not in lines[0] or "choice=%s" % PIN_A not in lines[0]:
+            failures.append("two pins with no corpus file measured by both must leave the thresholds unevaluated, got %s" % lines)
+
     with tempfile.TemporaryDirectory() as tmp:
         user_line = ("PIN_DECISION,choice=%s,reason=user decision overrides the formula result %s (formula line above)" % (PIN_A, PIN_B))
         _o, rc_none, _e = parse_args([tmp])
@@ -687,7 +753,8 @@ def self_check():
         print("SELF-CHECK-FAIL,%s" % msg)
     if not failures:
         print("SELF-CHECK-OK,partial_pipeline_not_counted_as_ok=1,skipped_operation_not_counted_as_ok=1,other_configuration_rows_excluded=1,"
-              "failed_output_verdict_not_counted_as_ok=1,pin_decision_explicit=1,recorded_user_pin_not_reversed=1,out_untouched_on_refusal=1")
+              "failed_output_verdict_not_counted_as_ok=1,pin_decision_explicit=1,recorded_user_pin_not_reversed=1,out_untouched_on_refusal=1,"
+              "foreign_ladder_row_refused=1,go_worker_validated=1,missing_format_class_refused=1,pin_without_common_files_unevaluated=1")
     return 1 if failures else 0
 
 
@@ -775,7 +842,11 @@ def derive(evidence_dir, override):
     if config is None:
         print("error: %s" % cfg_err, file=sys.stderr)
         return 1
-    ev = Evidence(args[0], config)
+    try:
+        ev = Evidence(args[0], config)
+    except EvidenceError as err:
+        print("error: %s" % err, file=sys.stderr)
+        return 1
     if not any(k[1] == "4g" and k[0] == PIN_A for k in ev.cells):
         print("error: no %s 4g ladder rows with par=%s lp=%s; the limits are not derived from rows of another "
               "configuration (run the 4g ladder with --parallel %s --lp-threads %s)" % (
@@ -785,7 +856,15 @@ def derive(evidence_dir, override):
     if ev.go is None:
         print("error: no GO_WORKER line; the Go worker RSS is not measured", file=sys.stderr)
         return 1
-    go = float(ev.go["vmhwm_after_job_mib"])
+    go = go_rss(ev.go)
+    if go is None:
+        print("error: GO_WORKER line without a positive vmhwm_after_job_mib and job_status=done; the Go worker RSS is not measured", file=sys.stderr)
+        return 1
+    missing = missing_classes(ev)
+    if missing:
+        print("error: no floor or no file of 1 MiB or more at 4g for %s; a memory limit and ceilings are not derived from a corpus that cannot "
+              "price every format class" % ",".join(missing), file=sys.stderr)
+        return 1
     private_n = ev.private_files()
     private_note = "реальный поток не замерен" if private_n == 0 else "private files=%d" % private_n
 
@@ -1034,7 +1113,11 @@ def derive(evidence_dir, override):
     for c in caps:
         print(c)
 
-    ev_formula = Evidence(args[0], ("on", "default"))
+    try:
+        ev_formula = Evidence(args[0], ("on", "default"))
+    except EvidenceError as err:
+        print("error: %s" % err, file=sys.stderr)
+        return 1
     print("PIN_CONFIG,rows=par=on;lp=default,reason=the 8.0.1.0.0 ladder exists only at this configuration; "
           "both pins are compared on rows of the same configuration and no row of another is mixed in")
     for line in pin_decision(ev_formula, override):
@@ -1103,6 +1186,8 @@ def pin_decision(ev, override=None):
     only_b = sorted(s for s in b if s in fail_a)
     only_a = sorted(s for s in a if s in fail_b)
     common_sha = sorted(set(a) & set(b))
+    if not common_sha:
+        return ["PIN_DECISION,choice=%s,reason=no corpus file was measured to success by both pins at 4g; thresholds a/b/c not evaluated" % (override or PIN_A)]
     common = [(s, ev.meta[s]) for s in common_sha]
     modes = {}
     for mode in ("eff", "child", "cg"):
