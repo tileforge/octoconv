@@ -168,3 +168,23 @@ Out of scope:
 
 *Phase: 73-cad-class-convert-slice-confined*
 *Context gathered: 2026-10-05*
+
+<research_resolutions>
+## Resolutions after research (2026-10-05, auto-selected recommendations under the user's delegation)
+
+These supersede the CONTEXT decisions where they conflict.
+
+- **R-01 (D-06 units):** The 71 evidence shows OCP already scales `nist_ctc_05`: an 841.6 mm vertex bbox against an OCP diagonal of 907.17. Only `FileUnits` returned an empty name. There is **no** explicit scale fallback, because it would risk double scaling. The helper trusts OCP's transfer, and a bbox test on both inch STEP files proves mm output. IGES inch scaling is unproven, because the corpus has no inch IGES. Record that as a known gap and do not invent a fixture claim.
+- **R-02 (D-10 memory):** There is no per-run memory cgroup in the repo (`cgroup.go` only reads `cpu.max`). Do not add RLIMIT_AS or a Go watchdog without a measurement. Memory safety comes from the container limit (4Gi), the guard caps and the ceilings. A SIGKILL while ctx is alive is classified terminal, as in the tectonic precedent.
+- **R-03 (D-09 NAUO):** The cap counts assembly edges, not instance expansion. Run a Wave-0 spike on the real OCP: does a doubling hierarchy pass the edge cap and still blow memory? If it does, the guard must compute expanded instance count (a DAG product) bounded by the cap. Finalise the guard rules after the spike. The entity count uses the `;`-after-`DATA;` upper bound (streaming, robust to comments and packing), not the line-anchored regex.
+- **R-04 (D-08 ceilings):** There is no per-format size map today; add one for cad (step 63 MiB, iges 155 MiB). Do NOT raise the chart's global `MAX_UPLOAD_BYTES` (100 MiB). That would widen every class and is outside this phase. The effective IGES ceiling in the chart is therefore min(155, global). Document this in ERROR-CODES/README and leave tuning to phase 76.
+- **R-05 (Landlock arch):** Use the measured minimum plus a runtime-selected multiarch triplet (`aarch64-linux-gnu` / `x86_64-linux-gnu` from `runtime.GOARCH`), not all of `/usr/lib`. A path absent from the image is an error, so only the triplet for the running arch is added.
+- **R-06 (D-04 image):**
+  - `ca-certificates` is allowed. Every existing runtime Dockerfile installs it (S3 TLS); it is not a new supply-chain item.
+  - apt is limited to `python3 libgl1 libx11-6 ca-certificates`, which is a subset of the 71 list plus ca-certificates.
+  - pip: use a hash-identical SUBSET of the approved lock files: numpy from `requirements-common.txt` and the OCP 7.9.3.1.1 pair. Do not add ezdxf, pillow or fonttools yet. A task checks that every hash equals the approved lock line.
+- **R-07 (timeouts):** The mesh-stage timeout is **316 s**: the worst measured mesh wall just above the ceiling (210.63 s at 79.24 MiB) × 1.5. Show the arithmetic in the plan. The guard stage gets 30 s and I/O 60 s, both marked as assumptions (A7). The attempt-level `CAD_ENGINE_TIMEOUT` is about 406 s. `CAD_MESH_TIMEOUT` and `CAD_GUARD_TIMEOUT` are worker-only env vars, with defaults from this derivation.
+- **R-08 (error codes):** Reuse `input_too_large`. Add four codes: `cad_too_complex`, `cad_unreadable`, `cad_empty_result` and `cad_mesh_timeout`. Non-empty means triangles > 0, never solids > 0: every IGES reads `solids:0` yet meshes fine.
+- **R-09 (goldens):** Leave `pre57_formats.golden.json` byte-identical and filter `cad` in tests (`withoutEngine`). Turn the phase 72 no-CAD guards into an exact allowlist: `step→stl`, `iges→stl`.
+- **R-10 (escape hatch / skeleton):** Follow the document-worker skeleton, where preflight runs before Postgres. The escape hatch is `CAD_SANDBOX_DISABLED`. A Landlock refusal looks like rc=2 with no text, so preflight must prove the sandbox is sufficient before the worker consumes the queue. Worker-death recovery uses the asynq lease (60–120 s). Add a unit test with a fake helper, plus a live docker proof of no orphan engine process.
+</research_resolutions>
