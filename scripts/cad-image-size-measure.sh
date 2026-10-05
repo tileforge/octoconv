@@ -74,18 +74,15 @@ fi
 
 PRUNED_TAG=$(cad_image_tag "$PIN" pruned)
 FULL_TAG=$(cad_image_tag "$PIN" full)
-NOFI_TAG=$(cad_image_tag "$PIN" nofreeimage)
 VARIANTS="pruned full"
 docker image inspect "$PRUNED_TAG" >/dev/null 2>&1 || { echo "error: missing image $PRUNED_TAG" >&2; exit 1; }
 docker image inspect "$FULL_TAG" >/dev/null 2>&1 || { echo "error: missing image $FULL_TAG" >&2; exit 1; }
-if docker image inspect "$NOFI_TAG" >/dev/null 2>&1; then VARIANTS="pruned full nofreeimage"; fi
 cad_require_native "$PRUNED_TAG"
 
 variant_tag() {
   case "$1" in
     pruned) echo "$PRUNED_TAG" ;;
     full) echo "$FULL_TAG" ;;
-    nofreeimage) echo "$NOFI_TAG" ;;
   esac
 }
 

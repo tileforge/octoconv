@@ -594,7 +594,7 @@ if [ "$CMD" = licences ]; then
   D18=$(sed -n 's/^D-18 outcome: //p' "$REPO_ROOT/.planning/phases/71-evaluation-gate/71-01-SUMMARY.md")
   case "$D18" in
     record) ;;
-    patchelf) echo "error: the patchelf outcome needs the venv-nofreeimage stage, which this script does not build; 71-01-SUMMARY.md records 'record'" >&2; exit 64 ;;
+    patchelf) echo "error: the patchelf outcome is not implemented (no image variant removes libfreeimage); 71-01-SUMMARY.md records 'record'" >&2; exit 64 ;;
     *) echo "error: no D-18 outcome in 71-01-SUMMARY.md (found '$D18')" >&2; exit 1 ;;
   esac
   TRACE_EVID="$EVID/71-07-libtrace.txt"

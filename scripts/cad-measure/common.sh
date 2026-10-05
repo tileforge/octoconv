@@ -36,8 +36,7 @@ cad_variant_stage() {
   case "$1" in
     full) echo venv ;;
     pruned) echo venv-pruned ;;
-    nofreeimage) echo venv-nofreeimage ;;
-    *) cad_log "error: unknown variant '$1' (full, pruned or nofreeimage)"; return 64 ;;
+    *) cad_log "error: unknown variant '$1' (full or pruned)"; return 64 ;;
   esac
 }
 
