@@ -105,4 +105,9 @@ var RejectBindings = map[string]RejectBinding{
 	// inspect report that listed it among a file's findings would be telling
 	// the client their document is at fault.
 	"unsupported_package": {ErrCode: errcode.UnsupportedPackage},
+
+	"truncated_cad_file":     {ErrCode: errcode.TruncatedCADFile},
+	"ambiguous_stl":          {ErrCode: errcode.AmbiguousSTL},
+	"binary_dxf_unsupported": {ErrCode: errcode.BinaryDXFUnsupported},
+	"dwg_unsupported":        {ErrCode: errcode.DWGUnsupported},
 }

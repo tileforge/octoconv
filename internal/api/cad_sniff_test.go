@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/apaderin/octoconv/internal/convert"
@@ -160,6 +161,74 @@ func TestCADTracerSTEPBothEndpoints(t *testing.T) {
 			rep := postCADInspect(t, srv, tc.filename, tc.data)
 			if rep.Format == "step" {
 				t.Errorf("inspect format = step for a truncated STEP")
+			}
+		})
+	}
+}
+
+func TestCADCreateRejections(t *testing.T) {
+	srv := newCADTestServer(t)
+	cases := []struct {
+		file    string
+		code    string
+		message string
+	}{
+		{"step_truncated.step", errcode.TruncatedCADFile, "truncated or incomplete step file"},
+		{"step_missing_header.step", errcode.TruncatedCADFile, "truncated or incomplete step file"},
+		{"step_trailing_nul.step", errcode.TruncatedCADFile, "truncated or incomplete step file"},
+		{"iges_truncated.iges", errcode.TruncatedCADFile, "truncated or incomplete iges file"},
+		{"dxf_truncated.dxf", errcode.TruncatedCADFile, "truncated or incomplete dxf file"},
+		{"stl_binary_truncated.stl", errcode.TruncatedCADFile, "truncated or incomplete stl file"},
+		{"stl_binary_trailing_byte.stl", errcode.TruncatedCADFile, "truncated or incomplete stl file"},
+		{"stl_ascii_truncated.stl", errcode.TruncatedCADFile, "truncated or incomplete stl file"},
+		{"stl_ambiguous.stl", errcode.AmbiguousSTL, "stl file is valid as both ascii and binary; re-export as binary stl"},
+		{"dxf_binary.dxf", errcode.BinaryDXFUnsupported, "binary dxf is not supported; re-export as ascii dxf"},
+		{"dwg_ac1027.dwg", errcode.DWGUnsupported, "dwg is not supported; re-export as dxf"},
+		{"step_bom.step", errcode.InvalidRequest, ""},
+		{"dxf_bom.dxf", errcode.InvalidRequest, ""},
+		{"stl_binary_ac10_header.stl", errcode.UnsupportedConversion, ""},
+		{"stl_binary_empty.stl", errcode.UnsupportedConversion, ""},
+	}
+
+	entries, err := os.ReadDir(filepath.Join("..", "convert", "testdata", "cad", "reject"))
+	if err != nil {
+		t.Fatalf("read reject dir: %v", err)
+	}
+	onDisk := map[string]bool{}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".md" {
+			continue
+		}
+		onDisk[e.Name()] = true
+	}
+	inTable := map[string]bool{}
+	for _, tc := range cases {
+		inTable[tc.file] = true
+		if !onDisk[tc.file] {
+			t.Errorf("table lists %s, which is not in testdata/cad/reject", tc.file)
+		}
+	}
+	for name := range onDisk {
+		if !inTable[name] {
+			t.Errorf("testdata/cad/reject/%s has no row in the table", name)
+		}
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			data := readCADFixture(t, filepath.Join("reject", tc.file))
+			status, resp := postCADCreate(t, srv, tc.file, data)
+			if status != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422; resp=%v", status, resp)
+			}
+			if resp["code"] != tc.code {
+				t.Errorf("code = %q, want %q; resp=%v", resp["code"], tc.code, resp)
+			}
+			if tc.message != "" && resp["error"] != tc.message {
+				t.Errorf("error = %q, want %q", resp["error"], tc.message)
+			}
+			if tc.message != "" && strings.Contains(resp["error"], tc.file) {
+				t.Errorf("error %q echoes the filename", resp["error"])
 			}
 		})
 	}
