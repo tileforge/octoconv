@@ -19,6 +19,7 @@ export LC_ALL=C
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 OCP=7.9.3.1.1
 OLD_REV=""
@@ -86,10 +87,11 @@ if [ "$rc" = 0 ] && [ -n "$pruned" ]; then
   arch=$(docker image inspect "$TAG" --format '{{.Architecture}}')
   emit "AMD64_PRUNE,list=new,result=built,$pruned,import_check=ok,image_arch=$arch,image_id=$(docker image inspect "$TAG" --format '{{.Id}}'),size_bytes=$(docker image inspect "$TAG" --format '{{.Size}}')"
   entries=$(($(wc -l < scripts/cad-measure/vtk-keeplist.txt) - 2))
-  case "$pruned" in
-    PRUNED,kept=$entries,*) emit "AMD64_KEPT,entries=$entries,kept=$entries,all_listed_modules_present=1" ;;
-    *) emit "AMD64_KEPT,entries=$entries,detail=$pruned,all_listed_modules_present=0"; FAILED=1 ;;
-  esac
+  if kept_verdict "$entries" "$pruned"; then
+    emit "AMD64_KEPT,entries=$entries,kept=$entries,all_listed_modules_present=1"
+  else
+    emit "AMD64_KEPT,entries=$entries,detail=$pruned,all_listed_modules_present=0"; FAILED=1
+  fi
 else
   emit "AMD64_PRUNE,list=new,result=FAILED,build_rc=$rc"
   tail -n 15 "$WORK/new.log" >&2

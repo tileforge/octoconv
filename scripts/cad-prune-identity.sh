@@ -9,7 +9,8 @@
 # 1280, white, LP_NUM_THREADS from evidence/71-06-limits.txt) in both images, one
 # container per render, --network none --cpus 2 --memory 2g --user nobody.
 #
-# Exit codes: 64 usage, 69 docker missing, 1 a render or mesh failed or the PNGs differ.
+# Exit codes: 64 usage or two images that are not one pin, 69 docker missing, 1 a render or mesh
+# failed, the PNGs differ, or fewer parts were compared than the script lists.
 
 set -euo pipefail
 export LC_ALL=C
@@ -17,6 +18,7 @@ export LC_ALL=C
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad/public"
@@ -45,6 +47,8 @@ for t in "$OLD" "$NEW"; do
   docker image inspect "$t" >/dev/null 2>&1 || { echo "error: no such image $t" >&2; exit 1; }
   cad_require_native "$t" || exit 1
 done
+image_pair_verdict "$OLD" "$NEW" "$(docker image inspect "$OLD" --format '{{.Id}}')" "$(docker image inspect "$NEW" --format '{{.Id}}')" ||
+  { echo "error: --old and --new must be two different images of one OCP pin" >&2; exit 64; }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-prune-identity.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -110,5 +114,5 @@ for part in "${PARTS[@]}"; do
     emit "IDENTITY_PNG,part=$part,same=0,detail=rc_old=$rc_o/rc_new=$rc_n"
   fi
 done
-emit "IDENTITY,parts=$TOTAL,identical=$SAME,different=$DIFF,failed=$BAD"
-[ "$DIFF" = 0 ] && [ "$BAD" = 0 ] && [ "$SAME" -gt 0 ]
+emit "IDENTITY,parts=$TOTAL,identical=$SAME,different=$DIFF,failed=$BAD,expected=${#PARTS[@]}"
+identity_verdict "$TOTAL" "$SAME" "$DIFF" "$BAD" "${#PARTS[@]}"

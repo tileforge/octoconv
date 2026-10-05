@@ -30,6 +30,7 @@ export LC_ALL=C
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$REPO_ROOT"
 . "$REPO_ROOT/scripts/cad-measure/common.sh"
+. "$REPO_ROOT/scripts/cad-measure/verdicts.sh"
 
 EVID="$REPO_ROOT/.planning/phases/71-evaluation-gate/evidence"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
@@ -297,9 +298,11 @@ build_matrix() {
     small=0; case "$name" in units_inch|surfaces_only) small=1 ;; esac
     add_case cad_mesh mesh "$name" "$f" "$ext" "-" "$small"
   done
-  if [ -f "$CAD_CACHE_DIR/fetched/freecad-mk8-hotend.iges" ]; then
-    add_case cad_mesh mesh freecad-mk8-hotend "$CAD_CACHE_DIR/fetched/freecad-mk8-hotend.iges" iges "-" 0
+  if [ ! -f "$CAD_CACHE_DIR/fetched/freecad-mk8-hotend.iges" ]; then
+    emit "FAIL,helper=cad_mesh,input=freecad-mk8-hotend,reason=not in the fetched corpus; run scripts/cad-corpus-fetch.sh, the matrix is not run without it"
+    exit 1
   fi
+  add_case cad_mesh mesh freecad-mk8-hotend "$CAD_CACHE_DIR/fetched/freecad-mk8-hotend.iges" iges "-" 0
   add_case cad_mesh stlstats nasa-hubble "$CORPUS/public/nasa-hubble-all-pieces.stl" stl "-" 0
   add_case cad_mesh stlstats stl_ascii_box "$CORPUS/synthetic/stl_ascii_box.stl" stl "-" 1
   add_case cad_mesh stlstats stl_binary_solid_header "$CORPUS/synthetic/stl_binary_solid_header.stl" stl "-" 0
@@ -329,6 +332,7 @@ prep_slide() {
 
 if [ "$RECHECK" = 1 ]; then
   prep_slide
+  RECHECKED=0
   while IFS= read -r spec; do
     helper=$(printf '%s' "$spec" | sed -n 's/^LANDLOCK_MINIMAL,helper=\([^,]*\),.*/\1/p')
     ro=$(printf '%s' "$spec" | sed -n 's/^.*,ro=\([^,]*\)\(,note=.*\)\{0,1\}$/\1/p')
@@ -345,7 +349,9 @@ if [ "$RECHECK" = 1 ]; then
     judge_case "$ro" "$helper" "$op" "$label" "$ext" "$infile" "$extra"
     emit "RECHECK,helper=$helper,input=$label,content=$CONTENT,confined_rc=$CONF_RC"
     [ "$CONTENT" = identical ] || exit 1
+    RECHECKED=$((RECHECKED + 1))
   done < "${TMPDIR:-/tmp}/cad-minimal.$$"
+  [ "$RECHECKED" = 4 ] || { emit "FAIL,reason=the recheck covered $RECHECKED helpers, expected 4"; exit 1; }
   exit 0
 fi
 
@@ -382,6 +388,10 @@ trace_helper() {
     fi
     rm -rf "$jobd"
     n=$(grep -c '^  /' "$WORK/trace/$helper.$idx" || true)
+    if [ "$n" -lt 1 ]; then
+      emit "FAIL,helper=$helper,input=$label,reason=the trace recorded no path"
+      exit 1
+    fi
     cat "$WORK/trace/$helper.$idx" >> "$WORK/trace/$helper.all"
     local tree
     tree=$(grep -cE '^  (/opt/venv/|/opt/cad-measure/|/usr/lib/python3)' "$WORK/trace/$helper.$idx" || true)
@@ -563,7 +573,8 @@ for hh in $HELPERS; do
   effect_case "$hh" minimal "$WORK/set.min.final.$hh"
 done
 
-emit "LANDLOCK_SUMMARY,helpers=4,inputs=$INPUTS,sufficient=$SUFF,different=$DIFF,leaked=$LEAKED,removal_rows=$REMROWS"
+HELPERS_SEEN=$(cut -f1 "$WORK/matrix.tsv" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+HELPERS_WANT=$(printf '%s\n' $HELPERS | wc -l | tr -d ' ')
+emit "LANDLOCK_SUMMARY,helpers=$HELPERS_SEEN,inputs=$INPUTS,sufficient=$SUFF,different=$DIFF,leaked=$LEAKED,removal_rows=$REMROWS"
 emit "NOTE,every set above is a candidate for phase 73, not a grant"
-if [ "$DIFF" -gt 0 ] || [ "$LEAKED" -gt 0 ] || [ "$SUFF" -ne "$INPUTS" ]; then exit 1; fi
-exit 0
+landlock_verdict "$INPUTS" "$SUFF" "$DIFF" "$LEAKED" "$HELPERS_SEEN" "$HELPERS_WANT"
