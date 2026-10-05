@@ -197,7 +197,26 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
      нечитаемый, пустой, сверх потолка вход и таймаут стадии mesh — терминальные с
      отдельным кодом, без цикла ретраев; убийство воркера посреди джобы не
      оставляет живых процессов движка и не держит джобу до полного таймаута
-**Plans**: TBD
+**Plans:** 6 plans in 6 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [ ] 73-01-PLAN.md — tracer: units_inch.step → бинарный STL в мм через продакшен-образ, хелпер и настоящий ruleset; спайки бомб на настоящем ридере OCP, правила гарда и таймауты стадий выведены из evidence
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 73-02-PLAN.md — гард-хелпер по правилам спайков, CADConverter с двумя конфайненными стадиями, судья STL, сентинели по стадиям, CADPreflight; ничего не регистрируется
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 73-03-PLAN.md — замер наборов Landlock обеих стадий на продакшен-образе, раздел `## cad` в SANDBOX-PATHS.md, conf05-crosscheck для cad
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 73-04-PLAN.md — решение о кодах ошибок (checkpoint), CADDescriptor, задача `cad:job`, `cmd/cad-worker` в финальном образе, проверки sandbox-liveproof
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 73-05-PLAN.md — потолки по формату (413), затем атомарное включение `cad` одним коммитом: реестры, маршруты, реконсилер, карты, compose, чарт
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 73-06-PLAN.md — живые доказательства на финальном дереве: конфайнмент образа (включая эмулированный amd64), сквозной convert, бомбы без OOM, cancel и убийство воркера
 
 ### Phase 74: 3D Render & Measurements
 
