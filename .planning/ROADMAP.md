@@ -159,8 +159,8 @@ Plans:
 - [x] 72-03-PLAN.md — роль выхода `measurements`: константа, миграция 0018, тесты на живом Postgres, никогда не `download_url`
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
-- [ ] 72-05-PLAN.md — алиасы `stp`/`igs` в Go и во фронтенде с тестом сверки; guard-тесты «ничего CAD не рекламируется»
+- [x] 72-04-PLAN.md — четыре кода 422 (errcode, ERROR-CODES.md, openapi) и полный набор правил STEP/IGES/STL/DXF/DWG на корпусе, фикстурах и мутациях
+- [x] 72-05-PLAN.md — алиасы `stp`/`igs` в Go и во фронтенде с тестом сверки; guard-тесты «ничего CAD не рекламируется»
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 72-06-PLAN.md — отказы подключены к созданию джобы (422) и к inspect (sentinel-форматы), привязки причин, тест согласия по каждой фикстуре
