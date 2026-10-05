@@ -43,6 +43,8 @@ func TestEngineSandboxUnavailableIsRetryableForEveryConfinedClass(t *testing.T) 
 		// sandbox fault would fail the job terminally.
 		{"document", isDocumentTerminal, fmt.Errorf("libreoffice: verapdf: pdf/a validation error: %w",
 			convert.ErrEngineSandboxUnavailable)},
+		{"cad", isCADTerminal, fmt.Errorf("cad guard: %w: %w: no_data_section",
+			convert.ErrEngineSandboxUnavailable, convert.ErrCADUnreadable)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -72,6 +74,7 @@ func TestEngineSandboxControlShapesAreTerminal(t *testing.T) {
 		{"html", isHTMLTerminal, fmt.Errorf("chromium: stat output: %w", plain)},
 		{"probe", isProbeTerminal, fmt.Errorf("%w: ps2write pass: %w", convert.ErrSanitizeMalformedInput, plain)},
 		{"document", isDocumentTerminal, fmt.Errorf("libreoffice: verapdf: pdf/a validation error: %w", plain)},
+		{"cad", isCADTerminal, fmt.Errorf("cad guard: %w: no_data_section", convert.ErrCADUnreadable)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

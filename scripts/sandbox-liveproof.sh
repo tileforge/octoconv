@@ -7,7 +7,7 @@
 #   scripts/sandbox-liveproof.sh <class>...
 #
 # Every class this script knows about is in the table below from the start
-# (image, pandoc, ocr, av, audio, html, probe, document), including classes not yet
+# (image, pandoc, ocr, av, audio, html, probe, document, cad), including classes not yet
 # confined by any converter -- so a class that lands later extends the
 # CONVERTER, never this script.
 #
@@ -52,7 +52,8 @@ class_row() {
     html)   echo "Dockerfile.chromium-worker chromium-worker HTML_SANDBOX_DISABLED yes -" ;;
     probe)  echo "Dockerfile.probe-worker probe-worker PROBE_SANDBOX_DISABLED yes -" ;;
     document) echo "Dockerfile.document-worker document-worker DOCUMENT_SANDBOX_DISABLED yes -" ;;
-    *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, html, probe or document)" ;;
+    cad) echo "Dockerfile.cad-worker cad-worker CAD_SANDBOX_DISABLED yes -" ;;
+    *) die "unknown class: $1 (expected image, pandoc, ocr, av, audio, html, probe, document or cad)" ;;
   esac
 }
 
