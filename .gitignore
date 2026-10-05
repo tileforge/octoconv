@@ -18,6 +18,7 @@ deploy/tectonic-bundle/octoconv-bundle.ttb
 /api
 /audio-worker
 /av-worker
+/cad-worker
 /chromium-worker
 /document-worker
 /manage-clients

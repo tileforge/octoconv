@@ -1,0 +1,118 @@
+#!/opt/venv/bin/python -IB
+import argparse
+import json
+import os
+import sys
+
+FINITE_LIMIT = 1e12
+LINEAR_DEFLECTION = 0.001
+ANGULAR_DEFLECTION = 0.35
+EXIT_UNREADABLE = 2
+EXIT_EMPTY = 3
+EXIT_USAGE = 64
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write("cad-mesh: %s\n" % message)
+        sys.exit(EXIT_USAGE)
+
+
+def box_diag(box):
+    lo, hi = box.CornerMin(), box.CornerMax()
+    return ((hi.X() - lo.X()) ** 2 + (hi.Y() - lo.Y()) ** 2 + (hi.Z() - lo.Z()) ** 2) ** 0.5
+
+
+def verdict(fd, verdict_name, reason, triangles=0):
+    obj = {"stage": "mesh", "verdict": verdict_name, "reason": reason, "triangles": triangles}
+    os.write(fd, ("CADVERDICT " + json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n").encode("ascii"))
+
+
+def finite_box(shape):
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.Bnd import Bnd_Box
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    if not box.IsVoid() and box_diag(box) <= FINITE_LIMIT:
+        return box
+    box = Bnd_Box()
+    faces = TopExp_Explorer(shape, TopAbs_FACE)
+    while faces.More():
+        fbox = Bnd_Box()
+        BRepBndLib.AddOptimal_s(faces.Current(), fbox, False, False)
+        if not fbox.IsVoid() and box_diag(fbox) <= FINITE_LIMIT:
+            box.Add(fbox)
+        faces.Next()
+    return box
+
+
+def run(fmt, src, out, fd):
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.IFSelect import IFSelect_RetDone
+    from OCP.IGESControl import IGESControl_Reader
+    from OCP.Interface import Interface_Static
+    from OCP.STEPControl import STEPControl_Reader
+    from OCP.StlAPI import StlAPI_Writer
+
+    reader = IGESControl_Reader() if fmt == "iges" else STEPControl_Reader()
+    if not Interface_Static.SetCVal_s("xstep.cascade.unit", "MM"):
+        sys.stderr.write("cad-mesh: cannot pin xstep.cascade.unit\n")
+        return 1
+    try:
+        if reader.ReadFile(src) != IFSelect_RetDone:
+            verdict(fd, "unreadable", "read_failed")
+            return EXIT_UNREADABLE
+        reader.TransferRoots()
+        shape = reader.OneShape()
+    except Exception as exc:
+        sys.stderr.write("cad-mesh: read: %s\n" % exc)
+        verdict(fd, "unreadable", "read_failed")
+        return EXIT_UNREADABLE
+    if shape.IsNull():
+        verdict(fd, "unreadable", "no_shape")
+        return EXIT_UNREADABLE
+
+    box = finite_box(shape)
+    if box.IsVoid():
+        verdict(fd, "empty", "empty_bbox")
+        return EXIT_EMPTY
+    diag = box_diag(box)
+    if diag <= 0:
+        verdict(fd, "empty", "zero_size")
+        return EXIT_EMPTY
+
+    try:
+        BRepMesh_IncrementalMesh(shape, LINEAR_DEFLECTION * diag, False, ANGULAR_DEFLECTION, False)
+        writer = StlAPI_Writer()
+        writer.ASCIIMode = False
+        written = writer.Write(shape, out)
+    except Exception as exc:
+        sys.stderr.write("cad-mesh: mesh: %s\n" % exc)
+        written = False
+    if not written:
+        verdict(fd, "empty", "write_failed")
+        return EXIT_EMPTY
+    triangles = (os.path.getsize(out) - 84) // 50
+    if triangles <= 0:
+        verdict(fd, "empty", "no_triangles")
+        return EXIT_EMPTY
+    verdict(fd, "ok", "", triangles)
+    return 0
+
+
+def main():
+    ap = Parser(prog="cad-mesh", add_help=False)
+    ap.add_argument("--format", required=True, choices=("step", "iges"))
+    ap.add_argument("src")
+    ap.add_argument("out")
+    args = ap.parse_args()
+    fd = os.dup(1)
+    os.dup2(2, 1)
+    return run(args.format, args.src, args.out, fd)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
