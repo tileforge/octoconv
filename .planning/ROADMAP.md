@@ -30,14 +30,14 @@ measurements, самая рискованная для ревью — собир
 | # | Фаза | Требования | Состояние |
 |---|---|---|---|
 | 71 | Замер: ядро, рендерер, корпус, бюджеты | EVAL-01..04 | ✓ 2026-10-04 |
-| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ○ следующая |
-| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ |
+| 72 | Контракт без движка: снифферы, коды, схема measurements | CADIN-01..03, MEAS-05 | ✓ 2026-10-05 |
+| 73 | Класс `cad` и срез `convert` под конфайнментом | CADIN-04, CCONV-01, CADW-01..03 | ○ следующая |
 | 74 | 3D `render` и выход `measurements` | RNDR-01..05, MEAS-01..04 | ○ |
 | 75 | DXF: 2D-конвейер | RNDR-06, CCONV-02, CCONV-03 | ○ |
 | 76 | Замеренные границы, KEDA, живой гейт, контракт превью и документация | CADW-04..06, PREV-01 | ○ |
 
 - [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
-- [ ] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка
+- [x] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка (completed 2026-10-05)
 - [ ] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок
 - [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
 - [ ] **Phase 75: DXF 2D Pipeline** - dxf → svg/pdf и `render` dxf → png через ezdxf + rsvg-convert
@@ -150,7 +150,7 @@ CAD-содержимого и контракт measurements — готова и 
   5. Ничего не рекламируется: `AllEngines()` не изменён, `/v1/formats` не
      показывает пар `cad`; алиасы `stp`/`igs` нормализуются (включая копию во
      фронтенде)
-**Plans:** 7 plans in 4 waves (последовательно)
+**Plans:** 7/7 plans complete in 4 waves (последовательно)
 
 Plans:
 **Wave 1**
@@ -295,7 +295,7 @@ Landlock-ruleset: STEP/IGES → STL сквозь очередь, воркер, p
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
-| 72. Engine-Free Contract Foundations | 0/TBD | Not started | - |
+| 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
 | 73. CAD Class & Convert Slice, Confined | 0/TBD | Not started | - |
 | 74. 3D Render & Measurements | 0/TBD | Not started | - |
 | 75. DXF 2D Pipeline | 0/TBD | Not started | - |
