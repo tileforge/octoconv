@@ -105,8 +105,8 @@ run_group() {
   for f in "${files[@]}"; do rels+=("${f#"$dir"/}"); done
   "$WORK/cad-sniff" -group "$group" -root "$dir" "${files[@]}" > "$WORK/$group.sniff.tsv"
   docker run --rm --network none --cpus "$CPUS" --memory "$MEMORY" --memory-swap "$MEMORY" \
-    -v "$REPO_ROOT/scripts:/lib:ro" -v "$dir:/corpus:ro" --entrypoint /opt/venv/bin/python "$TAG" \
-    -I -B /lib/cad-sniff-reader.py "${rels[@]}" \
+    -v "$REPO_ROOT/scripts:/opt/cad-sniff:ro" -v "$dir:/corpus:ro" --entrypoint /opt/venv/bin/python "$TAG" \
+    -I -B /opt/cad-sniff/cad-sniff-reader.py "${rels[@]}" \
     | awk -F'\t' -v OFS='\t' -v g="$group" '{ $1 = g "/" $1; print }' > "$WORK/$group.reader.tsv"
   local want got
   want=${#files[@]}
@@ -124,7 +124,7 @@ run_group() {
       END { exit bad }
     ' "$MANIFEST" "$WORK/fetched.sniff.tsv" || exit 1
   fi
-  policy_join "$WORK/$group.sniff.tsv" "$WORK/$group.reader.tsv" >> "$ALL"
+  policy_join "$WORK/$group.reader.tsv" "$WORK/$group.sniff.tsv" >> "$ALL"
 }
 
 run_group public "$COMMITTED/public"
