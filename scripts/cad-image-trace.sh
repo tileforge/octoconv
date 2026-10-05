@@ -6,6 +6,7 @@
 #   scripts/cad-image-trace.sh libs        [--out FILE]
 #   scripts/cad-image-trace.sh prune-check [--out FILE]
 #   scripts/cad-image-trace.sh licences    [--out FILE]
+#   scripts/cad-image-trace.sh self-test
 #
 # libs         LD_DEBUG and /proc/self/maps of every operation on both OCP pins
 #              (render, dxf and rsvg only on the pinned one), the DT_NEEDED chain,
@@ -13,6 +14,7 @@
 # prune-check  full and pruned image of one build: size, byte-identical renders,
 #              the other helpers, and two stale keep-list cases.
 # licences     wheel library inventory, upstream licences, D-18 outcome.
+# self-test    the verdict functions of libs and prune-check on synthetic input; no docker.
 #
 # PIN, LP and PAR come from evidence/71-06-limits.txt (PIN_DECISION,
 # THREADS_DECISION). An emulated image is not a measurement.
@@ -57,8 +59,242 @@ case "$CMD" in
   libs) : "${OUT:=$EVID/71-07-libtrace.txt}" ;;
   prune-check) : "${OUT:=$EVID/71-07-prune.txt}" ;;
   licences) : "${OUT:=$EVID/71-07-licences.txt}" ;;
+  self-test) ;;
   *) usage ;;
 esac
+
+corpus_other_expected() {
+  find "$1" -type f \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' -o -iname '*.stl' -o -iname '*.dxf' \) |
+    awk '{ e = tolower($0); sub(/^.*\./, "", e)
+           if (e == "step" || e == "stp" || e == "iges" || e == "igs" || e == "stl") n++
+           else if (e == "dxf") n += 2 }
+         END { print n + 0 }'
+}
+
+prune_other_verdict() {
+  local full=$1 pruned=$2 expected=$3 full_rc=$4 pruned_rc=$5
+  awk -F, -v EXPECTED="$expected" -v FRC="$full_rc" -v PRC="$pruned_rc" '
+    function kv(s, k,    n, i, parts) {
+      n = split(s, parts, ",")
+      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
+      return ""
+    }
+    FNR == 1 { side = (FILENAME == ARGV[1]) ? "f" : "p" }
+    /^ROW,/ {
+      head = $0; sub(/,out=.*$/, "", head)
+      out = $0; sub(/^.*,out=/, "", out)
+      n = split(out, parts, ";"); o = ""
+      for (i = 1; i <= n; i++) if (parts[i] !~ /^t_/) o = o parts[i] ";"
+      key = kv(head, "sha") "|" kv(head, "op")
+      val = "rc=" kv(head, "rc") "/pix=" kv(head, "pix") "/" o
+      nm[key] = kv(head, "name")
+      if (side == "f") { full[key] = val; nfull++; if (kv(head, "rc") == "0") nok++ } else { pr[key] = val; npr++ }
+    }
+    /^SKIP,/ && /reason=prestep-failed-/ {
+      key = kv($0, "name") "|" kv($0, "op")
+      if (side == "f") { sfull[key] = 1; nsf++ } else { spr[key] = 1; nsp++ }
+    }
+    END {
+      why = ""
+      if (FRC != 0 || PRC != 0) why = why "a measurement run failed (full_rc=" FRC ",pruned_rc=" PRC ");"
+      if (nfull + 0 == 0 || npr + 0 == 0) why = why "a run wrote no ROW (full=" nfull + 0 ",pruned=" npr + 0 ");"
+      if (nfull + nsf != EXPECTED) why = why "full run has " nfull + 0 " rows and " nsf + 0 " pre-step skips, expected " EXPECTED " pairs;"
+      if (npr + nsp != EXPECTED) why = why "pruned run has " npr + 0 " rows and " nsp + 0 " pre-step skips, expected " EXPECTED " pairs;"
+      for (k in sfull) if (!(k in spr)) { diff++; printf "PRUNE_OTHER_DIFF,name=%s,op=%s,full=prestep-skipped,pruned=%s\n", substr(k, 1, index(k, "|") - 1), substr(k, index(k, "|") + 1), ((k in pr) ? "row" : "missing") > "/dev/stderr" }
+      for (k in spr) if (!(k in sfull)) { diff++; printf "PRUNE_OTHER_DIFF,name=%s,op=%s,full=%s,pruned=prestep-skipped\n", substr(k, 1, index(k, "|") - 1), substr(k, index(k, "|") + 1), ((k in full) ? "row" : "missing") > "/dev/stderr" }
+      for (k in full) {
+        rows++
+        if ((k in pr) && pr[k] == full[k]) same++
+        else { diff++; printf "PRUNE_OTHER_DIFF,name=%s,op=%s,full=%s,pruned=%s\n", nm[k], substr(k, index(k, "|") + 1), full[k], (k in pr ? pr[k] : "missing") > "/dev/stderr" }
+      }
+      for (k in pr) if (!(k in full)) { rows++; diff++ }
+      if (rows + 0 == 0 || same + 0 == 0) why = why "no row was compared;"
+      if (nok + 0 == 0) why = why "no full-image row succeeded, so the pruned image was compared against failures only;"
+      if (diff + 0 != 0) why = why "rows differ;"
+      if (why != "") {
+        printf "PRUNE_OTHER,status=FAILED,rows=%d,same=%d,diff=%d,expected=%d,reason=%s\n", rows, same, diff, EXPECTED, why
+        exit 1
+      }
+      printf "PRUNE_OTHER,rows=%d,same=%d,diff=%d,expected=%d,prestep_skipped=%d,runs_ok=1\n", rows, same, diff, EXPECTED, nsf
+    }' "$full" "$pruned"
+}
+
+libs_expectation() {
+  awk -F'\t' -v PIN="$1" -v HOT="$2" '
+    BEGIN {
+      split("import:1 mesh-step:4 mesh-iges:" 1 + HOT " stlstats:2", base, " ")
+      split("render-view:7 render-transparent:1 render-512:1 render-2048:1 render-lp1:1 render-lpN:1 render-degenerate:3 render-exit2:1 render-exit3-unreachable:1 dxf:4 rsvg-png:4 rsvg-pdf:4", pinonly, " ")
+    }
+    {
+      seen[$1 SUBSEP $2]++
+      ocps[$1] = 1
+      jp_expected = ($1 == "8.0.1.0.0") ? 1 : 0
+      if ($7 != 1 || $8 != 1) printf "%s/%s(op did not run as expected: rc_ok=%s,ld_and_maps=%s);", $1, $2, $7, $8
+      imports_ocp = ($2 == "import" || $2 ~ /^mesh-/)
+      if (imports_ocp) {
+        if ($6 == 0) printf "%s/%s(imports OCP but no wheel library was seen loading);", $1, $2
+        else if ($3 != 1 || $4 != 1 || $5 != jp_expected)
+          printf "%s/%s(fi=%s,raw=%s,jp=%s,want_jp=%d);", $1, $2, $3, $4, $5, jp_expected
+      } else if ($6 > 0 || $3 != 0 || $4 != 0 || $5 != 0) {
+        printf "%s/%s(ocp-free op loads ocp_libs=%s,fi=%s,raw=%s,jp=%s);", $1, $2, $6, $3, $4, $5
+      }
+    }
+    END {
+      if (length(ocps) == 0) printf "no op rows;"
+      for (o in ocps) {
+        for (i = 1; i in base; i++) { split(base[i], b, ":"); want[o SUBSEP b[1]] = b[2] }
+        if (o == PIN) for (i = 1; i in pinonly; i++) { split(pinonly[i], b, ":"); want[o SUBSEP b[1]] = b[2] }
+      }
+      for (k in want) { split(k, kk, SUBSEP); if (seen[k] + 0 != want[k]) printf "%s/%s(%d rows, expected %d);", kk[1], kk[2], seen[k] + 0, want[k] }
+      for (k in seen) if (!(k in want)) { split(k, kk, SUBSEP); printf "%s/%s(unexpected op);", kk[1], kk[2] }
+    }' "$3"
+}
+
+keeplist_verdict() {
+  local identical=$1 entries=$2 maps=$3 planned=$4 mapped=$5
+  if [ "$identical" = 1 ] && [ "$entries" -gt 0 ] && [ "$planned" -gt 0 ] && [ "$maps" = "$planned" ] && [ "$mapped" = "$planned" ]; then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
+stale_missing_module_detected() {
+  local prune_rc=$1 render_rc=$2 sha=$3 ref=$4
+  case "$prune_rc" in ''|*[!0-9]*) return 1 ;; esac
+  case "$render_rc" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$ref" ] && [ "$prune_rc" = 0 ] && { [ "$render_rc" != 0 ] || [ "$sha" != "$ref" ]; }
+}
+
+self_test() {
+  local d fails=0 n=0
+  d=$(mktemp -d "${TMPDIR:-/tmp}/cad-trace-selftest.XXXXXX")
+  expect() {
+    local want=$1 label=$2 got=0
+    shift 2
+    "$@" >/dev/null 2>&1 || got=$?
+    n=$((n + 1))
+    if { [ "$want" = ok ] && [ "$got" = 0 ]; } || { [ "$want" = no ] && [ "$got" != 0 ]; }; then return 0; fi
+    echo "SELF_TEST_FAIL,case=$label,want=$want,rc=$got" >&2
+    fails=$((fails + 1))
+  }
+  expect_eq() {
+    local want=$1 label=$2 got
+    shift 2
+    got=$("$@" 2>/dev/null)
+    n=$((n + 1))
+    [ "$got" = "$want" ] && return 0
+    echo "SELF_TEST_FAIL,case=$label,want=$want,got=$got" >&2
+    fails=$((fails + 1))
+  }
+  row() {
+    printf 'ROW,src=public,name=%s,sha=%s,fmt=step,bytes=1,op=%s,ocp=7.9.3.1.1,variant=%s,mem=2g,cpus=2,confined=0,rep=1,rc=%s,pix=-,out=triangles:%s;t_wall:1\n' "$1" "$2" "$3" "$4" "${5:-0}" "${6:-10}"
+  }
+  pair() {
+    local variant=$1 f=$2 rc=${3:-0}
+    {
+      row a.step s1 mesh "$variant" "$rc"
+      row b.stl s2 stlstats "$variant"
+      row c.dxf s3 dxf "$variant"
+      row c.dxf s3 rsvg-png "$variant"
+    } > "$f"
+  }
+  pair full "$d/full.txt"; pair pruned "$d/pruned.txt"
+  expect ok prune-other-both-runs-complete prune_other_verdict "$d/full.txt" "$d/pruned.txt" 4 0 0
+  : > "$d/empty.txt"
+  expect no prune-other-nothing-expected-nothing-compared prune_other_verdict "$d/empty.txt" "$d/empty.txt" 0 0 0
+  expect no prune-other-both-runs-wrote-nothing-rc-hidden prune_other_verdict "$d/empty.txt" "$d/empty.txt" 4 0 0
+  expect no prune-other-both-runs-wrote-nothing-rc-failed prune_other_verdict "$d/empty.txt" "$d/empty.txt" 4 1 1
+  expect no prune-other-pruned-run-wrote-nothing prune_other_verdict "$d/full.txt" "$d/empty.txt" 4 0 0
+  expect no prune-other-full-run-failed prune_other_verdict "$d/full.txt" "$d/pruned.txt" 4 1 0
+  expect no prune-other-pruned-run-failed prune_other_verdict "$d/full.txt" "$d/pruned.txt" 4 0 1
+  expect no prune-other-fewer-rows-than-pairs prune_other_verdict "$d/full.txt" "$d/pruned.txt" 5 0 0
+  head -n 3 "$d/pruned.txt" > "$d/pruned-short.txt"
+  expect no prune-other-pruned-lost-a-row prune_other_verdict "$d/full.txt" "$d/pruned-short.txt" 4 0 0
+  sed 's/triangles:10/triangles:11/' "$d/pruned.txt" > "$d/pruned-diff.txt"
+  expect no prune-other-output-differs prune_other_verdict "$d/full.txt" "$d/pruned-diff.txt" 4 0 0
+  { head -n 3 "$d/full.txt"; printf 'SKIP,src=public,name=c.dxf,fmt=dxf,op=rsvg-png,mem=2g,rep=1,reason=prestep-failed-3-attempts\n'; } > "$d/full-skip.txt"
+  cp "$d/full-skip.txt" "$d/pruned-skip.txt"
+  expect ok prune-other-same-prestep-skip-is-accounted prune_other_verdict "$d/full-skip.txt" "$d/pruned-skip.txt" 4 0 0
+  expect no prune-other-skip-on-one-side-only prune_other_verdict "$d/full-skip.txt" "$d/pruned.txt" 4 0 0
+  sed 's/,rc=0,/,rc=1,/' "$d/full.txt" > "$d/full-allfail.txt"; sed 's/,rc=0,/,rc=1,/' "$d/pruned.txt" > "$d/pruned-allfail.txt"
+  expect no prune-other-every-row-fails-identically prune_other_verdict "$d/full-allfail.txt" "$d/pruned-allfail.txt" 4 0 0
+  pair full "$d/full-rc.txt" 1; pair pruned "$d/pruned-rc.txt" 1
+  expect ok prune-other-identical-failing-row-still-compares prune_other_verdict "$d/full-rc.txt" "$d/pruned-rc.txt" 4 0 0
+  out=$(prune_other_verdict "$d/empty.txt" "$d/empty.txt" 4 0 0 2>/dev/null || true)
+  case "$out" in PRUNE_OTHER,status=FAILED,*) n=$((n + 1)) ;; *) echo "SELF_TEST_FAIL,case=prune-other-failed-line-shape,got=$out" >&2; n=$((n + 1)); fails=$((fails + 1)) ;; esac
+  out=$(prune_other_verdict "$d/full.txt" "$d/pruned.txt" 4 0 0 2>/dev/null)
+  case "$out" in "PRUNE_OTHER,rows=4,same=4,diff=0,expected=4,prestep_skipped=0,runs_ok=1") n=$((n + 1)) ;; *) echo "SELF_TEST_FAIL,case=prune-other-ok-line-shape,got=$out" >&2; n=$((n + 1)); fails=$((fails + 1)) ;; esac
+
+  mkdir -p "$d/corpus/a" "$d/corpus/b"
+  : > "$d/corpus/a/x.step"; : > "$d/corpus/a/y.STP"; : > "$d/corpus/a/z.iges"; : > "$d/corpus/b/w.stl"; : > "$d/corpus/b/v.dxf"; : > "$d/corpus/b/README.md"
+  expect_eq 6 corpus-other-expected-pairs corpus_other_expected "$d/corpus"
+  expect no corpus-other-expected-missing-directory corpus_other_expected "$d/empty-dir-that-does-not-exist"
+
+  ops_fixture() {
+    local f=$1 hot=${2:-1} ocp op c i
+    : > "$f"
+    for ocp in 7.9.3.1.1 8.0.1.0.0; do
+      jp=0; [ "$ocp" != 8.0.1.0.0 ] || jp=1
+      printf '%s\timport\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"
+      for i in 1 2 3 4; do printf '%s\tmesh-step\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
+      for i in $(seq 1 $((1 + hot))); do printf '%s\tmesh-iges\t1\t1\t%s\t60\t1\t1\n' "$ocp" "$jp" >> "$f"; done
+      for i in 1 2; do printf '%s\tstlstats\t0\t0\t0\t0\t1\t1\n' "$ocp" >> "$f"; done
+    done
+    for spec in render-view:7 render-transparent:1 render-512:1 render-2048:1 render-lp1:1 render-lpN:1 render-degenerate:3 render-exit2:1 render-exit3-unreachable:1 dxf:4 rsvg-png:4 rsvg-pdf:4; do
+      op=${spec%%:*}; c=${spec#*:}
+      for i in $(seq 1 "$c"); do printf '7.9.3.1.1\t%s\t0\t0\t0\t0\t1\t1\n' "$op" >> "$f"; done
+    done
+  }
+  ops_fixture "$d/ops-ok.tsv" 1
+  expect_eq "" libs-expectation-matches-the-research libs_expectation 7.9.3.1.1 1 "$d/ops-ok.tsv"
+  ops_fixture "$d/ops-nohot.tsv" 0
+  expect_eq "" libs-expectation-without-the-fetched-iges libs_expectation 7.9.3.1.1 0 "$d/ops-nohot.tsv"
+  expect_eq "" libs-expectation-no-rows-is-not-a-match true
+  : > "$d/ops-none.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-none.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-empty-ops-must-mismatch" >&2; fails=$((fails + 1)); }
+  sed 's/^\(7.9.3.1.1\tmesh-step\t\)1\t1\t0\t60\t1\t1$/\10\t0\t0\t0\t1\t1/' "$d/ops-ok.tsv" > "$d/ops-silent.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-silent.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-mesh-op-loading-nothing-must-mismatch" >&2; fails=$((fails + 1)); }
+  awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "7.9.3.1.1" && $2 == "dxf" && !d { $7 = 0; d = 1 } { print }' "$d/ops-ok.tsv" > "$d/ops-failed.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-failed.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-failed-op-must-mismatch" >&2; fails=$((fails + 1)); }
+  awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "7.9.3.1.1" && $2 == "dxf" && !d { d = 1; next } { print }' "$d/ops-ok.tsv" > "$d/ops-missing.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-missing.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-missing-op-row-must-mismatch" >&2; fails=$((fails + 1)); }
+  { cat "$d/ops-ok.tsv"; printf '7.9.3.1.1\tbogus-op\t0\t0\t0\t0\t1\t1\n'; } > "$d/ops-extra.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-extra.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-unexpected-op-must-mismatch" >&2; fails=$((fails + 1)); }
+  awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "7.9.3.1.1" && $2 == "dxf" && !d { $3 = 1; d = 1 } { print }' "$d/ops-ok.tsv" > "$d/ops-loads.tsv"
+  got=$(libs_expectation 7.9.3.1.1 1 "$d/ops-loads.tsv")
+  n=$((n + 1)); [ -n "$got" ] || { echo "SELF_TEST_FAIL,case=libs-expectation-ocp-free-op-loading-freeimage-must-mismatch" >&2; fails=$((fails + 1)); }
+
+  expect_eq 1 keeplist-verdict-ok keeplist_verdict 1 77 17 17 17
+  expect_eq 0 keeplist-verdict-no-entries keeplist_verdict 1 0 17 17 17
+  expect_eq 0 keeplist-verdict-no-maps keeplist_verdict 1 77 0 0 0
+  expect_eq 0 keeplist-verdict-short-maps keeplist_verdict 1 77 16 17 16
+  expect_eq 0 keeplist-verdict-not-identical keeplist_verdict 0 77 17 17 17
+  expect_eq 0 keeplist-verdict-collected-fewer-than-mapped keeplist_verdict 1 77 16 17 17
+  expect_eq 0 keeplist-verdict-mapped-fewer-than-planned keeplist_verdict 1 77 17 17 16
+
+  expect ok stale-missing-module-render-fails stale_missing_module_detected 0 1 none abc
+  expect ok stale-missing-module-sha-differs stale_missing_module_detected 0 0 def abc
+  expect no stale-missing-module-docker-gave-no-rc stale_missing_module_detected 0 "" "" abc
+  expect no stale-missing-module-prune-gave-no-rc stale_missing_module_detected "" 1 none abc
+  expect no stale-missing-module-prune-failed stale_missing_module_detected 1 1 none abc
+  expect no stale-missing-module-no-reference stale_missing_module_detected 0 1 none ""
+  expect no stale-missing-module-render-identical stale_missing_module_detected 0 0 abc abc
+
+  rm -rf "$d"
+  echo "SELF_TEST,cases=$n,failed=$fails"
+  [ "$fails" = 0 ]
+}
+
+if [ "$CMD" = self-test ]; then
+  self_test
+  exit $?
+fi
 
 command -v docker >/dev/null 2>&1 || { echo "error: docker is required" >&2; exit 69; }
 [ -s "$LIMITS_FILE" ] || { echo "error: $LIMITS_FILE is missing" >&2; exit 1; }
@@ -186,6 +422,8 @@ for name in sorted(os.listdir(LIBS)):
   : > "$WORK/ops.tsv"
   KEEP_STL_AS=""
   MAPN=0
+  RENDER_PLANNED=0
+  HOT=0
 
   count_hits() {
     local pat=$1 file=$2
@@ -242,7 +480,7 @@ for name in sorted(os.listdir(LIBS)):
       if [ -s "$job/maps.txt" ]; then vtkn=$(grep -c '/vtkmodules/' "$job/maps.txt" || true); fi
     fi
     emit "LIBTRACE,op=$op,input=$input,ocp=$ocp,rc=$rc,freeimage=$fi,libraw=$raw,libjasper=$jp,ocp_libs_loaded=$ocpn,vtk_so_mapped=$vtkn,source=$src,fi_ld=$fi_ld,fi_maps=$fi_mp,raw_ld=$raw_ld,raw_maps=$raw_mp,jp_ld=$jp_ld,jp_maps=$jp_mp,rc_ok=$rc_ok,attempts=$attempt"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ocp" "$op" "$fi" "$raw" "$jp" "$ocpn" >> "$WORK/ops.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ocp" "$op" "$fi" "$raw" "$jp" "$ocpn" "$rc_ok" "$ok" >> "$WORK/ops.tsv"
     if [ "$ocp" = "$PIN" ] && [ "$maps" = 1 ] && [ -s "$job/maps.txt" ] && [ "${op#render}" != "$op" ]; then
       MAPN=$((MAPN + 1))
       cp "$job/maps.txt" "$MAPDIR/$(printf '%03d-%s' "$MAPN" "$op-$input" | tr -c 'A-Za-z0-9._-' '_').txt"
@@ -282,7 +520,9 @@ for name in sorted(os.listdir(LIBS)):
       KEEP_STL_AS=""
     done
     local iges="$CAD_CACHE_DIR/fetched/freecad-mk8-hotend.iges"
+    HOT=0
     if [ -f "$iges" ]; then
+      HOT=1
       trace_op mesh-iges freecad-mk8-hotend "$ocp" "$tag" 0 "$iges" iges 1 \
         "${PY[@]}" "$LIB/cad_mesh.py" mesh /job/in.iges /job --parallel "$PAR" --dump-maps /job/maps.txt
     else
@@ -316,6 +556,7 @@ PYEOF
   render_op() {
     local op=$1 name=$2 expect=$3
     shift 3
+    RENDER_PLANNED=$((RENDER_PLANNED + 1))
     trace_op "$op" "$name" "$PIN" "$TAG_PIN" "$expect" "$STLDIR/$name.stl" stl 1 \
       "${PY[@]}" "$LIB/cad_render.py" /job/in.stl /job/out.png "$@" --dump-maps /job/maps.txt
   }
@@ -361,16 +602,7 @@ PYEOF
       "$WORK/ops.tsv" | while IFS= read -r l; do emit "$l"; done
   done
 
-  MISMATCH=$(awk -F'\t' '
-    {
-      jp_expected = ($1 == "8.0.1.0.0") ? 1 : 0
-      if ($6 > 0) {
-        if ($3 != 1 || $4 != 1 || $5 != jp_expected)
-          printf "%s/%s(fi=%s,raw=%s,jp=%s,want_jp=%d);", $1, $2, $3, $4, $5, jp_expected
-      } else if ($3 != 0 || $4 != 0 || $5 != 0) {
-        printf "%s/%s(ocp-free op loads fi=%s,raw=%s,jp=%s);", $1, $2, $3, $4, $5
-      }
-    }' "$WORK/ops.tsv")
+  MISMATCH=$(libs_expectation "$PIN" "$HOT" "$WORK/ops.tsv")
   if [ -z "$MISMATCH" ]; then
     emit "EXPECTATION,research=V3-V7,match=1,detail=every op that imports OCP loads libfreeimage and libraw on both pins; libjasper only on 8.0.1.0.0; render dxf rsvg and stlstats load none"
   else
@@ -382,8 +614,11 @@ PYEOF
   MAPS=("$MAPDIR"/*.txt)
   python3 scripts/cad-measure/vtk_keeplist.py collect --vtk-version "$VTK_VERSION" --out "$KEEPLIST" "${MAPS[@]}" | while IFS= read -r l; do emit "$l"; done
   python3 scripts/cad-measure/vtk_keeplist.py collect --vtk-version "$VTK_VERSION" --out "$WORK/keeplist.again" "${MAPS[@]}" >/dev/null
-  if cmp -s "$KEEPLIST" "$WORK/keeplist.again"; then SAME=1; else SAME=0; fi
-  emit "KEEPLIST_REGEN,same=$SAME,entries=$(($(wc -l < "$KEEPLIST") - 2)),maps_files=${#MAPS[@]},vtk_version=$VTK_VERSION"
+  IDENTICAL=0
+  if cmp -s "$KEEPLIST" "$WORK/keeplist.again"; then IDENTICAL=1; fi
+  ENTRIES=$(($(wc -l < "$KEEPLIST") - 2))
+  SAME=$(keeplist_verdict "$IDENTICAL" "$ENTRIES" "${#MAPS[@]}" "$RENDER_PLANNED" "$MAPN")
+  emit "KEEPLIST_REGEN,same=$SAME,entries=$ENTRIES,maps_files=${#MAPS[@]},maps_expected=$RENDER_PLANNED,vtk_version=$VTK_VERSION"
 
   [ -z "$MISMATCH" ] || { echo "expectation mismatch: a human decides before the pruning step" >&2; exit 3; }
   [ "$SAME" = 1 ] || exit 1
@@ -430,10 +665,20 @@ if [ "$CMD" = prune-check ]; then
       add_input "mesh-$name" "$STLDIR/mesh-$name.stl" 2g corpus
     else
       emit "PRUNE_SKIP,input=$name,reason=mesh-gave-no-stl-after-3-attempts"
+      FAILED=1
     fi
   done < <(find "$CORPUS" -type f \( -iname '*.step' -o -iname '*.stp' -o -iname '*.iges' -o -iname '*.igs' \) | LC_ALL=C sort)
   while IFS= read -r f; do add_input "$(basename "$f")" "$f" 2g corpus; done \
     < <(find "$CORPUS" -type f -iname '*.stl' | LC_ALL=C sort)
+  FETCHED_EXPECTED=$(awk -F'\t' 'NR > 1 && NF > 0' "$REPO_ROOT/scripts/cad-corpus-manifest.tsv" | wc -l | tr -d ' ')
+  FETCHED_FOUND=0
+  if [ -d "$CAD_CACHE_DIR/fetched" ]; then
+    FETCHED_FOUND=$(find "$CAD_CACHE_DIR/fetched" -type f | wc -l | tr -d ' ')
+  fi
+  if [ "$FETCHED_EXPECTED" -lt 1 ] || [ "$FETCHED_FOUND" != "$FETCHED_EXPECTED" ]; then
+    emit "FAIL,reason=the fetched corpus has $FETCHED_FOUND files, the manifest lists $FETCHED_EXPECTED; run scripts/cad-corpus-fetch.sh"
+    FAILED=1
+  fi
   if [ -d "$CAD_CACHE_DIR/fetched" ]; then
     while IFS= read -r f; do
       name=$(basename "$f")
@@ -444,6 +689,7 @@ if [ "$CMD" = prune-check ]; then
             add_input "fetched-$name" "$STLDIR/fetched-$name.stl" 4g fetched
           else
             emit "PRUNE_SKIP,input=$name,reason=mesh-gave-no-stl-after-3-attempts"
+            FAILED=1
           fi ;;
       esac
     done < <(find "$CAD_CACHE_DIR/fetched" -type f | LC_ALL=C sort)
@@ -481,6 +727,9 @@ done'
   ISO_SPEC="iso:1280:white:$LP"
   REAL_PART="mesh-LinearSlide-MGN15x-Block.step"
 
+  EXPECT_PNGS=$(awk -F'\t' -v real="$REAL_PART" -v nv="${#VIEWS[@]}" -v nb="${#BRANCH_SPECS[@]}" '
+    { if ($4 == "fetched") n += 1; else { n += nv; if ($1 == real) n += nb } }
+    END { print n + 0 }' "$INPUTS")
   PNGS=0; SAME=0; DIFFERENT=0; BROKEN=0
   : > "$WORK/ref.sha"
   while IFS="$(printf '\t')" read -r name stl mem kind; do
@@ -514,45 +763,29 @@ done'
       printf '%s|%s\t%s\n' "$name" "$spec" "$sha_f" >> "$WORK/ref.sha"
     done < "$WORK/png.pair"
   done < "$INPUTS"
-  emit "PRUNE_IDENTITY,pngs=$PNGS,identical=$SAME,different=$DIFFERENT,failed=$BROKEN"
-  [ "$DIFFERENT" = 0 ] && [ "$BROKEN" = 0 ] && [ "$SAME" -gt 0 ] || { FAILED=1; emit "FAIL,reason=pruned renders differ from or fail against the full image"; }
+  emit "PRUNE_IDENTITY,pngs=$PNGS,identical=$SAME,different=$DIFFERENT,failed=$BROKEN,expected=$EXPECT_PNGS"
+  if [ "$DIFFERENT" = 0 ] && [ "$BROKEN" = 0 ] && [ "$SAME" -gt 0 ] && [ "$SAME" = "$PNGS" ] && [ "$PNGS" = "$EXPECT_PNGS" ]; then
+    :
+  else
+    FAILED=1
+    emit "FAIL,reason=pruned renders differ from or fail against the full image, or fewer renders were compared than the inputs call for"
+  fi
 
   run_other() {
-    local variant=$1 file=$2
+    local variant=$1 file=$2 rc=0
     scripts/cad-rss-time-measure.sh --ocp "$PIN" --variant "$variant" --memory 2g --repeats 1 \
-      --ops mesh,stlstats,dxf,rsvg-png --parallel "$PAR" --lp-threads "$LP" --out "$file" "$CORPUS" >/dev/null || true
+      --ops mesh,stlstats,dxf,rsvg-png --parallel "$PAR" --lp-threads "$LP" --out "$file" "$CORPUS" >/dev/null || rc=$?
+    return "$rc"
   }
-  run_other full "$WORK/other.full"
-  run_other pruned "$WORK/other.pruned"
-  OTHER_LINE=$(awk -F, '
-    function kv(s, k,    n, i, parts) {
-      n = split(s, parts, ",")
-      for (i = 1; i <= n; i++) if (index(parts[i], k "=") == 1) return substr(parts[i], length(k) + 2)
-      return ""
-    }
-    FNR == 1 { side = (FILENAME == ARGV[1]) ? "f" : "p" }
-    /^ROW,/ {
-      head = $0; sub(/,out=.*$/, "", head)
-      out = $0; sub(/^.*,out=/, "", out)
-      n = split(out, parts, ";"); o = ""
-      for (i = 1; i <= n; i++) if (parts[i] !~ /^t_/) o = o parts[i] ";"
-      key = kv(head, "sha") "|" kv(head, "op")
-      val = "rc=" kv(head, "rc") "/pix=" kv(head, "pix") "/" o
-      nm[key] = kv(head, "name")
-      if (side == "f") full[key] = val; else pr[key] = val
-    }
-    END {
-      for (k in full) {
-        rows++
-        if ((k in pr) && pr[k] == full[k]) same++
-        else { diff++; printf "PRUNE_OTHER_DIFF,name=%s,op=%s,full=%s,pruned=%s\n", nm[k], substr(k, index(k, "|") + 1), full[k], (k in pr ? pr[k] : "missing") > "/dev/stderr" }
-      }
-      for (k in pr) if (!(k in full)) { rows++; diff++ }
-      printf "PRUNE_OTHER,rows=%d,same=%d,diff=%d\n", rows, same, diff
-    }' "$WORK/other.full" "$WORK/other.pruned" 2> "$WORK/other.diff")
+  RC_FULL=0; RC_PRUNED=0
+  run_other full "$WORK/other.full" || RC_FULL=$?
+  run_other pruned "$WORK/other.pruned" || RC_PRUNED=$?
+  EXPECT_OTHER=$(corpus_other_expected "$CORPUS")
+  OTHER_RC=0
+  OTHER_LINE=$(prune_other_verdict "$WORK/other.full" "$WORK/other.pruned" "$EXPECT_OTHER" "$RC_FULL" "$RC_PRUNED" 2> "$WORK/other.diff") || OTHER_RC=$?
   cat "$WORK/other.diff" | while IFS= read -r l; do emit "$l"; done
   emit "$OTHER_LINE"
-  case "$OTHER_LINE" in *,diff=0) ;; *) FAILED=1 ;; esac
+  [ "$OTHER_RC" = 0 ] || FAILED=1
 
   K=$(mktemp -d "$WORK/stale.XXXXXX")
   chmod 0755 "$K"
@@ -580,7 +813,7 @@ done'
     if [ -s /tmp/o.png ]; then echo "SHA=$(sha256sum /tmp/o.png | cut -d" " -f1)"; else echo "SHA=none"; fi' > "$K/out.missing" 2>&1 || RC=$?
   P_RC=$(sed -n 's/^PRUNE_RC=//p' "$K/out.missing"); R_RC=$(sed -n 's/^RENDER_RC=//p' "$K/out.missing")
   R_SHA=$(sed -n 's/^SHA=//p' "$K/out.missing"); R_MSG=$(grep -a -v '^\(PRUNE_RC\|RENDER_RC\|SHA\|PRUNED\)' "$K/out.missing" | tail -n 1 | tr ',;' '__')
-  if [ -n "$REF_SHA" ] && { [ "$R_RC" != 0 ] || [ "$R_SHA" != "$REF_SHA" ]; }; then
+  if stale_missing_module_detected "$P_RC" "$R_RC" "$R_SHA" "$REF_SHA"; then
     emit "STALE_TEST,case=missing_module,result=detected,module=vtkFiltersCore,removed_entries=$(($(wc -l < "$KEEPLIST") - $(wc -l < "$K/nomod.txt"))),prune_rc=$P_RC,render_rc=$R_RC,sha=${R_SHA:0:16},reference_sha=${REF_SHA:0:16},message=$R_MSG"
   else
     emit "STALE_TEST,case=missing_module,result=MISSED,module=vtkFiltersCore,prune_rc=$P_RC,render_rc=$R_RC,sha=${R_SHA:-none},reference_sha=${REF_SHA:-none}"; FAILED=1
