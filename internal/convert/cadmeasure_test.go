@@ -205,6 +205,7 @@ func TestBuildCADMeasurementsNullReasons(t *testing.T) {
 		{"stl_not_watertight", cadMeasureDraft{Format: "stl", BBox: box, NullReason: "stl_not_watertight"}},
 		{"stl invalid_solid", cadMeasureDraft{Format: "stl", BBox: box, NullReason: "invalid_solid"}},
 		{"stl negative_volume", cadMeasureDraft{Format: "stl", BBox: box, NullReason: "negative_volume"}},
+		{"stl stl_ambiguous_shells", cadMeasureDraft{Format: "stl", BBox: box, NullReason: "stl_ambiguous_shells"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

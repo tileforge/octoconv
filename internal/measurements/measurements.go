@@ -11,28 +11,29 @@ import (
 )
 
 const (
-	Schema                 = "octoconv.measurements/v1"
-	MaxAbsCoordinate       = 1e12
-	UnitMM                 = "mm"
-	UnitCM                 = "cm"
-	UnitM                  = "m"
-	UnitInch               = "inch"
-	UnitFoot               = "foot"
-	UnitMicrometre         = "micrometre"
-	UnitUnspecified        = "unspecified"
-	SourceDeclared         = "declared"
-	SourceClientAssumed    = "client_assumed"
-	SourceNone             = "none"
-	ReasonNoSolids         = "no_solids"
-	ReasonOpenShell        = "open_shell"
-	ReasonInvalidSolid     = "invalid_solid"
-	ReasonNegativeVolume   = "negative_volume"
-	ReasonSTLNotWatertight = "stl_not_watertight"
-	ReasonNotApplicable2D  = "not_applicable_2d"
-	FormatSTEP             = "step"
-	FormatIGES             = "iges"
-	FormatSTL              = "stl"
-	FormatDXF              = "dxf"
+	Schema                   = "octoconv.measurements/v1"
+	MaxAbsCoordinate         = 1e12
+	UnitMM                   = "mm"
+	UnitCM                   = "cm"
+	UnitM                    = "m"
+	UnitInch                 = "inch"
+	UnitFoot                 = "foot"
+	UnitMicrometre           = "micrometre"
+	UnitUnspecified          = "unspecified"
+	SourceDeclared           = "declared"
+	SourceClientAssumed      = "client_assumed"
+	SourceNone               = "none"
+	ReasonNoSolids           = "no_solids"
+	ReasonOpenShell          = "open_shell"
+	ReasonInvalidSolid       = "invalid_solid"
+	ReasonNegativeVolume     = "negative_volume"
+	ReasonSTLNotWatertight   = "stl_not_watertight"
+	ReasonSTLAmbiguousShells = "stl_ambiguous_shells"
+	ReasonNotApplicable2D    = "not_applicable_2d"
+	FormatSTEP               = "step"
+	FormatIGES               = "iges"
+	FormatSTL                = "stl"
+	FormatDXF                = "dxf"
 )
 
 var ErrInvalid = errors.New("invalid measurements document")
@@ -40,14 +41,14 @@ var ErrInvalid = errors.New("invalid measurements document")
 var (
 	units       = []string{UnitMM, UnitCM, UnitM, UnitInch, UnitFoot, UnitMicrometre, UnitUnspecified}
 	unitSources = []string{SourceDeclared, SourceClientAssumed, SourceNone}
-	nullReasons = []string{ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume, ReasonSTLNotWatertight, ReasonNotApplicable2D}
+	nullReasons = []string{ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume, ReasonSTLNotWatertight, ReasonSTLAmbiguousShells, ReasonNotApplicable2D}
 	formats     = []string{FormatSTEP, FormatIGES, FormatSTL, FormatDXF}
 )
 
 var reasonsByFormat = map[string][]string{
 	FormatSTEP: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
 	FormatIGES: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
-	FormatSTL:  {ReasonSTLNotWatertight, ReasonInvalidSolid, ReasonNegativeVolume},
+	FormatSTL:  {ReasonSTLNotWatertight, ReasonSTLAmbiguousShells, ReasonInvalidSolid, ReasonNegativeVolume},
 	FormatDXF:  {ReasonNotApplicable2D},
 }
 
