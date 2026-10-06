@@ -1,0 +1,41 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-10-06T14:30:26.383Z",
+  "phase": "74",
+  "phase_name": "3D Render & Measurements",
+  "phase_dir": ".planning/phases/74-3d-render-measurements",
+  "plan": 7,
+  "task": 0,
+  "total_tasks": 0,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "74-01..74-07", "name": "all 7 plans executed", "status": "done", "commit": "2d531dd"},
+    {"id": "verify", "name": "74-VERIFICATION gaps_found 8/9", "status": "done", "commit": "1950f68"},
+    {"id": "gap-advisories", "name": "live AddOutputs transcript, .env.example rationale removed, test rename", "status": "done", "commit": "4206001"}
+  ],
+  "remaining_tasks": [
+    {"id": "gap-1", "name": "scripts/sandbox-liveproof.sh cad ALL PASS 5/5 incl. emulated-amd64-refuses; commit evidence/74-06-sandbox-liveproof.txt", "status": "blocked"},
+    {"id": "reverify", "name": "re-run gsd-verifier for phase 74 -> passed", "status": "not_started"},
+    {"id": "close", "name": "phase.complete 74, push branch, PR to main tagging @codex, fix findings, merge (authorized when codex clean + verified)", "status": "not_started"},
+    {"id": "75", "name": "Phase 75 DXF 2D pipeline: discuss (auto) -> research -> plan -> execute -> verify -> PR", "status": "not_started"},
+    {"id": "76", "name": "Phase 76 measured bounds, KEDA, live gate, preview contract, docs", "status": "not_started"},
+    {"id": "milestone", "name": "re-verify 71 on final tree (stale by later script edits), audit + complete milestone v1.16", "status": "not_started"}
+  ],
+  "blockers": [
+    {"description": "OrbStack VM disk too small: amd64 emulated build needs ~12 GiB free in the VM at start (6 GiB floor); VM had ~10 GiB", "type": "human_action", "workaround": "user is enlarging the OrbStack disk; check with: docker run --rm alpine df -h /"}
+  ],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Enlarge OrbStack VM disk so the VM shows >=12 GiB free", "context": "phase 74 gap: emulated-amd64-refuses check", "blocking": true}
+  ],
+  "decisions": [
+    {"decision": "User pre-delegated all GSD answers to Claude's recommended option for v1.16 and authorized merging PRs when codex clean + verification passed", "rationale": "memory v116-delegated-decisions", "phase": "71-76"},
+    {"decision": "cad_unit_factor_source=text_unit (orchestrator override of DERIVED none)", "rationale": "keeps MEAS-03 honest; nist-d2mi 25.4707 explained as OCP split vertices", "phase": "74"},
+    {"decision": "D-06: J1 span check applies to blob frames only; thin frames judged by thin rule", "rationale": "real thin part at 256px was falsely rejected", "phase": "74"},
+    {"decision": "cad engine serves convert+render (one-operation-per-engine relaxed for cad)", "rationale": "v1.16 roadmap: one cad:job task type", "phase": "74"},
+    {"decision": "Render timeout 480s, engine 886s < 900s reconciler; render timeout terminal; triangle cap 3835382; STL ceiling 190840832", "rationale": "74 research + Wave-0 evidence", "phase": "74"}
+  ],
+  "uncommitted_files": ["?? .vscode/", "?? octoconv.code-workspace"],
+  "next_action": "Check VM free space (docker run --rm alpine df -h /). If >=12 GiB, dispatch a gsd-executor (omit model param; sonnet subagents hit API 403 twice) to run scripts/sandbox-liveproof.sh cad on branch gsd/phase-74-3d-render-measurements and commit the ALL PASS transcript; then re-verify phase 74.",
+  "context_notes": "Phases 71-73 merged to main (PRs #32,#33,#34). Branch gsd/phase-74-3d-render-measurements is NOT pushed yet. Executors run sequentially on the main tree (use_worktrees=false); pin guard script lives in the old session scratchpad and must be regenerated from worktree-path-safety.md step 0p bound to /Users/apaderin/dev/octoconv. LSP diagnostics in this repo are routinely stale - trust go build/test with GOTOOLCHAIN=go1.26.4."
+}
