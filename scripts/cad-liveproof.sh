@@ -528,6 +528,40 @@ PY
 meas_case stl_case_upper "$W/stl_case_upper.stl" stl_ascii_box_upper.stl "" unspecified none 10:20:30 6000 2200 none
 meas_case stl_case_mixed_body "$W/stl_case_mixed_body.stl" stl_ascii_box_mixed.stl "" unspecified none 10:20:30 6000 2200 none
 meas_case stl_case_header_upper "$W/stl_case_header_upper.stl" stl_ascii_box_header_upper.stl "" unspecified none 10:20:30 6000 2200 none
+python3 - "$W/stl_hollow.stl" <<'PY' || fail "cannot generate the hollow stl"
+import sys
+
+QUADS = (
+    ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0)),
+    ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)),
+    ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1)),
+    ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0)),
+    ((0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0)),
+    ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1)),
+)
+
+
+def cube(lo, size, inward):
+    tris = []
+    for quad in QUADS:
+        a, b, c, d = [tuple(lo + size * k for k in v) for v in quad]
+        for t in ((a, b, c), (a, c, d)):
+            tris.append((t[0], t[2], t[1]) if inward else t)
+    six = sum(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]) for a, b, c in tris)
+    assert six == (-6 if inward else 6) * size ** 3, (lo, size, inward, six)
+    return tris
+
+
+lines = ["solid hollow"]
+for a, b, c in cube(0, 10, False) + cube(3, 4, True):
+    lines += ["  facet normal 0 0 0", "    outer loop"]
+    lines += ["      vertex %d %d %d" % v for v in (a, b, c)]
+    lines += ["    endloop", "  endfacet"]
+lines += ["endsolid hollow", ""]
+with open(sys.argv[1], "w") as fh:
+    fh.write("\n".join(lines))
+PY
+meas_case stl_hollow_ambiguous "$W/stl_hollow.stl" stl_hollow_cube.stl "" unspecified none 10:10:10 null null stl_ambiguous_shells
 
 quality_one() {
 	local q=$1 stl
