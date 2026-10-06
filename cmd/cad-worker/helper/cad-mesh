@@ -26,6 +26,12 @@ CONV_RE = re.compile(rb"CONVERSION_BASED_UNIT\s*\(\s*'([^']*)'")
 IGES_GLOBAL_LINES = 4096
 STL_CHUNK = 1000000
 ASCII_BLOCK = 1 << 25
+VERTEX_RE = re.compile(rb"vertex\s+(\S+)\s+(\S+)\s+(\S+)", re.IGNORECASE)
+VERTEX_KEY_RE = re.compile(rb"vertex", re.IGNORECASE)
+KEYWORD_WINDOW = 1 << 20
+NORMALIZED_HEADER = b"octoconv normalized binary stl".ljust(80, b"\0")
+STL_WRITE_CHUNK = 1 << 16
+STL_RECORD = [("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]
 EXIT_UNREADABLE = 2
 EXIT_EMPTY = 3
 EXIT_TOO_COMPLEX = 4
@@ -432,6 +438,47 @@ def run(fmt, src, out, fd, quality, measure):
         return EXIT_UNREADABLE
 
 
+def last_keyword(data):
+    pos = len(data)
+    while pos > 0:
+        lo = max(0, pos - KEYWORD_WINDOW)
+        last = -1
+        for m in VERTEX_KEY_RE.finditer(data, lo, min(len(data), pos + 5)):
+            last = m.start()
+        if last >= 0:
+            return last
+        pos = lo
+    return -1
+
+
+def stats_write(out, vertices):
+    import numpy as np
+
+    record = np.dtype(STL_RECORD)
+    total = len(vertices) // 3
+    with open(out, "wb") as fh:
+        fh.write(NORMALIZED_HEADER)
+        fh.write(total.to_bytes(4, "little"))
+        for start in range(0, total, STL_WRITE_CHUNK):
+            with np.errstate(over="ignore"):
+                tri = vertices[start * 3:(start + STL_WRITE_CHUNK) * 3].astype(np.float32).reshape(-1, 3, 3)
+            if not np.isfinite(tri).all():
+                return False
+            chunk = np.zeros(len(tri), dtype=record)
+            chunk["v"] = tri
+            del tri
+            fh.write(chunk.tobytes())
+            del chunk
+    return os.path.getsize(out) == 84 + 50 * total
+
+
+def stats_discard(out):
+    try:
+        os.remove(out)
+    except FileNotFoundError:
+        pass
+
+
 def stats_read(src):
     import numpy as np
 
@@ -443,12 +490,11 @@ def stats_read(src):
         if size == 84 + 50 * count:
             if count == 0:
                 return None, True
-            record = np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")])
+            record = np.dtype(STL_RECORD)
             mapped = np.memmap(src, dtype=record, mode="r", offset=84, shape=(count,))
             vertices = np.ascontiguousarray(mapped["v"]).reshape(-1, 3)
             del mapped
             return vertices, True
-    pattern = re.compile(rb"vertex\s+(\S+)\s+(\S+)\s+(\S+)")
     parts = []
     carry = b""
     with open(src, "rb") as fh:
@@ -456,13 +502,13 @@ def stats_read(src):
             block = fh.read(ASCII_BLOCK)
             data = carry + block
             if block:
-                cut = data.rfind(b"vertex")
+                cut = last_keyword(data)
                 if cut <= 0:
                     carry = data
                     continue
                 carry = data[cut:]
                 data = data[:cut]
-            found = pattern.findall(data)
+            found = VERTEX_RE.findall(data)
             if found:
                 parts.append(np.array(found, dtype=np.float64))
             if not block:
@@ -520,7 +566,7 @@ def stats_watertight(index, nv):
     return bool(np.array_equal(forward, backward))
 
 
-def stats(src, measure, fd):
+def stats(src, out, measure, fd):
     import numpy as np
 
     vertices, _ = stats_read(src)
@@ -531,6 +577,15 @@ def stats(src, measure, fd):
     lo = vertices.min(axis=0).astype(np.float64)
     hi = vertices.max(axis=0).astype(np.float64)
     if not (np.isfinite(lo).all() and np.isfinite(hi).all()):
+        verdict(fd, "unreadable", "stl_malformed")
+        return EXIT_UNREADABLE
+    try:
+        written = stats_write(out, vertices)
+    except BaseException:
+        stats_discard(out)
+        raise
+    if not written:
+        stats_discard(out)
         verdict(fd, "unreadable", "stl_malformed")
         return EXIT_UNREADABLE
     volume, area = stats_mass(vertices)
@@ -570,11 +625,12 @@ def main():
         ap = Parser(prog="cad-mesh stats", add_help=False)
         ap.add_argument("--measure", required=True)
         ap.add_argument("src")
+        ap.add_argument("out")
         args = ap.parse_args(sys.argv[2:])
         fd = os.dup(1)
         os.dup2(2, 1)
         try:
-            return stats(args.src, args.measure, fd)
+            return stats(args.src, args.out, args.measure, fd)
         except MemoryError:
             verdict(fd, "too_complex", "out_of_memory")
             return EXIT_TOO_COMPLEX

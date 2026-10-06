@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,8 +69,38 @@ func (f cadRenderFixture) meshScript(t *testing.T, draft string) string {
 	return fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/mesh.args\"\ncp '%s' \"$4\"\ncp '%s' \"$8\"\n%s", stl, draft, cadSay("mesh", "ok", "", 0))
 }
 
-func (f cadRenderFixture) statsScript(draft string) string {
-	return fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/stats.args\"\ncp '%s' \"$3\"\n%s", draft, cadSay("mesh", "ok", "", 0))
+func (f cadRenderFixture) statsScript(draft, stl string, n int) string {
+	return f.statsScriptPlacing("cp", draft, stl, n)
+}
+
+func (f cadRenderFixture) statsScriptLinking(draft, stl string, n int) string {
+	return f.statsScriptPlacing("ln -s", draft, stl, n)
+}
+
+func (f cadRenderFixture) statsScriptPlacing(place, draft, stl string, n int) string {
+	put := ""
+	if stl != "" {
+		put = fmt.Sprintf("%s '%s' \"$5\"\n", place, stl)
+	}
+	return fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/stats.args\"\ncp '%s' \"$3\"\n%s%s", draft, put, cadSayTriangles("mesh", "ok", "", n, 0))
+}
+
+func (f cadRenderFixture) boxSTL(t *testing.T) string {
+	t.Helper()
+	return f.writeSTL(t, "box.stl", cadBoxSTL(10, 20, 30))
+}
+
+func writeSparseSTL(t *testing.T, path string, n int) {
+	t.Helper()
+	header := make([]byte, stlHeaderBytes)
+	copy(header, "octoconv sparse test stl")
+	binary.LittleEndian.PutUint32(header[80:], uint32(n))
+	if err := os.WriteFile(path, header, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, stlHeaderBytes+stlTriangleBytes*int64(n)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f cadRenderFixture) renderScript(t *testing.T, png []byte) string {
@@ -146,7 +177,7 @@ func TestCADRenderStlSourceSkipsTheGuardAndRunsStats(t *testing.T) {
 	f := newCADRenderFixture(t, "stl")
 	draft := f.writeDraft(t, boxDraft("stl", 12))
 	f.setEngines(t, "touch \"$(dirname \"$0\")/guard.ran\"\n"+cadOKGuard(), "exit 9\n", "")
-	fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft))
+	fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft, f.boxSTL(t), 12))
 	fakeEngine(t, f.dir, "cad-render", f.renderScript(t, renderPNGBytes(t, 1280, false)))
 	if err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil); err != nil {
 		t.Fatalf("Convert: %v", err)
@@ -154,11 +185,16 @@ func TestCADRenderStlSourceSkipsTheGuardAndRunsStats(t *testing.T) {
 	if f.exists("guard.ran") {
 		t.Error("an STL render ran the guard")
 	}
-	if got := f.args(t, "stats.args"); !strings.HasPrefix(got, "stats --measure ") || !strings.HasSuffix(got, f.in) {
-		t.Errorf("stats argv = %q", got)
+	mesh := filepath.Join(f.jobDir, "mesh.stl")
+	if got, want := f.args(t, "stats.args"), "stats --measure "+filepath.Join(f.jobDir, "measure.json")+" "+f.in+" "+mesh; got != want {
+		t.Errorf("stats argv = %q, want %q", got, want)
 	}
-	if got := f.args(t, "render.args"); !strings.HasSuffix(got, f.in+" "+f.png) || !strings.HasPrefix(got, "--view iso --size 1280 --background opaque ") {
-		t.Errorf("render argv = %q, want the defaults on the input STL", got)
+	got := f.args(t, "render.args")
+	if want := "--view iso --size 1280 --background opaque " + mesh + " " + f.png; got != want {
+		t.Errorf("render argv = %q, want %q", got, want)
+	}
+	if strings.Contains(got, f.in) {
+		t.Errorf("render argv = %q names the client's file", got)
 	}
 	raw, err := os.ReadFile(f.sidecar())
 	if err != nil {
@@ -166,6 +202,75 @@ func TestCADRenderStlSourceSkipsTheGuardAndRunsStats(t *testing.T) {
 	}
 	if doc, err := measurements.Validate(raw); err != nil || doc.Format != "stl" || doc.UnitSource != measurements.SourceNone {
 		t.Errorf("document = %+v, %v, want an unspecified-unit stl", doc, err)
+	}
+}
+
+func TestCADRenderStlRefusesAnUnjudgedMeshBeforeAnyRender(t *testing.T) {
+	ascii, err := os.ReadFile(filepath.Join("testdata", "cad", "synthetic", "stl_ascii_box.stl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		stl      func(f cadRenderFixture) string
+		verdict  int
+		draftTri int
+		want     error
+	}{
+		{"no mesh.stl", func(cadRenderFixture) string { return "" }, 12, 12, ErrCADEmptyResult},
+		{"verdict disagrees with the records", func(f cadRenderFixture) string { return f.boxSTL(t) }, 11, 12, ErrCADEmptyResult},
+		{"the client's ascii bytes", func(f cadRenderFixture) string { return f.writeSTL(t, "client.stl", ascii) }, 12, 12, ErrCADEmptyResult},
+		{"draft disagrees with the records", func(f cadRenderFixture) string { return f.boxSTL(t) }, 12, 13, ErrCADMeasurementsInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCADRenderFixture(t, "stl")
+			draft := f.writeDraft(t, boxDraft("stl", tc.draftTri))
+			fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft, tc.stl(f), tc.verdict))
+			fakeEngine(t, f.dir, "cad-render", "touch \"$(dirname \"$0\")/render.ran\"\n"+f.renderScript(t, renderPNGBytes(t, 1280, false)))
+			err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if f.exists("render.ran") {
+				t.Error("the renderer ran on an unjudged mesh")
+			}
+			f.noSidecar(t)
+		})
+	}
+}
+
+func TestCADRenderStepDraftTrianglesMustEqualTheMesh(t *testing.T) {
+	f := newCADRenderFixture(t, "step")
+	d := unitsInchDraft()
+	d.Triangles = 13
+	f.setEngines(t, cadOKGuard(), f.meshScript(t, f.writeDraft(t, d)), "touch \"$(dirname \"$0\")/render.ran\"\n")
+	err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
+	if !errors.Is(err, ErrCADMeasurementsInvalid) {
+		t.Fatalf("err = %v, want ErrCADMeasurementsInvalid", err)
+	}
+	if f.exists("render.ran") {
+		t.Error("the renderer ran with a draft that disagrees with the mesh")
+	}
+	f.noSidecar(t)
+}
+
+func TestCADRenderRefusesAnInputAtTheMeshPath(t *testing.T) {
+	for name, rel := range map[string]string{"clean": "mesh.stl", "unclean": "./mesh.stl"} {
+		t.Run(name, func(t *testing.T) {
+			f := newCADRenderFixture(t, "stl")
+			marker := "touch \"$(dirname \"$0\")/e.ran\"\n"
+			f.setEngines(t, marker, marker, marker)
+			if err := os.WriteFile(filepath.Join(f.jobDir, "mesh.stl"), cadBoxSTL(10, 20, 30), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			in := f.jobDir + string(filepath.Separator) + rel
+			if err := (CADRenderConverter{}).Convert(context.Background(), in, f.png, nil); err == nil {
+				t.Fatal("Convert accepted an input at the mesh path")
+			}
+			if f.exists("e.ran") {
+				t.Error("an engine ran for an input at the mesh path")
+			}
+		})
 	}
 }
 
@@ -180,13 +285,19 @@ func TestCADRenderTriangleCapBoundary(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCADRenderFixture(t, "stl")
-			draft := f.writeDraft(t, boxDraft("stl", tc.triangles))
-			fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft))
+			d := boxDraft("stl", tc.triangles)
+			draft := f.writeDraft(t, d)
+			sparse := filepath.Join(f.dir, "sparse.stl")
+			writeSparseSTL(t, sparse, tc.triangles)
+			fakeEngine(t, f.dir, "cad-mesh", f.statsScriptLinking(draft, sparse, tc.triangles))
 			fakeEngine(t, f.dir, "cad-render", "touch \"$(dirname \"$0\")/render.ran\"\n"+f.renderScript(t, renderPNGBytes(t, 1280, false)))
 			err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
 			if tc.want == nil {
 				if err != nil {
 					t.Fatalf("Convert at the cap: %v", err)
+				}
+				if !f.exists("render.ran") {
+					t.Error("the renderer never ran at the cap")
 				}
 				return
 			}
@@ -205,7 +316,7 @@ func TestCADRenderZeroExtentIsEmptyBeforeAnyRender(t *testing.T) {
 	f := newCADRenderFixture(t, "stl")
 	d := boxDraft("stl", 12)
 	d.BBox = measurements.BBox{Min: []float64{1, 2, 3}, Max: []float64{1, 2, 3}}
-	fakeEngine(t, f.dir, "cad-mesh", f.statsScript(f.writeDraft(t, d)))
+	fakeEngine(t, f.dir, "cad-mesh", f.statsScript(f.writeDraft(t, d), f.boxSTL(t), 12))
 	fakeEngine(t, f.dir, "cad-render", "touch \"$(dirname \"$0\")/render.ran\"\n")
 	err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
 	if !errors.Is(err, ErrCADEmptyResult) {

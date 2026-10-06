@@ -52,6 +52,9 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 	}
 
 	jobDir := filepath.Dir(outPath)
+	if filepath.Clean(inPath) == filepath.Join(jobDir, cadMeshSTLName) {
+		return fmt.Errorf("cad: the input %s is the mesh path of its own job", inPath)
+	}
 	draftPath := filepath.Join(jobDir, cadMeasureDraftName)
 	sidecar := CADMeasurementsPath(outPath)
 	defer func() {
@@ -60,37 +63,36 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 		}
 	}()
 
-	renderInput := inPath
-	triangles := 0
+	renderInput := filepath.Join(jobDir, cadMeshSTLName)
+	var verdict cadVerdict
 	if format == "stl" {
-		if _, err := c.statsStage(ctx, jobDir, inPath, draftPath); err != nil {
+		verdict, err = c.statsStage(ctx, jobDir, inPath, renderInput, draftPath)
+		if err != nil {
 			return err
 		}
 	} else {
 		if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
 			return err
 		}
-		renderInput = filepath.Join(jobDir, cadMeshSTLName)
-		verdict, err := c.meshStage(ctx, jobDir, format, inPath, renderInput, o.Quality, draftPath)
+		verdict, err = c.meshStage(ctx, jobDir, format, inPath, renderInput, o.Quality, draftPath)
 		if err != nil {
 			return err
 		}
-		n, _, err := judgeBinarySTL(renderInput)
-		if err != nil {
-			return fmt.Errorf("cad: %w", err)
-		}
-		if err := requireSTLMatchesVerdict(n, verdict); err != nil {
-			return err
-		}
-		triangles = n
+	}
+	triangles, _, err := judgeBinarySTL(renderInput)
+	if err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	if err := requireSTLMatchesVerdict(triangles, verdict); err != nil {
+		return err
 	}
 
 	draft, err := parseCADMeasureDraft(draftPath)
 	if err != nil {
 		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
 	}
-	if format == "stl" {
-		triangles = draft.Triangles
+	if draft.Triangles != triangles {
+		return fmt.Errorf("cad: %w: the measurements count %d triangles, the mesh holds %d", ErrCADMeasurementsInvalid, draft.Triangles, triangles)
 	}
 	if triangles > CADMaxRenderTriangles {
 		return fmt.Errorf("cad: %w: %d triangles against a cap of %d", ErrCADTooComplex, triangles, CADMaxRenderTriangles)

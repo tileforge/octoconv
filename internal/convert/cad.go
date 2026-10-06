@@ -176,7 +176,7 @@ func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, out
 	return classifyCADStage(cadStageMesh, ctx, stageCtx, timeout, out, cpu, err)
 }
 
-func (c CADConverter) statsStage(ctx context.Context, jobDir, inPath, measure string) (cadVerdict, error) {
+func (c CADConverter) statsStage(ctx context.Context, jobDir, inPath, outPath, measure string) (cadVerdict, error) {
 	x, err := c.cadStage(jobDir, cadMeshReadOnly, cadMeshEngines)
 	if err != nil {
 		return cadVerdict{}, err
@@ -184,7 +184,7 @@ func (c CADConverter) statsStage(ctx context.Context, jobDir, inPath, measure st
 	timeout := c.meshTimeout()
 	stageCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", "stats", "--measure", measure, inPath)
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", "stats", "--measure", measure, inPath, outPath)
 	return classifyCADStage(cadStageMesh, ctx, stageCtx, timeout, out, cpu, err)
 }
 
