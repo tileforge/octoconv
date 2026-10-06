@@ -6,10 +6,10 @@ current_phase: 75
 current_phase_name: DXF 2D Pipeline
 status: planning
 stopped_at: Phase 74 complete, ready to plan Phase 75
-last_updated: "2026-10-06T17:48:10.795Z"
+last_updated: "2026-10-06T21:56:39.564Z"
 last_activity: 2026-10-06
 last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: 3224a9de21b4c40bcd9b4529c3e98a191a075db6
+state_head: 51f5131848f6efa6fe5a1a673f9f4a7cd31e8c1a
 progress:
   total_phases: 6
   completed_phases: 4
@@ -32,7 +32,7 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 Phase: 75 — DXF 2D Pipeline
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-06 — Phase 74 complete, transitioned to Phase 75
+Last activity: 2026-10-07 - Completed quick task 261006-t51: Normalize ASCII STL case for cad stats and render (Codex P2 PR 35)
 
 Progress: [███████░░░] 67% (0/6 phases)
 
@@ -223,6 +223,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261001-q68 | Chart: configurable MinIO data ownership migration (uid/gid, migrate toggle, image) - Codex P1 r2, PR 31 | 2026-10-01 | 128c086 | [261001-q68-chart-configurable-minio-data-ownership-](./quick/261001-q68-chart-configurable-minio-data-ownership-/) |
 | 261001-r2s | Chart: template-side MinIO data-ownership defaults under helm upgrade --reuse-values (Codex P1 r3, PR 31) | 2026-10-01 | f91b24f | [261001-r2s-chart-template-side-defaults-for-minio-d](./quick/261001-r2s-chart-template-side-defaults-for-minio-d/) |
 | 261002-15o | Chart: independent pinned default for minio.mcImage (Codex P1 r4, PR 31) | 2026-10-01 | f45c7ee | [261002-15o-chart-independent-pinned-default-for-min](./quick/261002-15o-chart-independent-pinned-default-for-min/) |
+| 261006-t51 | Normalize ASCII STL case for cad stats and render (Codex P2 PR 35) | 2026-10-07 | 51f5131 | [261006-t51-normalize-ascii-stl-case-for-cad-stats-a](./quick/261006-t51-normalize-ascii-stl-case-for-cad-stats-a/) |
 
 ### Pending Todos
 
