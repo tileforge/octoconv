@@ -1,18 +1,18 @@
-== cad: building octoconv-cad:sandbox-liveproof-1791307927-57881 from Dockerfile.cad-worker ==
-commit: 8c6a6c41d346ddd5635f064f9370e6d3d0f50f2f
-tracked dirt: 1 file(s)
-image id: sha256:91dfe431f200b01239a3bc05a383233ab04706613e03ef827ebdddd56bb6955b
+== cad: building octoconv-cad:sandbox-liveproof-1791316633-73154 from Dockerfile.cad-worker ==
+commit: b14becc131f144d6e21f70ce398bc1e2ec2122ff
+tracked dirt: 0 file(s)
+image id: sha256:6208ba1efd167d6282bd6bf0d1dd08a17a982cd390b9d4e0ed117e6ff0153a97
 PASS: cad confined-startup
-  2026/10/06 17:33:49 🔒 cad sandbox: landlock via /usr/local/bin/cad-worker __sandbox-exec (convert and render)
-  2026/10/06 17:33:54 🔒 cad sandbox proven: cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it
-  2026/10/06 17:33:54 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+  2026/10/06 19:57:17 🔒 cad sandbox: landlock via /usr/local/bin/cad-worker __sandbox-exec (convert and render)
+  2026/10/06 19:57:21 🔒 cad sandbox proven: cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it
+  2026/10/06 19:57:21 postgres: ping postgres: failed to connect to `user=gate database=gate`:
 PASS: cad refuses-without-landlock
-  2026/10/06 17:33:54 cad sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set CAD_SANDBOX_DISABLED=true to accept that deliberately
+  2026/10/06 19:57:22 cad sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set CAD_SANDBOX_DISABLED=true to accept that deliberately
 PASS: cad escape-hatch
-  2026/10/06 17:33:55 ⚠️  CAD_SANDBOX_DISABLED=true — the engines can read every file in this container
+  2026/10/06 19:57:22 ⚠️  CAD_SANDBOX_DISABLED=true — the engines can read every file in this container
 PASS: cad preflight-catches-restrict-self
-  2026/10/06 17:33:56 cad sandbox preflight: the cad guard stage cannot count a file inside the job directory under its sandbox: cad guard: engine sandbox could not be established: cad-guard failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
-emulated image id: sha256:70c52290fdf5690b5aef4d74111bcf9a2b66e1828dffdb91a1967904c4b07f08 (amd64)
+  2026/10/06 19:57:23 cad sandbox preflight: the cad guard stage cannot count a file inside the job directory under its sandbox: cad guard: engine sandbox could not be established: cad-guard failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+emulated image id: sha256:2e20aa9a9284e4442957502df13df40ec3e993ad183bb2a9252a87453dd7e2be (amd64)
 PASS: cad emulated-amd64-refuses
-  2026/10/06 17:37:36 cad sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set CAD_SANDBOX_DISABLED=true to accept that deliberately
+  2026/10/06 20:00:27 cad sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set CAD_SANDBOX_DISABLED=true to accept that deliberately
 ALL PASS (5 checks)
