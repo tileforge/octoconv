@@ -196,7 +196,7 @@ stage_argv() {
     guard) ARGV=(/usr/local/bin/cad-guard --format "$fmt" --max-entities "$MAX_ENTITIES" --max-nauo "$MAX_NAUO" "$dir/in.$ext") ;;
     mesh)
       if [ "$fmt" = stl ]; then
-        ARGV=(/usr/local/bin/cad-mesh stats --measure /job/measure.json "$dir/in.$ext")
+        ARGV=(/usr/local/bin/cad-mesh stats --measure /job/measure.json "$dir/in.$ext" /job/mesh.stl)
       else
         ARGV=(/usr/local/bin/cad-mesh --format "$fmt" "$dir/in.$ext" /job/out.stl --quality standard --measure /job/measure.json)
       fi ;;

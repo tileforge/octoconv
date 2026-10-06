@@ -508,6 +508,26 @@ meas_case stl_ascii_box "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl 
 meas_case stl_ascii_box_assume_mm "$CORPUS/synthetic/stl_ascii_box.stl" stl_ascii_box.stl mm mm client_assumed 10:20:30 6000 2200 none
 meas_case surfaces_only_iges "$CORPUS/synthetic/surfaces_only.iges" surfaces_only.iges "" any any any null null no_solids
 meas_case nasa_hubble_stl "$CORPUS/public/nasa-hubble-all-pieces.stl" nasa-hubble-all-pieces.stl "" unspecified none any null null stl_not_watertight
+python3 - "$CORPUS/synthetic/stl_ascii_box.stl" "$W" <<'PY' || fail "cannot generate the stl case variants"
+import sys
+
+src, out = sys.argv[1], sys.argv[2]
+with open(src, "rb") as fh:
+    data = fh.read()
+lines = data.split(b"\n")
+body = b"\n".join(lines[1:-2])
+for word, repl in ((b"facet normal", b"Facet Normal"), (b"outer loop", b"OUTER loop"), (b"vertex", b"VeRtEx"), (b"endloop", b"EndLoop"), (b"endfacet", b"endFACET")):
+    body = body.replace(word, repl)
+mixed = b"\n".join([lines[0], body] + lines[-2:])
+assert lines[0].startswith(b"solid ") and lines[-2].startswith(b"endsolid ") and lines[-1] == b""
+header = b"\n".join([b"SOLID" + lines[0][5:]] + lines[1:-2] + [b"ENDSOLID" + lines[-2][8:], b""])
+for name, blob in (("upper", data.upper()), ("mixed_body", mixed), ("header_upper", header)):
+    with open("%s/stl_case_%s.stl" % (out, name), "wb") as fh:
+        fh.write(blob)
+PY
+meas_case stl_case_upper "$W/stl_case_upper.stl" stl_ascii_box_upper.stl "" unspecified none 10:20:30 6000 2200 none
+meas_case stl_case_mixed_body "$W/stl_case_mixed_body.stl" stl_ascii_box_mixed.stl "" unspecified none 10:20:30 6000 2200 none
+meas_case stl_case_header_upper "$W/stl_case_header_upper.stl" stl_ascii_box_header_upper.stl "" unspecified none 10:20:30 6000 2200 none
 
 quality_one() {
 	local q=$1 stl

@@ -58,6 +58,8 @@ second carries a reason.
 | `stl` | 3D mesh; no solid counts; carries no units |
 | `dxf` | 2D; two coordinates per bbox corner; volume and area are always null |
 
+An STL is read as binary when its size is exactly 84 bytes plus 50 times the triangle count stored at byte 80; any other STL is read as ASCII, and its keywords (`solid`, `facet normal`, `outer loop`, `vertex`, `endloop`, `endfacet`, `endsolid`) match in any letter case. A vertex coordinate that does not fit a 32-bit float makes the file unreadable (`cad_unreadable`). The PNG is drawn from the same triangles that were measured.
+
 ## Units
 
 | Unit | Seen on the phase-71 corpus | Notes |

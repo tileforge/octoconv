@@ -720,7 +720,7 @@ run_stats() {
   local src=$1 job=$2
   docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job \
     -v "$job:/job" -v "$src:/job/in.stl:ro" "$TAG" \
-    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl \
+    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl /job/mesh.stl \
     > "$job/stdout.txt" 2> "$job/stderr.txt" </dev/null
 }
 
@@ -1004,7 +1004,7 @@ mesh_rss_row() {
   docker run --rm "${LIMITS[@]}" -e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job \
     -v "$WORK/wrap:/wrap:ro" -v "$job:/job" -v "$tile:/job/in.stl:ro" --entrypoint "${PYV[0]}" "$TAG" \
     "${PYV[@]:1}" /wrap/measure_wrap.py --budget-s 400 --outdir /job -- \
-    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl \
+    /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl /job/mesh.stl \
     > "$wrapout" 2> "$WORK/wrap.err" </dev/null || rc_w=$?
   rss=$(wrap_field child_rss_mib "$wrapout")
   peak=$(wrap_field cg_peak_mib "$wrapout")
