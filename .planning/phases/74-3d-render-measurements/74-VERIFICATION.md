@@ -1,24 +1,25 @@
 ---
 phase: 74-3d-render-measurements
-verified: 2026-10-05T22:05:09Z
-status: gaps_found
-score: 8/9 must-haves verified
-covered_files: [".env.example", ".planning/ci-local/ci-local-20261005T214321Z.log", ".planning/phases/74-3d-render-measurements/74-01-PLAN.md", ".planning/phases/74-3d-render-measurements/74-01-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-02-PLAN.md", ".planning/phases/74-3d-render-measurements/74-02-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-03-PLAN.md", ".planning/phases/74-3d-render-measurements/74-03-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-04-PLAN.md", ".planning/phases/74-3d-render-measurements/74-04-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-05-PLAN.md", ".planning/phases/74-3d-render-measurements/74-05-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-06-PLAN.md", ".planning/phases/74-3d-render-measurements/74-06-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-07-PLAN.md", ".planning/phases/74-3d-render-measurements/74-07-SUMMARY.md", ".planning/phases/74-3d-render-measurements/74-CONTEXT.md", ".planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt", ".planning/phases/74-3d-render-measurements/evidence/74-02-mesh.txt", ".planning/phases/74-3d-render-measurements/evidence/74-06-judge.txt", ".planning/phases/74-3d-render-measurements/evidence/74-06-landlock.txt", ".planning/phases/74-3d-render-measurements/evidence/74-06-sandbox-liveproof.txt", ".planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt", ".planning/research/SANDBOX-PATHS.md", "Dockerfile.cad-worker", "cmd/cad-worker/helper/cad-mesh", "cmd/cad-worker/helper/cad-render", "cmd/cad-worker/main.go", "cmd/cad-worker/requirements-vtk.txt", "cmd/cad-worker/vtk-keeplist.txt", "cmd/cad-worker/vtk_keeplist.py", "deploy/chart/octoconv/templates/configmap.yaml", "deploy/chart/octoconv/values.yaml", "docker-compose.yml", "docs/ERROR-CODES.md", "docs/MEASUREMENTS.md", "internal/api/api.go", "internal/api/cad_ceiling_test.go", "internal/api/cad_opts_test.go", "internal/api/formats_handlers_test.go", "internal/api/handlers.go", "internal/api/handlers_test.go", "internal/api/pre58_pinning_test.go", "internal/convert/cad.go", "internal/convert/cad_test.go", "internal/convert/cadmeasure.go", "internal/convert/cadmeasure_test.go", "internal/convert/cadopts.go", "internal/convert/cadopts_test.go", "internal/convert/cadpixel.go", "internal/convert/cadpixel_test.go", "internal/convert/cadrender.go", "internal/convert/cadrender_test.go", "internal/convert/cadsandbox.go", "internal/convert/cadsandbox_test.go", "internal/convert/convert.go", "internal/convert/convert_test.go", "internal/convert/converters.go", "internal/convert/operations_test.go", "internal/convert/sandboxcoverage_test.go", "internal/jobs/add_outputs_test.go", "internal/jobs/repo.go", "internal/measurements/consistency_test.go", "internal/measurements/measurements.go", "internal/worker/cad_outputs_test.go", "internal/worker/descriptors.go", "internal/worker/pinning_test.go", "internal/worker/probe_sideoutput_test.go", "internal/worker/runner.go", "internal/worker/webhook_role_test.go", "internal/worker/worker.go", "internal/worker/worker_test.go", "scripts/cad-liveproof.sh", "scripts/cad-render-probe.sh", "scripts/cad-unit-probe.py", "scripts/cad-worker-sandbox-measure.sh", "scripts/cmd/cad-measurements-check/main.go", "scripts/cmd/cad-pixel-judge/main.go", "scripts/conf05-crosscheck.sh"]
-covered_digest: "v3:sha256:bd9a0cbce2e50dcaa430951af8cc392c6070b1bb7111600746720bf334f90505"
+verified: 2026-10-06T17:45:35Z
+status: passed
+score: 9/9 must-haves verified
+covered_files: [".env.example",".planning/ci-local/ci-local-20261005T214321Z.log",".planning/phases/74-3d-render-measurements/74-01-PLAN.md",".planning/phases/74-3d-render-measurements/74-01-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-02-PLAN.md",".planning/phases/74-3d-render-measurements/74-02-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-03-PLAN.md",".planning/phases/74-3d-render-measurements/74-03-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-04-PLAN.md",".planning/phases/74-3d-render-measurements/74-04-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-05-PLAN.md",".planning/phases/74-3d-render-measurements/74-05-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-06-PLAN.md",".planning/phases/74-3d-render-measurements/74-06-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-07-PLAN.md",".planning/phases/74-3d-render-measurements/74-07-SUMMARY.md",".planning/phases/74-3d-render-measurements/74-CONTEXT.md",".planning/phases/74-3d-render-measurements/evidence/74-01-wave0.txt",".planning/phases/74-3d-render-measurements/evidence/74-02-mesh.txt",".planning/phases/74-3d-render-measurements/evidence/74-05-addoutputs-live.txt",".planning/phases/74-3d-render-measurements/evidence/74-06-judge.txt",".planning/phases/74-3d-render-measurements/evidence/74-06-landlock.txt",".planning/phases/74-3d-render-measurements/evidence/74-06-sandbox-liveproof.txt",".planning/phases/74-3d-render-measurements/evidence/74-07-liveproof.txt",".planning/research/SANDBOX-PATHS.md","Dockerfile.cad-worker","cmd/cad-worker/helper/cad-mesh","cmd/cad-worker/helper/cad-render","cmd/cad-worker/main.go","cmd/cad-worker/requirements-vtk.txt","cmd/cad-worker/vtk-keeplist.txt","cmd/cad-worker/vtk_keeplist.py","deploy/chart/octoconv/templates/configmap.yaml","deploy/chart/octoconv/values.yaml","docker-compose.yml","docs/ERROR-CODES.md","docs/MEASUREMENTS.md","internal/api/api.go","internal/api/cad_ceiling_test.go","internal/api/cad_opts_test.go","internal/api/formats_handlers_test.go","internal/api/handlers.go","internal/api/handlers_test.go","internal/api/pre58_pinning_test.go","internal/convert/cad.go","internal/convert/cad_test.go","internal/convert/cadmeasure.go","internal/convert/cadmeasure_test.go","internal/convert/cadopts.go","internal/convert/cadopts_test.go","internal/convert/cadpixel.go","internal/convert/cadpixel_test.go","internal/convert/cadrender.go","internal/convert/cadrender_test.go","internal/convert/cadsandbox.go","internal/convert/cadsandbox_test.go","internal/convert/convert.go","internal/convert/convert_test.go","internal/convert/converters.go","internal/convert/operations_test.go","internal/convert/sandboxcoverage_test.go","internal/jobs/add_outputs_test.go","internal/jobs/repo.go","internal/measurements/consistency_test.go","internal/measurements/measurements.go","internal/worker/cad_outputs_test.go","internal/worker/descriptors.go","internal/worker/pinning_test.go","internal/worker/probe_sideoutput_test.go","internal/worker/runner.go","internal/worker/webhook_role_test.go","internal/worker/worker.go","internal/worker/worker_test.go","scripts/cad-liveproof.sh","scripts/cad-render-probe.sh","scripts/cad-unit-probe.py","scripts/cad-worker-sandbox-measure.sh","scripts/cmd/cad-measurements-check/main.go","scripts/cmd/cad-pixel-judge/main.go","scripts/conf05-crosscheck.sh"]
+covered_digest: "v3:sha256:098057508d15647783cbe776da9016deb31ad401325990fd089891d7470006aa"
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "The final cad-worker image (now carrying vtk 9.7.1 and libosmesa6) builds for linux/amd64 and, run emulated, refuses to start without Landlock (the emulated-amd64-refuses check of scripts/sandbox-liveproof.sh cad, which phase 73 ran and passed on its image)"
-    status: failed
-    reason: "NOT RUN. evidence/74-06-sandbox-liveproof.txt records 'NOT RUN: cad emulated-amd64-refuses -- the emulated linux/amd64 build was stopped by a disk watchdog at 5.77 GiB free (floor 6 GiB)' and its RESULT line says 'this is NOT an ALL PASS line'. Phase 74 changed Dockerfile.cad-worker (a second hash-locked wheel install, a keep-list prune of site-packages, a new apt package, a vtkmodules import smoke). None of that has been built for amd64, so whether the amd64 image builds at all, whether the x86_64 vtk wheel hash in the copied lock installs, whether the keep-list prune leaves a working VTK on amd64, and whether the class still refuses to run unconfined there are all unknown. Every Landlock measurement in this phase is native arm64."
-    artifacts:
-      - path: ".planning/phases/74-3d-render-measurements/evidence/74-06-sandbox-liveproof.txt"
-        issue: "4 PASS, 1 NOT RUN (emulated-amd64-refuses); no ALL PASS line"
-      - path: "Dockerfile.cad-worker"
-        issue: "changed by this phase; amd64 build unproven"
-    missing:
-      - "Free at least 6 GiB of docker disk and run scripts/sandbox-liveproof.sh cad on the final tree until it ends with an ALL PASS line including emulated-amd64-refuses; commit the transcript as evidence"
-      - "If the amd64 build fails (wheel hash, prune, OSMesa), fix it in a separate commit and re-run the arm64 live proof as well"
+re_verification:
+  previous_status: gaps_found
+  previous_score: 8/9
+  previous_verified: 2026-10-05T22:05:09Z
+  gaps_closed:
+    - "The final cad-worker image (now carrying vtk 9.7.1 and libosmesa6) builds for linux/amd64 and, run emulated, refuses to start without Landlock (the emulated-amd64-refuses check of scripts/sandbox-liveproof.sh cad, which phase 73 ran and passed on its image)"
+  gaps_remaining: []
+  regressions: []
+  advisory_closed:
+    - "Live-DB run of TestAddOutputs* is now a committed transcript (evidence/74-05-addoutputs-live.txt, 3 PASS, no SKIP)"
+    - ".env.example rationale block removed (77fa7cf)"
+    - "Stale test name TestCreateJobCADTakesNoOptions renamed (e60f49c)"
+gaps: []
 deferred: []
 coincidental_reliance_items:
   - truth: "SC4 units: STEP/IGES report the declared unit, numbers converted back from mm"
@@ -29,132 +30,154 @@ coincidental_reliance_items:
 # Phase 74: 3D Render & Measurements Verification Report
 
 **Phase goal:** Клиент получает PNG-превью детали и вместе с ним честные размеры; два выхода одной джобы видны оба или не виден ни один.
-**Verified:** 2026-10-05T22:05:09Z on branch `gsd/phase-74-3d-render-measurements`, HEAD `01be894` (base `main`)
-**Status:** gaps_found
-**Re-verification:** No. This is the initial verification.
+**Verified:** 2026-10-06T17:45:35Z on branch `gsd/phase-74-3d-render-measurements`, HEAD `720cb93` (base `main`)
+**Status:** passed
+**Re-verification:** Yes. The previous run (2026-10-05T22:05:09Z, HEAD `01be894`) was gaps_found 8/9. This run follows the gap closure.
 
 ## Goal Achievement
 
-The client-facing goal is achieved on arm64. It is proven live on the final product code (`d93f6db`; the commits after it touch only `.planning/`). One gap remains: the phase changed the engine image, and its amd64 build and amd64 refusal check were never run.
+The client-facing goal is achieved. The render and measurements path is proven live on `d93f6db`. The only product-tree changes since then are a 4-line comment removal in `.env.example` and a test rename in `internal/api/handlers_test.go`. The one open gap is now closed: the final `Dockerfile.cad-worker` builds for linux/amd64, including the hash-locked vtk wheel, the keep-list prune, libosmesa6 and the `vtkmodules` import smoke. Run emulated, that image refuses to start without Landlock.
+
+### Re-verification of the gap (truth 9)
+
+`evidence/74-06-sandbox-liveproof.txt` (committed in `720cb93`) is the raw output of `scripts/sandbox-liveproof.sh cad`:
+
+- `commit: 8c6a6c41d346…`, `tracked dirt: 1 file(s)`. Native image `sha256:91dfe431…`.
+- Results: PASS confined-startup (the worker logs `cad sandbox proven: cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it`), PASS refuses-without-landlock, PASS escape-hatch, PASS preflight-catches-restrict-self.
+- `emulated image id: sha256:70c52290… (amd64)`. `PASS: cad emulated-amd64-refuses` with the refusal line `landlock is unavailable on this kernel …`.
+- The run ends with `ALL PASS (5 checks)`. There is no NOT RUN line.
+
+**Is the transcript from the current code?**
+- `git diff --stat 8c6a6c4 720cb93` changes only the evidence file, so the product tree is identical to HEAD.
+- `8c6a6c4` itself adds only `.planning/HANDOFF.json` and `.continue-here.md`.
+- `git diff --stat d93f6db 8c6a6c4 -- . ':!.planning'` shows only `.env.example` (4 comment lines removed) and `internal/api/handlers_test.go` (one test renamed). Neither can change the cad image. The final stage copies only `/out/cad-worker`, which `go build ./cmd/cad-worker` produces, and `_test.go` files are never compiled into it. `.env.example` is not read by the build. The only non-test `go:embed` directives are the migrations, `testdata/cad/synthetic/units_inch.step` and `texresolvable.txt`, and none of them changed.
+- The one dirty tracked file is `.planning/STATE.md`, which the commit message names. It is still the only modification in the working tree. It sits under `.planning/`, and no build input reads it.
+
+**Does the check prove the build, not just the refusal?** Yes:
+- `check_emulated_amd64_refuses` runs `docker build --platform linux/amd64 -f Dockerfile.cad-worker` on the same Dockerfile and calls `die` if that build fails.
+- The engine stage ends with a `RUN … import … vtkmodules.vtkRenderingOpenGL2` smoke. An amd64 build therefore cannot complete unless the x86_64 vtk wheel hash installs and the pruned VTK still imports.
+- The script fails the check if the emulated output contains 🔒.
+
+**Verdict:** ✓ VERIFIED.
+
+One limit stays in scope as before: every Landlock measurement is native arm64. The amd64 evidence covers build, import and refusal. It does not cover a confined amd64 render, and CONTEXT defers that, as recorded in SANDBOX-PATHS "Ещё не замерено".
 
 ### Observable Truths
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | SC1: `render` step/stp/iges/stl → png gives a non-empty, pixel-judged part image. The default is iso, 1280, opaque. Different views give different images, with Z up. | ✓ VERIFIED | 74-07-liveproof (commit d93f6db, tracked_dirt 0, ALL PASS): RENDER rows for .step, .stp, .igs, .iges and .stl are done with 2 outputs. The Go judge says `ok=1`, mode blob, 1280x1280, margin ≥76 px, `alpha=0`. The default render's PNG sha (`51c322…`) equals the explicit `view=iso` sha, so the default is iso. The iso, front and top views give 3 distinct shas. Front h/w = 0.502 and top h/w = 1.500 on the X=2, Y=3, Z=1 inch box. That holds only with Z up: a Y-up camera would give front h/w 1.5. `JudgeCADPNG` runs in `CADRenderConverter.Convert` before returning nil (cadrender.go). |
-| 2 | SC2: closed options give 422. `quality` changes tessellation for both convert and render, with monotone triangle counts. `transparent` gives an alpha PNG with a fully transparent background. | ✓ VERIFIED | `ParseCADOpts` (cadopts.go) accepts five keys with closed values. Size is an integer from 256 to 2048, and null, string or fractional sizes are rejected. Unknown keys are rejected. `ValidateCADApplicability` lets convert take only quality and refuses quality on an STL render. Live OPTS_REJECT: 9 rows, all 422 with `jobs_created=0`, covering view, size 255, 2049 and string, quality, background, unknown key, a render key on convert, and quality on STL. Live QUALITY runs real convert jobs: draft 3988 ≤ standard 5948 ≤ fine 14140. Render passes the same `--quality` to the same `meshStage` (cadrender_test asserts `--quality fine` in the mesh argv), and a render with `fine` ended done and judged ok. Transparent: live `alpha=1`, frac_transparent 0.6049 + part 0.3951 = 1.0, so every non-part pixel has alpha 0. The judge requires alpha and treats any pixel with a>0 as part, so a semi-transparent background would break J3's margin. |
-| 3 | SC3/MEAS-01: two outputs, written atomically. The inversion test can fail against the naive sequence. `download_url` points to the PNG. | ✓ VERIFIED | `Repo.AddOutputs` writes all rows in one `pgx.BeginFunc` (repo.go). `process()` (worker.go) runs the side-output hook (which reads the sidecar and runs `measurements.Validate`) before any upload. It then uploads the primary and the extras, calls `AddOutputs` once, then `MarkDone`. `TestAddOutputsRollsBackWhenTheSecondRowFails` holds the naive control in the same test: two `AddOutputWithRole` calls must leave exactly 1 visible row, while `AddOutputs` must leave 0, and `MarkDone` refuses with "0 primary outputs". So a naive `AddOutputs` fails that test. Worker tests cover a second upload failure, an `AddOutputs` failure, rejected measurements and a rejected PNG (cad_outputs_test.go). `download_url` selection is tested for GET (`TestGetJob_DownloadURLNeverMeasurements`) and for the webhook in reverse row order (webhook_role_test.go). Live, every render shows `roles=primary@0;measurements@1`, and the measurements body was fetched through the API URL and validated. The live DB run is backed by a scratchpad transcript, not a committed one (see Advisory). |
-| 4 | SC4/MEAS-02..04: volume and area are null with a reason, never 0. The unit follows the source: the declared unit, converted back from mm. `assume_unit` never overrides a declared unit. IGES inch is a recorded GAP. | ✓ VERIFIED (coincidental-reliance) | cad-mesh `solid_summary` sums only closed and valid solids. A zero or non-finite total demotes them to `invalid_solid`, so 0 is never emitted. `buildCADMeasurements` pairs a null volume with its reason, divides by f, f² and f³, and runs `Validate`. `cadUnitFor` returns the declared unit before it looks at `assumeUnit`; assume applies only when there is neither a declared unit nor raw text; STL gives unspecified/none or client_assumed. Live MEAS: units_inch gives inch/declared 1:2:3, V 6, A 22, and stays inch with `assume_unit=mm`. stl_ascii_box gives unspecified/none, or mm/client_assumed with assume. surfaces_only.iges gives null with `no_solids`. nasa_hubble.stl gives null with `stl_not_watertight`. No document has a 0. IGES that declares anything but mm gets `applied_factor=None` and becomes unspecified/none; the GAP is recorded in 74-01-wave0 and docs/MEASUREMENTS.md. The `text_unit` decision is judged below. |
-| 5 | SC5: the render stage has no OCP and runs under its own measured ruleset, which matches across SANDBOX-PATHS, Go and conf05. Preflight judges by pixels. Render failures are retryable, a render timeout is terminal, and mesh failures are terminal. | ✓ VERIFIED (arm64) | `cadRenderReadOnly` = `/opt/venv`, `/usr/bin/python3.11`, `/usr/lib/python3.11`, plus multiarch; `cadRenderEngines` = `cad-render`. This equals `MEASURED,stage=render` and the `conf05:cadrender` blocks. `scripts/conf05-crosscheck.sh cad` gives `MATCH: cadrender readonly (3) engines (1)` and exits 0. The render removal table has 12 rows; the negative control fails as expected and the outside file is denied. cad-render has no OCP/OCC/cadquery string, and `cadsandbox_test` greps its imports. `classifyCADStage`: render deadline → `ErrCADRenderTimeout` (terminal, cad_too_complex); SIGKILL → terminal; any other render failure → `ErrCADRenderFailed`, which is not in `isCADTerminal`. pinning_test covers retry and no MarkFailed. Live RENDER_RETRY (TERM to cad-render): retried=1, then done with 2 outputs. MESH_SIGNAL: failed, retried=0. CANCEL_RENDER: pid gone in 0.3 s. Preflight: the worker log line "cad-guard, cad-mesh and cad-render ran inside the job directory and were denied a file outside it", and the live stack ran with `sandbox_disabled=false`. |
-| 6 | Limits: the engine timeout is 886 s, under the 900 s reconciler window. The triangle cap is 3,835,382, derived from Wave-0. | ✓ VERIFIED | `CADDefaultEngineTimeout` = 30+316+480+60 = 886 is pinned in cad_test, and cadsandbox_test asserts it is below the reconciler window. `RECONCILER_ACTIVE_STALE_AFTER` is unchanged in the diff. Helm grace is 906, and the compose, configmap and .env values are all 886. `CADMaxRenderTriangles=3835382` and `CADMaxSTLBytes=190840832` are held by a cadrender_test that regex-parses the `DERIVED` lines of 74-01-wave0.txt. Live HDR shows `cad_engine_timeout_s=886` and INSPECT shows stl max_bytes 190840832. |
-| 7 | Supply chain: the only additions are vtk from the 71 lock and libosmesa6. | ✓ VERIFIED | `cmp` shows `requirements-vtk.txt`, `vtk_keeplist.py` and `vtk-keeplist.txt` byte-identical to `scripts/cad-measure/`. The Dockerfile diff adds one pip install (`--require-hashes --no-deps --only-binary`), the prune and `libosmesa6`, and nothing else. The libosmesa6 version equals 71's. IDENTITY shows 5/5 PNGs byte-identical to the 71 renders. |
-| 8 | Invariants: `exec.go` unchanged, no new code comments, goldens and metric labels unchanged. | ✓ VERIFIED | `git diff main...HEAD` is empty for internal/convert/exec.go, scripts/cad-measure, Dockerfile.cad-measure and cad-guard. No golden or testdata file and nothing in internal/metrics is in the diff. Go `//` lines changed only where existing comments were edited (net ≤ 0 per file, except formats_handlers_test.go, which re-wraps an existing comment). New scripts and helpers add 0 `#` lines besides the shebang. conf05-crosscheck.sh only edits its existing header. One new comment block is in .env.example (see Anti-Patterns). |
-| 9 | The final engine image builds for amd64 and refuses to run unconfined there (emulated-amd64-refuses). | ✗ FAILED (NOT RUN) | 74-06-sandbox-liveproof.txt: "NOT RUN … disk watchdog at 5.77 GiB free"; "this is NOT an ALL PASS line". The Dockerfile changed in this phase. See Gaps. |
+| 1 | SC1: `render` step/stp/iges/stl → png gives a non-empty, pixel-judged part image. The default is iso, 1280, opaque. Different views give different images, with Z up. | ✓ VERIFIED (regression ok) | 74-07-liveproof `SUMMARY,result=ALL PASS … render=5,views=6`, taken on d93f6db. The product code has not changed since, except for comments and a test name. The full unit suite passes on go1.26.4. Initial evidence: judge ok, 1280x1280, default sha equals the iso sha, front h/w 0.502 and top h/w 1.500 (Z up). |
+| 2 | SC2: closed options give 422. `quality` changes tessellation for convert and render. `transparent` gives a fully transparent background. | ✓ VERIFIED (regression ok) | Live `opts_reject=9`, `quality=1` (draft 3988 ≤ standard 5948 ≤ fine 14140), transparent alpha=1 with background fraction + part fraction = 1.0. The cadopts and cadrender unit tests pass. |
+| 3 | SC3/MEAS-01 (3D half): two outputs, written atomically. The inversion test can fail against the naive sequence. `download_url` points to the PNG. | ✓ VERIFIED | `Repo.AddOutputs` runs in one `pgx.BeginFunc`. `process()` validates, uploads, calls `AddOutputs` once, then `MarkDone`. **New:** evidence/74-05-addoutputs-live.txt (commit 1950f68, tracked dirt 0, PostgreSQL 18.4) records PASS for `TestAddOutputsWritesBothRowsInOneTransaction`, `TestAddOutputsRollsBackWhenTheSecondRowFails` (which holds the naive two-call control) and `TestAddOutputsRejectsEmptyInputWithoutWriting`, with go test exit 0 and no SKIP. `git diff 1950f68 HEAD -- internal/ cmd/` shows only the handlers_test rename, so repo.go and add_outputs_test.go are unchanged since that run. Live: every render reports `roles=primary@0;measurements@1`. |
+| 4 | SC4/MEAS-02..04: null with a reason, never 0. Unit by source. `assume_unit` never overrides a declared unit. IGES inch is a recorded GAP. | ✓ VERIFIED (coincidental-reliance) | Unchanged from the initial run. Live `meas=6`: units_inch stays inch even with `assume_unit=mm`, STL gives unspecified/none or client_assumed, surfaces-only IGES gives `no_solids`, open STL gives `stl_not_watertight`. The advisory on the STEP text-unit factor still stands; see coincidental_reliance_items. |
+| 5 | SC5 (extends CADW-02 and CADW-03 for the render stage): the render stage has no OCP and runs under its own measured ruleset, matched across SANDBOX-PATHS, Go and conf05. Preflight judges by pixels. Render failures are retryable, a render timeout is terminal, mesh failures are terminal. A kill leaves no live process. | ✓ VERIFIED | Re-run now: `scripts/conf05-crosscheck.sh cad` gives MATCH for cadguard (2/1), cadmesh (3/1), cadrender (3/1) and multiarch (2), exit 0. The sandbox liveproof on 8c6a6c4 shows the preflight proven line covering cad-render, plus refuse/escape-hatch/restrict-self on the final image, now also on amd64. Live `render_retry=1`, `mesh_signal=1`, `cancel_render=1` (pid gone in 0.3 s). The pinning_test and cadsandbox_test packages pass. |
+| 6 | Limits: engine timeout 886 s, under the 900 s reconciler window. Triangle cap 3,835,382, derived from Wave-0. | ✓ VERIFIED (regression ok) | The commit 77fa7cf removed only rationale comments. `CAD_RENDER_TIMEOUT` and the 886 values did not change. The cad_test, cadsandbox_test and cadrender_test pins pass. |
+| 7 | Supply chain: the only additions are vtk from the 71 lock and libosmesa6. | ✓ VERIFIED | Re-run: `cmp` says `requirements-vtk.txt`, `vtk_keeplist.py` and `vtk-keeplist.txt` are byte-identical to `scripts/cad-measure/`. The Dockerfile is unchanged since the initial run. |
+| 8 | Invariants: `exec.go` unchanged, no new code comments, goldens and metric labels unchanged. | ✓ VERIFIED | Re-run: `git diff main...HEAD` is empty for exec.go, scripts/cad-measure, Dockerfile.cad-measure and cad-guard. The gap-closure commits add no comments; 77fa7cf removes 4. |
+| 9 | The final engine image builds for amd64 and refuses to run unconfined there (emulated-amd64-refuses). | ✓ VERIFIED (gap closed) | See "Re-verification of the gap" above: `ALL PASS (5 checks)`, taken on 8c6a6c4, whose product tree equals HEAD's. |
 
-**Score:** 8/9 truths verified (0 present-but-behavior-unverified)
+**Score:** 9/9 truths verified (0 present-but-behavior-unverified)
 
 ### Decisions recorded
 
-- **D-06 (the J1 relaxation for thin frames).** J1's span check (`count >= long side`) now applies only to blob-mode frames. A frame that fails the blob test is judged by the thin rule instead: aspect < 0.15 and dark_count ≥ 0.25 × long side, after J0, J2 and J3. Empty frames still fail J1 (no part pixels) or J4. `CADMinRenderSize` stays 256. The trigger was a W15 thin part at 256 px: 186 part pixels against a 206 px extent, which pixelcheck also rejects. Evidence is in 74-06-judge.txt: 49 frames, 46 agreements, 3 divergences that the thin rule admits (all W15), 0 unexplained, and blank frames rejected by both judges. Tests `TestJudgeCADPNGAcceptsW15ThinFrameAt256WithFewerPixelsThanItsExtent` and `TestJudgeCADPNGRejectsSparseNoise` are mutation-proved per 74-06-SUMMARY. Verdict: an intentional, bounded relaxation backed by evidence. It widens acceptance only for frames that pass J0, J2, J3 and the thin criteria.
-- **One operation per engine, relaxed for cad (convert + render).** `operations_test.go` keeps "every class serves exactly one operation" except for cad, which must serve exactly convert and render. `convert_test.go` names the five allowed `(operation, pair)` keys. `cmd/cad-worker/main.go` replaces both converters with the same configured `CADConverter`. Verdict: the relaxation is explicit and narrow, enforced by name and count, not by omission.
-- **`cad_unit_factor_source = text_unit` (the orchestrator DECISION in 74-01-wave0.txt).** The pre-registered rule gave `none` because the raw ratio for nist-d2mi was 25.4707. A follow-up probe found that the extra ratio comes from 9 OCP-created edge-split vertices; on the 130 vertices that match VERTEX_POINT the ratio is exactly 25.4. The DERIVED line was left unedited and the DECISION line was added after it with the reason and a fallback. **Judgment: honest and evidenced, with a residual precondition.** It is honest because the override is visible, the original rule result is preserved, and docs/MEASUREMENTS.md states "The helper does not measure that ratio at run time". It is evidenced by 5 STEP rows, one of them explained by a re-probe rather than matched directly, and corroborated live: ctc_05 reports 19 × 20.75 × 22 inch, round design dimensions that would be very unlikely under a wrong factor. The residual is that the helper's regex predicts OCP's unit resolution, and nothing cross-checks it at run time; this is recorded under coincidental_reliance_items. One process detail: the re-probe was "one run of the 71 pruned image with scripts/cad-unit-probe.py helpers". Its command is not a committed probe mode, so a reader cannot re-run it verbatim.
+These are unchanged from the initial verification and still hold:
+- **D-06, the J1 thin-frame relaxation.** It is bounded and evidenced in 74-06-judge.txt: 49 frames, 0 unexplained divergences.
+- **The cad class serves both convert and render.** The exception is enforced by name and by count in operations_test and convert_test.
+- **`cad_unit_factor_source = text_unit`.** The override is honest and evidenced, with a residual precondition recorded under coincidental_reliance_items.
+
+### Per-stage "extends …" criteria
+
+- **CADW-02 and CADW-03 (render stage) are extended by this phase (SC5).** Truth 5 verifies them: the render ruleset is measured and crosschecked, the worker refuses to start without Landlock (now on arm64 and on emulated amd64), the preflight runs cad-render inside and outside the job directory, render-stage errors are classified, and a cancel during render leaves no live process.
+- **MEAS-01 and MEAS-03 (DXF half) are extended by Phase 75 SC2,** which says "вторым выходом идёт `measurements` с 2D bbox … единицы по `$INSUNITS` или `unspecified` (расширяет MEAS-01, MEAS-03)". The REQUIREMENTS.md note says that these extended criteria "проверяются верификатором расширяющей фазы". For Phase 74 the 3D halves are satisfied: two outputs for STEP/STP/IGES/STL render, and units from the declared STEP/IGES unit or `unspecified` for STL. The DXF half is not a gap here.
 
 ### Deferred Items
 
-None are filtered. The amd64 gap could be closed by Phase 76 SC3 ("Живой гейт всех классов, включая `cad`, завершается `ALL PASS` на образах, собранных из финального коммита"), which needs the sandbox live proof to end with ALL PASS. Per the verification brief it stays a gap here. The DXF parts of MEAS-01 and MEAS-03 belong to Phase 75 by the REQUIREMENTS.md mapping note; they are not gaps of this phase.
+None. The DXF parts of MEAS-01 and MEAS-03 are owned by Phase 75 by the requirements mapping. They are not gaps of this phase.
+
+### Advisory (New Scope, Unevidenced)
+
+| # | Finding | Category | Why Advisory |
+|---|---------|----------|--------------|
+| 1 | `applied_factor` for STEP is the table value of the text unit, so `cadFactorMatches` compares the table with itself for STEP (carried forward from the initial run). | other | It is documented truthfully in docs/MEASUREMENTS.md. No failing file or test demonstrates a wrong unit. See coincidental_reliance_items. |
+
+The previous advisory on the live AddOutputs DB run is closed by evidence/74-05-addoutputs-live.txt.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `cmd/cad-worker/helper/cad-render` | confined VTK render, CADVERDICT | ✓ VERIFIED | Shebang-only header with no OCP imports. Byte-identical PNG output to 71 on 5 parts. |
-| `cmd/cad-worker/helper/cad-mesh` | `--quality`, `--measure`, `stats` | ✓ VERIFIED | QUALITY table and the mm-per-unit table are present. The stats path has no OCP import (grep and evidence). The standard-quality STL is byte-identical to 73 (IDENTITY_STL). |
-| `Dockerfile.cad-worker` | hash-locked vtk, prune, libosmesa6 | ✓ VERIFIED (arm64) | amd64 is unbuilt (gap). |
-| `internal/convert/cadopts.go` | closed union, applicability | ✓ VERIFIED | Wired at handlers.go and in the worker through `CADOptsFromMap`. |
-| `internal/convert/cadpixel.go` | `JudgeCADPNG` J0–J4 and thin rule | ✓ VERIFIED | Called by cadrender.go, the preflight and the `cad-pixel-judge` CLI. |
-| `internal/convert/cadrender.go` | `CADRenderConverter` | ✓ VERIFIED | Registered in converters.go and replaced in cad-worker main. |
-| `internal/convert/cadmeasure.go` | draft → document in the declared unit | ✓ VERIFIED | Strict decode, finite checks, `Validate`. |
-| `internal/jobs/repo.go` `AddOutputs` | one transaction | ✓ VERIFIED | Used by worker.go when `sideOutputs != nil` (cad and probe). |
-| `internal/worker/descriptors.go` | `cadSideOutputs`, render sentinels | ✓ VERIFIED | `SideOutputs: cadSideOutputs` on `CADDescriptor`. |
-| `.planning/research/SANDBOX-PATHS.md` | `conf05:cadrender` blocks | ✓ VERIFIED | conf05 MATCH. |
-| evidence/74-0* | wave0, mesh, judge, landlock, sandbox, liveproof | ✓ present | The sandbox-liveproof file is a partial pass (gap). |
+| `cmd/cad-worker/helper/cad-render` | confined VTK render, CADVERDICT | ✓ VERIFIED | Unchanged since the initial run |
+| `cmd/cad-worker/helper/cad-mesh` | `--quality`, `--measure`, `stats` | ✓ VERIFIED | Unchanged |
+| `Dockerfile.cad-worker` | hash-locked vtk, prune, libosmesa6 | ✓ VERIFIED (arm64 and amd64 build) | The amd64 image `sha256:70c52290…` was built from this file in the 8c6a6c4 run |
+| `internal/convert/cadopts.go`, `cadpixel.go`, `cadrender.go`, `cadmeasure.go` | options, judge, converter, measurements | ✓ VERIFIED | Unchanged; tests pass |
+| `internal/jobs/repo.go` `AddOutputs` | one transaction | ✓ VERIFIED | The live-DB transcript is now committed |
+| `internal/worker/descriptors.go` | `cadSideOutputs`, render sentinels | ✓ VERIFIED | Unchanged |
+| `.planning/research/SANDBOX-PATHS.md` | `conf05:cadrender` blocks | ✓ VERIFIED | conf05 MATCH, re-run, exit 0 |
+| evidence/74-0* | wave0, mesh, addoutputs-live, judge, landlock, sandbox, liveproof | ✓ VERIFIED | The sandbox-liveproof is now ALL PASS 5/5 |
 
 ### Key Link Verification
 
-| From | To | Via | Status |
-|------|----|-----|--------|
-| handlers.go create | `ParseCADOpts` + `ValidateCADApplicability` | engine-keyed opts switch | ✓ WIRED (live OPTS_REJECT) |
-| worker `CADDescriptor.OptsFromMap` | `CADOptsFromMap` | re-parse of the stored map | ✓ WIRED (cadrender.go also re-parses) |
-| cadrender.go | `JudgeCADPNG`, `buildCADMeasurements` | before Convert returns nil | ✓ WIRED |
-| worker.go `process()` | `Repo.AddOutputs` | single write path for hooked engines | ✓ WIRED |
-| cad-worker main | `CADRenderConverter`, `CAD_RENDER_TIMEOUT` | `Default.Replace`, `envDuration` | ✓ WIRED |
-| SANDBOX-PATHS | cadsandbox.go | conf05-crosscheck.sh cad | ✓ WIRED (MATCH, exit 0) |
-| wave0 DERIVED lines | cad.go constants | cadrender_test regex | ✓ WIRED |
+All links from the initial verification are unchanged in code, because `git diff 1950f68 HEAD -- internal/ cmd/` contains only the test rename. They remain WIRED: handlers → ParseCADOpts/ValidateCADApplicability, worker → CADOptsFromMap, cadrender → JudgeCADPNG/buildCADMeasurements, process() → AddOutputs, cad-worker main → CADRenderConverter, SANDBOX-PATHS ↔ cadsandbox.go (conf05 re-run), wave0 DERIVED → cad.go constants.
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data | Source | Real data | Status |
 |----------|------|--------|-----------|--------|
-| measurements output | bbox, solids, volume, area, unit | cad-mesh OCP draft or numpy stats → `buildCADMeasurements` → sidecar → `cadSideOutputs` → S3 + `AddOutputs` | yes (live MEAS rows from API-fetched bodies) | ✓ FLOWING |
-| PNG primary | rendered frame | cad-render under Landlock → `JudgeCADPNG` → upload | yes (live judge on the downloaded bytes) | ✓ FLOWING |
+| measurements output | bbox, solids, volume, area, unit | cad-mesh → `buildCADMeasurements` → sidecar → `cadSideOutputs` → S3 + `AddOutputs` | yes (live MEAS rows) | ✓ FLOWING |
+| PNG primary | rendered frame | cad-render under Landlock → `JudgeCADPNG` → upload | yes (live judge on downloaded bytes) | ✓ FLOWING |
 
-### Behavioral Spot-Checks
+### Behavioral Spot-Checks (this run, GOTOOLCHAIN=go1.26.4)
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Build, vet and all tests on the pinned toolchain | `GOTOOLCHAIN=go1.26.4 go build ./... && go vet ./... && go test -count=1 ./...` | 31 packages ok, exit 0 | ✓ PASS |
+| Build | `go build ./...` | ok (go1.26.4 darwin/arm64) | ✓ PASS |
+| Vet | `go vet ./...` | ok | ✓ PASS |
 | Formatting | `gofmt -l .` | empty | ✓ PASS |
-| Landlock sets match the doc | `scripts/conf05-crosscheck.sh cad` | cadguard, cadmesh, cadrender and multiarch MATCH, exit 0 | ✓ PASS |
-| Chart checks | `scripts/ci-helm-checks.sh` | all OK, exit 0 | ✓ PASS |
+| Unit tests | `go test -count=1 ./...` (one run; the six packages cut off from the captured tail were re-run on their own) | every package ok, internal/convert 162.5 s, no FAIL | ✓ PASS |
+| Renamed test | `go test -run TestCreateJobCADRejectsOtherEnginesOptions -v ./internal/api/` | PASS | ✓ PASS |
+| Landlock sets match the doc | `scripts/conf05-crosscheck.sh cad` | 4 MATCH, exit 0 | ✓ PASS |
 | vtk lock and keep-list identity | `cmp scripts/cad-measure/* cmd/cad-worker/*` | 3/3 identical | ✓ PASS |
 | Invariant files | `git diff main...HEAD -- internal/convert/exec.go scripts/cad-measure Dockerfile.cad-measure cmd/cad-worker/helper/cad-guard` | empty | ✓ PASS |
-| Live proof taken on final code | `git diff --stat d93f6db HEAD` | only `.planning/` files | ✓ PASS |
+| Liveproof on the current product tree | `git diff --stat d93f6db HEAD -- . ':!.planning'` and `git diff --stat 8c6a6c4 HEAD -- . ':!.planning'` | comment and test-name changes only; empty | ✓ PASS |
 
-The AddOutputs DB tests skip without `DATABASE_URL`. Neither the local `go test` nor the ci-local gate tier sets it, so they skipped in both runs. No octoconv postgres was running and no service was started for this verification.
+The compose-backed live suites were not re-run. Their committed transcripts were taken on product trees that equal HEAD, except for comments and a test name.
 
 ### Probe Execution
 
-The docker probes were not re-run, as the brief required. The committed transcripts were checked for self-consistency instead:
-
 | Probe | Result | Taken on | Status |
 |-------|--------|----------|--------|
-| `scripts/cad-liveproof.sh` → 74-07-liveproof.txt | `SUMMARY,result=ALL PASS` | d93f6db, tracked_dirt 0 (product code = HEAD) | PASS |
-| `scripts/sandbox-liveproof.sh cad` → 74-06-sandbox-liveproof.txt | 4 PASS, 1 NOT RUN | c40b54f, dirt = STATE.md; c40b54f→d93f6db changed only scripts and summaries | PARTIAL (gap) |
-| `scripts/cad-worker-sandbox-measure.sh` → 74-06-landlock.txt | `MEASURED,stage=render…`, leaked 0, 3 negative controls | image d1ee5a9e (helpers last changed in e873193) | PASS |
-| `scripts/cad-render-probe.sh judge` → 74-06-judge.txt | 46/46 real ok, 3 thin-only, 0 unexplained | 3c2c1ee (the J1 reorder) | PASS |
-| `scripts/cad-render-probe.sh tracer/identity/cost/units/mesh` → 74-01, 74-02 | ok, IDENTITY 5/5, DERIVED lines | Wave 0 commits with tracked dirt 2–3 (pre-commit work in progress) | PASS for Wave 0; the final behaviour is re-proven live in 74-07 |
+| `scripts/sandbox-liveproof.sh cad` → 74-06-sandbox-liveproof.txt | `ALL PASS (5 checks)` incl. emulated-amd64-refuses | 8c6a6c4 (product tree = HEAD), dirt = `.planning/STATE.md` | PASS |
+| `scripts/cad-liveproof.sh` → 74-07-liveproof.txt | `SUMMARY,result=ALL PASS` | d93f6db, tracked dirt 0 | PASS |
+| `go test -run TestAddOutputs ./internal/jobs/` against live PG → 74-05-addoutputs-live.txt | 3 PASS, exit 0, no SKIP | 1950f68, tracked dirt 0 | PASS |
+| `scripts/cad-worker-sandbox-measure.sh` → 74-06-landlock.txt | `MEASURED,stage=render…`, leaked 0 | unchanged since the initial run | PASS |
+| `scripts/cad-render-probe.sh judge` → 74-06-judge.txt | 0 unexplained | unchanged | PASS |
+
+No docker probe was re-run by this verifier. Each transcript was checked against git history to confirm it reflects the current product tree.
 
 ### Requirements Coverage
 
 | Requirement | Source plan | Status | Evidence |
 |-------------|-------------|--------|----------|
-| RNDR-01 | 74-01, 04, 05, 06, 07 | ✓ SATISFIED (arm64) | Truth 1; live RENDER on all 5 extensions |
-| RNDR-02 | 74-03, 07 | ✓ SATISFIED | Closed view vocabulary, 422 live, Z-up ratios |
-| RNDR-03 | 74-01, 03, 07 | ✓ SATISFIED | Size 256..2048, default 1280, 255, 2049 and string give 422, 2048 live |
-| RNDR-04 | 74-02, 03, 04, 07 | ✓ SATISFIED | Same constants for convert and render; live monotone counts |
-| RNDR-05 | 74-03, 04, 06, 07 | ✓ SATISFIED | Opaque by default (alpha=0); transparent has background alpha 0 |
-| MEAS-01 | 74-05, 07 | ✓ SATISFIED for 3D | The DXF render half belongs to Phase 75 |
-| MEAS-02 | 74-02, 07 | ✓ SATISFIED | Nulls with reasons, never 0 |
-| MEAS-03 | 74-01, 02, 07 | ✓ SATISFIED for STEP, IGES and STL | The DXF half belongs to Phase 75; IGES non-mm gives unspecified (GAP recorded) |
-| MEAS-04 | 74-02, 03, 07 | ✓ SATISFIED | Declared wins; client_assumed only when no unit is declared |
+| RNDR-01 | 74-01, 04, 05, 06, 07 | ✓ SATISFIED | Truth 1; the image now also builds for amd64 (truth 9) |
+| RNDR-02 | 74-03, 07 | ✓ SATISFIED | Truth 1, truth 2 |
+| RNDR-03 | 74-01, 03, 07 | ✓ SATISFIED | Truth 2 |
+| RNDR-04 | 74-02, 03, 04, 07 | ✓ SATISFIED | Truth 2 |
+| RNDR-05 | 74-03, 04, 06, 07 | ✓ SATISFIED | Truth 2 |
+| MEAS-01 | 74-05, 07 | ✓ SATISFIED for 3D | Truth 3; the DXF half is extended by Phase 75 SC2 |
+| MEAS-02 | 74-02, 07 | ✓ SATISFIED | Truth 4 |
+| MEAS-03 | 74-01, 02, 07 | ✓ SATISFIED for STEP/IGES/STL | Truth 4; the DXF half is extended by Phase 75 SC2; IGES non-mm gives unspecified (recorded GAP) |
+| MEAS-04 | 74-02, 03, 07 | ✓ SATISFIED | Truth 4 |
 
-There are no orphaned requirements: REQUIREMENTS.md maps exactly these 9 IDs to Phase 74, and each one appears in at least one plan.
+There are no orphaned requirements.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 |------|------|---------|----------|--------|
-| `.env.example` | ~581–584 | 4 new comment lines of design rationale ("480s render CHOSEN … covers 437.36s by 1.10x … GAP"), plus an inline note on `CAD_RENDER_TIMEOUT` | ℹ️ Info | They extend the file's existing derivation block, which is config documentation rather than code. Under the user's global rule, rationale belongs in the PR body; consider moving it there. |
-| `internal/api/handlers_test.go` | 4047 | `TestCreateJobCADTakesNoOptions` name is stale (CAD now takes options) | ℹ️ Info | The test body still asserts 422 for foreign keys, so its behaviour is right. |
-| `internal/worker/worker.go` | process() | Probe's sanitize report now also goes through `AddOutputs`, and its hook runs before the primary upload | ℹ️ Info | Deliberate (`TestCADOutputsProbeReportGoesThroughAddOutputsAtOrdinalOne`). It is atomic now, which is stricter than before. |
-| (none) | | TBD, FIXME or XXX in changed files | | 0 matches |
+| (changed files) | | TBD, FIXME or XXX | | 0 real markers. The only matches are `mktemp …XXXXXX` templates in scripts/cad-render-probe.sh and scripts/cad-worker-sandbox-measure.sh. |
+| `.planning/phases/74-3d-render-measurements/.continue-here.md`, `.planning/HANDOFF.json` | | pause-work handoff files from 8c6a6c4 still tracked | ℹ️ Info | Planning hygiene only. The resume flow or the orchestrator should remove them before merge. |
 
-### Advisory
-
-| # | Finding | Category | Why advisory |
-|---|---------|----------|--------------|
-| 1 | The live-DB run of `TestAddOutputs*`, and its naive-mutation run, are evidenced only by 74-05-SUMMARY and an uncommitted scratchpad transcript, where all 7 role and AddOutputs tests PASS against a DB with no SKIP. ci-local's gate tier does not set `DATABASE_URL`, so this test skips in every committed transcript. | other | The test design itself can fail against the naive sequence (the in-test control). Committing a `DATABASE_URL=… go test -v -run 'TestAddOutputs' ./internal/jobs/` transcript would close this. |
-| 2 | `applied_factor` in the draft is the table value of the text unit, not a factor OCP reported. `cadFactorMatches` is therefore tautological for STEP. | other | It is documented truthfully in docs/MEASUREMENTS.md; see coincidental_reliance_items. |
+The previous Info items are resolved: the `.env.example` rationale was removed in 77fa7cf, and the stale test name was fixed in e60f49c.
 
 ### Human Verification Required
 
@@ -162,9 +185,9 @@ None.
 
 ### Gaps Summary
 
-There is one gap, and its root cause is the environment, not the code. The emulated-amd64 sandbox check was not run because the docker disk was below the 6 GiB watchdog floor. This phase is the first to put VTK, OSMesa and a site-packages prune into the cad image, so the amd64 build of that image has never been exercised. Every confinement measurement here is native arm64, and the phase does not claim otherwise (SANDBOX-PATHS "Ещё не замерено" says so). A native amd64 Landlock measurement is out of scope per CONTEXT deferred; the gap is only the build plus refusal check that phase 73 had passed. Closing it takes one `scripts/sandbox-liveproof.sh cad` run with enough free disk, ending in an ALL PASS line that is then committed.
+There are no gaps. The one gap from the initial verification, the emulated-amd64 build and refusal check, is closed by an ALL PASS 5/5 transcript taken on a commit whose product tree equals HEAD. The regression checks on the eight previously passing truths are clean: build, vet, gofmt, the full unit suite on go1.26.4, the conf05 crosscheck, lock identity and the invariant diffs. The former advisory on the live AddOutputs DB run is closed by a committed transcript. One advisory remains, the STEP text-unit factor precondition. It is non-blocking.
 
 ---
 
-_Verified: 2026-10-05T22:05:09Z_
+_Verified: 2026-10-06T17:45:35Z_
 _Verifier: Claude (gsd-verifier)_
