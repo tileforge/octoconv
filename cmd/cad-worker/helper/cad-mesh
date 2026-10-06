@@ -533,7 +533,7 @@ def stats_mass(vertices):
     vol = np.empty(total, dtype=np.float64)
     for start in range(0, total, STL_CHUNK):
         tri = vertices[start * 3:(start + STL_CHUNK) * 3].reshape(-1, 3, 3).astype(np.float64)
-        vol[start:start + len(tri)] = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2])) / 6.0
+        vol[start:start + len(tri)] = np.einsum("ij,ij->i", tri[:, 0], np.cross(tri[:, 1], tri[:, 2]))
         area += 0.5 * float(np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1).sum())
         del tri
     return vol, area
@@ -612,7 +612,7 @@ def stats_shells(vol, root):
     import numpy as np
 
     sums = np.bincount(root, weights=vol, minlength=len(root))
-    return sums[root == np.arange(len(root))]
+    return sums[root == np.arange(len(root))] / 6.0
 
 
 def stats(src, out, measure, fd):
