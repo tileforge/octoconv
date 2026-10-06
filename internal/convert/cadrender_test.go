@@ -212,20 +212,20 @@ func TestCADRenderStlRefusesAnUnjudgedMeshBeforeAnyRender(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name     string
-		stl      func(f cadRenderFixture) string
+		stl      func(t *testing.T, f cadRenderFixture) string
 		verdict  int
 		draftTri int
 		want     error
 	}{
-		{"no mesh.stl", func(cadRenderFixture) string { return "" }, 12, 12, ErrCADEmptyResult},
-		{"verdict disagrees with the records", func(f cadRenderFixture) string { return f.boxSTL(t) }, 11, 12, ErrCADEmptyResult},
-		{"the client's ascii bytes", func(f cadRenderFixture) string { return f.writeSTL(t, "client.stl", ascii) }, 12, 12, ErrCADEmptyResult},
-		{"draft disagrees with the records", func(f cadRenderFixture) string { return f.boxSTL(t) }, 12, 13, ErrCADMeasurementsInvalid},
+		{"no mesh.stl", func(*testing.T, cadRenderFixture) string { return "" }, 12, 12, ErrCADEmptyResult},
+		{"verdict disagrees with the records", func(t *testing.T, f cadRenderFixture) string { return f.boxSTL(t) }, 11, 12, ErrCADEmptyResult},
+		{"the client's ascii bytes", func(t *testing.T, f cadRenderFixture) string { return f.writeSTL(t, "client.stl", ascii) }, 12, 12, ErrCADEmptyResult},
+		{"draft disagrees with the records", func(t *testing.T, f cadRenderFixture) string { return f.boxSTL(t) }, 12, 13, ErrCADMeasurementsInvalid},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCADRenderFixture(t, "stl")
 			draft := f.writeDraft(t, boxDraft("stl", tc.draftTri))
-			fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft, tc.stl(f), tc.verdict))
+			fakeEngine(t, f.dir, "cad-mesh", f.statsScript(draft, tc.stl(t, f), tc.verdict))
 			fakeEngine(t, f.dir, "cad-render", "touch \"$(dirname \"$0\")/render.ran\"\n"+f.renderScript(t, renderPNGBytes(t, 1280, false)))
 			err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, nil)
 			if !errors.Is(err, tc.want) {
