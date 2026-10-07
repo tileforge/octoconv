@@ -7,6 +7,7 @@ Usage:
     scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|iges-from-step
         --targets LIST [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --dxf-fixtures [--out-dir DIR] [--check-only]
+    scripts/cad-corpus-gen.py --kind dxf-guard-stress --shape chain|fanout|blocks|wide --targets MiB [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -1483,6 +1484,72 @@ def scale_iges_from_step(base_path, targets, out_dir):
     return 0
 
 
+GUARD_STRESS_SHAPES = ("chain", "fanout", "blocks", "wide")
+GUARD_STRESS_HEAD = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$DWGCODEPAGE\n3\nANSI_1252\n0\nENDSEC\n"
+GUARD_STRESS_LINE = b"0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n30\n0.0\n11\n1.0\n21\n0.0\n31\n0.0\n"
+
+
+def guard_stress_parts(shape):
+    if shape == "chain":
+        head = b"0\nSECTION\n2\nBLOCKS\n"
+        unit = lambda i: b"0\nBLOCK\n2\nC%d\n0\nINSERT\n2\nC%d\n0\nENDBLK\n" % (i, i + 1)
+        tail = lambda n: (b"0\nBLOCK\n2\nC%d\n" % n + GUARD_STRESS_LINE + b"0\nENDBLK\n0\nENDSEC\n"
+                          b"0\nSECTION\n2\nENTITIES\n0\nINSERT\n2\nC0\n0\nENDSEC\n0\nEOF\n")
+    elif shape == "fanout":
+        head = (b"0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n2\nS\n" + GUARD_STRESS_LINE
+                + b"0\nENDBLK\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n")
+        unit = lambda i: b"0\nINSERT\n2\nS\n"
+        tail = lambda n: b"0\nENDSEC\n0\nEOF\n"
+    elif shape == "blocks":
+        head = b"0\nSECTION\n2\nBLOCKS\n"
+        unit = lambda i: b"0\nBLOCK\n2\nB%d\n0\nENDBLK\n" % i
+        tail = lambda n: b"0\nENDSEC\n0\nSECTION\n2\nENTITIES\n" + GUARD_STRESS_LINE + b"0\nENDSEC\n0\nEOF\n"
+    elif shape == "wide":
+        head = b"0\nSECTION\n2\nENTITIES\n"
+        unit = lambda i: b"0\nINSERT\n2\nW%d\n" % i
+        tail = lambda n: b"0\nENDSEC\n0\nEOF\n"
+    else:
+        raise SystemExit("--shape must be one of %s" % ", ".join(GUARD_STRESS_SHAPES))
+    return head, unit, tail
+
+
+def run_guard_stress(args):
+    if not args.shape or not args.targets:
+        raise SystemExit("--kind dxf-guard-stress needs --shape and --targets")
+    out_dir = args.scaled_dir or DEFAULT_SCALED
+    os.makedirs(out_dir, exist_ok=True)
+    for target in parse_targets(args.targets):
+        head, unit, tail = guard_stress_parts(args.shape)
+        name = "dxf-guard-stress-%s-%dMiB.dxf" % (args.shape, target)
+        path = os.path.join(out_dir, name)
+        limit = target * MIB - len(tail(10 ** 9))
+        digest = hashlib.sha256()
+        count = 0
+        with open(path + ".tmp", "wb") as fh:
+            size = len(GUARD_STRESS_HEAD) + len(head)
+            chunk = [GUARD_STRESS_HEAD, head]
+            while True:
+                part = unit(count)
+                if size + len(part) > limit:
+                    break
+                chunk.append(part)
+                size += len(part)
+                count += 1
+                if len(chunk) >= 65536:
+                    blob = b"".join(chunk)
+                    fh.write(blob)
+                    digest.update(blob)
+                    chunk = []
+            chunk.append(tail(count))
+            blob = b"".join(chunk)
+            fh.write(blob)
+            digest.update(blob)
+        os.replace(path + ".tmp", path)
+        scaled_line("dxf-guard-stress", "%dMiB" % target, os.path.getsize(path), digest.hexdigest(), "ok",
+                    ",shape=%s,units=%d,file=%s" % (args.shape, count, name))
+    return 0
+
+
 def run_scaled(args):
     if args.kind not in KINDS:
         raise SystemExit("--kind must be one of %s" % ", ".join(KINDS))
@@ -2242,7 +2309,8 @@ def main():
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
-    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-guard-stress")
+    ap.add_argument("--shape", help="dxf-guard-stress shape: chain|fanout|blocks|wide")
     ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
     ap.add_argument("--dxf-fixtures", action="store_true",
@@ -2254,6 +2322,9 @@ def main():
 
     if args.reject:
         return run_reject(args)
+
+    if args.kind == "dxf-guard-stress":
+        return run_guard_stress(args)
 
     if args.scaled_from:
         return run_scaled(args)
