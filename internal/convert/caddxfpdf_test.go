@@ -292,6 +292,10 @@ func TestCADDXFTextsParsesTheHelperContract(t *testing.T) {
 	if err != nil || len(all) != 49 {
 		t.Fatalf("uncommon: %d texts, %v", len(all), err)
 	}
+	got, err := CADDXFExpectedTextFile(filepath.Join(cadSVGTestDir, "legacy_cp1251.texts.json"), 1<<20)
+	if err != nil || got != "Деталь" {
+		t.Fatalf("CADDXFExpectedTextFile = %q, %v", got, err)
+	}
 }
 
 func TestCADDXFTextsRejectsWhatTheContractDoesNotAllow(t *testing.T) {
