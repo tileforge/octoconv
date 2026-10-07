@@ -656,6 +656,27 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 
 ---
 
+## Phase 75 DXF fixtures (`dxf/`)
+
+- Licence: generated. Every file is written by `scripts/cad-corpus-gen.py`; no third-party material.
+- Generation command: `scripts/cad-dxf-probe.sh fixtures --write`, which runs `/opt/venv/bin/python -B scripts/cad-corpus-gen.py --dxf-fixtures --out-dir OUT` inside the engine image of `Dockerfile.cad-worker` (ezdxf 1.4.4) and copies the 41 files here. `scripts/cad-dxf-probe.sh fixtures` without `--write` regenerates them and requires every committed file to be byte-identical.
+- Determinism: `PYTHONHASHSEED=0` (the generator refuses to run without it, because ezdxf writes the OBJECTS section in set order), `python -B` rather than `-I` so the seed is honoured, `ezdxf.options.write_fixed_meta_data_for_testing = True` (fixed timestamps and GUIDs), ezdxf pinned to 1.4.4. Byte-level edits and the stdlib-written files use fixed literals only.
+- Check: `python3 scripts/cad-corpus-gen.py --dxf-fixtures --check-only` needs only the standard library and checks the byte markers of every file; the sha256, size and ezdxf strict-read facts of each file are the `FIXTURE` lines in `.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt`.
+- All 41 files sniff as `dxf` with no create-time rejection (`TestDXFFixturesSniffAsDXF`).
+
+| Group | Files | Built with | Purpose |
+|---|---|---|---|
+| Text | `text_cases`, `text_illegal_chars` | ezdxf R2018; `text_illegal_chars` is an ezdxf file whose TEXT value is byte-edited to `AB\x01CD\xffEF` | Text kept as SVG text: `&<>"'` and a script tag round trip, rotation, alignment, FIT/ALIGNED, width factor, `%%c %%d %%p`, MTEXT codes, ATTRIB, dimension text, glyphs outside DejaVu; a C0 control and an invalid UTF-8 byte that must not break the XML |
+| Layers | `layers_off_frozen`, `all_hidden` | ezdxf R2018 | Off and frozen layers are absent from the drawing; a drawing with only hidden content is empty |
+| Never resolved | `never_resolved` | ezdxf R2018 | IMAGE naming `/etc/passwd` and `../../outside/secret.png`, PDFUNDERLAY naming `/etc/hostname`, an XREF to `/etc/passwd` and an OLE2FRAME beside visible content |
+| Framing | `wrong_extents`, `header_far_extents`, `wide`, `tall`, `far_point`, `single_point`, `xline_ray` | ezdxf R2018; the two extents files have `$EXTMIN`/`$EXTMAX` byte-edited to ±1e9 and ±1e20 | Frame and bbox come from the drawn entities, not the header; extreme aspect ratios; a stray far point; a zero-size drawing; XLINE/RAY with an unnormalised direction (999, 0, 0) |
+| Units | `units_0`, `units_1`, `units_2`, `units_3`, `units_4`, `units_5`, `units_6`, `units_13`, `units_21`, `units_missing` | ezdxf R2018 | `$INSUNITS` mapping to the measurements vocabulary, codes outside it, and a file without the variable |
+| Block bombs | `cyclic_self`, `cyclic_ab`, `cyclic_unreferenced`, `cyclic_case`, `nest_d16`, `nest_d17`, `minsert_over_inserts`, `entities_over`, `dimension_minsert` | standard library (R12 pairs) | Cycles (self, mutual, unreferenced, `A` inserting `a`), nesting at and one above the derived bound 16, one MINSERT of 16 x 10627 = 170032 cells (one above the 170031 cap), 851 inserts of a 1000-entity block (851000 expanded entities, above 850155), a DIMENSION block holding a 1000 x 1000 MINSERT |
+| Numbers | `nonnumeric_abc`, `nonnumeric_comma`, `nonnumeric_nan`, `nonnumeric_inf`, `nonnumeric_underscore`, `coord_1e300`, `coord_1e400` | standard library (R12 pairs) | One LINE x coordinate in ENTITIES is `abc`, `1,5`, `nan`, `inf`, `1_0`, `1e300` or `1e400` |
+| Section scope | `nonfinite_header`, `nonfinite_tables`, `nonfinite_objects` | ezdxf R2018, one code-40 value byte-edited | `$LTSCALE` = `nan` in HEADER, a VPORT code 40 = `inf` in TABLES, a LAYOUT (AcDbPlotSettings) code 40 = `1_0` in OBJECTS, with ENTITIES and BLOCKS finite |
+
+---
+
 ## Fetched (manifest authoritative)
 
 These files are not committed. `scripts/cad-corpus-manifest.tsv` holds the URL, archive digest, member, sha256, byte count and licence of each; the sha256 values are deliberately not repeated here, so that the manifest is the only place that has to agree with the bytes. `scripts/cad-corpus-fetch.sh` downloads them into `$OCTOCONV_CAD_CACHE/fetched` and refuses a file whose sha256 differs.

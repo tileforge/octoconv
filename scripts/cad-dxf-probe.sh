@@ -24,17 +24,26 @@ HELPERS=(cad-mesh cad-guard cad-render cad-dxf)
 PY_PACKAGES=(ezdxf fonttools numpy pillow pyparsing typing-extensions)
 RW_SET=/job
 OUT_OVERRIDE=""
+FIXTURE_DIR="$CORPUS/dxf"
+FIXTURE_COUNT=41
 
 usage() {
   cat >&2 <<'USAGE'
 Usage:
   scripts/cad-dxf-probe.sh tracer   [--out FILE]
+  scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
           uncommon.dxf with cad-dxf under its candidate Landlock ruleset, turn each SVG into a
           PDF and a letterboxed 1280 x 1280 PNG with rsvg-convert under its own candidate
           ruleset, check the SVG text elements, the PDF text (pdftotext on the host) and the PNG
           size, and prove that a DXF or an SVG outside every grant is not read.
+fixtures  generate the phase fixture set with scripts/cad-corpus-gen.py --dxf-fixtures inside
+          the engine image (PYTHONHASHSEED=0), require every committed file under
+          internal/convert/testdata/cad/dxf to be byte-identical to the fresh generation (--write
+          copies the fresh files in first), then strict-read and audit each with ezdxf and print
+          one FIXTURE line per file. Drawing, units and extents fixtures must read with no audit
+          error; every cyclic fixture must show audit code 104; the rest are recorded as facts.
 
 Every mode rewrites its own lines in the evidence file (default
 .planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt) and removes the image tags it
@@ -489,12 +498,101 @@ tracer() {
   return 1
 }
 
+generate_fixtures() {
+  local attempt=1 gen rc
+  while [ "$attempt" -le 3 ]; do
+    gen=$(mktemp -d "$WORK/gen.XXXXXX")
+    chmod 0777 "$gen"
+    rc=0
+    docker run --rm "${LIMITS[@]}" -e HOME=/tmp -e PYTHONHASHSEED=0 -v "$REPO_ROOT:/src:ro" -v "$gen:/out" -w /src \
+      --entrypoint /opt/venv/bin/python "$TAG" -B scripts/cad-corpus-gen.py --dxf-fixtures --out-dir /out \
+      > "$WORK/gen.log" 2>&1 </dev/null || rc=$?
+    if [ "$rc" = 0 ] && [ "$(find "$gen" -maxdepth 1 -name '*.dxf' | wc -l | tr -d ' ')" = "$FIXTURE_COUNT" ]; then
+      printf '%s\n' "$gen"
+      return 0
+    fi
+    tail -n 5 "$WORK/gen.log" >&2
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+read_fixtures() {
+  docker run --rm -i "${LIMITS[@]}" -e HOME=/tmp -v "$1:/fx:ro" --entrypoint /opt/venv/bin/python "$TAG" -B - /fx <<'PY'
+import os, sys
+sys.stdout = sys.stderr
+import ezdxf
+d = sys.argv[1]
+for name in sorted(os.listdir(d)):
+    if not name.endswith(".dxf"):
+        continue
+    strict, codes, count = "ok", "na", "na"
+    try:
+        doc = ezdxf.readfile(os.path.join(d, name))
+        auditor = doc.audit()
+        codes = "+".join(str(c) for c in sorted({int(e.code) for e in auditor.errors})) or "none"
+        count = str(len(doc.modelspace()))
+    except Exception as exc:
+        strict = exc.__class__.__name__
+    sys.__stdout__.write("%s %s %s %s\n" % (name[:-4], strict, codes, count))
+PY
+}
+
+fixture_expectation() {
+  case "$1" in
+    cyclic_*) echo audit_104 ;;
+    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
+    *) echo fact ;;
+  esac
+}
+
+fixtures() {
+  setup fixtures
+  local gen name strict codes count expect expect_ok same total=0 identical=0 failed=0 ok=1 committed
+  gen=$(generate_fixtures) || { printf 'SUMMARY,mode=fixtures,fixtures=0,identical=0,strict_expectations_failed=0,result=fail,reason=generation_failed\n' >> "$LINES"; ok=0; gen=""; }
+  if [ -n "$gen" ]; then
+    if [ "$WRITE" = 1 ]; then
+      mkdir -p "$FIXTURE_DIR"
+      find "$FIXTURE_DIR" -maxdepth 1 -name '*.dxf' -exec rm -f {} +
+      cp "$gen"/*.dxf "$FIXTURE_DIR/"
+    fi
+    committed=$(find "$FIXTURE_DIR" -maxdepth 1 -name '*.dxf' 2>/dev/null | wc -l | tr -d ' ')
+    [ "$committed" = "$FIXTURE_COUNT" ] || ok=0
+    while read -r name strict codes count; do
+      total=$((total + 1))
+      same=0
+      if [ -f "$FIXTURE_DIR/$name.dxf" ] && cmp -s "$gen/$name.dxf" "$FIXTURE_DIR/$name.dxf"; then
+        same=1
+        identical=$((identical + 1))
+      fi
+      expect=$(fixture_expectation "$name")
+      case "$expect" in
+        strict_clean) if [ "$strict" = ok ] && [ "$codes" = none ]; then expect_ok=1; else expect_ok=0; fi ;;
+        audit_104) if printf '+%s+' "$codes" | grep -q '+104+'; then expect_ok=1; else expect_ok=0; fi ;;
+        *) expect_ok=na ;;
+      esac
+      [ "$expect_ok" != 0 ] || failed=$((failed + 1))
+      printf 'FIXTURE,name=%s,sha256=%s,bytes=%s,identical=%s,strict=%s,audit_codes=%s,msp_entities=%s,expect=%s,expect_ok=%s\n' \
+        "$name" "$(sha_of "$gen/$name.dxf")" "$(wc -c < "$gen/$name.dxf" | tr -d ' ')" "$same" "$strict" "$codes" "$count" \
+        "$expect" "$expect_ok" >> "$LINES"
+    done < <(read_fixtures "$gen")
+    [ "$total" = "$FIXTURE_COUNT" ] && [ "$identical" = "$FIXTURE_COUNT" ] && [ "$failed" = 0 ] || ok=0
+    printf 'SUMMARY,mode=fixtures,fixtures=%s,committed=%s,identical=%s,strict_expectations_failed=%s,write=%s,result=%s\n' \
+      "$total" "$committed" "$identical" "$failed" "$WRITE" "$( [ "$ok" = 1 ] && echo ok || echo fail )" >> "$LINES"
+  fi
+  evid_put "$LINES" '^HDR,mode=fixtures,|^LOCK,|^FIXTURE,|^SUMMARY,mode=fixtures,'
+  cat "$LINES"
+  [ "$ok" = 1 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
+WRITE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT_OVERRIDE=${2:?}; shift 2 ;;
+    --write) [ "$MODE" = fixtures ] || usage; WRITE=1; shift ;;
     *) usage ;;
   esac
 done
@@ -502,5 +600,6 @@ done
 
 case "$MODE" in
   tracer) tracer ;;
+  fixtures) fixtures ;;
   *) usage ;;
 esac

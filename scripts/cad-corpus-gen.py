@@ -6,6 +6,7 @@ Usage:
     scripts/cad-corpus-gen.py --reject [--out-dir DIR] [--check-only] [--provenance]
     scripts/cad-corpus-gen.py --scaled-from FILE --kind step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|iges-from-step
         --targets LIST [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --dxf-fixtures [--out-dir DIR] [--check-only]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -1765,6 +1766,472 @@ def run_reject(args):
     return check_reject(out_dir)
 
 
+DEFAULT_DXF_OUT = os.path.join("internal", "convert", "testdata", "cad", "dxf")
+DXF_INSERT_CAP = 170031
+DXF_UNIT_CODES = (0, 1, 2, 3, 4, 5, 6, 13, 21)
+DXF_TEXT_SPECIAL = "A&B <x> \"q\" 'a' & <script>alert(1)</script>"
+DXF_TEXT_WIDE = "Lat中文Ω😀end"
+DXF_TEXT_ILLEGAL = b"AB\x01CD\xffEF"
+DXF_TEXT_PLACEHOLDER = "ILLEGALPLACEHOLDER"
+DXF_NONNUMERIC = {
+    "nonnumeric_abc": "abc",
+    "nonnumeric_comma": "1,5",
+    "nonnumeric_nan": "nan",
+    "nonnumeric_inf": "inf",
+    "nonnumeric_underscore": "1_0",
+    "coord_1e300": "1e300",
+    "coord_1e400": "1e400",
+}
+DXF_NONFINITE = {
+    "nonfinite_header": ("HEADER", "nan"),
+    "nonfinite_tables": ("TABLES", "inf"),
+    "nonfinite_objects": ("OBJECTS", "1_0"),
+}
+DXF_FIXTURES = (
+    ["text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf",
+     "never_resolved.dxf", "wrong_extents.dxf", "header_far_extents.dxf", "wide.dxf", "tall.dxf",
+     "far_point.dxf", "single_point.dxf", "xline_ray.dxf"]
+    + ["units_%d.dxf" % c for c in DXF_UNIT_CODES] + ["units_missing.dxf"]
+    + ["cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf",
+       "nest_d16.dxf", "nest_d17.dxf", "minsert_over_inserts.dxf", "entities_over.dxf",
+       "dimension_minsert.dxf"]
+    + ["%s.dxf" % n for n in DXF_NONNUMERIC] + ["%s.dxf" % n for n in DXF_NONFINITE]
+)
+
+
+def dxf_value_pair(code, value):
+    return b"%3d\r\n" % code + value.encode("ascii") + b"\r\n"
+
+
+def dxf_expected():
+    exp = {
+        "text_cases.dxf": [b"AC1032", b"$INSUNITS\n 70\n4\n", DXF_TEXT_SPECIAL.encode("utf-8"), DXF_TEXT_WIDE.encode("utf-8"),
+                           b"%%c50 %%d %%p0.1", b"Attr<&>", b"ATTRIB", b"MTEXT", b"DIMENSION", b"\\S1^2;"],
+        "text_illegal_chars.dxf": [b"AC1032", b"\n" + DXF_TEXT_ILLEGAL + b"\n"],
+        "layers_off_frozen.dxf": [b"OFFL", b"FROZ", b"HIDDEN_OFF", b"HIDDEN_FROZEN", b"VISIBLE"],
+        "all_hidden.dxf": [b"OFFL", b"FROZ", b"HIDDEN_OFF", b"HIDDEN_FROZEN"],
+        "never_resolved.dxf": [b"IMAGEDEF", b"/etc/passwd", b"../../outside/secret.png", b"PDFDEFINITION",
+                               b"/etc/hostname", b"OLE2FRAME", b"VISIBLE"],
+        "wrong_extents.dxf": [b"$EXTMIN\n 10\n-1000000000.0\n", b"$EXTMAX\n 10\n1000000000.0\n"],
+        "header_far_extents.dxf": [b"$EXTMIN\n 10\n-1e+20\n", b"$EXTMAX\n 10\n1e+20\n"],
+        "wide.dxf": [b"1000.0", b"WIDE"],
+        "tall.dxf": [b"1000.0", b"TALL"],
+        "far_point.dxf": [b"POINT", b"100000.0"],
+        "single_point.dxf": [b"POINT"],
+        "xline_ray.dxf": [b"XLINE", b"RAY", b" 11\n999.0\n"],
+        "units_missing.dxf": [b"AC1032", b"LINE"],
+        "cyclic_self.dxf": [b"BLOCKS", b"INSERT"],
+        "cyclic_ab.dxf": [b"BLOCKS", b"INSERT"],
+        "cyclic_unreferenced.dxf": [b"BLOCKS", b"INSERT"],
+        "cyclic_case.dxf": [b"BLOCKS", b"\r\n  2\r\na\r\n"],
+        "nest_d16.dxf": [b"N16\r\n"],
+        "nest_d17.dxf": [b"N17\r\n"],
+        "minsert_over_inserts.dxf": [b" 70\r\n16\r\n", b" 71\r\n10627\r\n"],
+        "entities_over.dxf": [b"BIG\r\n"],
+        "dimension_minsert.dxf": [b"DIMENSION", b"*D1", b" 70\r\n1000\r\n", b" 71\r\n1000\r\n"],
+    }
+    for c in DXF_UNIT_CODES:
+        exp["units_%d.dxf" % c] = [b"AC1032", b"$INSUNITS\n 70\n%d\n" % c]
+    for name, literal in DXF_NONNUMERIC.items():
+        exp[name + ".dxf"] = [b"ENTITIES", dxf_value_pair(10, literal)]
+    for name, (section, literal) in DXF_NONFINITE.items():
+        exp[name + ".dxf"] = [b"AC1032", section.encode("ascii"), b"\n" + literal.encode("ascii") + b"\n"]
+    return exp
+
+
+DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"]}
+
+
+def dxf_ezdxf_bytes(doc):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "fixture.dxf")
+        doc.saveas(path)
+        with open(path, "rb") as fh:
+            return fh.read()
+
+
+def dxf_new(ezdxf, units=4, setup=False):
+    doc = ezdxf.new("R2018", setup=setup)
+    if units is None:
+        del doc.header["$INSUNITS"]
+    else:
+        doc.header["$INSUNITS"] = units
+    return doc
+
+
+def dxf_rect(layout, x0, y0, x1, y1, dxfattribs=None):
+    for a, b in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+        layout.add_line(a, b, dxfattribs=dxfattribs)
+
+
+def build_dxf_text_cases(ezdxf):
+    from ezdxf.enums import TextEntityAlignment as Align
+    doc = dxf_new(ezdxf, 4, setup=True)
+    msp = doc.modelspace()
+    msp.add_text(DXF_TEXT_SPECIAL, height=2.5).set_placement((0, 100))
+    msp.add_text("Rotated 30", height=2.5, rotation=30).set_placement((0, 85))
+    msp.add_text("Centre", height=2.5).set_placement((100, 85), align=Align.MIDDLE_CENTER)
+    msp.add_text("Right", height=2.5).set_placement((200, 85), align=Align.RIGHT)
+    msp.add_text("Fit text", height=2.5).set_placement((0, 72), (60, 72), align=Align.FIT)
+    msp.add_text("Aligned text", height=2.5).set_placement((100, 72), (180, 72), align=Align.ALIGNED)
+    msp.add_text("Width half", height=2.5, dxfattribs={"width": 0.5}).set_placement((0, 62))
+    msp.add_text("%%c50 %%d %%p0.1", height=2.5).set_placement((100, 62))
+    msp.add_mtext(
+        "First paragraph\\PSecond \\H5;tall\\H2.5; \\C1;red\\C256; \\fDejaVu Sans|b1|i0;bold\\fDejaVu Sans|b0|i0; \\S1^2;",
+        dxfattribs={"char_height": 2.5, "width": 150.0},
+    ).set_location((0, 52))
+    block = doc.blocks.new("TAG")
+    block.add_line((0, 0), (20, 0))
+    block.add_attdef("VALUE", (0, 1), dxfattribs={"height": 2.5})
+    msp.add_blockref("TAG", (0, 25)).add_auto_attribs({"VALUE": "Attr<&>"})
+    msp.add_linear_dim(base=(100, 35), p1=(100, 25), p2=(160, 25), dimstyle="EZDXF").render()
+    msp.add_text(DXF_TEXT_WIDE, height=2.5).set_placement((0, 8))
+    dxf_rect(msp, -10, -10, 230, 115)
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_text_illegal(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    msp.add_text(DXF_TEXT_PLACEHOLDER, height=2.5).set_placement((0, 0))
+    msp.add_line((0, -5), (40, -5))
+    blob = dxf_ezdxf_bytes(doc)
+    marker = b"\n" + DXF_TEXT_PLACEHOLDER.encode("ascii") + b"\n"
+    if blob.count(marker) != 1:
+        raise SystemExit("text_illegal_chars.dxf: the placeholder TEXT value is not unique")
+    return blob.replace(marker, b"\n" + DXF_TEXT_ILLEGAL + b"\n")
+
+
+def build_dxf_layers(ezdxf, with_visible):
+    doc = dxf_new(ezdxf, 4)
+    doc.layers.add("OFFL").off()
+    doc.layers.add("FROZ").freeze()
+    msp = doc.modelspace()
+    msp.add_text("HIDDEN_OFF", height=2.5, dxfattribs={"layer": "OFFL"}).set_placement((0, 20))
+    msp.add_line((0, 15), (40, 15), dxfattribs={"layer": "OFFL"})
+    msp.add_text("HIDDEN_FROZEN", height=2.5, dxfattribs={"layer": "FROZ"}).set_placement((0, 10))
+    msp.add_line((0, 5), (40, 5), dxfattribs={"layer": "FROZ"})
+    if with_visible:
+        msp.add_text("VISIBLE", height=2.5, dxfattribs={"layer": "0"}).set_placement((0, 0))
+        msp.add_line((0, -5), (40, -5), dxfattribs={"layer": "0"})
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_never_resolved(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    passwd = doc.add_image_def(filename="/etc/passwd", size_in_pixel=(64, 64), name="PASSWD")
+    msp.add_image(passwd, insert=(0, 0), size_in_units=(10, 10))
+    outside = doc.add_image_def(filename="../../outside/secret.png", size_in_pixel=(64, 64), name="SECRET")
+    msp.add_image(outside, insert=(20, 0), size_in_units=(10, 10))
+    underlay = doc.add_underlay_def(filename="/etc/hostname", fmt="pdf", name="1")
+    msp.add_underlay(underlay, insert=(40, 0), scale=(1, 1, 1))
+    doc.add_xref_def(filename="/etc/passwd", name="XREFPASSWD")
+    msp.add_blockref("XREFPASSWD", (60, 0))
+    from ezdxf.lldxf.tags import Tags
+    from ezdxf.lldxf.types import DXFBinaryTag, DXFTag, DXFVertex
+    ole = msp.new_entity("OLE2FRAME", dxfattribs={})
+    ole.acdb_ole2frame = Tags([
+        DXFTag(100, "AcDbOle2Frame"), DXFTag(70, 2), DXFTag(3, "Paintbrush Picture"),
+        DXFVertex(10, (80.0, 0.0, 0.0)), DXFVertex(11, (90.0, -10.0, 0.0)),
+        DXFTag(71, 2), DXFTag(72, 0), DXFTag(73, 2), DXFTag(90, 4),
+        DXFBinaryTag(310, b"\x01\x02\x03\x04"), DXFTag(1, "OLE"),
+    ])
+    msp.add_line((0, -20), (90, -20))
+    msp.add_text("VISIBLE", height=2.5).set_placement((0, -30))
+    return dxf_ezdxf_bytes(doc)
+
+
+def dxf_set_header_point(blob, var, values):
+    lines = blob.split(b"\n")
+    for i in range(0, len(lines) - 7, 2):
+        if lines[i].strip() == b"9" and lines[i + 1].strip() == var.encode("ascii"):
+            for k, code in enumerate((b"10", b"20", b"30")):
+                if lines[i + 2 + 2 * k].strip() != code:
+                    raise SystemExit("%s: unexpected group code layout in the header" % var)
+                lines[i + 3 + 2 * k] = values[k].encode("ascii")
+            return b"\n".join(lines)
+    raise SystemExit("%s: header variable not found" % var)
+
+
+def build_dxf_extents(ezdxf, extmin, extmax):
+    doc = dxf_new(ezdxf, 4)
+    doc.modelspace().add_line((10, 20), (40, 30))
+    blob = dxf_ezdxf_bytes(doc)
+    blob = dxf_set_header_point(blob, "$EXTMIN", extmin)
+    return dxf_set_header_point(blob, "$EXTMAX", extmax)
+
+
+def build_dxf_box(ezdxf, w, h, label):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    dxf_rect(msp, 0, 0, w, h)
+    msp.add_text(label, height=2.0).set_placement((1, 1))
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_far_point(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    dxf_rect(msp, 0, 0, 10, 10)
+    msp.add_line((0, 0), (10, 10))
+    msp.add_point((100000, 100000))
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_single_point(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    doc.modelspace().add_point((5, 5))
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_xline_ray(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    dxf_rect(msp, 0, 0, 100, 50)
+    xline = msp.add_xline((50, 25), (1, 0, 0))
+    xline.dxf.unit_vector = (999, 0, 0)
+    msp.add_ray((0, 0), (1, 1, 0))
+    blob = dxf_ezdxf_bytes(doc)
+    if b" 11\n999.0\n" not in blob:
+        raise SystemExit("xline_ray.dxf: ezdxf normalised the XLINE direction")
+    return blob
+
+
+def build_dxf_units(ezdxf, code):
+    doc = dxf_new(ezdxf, code)
+    doc.modelspace().add_line((0, 0), (10, 5))
+    return dxf_ezdxf_bytes(doc)
+
+
+def dxf_block(name, body):
+    return ([(0, "BLOCK"), (8, "0"), (2, name), (70, "0"), (10, "0.0"), (20, "0.0"), (30, "0.0"), (3, name)]
+            + body + [(0, "ENDBLK"), (8, "0")])
+
+
+def dxf_insert(name, x=0.0, y=0.0, extra=None):
+    return [(0, "INSERT"), (8, "0"), (2, name), (10, "%.1f" % x), (20, "%.1f" % y), (30, "0.0")] + (extra or [])
+
+
+def dxf_line_pairs(x0, y0, x1, y1, x0_literal=None):
+    return [(0, "LINE"), (8, "0"),
+            (10, x0_literal if x0_literal is not None else "%.1f" % x0), (20, "%.1f" % y0), (30, "0.0"),
+            (11, "%.1f" % x1), (21, "%.1f" % y1), (31, "0.0")]
+
+
+def dxf_cell_body():
+    return ([(0, "CIRCLE"), (8, "0"), (10, "0.0"), (20, "0.0"), (30, "0.0"), (40, "3.0")]
+            + dxf_line_pairs(-4, 0, 4, 0) + dxf_line_pairs(0, -4, 0, 4)
+            + dxf_line_pairs(-5, -5, 5, -5) + dxf_line_pairs(-5, 5, 5, 5))
+
+
+def dxf_document(blocks, entities):
+    pairs = dxf_header("ANSI_1252")
+    if blocks:
+        pairs += [(0, "SECTION"), (2, "BLOCKS")] + blocks + [(0, "ENDSEC")]
+    pairs += [(0, "SECTION"), (2, "ENTITIES")] + entities + [(0, "ENDSEC"), (0, "EOF")]
+    return dxf_pairs(pairs)
+
+
+def build_dxf_cyclic(kind):
+    line = dxf_line_pairs(0, 0, 10, 0)
+    if kind == "self":
+        return dxf_document(dxf_block("A", line + dxf_insert("A", 5, 5)), dxf_insert("A") + dxf_line_pairs(0, -5, 10, -5))
+    if kind == "ab":
+        blocks = dxf_block("A", line + dxf_insert("B", 5, 5)) + dxf_block("B", line + dxf_insert("A", 5, 5))
+        return dxf_document(blocks, dxf_insert("A"))
+    if kind == "unreferenced":
+        blocks = dxf_block("A", line + dxf_insert("B", 5, 5)) + dxf_block("B", line + dxf_insert("A", 5, 5))
+        return dxf_document(blocks, dxf_line_pairs(0, -5, 10, -5))
+    if kind == "case":
+        return dxf_document(dxf_block("A", line + dxf_insert("a", 5, 5)), dxf_insert("A"))
+    raise ValueError(kind)
+
+
+def build_dxf_nest(depth):
+    blocks = []
+    for level in range(1, depth + 1):
+        name = "N%d" % level
+        body = dxf_line_pairs(0, 0, 10, 0) if level == depth else dxf_insert("N%d" % (level + 1), 1, 1)
+        blocks += dxf_block(name, body)
+    return dxf_document(blocks, dxf_insert("N1"))
+
+
+def build_dxf_minsert_over():
+    cells = DXF_INSERT_CAP + 1
+    cols = 16
+    rows = cells // cols
+    if cols * rows != cells:
+        raise SystemExit("minsert_over_inserts.dxf: %d is not %d columns of whole rows" % (cells, cols))
+    extra = [(70, str(cols)), (71, str(rows)), (44, "12.0"), (45, "12.0")]
+    return dxf_document(dxf_block("CELL", dxf_cell_body()), dxf_insert("CELL", 0, 0, extra))
+
+
+def build_dxf_entities_over():
+    body = []
+    for i in range(1000):
+        body += dxf_line_pairs(i * 0.01, 0, i * 0.01, 1)
+    entities = []
+    for i in range(851):
+        entities += dxf_insert("BIG", (i % 29) * 20.0, (i // 29) * 5.0)
+    return dxf_document(dxf_block("BIG", body), entities)
+
+
+def build_dxf_dimension_minsert():
+    extra = [(70, "1000"), (71, "1000"), (44, "12.0"), (45, "12.0")]
+    blocks = dxf_block("CELL", dxf_cell_body())
+    blocks += [(0, "BLOCK"), (8, "0"), (2, "*D1"), (70, "1"), (10, "0.0"), (20, "0.0"), (30, "0.0"), (3, "*D1")]
+    blocks += dxf_insert("CELL", 0, 0, extra) + [(0, "ENDBLK"), (8, "0")]
+    dim = [(0, "DIMENSION"), (8, "0"), (2, "*D1"),
+           (10, "10.0"), (20, "-5.0"), (30, "0.0"),
+           (11, "5.0"), (21, "-5.0"), (31, "0.0"),
+           (70, "0"),
+           (13, "0.0"), (23, "0.0"), (33, "0.0"),
+           (14, "10.0"), (24, "0.0"), (34, "0.0")]
+    return dxf_document(blocks, dim)
+
+
+def build_dxf_nonnumeric(literal):
+    return dxf_document([], dxf_line_pairs(0, 0, 10, 5, x0_literal=literal) + dxf_line_pairs(0, 10, 10, 15))
+
+
+def dxf_section_of_pairs(lines):
+    section = None
+    out = []
+    for i in range(0, len(lines) - 1, 2):
+        code, value = lines[i].strip(), lines[i + 1].strip()
+        if code == b"2" and i >= 2 and lines[i - 2].strip() == b"0" and lines[i - 1].strip() == b"SECTION":
+            section = value.decode("ascii", "replace")
+        out.append((i, section, code, value))
+        if code == b"0" and value == b"ENDSEC":
+            section = None
+    return out
+
+
+def dxf_is_real(value):
+    return re.fullmatch(rb"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", value) is not None
+
+
+def build_dxf_nonfinite(ezdxf, section, literal):
+    doc = dxf_new(ezdxf, 4)
+    doc.modelspace().add_line((0, 0), (10, 5))
+    blob = dxf_ezdxf_bytes(doc)
+    lines = blob.split(b"\n")
+    for i, sec, code, value in dxf_section_of_pairs(lines):
+        if sec == section and code.isdigit() and 40 <= int(code) <= 49 and dxf_is_real(value):
+            lines[i + 1] = literal.encode("ascii")
+            return b"\n".join(lines)
+    raise SystemExit("nonfinite: no real-valued tag with a code in 40..49 in the %s section" % section)
+
+
+def build_dxf_all():
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        raise SystemExit("--dxf-fixtures: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+    import ezdxf
+    if ezdxf.__version__ != "1.4.4":
+        raise SystemExit("--dxf-fixtures: ezdxf 1.4.4 is required, found %s" % ezdxf.__version__)
+    ezdxf.options.write_fixed_meta_data_for_testing = True
+    out = {
+        "text_cases.dxf": build_dxf_text_cases(ezdxf),
+        "text_illegal_chars.dxf": build_dxf_text_illegal(ezdxf),
+        "layers_off_frozen.dxf": build_dxf_layers(ezdxf, True),
+        "all_hidden.dxf": build_dxf_layers(ezdxf, False),
+        "never_resolved.dxf": build_dxf_never_resolved(ezdxf),
+        "wrong_extents.dxf": build_dxf_extents(ezdxf, ("-1000000000.0", "-1000000000.0", "0.0"), ("1000000000.0", "1000000000.0", "0.0")),
+        "header_far_extents.dxf": build_dxf_extents(ezdxf, ("-1e+20", "-1e+20", "-1e+20"), ("1e+20", "1e+20", "1e+20")),
+        "wide.dxf": build_dxf_box(ezdxf, 1000, 10, "WIDE"),
+        "tall.dxf": build_dxf_box(ezdxf, 10, 1000, "TALL"),
+        "far_point.dxf": build_dxf_far_point(ezdxf),
+        "single_point.dxf": build_dxf_single_point(ezdxf),
+        "xline_ray.dxf": build_dxf_xline_ray(ezdxf),
+        "units_missing.dxf": build_dxf_units(ezdxf, None),
+        "cyclic_self.dxf": build_dxf_cyclic("self"),
+        "cyclic_ab.dxf": build_dxf_cyclic("ab"),
+        "cyclic_unreferenced.dxf": build_dxf_cyclic("unreferenced"),
+        "cyclic_case.dxf": build_dxf_cyclic("case"),
+        "nest_d16.dxf": build_dxf_nest(16),
+        "nest_d17.dxf": build_dxf_nest(17),
+        "minsert_over_inserts.dxf": build_dxf_minsert_over(),
+        "entities_over.dxf": build_dxf_entities_over(),
+        "dimension_minsert.dxf": build_dxf_dimension_minsert(),
+    }
+    for c in DXF_UNIT_CODES:
+        out["units_%d.dxf" % c] = build_dxf_units(ezdxf, c)
+    for name, literal in DXF_NONNUMERIC.items():
+        out[name + ".dxf"] = build_dxf_nonnumeric(literal)
+    for name, (section, literal) in DXF_NONFINITE.items():
+        out[name + ".dxf"] = build_dxf_nonfinite(ezdxf, section, literal)
+    if sorted(out) != sorted(DXF_FIXTURES):
+        raise SystemExit("--dxf-fixtures: the builder set differs from DXF_FIXTURES")
+    return out
+
+
+def check_dxf_nonfinite(blob, section, literal):
+    problems = []
+    hits = [(sec, code) for _, sec, code, value in dxf_section_of_pairs(blob.split(b"\n"))
+            if value == literal.encode("ascii") and code.isdigit() and 40 <= int(code) <= 49]
+    if [sec for sec, _ in hits] != [section]:
+        problems.append("literal %s found in sections %s, expected exactly one in %s" % (literal, [s for s, _ in hits], section))
+    for _, sec, code, value in dxf_section_of_pairs(blob.split(b"\n")):
+        if sec in ("ENTITIES", "BLOCKS") and code.isdigit() and 10 <= int(code) <= 59:
+            if not dxf_is_real(value) or not math.isfinite(float(value)):
+                problems.append("non-finite real %r in %s" % (value, sec))
+    return problems
+
+
+def dxf_fixture_failures(out_dir):
+    failures = []
+    expected = dxf_expected()
+    present = sorted(n for n in os.listdir(out_dir) if n.endswith(".dxf")) if os.path.isdir(out_dir) else []
+    extra = sorted(set(present) - set(DXF_FIXTURES))
+    if extra:
+        failures.append("unexpected files: %s" % ", ".join(extra))
+    for name in DXF_FIXTURES:
+        path = os.path.join(out_dir, name)
+        if not os.path.exists(path):
+            failures.append("%s: missing" % name)
+            continue
+        with open(path, "rb") as fh:
+            blob = fh.read()
+        for marker in expected[name]:
+            if marker not in blob:
+                failures.append("%s: marker %r absent from raw bytes" % (name, marker))
+        for marker in DXF_ABSENT.get(name, []):
+            if marker in blob:
+                failures.append("%s: marker %r must be absent" % (name, marker))
+        stem = name[:-4]
+        if stem in DXF_NONFINITE:
+            failures += ["%s: %s" % (name, p) for p in check_dxf_nonfinite(blob, *DXF_NONFINITE[stem])]
+    return failures
+
+
+def check_dxf_fixtures(out_dir):
+    failures = dxf_fixture_failures(out_dir)
+    if failures:
+        print("SELF-CHECK FAILED:", file=sys.stderr)
+        for f in failures:
+            print("  " + f, file=sys.stderr)
+        return 1
+    for name in DXF_FIXTURES:
+        print("  %s: %d bytes" % (name, os.path.getsize(os.path.join(out_dir, name))))
+    print("self-check passed: %d dxf fixtures carry the markers they exist to carry" % len(DXF_FIXTURES))
+    return 0
+
+
+def run_dxf_fixtures(args):
+    out_dir = args.out_dir or DEFAULT_DXF_OUT
+    if not args.check_only:
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except FileExistsError:
+            pass
+        for name, blob in build_dxf_all().items():
+            with open(os.path.join(out_dir, name), "wb") as fh:
+                fh.write(blob)
+        print("generated dxf fixtures into %s" % out_dir)
+    return check_dxf_fixtures(out_dir)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out-dir", default=None)
@@ -1778,7 +2245,12 @@ def main():
     ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate")
     ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
+    ap.add_argument("--dxf-fixtures", action="store_true",
+                    help="generate or check the phase 75 DXF fixtures (generation needs ezdxf and PYTHONHASHSEED=0)")
     args = ap.parse_args()
+
+    if args.dxf_fixtures:
+        return run_dxf_fixtures(args)
 
     if args.reject:
         return run_reject(args)
