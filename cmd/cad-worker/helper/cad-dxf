@@ -1,5 +1,6 @@
 #!/opt/venv/bin/python -IB
 import argparse
+import io
 import json
 import math
 import os
@@ -10,6 +11,8 @@ COORDINATE_SPACE = 10000
 PAGE_LONG_MM = 297.0
 PAGE_MARGIN_MM = 10.0
 ASPECT_CLAMP = 1000.0
+HATCH_TIMEOUT_S = 30.0
+HATCH_TIMEOUT_MESSAGE = "hatching timeout of"
 AUDIT_BLOCK_CYCLE = 104
 INFINITE_LINES = ("XLINE", "RAY")
 INSUNITS_NAMES = {1: "inch", 2: "foot", 4: "mm", 5: "cm", 6: "m", 13: "micrometre"}
@@ -44,6 +47,10 @@ class FontUnavailable(Exception):
     pass
 
 
+class DrawnOverCap(Exception):
+    pass
+
+
 def xml_char_ok(c):
     o = ord(c)
     return (
@@ -61,6 +68,8 @@ def xml_safe(text):
 def new_state():
     return {
         "texts": 0,
+        "uncovered": 0,
+        "hatch_truncated": 0,
         "entities_drawn": 0,
         "page_w_mm": 0.0,
         "page_h_mm": 0.0,
@@ -155,7 +164,7 @@ def padded_frame(frame, BoundingBox2d):
     return BoundingBox2d([(cx - w / 2.0, cy - h / 2.0), (cx + w / 2.0, cy + h / 2.0)]), w, h
 
 
-def draw(doc, svg_path, state):
+def draw(doc, max_drawn, state):
     from ezdxf.addons.drawing import Frontend, RenderContext, config, layout, svg
     from ezdxf.addons.drawing.frontend import UniversalFrontend
     from ezdxf.addons.drawing.pipeline import RenderPipeline2d, prepare_string_for_rendering
@@ -167,6 +176,7 @@ def draw(doc, svg_path, state):
 
     texts = []
     infinite = []
+    cmaps = {}
     skipped = state["skipped"]
 
     def skip_kind(entity):
@@ -208,8 +218,12 @@ def draw(doc, svg_path, state):
                 if len(p):
                     box.extend(p.extents())
             name = gc.font["name"].getDebugName(2) or ""
+            cmap = cmaps.get(id(gc.font))
+            if cmap is None:
+                cmap = cmaps[id(gc.font)] = gc.font.getBestCmap() or {}
             texts.append({
                 "text": text,
+                "covered": "".join(c for c in text if ord(c) in cmap),
                 "m": Matrix44(transform),
                 "em": gc.font["head"].unitsPerEm * f,
                 "shift": -gc.font_measurements.baseline * f,
@@ -266,7 +280,22 @@ def draw(doc, svg_path, state):
 
         def draw_entity(self, entity, properties):
             state["entities_drawn"] += 1
+            if state["entities_drawn"] > max_drawn:
+                raise DrawnOverCap(state["entities_drawn"])
             super().draw_entity(entity, properties)
+
+        def draw_hatch_pattern(self, polygon, paths, properties):
+            sink = io.StringIO()
+            saved = sys.stdout
+            sys.stdout = sink
+            try:
+                super().draw_hatch_pattern(polygon, paths, properties)
+            finally:
+                sys.stdout = saved
+                captured = sink.getvalue()
+                sys.stderr.write(captured)
+            if HATCH_TIMEOUT_MESSAGE in captured:
+                state["hatch_truncated"] += 1
 
         def draw_line_entity(self, entity, properties):
             kind = entity.dxftype()
@@ -284,6 +313,7 @@ def draw(doc, svg_path, state):
         image_policy=config.ImagePolicy.IGNORE,
         proxy_graphic_policy=config.ProxyGraphicPolicy.SHOW,
         color_policy=config.ColorPolicy.COLOR,
+        hatching_timeout=HATCH_TIMEOUT_S,
     )
     fe = DXFFrontend(RenderContext(doc), pipeline, cfg)
     fe.draw_layout(doc.modelspace(), finalize=False, filter_func=keep)
@@ -332,7 +362,7 @@ def draw(doc, svg_path, state):
     state["page_w_mm"] = float(root.get("width", "0mm")[:-2])
     state["page_h_mm"] = float(root.get("height", "0mm")[:-2])
 
-    count = 0
+    emitted = []
     flip = Matrix44.scale(1, -1, 1)
     for t in texts:
         m = flip @ Matrix44.translate(0, t["shift"], 0) @ t["m"] @ T
@@ -353,14 +383,18 @@ def draw(doc, svg_path, state):
         el.set("fill", t["color"][:7])
         el.set(XML_SPACE, "preserve")
         el.text = t["text"]
-        count += 1
-    state["texts"] = count
-    return root, drawn_box
+        emitted.append({"text": t["text"], "covered": t["covered"]})
+    state["texts"] = len(emitted)
+    state["uncovered"] = sum(len(e["text"]) - len(e["covered"]) for e in emitted)
+    return root, drawn_box, emitted
 
 
-def write_outputs(args, state, root, drawn_box):
+def write_outputs(args, state, root, drawn_box, emitted):
     try:
         ET.ElementTree(root).write(args.svg, encoding="utf-8", xml_declaration=True)
+        text = json.dumps({"texts": emitted}, separators=(",", ":"), ensure_ascii=True)
+        with open(args.texts, "w", encoding="ascii") as fh:
+            fh.write(text)
         if args.measure:
             text = json.dumps(measure_draft(state, drawn_box), separators=(",", ":"), sort_keys=True, allow_nan=False)
             with open(args.measure, "w", encoding="ascii") as fh:
@@ -372,29 +406,36 @@ def write_outputs(args, state, root, drawn_box):
 
 def run(args, state):
     doc = read_document(args.src, state)
+    from ezdxf.fonts.font_manager import FontNotFoundError
     try:
-        root, drawn_box = draw(doc, args.svg, state)
+        root, drawn_box, emitted = draw(doc, args.max_drawn_entities, state)
     except Outcome:
         raise
+    except DrawnOverCap:
+        raise Outcome("too_complex", "drawn_entities_over_cap", EXIT_TOO_COMPLEX)
     except RecursionError:
         raise Outcome("too_complex", "recursion", EXIT_TOO_COMPLEX)
     except MemoryError:
         raise Outcome("too_complex", "out_of_memory", EXIT_TOO_COMPLEX)
-    except FontUnavailable as exc:
-        sys.stderr.write("cad-dxf: no TrueType font available for %s\n" % exc)
+    except (FontUnavailable, FontNotFoundError) as exc:
+        sys.stderr.write("cad-dxf: no TrueType font available: %s: %s\n" % (exc.__class__.__name__, exc))
         raise Outcome("failed", "font_unavailable", EXIT_FAILED)
     except Exception as exc:
         sys.stderr.write("cad-dxf: %s: %s\n" % (exc.__class__.__name__, exc))
         raise Outcome("failed", "draw_exception", EXIT_FAILED)
-    write_outputs(args, state, root, drawn_box)
+    write_outputs(args, state, root, drawn_box, emitted)
 
 
 def main():
     ap = Parser(prog="cad-dxf", add_help=False)
+    ap.add_argument("--max-drawn-entities", type=int, required=True)
+    ap.add_argument("--texts", required=True)
     ap.add_argument("--measure", default="")
     ap.add_argument("src")
     ap.add_argument("svg")
     args = ap.parse_args()
+    if args.max_drawn_entities < 1:
+        ap.error("--max-drawn-entities must be at least 1")
     fd = os.dup(1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr

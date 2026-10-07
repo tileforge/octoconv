@@ -624,6 +624,8 @@ NS = "{http://www.w3.org/2000/svg}"
 DRAFT_KEYS = {"format", "declared_unit", "declared_unit_raw", "applied_factor", "bbox", "solids",
               "closed_solids", "volume", "area", "null_reason", "triangles"}
 EXIT = {"ok": 0, "failed": 1, "unreadable": 2, "empty": 3, "too_complex": 4}
+SPECIAL = "A&B <x> \"q\" 'a' & <script>alert(1)</script>"
+WIDE = "Lat\u4e2d\u6587\u03a9\U0001F600end"
 UNITS = {"units_1": ("inch", ""), "units_2": ("foot", ""), "units_4": ("mm", ""), "units_5": ("cm", ""),
          "units_6": ("m", ""), "units_13": ("micrometre", ""), "units_0": ("", ""), "units_missing": ("", ""),
          "units_3": ("", "3"), "units_21": ("", "21")}
@@ -660,20 +662,28 @@ verdict = v.get("verdict", "none") if v.get("stage", "dxf") == "dxf" else "wrong
 reason = v.get("reason") or "none"
 last_is_verdict = 1 if lines and lines[-1].startswith("CADVERDICT ") and v else 0
 fact("last_line_verdict", last_is_verdict)
-if extra.get("log") != "1":
+if extra.get("log") != "1" and not case.startswith("usage_"):
     need("last_line_verdict", last_is_verdict)
-need("rc_matches_verdict", verdict in EXIT and str(EXIT[verdict]) == rc)
+if case.startswith("usage_"):
+    need("rc_64", rc == "64")
+    need("no_verdict", not vlines)
+else:
+    need("rc_matches_verdict", verdict in EXIT and str(EXIT[verdict]) == rc)
 if v:
     fact("skipped", "+".join("%s-%s" % kv for kv in sorted(v.get("skipped", {}).items())) or "none")
     fact("entities_drawn", v.get("entities_drawn"))
     fact("auditor_fixes", v.get("auditor_fixes"))
     fact("verdict_texts", v.get("texts"))
+    fact("uncovered", v.get("uncovered"))
+    fact("hatch_truncated", v.get("hatch_truncated"))
     fact("page_mm", "%sx%s" % (v.get("page_w_mm"), v.get("page_h_mm")))
 
 svg_path = os.path.join(job, "out.svg")
 draft_path = os.path.join(job, "out.measure.json")
+texts_path = os.path.join(job, "out.texts.json")
 root = None
 svg_texts = []
+entries = []
 draft = None
 if verdict == "ok":
     try:
@@ -694,6 +704,35 @@ if verdict == "ok":
             page_ok = False
         fact("page_equals_svg_root", int(page_ok))
         need("page_equals_svg_root", page_ok)
+    tj = None
+    try:
+        with open(texts_path, "rb") as fh:
+            blob = fh.read()
+        ascii_ok = all(b < 128 for b in blob)
+        tj = json.loads(blob.decode("ascii"))
+    except Exception as exc:
+        ascii_ok = False
+        fact("texts_json", exc.__class__.__name__)
+    shape_ok = (isinstance(tj, dict) and set(tj) == {"texts"} and isinstance(tj["texts"], list)
+                and all(isinstance(e, dict) and set(e) == {"text", "covered"}
+                        and isinstance(e["text"], str) and isinstance(e["covered"], str) for e in tj["texts"]))
+    if shape_ok:
+        entries = tj["texts"]
+
+    def subseq(sub, full):
+        it = iter(full)
+        return all(c in it for c in sub)
+
+    order_ok = shape_ok and [e["text"] for e in entries] == svg_texts and len(entries) == v.get("texts")
+    covered_ok = shape_ok and all(subseq(e["covered"], e["text"]) for e in entries)
+    uncovered_ok = shape_ok and v.get("uncovered") == sum(len(e["text"]) - len(e["covered"]) for e in entries)
+    fact("texts_json_ascii", int(ascii_ok))
+    fact("texts_json_equals_svg", int(order_ok))
+    fact("covered_subsequence", int(covered_ok))
+    need("texts_json_ascii", ascii_ok)
+    need("texts_json_equals_svg", order_ok)
+    need("covered_subsequence", covered_ok)
+    need("uncovered_sum", uncovered_ok)
     if extra.get("measure") == "1":
         try:
             with open(draft_path, "rb") as fh:
@@ -701,7 +740,7 @@ if verdict == "ok":
         except Exception as exc:
             fact("draft", exc.__class__.__name__)
         need("draft_present", draft is not None)
-else:
+elif not extra.get("keep_outputs"):
     absent = not any(os.path.exists(os.path.join(job, n)) for n in ("out.svg", "out.measure.json", "out.texts.json"))
     fact("outputs_absent", int(absent))
     need("outputs_absent", absent)
@@ -784,6 +823,52 @@ elif case in UNITS:
     expect("ok")
     unit, raw_code = UNITS[case]
     need("unit_mapping", draft is not None and draft.get("declared_unit") == unit and draft.get("declared_unit_raw") == raw_code)
+elif case == "text_round_trip":
+    expect("ok")
+    need("special_exact", SPECIAL in svg_texts)
+    need("attrib_exact", "Attr<&>" in svg_texts)
+    fact("special_present", int(SPECIAL in svg_texts))
+    fact("attrib_present", int("Attr<&>" in svg_texts))
+elif case == "text_coverage":
+    expect("ok")
+    maps = dict(kv.split(":") for kv in extra.get("maps", "").split("+") if kv)
+    wide = [e for e in entries if e["text"] == WIDE]
+    want = "".join(c for c in WIDE if maps.get("%x" % ord(c), "1") == "1")
+    lacking = "".join(c for c in WIDE if maps.get("%x" % ord(c), "1") == "0")
+    fact("dejavu_maps", "+".join("%s:%s" % kv for kv in sorted(maps.items())) or "none")
+    fact("wide_covered", wide[0]["covered"].encode("unicode_escape").decode("ascii") if wide else "none")
+    need("maps_probed", set(maps) == {"4e2d", "6587", "3a9", "1f600"})
+    need("wide_text_present", len(wide) == 1)
+    need("wide_covered_equals_font", bool(wide) and wide[0]["covered"] == want)
+    need("cjk_uncovered", bool(wide) and "\u4e2d" not in wide[0]["covered"] and "\u6587" not in wide[0]["covered"])
+    need("uncovered_at_least_lacking", (v.get("uncovered") or 0) >= len(lacking) >= 2)
+    fact("plan_premise_1f600_uncovered", "false" if maps.get("1f600") == "1" else "true")
+elif case == "text_illegal_chars":
+    expect("ok")
+    need("replacement_chars", svg_texts == ["AB\ufffdCD\ufffdEF"])
+    fact("text_escaped", "+".join(t.encode("unicode_escape").decode("ascii") for t in svg_texts) or "none")
+elif case == "font_fresh_cache":
+    expect("failed", "font_unavailable")
+elif case == "font_warm_cache":
+    expect("failed", "font_unavailable")
+    fact("cache_warm_before_run", extra.get("warm", "0"))
+    need("cache_warm_before_run", extra.get("warm") == "1")
+elif case == "drawn_entities_over_cap":
+    expect("too_complex", "drawn_entities_over_cap")
+elif case == "block_cycle":
+    expect("too_complex", "block_cycle")
+elif case == "recursion":
+    expect("too_complex", "recursion")
+elif case == "nonnumeric_inf_unguarded":
+    fact("expected_without_guard", "failed/draw_exception")
+    fact("matches_expected", int(verdict == "failed" and reason == "draw_exception"))
+elif case == "hatch_pattern_default":
+    expect("ok")
+    need("hatch_truncated_0", v.get("hatch_truncated") == 0)
+elif case == "hatch_timeout_signal":
+    need("hatch_truncated_counted", (v.get("hatch_truncated") or 0) >= 1)
+elif case in ("usage_cap_zero", "usage_no_texts"):
+    pass
 else:
     need("known_case", False)
 
@@ -793,7 +878,10 @@ fact("failed_checks", "+".join(failed) or "none")
 out = ["verdict=%s" % verdict, "reason=%s" % reason, "rc=%s" % rc]
 for k, val in facts:
     out.append("%s=%s" % (k, str(val).replace(",", "_").replace("\n", "_")))
-out.append("result=%s" % ("ok" if not failed else "fail"))
+if case == "nonnumeric_inf_unguarded":
+    out.append("result=%s" % ("fact" if not failed else "fail"))
+else:
+    out.append("result=%s" % ("ok" if not failed else "fail"))
 print(",".join(out))
 PY
 }
@@ -815,7 +903,42 @@ helper_unconfined() {
 }
 
 std_args() {
-  printf '%s\n' --measure /job/out.measure.json /job/in.dxf /job/out.svg
+  printf '%s\n' --max-drawn-entities "${1:-$MAX_DRAWN}" --texts /job/out.texts.json --measure /job/out.measure.json /job/in.dxf /job/out.svg
+}
+
+write_harness() {
+  mkdir -p "$WORK/wrap"
+  chmod 0755 "$WORK/wrap"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+  cat > "$WORK/wrap/harness.py" <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("cad_dxf", "/usr/local/bin/cad-dxf")
+spec = importlib.util.spec_from_loader("cad_dxf", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+setting = sys.argv[1]
+if setting == "hatch0":
+    mod.HATCH_TIMEOUT_S = 0.0
+elif setting == "outline":
+    mod.TEXT_AS_OUTLINE = True
+else:
+    raise SystemExit("unknown setting " + setting)
+sys.argv = ["cad-dxf"] + sys.argv[2:]
+sys.exit(mod.main())
+PY
+  chmod 0644 "$WORK/wrap/"*.py
+}
+
+harness_run() {
+  local job=$1 name=$2 rc=0
+  shift 2
+  docker run --rm "${LIMITS[@]}" "${STAGE_ENV[@]}" -v "$job:/job" -v "$WORK/wrap:/wrap:ro" \
+    --entrypoint /opt/venv/bin/python "$TAG" -I -B /wrap/harness.py "$@" \
+    > "$WORK/$name.out" 2> "$WORK/$name.err" </dev/null || rc=$?
+  printf '%s\n' "$rc"
 }
 
 job_with() {
@@ -867,6 +990,106 @@ group_semantics() {
   rm -rf "$job" "$job2"
 }
 
+group_safety() {
+  local job rc args maps cache warm gen
+  disk_guard
+  args=$(std_args)
+  job=$(job_with "$CORPUS/dxf/text_cases.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" text_round_trip $args)
+  cp "$WORK/text_round_trip.out" "$WORK/text_coverage.out"
+  cp "$WORK/text_round_trip.err" "$WORK/text_coverage.err"
+  maps=$(docker run --rm --network none --entrypoint /opt/venv/bin/python "$TAG" -I -B -c '
+from fontTools.ttLib import TTFont
+c = TTFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf").getBestCmap()
+print("+".join("%x:%d" % (o, o in c) for o in (0x4e2d, 0x6587, 0x3a9, 0x1f600)))
+' </dev/null)
+  helper_row safety text_round_trip dxf/text_cases.dxf "$CORPUS/dxf/text_cases.dxf" "$rc" "$job" measure=1
+  helper_row safety text_coverage dxf/text_cases.dxf "$CORPUS/dxf/text_cases.dxf" "$rc" "$job" measure=1 "maps=$maps"
+  rm -rf "$job"
+  printf 'DEVIATION,key=text_coverage_emoji,group=safety,plan_expectation=covered_lacks_U+4E2D_U+6587_U+1F600_and_uncovered_ge_3,observed=DejaVuSans.ttf_cmap_%s,judged=covered_equals_the_font_cmap_and_uncovered_ge_the_unmapped_count\n' "$maps" >> "$LINES"
+
+  job=$(job_with "$CORPUS/dxf/text_illegal_chars.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" text_illegal_chars $args)
+  helper_row safety text_illegal_chars dxf/text_illegal_chars.dxf "$CORPUS/dxf/text_illegal_chars.dxf" "$rc" "$job" measure=1
+  rm -rf "$job"
+
+  job=$(job_with "$CORPUS/dxf/text_cases.dxf")
+  rc=$(helper_exec "$DXF_NOFONT_RO" "$job" font_fresh_cache $args)
+  helper_row safety font_fresh_cache dxf/text_cases.dxf "$CORPUS/dxf/text_cases.dxf" "$rc" "$job" measure=1
+  rm -rf "$job"
+
+  job=$(job_with "$CORPUS/dxf/text_cases.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" font_warm_up $args)
+  cache="$job/.home/.cache/ezdxf/font_manager_cache.json"
+  warm=0
+  if [ "$rc" = 0 ] && [ -s "$cache" ]; then warm=1; fi
+  rm -f "$job/out.svg" "$job/out.texts.json" "$job/out.measure.json"
+  rc=$(helper_exec "$DXF_NOFONT_RO" "$job" font_warm_cache $args)
+  helper_row safety font_warm_cache dxf/text_cases.dxf "$CORPUS/dxf/text_cases.dxf" "$rc" "$job" measure=1 "warm=$warm"
+  rm -rf "$job"
+
+  job=$(job_with "$CORPUS/synthetic/blocks_minsert.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" drawn_entities_over_cap $(std_args 3))
+  helper_row safety drawn_entities_over_cap synthetic/blocks_minsert.dxf "$CORPUS/synthetic/blocks_minsert.dxf" "$rc" "$job"
+  rm -rf "$job"
+
+  job=$(job_with "$CORPUS/dxf/cyclic_self.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" block_cycle $args)
+  helper_row safety block_cycle dxf/cyclic_self.dxf "$CORPUS/dxf/cyclic_self.dxf" "$rc" "$job"
+  rm -rf "$job"
+
+  gen="$WORK/nest_d250.dxf"
+  python3 - "$REPO_ROOT/scripts/cad-corpus-gen.py" "$gen" <<'PY'
+import importlib.util
+import sys
+spec = importlib.util.spec_from_file_location("cad_corpus_gen", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+with open(sys.argv[2], "wb") as fh:
+    fh.write(mod.build_dxf_nest(250))
+PY
+  job=$(job_with "$gen")
+  rc=$(helper_exec "$DXF_RO" "$job" recursion $args)
+  helper_row safety recursion generated/nest_d250.dxf "$gen" "$rc" "$job"
+  rm -rf "$job"
+
+  job=$(job_with "$CORPUS/dxf/nonnumeric_inf.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" nonnumeric_inf_unguarded $args)
+  helper_row safety nonnumeric_inf_unguarded dxf/nonnumeric_inf.dxf "$CORPUS/dxf/nonnumeric_inf.dxf" "$rc" "$job"
+  rm -rf "$job"
+
+  job=$(new_job)
+  docker run --rm --network none --user nobody -e HOME=/tmp -v "$job:/job" --entrypoint /opt/venv/bin/python "$TAG" -I -B -c '
+import ezdxf
+d = ezdxf.new("R2018")
+h = d.modelspace().add_hatch()
+h.set_pattern_fill("ANSI31", scale=0.5)
+h.paths.add_polyline_path([(0, 0), (100, 0), (100, 100), (0, 100)], is_closed=True)
+d.saveas("/job/gen.dxf")
+' </dev/null >&2
+  gen="$WORK/pattern_hatch.dxf"
+  cp "$job/gen.dxf" "$gen"
+  rm -rf "$job"
+  job=$(job_with "$gen")
+  rc=$(helper_exec "$DXF_RO" "$job" hatch_pattern_default $args)
+  helper_row safety hatch_pattern_default generated/pattern_hatch.dxf "$gen" "$rc" "$job" measure=1
+  rm -rf "$job"
+  job=$(job_with "$gen")
+  rc=$(harness_run "$job" hatch_timeout_signal hatch0 $args)
+  helper_row safety hatch_timeout_signal generated/pattern_hatch.dxf "$gen" "$rc" "$job" measure=1 keep_outputs=1
+  rm -rf "$job"
+  printf 'GAP,key=hatch_timeout_partial,group=safety,ezdxf_signal=none_but_a_print,checked=ezdxf_1.4.4_Frontend.draw_hatch_pattern_prints_hatching_timeout_of_to_stdout_and_keeps_the_partial_lines,helper=counts_that_print_per_draw_hatch_pattern_call_into_hatch_truncated,proof=rows_hatch_pattern_default_and_hatch_timeout_signal,corpus_hatches=solid_only\n' >> "$LINES"
+
+  job=$(job_with "$CORPUS/dxf/wide.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" usage_cap_zero $(std_args 0))
+  helper_row safety usage_cap_zero dxf/wide.dxf "$CORPUS/dxf/wide.dxf" "$rc" "$job"
+  rm -rf "$job"
+  job=$(job_with "$CORPUS/dxf/wide.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" usage_no_texts --max-drawn-entities "$MAX_DRAWN" /job/in.dxf /job/out.svg)
+  helper_row safety usage_no_texts dxf/wide.dxf "$CORPUS/dxf/wide.dxf" "$rc" "$job"
+  rm -rf "$job"
+}
+
 group_rows() { grep -cE "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" || true; }
 
 group_fails() { grep -E "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" | grep -c ',result=fail$' || true; }
@@ -876,6 +1099,7 @@ helper_mode() {
   need_tool pdftotext
   setup helper
   write_judge
+  write_harness
   case "$GROUP" in
     all) groups="semantics safety corpus" ;;
     *) groups=$GROUP ;;
