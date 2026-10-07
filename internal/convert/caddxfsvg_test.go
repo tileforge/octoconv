@@ -248,7 +248,7 @@ func TestValidateCADSVGRejectsMutations(t *testing.T) {
 	body := strings.TrimPrefix(cadSVGBase, decl)
 	cases := []struct {
 		name, in, rule string
-		max          int64
+		max            int64
 	}{
 		{"doctype", rep(decl, decl+"<!DOCTYPE svg>"), "directive", 0},
 		{"entity_declaration", rep(decl, decl+`<!DOCTYPE svg [<!ENTITY a "b">]>`), "directive", 0},
