@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"math"
 )
 
 const (
@@ -23,12 +24,16 @@ const (
 	cadMarginMin           = 0.03
 	cadTransparentMin      = 0.05
 	cadTransparentMax      = 0.95
+	cadDrawingFracMin      = 0.0003
+	cadDrawingSpanMin      = 0.5
+	cadLetterboxSlack      = 2
 )
 
 type CADPixelFacts struct {
 	Width, Height    int
 	Count, DarkCount int
 	BoxW, BoxH       int
+	BoxX, BoxY       int
 	Margin           int
 	Frac, Dark       float64
 	FracTransparent  float64
@@ -61,34 +66,100 @@ func cadPNGHasAlpha(data []byte) bool {
 func JudgeCADPNG(r io.Reader, size int, background string) (CADPixelFacts, error) {
 	var facts CADPixelFacts
 	facts.Mode = "none"
+	img, err := cadReadFrame(r, size, background, &facts)
+	if err != nil {
+		return facts, err
+	}
+	opaquePx := cadMeasure(img, background, &facts)
+	return facts, cadJudgeFacts(&facts, size, background, opaquePx)
+}
+
+func cadReadFrame(r io.Reader, size int, background string, facts *CADPixelFacts) (image.Image, error) {
 	if size < CADMinRenderSize || size > CADMaxRenderSize {
-		return facts, fmt.Errorf("cad: judge size %d is outside %d..%d", size, CADMinRenderSize, CADMaxRenderSize)
+		return nil, fmt.Errorf("cad: judge size %d is outside %d..%d", size, CADMinRenderSize, CADMaxRenderSize)
 	}
 	if background != CADBackgroundOpq && background != CADBackgroundTr {
-		return facts, fmt.Errorf("cad: judge background %q is not opaque or transparent", background)
+		return nil, fmt.Errorf("cad: judge background %q is not opaque or transparent", background)
 	}
 	data, err := io.ReadAll(io.LimitReader(r, cadPixelMaxBytes+1))
 	if err != nil {
-		return facts, fmt.Errorf("cad: read the rendered image: %w", err)
+		return nil, fmt.Errorf("cad: read the rendered image: %w", err)
 	}
 	if len(data) > cadPixelMaxBytes {
-		return facts, fmt.Errorf("%w: the image exceeds %d bytes", ErrCADRenderRejected, cadPixelMaxBytes)
+		return nil, fmt.Errorf("%w: the image exceeds %d bytes", ErrCADRenderRejected, cadPixelMaxBytes)
 	}
 	cfg, err := png.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return facts, fmt.Errorf("%w: not a decodable PNG: %v", ErrCADRenderRejected, err)
+		return nil, fmt.Errorf("%w: not a decodable PNG: %v", ErrCADRenderRejected, err)
 	}
 	facts.Width, facts.Height = cfg.Width, cfg.Height
 	if cfg.Width != size || cfg.Height != size {
-		return facts, fmt.Errorf("%w: J0 frame is %dx%d, want %dx%d", ErrCADRenderRejected, cfg.Width, cfg.Height, size, size)
+		return nil, fmt.Errorf("%w: J0 frame is %dx%d, want %dx%d", ErrCADRenderRejected, cfg.Width, cfg.Height, size, size)
 	}
 	facts.HasAlpha = cadPNGHasAlpha(data)
 	img, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
-		return facts, fmt.Errorf("%w: not a decodable PNG: %v", ErrCADRenderRejected, err)
+		return nil, fmt.Errorf("%w: not a decodable PNG: %v", ErrCADRenderRejected, err)
 	}
-	opaquePx := cadMeasure(img, background, &facts)
-	return facts, cadJudgeFacts(&facts, size, background, opaquePx)
+	return img, nil
+}
+
+type CADLetterbox struct{ Left, Top, Width, Height int }
+
+func CADDrawingLetterbox(wMM, hMM float64, size int) (CADLetterbox, error) {
+	if size < CADMinRenderSize || size > CADMaxRenderSize {
+		return CADLetterbox{}, fmt.Errorf("cad: letterbox size %d is outside %d..%d", size, CADMinRenderSize, CADMaxRenderSize)
+	}
+	if !(wMM > 0) || !(hMM > 0) || math.IsInf(wMM, 0) || math.IsInf(hMM, 0) {
+		return CADLetterbox{}, fmt.Errorf("cad: letterbox of a %v x %v mm drawing", wMM, hMM)
+	}
+	k := float64(size) * (1 - 2*cadMarginMin) / math.Max(wMM, hMM)
+	sw := max(1, int(math.Floor(wMM*k+0.5)))
+	sh := max(1, int(math.Floor(hMM*k+0.5)))
+	return CADLetterbox{Left: (size - sw) / 2, Top: (size - sh) / 2, Width: sw, Height: sh}, nil
+}
+
+func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterbox) (CADPixelFacts, error) {
+	var facts CADPixelFacts
+	facts.Mode = "drawing"
+	if box.Width < 1 || box.Height < 1 || box.Left < 0 || box.Top < 0 || box.Left+box.Width > size || box.Top+box.Height > size {
+		return facts, fmt.Errorf("cad: letterbox %+v does not fit a %d px frame", box, size)
+	}
+	img, err := cadReadFrame(r, size, background, &facts)
+	if err != nil {
+		return facts, err
+	}
+	cadMeasure(img, background, &facts)
+	if background == CADBackgroundTr {
+		if !facts.HasAlpha {
+			return facts, fmt.Errorf("%w: background transparent but the PNG carries no alpha", ErrCADRenderRejected)
+		}
+		if facts.FracTransparent < cadTransparentMin {
+			return facts, fmt.Errorf("%w: transparent fraction %.4f is under %.2f", ErrCADRenderRejected, facts.FracTransparent, cadTransparentMin)
+		}
+	} else if facts.FracTransparent > 0 {
+		return facts, fmt.Errorf("%w: background opaque but %.4f of the frame is transparent", ErrCADRenderRejected, facts.FracTransparent)
+	}
+	if facts.Count == 0 {
+		return facts, fmt.Errorf("%w: J1 the frame holds no ink", ErrCADRenderRejected)
+	}
+	if facts.Frac < cadDrawingFracMin {
+		return facts, fmt.Errorf("%w: J1 ink fraction %.6f is under %.4f", ErrCADRenderRejected, facts.Frac, cadDrawingFracMin)
+	}
+	long, boxLong := max(facts.BoxW, facts.BoxH), max(box.Width, box.Height)
+	if float64(long) < cadDrawingSpanMin*float64(boxLong) {
+		return facts, fmt.Errorf("%w: J2 the ink spans %d px of a %d px letterbox", ErrCADRenderRejected, long, boxLong)
+	}
+	if need := int(cadMarginMin * float64(size)); facts.Margin < need {
+		return facts, fmt.Errorf("%w: J3 the margin is %d px, want at least %d", ErrCADRenderRejected, facts.Margin, need)
+	}
+	x1, y1 := facts.BoxX+facts.BoxW-1, facts.BoxY+facts.BoxH-1
+	if facts.BoxX < box.Left-cadLetterboxSlack || facts.BoxY < box.Top-cadLetterboxSlack ||
+		x1 > box.Left+box.Width-1+cadLetterboxSlack || y1 > box.Top+box.Height-1+cadLetterboxSlack {
+		return facts, fmt.Errorf("%w: J3 the ink box %d,%d..%d,%d leaves the letterbox %d,%d..%d,%d by more than %d px", ErrCADRenderRejected,
+			facts.BoxX, facts.BoxY, x1, y1, box.Left, box.Top, box.Left+box.Width-1, box.Top+box.Height-1, cadLetterboxSlack)
+	}
+	return facts, nil
 }
 
 func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
@@ -148,6 +219,7 @@ func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 	f.Margin = -1
 	if f.Count > 0 {
 		f.BoxW, f.BoxH = x1-x0+1, y1-y0+1
+		f.BoxX, f.BoxY = x0, y0
 		f.Margin = min(x0, y0, w-1-x1, h-1-y1)
 	}
 	return opaquePx
