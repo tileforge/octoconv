@@ -1,5 +1,5 @@
-HDR,mode=tracer,date_utc=2026-10-07T11:05:31Z
-HDR,mode=tracer,commit=23b5ce48e9ddd4f4c468b547f2b0ab9347820174,tracked_dirt=2
+HDR,mode=tracer,date_utc=2026-10-07T11:19:33Z
+HDR,mode=tracer,commit=58728b6f4b6981d086acabed2d4e115895eb9411,tracked_dirt=1
 HDR,mode=tracer,image=octoconv-cad-worker:engine75-7f41d42e9fc6,image_id=sha256:b9428c6c86e2b07609a87f72561b0fecfccda8d81f9e4b32d546851b1de297d3,image_bytes=1137248379
 HDR,mode=tracer,server_arch=arm64
 HDR,mode=tracer,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
@@ -24,8 +24,8 @@ TRACER,stage=rsvg-pdf,input=legacy_cp1251_svg_outside,rc=1,confined=1,pdf=absent
 SUMMARY,mode=tracer,runs_ok=6,runs_expected=6,denied=2,denied_expected=2,result=ok
 TRACER-OK
 LOCK,file=requirements-dxf.txt,source=scripts/cad-measure/requirements-common.txt,cmp=identical,packages=ezdxf==1.4.4+fonttools==4.66.1+pillow==12.3.0+pyparsing==3.3.3+typing-extensions==4.16.0,hashes=183,sha256=45d7e1b2e1722ef0b8f8693b3693aceb1ba704c6f7056ecea584182737f3231b,numpy_block_vs_mesh=identical,result=ok
-HDR,mode=fixtures,date_utc=2026-10-07T11:15:28Z
-HDR,mode=fixtures,commit=28622583d2c99271174d89bf25b985553dea0eb0,tracked_dirt=4
+HDR,mode=fixtures,date_utc=2026-10-07T11:19:46Z
+HDR,mode=fixtures,commit=58728b6f4b6981d086acabed2d4e115895eb9411,tracked_dirt=1
 HDR,mode=fixtures,image=octoconv-cad-worker:engine75-7f41d42e9fc6,image_id=sha256:b9428c6c86e2b07609a87f72561b0fecfccda8d81f9e4b32d546851b1de297d3,image_bytes=1137248379
 HDR,mode=fixtures,server_arch=arm64
 HDR,mode=fixtures,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
