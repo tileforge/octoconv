@@ -90,6 +90,21 @@ These come from phase 71 (`71-DECISION.md`) and phases 72–74:
 - **D-14: Rulesets.** Measure the `cad-dxf` and `rsvg-convert` sets on the production image by the D-09/74 method, judging by content: the SVG text is present, and the PDF and PNG are non-empty with text. Fonts must be readable under the ruleset, and the negative control removes `/usr/share/fonts` and must show the text drop. HOME and the fontconfig/XDG cache live in a job-dir subpath. Record the sets in SANDBOX-PATHS `## cad`, held by the Go pinning test and `conf05-crosscheck.sh cad`.
 - **D-15: Preflight.** It proves each new stage both ways at startup, as 73/74 do: success inside the job dir (judged by content), and denial of a file outside it.
 
+### Orchestrator resolutions after research (2026-10-07, `--auto`, recommended options)
+- **R-1: Kerning.** Accept the pango-vs-ezdxf kerning drift: up to 3.3% narrower, with identical start and height. Record it in the docs as a known limit. Do not patch ezdxf.
+- **R-2: bbox source.** The D-10 bbox is the box of the drawn primitives (what the picture shows), not `bbox.extents`, which counts undrawn dimension defpoints.
+- **R-3: PDF text rule.** The text must appear in the PDF as a subsequence of the characters DejaVu covers. Characters outside the font are excluded from the comparison and counted in the verdict.
+- **R-4: Stray far POINT.** Accept it. A stray far-away POINT is drawn and is part of the frame and the bbox. The frame shows exactly what the DXF contains, and isolated points are not filtered.
+- **R-5: Timeout env names.** `CAD_DXF_TIMEOUT` and `CAD_RSVG_TIMEOUT`, following `CAD_GUARD_TIMEOUT`, `CAD_MESH_TIMEOUT` and `CAD_RENDER_TIMEOUT`. The values are re-measured in Wave 0 by the 73 method. The DXF engine total must stay under 886 s.
+- **R-6: Package legitimacy.** The ezdxf set is a byte-for-byte subset of the phase-71 user-approved lock (`renderer_user_approval` / `requirements-common.txt`). The planner adds a checkpoint that verifies the hashes against the lock with `cmp`. Under the delegation the orchestrator answers that checkpoint, the same way as the 74-01 R-10 vtk checkpoint.
+- **R-7: Memory budget.** The research measured the rsvg PDF stage at 2510 MiB at the 118 MiB DXF ceiling. That is 88% of the 2842 MiB budget, while the project rule is a peak of at most 70%. Re-derive the DXF ceiling and/or caps so the worst measured stage peak (cad-dxf or rsvg, for pdf or png) stays at or below 70% of the budget, the same way IGES was re-derived in 73 (155 to 135 MiB). Record the derivation in the evidence. Do not raise the pod memory here; phase 76 owns the resources.
+- **R-8: Guard extensions found by research are binding.**
+  - An expanded-entity cap (850155) in addition to the 170031 expanded-insert cap.
+  - Block names compared after `name.lower()`, matching ezdxf.
+  - `nan`, `inf`, out-of-range magnitudes and `1_0`-style literals rejected inside ENTITIES/BLOCKS only.
+  - A nesting bound of 16.
+  - Every deterministic ezdxf crash class (`RecursionError`, `ValueError` on `inf`) is pre-empted by the guard, so none of them can reach the retryable path of D-13.
+
 ### Claude's Discretion
 - How the guard's DXF pair parser is structured, and its exact verdict fields.
 - The SVG allowlist's exact attribute list, provided it satisfies D-05.
