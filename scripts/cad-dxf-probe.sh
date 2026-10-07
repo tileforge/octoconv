@@ -26,12 +26,21 @@ RW_SET=/job
 OUT_OVERRIDE=""
 FIXTURE_DIR="$CORPUS/dxf"
 FIXTURE_COUNT=41
+HELPER_EVID="$PHASE_DIR/evidence/75-02-helper.txt"
+HELPER_EVID_NAME="evidence/75-02-helper.txt"
+DXF_OUT="$CORPUS/dxf-out"
+MAX_DRAWN=850155
+CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
+WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
+GROUP=all
+WRITE_OUT=0
 
 usage() {
   cat >&2 <<'USAGE'
 Usage:
   scripts/cad-dxf-probe.sh tracer   [--out FILE]
   scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
+  scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|all] [--write-out] [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
           uncommon.dxf with cad-dxf under its candidate Landlock ruleset, turn each SVG into a
@@ -44,10 +53,19 @@ fixtures  generate the phase fixture set with scripts/cad-corpus-gen.py --dxf-fi
           copies the fresh files in first), then strict-read and audit each with ezdxf and print
           one FIXTURE line per file. Drawing, units and extents fixtures must read with no audit
           error; every cyclic fixture must show audit code 104; the rest are recorded as facts.
+helper    run the production cad-dxf under its candidate Landlock ruleset and the stage
+          environment of the tracer and judge every output against pre-registered expectations:
+          semantics (what is drawn, skipped, framed and declared), safety (texts.json, XML-safe
+          text, font failure, backstops), corpus (the 17 corpus DXF wrapped by measure_wrap.py,
+          and text fidelity against ezdxf's own outline rendering at 1280 px). One HELPER,
+          CORPUS or FIDELITY row per check and one SUMMARY line per group. --write-out refreshes
+          internal/convert/testdata/cad/dxf-out with the real outputs. The evidence file defaults
+          to .planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt and a group re-run
+          replaces only its own lines.
 
 Every mode rewrites its own lines in the evidence file (default
-.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt) and removes the image tags it
-built. Needs a native arm64 docker server, go, python3 and pdftotext.
+.planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
+removes the image tags it built. Needs a native arm64 docker server, go, python3 and pdftotext.
 Exit codes: 64 usage, 69 a tool is missing, 3 VM disk below 6 GiB, 1 a check failed.
 USAGE
   exit 64
@@ -179,6 +197,8 @@ for p in sys.argv[1:]:
   docker run --rm --network none --entrypoint sh "$tag" -c "$inner" </dev/null | sed "s/^/HDR,mode=$mode,/"
   if [ "$mode" = tracer ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
+  elif [ "${mode%%,*}" = helper ]; then
+    printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset,max_drawn_entities=%s\n' "$mode" "$MAX_DRAWN"
   else
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/tmp_PYTHONHASHSEED=0_python=-B,unconfined=1\n' "$mode"
   fi
@@ -212,6 +232,8 @@ setup() {
   TRIPLET=$(triplet_for "$ARCH")
   DXF_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/share/fonts:/usr/lib/$TRIPLET:/usr/local/bin/cad-dxf"
   RSVG_RO="/usr/share/fonts:/usr/lib/$TRIPLET:/usr/bin/rsvg-convert"
+  DXF_NOFONT_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/$TRIPLET:/usr/local/bin/cad-dxf"
+  RSVG_NOFONT_RO="/usr/lib/$TRIPLET:/usr/bin/rsvg-convert"
   build_probe "$ARCH" "$WORK/probe"
   LINES="$WORK/lines.txt"
   : > "$LINES"
@@ -220,6 +242,8 @@ setup() {
     header_lines "$mode" "$TAG"
     [ "$mode" != tracer ] || printf 'HDR,mode=%s,ro_cad_dxf=%s,ro_rsvg=%s,rw=%s\n' "$mode" "$DXF_RO" "$RSVG_RO" "$RW_SET"
   } >> "$LINES"
+  HDR_LINES="$WORK/hdr.txt"
+  grep -v '^LOCK,' "$LINES" > "$HDR_LINES" || true
 }
 
 run_confined() {
@@ -589,6 +613,302 @@ fixtures() {
   [ "$ok" = 1 ]
 }
 
+write_judge() {
+  cat > "$WORK/judge.py" <<'PY'
+import json
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+NS = "{http://www.w3.org/2000/svg}"
+DRAFT_KEYS = {"format", "declared_unit", "declared_unit_raw", "applied_factor", "bbox", "solids",
+              "closed_solids", "volume", "area", "null_reason", "triangles"}
+EXIT = {"ok": 0, "failed": 1, "unreadable": 2, "empty": 3, "too_complex": 4}
+UNITS = {"units_1": ("inch", ""), "units_2": ("foot", ""), "units_4": ("mm", ""), "units_5": ("cm", ""),
+         "units_6": ("m", ""), "units_13": ("micrometre", ""), "units_0": ("", ""), "units_missing": ("", ""),
+         "units_3": ("", "3"), "units_21": ("", "21")}
+
+case, rc, stdout_path, job = sys.argv[1:5]
+extra = dict(a.split("=", 1) for a in sys.argv[5:])
+facts = []
+checks = []
+
+
+def fact(k, v):
+    facts.append((k, v))
+
+
+def need(name, cond):
+    checks.append((name, bool(cond)))
+
+
+def g(x):
+    return "%.9g" % x
+
+
+with open(stdout_path, "rb") as fh:
+    raw = fh.read().decode("utf-8", "replace")
+lines = [ln for ln in raw.split("\n") if ln.strip()]
+vlines = [ln for ln in lines if ln.startswith("CADVERDICT ")]
+v = {}
+if vlines:
+    try:
+        v = json.loads(vlines[-1][len("CADVERDICT "):])
+    except ValueError:
+        v = {}
+verdict = v.get("verdict", "none") if v.get("stage", "dxf") == "dxf" else "wrong_stage"
+reason = v.get("reason") or "none"
+last_is_verdict = 1 if lines and lines[-1].startswith("CADVERDICT ") and v else 0
+fact("last_line_verdict", last_is_verdict)
+if extra.get("log") != "1":
+    need("last_line_verdict", last_is_verdict)
+need("rc_matches_verdict", verdict in EXIT and str(EXIT[verdict]) == rc)
+if v:
+    fact("skipped", "+".join("%s-%s" % kv for kv in sorted(v.get("skipped", {}).items())) or "none")
+    fact("entities_drawn", v.get("entities_drawn"))
+    fact("auditor_fixes", v.get("auditor_fixes"))
+    fact("verdict_texts", v.get("texts"))
+    fact("page_mm", "%sx%s" % (v.get("page_w_mm"), v.get("page_h_mm")))
+
+svg_path = os.path.join(job, "out.svg")
+draft_path = os.path.join(job, "out.measure.json")
+root = None
+svg_texts = []
+draft = None
+if verdict == "ok":
+    try:
+        root = ET.parse(svg_path).getroot()
+        fact("svg_parse", "strict_ok")
+    except Exception as exc:
+        fact("svg_parse", exc.__class__.__name__)
+    need("svg_parses", root is not None)
+    if root is not None:
+        svg_texts = [el.text or "" for el in root.iter(NS + "text")]
+        fact("svg_texts", len(svg_texts))
+        need("svg_texts_equal_verdict", len(svg_texts) == v.get("texts"))
+        try:
+            pw = float(root.get("width")[:-2])
+            ph = float(root.get("height")[:-2])
+            page_ok = pw == v.get("page_w_mm") and ph == v.get("page_h_mm")
+        except (TypeError, ValueError):
+            page_ok = False
+        fact("page_equals_svg_root", int(page_ok))
+        need("page_equals_svg_root", page_ok)
+    if extra.get("measure") == "1":
+        try:
+            with open(draft_path, "rb") as fh:
+                draft = json.loads(fh.read().decode("ascii"))
+        except Exception as exc:
+            fact("draft", exc.__class__.__name__)
+        need("draft_present", draft is not None)
+else:
+    absent = not any(os.path.exists(os.path.join(job, n)) for n in ("out.svg", "out.measure.json", "out.texts.json"))
+    fact("outputs_absent", int(absent))
+    need("outputs_absent", absent)
+
+bbox = None
+if draft is not None:
+    b = draft.get("bbox") if isinstance(draft.get("bbox"), dict) else {}
+    ok = (set(draft) == DRAFT_KEYS and draft["format"] == "dxf" and draft["applied_factor"] == 1
+          and draft["solids"] is None and draft["closed_solids"] is None and draft["volume"] is None
+          and draft["area"] is None and draft["null_reason"] == "not_applicable_2d" and draft["triangles"] == 0
+          and set(b) == {"min", "max"} and len(b.get("min", [])) == 2 and len(b.get("max", [])) == 2
+          and isinstance(draft["declared_unit"], str) and isinstance(draft["declared_unit_raw"], str))
+    fact("draft_contract", int(ok))
+    need("draft_contract", ok)
+    if ok:
+        bbox = (b["min"][0], b["min"][1], b["max"][0], b["max"][1])
+        fact("bbox", "+".join(g(x) for x in bbox))
+        fact("declared_unit", draft["declared_unit"] or "empty")
+        fact("declared_unit_raw", draft["declared_unit_raw"] or "empty")
+
+
+def expect(vd, rs=""):
+    need("verdict_%s" % vd, verdict == vd)
+    if rs:
+        need("reason_%s" % rs, reason == rs)
+
+
+def near(box, want, tol):
+    return box is not None and all(abs(a - b) <= tol for a, b in zip(box, want))
+
+
+skipped = v.get("skipped", {})
+pw, ph = v.get("page_w_mm") or 0.0, v.get("page_h_mm") or 0.0
+if case == "layers_off_frozen":
+    expect("ok")
+    blob = open(svg_path, "rb").read() if os.path.exists(svg_path) else b""
+    need("only_visible_text", svg_texts == ["VISIBLE"])
+    need("hidden_absent", b"HIDDEN_OFF" not in blob and b"HIDDEN_FROZEN" not in blob)
+    fact("text_list", "+".join(svg_texts) or "none")
+elif case in ("all_hidden",):
+    expect("empty", "nothing_drawable")
+elif case == "never_resolved":
+    expect("ok")
+    need("skipped_exact", skipped == {"IMAGE": 2, "PDFUNDERLAY": 1, "XREF": 1, "OLE2FRAME": 1})
+    other = extra.get("compare", "")
+    import hashlib
+    a = hashlib.sha256(open(svg_path, "rb").read()).hexdigest() if os.path.exists(svg_path) else "none"
+    bsha = hashlib.sha256(open(other, "rb").read()).hexdigest() if other and os.path.exists(other) else "none"
+    fact("svg_sha256_confined", a)
+    fact("svg_sha256_unconfined", bsha)
+    need("confined_equals_unconfined", a != "none" and a == bsha)
+elif case == "3dsolids":
+    expect("empty", "nothing_drawable")
+    need("skipped_3dsolid_4", skipped == {"3DSOLID": 4})
+elif case == "uncommon":
+    expect("ok")
+    need("skipped_3dsolid_1", skipped.get("3DSOLID") == 1)
+    need("min_x_above_21", bbox is not None and bbox[0] > 21.0)
+elif case in ("wrong_extents", "header_far_extents"):
+    expect("ok")
+    need("bbox_from_line", near(bbox, (10.0, 20.0, 40.0, 30.0), 1e-9))
+elif case == "xline_ray":
+    expect("ok")
+    need("bbox_rectangle", near(bbox, (0.0, 0.0, 100.0, 50.0), 1e-9))
+    inner = (min(pw, ph) - 20.0) / (max(pw, ph) - 20.0) if max(pw, ph) > 20.0 else 0.0
+    fact("inner_page_aspect", g(inner))
+    need("page_aspect", abs(inner - 0.5) <= 1e-3)
+elif case == "far_point":
+    expect("ok")
+    need("far_point_in_bbox", bbox is not None and bbox[2] >= 1e5)
+elif case == "single_point":
+    expect("empty", "zero_extent")
+elif case == "wide":
+    expect("ok")
+    need("page_wide", pw == 297.0 and ph < 30.0)
+elif case == "tall":
+    expect("ok")
+    need("page_tall", ph == 297.0 and pw < 30.0)
+elif case in UNITS:
+    expect("ok")
+    unit, raw_code = UNITS[case]
+    need("unit_mapping", draft is not None and draft.get("declared_unit") == unit and draft.get("declared_unit_raw") == raw_code)
+else:
+    need("known_case", False)
+
+failed = [n for n, ok in checks if not ok]
+fact("checks", len(checks))
+fact("failed_checks", "+".join(failed) or "none")
+out = ["verdict=%s" % verdict, "reason=%s" % reason, "rc=%s" % rc]
+for k, val in facts:
+    out.append("%s=%s" % (k, str(val).replace(",", "_").replace("\n", "_")))
+out.append("result=%s" % ("ok" if not failed else "fail"))
+print(",".join(out))
+PY
+}
+
+helper_exec() {
+  local ro=$1 job=$2 name=$3 rc=0
+  shift 3
+  MOUNTS=()
+  run_confined "$ro" "$job" "$WORK/$name.out" "$WORK/$name.err" /usr/local/bin/cad-dxf "$@" || rc=$?
+  printf '%s\n' "$rc"
+}
+
+helper_unconfined() {
+  local job=$1 name=$2 rc=0
+  shift 2
+  MOUNTS=()
+  run_unconfined "$job" "$WORK/$name.out" "$WORK/$name.err" /usr/local/bin/cad-dxf "$@" || rc=$?
+  printf '%s\n' "$rc"
+}
+
+std_args() {
+  printf '%s\n' --measure /job/out.measure.json /job/in.dxf /job/out.svg
+}
+
+job_with() {
+  local job
+  job=$(new_job)
+  cp "$1" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  printf '%s\n' "$job"
+}
+
+helper_row() {
+  local group=$1 name=$2 input=$3 src=$4 rc=$5 job=$6 j
+  shift 6
+  if probe_refused "$WORK/$name.err"; then
+    j="verdict=none,reason=probe_refused,rc=$rc,result=fail"
+  else
+    j=$(python3 "$WORK/judge.py" "$name" "$rc" "$WORK/$name.out" "$job" "$@")
+  fi
+  printf 'HELPER,group=%s,case=%s,input=%s,sha256=%s,%s\n' "$group" "$name" "$input" "$(sha_of "$src")" "$j" >> "$LINES"
+  case "$j" in *,result=fail) tail -n 5 "$WORK/$name.err" >&2 || true ;; esac
+}
+
+sem_case() {
+  local name=$1 rel=$2 job rc args
+  job=$(job_with "$CORPUS/$rel")
+  args=$(std_args)
+  rc=$(helper_exec "$DXF_RO" "$job" "$name" $args)
+  helper_row semantics "$name" "$rel" "$CORPUS/$rel" "$rc" "$job" measure=1
+  rm -rf "$job"
+}
+
+group_semantics() {
+  local c job job2 rc rc2 args
+  disk_guard
+  for c in layers_off_frozen all_hidden wrong_extents header_far_extents xline_ray far_point single_point wide tall \
+    units_0 units_1 units_2 units_3 units_4 units_5 units_6 units_13 units_21 units_missing; do
+    sem_case "$c" "dxf/$c.dxf"
+  done
+  sem_case 3dsolids public/3dsolids.dxf
+  sem_case uncommon public/uncommon.dxf
+  args=$(std_args)
+  job=$(job_with "$CORPUS/dxf/never_resolved.dxf")
+  job2=$(job_with "$CORPUS/dxf/never_resolved.dxf")
+  rc=$(helper_exec "$DXF_RO" "$job" never_resolved $args)
+  rc2=$(helper_unconfined "$job2" never_resolved_unconfined $args)
+  helper_row semantics never_resolved dxf/never_resolved.dxf "$CORPUS/dxf/never_resolved.dxf" "$rc" "$job" \
+    measure=1 "compare=$job2/out.svg"
+  [ "$rc2" = 0 ] || echo "never_resolved unconfined control rc=$rc2" >&2
+  rm -rf "$job" "$job2"
+}
+
+group_rows() { grep -cE "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" || true; }
+
+group_fails() { grep -E "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" | grep -c ',result=fail$' || true; }
+
+helper_mode() {
+  local groups g rows fails all_rows=0 all_fails=0
+  need_tool pdftotext
+  setup helper
+  write_judge
+  case "$GROUP" in
+    all) groups="semantics safety corpus" ;;
+    *) groups=$GROUP ;;
+  esac
+  [ "$WRITE_OUT" = 0 ] || groups="$groups writeout"
+  printf '%s\n' "$LOCK_LINE" > "$WORK/lock.txt"
+  evid_put "$WORK/lock.txt" '^LOCK,'
+  for g in $groups; do
+    LINES="$WORK/lines-$g.txt"
+    : > "$LINES"
+    sed "s/^HDR,mode=helper,/HDR,mode=helper,group=$g,/" "$HDR_LINES" >> "$LINES"
+    printf 'HDR,mode=helper,group=%s,ro_cad_dxf=%s,ro_cad_dxf_nofont=%s,ro_rsvg=%s,ro_rsvg_nofont=%s,rw=%s\n' \
+      "$g" "$DXF_RO" "$DXF_NOFONT_RO" "$RSVG_RO" "$RSVG_NOFONT_RO" "$RW_SET" >> "$LINES"
+    "group_$g"
+    rows=$(group_rows "$g" "$LINES")
+    fails=$(group_fails "$g" "$LINES")
+    [ "$rows" -gt 0 ] || fails=$((fails + 1))
+    all_rows=$((all_rows + rows))
+    all_fails=$((all_fails + fails))
+    printf 'SUMMARY,mode=helper,group=%s,rows=%s,fail=%s,facts=%s\n' "$g" "$rows" "$fails" \
+      "$(grep -cE "^HELPER,group=$g,.*,result=fact$" "$LINES" || true)" >> "$LINES"
+    evid_put "$LINES" "^[A-Z_]+,(mode=helper,|key=[^,]*,)?group=$g,"
+    cat "$LINES"
+  done
+  if [ "$GROUP" = all ]; then
+    printf 'SUMMARY,mode=helper,group=all,groups=%s,rows=%s,fail=%s,commit=%s\n' \
+      "$(printf '%s' "$groups" | tr ' ' '+')" "$all_rows" "$all_fails" "$(git rev-parse HEAD)" > "$WORK/all.txt"
+    evid_put "$WORK/all.txt" '^SUMMARY,mode=helper,group=all,'
+    cat "$WORK/all.txt"
+  fi
+  [ "$all_fails" = 0 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
@@ -597,13 +917,23 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT_OVERRIDE=${2:?}; shift 2 ;;
     --write) [ "$MODE" = fixtures ] || usage; WRITE=1; shift ;;
+    --group)
+      [ "$MODE" = helper ] || usage
+      case "${2:-}" in semantics|safety|corpus|all) GROUP=$2 ;; *) usage ;; esac
+      shift 2 ;;
+    --write-out) [ "$MODE" = helper ] || usage; WRITE_OUT=1; shift ;;
     *) usage ;;
   esac
 done
+if [ "$MODE" = helper ]; then
+  EVID=$HELPER_EVID
+  EVID_NAME=$HELPER_EVID_NAME
+fi
 [ -z "$OUT_OVERRIDE" ] || EVID=$OUT_OVERRIDE
 
 case "$MODE" in
   tracer) tracer ;;
   fixtures) fixtures ;;
+  helper) helper_mode ;;
   *) usage ;;
 esac
