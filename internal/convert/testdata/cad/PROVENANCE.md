@@ -677,6 +677,28 @@ Generation command for every file below: `python3 scripts/cad-corpus-gen.py --re
 
 ---
 
+## Phase 75 helper outputs (`dxf-out/`)
+
+- Licence: generated. Every file is an output of this repository's `cmd/cad-worker/helper/cad-dxf` (and of `rsvg-convert` run on that output) for a fixture listed above; no third-party material beyond the corpus files they were drawn from (`public/uncommon.dxf`, `public/hatches_2.dxf`, MIT, notices in this document).
+- Generation command: `scripts/cad-dxf-probe.sh helper --group all --write-out`. Every run is confined by the candidate Landlock sets of 75-01 under `--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody` with HOME and XDG under the job dir: `cad-dxf --max-drawn-entities 850155 --texts out.texts.json --measure out.measure.json in.dxf out.svg`, `rsvg-convert -f pdf -b white`, and the letterboxed PNG argv of D-08 (`[-b white] -w sw -h sh --page-width S --page-height S --left left --top top`).
+- Image: `octoconv-cad-worker:engine75-8d48826a49aa`, image id `sha256:d22ff36dfcc73576170a70b38bc8c52a26ad50860743131180344e00bc0eef06`, built from commit `a695dd0` (`Dockerfile.cad-worker --target engine`). The sha256 and size of every file are the `OUT` lines in `.planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt`.
+- The PDFs carry a creation date, so a refresh changes their bytes; the SVG, texts.json, drafts and PNGs are deterministic for a given image.
+
+| Files | Source | What they are for |
+|---|---|---|
+| `text_cases.svg`, `.texts.json`, `.pdf` | `dxf/text_cases.dxf` | SVG text and texts.json cross-check, the `&<>"'` round trip, coverage of characters outside DejaVu, a PDF with extractable text |
+| `legacy_cp1251.svg`, `.texts.json`, `.pdf` | `synthetic/legacy_cp1251.dxf` | One text element `Деталь` and its PDF |
+| `uncommon.svg`, `.texts.json`, `.pdf` | `public/uncommon.dxf` | 49 texts, dimensions, leaders and multileaders |
+| `hatches_2.svg`, `.texts.json`, `.pdf` | `public/hatches_2.dxf` | Filled paths with text |
+| `wide.svg`, `.texts.json`, `.measure.json`; `tall.svg`, `.texts.json` | `dxf/wide.dxf`, `dxf/tall.dxf` | Extreme aspect ratios and a dxf draft |
+| `wrong_extents.measure.json`, `units_3.measure.json` | `dxf/wrong_extents.dxf`, `dxf/units_3.dxf` | A draft whose bbox comes from the drawn line, not the header; a draft with an empty unit and raw code `3` |
+| `nofont.pdf` | `text_cases.svg` drawn by `rsvg-convert` under a set without `/usr/share/fonts` | A PDF with no extractable text (Pitfall 1), which the PDF judge must reject |
+| `outline.pdf` | `text_cases.dxf` drawn with ezdxf's stock SVG backend (text as paths) through the probe harness, then `rsvg-convert` | A PDF whose text is only outlines, which the PDF judge must reject |
+| `wide_1280_opaque.png`, `wide_1280_transparent.png`, `tall_256_opaque.png` | `wide.svg`, `tall.svg` | Letterboxed frames for the pixel judge |
+| `frames.tsv` | the three PNG runs | `name, size, background, w_mm, h_mm, sw, sh, left, top` of each PNG (tab separated, header row first) |
+
+---
+
 ## Fetched (manifest authoritative)
 
 These files are not committed. `scripts/cad-corpus-manifest.tsv` holds the URL, archive digest, member, sha256, byte count and licence of each; the sha256 values are deliberately not repeated here, so that the manifest is the only place that has to agree with the bytes. `scripts/cad-corpus-fetch.sh` downloads them into `$OCTOCONV_CAD_CACHE/fetched` and refuses a file whose sha256 differs.

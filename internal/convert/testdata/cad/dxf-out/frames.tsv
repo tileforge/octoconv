@@ -1,0 +1,4 @@
+name	size	background	w_mm	h_mm	sw	sh	left	top
+wide_1280_opaque.png	1280	opaque	297	22.8	1203	92	38	594
+wide_1280_transparent.png	1280	transparent	297	22.8	1203	92	38	594
+tall_256_opaque.png	256	opaque	22.8	297	18	241	119	7
