@@ -86,19 +86,15 @@ type EngineDescriptor struct {
 	PreConvertGuard func(ctx context.Context, job *jobs.Job, inPath string, convertFn func() error) error
 
 	// SideOutputs, when non-nil, is called after a successful convert and
-	// AFTER the primary output has been uploaded and recorded, and returns
+	// BEFORE any output is uploaded or recorded, and returns
 	// additional outputs to store beside it (Phase 60, SANI-05).
 	//
-	// nil for seven of the eight engines, which have nothing to report
-	// alongside their result; only probe populates it, to carry the sanitize
-	// report as the job's role=report output. The hook mirrors
+	// nil for every engine with nothing to report alongside its result;
+	// probe populates it with the sanitize report as the job's role=report
+	// output and cad with the render measurements as role=measurements. The hook mirrors
 	// PreConvertGuard's shape deliberately: an optional, descriptor-declared
 	// splice into the shared process() path, so the generic pipeline gains a
 	// capability without gaining a per-engine branch.
-	//
-	// Ordering is deliberate and is the reason this runs AFTER the primary
-	// upload rather than before: a report describing an output that failed
-	// to store would be a record of something the client cannot fetch.
 	SideOutputs func(ctx context.Context, job *jobs.Job, outPath string) ([]SideOutput, error)
 }
 

@@ -23,40 +23,43 @@ const (
 	CADMaxIGESBytes         = 135 << 20
 	CADMaxSTEPEntities      = 754762
 	CADMaxNAUO              = 1518
+	CADMaxRenderTriangles   = 3835382
+	CADMaxSTLBytes          = 190840832
 	CADDefaultGuardTimeout  = 30 * time.Second
 	CADDefaultMeshTimeout   = 316 * time.Second
+	CADDefaultRenderTimeout = 480 * time.Second
 	CADIOAllowance          = 60 * time.Second
-	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADIOAllowance
+	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADDefaultRenderTimeout + CADIOAllowance
 
 	cadOutputLimit   = 1 << 20
 	cadVerdictPrefix = "CADVERDICT "
 	cadStageGuard    = "guard"
 	cadStageMesh     = "mesh"
+	cadStageRender   = "render"
 	stlHeaderBytes   = 84
 	stlTriangleBytes = 50
 	stlBlockTriangle = 4096
 )
 
 var (
-	ErrCADInputTooLarge = errors.New("cad: the input exceeds this deployment's size ceiling")
-	ErrCADTooComplex    = errors.New("cad: the model is too complex to convert")
-	ErrCADUnreadable    = errors.New("cad: the file could not be read as CAD data")
-	ErrCADEmptyResult   = errors.New("cad: the conversion produced no geometry")
-	ErrCADMeshTimeout   = errors.New("cad: the mesh stage did not finish within the time limit")
-	ErrCADEngineKilled  = errors.New("cad: the engine was killed before it finished")
+	ErrCADInputTooLarge  = errors.New("cad: the input exceeds this deployment's size ceiling")
+	ErrCADTooComplex     = errors.New("cad: the model is too complex to convert")
+	ErrCADUnreadable     = errors.New("cad: the file could not be read as CAD data")
+	ErrCADEmptyResult    = errors.New("cad: the conversion produced no geometry")
+	ErrCADMeshTimeout    = errors.New("cad: the mesh stage did not finish within the time limit")
+	ErrCADEngineKilled   = errors.New("cad: the engine was killed before it finished")
+	ErrCADRenderRejected = errors.New("cad: the rendered image failed the content check")
+
+	ErrCADRenderTimeout       = errors.New("cad: the render stage did not finish within the time limit")
+	ErrCADRenderFailed        = errors.New("cad: the render stage failed")
+	ErrCADMeasurementsInvalid = errors.New("cad: the measurements could not be produced")
 )
 
-func CADOptsFromMap(m map[string]any) (any, error) {
-	if len(m) > 0 {
-		return nil, fmt.Errorf("cad takes no options, got %d", len(m))
-	}
-	return nil, nil
-}
-
 type CADConverter struct {
-	Sandbox      *engineSandbox
-	GuardTimeout time.Duration
-	MeshTimeout  time.Duration
+	Sandbox       *engineSandbox
+	GuardTimeout  time.Duration
+	MeshTimeout   time.Duration
+	RenderTimeout time.Duration
 }
 
 func (CADConverter) Pairs() []Pair {
@@ -66,8 +69,11 @@ func (CADConverter) Pairs() []Pair {
 func (CADConverter) Engine() string { return EngineCAD }
 
 func cadMaxBytes(format string) int64 {
-	if format == "iges" {
+	switch format {
+	case "iges":
 		return CADMaxIGESBytes
+	case "stl":
+		return CADMaxSTLBytes
 	}
 	return CADMaxSTEPBytes
 }
@@ -86,8 +92,19 @@ func (c CADConverter) meshTimeout() time.Duration {
 	return CADDefaultMeshTimeout
 }
 
+func (c CADConverter) renderTimeout() time.Duration {
+	if c.RenderTimeout > 0 {
+		return c.RenderTimeout
+	}
+	return CADDefaultRenderTimeout
+}
+
 func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
-	if _, err := CADOptsFromMap(opts); err != nil {
+	o, err := CADOptsFromMap(opts)
+	if err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	if err := ValidateCADApplicability(EngineCAD, OperationConvert, "", "", o); err != nil {
 		return fmt.Errorf("cad: %w", err)
 	}
 	format := NormalizeFormat(filepath.Ext(inPath))
@@ -106,7 +123,7 @@ func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts 
 	if _, err := c.guardStage(ctx, jobDir, format, inPath); err != nil {
 		return err
 	}
-	verdict, err := c.meshStage(ctx, jobDir, format, inPath, outPath)
+	verdict, err := c.meshStage(ctx, jobDir, format, inPath, outPath, o.Resolved().Quality, "")
 	if err != nil {
 		return err
 	}
@@ -140,7 +157,7 @@ func (c CADConverter) guardStage(ctx context.Context, jobDir, format, inPath str
 	return classifyCADStage(cadStageGuard, ctx, stageCtx, timeout, out, cpu, err)
 }
 
-func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, outPath string) (cadVerdict, error) {
+func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, outPath, quality, measure string) (cadVerdict, error) {
 	x, err := c.cadStage(jobDir, cadMeshReadOnly, cadMeshEngines)
 	if err != nil {
 		return cadVerdict{}, err
@@ -148,7 +165,26 @@ func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, out
 	timeout := c.meshTimeout()
 	stageCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", "--format", format, inPath, outPath)
+	args := []string{"--format", format, inPath, outPath}
+	if quality != "" {
+		args = append(args, "--quality", quality)
+	}
+	if measure != "" {
+		args = append(args, "--measure", measure)
+	}
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", args...)
+	return classifyCADStage(cadStageMesh, ctx, stageCtx, timeout, out, cpu, err)
+}
+
+func (c CADConverter) statsStage(ctx context.Context, jobDir, inPath, outPath, measure string) (cadVerdict, error) {
+	x, err := c.cadStage(jobDir, cadMeshReadOnly, cadMeshEngines)
+	if err != nil {
+		return cadVerdict{}, err
+	}
+	timeout := c.meshTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-mesh", "stats", "--measure", measure, inPath, outPath)
 	return classifyCADStage(cadStageMesh, ctx, stageCtx, timeout, out, cpu, err)
 }
 
@@ -158,6 +194,11 @@ type cadVerdict struct {
 	Reason    string `json:"reason"`
 	Triangles int    `json:"triangles"`
 	Entities  *int   `json:"entities"`
+
+	View       string  `json:"view"`
+	Size       int     `json:"size"`
+	Background string  `json:"background"`
+	ProjAspect float64 `json:"proj_aspect"`
 }
 
 func parseCADVerdict(stage string, out []byte) (cadVerdict, bool) {
@@ -194,24 +235,39 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 	if errors.Is(err, ErrEngineSandboxUnavailable) {
 		return cadVerdict{}, fmt.Errorf("cad %s: %w", stage, err)
 	}
+	render := stage == cadStageRender
 	if v, ok := parseCADVerdict(stage, out); ok {
 		switch v.Verdict {
 		case "ok":
 			if err == nil {
 				return v, nil
 			}
-		case "too_complex":
-			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADTooComplex, v.Reason)
-		case "unreadable", "incomplete":
-			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADUnreadable, v.Reason)
 		case "empty":
 			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADEmptyResult, v.Reason)
+		case "failed":
+			if render {
+				return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADRenderFailed, v.Reason)
+			}
+		case "too_complex":
+			if !render {
+				return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADTooComplex, v.Reason)
+			}
+			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADRenderFailed, v.Reason)
+		case "unreadable", "incomplete":
+			if !render {
+				return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADUnreadable, v.Reason)
+			}
+			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADRenderFailed, v.Reason)
 		}
 	}
 	if err != nil && parent.Err() == nil && errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
-		if stage == cadStageMesh {
+		switch stage {
+		case cadStageMesh:
 			return cadVerdict{}, fmt.Errorf("cad mesh: %w: no result within %s, engine cpu %.1fs: %v",
 				ErrCADMeshTimeout, timeout, cpu.Total().Seconds(), err)
+		case cadStageRender:
+			return cadVerdict{}, fmt.Errorf("cad render: %w: no result within %s, engine cpu %.1fs: %v",
+				ErrCADRenderTimeout, timeout, cpu.Total().Seconds(), err)
 		}
 		return cadVerdict{}, fmt.Errorf("cad %s: no verdict within the %s stage deadline: %w", stage, timeout, err)
 	}
@@ -226,7 +282,16 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 		if sig == syscall.SIGKILL {
 			return cadVerdict{}, fmt.Errorf("cad %s: %w: %v", stage, ErrCADEngineKilled, err)
 		}
+		if render {
+			return cadVerdict{}, fmt.Errorf("cad %s: %w: the renderer died on signal %s", stage, ErrCADRenderFailed, sig)
+		}
 		return cadVerdict{}, fmt.Errorf("cad %s: %w: the reader died on signal %s", stage, ErrCADUnreadable, sig)
+	}
+	if render {
+		if err != nil {
+			return cadVerdict{}, fmt.Errorf("cad %s: %w: no verdict: %v", stage, ErrCADRenderFailed, err)
+		}
+		return cadVerdict{}, fmt.Errorf("cad %s: %w: exited 0 without a verdict", stage, ErrCADRenderFailed)
 	}
 	if err != nil {
 		return cadVerdict{}, fmt.Errorf("cad %s: no verdict: %w", stage, err)

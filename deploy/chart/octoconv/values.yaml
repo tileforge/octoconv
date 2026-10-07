@@ -221,7 +221,7 @@ cadWorker:
   image:
     repository: "octoconv-cad-worker"
   replicas: 1
-  terminationGracePeriodSeconds: 426
+  terminationGracePeriodSeconds: 906
   resources:
     limits:
       cpu: "2"

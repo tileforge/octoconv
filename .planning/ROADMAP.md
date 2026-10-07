@@ -39,7 +39,7 @@ measurements, самая рискованная для ревью — собир
 - [x] **Phase 71: Evaluation Gate** - ядро геометрии, рендерер и 2D-путь DXF выбраны по замеру на настоящем образе; корпус, лимиты входа и лицензии известны до первой строки продакшен-кода (completed 2026-10-04)
 - [x] **Phase 72: Engine-Free Contract Foundations** - fail-closed снифферы CAD-форматов, различимые коды отказов и версионированный контракт measurements — без регистрации движка (completed 2026-10-05)
 - [x] **Phase 73: CAD Class & Convert Slice, Confined** - класс `cad` целиком под Landlock: STEP/IGES → STL сквозь очередь, воркер, preflight и классификацию ошибок (completed 2026-10-05)
-- [ ] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements`
+- [x] **Phase 74: 3D Render & Measurements** - `render` step/stp/iges/stl → png с закрытыми опциями и вторым выходом `measurements` (completed 2026-10-06)
 - [ ] **Phase 75: DXF 2D Pipeline** - dxf → svg/pdf и `render` dxf → png через ezdxf + rsvg-convert
 - [ ] **Phase 76: Measured Bounds, KEDA Proof & Client Docs** - замеренный таймаут, scale-from-zero, живой гейт всех классов, контракт превью и клиентская документация
 
@@ -250,7 +250,16 @@ Plans:
      записанным в `SANDBOX-PATHS.md` и удерживаемым тестом; preflight судит по
      пикселям; сбой стадии рендера повторяемый, сбой стадии mesh — терминальный
      (расширяет CADW-02, CADW-03)
-**Plans**: TBD
+**Plans**: 7/7 plans complete
+
+Plans:
+- [x] 74-01-PLAN.md — Wave 0: vtk legitimacy checkpoint, cad-render in the pruned production image (tracer, prune identity), 2048 px cost, cap, STL ceiling and unit-factor probes
+- [x] 74-02-PLAN.md — cad-mesh measures, quality and STL stats; draft to measurements document in the declared unit; invalid_solid for STL
+- [x] 74-03-PLAN.md — closed CAD options at API and worker; Go pixel judge with the thin-part rule
+- [x] 74-04-PLAN.md — 886 s timeout budget everywhere; CADRenderConverter (unregistered); render failure classification
+- [x] 74-05-PLAN.md — Repo.AddOutputs with inversion; atomic two-output process(); render exposed in one commit
+- [x] 74-06-PLAN.md — render and mesh Landlock sets measured and crosschecked; judge calibrated against pixelcheck; preflight proves render
+- [x] 74-07-PLAN.md — live proof of render and measurements end to end
 
 ### Phase 75: DXF 2D Pipeline
 
@@ -316,7 +325,7 @@ Plans:
 | 71. Evaluation Gate | 8/8 | Complete    | 2026-10-04 |
 | 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
-| 74. 3D Render & Measurements | 0/TBD | Not started | - |
+| 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
 | 75. DXF 2D Pipeline | 0/TBD | Not started | - |
 | 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |
 

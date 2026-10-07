@@ -6,22 +6,32 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"time"
+
+	"github.com/apaderin/octoconv/internal/measurements"
 )
 
 //go:embed testdata/cad/synthetic/units_inch.step
 var cadPreflightSTEP []byte
 
 const (
-	cadPreflightTriangles = 12
-	cadPreflightTolerance = 1e-3
+	cadPreflightTriangles   = 12
+	cadPreflightTolerance   = 1e-3
+	cadPreflightFrame       = 256
+	cadPreflightInchExtent  = 1e-4
+	cadPreflightInchMeasure = 1e-6
 )
 
 var cadPreflightExtents = [3]float64{25.4, 50.8, 76.2}
+
+var cadPreflightInchExtents = [3]float64{1, 2, 3}
 
 var cadMeshReadOnly = []string{
 	"/opt/venv",
@@ -34,7 +44,15 @@ var cadGuardReadOnly = []string{
 	"/usr/lib/python3.11",
 }
 
+var cadRenderReadOnly = []string{
+	"/opt/venv",
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+}
+
 var cadMeshEngines = []string{"cad-mesh"}
+
+var cadRenderEngines = []string{"cad-render"}
 
 var cadGuardEngines = []string{"cad-guard"}
 
@@ -58,31 +76,31 @@ func (c CADConverter) WithSandbox(helper []string) CADConverter {
 	return c
 }
 
-func ValidateCADTimeouts(guard, mesh, engine time.Duration) error {
+func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
 	for _, v := range []struct {
 		name  string
 		value time.Duration
-	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_ENGINE_TIMEOUT", engine}} {
+	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render}, {"CAD_ENGINE_TIMEOUT", engine}} {
 		if v.value <= 0 {
 			return fmt.Errorf("%s=%s must be positive", v.name, v.value)
 		}
 	}
-	if guard+mesh+CADIOAllowance > engine {
-		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
-			"the attempt deadline would cut a stage short of its own limit", guard, mesh, CADIOAllowance, engine)
+	if guard+mesh+render+CADIOAllowance > engine {
+		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + CAD_RENDER_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
+			"the attempt deadline would cut a stage short of its own limit", guard, mesh, render, CADIOAllowance, engine)
 	}
 	return nil
 }
 
-func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, engine time.Duration) (CADConverter, error) {
+func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, engine time.Duration) (CADConverter, error) {
 	if concurrency != 1 {
 		return CADConverter{}, fmt.Errorf("%s=%d: the cad pod limit was derived for one job at a time; set %s=1 and scale with replicas",
 			concurrencyEnv, concurrency, concurrencyEnv)
 	}
-	if err := ValidateCADTimeouts(guard, mesh, engine); err != nil {
+	if err := ValidateCADTimeouts(guard, mesh, render, engine); err != nil {
 		return CADConverter{}, err
 	}
-	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh}.WithSandbox(helper)
+	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render}.WithSandbox(helper)
 	return c, nil
 }
 
@@ -119,7 +137,7 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		return err
 	}
 	defer cleanup()
-	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, []string{"/usr/lib/" + triple}); err != nil {
+	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, cadRenderReadOnly, []string{"/usr/lib/" + triple}); err != nil {
 		return err
 	}
 	inside, outside, err := w.place("in.step", cadPreflightSTEP)
@@ -136,7 +154,8 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 	}
 
 	outInside := filepath.Join(w.jobDir, "out.stl")
-	meshVerdict, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside)
+	draftPath := filepath.Join(w.jobDir, cadMeasureDraftName)
+	meshVerdict, err := c.meshStage(ctx, w.jobDir, "step", inside, outInside, "standard", draftPath)
 	if err != nil {
 		return fmt.Errorf("the cad mesh stage cannot mesh a file inside the job directory under its sandbox: %w", err)
 	}
@@ -159,6 +178,13 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		}
 	}
 
+	if err := requireCADInchMeasurements(draftPath); err != nil {
+		return err
+	}
+	if err := cadPreflightRender(ctx, CADRenderConverter{c}, w, outInside); err != nil {
+		return err
+	}
+
 	_, guardErr := c.guardStage(ctx, w.jobDir, "step", outside)
 	if guardErr == nil {
 		return errors.New("the cad guard stage returned ok for a file outside the job directory: confinement is not in effect")
@@ -168,12 +194,95 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 	}
 
 	outOutside := filepath.Join(w.jobDir, "neg.stl")
-	_, meshErr := c.meshStage(ctx, w.jobDir, "step", outside, outOutside)
+	_, meshErr := c.meshStage(ctx, w.jobDir, "step", outside, outOutside, "standard", "")
 	if err := requireCADDenied("cad mesh", meshErr); err != nil {
 		return err
 	}
 	if err := requireDenied(meshErr, outOutside, nil); err != nil {
 		return fmt.Errorf("the cad mesh stage read a file outside the job directory: %w", err)
+	}
+	return cadPreflightRenderDenied(ctx, CADRenderConverter{c}, w, outInside)
+}
+
+func requireCADInchMeasurements(draftPath string) error {
+	draft, err := parseCADMeasureDraft(draftPath)
+	if err != nil {
+		return fmt.Errorf("units: the cad mesh stage left no usable measurements draft for the inch fixture: %w", err)
+	}
+	doc, err := buildCADMeasurements(draft, "")
+	if err != nil {
+		return fmt.Errorf("units: the measurements of the inch fixture cannot be built: %w", err)
+	}
+	if doc.Unit != measurements.UnitInch || doc.UnitSource != measurements.SourceDeclared {
+		return fmt.Errorf("units: the inch fixture measured as unit %q source %q, want inch declared", doc.Unit, doc.UnitSource)
+	}
+	if len(doc.BBox.Min) != 3 || len(doc.BBox.Max) != 3 {
+		return fmt.Errorf("units: the inch fixture bounding box has %d and %d coordinates, want 3", len(doc.BBox.Min), len(doc.BBox.Max))
+	}
+	ext := make([]float64, 3)
+	for i := range ext {
+		ext[i] = doc.BBox.Max[i] - doc.BBox.Min[i]
+	}
+	sort.Float64s(ext)
+	for i, want := range cadPreflightInchExtents {
+		if math.Abs(ext[i]-want) > cadPreflightInchExtent {
+			return fmt.Errorf("units: the inch fixture measured sorted extents %.6f %.6f %.6f, want 1 2 3", ext[0], ext[1], ext[2])
+		}
+	}
+	if doc.Volume == nil || math.Abs(*doc.Volume-6) > cadPreflightInchMeasure {
+		return fmt.Errorf("units: the inch fixture volume is %v, want 6", doc.Volume)
+	}
+	if doc.Area == nil || math.Abs(*doc.Area-22) > cadPreflightInchMeasure {
+		return fmt.Errorf("units: the inch fixture area is %v, want 22", doc.Area)
+	}
+	return nil
+}
+
+func cadPreflightRender(ctx context.Context, r CADRenderConverter, w preflightWorkspace, stl string) error {
+	size := cadPreflightFrame
+	for _, background := range []string{CADBackgroundOpq, CADBackgroundTr} {
+		path := filepath.Join(w.jobDir, "preflight-"+background+".png")
+		o := CADOpts{View: CADViewIso, Size: &size, Background: background}
+		if err := r.renderStage(ctx, w.jobDir, stl, path, o); err != nil {
+			return fmt.Errorf("the cad render stage cannot render a file inside the job directory (%s) under its sandbox: %w", background, err)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("the cad render stage left no %s image inside the job directory: %w", background, err)
+		}
+		_, err = JudgeCADPNG(f, size, background)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("the pixel judge rejects the %s frame the cad render stage drew inside the job directory: %w", background, err)
+		}
+	}
+	var blank bytes.Buffer
+	if err := png.Encode(&blank, image.NewNRGBA(image.Rect(0, 0, size, size))); err != nil {
+		return fmt.Errorf("cad preflight: build the blank frame: %w", err)
+	}
+	if _, err := JudgeCADPNG(bytes.NewReader(blank.Bytes()), size, CADBackgroundTr); !errors.Is(err, ErrCADRenderRejected) {
+		return fmt.Errorf("the pixel judge did not reject a blank frame (%v): a judge that cannot fail proves nothing", err)
+	}
+	return nil
+}
+
+func cadPreflightRenderDenied(ctx context.Context, r CADRenderConverter, w preflightWorkspace, stl string) error {
+	data, err := os.ReadFile(stl)
+	if err != nil {
+		return fmt.Errorf("cad preflight: read the fixture mesh: %w", err)
+	}
+	outsideSTL := filepath.Join(w.outsideDir, "out.stl")
+	if err := os.WriteFile(outsideSTL, data, 0o600); err != nil {
+		return fmt.Errorf("cad preflight fixture (outside): %w", err)
+	}
+	size := cadPreflightFrame
+	outPNG := filepath.Join(w.jobDir, "neg.png")
+	err = r.renderStage(ctx, w.jobDir, outsideSTL, outPNG, CADOpts{View: CADViewIso, Size: &size, Background: CADBackgroundOpq})
+	if err := requireCADDenied("cad render", err); err != nil {
+		return err
+	}
+	if err := requireDenied(err, outPNG, nil); err != nil {
+		return fmt.Errorf("the cad render stage read a file outside the job directory: confinement is not in effect: %w", err)
 	}
 	return nil
 }

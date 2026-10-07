@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
-current_phase: 74
-current_phase_name: 3D Render & Measurements
+current_phase: 75
+current_phase_name: DXF 2D Pipeline
 status: planning
-stopped_at: Phase 73 complete, ready to plan Phase 74
-last_updated: "2026-10-05T11:07:40.518Z"
-last_activity: 2026-10-05
-last_activity_desc: Phase 73 complete, transitioned to Phase 74
-state_head: 313fbb6108543dfb45898cb7ad12efd40368a1e7
+stopped_at: Phase 74 complete, ready to plan Phase 75
+last_updated: "2026-10-06T23:15:06.152Z"
+last_activity: 2026-10-07
+last_activity_desc: Phase 74 complete, transitioned to Phase 75
+state_head: 8dc219e5076bc115566d95d5d8e5a10f886c19aa
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 21
-  completed_plans: 21
-  percent: 50
+  completed_phases: 4
+  total_plans: 28
+  completed_plans: 28
+  percent: 67
 ---
 
 # Project State
@@ -25,22 +25,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 **Core value:** Внутренние сервисы компании могут безопасно (через аутентификацию по API-ключу) и надёжно поставить задачу конвертации файла (изображения, офисные документы, HTML, аудио, видео, OCR, markup) и получить результат — без риска для стабильности или безопасности продакшена.
-**Current focus:** Phase 73 — CAD Class & Convert Slice, Confined
+**Current focus:** Phase 74 — 3D Render & Measurements
 
 ## Current Position
 
-Phase: 74 — 3D Render & Measurements
+Phase: 75 — DXF 2D Pipeline
 Plan: Not started
 Status: Ready to plan
-Last activity: 2026-10-05 — Phase 73 complete, transitioned to Phase 74
+Last activity: 2026-10-07 - Completed quick task 261007-1sx: Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2)
 
-Progress: [█████░░░░░] 50% (0/6 phases)
+Progress: [███████░░░] 67% (0/6 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 226 (all v1.0–v1.11)
+- Total plans completed: 233 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -108,6 +108,7 @@ Progress: [█████░░░░░] 50% (0/6 phases)
 | 71 | 8 | - | - |
 | 72 | 7 | - | - |
 | 73 | 6 | - | - |
+| 74 | 7 | - | - |
 
 **Recent Trend:**
 
@@ -222,6 +223,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261001-q68 | Chart: configurable MinIO data ownership migration (uid/gid, migrate toggle, image) - Codex P1 r2, PR 31 | 2026-10-01 | 128c086 | [261001-q68-chart-configurable-minio-data-ownership-](./quick/261001-q68-chart-configurable-minio-data-ownership-/) |
 | 261001-r2s | Chart: template-side MinIO data-ownership defaults under helm upgrade --reuse-values (Codex P1 r3, PR 31) | 2026-10-01 | f91b24f | [261001-r2s-chart-template-side-defaults-for-minio-d](./quick/261001-r2s-chart-template-side-defaults-for-minio-d/) |
 | 261002-15o | Chart: independent pinned default for minio.mcImage (Codex P1 r4, PR 31) | 2026-10-01 | f45c7ee | [261002-15o-chart-independent-pinned-default-for-min](./quick/261002-15o-chart-independent-pinned-default-for-min/) |
+| 261006-t51 | Normalize ASCII STL case for cad stats and render (Codex P2 PR 35) | 2026-10-07 | 51f5131 | [261006-t51-normalize-ascii-stl-case-for-cad-stats-a](./quick/261006-t51-normalize-ascii-stl-case-for-cad-stats-a/) |
+| 261007-1sx | Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2) | 2026-10-07 | 8dc219e | [261007-1sx-per-shell-signed-volume-for-stl-and-per-](./quick/261007-1sx-per-shell-signed-volume-for-stl-and-per-/) |
 
 ### Pending Todos
 
@@ -415,8 +418,8 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-02T00:30:51.332Z
-Stopped at: Phase 73 complete, ready to plan Phase 74
+Last session: 2026-10-05T15:22:32.176Z
+Stopped at: Phase 74 complete, ready to plan Phase 75
 Resume file: .planning/phases/71-evaluation-gate/71-CONTEXT.md
 
 ## Operator Next Steps

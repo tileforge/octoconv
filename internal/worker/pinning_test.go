@@ -141,6 +141,10 @@ func (r *pinRepo) AddOutputWithRole(_ context.Context, _ uuid.UUID, _ jobs.Outpu
 	return nil
 }
 
+func (r *pinRepo) AddOutputs(_ context.Context, _ uuid.UUID, _ []jobs.Output) error {
+	return nil
+}
+
 func (r *pinRepo) AddOutput(_ context.Context, _ uuid.UUID, _ jobs.Output) error {
 	return nil
 }
@@ -1510,6 +1514,15 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 		{"mesh timeout", convert.ErrCADMeshTimeout,
 			fmt.Errorf("cad mesh: %w: 90s, 89.1s of CPU: %v", convert.ErrCADMeshTimeout, context.DeadlineExceeded),
 			CodeCADMeshTimeout, "the model took too long to convert to a mesh; simplify it or export fewer details"},
+		{"render timeout", convert.ErrCADRenderTimeout,
+			fmt.Errorf("cad render: %w: no result within 480s, engine cpu 470.0s: %v", convert.ErrCADRenderTimeout, context.DeadlineExceeded),
+			CodeCADTooComplex, "the model took too long to render; simplify it or export fewer details"},
+		{"render rejected by pixels", convert.ErrCADRenderRejected,
+			fmt.Errorf("cad: %w: J1 the frame has 3 opaque pixels", convert.ErrCADRenderRejected),
+			CodeCADEmptyResult, "the rendered preview shows no recognisable part"},
+		{"measurements invalid", convert.ErrCADMeasurementsInvalid,
+			fmt.Errorf("cad: %w: key \"volume\" is missing", convert.ErrCADMeasurementsInvalid),
+			CodeEngineError, "the measurements of this model could not be produced"},
 	}
 	for _, tc := range terminal {
 		t.Run(tc.name+" is terminal with its own code on the first attempt", func(t *testing.T) {
@@ -1537,6 +1550,51 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a render failure retries and marks nothing on the first attempt", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("cad render: %w: exited 1", convert.ErrCADRenderFailed))
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a render that failed without a verdict can succeed on another attempt", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 on a retryable attempt", len(repo.markFailed))
+		}
+	})
+
+	t.Run("a render failure maps to engine_error with its own sentence on the final attempt", func(t *testing.T) {
+		code, message := cadFailureCode(fmt.Errorf("convert: %w", fmt.Errorf("cad render: %w: exited 1", convert.ErrCADRenderFailed)))
+		if code != CodeEngineError || message != "the preview could not be rendered" {
+			t.Fatalf("cadFailureCode = %q, %q, want engine_error and the preview sentence", code, message)
+		}
+		if isCADTerminal(fmt.Errorf("cad render: %w", convert.ErrCADRenderFailed)) {
+			t.Fatal("ErrCADRenderFailed is terminal, want retried")
+		}
+	})
+
+	t.Run("a sandbox fault wrapping a render sentinel retries and marks nothing", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("cad render: %w: %w: unrecoverable error", convert.ErrEngineSandboxUnavailable, convert.ErrCADRenderTimeout)
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) || len(repo.markFailed) != 0 {
+			t.Fatalf("err = %v, MarkFailed = %d: a node that cannot establish the sandbox says nothing about the model", err, len(repo.markFailed))
+		}
+	})
 
 	t.Run("a sandbox fault wrapping a terminal-looking error retries and marks nothing", func(t *testing.T) {
 		job, jobID := newPinJob("")

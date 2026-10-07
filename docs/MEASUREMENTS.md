@@ -11,9 +11,24 @@ change (renaming or removing a field, changing a vocabulary code, changing what 
 identifier to `v2`. Adding an optional field does not bump it, but the validator is strict: unknown fields
 are rejected, so an additive field lands with a code change and a change to this document together.
 
-No engine emits this document yet. Phase 74 writes it as the output with role `measurements` of a render
-job; until then the contract and its validator exist so the producer is written against a fixed, tested
-target.
+Render jobs emit this document as the output with role `measurements`. Every length, area and volume in it is
+expressed in `unit`: the engine measures in millimetres, and the producer divides lengths by the factor the
+engine applied, areas by its square and volumes by its cube, so a file declared in inches reports inches. A
+declared unit is reported only when the factor the engine applied equals the table value for that unit;
+otherwise `unit` is `unspecified` with source `none` and the numbers are in the file's own unit when the
+factor is known, unchanged when it is not.
+
+The factor is the table value (`mm` 1, `cm` 10, `m` 1000, `inch` 25.4, `foot` 304.8, `micrometre` 0.001)
+for the unit the STEP text declares. The mesh helper pins `xstep.cascade.unit` to `MM` and OCP converts by
+the file's declared unit; the phase-74 unit probe (`evidence/74-01-wave0.txt`) measured the ratio between OCP's
+vertices and the file's `VERTEX_POINT` coordinates on five STEP files, and the declared unit matched it on all
+of them. The helper does not measure that ratio at run time. Two gaps stand:
+
+- IGES inch scaling is unproven: the corpus has no inch IGES, so an IGES file that declares anything but
+  millimetres is reported `unspecified` with source `none`.
+- `nist_ctc_05_asme1_ap242-e1.stp` declares inch in its text while OCP's own file-units call reports no
+  unit for it; the measured ratio is exactly 25.4, so it is reported as inch, declared, on the strength of the
+  text and the offline measurement alone.
 
 ## Fields
 
@@ -42,6 +57,10 @@ second carries a reason.
 | `iges` | 3D; solid counts present |
 | `stl` | 3D mesh; no solid counts; carries no units |
 | `dxf` | 2D; two coordinates per bbox corner; volume and area are always null |
+
+An STL is read as binary when its size is exactly 84 bytes plus 50 times the triangle count stored at byte 80; any other STL is read as ASCII, and its keywords (`solid`, `facet normal`, `outer loop`, `vertex`, `endloop`, `endfacet`, `endsolid`) match in any letter case. A vertex coordinate that does not fit a 32-bit float makes the file unreadable (`cad_unreadable`). The PNG is drawn from the same triangles that were measured.
+
+An STL's volume is computed per shell, where a shell is the set of triangles joined through shared edges. When every shell encloses a positive volume, the volume is their sum and the area is the sum of all triangle areas. When every shell is inward, the reason is `negative_volume`. When the signs are mixed, volume and area are null with `stl_ambiguous_shells` instead of a difference of shells. This includes a hollow part whose cavity is modelled as an inward shell: it is reported as null, never as a wrong number. A shell of exactly zero volume makes the document `invalid_solid`.
 
 ## Units
 
@@ -74,19 +93,20 @@ An STL never has source `declared`: the format carries no units.
 |---|---|---|---|
 | `no_solids` | `step`, `iges` | `solids` = 0 | observed: `surfaces_only.iges`, `iges_no_newlines.iges`, `open_shell.step`, `single_face.step` |
 | `open_shell` | `step`, `iges` | `solids` > 0 and `closed_solids` = 0 | not observed on corpus; OCP repairs orientation / reads open shell as 0 solids |
-| `invalid_solid` | `step`, `iges` | `solids` > 0 and `closed_solids` = 0 | not observed on corpus; OCP repairs orientation / reads open shell as 0 solids |
-| `negative_volume` | `step`, `iges`, `stl` | `closed_solids` > 0 | not observed on corpus; OCP repairs orientation / reads open shell as 0 solids |
+| `invalid_solid` | `step`, `iges`, `stl` | `solids` > 0 and `closed_solids` = 0 | not observed on corpus; for `stl` a watertight mesh whose total volume, or the volume of any one shell, is exactly 0 or not finite |
+| `negative_volume` | `step`, `iges`, `stl` | `closed_solids` > 0 | not observed on corpus; for `step` and `iges` some closed solid has a negative volume (OCP's STEP reader repairs a reversed solid's orientation on read); for `stl` every shell has a negative volume |
 | `stl_not_watertight` | `stl` | none | observed: two NASA STL files |
+| `stl_ambiguous_shells` | `stl` | none | not observed on corpus; a watertight STL whose shells (triangles joined through shared edges) enclose volumes of both signs, such as a hollow part whose cavity is an inward shell or a disjoint inverted body |
 | `not_applicable_2d` | `dxf` | none | every DXF volume and area |
 
 The Solid counts column is the rule a null reason must satisfy against the document's own `solids` and
 `closed_solids`; it applies to `step` and `iges`, the only formats that carry the counts, and `none` means no
 rule. The rule is `cad_mesh.py`'s reason logic read back: it names a reason only when `closed_solids` is 0
 (`no_solids` when `solids` is 0, otherwise `open_shell` when any solid has an open shell, otherwise
-`invalid_solid`) and `negative_volume` only when a closed solid exists, because the volume it reports is the sum
-over the closed solids. When some solids are closed and others are not, the helper reports the sum over the
-closed ones and no reason; a null volume with `closed_solids` above 0 and a reason other than `negative_volume`
-is therefore a contradiction, not a partial result. `internal/measurements/doc_sync_test.go` probes
+`invalid_solid`) and `negative_volume` only when a closed solid exists and any closed solid has a negative
+volume; otherwise it reports the sum over the closed solids. When some solids are closed and others are not,
+the helper reports the sum over the closed ones and no reason; a null volume with `closed_solids` above 0 and a
+reason other than `negative_volume` is therefore a contradiction, not a partial result. `internal/measurements/doc_sync_test.go` probes
 `Document.Validate` over every format and every pair of counts up to 3 and compares the outcome with this table.
 
 ## Validation rules
@@ -109,8 +129,8 @@ error so a caller can tell a contract violation from an I/O error.
   never exceeds `solids`.
 - A number and a reason never appear together; a null without a reason is rejected.
 - Reasons are per format: `step` and `iges` allow `no_solids`, `open_shell`, `invalid_solid`,
-  `negative_volume`; `stl` allows `stl_not_watertight`, `negative_volume`; `dxf` allows only
-  `not_applicable_2d`, and its volume and area must both be null with it.
+  `negative_volume`; `stl` allows `stl_not_watertight`, `stl_ambiguous_shells`, `invalid_solid`,
+  `negative_volume`; `dxf` allows only `not_applicable_2d`, and its volume and area must both be null with it.
 - For `step` and `iges`, a null reason must fit the solid counts as the Solid counts column of the Null reasons
   table says. A document such as `solids` 1, `closed_solids` 1, `volume` null with `no_solids` is rejected: the
   reason says the file holds no solid and the counts say it holds one.

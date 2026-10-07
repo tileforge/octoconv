@@ -10,6 +10,7 @@ import (
 	"github.com/apaderin/octoconv/internal/jobs"
 
 	"github.com/apaderin/octoconv/internal/convert"
+	"github.com/apaderin/octoconv/internal/measurements"
 	"github.com/apaderin/octoconv/internal/queue"
 )
 
@@ -673,6 +674,27 @@ var CADDescriptor = EngineDescriptor{
 	},
 	IsTerminal:  isCADTerminal,
 	FailureCode: cadFailureCode,
+	SideOutputs: cadSideOutputs,
+}
+
+func cadSideOutputs(_ context.Context, job *jobs.Job, outPath string) ([]SideOutput, error) {
+	if job.Operation != convert.OperationRender {
+		return nil, nil
+	}
+	blob, err := os.ReadFile(convert.CADMeasurementsPath(outPath))
+	if err != nil {
+		return nil, fmt.Errorf("%w: measurements missing beside the render: %v", convert.ErrCADMeasurementsInvalid, err)
+	}
+	if _, err := measurements.Validate(blob); err != nil {
+		return nil, fmt.Errorf("%w: %v", convert.ErrCADMeasurementsInvalid, err)
+	}
+	return []SideOutput{{
+		Role:        jobs.OutputRoleMeasurements,
+		Filename:    "measurements.json",
+		Format:      "json",
+		ContentType: "application/json",
+		Body:        blob,
+	}}, nil
 }
 
 func isCADTerminal(err error) bool {
@@ -689,6 +711,9 @@ func isCADTerminal(err error) bool {
 		convert.ErrCADEmptyResult,
 		convert.ErrCADMeshTimeout,
 		convert.ErrCADEngineKilled,
+		convert.ErrCADRenderTimeout,
+		convert.ErrCADRenderRejected,
+		convert.ErrCADMeasurementsInvalid,
 	} {
 		if errors.Is(err, sentinel) {
 			return true
@@ -709,6 +734,14 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):
 		return CodeCADMeshTimeout, "the model took too long to convert to a mesh; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRenderTimeout):
+		return CodeCADTooComplex, "the model took too long to render; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRenderRejected):
+		return CodeCADEmptyResult, "the rendered preview shows no recognisable part"
+	case errors.Is(err, convert.ErrCADMeasurementsInvalid):
+		return CodeEngineError, "the measurements of this model could not be produced"
+	case errors.Is(err, convert.ErrCADRenderFailed):
+		return CodeEngineError, "the preview could not be rendered"
 	}
 	return CodeEngineError, "unsupported or corrupted input format"
 }

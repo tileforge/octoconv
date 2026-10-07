@@ -154,27 +154,80 @@ func TestCADPinnedConstantsComeFromTheEvidence(t *testing.T) {
 		{"CADMaxNAUO", CADMaxNAUO, 1518, decision},
 		{"CADDefaultGuardTimeout", int64(CADDefaultGuardTimeout / time.Second), 30, spikes + " cad_guard_timeout_s"},
 		{"CADDefaultMeshTimeout", int64(CADDefaultMeshTimeout / time.Second), 316, spikes + " cad_mesh_timeout_s"},
+		{"CADDefaultRenderTimeout", int64(CADDefaultRenderTimeout / time.Second), 480, ".planning/phases/74-3d-render-measurements/74-RESEARCH.md Render stage timeout (chosen under the 900 s window, not measured)"},
 		{"CADIOAllowance", int64(CADIOAllowance / time.Second), 60, spikes + " cad_io_allowance_s"},
-		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 406, spikes + " cad_engine_timeout_s"},
+		{"CADDefaultEngineTimeout", int64(CADDefaultEngineTimeout / time.Second), 886, "30 + 316 + 480 + 60"},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d: re-derive it from %s rather than editing the expectation", c.name, c.got, c.want, c.source)
 		}
 	}
-	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADIOAllowance {
-		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + io allowance (%s)", spikes)
+	if CADDefaultEngineTimeout != CADDefaultGuardTimeout+CADDefaultMeshTimeout+CADDefaultRenderTimeout+CADIOAllowance {
+		t.Errorf("CADDefaultEngineTimeout must equal guard + mesh + render + io allowance (%s)", spikes)
 	}
 }
 
-func TestCADOptsFromMapTakesNothing(t *testing.T) {
+func TestCADOptsFromMapEmptyAndUnion(t *testing.T) {
 	for _, m := range []map[string]any{nil, {}} {
-		if _, err := CADOptsFromMap(m); err != nil {
-			t.Errorf("CADOptsFromMap(%v) = %v, want nil", m, err)
+		if o, err := CADOptsFromMap(m); err != nil || !o.isZero() {
+			t.Errorf("CADOptsFromMap(%v) = %+v, %v, want zero and nil", m, o, err)
 		}
 	}
 	if _, err := CADOptsFromMap(map[string]any{"units": "in"}); err == nil {
-		t.Error("CADOptsFromMap with an option returned nil, want an error")
+		t.Error("CADOptsFromMap with an unknown option returned nil, want an error")
+	}
+}
+
+func TestCADConvertAcceptsQualityOnlyOptions(t *testing.T) {
+	c := CADConverter{}
+	dir := t.TempDir()
+	in := filepath.Join(dir, "in.step")
+	out := filepath.Join(dir, "out.stl")
+	err := c.Convert(context.Background(), in, out, map[string]any{"view": "top"})
+	if err == nil || !strings.Contains(err.Error(), "only quality applies") {
+		t.Errorf("Convert with a render key = %v, want the only-quality refusal", err)
+	}
+	err = c.Convert(context.Background(), in, out, map[string]any{"quality": "ultra"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported quality") {
+		t.Errorf("Convert with a bad quality = %v, want the unsupported-quality refusal", err)
+	}
+}
+
+func TestCADConvertPassesQualityToTheMesher(t *testing.T) {
+	for _, tc := range []struct {
+		opts map[string]any
+		want string
+	}{
+		{nil, "standard"},
+		{map[string]any{"quality": "draft"}, "draft"},
+		{map[string]any{"quality": "fine"}, "fine"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			f := newCADFixture(t, "step", cadOKGuard(), "")
+			std := f.writeSTL(t, "std.stl", cadBoxSTL(25.4, 50.8, 76.2))
+			fine := f.writeSTL(t, "fine.stl", cadSTL(slices.Repeat([][3]int{{0, 2, 1}}, 48), func(i int) [3]float32 { return [3]float32{float32(i), float32(i * i), 1} }))
+			mesh := fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/mesh.args\"\ncase \"$6\" in\nfine) cp '%s' \"$4\"\n%s;;\n*) cp '%s' \"$4\"\n%s;;\nesac\n",
+				fine, cadSayTriangles("mesh", "ok", "", 48, 0), std, cadSayTriangles("mesh", "ok", "", 12, 0))
+			fakeEngine(t, f.dir, "cad-mesh", mesh)
+			if err := (CADConverter{}).Convert(context.Background(), f.in, f.out, tc.opts); err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			raw, err := os.ReadFile(f.marker("mesh.args"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(raw); !strings.Contains(got, "--quality "+tc.want) {
+				t.Errorf("mesh argv = %q, want --quality %s", got, tc.want)
+			}
+			n, _, err := judgeBinarySTL(f.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (tc.want == "fine") != (n == 48) || (tc.want != "fine" && n != 12) {
+				t.Errorf("triangles = %d for quality %s, want fine to yield at least as many as standard", n, tc.want)
+			}
+		})
 	}
 }
 
@@ -254,7 +307,7 @@ func TestCADConvertPassesTheCapsAndPathsToTheStages(t *testing.T) {
 		t.Errorf("guard argv = %q, want %q", guardArgs, wantGuard)
 	}
 	meshArgs, _ := os.ReadFile(f.marker("mesh.args"))
-	wantMesh := fmt.Sprintf("--format iges %s %s", f.in, f.out)
+	wantMesh := fmt.Sprintf("--format iges %s %s --quality standard", f.in, f.out)
 	if strings.TrimSpace(string(meshArgs)) != wantMesh {
 		t.Errorf("mesh argv = %q, want %q", meshArgs, wantMesh)
 	}

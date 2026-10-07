@@ -152,11 +152,19 @@ func TestListFormats_OperationsTreeDerivedFromRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	// Two keys as of Phase 60: convert, and sanitize under the probe engine.
-	// Asserted by NAME rather than by count alone -- a bare length check
-	// stops being able to say which operation appeared.
-	if len(resp.Operations) != 2 {
-		t.Fatalf("operations has %d keys, want exactly 2; operations=%+v", len(resp.Operations), resp.Operations)
+	// Three keys as of Phase 74: convert, render under the cad engine, and
+	// sanitize under the probe engine. Asserted by NAME rather than by count
+	// alone -- a bare length check stops being able to say which operation
+	// appeared.
+	if len(resp.Operations) != 3 {
+		t.Fatalf("operations has %d keys, want exactly 3; operations=%+v", len(resp.Operations), resp.Operations)
+	}
+	renderTree, ok := resp.Operations["render"]
+	if !ok {
+		t.Fatalf(`operations missing "render" key; operations=%+v`, resp.Operations)
+	}
+	if _, ok := renderTree["cad"]; !ok || len(renderTree) != 1 {
+		t.Errorf(`operations.render must hold only the "cad" engine; render=%+v`, renderTree)
 	}
 	convertTree, ok := resp.Operations["convert"]
 	if !ok {
@@ -258,11 +266,12 @@ func TestListFormats_NoOperationOutsideRegistry(t *testing.T) {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
 
-	// "sanitize" left this list in Phase 60, when it stopped being a
-	// reserved-but-unregistered DB CHECK value and gained a converter. The
-	// remaining four are still reserved and still unregistered, and they are
-	// what keeps this test meaningful: without them it would assert nothing.
-	for _, unregistered := range []string{"extract", "archive", "inspect", "render"} {
+	// "sanitize" left this list in Phase 60 and "render" in Phase 74, when
+	// each stopped being a reserved-but-unregistered DB CHECK value and
+	// gained a converter. The remaining three are still reserved and still
+	// unregistered, and they are what keeps this test meaningful: without
+	// them it would assert nothing.
+	for _, unregistered := range []string{"extract", "archive", "inspect"} {
 		if _, ok := resp.Operations[unregistered]; ok {
 			t.Errorf("operations unexpectedly contains %q, want it absent (not yet registered under any engine)", unregistered)
 		}
@@ -298,7 +307,14 @@ func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 		"step": true, "stp": true, "iges": true, "igs": true,
 		"stl": true, "dxf": true, "dwg": true,
 	}
-	allowed := map[string]bool{"step>stl": true, "iges>stl": true}
+	convertPairs := map[string]bool{"step>stl": true, "iges>stl": true}
+	renderPairs := map[string]bool{"step>png": true, "iges>png": true, "stl>png": true}
+	allowedAt := func(where string) map[string]bool {
+		if where == "operations."+convert.OperationRender {
+			return renderPairs
+		}
+		return convertPairs
+	}
 	found := map[string]bool{}
 	check := func(where, class string, pairs [][]string) {
 		for _, pair := range pairs {
@@ -312,8 +328,8 @@ func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 				continue
 			}
 			key := strings.Join(pair, ">")
-			if !allowed[key] || class != convert.EngineCAD {
-				t.Errorf("%s advertises CAD pair %v under %q, want only step -> stl and iges -> stl under cad", where, pair, class)
+			if !allowedAt(where)[key] || class != convert.EngineCAD {
+				t.Errorf("%s advertises CAD pair %v under %q, want only step -> stl and iges -> stl under cad for convert and step, iges, stl -> png under cad for render", where, pair, class)
 				continue
 			}
 			found[where+"|"+key] = true
@@ -327,8 +343,8 @@ func TestListFormats_AdvertisesOnlyAllowlistedCADPairs(t *testing.T) {
 			check("operations."+op, class, e.Pairs)
 		}
 	}
-	for _, where := range []string{"engines", "operations.convert"} {
-		for key := range allowed {
+	for _, where := range []string{"engines", "operations.convert", "operations.render"} {
+		for key := range allowedAt(where) {
 			if !found[where+"|"+key] {
 				t.Errorf("%s does not advertise %s under cad", where, key)
 			}

@@ -1298,7 +1298,7 @@ soffice
 verapdf
 <!-- /conf05:verapdf:engines -->
 
-## cad (cad-guard + cad-mesh) — замерено и доказано 2026-10-05 (фаза 73, план 03)
+## cad (cad-guard + cad-mesh + cad-render) — замерено и доказано 2026-10-05 (фаза 73, план 03; render и повторный замер mesh — фаза 74, план 06)
 
 Две стадии одного образа и два ОТДЕЛЬНЫХ набора (D-12): guard первым читает
 недоверенные байты и не должен иметь пути к OCP, поэтому `/opt/venv` в его наборе нет;
@@ -1399,6 +1399,78 @@ mesh читает (трасса видит `/sys/devices/system/cpu/possible`), 
 проходит, guard даёт ok, а mesh — двенадцать треугольников на `units_inch.step` (без
 ruleset, в эмуляции). Строка amd64 в карте — выведена, не замерена.
 
+### Render (cad-render) и повторный замер mesh — фаза 74, план 06
+
+Третья стадия того же образа и ТРЕТИЙ отдельный набор. Инструмент и метод те же
+(`scripts/cad-worker-sandbox-measure.sh`, кандидаты по `strace`, достаточность по содержимому,
+таблица удаления, отрицательный контроль, действенность), образ — боевой engine-этап
+`Dockerfile.cad-worker` уже с VTK 9.7.1 и OSMesa (id
+`sha256:d1ee5a9ef804a300a8ba2344561a439ae6e99a641ef3cb561e3142ee107ac685`, Python 3.11.2,
+cadquery-ocp-novtk 7.9.3.1.1, `USER nobody`, нативный arm64, ядро 7.0.14-orbstack). Транскрипт —
+`.planning/phases/74-3d-render-measurements/evidence/74-06-landlock.txt`. До этого замера
+`cadRenderReadOnly` был посеян равным набору mesh (план 74-04) и ничем не доказан.
+
+- **Матрица render**: четырнадцать STL-входов — десять STL, которые сам боевой `cad-mesh` построил из десяти
+  входов guard и mesh (STEP и IGES), плюс `stl_ascii_box`, `stl_binary_solid_header`,
+  `nasa-hubble-all-pieces` и W15 (первые 4396 треугольников `nasa-sls-block1.stl` в ASCII, 1 МиБ,
+  `stl-ascii-nasa-sls-block1-1MiB.stl` лестницы 71); на каждый вход три варианта argv:
+  `iso 1280 opaque`, `top 2048 opaque`, `iso 1280 transparent`. Сорок два эталонных прогона;
+  каждый эталон обязан быть кадром с вердиктом `ok` и PNG (иначе замер пуст).
+- **argv**: `/usr/local/bin/cad-render --view V --size S --background B /job/in.stl /job/out.png`;
+  среда и лимиты те же, что у guard и mesh.
+- **Подпись прогона** — последняя строка `CADVERDICT` плюс sha256 PNG; код выхода не судится.
+  Пиксели PNG побайтно совпали с неограниченным прогоном во всех сорока двух случаях и под
+  кандидатом, и под итоговым набором.
+- **Кандидат** — трасса по восемнадцати прогонам (все входы в `iso 1280 opaque`, а `units_inch` и
+  `nasa-hubble` ещё и в двух других вариантах), плюс руками движок `/usr/local/bin/cad-render`,
+  интерпретатор и каталог multiarch. `TMP_NEED none`.
+
+Таблица удаления render (каждый раз полная матрица из сорока двух прогонов):
+
+| Запись | Итог |
+|---|---|
+| `/etc/ld.so.cache` | removable |
+| `/etc/nsswitch.conf` | removable |
+| `/etc/passwd` | removable |
+| `/proc/cpuinfo` | removable |
+| `/sys/devices/system/cpu` | removable |
+| `/usr/lib/locale` | removable |
+| `/usr/share/zoneinfo` | removable |
+| `/opt/venv` | **load-bearing** (VTK и shebang `/opt/venv/bin/python`) |
+| `/usr/bin/python3.11` | **load-bearing** (интерпретатор) |
+| `/usr/lib/python3.11` | **load-bearing** (стандартная библиотека) |
+| `/usr/local/bin/cad-render` | **load-bearing** (движок) |
+| `/usr/lib/aarch64-linux-gnu` | **load-bearing** (multiarch: OSMesa, LLVM) |
+
+Итоговый набор render — те же пути, что у mesh: `/opt/venv`, `/usr/bin/python3.11`,
+`/usr/lib/python3.11` плюс multiarch, и отличается он только грантом на исполнение
+(`cad-render`, не `cad-mesh`). Набор из одних load-bearing записей даёт ту же матрицу (сорок два
+из сорока двух идентичны). Ни `/tmp`, ни `/proc`, ни `/sys` в наборе нет: трасса видит
+`/proc/cpuinfo` и `/sys/devices/system/cpu/*`, но без них результат тот же, и записи убраны;
+общего записываемого пути нет, `TMPDIR=/job`.
+
+- **Действенность**: STL `units_inch` вне всех грантов (`/outside`, только чтение) — без ruleset
+  кадр `ok` и PNG есть, под набором вердикт без `ok` (`no_triangles`) и PNG нет, rc=2; проверено и
+  на широком кандидате, и на итоговом наборе. Проба читает канарейку `/etc/hostname` до ruleset.
+- **Отрицательный контроль**: render без `/opt/venv` падает на первом входе (`missing`, вердикта
+  нет) — `failed_as_expected`.
+- **Без OpenCascade — по импортам, а не по путям**: VTK и OCP живут в одном `/opt/venv`, так что набор
+  путей не может отделить render от OCP. Это держит Go-тест, читающий `cmd/cad-worker/helper/cad-render`
+  и падающий на любой import `OCP`/`cadquery`, и отдельный грант на исполнение. Узкий набор потребовал бы
+  второго venv — это незамеренная работа.
+- **Повторный замер mesh** (новый argv `--quality standard --measure /job/measure.json`, новые
+  импорты OCP, STL-входы режима `cad-mesh stats`): тринадцать входов, из них три STL
+  (`stl_ascii_box`, `stl_binary_solid_header`, `nasa-hubble`) идут через `stats`. Набор не изменился:
+  `/opt/venv`, `/usr/bin/python3.11`, `/usr/lib/python3.11`; подпись mesh теперь включает sha256 STL и
+  sha256 `measure.json`. Набор guard перемерен без изменений в argv — тот же результат.
+- **Итого**: шестьдесят пять пар стадия-вход, сто тридцать проверок достаточности (кандидат и итоговый
+  набор) — ни одна не отличается; семь строк действенности — все denied; три отрицательных
+  контроля — все `failed_as_expected`; `--recheck` заканчивается `RECHECK-OK`.
+- **amd64 для render не замерен.** Эмулируемому процессу Landlock недоступен, поэтому amd64 render
+  отложен по контексту фазы и здесь только заявлен: строка amd64 в карте multiarch по-прежнему выведена,
+  а не замерена, и эмулируемая сборка этим прогоном не повторялась (флаг `--amd64` повторяет сборку
+  guard и mesh).
+
 <!-- conf05:cadguard:readonly -->
 /usr/bin/python3.11
 /usr/lib/python3.11
@@ -1416,6 +1488,15 @@ cad-guard
 cad-mesh
 <!-- /conf05:cadmesh:engines -->
 
+<!-- conf05:cadrender:readonly -->
+/opt/venv
+/usr/bin/python3.11
+/usr/lib/python3.11
+<!-- /conf05:cadrender:readonly -->
+<!-- conf05:cadrender:engines -->
+cad-render
+<!-- /conf05:cadrender:engines -->
+
 <!-- conf05:cad:multiarch -->
 amd64 x86_64-linux-gnu
 arm64 aarch64-linux-gnu
@@ -1424,5 +1505,6 @@ arm64 aarch64-linux-gnu
 ## Ещё не замерено
 
 Ничего: все классы замерены на нативных образах. `document` (LibreOffice и
-veraPDF) — в разделе выше. `cad` замерен на нативном arm64; amd64 для него —
-доказательство сборки, а не замер (раздел `cad` выше).
+veraPDF) — в разделе выше. `cad` (guard, mesh и render) замерен на нативном arm64;
+amd64 для него — доказательство сборки (guard и mesh), а не замер, а для render не сделано и
+этого (раздел `cad` выше).

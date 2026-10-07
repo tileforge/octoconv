@@ -95,4 +95,5 @@ func init() {
 	// pandoc's route away.
 	Default.Register(TectonicConverter{})
 	Default.Register(CADConverter{})
+	Default.Register(CADRenderConverter{})
 }

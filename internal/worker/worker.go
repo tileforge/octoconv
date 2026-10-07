@@ -673,6 +673,7 @@ type convertRepo interface {
 	Inputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Input, error)
 	AddOutput(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
 	AddOutputWithRole(ctx context.Context, jobID uuid.UUID, o jobs.Output) error
+	AddOutputs(ctx context.Context, jobID uuid.UUID, outs []jobs.Output) error
 	Outputs(ctx context.Context, jobID uuid.UUID) ([]jobs.Output, error)
 	UpdateProgress(ctx context.Context, id uuid.UUID, pct int, eta *int) error
 	SetSourceDuration(ctx context.Context, id uuid.UUID, seconds float64) error
@@ -1453,59 +1454,64 @@ func (h *Handler) process(ctx context.Context, job *jobs.Job) error {
 		return convertErr
 	}
 
+	var extras []SideOutput
+	if h.sideOutputs != nil {
+		var hookErr error
+		extras, hookErr = h.sideOutputs(attemptCtx, job, outPath)
+		if hookErr != nil {
+			return hookErr
+		}
+	}
+
 	outKey := storage.OutputKey(job.ID, 0, outName)
 	size, err := h.uploadFrom(attemptCtx, outKey, outPath, convert.MIMEType(job.TargetFormat))
 	if err != nil {
 		return err
 	}
 
-	if err := h.repo.AddOutput(attemptCtx, job.ID, jobs.Output{
+	if h.sideOutputs == nil {
+		if err := h.repo.AddOutput(attemptCtx, job.ID, jobs.Output{
+			Ordinal:     0,
+			ObjectKey:   outKey,
+			Filename:    outName,
+			Format:      job.TargetFormat,
+			SizeBytes:   size,
+			ContentType: convert.MIMEType(job.TargetFormat),
+		}); err != nil {
+			return err
+		}
+		return h.repo.MarkDone(attemptCtx, job.ID, time.Since(attemptStart))
+	}
+
+	rows := make([]jobs.Output, 0, 1+len(extras))
+	rows = append(rows, jobs.Output{
 		Ordinal:     0,
 		ObjectKey:   outKey,
 		Filename:    outName,
 		Format:      job.TargetFormat,
 		SizeBytes:   size,
 		ContentType: convert.MIMEType(job.TargetFormat),
-	}); err != nil {
-		return err
-	}
-
-	// Additional outputs, if this engine declares any. Runs after the
-	// primary output is stored and recorded: a report describing a result
-	// the client cannot fetch would be a record of nothing.
-	//
-	// An error here fails the job. The alternative -- succeed with the
-	// primary output and no report -- would hand back a sanitized file with
-	// no statement of what was removed from it, which is the outcome
-	// SANI-05 exists to prevent.
-	if h.sideOutputs != nil {
-		extra, err := h.sideOutputs(attemptCtx, job, outPath)
+		Role:        jobs.OutputRolePrimary,
+	})
+	for i, so := range extras {
+		ordinal := i + 1
+		key := storage.OutputKey(job.ID, ordinal, so.Filename)
+		extraSize, err := h.uploadBytes(attemptCtx, key, so.Body, so.ContentType)
 		if err != nil {
 			return err
 		}
-		for i, so := range extra {
-			ordinal := i + 1 // ordinal 0 is always the primary output
-			key := storage.OutputKey(job.ID, ordinal, so.Filename)
-			size, err := h.uploadBytes(attemptCtx, key, so.Body, so.ContentType)
-			if err != nil {
-				return err
-			}
-			// AddOutputWithRole, not AddOutput: the latter deliberately
-			// omits the role column so the DB default applies, which would
-			// store this report as a second PRIMARY output and make
-			// MarkDone's exactly-one-primary guard fail the job.
-			if err := h.repo.AddOutputWithRole(attemptCtx, job.ID, jobs.Output{
-				Ordinal:     ordinal,
-				ObjectKey:   key,
-				Filename:    so.Filename,
-				Format:      so.Format,
-				SizeBytes:   size,
-				ContentType: so.ContentType,
-				Role:        so.Role,
-			}); err != nil {
-				return err
-			}
-		}
+		rows = append(rows, jobs.Output{
+			Ordinal:     ordinal,
+			ObjectKey:   key,
+			Filename:    so.Filename,
+			Format:      so.Format,
+			SizeBytes:   extraSize,
+			ContentType: so.ContentType,
+			Role:        so.Role,
+		})
+	}
+	if err := h.repo.AddOutputs(attemptCtx, job.ID, rows); err != nil {
+		return err
 	}
 
 	return h.repo.MarkDone(attemptCtx, job.ID, time.Since(attemptStart))

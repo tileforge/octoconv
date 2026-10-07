@@ -294,8 +294,8 @@ func TestVocabularyCounts(t *testing.T) {
 	if got := len(AllUnitSources()); got != 3 {
 		t.Errorf("len(AllUnitSources()) = %d, want 3", got)
 	}
-	if got := len(AllNullReasons()); got != 6 {
-		t.Errorf("len(AllNullReasons()) = %d, want 6", got)
+	if got := len(AllNullReasons()); got != 7 {
+		t.Errorf("len(AllNullReasons()) = %d, want 7", got)
 	}
 	if got := len(AllFormats()); got != 4 {
 		t.Errorf("len(AllFormats()) = %d, want 4", got)
@@ -311,7 +311,7 @@ func TestVocabularyExactMembers(t *testing.T) {
 	}
 	check("units", AllUnits(), []string{"mm", "cm", "m", "inch", "foot", "micrometre", "unspecified"})
 	check("unit sources", AllUnitSources(), []string{"declared", "client_assumed", "none"})
-	check("null reasons", AllNullReasons(), []string{"no_solids", "open_shell", "invalid_solid", "negative_volume", "stl_not_watertight", "not_applicable_2d"})
+	check("null reasons", AllNullReasons(), []string{"no_solids", "open_shell", "invalid_solid", "negative_volume", "stl_not_watertight", "stl_ambiguous_shells", "not_applicable_2d"})
 	check("formats", AllFormats(), []string{"step", "iges", "stl", "dxf"})
 	for _, u := range AllUnits() {
 		if u == "unknown" {

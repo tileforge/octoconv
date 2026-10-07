@@ -2,13 +2,17 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/apaderin/octoconv/internal/measurements"
 )
 
 type cadPreflightFakes struct {
@@ -17,6 +21,23 @@ type cadPreflightFakes struct {
 	meshInsideSTL []byte
 	meshTriangles int
 	meshOutside   string
+	draft         cadMeasureDraft
+	renderFrame   func(t *testing.T, size int, transparent bool) []byte
+	renderOutside string
+}
+
+func inchBoxDraft() cadMeasureDraft {
+	return cadMeasureDraft{
+		Format:        "step",
+		DeclaredUnit:  "inch",
+		AppliedFactor: floatp(25.4),
+		BBox:          measurements.BBox{Min: []float64{0, 0, 0}, Max: []float64{25.4, 50.8, 76.2}},
+		Solids:        intp(1),
+		ClosedSolids:  intp(1),
+		Volume:        floatp(6 * 25.4 * 25.4 * 25.4),
+		Area:          floatp(22 * 25.4 * 25.4),
+		Triangles:     12,
+	}
 }
 
 func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
@@ -31,6 +52,9 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		meshInsideSTL: cadBoxSTL(25.4, 50.8, 76.2),
 		meshTriangles: 12,
 		meshOutside:   "deny",
+		draft:         inchBoxDraft(),
+		renderFrame:   renderPNGBytes,
+		renderOutside: "deny",
 	}
 }
 
@@ -48,12 +72,35 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	}
 	fakeEngine(t, dir, "cad-guard", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
 
-	meshOK := fmt.Sprintf("cp '%s' \"$4\"\n%s", stl, cadSayTriangles("mesh", "ok", "", p.meshTriangles, 0))
+	draftJSON, err := json.Marshal(p.draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := filepath.Join(dir, "draft.json")
+	if err := os.WriteFile(draft, draftJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meshOK := fmt.Sprintf("cp '%s' \"$4\"\nif [ -n \"$8\" ]; then cp '%s' \"$8\"; fi\n%s", stl, draft, cadSayTriangles("mesh", "ok", "", p.meshTriangles, 0))
 	meshOutside := cadSay("mesh", "unreadable", "read_failed", 2)
 	if p.meshOutside == "leak" {
 		meshOutside = meshOK
 	}
 	fakeEngine(t, dir, "cad-mesh", fmt.Sprintf("case \"$3\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", meshOK, meshOutside))
+
+	size := cadPreflightFrame
+	for _, tr := range []bool{false, true} {
+		frame := filepath.Join(dir, fmt.Sprintf("frame-%v.png", tr))
+		if err := os.WriteFile(frame, p.renderFrame(t, size, tr), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	renderDraw := "case \"$6\" in\ntransparent) cp '" + filepath.Join(dir, "frame-true.png") + "' \"$8\";;\n*) cp '" + filepath.Join(dir, "frame-false.png") + "' \"$8\";;\nesac\n" +
+		`printf 'CADVERDICT {"stage":"render","verdict":"ok","reason":"","triangles":12,"view":"%s","size":%s,"background":"%s"}\n' "$2" "$4" "$6"` + "\nexit 0\n"
+	renderOutside := cadSay("render", "unreadable", "read_failed", 2)
+	if p.renderOutside == "leak" {
+		renderOutside = renderDraw
+	}
+	fakeEngine(t, dir, "cad-render", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", renderDraw, renderOutside))
 	pathWith(t, dir)
 
 	helper, _ := fakeSandboxHelper(t)
@@ -94,6 +141,15 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"inch output scaled twice", func(p *cadPreflightFakes) { p.meshInsideSTL = cadBoxSTL(645.16, 1290.32, 1935.48) }, []string{"units"}},
 		{"the mesh reports a different triangle count than its file", func(p *cadPreflightFakes) { p.meshTriangles = 11 }, []string{"mesh", "verdict"}},
 		{"the guard counts a different number of entities", func(p *cadPreflightFakes) { p.guardEntities++ }, []string{"guard", "entities"}},
+		{"the render meshes a blank frame", func(p *cadPreflightFakes) {
+			p.renderFrame = func(t *testing.T, size int, _ bool) []byte { return blankPNGBytes(t, size) }
+		}, []string{"pixel judge"}},
+		{"the render draws the outside file", func(p *cadPreflightFakes) { p.renderOutside = "leak" }, []string{"render", "confinement"}},
+		{"the measured unit is not inch", func(p *cadPreflightFakes) { p.draft.DeclaredUnit, p.draft.AppliedFactor = "mm", floatp(1) }, []string{"units", "inch"}},
+		{"the volume is not the inch box volume", func(p *cadPreflightFakes) { *p.draft.Volume *= 2 }, []string{"units", "volume"}},
+		{"the area is not the inch box area", func(p *cadPreflightFakes) { *p.draft.Area *= 2 }, []string{"units", "area"}},
+		{"the extents are not 1 2 3", func(p *cadPreflightFakes) { p.draft.BBox.Max = []float64{25.4, 50.8, 25.4} }, []string{"units", "extents"}},
+		{"the unit is not declared", func(p *cadPreflightFakes) { p.draft.DeclaredUnit = "" }, []string{"units"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,6 +165,39 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCADPreflightDoesNotTakeASandboxFailureOnTheOutsideRenderForADenial(t *testing.T) {
+	p := newCADPreflightFakes(t)
+	c := p.converter(t)
+	helper, _ := fakeSandboxHelper(t)
+	wrapper := filepath.Join(t.TempDir(), "refuse-outside-render.sh")
+	body := fmt.Sprintf("#!/bin/bash\nfor a in \"$@\"; do\n  case \"$a\" in\n    */out.stl) case \"$*\" in *cad-preflight-outside-*cad-render*|*cad-render*cad-preflight-outside-*) exit 78;; esac;;\n  esac\ndone\nexec %q \"$@\"\n", helper[0])
+	if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	c = c.WithSandbox([]string{wrapper, helper[1]})
+	err := CADPreflight(context.Background(), c)
+	if err == nil {
+		t.Fatal("CADPreflight accepted a sandbox that could not be established for the outside render")
+	}
+	if !strings.Contains(err.Error(), "the cad render stage could not establish its sandbox") {
+		t.Errorf("error %q does not name the render stage as the one without a sandbox", err)
+	}
+}
+
+func TestCADRenderReadOnlyIsGrantedToNoOutsideDirectory(t *testing.T) {
+	w, cleanup, err := newPreflightWorkspace("cad")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := w.requireOutsideGrants(cadRenderReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.requireOutsideGrants([]string{w.outsideDir}); err == nil {
+		t.Fatal("requireOutsideGrants accepted a grant that covers the outside directory")
 	}
 }
 
@@ -133,19 +222,19 @@ func TestCADPreflightFixtureCountMatchesTheRealGuard(t *testing.T) {
 
 func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 	for _, n := range []int{0, 2, -1} {
-		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+		_, err := ConfinedCAD([]string{"helper"}, n, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 		if err == nil || !strings.Contains(err.Error(), "CAD_WORKER_CONCURRENCY") {
 			t.Errorf("concurrency %d: err = %v, want a refusal naming CAD_WORKER_CONCURRENCY", n, err)
 		}
 	}
-	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+	c, err := ConfinedCAD([]string{"helper"}, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 	if err != nil {
 		t.Fatalf("concurrency 1: %v", err)
 	}
-	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout {
+	if !c.Sandbox.confines() || c.GuardTimeout != CADDefaultGuardTimeout || c.MeshTimeout != CADDefaultMeshTimeout || c.RenderTimeout != CADDefaultRenderTimeout {
 		t.Errorf("ConfinedCAD = %+v, want a confined converter carrying the given stage timeouts", c)
 	}
-	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout)
+	open, err := ConfinedCAD(nil, 1, "CAD_WORKER_CONCURRENCY", CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout)
 	if err != nil || open.Sandbox.confines() {
 		t.Errorf("ConfinedCAD with no helper = %+v, %v, want an unconfined converter", open, err)
 	}
@@ -153,23 +242,28 @@ func TestConfinedCADRefusesEveryConcurrencyButOne(t *testing.T) {
 
 func TestValidateCADTimeouts(t *testing.T) {
 	s := time.Second
-	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultEngineTimeout); err != nil {
+	if err := ValidateCADTimeouts(CADDefaultGuardTimeout, CADDefaultMeshTimeout, CADDefaultRenderTimeout, CADDefaultEngineTimeout); err != nil {
 		t.Errorf("the defaults: %v", err)
 	}
+	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 886*s); err != nil {
+		t.Errorf("30+316+480 against 886: %v", err)
+	}
 	cases := []struct {
-		name                string
-		guard, mesh, engine time.Duration
-		want                string
+		name                        string
+		guard, mesh, render, engine time.Duration
+		want                        string
 	}{
-		{"zero guard", 0, 316 * s, 406 * s, "CAD_GUARD_TIMEOUT"},
-		{"negative mesh", 30 * s, -s, 406 * s, "CAD_MESH_TIMEOUT"},
-		{"zero engine", 30 * s, 316 * s, 0, "CAD_ENGINE_TIMEOUT"},
-		{"stages and allowance exceed the engine", 30 * s, 316 * s, 405 * s, "CAD_ENGINE_TIMEOUT"},
-		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 406 * s, "CAD_MESH_TIMEOUT"},
+		{"zero guard", 0, 316 * s, 480 * s, 886 * s, "CAD_GUARD_TIMEOUT"},
+		{"negative mesh", 30 * s, -s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
+		{"zero render", 30 * s, 316 * s, 0, 886 * s, "CAD_RENDER_TIMEOUT"},
+		{"zero engine", 30 * s, 316 * s, 480 * s, 0, "CAD_ENGINE_TIMEOUT"},
+		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 886 * s, "CAD_RENDER_TIMEOUT"},
+		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 885 * s, "CAD_ENGINE_TIMEOUT"},
+		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 886 * s, "CAD_MESH_TIMEOUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.engine)
+			err := ValidateCADTimeouts(tc.guard, tc.mesh, tc.render, tc.engine)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("err = %v, want one naming %s", err, tc.want)
 			}
@@ -177,9 +271,19 @@ func TestValidateCADTimeouts(t *testing.T) {
 	}
 }
 
+func TestCADEngineTimeoutStaysUnderTheReconcilerWindow(t *testing.T) {
+	const window = 900 * time.Second
+	if CADDefaultEngineTimeout >= window {
+		t.Errorf("CADDefaultEngineTimeout = %s, must stay under the %s RECONCILER_ACTIVE_STALE_AFTER window or the reconciler re-enqueues live cad jobs", CADDefaultEngineTimeout, window)
+	}
+	if grace := CADDefaultEngineTimeout + 20*time.Second; grace >= window+10*time.Second || grace != 906*time.Second {
+		t.Errorf("pod grace = %s, want 906s (engine + 20s)", grace)
+	}
+}
+
 func TestCADSetsAreTheMeasuredOnes(t *testing.T) {
 	const remeasure = "these are the sets scripts/cad-worker-sandbox-measure.sh measured on the production engine image " +
-		"(evidence/73-03-landlock.txt, SANDBOX-PATHS.md section cad); re-measure with that script and update the " +
+		"(evidence/74-06-landlock.txt, SANDBOX-PATHS.md section cad); re-run scripts/cad-worker-sandbox-measure.sh and update the " +
 		"document, the Go vars and this pin together rather than editing the expectation"
 	pins := []struct {
 		name      string
@@ -187,8 +291,10 @@ func TestCADSetsAreTheMeasuredOnes(t *testing.T) {
 	}{
 		{"cadMeshReadOnly", cadMeshReadOnly, []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11"}},
 		{"cadGuardReadOnly", cadGuardReadOnly, []string{"/usr/bin/python3.11", "/usr/lib/python3.11"}},
+		{"cadRenderReadOnly", cadRenderReadOnly, []string{"/opt/venv", "/usr/bin/python3.11", "/usr/lib/python3.11"}},
 		{"cadMeshEngines", cadMeshEngines, []string{"cad-mesh"}},
 		{"cadGuardEngines", cadGuardEngines, []string{"cad-guard"}},
+		{"cadRenderEngines", cadRenderEngines, []string{"cad-render"}},
 	}
 	for _, p := range pins {
 		if !slices.Equal(p.got, p.want) {
@@ -210,7 +316,7 @@ func TestCADGuardSetHasNoPathToTheReader(t *testing.T) {
 }
 
 func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
-	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly} {
+	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly} {
 		for _, p := range set {
 			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
 				if p == banned || strings.HasPrefix(p, banned+"/") {
@@ -219,6 +325,33 @@ func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestCADRenderHelperImportsNoOpenCascade(t *testing.T) {
+	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-render")
+	if err != nil {
+		t.Fatal(err)
+	}
+	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
+	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC)\b|__import__|importlib`)
+	vtk, imports := 0, 0
+	for i, line := range strings.Split(string(raw), "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
+			continue
+		}
+		imports++
+		if strings.Contains(code, "vtkmodules") {
+			vtk++
+		}
+		if forbidden.MatchString(code) {
+			t.Errorf("cad-render line %d imports %q: the render stage must not reach OpenCascade; its separate exec grant "+
+				"is what keeps OCP out, and a path set cannot (R-09)", i+1, strings.TrimSpace(line))
+		}
+	}
+	if imports == 0 || vtk == 0 {
+		t.Fatalf("read %d import lines and %d from vtkmodules: the check would pass on a helper it did not read", imports, vtk)
 	}
 }
 

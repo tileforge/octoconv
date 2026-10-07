@@ -37,19 +37,19 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 
 ### Render (RNDR)
 
-- [ ] **RNDR-01**: Клиент ставит `render` для `step`/`stp`/`iges`/`stl` → `png` и получает непустое изображение детали
-- [ ] **RNDR-02**: Ракурс — закрытый словарь `iso` (по умолчанию), `front`, `back`, `left`, `right`, `top`, `bottom`; Z вверх, деталь вписана в кадр с полем; неизвестное значение — 422
-- [ ] **RNDR-03**: Размер изображения — закрытая опция, по умолчанию 1280×1280, с жёстким потолком; вне диапазона — 422
-- [ ] **RNDR-04**: Опция `quality` (`draft`/`standard`/`fine`) выбирает серверные константы тесселяции относительно диагонали bbox — для рендера и для конверсии в STL
-- [ ] **RNDR-05**: Фон по умолчанию непрозрачный, `background: transparent` — опцией
+- [x] **RNDR-01**: Клиент ставит `render` для `step`/`stp`/`iges`/`stl` → `png` и получает непустое изображение детали
+- [x] **RNDR-02**: Ракурс — закрытый словарь `iso` (по умолчанию), `front`, `back`, `left`, `right`, `top`, `bottom`; Z вверх, деталь вписана в кадр с полем; неизвестное значение — 422
+- [x] **RNDR-03**: Размер изображения — закрытая опция, по умолчанию 1280×1280, с жёстким потолком; вне диапазона — 422
+- [x] **RNDR-04**: Опция `quality` (`draft`/`standard`/`fine`) выбирает серверные константы тесселяции относительно диагонали bbox — для рендера и для конверсии в STL
+- [x] **RNDR-05**: Фон по умолчанию непрозрачный, `background: transparent` — опцией
 - [ ] **RNDR-06**: `render` для `dxf` → `png` рисует чертёж сверху; опция ракурса для `dxf` отвергается 422
 
 ### Measurements (MEAS)
 
-- [ ] **MEAS-01**: Каждая успешная `render`-джоба отдаёт второй выход — JSON с новой ролью `measurements`; PNG остаётся `primary`; клиенту видны оба выхода или джоба падает и не видно ни одного
-- [ ] **MEAS-02**: JSON содержит точный bbox и число солидов; объём и площадь поверхности считаются только по замкнутым солидам, иначе `null` с закрытым кодом причины — никогда не `0`
-- [ ] **MEAS-03**: Единицы честно по источнику, с происхождением: STEP/IGES — объявленная в файле, STL — `unspecified`, DXF — по `$INSUNITS` или `unspecified`; для `dxf` только 2D bbox без объёма
-- [ ] **MEAS-04**: Опция `assume_unit` заполняет только отсутствующую единицу, никогда не переопределяет объявленную, и помечается `source: client_assumed`
+- [x] **MEAS-01**: Каждая успешная `render`-джоба отдаёт второй выход — JSON с новой ролью `measurements`; PNG остаётся `primary`; клиенту видны оба выхода или джоба падает и не видно ни одного
+- [x] **MEAS-02**: JSON содержит точный bbox и число солидов; объём и площадь поверхности считаются только по замкнутым солидам, иначе `null` с закрытым кодом причины — никогда не `0`
+- [x] **MEAS-03**: Единицы честно по источнику, с происхождением: STEP/IGES — объявленная в файле, STL — `unspecified`, DXF — по `$INSUNITS` или `unspecified`; для `dxf` только 2D bbox без объёма
+- [x] **MEAS-04**: Опция `assume_unit` заполняет только отсутствующую единицу, никогда не переопределяет объявленную, и помечается `source: client_assumed`
 - [x] **MEAS-05**: JSON версионирован (`schema`), закрытые словари (единицы, коды причин) задокументированы и сверены с кодом тестом
 
 ### Conversions (CCONV)
@@ -113,15 +113,15 @@ v1.16 (`.planning/research/SUMMARY.md`) сузило это дальше зам�
 | CADW-01 | Phase 73 | Complete |
 | CADW-02 | Phase 73 | Complete |
 | CADW-03 | Phase 73 | Complete |
-| RNDR-01 | Phase 74 | Pending |
-| RNDR-02 | Phase 74 | Pending |
-| RNDR-03 | Phase 74 | Pending |
-| RNDR-04 | Phase 74 | Pending |
-| RNDR-05 | Phase 74 | Pending |
-| MEAS-01 | Phase 74 | Pending |
-| MEAS-02 | Phase 74 | Pending |
-| MEAS-03 | Phase 74 | Pending |
-| MEAS-04 | Phase 74 | Pending |
+| RNDR-01 | Phase 74 | Complete |
+| RNDR-02 | Phase 74 | Complete |
+| RNDR-03 | Phase 74 | Complete |
+| RNDR-04 | Phase 74 | Complete |
+| RNDR-05 | Phase 74 | Complete |
+| MEAS-01 | Phase 74 | Complete |
+| MEAS-02 | Phase 74 | Complete |
+| MEAS-03 | Phase 74 | Complete |
+| MEAS-04 | Phase 74 | Complete |
 | RNDR-06 | Phase 75 | Pending |
 | CCONV-02 | Phase 75 | Pending |
 | CCONV-03 | Phase 75 | Pending |

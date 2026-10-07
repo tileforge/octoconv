@@ -9,15 +9,19 @@ cd "$REPO_ROOT"
 usage() {
   printf '%s\n' \
     'Usage:' \
-    '  scripts/cad-worker-sandbox-measure.sh [--out FILE]' \
+    '  scripts/cad-worker-sandbox-measure.sh [--amd64] [--out FILE]' \
     '  scripts/cad-worker-sandbox-measure.sh --recheck [--out FILE]' \
     'Exit codes: 64 usage, 69 docker or go missing, 1 a non-identical result, a probe failure or an emulated image.' >&2
   exit 64
 }
 
-PHASE_EVID="$REPO_ROOT/.planning/phases/73-cad-class-convert-slice-confined/evidence"
-MAIN_EVIDENCE="$PHASE_EVID/73-03-landlock.txt"
+PHASE_EVID="$REPO_ROOT/.planning/phases/74-3d-render-measurements/evidence"
+MAIN_EVIDENCE="$PHASE_EVID/74-06-landlock.txt"
 CORPUS="$REPO_ROOT/internal/convert/testdata/cad"
+W15_SRC="$CAD_CACHE_DIR/scaled/stl-ascii-nasa-sls-block1-1MiB.stl"
+W15_SHA=77492adbca35ff7f0c583732208324a834170aec9cb76eee7ad4e0b853c18ef0
+GO_AMD_DERIVED=x86_64-linux-gnu
+RENDER_VARIANTS=(iso:1280:opaque top:2048:opaque iso:1280:transparent)
 GO_TOOLCHAIN=go1.26.4
 MIN_FREE_KIB=6291456
 LIMITS=(--network none --cpus 2 --memory 4g --memory-swap 4g --user nobody)
@@ -26,16 +30,18 @@ CANARY=/etc/hostname
 
 OUT=""
 RECHECK=0
+AMD64=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT=${2:?}; shift 2 ;;
+    --amd64) AMD64=1; shift ;;
     --recheck) RECHECK=1; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown argument $1" >&2; usage ;;
   esac
 done
 if [ -z "$OUT" ]; then
-  if [ "$RECHECK" = 1 ]; then OUT="${TMPDIR:-/tmp}/73-03-recheck.txt"; else OUT=$MAIN_EVIDENCE; fi
+  if [ "$RECHECK" = 1 ]; then OUT="${TMPDIR:-/tmp}/74-06-recheck.txt"; else OUT=$MAIN_EVIDENCE; fi
 fi
 
 command -v docker >/dev/null 2>&1 || { echo "error: docker is required" >&2; exit 69; }
@@ -81,16 +87,19 @@ disk_guard() {
 }
 
 inputs_short() {
-  shasum -a 256 Dockerfile.cad-worker cmd/cad-worker/requirements-mesh.txt \
-    cmd/cad-worker/helper/cad-mesh cmd/cad-worker/helper/cad-guard | awk '{print $1}' | shasum -a 256 | cut -c1-12
+  shasum -a 256 Dockerfile.cad-worker cmd/cad-worker/requirements-mesh.txt cmd/cad-worker/requirements-vtk.txt \
+    cmd/cad-worker/vtk_keeplist.py cmd/cad-worker/vtk-keeplist.txt \
+    cmd/cad-worker/helper/cad-mesh cmd/cad-worker/helper/cad-guard cmd/cad-worker/helper/cad-render \
+    | awk '{print $1}' | shasum -a 256 | cut -c1-12
 }
 
 stage_context() {
   local dir=$1
   mkdir -p "$dir/cmd/cad-worker/helper"
   cp Dockerfile.cad-worker "$dir/Dockerfile.cad-worker"
-  cp cmd/cad-worker/requirements-mesh.txt "$dir/cmd/cad-worker/requirements-mesh.txt"
-  cp cmd/cad-worker/helper/cad-mesh cmd/cad-worker/helper/cad-guard "$dir/cmd/cad-worker/helper/"
+  cp cmd/cad-worker/requirements-mesh.txt cmd/cad-worker/requirements-vtk.txt cmd/cad-worker/vtk_keeplist.py \
+    cmd/cad-worker/vtk-keeplist.txt "$dir/cmd/cad-worker/"
+  cp cmd/cad-worker/helper/cad-mesh cmd/cad-worker/helper/cad-guard cmd/cad-worker/helper/cad-render "$dir/cmd/cad-worker/helper/"
 }
 
 disk_guard
@@ -130,7 +139,7 @@ go_triplet() {
   sed -n 's/^var cadMultiarchLib = .*"'"$1"'": "\([^"]*\)".*/\1/p' internal/convert/cadsandbox.go
 }
 
-emit "# Plan 73-03: Landlock sets of the cad-guard and cad-mesh stages, measured on the production engine image"
+emit "# Plan 74-06: Landlock sets of the cad-guard, cad-mesh and cad-render stages, measured on the production engine image"
 emit "HDR,date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 emit "HDR,server_arch=$SERVER_ARCH,image_arch=$IMAGE_ARCH,image=$TAG"
 emit "HDR,image_id=$(docker image inspect "$TAG" --format '{{.Id}}'),user=$(docker image inspect "$TAG" --format '{{.Config.User}}')"
@@ -140,35 +149,60 @@ emit "HDR,guard_interp=$GUARD_INTERP,mesh_interp=$MESH_INTERP,multiarch=$NATIVE_
 emit "HDR,cpus=2,memory=4g,network=none,env=HOME=/job;LANG=C.UTF-8;TMPDIR=/job;LP_NUM_THREADS=2;PATH=image,rw=/job,canary=$CANARY"
 emit "HDR,go=$(GOTOOLCHAIN=$GO_TOOLCHAIN go version),host_noise=$(docker ps -q | wc -l | tr -d ' ')"
 
-add_input() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$WORK/inputs.tsv"; }
-: > "$WORK/inputs.tsv"
+add_input() { printf '%s\t%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" "${6:--}" >> "$WORK/inputs.$1.tsv"; }
+STAGES="guard mesh render"
+for s in $STAGES; do : > "$WORK/inputs.$s.tsv"; done
+add_cad_input() {
+  add_input guard "$@"
+  add_input mesh "$@"
+}
 if [ "$RECHECK" = 1 ]; then
-  add_input units_inch "$CORPUS/synthetic/units_inch.step" step step
-  add_input surfaces_only "$CORPUS/synthetic/surfaces_only.iges" iges iges
+  add_cad_input units_inch "$CORPUS/synthetic/units_inch.step" step step
+  add_cad_input surfaces_only "$CORPUS/synthetic/surfaces_only.iges" iges iges
+  add_input mesh stl_ascii_box "$CORPUS/synthetic/stl_ascii_box.stl" stl stl
 else
-  add_input units_inch "$CORPUS/synthetic/units_inch.step" step step
-  add_input LM8UU "$CORPUS/public/LM8UU.step" step step
-  add_input nist_ctc_05 "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" step step
-  add_input nist_d2mi_906 "$CORPUS/public/nist-d2mi-827-9999-906.stp" step step
-  add_input vslot_finite_box "$CORPUS/public/V-Slot-20x20-100mm.step" step step
-  add_input legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.step" step step
-  add_input assembly_nauo4 "$CORPUS/synthetic/assembly_nauo4.step" step step
-  add_input surfaces_only "$CORPUS/synthetic/surfaces_only.iges" iges iges
-  add_input iges_no_newlines "$CORPUS/synthetic/iges_no_newlines.iges" iges iges
-  add_input festo_igs "$CAD_CACHE_DIR/fetched/freecad-festo-valve-5-2.igs" iges iges
+  add_cad_input units_inch "$CORPUS/synthetic/units_inch.step" step step
+  add_cad_input LM8UU "$CORPUS/public/LM8UU.step" step step
+  add_cad_input nist_ctc_05 "$CORPUS/public/nist_ctc_05_asme1_ap242-e1.stp" step step
+  add_cad_input nist_d2mi_906 "$CORPUS/public/nist-d2mi-827-9999-906.stp" step step
+  add_cad_input vslot_finite_box "$CORPUS/public/V-Slot-20x20-100mm.step" step step
+  add_cad_input legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.step" step step
+  add_cad_input assembly_nauo4 "$CORPUS/synthetic/assembly_nauo4.step" step step
+  add_cad_input surfaces_only "$CORPUS/synthetic/surfaces_only.iges" iges iges
+  add_cad_input iges_no_newlines "$CORPUS/synthetic/iges_no_newlines.iges" iges iges
+  add_cad_input festo_igs "$CAD_CACHE_DIR/fetched/freecad-festo-valve-5-2.igs" iges iges
+  add_input mesh stl_ascii_box "$CORPUS/synthetic/stl_ascii_box.stl" stl stl
+  add_input mesh stl_binary_solid_header "$CORPUS/synthetic/stl_binary_solid_header.stl" stl stl
+  add_input mesh nasa_hubble "$CORPUS/public/nasa-hubble-all-pieces.stl" stl stl
 fi
-INPUT_COUNT=$(wc -l < "$WORK/inputs.tsv" | tr -d ' ')
-while IFS=$'\t' read -r -u 3 label path fmt ext; do
-  [ -f "$path" ] || { emit "FAIL,input=$label,reason=$path is missing; run scripts/cad-corpus-fetch.sh"; exit 1; }
-done 3< "$WORK/inputs.tsv"
+check_inputs() {
+  local label path fmt ext var stage
+  for stage in guard mesh; do
+    while IFS=$'\t' read -r -u 3 label path fmt ext var; do
+      [ -f "$path" ] || { emit "FAIL,input=$label,reason=$path is missing; run scripts/cad-corpus-fetch.sh"; exit 1; }
+    done 3< "$WORK/inputs.$stage.tsv"
+  done
+}
+check_inputs
+if [ "$RECHECK" != 1 ]; then
+  [ -f "$W15_SRC" ] && [ "$(shasum -a 256 < "$W15_SRC" | cut -c1-64)" = "$W15_SHA" ] \
+    || { emit "FAIL,input=w15,reason=$W15_SRC is missing or is not the 71 ladder slice sha256 $W15_SHA"; exit 1; }
+fi
 
-STAGES="guard mesh"
 ARGV=()
 stage_argv() {
-  local stage=$1 fmt=$2 ext=$3 dir=$4
+  local stage=$1 fmt=$2 ext=$3 dir=$4 var=${5:--} view size bg
   case "$stage" in
     guard) ARGV=(/usr/local/bin/cad-guard --format "$fmt" --max-entities "$MAX_ENTITIES" --max-nauo "$MAX_NAUO" "$dir/in.$ext") ;;
-    mesh) ARGV=(/usr/local/bin/cad-mesh --format "$fmt" "$dir/in.$ext" /job/out.stl) ;;
+    mesh)
+      if [ "$fmt" = stl ]; then
+        ARGV=(/usr/local/bin/cad-mesh stats --measure /job/measure.json "$dir/in.$ext" /job/mesh.stl)
+      else
+        ARGV=(/usr/local/bin/cad-mesh --format "$fmt" "$dir/in.$ext" /job/out.stl --quality standard --measure /job/measure.json)
+      fi ;;
+    render)
+      IFS=: read -r view size bg <<< "$var"
+      ARGV=(/usr/local/bin/cad-render --view "$view" --size "$size" --background "$bg" "$dir/in.$ext" /job/out.png) ;;
   esac
 }
 
@@ -210,33 +244,76 @@ probe_failure_exit() {
 }
 
 signature() {
-  local stage=$1 job=$2 v s
+  local stage=$1 job=$2 v s m
   v=$(grep -a '^CADVERDICT ' "$RUN_OUT" | tail -n 1 || true)
   if [ -z "$v" ]; then
     echo missing
     return 0
   fi
-  if [ "$stage" = mesh ]; then
-    if [ -s "$job/out.stl" ]; then s=$(shasum -a 256 < "$job/out.stl" | cut -c1-64); else s=none; fi
-    printf '%s|stl=%s\n' "$v" "$s"
-  else
-    printf '%s\n' "$v"
-  fi
+  case "$stage" in
+    mesh)
+      if [ -s "$job/out.stl" ]; then s=$(shasum -a 256 < "$job/out.stl" | cut -c1-64); else s=none; fi
+      if [ -s "$job/measure.json" ]; then m=$(shasum -a 256 < "$job/measure.json" | cut -c1-64); else m=none; fi
+      printf '%s|stl=%s|measure=%s\n' "$v" "$s" "$m" ;;
+    render)
+      if [ -s "$job/out.png" ]; then s=$(shasum -a 256 < "$job/out.png" | cut -c1-64); else s=none; fi
+      printf '%s|png=%s\n' "$v" "$s" ;;
+    *) printf '%s\n' "$v" ;;
+  esac
 }
 
 verdict_of() { printf '%s' "$1" | sed -n 's/.*"verdict":"\([a-z_]*\)".*/\1/p'; }
 short_sig() { printf '%s' "$1" | shasum -a 256 | cut -c1-16; }
 
+build_render_inputs() {
+  local label path fmt ext var name v
+  mkdir -p "$WORK/stl"
+  : > "$WORK/inputs.render.tsv"
+  for name in $RENDER_NAMES; do
+    path="$WORK/stl/$name.stl"
+    [ -s "$path" ] || continue
+    for v in "${RENDER_VARIANTS[@]}"; do
+      add_input render "$name@$v" "$path" stl stl "$v"
+    done
+  done
+}
+
+RENDER_NAMES=""
 make_refs() {
-  local stage label path fmt ext sig attempt
-  while IFS=$'\t' read -r -u 3 label path fmt ext; do
-    for stage in $STAGES; do
+  local stage label path fmt ext var sig attempt
+  for stage in $STAGES; do
+    if [ "$stage" = render ]; then
+      mkdir -p "$WORK/stl"
+      if [ "$RECHECK" != 1 ]; then
+        cp "$W15_SRC" "$WORK/stl/w15_prefix.stl"
+        RENDER_NAMES="$RENDER_NAMES w15_prefix"
+      fi
+      for label in stl_ascii_box; do cp "$CORPUS/synthetic/$label.stl" "$WORK/stl/$label.stl"; RENDER_NAMES="$RENDER_NAMES $label"; done
+      if [ "$RECHECK" != 1 ]; then
+        cp "$CORPUS/synthetic/stl_binary_solid_header.stl" "$WORK/stl/stl_binary_solid_header.stl"
+        cp "$CORPUS/public/nasa-hubble-all-pieces.stl" "$WORK/stl/nasa_hubble.stl"
+        RENDER_NAMES="$RENDER_NAMES stl_binary_solid_header nasa_hubble"
+      fi
+      build_render_inputs
+    fi
+    while IFS=$'\t' read -r -u 3 label path fmt ext var; do
       attempt=1
       while :; do
         ARGV=()
-        stage_argv "$stage" "$fmt" "$ext" /job
+        stage_argv "$stage" "$fmt" "$ext" /job "$var"
         run_case - "$path" "$ext" "${ARGV[@]}"
         sig=$(signature "$stage" "$JOB")
+        if [ "$sig" != missing ] && [ "$stage" = mesh ] && [ "$fmt" != stl ] && [ -s "$JOB/out.stl" ]; then
+          mkdir -p "$WORK/stl"
+          cp "$JOB/out.stl" "$WORK/stl/$label.stl"
+          RENDER_NAMES="$RENDER_NAMES $label"
+        fi
+        if [ "$stage" = render ] && [ "$sig" != missing ]; then
+          case "$sig" in
+            *'"verdict":"ok"'*"|png="[0-9a-f]*) ;;
+            *) emit "FAIL,stage=render,input=$label,reason=the unconfined reference render is not an ok frame, so a confined match would prove nothing: $(printf '%s' "$sig" | cut -c1-120 | tr ',' ';')"; exit 1 ;;
+          esac
+        fi
         rm -rf "$JOB"
         [ "$sig" = missing ] || break
         [ "$attempt" -lt 3 ] || { emit "FAIL,stage=$stage,input=$label,reason=the unconfined reference run printed no verdict after 3 attempts"; exit 1; }
@@ -244,19 +321,19 @@ make_refs() {
       done
       printf '%s' "$sig" > "$WORK/ref/$stage.$label"
       emit "REF,stage=$stage,input=$label,fmt=$fmt,verdict=$(verdict_of "$sig"),sig=$(short_sig "$sig"),attempts=$attempt"
-    done
-  done 3< "$WORK/inputs.tsv"
+    done 3< "$WORK/inputs.$stage.tsv"
+  done
 }
 
 CONTENT=""
 ATTEMPTS=0
 CONF_RC=0
 judge() {
-  local ro=$1 stage=$2 label=$3 fmt=$4 ext=$5 infile=$6 ref sig attempt=1
+  local ro=$1 stage=$2 label=$3 fmt=$4 ext=$5 infile=$6 var=${7:--} ref sig attempt=1
   ref=$(cat "$WORK/ref/$stage.$label")
   while [ "$attempt" -le 2 ]; do
     ARGV=()
-    stage_argv "$stage" "$fmt" "$ext" /job
+    stage_argv "$stage" "$fmt" "$ext" /job "$var"
     run_case "$ro" "$infile" "$ext" "${ARGV[@]}"
     if probe_failure; then probe_failure_exit "$stage" "$label"; fi
     sig=$(signature "$stage" "$JOB")
@@ -278,27 +355,27 @@ without() { grep -vxF "$2" "$1" || true; }
 SUFF=0
 DIFF=0
 sufficiency() {
-  local stage=$1 setname=$2 setfile=$3 ro label path fmt ext
+  local stage=$1 setname=$2 setfile=$3 ro label path fmt ext var
   ro=$(ro_of "$setfile")
-  while IFS=$'\t' read -r -u 3 label path fmt ext; do
-    judge "$ro" "$stage" "$label" "$fmt" "$ext" "$path"
+  while IFS=$'\t' read -r -u 3 label path fmt ext var; do
+    judge "$ro" "$stage" "$label" "$fmt" "$ext" "$path" "$var"
     emit "SUFFICIENT,stage=$stage,input=$label,set=$setname,result=$CONTENT,confined_rc=$CONF_RC,attempts=$ATTEMPTS"
     if [ "$CONTENT" = identical ]; then SUFF=$((SUFF + 1)); else DIFF=$((DIFF + 1)); fi
-  done 3< "$WORK/inputs.tsv"
+  done 3< "$WORK/inputs.$stage.tsv"
 }
 
 FIRST_CHANGE=""
 first_change() {
-  local stage=$1 setfile=$2 ro label path fmt ext
+  local stage=$1 setfile=$2 ro label path fmt ext var
   ro=$(ro_of "$setfile")
   FIRST_CHANGE=""
-  while IFS=$'\t' read -r -u 3 label path fmt ext; do
-    judge "$ro" "$stage" "$label" "$fmt" "$ext" "$path"
+  while IFS=$'\t' read -r -u 3 label path fmt ext var; do
+    judge "$ro" "$stage" "$label" "$fmt" "$ext" "$path" "$var"
     if [ "$CONTENT" != identical ]; then
       FIRST_CHANGE="$label:$CONTENT"
       return 0
     fi
-  done 3< "$WORK/inputs.tsv"
+  done 3< "$WORK/inputs.$stage.tsv"
 }
 
 LEAKED=0
@@ -309,31 +386,42 @@ effect_case() {
   rm -rf "$WORK/outside"
   mkdir -p "$WORK/outside"
   chmod 0755 "$WORK/outside"
-  cp "$CORPUS/synthetic/units_inch.step" "$WORK/outside/in.step"
-  chmod 0644 "$WORK/outside/in.step"
+  local fmt=step ext=step var=-
+  if [ "$stage" = render ]; then
+    fmt=stl ext=stl var=iso:1280:opaque
+    cp "$WORK/stl/units_inch.stl" "$WORK/outside/in.stl"
+    chmod 0644 "$WORK/outside/in.stl"
+  else
+    cp "$CORPUS/synthetic/units_inch.step" "$WORK/outside/in.step"
+    chmod 0644 "$WORK/outside/in.step"
+  fi
   EXTRA=(-v "$WORK/outside:/outside:ro")
   ARGV=()
-  stage_argv "$stage" step step /outside
+  stage_argv "$stage" "$fmt" "$ext" /outside "$var"
   emit "ARGV,stage=$stage,input=outside/units_inch,argv=$(printf '%s ' "${ARGV[@]}" | sed 's/ $//' | tr ',' ';')"
-  run_case - "" step "${ARGV[@]}"
+  run_case - "" "$ext" "${ARGV[@]}"
   sig_u=$(signature "$stage" "$JOB")
   rm -rf "$JOB"
   case "$sig_u" in
     *'"verdict":"ok"'*) ;;
     *) emit "FAIL,stage=$stage,reason=the unconfined run on the outside copy did not print an ok verdict, so its denial would prove nothing"; exit 1 ;;
   esac
-  run_case "$ro" "" step "${ARGV[@]}"
+  run_case "$ro" "" "$ext" "${ARGV[@]}"
   if probe_failure; then probe_failure_exit "$stage" outside/units_inch; fi
   sig_c=$(signature "$stage" "$JOB")
-  [ -s "$JOB/out.stl" ] && produced=yes
+  if [ "$stage" = render ]; then
+    [ -s "$JOB/out.png" ] && produced=yes
+  else
+    [ -s "$JOB/out.stl" ] && produced=yes
+  fi
   why=$(printf '%s' "$sig_c" | cut -c1-60 | tr ',' ';')
   rm -rf "$JOB"
   EXTRA=()
   result=denied
   case "$sig_c" in *'"verdict":"ok"'*) result=LEAKED ;; esac
-  [ "$stage" != mesh ] || [ "$produced" = no ] || result=LEAKED
+  [ "$stage" = guard ] || [ "$produced" = no ] || result=LEAKED
   if [ "$result" = denied ]; then EFFECT_DENIED=$((EFFECT_DENIED + 1)); else LEAKED=$((LEAKED + 1)); fi
-  emit "EFFECT,stage=$stage,set=$setname,input=outside/units_inch,unconfined=ok,result=$result,stl_produced=$produced,confined_rc=$RC,canary=$CANARY,confined_signature=$why"
+  emit "EFFECT,stage=$stage,set=$setname,input=outside/units_inch,unconfined=ok,result=$result,produced=$produced,confined_rc=$RC,canary=$CANARY,confined_signature=$why"
   [ "$result" = denied ] || exit 1
 }
 
@@ -407,14 +495,20 @@ engine_path() { printf '/usr/local/bin/cad-%s' "$1"; }
 interp_of() { if [ "$1" = guard ]; then printf '%s' "$GUARD_INTERP"; else printf '%s' "$MESH_INTERP"; fi; }
 
 trace_stage() {
-  local stage=$1 idx=0 label path fmt ext jobd n tree tmpn
+  local stage=$1 idx=0 label path fmt ext var jobd n tree tmpn seen=""
   : > "$WORK/trace/$stage.all"
-  while IFS=$'\t' read -r -u 3 label path fmt ext; do
+  while IFS=$'\t' read -r -u 3 label path fmt ext var; do
+    if [ "$stage" = render ]; then
+      case " $seen " in
+        *" ${label%%@*} "*) [ "${label%%@*}" = units_inch ] || [ "${label%%@*}" = nasa_hubble ] || continue ;;
+      esac
+      seen="$seen ${label%%@*}"
+    fi
     idx=$((idx + 1))
     jobd=$(newdir)
     cp "$path" "$jobd/in.$ext"
     ARGV=()
-    stage_argv "$stage" "$fmt" "$ext" /job
+    stage_argv "$stage" "$fmt" "$ext" /job "$var"
     if ! scripts/sandbox-paths-measure.sh trace "$TAG" "$jobd" \
          env HOME=/job TMPDIR=/job LANG=C.UTF-8 LP_NUM_THREADS=2 "${ARGV[@]}" > "$WORK/trace/$stage.$idx" 2>> "$WORK/trace.err" </dev/null; then
       emit "FAIL,stage=$stage,input=$label,reason=trace failed: $(tail -n 2 "$WORK/trace.err" | tr '\n,' '  ')"
@@ -429,7 +523,7 @@ trace_stage() {
     cat "$WORK/trace/$stage.$idx" >> "$WORK/trace/$stage.all"
     tree=$(grep -cE '^  (/opt/venv/|/usr/lib/python3)' "$WORK/trace/$stage.$idx" || true)
     emit "TRACE,stage=$stage,input=$label,paths=$n,python_tree_paths=$tree,list=$(grep '^  /' "$WORK/trace/$stage.$idx" | grep -vE "^  (/opt/venv/|/usr/lib/python3|/usr/lib/$NATIVE_TRIPLET/|/lib/$NATIVE_TRIPLET/)" | sed 's/^  //; s/ -> /=>/' | paste -sd: - | tr ',' ';')"
-  done 3< "$WORK/inputs.tsv"
+  done 3< "$WORK/inputs.$stage.tsv"
   python3 -c "$COLLAPSE_PY" "$WORK/trace/$stage.all" "$NATIVE_TRIPLET" "$(engine_path "$stage")" "$(interp_of "$stage")" "$MULTIARCH_DIR" > "$WORK/collapse.$stage"
   grep '^ENTRY ' "$WORK/collapse.$stage" | sed 's/^ENTRY //' > "$WORK/set.cand.$stage"
   tmpn=$(grep -c '^TMP ' "$WORK/collapse.$stage" || true)
@@ -548,14 +642,16 @@ if [ "$RECHECK" = 1 ]; then
   RECHECKED=0
   for s in $STAGES; do
     ro=$(ro_of "$WORK/set.meas.$s")
-    while IFS=$'\t' read -r -u 3 label path fmt ext; do
-      judge "$ro" "$s" "$label" "$fmt" "$ext" "$path"
+    while IFS=$'\t' read -r -u 3 label path fmt ext var; do
+      judge "$ro" "$s" "$label" "$fmt" "$ext" "$path" "$var"
       emit "RECHECK,stage=$s,input=$label,result=$CONTENT,confined_rc=$CONF_RC"
       [ "$CONTENT" = identical ] || exit 1
       RECHECKED=$((RECHECKED + 1))
-    done 3< "$WORK/inputs.tsv"
+    done 3< "$WORK/inputs.$s.tsv"
   done
-  [ "$RECHECKED" = $((2 * INPUT_COUNT)) ] || { emit "FAIL,reason=the recheck covered $RECHECKED cases"; exit 1; }
+  EXPECTED=0
+  for s in $STAGES; do EXPECTED=$((EXPECTED + $(wc -l < "$WORK/inputs.$s.tsv" | tr -d ' '))); done
+  [ "$RECHECKED" = "$EXPECTED" ] && [ "$RECHECKED" -gt 0 ] || { emit "FAIL,reason=the recheck covered $RECHECKED of $EXPECTED cases"; exit 1; }
   emit "RECHECK-OK,cases=$RECHECKED,image=$TAG"
   exit 0
 fi
@@ -585,7 +681,12 @@ if grep -qx '/opt/venv' "$WORK/set.meas.guard"; then
 fi
 
 AMD64_TRIPLET=""
-amd64_proof
+if [ "$AMD64" = 1 ]; then
+  amd64_proof
+else
+  AMD64_TRIPLET=$GO_AMD_DERIVED
+  emit "AMD64,image_arch=amd64,status=deferred,landlock=not_measured,render=not_measured,note=the amd64 render Landlock set and the emulated amd64 build are not measured here; run with --amd64 for the guard and mesh build proof"
+fi
 GO_ARM=$(go_triplet arm64)
 GO_AMD=$(go_triplet amd64)
 if [ "$NATIVE_TRIPLET" = "$GO_ARM" ] && [ "$AMD64_TRIPLET" = "$GO_AMD" ]; then GO_MATCH=match; else GO_MATCH=MISMATCH; fi
@@ -593,4 +694,4 @@ emit "MULTIARCH,arm64=$NATIVE_TRIPLET,amd64=$AMD64_TRIPLET,amd64_status=derived,
 [ "$GO_MATCH" = match ] || { emit "FAIL,reason=cadMultiarchLib does not equal the observed triplets"; exit 1; }
 
 PST=$(grep -hE '^/(proc|sys|tmp)' "$WORK/set.meas.guard" "$WORK/set.meas.mesh" | LC_ALL=C sort -u | paste -sd: - || true)
-emit "SUMMARY,stages=2,inputs=$INPUT_COUNT,sufficient=$SUFF,different=$DIFF,leaked=$LEAKED,effect_denied=$EFFECT_DENIED,negative_controls=$NEG,removal_rows=$REMOVAL_ROWS,proc_sys_tmp=${PST:-none}"
+emit "SUMMARY,stages=3,inputs=$(cat "$WORK"/inputs.*.tsv | wc -l | tr -d ' '),sufficient=$SUFF,different=$DIFF,leaked=$LEAKED,effect_denied=$EFFECT_DENIED,negative_controls=$NEG,removal_rows=$REMOVAL_ROWS,proc_sys_tmp=${PST:-none}"

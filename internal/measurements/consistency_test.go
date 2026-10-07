@@ -197,11 +197,35 @@ func TestCADBBoxIsNotAPoint(t *testing.T) {
 	expectAccepted(t, flat)
 }
 
+func TestSTLInvalidSolidIsAllowed(t *testing.T) {
+	m := validDoc(FormatSTL)
+	m["volume"] = nil
+	m["volume_null_reason"] = ReasonInvalidSolid
+	m["area"] = nil
+	m["area_null_reason"] = ReasonInvalidSolid
+	expectAccepted(t, m)
+
+	m["area_null_reason"] = ReasonSTLNotWatertight
+	expectRejected(t, m, "area_null_reason")
+}
+
+func TestSTLAmbiguousShellsIsAllowed(t *testing.T) {
+	m := validDoc(FormatSTL)
+	m["volume"] = nil
+	m["volume_null_reason"] = ReasonSTLAmbiguousShells
+	m["area"] = nil
+	m["area_null_reason"] = ReasonSTLAmbiguousShells
+	expectAccepted(t, m)
+
+	m["area_null_reason"] = ReasonSTLNotWatertight
+	expectRejected(t, m, "area_null_reason")
+}
+
 func TestNullReasonFormatMatrix(t *testing.T) {
 	allowed := map[string][]string{
 		FormatSTEP: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
 		FormatIGES: {ReasonNoSolids, ReasonOpenShell, ReasonInvalidSolid, ReasonNegativeVolume},
-		FormatSTL:  {ReasonSTLNotWatertight, ReasonNegativeVolume},
+		FormatSTL:  {ReasonSTLNotWatertight, ReasonSTLAmbiguousShells, ReasonInvalidSolid, ReasonNegativeVolume},
 		FormatDXF:  {ReasonNotApplicable2D},
 	}
 	for _, format := range AllFormats() {
