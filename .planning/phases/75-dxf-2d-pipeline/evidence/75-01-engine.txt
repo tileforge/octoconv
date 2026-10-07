@@ -1,0 +1,26 @@
+LOCK,file=requirements-dxf.txt,source=scripts/cad-measure/requirements-common.txt,cmp=identical,packages=ezdxf==1.4.4+fonttools==4.66.1+pillow==12.3.0+pyparsing==3.3.3+typing-extensions==4.16.0,hashes=183,sha256=45d7e1b2e1722ef0b8f8693b3693aceb1ba704c6f7056ecea584182737f3231b,numpy_block_vs_mesh=identical,result=ok
+HDR,mode=tracer,date_utc=2026-10-07T11:05:31Z
+HDR,mode=tracer,commit=23b5ce48e9ddd4f4c468b547f2b0ab9347820174,tracked_dirt=2
+HDR,mode=tracer,image=octoconv-cad-worker:engine75-7f41d42e9fc6,image_id=sha256:b9428c6c86e2b07609a87f72561b0fecfccda8d81f9e4b32d546851b1de297d3,image_bytes=1137248379
+HDR,mode=tracer,server_arch=arm64
+HDR,mode=tracer,kernel=7.0.14-orbstack-00380-ga7e0a2dc9535
+HDR,mode=tracer,librsvg2_bin=2.54.7+dfsg-1~deb12u1
+HDR,mode=tracer,fonts_dejavu_core=2.37-6
+HDR,mode=tracer,py_ezdxf=1.4.4
+HDR,mode=tracer,py_fonttools=4.66.1
+HDR,mode=tracer,py_numpy=2.4.6
+HDR,mode=tracer,py_pillow=12.3.0
+HDR,mode=tracer,py_pyparsing=3.3.3
+HDR,mode=tracer,py_typing_extensions=4.16.0
+HDR,mode=tracer,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset
+HDR,mode=tracer,ro_cad_dxf=/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/share/fonts:/usr/lib/aarch64-linux-gnu:/usr/local/bin/cad-dxf,ro_rsvg=/usr/share/fonts:/usr/lib/aarch64-linux-gnu:/usr/bin/rsvg-convert,rw=/job
+TRACER,stage=cad-dxf,input=legacy_cp1251,sha256=c3d66b5d8993e42f0f60852f0ad6ccab98780cfbcd297003f65b7a5aa2047b87,rc=0,confined=1,verdict=ok,reason=none,verdict_texts=1,entities_drawn=1,page_mm=297.0x86.1,insunits=None,codepage=ANSI_1251,svg=parsed,svg_texts=1,elements_ok=1,attrs_ok=1,text_ok=1,svg_bytes=455,result=ok
+TRACER,stage=rsvg-pdf,input=legacy_cp1251,rc=0,confined=1,pdf_magic=1,pdf_text_ok=1,pdf_chars=6,svg_chars=6,check=substring,pdf_bytes=4946,stderr_lines=1,result=ok
+TRACER,stage=rsvg-png,input=legacy_cp1251,rc=0,confined=1,frame=1280,scaled=1203x349,offset=38+465,png_w=1280,png_h=1280,png_color_type=2,png_bytes=24904,result=ok
+TRACER,stage=cad-dxf,input=uncommon,sha256=5efdd671e3b6d8c45bd0688b1d6479d523f2290f0b390f1584348bf46e34c965,rc=0,confined=1,verdict=ok,reason=none,verdict_texts=49,entities_drawn=230,page_mm=297.0x257.4,insunits=1,codepage=ANSI_1252,svg=parsed,svg_texts=49,elements_ok=1,attrs_ok=1,text_ok=1,svg_bytes=24056,result=ok
+TRACER,stage=rsvg-pdf,input=uncommon,rc=0,confined=1,pdf_magic=1,pdf_text_ok=1,pdf_chars=299,svg_chars=299,check=subsequence,pdf_bytes=16581,stderr_lines=1,result=ok
+TRACER,stage=rsvg-png,input=uncommon,rc=0,confined=1,frame=1280,scaled=1203x1043,offset=38+118,png_w=1280,png_h=1280,png_color_type=2,png_bytes=92622,result=ok
+TRACER,stage=cad-dxf,input=legacy_cp1251_outside,rc=2,confined=1,verdict=unreadable,reason=read_error,verdict_texts=0,entities_drawn=0,page_mm=0.0x0.0,insunits=None,codepage=None,svg=absent,verdict_ok_lines=0,control=unconfined_ok,control_rc=0,result=denied
+TRACER,stage=rsvg-pdf,input=legacy_cp1251_svg_outside,rc=1,confined=1,pdf=absent,control=unconfined_ok,control_rc=0,stderr=Error reading file _/outside/draw.svg_: Error opening file /outside/draw.svg: Permission denied_,result=denied
+SUMMARY,mode=tracer,runs_ok=6,runs_expected=6,denied=2,denied_expected=2,result=ok
+TRACER-OK
