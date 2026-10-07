@@ -105,6 +105,15 @@ These come from phase 71 (`71-DECISION.md`) and phases 72–74:
   - A nesting bound of 16.
   - Every deterministic ezdxf crash class (`RecursionError`, `ValueError` on `inf`) is pre-empted by the guard, so none of them can reach the retryable path of D-13.
 
+- **R-9: Text outside DejaVu (decided 2026-10-07 after the 75-02 halt; option B plus a per-line gate).**
+  - **The problem.** librsvg 2.54.7 shifts a whole `<text>` line off its baseline when the line contains glyphs that DejaVu does not cover; pango draws them as hex boxes. At small scales the line can leave the page, which loses text the font does cover. That breaks the goal that no text is lost.
+  - **The fix.** `cad-dxf` writes two SVGs:
+    - The client SVG keeps the exact text and is the only SVG returned for `dxf → svg`.
+    - A render-only SVG replaces every character outside the font's actual cmap with U+FFFD. It is the only input `rsvg-convert` gets, for both pdf and png.
+  - **What validates which file.** The Go allowlist validates both files. The PDF judge's R-3 subsequence rule compares only covered characters, as before.
+  - **The fidelity gate.** For `text_cases`, the 0.99 whole-image coverage gate is replaced by a per-line geometric check on the render-only SVG. Each line must keep its start point and baseline within 1 px at 1280, and its height within 1 px. Its width must be within 3.5% of ezdxf's outline width; that bound is R-1's measured kerning drift (3.3%) plus margin. A line with substituted characters must stay on its baseline and inside the page. The other seven text-bearing corpus files keep the 0.99 coverage gate.
+  - **Docs.** A known limit for phase 76's docs: characters outside DejaVu appear as U+FFFD in PNG and PDF, while the client SVG keeps them exact.
+
 ### Claude's Discretion
 - How the guard's DXF pair parser is structured, and its exact verdict fields.
 - The SVG allowlist's exact attribute list, provided it satisfies D-05.
