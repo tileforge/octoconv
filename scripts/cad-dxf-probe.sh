@@ -383,7 +383,8 @@ tracer_input() {
   so="$WORK/$name.dxf.out"; se="$WORK/$name.dxf.err"
   rc=0
   MOUNTS=()
-  run_confined "$DXF_RO" "$job" "$so" "$se" /usr/local/bin/cad-dxf /job/in.dxf /job/draw.svg || rc=$?
+  run_confined "$DXF_RO" "$job" "$so" "$se" /usr/local/bin/cad-dxf --max-drawn-entities "$MAX_DRAWN" --texts /job/draw.texts.json \
+    --render-svg /job/draw.render.svg /job/in.dxf /job/draw.svg || rc=$?
   result=fail
   if probe_refused "$se"; then
     vf="verdict=none,reason=probe_refused"; sf="svg=none"
@@ -393,7 +394,7 @@ tracer_input() {
   else
     vf=$(verdict_fields "$so")
     sf=$(svg_fields "$job/draw.svg" "$expect" "$WORK/$name.texts")
-    if [ "$rc" = 0 ] && [ "$(field verdict "$vf")" = ok ] && [ "$(field elements_ok "$sf")" = 1 ] \
+    if [ "$rc" = 0 ] && [ "$(field verdict "$vf")" = ok ] && [ "$(field elements_ok "$sf")" = 1 ] && [ -s "$job/draw.render.svg" ] \
        && [ "$(field attrs_ok "$sf")" = 1 ] && [ "$(field text_ok "$sf")" = 1 ] \
        && [ "$(field verdict_texts "$vf")" = "$(field svg_texts "$sf")" ]; then
       result=ok
@@ -409,11 +410,11 @@ tracer_input() {
     rm -rf "$job"
     return 0
   fi
-  cp "$job/draw.svg" "$WORK/$name.svg"
+  cp "$job/draw.render.svg" "$WORK/$name.svg"
 
   so="$WORK/$name.pdf.out"; se="$WORK/$name.pdf.err"
   rc=0
-  run_confined "$RSVG_RO" "$job" "$so" "$se" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/draw.svg || rc=$?
+  run_confined "$RSVG_RO" "$job" "$so" "$se" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/draw.render.svg || rc=$?
   result=fail
   if probe_refused "$se"; then
     pf="pdf=probe_refused"
@@ -429,11 +430,11 @@ tracer_input() {
     "$name" "$rc" "$pf" "$pdfmode" "$( [ -f "$job/out.pdf" ] && wc -c < "$job/out.pdf" | tr -d ' ' || echo 0 )" \
     "$(wc -l < "$se" | tr -d ' ')" "$result" >> "$LINES"
 
-  read -r sw sh left top <<< "$(letterbox_args "$job/draw.svg")"
+  read -r sw sh left top <<< "$(letterbox_args "$job/draw.render.svg")"
   so="$WORK/$name.png.out"; se="$WORK/$name.png.err"
   rc=0
   run_confined "$RSVG_RO" "$job" "$so" "$se" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" \
-    --page-width "$FRAME" --page-height "$FRAME" --left "$left" --top "$top" -o /job/out.png /job/draw.svg || rc=$?
+    --page-width "$FRAME" --page-height "$FRAME" --left "$left" --top "$top" -o /job/out.png /job/draw.render.svg || rc=$?
   result=fail
   if probe_refused "$se"; then
     pngf="png=probe_refused"
@@ -456,10 +457,12 @@ tracer_negatives() {
   job=$(new_job); ctl=$(new_job)
   MOUNTS=(-v "$CORPUS/synthetic/legacy_cp1251.dxf:/outside/in.dxf:ro")
   crc=0
-  run_unconfined "$ctl" "$WORK/ctl1.out" "$WORK/ctl1.err" /usr/local/bin/cad-dxf /outside/in.dxf /job/draw.svg || crc=$?
+  run_unconfined "$ctl" "$WORK/ctl1.out" "$WORK/ctl1.err" /usr/local/bin/cad-dxf --max-drawn-entities "$MAX_DRAWN" --texts /job/draw.texts.json \
+    --render-svg /job/draw.render.svg /outside/in.dxf /job/draw.svg || crc=$?
   if [ "$crc" = 0 ] && [ -s "$ctl/draw.svg" ]; then control=unconfined_ok; else control=unconfined_failed; fi
   rc=0
-  run_confined "$DXF_RO" "$job" "$WORK/neg1.out" "$WORK/neg1.err" /usr/local/bin/cad-dxf /outside/in.dxf /job/draw.svg || rc=$?
+  run_confined "$DXF_RO" "$job" "$WORK/neg1.out" "$WORK/neg1.err" /usr/local/bin/cad-dxf --max-drawn-entities "$MAX_DRAWN" --texts /job/draw.texts.json \
+    --render-svg /job/draw.render.svg /outside/in.dxf /job/draw.svg || rc=$?
   verdict_ok=$(grep -ac '"verdict":"ok"' "$WORK/neg1.out" || true)
   if [ -s "$job/draw.svg" ]; then state=present; else state=absent; fi
   result=fail
@@ -675,6 +678,7 @@ if v:
     fact("auditor_fixes", v.get("auditor_fixes"))
     fact("verdict_texts", v.get("texts"))
     fact("uncovered", v.get("uncovered"))
+    fact("render_substituted", v.get("render_substituted"))
     fact("hatch_truncated", v.get("hatch_truncated"))
     fact("page_mm", "%sx%s" % (v.get("page_w_mm"), v.get("page_h_mm")))
 
@@ -733,6 +737,36 @@ if verdict == "ok":
     need("texts_json_equals_svg", order_ok)
     need("covered_subsequence", covered_ok)
     need("uncovered_sum", uncovered_ok)
+
+    def rendered(e):
+        out, rest = [], list(e["covered"])
+        for c in e["text"]:
+            if rest and c == rest[0]:
+                out.append(c)
+                rest.pop(0)
+            else:
+                out.append("\ufffd")
+        return "".join(out)
+
+    render_root = None
+    try:
+        render_root = ET.parse(os.path.join(job, "out.render.svg")).getroot()
+    except Exception as exc:
+        fact("render_svg", exc.__class__.__name__)
+    render_texts = [el.text or "" for el in render_root.iter(NS + "text")] if render_root is not None else None
+    expected_render = [rendered(e) for e in entries]
+    structure_ok = False
+    if render_root is not None and root is not None:
+        a = [(el.tag, sorted(el.attrib.items())) for el in root.iter()]
+        b = [(el.tag, sorted(el.attrib.items())) for el in render_root.iter()]
+        structure_ok = a == b
+    subst = sum(1 for e in entries for x, y in zip(e["text"], rendered(e)) if x != y)
+    render_ok = render_texts == expected_render
+    fact("render_svg_texts_ok", int(render_ok))
+    fact("render_svg_structure_equal", int(structure_ok))
+    need("render_svg_texts_ok", render_ok)
+    need("render_svg_structure_equal", structure_ok)
+    need("render_substituted_count", v.get("render_substituted") == subst == v.get("uncovered"))
     if extra.get("measure") == "1":
         try:
             with open(draft_path, "rb") as fh:
@@ -741,7 +775,7 @@ if verdict == "ok":
             fact("draft", exc.__class__.__name__)
         need("draft_present", draft is not None)
 elif not extra.get("keep_outputs"):
-    absent = not any(os.path.exists(os.path.join(job, n)) for n in ("out.svg", "out.measure.json", "out.texts.json"))
+    absent = not any(os.path.exists(os.path.join(job, n)) for n in ("out.svg", "out.render.svg", "out.measure.json", "out.texts.json"))
     fact("outputs_absent", int(absent))
     need("outputs_absent", absent)
 
@@ -919,7 +953,8 @@ helper_unconfined() {
 }
 
 std_args() {
-  printf '%s\n' --max-drawn-entities "${1:-$MAX_DRAWN}" --texts /job/out.texts.json --measure /job/out.measure.json /job/in.dxf /job/out.svg
+  printf '%s\n' --max-drawn-entities "${1:-$MAX_DRAWN}" --texts /job/out.texts.json --render-svg /job/out.render.svg \
+    --measure /job/out.measure.json /job/in.dxf /job/out.svg
 }
 
 write_harness() {
@@ -929,6 +964,7 @@ write_harness() {
   cat > "$WORK/wrap/harness.py" <<'PY'
 import importlib.machinery
 import importlib.util
+import os
 import sys
 
 loader = importlib.machinery.SourceFileLoader("cad_dxf", "/usr/local/bin/cad-dxf")
@@ -940,6 +976,41 @@ if setting == "hatch0":
     mod.HATCH_TIMEOUT_S = 0.0
 elif setting == "outline":
     mod.TEXT_AS_OUTLINE = True
+elif setting == "outline_lines":
+    from ezdxf.addons.drawing import pipeline, recorder
+    mod.TEXT_AS_OUTLINE = True
+    outdir = sys.argv[2]
+    rest = sys.argv[3:]
+    state = {"i": -1, "want": -1, "on": False}
+    original_text = pipeline.RenderPipeline2d.draw_text
+    original_store = recorder.Recorder.store
+
+    def draw_text(self, *args, **kwargs):
+        state["i"] += 1
+        if state["i"] == state["want"]:
+            state["on"] = True
+            try:
+                original_text(self, *args, **kwargs)
+            finally:
+                state["on"] = False
+
+    def store(self, record, properties):
+        if state["on"]:
+            original_store(self, record, properties)
+
+    pipeline.RenderPipeline2d.draw_text = draw_text
+    recorder.Recorder.store = store
+    sys.argv = ["cad-dxf"] + rest
+    rc = mod.main()
+    calls = state["i"] + 1
+    for want in range(calls):
+        state["i"] = -1
+        state["want"] = want
+        sys.argv = ["cad-dxf"] + rest[:-1] + [os.path.join(outdir, "line_%03d.svg" % want)]
+        rc = rc or mod.main()
+    with open(os.path.join(outdir, "lines.count"), "w") as fh:
+        fh.write("%d\n" % calls)
+    sys.exit(rc)
 else:
     raise SystemExit("unknown setting " + setting)
 sys.argv = ["cad-dxf"] + sys.argv[2:]
@@ -1039,7 +1110,7 @@ print("+".join("%x:%d" % (o, o in c) for o in (0x4e2d, 0x6587, 0x3a9, 0x1f600)))
   cache="$job/.home/.cache/ezdxf/font_manager_cache.json"
   warm=0
   if [ "$rc" = 0 ] && [ -s "$cache" ]; then warm=1; fi
-  rm -f "$job/out.svg" "$job/out.texts.json" "$job/out.measure.json"
+  rm -f "$job/out.svg" "$job/out.render.svg" "$job/out.texts.json" "$job/out.measure.json"
   rc=$(helper_exec "$DXF_NOFONT_RO" "$job" font_warm_cache $args)
   helper_row safety font_warm_cache dxf/text_cases.dxf "$CORPUS/dxf/text_cases.dxf" "$rc" "$job" measure=1 "warm=$warm"
   rm -rf "$job"
@@ -1101,7 +1172,7 @@ d.saveas("/job/gen.dxf")
   helper_row safety usage_cap_zero dxf/wide.dxf "$CORPUS/dxf/wide.dxf" "$rc" "$job"
   rm -rf "$job"
   job=$(job_with "$CORPUS/dxf/wide.dxf")
-  rc=$(helper_exec "$DXF_RO" "$job" usage_no_texts --max-drawn-entities "$MAX_DRAWN" /job/in.dxf /job/out.svg)
+  rc=$(helper_exec "$DXF_RO" "$job" usage_no_texts --max-drawn-entities "$MAX_DRAWN" --render-svg /job/out.render.svg /job/in.dxf /job/out.svg)
   helper_row safety usage_no_texts dxf/wide.dxf "$CORPUS/dxf/wide.dxf" "$rc" "$job"
   rm -rf "$job"
 }
@@ -1206,7 +1277,7 @@ corpus_row() {
   printf 'CORPUS,group=corpus,file=%s,input=%s,sha256=%s,bytes=%s,%s,%s,result=%s\n' "$name" "$input" "$(sha_of "$src")" \
     "$(wc -c < "$src" | tr -d ' ')" "$j" "$wf" "$result" >> "$LINES"
   [ "$result" != fail ] || tail -n 8 "$WORK/corpus_$name.out" >&2 || true
-  if [ -s "$job/out.svg" ]; then cp "$job/out.svg" "$WORK/fid_$name.svg"; fi
+  if [ -s "$job/out.render.svg" ]; then cp "$job/out.render.svg" "$WORK/fid_$name.svg"; fi
   rm -rf "$job"
 }
 
@@ -1255,8 +1326,8 @@ fidelity_row() {
     cp "$src" "$job/in.dxf"
     chmod 0644 "$job/in.dxf"
     rc=$(helper_exec "$DXF_RO" "$job" "fid_text_$name" $(std_args))
-    [ "$rc" != 0 ] || mv "$job/out.svg" "$job/text.svg"
-    rm -f "$job/out.texts.json" "$job/out.measure.json"
+    [ "$rc" != 0 ] || mv "$job/out.render.svg" "$job/text.svg"
+    rm -f "$job/out.svg" "$job/out.texts.json" "$job/out.measure.json"
   fi
   cp "$src" "$job/in.dxf"
   chmod 0644 "$job/in.dxf"
@@ -1326,9 +1397,14 @@ group_corpus() {
     corpus_row "dxf-replicate-uncommon-$t" "scaled/dxf-replicate-uncommon-$t.dxf" "$src" "prov_sha=$(prov_sha "$t")"
   done
   for f in synthetic/legacy_cp1251 synthetic/legacy_latin1 public/columns_R2007 public/dimension_in_nested_blocks \
-    public/hatches_2 public/uncommon public/acad_table_with_blk_ref dxf/text_cases; do
+    public/hatches_2 public/uncommon public/acad_table_with_blk_ref; do
     fidelity_row "${f#*/}" "$CORPUS/$f.dxf"
   done
+  write_line_tools
+  fidelity_lines text_cases "$CORPUS/dxf/text_cases.dxf"
+  printf 'RULE,key=line_width_bound,group=corpus,bound=max(3.5pct_of_outline_ink_width_1.0px),why=both_widths_are_integer_pixel_ink_box_spans_so_a_bound_under_1px_tests_instrument_resolution_not_kerning,source=75-CONTEXT_R-9_addendum\n' >> "$LINES"
+  printf 'RULE,key=substituted_line_gate,group=corpus,gated=start_within_1px+covered_prefix_baseline_within_1px+inside_page,recorded_not_gated=width+height,why=U+FFFD_and_ezdxf_glyphs_for_uncovered_characters_differ_in_shape,source=75-CONTEXT_R-9_addendum\n' >> "$LINES"
+  printf 'KNOWN_LIMIT,key=uncovered_as_fffd,group=corpus,png_pdf=characters_outside_the_resolved_DejaVu_cmap_are_drawn_as_U+FFFD_from_the_render_only_SVG,client_svg=keeps_them_exact,texts_json=lists_them_outside_covered,source=75-CONTEXT_R-9,docs=phase_76_client_documentation\n' >> "$LINES"
   printf 'KNOWN_LIMIT,key=pango_kerning,group=corpus,source=75-RESEARCH.md_Pattern_1_tiny_huge_row,start=exact,height=exact,width=up_to_3.3pct_narrower,affects=centre_right_FIT_ALIGNED_text,accepted_by=75-CONTEXT_R-1,docs=phase_76_client_documentation\n' >> "$LINES"
   hexbox_finding
 }
@@ -1410,6 +1486,8 @@ group_writeout() {
         cp "$job/out.texts.json" "$DXF_OUT/$n.texts.json" 2>/dev/null || true
         out_row "$n.svg" "$facts,svg_texts=$(grep -o '<text' "$job/out.svg" 2>/dev/null | wc -l | tr -d ' ')" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
         out_row "$n.texts.json" "$facts" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
+        cp "$job/out.render.svg" "$DXF_OUT/$n.render.svg" 2>/dev/null || true
+        out_row "$n.render.svg" "$facts,render_svg_texts=$(grep -o '<text' "$job/out.render.svg" 2>/dev/null | wc -l | tr -d ' '),substituted=$(grep -o $'\xef\xbf\xbd' "$job/out.render.svg" 2>/dev/null | wc -l | tr -d ' ')" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
         if [ "$n" = wide ]; then
           cp "$job/out.measure.json" "$DXF_OUT/wide.measure.json" 2>/dev/null || true
           out_row wide.measure.json "$facts" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
@@ -1419,19 +1497,19 @@ group_writeout() {
       text_cases|legacy_cp1251|uncommon|hatches_2)
         pdfrc=0
         MOUNTS=()
-        run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.svg || pdfrc=$?
+        run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
         cp "$job/out.pdf" "$DXF_OUT/$n.pdf" 2>/dev/null || true
-        facts="source=$n.svg,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/$n.pdf" "$DXF_OUT/$n.texts.json")"
+        facts="source=$n.render.svg,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/$n.pdf" "$DXF_OUT/$n.texts.json")"
         out_row "$n.pdf" "$facts" "$(both_ok "$pdfrc" covered_subsequence=1 "$facts")"
         ;;
     esac
     if [ "$n" = text_cases ]; then
       pdfrc=0
-      run_confined "$RSVG_NOFONT_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/nofont.pdf /job/out.svg || pdfrc=$?
+      run_confined "$RSVG_NOFONT_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/nofont.pdf /job/out.render.svg || pdfrc=$?
       cp "$job/nofont.pdf" "$DXF_OUT/nofont.pdf" 2>/dev/null || true
-      facts="source=text_cases.svg,rsvg_rc=$pdfrc,ruleset=rsvg_without_usr_share_fonts,$(pdf_text_fields "$DXF_OUT/nofont.pdf")"
+      facts="source=text_cases.render.svg,rsvg_rc=$pdfrc,ruleset=rsvg_without_usr_share_fonts,$(pdf_text_fields "$DXF_OUT/nofont.pdf")"
       out_row nofont.pdf "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
-      rm -f "$job/out.svg" "$job/out.texts.json" "$job/out.measure.json"
+      rm -f "$job/out.svg" "$job/out.render.svg" "$job/out.texts.json" "$job/out.measure.json"
       r=$(harness_run "$job" out_outline outline $(std_args))
       pdfrc=1
       if [ "$r" = 0 ]; then
@@ -1443,14 +1521,14 @@ group_writeout() {
       out_row outline.pdf "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
     fi
     if [ "$n" = wide ] || [ "$n" = tall ]; then
-      cp "$job/out.svg" "$job/frame.svg" 2>/dev/null || true
+      cp "$job/out.render.svg" "$job/frame.svg" 2>/dev/null || true
     fi
     if [ "$n" = wide ]; then
       for spec in 1280:opaque 1280:transparent; do
         read -r r sw sh left top <<< "$(rsvg_png "$RSVG_RO" "$job" frame.svg out.png "${spec%%:*}" "${spec#*:}")"
         cp "$job/out.png" "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png" 2>/dev/null || true
         frame_line "wide_${spec%%:*}_${spec#*:}.png" "${spec%%:*}" "${spec#*:}" "$job/frame.svg" "$sw" "$sh" "$left" "$top"
-        out_row "wide_${spec%%:*}_${spec#*:}.png" "source=wide.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png")" \
+        out_row "wide_${spec%%:*}_${spec#*:}.png" "source=wide.render.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png")" \
           "$( [ "$r" = 0 ] && echo 1 || echo 0 )"
         rm -f "$job/out.png"
       done
@@ -1459,7 +1537,7 @@ group_writeout() {
       read -r r sw sh left top <<< "$(rsvg_png "$RSVG_RO" "$job" frame.svg out.png 256 opaque)"
       cp "$job/out.png" "$DXF_OUT/tall_256_opaque.png" 2>/dev/null || true
       frame_line tall_256_opaque.png 256 opaque "$job/frame.svg" "$sw" "$sh" "$left" "$top"
-      out_row tall_256_opaque.png "source=tall.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/tall_256_opaque.png")" \
+      out_row tall_256_opaque.png "source=tall.render.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/tall_256_opaque.png")" \
         "$( [ "$r" = 0 ] && echo 1 || echo 0 )"
     fi
     rm -rf "$job"
@@ -1474,9 +1552,254 @@ frame_line() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$size" "$bg" "$w" "$h" "$sw" "$sh" "$left" "$top" >> "$WORK/frames.rows"
 }
 
-group_rows() { grep -cE "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" || true; }
+write_line_tools() {
+  cat > "$WORK/wrap/lines.py" <<'PY'
+import json
+import math
+import re
+import sys
+import numpy as np
+from PIL import Image
 
-group_fails() { grep -E "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" | grep -c ',result=fail$' || true; }
+
+def ink(path):
+    a = np.asarray(Image.open(path).convert("RGB"))
+    return (a < 160).any(axis=2)
+
+
+def frame(matrix):
+    m = [float(x) for x in re.findall(r"[-0-9.eE+]+", matrix)]
+    ux, uy = m[0], m[1]
+    k = math.hypot(ux, uy)
+    nx, ny = m[2], m[3]
+    j = math.hypot(nx, ny)
+    return ux / k, uy / k, nx / j, ny / j
+
+
+def coords(mask, f):
+    ys, xs = np.nonzero(mask)
+    ux, uy, nx, ny = f
+    return xs, ys, xs * ux + ys * uy, xs * nx + ys * ny
+
+
+def box(mask, f):
+    xs, ys, u, v = coords(mask, f)
+    if len(xs) == 0:
+        return None
+    return [float(u.min()), float(u.max()), float(v.min()), float(v.max()),
+            int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def bottom_in(mask, f, lo, hi):
+    xs, ys, u, v = coords(mask, f)
+    sel = (u >= lo) & (u <= hi)
+    if not sel.any():
+        return None
+    return float(v[sel].max())
+
+
+d = sys.argv[1]
+with open(sys.argv[2]) as fh:
+    rows = [ln.rstrip("\n").split("\t") for ln in fh if ln.strip()]
+for line, variant, text_png, outline_png, matrix_file, prefix_png in rows:
+    with open("%s/%s" % (d, matrix_file)) as fh:
+        f = frame(fh.read())
+    t = ink("%s/%s" % (d, text_png))
+    o = ink("%s/%s" % (d, outline_png))
+    out = {"line": int(line), "variant": variant, "text": box(t, f), "outline": box(o, f)}
+    if prefix_png != "-":
+        p = box(ink("%s/%s" % (d, prefix_png)), f)
+        out["prefix"] = p
+        if p is not None:
+            out["prefix_bottom_text"] = bottom_in(t, f, p[0], p[1] - 1)
+            out["prefix_bottom_outline"] = bottom_in(o, f, p[0], p[1] - 1)
+    print(json.dumps(out))
+PY
+  chmod 0644 "$WORK/wrap/lines.py"
+}
+
+split_lines() {
+  python3 - "$@" <<'PY'
+import json
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+NS = "http://www.w3.org/2000/svg"
+ET.register_namespace("", NS)
+src, outdir, prefix, texts_json = sys.argv[1:5]
+with open(texts_json, encoding="ascii") as fh:
+    entries = json.load(fh)["texts"]
+tree = ET.parse(src)
+root = tree.getroot()
+texts = []
+for parent in list(root.iter()):
+    for child in list(parent):
+        if child.tag == "{%s}path" % NS:
+            parent.remove(child)
+        elif child.tag == "{%s}text" % NS:
+            texts.append((parent, child))
+for parent, child in texts:
+    parent.remove(child)
+for i, (parent, child) in enumerate(texts):
+    parent.append(child)
+    tree.write(os.path.join(outdir, "%s_%03d.svg" % (prefix, i)), encoding="utf-8", xml_declaration=True)
+    with open(os.path.join(outdir, "%s_%03d.matrix" % (prefix, i)), "w") as fh:
+        fh.write(child.get("transform") + "\n")
+    if prefix == "text" and i < len(entries) and entries[i]["covered"] != entries[i]["text"]:
+        full = child.text or ""
+        cut = full.find("�")
+        head = full[:cut] if cut >= 0 else full
+        if head:
+            child.text = head
+            tree.write(os.path.join(outdir, "prefix_%03d.svg" % i), encoding="utf-8", xml_declaration=True)
+            child.text = full
+    parent.remove(child)
+print(len(texts))
+PY
+}
+
+judge_lines() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+import xml.etree.ElementTree as ET
+
+metrics_path, texts_json, pdf_text, client_svg, left, top, sw, sh = sys.argv[1:9]
+left, top, sw, sh = int(left), int(top), int(sw), int(sh)
+client_texts = [el.text or "" for el in ET.parse(client_svg).getroot().iter("{http://www.w3.org/2000/svg}text")]
+with open(texts_json, encoding="ascii") as fh:
+    entries = json.load(fh)["texts"]
+with open(pdf_text, encoding="utf-8", errors="replace") as fh:
+    pdf = "".join(fh.read().split())
+rows = [json.loads(ln) for ln in open(metrics_path) if ln.strip()]
+
+
+def esc(s):
+    return s.encode("unicode_escape").decode("ascii").replace(",", "\\x2c")
+
+
+for r in rows:
+    i, variant = r["line"], r["variant"]
+    e = entries[i] if i < len(entries) else {"text": "", "covered": ""}
+    substituted = sum(1 for c in e["text"] if c not in e["covered"])
+    t, o = r["text"], r["outline"]
+    f = ["line=%d" % i, "variant=%s" % variant, "text=%s" % esc(e["text"]), "substituted=%d" % substituted]
+    checks = []
+    if t is None and o is None:
+        present = "".join(e["covered"].split()) in pdf and bool(e["covered"].strip())
+        in_client = i < len(client_texts) and client_texts[i] == e["text"] and bool(e["text"])
+        f += ["both_empty=1", "in_client_svg_and_texts_json=%d" % in_client, "in_pdf_text=%d" % present]
+        checks += [present, in_client]
+        gated = "both_empty+pdf_text"
+    elif t is None or o is None:
+        f += ["both_empty=0", "text_ink=%d" % (t is not None), "outline_ink=%d" % (o is not None)]
+        checks.append(False)
+        gated = "ink_on_both_sides"
+    else:
+        d_start = t[0] - o[0]
+        d_height = (t[3] - t[2]) - (o[3] - o[2])
+        ow = o[1] - o[0]
+        tw = t[1] - t[0]
+        bound = max(0.035 * ow, 1.0)
+        inside = t[4] >= left and t[5] >= top and t[6] < left + sw and t[7] < top + sh
+        f += ["both_empty=0", "d_start_px=%.2f" % d_start]
+        if substituted:
+            pb_t, pb_o = r.get("prefix_bottom_text"), r.get("prefix_bottom_outline")
+            if pb_t is None or pb_o is None:
+                d_base = None
+            else:
+                d_base = pb_t - pb_o
+            f += ["baseline_basis=covered_prefix", "d_baseline_px=%s" % ("na" if d_base is None else "%.2f" % d_base)]
+            checks += [abs(d_start) <= 1.0, d_base is not None and abs(d_base) <= 1.0, inside]
+            gated = "start+prefix_baseline+inside_page"
+        else:
+            d_base = t[3] - o[3]
+            f += ["baseline_basis=line", "d_baseline_px=%.2f" % d_base]
+            checks += [abs(d_start) <= 1.0, abs(d_base) <= 1.0, abs(d_height) <= 1.0, abs(tw - ow) <= bound, inside]
+            gated = "start+baseline+height+width+inside_page"
+        f += ["d_height_px=%.2f" % d_height, "outline_width_px=%.0f" % ow, "text_width_px=%.0f" % tw,
+              "d_width_px=%.0f" % (tw - ow), "d_width_pct=%.2f" % (100.0 * (tw - ow) / ow if ow else 0.0),
+              "width_bound_px=%.2f" % bound, "inside_page=%d" % inside]
+    check = "pass" if all(checks) else "fail"
+    f += ["gated=%s" % gated, "check=%s" % check]
+    if variant == "client_before":
+        f += ["expected=fail", "result=%s" % ("ok" if check == "fail" else "fail")]
+    else:
+        f += ["result=%s" % ("ok" if check == "pass" else "fail")]
+    print("LINE,group=corpus,file=text_cases," + ",".join(f))
+PY
+}
+
+fidelity_lines() {
+  local name=$1 src=$2 job ld rc n i sw sh left top r cmp orc pdfrc lines_ok lines_fail teeth result page_equal subst f
+  job=$(job_with "$src")
+  rc=$(helper_exec "$DXF_RO" "$job" "lines_$name" $(std_args))
+  ld=$(new_job)
+  if [ "$rc" != 0 ] || [ ! -s "$job/out.render.svg" ]; then
+    printf 'FIDELITY,group=corpus,file=%s,mode=per_line,helper_rc=%s,result=fail\n' "$name" "$rc" >> "$LINES"
+    rm -rf "$job" "$ld"
+    return 0
+  fi
+  cp "$job/out.svg" "$ld/client.svg"
+  cp "$job/out.render.svg" "$ld/render.svg"
+  cp "$job/out.texts.json" "$ld/texts.json"
+  pdfrc=0
+  MOUNTS=()
+  run_confined "$RSVG_RO" "$job" "$WORK/lines_pdf.out" "$WORK/lines_pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
+  pdftotext -raw "$job/out.pdf" "$ld/pdf.txt" 2>/dev/null || : > "$ld/pdf.txt"
+  rm -f "$job/out.svg" "$job/out.render.svg" "$job/out.texts.json" "$job/out.measure.json" "$job/out.pdf"
+  orc=$(harness_run "$job" "lines_full_$name" outline $(std_args))
+  [ ! -s "$job/out.svg" ] || cp "$job/out.svg" "$ld/outline.svg"
+  mkdir -p "$job/ol"
+  chmod 0777 "$job/ol"
+  r=$(harness_run "$job" "lines_outline_$name" outline_lines /job/ol $(std_args))
+  cp "$job/ol"/line_*.svg "$ld/" 2>/dev/null || true
+  n=$(split_lines "$ld/render.svg" "$ld" text "$ld/texts.json")
+  split_lines "$ld/client.svg" "$ld" client "$ld/texts.json" >/dev/null
+  read -r sw sh left top <<< "$(letterbox_size "$ld/render.svg" "$FRAME")"
+  : > "$ld/manifest.tsv"
+  for f in "$ld"/text_*.svg "$ld"/line_*.svg "$ld"/prefix_*.svg "$ld/outline.svg" "$ld/render.svg"; do
+    [ -f "$f" ] || continue
+    run_confined "$RSVG_RO" "$ld" "$WORK/lines_r.out" "$WORK/lines_r.err" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" \
+      --page-width "$FRAME" --page-height "$FRAME" --left "$left" --top "$top" -o "/job/$(basename "${f%.svg}").png" "/job/$(basename "$f")" || true
+  done
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    printf '%d\trender\ttext_%03d.png\tline_%03d.png\ttext_%03d.matrix\t%s\n' "$i" "$i" "$i" "$i" \
+      "$( [ -f "$ld/$(printf 'prefix_%03d.svg' "$i")" ] && printf 'prefix_%03d.png' "$i" || echo - )" >> "$ld/manifest.tsv"
+    if [ -f "$ld/$(printf 'prefix_%03d.svg' "$i")" ]; then
+      run_confined "$RSVG_RO" "$ld" "$WORK/lines_r.out" "$WORK/lines_r.err" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" \
+        --page-width "$FRAME" --page-height "$FRAME" --left "$left" --top "$top" -o "/job/$(printf 'client_%03d.png' "$i")" "/job/$(printf 'client_%03d.svg' "$i")" || true
+      printf '%d\tclient_before\tclient_%03d.png\tline_%03d.png\tclient_%03d.matrix\tprefix_%03d.png\n' "$i" "$i" "$i" "$i" "$i" >> "$ld/manifest.tsv"
+    fi
+    i=$((i + 1))
+  done
+  in_image "$ld" /wrap/lines.py /job /job/manifest.tsv > "$ld/metrics.jsonl"
+  judge_lines "$ld/metrics.jsonl" "$ld/texts.json" "$ld/pdf.txt" "$ld/client.svg" "$left" "$top" "$sw" "$sh" >> "$LINES"
+  lines_ok=$(grep -cE "^LINE,group=corpus,file=$name,line=[0-9]+,variant=render,.*,result=ok$" "$LINES" || true)
+  lines_fail=$(grep -cE "^LINE,group=corpus,file=$name,line=[0-9]+,variant=render,.*,result=fail$" "$LINES" || true)
+  teeth=$(grep -cE "^LINE,group=corpus,file=$name,line=[0-9]+,variant=client_before,.*,check=fail,expected=fail,result=ok$" "$LINES" || true)
+  subst=$(grep -cE "^LINE,group=corpus,file=$name,line=[0-9]+,variant=client_before," "$LINES" || true)
+  cmp="shape_equal=0"
+  [ ! -s "$ld/outline.png" ] || [ ! -s "$ld/render.png" ] || cmp=$(in_image "$ld" /wrap/compare.py /job/render.png /job/outline.png)
+  page_equal=0
+  if [ -s "$ld/outline.svg" ] && [ "$(python3 -c 'import sys, xml.etree.ElementTree as ET; print(*[(lambda r: r.get("width") + r.get("height"))(ET.parse(p).getroot()) for p in sys.argv[1:]])' "$ld/render.svg" "$ld/outline.svg" | awk '{print ($1 == $2)}')" = 1 ]; then page_equal=1; fi
+  result=fail
+  if [ "$n" -gt 0 ] && [ "$lines_ok" = "$n" ] && [ "$lines_fail" = 0 ] && [ "$subst" -ge 1 ] && [ "$teeth" = "$subst" ] \
+     && [ "$(cat "$job/ol/lines.count" 2>/dev/null)" = "$n" ] && [ "$page_equal" = 1 ] && [ "$pdfrc" = 0 ] && [ "$orc" = 0 ] && [ "$r" = 0 ]; then
+    result=ok
+  fi
+  printf 'FIDELITY,group=corpus,file=%s,sha256=%s,mode=per_line,source_svg=render,size=%s,background=opaque,lines=%s,outline_lines=%s,lines_ok=%s,lines_fail=%s,client_before_rows=%s,client_before_failing=%s,page_equal=%s,%s,result=%s\n' \
+    "$name" "$(sha_of "$src")" "$FRAME" "$n" "$(cat "$job/ol/lines.count" 2>/dev/null || echo na)" "$lines_ok" "$lines_fail" "$subst" "$teeth" "$page_equal" \
+    "$(printf '%s' "$cmp" | sed 's/text_in_outline=/info_coverage_text_in_outline=/; s/outline_in_text=/info_coverage_outline_in_text=/')" "$result" >> "$LINES"
+  rm -rf "$job" "$ld"
+}
+
+group_rows() { grep -cE "^(HELPER|CORPUS|FIDELITY|LINE|OUT),group=$1," "$2" || true; }
+
+group_fails() { grep -E "^(HELPER|CORPUS|FIDELITY|LINE|OUT),group=$1," "$2" | grep -c ',result=fail$' || true; }
 
 helper_mode() {
   local groups g rows fails all_rows=0 all_fails=0

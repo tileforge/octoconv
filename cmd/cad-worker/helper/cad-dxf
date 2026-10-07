@@ -70,6 +70,7 @@ def new_state():
     return {
         "texts": 0,
         "uncovered": 0,
+        "render_substituted": 0,
         "hatch_truncated": 0,
         "entities_drawn": 0,
         "page_w_mm": 0.0,
@@ -225,6 +226,7 @@ def draw(doc, max_drawn, state):
             texts.append({
                 "text": text,
                 "covered": "".join(c for c in text if ord(c) in cmap),
+                "render": "".join(c if ord(c) in cmap else "\ufffd" for c in text),
                 "m": Matrix44(transform),
                 "em": gc.font["head"].unitsPerEm * f,
                 "shift": -gc.font_measurements.baseline * f,
@@ -388,15 +390,22 @@ def draw(doc, max_drawn, state):
         el.set("fill", t["color"][:7])
         el.set(XML_SPACE, "preserve")
         el.text = t["text"]
-        emitted.append({"text": t["text"], "covered": t["covered"]})
+        emitted.append({"text": t["text"], "covered": t["covered"], "el": el, "render": t["render"]})
     state["texts"] = len(emitted)
     state["uncovered"] = sum(len(e["text"]) - len(e["covered"]) for e in emitted)
+    state["render_substituted"] = sum(1 for e in emitted for a, b in zip(e["text"], e["render"]) if a != b)
     return root, drawn_box, emitted
 
 
 def write_outputs(args, state, root, drawn_box, emitted):
     try:
         ET.ElementTree(root).write(args.svg, encoding="utf-8", xml_declaration=True)
+        for e in emitted:
+            e["el"].text = e["render"]
+        ET.ElementTree(root).write(args.render_svg, encoding="utf-8", xml_declaration=True)
+        for e in emitted:
+            e["el"].text = e["text"]
+        emitted = [{"text": e["text"], "covered": e["covered"]} for e in emitted]
         text = json.dumps({"texts": emitted}, separators=(",", ":"), ensure_ascii=True)
         with open(args.texts, "w", encoding="ascii") as fh:
             fh.write(text)
@@ -435,6 +444,7 @@ def main():
     ap = Parser(prog="cad-dxf", add_help=False)
     ap.add_argument("--max-drawn-entities", type=int, required=True)
     ap.add_argument("--texts", required=True)
+    ap.add_argument("--render-svg", required=True)
     ap.add_argument("--measure", default="")
     ap.add_argument("src")
     ap.add_argument("svg")
