@@ -869,6 +869,22 @@ elif case == "hatch_timeout_signal":
     need("hatch_truncated_counted", (v.get("hatch_truncated") or 0) >= 1)
 elif case in ("usage_cap_zero", "usage_no_texts"):
     pass
+elif case == "corpus":
+    name = extra.get("file", "")
+    if name == "3dsolids":
+        expect("empty", "nothing_drawable")
+    else:
+        expect("ok")
+    need("auditor_fixes_0", v.get("auditor_fixes") == 0)
+    if name == "legacy_cp1251":
+        need("text_exact", svg_texts == ["\u0414\u0435\u0442\u0430\u043b\u044c"])
+    if name == "legacy_latin1":
+        need("text_exact", svg_texts == ["B\u00fcgel \u00d85"])
+    if name in ("legacy_cp1251", "legacy_latin1"):
+        fact("text_list", "+".join(t.encode("unicode_escape").decode("ascii") for t in svg_texts) or "none")
+    if "prov_sha" in extra:
+        fact("provenance_sha256_match", int(extra["prov_sha"] == extra.get("sha")))
+        need("provenance_sha256_match", extra["prov_sha"] == extra.get("sha"))
 else:
     need("known_case", False)
 
@@ -1088,6 +1104,374 @@ d.saveas("/job/gen.dxf")
   rc=$(helper_exec "$DXF_RO" "$job" usage_no_texts --max-drawn-entities "$MAX_DRAWN" /job/in.dxf /job/out.svg)
   helper_row safety usage_no_texts dxf/wide.dxf "$CORPUS/dxf/wide.dxf" "$rc" "$job"
   rm -rf "$job"
+}
+
+write_corpus_tools() {
+  cat > "$WORK/wrap/compare.py" <<'PY'
+import sys
+import numpy as np
+from PIL import Image
+
+
+def ink(path):
+    a = np.asarray(Image.open(path).convert("RGB"))
+    return (a < 160).any(axis=2)
+
+
+def near(mask, r):
+    h, w = mask.shape
+    p = np.pad(mask, r)
+    out = np.zeros_like(mask)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dx * dx + dy * dy <= r * r:
+                out |= p[r + dy:r + dy + h, r + dx:r + dx + w]
+    return out
+
+
+text = ink(sys.argv[1])
+outline = ink(sys.argv[2])
+if text.shape != outline.shape:
+    print("shape_equal=0,ink_text=na,ink_outline=na,text_in_outline=0,outline_in_text=0")
+    sys.exit(0)
+nt, no = int(text.sum()), int(outline.sum())
+tio = float((outline & near(text, 2)).sum()) / no if no else 0.0
+oit = float((text & near(outline, 2)).sum()) / nt if nt else 0.0
+print("shape_equal=1,ink_text=%d,ink_outline=%d,text_in_outline=%.4f,outline_in_text=%.4f" % (nt, no, tio, oit))
+PY
+  cat > "$WORK/wrap/inkbox.py" <<'PY'
+import sys
+import numpy as np
+from PIL import Image
+a = np.asarray(Image.open(sys.argv[1]).convert("RGB"))
+k = (a < 160).any(axis=2)
+ys, xs = np.nonzero(k)
+if len(ys) == 0:
+    print("none")
+else:
+    print("%d+%d+%d+%d" % (xs.min(), ys.min(), xs.max(), ys.max()))
+PY
+  chmod 0644 "$WORK/wrap/"*.py
+}
+
+wrap_field() { sed -n "s/.*[,]$1=\([^,]*\).*/\1/p" "$2" | head -n 1; }
+
+prov_sha() {
+  awk -F'|' -v t="$1" '
+    /^### dxf-replicate from uncommon.dxf/ { on = 1; next }
+    /^### / { on = 0 }
+    on && $2 ~ "^ *" t " *$" { gsub(/ /, "", $5); print $5 }
+  ' "$CORPUS/PROVENANCE.md"
+}
+
+replicate_src() {
+  local target=$1 path gen
+  path="$CAD_CACHE/scaled/dxf-replicate-uncommon-$target.dxf"
+  if [ ! -s "$path" ]; then
+    mkdir -p "$CAD_CACHE/scaled"
+    gen=$(mktemp -d "$WORK/gen.XXXXXX")
+    chmod 0777 "$gen"
+    docker run --rm "${LIMITS[@]}" -e HOME=/tmp -v "$REPO_ROOT:/src:ro" -v "$gen:/out" -w /src \
+      --entrypoint /opt/venv/bin/python "$TAG" -B scripts/cad-corpus-gen.py \
+      --scaled-from internal/convert/testdata/cad/public/uncommon.dxf --kind dxf-replicate --targets "${target%MiB}" \
+      --scaled-dir /out </dev/null >&2
+    cp "$gen/dxf-replicate-uncommon-$target.dxf" "$path"
+    rm -rf "$gen"
+  fi
+  printf '%s\n' "$path"
+}
+
+corpus_row() {
+  local name=$1 input=$2 src=$3 extra=${4:-} job wrapout rc_w=0 j wf result wrc
+  disk_guard
+  job=$(job_with "$src")
+  mkdir -p "$job/wrap"
+  chmod 0777 "$job/wrap"
+  wrapout="$WORK/corpus_$name.wrap"
+  docker run --rm "${LIMITS[@]}" "${STAGE_ENV[@]}" -e "PROBE_RO=$DXF_RO" -e "PROBE_RW=$RW_SET" \
+    -v "$WORK/probe:/probe:ro" -v "$WORK/wrap:/wrap:ro" -v "$job:/job" --entrypoint /usr/bin/python3 "$TAG" \
+    -I -B /wrap/measure_wrap.py --budget-s 600 --outdir /job/wrap -- \
+    /probe/sandbox-probe /usr/local/bin/cad-dxf $(std_args) > "$wrapout" 2> "$WORK/corpus_$name.err" </dev/null || rc_w=$?
+  cp "$job/wrap/child.log" "$WORK/corpus_$name.out" 2>/dev/null || : > "$WORK/corpus_$name.out"
+  wrc=$(wrap_field rc "$wrapout")
+  if probe_refused "$WORK/corpus_$name.out"; then
+    j="verdict=none,reason=probe_refused,rc=${wrc:-na},result=fail"
+  else
+    j=$(python3 "$WORK/judge.py" corpus "${wrc:-na}" "$WORK/corpus_$name.out" "$job" log=1 measure=1 "file=$name" "sha=$(sha_of "$src")" $extra)
+  fi
+  result=${j##*,result=}
+  j=${j%,result=*}
+  wf="wall_s=$(wrap_field wall_s "$wrapout"),child_rss_mib=$(wrap_field child_rss_mib "$wrapout"),cg_peak_mib=$(wrap_field cg_peak_mib "$wrapout"),oom_kill=$(wrap_field oom_kill "$wrapout"),timeout=$(wrap_field timeout "$wrapout"),wrap_rc=$rc_w"
+  if [ "$(wrap_field timeout "$wrapout")" != 0 ] || [ "$(wrap_field oom_kill "$wrapout")" != 0 ] || [ "$rc_w" != 0 ]; then result=fail; fi
+  printf 'CORPUS,group=corpus,file=%s,input=%s,sha256=%s,bytes=%s,%s,%s,result=%s\n' "$name" "$input" "$(sha_of "$src")" \
+    "$(wc -c < "$src" | tr -d ' ')" "$j" "$wf" "$result" >> "$LINES"
+  [ "$result" != fail ] || tail -n 8 "$WORK/corpus_$name.out" >&2 || true
+  if [ -s "$job/out.svg" ]; then cp "$job/out.svg" "$WORK/fid_$name.svg"; fi
+  rm -rf "$job"
+}
+
+rsvg_png() {
+  local ro=$1 job=$2 svg=$3 png=$4 size=$5 bg=$6 sw sh left top rc=0
+  read -r sw sh left top <<< "$(letterbox_size "$job/$svg" "$size")"
+  MOUNTS=()
+  if [ "$bg" = opaque ]; then
+    run_confined "$ro" "$job" "$WORK/rsvg.out" "$WORK/rsvg.err" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" \
+      --page-width "$size" --page-height "$size" --left "$left" --top "$top" -o "/job/$png" "/job/$svg" || rc=$?
+  else
+    run_confined "$ro" "$job" "$WORK/rsvg.out" "$WORK/rsvg.err" /usr/bin/rsvg-convert -w "$sw" -h "$sh" \
+      --page-width "$size" --page-height "$size" --left "$left" --top "$top" -o "/job/$png" "/job/$svg" || rc=$?
+  fi
+  printf '%s %s %s %s %s\n' "$rc" "$sw" "$sh" "$left" "$top"
+}
+
+letterbox_size() {
+  python3 - "$1" "$2" <<'PY'
+import math, sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+s = int(sys.argv[2])
+w = float(root.get("width")[:-2])
+h = float(root.get("height")[:-2])
+k = s * 0.94 / max(w, h)
+sw = max(1, math.floor(w * k + 0.5))
+sh = max(1, math.floor(h * k + 0.5))
+print(sw, sh, (s - sw) // 2, (s - sh) // 2)
+PY
+}
+
+in_image() {
+  local job=$1
+  shift
+  docker run --rm --network none --user nobody -e HOME=/tmp -v "$job:/job" -v "$WORK/wrap:/wrap:ro" \
+    --entrypoint /opt/venv/bin/python "$TAG" -I -B "$@" </dev/null
+}
+
+fidelity_row() {
+  local name=$1 src=$2 job rc orc page_equal r1 r2 cmp result tw th ow oh texts uncovered
+  job=$(new_job)
+  if [ -s "$WORK/fid_$name.svg" ]; then
+    cp "$WORK/fid_$name.svg" "$job/text.svg"
+  else
+    cp "$src" "$job/in.dxf"
+    chmod 0644 "$job/in.dxf"
+    rc=$(helper_exec "$DXF_RO" "$job" "fid_text_$name" $(std_args))
+    [ "$rc" != 0 ] || mv "$job/out.svg" "$job/text.svg"
+    rm -f "$job/out.texts.json" "$job/out.measure.json"
+  fi
+  cp "$src" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  orc=$(harness_run "$job" "fid_outline_$name" outline $(std_args))
+  [ ! -s "$job/out.svg" ] || mv "$job/out.svg" "$job/outline.svg"
+  result=fail
+  cmp="shape_equal=0,ink_text=na,ink_outline=na,text_in_outline=0,outline_in_text=0"
+  page_equal=0
+  if [ -s "$job/text.svg" ] && [ -s "$job/outline.svg" ] && [ "$orc" = 0 ]; then
+    read -r tw th <<< "$(python3 -c 'import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); print(r.get("width"), r.get("height"))' "$job/text.svg")"
+    read -r ow oh <<< "$(python3 -c 'import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); print(r.get("width"), r.get("height"))' "$job/outline.svg")"
+    [ "$tw/$th" != "$ow/$oh" ] || page_equal=1
+    read -r r1 _ <<< "$(rsvg_png "$RSVG_RO" "$job" text.svg text.png "$FRAME" opaque)"
+    read -r r2 _ <<< "$(rsvg_png "$RSVG_RO" "$job" outline.svg outline.png "$FRAME" opaque)"
+    if [ "$r1" = 0 ] && [ "$r2" = 0 ]; then
+      cmp=$(in_image "$job" /wrap/compare.py /job/text.png /job/outline.png)
+      if [ "$page_equal" = 1 ] && python3 - "$cmp" <<'PY'
+import sys
+kv = dict(p.split("=", 1) for p in sys.argv[1].split(","))
+ok = kv.get("shape_equal") == "1" and float(kv["text_in_outline"]) >= 0.99 and float(kv["outline_in_text"]) >= 0.99
+sys.exit(0 if ok else 1)
+PY
+      then result=ok; fi
+    fi
+  fi
+  texts=$(grep -o '<text' "$job/text.svg" 2>/dev/null | wc -l | tr -d ' ')
+  printf 'FIDELITY,group=corpus,file=%s,sha256=%s,size=%s,background=opaque,page_mm=%s,page_equal=%s,outline_rc=%s,svg_texts=%s,%s,threshold=0.99,result=%s\n' \
+    "$name" "$(sha_of "$src")" "$FRAME" "${tw:-na}x${th:-na}" "$page_equal" "$orc" "${texts:-0}" "$cmp" "$result" >> "$LINES"
+  rm -rf "$job"
+}
+
+hexbox_finding() {
+  local job a b c
+  job=$(new_job)
+  python3 - "$job" <<'PY'
+import sys
+d = sys.argv[1]
+cases = {"plain_fs600": (600, 1, "Latend"), "cjk_fs600": (600, 1, "Lat中文end"), "cjk_fs60_x10": (60, 10, "Lat中文end")}
+for name, (fs, m, t) in cases.items():
+    with open("%s/%s.svg" % (d, name), "w", encoding="utf-8") as fh:
+        fh.write('<?xml version="1.0" encoding="utf-8"?><svg xmlns="http://www.w3.org/2000/svg" width="1000px" height="1000px" viewBox="0 0 10000 10000">'
+                 '<text transform="matrix(%d 0 0 %d 100 5000)" font-family="DejaVu Sans" font-size="%d" fill="#000000">%s</text></svg>' % (m, m, fs, t))
+PY
+  MOUNTS=()
+  for c in plain_fs600 cjk_fs600 cjk_fs60_x10; do
+    run_confined "$RSVG_RO" "$job" "$WORK/hex.out" "$WORK/hex.err" /usr/bin/rsvg-convert -b white -o "/job/$c.png" "/job/$c.svg" || true
+  done
+  a=$(in_image "$job" /wrap/inkbox.py /job/plain_fs600.png)
+  b=$(in_image "$job" /wrap/inkbox.py /job/cjk_fs600.png)
+  c=$(in_image "$job" /wrap/inkbox.py /job/cjk_fs60_x10.png)
+  printf 'FINDING,key=rsvg_hexbox_baseline,group=corpus,setup=baseline_y_500px_of_1000_scale_0.1,inkbox_x0y0x1y1_plain_fs600=%s,inkbox_cjk_fs600=%s,inkbox_cjk_fs60_matrix10=%s,meaning=a_text_element_holding_characters_outside_DejaVu_is_drawn_by_pango_with_hex_boxes_and_librsvg_2.54.7_moves_the_whole_line_off_its_baseline_unless_the_device_scale_of_the_text_is_1\n' \
+    "$a" "$b" "$c" >> "$LINES"
+  rm -rf "$job"
+}
+
+group_corpus() {
+  local f t src
+  disk_guard
+  write_corpus_tools
+  for f in public/3dsolids public/acad_table_with_blk_ref public/columns_R2007 public/dimension_in_nested_blocks \
+    public/hatches_1 public/hatches_2 public/houses_of_parliament_georeferenced public/uncommon \
+    synthetic/blocks_minsert synthetic/comments_999 synthetic/legacy_cp1251 synthetic/legacy_latin1; do
+    corpus_row "${f#*/}" "$f.dxf" "$CORPUS/$f.dxf"
+  done
+  for t in 2MiB 5MiB 10MiB 20MiB 50MiB; do
+    src=$(replicate_src "$t")
+    corpus_row "dxf-replicate-uncommon-$t" "scaled/dxf-replicate-uncommon-$t.dxf" "$src" "prov_sha=$(prov_sha "$t")"
+  done
+  for f in synthetic/legacy_cp1251 synthetic/legacy_latin1 public/columns_R2007 public/dimension_in_nested_blocks \
+    public/hatches_2 public/uncommon public/acad_table_with_blk_ref dxf/text_cases; do
+    fidelity_row "${f#*/}" "$CORPUS/$f.dxf"
+  done
+  printf 'KNOWN_LIMIT,key=pango_kerning,group=corpus,source=75-RESEARCH.md_Pattern_1_tiny_huge_row,start=exact,height=exact,width=up_to_3.3pct_narrower,affects=centre_right_FIT_ALIGNED_text,accepted_by=75-CONTEXT_R-1,docs=phase_76_client_documentation\n' >> "$LINES"
+  hexbox_finding
+}
+
+out_row() {
+  local file=$1 facts=$2 ok=$3 path="$DXF_OUT/$1" result=fail
+  if [ "$ok" = 1 ] && [ -s "$path" ]; then result=ok; fi
+  printf 'OUT,group=writeout,file=%s,bytes=%s,sha256=%s,%s,result=%s\n' "$file" \
+    "$( [ -f "$path" ] && wc -c < "$path" | tr -d ' ' || echo 0 )" "$( [ -f "$path" ] && sha_of "$path" || echo none )" \
+    "$facts" "$result" >> "$LINES"
+}
+
+both_ok() {
+  if [ "$1" = 0 ]; then
+    case ",$3," in
+      *",$2,"*) echo 1 ;;
+      *) echo 0 ;;
+    esac
+  else
+    echo 0
+  fi
+}
+
+pdf_text_fields() {
+  python3 - "$1" "${2:-}" <<'PY'
+import json, subprocess, sys
+pdf, texts = sys.argv[1], sys.argv[2]
+with open(pdf, "rb") as fh:
+    magic = fh.read(5) == b"%PDF-"
+out = subprocess.run(["pdftotext", "-raw", pdf, "-"], capture_output=True).stdout.decode("utf-8", "replace")
+got = "".join(out.split())
+fields = ["pdf_magic=%d" % magic, "pdf_text_chars=%d" % len(got)]
+if texts:
+    with open(texts, encoding="ascii") as fh:
+        want = "".join("".join(e["covered"].split()) for e in json.load(fh)["texts"])
+    it = iter(got)
+    fields.append("covered_chars=%d" % len(want))
+    fields.append("covered_subsequence=%d" % int(len(want) > 0 and all(c in it for c in want)))
+print(",".join(fields))
+PY
+}
+
+png_facts() {
+  python3 - "$1" <<'PY'
+import struct, sys
+with open(sys.argv[1], "rb") as fh:
+    data = fh.read()
+if data[:8] != b"\x89PNG\r\n\x1a\n":
+    print("png_w=0,png_h=0,color_type=na")
+    sys.exit(0)
+w, h = struct.unpack(">II", data[16:24])
+print("png_w=%d,png_h=%d,color_type=%d" % (w, h, data[25]))
+PY
+}
+
+draw_out() {
+  local name=$1 src=$2 job rc
+  job=$(job_with "$src")
+  rc=$(helper_exec "$DXF_RO" "$job" "out_$name" $(std_args))
+  printf '%s %s\n' "$rc" "$job"
+}
+
+group_writeout() {
+  local n src job rc facts pdfrc r sw sh left top spec
+  disk_guard
+  mkdir -p "$DXF_OUT"
+  : > "$WORK/frames.rows"
+  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf; do
+    src="$CORPUS/${n#*:}/${n%%:*}.dxf"
+    n=${n%%:*}
+    read -r rc job <<< "$(draw_out "$n" "$src")"
+    facts="source=${src#$CORPUS/},source_sha256=$(sha_of "$src"),helper_rc=$rc,$(verdict_fields "$WORK/out_$n.out" | cut -d, -f1-3)"
+    case "$n" in
+      wrong_extents|units_3)
+        cp "$job/out.measure.json" "$DXF_OUT/$n.measure.json" 2>/dev/null || true
+        out_row "$n.measure.json" "$facts" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )" ;;
+      *)
+        cp "$job/out.svg" "$DXF_OUT/$n.svg" 2>/dev/null || true
+        cp "$job/out.texts.json" "$DXF_OUT/$n.texts.json" 2>/dev/null || true
+        out_row "$n.svg" "$facts,svg_texts=$(grep -o '<text' "$job/out.svg" 2>/dev/null | wc -l | tr -d ' ')" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
+        out_row "$n.texts.json" "$facts" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
+        if [ "$n" = wide ]; then
+          cp "$job/out.measure.json" "$DXF_OUT/wide.measure.json" 2>/dev/null || true
+          out_row wide.measure.json "$facts" "$( [ "$rc" = 0 ] && echo 1 || echo 0 )"
+        fi ;;
+    esac
+    case "$n" in
+      text_cases|legacy_cp1251|uncommon|hatches_2)
+        pdfrc=0
+        MOUNTS=()
+        run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.svg || pdfrc=$?
+        cp "$job/out.pdf" "$DXF_OUT/$n.pdf" 2>/dev/null || true
+        facts="source=$n.svg,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/$n.pdf" "$DXF_OUT/$n.texts.json")"
+        out_row "$n.pdf" "$facts" "$(both_ok "$pdfrc" covered_subsequence=1 "$facts")"
+        ;;
+    esac
+    if [ "$n" = text_cases ]; then
+      pdfrc=0
+      run_confined "$RSVG_NOFONT_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/nofont.pdf /job/out.svg || pdfrc=$?
+      cp "$job/nofont.pdf" "$DXF_OUT/nofont.pdf" 2>/dev/null || true
+      facts="source=text_cases.svg,rsvg_rc=$pdfrc,ruleset=rsvg_without_usr_share_fonts,$(pdf_text_fields "$DXF_OUT/nofont.pdf")"
+      out_row nofont.pdf "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
+      rm -f "$job/out.svg" "$job/out.texts.json" "$job/out.measure.json"
+      r=$(harness_run "$job" out_outline outline $(std_args))
+      pdfrc=1
+      if [ "$r" = 0 ]; then
+        pdfrc=0
+        run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/outline.pdf /job/out.svg || pdfrc=$?
+      fi
+      cp "$job/outline.pdf" "$DXF_OUT/outline.pdf" 2>/dev/null || true
+      facts="source=text_cases.dxf_stock_svg_backend_text_as_paths,helper_rc=$r,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/outline.pdf")"
+      out_row outline.pdf "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
+    fi
+    if [ "$n" = wide ] || [ "$n" = tall ]; then
+      cp "$job/out.svg" "$job/frame.svg" 2>/dev/null || true
+    fi
+    if [ "$n" = wide ]; then
+      for spec in 1280:opaque 1280:transparent; do
+        read -r r sw sh left top <<< "$(rsvg_png "$RSVG_RO" "$job" frame.svg out.png "${spec%%:*}" "${spec#*:}")"
+        cp "$job/out.png" "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png" 2>/dev/null || true
+        frame_line "wide_${spec%%:*}_${spec#*:}.png" "${spec%%:*}" "${spec#*:}" "$job/frame.svg" "$sw" "$sh" "$left" "$top"
+        out_row "wide_${spec%%:*}_${spec#*:}.png" "source=wide.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png")" \
+          "$( [ "$r" = 0 ] && echo 1 || echo 0 )"
+        rm -f "$job/out.png"
+      done
+    fi
+    if [ "$n" = tall ]; then
+      read -r r sw sh left top <<< "$(rsvg_png "$RSVG_RO" "$job" frame.svg out.png 256 opaque)"
+      cp "$job/out.png" "$DXF_OUT/tall_256_opaque.png" 2>/dev/null || true
+      frame_line tall_256_opaque.png 256 opaque "$job/frame.svg" "$sw" "$sh" "$left" "$top"
+      out_row tall_256_opaque.png "source=tall.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/tall_256_opaque.png")" \
+        "$( [ "$r" = 0 ] && echo 1 || echo 0 )"
+    fi
+    rm -rf "$job"
+  done
+  { printf 'name\tsize\tbackground\tw_mm\th_mm\tsw\tsh\tleft\ttop\n'; cat "$WORK/frames.rows"; } > "$DXF_OUT/frames.tsv"
+  out_row frames.tsv "rows=$(wc -l < "$WORK/frames.rows" | tr -d ' ')" "$( [ "$(wc -l < "$WORK/frames.rows" | tr -d ' ')" = 3 ] && echo 1 || echo 0 )"
+}
+
+frame_line() {
+  local name=$1 size=$2 bg=$3 svg=$4 sw=$5 sh=$6 left=$7 top=$8 w h
+  read -r w h <<< "$(python3 -c 'import sys, xml.etree.ElementTree as ET; r = ET.parse(sys.argv[1]).getroot(); print(r.get("width")[:-2], r.get("height")[:-2])' "$svg")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$size" "$bg" "$w" "$h" "$sw" "$sh" "$left" "$top" >> "$WORK/frames.rows"
 }
 
 group_rows() { grep -cE "^(HELPER|CORPUS|FIDELITY|OUT),group=$1," "$2" || true; }

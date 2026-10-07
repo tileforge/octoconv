@@ -13,6 +13,7 @@ PAGE_MARGIN_MM = 10.0
 ASPECT_CLAMP = 1000.0
 HATCH_TIMEOUT_S = 30.0
 HATCH_TIMEOUT_MESSAGE = "hatching timeout of"
+TEXT_AS_OUTLINE = False
 AUDIT_BLOCK_CYCLE = 104
 INFINITE_LINES = ("XLINE", "RAY")
 INSUNITS_NAMES = {1: "inch", 2: "foot", 4: "mm", 5: "cm", 6: "m", 13: "micrometre"}
@@ -232,6 +233,8 @@ def draw(doc, max_drawn, state):
                 "color": self.get_backend_properties(properties).color,
                 "box": box,
             })
+            if TEXT_AS_OUTLINE:
+                RenderPipeline2d.draw_text(self, text, transform, properties, cap_height, dxftype)
 
     class NoCssRenderBackend(svg.SVGRenderBackend):
         def add_strokes(self, d, properties):
@@ -269,6 +272,8 @@ def draw(doc, max_drawn, state):
 
         @staticmethod
         def make_backend(page, settings):
+            if TEXT_AS_OUTLINE:
+                return svg.SVGRenderBackend(page, settings)
             return NoCssRenderBackend(page, settings)
 
     class DXFFrontend(Frontend):
@@ -364,7 +369,7 @@ def draw(doc, max_drawn, state):
 
     emitted = []
     flip = Matrix44.scale(1, -1, 1)
-    for t in texts:
+    for t in [] if TEXT_AS_OUTLINE else texts:
         m = flip @ Matrix44.translate(0, t["shift"], 0) @ t["m"] @ T
         k = math.hypot(m[1, 0], m[1, 1])
         values = (m[0, 0], m[0, 1], m[1, 0], m[1, 1], m[3, 0], m[3, 1], k, t["em"])
