@@ -445,16 +445,28 @@ func TestCADGuardHelperHoldsNoNumbersOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	forbidden := []string{"754762", "1518",
-		fmt.Sprint(guardTestDXFInserts), fmt.Sprint(guardTestDXFEntities), fmt.Sprint(guardTestDXFNesting),
-		guardTestDXFCoordinate, "1e+12", "1E12", "1000000000000", "10 ** 12", "10**12"}
-	for _, n := range forbidden {
-		re := regexp.MustCompile(`(^|[^0-9A-Za-z_.])` + regexp.QuoteMeta(n) + `($|[^0-9A-Za-z_.])`)
-		if re.Match(data) {
+	for _, n := range []string{"754762", "1518", fmt.Sprint(guardTestDXFInserts), fmt.Sprint(guardTestDXFEntities)} {
+		if bytes.Contains(data, []byte(n)) {
 			t.Errorf("cad-guard contains the cap %s: the caps arrive on argv only", n)
 		}
 	}
-	t.Logf("forbidden cap literals: %s", strings.Join(forbidden, " "))
+	caps := []string{"754762", "1518", fmt.Sprint(guardTestDXFInserts), fmt.Sprint(guardTestDXFEntities), fmt.Sprint(guardTestDXFNesting), guardTestDXFCoordinate}
+	t.Logf("forbidden cap literals: %s", strings.Join(caps, " "))
+	py := requireCADPython(t)
+	script := `import ast, io, sys, tokenize
+caps = {ast.literal_eval(c) for c in sys.argv[2:]}
+src = open(sys.argv[1], encoding="utf-8").read()
+for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+    if tok.type == tokenize.NUMBER and ast.literal_eval(tok.string) in caps:
+        print("%d:%s" % (tok.start[0], tok.string))
+`
+	out, err := exec.Command(py, append([]string{"-c", script, cadGuardHelperPath}, caps...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tokenize cad-guard: %v: %s", err, out)
+	}
+	if hits := strings.TrimSpace(string(out)); hits != "" {
+		t.Errorf("cad-guard holds numeric literals equal to a cap (line:literal): %s", hits)
+	}
 	if !bytes.HasPrefix(data, []byte("#!/usr/bin/python3 -IB\n")) {
 		t.Errorf("cad-guard shebang is %q", bytes.SplitN(data, []byte("\n"), 2)[0])
 	}
@@ -657,9 +669,9 @@ func TestCADGuardDXFExpansionCaps(t *testing.T) {
 	}
 	t.Run("a grid of exactly the cap is ok", func(t *testing.T) {
 		r := runCADGuardDXF(t, grid("1", fmt.Sprint(guardTestDXFInserts)))
-		if r.verdict != "ok" || r.number("expanded_inserts") != guardTestDXFInserts || r.number("expanded_entities") != guardTestDXFInserts {
-			t.Errorf("verdict=%q expanded_inserts=%d expanded_entities=%d, want ok/%d/%d", r.verdict,
-				r.number("expanded_inserts"), r.number("expanded_entities"), guardTestDXFInserts, guardTestDXFInserts)
+		if r.verdict != "ok" || r.number("expanded_inserts") != guardTestDXFInserts || r.number("expanded_entities") != guardTestDXFInserts+1 {
+			t.Errorf("verdict=%q expanded_inserts=%d expanded_entities=%d, want ok/%d/%d (one LINE per cell plus the INSERT)", r.verdict,
+				r.number("expanded_inserts"), r.number("expanded_entities"), guardTestDXFInserts, guardTestDXFInserts+1)
 		}
 	})
 	t.Run("a grid of 1e300 rows saturates", func(t *testing.T) {
