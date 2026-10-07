@@ -879,3 +879,80 @@ func TestCADGuardDXFUsage(t *testing.T) {
 		}
 	})
 }
+
+func dxfRecordTable(records ...[2]string) []dxfPair {
+	out := []dxfPair{{"0", "SECTION"}, {"2", "TABLES"}, {"0", "TABLE"}, {"2", "BLOCK_RECORD"}}
+	for _, r := range records {
+		out = append(out, dxfPair{"0", "BLOCK_RECORD"}, dxfPair{"5", r[0]}, dxfPair{"100", "AcDbSymbolTableRecord"},
+			dxfPair{"100", "AcDbBlockTableRecord"}, dxfPair{"2", r[1]})
+	}
+	return append(out, dxfPair{"0", "ENDTAB"}, dxfPair{"0", "ENDSEC"})
+}
+
+func TestCADGuardDXFFollowsAnnotationBlockHandles(t *testing.T) {
+	requireCADPython(t)
+	dir := t.TempDir()
+	multileader := func(content string, leaderLines int) []dxfPair {
+		out := []dxfPair{{"0", "MULTILEADER"}, {"8", "0"}, {"100", "AcDbMLeader"}, {"300", "CONTEXT_DATA{"}, {"302", "LEADER{"}}
+		for i := 0; i < leaderLines; i++ {
+			out = append(out, dxfPair{"304", "LEADER_LINE{"}, dxfPair{"10", "0.0"}, dxfPair{"20", "0.0"}, dxfPair{"30", "0.0"}, dxfPair{"305", "}"})
+		}
+		return append(out, dxfPair{"303", "}"}, dxfPair{"341", content}, dxfPair{"301", "}"}, dxfPair{"344", content})
+	}
+	leader := []dxfPair{{"0", "LEADER"}, {"8", "0"}, {"3", "STANDARD"}, {"71", "1"}, {"76", "2"},
+		{"10", "0.0"}, {"20", "0.0"}, {"30", "0.0"}, {"10", "5.0"}, {"20", "5.0"}, {"30", "0.0"}}
+	dimstyleTable := func(pairs ...dxfPair) []dxfPair {
+		out := []dxfPair{{"0", "TABLE"}, {"2", "DIMSTYLE"}, {"0", "DIMSTYLE"}, {"105", "30"}, {"2", "STANDARD"}}
+		return append(append(out, pairs...), dxfPair{"0", "ENDTAB"})
+	}
+	withDimstyle := func(records []dxfPair, dim []dxfPair) []dxfPair {
+		return append(records[:len(records)-1], append(dim, dxfPair{"0", "ENDSEC"})...)
+	}
+	grid := dxfInsertPairs("CELL", dxfPair{"70", "1000"}, dxfPair{"71", "1000"}, dxfPair{"44", "1.0"}, dxfPair{"45", "1.0"})
+	cases := []struct {
+		name, reason string
+		data         []byte
+	}{
+		{"a multileader holding its own block by handle", "cyclic_block_reference", dxfFile("AC1027", "",
+			dxfBlockPairs("M", multileader("1F", 1)), dxfInsertPairs("M"), dxfRecordTable([2]string{"1F", "M"}))},
+		{"a multileader whose block content is a million cells", "expanded_inserts_over_cap", dxfFile("AC1027", "",
+			append(dxfBlockPairs("CELL", dxfLinePairs()), dxfBlockPairs("BIG", grid)...), multileader("2B", 1),
+			dxfRecordTable([2]string{"2B", "BIG"}))},
+		{"a leader whose dimstyle arrow block holds the leader", "cyclic_block_reference", dxfFile("AC1015", "",
+			dxfBlockPairs("ARR", leader), leader,
+			withDimstyle(dxfRecordTable([2]string{"2A", "ARR"}), dimstyleTable(dxfPair{"341", "2A"})))},
+		{"an R12 dimstyle arrow name", "cyclic_block_reference", dxfFile("AC1009", "",
+			dxfBlockPairs("ARR", leader), leader,
+			[]dxfPair{{"0", "SECTION"}, {"2", "TABLES"}, {"0", "TABLE"}, {"2", "DIMSTYLE"}, {"0", "DIMSTYLE"}, {"2", "STANDARD"}, {"5", "arr"}, {"0", "ENDTAB"}, {"0", "ENDSEC"}})},
+		{"a multileader style block", "cyclic_block_reference", dxfFile("AC1027", "",
+			dxfBlockPairs("S", multileader("0", 1)), dxfInsertPairs("S"), dxfRecordTable([2]string{"3C", "S"}),
+			[]dxfPair{{"0", "SECTION"}, {"2", "OBJECTS"}, {"0", "MLEADERSTYLE"}, {"5", "40"}, {"343", "3C"}, {"0", "ENDSEC"}})},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := runCADGuardDXF(t, writeGuardFile(t, dir, fmt.Sprintf("annotation_%d.dxf", i), c.data))
+			if r.verdict != "too_complex" || r.reason != c.reason || r.exit != 4 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want too_complex/%s/4 (%v)", r.verdict, r.reason, r.exit, c.reason, r.fields)
+			}
+			requireGuardCountersWithinCaps(t, r)
+		})
+	}
+	t.Run("a style block adds one level, not two", func(t *testing.T) {
+		data := dxfFile("AC1015", "", dxfBlockPairs("ARR", dxfLinePairs()), leader,
+			withDimstyle(dxfRecordTable([2]string{"2A", "ARR"}), dimstyleTable(dxfPair{"341", "2A"})))
+		r := runCADGuardDXF(t, writeGuardFile(t, dir, "leader_ok.dxf", data))
+		if r.verdict != "ok" || r.number("nesting") != 1 || r.number("expanded_inserts") != 1 || r.number("expanded_entities") != 2 {
+			t.Errorf("verdict=%q nesting=%d expanded_inserts=%d expanded_entities=%d, want ok/1/1/2", r.verdict,
+				r.number("nesting"), r.number("expanded_inserts"), r.number("expanded_entities"))
+		}
+	})
+	t.Run("leader lines multiply the arrow references", func(t *testing.T) {
+		data := dxfFile("AC1027", "", dxfBlockPairs("ARR", dxfLinePairs()), multileader("0", 4),
+			dxfRecordTable([2]string{"3C", "ARR"}),
+			[]dxfPair{{"0", "SECTION"}, {"2", "OBJECTS"}, {"0", "MLEADERSTYLE"}, {"5", "40"}, {"341", "3C"}, {"0", "ENDSEC"}})
+		r := runCADGuardDXF(t, writeGuardFile(t, dir, "mleader_lines.dxf", data))
+		if r.verdict != "ok" || r.number("expanded_inserts") != 5 {
+			t.Errorf("verdict=%q expanded_inserts=%d, want ok/5", r.verdict, r.number("expanded_inserts"))
+		}
+	})
+}

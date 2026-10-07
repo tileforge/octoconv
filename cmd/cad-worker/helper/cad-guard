@@ -56,6 +56,14 @@ CAPTURE_REFERENCE = 1
 CAPTURE_INSERT = 2
 CAPTURE_BLOCK = 3
 CAPTURE_RECORD = 4
+CAPTURE_ANNOTATION = 5
+CAPTURE_STYLE = 6
+ANNOTATION_KINDS = frozenset((b"MULTILEADER", b"MLEADER", b"LEADER"))
+ANNOTATION_HANDLE_CODES = frozenset((341, 342, 344, 345, 1005))
+LEADER_LINE_MARKER = b"LEADER_LINE{"
+STYLE_KINDS = {b"DIMSTYLE": True, b"MLEADERSTYLE": False}
+STYLE_HANDLE_CODES = frozenset((341, 342, 343, 344))
+STYLE_NAME_CODES = frozenset((5, 6, 7))
 MODEL_SPACE = b"*Model_Space"
 PAPER_SPACE = b"*Paper_Space"
 INFO_VARS_EXPECTED = 5
@@ -441,6 +449,10 @@ class BlockGraph:
         self.owned_ids = array("q")
         self.owned_handles = []
         self.records = {}
+        self.annotations = []
+        self.style_handles = set()
+        self.style_names = set()
+        self.virtual = []
         self.blocks = 0
         self.root = self.node(MODEL_SPACE)
         self.unions.append((self.root, self.node(PAPER_SPACE)))
@@ -481,12 +493,42 @@ class BlockGraph:
         for handle in handles:
             self.records.setdefault(handle, []).extend(names)
 
-    def resolve_owners(self):
-        for ident, handle in zip(self.owned_ids, self.owned_handles):
-            for raw in self.records.get(handle, ()):
-                if raw:
-                    self.unions.append((ident, self.node(raw)))
+    def annotate(self, owner, handles, mult):
+        self.annotations.append((owner, min(mult, self.mult_limit), tuple(handles)))
 
+    def style(self, handles, names):
+        self.style_handles.update(handles)
+        self.style_names.update(raw for raw in names if raw)
+
+    def edge(self, parent, child, mult):
+        self.parents.append(parent)
+        self.children.append(child)
+        self.mults.append(mult)
+
+    def record_names(self, handle):
+        return [raw for raw in self.records.get(handle, ()) if raw]
+
+    def resolve_references(self):
+        for ident, handle in zip(self.owned_ids, self.owned_handles):
+            for raw in self.record_names(handle):
+                self.unions.append((ident, self.node(raw)))
+        if not self.annotations:
+            return
+        targets = set(self.style_names)
+        for handle in self.style_handles:
+            targets.update(self.record_names(handle))
+        shared = None
+        if targets:
+            shared = self.anonymous()
+            self.virtual.append(shared)
+            for raw in sorted(targets):
+                self.edge(shared, self.node(raw), 1)
+        for owner, mult, handles in self.annotations:
+            if shared is not None:
+                self.edge(owner, shared, mult)
+            for handle in handles:
+                for raw in self.record_names(handle):
+                    self.edge(owner, self.node(raw), mult)
 
 def numeric_finding(kind, line, code, counters):
     counters = dict(counters)
@@ -504,7 +546,9 @@ def walk_dxf(fh, graph, max_abs, counters):
     lineno = 0
     code = None
     pairs = 0
-    in_entities = in_blocks = in_tables = scoped = naming = False
+    in_entities = in_blocks = in_tables = in_objects = scoped = naming = False
+    dimstyle = False
+    leader_lines = 0
     kind = None
     capture = 0
     names = []
@@ -536,7 +580,9 @@ def walk_dxf(fh, graph, max_abs, counters):
                 if kind is not None:
                     if in_entities:
                         graph.direct[root] += 1
-                        if capture:
+                        if capture == CAPTURE_ANNOTATION:
+                            graph.annotate(root, handles, 1 + leader_lines)
+                        elif capture:
                             graph.refer(root, names, max(cols, 1) * max(rows, 1))
                     elif in_blocks:
                         if capture == CAPTURE_BLOCK:
@@ -545,10 +591,14 @@ def walk_dxf(fh, graph, max_abs, counters):
                             current = None
                         elif current is not None:
                             graph.direct[current] += 1
-                            if capture:
+                            if capture == CAPTURE_ANNOTATION:
+                                graph.annotate(current, handles, 1 + leader_lines)
+                            elif capture:
                                 graph.refer(current, names, max(cols, 1) * max(rows, 1))
                     elif capture == CAPTURE_RECORD:
                         graph.record(handles, names)
+                    elif capture == CAPTURE_STYLE:
+                        graph.style(handles, names)
                 if line == b"EOF":
                     return pairs
                 kind = line.strip()
@@ -560,18 +610,24 @@ def walk_dxf(fh, graph, max_abs, counters):
                 if handles:
                     handles = []
                 cols = rows = 1
+                leader_lines = 0
                 if kind == b"SECTION" or kind == b"ENDSEC":
-                    in_entities = in_blocks = in_tables = scoped = False
+                    in_entities = in_blocks = in_tables = in_objects = scoped = False
                     naming = kind == b"SECTION"
                     kind = None
                     current = None
                 elif scoped:
                     if kind in REFERENCE_KINDS:
                         capture = CAPTURE_INSERT if kind == b"INSERT" else CAPTURE_REFERENCE
+                    elif kind in ANNOTATION_KINDS:
+                        capture = CAPTURE_ANNOTATION
                     elif in_blocks and kind == b"BLOCK":
                         capture = CAPTURE_BLOCK
                 elif in_tables and kind == b"BLOCK_RECORD":
                     capture = CAPTURE_RECORD
+                elif (in_tables or in_objects) and kind in STYLE_KINDS:
+                    capture = CAPTURE_STYLE
+                    dimstyle = STYLE_KINDS[kind]
                 continue
             if naming:
                 naming = False
@@ -579,6 +635,7 @@ def walk_dxf(fh, graph, max_abs, counters):
                     in_entities = line == b"ENTITIES"
                     in_blocks = line == b"BLOCKS"
                     in_tables = line == b"TABLES"
+                    in_objects = line == b"OBJECTS"
                     scoped = in_entities or in_blocks
                     continue
             if scoped and 0 <= c < type_count:
@@ -594,7 +651,17 @@ def walk_dxf(fh, graph, max_abs, counters):
                     elif t == TYPE_REAL and isinf(float(text)):
                         raise numeric_finding("non_numeric_value", lineno, c, counters)
             if capture:
-                if c == NAME_CODE:
+                if capture == CAPTURE_ANNOTATION:
+                    if c in ANNOTATION_HANDLE_CODES:
+                        handles.append(line)
+                    elif line.strip() == LEADER_LINE_MARKER:
+                        leader_lines += 1
+                elif capture == CAPTURE_STYLE:
+                    if c in STYLE_HANDLE_CODES:
+                        handles.append(line)
+                    elif dimstyle and c in STYLE_NAME_CODES:
+                        names.append(line)
+                elif c == NAME_CODE:
                     names.append(line)
                 elif capture == CAPTURE_INSERT:
                     if c == COLUMN_CODE:
@@ -604,21 +671,20 @@ def walk_dxf(fh, graph, max_abs, counters):
                 elif capture == CAPTURE_BLOCK:
                     if c == OWNER_CODE:
                         owners.append(line)
-                elif c == HANDLE_CODE:
+                elif capture == CAPTURE_RECORD and c == HANDLE_CODE:
                     handles.append(line)
-    if kind is not None and in_entities:
-        graph.direct[root] += 1
-        if capture:
-            graph.refer(root, names, max(cols, 1) * max(rows, 1))
-    elif kind is not None and in_blocks and current is not None and capture != CAPTURE_BLOCK and kind != b"ENDBLK":
-        graph.direct[current] += 1
-        if capture:
-            graph.refer(current, names, max(cols, 1) * max(rows, 1))
+    owner = root if in_entities else current if in_blocks and capture != CAPTURE_BLOCK and kind != b"ENDBLK" else None
+    if kind is not None and owner is not None:
+        graph.direct[owner] += 1
+        if capture == CAPTURE_ANNOTATION:
+            graph.annotate(owner, handles, 1 + leader_lines)
+        elif capture:
+            graph.refer(owner, names, max(cols, 1) * max(rows, 1))
     return pairs
 
 
 def judge_graph(graph, max_inserts, max_entities, max_nesting, counters):
-    graph.resolve_owners()
+    graph.resolve_references()
     n = len(graph.direct)
     direct = graph.direct
     parents = graph.parents
@@ -698,6 +764,9 @@ def judge_graph(graph, max_inserts, max_entities, max_nesting, counters):
                 ready.append(c)
     if len(order) != active:
         raise Finding("too_complex", "cyclic_block_reference", counters)
+    hop = bytearray(b"\x01") * n
+    for x in graph.virtual:
+        hop[x] = 0
     depth = array("q", bytes(8 * n))
     inserts = array("q", bytes(8 * n))
     entities = array("q", (min(v, sat_entities) for v in direct))
@@ -712,9 +781,10 @@ def judge_graph(graph, max_inserts, max_entities, max_nesting, counters):
         for k in range(lo, hi):
             c = adj[k]
             m = amult[k]
-            if depth[c] >= d:
-                d = depth[c] + 1
-            ins += m * (1 + inserts[c])
+            step = hop[c]
+            if depth[c] + step > d:
+                d = depth[c] + step
+            ins += m * (step + inserts[c])
             ent += m * entities[c]
         depth[x] = min(d, sat_nesting)
         inserts[x] = min(ins, sat_inserts)
