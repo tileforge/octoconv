@@ -1,9 +1,11 @@
 #!/usr/bin/python3 -IB
 import argparse
+import bisect
 import itertools
 import json
 import math
 import mmap
+import operator
 import os
 import re
 import stat
@@ -454,12 +456,21 @@ class BlockGraph:
         self.style_names = set()
         self.virtual = []
         self.blocks = 0
+        self.last_parent = -1
+        self.last_child = -1
         self.root = self.node(MODEL_SPACE)
         self.unions.append((self.root, self.node(PAPER_SPACE)))
 
+    def key(self, raw):
+        if raw.isascii():
+            return raw.lower()
+        key = raw.decode(self.encoding, "surrogateescape").lower()
+        return key.encode("ascii") if key.isascii() else key
+
     def node(self, raw):
-        text = raw.decode("ascii") if raw.isascii() else raw.decode(self.encoding, "surrogateescape")
-        key = text.lower()
+        return self.node_of(self.key(raw))
+
+    def node_of(self, key):
         ident = self.keys.get(key)
         if ident is None:
             ident = len(self.direct)
@@ -472,11 +483,8 @@ class BlockGraph:
         return len(self.direct) - 1
 
     def refer(self, owner, names, mult):
-        mult = min(mult, self.mult_limit)
         for raw in names:
-            self.parents.append(owner)
-            self.children.append(self.node(raw))
-            self.mults.append(mult)
+            self.edge(owner, self.node(raw), mult)
 
     def define(self, names, owners):
         self.blocks += 1
@@ -501,9 +509,17 @@ class BlockGraph:
         self.style_names.update(raw for raw in names if raw)
 
     def edge(self, parent, child, mult):
+        limit = self.mult_limit
+        if parent == self.last_parent and child == self.last_child:
+            last = len(self.mults) - 1
+            mult += self.mults[last]
+            self.mults[last] = mult if mult < limit else limit
+            return
         self.parents.append(parent)
         self.children.append(child)
-        self.mults.append(mult)
+        self.mults.append(mult if mult < limit else limit)
+        self.last_parent = parent
+        self.last_child = child
 
     def record_names(self, handle):
         return [raw for raw in self.records.get(handle, ()) if raw]
@@ -537,15 +553,56 @@ def numeric_finding(kind, line, code, counters):
     return Finding("unreadable", kind, counters)
 
 
+def dxf_pairs(fh, counters):
+    cache = {}
+    base = 0
+    carry = None
+    for lines in dxf_lines(fh):
+        if carry is not None:
+            lines.insert(0, carry)
+            carry = None
+        if len(lines) & 1:
+            carry = lines.pop()
+        if not lines:
+            continue
+        raw_codes = lines[0::2]
+        values = lines[1::2]
+        if len(cache) > CODE_CACHE_LIMIT:
+            cache = {}
+        missing = set(raw_codes).difference(cache)
+        for raw in missing:
+            text = raw.strip()
+            cache[raw] = int(text) if GROUP_CODE.fullmatch(text) else None
+        codes = list(map(cache.__getitem__, raw_codes))
+        if missing and None in codes:
+            bad = codes.index(None)
+            for j in range(bad):
+                if codes[j] == 0 and values[j] == b"EOF":
+                    yield base, codes[:j + 1], values[:j + 1]
+                    return
+            counters["line"] = base + 2 * bad + 1
+            raise Finding("unreadable", "bad_group_code", counters)
+        yield base, codes, values
+        base += len(lines)
+
+
 def walk_dxf(fh, graph, max_abs, counters):
-    codes = {}
     types = CODE_TYPES
     type_count = len(types)
     real = REAL.fullmatch
     isinf = math.isinf
-    lineno = 0
-    code = None
+    direct = graph.direct
+    key_of = graph.key
+    keys = graph.keys
+    node_of = graph.node_of
+    limit = graph.mult_limit
+    add_parent = graph.parents.append
+    add_child = graph.children.append
+    add_mult = graph.mults.append
+    pend_p = pend_c = -1
+    pend_m = 0
     pairs = 0
+    block_count = 0
     in_entities = in_blocks = in_tables = in_objects = scoped = naming = False
     dimstyle = False
     leader_lines = 0
@@ -555,51 +612,65 @@ def walk_dxf(fh, graph, max_abs, counters):
     owners = []
     handles = []
     cols = rows = 1
-    current = None
+    current = -1
     root = graph.root
-    for lines in dxf_lines(fh):
-        for line in lines:
-            lineno += 1
-            if code is None:
-                code = codes.get(line)
-                if code is None:
-                    text = line.strip()
-                    if GROUP_CODE.fullmatch(text) is None:
-                        counters["line"] = lineno
-                        raise Finding("unreadable", "bad_group_code", counters)
-                    code = int(text)
-                    if len(codes) < CODE_CACHE_LIMIT:
-                        codes[line] = code
-                continue
-            c = code
-            code = None
-            pairs += 1
-            if c == COMMENT_CODE:
-                continue
+    final = (-1, [0], [b"EOF"])
+    for base, codes, values in itertools.chain(dxf_pairs(fh, counters), (final,)):
+        if base >= 0:
+            pairs += len(codes)
+        for i, c in enumerate(codes):
             if c == 0:
                 if kind is not None:
-                    if in_entities:
-                        graph.direct[root] += 1
-                        if capture == CAPTURE_ANNOTATION:
-                            graph.annotate(root, handles, 1 + leader_lines)
-                        elif capture:
-                            graph.refer(root, names, max(cols, 1) * max(rows, 1))
-                    elif in_blocks:
-                        if capture == CAPTURE_BLOCK:
+                    if in_blocks and capture == CAPTURE_BLOCK:
+                        if owners or len(names) != 1 or not names[0]:
                             current = graph.define(names, owners)
-                        elif kind == b"ENDBLK":
-                            current = None
-                        elif current is not None:
-                            graph.direct[current] += 1
-                            if capture == CAPTURE_ANNOTATION:
-                                graph.annotate(current, handles, 1 + leader_lines)
-                            elif capture:
-                                graph.refer(current, names, max(cols, 1) * max(rows, 1))
-                    elif capture == CAPTURE_RECORD:
-                        graph.record(handles, names)
-                    elif capture == CAPTURE_STYLE:
-                        graph.style(handles, names)
+                        else:
+                            raw = names[0]
+                            key = raw.lower() if raw.isascii() else key_of(raw)
+                            current = keys.get(key)
+                            if current is None:
+                                current = node_of(key)
+                            block_count += 1
+                    elif in_blocks and kind == b"ENDBLK":
+                        current = -1
+                    else:
+                        owner = root if in_entities else current if in_blocks else -1
+                        if owner >= 0:
+                            direct[owner] += 1
+                            if capture == CAPTURE_INSERT or capture == CAPTURE_REFERENCE:
+                                m = (cols if cols > 1 else 1) * (rows if rows > 1 else 1)
+                                for raw in names:
+                                    key = raw.lower() if raw.isascii() else key_of(raw)
+                                    child = keys.get(key)
+                                    if child is None:
+                                        child = node_of(key)
+                                    if owner == pend_p and child == pend_c:
+                                        pend_m += m
+                                        if pend_m > limit:
+                                            pend_m = limit
+                                    else:
+                                        if pend_p >= 0:
+                                            add_parent(pend_p)
+                                            add_child(pend_c)
+                                            add_mult(pend_m)
+                                        pend_p = owner
+                                        pend_c = child
+                                        pend_m = m if m < limit else limit
+                            elif capture == CAPTURE_ANNOTATION:
+                                graph.annotate(owner, handles, 1 + leader_lines)
+                        elif capture == CAPTURE_RECORD:
+                            graph.record(handles, names)
+                        elif capture == CAPTURE_STYLE:
+                            graph.style(handles, names)
+                line = values[i]
                 if line == b"EOF":
+                    if pend_p >= 0:
+                        add_parent(pend_p)
+                        add_child(pend_c)
+                        add_mult(pend_m)
+                    graph.last_parent = pend_p
+                    graph.last_child = pend_c
+                    graph.blocks += block_count
                     return pairs
                 kind = line.strip()
                 capture = 0
@@ -615,7 +686,7 @@ def walk_dxf(fh, graph, max_abs, counters):
                     in_entities = in_blocks = in_tables = in_objects = scoped = False
                     naming = kind == b"SECTION"
                     kind = None
-                    current = None
+                    current = -1
                 elif scoped:
                     if kind in REFERENCE_KINDS:
                         capture = CAPTURE_INSERT if kind == b"INSERT" else CAPTURE_REFERENCE
@@ -629,6 +700,9 @@ def walk_dxf(fh, graph, max_abs, counters):
                     capture = CAPTURE_STYLE
                     dimstyle = STYLE_KINDS[kind]
                 continue
+            if c == COMMENT_CODE:
+                continue
+            line = values[i]
             if naming:
                 naming = False
                 if c == NAME_CODE:
@@ -638,18 +712,18 @@ def walk_dxf(fh, graph, max_abs, counters):
                     in_objects = line == b"OBJECTS"
                     scoped = in_entities or in_blocks
                     continue
-            if scoped and 0 <= c < type_count:
+            if scoped and 0 < c < type_count:
                 t = types[c]
                 if t:
                     text = line.strip()
                     if real(text) is None:
-                        raise numeric_finding("non_numeric_value", lineno, c, counters)
+                        raise numeric_finding("non_numeric_value", base + 2 * i + 2, c, counters)
                     if t == TYPE_COORDINATE:
                         value = float(text)
                         if not -max_abs <= value <= max_abs:
-                            raise numeric_finding("coordinate_out_of_range", lineno, c, counters)
+                            raise numeric_finding("coordinate_out_of_range", base + 2 * i + 2, c, counters)
                     elif t == TYPE_REAL and isinf(float(text)):
-                        raise numeric_finding("non_numeric_value", lineno, c, counters)
+                        raise numeric_finding("non_numeric_value", base + 2 * i + 2, c, counters)
             if capture:
                 if capture == CAPTURE_ANNOTATION:
                     if c in ANNOTATION_HANDLE_CODES:
@@ -673,19 +747,11 @@ def walk_dxf(fh, graph, max_abs, counters):
                         owners.append(line)
                 elif capture == CAPTURE_RECORD and c == HANDLE_CODE:
                     handles.append(line)
-    owner = root if in_entities else current if in_blocks and capture != CAPTURE_BLOCK and kind != b"ENDBLK" else None
-    if kind is not None and owner is not None:
-        graph.direct[owner] += 1
-        if capture == CAPTURE_ANNOTATION:
-            graph.annotate(owner, handles, 1 + leader_lines)
-        elif capture:
-            graph.refer(owner, names, max(cols, 1) * max(rows, 1))
     return pairs
 
 
 def judge_graph(graph, max_inserts, max_entities, max_nesting, counters):
     graph.resolve_references()
-    n = len(graph.direct)
     direct = graph.direct
     parents = graph.parents
     children = graph.children
@@ -711,92 +777,114 @@ def judge_graph(graph, max_inserts, max_entities, max_nesting, counters):
         direct[top] += direct[x]
         direct[x] = 0
     if links:
-        for i in range(len(parents)):
-            if parents[i] in links:
-                parents[i] = find(parents[i])
-            if children[i] in links:
-                children[i] = find(children[i])
+        canon = {x: find(x) for x in links}
+        parents = array("q", map(canon.get, parents, parents))
+        children = array("q", map(canon.get, children, children))
     root = find(graph.root)
     sat_inserts = max_inserts + 1
     sat_entities = max_entities + 1
     sat_nesting = max_nesting + 1
     counters["blocks"] = graph.blocks
     counters["entities"] = min(direct[root], sat_entities)
-    edges = len(parents)
-    outdeg = array("q", bytes(8 * n))
+    if any(map(operator.eq, parents, children)):
+        raise Finding("too_complex", "cyclic_block_reference", counters)
+    n = len(direct)
+    internal = set(parents)
+    if all(map(operator.le, parents, itertools.islice(parents, 1, None))):
+        by_parent = parents
+        by_child = children
+        by_mult = graph.mults
+    else:
+        perm = sorted(range(len(parents)), key=parents.__getitem__)
+        by_parent = array("q", map(parents.__getitem__, perm))
+        by_child = array("q", map(children.__getitem__, perm))
+        by_mult = array("q", map(graph.mults.__getitem__, perm))
+        del perm
+    core = bytes(map(internal.__contains__, by_child))
+    if all(core):
+        core_parents, core_children, core_mults = by_parent, by_child, by_mult
+        leaf_parents = leaf_mults = leaf_direct = array("q")
+    else:
+        leaf = bytes(map(operator.not_, core))
+        core_parents = array("q", itertools.compress(by_parent, core))
+        core_children = array("q", itertools.compress(by_child, core))
+        core_mults = array("q", itertools.compress(by_mult, core))
+        leaf_parents = array("q", itertools.compress(by_parent, leaf))
+        leaf_mults = array("q", itertools.compress(by_mult, leaf))
+        leaf_direct = array("q", map(direct.__getitem__, itertools.compress(by_child, leaf)))
+        del leaf
+    del by_parent, by_child, by_mult, core
+    leaf_ins = array("q", bytes(8 * n))
+    leaf_ent = {}
+    has_leaf = bytearray(n)
+    pos = 0
+    while pos < len(leaf_parents):
+        parent = leaf_parents[pos]
+        end = bisect.bisect_right(leaf_parents, parent, pos)
+        mults = leaf_mults[pos:end]
+        leaf_ins[parent] = min(sum(mults), sat_inserts)
+        leaf_ent[parent] = sum(map(operator.mul, mults, leaf_direct[pos:end]))
+        has_leaf[parent] = 1
+        pos = end
+    del leaf_parents, leaf_mults, leaf_direct
+    start = array("q", bytes(8 * (n + 1)))
+    pos = 0
+    while pos < len(core_parents):
+        parent = core_parents[pos]
+        end = bisect.bisect_right(core_parents, parent, pos)
+        start[parent] = pos
+        start[parent + 1] = end
+        pos = end
+    del core_parents
     indeg = array("q", bytes(8 * n))
-    for i in range(edges):
-        p = parents[i]
-        c = children[i]
-        if p == c:
-            raise Finding("too_complex", "cyclic_block_reference", counters)
-        outdeg[p] += 1
+    for c in core_children:
         indeg[c] += 1
-    start = array("q", [0])
-    start.extend(itertools.accumulate(outdeg))
-    fill = array("q", start)
-    adj = array("q", bytes(8 * edges))
-    amult = array("q", bytes(8 * edges))
-    mults = graph.mults
-    for i in range(edges):
-        p = parents[i]
-        k = fill[p]
-        adj[k] = children[i]
-        amult[k] = mults[i]
-        fill[p] = k + 1
-    del fill
-    ready = []
-    active = 0
-    for x in range(n):
-        if outdeg[x] or indeg[x]:
-            active += 1
-            if not indeg[x]:
-                ready.append(x)
+    ready = [x for x in internal if not indeg[x]]
     order = []
     while ready:
         x = ready.pop()
         order.append(x)
         for k in range(start[x], start[x + 1]):
-            c = adj[k]
+            c = core_children[k]
             left = indeg[c] - 1
             indeg[c] = left
             if not left:
                 ready.append(c)
-    if len(order) != active:
+    if len(order) != len(internal):
         raise Finding("too_complex", "cyclic_block_reference", counters)
+    del indeg, ready
     hop = bytearray(b"\x01") * n
     for x in graph.virtual:
         hop[x] = 0
     depth = array("q", bytes(8 * n))
     inserts = array("q", bytes(8 * n))
-    entities = array("q", (min(v, sat_entities) for v in direct))
+    entities = array("q", bytes(8 * n))
     for x in reversed(order):
-        lo = start[x]
-        hi = start[x + 1]
-        if lo == hi:
-            continue
-        d = 0
-        ins = 0
-        ent = entities[x]
-        for k in range(lo, hi):
-            c = adj[k]
-            m = amult[k]
+        d = has_leaf[x]
+        ins = leaf_ins[x]
+        ent = direct[x] + leaf_ent[x] if d else direct[x]
+        for k in range(start[x], start[x + 1]):
+            c = core_children[k]
+            m = core_mults[k]
             step = hop[c]
-            if depth[c] + step > d:
-                d = depth[c] + step
+            dc = depth[c] + step
+            if dc > d:
+                d = dc
             ins += m * (step + inserts[c])
             ent += m * entities[c]
-        depth[x] = min(d, sat_nesting)
-        inserts[x] = min(ins, sat_inserts)
-        entities[x] = min(ent, sat_entities)
+        depth[x] = d if d < sat_nesting else sat_nesting
+        inserts[x] = ins if ins < sat_inserts else sat_inserts
+        entities[x] = ent if ent < sat_entities else sat_entities
+    if root not in internal:
+        entities[root] = min(direct[root], sat_entities)
     counters["nesting"] = depth[root]
     counters["expanded_inserts"] = inserts[root]
     counters["expanded_entities"] = entities[root]
-    if depth[root] > max_nesting:
+    if counters["nesting"] > max_nesting:
         raise Finding("too_complex", "nesting_too_deep", counters)
-    if inserts[root] > max_inserts:
+    if counters["expanded_inserts"] > max_inserts:
         raise Finding("too_complex", "expanded_inserts_over_cap", counters)
-    if entities[root] > max_entities:
+    if counters["expanded_entities"] > max_entities:
         raise Finding("too_complex", "expanded_entities_over_cap", counters)
     return counters
 

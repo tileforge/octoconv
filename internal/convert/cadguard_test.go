@@ -956,3 +956,34 @@ func TestCADGuardDXFFollowsAnnotationBlockHandles(t *testing.T) {
 		}
 	})
 }
+
+func TestCADGuardDXFLineNumbersSurviveChunkBoundaries(t *testing.T) {
+	requireCADPython(t)
+	dir := t.TempDir()
+	var entities []dxfPair
+	for i := 0; i < 200000; i++ {
+		entities = append(entities, dxfLinePairs()...)
+	}
+	bad := []dxfPair{{"0", "LINE"}, {"8", "0"}, {"10", "nan"}}
+	for _, newline := range []string{"\n", "\r\n", "\r"} {
+		t.Run(fmt.Sprintf("%q", newline), func(t *testing.T) {
+			data := bytes.ReplaceAll(dxfFile("AC1009", "", nil, append(append([]dxfPair{}, entities...), bad...)), []byte("\n"), []byte(newline))
+			if len(data) < 9<<20 {
+				t.Fatalf("file is %d bytes, want more than two read chunks", len(data))
+			}
+			marker := bytes.Index(data, []byte("nan"))
+			want := bytes.Count(data[:marker], []byte(newline)) + 1
+			r := runCADGuardDXF(t, writeGuardFile(t, dir, "big.dxf", data))
+			if r.reason != "non_numeric_value" || r.number("line") != want || r.number("code") != 10 {
+				t.Errorf("reason=%q line=%d code=%d, want non_numeric_value at line %d code 10", r.reason, r.number("line"), r.number("code"), want)
+			}
+		})
+	}
+	t.Run("bad group codes after EOF are never read", func(t *testing.T) {
+		data := append(dxfFile("AC1009", "", nil, dxfLinePairs()), []byte("x\nnan\n1_0\n")...)
+		r := runCADGuardDXF(t, writeGuardFile(t, dir, "after_eof.dxf", data))
+		if r.verdict != "ok" || r.exit != 0 {
+			t.Errorf("verdict=%q reason=%q exit=%d, want ok/0", r.verdict, r.reason, r.exit)
+		}
+	})
+}
