@@ -17,10 +17,14 @@ import (
 )
 
 const (
-	cadGuardHelperPath = "../../cmd/cad-worker/helper/cad-guard"
-	cadMeshHelperPath  = "../../cmd/cad-worker/helper/cad-mesh"
-	guardTestEntityCap = 754762
-	guardTestNAUOCap   = 1518
+	cadGuardHelperPath     = "../../cmd/cad-worker/helper/cad-guard"
+	cadMeshHelperPath      = "../../cmd/cad-worker/helper/cad-mesh"
+	guardTestEntityCap     = 754762
+	guardTestNAUOCap       = 1518
+	guardTestDXFInserts    = 170031
+	guardTestDXFEntities   = 850155
+	guardTestDXFNesting    = 16
+	guardTestDXFCoordinate = "1e12"
 )
 
 type guardResult struct {
@@ -50,28 +54,56 @@ func requireCADPython(t *testing.T) string {
 
 func runCADGuard(t *testing.T, format string, entityCap, nauoCap int, path string) guardResult {
 	t.Helper()
-	py := requireCADPython(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, py, "-IB", cadGuardHelperPath,
+	return runCADGuardArgs(t,
 		"--format", format,
 		"--max-entities", fmt.Sprint(entityCap),
 		"--max-nauo", fmt.Sprint(nauoCap),
 		path)
+}
+
+func runCADGuardDXF(t *testing.T, path string) guardResult {
+	t.Helper()
+	return runCADGuardArgs(t, dxfGuardArgs(path)...)
+}
+
+func dxfGuardArgs(path string) []string {
+	return []string{
+		"--format", "dxf",
+		"--max-expanded-inserts", fmt.Sprint(guardTestDXFInserts),
+		"--max-expanded-entities", fmt.Sprint(guardTestDXFEntities),
+		"--max-nesting", fmt.Sprint(guardTestDXFNesting),
+		"--max-abs-coordinate", guardTestDXFCoordinate,
+		path,
+	}
+}
+
+func execCADGuard(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	py := requireCADPython(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, py, append([]string{"-IB", cadGuardHelperPath}, args...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	err := cmd.Run()
-	res := guardResult{stdout: stdout.String()}
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
+		return 0, stdout.String()
 	case errors.As(err, &exitErr):
-		res.exit = exitErr.ExitCode()
+		return exitErr.ExitCode(), stdout.String()
 	default:
 		t.Fatalf("run cad-guard: %v", err)
 	}
+	return -1, ""
+}
+
+func runCADGuardArgs(t *testing.T, args ...string) guardResult {
+	t.Helper()
+	exit, out := execCADGuard(t, args...)
+	res := guardResult{exit: exit, stdout: out}
 	var last string
-	sc := bufio.NewScanner(&stdout)
+	sc := bufio.NewScanner(strings.NewReader(out))
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
 		if line := strings.TrimSpace(sc.Text()); line != "" {
@@ -413,11 +445,16 @@ func TestCADGuardHelperHoldsNoNumbersOfItsOwn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []string{"754762", "1518"} {
-		if bytes.Contains(data, []byte(n)) {
+	forbidden := []string{"754762", "1518",
+		fmt.Sprint(guardTestDXFInserts), fmt.Sprint(guardTestDXFEntities), fmt.Sprint(guardTestDXFNesting),
+		guardTestDXFCoordinate, "1e+12", "1E12", "1000000000000", "10 ** 12", "10**12"}
+	for _, n := range forbidden {
+		re := regexp.MustCompile(`(^|[^0-9A-Za-z_.])` + regexp.QuoteMeta(n) + `($|[^0-9A-Za-z_.])`)
+		if re.Match(data) {
 			t.Errorf("cad-guard contains the cap %s: the caps arrive on argv only", n)
 		}
 	}
+	t.Logf("forbidden cap literals: %s", strings.Join(forbidden, " "))
 	if !bytes.HasPrefix(data, []byte("#!/usr/bin/python3 -IB\n")) {
 		t.Errorf("cad-guard shebang is %q", bytes.SplitN(data, []byte("\n"), 2)[0])
 	}
@@ -426,4 +463,407 @@ func TestCADGuardHelperHoldsNoNumbersOfItsOwn(t *testing.T) {
 			t.Errorf("cad-guard imports %s: the guard is standard library only", mod)
 		}
 	}
+}
+
+type dxfPair struct {
+	code  string
+	value string
+}
+
+func dxfFile(acadver, codepage string, blocks, entities []dxfPair, extra ...[]dxfPair) []byte {
+	var pairs []dxfPair
+	pairs = append(pairs, dxfPair{"0", "SECTION"}, dxfPair{"2", "HEADER"})
+	if acadver != "" {
+		pairs = append(pairs, dxfPair{"9", "$ACADVER"}, dxfPair{"1", acadver})
+	}
+	if codepage != "" {
+		pairs = append(pairs, dxfPair{"9", "$DWGCODEPAGE"}, dxfPair{"3", codepage})
+	}
+	pairs = append(pairs, dxfPair{"0", "ENDSEC"})
+	for _, section := range extra {
+		pairs = append(pairs, section...)
+	}
+	if blocks != nil {
+		pairs = append(pairs, dxfPair{"0", "SECTION"}, dxfPair{"2", "BLOCKS"})
+		pairs = append(pairs, blocks...)
+		pairs = append(pairs, dxfPair{"0", "ENDSEC"})
+	}
+	pairs = append(pairs, dxfPair{"0", "SECTION"}, dxfPair{"2", "ENTITIES"})
+	pairs = append(pairs, entities...)
+	pairs = append(pairs, dxfPair{"0", "ENDSEC"}, dxfPair{"0", "EOF"})
+	var b bytes.Buffer
+	for _, p := range pairs {
+		b.WriteString(p.code)
+		b.WriteString("\n")
+		b.WriteString(p.value)
+		b.WriteString("\n")
+	}
+	return b.Bytes()
+}
+
+func dxfLinePairs() []dxfPair {
+	return []dxfPair{{"0", "LINE"}, {"8", "0"}, {"10", "0.0"}, {"20", "0.0"}, {"30", "0.0"}, {"11", "10.0"}, {"21", "0.0"}, {"31", "0.0"}}
+}
+
+func dxfBlockPairs(name string, body ...[]dxfPair) []dxfPair {
+	out := []dxfPair{{"0", "BLOCK"}, {"8", "0"}, {"2", name}, {"70", "0"}, {"10", "0.0"}, {"20", "0.0"}, {"30", "0.0"}}
+	for _, b := range body {
+		out = append(out, b...)
+	}
+	return append(out, dxfPair{"0", "ENDBLK"}, dxfPair{"8", "0"})
+}
+
+func dxfInsertPairs(name string, extra ...dxfPair) []dxfPair {
+	out := []dxfPair{{"0", "INSERT"}, {"8", "0"}, {"2", name}, {"10", "1.0"}, {"20", "1.0"}, {"30", "0.0"}}
+	return append(out, extra...)
+}
+
+func dxfFixturePath(name string) string {
+	return filepath.Join("testdata", "cad", "dxf", name)
+}
+
+func dxfCorpusFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	for _, dir := range []string{"public", "synthetic"} {
+		m, err := filepath.Glob(filepath.Join("testdata", "cad", dir, "*.dxf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, m...)
+	}
+	if len(files) != 12 {
+		t.Fatalf("found %d committed corpus DXF files, want 12", len(files))
+	}
+	return files
+}
+
+func requireGuardCountersWithinCaps(t *testing.T, r guardResult) {
+	t.Helper()
+	limits := map[string]int{
+		"expanded_inserts":  guardTestDXFInserts + 1,
+		"expanded_entities": guardTestDXFEntities + 1,
+		"entities":          guardTestDXFEntities + 1,
+		"nesting":           guardTestDXFNesting + 1,
+	}
+	for key, limit := range limits {
+		if _, ok := r.fields[key]; !ok {
+			continue
+		}
+		if got := r.number(key); got < 0 || got > limit {
+			t.Errorf("counter %s = %d, want 0..%d", key, got, limit)
+		}
+	}
+}
+
+func TestCADGuardDXFAdmitsCorpusAndDrawingFixtures(t *testing.T) {
+	requireCADPython(t)
+	files := dxfCorpusFiles(t)
+	maxNesting := 0
+	for _, f := range files {
+		t.Run("corpus/"+filepath.Base(f), func(t *testing.T) {
+			r := runCADGuardDXF(t, f)
+			if r.verdict != "ok" || r.exit != 0 {
+				t.Fatalf("verdict=%q reason=%q exit=%d, want ok/0 (%v)", r.verdict, r.reason, r.exit, r.fields)
+			}
+			for _, key := range []string{"entities", "expanded_inserts", "expanded_entities", "nesting", "blocks"} {
+				if _, ok := r.fields[key]; !ok {
+					t.Errorf("counter %s missing from %v", key, r.fields)
+				}
+			}
+			requireGuardCountersWithinCaps(t, r)
+			if n := r.number("nesting"); n > maxNesting {
+				maxNesting = n
+			}
+		})
+	}
+	if maxNesting > 4 {
+		t.Errorf("corpus nesting maximum is %d, want at most 4", maxNesting)
+	}
+	t.Logf("corpus nesting maximum %d", maxNesting)
+	fixtures := []string{
+		"text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf", "never_resolved.dxf",
+		"wide.dxf", "tall.dxf", "far_point.dxf", "single_point.dxf", "xline_ray.dxf",
+		"units_0.dxf", "units_1.dxf", "units_2.dxf", "units_3.dxf", "units_4.dxf", "units_5.dxf", "units_6.dxf",
+		"units_13.dxf", "units_21.dxf", "units_missing.dxf",
+		"header_far_extents.dxf", "wrong_extents.dxf",
+		"nonfinite_header.dxf", "nonfinite_tables.dxf", "nonfinite_objects.dxf",
+	}
+	for _, name := range fixtures {
+		t.Run("fixture/"+name, func(t *testing.T) {
+			r := runCADGuardDXF(t, dxfFixturePath(name))
+			if r.verdict != "ok" || r.exit != 0 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want ok/0 (%v)", r.verdict, r.reason, r.exit, r.fields)
+			}
+			requireGuardCountersWithinCaps(t, r)
+		})
+	}
+}
+
+func TestCADGuardDXFRejectsCyclesAndDepth(t *testing.T) {
+	requireCADPython(t)
+	for _, name := range []string{"cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf"} {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, dxfFixturePath(name))
+			if r.verdict != "too_complex" || r.reason != "cyclic_block_reference" || r.exit != 4 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want too_complex/cyclic_block_reference/4", r.verdict, r.reason, r.exit)
+			}
+		})
+	}
+	t.Run("nest_d16 is at the bound", func(t *testing.T) {
+		r := runCADGuardDXF(t, dxfFixturePath("nest_d16.dxf"))
+		if r.verdict != "ok" || r.exit != 0 || r.number("nesting") != 16 {
+			t.Errorf("verdict=%q exit=%d nesting=%d, want ok/0/16", r.verdict, r.exit, r.number("nesting"))
+		}
+	})
+	t.Run("nest_d17 is one over", func(t *testing.T) {
+		r := runCADGuardDXF(t, dxfFixturePath("nest_d17.dxf"))
+		if r.verdict != "too_complex" || r.reason != "nesting_too_deep" || r.exit != 4 || r.number("nesting") != 17 {
+			t.Errorf("verdict=%q reason=%q exit=%d nesting=%d, want too_complex/nesting_too_deep/4/17", r.verdict, r.reason, r.exit, r.number("nesting"))
+		}
+		requireGuardCountersWithinCaps(t, r)
+	})
+}
+
+func TestCADGuardDXFExpansionCaps(t *testing.T) {
+	requireCADPython(t)
+	for _, name := range []string{"minsert_over_inserts.dxf", "dimension_minsert.dxf"} {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, dxfFixturePath(name))
+			if r.verdict != "too_complex" || r.reason != "expanded_inserts_over_cap" || r.exit != 4 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want too_complex/expanded_inserts_over_cap/4", r.verdict, r.reason, r.exit)
+			}
+			if r.number("expanded_inserts") != guardTestDXFInserts+1 {
+				t.Errorf("expanded_inserts=%d, want the saturated %d", r.number("expanded_inserts"), guardTestDXFInserts+1)
+			}
+			requireGuardCountersWithinCaps(t, r)
+		})
+	}
+	t.Run("entities_over", func(t *testing.T) {
+		r := runCADGuardDXF(t, dxfFixturePath("entities_over.dxf"))
+		if r.verdict != "too_complex" || r.reason != "expanded_entities_over_cap" || r.exit != 4 {
+			t.Errorf("verdict=%q reason=%q exit=%d, want too_complex/expanded_entities_over_cap/4", r.verdict, r.reason, r.exit)
+		}
+		if got := r.number("expanded_inserts"); got != 851 {
+			t.Errorf("expanded_inserts=%d, want 851 (under the insert cap)", got)
+		}
+		requireGuardCountersWithinCaps(t, r)
+	})
+	dir := t.TempDir()
+	cell := dxfBlockPairs("CELL", dxfLinePairs())
+	grid := func(cols, rows string) string {
+		return writeGuardFile(t, dir, "grid_"+cols+"x"+rows+".dxf", dxfFile("AC1009", "ANSI_1252", cell,
+			dxfInsertPairs("CELL", dxfPair{"70", cols}, dxfPair{"71", rows}, dxfPair{"44", "1.0"}, dxfPair{"45", "1.0"})))
+	}
+	t.Run("a grid of exactly the cap is ok", func(t *testing.T) {
+		r := runCADGuardDXF(t, grid("1", fmt.Sprint(guardTestDXFInserts)))
+		if r.verdict != "ok" || r.number("expanded_inserts") != guardTestDXFInserts || r.number("expanded_entities") != guardTestDXFInserts {
+			t.Errorf("verdict=%q expanded_inserts=%d expanded_entities=%d, want ok/%d/%d", r.verdict,
+				r.number("expanded_inserts"), r.number("expanded_entities"), guardTestDXFInserts, guardTestDXFInserts)
+		}
+	})
+	t.Run("a grid of 1e300 rows saturates", func(t *testing.T) {
+		r := runCADGuardDXF(t, grid("2", "1e300"))
+		if r.verdict != "too_complex" || r.reason != "expanded_inserts_over_cap" || r.number("expanded_inserts") != guardTestDXFInserts+1 {
+			t.Errorf("verdict=%q reason=%q expanded_inserts=%d", r.verdict, r.reason, r.number("expanded_inserts"))
+		}
+		requireGuardCountersWithinCaps(t, r)
+	})
+}
+
+func TestCADGuardDXFNumericRulesInsideEntitiesAndBlocks(t *testing.T) {
+	requireCADPython(t)
+	for _, name := range []string{"nonnumeric_abc.dxf", "nonnumeric_comma.dxf", "nonnumeric_nan.dxf", "nonnumeric_inf.dxf", "nonnumeric_underscore.dxf"} {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, dxfFixturePath(name))
+			if r.verdict != "unreadable" || r.reason != "non_numeric_value" || r.exit != 2 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want unreadable/non_numeric_value/2", r.verdict, r.reason, r.exit)
+			}
+			if r.number("line") <= 0 || r.number("code") != 10 {
+				t.Errorf("line=%d code=%d, want a line and code 10", r.number("line"), r.number("code"))
+			}
+		})
+	}
+	for _, name := range []string{"coord_1e300.dxf", "coord_1e400.dxf"} {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, dxfFixturePath(name))
+			if r.verdict != "unreadable" || r.reason != "coordinate_out_of_range" || r.exit != 2 || r.number("line") <= 0 {
+				t.Errorf("verdict=%q reason=%q exit=%d line=%d, want unreadable/coordinate_out_of_range/2", r.verdict, r.reason, r.exit, r.number("line"))
+			}
+		})
+	}
+	for _, name := range []string{"dxf_binary.dxf", "dxf_bom.dxf"} {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, filepath.Join("testdata", "cad", "reject", name))
+			if r.verdict != "unreadable" || r.reason != "bad_group_code" || r.exit != 2 {
+				t.Errorf("verdict=%q reason=%q exit=%d, want unreadable/bad_group_code/2", r.verdict, r.reason, r.exit)
+			}
+		})
+	}
+	dir := t.TempDir()
+	line := func(x string) []dxfPair {
+		return []dxfPair{{"0", "LINE"}, {"8", "0"}, {"10", x}, {"20", "0.0"}, {"30", "0.0"}, {"11", "1.0"}, {"21", "0.0"}, {"31", "0.0"}}
+	}
+	cases := []struct {
+		name, reason string
+		data         []byte
+	}{
+		{"coordinate exactly at the bound", "", dxfFile("AC1009", "", nil, line("1e12"))},
+		{"coordinate just above the bound", "coordinate_out_of_range", dxfFile("AC1009", "", nil, line("1.0000000001e12"))},
+		{"negative coordinate above the bound", "coordinate_out_of_range", dxfFile("AC1009", "", nil, line("-2e12"))},
+		{"nan inside a block", "non_numeric_value", dxfFile("AC1009", "", dxfBlockPairs("B", line("nan")), nil)},
+		{"-inf inside a block", "non_numeric_value", dxfFile("AC1009", "", dxfBlockPairs("B", line("-inf")), nil)},
+		{"overflowing radius", "non_numeric_value", dxfFile("AC1009", "", nil,
+			[]dxfPair{{"0", "CIRCLE"}, {"8", "0"}, {"10", "0"}, {"20", "0"}, {"30", "0"}, {"40", "1e400"}})},
+		{"integer code holding 2.0", "", dxfFile("AC1009", "", dxfBlockPairs("C", dxfLinePairs()),
+			dxfInsertPairs("C", dxfPair{"70", "2.0"}))},
+		{"integer code holding x", "non_numeric_value", dxfFile("AC1009", "", dxfBlockPairs("C", dxfLinePairs()),
+			dxfInsertPairs("C", dxfPair{"70", "x"}))},
+		{"nan in the header", "", dxfFile("AC1009", "", nil, dxfLinePairs(),
+			[]dxfPair{{"0", "SECTION"}, {"2", "TABLES"}, {"0", "TABLE"}, {"2", "VPORT"}, {"0", "VPORT"}, {"40", "nan"}, {"0", "ENDTAB"}, {"0", "ENDSEC"}})},
+		{"a group code that is not an integer", "bad_group_code", []byte("0\nSECTION\n2\nENTITIES\n1_0\n0.0\n0\nENDSEC\n0\nEOF\n")},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := runCADGuardDXF(t, writeGuardFile(t, dir, fmt.Sprintf("numeric_%d.dxf", i), c.data))
+			want := c.reason
+			if want == "" && (r.verdict != "ok" || r.exit != 0) {
+				t.Errorf("verdict=%q reason=%q exit=%d, want ok/0", r.verdict, r.reason, r.exit)
+			}
+			if want != "" && (r.verdict != "unreadable" || r.reason != want || r.exit != 2) {
+				t.Errorf("verdict=%q reason=%q exit=%d, want unreadable/%s/2", r.verdict, r.reason, r.exit, want)
+			}
+		})
+	}
+}
+
+func TestCADGuardDXFKeysBlocksLikeEzdxf(t *testing.T) {
+	requireCADPython(t)
+	dir := t.TempDir()
+	selfRef := func(acadver, codepage, block, insert string) []byte {
+		return dxfFile(acadver, codepage, dxfBlockPairs(block, dxfLinePairs(), dxfInsertPairs(insert)), dxfInsertPairs(block))
+	}
+	cases := []struct {
+		name   string
+		cyclic bool
+		data   []byte
+	}{
+		{"ascii case folds", true, selfRef("AC1009", "ANSI_1252", "A", "a")},
+		{"cp1251 capital and small IO fold", true, selfRef("AC1015", "ANSI_1251", "\xa8", "\xb8")},
+		{"the same bytes under cp1252 do not fold", false, selfRef("AC1015", "ANSI_1252", "\xa8", "\xb8")},
+		{"utf-8 Cyrillic from AC1032", true, selfRef("AC1032", "ANSI_1252", "Ж", "ж")},
+		{"utf-8 Kelvin sign folds to k", true, selfRef("AC1032", "ANSI_1252", "k", "K")},
+		{"utf-8 Greek from AC1021", true, selfRef("AC1021", "ANSI_1253", "Σ", "σ")},
+		{"cp1253 Greek before AC1021", true, selfRef("AC1018", "ANSI_1253", "\xd3", "\xf3")},
+		{"a lower-case version string sorts above AC1021", true, selfRef("ac1015", "ANSI_1252", "Ж", "ж")},
+		{"a trailing space is part of the name", false, selfRef("AC1009", "ANSI_1252", "A ", "A")},
+		{"a leading space is part of the name", false, selfRef("AC1009", "ANSI_1252", " A", "A")},
+		{"a \\U+ escape matches its literal lower case", true, selfRef("AC1032", "ANSI_1252", "\\U+0416", "\\u+0416")},
+		{"a \\U+ escape is not decoded", false, selfRef("AC1032", "ANSI_1252", "\\U+0416", "ж")},
+		{"model space inserted into itself", true, dxfFile("AC1009", "", nil, dxfInsertPairs("*Model_Space"))},
+		{"a nameless block takes its owner record name", true, dxfFile("AC1015", "ANSI_1252",
+			[]dxfPair{{"0", "BLOCK"}, {"5", "20"}, {"330", "1F"}, {"100", "AcDbEntity"}, {"8", "0"}, {"100", "AcDbBlockBegin"}, {"70", "0"},
+				{"10", "0.0"}, {"20", "0.0"}, {"30", "0.0"}, {"0", "INSERT"}, {"8", "0"}, {"2", "R"}, {"10", "0"}, {"20", "0"}, {"30", "0"},
+				{"0", "ENDBLK"}, {"8", "0"}},
+			dxfInsertPairs("R"),
+			[]dxfPair{{"0", "SECTION"}, {"2", "TABLES"}, {"0", "TABLE"}, {"2", "BLOCK_RECORD"},
+				{"0", "BLOCK_RECORD"}, {"5", "1F"}, {"100", "AcDbSymbolTableRecord"}, {"100", "AcDbBlockTableRecord"}, {"2", "R"},
+				{"0", "ENDTAB"}, {"0", "ENDSEC"}})},
+		{"a dimension geometry block holding its dimension", true, dxfFile("AC1009", "",
+			append(dxfBlockPairs("*D1", dxfInsertPairs("HOST")),
+				dxfBlockPairs("HOST", []dxfPair{{"0", "DIMENSION"}, {"8", "0"}, {"2", "*d1"}, {"10", "0"}, {"20", "0"}, {"30", "0"}, {"70", "0"}})...),
+			dxfInsertPairs("HOST"))},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := runCADGuardDXF(t, writeGuardFile(t, dir, fmt.Sprintf("keys_%d.dxf", i), c.data))
+			if c.cyclic && (r.verdict != "too_complex" || r.reason != "cyclic_block_reference" || r.exit != 4) {
+				t.Errorf("verdict=%q reason=%q exit=%d, want too_complex/cyclic_block_reference/4", r.verdict, r.reason, r.exit)
+			}
+			if !c.cyclic && (r.verdict != "ok" || r.exit != 0) {
+				t.Errorf("verdict=%q reason=%q exit=%d, want ok/0", r.verdict, r.reason, r.exit)
+			}
+		})
+	}
+}
+
+func TestCADGuardDXFGraphWorkIsIterative(t *testing.T) {
+	requireCADPython(t)
+	dir := t.TempDir()
+	const depth = 5000
+	var chain, ring []dxfPair
+	for i := 0; i < depth; i++ {
+		chain = append(chain, dxfBlockPairs(fmt.Sprintf("C%d", i), dxfInsertPairs(fmt.Sprintf("C%d", i+1)))...)
+		ring = append(ring, dxfBlockPairs(fmt.Sprintf("R%d", i), dxfInsertPairs(fmt.Sprintf("R%d", (i+1)%depth)))...)
+	}
+	t.Run("a chain far deeper than the recursion limit", func(t *testing.T) {
+		r := runCADGuardDXF(t, writeGuardFile(t, dir, "chain.dxf", dxfFile("AC1009", "", chain, dxfInsertPairs("C0"))))
+		if r.verdict != "too_complex" || r.reason != "nesting_too_deep" || r.number("nesting") != guardTestDXFNesting+1 || r.number("blocks") != depth {
+			t.Errorf("verdict=%q reason=%q nesting=%d blocks=%d", r.verdict, r.reason, r.number("nesting"), r.number("blocks"))
+		}
+	})
+	t.Run("a ring far longer than the recursion limit", func(t *testing.T) {
+		r := runCADGuardDXF(t, writeGuardFile(t, dir, "ring.dxf", dxfFile("AC1009", "", ring, dxfLinePairs())))
+		if r.verdict != "too_complex" || r.reason != "cyclic_block_reference" {
+			t.Errorf("verdict=%q reason=%q", r.verdict, r.reason)
+		}
+	})
+}
+
+func TestCADGuardDXFLineEndingsAndCommentsDoNotChangeCounts(t *testing.T) {
+	requireCADPython(t)
+	plain, err := os.ReadFile(filepath.Join("testdata", "cad", "synthetic", "blocks_minsert.dxf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	base := runCADGuardDXF(t, writeGuardFile(t, dir, "plain.dxf", plain))
+	if base.verdict != "ok" || base.number("expanded_inserts") <= 0 {
+		t.Fatalf("plain file: verdict=%q expanded_inserts=%d", base.verdict, base.number("expanded_inserts"))
+	}
+	lf := bytes.ReplaceAll(plain, []byte("\r\n"), []byte("\n"))
+	variants := map[string][]byte{
+		"LF only":  lf,
+		"CR only":  bytes.ReplaceAll(lf, []byte("\n"), []byte("\r")),
+		"CRLF":     bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n")),
+		"comments": bytes.ReplaceAll(lf, []byte("\n  0\nINSERT\n"), []byte("\n999\nnan\n  0\nINSERT\n999\n1_0\n")),
+	}
+	for name, data := range variants {
+		t.Run(name, func(t *testing.T) {
+			r := runCADGuardDXF(t, writeGuardFile(t, dir, strings.ReplaceAll(name, " ", "_")+".dxf", data))
+			for _, key := range []string{"entities", "expanded_inserts", "expanded_entities", "nesting", "blocks"} {
+				if r.verdict != "ok" || r.number(key) != base.number(key) {
+					t.Errorf("verdict=%q %s=%d, want ok/%d", r.verdict, key, r.number(key), base.number(key))
+				}
+			}
+		})
+	}
+}
+
+func TestCADGuardDXFUsage(t *testing.T) {
+	requireCADPython(t)
+	path := dxfFixturePath("wide.dxf")
+	cases := map[string][]string{
+		"step without --max-entities":      {"--format", "step", "--max-nauo", "1", path},
+		"step without --max-nauo":          {"--format", "step", "--max-entities", "1", path},
+		"iges without --max-entities":      {"--format", "iges", "--max-nauo", "1", path},
+		"dxf without --max-nesting":        {"--format", "dxf", "--max-expanded-inserts", "1", "--max-expanded-entities", "1", "--max-abs-coordinate", "1", path},
+		"dxf without --max-abs-coordinate": {"--format", "dxf", "--max-expanded-inserts", "1", "--max-expanded-entities", "1", "--max-nesting", "1", path},
+		"dxf with a nan coordinate bound":  {"--format", "dxf", "--max-expanded-inserts", "1", "--max-expanded-entities", "1", "--max-nesting", "1", "--max-abs-coordinate", "nan", path},
+		"dxf with a negative cap":          {"--format", "dxf", "--max-expanded-inserts", "-1", "--max-expanded-entities", "1", "--max-nesting", "1", "--max-abs-coordinate", "1", path},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			exit, out := execCADGuard(t, args...)
+			if exit != 64 || strings.Contains(out, "CADVERDICT") {
+				t.Errorf("exit=%d stdout=%q, want 64 and no verdict", exit, out)
+			}
+		})
+	}
+	t.Run("dxf accepts the step caps and ignores them", func(t *testing.T) {
+		r := runCADGuardArgs(t, append([]string{"--max-entities", "1", "--max-nauo", "1"}, dxfGuardArgs(path)...)...)
+		if r.verdict != "ok" || r.exit != 0 {
+			t.Errorf("verdict=%q exit=%d, want ok/0", r.verdict, r.exit)
+		}
+	})
 }
