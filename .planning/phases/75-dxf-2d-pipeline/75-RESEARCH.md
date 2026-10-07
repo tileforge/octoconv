@@ -679,7 +679,7 @@ All of this was measured with the 1e6 coordinate space and un-normalized font si
 | A4 | The removable fontconfig entries stay removable on amd64 | Landlock | amd64 is not measured (no Landlock under emulation), as in 73/74 |
 | A5 | No production DXF depends on `recover` | D-02 | The private flow is unmeasured (71 `PRIVATE_CORPUS files=0`) |
 
-## Open Questions
+## Open Questions (RESOLVED — see 75-CONTEXT.md R-1..R-6: 1→R-1 kerning accepted, 2→R-2 drawn-primitive bbox, 3→R-3 subsequence rule, 4→R-4 far point accepted, 5→R-5 CAD_DXF_TIMEOUT/CAD_RSVG_TIMEOUT, 6→R-6 lock cmp checkpoint)
 
 1. **Kerning delta.** Centre/right/FIT text can drift up to ~3% of its width. Accept and document (recommended), or patch ezdxf to kern (`TTFontRenderer(font, kerning=True)`), which changes ezdxf's own layout and was not tested.
 2. **D-10 bbox source.** "Via ezdxf bbox" taken literally (`bbox.extents` of drawn entities) includes undrawn DIMENSION defpoints (`uncommon`: 0.0 vs 21.89). Recommended: the frame box (ezdxf `BoundingBox2d` of the recorded primitives + text glyph boxes), which is exactly what the picture shows. Needs a one-line confirmation.

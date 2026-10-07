@@ -4,16 +4,16 @@ milestone: v1.16
 milestone_name: CAD Engine
 current_phase: 75
 current_phase_name: DXF 2D Pipeline
-status: planning
+status: executing
 stopped_at: Phase 75 context gathered
-last_updated: "2026-10-07T00:30:33.383Z"
+last_updated: "2026-10-07T02:26:09.878Z"
 last_activity: 2026-10-07
 last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: cb33bad85afada2822c65f03f3d6153a6f5b4cf1
+state_head: fbc40b2cbcda4df8c034a266c248c121cf422c0f
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 28
+  total_plans: 38
   completed_plans: 28
   percent: 67
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 ## Current Position
 
-Phase: 75 — DXF 2D Pipeline
+Phase: 75 (DXF 2D Pipeline) — READY TO EXECUTE
 Plan: Not started
-Status: Ready to plan
+Status: Ready to execute
 Last activity: 2026-10-07 - Completed quick task 261007-1sx: Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2)
 
 Progress: [███████░░░] 67% (0/6 phases)

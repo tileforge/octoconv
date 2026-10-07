@@ -287,7 +287,36 @@ Plans:
   5. Стадии ezdxf и `rsvg-convert` работают каждая под своим замеренным ruleset,
      записанным в `SANDBOX-PATHS.md` и удерживаемым тестом; preflight судит по
      содержимому; шрифт доступен под ruleset, текст не пропадает (расширяет CADW-02)
-**Plans**: TBD
+**Plans**: 10 plans in 9 waves (последовательно)
+
+Plans:
+**Wave 1**
+- [ ] 75-01-PLAN.md — Wave 0: ezdxf lock-subset checkpoint (R-6), tracer cad-dxf + rsvg-convert under Landlock in the production image (text as text), phase fixtures
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 75-02-PLAN.md — cad-dxf complete: skip and count, never resolve, frame and bbox, units draft, texts.json, font failure, backstops, fidelity; real outputs as fixtures
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 75-03-PLAN.md — cad-guard DXF mode; differential vs ezdxf and the unguarded helper; R-8 scope; nesting derivation; guard cost at the ceiling
+- [ ] 75-04-PLAN.md — Go SVG allowlist with re-serialization, stdlib PDF judge, drawing mode of the pixel judge and the letterbox; three CLIs
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 75-05-PLAN.md — Wave 0 bounds (R-7, R-5): ceiling, insert and entity caps, stage timeouts and output byte ceilings derived from measured rows
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 75-06-PLAN.md — dxf option contract and measurements branch; pinned constants, sentinels, classification; job-local HOME stages; CAD_DXF_TIMEOUT and CAD_RSVG_TIMEOUT
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 75-07-PLAN.md — CADDXFConverter and CADDXFRenderConverter (unregistered); worker mapping and ERROR-CODES
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 75-08-PLAN.md — cad-dxf and rsvg-convert Landlock sets measured and crosschecked; drawing judge calibrated against pixelcheck; preflight proves both stages
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 75-09-PLAN.md — DXF pairs exposed in one commit; HTTP option, ceiling and inspect tests; worker two outputs
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 75-10-PLAN.md — live proof of the DXF pipeline end to end with the 74 regression
 
 ### Phase 76: Measured Bounds, KEDA Proof & Client Docs
 
@@ -326,7 +355,7 @@ Plans:
 | 72. Engine-Free Contract Foundations | 7/7 | Complete    | 2026-10-05 |
 | 73. CAD Class & Convert Slice, Confined | 6/6 | Complete    | 2026-10-05 |
 | 74. 3D Render & Measurements | 7/7 | Complete    | 2026-10-06 |
-| 75. DXF 2D Pipeline | 0/TBD | Not started | - |
+| 75. DXF 2D Pipeline | 0/10 | Planned | - |
 | 76. Measured Bounds, KEDA Proof & Client Docs | 0/TBD | Not started | - |
 
 Предыдущий милстоун — **v1.15 Engine Confinement** — закрыт 2026-10-01: все
