@@ -177,7 +177,11 @@ for p in sys.argv[1:]:
     "$(docker image inspect "$tag" --format '{{.Id}}')" "$(docker image inspect "$tag" --format '{{.Size}}')"
   printf 'HDR,mode=%s,server_arch=%s\n' "$mode" "$(docker version --format '{{.Server.Arch}}')"
   docker run --rm --network none --entrypoint sh "$tag" -c "$inner" </dev/null | sed "s/^/HDR,mode=$mode,/"
-  printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
+  if [ "$mode" = tracer ]; then
+    printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
+  else
+    printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/tmp_PYTHONHASHSEED=0_python=-B,unconfined=1\n' "$mode"
+  fi
 }
 
 evid_put() {
@@ -214,7 +218,7 @@ setup() {
   {
     printf '%s\n' "$LOCK_LINE"
     header_lines "$mode" "$TAG"
-    printf 'HDR,mode=%s,ro_cad_dxf=%s,ro_rsvg=%s,rw=%s\n' "$mode" "$DXF_RO" "$RSVG_RO" "$RW_SET"
+    [ "$mode" != tracer ] || printf 'HDR,mode=%s,ro_cad_dxf=%s,ro_rsvg=%s,rw=%s\n' "$mode" "$DXF_RO" "$RSVG_RO" "$RW_SET"
   } >> "$LINES"
 }
 
