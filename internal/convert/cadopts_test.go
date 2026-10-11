@@ -133,6 +133,31 @@ func TestValidateCADApplicability(t *testing.T) {
 		{"all but quality on stl render", EngineCAD, OperationRender, "stl", "png", noQuality, ""},
 		{"wrong engine", EngineImage, OperationConvert, "step", "stl", CADOpts{Quality: "draft"}, "cad-engine"},
 		{"unknown operation", EngineCAD, "sanitize", "step", "stl", CADOpts{Quality: "draft"}, "operation"},
+		{"view on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{View: "top"}, "view does not apply to a dxf source"},
+		{"quality on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{Quality: "fine"}, "quality does not apply to a dxf source"},
+		{"view on an upper-case DXF render", EngineCAD, OperationRender, "DXF", "png", CADOpts{View: "top"}, "view does not apply to a dxf source"},
+		{"quality on a dotted dxf render", EngineCAD, OperationRender, ".dxf", "png", CADOpts{Quality: "draft"}, "quality does not apply to a dxf source"},
+		{"size, background and unit on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{Size: cadIntPtr(1024), Background: "transparent", AssumeUnit: "mm"}, ""},
+		{"size alone on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{Size: cadIntPtr(256)}, ""},
+		{"zero opts on dxf render", EngineCAD, OperationRender, "dxf", "png", CADOpts{}, ""},
+		{"zero opts on dxf to svg", EngineCAD, OperationConvert, "dxf", "svg", CADOpts{}, ""},
+		{"zero opts on dxf to pdf", EngineCAD, OperationConvert, "dxf", "pdf", CADOpts{}, ""},
+	}
+	for _, target := range []string{"svg", "pdf"} {
+		for name, o := range map[string]CADOpts{
+			"view":        {View: "top"},
+			"size":        {Size: cadIntPtr(512)},
+			"quality":     {Quality: "standard"},
+			"background":  {Background: "opaque"},
+			"assume_unit": {AssumeUnit: "mm"},
+		} {
+			cases = append(cases, struct {
+				name                       string
+				engine, op, source, target string
+				o                          CADOpts
+				wantErr                    string
+			}{name + " on dxf to " + target, EngineCAD, OperationConvert, "dxf", target, o, "no option applies to a dxf conversion"})
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -62,17 +62,54 @@ An STL is read as binary when its size is exactly 84 bytes plus 50 times the tri
 
 An STL's volume is computed per shell, where a shell is the set of triangles joined through shared edges. When every shell encloses a positive volume, the volume is their sum and the area is the sum of all triangle areas. When every shell is inward, the reason is `negative_volume`. When the signs are mixed, volume and area are null with `stl_ambiguous_shells` instead of a difference of shells. This includes a hollow part whose cavity is modelled as an inward shell: it is reported as null, never as a wrong number. A shell of exactly zero volume makes the document `invalid_solid`.
 
+## DXF drawings
+
+A DXF document describes the same drawing as the picture. The `cad-dxf` helper draws model space only, with
+visible layers only (a layer that is off or frozen is absent from both), and it skips XREF, IMAGE, UNDERLAY,
+OLE, 3DSOLID, ACIS and proxy entities. Volume and area are always null with `not_applicable_2d`, and there are
+no solid counts.
+
+**Bounding box.** The bbox is the box of what is drawn: the drawn primitives plus the glyph box of every text.
+It is never taken from the header's `$EXTMIN`/`$EXTMAX`, which a file can state wrongly, and it is not ezdxf's
+`bbox.extents`, which counts dimension definition points that are never drawn. XLINE and RAY are infinite: they
+are drawn clipped to the picture's frame and are excluded from the bbox. An isolated POINT is drawn and is part
+of both the bbox and the frame, however far it is from the rest of the drawing: the frame shows exactly what
+the file contains, and points are not filtered as strays.
+
+**Units.** Values are in drawing units, unscaled: the millimetre conversion described under Schema does not
+apply to DXF, the engine applies no factor, and the document reports the unit the drawing declares. The unit
+comes from the `$INSUNITS` header:
+
+| `$INSUNITS` | `unit` | `unit_source` |
+|---|---|---|
+| 1 | `inch` | `declared` |
+| 2 | `foot` | `declared` |
+| 4 | `mm` | `declared` |
+| 5 | `cm` | `declared` |
+| 6 | `m` | `declared` |
+| 13 | `micrometre` | `declared` |
+| 0 or missing | `unspecified`, or the client's `assume_unit` | `none`, or `client_assumed` |
+| any other code | `unspecified` | `none`; `assume_unit` does not apply |
+
+A code outside this table (yards, miles, angstroms, survey units and the rest) names a unit the vocabulary has
+no word for. It is reported `unspecified`, and `assume_unit` does not fill it, because the file did state a
+unit and the client's guess would contradict it.
+
+**Known limit: kerning.** The text in the PNG and PDF is laid out by pango, which kerns; the bbox uses ezdxf's
+text layout, which does not. A rendered line of text can therefore be up to 3.3% narrower than its extent in
+the bbox, with the same start point and height.
+
 ## Units
 
 | Unit | Seen on the phase-71 corpus | Notes |
 |---|---|---|
 | `mm` | yes | STEP `SI:MILLI_METRE`, IGES `MM`, DXF `$INSUNITS` 4 |
-| `cm` | no | in the vocabulary, never observed |
+| `cm` | no | in the vocabulary, never observed; DXF `$INSUNITS` 5 |
 | `m` | yes | DXF `$INSUNITS` 6 |
 | `inch` | yes | STEP `CBU:INCH`, DXF `$INSUNITS` 1 |
-| `foot` | no | in the vocabulary, never observed |
-| `micrometre` | no | in the vocabulary, never observed |
-| `unspecified` | yes | every STL; a DXF without `$INSUNITS`; pairs with unit source `none` |
+| `foot` | no | in the vocabulary, never observed; DXF `$INSUNITS` 2 |
+| `micrometre` | no | in the vocabulary, never observed; DXF `$INSUNITS` 13 |
+| `unspecified` | yes | every STL; a DXF whose `$INSUNITS` is 0, missing or a code outside the DXF drawings table; pairs with unit source `none` |
 
 The draft vocabulary of phase 71 had a unit word for "not recognised". It is not a value: `unspecified`
 replaces it, and it means the file states no unit, not that the reader failed to understand one.
