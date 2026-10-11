@@ -8,6 +8,8 @@ Usage:
         --targets LIST [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --dxf-fixtures [--out-dir DIR] [--check-only]
     scripts/cad-corpus-gen.py --kind dxf-guard-stress --shape chain|fanout|blocks|wide --targets MiB [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-minsert --targets N [--block-entities N] [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from REPLICATE --kind dxf-combo --cells N [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -846,7 +848,7 @@ DEFAULT_SCALED = os.path.join(
     os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
     "scaled",
 )
-KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step")
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo")
 STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
 STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
 STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
@@ -1400,33 +1402,62 @@ def scale_dxf_replicate(base_path, targets, out_dir):
     return failures
 
 
-def scale_dxf_minsert(base_path, targets, out_dir):
-    # ezdxf writes the OBJECTS section in set order, so the bytes depend on the hash seed
-    if os.environ.get("PYTHONHASHSEED") != "0":
-        raise SystemExit("dxf-minsert: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+def dxf_grid(n):
+    cols = int(math.isqrt(n))
+    while cols > 1 and n % cols:
+        cols -= 1
+    return cols, n // cols
+
+
+def dxf_cell_block(doc, block_entities):
+    block = doc.blocks.new("CELL")
+    for i in range(block_entities):
+        dx = 0.1 * (i // 5)
+        kind = i % 5
+        if kind == 0:
+            block.add_circle((0.0 + dx, 0.0), 3.0)
+        elif kind == 1:
+            block.add_line((-4.0 + dx, 0.0), (4.0 + dx, 0.0))
+        elif kind == 2:
+            block.add_line((0.0 + dx, -4.0), (0.0 + dx, 4.0))
+        elif kind == 3:
+            block.add_lwpolyline([(-5.0 + dx, -5.0), (5.0 + dx, -5.0), (5.0 + dx, 5.0), (-5.0 + dx, 5.0)], close=True)
+        else:
+            block.add_text("A", height=1.0).set_placement((1.0 + dx, 1.0))
+    return block
+
+
+def dxf_minsert_doc(n, block_entities):
     import ezdxf
 
     ezdxf.options.write_fixed_meta_data_for_testing = True
+    cols, rows = dxf_grid(n)
+    doc = ezdxf.new("R2018")
+    dxf_cell_block(doc, block_entities)
+    doc.modelspace().add_blockref(
+        "CELL", (0.0, 0.0),
+        dxfattribs={"column_count": cols, "row_count": rows, "column_spacing": 12.0, "row_spacing": 12.0})
+    return doc, cols, rows
+
+
+def scale_dxf_minsert(base_path, targets, out_dir, block_entities=5):
+    # ezdxf writes the OBJECTS section in set order, so the bytes depend on the hash seed
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        raise SystemExit("dxf-minsert: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+    if block_entities < 1:
+        raise SystemExit("dxf-minsert: --block-entities is at least 1")
+    import ezdxf
+
     stem = stem_of(base_path)
     failures = 0
     for n in targets:
         if n < 1:
             raise SystemExit("dxf-minsert: a target is an expanded instance count of at least 1")
-        cols = int(math.isqrt(n))
-        while cols > 1 and n % cols:
-            cols -= 1
-        rows = n // cols
-        doc = ezdxf.new("R2018")
-        block = doc.blocks.new("CELL")
-        block.add_circle((0.0, 0.0), 3.0)
-        block.add_line((-4.0, 0.0), (4.0, 0.0))
-        block.add_line((0.0, -4.0), (0.0, 4.0))
-        block.add_lwpolyline([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)], close=True)
-        block.add_text("A", height=1.0).set_placement((1.0, 1.0))
-        doc.modelspace().add_blockref(
-            "CELL", (0.0, 0.0),
-            dxfattribs={"column_count": cols, "row_count": rows, "column_spacing": 12.0, "row_spacing": 12.0})
-        name = "dxf-minsert-%s-n%d.dxf" % (stem, n)
+        doc, cols, rows = dxf_minsert_doc(n, block_entities)
+        if block_entities == 5:
+            name = "dxf-minsert-%s-n%d.dxf" % (stem, n)
+        else:
+            name = "dxf-minsert-%s-n%d-b%d.dxf" % (stem, n, block_entities)
         path = os.path.join(out_dir, name)
         doc.saveas(path)
         with open(path, "rb") as fh:
@@ -1438,13 +1469,227 @@ def scale_dxf_minsert(base_path, targets, out_dir):
             problems.append("%d INSERT entities, expected 1" % len(inserts))
         elif inserts[0].dxf.column_count * inserts[0].dxf.row_count != n:
             problems.append("grid %d x %d, expected %d cells" % (inserts[0].dxf.column_count, inserts[0].dxf.row_count, n))
+        if len(back.blocks.get("CELL")) != block_entities:
+            problems.append("CELL holds %d entities, expected %d" % (len(back.blocks.get("CELL")), block_entities))
         if problems:
             failures += 1
             print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
             continue
         scaled_line("dxf-minsert", "n%d" % n, len(blob), hashlib.sha256(blob).hexdigest(), "ok",
-                    ",expanded=%d,cols=%d,rows=%d,block_entities=5,file=%s" % (n, cols, rows, name))
+                    ",expanded=%d,cols=%d,rows=%d,block_entities=%d,file=%s" % (n, cols, rows, block_entities, name))
     return failures
+
+
+DXF_HANDLE_REF_CODES = set(range(320, 370)) | {390, 1005}
+
+
+def dxf_text_records(text):
+    lines = text.split("\n")
+    pairs = [(int(lines[i].strip()), lines[i + 1]) for i in range(0, len(lines) - 1, 2)]
+    records = []
+    section = None
+    pending_section = False
+    for code, value in pairs:
+        if code == 0:
+            records.append({"section": section, "pairs": []})
+            pending_section = value.strip() == "SECTION"
+        elif code == 2 and pending_section:
+            section = value.strip()
+            pending_section = False
+        records[-1]["pairs"].append((code, value))
+    return records
+
+
+def dxf_record_value(record, code):
+    for c, v in record["pairs"]:
+        if c == code:
+            return v.strip()
+    return None
+
+
+def dxf_combo_template(cells):
+    import io
+
+    doc, cols, rows = dxf_minsert_doc(cells, 5)
+    stream = io.StringIO()
+    doc.write(stream)
+    records = dxf_text_records(stream.getvalue())
+    br_table = msp = None
+    br_cell = None
+    block = []
+    insert = None
+    in_block = False
+    for rec in records:
+        kind = rec["pairs"][0][1].strip()
+        name = dxf_record_value(rec, 2)
+        if rec["section"] == "TABLES" and kind == "TABLE" and name == "BLOCK_RECORD":
+            br_table = dxf_record_value(rec, 5)
+        elif rec["section"] == "TABLES" and kind == "BLOCK_RECORD" and name is not None:
+            if name.lower() == "*model_space":
+                msp = dxf_record_value(rec, 5)
+            elif name == "CELL":
+                br_cell = rec["pairs"]
+        elif rec["section"] == "BLOCKS" and kind == "BLOCK" and name == "CELL":
+            in_block = True
+            block.extend(rec["pairs"])
+        elif in_block:
+            block.extend(rec["pairs"])
+            if kind == "ENDBLK":
+                in_block = False
+        elif rec["section"] == "ENTITIES" and kind == "INSERT" and name == "CELL":
+            insert = rec["pairs"]
+    if None in (br_table, msp, br_cell, insert) or not block or in_block:
+        raise SystemExit("dxf-combo: the template drawing lacks the CELL block, its record or its MINSERT")
+    return br_table, msp, br_cell, block, insert, cols, rows
+
+
+def dxf_lines_with_offsets(blob):
+    pos = 0
+    size = len(blob)
+    while pos < size:
+        end = blob.find(b"\n", pos)
+        if end < 0:
+            end = size
+        yield pos, blob[pos:end].rstrip(b"\r")
+        pos = end + 1
+
+
+def dxf_combo_anchors(blob):
+    it = dxf_lines_with_offsets(blob)
+    section = None
+    pending_section = False
+    table = None
+    pending_table = False
+    record = None
+    record_handle = record_name = None
+    want_seed = False
+    found = {"seed": None, "br_endtab": None, "blocks_endsec": None, "entities_endsec": None,
+             "br_table": None, "msp": None, "names": set()}
+    in_header_var = None
+
+    def close_record():
+        if record == b"BLOCK_RECORD" and section == b"TABLES":
+            if record_name is not None:
+                found["names"].add(record_name.lower())
+                if record_name.lower() == b"*model_space":
+                    found["msp"] = record_handle
+        elif record == b"TABLE" and table == b"BLOCK_RECORD" and found["br_table"] is None:
+            found["br_table"] = record_handle
+
+    for (cpos, code_raw), (vpos, value) in zip(it, it):
+        code = int(code_raw.strip())
+        v = value.strip()
+        if code == 0:
+            close_record()
+            record = v
+            record_handle = record_name = None
+            pending_section = v == b"SECTION"
+            if v == b"TABLE":
+                pending_table = True
+            if v == b"ENDTAB" and table == b"BLOCK_RECORD" and found["br_endtab"] is None:
+                found["br_endtab"] = cpos
+            if v == b"ENDSEC" and section == b"BLOCKS":
+                found["blocks_endsec"] = cpos
+            if v == b"ENDSEC" and section == b"ENTITIES":
+                found["entities_endsec"] = cpos
+            continue
+        if code == 2 and pending_section:
+            section = v
+            pending_section = False
+            continue
+        if code == 2 and pending_table:
+            table = v
+            pending_table = False
+        if section == b"HEADER" and code == 9:
+            in_header_var = v
+            continue
+        if section == b"HEADER" and in_header_var == b"$HANDSEED" and code == 5:
+            found["seed"] = (vpos, len(value), int(v, 16))
+            in_header_var = None
+            continue
+        if code == 5:
+            record_handle = v.decode("ascii")
+        elif code == 2:
+            record_name = v
+    close_record()
+    return found
+
+
+def scale_dxf_combo(base_path, cells, out_dir):
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        raise SystemExit("dxf-combo: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+    if cells is None or cells < 1:
+        raise SystemExit("dxf-combo: --cells is at least 1")
+    import ezdxf
+
+    br_table, msp, br_cell, block, insert, cols, rows = dxf_combo_template(cells)
+    with open(base_path, "rb") as fh:
+        blob = fh.read()
+    nl = b"\r\n" if b"\r\n" in blob[:4096] else b"\n"
+    found = dxf_combo_anchors(blob)
+    for key in ("seed", "br_endtab", "blocks_endsec", "entities_endsec", "br_table", "msp"):
+        if found[key] is None:
+            raise SystemExit("dxf-combo: the base lacks %s" % key)
+    if b"cell" in found["names"]:
+        raise SystemExit("dxf-combo: the base already has a block named CELL")
+    seed_pos, seed_len, seed = found["seed"]
+    own = [v.strip() for part in (br_cell, block, insert) for c, v in part if c == 5]
+    mapping = {h: "%X" % (seed + i) for i, h in enumerate(own)}
+    fixed = {br_table: found["br_table"], msp: found["msp"], "0": "0"}
+
+    def render(pairs):
+        out = []
+        for code, value in pairs:
+            if code == 5:
+                value = mapping[value.strip()]
+            elif code in DXF_HANDLE_REF_CODES:
+                ref = value.strip()
+                if ref in mapping:
+                    value = mapping[ref]
+                elif ref in fixed:
+                    value = fixed[ref]
+                else:
+                    raise SystemExit("dxf-combo: the template references handle %s outside the copied records" % ref)
+            out.append(b"%3d" % code + nl + value.encode("ascii") + nl)
+        return b"".join(out)
+
+    parts = [
+        blob[:seed_pos], b"%X" % (seed + len(own)), blob[seed_pos + seed_len:found["br_endtab"]],
+        render(br_cell), blob[found["br_endtab"]:found["blocks_endsec"]],
+        render(block), blob[found["blocks_endsec"]:found["entities_endsec"]],
+        render(insert), blob[found["entities_endsec"]:],
+    ]
+    if not (seed_pos < found["br_endtab"] < found["blocks_endsec"] < found["entities_endsec"]):
+        raise SystemExit("dxf-combo: the base sections are not in HEADER, TABLES, BLOCKS, ENTITIES order")
+    name = "dxf-combo-%s-c%d.dxf" % (stem_of(base_path), cells)
+    path = os.path.join(out_dir, name)
+    digest = hashlib.sha256()
+    with open(path + ".tmp", "wb") as fh:
+        for part in parts:
+            fh.write(part)
+            digest.update(part)
+    del blob, parts
+    problems = []
+    doc = ezdxf.readfile(path + ".tmp")
+    auditor = doc.audit()
+    if auditor.errors:
+        problems.append("audit errors %s" % ",".join(str(e.code) for e in auditor.errors))
+    found_insert = [e for e in doc.modelspace() if e.dxftype() == "INSERT" and e.dxf.name == "CELL"]
+    if len(found_insert) != 1:
+        problems.append("%d CELL inserts, expected 1" % len(found_insert))
+    elif found_insert[0].dxf.column_count * found_insert[0].dxf.row_count != cells:
+        problems.append("grid %d x %d, expected %d cells" % (found_insert[0].dxf.column_count, found_insert[0].dxf.row_count, cells))
+    if doc.blocks.get("CELL") is None or len(doc.blocks.get("CELL")) != 5:
+        problems.append("CELL block missing or not 5 entities")
+    if problems:
+        os.remove(path + ".tmp")
+        print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+        return 1
+    os.replace(path + ".tmp", path)
+    scaled_line("dxf-combo", "c%d" % cells, os.path.getsize(path), digest.hexdigest(), "ok",
+                ",base=%s,cells=%d,cols=%d,rows=%d,block_entities=5,auditor_fixes=%d,method=bytes+ezdxf,file=%s" % (
+                    os.path.basename(base_path), cells, cols, rows, len(auditor.fixes), name))
+    return 0
 
 
 def scale_iges_from_step(base_path, targets, out_dir):
@@ -1553,8 +1798,6 @@ def run_guard_stress(args):
 def run_scaled(args):
     if args.kind not in KINDS:
         raise SystemExit("--kind must be one of %s" % ", ".join(KINDS))
-    if not args.targets:
-        raise SystemExit("--targets is required with --scaled-from")
     if not os.path.isfile(args.scaled_from):
         raise SystemExit("--scaled-from: no such file")
     out_dir = args.scaled_dir or DEFAULT_SCALED
@@ -1562,6 +1805,17 @@ def run_scaled(args):
         os.makedirs(out_dir, exist_ok=True)
     except FileExistsError:
         pass
+    if args.kind == "dxf-combo":
+        if args.targets:
+            raise SystemExit("--kind dxf-combo takes --cells, not --targets")
+        return scale_dxf_combo(args.scaled_from, args.cells, out_dir)
+    if not args.targets:
+        raise SystemExit("--targets is required with --scaled-from")
+    if args.block_entities is not None and args.kind != "dxf-minsert":
+        raise SystemExit("--block-entities applies to --kind dxf-minsert only")
+    if args.kind == "dxf-minsert":
+        return 1 if scale_dxf_minsert(args.scaled_from, parse_targets(args.targets), out_dir,
+                                      5 if args.block_entities is None else args.block_entities) else 0
     targets = parse_targets(args.targets)
     runner = {
         "step-copies": scale_step_copies,
@@ -2309,10 +2563,12 @@ def main():
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
-    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-guard-stress")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-guard-stress")
     ap.add_argument("--shape", help="dxf-guard-stress shape: chain|fanout|blocks|wide")
     ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")
+    ap.add_argument("--block-entities", type=int, help="dxf-minsert: entities in the CELL block (default 5)")
+    ap.add_argument("--cells", type=int, help="dxf-combo: cells of the MINSERT appended to the base")
     ap.add_argument("--dxf-fixtures", action="store_true",
                     help="generate or check the phase 75 DXF fixtures (generation needs ezdxf and PYTHONHASHSEED=0)")
     args = ap.parse_args()
