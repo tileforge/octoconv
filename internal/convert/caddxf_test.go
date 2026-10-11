@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/apaderin/octoconv/internal/measurements"
 )
 
 const cadDXFCRDir = "testdata/cad/dxf-cr"
@@ -619,4 +621,370 @@ func TestCADDXFConvertNormalizesLineEndingsOnBothSides(t *testing.T) {
 			t.Fatalf("err = %v, want ErrCADSVGRejected", err)
 		}
 	})
+}
+
+type cadDXFFrame struct {
+	name, background string
+	size             int
+	sw, sh           int
+	left, top        int
+}
+
+func cadDXFFrames(t *testing.T) []cadDXFFrame {
+	t.Helper()
+	raw, err := os.ReadFile(cadDXFTestFile("frames.tsv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []cadDXFFrame
+	for i, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if i == 0 {
+			continue
+		}
+		col := strings.Split(line, "\t")
+		if len(col) != 9 {
+			t.Fatalf("frames.tsv row %d has %d columns", i, len(col))
+		}
+		n := func(s string) int {
+			v, err := strconv.Atoi(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return v
+		}
+		out = append(out, cadDXFFrame{name: col[0], size: n(col[1]), background: col[2], sw: n(col[5]), sh: n(col[6]), left: n(col[7]), top: n(col[8])})
+	}
+	if len(out) != 3 {
+		t.Fatalf("frames.tsv has %d frames, want 3", len(out))
+	}
+	return out
+}
+
+func (f cadDXFFixture) sidecar() string { return CADMeasurementsPath(f.out) }
+
+func (f cadDXFFixture) noSidecar(t *testing.T) {
+	t.Helper()
+	if _, err := os.Lstat(f.sidecar()); err == nil {
+		t.Error("a measurements sidecar exists after a failed render")
+	}
+}
+
+func cadDXFRenderOutputs(t *testing.T, name, measure string) cadDXFOutputs {
+	t.Helper()
+	o := cadDXFFixtureOutputs(t, name)
+	o.measure = measure
+	return o
+}
+
+func cadDXFDraftWith(t *testing.T, dir, name string, edit func(map[string]any)) string {
+	t.Helper()
+	raw, err := os.ReadFile(cadDXFTestFile("wide.measure.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	edit(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cadDXFWrite(t, dir, name, out)
+}
+
+func cadDXFSidecarDoc(t *testing.T, f cadDXFFixture) measurements.Document {
+	t.Helper()
+	raw, err := os.ReadFile(f.sidecar())
+	if err != nil {
+		t.Fatalf("no sidecar: %v", err)
+	}
+	doc, err := measurements.Validate(raw)
+	if err != nil {
+		t.Fatalf("the sidecar is not a valid measurements document: %v", err)
+	}
+	return doc
+}
+
+func TestCADDXFRenderPairsOperationAndOptions(t *testing.T) {
+	c := CADDXFRenderConverter{}
+	if got := c.Pairs(); len(got) != 1 || got[0] != (Pair{"dxf", "png"}) {
+		t.Errorf("Pairs() = %v, want exactly dxf->png", got)
+	}
+	if got := operationOf(c); got != OperationRender {
+		t.Errorf("operation = %q, want %q", got, OperationRender)
+	}
+	if got := c.Engine(); got != EngineCAD {
+		t.Errorf("Engine() = %q, want %q", got, EngineCAD)
+	}
+	refusals := []struct {
+		name string
+		opts map[string]any
+		in   func(f cadDXFFixture) string
+		out  string
+		want string
+	}{
+		{"view top", map[string]any{"view": "top"}, nil, "", "view does not apply to a dxf source"},
+		{"view iso", map[string]any{"view": "iso"}, nil, "", "view does not apply to a dxf source"},
+		{"quality", map[string]any{"quality": "fine"}, nil, "", "quality does not apply to a dxf source"},
+		{"an unknown option", map[string]any{"page": 2}, nil, "", ""},
+		{"an svg target", nil, nil, "out.svg", ""},
+		{"a step source", nil, func(f cadDXFFixture) string { return cadDXFWrite(t, f.jobDir, "in.step", []byte("x")) }, "", ""},
+		{"an input above the ceiling", nil, func(f cadDXFFixture) string {
+			if err := os.Truncate(f.in, CADMaxDXFBytes+1); err != nil {
+				t.Fatal(err)
+			}
+			return f.in
+		}, "", ""},
+		{"an input at measure.json", nil, func(f cadDXFFixture) string { return f.job("measure.json") }, "", ""},
+	}
+	for _, tc := range refusals {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCADDXFFixture(t, "png")
+			if tc.out != "" {
+				f.out = f.job(tc.out)
+			}
+			f.setDXF(t, cadDXFRenderOutputs(t, "wide", cadDXFTestFile("wide.measure.json")))
+			f.setRsvg(t, cadDXFTestFile("wide_1280_opaque.png"), 0, "")
+			in := f.in
+			if tc.in != nil {
+				in = tc.in(f)
+			}
+			err := (CADDXFRenderConverter{}).Convert(context.Background(), in, f.out, tc.opts)
+			if err == nil {
+				t.Fatal("Convert accepted the request")
+			}
+			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want %q", err, tc.want)
+			}
+			for _, m := range []string{"guard.args", "dxf.args", "rsvg.args"} {
+				if f.exists(m) {
+					t.Errorf("%s ran before the refusal", m)
+				}
+			}
+			f.noOutput(t)
+			f.noSidecar(t)
+		})
+	}
+	t.Run("size, background and assume_unit are honoured", func(t *testing.T) {
+		f := newCADDXFFixture(t, "png")
+		scratch := t.TempDir()
+		draft := cadDXFDraftWith(t, scratch, "unspecified.json", func(m map[string]any) { m["declared_unit"] = "" })
+		f.setDXF(t, cadDXFRenderOutputs(t, "tall", draft))
+		f.setRsvg(t, cadDXFTestFile("tall_256_opaque.png"), 0, "")
+		opts := map[string]any{"size": float64(256), "background": "opaque", "assume_unit": "inch"}
+		if err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, opts); err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if doc := cadDXFSidecarDoc(t, f); doc.Unit != measurements.UnitInch || doc.UnitSource != measurements.SourceClientAssumed {
+			t.Errorf("unit %q source %q, want inch client_assumed", doc.Unit, doc.UnitSource)
+		}
+		if got := f.args(t, "rsvg.args"); !strings.Contains(got, "--page-width 256 --page-height 256") {
+			t.Errorf("rsvg argv = %q, want the 256 frame", got)
+		}
+	})
+}
+
+func TestCADDXFRenderLetterboxesTheValidatedSVGWithTheProbeArgv(t *testing.T) {
+	for _, fr := range cadDXFFrames(t) {
+		t.Run(fr.name, func(t *testing.T) {
+			drawing := strings.SplitN(fr.name, "_", 2)[0]
+			f := newCADDXFFixture(t, "png")
+			f.setDXF(t, cadDXFRenderOutputs(t, drawing, cadDXFTestFile("wide.measure.json")))
+			f.setRsvg(t, cadDXFTestFile(fr.name), 0, "")
+			opts := map[string]any{"size": float64(fr.size), "background": fr.background}
+			if fr.size == CADDefaultRenderSize && fr.background == CADBackgroundOpq {
+				opts = nil
+			}
+			if err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, opts); err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			want := fmt.Sprintf("--max-drawn-entities %d --texts %s --render-svg %s --measure %s %s %s",
+				CADMaxDXFExpandedEntities, f.job("texts.json"), f.job("draw.render.svg"), f.job("measure.json"), f.in, f.job("draw.svg"))
+			if g := f.args(t, "dxf.args"); g != want {
+				t.Errorf("cad-dxf argv = %q, want %q", g, want)
+			}
+			bg := ""
+			if fr.background == CADBackgroundOpq {
+				bg = "-b white "
+			}
+			want = fmt.Sprintf("%s-w %d -h %d --page-width %d --page-height %d --left %d --top %d -o %s %s",
+				bg, fr.sw, fr.sh, fr.size, fr.size, fr.left, fr.top, f.out, f.job("clean.svg"))
+			if g := f.args(t, "rsvg.args"); g != want {
+				t.Errorf("rsvg argv = %q, want %q", g, want)
+			}
+			for _, m := range []string{"guard.args", "dxf.args", "rsvg.args"} {
+				if g := f.args(t, m); strings.Contains(g, "iso") {
+					t.Errorf("%s carries the 3D view: %q", m, g)
+				}
+			}
+			clean, err := os.ReadFile(f.job("clean.svg"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w := cadDXFValidated(t, cadDXFTestFile(drawing+".render.svg")); !bytes.Equal(clean, w) {
+				t.Error("clean.svg is not Go's re-serialization of the render-only SVG")
+			}
+			doc := cadDXFSidecarDoc(t, f)
+			if doc.Format != measurements.FormatDXF {
+				t.Errorf("format %q, want dxf", doc.Format)
+			}
+			info, err := os.Lstat(f.sidecar())
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Errorf("sidecar mode = %v, %v, want a regular 0600 file", info.Mode(), err)
+			}
+		})
+	}
+}
+
+func TestCADDXFRenderRejectsABlankFrameWithoutASidecar(t *testing.T) {
+	f := newCADDXFFixture(t, "png")
+	f.setDXF(t, cadDXFRenderOutputs(t, "wide", cadDXFTestFile("wide.measure.json")))
+	f.setRsvg(t, cadDXFWrite(t, t.TempDir(), "blank.png", blankPNGBytes(t, CADDefaultRenderSize)), 0, "")
+	err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, nil)
+	if !errors.Is(err, ErrCADRenderRejected) {
+		t.Fatalf("err = %v, want ErrCADRenderRejected", err)
+	}
+	f.noOutput(t)
+	f.noSidecar(t)
+}
+
+func TestCADDXFRenderMeasurementsComeFromTheDraft(t *testing.T) {
+	scratch := t.TempDir()
+	t.Run("wrong_extents", func(t *testing.T) {
+		f := newCADDXFFixture(t, "png")
+		f.setDXF(t, cadDXFRenderOutputs(t, "wide", cadDXFTestFile("wrong_extents.measure.json")))
+		f.setRsvg(t, cadDXFTestFile("wide_1280_opaque.png"), 0, "")
+		if err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, nil); err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		doc := cadDXFSidecarDoc(t, f)
+		if fmt.Sprint(doc.BBox.Min) != "[10 20]" || fmt.Sprint(doc.BBox.Max) != "[40 30]" {
+			t.Errorf("bbox %v..%v, want [10 20]..[40 30]", doc.BBox.Min, doc.BBox.Max)
+		}
+		if doc.Unit != measurements.UnitMM || doc.UnitSource != measurements.SourceDeclared {
+			t.Errorf("unit %q source %q, want mm declared", doc.Unit, doc.UnitSource)
+		}
+	})
+	t.Run("unspecified with assume_unit mm", func(t *testing.T) {
+		f := newCADDXFFixture(t, "png")
+		draft := cadDXFDraftWith(t, scratch, "unspecified.json", func(m map[string]any) { m["declared_unit"] = "" })
+		f.setDXF(t, cadDXFRenderOutputs(t, "wide", draft))
+		f.setRsvg(t, cadDXFTestFile("wide_1280_opaque.png"), 0, "")
+		if err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, map[string]any{"assume_unit": "mm"}); err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if doc := cadDXFSidecarDoc(t, f); doc.Unit != measurements.UnitMM || doc.UnitSource != measurements.SourceClientAssumed {
+			t.Errorf("unit %q source %q, want mm client_assumed", doc.Unit, doc.UnitSource)
+		}
+	})
+	failures := []struct {
+		name  string
+		draft func() string
+		want  error
+	}{
+		{"a step draft", func() string {
+			return cadDXFDraftWith(t, scratch, "step.json", func(m map[string]any) { m["format"] = "step" })
+		}, ErrCADMeasurementsInvalid},
+		{"a zero-extent draft", func() string {
+			return cadDXFDraftWith(t, scratch, "zero.json", func(m map[string]any) {
+				m["bbox"] = map[string]any{"min": []float64{5, 5}, "max": []float64{5, 5}}
+			})
+		}, ErrCADEmptyResult},
+		{"a draft that is not JSON", func() string { return cadDXFWrite(t, scratch, "junk.json", []byte("{")) }, ErrCADMeasurementsInvalid},
+		{"a 3D draft", func() string {
+			return cadDXFDraftWith(t, scratch, "3d.json", func(m map[string]any) {
+				m["bbox"] = map[string]any{"min": []float64{0, 0, 0}, "max": []float64{1, 1, 1}}
+			})
+		}, ErrCADMeasurementsInvalid},
+		{"an ok verdict without a draft", func() string { return "" }, ErrCADDrawingFailed},
+	}
+	for _, tc := range failures {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCADDXFFixture(t, "png")
+			f.setDXF(t, cadDXFRenderOutputs(t, "wide", tc.draft()))
+			f.setRsvg(t, cadDXFTestFile("wide_1280_opaque.png"), 0, "")
+			err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, nil)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			if f.exists("rsvg.args") {
+				t.Error("rsvg-convert ran before the measurements were built")
+			}
+			f.noOutput(t)
+			f.noSidecar(t)
+		})
+	}
+}
+
+func TestCADDXFRenderLeavesNoOutputOrSidecarOnAnyFailure(t *testing.T) {
+	ok := cadDXFRenderOutputs(t, "wide", cadDXFTestFile("wide.measure.json"))
+	script := ok
+	script.client = cadDXFMutate(t, t.TempDir(), ok.client, "s.svg", "</g>", "<script>x</script></g>")
+	failed := cadDXFOutputs{verdict: `CADVERDICT {"stage":"dxf","verdict":"failed","reason":"draw_exception"}`, exit: 1}
+	cases := []struct {
+		name    string
+		dxf     cadDXFOutputs
+		png     string
+		rsvgRC  int
+		rsvgPre string
+		c       CADConverter
+		want    error
+	}{
+		{"an unsafe SVG", script, cadDXFTestFile("wide_1280_opaque.png"), 0, "", CADConverter{}, ErrCADSVGRejected},
+		{"a drawing fault", failed, cadDXFTestFile("wide_1280_opaque.png"), 0, "", CADConverter{}, ErrCADDrawingFailed},
+		{"rsvg exit 1", ok, cadDXFTestFile("wide_1280_opaque.png"), 1, "", CADConverter{}, ErrCADDrawingFailed},
+		{"rsvg deadline", ok, cadDXFTestFile("wide_1280_opaque.png"), 0, "sleep 5", CADConverter{RsvgTimeout: 300 * time.Millisecond}, ErrCADRsvgTimeout},
+		{"a frame of the wrong size", ok, cadDXFTestFile("tall_256_opaque.png"), 0, "", CADConverter{}, ErrCADRenderRejected},
+		{"a transparent frame for an opaque request", ok, cadDXFTestFile("wide_1280_transparent.png"), 0, "", CADConverter{}, ErrCADRenderRejected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCADDXFFixture(t, "png")
+			cadDXFWrite(t, f.jobDir, filepath.Base(f.sidecar()), []byte(`{"stale":true}`))
+			cadDXFWrite(t, f.jobDir, filepath.Base(f.out), []byte("stale"))
+			f.setDXF(t, tc.dxf)
+			f.setRsvg(t, tc.png, tc.rsvgRC, tc.rsvgPre)
+			err := (CADDXFRenderConverter{tc.c}).Convert(context.Background(), f.in, f.out, nil)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+			f.noOutput(t)
+			f.noSidecar(t)
+		})
+	}
+}
+
+func TestCADDXFRenderWritesTheSidecarAsANewFile(t *testing.T) {
+	for _, planter := range []string{"cad-dxf", "rsvg-convert"} {
+		t.Run("a symlink planted by "+planter, func(t *testing.T) {
+			f := newCADDXFFixture(t, "png")
+			outside := filepath.Join(t.TempDir(), "outside.json")
+			if err := os.WriteFile(outside, []byte("untouched"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plant := fmt.Sprintf("ln -s %s %s", cadDXFQuote(outside), cadDXFQuote(f.sidecar()))
+			o := cadDXFRenderOutputs(t, "wide", cadDXFTestFile("wide.measure.json"))
+			rsvgPre := ""
+			if planter == "cad-dxf" {
+				o.post = plant
+			} else {
+				rsvgPre = plant
+			}
+			f.setDXF(t, o)
+			f.setRsvg(t, cadDXFTestFile("wide_1280_opaque.png"), 0, rsvgPre)
+			if err := (CADDXFRenderConverter{}).Convert(context.Background(), f.in, f.out, nil); err != nil {
+				t.Fatalf("Convert: %v", err)
+			}
+			if got, _ := os.ReadFile(outside); string(got) != "untouched" {
+				t.Errorf("the worker wrote through a planted sidecar symlink: %q", got)
+			}
+			info, err := os.Lstat(f.sidecar())
+			if err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("sidecar = %v, %v, want a regular file", info, err)
+			}
+			cadDXFSidecarDoc(t, f)
+		})
+	}
 }

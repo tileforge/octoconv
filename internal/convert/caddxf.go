@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -77,11 +78,130 @@ func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, op
 	if err := c.rsvgStage(ctx, jobDir, outPath, "-f", "pdf", "-b", "white", "-o", outPath, clean); err != nil {
 		return err
 	}
-	if err := cadDXFRegular(outPath, "the PDF"); err != nil {
+	if err := cadDXFRegular(outPath, "the PDF", ErrCADDrawingFailed); err != nil {
 		return err
 	}
 	if _, err := JudgeCADDXFPDF(outPath, CADMaxDXFPDFBytes, d.texts, d.render); err != nil {
 		return fmt.Errorf("cad: %w", err)
+	}
+	return nil
+}
+
+type CADDXFRenderConverter struct{ CADConverter }
+
+func (CADDXFRenderConverter) Operation() string { return OperationRender }
+
+func (CADDXFRenderConverter) Pairs() []Pair {
+	return []Pair{{From: "dxf", To: "png"}}
+}
+
+func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
+	parsed, err := CADOptsFromMap(opts)
+	if err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	format := NormalizeFormat(filepath.Ext(inPath))
+	target := NormalizeFormat(filepath.Ext(outPath))
+	if format != "dxf" || target != "png" {
+		return fmt.Errorf("cad: unsupported render %s -> %s", format, target)
+	}
+	if err := ValidateCADApplicability(EngineCAD, OperationRender, format, target, parsed); err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	o := parsed.Resolved()
+	size := *o.Size
+	jobDir, err := cadDXFAdmit(inPath, outPath)
+	if err != nil {
+		return err
+	}
+	clean := filepath.Join(jobDir, cadDXFCleanName)
+	sidecar := CADMeasurementsPath(outPath)
+	defer func() {
+		if err != nil {
+			os.Remove(outPath)
+			os.Remove(clean)
+			os.Remove(sidecar)
+		}
+	}()
+
+	draftPath := filepath.Join(jobDir, cadMeasureDraftName)
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", clean, draftPath)
+	if err != nil {
+		return err
+	}
+	if err := cadDXFRegular(draftPath, "the measurements draft", ErrCADMeasurementsInvalid); err != nil {
+		return err
+	}
+	draft, err := parseCADMeasureDraft(draftPath)
+	if err != nil {
+		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
+	}
+	if draft.Format != "dxf" {
+		return fmt.Errorf("cad: %w: the draft of a dxf drawing reports format %q", ErrCADMeasurementsInvalid, draft.Format)
+	}
+	if cadZeroExtent(draft.BBox) {
+		return fmt.Errorf("cad: %w: the drawing has no extent", ErrCADEmptyResult)
+	}
+	doc, err := buildCADMeasurements(draft, o.AssumeUnit)
+	if err != nil {
+		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
+	}
+
+	box, err := CADDrawingLetterbox(d.render.WidthMM, d.render.HeightMM, size)
+	if err != nil {
+		return fmt.Errorf("cad dxf: %w: %v", ErrCADSVGRejected, err)
+	}
+	var args []string
+	if o.Background == CADBackgroundOpq {
+		args = append(args, "-b", "white")
+	}
+	args = append(args,
+		"-w", strconv.Itoa(box.Width), "-h", strconv.Itoa(box.Height),
+		"--page-width", strconv.Itoa(size), "--page-height", strconv.Itoa(size),
+		"--left", strconv.Itoa(box.Left), "--top", strconv.Itoa(box.Top),
+		"-o", outPath, clean)
+	for _, p := range []string{outPath, sidecar} {
+		if err := cadDXFClear(p); err != nil {
+			return err
+		}
+	}
+	if err := c.rsvgStage(ctx, jobDir, outPath, args...); err != nil {
+		return err
+	}
+	if err := cadDXFRegular(outPath, "the PNG", ErrCADDrawingFailed); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(outPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("cad: %w: no image at %s: %v", ErrCADRenderRejected, outPath, err)
+	}
+	_, err = JudgeCADDrawingPNG(f, size, o.Background, box)
+	f.Close()
+	if err != nil {
+		return err
+	}
+
+	body, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
+	}
+	return cadDXFWriteNew(sidecar, body)
+}
+
+func cadDXFWriteNew(path string, body []byte) error {
+	if err := cadDXFClear(path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("cad: write measurements: %w", err)
+	}
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return fmt.Errorf("cad: write measurements: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("cad: write measurements: %w", err)
 	}
 	return nil
 }
@@ -137,7 +257,7 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	}
 	d.verdict = v
 	for _, out := range []struct{ path, what string }{{draw, "the client SVG"}, {render, "the render-only SVG"}, {texts, "texts.json"}} {
-		if err := cadDXFRegular(out.path, out.what); err != nil {
+		if err := cadDXFRegular(out.path, out.what, ErrCADSVGRejected); err != nil {
 			return d, err
 		}
 	}
@@ -202,7 +322,7 @@ func (c CADConverter) rsvgStage(ctx context.Context, jobDir, outPath string, arg
 	return classifyCADRsvg(ctx, stageCtx, timeout, cpu, err, outPath)
 }
 
-func cadDXFRegular(path, what string) error {
+func cadDXFRegular(path, what string, irregular error) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("cad: %w: the stage reported ok without %s", ErrCADDrawingFailed, what)
@@ -211,7 +331,7 @@ func cadDXFRegular(path, what string) error {
 		return fmt.Errorf("cad: %w: stat %s: %v", ErrCADDrawingFailed, what, err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("cad: %w: %s is %v, not a regular file", ErrCADSVGRejected, what, info.Mode().Type())
+		return fmt.Errorf("cad: %w: %s is %v, not a regular file", irregular, what, info.Mode().Type())
 	}
 	return nil
 }
