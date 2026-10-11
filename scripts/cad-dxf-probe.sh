@@ -34,6 +34,14 @@ CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
 WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
 GROUP=all
 WRITE_OUT=0
+JUDGE_EVID="$PHASE_DIR/evidence/75-08-judge.txt"
+JUDGE_EVID_NAME="evidence/75-08-judge.txt"
+LANDLOCK_EVID="$PHASE_DIR/evidence/75-08-landlock.txt"
+PIXELCHECK="$REPO_ROOT/scripts/cad-measure/pixelcheck.py"
+JUDGE_DRAWINGS="public/hatches_2 public/acad_table_with_blk_ref public/uncommon public/dimension_in_nested_blocks
+  public/columns_R2007 synthetic/legacy_cp1251 synthetic/legacy_latin1 public/houses_of_parliament_georeferenced
+  dxf/wide dxf/tall dxf/far_point dxf/xline_ray dxf/text_cases"
+JUDGE_SIZES="256 1280 2048"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -41,6 +49,7 @@ Usage:
   scripts/cad-dxf-probe.sh tracer   [--out FILE]
   scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
   scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|all] [--write-out] [--out FILE]
+  scripts/cad-dxf-probe.sh judge    [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
           uncommon.dxf with cad-dxf under its candidate Landlock ruleset, turn each SVG into a
@@ -62,6 +71,16 @@ helper    run the production cad-dxf under its candidate Landlock ruleset and th
           internal/convert/testdata/cad/dxf-out with the real outputs. The evidence file defaults
           to .planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt and a group re-run
           replaces only its own lines.
+judge     draw the 8 phase-71 drawings and wide, tall, far_point, xline_ray and text_cases with
+          cad-dxf under its measured ruleset (MEASURED,stage=dxf of evidence/75-08-landlock.txt),
+          validate the render-only SVG with the Go validator, and rasterize it with rsvg-convert
+          under its measured ruleset into the Go letterbox at 256, 1280 and 2048, opaque and
+          transparent. Every frame is judged by the Go drawing judge (cad-pixel-judge --drawing)
+          and by the 71 judge (pixelcheck.py single --mode drawing, in the engine image); each
+          transparent frame's Go ink box is compared with its opaque twin's, and a blank 1280
+          frame is judged by both. Disagreements are classified by the pre-registered classes E1,
+          E2 and E3; anything else is unexplained. The evidence file defaults to
+          .planning/phases/75-dxf-2d-pipeline/evidence/75-08-judge.txt and is rewritten whole.
 
 Every mode rewrites its own lines in the evidence file (default
 .planning/phases/75-dxf-2d-pipeline/evidence/75-01-engine.txt for tracer and fixtures) and
@@ -197,7 +216,7 @@ for p in sys.argv[1:]:
   docker run --rm --network none --entrypoint sh "$tag" -c "$inner" </dev/null | sed "s/^/HDR,mode=$mode,/"
   if [ "$mode" = tracer ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
-  elif [ "${mode%%,*}" = helper ]; then
+  elif [ "${mode%%,*}" = helper ] || [ "$mode" = judge ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset,max_drawn_entities=%s\n' "$mode" "$MAX_DRAWN"
   else
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/tmp_PYTHONHASHSEED=0_python=-B,unconfined=1\n' "$mode"
@@ -1840,6 +1859,307 @@ helper_mode() {
   [ "$all_fails" = 0 ]
 }
 
+measured_ro() {
+  local stage=$1 engine=$2 line ro mult
+  line=$(grep "^MEASURED,stage=$stage," "$LANDLOCK_EVID" 2>/dev/null || true)
+  [ "$(printf '%s\n' "$line" | grep -c .)" = 1 ] || return 0
+  ro=$(printf '%s' "$line" | sed -n 's/^.*,ro=\([^,]*\),engines=.*$/\1/p')
+  mult=$(printf '%s' "$line" | sed -n 's/^.*,multiarch=\(.*\)$/\1/p')
+  [ -n "$ro" ] && [ "$mult" = "/usr/lib/$TRIPLET" ] || return 0
+  printf '%s:%s:%s\n' "$ro" "$mult" "$engine"
+}
+
+write_pixelcheck_exact() {
+  mkdir -p "$WORK/pc"
+  chmod 0755 "$WORK/pc"
+  cp "$PIXELCHECK" "$WORK/pc/pixelcheck.py"
+  cat > "$WORK/pc/exact.py" <<'PY'
+import contextlib
+import io
+import sys
+
+sys.path.insert(0, "/pc")
+import pixelcheck as pc
+
+for path in sys.argv[1:]:
+    name = path.rsplit("/", 1)[-1][:-len(".png")]
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = pc.single(path, "drawing")
+    img = pc.load_rgb(path)
+    h, w, mask, dark, frac, box = pc.stats(img)
+    margin = -1 if box is None else min(box[0], box[1], w - 1 - box[2], h - 1 - box[3])
+    print("%s\t%s\tframe_rc=%d,frac_exact=%r,dark_exact=%r,margin_exact=%d,margin_need=%d,frac_min=%r,dark_min=%r" % (
+        name, buf.getvalue().strip(), rc, frac, dark, margin, int(pc.MARGIN_MIN * min(w, h)), pc.DRAW_FRAC_MIN, pc.DRAW_DARK_MIN))
+PY
+  chmod 0644 "$WORK/pc/"*.py
+}
+
+judge_frame_png() {
+  local job=$1 name=$2 size=$3 bg=$4 sw=$5 sh=$6 left=$7 top=$8 png rc=0 args=()
+  png="f_${size}_${bg}.png"
+  if [ "$bg" = opaque ]; then args=(-b white); fi
+  MOUNTS=()
+  run_confined "$RSVG_RO" "$job" "$WORK/rsvg.out" "$WORK/rsvg.err" /usr/bin/rsvg-convert ${args[@]+"${args[@]}"} \
+    -w "$sw" -h "$sh" --page-width "$size" --page-height "$size" --left "$left" --top "$top" -o "/job/$png" /job/clean.svg || rc=$?
+  if probe_refused "$WORK/rsvg.err" || [ "$rc" != 0 ] || [ ! -s "$job/$png" ]; then
+    printf 'FRAME,drawing=%s,size=%s,background=%s,rsvg_rc=%s,stderr=%s,result=fail\n' "$name" "$size" "$bg" "$rc" \
+      "$(head -n 1 "$WORK/rsvg.err" | tr -c 'A-Za-z0-9 ._/:-' '_' | cut -c1-120)" >> "$LINES"
+    JUDGE_FAIL=1
+    return 0
+  fi
+  cp "$job/$png" "$WORK/frames/${name}_${size}_${bg}.png"
+  chmod 0644 "$WORK/frames/${name}_${size}_${bg}.png"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$size" "$bg" "$sw:$sh:$left:$top" \
+    "$("$WORK/tools/cad-pixel-judge" --size "$size" --background "$bg" --drawing --letterbox-svg "$job/clean.svg" \
+       "$WORK/frames/${name}_${size}_${bg}.png" 2>/dev/null || true)" >> "$WORK/go.tsv"
+}
+
+judge_drawing() {
+  local name=$1 src=$2 job rc vf sv size bg lb sw sh left top
+  disk_guard
+  job=$(job_with "$src")
+  rc=$(helper_exec "$DXF_RO" "$job" "judge_$name" --max-drawn-entities "$MAX_DRAWN" --texts /job/texts.json \
+    --render-svg /job/draw.render.svg --measure /job/measure.json /job/in.dxf /job/draw.svg)
+  vf=$(verdict_fields "$WORK/judge_$name.out")
+  if probe_refused "$WORK/judge_$name.err" || [ "$rc" != 0 ] || [ "$(field verdict "$vf")" != ok ] || [ ! -s "$job/draw.render.svg" ]; then
+    printf 'FRAME_SOURCE,drawing=%s,input=%s,sha256=%s,rc=%s,%s,result=fail\n' "$name" "${src#"$CORPUS"/}" "$(sha_of "$src")" "$rc" "$vf" >> "$LINES"
+    JUDGE_FAIL=1
+    rm -rf "$job"
+    return 0
+  fi
+  sv=$("$WORK/tools/cad-svg-check" --max-bytes "$SVG_MAX" --out "$job/clean.svg" "$job/draw.render.svg" 2>&1 || true)
+  case "$sv" in
+    GOSVG,*,ok=1,*) ;;
+    *)
+      printf 'FRAME_SOURCE,drawing=%s,input=%s,sha256=%s,rc=%s,%s,svg_check=%s,result=fail\n' "$name" "${src#"$CORPUS"/}" "$(sha_of "$src")" \
+        "$rc" "$vf" "$(printf '%s' "$sv" | sed 's/^GOSVG,svg=[^,]*,//' | tr ',' ';')" >> "$LINES"
+      JUDGE_FAIL=1
+      rm -rf "$job"
+      return 0 ;;
+  esac
+  chmod 0644 "$job/clean.svg"
+  cp "$job/clean.svg" "$WORK/frames/$name.svg"
+  printf 'FRAME_SOURCE,drawing=%s,input=%s,sha256=%s,rc=0,%s,clean_svg_sha256=%s,%s,result=ok\n' "$name" "${src#"$CORPUS"/}" "$(sha_of "$src")" \
+    "$vf" "$(sha_of "$job/clean.svg")" "$(printf '%s' "$sv" | sed 's/^GOSVG,svg=[^,]*,//; s/,reason=none$//')" >> "$LINES"
+  for size in $JUDGE_SIZES; do
+    lb=$("$WORK/tools/cad-pixel-judge" --print-letterbox --svg "$job/clean.svg" --size "$size" || true)
+    read -r sw sh left top <<< "$(printf '%s' "$lb" | sed -n 's/^LETTERBOX,sw=\([0-9]*\),sh=\([0-9]*\),left=\([0-9]*\),top=\([0-9]*\)$/\1 \2 \3 \4/p')"
+    if [ -z "${top:-}" ]; then
+      printf 'FRAME,drawing=%s,size=%s,reason=no_go_letterbox,result=fail\n' "$name" "$size" >> "$LINES"
+      JUDGE_FAIL=1
+      continue
+    fi
+    for bg in opaque transparent; do
+      judge_frame_png "$job" "$name" "$size" "$bg" "$sw" "$sh" "$left" "$top"
+    done
+  done
+  rm -rf "$job"
+}
+
+judge_blank() {
+  local lb
+  chmod 0777 "$WORK/frames"
+  docker run --rm --network none --user nobody -e HOME=/tmp -v "$WORK/frames:/frames" --entrypoint /opt/venv/bin/python "$TAG" -I -B -c \
+    'from PIL import Image; Image.new("RGB", (1280, 1280), (255, 255, 255)).save("/frames/blank_1280_opaque.png")' </dev/null
+  chmod 0755 "$WORK/frames"
+  [ -s "$WORK/frames/blank_1280_opaque.png" ] || fail "the blank frame was not written"
+  lb=$("$WORK/tools/cad-pixel-judge" --print-letterbox --svg "$WORK/frames/legacy_cp1251.svg" --size 1280 \
+    | sed -n 's/^LETTERBOX,sw=\([0-9]*\),sh=\([0-9]*\),left=\([0-9]*\),top=\([0-9]*\)$/\1:\2:\3:\4/p')
+  printf '%s\t%s\t%s\t%s\t%s\n' blank 1280 opaque "$lb" \
+    "$("$WORK/tools/cad-pixel-judge" --size 1280 --background opaque --drawing --letterbox-svg "$WORK/frames/legacy_cp1251.svg" \
+       "$WORK/frames/blank_1280_opaque.png" 2>/dev/null || true)" >> "$WORK/go.tsv"
+}
+
+judge_classify() {
+  python3 - "$WORK/go.tsv" "$WORK/pix.tsv" "$1" <<'PY'
+import sys
+
+go_path, pix_path, expected = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+
+def fields(line, prefix):
+    out = {}
+    if not line.startswith(prefix + ","):
+        return None
+    for part in line[len(prefix) + 1:].split(","):
+        k, _, v = part.partition("=")
+        out[k] = v
+    return out
+
+
+go = {}
+for raw in open(go_path, encoding="utf-8"):
+    name, size, bg, lb, g = raw.rstrip("\n").split("\t", 4)
+    go[(name, int(size), bg)] = (lb, fields(g, "GOJUDGE"))
+pix = {}
+for raw in open(pix_path, encoding="utf-8"):
+    parts = raw.rstrip("\n").split("\t")
+    if len(parts) != 3:
+        continue
+    name, size, bg = parts[0].rsplit("_", 2)
+    pix[(name, int(size), bg)] = (fields(parts[1], "PIX"), dict(p.split("=", 1) for p in parts[2].split(",")))
+
+E2P_EXPECTED = {("far_point", 256, "opaque")}
+rows = []
+agree = explained = unexplained = real = real_go_ok = 0
+classes = {"E1": 0, "E2": 0, "E2'": 0, "E3": 0}
+e2p = set()
+boxes = {}
+for key in sorted(go, key=lambda k: (k[0] == "blank", k[0], k[1], k[2])):
+    name, size, bg = key
+    lb, g = go[key]
+    p, ex = pix.get(key, (None, None))
+    go_ok = 1 if g and g.get("ok") == "1" else 0
+    pix_ok = 1 if p and p.get("ok") == "1" else 0
+    if g:
+        w, h = (int(x) for x in g["box"].split("x"))
+        x0, y0 = int(g.get("box_x", "-1")), int(g.get("box_y", "-1"))
+        boxes[key] = (x0, y0, x0 + w - 1, y0 + h - 1) if w > 0 else None
+        rows.append("GOJUDGE,drawing=%s,size=%d,background=%s,letterbox=%s,ok=%d,count=%s,frac6=%s,dark=%s,box=%s,box_x=%s,box_y=%s,margin_px=%s,alpha=%s,frac_transparent=%s" % (
+            name, size, bg, lb.replace(":", "x", 1).replace(":", "+"), go_ok, g.get("count"), g.get("frac6"), g.get("dark"), g.get("box"),
+            g.get("box_x"), g.get("box_y"), g.get("margin_px"), g.get("alpha"), g.get("frac_transparent")))
+    else:
+        boxes[key] = None
+        rows.append("GOJUDGE,drawing=%s,size=%d,background=%s,letterbox=%s,ok=0,output=none" % (name, size, bg, lb))
+    if p:
+        rows.append("PIX,drawing=%s,size=%d,background=%s,frac=%s,margin_px=%s,dark=%s,bbox=%s,w=%s,h=%s,mode=%s,ok=%s,frac_exact=%s,dark_exact=%s,margin_need=%s" % (
+            name, size, bg, p.get("frac"), p.get("margin_px"), p.get("dark"), p.get("bbox"), p.get("w"), p.get("h"), p.get("mode"), p.get("ok"),
+            ex.get("frac_exact"), ex.get("dark_exact"), ex.get("margin_need")))
+    else:
+        rows.append("PIX,drawing=%s,size=%d,background=%s,ok=none" % (name, size, bg))
+    if name != "blank":
+        real += 1
+        real_go_ok += go_ok
+    if p is None:
+        unexplained += 1
+        rows.append("DIVERGENCE,class=unexplained,drawing=%s,size=%d,background=%s,go_ok=%d,pix_ok=none,why=pixelcheck_printed_no_verdict" % (name, size, bg, go_ok))
+        continue
+    frac, dark = float(ex["frac_exact"]), float(ex["dark_exact"])
+    margin, need = int(ex["margin_exact"]), int(ex["margin_need"])
+    frac_fail = frac < float(ex["frac_min"])
+    dark_fail = dark < float(ex["dark_min"])
+    margin_fail = margin < need
+    recomputed = 0 if (margin < 0 or frac_fail or dark_fail or margin_fail) else 1
+    if recomputed != pix_ok:
+        unexplained += 1
+        rows.append("DIVERGENCE,class=unexplained,drawing=%s,size=%d,background=%s,go_ok=%d,pix_ok=%d,why=exact_values_do_not_reproduce_the_pixelcheck_verdict" % (name, size, bg, go_ok, pix_ok))
+        continue
+    facts = "frac_exact=%r;dark_exact=%r;margin=%d;need=%d;frac_fail=%d;dark_fail=%d;margin_fail=%d" % (
+        frac, dark, margin, need, frac_fail, dark_fail, margin_fail)
+    if go_ok == 0 and name != "blank":
+        cls, why = "unexplained", "a_real_frame_rejected_by_go"
+        if g and key in E2P_EXPECTED and pix_ok == 0:
+            lw, lh = (int(x) for x in lb.split(":")[:2])
+            bw, bh = (int(x) for x in g["box"].split("x"))
+            if int(g.get("count", "0")) >= 1 and max(bw, bh) < 0.5 * max(lw, lh):
+                cls, why = "E2'", "both_judges_reject_a_feature_below_one_pixel_at_this_size_go_J2_span_%d_of_%d" % (max(bw, bh), max(lw, lh))
+        if cls == "unexplained":
+            unexplained += 1
+        else:
+            explained += 1
+            classes[cls] += 1
+            e2p.add(key)
+        rows.append("DIVERGENCE,class=%s,drawing=%s,size=%d,background=%s,go_ok=%d,pix_ok=%d,why=%s,facts=%s" % (cls, name, size, bg, go_ok, pix_ok, why, facts))
+        continue
+    if go_ok == pix_ok:
+        agree += 1
+        continue
+    cls = "unexplained"
+    why = "no_registered_class"
+    if go_ok == 1 and name != "blank":
+        if bg == "transparent":
+            cls, why = "E3", "pixelcheck_converts_RGBA_to_RGB_so_transparent_black_counts_as_ink"
+        elif name == "far_point" and (frac_fail or dark_fail) and not margin_fail:
+            cls, why = "E2", "far_point_frame_accepted_under_R-4_and_R-11_pixelcheck_rejects_on_frac_or_dark"
+        elif dark_fail and not frac_fail and not margin_fail:
+            cls, why = "E1", "pixelcheck_rejects_only_on_dark"
+    if cls == "unexplained":
+        unexplained += 1
+    else:
+        explained += 1
+        classes[cls] += 1
+    rows.append("DIVERGENCE,class=%s,drawing=%s,size=%d,background=%s,go_ok=%d,pix_ok=%d,why=%s,facts=%s" % (cls, name, size, bg, go_ok, pix_ok, why, facts))
+
+twins = twins_ok = twins_excluded = 0
+for (name, size, bg), box in sorted(boxes.items()):
+    if bg != "transparent" or name == "blank":
+        continue
+    twin = boxes.get((name, size, "opaque"))
+    if (name, size, "opaque") in e2p and go.get((name, size, "transparent"), ("", {}))[1].get("ok") == "1":
+        twins_excluded += 1
+        rows.append("TWIN,drawing=%s,size=%d,transparent_box=%s,opaque_box=%s,compared=0,class=E2',why=the_opaque_twin_lost_the_sub_pixel_feature_and_is_rejected_so_there_is_no_accepted_box_to_match,ok=na" % (
+            name, size, ":".join(map(str, box)) if box else "none", ":".join(map(str, twin)) if twin else "none"))
+        continue
+    twins += 1
+    ok = 0
+    diff = "na"
+    if box and twin:
+        d = max(abs(a - b) for a, b in zip(box, twin))
+        diff = str(d)
+        ok = 1 if d <= 2 else 0
+    twins_ok += ok
+    rows.append("TWIN,drawing=%s,size=%d,transparent_box=%s,opaque_box=%s,max_edge_diff_px=%s,slack_px=2,ok=%d" % (
+        name, size, ":".join(map(str, box)) if box else "none", ":".join(map(str, twin)) if twin else "none", diff, ok))
+
+blank_go = go.get(("blank", 1280, "opaque"), ("", None))[1]
+blank_pix = pix.get(("blank", 1280, "opaque"), (None, None))[0]
+blank_both = 1 if blank_go and blank_go.get("ok") == "0" and blank_pix and blank_pix.get("ok") == "0" else 0
+rows.append("BLANK,size=1280,background=opaque,go_ok=%s,pix_ok=%s,rejected_by_both=%d" % (
+    blank_go.get("ok") if blank_go else "none", blank_pix.get("ok") if blank_pix else "none", blank_both))
+ok = (unexplained == 0 and real == expected and e2p == E2P_EXPECTED and real_go_ok == real - len(e2p)
+      and twins + twins_excluded == expected // 2 and twins_excluded == len(e2p) and twins_ok == twins and blank_both == 1)
+rows.append("JUDGE_SUMMARY,frames=%d,agreements=%d,explained=%d,explained_e1=%d,explained_e2=%d,explained_e2p=%d,explained_e3=%d,unexplained_divergence=%d,real_go_ok=%d,real_frames=%d,expected_real_frames=%d,real_rejected_e2p=%d,twins_ok=%d,twins=%d,twins_excluded_e2p=%d,blank_rejected_by_both=%d,result=%s" % (
+    real + 1, agree, explained, classes["E1"], classes["E2"], classes["E2'"], classes["E3"], unexplained, real_go_ok, real, expected, len(e2p),
+    twins_ok, twins, twins_excluded, blank_both, "ok" if ok else "fail"))
+print("\n".join(rows))
+PY
+}
+
+judge_mode() {
+  local f n drawings svg_mib expected
+  setup judge
+  DXF_RO=$(measured_ro dxf /usr/local/bin/cad-dxf)
+  RSVG_RO=$(measured_ro rsvg /usr/bin/rsvg-convert)
+  [ -n "$DXF_RO" ] && [ -n "$RSVG_RO" ] \
+    || fail "$LANDLOCK_EVID carries no single readable MEASURED line for dxf and rsvg; run scripts/cad-worker-sandbox-measure.sh --stages guard,dxf,rsvg first"
+  svg_mib=$(sed -n 's/^[[:space:]]*CADMaxDXFSVGBytes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\) << 20$/\1/p' "$REPO_ROOT/internal/convert/cad.go")
+  [ -n "$svg_mib" ] || fail "CADMaxDXFSVGBytes is not N << 20 in internal/convert/cad.go"
+  SVG_MAX=$((svg_mib << 20))
+  mkdir -p "$WORK/tools" "$WORK/frames"
+  chmod 0755 "$WORK/frames"
+  for f in cad-svg-check cad-pixel-judge; do
+    GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/tools/$f" "./scripts/cmd/$f"
+  done
+  write_pixelcheck_exact
+  JUDGE_FAIL=0
+  : > "$WORK/go.tsv"
+  {
+    printf 'HDR,mode=judge,ro_cad_dxf=%s,ro_rsvg=%s,rw=%s,landlock_evidence=evidence/75-08-landlock.txt\n' "$DXF_RO" "$RSVG_RO" "$RW_SET"
+    printf 'HDR,mode=judge,go_judge=scripts/cmd/cad-pixel-judge --drawing --letterbox-svg,letterbox=scripts/cmd/cad-pixel-judge --print-letterbox,svg_validator=scripts/cmd/cad-svg-check,pixelcheck=scripts/cad-measure/pixelcheck.py single --mode drawing,pixelcheck_sha256=%s,pixelcheck_python=/opt/venv/bin/python\n' "$(sha_of "$PIXELCHECK")"
+    printf "RULE,key=judge_divergence_classes,registered=before_any_frame,E1=pixelcheck_rejects_only_on_dark_while_go_accepts,E2=far_point_rejected_by_pixelcheck_on_frac_or_dark_and_accepted_by_go_under_R-4_and_R-11,E2'=both_judges_reject_a_feature_below_one_pixel_at_the_requested_size_expected_only_for_far_point_256_opaque_by_go_J2,E3=transparent_frame_flattened_by_pixelcheck,other=unexplained,source=75-08-PLAN_Task_1+75-CONTEXT_R-11\n"
+    printf "RULE,key=judge_requirements,real_frames=all_ok_in_go_except_E2'_far_point_256_opaque,twins=transparent_ink_box_equals_opaque_twin_within_2px_when_both_are_accepted_and_the_E2'_pair_is_recorded_uncompared,blank_1280=rejected_by_both,unexplained=0,go_drawing_J1=at_least_one_ink_pixel_R-11,thresholds=75-04_except_R-11_J1\n"
+  } >> "$LINES"
+  drawings=0
+  for f in $JUDGE_DRAWINGS; do
+    judge_drawing "${f#*/}" "$CORPUS/$f.dxf"
+    drawings=$((drawings + 1))
+  done
+  judge_blank
+  docker run --rm --network none --user nobody -e HOME=/tmp -v "$WORK/frames:/frames:ro" -v "$WORK/pc:/pc:ro" \
+    --entrypoint sh "$TAG" -c '/opt/venv/bin/python -I -B /pc/exact.py /frames/*.png' > "$WORK/pix.tsv" </dev/null \
+    || fail "pixelcheck did not run in the engine image"
+  expected=$((drawings * 6))
+  judge_classify "$expected" >> "$LINES"
+  n=$(grep -c '^JUDGE_SUMMARY,.*,result=ok$' "$LINES" || true)
+  [ "$JUDGE_FAIL" = 0 ] || sed -i.bak 's/^\(JUDGE_SUMMARY,.*\),result=ok$/\1,frame_production=failed,result=fail/' "$LINES"
+  rm -f "$LINES.bak"
+  mkdir -p "$(dirname "$EVID")"
+  cp "$LINES" "$EVID"
+  grep -E '^(FRAME_SOURCE|FRAME|DIVERGENCE|TWIN|BLANK|JUDGE_SUMMARY),' "$LINES" | grep -vE '^TWIN,.*,ok=1$|^FRAME_SOURCE,.*,result=ok$'
+  [ "$JUDGE_FAIL" = 0 ] && [ "$n" = 1 ]
+}
+
 [ $# -ge 1 ] || usage
 MODE=$1
 shift
@@ -1860,11 +2180,16 @@ if [ "$MODE" = helper ]; then
   EVID=$HELPER_EVID
   EVID_NAME=$HELPER_EVID_NAME
 fi
+if [ "$MODE" = judge ]; then
+  EVID=$JUDGE_EVID
+  EVID_NAME=$JUDGE_EVID_NAME
+fi
 [ -z "$OUT_OVERRIDE" ] || EVID=$OUT_OVERRIDE
 
 case "$MODE" in
   tracer) tracer ;;
   fixtures) fixtures ;;
   helper) helper_mode ;;
+  judge) judge_mode ;;
   *) usage ;;
 esac
