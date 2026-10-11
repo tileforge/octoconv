@@ -736,6 +736,18 @@ replicate_src() {
   printf '%s\n' "$path"
 }
 
+far_point_src() {
+  local d=$1 path out
+  path="$CAD_CACHE/scaled/dxf-farpoint-uncommon-d$d.dxf"
+  if [ ! -s "$path" ]; then
+    GEN_MOUNTS=()
+    out=$(gen --scaled-from "$BASE_DXF" --kind dxf-far-point --targets "$d")
+    log "$out"
+    path=$(stash_gen "dxf-farpoint-uncommon-d$d.dxf")
+  fi
+  printf '%s\n' "$path"
+}
+
 stress_src() {
   local shape=$1 path
   path="$CAD_CACHE/scaled/dxf-guard-stress-$shape-118MiB.dxf"
@@ -840,7 +852,7 @@ measure_row() {
     wrapped M "$row" "$rep" rsvg_pdf "$job" "$RSVG_RO" out.pdf /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/clean.render.svg || ok=0
   fi
   if [ "$ok" = 1 ]; then
-    wrapped G "$row" "$rep" pdf "$job" none "" /gobin/cad-pdf-check --texts /job/draw.texts.json /job/out.pdf || ok=0
+    wrapped G "$row" "$rep" pdf "$job" none "" /gobin/cad-pdf-check --texts /job/draw.texts.json --svg /job/clean.render.svg /job/out.pdf || ok=0
   fi
   if [ "$ok" = 1 ]; then
     lb=$(docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pixel-judge "$TAG" \
@@ -990,6 +1002,82 @@ rep2_rows() {
     done
     check_state run
   done
+}
+
+teeth_row() {
+  local name=$1 src=$2 side=$3 job pick idx size got
+  disk_guard
+  log "teeth $name"
+  job=$(new_job)
+  cp -c "$src" "$job/in.dxf" 2>/dev/null || cp "$src" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  docker run --rm "${LIMITS[@]}" "${STAGE_ENV[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint sh "$TAG" -c \
+    '/usr/local/bin/cad-dxf --max-drawn-entities 100000000 --texts /job/draw.texts.json --render-svg /job/draw.render.svg /job/in.dxf /job/draw.svg >/dev/null 2>&1 &&
+     /gobin/cad-svg-check --out /job/clean.render.svg /job/draw.render.svg >/dev/null &&
+     /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/clean.render.svg &&
+     /gobin/cad-pdf-check --texts /job/draw.texts.json --svg /job/clean.render.svg /job/out.pdf > /job/plain.out;
+     /gobin/cad-pdf-check --report --texts /job/draw.texts.json --svg /job/clean.render.svg /job/out.pdf > /job/report.out' </dev/null || true
+  pick=$(python3 - "$job" "$side" <<'PY'
+import json
+import sys
+
+job, side = sys.argv[1:3]
+floor = None
+for ln in open(job + "/plain.out"):
+    if ln.startswith("GOPDF,"):
+        parts = dict(p.split("=", 1) for p in ln.strip().split(",")[1:] if "=" in p)
+        floor = float(parts["floor_pt"])
+rows = []
+for ln in open(job + "/report.out"):
+    if ln.startswith("REPORT,"):
+        parts = dict(p.split("=", 1) for p in ln.strip().split(",")[1:] if "=" in p)
+        rows.append((int(parts["i"]), float(parts["svg_pt"]), parts["present"]))
+cands = [r for r in rows if r[2] == "1" and r[1] >= 10 * floor] if side == "above" else [r for r in rows if r[2] in ("0", "1") and r[1] < floor]
+if not cands:
+    print("none 0")
+    sys.exit(0)
+i, size, _ = cands[0]
+doc = json.load(open(job + "/draw.texts.json"))
+doc["texts"][i] = {"text": "☃☃", "covered": "☃☃"}
+open(job + "/altered.texts.json", "w").write(json.dumps(doc, separators=(",", ":"), ensure_ascii=True))
+print(i, "%.6g" % size)
+PY
+)
+  read -r idx size <<< "$pick"
+  if [ "$idx" = none ]; then
+    printf 'TEETH,name=%s,side=%s,file=%s,sha256=%s,result=fail,reason=no_text_on_this_side_of_the_floor\n' "$name" "$side" "$(basename "$src")" "$(sha_of "$src")" >> "$LINES"
+    printf 'X,stop=teeth_failed,name=%s\n' "$name" >> "$MEAS"
+    rm -rf "$job"
+    return 0
+  fi
+  docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pdf-check "$TAG" \
+    --texts /job/altered.texts.json --svg /job/clean.render.svg /job/out.pdf > "$job/altered.out" </dev/null || true
+  got=$(python3 - "$job" "$side" "$name" "$idx" "$size" "$(basename "$src")" "$(sha_of "$src")" <<'PY'
+import sys
+
+job, side, name, idx, size, fname, digest = sys.argv[1:8]
+def facts(path):
+    for ln in open(path):
+        if ln.startswith("GOPDF,"):
+            return dict(p.split("=", 1) for p in ln.strip().split(",")[1:] if "=" in p)
+    return {}
+plain, alt = facts(job + "/plain.out"), facts(job + "/altered.out")
+if side == "above":
+    ok = plain.get("ok") == "1" and alt.get("ok") == "0" and "missing_text" in alt.get("reason", "").replace(" ", "_")
+    expect = "unaltered_ok_and_altered_rejected_missing_text"
+else:
+    ok = plain.get("ok") == "1" and alt.get("ok") == "1" and int(alt.get("below_render_floor", "0")) >= 1 \
+        and int(alt.get("below_floor_runes", "0")) >= 2
+    expect = "unaltered_ok_and_altered_ok_with_the_text_counted_below_render_floor"
+print("TEETH,name=%s,side=%s,file=%s,sha256=%s,altered_index=%s,altered_svg_pt=%s,floor_pt=%s,expect=%s,unaltered_ok=%s,unaltered_below_render_floor=%s,altered_ok=%s,altered_below_render_floor=%s,altered_expected_runes=%s,altered_reason=%s,result=%s" % (
+    name, side, fname, digest, idx, size, alt.get("floor_pt", "na"), expect, plain.get("ok", "na"), plain.get("below_render_floor", "na"),
+    alt.get("ok", "na"), alt.get("below_render_floor", "na"), alt.get("expected_runes", "na"), alt.get("reason", "na"), "ok" if ok else "fail"))
+PY
+)
+  printf '%s\n' "$got" >> "$LINES"
+  log "$got"
+  case "$got" in *result=ok) ;; *) printf 'X,stop=teeth_failed,name=%s\n' "$name" >> "$MEAS" ;; esac
+  rm -rf "$job"
 }
 
 floor_rule_lines() {
@@ -1150,6 +1238,9 @@ smoke_mode() {
 run_mode() {
   local i n path gline mib ci ce verdict b_line c_line ceil_src over
   setup run
+  teeth_row above_the_floor "$REPO_ROOT/$BASE_DXF" above
+  teeth_row below_the_floor "$(far_point_src 367332)" below
+  check_state run
   stress_rows
   check_state run
   LADDER_PATH=(); LADDER_GEN=()

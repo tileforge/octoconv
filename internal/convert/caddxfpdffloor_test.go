@@ -5,8 +5,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func cadSVGFactsOf(t *testing.T, svg string) CADSVGFacts {
@@ -115,4 +118,90 @@ func TestCADDXFPDFReportOnTheHelperFixtures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCADDXFPDFTextFloorComesFromTheEvidence(t *testing.T) {
+	const evidence = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
+	raw, err := os.ReadFile(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^DERIVED,key=cad_dxf_pdf_text_floor,value=([0-9.eE+-]+),`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("no DERIVED line for cad_dxf_pdf_text_floor in %s", evidence)
+	}
+	want, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if CADDXFPDFTextFloorPt != want {
+		t.Errorf("CADDXFPDFTextFloorPt = %v, evidence DERIVED line says %v: re-derive it with scripts/cad-dxf-bounds.sh floor rather than editing the expectation", CADDXFPDFTextFloorPt, want)
+	}
+}
+
+func cadDXFFixtureInputs(t *testing.T, name string) (string, []cadDXFText, CADSVGFacts) {
+	t.Helper()
+	texts, err := parseCADDXFTexts(filepath.Join(cadSVGTestDir, name+".texts.json"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svg, err := cadDXFReadSVGFacts(filepath.Join(cadSVGTestDir, name+".render.svg"), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(cadSVGTestDir, name+".pdf"), texts, svg
+}
+
+func TestJudgeCADDXFPDFAcceptsHelperPDFsAndExcludesNothingAboveTheFloor(t *testing.T) {
+	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2"} {
+		t.Run(name, func(t *testing.T) {
+			pdf, texts, svg := cadDXFFixtureInputs(t, name)
+			facts, err := JudgeCADDXFPDF(pdf, 1<<30, texts, svg)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if facts.BelowRenderFloor != 0 || facts.BelowFloorRunes != 0 || facts.FloorPt != CADDXFPDFTextFloorPt {
+				t.Errorf("facts = %+v, want nothing below the %v pt floor", facts, CADDXFPDFTextFloorPt)
+			}
+			if facts.ExpectedRunes != utf8.RuneCountInString(cadDXFExpectedText(texts)) {
+				t.Errorf("expected runes = %d, want %d", facts.ExpectedRunes, utf8.RuneCountInString(cadDXFExpectedText(texts)))
+			}
+		})
+	}
+}
+
+func TestJudgeCADDXFPDFRejectsAnAlteredTextAboveTheFloor(t *testing.T) {
+	pdf, texts, svg := cadDXFFixtureInputs(t, "uncommon")
+	texts[7] = cadDXFText{Text: "☃", Covered: "☃"}
+	_, err := JudgeCADDXFPDF(pdf, 1<<30, texts, svg)
+	cadPDFRequireRejected(t, err, "missing text")
+}
+
+func TestJudgeCADDXFPDFExcludesAndCountsAnAlteredTextBelowTheFloor(t *testing.T) {
+	pdf, texts, svg := cadDXFFixtureInputs(t, "uncommon")
+	texts[7] = cadDXFText{Text: "☃☃", Covered: "☃☃"}
+	svg.TextSizes = append([]float64(nil), svg.TextSizes...)
+	svg.TextSizes[7] = 1e-9
+	facts, err := JudgeCADDXFPDF(pdf, 1<<30, texts, svg)
+	if err != nil {
+		t.Fatalf("rejected: %v", err)
+	}
+	if facts.BelowRenderFloor != 1 || facts.BelowFloorRunes != 2 {
+		t.Errorf("facts = %+v, want one text and two runes below the floor", facts)
+	}
+}
+
+func TestJudgeCADDXFPDFRejectsMismatchedInputs(t *testing.T) {
+	pdf, texts, svg := cadDXFFixtureInputs(t, "uncommon")
+	_, err := JudgeCADDXFPDF(pdf, 1<<30, texts[1:], svg)
+	cadPDFRequireRejected(t, err, "texts.json has 48 entries")
+	noBox := cadPDFFile(
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>",
+		cadPDFStream("", []byte("0 0 1 1 re f 0 0 2 2 re f"), true),
+	)
+	svgOne := CADSVGFacts{ViewBoxW: 10, ViewBoxH: 10, TextSizes: []float64{1}}
+	_, err = JudgeCADDXFPDF(cadPDFWrite(t, noBox), 1<<20, []cadDXFText{{Text: "A", Covered: "A"}}, svgOne)
+	cadPDFRequireRejected(t, err, "MediaBox")
 }

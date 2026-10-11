@@ -20,10 +20,14 @@ import (
 
 var ErrCADPDFRejected = errors.New("cad: the drawing's PDF failed the content check")
 
+const CADDXFPDFTextFloorPt = 0.00469174
+
 type CADPDFFacts struct {
 	Pages, PaintOps, TextRunes, ExpectedRunes int
 	Text                                      string
 	PageW, PageH                              float64
+	BelowRenderFloor, BelowFloorRunes         int
+	FloorPt                                   float64
 }
 
 type CADPDFShow struct {
@@ -1500,6 +1504,56 @@ func cadDXFReadSVGFacts(path string, maxBytes int64) (CADSVGFacts, error) {
 	}
 	defer f.Close()
 	return ValidateCADSVG(f, io.Discard, maxBytes)
+}
+
+func JudgeCADDXFPDF(path string, maxBytes int64, texts []cadDXFText, svg CADSVGFacts) (CADPDFFacts, error) {
+	facts, _, err := cadPDFDecode(path, maxBytes, false)
+	facts.FloorPt = CADDXFPDFTextFloorPt
+	if err != nil {
+		return facts, err
+	}
+	if len(texts) != len(svg.TextSizes) {
+		return facts, cadPDFReject("texts.json has %d entries, the SVG has %d texts", len(texts), len(svg.TextSizes))
+	}
+	scale, err := cadDXFPageScale(facts, svg)
+	if err != nil {
+		return facts, err
+	}
+	var want strings.Builder
+	for i, t := range texts {
+		c := cadStripSpace(t.Covered)
+		if c == "" {
+			continue
+		}
+		if svg.TextSizes[i]*scale < CADDXFPDFTextFloorPt {
+			facts.BelowRenderFloor++
+			facts.BelowFloorRunes += utf8.RuneCountInString(c)
+			continue
+		}
+		want.WriteString(c)
+	}
+	w := want.String()
+	facts.ExpectedRunes = utf8.RuneCountInString(w)
+	if facts.PaintOps-1 < 1 {
+		return facts, cadPDFReject("empty page: %d paint operations, want at least one beyond the background", facts.PaintOps)
+	}
+	stripped := cadStripSpace(facts.Text)
+	if w != "" && !cadRuneSubsequence(w, stripped) {
+		return facts, cadPDFReject("missing text: %d of %d expected characters found in order", cadRuneSubsequenceCount(w, stripped), facts.ExpectedRunes)
+	}
+	return facts, nil
+}
+
+func JudgeCADDXFPDFFiles(pdfPath, textsPath, svgPath string, maxBytes int64) (CADPDFFacts, error) {
+	svg, err := cadDXFReadSVGFacts(svgPath, maxBytes)
+	if err != nil {
+		return CADPDFFacts{}, err
+	}
+	texts, err := parseCADDXFTexts(textsPath, maxBytes)
+	if err != nil {
+		return CADPDFFacts{}, err
+	}
+	return JudgeCADDXFPDF(pdfPath, maxBytes, texts, svg)
 }
 
 func CADDXFPDFReport(pdfPath, textsPath, svgPath string, maxBytes int64) ([]CADDXFPDFText, int, error) {
