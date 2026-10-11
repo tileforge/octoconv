@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/apaderin/octoconv/internal/measurements"
@@ -56,19 +58,79 @@ var cadRenderEngines = []string{"cad-render"}
 
 var cadGuardEngines = []string{"cad-guard"}
 
+var cadDXFReadOnly = []string{
+	"/opt/venv",
+	"/usr/bin/python3.11",
+	"/usr/lib/python3.11",
+	"/usr/share/fonts",
+}
+
+var cadDXFEngines = []string{"cad-dxf"}
+
+var cadRsvgReadOnly = []string{
+	"/usr/share/fonts",
+}
+
+var cadRsvgEngines = []string{"rsvg-convert"}
+
 var cadMultiarchLib = map[string]string{"arm64": "aarch64-linux-gnu", "amd64": "x86_64-linux-gnu"}
 
-func (c CADConverter) cadStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+func (c CADConverter) cadReadOnly(readOnly []string) ([]string, error) {
 	ro := append([]string{}, readOnly...)
 	if c.Sandbox.confines() {
 		triple, ok := cadMultiarchLib[runtime.GOARCH]
 		if !ok {
-			return engineExec{}, fmt.Errorf("cad: no multiarch library directory is known for GOARCH %s", runtime.GOARCH)
+			return nil, fmt.Errorf("cad: no multiarch library directory is known for GOARCH %s", runtime.GOARCH)
 		}
 		ro = append(ro, "/usr/lib/"+triple)
 	}
+	return ro, nil
+}
+
+func (c CADConverter) cadStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+	ro, err := c.cadReadOnly(readOnly)
+	if err != nil {
+		return engineExec{}, err
+	}
 	env := append(engineEnv(jobDir), "LP_NUM_THREADS=2")
 	return c.Sandbox.forJob(jobDir, ro, engines).withEnv(env), nil
+}
+
+func (c CADConverter) cadDrawStage(jobDir string, readOnly, engines []string) (engineExec, error) {
+	ro, err := c.cadReadOnly(readOnly)
+	if err != nil {
+		return engineExec{}, err
+	}
+	home := filepath.Join(jobDir, ".home")
+	cache := filepath.Join(home, ".cache")
+	config := filepath.Join(home, ".config")
+	for _, dir := range []string{home, cache, config} {
+		if err := cadPrivateDir(dir); err != nil {
+			return engineExec{}, err
+		}
+	}
+	var env []string
+	for _, e := range engineEnv(jobDir) {
+		if !strings.HasPrefix(e, "HOME=") {
+			env = append(env, e)
+		}
+	}
+	env = append(env, "HOME="+home, "XDG_CACHE_HOME="+cache, "XDG_CONFIG_HOME="+config)
+	return c.Sandbox.forJob(jobDir, ro, engines).withEnv(env), nil
+}
+
+func cadPrivateDir(dir string) error {
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("cad: create the stage home %s: %w", dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("cad: stat the stage home %s: %w", dir, err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("cad: the stage home %s is %v, want a 0700 directory", dir, info.Mode())
+	}
+	return nil
 }
 
 func (c CADConverter) WithSandbox(helper []string) CADConverter {
@@ -76,11 +138,14 @@ func (c CADConverter) WithSandbox(helper []string) CADConverter {
 	return c
 }
 
-func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
+func ValidateCADTimeouts(guard, mesh, render, dxf, rsvg, engine time.Duration) error {
 	for _, v := range []struct {
 		name  string
 		value time.Duration
-	}{{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render}, {"CAD_ENGINE_TIMEOUT", engine}} {
+	}{
+		{"CAD_GUARD_TIMEOUT", guard}, {"CAD_MESH_TIMEOUT", mesh}, {"CAD_RENDER_TIMEOUT", render},
+		{"CAD_DXF_TIMEOUT", dxf}, {"CAD_RSVG_TIMEOUT", rsvg}, {"CAD_ENGINE_TIMEOUT", engine},
+	} {
 		if v.value <= 0 {
 			return fmt.Errorf("%s=%s must be positive", v.name, v.value)
 		}
@@ -89,18 +154,22 @@ func ValidateCADTimeouts(guard, mesh, render, engine time.Duration) error {
 		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + CAD_RENDER_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
 			"the attempt deadline would cut a stage short of its own limit", guard, mesh, render, CADIOAllowance, engine)
 	}
+	if guard+dxf+rsvg+CADIOAllowance > engine {
+		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_DXF_TIMEOUT=%s + CAD_RSVG_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
+			"the attempt deadline would cut a stage short of its own limit", guard, dxf, rsvg, CADIOAllowance, engine)
+	}
 	return nil
 }
 
-func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, engine time.Duration) (CADConverter, error) {
+func ConfinedCAD(helper []string, concurrency int, concurrencyEnv string, guard, mesh, render, dxf, rsvg, engine time.Duration) (CADConverter, error) {
 	if concurrency != 1 {
 		return CADConverter{}, fmt.Errorf("%s=%d: the cad pod limit was derived for one job at a time; set %s=1 and scale with replicas",
 			concurrencyEnv, concurrency, concurrencyEnv)
 	}
-	if err := ValidateCADTimeouts(guard, mesh, render, engine); err != nil {
+	if err := ValidateCADTimeouts(guard, mesh, render, dxf, rsvg, engine); err != nil {
 		return CADConverter{}, err
 	}
-	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render}.WithSandbox(helper)
+	c := CADConverter{GuardTimeout: guard, MeshTimeout: mesh, RenderTimeout: render, DXFTimeout: dxf, RsvgTimeout: rsvg}.WithSandbox(helper)
 	return c, nil
 }
 
