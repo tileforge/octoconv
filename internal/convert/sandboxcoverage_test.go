@@ -96,8 +96,8 @@ func sandboxClassFileEngines(base string) (engines []string, isClass bool) {
 		return verapdfEngines, true
 	case "documentsandbox.go":
 		return sandboxUnion(sofficeEngines, verapdfEngines), true
-	case "cad.go", "cadsandbox.go", "cadrender.go":
-		return sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines), true
+	case "cad.go", "cadsandbox.go", "cadrender.go", "caddxf.go":
+		return sandboxUnion(sandboxUnion(sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines), cadDXFEngines), cadRsvgEngines), true
 	}
 	return nil, false
 }
@@ -124,7 +124,7 @@ func sandboxClassFileGroups(base string) []string {
 		return []string{"probe"}
 	case "libreoffice.go", "verapdf.go", "documentsandbox.go":
 		return []string{"document"}
-	case "cad.go", "cadsandbox.go", "cadrender.go":
+	case "cad.go", "cadsandbox.go", "cadrender.go", "caddxf.go":
 		return []string{"cad"}
 	}
 	return nil
@@ -150,7 +150,7 @@ func sandboxGroupEngines(group string) []string {
 	case "document":
 		return sandboxUnion(sofficeEngines, verapdfEngines)
 	case "cad":
-		return sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines)
+		return sandboxUnion(sandboxUnion(sandboxUnion(sandboxUnion(cadGuardEngines, cadMeshEngines), cadRenderEngines), cadDXFEngines), cadRsvgEngines)
 	}
 	return nil
 }

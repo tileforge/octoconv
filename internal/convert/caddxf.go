@@ -1,0 +1,310 @@
+package convert
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"math"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"unicode/utf8"
+)
+
+const (
+	cadDXFDrawName   = "draw.svg"
+	cadDXFRenderName = "draw.render.svg"
+	cadDXFTextsName  = "texts.json"
+	cadDXFCleanName  = "clean.svg"
+	cadDXFHomeName   = ".home"
+	cadDXFPageSlack  = 1e-6
+)
+
+var cadDXFJobNames = []string{cadDXFDrawName, cadDXFRenderName, cadDXFTextsName, cadMeasureDraftName, cadDXFCleanName, cadDXFHomeName}
+
+type CADDXFConverter struct{ CADConverter }
+
+func (CADDXFConverter) Pairs() []Pair {
+	return []Pair{{From: "dxf", To: "svg"}, {From: "dxf", To: "pdf"}}
+}
+
+type cadDXFDrawing struct {
+	client, render CADSVGFacts
+	texts          []cadDXFText
+	verdict        cadVerdict
+}
+
+func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) (err error) {
+	parsed, err := CADOptsFromMap(opts)
+	if err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	format := NormalizeFormat(filepath.Ext(inPath))
+	target := NormalizeFormat(filepath.Ext(outPath))
+	if format != "dxf" || (target != "svg" && target != "pdf") {
+		return fmt.Errorf("cad: unsupported conversion %s -> %s", format, target)
+	}
+	if err := ValidateCADApplicability(EngineCAD, OperationConvert, format, target, parsed); err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	jobDir, err := cadDXFAdmit(inPath, outPath)
+	if err != nil {
+		return err
+	}
+	clean := filepath.Join(jobDir, cadDXFCleanName)
+	defer func() {
+		if err != nil {
+			os.Remove(outPath)
+			os.Remove(clean)
+		}
+	}()
+
+	if target == "svg" {
+		_, err = c.dxfDrawing(ctx, jobDir, inPath, outPath, "", "")
+		return err
+	}
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", clean, "")
+	if err != nil {
+		return err
+	}
+	if err := cadDXFClear(outPath); err != nil {
+		return err
+	}
+	if err := c.rsvgStage(ctx, jobDir, outPath, "-f", "pdf", "-b", "white", "-o", outPath, clean); err != nil {
+		return err
+	}
+	if err := cadDXFRegular(outPath, "the PDF"); err != nil {
+		return err
+	}
+	if _, err := JudgeCADDXFPDF(outPath, CADMaxDXFPDFBytes, d.texts, d.render); err != nil {
+		return fmt.Errorf("cad: %w", err)
+	}
+	return nil
+}
+
+func cadDXFAdmit(inPath, outPath string) (string, error) {
+	jobDir := filepath.Dir(outPath)
+	for _, name := range cadDXFJobNames {
+		p := filepath.Join(jobDir, name)
+		if filepath.Clean(inPath) == p {
+			return "", fmt.Errorf("cad: the input %s is the %s path of its own job", inPath, name)
+		}
+		if filepath.Clean(outPath) == p {
+			return "", fmt.Errorf("cad: the output %s is the %s path of its own job", outPath, name)
+		}
+	}
+	info, err := os.Stat(inPath)
+	if err != nil {
+		return "", fmt.Errorf("cad: stat input: %w", err)
+	}
+	if ceiling := cadMaxBytes("dxf"); info.Size() > ceiling {
+		return "", fmt.Errorf("cad: %w: dxf input is %d bytes against a %d-byte ceiling", ErrCADInputTooLarge, info.Size(), ceiling)
+	}
+	return jobDir, nil
+}
+
+func cadDXFClear(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cad: clear %s: %w", path, err)
+	}
+	return nil
+}
+
+func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut, renderOut, measure string) (cadDXFDrawing, error) {
+	var d cadDXFDrawing
+	if _, err := c.guardStage(ctx, jobDir, "dxf", inPath); err != nil {
+		return d, err
+	}
+	draw := filepath.Join(jobDir, cadDXFDrawName)
+	render := filepath.Join(jobDir, cadDXFRenderName)
+	texts := filepath.Join(jobDir, cadDXFTextsName)
+	stale := []string{draw, render, texts, filepath.Join(jobDir, cadDXFCleanName)}
+	if measure != "" {
+		stale = append(stale, measure)
+	}
+	for _, p := range stale {
+		if err := cadDXFClear(p); err != nil {
+			return d, err
+		}
+	}
+	v, err := c.dxfStage(ctx, jobDir, inPath, draw, render, texts, measure)
+	if err != nil {
+		return d, err
+	}
+	d.verdict = v
+	for _, out := range []struct{ path, what string }{{draw, "the client SVG"}, {render, "the render-only SVG"}, {texts, "texts.json"}} {
+		if err := cadDXFRegular(out.path, out.what); err != nil {
+			return d, err
+		}
+	}
+	for _, p := range []string{draw, render} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return d, fmt.Errorf("cad dxf: %w: %v", ErrCADDrawingFailed, err)
+		}
+		if info.Size() > CADMaxDXFSVGBytes {
+			return d, fmt.Errorf("cad dxf: %w: %s is %d bytes against a %d-byte ceiling", ErrCADTooComplex, filepath.Base(p), info.Size(), int64(CADMaxDXFSVGBytes))
+		}
+	}
+	if d.client, err = cadDXFValidate(draw, clientOut); err != nil {
+		return d, err
+	}
+	if d.render, err = cadDXFValidate(render, renderOut); err != nil {
+		return d, err
+	}
+	d.texts, err = parseCADDXFTexts(texts, CADMaxDXFSVGBytes)
+	if err != nil {
+		if errors.Is(err, ErrCADPDFRejected) {
+			return d, fmt.Errorf("cad dxf: %w: %v", ErrCADSVGRejected, err)
+		}
+		return d, fmt.Errorf("cad dxf: %w", err)
+	}
+	if err := cadDXFCrossCheck(d); err != nil {
+		return d, err
+	}
+	return d, nil
+}
+
+func (c CADConverter) dxfStage(ctx context.Context, jobDir, inPath, svg, render, texts, measure string) (cadVerdict, error) {
+	x, err := c.cadDrawStage(jobDir, cadDXFReadOnly, cadDXFEngines)
+	if err != nil {
+		return cadVerdict{}, err
+	}
+	timeout := c.dxfTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	args := []string{
+		"--max-drawn-entities", strconv.Itoa(CADMaxDXFExpandedEntities),
+		"--texts", texts,
+		"--render-svg", render,
+	}
+	if measure != "" {
+		args = append(args, "--measure", measure)
+	}
+	args = append(args, inPath, svg)
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-dxf", args...)
+	return classifyCADStage(cadStageDXF, ctx, stageCtx, timeout, out, cpu, err)
+}
+
+func (c CADConverter) rsvgStage(ctx context.Context, jobDir, outPath string, args ...string) error {
+	x, err := c.cadDrawStage(jobDir, cadRsvgReadOnly, cadRsvgEngines)
+	if err != nil {
+		return err
+	}
+	timeout := c.rsvgTimeout()
+	stageCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "rsvg-convert", args...)
+	return classifyCADRsvg(ctx, stageCtx, timeout, cpu, err, outPath)
+}
+
+func cadDXFRegular(path, what string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("cad: %w: the stage reported ok without %s", ErrCADDrawingFailed, what)
+	}
+	if err != nil {
+		return fmt.Errorf("cad: %w: stat %s: %v", ErrCADDrawingFailed, what, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cad: %w: %s is %v, not a regular file", ErrCADSVGRejected, what, info.Mode().Type())
+	}
+	return nil
+}
+
+func cadDXFValidate(src, dst string) (facts CADSVGFacts, err error) {
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return facts, fmt.Errorf("cad dxf: %w: open %s: %v", ErrCADSVGRejected, filepath.Base(src), err)
+	}
+	defer in.Close()
+	var w io.Writer = io.Discard
+	if dst != "" {
+		if err := cadDXFClear(dst); err != nil {
+			return facts, err
+		}
+		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return facts, fmt.Errorf("cad dxf: create %s: %w", dst, err)
+		}
+		defer func() {
+			if cerr := out.Close(); cerr != nil && err == nil {
+				err = fmt.Errorf("cad dxf: write %s: %w", dst, cerr)
+			}
+			if err != nil {
+				os.Remove(dst)
+			}
+		}()
+		w = out
+	}
+	facts, err = ValidateCADSVG(in, w, CADMaxDXFSVGBytes)
+	if err != nil {
+		return facts, fmt.Errorf("cad dxf: %s: %w", filepath.Base(src), err)
+	}
+	return facts, nil
+}
+
+func cadXMLLineEnds(s string) string {
+	if !strings.Contains(s, "\r") {
+		return s
+	}
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
+func cadDXFRenderText(t cadDXFText) (string, int) {
+	covered := make(map[rune]bool, len(t.Covered))
+	for _, r := range t.Covered {
+		covered[r] = true
+	}
+	var b strings.Builder
+	substituted := 0
+	for _, r := range t.Text {
+		if covered[r] {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteRune('�')
+		if r != '�' {
+			substituted++
+		}
+	}
+	return b.String(), substituted
+}
+
+func cadDXFCrossCheck(d cadDXFDrawing) error {
+	n := len(d.texts)
+	if len(d.client.Texts) != n || len(d.render.Texts) != n || d.verdict.Texts != n {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("texts.json holds %d texts, the client SVG %d, the render-only SVG %d and the verdict %d",
+			n, len(d.client.Texts), len(d.render.Texts), d.verdict.Texts))
+	}
+	uncovered, substituted := 0, 0
+	for i, t := range d.texts {
+		if cadXMLLineEnds(t.Text) != cadXMLLineEnds(d.client.Texts[i]) {
+			return fmt.Errorf("cad dxf: %w", cadSVGReject("text %d of texts.json differs from the client SVG", i))
+		}
+		want, subs := cadDXFRenderText(t)
+		if cadXMLLineEnds(want) != cadXMLLineEnds(d.render.Texts[i]) {
+			return fmt.Errorf("cad dxf: %w", cadSVGReject("text %d of the render-only SVG is not texts.json with U+FFFD outside covered", i))
+		}
+		uncovered += utf8.RuneCountInString(t.Text) - utf8.RuneCountInString(t.Covered)
+		substituted += subs
+	}
+	if d.verdict.Uncovered != uncovered || d.verdict.RenderSubstituted != substituted {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("the verdict reports %d uncovered and %d substituted characters, texts.json implies %d and %d",
+			d.verdict.Uncovered, d.verdict.RenderSubstituted, uncovered, substituted))
+	}
+	if d.client.WidthMM != d.render.WidthMM || d.client.HeightMM != d.render.HeightMM ||
+		d.client.ViewBoxW != d.render.ViewBoxW || d.client.ViewBoxH != d.render.ViewBoxH {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("the client SVG page %vx%v mm, viewBox %vx%v differs from the render-only SVG page %vx%v mm, viewBox %vx%v",
+			d.client.WidthMM, d.client.HeightMM, d.client.ViewBoxW, d.client.ViewBoxH, d.render.WidthMM, d.render.HeightMM, d.render.ViewBoxW, d.render.ViewBoxH))
+	}
+	if math.Abs(d.verdict.PageWMM-d.client.WidthMM) > cadDXFPageSlack || math.Abs(d.verdict.PageHMM-d.client.HeightMM) > cadDXFPageSlack {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("the verdict page %vx%v mm differs from the SVG page %vx%v mm",
+			d.verdict.PageWMM, d.verdict.PageHMM, d.client.WidthMM, d.client.HeightMM))
+	}
+	return nil
+}
