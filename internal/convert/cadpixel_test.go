@@ -494,12 +494,8 @@ func TestJudgeCADDrawingPNGRejects(t *testing.T) {
 	tight := pixFrame(1280, color.NRGBA{R: 255, G: 255, B: 255, A: 10})
 	cadDrawingSquare(tight, pixDark)
 	tight.SetNRGBA(640, 640, color.NRGBA{})
-	sparse := pixFrame(2048, pixWhite)
-	pixRect(sparse, 100, 1024, 1199, 1024, pixDark)
-	sparseBox, err := CADDrawingLetterbox(297, 297, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	single := pixFrame(1280, pixWhite)
+	single.SetNRGBA(640, 640, pixDark)
 	cases := []struct {
 		name       string
 		img        image.Image
@@ -517,7 +513,7 @@ func TestJudgeCADDrawingPNGRejects(t *testing.T) {
 		{"opaque_with_transparent_pixel", holed, 1280, "opaque", cadSquareBox, "transparent"},
 		{"transparent_without_alpha", square(), 1280, "transparent", cadSquareBox, "alpha"},
 		{"transparent_fraction_under_min", tight, 1280, "transparent", cadSquareBox, "transparent fraction"},
-		{"ink_fraction_under_min", sparse, 2048, "opaque", sparseBox, "J1"},
+		{"single_ink_pixel_wrong_span", single, 1280, "opaque", cadSquareBox, "J2"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -530,6 +526,33 @@ func TestJudgeCADDrawingPNGRejects(t *testing.T) {
 	}
 	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, slack)), 1280, "opaque", wideBox); err != nil {
 		t.Fatalf("ink 2 px outside the letterbox is within the slack: %v", err)
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsAnySpanningInkHoweverSparse(t *testing.T) {
+	box, err := CADDrawingLetterbox(297, 297, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sparse := pixFrame(2048, pixWhite)
+	pixRect(sparse, 100, 1024, 1199, 1024, pixDark)
+	twoDots := pixFrame(2048, pixWhite)
+	twoDots.SetNRGBA(box.Left+64, box.Top+box.Height-65, pixDark)
+	twoDots.SetNRGBA(box.Left+box.Width-65, box.Top+64, pixDark)
+	for _, c := range []struct {
+		name  string
+		img   image.Image
+		count int
+	}{{"line_under_the_old_fraction", sparse, 1100}, {"two_far_dots", twoDots, 2}} {
+		t.Run(c.name, func(t *testing.T) {
+			f, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, c.img)), 2048, "opaque", box)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if f.Count != c.count || f.Frac >= 0.0003 {
+				t.Errorf("count %d frac %.6f, want %d ink pixels under the old 0.0003 fraction", f.Count, f.Frac, c.count)
+			}
+		})
 	}
 }
 

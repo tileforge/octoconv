@@ -24,7 +24,6 @@ const (
 	cadMarginMin           = 0.03
 	cadTransparentMin      = 0.05
 	cadTransparentMax      = 0.95
-	cadDrawingFracMin      = 0.0003
 	cadDrawingSpanMin      = 0.5
 	cadLetterboxSlack      = 2
 )
@@ -142,9 +141,6 @@ func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterb
 	}
 	if facts.Count == 0 {
 		return facts, fmt.Errorf("%w: J1 the frame holds no ink", ErrCADRenderRejected)
-	}
-	if facts.Frac < cadDrawingFracMin {
-		return facts, fmt.Errorf("%w: J1 ink fraction %.6f is under %.4f", ErrCADRenderRejected, facts.Frac, cadDrawingFracMin)
 	}
 	long, boxLong := max(facts.BoxW, facts.BoxH), max(box.Width, box.Height)
 	if float64(long) < cadDrawingSpanMin*float64(boxLong) {
