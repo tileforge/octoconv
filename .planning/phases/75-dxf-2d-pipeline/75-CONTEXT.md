@@ -125,6 +125,15 @@ These come from phase 71 (`71-DECISION.md`) and phases 72–74:
   - **Proving the rule bites.** One row must show that a file with texts above F still fails the judge when one of those texts is removed from the PDF.
   - **Docs.** Phase 76 docs gain a known limit: text rendered below F on the page may be missing from the PDF text layer, while the SVG keeps it.
 
+- **R-11: Drawing-mode J1 is absolute (decided 2026-10-11 after the 75-08 STOP).**
+  - **Why.** The frac-based J1 contradicts R-4. A DXF with a far stray POINT renders, correctly, as two dots on the frame, and J1 rejected all six far_point frames.
+  - **New J1.** In drawing mode only, J1 becomes "at least 1 ink pixel".
+  - **Unchanged.** J2, J3 and J4 (ink-box span against the Go letterbox, margins, size) stay as they are. The letterbox is computed from the drawing's own frame, so J2 still detects partial render loss. A blank frame (0 ink) is still rejected.
+  - **far_point at 256 opaque.** Expected outcome: rejected by J2. One of the two features falls below visibility at that size, so the PNG has lost content. Record it as pre-registered class E2' "both judges reject: feature below one pixel at the requested size".
+  - **3D judge.** `JudgeCADPNG` is unchanged.
+  - **Calibration.** The change needs a fresh judge run with new evidence, and the pre-registered classes are rewritten before that run.
+  - **Known limit (phase 76 docs).** A drawing whose features fall below one pixel at the requested size may be rejected for render. Use a larger size; svg and pdf are unaffected.
+
 ### Claude's Discretion
 - How the guard's DXF pair parser is structured, and its exact verdict fields.
 - The SVG allowlist's exact attribute list, provided it satisfies D-05.
