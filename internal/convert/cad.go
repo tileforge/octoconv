@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/apaderin/octoconv/internal/measurements"
 )
 
 const (
@@ -31,11 +33,22 @@ const (
 	CADIOAllowance          = 60 * time.Second
 	CADDefaultEngineTimeout = CADDefaultGuardTimeout + CADDefaultMeshTimeout + CADDefaultRenderTimeout + CADIOAllowance
 
+	CADMaxDXFBytes            = 118 << 20
+	CADMaxDXFExpandedInserts  = 170031
+	CADMaxDXFExpandedEntities = 850155
+	CADMaxDXFNesting          = 16
+	CADMaxDXFSVGBytes         = 129 << 20
+	CADMaxDXFPDFBytes         = 19 << 20
+	CADDefaultDXFTimeout      = 162 * time.Second
+	CADDefaultRsvgTimeout     = 141 * time.Second
+
 	cadOutputLimit   = 1 << 20
 	cadVerdictPrefix = "CADVERDICT "
 	cadStageGuard    = "guard"
 	cadStageMesh     = "mesh"
 	cadStageRender   = "render"
+	cadStageDXF      = "dxf"
+	cadStageRsvg     = "rsvg"
 	stlHeaderBytes   = 84
 	stlTriangleBytes = 50
 	stlBlockTriangle = 4096
@@ -53,6 +66,11 @@ var (
 	ErrCADRenderTimeout       = errors.New("cad: the render stage did not finish within the time limit")
 	ErrCADRenderFailed        = errors.New("cad: the render stage failed")
 	ErrCADMeasurementsInvalid = errors.New("cad: the measurements could not be produced")
+
+	ErrCADDXFTimeout      = errors.New("cad: the dxf stage did not finish within the time limit")
+	ErrCADRsvgTimeout     = errors.New("cad: the rsvg stage did not finish within the time limit")
+	ErrCADDrawingFailed   = errors.New("cad: the drawing stage failed")
+	ErrCADNothingDrawable = errors.New("cad: the drawing has nothing drawable")
 )
 
 type CADConverter struct {
@@ -60,6 +78,8 @@ type CADConverter struct {
 	GuardTimeout  time.Duration
 	MeshTimeout   time.Duration
 	RenderTimeout time.Duration
+	DXFTimeout    time.Duration
+	RsvgTimeout   time.Duration
 }
 
 func (CADConverter) Pairs() []Pair {
@@ -74,6 +94,8 @@ func cadMaxBytes(format string) int64 {
 		return CADMaxIGESBytes
 	case "stl":
 		return CADMaxSTLBytes
+	case "dxf":
+		return CADMaxDXFBytes
 	}
 	return CADMaxSTEPBytes
 }
@@ -97,6 +119,20 @@ func (c CADConverter) renderTimeout() time.Duration {
 		return c.RenderTimeout
 	}
 	return CADDefaultRenderTimeout
+}
+
+func (c CADConverter) dxfTimeout() time.Duration {
+	if c.DXFTimeout > 0 {
+		return c.DXFTimeout
+	}
+	return CADDefaultDXFTimeout
+}
+
+func (c CADConverter) rsvgTimeout() time.Duration {
+	if c.RsvgTimeout > 0 {
+		return c.RsvgTimeout
+	}
+	return CADDefaultRsvgTimeout
 }
 
 func (c CADConverter) Convert(ctx context.Context, inPath, outPath string, opts map[string]any) error {
@@ -149,12 +185,27 @@ func (c CADConverter) guardStage(ctx context.Context, jobDir, format, inPath str
 	timeout := c.guardTimeout()
 	stageCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-guard",
+	out, cpu, err := x.runBounded(stageCtx, cadOutputLimit, "cad-guard", cadGuardArgs(format, inPath)...)
+	return classifyCADStage(cadStageGuard, ctx, stageCtx, timeout, out, cpu, err)
+}
+
+func cadGuardArgs(format, inPath string) []string {
+	if format == "dxf" {
+		return []string{
+			"--format", format,
+			"--max-expanded-inserts", strconv.Itoa(CADMaxDXFExpandedInserts),
+			"--max-expanded-entities", strconv.Itoa(CADMaxDXFExpandedEntities),
+			"--max-nesting", strconv.Itoa(CADMaxDXFNesting),
+			"--max-abs-coordinate", strconv.FormatFloat(measurements.MaxAbsCoordinate, 'g', -1, 64),
+			inPath,
+		}
+	}
+	return []string{
 		"--format", format,
 		"--max-entities", strconv.Itoa(CADMaxSTEPEntities),
 		"--max-nauo", strconv.Itoa(CADMaxNAUO),
-		inPath)
-	return classifyCADStage(cadStageGuard, ctx, stageCtx, timeout, out, cpu, err)
+		inPath,
+	}
 }
 
 func (c CADConverter) meshStage(ctx context.Context, jobDir, format, inPath, outPath, quality, measure string) (cadVerdict, error) {
@@ -199,6 +250,18 @@ type cadVerdict struct {
 	Size       int     `json:"size"`
 	Background string  `json:"background"`
 	ProjAspect float64 `json:"proj_aspect"`
+
+	Texts             int            `json:"texts"`
+	Uncovered         int            `json:"uncovered"`
+	RenderSubstituted int            `json:"render_substituted"`
+	HatchTruncated    int            `json:"hatch_truncated"`
+	EntitiesDrawn     int            `json:"entities_drawn"`
+	PageWMM           float64        `json:"page_w_mm"`
+	PageHMM           float64        `json:"page_h_mm"`
+	AuditorFixes      int            `json:"auditor_fixes"`
+	InsUnits          *int           `json:"insunits"`
+	Codepage          *string        `json:"codepage"`
+	Skipped           map[string]int `json:"skipped"`
 }
 
 func parseCADVerdict(stage string, out []byte) (cadVerdict, bool) {
@@ -236,6 +299,7 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 		return cadVerdict{}, fmt.Errorf("cad %s: %w", stage, err)
 	}
 	render := stage == cadStageRender
+	dxf := stage == cadStageDXF
 	if v, ok := parseCADVerdict(stage, out); ok {
 		switch v.Verdict {
 		case "ok":
@@ -243,10 +307,16 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 				return v, nil
 			}
 		case "empty":
+			if dxf {
+				return v, fmt.Errorf("cad %s: %w: %w: %s", stage, ErrCADNothingDrawable, ErrCADEmptyResult, v.Reason)
+			}
 			return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADEmptyResult, v.Reason)
 		case "failed":
 			if render {
 				return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADRenderFailed, v.Reason)
+			}
+			if dxf {
+				return v, fmt.Errorf("cad %s: %w: %s", stage, ErrCADDrawingFailed, v.Reason)
 			}
 		case "too_complex":
 			if !render {
@@ -268,6 +338,9 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 		case cadStageRender:
 			return cadVerdict{}, fmt.Errorf("cad render: %w: no result within %s, engine cpu %.1fs: %v",
 				ErrCADRenderTimeout, timeout, cpu.Total().Seconds(), err)
+		case cadStageDXF:
+			return cadVerdict{}, fmt.Errorf("cad dxf: %w: no result within %s, engine cpu %.1fs: %v",
+				ErrCADDXFTimeout, timeout, cpu.Total().Seconds(), err)
 		}
 		return cadVerdict{}, fmt.Errorf("cad %s: no verdict within the %s stage deadline: %w", stage, timeout, err)
 	}
@@ -285,6 +358,9 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 		if render {
 			return cadVerdict{}, fmt.Errorf("cad %s: %w: the renderer died on signal %s", stage, ErrCADRenderFailed, sig)
 		}
+		if dxf {
+			return cadVerdict{}, fmt.Errorf("cad %s: %w: the drawing helper died on signal %s", stage, ErrCADDrawingFailed, sig)
+		}
 		return cadVerdict{}, fmt.Errorf("cad %s: %w: the reader died on signal %s", stage, ErrCADUnreadable, sig)
 	}
 	if render {
@@ -293,10 +369,50 @@ func classifyCADStage(stage string, parent, stageCtx context.Context, timeout ti
 		}
 		return cadVerdict{}, fmt.Errorf("cad %s: %w: exited 0 without a verdict", stage, ErrCADRenderFailed)
 	}
+	if dxf {
+		if err != nil {
+			return cadVerdict{}, fmt.Errorf("cad %s: %w: no verdict: %v", stage, ErrCADDrawingFailed, err)
+		}
+		return cadVerdict{}, fmt.Errorf("cad %s: %w: exited 0 without a verdict", stage, ErrCADDrawingFailed)
+	}
 	if err != nil {
 		return cadVerdict{}, fmt.Errorf("cad %s: no verdict: %w", stage, err)
 	}
 	return cadVerdict{}, fmt.Errorf("cad %s: exited 0 without a verdict", stage)
+}
+
+func classifyCADRsvg(parent, stageCtx context.Context, timeout time.Duration, cpu engineCPU, err error, outPath string) error {
+	if errors.Is(err, ErrEngineSandboxUnavailable) {
+		return fmt.Errorf("cad %s: %w", cadStageRsvg, err)
+	}
+	if err != nil && parent.Err() == nil && errors.Is(stageCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("cad %s: %w: no result within %s, engine cpu %.1fs: %v",
+			cadStageRsvg, ErrCADRsvgTimeout, timeout, cpu.Total().Seconds(), err)
+	}
+	if parent.Err() != nil {
+		cause := err
+		if cause == nil {
+			cause = parent.Err()
+		}
+		return fmt.Errorf("cad %s: %w", cadStageRsvg, cause)
+	}
+	if sig, signalled := cadSignal(err); signalled {
+		if sig == syscall.SIGKILL {
+			return fmt.Errorf("cad %s: %w: %v", cadStageRsvg, ErrCADEngineKilled, err)
+		}
+		return fmt.Errorf("cad %s: %w: rsvg-convert died on signal %s", cadStageRsvg, ErrCADDrawingFailed, sig)
+	}
+	if err != nil {
+		return fmt.Errorf("cad %s: %w: %v", cadStageRsvg, ErrCADDrawingFailed, err)
+	}
+	info, statErr := os.Stat(outPath)
+	if statErr != nil {
+		return fmt.Errorf("cad %s: %w: exited 0 without an output: %v", cadStageRsvg, ErrCADDrawingFailed, statErr)
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("cad %s: %w: exited 0 with an empty output", cadStageRsvg, ErrCADDrawingFailed)
+	}
+	return nil
 }
 
 type stlBounds struct {

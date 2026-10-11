@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -21,6 +23,7 @@ import (
 var cadSentinels = []error{
 	ErrCADInputTooLarge, ErrCADTooComplex, ErrCADUnreadable,
 	ErrCADEmptyResult, ErrCADMeshTimeout, ErrCADEngineKilled,
+	ErrCADDXFTimeout, ErrCADRsvgTimeout, ErrCADDrawingFailed, ErrCADNothingDrawable,
 }
 
 func requireNoCADSentinel(t *testing.T, err error) {
@@ -710,6 +713,306 @@ func TestCADJudgeBinarySTL(t *testing.T) {
 	t.Run("a missing file", func(t *testing.T) {
 		if _, _, err := judgeBinarySTL(filepath.Join(dir, "missing.stl")); !errors.Is(err, ErrCADEmptyResult) {
 			t.Errorf("err = %v, want ErrCADEmptyResult", err)
+		}
+	})
+}
+
+func cadDerivedValue(t *testing.T, evidence, key string) int64 {
+	t.Helper()
+	raw, err := os.ReadFile(evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^DERIVED,key=` + regexp.QuoteMeta(key) + `,value=(\d+),`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("no integer DERIVED line for %s in %s", key, evidence)
+	}
+	n, err := strconv.ParseInt(string(m[1]), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
+	const bounds = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt"
+	const guard = "../../.planning/phases/75-dxf-2d-pipeline/evidence/75-03-guard.txt"
+	const boundsScript = "scripts/cad-dxf-bounds.sh run"
+	const guardScript = "scripts/cad-dxf-guard-diff.sh"
+	for _, c := range []struct {
+		name     string
+		got      int64
+		evidence string
+		key      string
+		script   string
+	}{
+		{"CADMaxDXFBytes", CADMaxDXFBytes, bounds, "cad_dxf_ceiling_bytes", boundsScript},
+		{"CADMaxDXFExpandedInserts", CADMaxDXFExpandedInserts, bounds, "cad_dxf_expanded_inserts_cap", boundsScript},
+		{"CADMaxDXFExpandedEntities", CADMaxDXFExpandedEntities, bounds, "cad_dxf_expanded_entities_cap", boundsScript},
+		{"CADDefaultDXFTimeout", int64(CADDefaultDXFTimeout / time.Second), bounds, "cad_dxf_timeout_s", boundsScript},
+		{"CADDefaultRsvgTimeout", int64(CADDefaultRsvgTimeout / time.Second), bounds, "cad_rsvg_timeout_s", boundsScript},
+		{"CADMaxDXFSVGBytes", CADMaxDXFSVGBytes, bounds, "cad_dxf_svg_max_bytes", boundsScript},
+		{"CADMaxDXFPDFBytes", CADMaxDXFPDFBytes, bounds, "cad_dxf_pdf_max_bytes", boundsScript},
+		{"CADMaxDXFNesting", CADMaxDXFNesting, guard, "cad_dxf_nesting_bound", guardScript},
+	} {
+		if want := cadDerivedValue(t, c.evidence, c.key); c.got != want {
+			t.Errorf("%s = %d, %s DERIVED %s says %d: re-derive it with %s rather than editing the expectation",
+				c.name, c.got, c.evidence, c.key, want, c.script)
+		}
+	}
+	if CADDefaultDXFTimeout%time.Second != 0 || CADDefaultRsvgTimeout%time.Second != 0 {
+		t.Errorf("the DXF stage timeouts %s and %s are not whole seconds; the evidence derives whole seconds", CADDefaultDXFTimeout, CADDefaultRsvgTimeout)
+	}
+	if sum := CADDefaultGuardTimeout + CADDefaultDXFTimeout + CADDefaultRsvgTimeout + CADIOAllowance; sum > CADDefaultEngineTimeout {
+		t.Errorf("guard + dxf + rsvg + I/O = %s exceeds the %s engine timeout", sum, CADDefaultEngineTimeout)
+	}
+}
+
+func TestCADDXFMaxBytesIsTheDXFCeiling(t *testing.T) {
+	for format, want := range map[string]int64{
+		"dxf": CADMaxDXFBytes, "step": CADMaxSTEPBytes, "iges": CADMaxIGESBytes, "stl": CADMaxSTLBytes,
+	} {
+		if got := cadMaxBytes(format); got != want {
+			t.Errorf("cadMaxBytes(%q) = %d, want %d", format, got, want)
+		}
+	}
+}
+
+func TestCADDXFTimeoutsDefaultAndOverride(t *testing.T) {
+	c := CADConverter{}
+	if c.dxfTimeout() != CADDefaultDXFTimeout || c.rsvgTimeout() != CADDefaultRsvgTimeout {
+		t.Errorf("zero converter timeouts = %s, %s, want the defaults", c.dxfTimeout(), c.rsvgTimeout())
+	}
+	c = CADConverter{DXFTimeout: 7 * time.Second, RsvgTimeout: 9 * time.Second}
+	if c.dxfTimeout() != 7*time.Second || c.rsvgTimeout() != 9*time.Second {
+		t.Errorf("configured timeouts = %s, %s, want 7s and 9s", c.dxfTimeout(), c.rsvgTimeout())
+	}
+}
+
+func TestCADDXFGuardArgv(t *testing.T) {
+	record := "printf '%s\\n' \"$*\" > \"$(dirname \"$0\")/guard.args\"\n" + cadOKGuard()
+	t.Run("dxf", func(t *testing.T) {
+		f := newCADFixture(t, "dxf", record, "exit 1\n")
+		if _, err := (CADConverter{}).guardStage(context.Background(), f.jobDir, "dxf", f.in); err != nil {
+			t.Fatalf("guardStage: %v", err)
+		}
+		got, _ := os.ReadFile(f.marker("guard.args"))
+		want := fmt.Sprintf("--format dxf --max-expanded-inserts %d --max-expanded-entities %d --max-nesting %d --max-abs-coordinate 1e+12 %s",
+			CADMaxDXFExpandedInserts, CADMaxDXFExpandedEntities, CADMaxDXFNesting, f.in)
+		if strings.TrimSpace(string(got)) != want {
+			t.Errorf("guard argv = %q, want %q", got, want)
+		}
+	})
+	t.Run("the real guard accepts the production argv", func(t *testing.T) {
+		r := runCADGuardArgs(t, cadGuardArgs("dxf", filepath.Join("testdata", "cad", "dxf", "all_hidden.dxf"))...)
+		if r.exit != 0 || r.verdict != "ok" {
+			t.Fatalf("cad-guard exit %d verdict %q reason %q: %s", r.exit, r.verdict, r.reason, r.stdout)
+		}
+	})
+	t.Run("step is unchanged", func(t *testing.T) {
+		f := newCADFixture(t, "step", record, "exit 1\n")
+		if _, err := (CADConverter{}).guardStage(context.Background(), f.jobDir, "step", f.in); err != nil {
+			t.Fatalf("guardStage: %v", err)
+		}
+		got, _ := os.ReadFile(f.marker("guard.args"))
+		want := fmt.Sprintf("--format step --max-entities %d --max-nauo %d %s", CADMaxSTEPEntities, CADMaxNAUO, f.in)
+		if strings.TrimSpace(string(got)) != want {
+			t.Errorf("guard argv = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestCADDXFVerdictCarriesTheDrawingFacts(t *testing.T) {
+	line := `CADVERDICT {"auditor_fixes":2,"codepage":"ANSI_1251","entities_drawn":41,"hatch_truncated":1,"insunits":4,"page_h_mm":120.5,"page_w_mm":297.0,"reason":"","render_substituted":3,"skipped":{"3DSOLID":2,"IMAGE":1},"stage":"dxf","texts":7,"uncovered":3,"verdict":"ok"}`
+	v, ok := parseCADVerdict(cadStageDXF, []byte(line+"\n"))
+	if !ok {
+		t.Fatal("the dxf verdict did not parse")
+	}
+	if v.Texts != 7 || v.Uncovered != 3 || v.EntitiesDrawn != 41 || v.PageWMM != 297 || v.PageHMM != 120.5 || v.AuditorFixes != 2 ||
+		v.RenderSubstituted != 3 || v.HatchTruncated != 1 {
+		t.Errorf("verdict counts = %+v", v)
+	}
+	if v.InsUnits == nil || *v.InsUnits != 4 || v.Codepage == nil || *v.Codepage != "ANSI_1251" {
+		t.Errorf("insunits %v codepage %v, want 4 and ANSI_1251", v.InsUnits, v.Codepage)
+	}
+	if len(v.Skipped) != 2 || v.Skipped["3DSOLID"] != 2 || v.Skipped["IMAGE"] != 1 {
+		t.Errorf("skipped = %v", v.Skipped)
+	}
+	v, ok = parseCADVerdict(cadStageDXF, []byte(`CADVERDICT {"stage":"dxf","verdict":"ok","insunits":null,"codepage":null,"skipped":{}}`+"\n"))
+	if !ok || v.InsUnits != nil || v.Codepage != nil {
+		t.Errorf("null insunits and codepage = %+v, %v", v, ok)
+	}
+}
+
+func cadShellErr(t *testing.T, script string) error {
+	t.Helper()
+	err := exec.Command("/bin/sh", "-c", script).Run()
+	if err == nil {
+		t.Fatalf("%q exited 0, want a failure", script)
+	}
+	return err
+}
+
+func cadExpiredStage(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	t.Cleanup(cancel)
+	<-ctx.Done()
+	return ctx
+}
+
+func TestCADDXFStageClassification(t *testing.T) {
+	alive := context.Background()
+	exit := func(code int) error { return cadShellErr(t, "exit "+strconv.Itoa(code)) }
+	cases := []struct {
+		name     string
+		out      string
+		stageCtx context.Context
+		err      error
+		want     []error
+		wantNot  []error
+		contains string
+	}{
+		{"empty", cadLine("dxf", "empty", "nothing_drawable"), alive, exit(3), []error{ErrCADEmptyResult, ErrCADNothingDrawable}, nil, "nothing_drawable"},
+		{"too_complex", cadLine("dxf", "too_complex", "drawn_entities_over_cap"), alive, exit(4), []error{ErrCADTooComplex}, []error{ErrCADDrawingFailed}, ""},
+		{"unreadable", cadLine("dxf", "unreadable", "structure"), alive, exit(2), []error{ErrCADUnreadable}, []error{ErrCADDrawingFailed}, ""},
+		{"failed", cadLine("dxf", "failed", "draw_exception"), alive, exit(1), []error{ErrCADDrawingFailed}, []error{ErrCADUnreadable, ErrCADTooComplex}, "draw_exception"},
+		{"stage deadline", "", cadExpiredStage(t), fmt.Errorf("cad-dxf killed: %w", context.DeadlineExceeded), []error{ErrCADDXFTimeout}, []error{ErrCADEngineKilled, context.DeadlineExceeded}, "cad dxf"},
+		{"SIGKILL", "", alive, cadShellErr(t, "kill -9 $$"), []error{ErrCADEngineKilled}, []error{ErrCADDrawingFailed}, ""},
+		{"SIGSEGV", "", alive, cadShellErr(t, "kill -s SEGV $$"), []error{ErrCADDrawingFailed}, []error{ErrCADUnreadable}, ""},
+		{"non-zero exit without a verdict", "Traceback\n", alive, exit(1), []error{ErrCADDrawingFailed}, nil, ""},
+		{"exit 0 without a verdict", "", alive, nil, []error{ErrCADDrawingFailed}, nil, ""},
+		{"ok with a non-zero exit", cadLine("dxf", "ok", ""), alive, exit(1), []error{ErrCADDrawingFailed}, nil, ""},
+		{"a verdict of another stage", cadLine("guard", "ok", ""), alive, nil, []error{ErrCADDrawingFailed}, nil, ""},
+		{"sandbox unavailable", cadLine("dxf", "ok", ""), alive, fmt.Errorf("wrap: %w", ErrEngineSandboxUnavailable), []error{ErrEngineSandboxUnavailable}, cadSentinels, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := classifyCADStage(cadStageDXF, alive, c.stageCtx, CADDefaultDXFTimeout, []byte(c.out), engineCPU{}, c.err)
+			if err == nil {
+				t.Fatal("classifyCADStage returned nil")
+			}
+			for _, w := range c.want {
+				if !errors.Is(err, w) {
+					t.Errorf("err = %v, want it to wrap %v", err, w)
+				}
+			}
+			for _, w := range c.wantNot {
+				if errors.Is(err, w) {
+					t.Errorf("err = %v, must not wrap %v", err, w)
+				}
+			}
+			if !strings.HasPrefix(err.Error(), "cad dxf: ") || !strings.Contains(err.Error(), c.contains) {
+				t.Errorf("err %q does not have the cad dxf shape or does not contain %q", err, c.contains)
+			}
+		})
+	}
+	t.Run("ok is accepted", func(t *testing.T) {
+		v, err := classifyCADStage(cadStageDXF, alive, alive, CADDefaultDXFTimeout, []byte(cadLine("dxf", "ok", "")), engineCPU{}, nil)
+		if err != nil || v.Verdict != "ok" {
+			t.Fatalf("ok verdict = %+v, %v", v, err)
+		}
+	})
+	t.Run("the attempt deadline stays a context error", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := classifyCADStage(cadStageDXF, parent, parent, CADDefaultDXFTimeout, nil, engineCPU{}, fmt.Errorf("cad-dxf killed: %w", parent.Err()))
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+		if errors.Is(err, ErrCADDXFTimeout) || errors.Is(err, ErrCADDrawingFailed) {
+			t.Errorf("err = %v, a cancelled attempt must not read as a stage fault", err)
+		}
+	})
+}
+
+func TestCADDXFStageLeavesTheOtherStagesClassesAlone(t *testing.T) {
+	alive := context.Background()
+	for _, c := range []struct {
+		stage string
+		out   string
+		err   error
+		want  error
+	}{
+		{cadStageMesh, cadLine("mesh", "empty", "zero_size"), nil, ErrCADEmptyResult},
+		{cadStageMesh, "", cadShellErr(t, "kill -s SEGV $$"), ErrCADUnreadable},
+		{cadStageRender, cadLine("render", "failed", "x"), nil, ErrCADRenderFailed},
+		{cadStageGuard, cadLine("guard", "too_complex", "x"), nil, ErrCADTooComplex},
+	} {
+		_, err := classifyCADStage(c.stage, alive, alive, time.Minute, []byte(c.out), engineCPU{}, c.err)
+		if !errors.Is(err, c.want) || errors.Is(err, ErrCADDrawingFailed) || errors.Is(err, ErrCADNothingDrawable) {
+			t.Errorf("%s %q: err = %v, want %v and no DXF sentinel", c.stage, c.out, err, c.want)
+		}
+	}
+	_, err := classifyCADStage(cadStageMesh, alive, cadExpiredStage(t), time.Minute, nil, engineCPU{}, cadShellErr(t, "exit 1"))
+	if !errors.Is(err, ErrCADMeshTimeout) || errors.Is(err, ErrCADDXFTimeout) {
+		t.Errorf("mesh deadline: err = %v, want ErrCADMeshTimeout only", err)
+	}
+}
+
+func TestCADRsvgClassification(t *testing.T) {
+	alive := context.Background()
+	dir := t.TempDir()
+	full := filepath.Join(dir, "full.png")
+	if err := os.WriteFile(full, []byte("\x89PNG"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	empty := filepath.Join(dir, "empty.png")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.png")
+
+	if err := classifyCADRsvg(alive, alive, CADDefaultRsvgTimeout, engineCPU{}, nil, full); err != nil {
+		t.Fatalf("a clean exit with output = %v, want nil", err)
+	}
+	cases := []struct {
+		name     string
+		stageCtx context.Context
+		err      error
+		out      string
+		want     []error
+		wantNot  []error
+		contains string
+	}{
+		{"stage deadline", cadExpiredStage(t), fmt.Errorf("rsvg-convert killed: %w", context.DeadlineExceeded), full, []error{ErrCADRsvgTimeout}, []error{ErrCADEngineKilled, ErrCADDrawingFailed, context.DeadlineExceeded}, "cad rsvg"},
+		{"SIGKILL", alive, cadShellErr(t, "kill -9 $$"), full, []error{ErrCADEngineKilled}, []error{ErrCADDrawingFailed}, ""},
+		{"SIGSEGV", alive, cadShellErr(t, "kill -s SEGV $$"), full, []error{ErrCADDrawingFailed}, nil, "segmentation"},
+		{"non-zero exit", alive, cadShellErr(t, "exit 1"), full, []error{ErrCADDrawingFailed}, nil, ""},
+		{"clean exit with an empty output", alive, nil, empty, []error{ErrCADDrawingFailed}, nil, "empty"},
+		{"clean exit with no output", alive, nil, missing, []error{ErrCADDrawingFailed}, nil, ""},
+		{"sandbox unavailable", alive, fmt.Errorf("wrap: %w", ErrEngineSandboxUnavailable), full, []error{ErrEngineSandboxUnavailable}, cadSentinels, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := classifyCADRsvg(alive, c.stageCtx, CADDefaultRsvgTimeout, engineCPU{}, c.err, c.out)
+			if err == nil {
+				t.Fatal("classifyCADRsvg returned nil")
+			}
+			for _, w := range c.want {
+				if !errors.Is(err, w) {
+					t.Errorf("err = %v, want it to wrap %v", err, w)
+				}
+			}
+			for _, w := range c.wantNot {
+				if errors.Is(err, w) {
+					t.Errorf("err = %v, must not wrap %v", err, w)
+				}
+			}
+			if !strings.HasPrefix(err.Error(), "cad rsvg: ") || !strings.Contains(err.Error(), c.contains) {
+				t.Errorf("err %q does not have the cad rsvg shape or does not contain %q", err, c.contains)
+			}
+		})
+	}
+	t.Run("a cancelled parent is cancellation", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := classifyCADRsvg(parent, parent, CADDefaultRsvgTimeout, engineCPU{}, fmt.Errorf("rsvg-convert killed: %w", parent.Err()), full)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v, want context.Canceled", err)
+		}
+		if errors.Is(err, ErrCADRsvgTimeout) || errors.Is(err, ErrCADDrawingFailed) || errors.Is(err, ErrCADEngineKilled) {
+			t.Errorf("err = %v, a cancelled attempt must not read as a stage fault", err)
 		}
 	})
 }
