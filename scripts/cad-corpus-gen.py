@@ -10,6 +10,7 @@ Usage:
     scripts/cad-corpus-gen.py --kind dxf-guard-stress --shape chain|fanout|blocks|wide --targets MiB [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-minsert --targets N [--block-entities N] [--scaled-dir DIR]
     scripts/cad-corpus-gen.py --scaled-from REPLICATE --kind dxf-combo --cells N [--scaled-dir DIR]
+    scripts/cad-corpus-gen.py --scaled-from FILE --kind dxf-far-point --targets D,... [--scaled-dir DIR]
 
 Generation needs OCP and runs inside the measurement image:
     docker run --rm --network none -v "$PWD:/src:ro" -v OUT:/out -w /src TAG \
@@ -848,7 +849,7 @@ DEFAULT_SCALED = os.path.join(
     os.environ.get("OCTOCONV_CAD_CACHE") or os.path.join(os.path.expanduser("~"), ".cache", "octoconv", "cad-corpus"),
     "scaled",
 )
-KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo")
+KINDS = ("step-copies", "step-nauo", "stl-tile", "stl-ascii", "dxf-replicate", "dxf-minsert", "iges-from-step", "dxf-combo", "dxf-far-point")
 STEP_TOKEN = re.compile(rb"'(?:[^']|'')*'|#(\d+)")
 STEP_DEF = re.compile(rb"(?:^|(?<=;))[ \t]*#\d+[ \t]*=", re.M)
 STEP_NAUO = re.compile(rb"(?<![A-Z_0-9])NEXT_ASSEMBLY_USAGE_OCCURRENCE[ \t\r\n]*\(")
@@ -1480,6 +1481,41 @@ def scale_dxf_minsert(base_path, targets, out_dir, block_entities=5):
     return failures
 
 
+def scale_dxf_far_point(base_path, targets, out_dir):
+    if os.environ.get("PYTHONHASHSEED") != "0":
+        raise SystemExit("dxf-far-point: run with PYTHONHASHSEED=0 (python -B, not -I) for a byte-identical output")
+    import ezdxf
+
+    ezdxf.options.write_fixed_meta_data_for_testing = True
+    stem = stem_of(base_path)
+    failures = 0
+    for d in targets:
+        if d < 1:
+            raise SystemExit("dxf-far-point: a target is a distance of at least 1 drawing unit")
+        doc = ezdxf.readfile(base_path)
+        before = len(doc.modelspace().query("POINT"))
+        doc.modelspace().add_point((float(d), float(d)))
+        name = "dxf-farpoint-%s-d%d.dxf" % (stem, d)
+        path = os.path.join(out_dir, name)
+        doc.saveas(path)
+        with open(path, "rb") as fh:
+            blob = fh.read()
+        back = ezdxf.readfile(path)
+        auditor = back.audit()
+        problems = []
+        if len(back.modelspace().query("POINT")) != before + 1:
+            problems.append("POINT count %d, expected %d" % (len(back.modelspace().query("POINT")), before + 1))
+        if auditor.errors:
+            problems.append("audit errors %s" % ",".join(str(e.code) for e in auditor.errors))
+        if problems:
+            failures += 1
+            print("SCALE CHECK FAILED %s: %s" % (name, "; ".join(problems)), file=sys.stderr)
+            continue
+        scaled_line("dxf-far-point", "d%d" % d, len(blob), hashlib.sha256(blob).hexdigest(), "ok",
+                    ",base=%s,distance=%d,file=%s" % (os.path.basename(base_path), d, name))
+    return failures
+
+
 DXF_HANDLE_REF_CODES = set(range(320, 370)) | {390, 1005}
 
 
@@ -1824,6 +1860,7 @@ def run_scaled(args):
         "stl-ascii": scale_stl_ascii,
         "dxf-replicate": scale_dxf_replicate,
         "dxf-minsert": scale_dxf_minsert,
+        "dxf-far-point": scale_dxf_far_point,
         "iges-from-step": scale_iges_from_step,
     }[args.kind]
     return 1 if runner(args.scaled_from, targets, out_dir) else 0
@@ -2563,7 +2600,7 @@ def main():
     ap.add_argument("--check-only", action="store_true",
                     help="verify existing fixtures without rewriting them")
     ap.add_argument("--scaled-from", help="real base file to scale (not committed output)")
-    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-guard-stress")
+    ap.add_argument("--kind", help="step-copies|step-nauo|stl-tile|stl-ascii|dxf-replicate|dxf-minsert|dxf-combo|dxf-far-point|dxf-guard-stress")
     ap.add_argument("--shape", help="dxf-guard-stress shape: chain|fanout|blocks|wide")
     ap.add_argument("--targets", help="comma separated MiB sizes, or instance counts for step-nauo, or expanded cells (columns x rows) for dxf-minsert")
     ap.add_argument("--scaled-dir", help="output directory for scaled files")

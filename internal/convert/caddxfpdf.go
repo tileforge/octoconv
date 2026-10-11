@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -22,6 +23,18 @@ var ErrCADPDFRejected = errors.New("cad: the drawing's PDF failed the content ch
 type CADPDFFacts struct {
 	Pages, PaintOps, TextRunes, ExpectedRunes int
 	Text                                      string
+	PageW, PageH                              float64
+}
+
+type CADPDFShow struct {
+	Text   string
+	SizePt float64
+}
+
+type CADDXFPDFText struct {
+	Text         string
+	SVGPt, PDFPt float64
+	Present      int
 }
 
 type cadDXFText struct{ Text, Covered string }
@@ -1036,12 +1049,52 @@ var cadPDFOtherOps = map[string]bool{
 }
 
 type cadPDFRun struct {
-	d     *cadPDFDoc
-	fonts map[string]any
-	cache map[string]*cadPDFFont
-	cur   *cadPDFFont
-	text  strings.Builder
-	paint int
+	d      *cadPDFDoc
+	fonts  map[string]any
+	cache  map[string]*cadPDFFont
+	cur    *cadPDFFont
+	text   strings.Builder
+	paint  int
+	keep   bool
+	shows  []CADPDFShow
+	ctm    [4]float64
+	stack  [][4]float64
+	tm     [4]float64
+	tfSize float64
+}
+
+func cadPDFNumber64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return float64(n), true
+	case float64:
+		return n, true
+	}
+	return 0, false
+}
+
+func cadPDFMatrix(args []any) ([4]float64, bool) {
+	var m [4]float64
+	if len(args) != 6 {
+		return m, false
+	}
+	for i := range m {
+		f, ok := cadPDFNumber64(args[i])
+		if !ok {
+			return m, false
+		}
+		m[i] = f
+	}
+	return m, true
+}
+
+func cadPDFMul(a, b [4]float64) [4]float64 {
+	return [4]float64{a[0]*b[0] + a[1]*b[2], a[0]*b[1] + a[1]*b[3], a[2]*b[0] + a[3]*b[2], a[2]*b[1] + a[3]*b[3]}
+}
+
+func (r *cadPDFRun) sizePt() float64 {
+	m := cadPDFMul(r.tm, r.ctm)
+	return math.Abs(r.tfSize) * math.Sqrt(math.Abs(m[0]*m[3]-m[1]*m[2]))
 }
 
 func (r *cadPDFRun) font(name string) (*cadPDFFont, error) {
@@ -1104,6 +1157,7 @@ func (r *cadPDFRun) show(v any) error {
 			return cadPDFReject("an odd-length string for a two-byte font")
 		}
 	}
+	start := r.text.Len()
 	for i := 0; i+width <= len(s); i += width {
 		code := uint32(width) << 24
 		if width == 2 {
@@ -1112,6 +1166,9 @@ func (r *cadPDFRun) show(v any) error {
 			code |= uint32(s[i])
 		}
 		r.text.WriteString(r.cur.cmap[code])
+	}
+	if r.keep {
+		r.shows = append(r.shows, CADPDFShow{Text: r.text.String()[start:], SizePt: r.sizePt()})
 	}
 	if r.text.Len() > cadPDFMaxText {
 		return cadPDFReject("more than %d bytes of decoded text", cadPDFMaxText)
@@ -1146,6 +1203,24 @@ func (r *cadPDFRun) op(name string, args []any) error {
 			return err
 		}
 		r.cur = f
+		r.tfSize, _ = cadPDFNumber64(args[1])
+	case "q":
+		r.stack = append(r.stack, r.ctm)
+	case "Q":
+		if len(r.stack) > 0 {
+			r.ctm = r.stack[len(r.stack)-1]
+			r.stack = r.stack[:len(r.stack)-1]
+		}
+	case "cm":
+		if m, ok := cadPDFMatrix(args); ok {
+			r.ctm = cadPDFMul(m, r.ctm)
+		}
+	case "BT":
+		r.tm = [4]float64{1, 0, 0, 1}
+	case "Tm":
+		if m, ok := cadPDFMatrix(args); ok {
+			r.tm = m
+		}
 	case "Tj", "'":
 		return r.show(last())
 	case `"`:
@@ -1279,61 +1354,99 @@ func (d *cadPDFDoc) contents(page map[string]any) ([]*cadPDFObj, error) {
 	return out, nil
 }
 
-func JudgeCADPDF(path string, maxBytes int64, want string) (CADPDFFacts, error) {
+func cadPDFDecode(path string, maxBytes int64, keep bool) (CADPDFFacts, []CADPDFShow, error) {
 	var facts CADPDFFacts
 	if maxBytes <= 0 {
-		return facts, fmt.Errorf("cad: PDF byte limit %d is not positive", maxBytes)
+		return facts, nil, fmt.Errorf("cad: PDF byte limit %d is not positive", maxBytes)
 	}
-	want = cadStripSpace(want)
-	facts.ExpectedRunes = utf8.RuneCountInString(want)
 	f, err := os.Open(path)
 	if err != nil {
-		return facts, fmt.Errorf("cad: open the PDF: %w", err)
+		return facts, nil, fmt.Errorf("cad: open the PDF: %w", err)
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return facts, fmt.Errorf("cad: stat the PDF: %w", err)
+		return facts, nil, fmt.Errorf("cad: stat the PDF: %w", err)
 	}
 	if st.Size() > maxBytes {
-		return facts, cadPDFReject("the PDF is %d bytes, over the %d byte limit", st.Size(), maxBytes)
+		return facts, nil, cadPDFReject("the PDF is %d bytes, over the %d byte limit", st.Size(), maxBytes)
 	}
 	d := &cadPDFDoc{f: f, size: st.Size(), objs: map[int]*cadPDFObj{}, budget: cadPDFInflateFactor * maxBytes}
 	if err := d.scan(); err != nil {
-		return facts, err
+		return facts, nil, err
 	}
 	if err := d.resolveLengths(); err != nil {
-		return facts, err
+		return facts, nil, err
 	}
 	page, err := d.page()
 	if err != nil {
-		return facts, err
+		return facts, nil, err
 	}
 	facts.Pages = 1
+	facts.PageW, facts.PageH = d.mediaBox(page)
 	res, err := d.resources(page)
 	if err != nil {
-		return facts, err
+		return facts, nil, err
 	}
-	run := &cadPDFRun{d: d, cache: map[string]*cadPDFFont{}}
+	run := &cadPDFRun{d: d, cache: map[string]*cadPDFFont{}, keep: keep, ctm: [4]float64{1, 0, 0, 1}, tm: [4]float64{1, 0, 0, 1}}
 	if res != nil {
 		if run.fonts, err = d.dict(res["Font"]); err != nil {
-			return facts, err
+			return facts, nil, err
 		}
 	}
 	streams, err := d.contents(page)
 	if err != nil {
-		return facts, err
+		return facts, nil, err
 	}
 	for _, o := range streams {
 		if err := run.content(o); err != nil {
 			facts.PaintOps = run.paint
-			return facts, err
+			return facts, nil, err
 		}
 	}
 	facts.PaintOps = run.paint
 	facts.Text = run.text.String()
+	facts.TextRunes = utf8.RuneCountInString(cadStripSpace(facts.Text))
+	return facts, run.shows, nil
+}
+
+func (d *cadPDFDoc) mediaBox(page map[string]any) (float64, float64) {
+	node := page
+	for i := 0; node != nil && i < cadPDFMaxRefChain; i++ {
+		if v, ok := node["MediaBox"]; ok {
+			box, _, err := d.resolve(v)
+			arr, isArr := box.([]any)
+			if err != nil || !isArr || len(arr) != 4 {
+				return 0, 0
+			}
+			var n [4]float64
+			for j := range n {
+				x, _, err := d.resolve(arr[j])
+				f, ok := cadPDFNumber64(x)
+				if err != nil || !ok || math.IsNaN(f) || math.IsInf(f, 0) {
+					return 0, 0
+				}
+				n[j] = f
+			}
+			return math.Abs(n[2] - n[0]), math.Abs(n[3] - n[1])
+		}
+		parent, err := d.dict(node["Parent"])
+		if err != nil {
+			return 0, 0
+		}
+		node = parent
+	}
+	return 0, 0
+}
+
+func JudgeCADPDF(path string, maxBytes int64, want string) (CADPDFFacts, error) {
+	want = cadStripSpace(want)
+	facts, _, err := cadPDFDecode(path, maxBytes, false)
+	facts.ExpectedRunes = utf8.RuneCountInString(want)
+	if err != nil {
+		return facts, err
+	}
 	stripped := cadStripSpace(facts.Text)
-	facts.TextRunes = utf8.RuneCountInString(stripped)
 	if facts.PaintOps-1 < 1 {
 		return facts, cadPDFReject("empty page: %d paint operations, want at least one beyond the background", facts.PaintOps)
 	}
@@ -1341,6 +1454,79 @@ func JudgeCADPDF(path string, maxBytes int64, want string) (CADPDFFacts, error) 
 		return facts, cadPDFReject("missing text: %d of %d expected characters found in order", cadRuneSubsequenceCount(want, stripped), facts.ExpectedRunes)
 	}
 	return facts, nil
+}
+
+func cadDXFPDFAlign(expect []string, shows []CADPDFShow) ([]CADDXFPDFText, int) {
+	var runes []rune
+	var sizes []float64
+	for _, sh := range shows {
+		for _, r := range cadStripSpace(sh.Text) {
+			runes = append(runes, r)
+			sizes = append(sizes, sh.SizePt)
+		}
+	}
+	rows := make([]CADDXFPDFText, len(expect))
+	pos := 0
+	for i, e := range expect {
+		t := []rune(cadStripSpace(e))
+		rows[i].Text = e
+		if len(t) == 0 {
+			rows[i].Present = -1
+			continue
+		}
+		if pos+len(t) <= len(runes) && string(runes[pos:pos+len(t)]) == string(t) {
+			rows[i].Present = 1
+			rows[i].PDFPt = sizes[pos]
+			pos += len(t)
+		}
+	}
+	return rows, len(runes) - pos
+}
+
+func cadDXFPageScale(pdf CADPDFFacts, svg CADSVGFacts) (float64, error) {
+	if !(pdf.PageW > 0) || !(pdf.PageH > 0) {
+		return 0, cadPDFReject("the page has no usable /MediaBox")
+	}
+	if !(svg.ViewBoxW > 0) || !(svg.ViewBoxH > 0) {
+		return 0, cadPDFReject("the SVG has no usable viewBox")
+	}
+	return math.Min(pdf.PageW/svg.ViewBoxW, pdf.PageH/svg.ViewBoxH), nil
+}
+
+func cadDXFReadSVGFacts(path string, maxBytes int64) (CADSVGFacts, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return CADSVGFacts{}, fmt.Errorf("cad: open the SVG: %w", err)
+	}
+	defer f.Close()
+	return ValidateCADSVG(f, io.Discard, maxBytes)
+}
+
+func CADDXFPDFReport(pdfPath, textsPath, svgPath string, maxBytes int64) ([]CADDXFPDFText, int, error) {
+	svg, err := cadDXFReadSVGFacts(svgPath, maxBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	texts, err := parseCADDXFTexts(textsPath, maxBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(texts) != len(svg.Texts) {
+		return nil, 0, cadPDFReject("texts.json has %d entries, the SVG has %d texts", len(texts), len(svg.Texts))
+	}
+	pdf, shows, err := cadPDFDecode(pdfPath, maxBytes, true)
+	if err != nil {
+		return nil, 0, err
+	}
+	scale, err := cadDXFPageScale(pdf, svg)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, residual := cadDXFPDFAlign(svg.Texts, shows)
+	for i := range rows {
+		rows[i].SVGPt = svg.TextSizes[i] * scale
+	}
+	return rows, residual, nil
 }
 
 func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {

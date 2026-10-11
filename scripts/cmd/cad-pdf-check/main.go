@@ -18,7 +18,34 @@ func main() {
 	maxBytes := flag.Int64("max-bytes", 1<<30, "largest PDF and texts.json accepted, in bytes")
 	texts := flag.String("texts", "", "texts.json whose covered characters the PDF text must contain in order")
 	printText := flag.Bool("print-text", false, "print the decoded text instead of the facts line")
+	svg := flag.String("svg", "", "the validated render-only SVG the PDF was drawn from")
+	report := flag.Bool("report", false, "print one REPORT line per text with its rendered size and whether the PDF holds it")
 	flag.Parse()
+	if *report {
+		if flag.NArg() != 1 || *texts == "" || *svg == "" || *maxBytes <= 0 {
+			fmt.Fprintln(os.Stderr, "usage: cad-pdf-check --report --texts FILE --svg FILE [--max-bytes N] PDF")
+			os.Exit(64)
+		}
+		rows, residual, err := convert.CADDXFPDFReport(flag.Arg(0), *texts, *svg, *maxBytes)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cad-pdf-check: %v\n", err)
+			os.Exit(64)
+		}
+		present, lost, empty := 0, 0, 0
+		for i, r := range rows {
+			switch r.Present {
+			case 1:
+				present++
+			case 0:
+				lost++
+			default:
+				empty++
+			}
+			fmt.Printf("REPORT,i=%d,svg_pt=%.6g,pdf_pt=%.6g,present=%d,text=%s\n", i, r.SVGPt, r.PDFPt, r.Present, field(strings.ReplaceAll(r.Text, "=", ":")))
+		}
+		fmt.Printf("GOPDFREPORT,texts=%d,present=%d,lost=%d,empty=%d,residual=%d\n", len(rows), present, lost, empty, residual)
+		return
+	}
 	if flag.NArg() != 1 || *maxBytes <= 0 {
 		fmt.Fprintln(os.Stderr, "usage: cad-pdf-check [--max-bytes N] [--texts FILE] [--print-text] PDF")
 		os.Exit(64)

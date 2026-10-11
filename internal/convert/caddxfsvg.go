@@ -16,8 +16,10 @@ import (
 var ErrCADSVGRejected = errors.New("cad: the drawing's SVG failed the safety check")
 
 type CADSVGFacts struct {
-	WidthMM, HeightMM float64
-	Texts             []string
+	WidthMM, HeightMM  float64
+	ViewBoxW, ViewBoxH float64
+	Texts              []string
+	TextSizes          []float64
 }
 
 const (
@@ -99,6 +101,35 @@ func cadSVGMatrix(s string) bool {
 		}
 	}
 	return true
+}
+
+func cadSVGMatrixScale(s string) float64 {
+	m := cadSVGMatrixRe.FindStringSubmatch(s)
+	if m == nil {
+		return math.Inf(1)
+	}
+	var v [4]float64
+	for i := range v {
+		f, err := strconv.ParseFloat(m[i+1], 64)
+		if err != nil {
+			return math.Inf(1)
+		}
+		v[i] = f
+	}
+	return math.Sqrt(math.Abs(v[0]*v[3] - v[1]*v[2]))
+}
+
+func cadSVGTextSize(attrs []xml.Attr, scale float64) (float64, bool) {
+	for _, a := range attrs {
+		if a.Name.Space == "" && a.Name.Local == "font-size" {
+			f, err := strconv.ParseFloat(a.Value, 64)
+			if err != nil {
+				return math.Inf(1), true
+			}
+			return f * scale, true
+		}
+	}
+	return 0, false
 }
 
 func cadSVGPathData(s string) bool { return cadSVGPathRe.MatchString(s) }
@@ -321,6 +352,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 	var stack []string
 	first, rootDone := true, false
 	var text *strings.Builder
+	textScale, textSize := 1.0, math.Inf(1)
 	for {
 		tok, err := dec.Token()
 		if cr.n > maxBytes {
@@ -412,11 +444,31 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 						facts.WidthMM = v
 					case "height":
 						facts.HeightMM = v
+					case "viewBox":
+						if m := cadSVGViewBoxRe.FindStringSubmatch(a.Value); m != nil {
+							facts.ViewBoxW, _ = strconv.ParseFloat(m[1], 64)
+							facts.ViewBoxH, _ = strconv.ParseFloat(m[2], 64)
+						}
 					}
 				}
 			}
 			if name == "text" {
 				text = &strings.Builder{}
+				textScale = 1
+				for _, a := range t.Attr {
+					if a.Name.Space == "" && a.Name.Local == "transform" {
+						textScale = cadSVGMatrixScale(a.Value)
+					}
+				}
+				textSize = math.Inf(1)
+				if v, ok := cadSVGTextSize(t.Attr, textScale); ok {
+					textSize = v
+				}
+			}
+			if name == "tspan" {
+				if v, ok := cadSVGTextSize(t.Attr, textScale); ok && v > textSize {
+					textSize = v
+				}
 			}
 			bw.WriteByte('<')
 			bw.WriteString(name)
@@ -438,6 +490,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 			bw.WriteByte('>')
 			if name == "text" {
 				facts.Texts = append(facts.Texts, text.String())
+				facts.TextSizes = append(facts.TextSizes, textSize)
 				text = nil
 			}
 			if len(stack) == 0 {

@@ -38,6 +38,7 @@ usage() {
 Usage:
   scripts/cad-dxf-bounds.sh smoke [--out FILE]
   scripts/cad-dxf-bounds.sh run [--out FILE]
+  scripts/cad-dxf-bounds.sh floor [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -53,6 +54,11 @@ run    runs the 75-03 guard stress shapes, the ceiling rows (100 and 118 MiB rep
        dxf-minsert ladder (60000 to 170031 cells of the 5-entity block), the second repetitions,
        the two check rows and the pre-registered derivation into
        .planning/phases/75-dxf-2d-pipeline/evidence/75-05-bounds.txt.
+
+floor  the R-10 sweep: uncommon.dxf with one far POINT at 61 distances and the 2 to 50 MiB replicates,
+       each drawn, validated, converted to PDF and reported per text by cad-pdf-check --report, and
+       the DERIVED cad_dxf_pdf_text_floor = 2 x the largest rendered size of a lost text. Its lines
+       replace only the floor lines of the evidence file; run replaces only the others.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -143,12 +149,32 @@ new_job() {
   printf '%s\n' "$d"
 }
 
+FLOOR_PATTERN='^(RULE,key=r10_[^,]*,mode=floor,|HDR,mode=floor,|FLOOR_ROW,|FLOOR_FILE,|FLOOR_GEN,|DERIVED,key=cad_dxf_pdf_text_floor,|STOP,mode=floor,|SUMMARY,mode=floor,)'
+
+write_evidence() {
+  local keep
+  mkdir -p "$(dirname "$EVID")"
+  keep=$(mktemp "${TMPDIR:-/tmp}/cad-bounds-keep.XXXXXX")
+  : > "$keep"
+  if [ -f "$EVID" ] && [ "$MODE" != smoke ]; then
+    if [ "$MODE" = floor ]; then
+      grep -vE "$FLOOR_PATTERN" "$EVID" > "$keep" || true
+      cat "$LINES" "$keep" > "$EVID"
+    else
+      grep -E "$FLOOR_PATTERN" "$EVID" > "$keep" || true
+      cat "$keep" "$LINES" > "$EVID"
+    fi
+  else
+    cp "$LINES" "$EVID"
+  fi
+  rm -f "$keep"
+}
+
 finish() {
   local code=$1
   python3 "$WORK/tools/derive.py" emit "$MODE" "$MEAS" >> "$LINES"
-  mkdir -p "$(dirname "$EVID")"
-  cp "$LINES" "$EVID"
-  grep -E '^(DERIVED|CHECK_ROW|GAP|STOP|SUMMARY),' "$EVID" >&2 || true
+  write_evidence
+  grep -E '^(DERIVED|CHECK_ROW|GAP|STOP|SUMMARY),' "$LINES" >&2 || true
   exit "$code"
 }
 
@@ -629,6 +655,7 @@ RULE,key=g,mode=run,rule=cad_dxf_svg_max_bytes=ceil(1.5xmax_helper_svg_bytes_(cl
 RULE,key=h,mode=all,rule=Go_side:wall_and_peak_of_cad-svg-check_(client_and_render-only);cad-pdf-check;cad-pixel-judge_--drawing_(opaque_and_transparent)_per_row_and_rep;go_peak_mib=child_rss_mib_(the_process_RSS);30+cad_dxf_timeout_s+cad_rsvg_timeout_s+60+max_Go_wall_sum_over_admitted_rows_at_most_886_else_STOP;a_Go_peak_above_24.9_MiB_is_GAP_go_worker_rss_dxf_for_phase_76_not_a_stop
 RULE,key=reps,mode=run,rule=rep_1_for_every_row;rep_2_for_the_rows_that_set_a_DERIVED_value_(the_cap_rung;the_ceiling_row;the_rows_of_the_max_cad-dxf_wall;max_rsvg_wall;max_svg_bytes;max_pdf_bytes);peak_and_wall_of_a_row_and_stage_are_maxima_over_reps;a_rep_2_that_changes_b-d_after_the_check_rows_is_STOP_derivation_changed_after_check_rows
 RULE,key=failures,mode=all,rule=every_stage_must_exit_0_within_its_1800_s_wrap_budget_with_guard_and_cad-dxf_verdict_ok_and_every_Go_judge_ok_else_STOP_stage_failed;a_stage_killed_by_the_cgroup_OOM_counts_as_over_LIMIT_(not_a_stop)_and_ends_the_row;nothing_is_extrapolated_upward
+RULE,key=r10,mode=all,rule=R-10_(added_2026-10-11_before_any_row_of_this_run):cad-pdf-check_judges_with_--svg_the_validated_render-only_SVG;every_text_whose_rendered_size_on_the_PDF_page_is_below_F=cad_dxf_pdf_text_floor_(the_Go_constant_pinned_to_the_floor-mode_DERIVED_line)_is_excluded_from_the_R-3_expectation_and_counted_below_render_floor;every_text_at_or_above_F_must_be_found_in_order;the_teeth_rows_must_reject_an_altered_text_above_F_and_accept_an_altered_text_below_F
 RULE,key=rows,mode=all,rule=measurement_rows_run_the_guard_with_caps_ten_times_the_row_counts_from_an_unmeasured_counting_pass_and_cad-dxf_with_--max-drawn-entities_ten_times_the_expanded_entities;check_rows_run_the_guard_with_the_derived_caps;rsvg_reads_the_Go-re-serialized_render-only_SVG_(R-9);letterbox_from_cad-pixel-judge_--print-letterbox_at_2048;outputs_deleted_after_each_row
 RULES
 }
@@ -654,7 +681,7 @@ setup() {
   LINES="$WORK/lines.txt"
   MEAS="$WORK/meas.txt"
   : > "$MEAS"
-  rule_lines > "$LINES"
+  if [ "$mode" = floor ]; then floor_rule_lines > "$LINES"; else rule_lines > "$LINES"; fi
   TAG=$(build_engine)
   BUILT_TAGS+=("$TAG")
   cad_require_native "$TAG" || fail "engine image is not native"
@@ -965,6 +992,140 @@ rep2_rows() {
   done
 }
 
+floor_rule_lines() {
+  cat <<'RULES'
+RULE,key=r10_sweep,mode=floor,rule=rows=public/uncommon.dxf_plus_one_POINT_at_(D;D)_for_D=round(2000x1.12^k)_k=0..60_(dxf-far-point)_and_the_2;5;10;20;50_MiB_replicates_of_uncommon.dxf;each_row_runs_cad-dxf_confined;cad-svg-check_on_the_render-only_SVG;rsvg-convert_-f_pdf_-b_white_confined_from_the_validated_SVG;cad-pdf-check_--report
+RULE,key=r10_size,mode=floor,rule=rendered_size_pt=SVG_font-size_x_sqrt(abs(det(text_matrix)))_x_min(MediaBox_w/viewBox_w;MediaBox_h/viewBox_h);a_text_is_present_when_its_render-only_SVG_text_without_whitespace_is_the_next_run_of_the_decoded_PDF_text_in_document_order;the_PDF-side_size_(CTM_x_Tm_x_Tf)_of_present_texts_is_recorded_as_a_cross-check
+RULE,key=r10_floor,mode=floor,rule=L=the_largest_rendered_size_pt_of_any_lost_text_over_all_rows;F=2xL;STOP_floor_stage_failed_if_a_stage_or_a_report_fails;STOP_alignment_residual_if_a_row_leaves_decoded_text_unmatched;STOP_no_loss_observed_if_no_text_is_lost
+RULES
+}
+
+floor_row() {
+  local row=$1 src=$2 label=$3 job ok=1
+  disk_guard
+  log "floor row $row ($(bytes_of "$src") bytes)"
+  job=$(new_job)
+  cp -c "$src" "$job/in.dxf" 2>/dev/null || cp "$src" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  wrapped M "$row" 1 dxf "$job" "$DXF_RO" draw.svg /usr/local/bin/cad-dxf --max-drawn-entities 100000000 \
+    --texts /job/draw.texts.json --render-svg /job/draw.render.svg /job/in.dxf /job/draw.svg || ok=0
+  if [ "$ok" = 1 ]; then
+    wrapped G "$row" 1 svg_render "$job" none clean.render.svg /gobin/cad-svg-check --out /job/clean.render.svg /job/draw.render.svg || ok=0
+  fi
+  if [ "$ok" = 1 ]; then
+    wrapped M "$row" 1 rsvg_pdf "$job" "$RSVG_RO" out.pdf /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/clean.render.svg || ok=0
+  fi
+  if [ "$ok" = 1 ]; then
+    docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pdf-check "$TAG" \
+      --report --texts /job/draw.texts.json --svg /job/clean.render.svg /job/out.pdf > "$FLOOR_DIR/$row.report" </dev/null || ok=0
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$row" "$label" "$(basename "$src")" "$(bytes_of "$src")" "$(sha_of "$src")" "$ok" >> "$FLOOR_DIR/index.tsv"
+  rm -rf "$job"
+}
+
+floor_aggregate() {
+  python3 - "$FLOOR_DIR" <<'PY'
+import collections
+import os
+import sys
+
+d = sys.argv[1]
+index = [ln.rstrip("\n").split("\t") for ln in open(os.path.join(d, "index.tsv"))]
+stop = None
+lost_max = None
+lost_at = None
+present_sizes = []
+diff_abs = 0.0
+diff_rel = 0.0
+lines = []
+for row, label, name, size, digest, ok in index:
+    path = os.path.join(d, row + ".report")
+    reps = []
+    summary = {}
+    if ok == "1" and os.path.exists(path):
+        for ln in open(path):
+            ln = ln.strip()
+            parts = dict(p.split("=", 1) for p in ln.split(",")[1:] if "=" in p)
+            if ln.startswith("REPORT,"):
+                reps.append(parts)
+            elif ln.startswith("GOPDFREPORT,"):
+                summary = parts
+    if ok != "1" or not summary:
+        stop = stop or ("floor_stage_failed", "row=%s" % row)
+        lines.append("FLOOR_FILE,row=%s,label=%s,file=%s,bytes=%s,sha256=%s,result=fail" % (row, label, name, size, digest))
+        continue
+    if summary.get("residual") != "0":
+        stop = stop or ("alignment_residual", "row=%s,residual=%s" % (row, summary.get("residual")))
+    lines.append("FLOOR_FILE,row=%s,label=%s,file=%s,bytes=%s,sha256=%s,texts=%s,present=%s,lost=%s,empty=%s,residual=%s,result=%s" % (
+        row, label, name, size, digest, summary["texts"], summary["present"], summary["lost"], summary["empty"], summary["residual"],
+        "ok" if summary.get("residual") == "0" else "fail"))
+    groups = collections.OrderedDict()
+    for r in reps:
+        if r["present"] == "-1":
+            continue
+        g = groups.setdefault(r["svg_pt"], {"texts": 0, "present": 0, "lost": 0, "pdf": []})
+        g["texts"] += 1
+        sv = float(r["svg_pt"])
+        if r["present"] == "1":
+            g["present"] += 1
+            pv = float(r["pdf_pt"])
+            g["pdf"].append(pv)
+            diff_abs = max(diff_abs, abs(sv - pv))
+            if sv >= 0.1:
+                diff_rel = max(diff_rel, abs(sv - pv) / sv)
+            present_sizes.append(sv)
+        else:
+            g["lost"] += 1
+            if lost_max is None or sv > lost_max:
+                lost_max, lost_at = sv, (row, r["svg_pt"])
+    for size_pt in sorted(groups, key=float):
+        g = groups[size_pt]
+        lines.append("FLOOR_ROW,row=%s,label=%s,size_pt=%s,texts=%d,present=%d,lost=%d,pdf_pt_min=%s,pdf_pt_max=%s,all_present=%d" % (
+            row, label, size_pt, g["texts"], g["present"], g["lost"],
+            "%.6g" % min(g["pdf"]) if g["pdf"] else "na", "%.6g" % max(g["pdf"]) if g["pdf"] else "na", 1 if g["lost"] == 0 else 0))
+if stop is None and lost_max is None:
+    stop = ("no_loss_observed", "rows=%d" % len(index))
+for ln in lines:
+    print(ln)
+if stop:
+    print("STOP,mode=floor,reason=%s,%s" % stop)
+    print("SUMMARY,mode=floor,rows=%d,stop=%s,result=stop" % (len(index), stop[0]))
+    sys.exit(1)
+floor = float("%.6g" % (2 * lost_max))
+print("DERIVED,key=cad_dxf_pdf_text_floor,value=%.6g,derivation=F=2xL=2x%s=%.6g_pt;L=largest_rendered_size_of_a_lost_text_at_row_%s;sizes_in_PDF_page_points" % (
+    floor, lost_at[1], floor, lost_at[0]))
+print("SUMMARY,mode=floor,rows=%d,largest_lost_pt=%s,smallest_present_pt=%.6g,svg_vs_pdf_size_max_abs_pt=%.6g,svg_vs_pdf_size_max_rel_at_or_above_0.1pt=%.6g,floor_pt=%.6g,stop=none,result=ok" % (
+    len(index), lost_at[1], min(present_sizes), diff_abs, diff_rel, floor))
+PY
+}
+
+floor_mode() {
+  local out line name dist path mib rc=0
+  setup floor
+  FLOOR_DIR="$WORK/floor"
+  mkdir -p "$FLOOR_DIR"
+  : > "$FLOOR_DIR/index.tsv"
+  GEN_MOUNTS=()
+  out=$(gen --scaled-from "$BASE_DXF" --kind dxf-far-point --targets "$(python3 -c 'print(",".join(str(round(2000 * 1.12 ** k)) for k in range(61)))')")
+  printf '%s\n' "$out" | grep '^SCALED,' > "$WORK/gen.lines" || fail "no SCALED line from dxf-far-point"
+  [ "$(wc -l < "$WORK/gen.lines" | tr -d ' ')" = 61 ] || fail "dxf-far-point produced $(wc -l < "$WORK/gen.lines") files"
+  while IFS= read -r line; do
+    name=$(scaled_field file "$line")
+    dist=$(scaled_field distance "$line")
+    path=$(stash_gen "$name")
+    printf 'FLOOR_GEN,row=D%s,%s\n' "$dist" "$(printf '%s' "$line" | sed 's/^SCALED,//')" >> "$LINES"
+    floor_row "D$dist" "$path" "far_point_d$dist"
+  done < "$WORK/gen.lines"
+  for mib in 2 5 10 20 50; do
+    path=$(replicate_src "$mib")
+    floor_row "R$mib" "$path" "replicate_${mib}MiB"
+  done
+  floor_aggregate >> "$LINES" || rc=1
+  write_evidence
+  grep -E '^(DERIVED|STOP|SUMMARY),' "$LINES" >&2 || true
+  exit "$rc"
+}
+
 smoke_mode() {
   local n path gline c_line c_path b_path b_line k=0
   setup smoke
@@ -1052,5 +1213,6 @@ case "$MODE" in
     [ "$OUT_SET" = 1 ] || EVID="${TMPDIR:-/tmp}/75-05-bounds-smoke.txt"
     smoke_mode ;;
   run) run_mode ;;
+  floor) floor_mode ;;
   *) usage ;;
 esac
