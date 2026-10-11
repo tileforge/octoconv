@@ -1523,6 +1523,21 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 		{"measurements invalid", convert.ErrCADMeasurementsInvalid,
 			fmt.Errorf("cad: %w: key \"volume\" is missing", convert.ErrCADMeasurementsInvalid),
 			CodeEngineError, "the measurements of this model could not be produced"},
+		{"dxf nothing drawable", convert.ErrCADNothingDrawable,
+			fmt.Errorf("cad dxf: %w: %w: nothing_drawable", convert.ErrCADNothingDrawable, convert.ErrCADEmptyResult),
+			CodeCADEmptyResult, "the drawing contains nothing that can be drawn: model space is empty, hidden or holds only 3D solids"},
+		{"dxf timeout", convert.ErrCADDXFTimeout,
+			fmt.Errorf("cad dxf: %w: no result within 162s, engine cpu 160.0s: %v", convert.ErrCADDXFTimeout, context.DeadlineExceeded),
+			CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"},
+		{"rsvg timeout", convert.ErrCADRsvgTimeout,
+			fmt.Errorf("cad rsvg: %w: no result within 141s, engine cpu 140.0s: %v", convert.ErrCADRsvgTimeout, context.DeadlineExceeded),
+			CodeCADTooComplex, "the drawing took too long to convert to PDF or PNG; simplify it or export fewer details"},
+		{"dxf svg rejected", convert.ErrCADSVGRejected,
+			fmt.Errorf("cad dxf: draw.svg: %w", fmt.Errorf("%w: element script is not allowed inside g", convert.ErrCADSVGRejected)),
+			CodeEngineError, "the drawing could not be converted into a safe vector file"},
+		{"dxf pdf rejected", convert.ErrCADPDFRejected,
+			fmt.Errorf("cad: %w: missing text: 0 of 145 expected characters found in order", convert.ErrCADPDFRejected),
+			CodeCADEmptyResult, "the PDF of this drawing shows no recognisable content"},
 	}
 	for _, tc := range terminal {
 		t.Run(tc.name+" is terminal with its own code on the first attempt", func(t *testing.T) {
@@ -1577,6 +1592,51 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 		}
 		if isCADTerminal(fmt.Errorf("cad render: %w", convert.ErrCADRenderFailed)) {
 			t.Fatal("ErrCADRenderFailed is terminal, want retried")
+		}
+	})
+
+	t.Run("a drawing fault retries and marks nothing on the first attempt", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("convert: %w", fmt.Errorf("cad rsvg: %w: exit status 1", convert.ErrCADDrawingFailed))
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) {
+			t.Fatalf("err = %v was made terminal: a crash on a validated drawing can succeed on another attempt", err)
+		}
+		if len(repo.markFailed) != 0 {
+			t.Fatalf("MarkFailed calls = %d, want 0 on a retryable attempt", len(repo.markFailed))
+		}
+	})
+
+	t.Run("a drawing fault maps to engine_error with its own sentence on the final attempt", func(t *testing.T) {
+		code, message := cadFailureCode(fmt.Errorf("convert: %w", fmt.Errorf("cad dxf: %w: draw_exception", convert.ErrCADDrawingFailed)))
+		if code != CodeEngineError || message != "the drawing could not be produced" {
+			t.Fatalf("cadFailureCode = %q, %q, want engine_error and the drawing sentence", code, message)
+		}
+		if isCADTerminal(fmt.Errorf("cad dxf: %w", convert.ErrCADDrawingFailed)) {
+			t.Fatal("ErrCADDrawingFailed is terminal, want retried")
+		}
+	})
+
+	t.Run("a sandbox fault wrapping a dxf sentinel retries and marks nothing", func(t *testing.T) {
+		job, jobID := newPinJob("")
+		calls := []string{}
+		repo := &pinRepo{job: job, calls: &calls}
+		h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+		h.processFn = func(context.Context, *jobs.Job) error {
+			return fmt.Errorf("cad dxf: %w: %w: unrecoverable error", convert.ErrEngineSandboxUnavailable, convert.ErrCADDXFTimeout)
+		}
+
+		err := cadHandle(h, context.Background(), newTask(t, queue.TypeCADJob, jobID))
+
+		if errors.Is(err, asynq.SkipRetry) || len(repo.markFailed) != 0 {
+			t.Fatalf("err = %v, MarkFailed = %d: a node that cannot establish the sandbox says nothing about the drawing", err, len(repo.markFailed))
 		}
 	})
 

@@ -714,6 +714,11 @@ func isCADTerminal(err error) bool {
 		convert.ErrCADRenderTimeout,
 		convert.ErrCADRenderRejected,
 		convert.ErrCADMeasurementsInvalid,
+		convert.ErrCADNothingDrawable,
+		convert.ErrCADDXFTimeout,
+		convert.ErrCADRsvgTimeout,
+		convert.ErrCADSVGRejected,
+		convert.ErrCADPDFRejected,
 	} {
 		if errors.Is(err, sentinel) {
 			return true
@@ -730,6 +735,8 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeCADTooComplex, "the CAD model is too complex to convert; simplify it or split it into smaller parts"
 	case errors.Is(err, convert.ErrCADUnreadable):
 		return CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"
+	case errors.Is(err, convert.ErrCADNothingDrawable):
+		return CodeCADEmptyResult, "the drawing contains nothing that can be drawn: model space is empty, hidden or holds only 3D solids"
 	case errors.Is(err, convert.ErrCADEmptyResult):
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):
@@ -742,6 +749,16 @@ func cadFailureCode(err error) (code, message string) {
 		return CodeEngineError, "the measurements of this model could not be produced"
 	case errors.Is(err, convert.ErrCADRenderFailed):
 		return CodeEngineError, "the preview could not be rendered"
+	case errors.Is(err, convert.ErrCADDXFTimeout):
+		return CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADRsvgTimeout):
+		return CodeCADTooComplex, "the drawing took too long to convert to PDF or PNG; simplify it or export fewer details"
+	case errors.Is(err, convert.ErrCADSVGRejected):
+		return CodeEngineError, "the drawing could not be converted into a safe vector file"
+	case errors.Is(err, convert.ErrCADPDFRejected):
+		return CodeCADEmptyResult, "the PDF of this drawing shows no recognisable content"
+	case errors.Is(err, convert.ErrCADDrawingFailed):
+		return CodeEngineError, "the drawing could not be produced"
 	}
 	return CodeEngineError, "unsupported or corrupted input format"
 }
