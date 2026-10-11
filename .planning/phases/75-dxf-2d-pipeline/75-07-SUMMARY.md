@@ -54,7 +54,7 @@ coverage:
     requirement: CCONV-02
     verification:
       - kind: unit
-        ref: "internal/convert/caddxf_test.go TestCADDXFConvert* (7 tests, 76 subtests)"
+        ref: "internal/convert/caddxf_test.go TestCADDXFConvert* (7 tests, 77 subtests)"
         status: pass
     human_judgment: false
   - id: D2
