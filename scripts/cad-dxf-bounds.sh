@@ -242,6 +242,8 @@ PNG_MAX = 96 * MIB
 STAGES = ["guard", "dxf", "rsvg_pdf", "rsvg_png_opaque", "rsvg_png_transparent"]
 RSVG = ["rsvg_pdf", "rsvg_png_opaque", "rsvg_png_transparent"]
 GO_STEPS = ["svg_client", "svg_render", "pdf", "pixel_opaque", "pixel_transparent"]
+PIPELINE = ["guard", "dxf", "svg_client", "svg_render", "rsvg_pdf", "pdf", "rsvg_png_opaque", "rsvg_png_transparent",
+            "pixel_opaque", "pixel_transparent"]
 OOM_PEAK = Decimal(4096)
 
 
@@ -319,17 +321,22 @@ class Model:
             return "over_oom"
         for rep in self.reps(row):
             ss = {m["stage"]: m for m in self.stages(row, rep)}
-            for st in STAGES:
-                m = ss.get(st)
-                if m is None or m["wrap_ok"] != "1" or m["rc"] != "0" or m.get("timeout") != "0":
-                    return "failed:%s:rep%d" % (st, rep)
-                if st in ("guard", "dxf") and m["verdict"] != "ok":
-                    return "failed:%s_verdict_%s:rep%d" % (st, m["verdict"], rep)
             gg = {g["step"]: g for g in self.gos(row, rep)}
-            for st in GO_STEPS:
-                g = gg.get(st)
-                if g is None or g["wrap_ok"] != "1" or g["rc"] != "0" or g["ok"] != "1":
-                    return "failed:%s:rep%d" % (st, rep)
+            for st in PIPELINE:
+                if st in STAGES:
+                    m = ss.get(st)
+                    if m is None:
+                        return "failed:%s_not_run:rep%d" % (st, rep)
+                    if m["wrap_ok"] != "1" or m["rc"] != "0" or m.get("timeout") != "0":
+                        return "failed:%s:rep%d" % (st, rep)
+                    if st in ("guard", "dxf") and m["verdict"] != "ok":
+                        return "failed:%s_verdict_%s:rep%d" % (st, m["verdict"], rep)
+                else:
+                    g = gg.get(st)
+                    if g is None:
+                        return "failed:%s_not_run:rep%d" % (st, rep)
+                    if g["wrap_ok"] != "1" or g["rc"] != "0" or g["ok"] != "1":
+                        return "failed:%s_judge:rep%d:%s" % (st, rep, g.get("facts", "-")[-160:])
         return "ok"
 
     def row_peak(self, row):
