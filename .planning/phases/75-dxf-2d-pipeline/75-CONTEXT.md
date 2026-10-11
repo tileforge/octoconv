@@ -118,6 +118,13 @@ These come from phase 71 (`71-DECISION.md`) and phases 72–74:
   - **Lines with no ink.** A line with no ink in either the render-only rsvg render or ezdxf's own outline at 1280 counts as agreeing, recorded as `both_empty=1`. Its text must still be present in the client SVG, in texts.json and in the PDF text. In 75-02 the dimension text `6000` is a covered string, so R-3 requires it in pdftotext output, and it is there (`in_pdf_text=1`).
   - **Substituted lines.** These gates apply: start point within 1 px; the baseline of the covered prefix (the text before the first U+FFFD, measured as the ink bottom within the prefix's own extent along the line) within 1 px; and the line fully inside the page. Width and height are recorded but not gated. The same check on the client SVG must fail; it does, at −60 px.
 
+- **R-10: Rendered-size floor for the PDF text rule (decided 2026-10-11 after the 75-05 STOP).** rsvg-convert 2.54.7 exits 0 but silently drops some texts from the PDF once their rendered size on the page is microscopic: 90°, 126°, 36° and rotated ordinate texts once the smallest size falls to about 0.017 page user units. That would terminally reject any DXF whose extents are huge relative to its text height. Such text is illegible on the page anyway, and the client SVG and texts.json keep it exactly.
+  - **Rule.** The R-3 PDF expectation excludes every text whose rendered font size on the PDF page is below a floor F. Excluded texts are counted in the verdict as `below_render_floor`, never silently dropped. Every text at or above F must still be found in order, as before.
+  - **Deriving F.** F is measured, not chosen. Sweep the rendered size: replicate or scale a text-bearing corpus file across sizes on the production image. For each size, record whether every text of that size is present in the PDF. L is the largest size at which any text was lost. F is 2 × L. Write DERIVED,key=cad_dxf_pdf_text_floor with the sweep rows as evidence, and hold F in a Go constant whose value a test parses from the DERIVED line.
+  - **Units.** F and the sizes are in PDF page points (the unit the judge reads), so the rule is independent of the drawing.
+  - **Proving the rule bites.** One row must show that a file with texts above F still fails the judge when one of those texts is removed from the PDF.
+  - **Docs.** Phase 76 docs gain a known limit: text rendered below F on the page may be missing from the PDF text layer, while the SVG keeps it.
+
 ### Claude's Discretion
 - How the guard's DXF pair parser is structured, and its exact verdict fields.
 - The SVG allowlist's exact attribute list, provided it satisfies D-05.
