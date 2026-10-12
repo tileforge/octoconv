@@ -74,7 +74,7 @@ func (f cadRenderFixture) statsScript(draft, stl string, n int) string {
 }
 
 func (f cadRenderFixture) statsScriptLinking(draft, stl string, n int) string {
-	return f.statsScriptPlacing("ln -s", draft, stl, n)
+	return f.statsScriptPlacing("ln", draft, stl, n)
 }
 
 func (f cadRenderFixture) statsScriptPlacing(place, draft, stl string, n int) string {

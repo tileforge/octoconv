@@ -109,7 +109,7 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 		return err
 	}
 
-	f, err := os.Open(outPath)
+	f, _, err := OpenJobFile(outPath)
 	if err != nil {
 		return fmt.Errorf("cad: %w: no image at %s: %v", ErrCADRenderRejected, outPath, err)
 	}

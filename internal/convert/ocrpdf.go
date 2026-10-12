@@ -231,7 +231,7 @@ func (c OCRConverter) ocrPDFPage(ctx context.Context, x engineExec, pdfPath, tmp
 	produced := pageOutBase + ocrTesseractOutputExt(targetFormat)
 	defer os.Remove(produced)
 
-	fragment, err := os.ReadFile(produced)
+	fragment, err := ReadJobFile(produced)
 	if err != nil {
 		return nil, fmt.Errorf("ocr: read page output: %w", err)
 	}

@@ -426,15 +426,11 @@ func (b stlBounds) Extents() [3]float64 {
 
 func judgeBinarySTL(path string) (int, stlBounds, error) {
 	var bounds stlBounds
-	f, err := os.Open(path)
+	f, info, err := OpenJobFile(path)
 	if err != nil {
-		return 0, bounds, fmt.Errorf("%w: no STL at %s: %v", ErrCADEmptyResult, path, err)
+		return 0, bounds, fmt.Errorf("%w: no STL at %s: %w", ErrCADEmptyResult, path, err)
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return 0, bounds, fmt.Errorf("%w: stat STL: %v", ErrCADEmptyResult, err)
-	}
 	if info.Size() < stlHeaderBytes {
 		return 0, bounds, fmt.Errorf("%w: STL is %d bytes, shorter than its %d-byte header", ErrCADEmptyResult, info.Size(), stlHeaderBytes)
 	}
