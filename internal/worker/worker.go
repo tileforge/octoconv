@@ -1606,16 +1606,12 @@ func (h *Handler) uploadBytes(ctx context.Context, key string, body []byte, cont
 }
 
 func (h *Handler) uploadFrom(ctx context.Context, key, path, contentType string) (int64, error) {
-	f, err := os.Open(path)
+	f, fi, err := convert.OpenJobFile(path)
 	if err != nil {
 		return 0, fmt.Errorf("open output: %w", err)
 	}
 	defer f.Close()
 
-	fi, err := f.Stat()
-	if err != nil {
-		return 0, fmt.Errorf("stat output: %w", err)
-	}
 	if err := h.store.Upload(ctx, key, f, fi.Size(), contentType); err != nil {
 		return 0, err
 	}

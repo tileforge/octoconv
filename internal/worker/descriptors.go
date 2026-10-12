@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -409,7 +408,7 @@ func probeFailureCode(err error) (code, message string) {
 // the file -- and in both cases a silent success would deliver a sanitized
 // document with no statement of what was removed from it.
 func probeSideOutputs(_ context.Context, _ *jobs.Job, outPath string) ([]SideOutput, error) {
-	blob, err := os.ReadFile(convert.SanitizeReportPath(outPath))
+	blob, err := convert.ReadJobFile(convert.SanitizeReportPath(outPath))
 	if err != nil {
 		return nil, fmt.Errorf("sanitize report missing beside the output: %w", err)
 	}
@@ -681,9 +680,9 @@ func cadSideOutputs(_ context.Context, job *jobs.Job, outPath string) ([]SideOut
 	if job.Operation != convert.OperationRender {
 		return nil, nil
 	}
-	blob, err := os.ReadFile(convert.CADMeasurementsPath(outPath))
+	blob, err := convert.ReadJobFile(convert.CADMeasurementsPath(outPath))
 	if err != nil {
-		return nil, fmt.Errorf("%w: measurements missing beside the render: %v", convert.ErrCADMeasurementsInvalid, err)
+		return nil, fmt.Errorf("%w: measurements missing beside the render: %w", convert.ErrCADMeasurementsInvalid, err)
 	}
 	if _, err := measurements.Validate(blob); err != nil {
 		return nil, fmt.Errorf("%w: %v", convert.ErrCADMeasurementsInvalid, err)
