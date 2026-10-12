@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v1.16
 milestone_name: CAD Engine
-current_phase: 75
-current_phase_name: DXF 2D Pipeline
-status: executing
-stopped_at: Phase 75 context gathered
-last_updated: "2026-10-07T02:26:09.878Z"
-last_activity: 2026-10-07
-last_activity_desc: Phase 74 complete, transitioned to Phase 75
-state_head: fbc40b2cbcda4df8c034a266c248c121cf422c0f
+current_phase: 76
+current_phase_name: Measured Bounds, KEDA Proof & Client Docs
+status: planning
+stopped_at: Phase 75 complete, ready to plan Phase 76
+last_updated: "2026-10-12T14:12:52.122Z"
+last_activity: 2026-10-12
+last_activity_desc: Phase 75 complete, transitioned to Phase 76
+state_head: f0cb32f3a5b36625a139b273679c6f70a6ce5d71
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 38
-  completed_plans: 28
-  percent: 67
+  completed_plans: 38
+  percent: 83
 ---
 
 # Project State
@@ -29,18 +29,18 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 ## Current Position
 
-Phase: 75 (DXF 2D Pipeline) — READY TO EXECUTE
+Phase: 76 — Measured Bounds, KEDA Proof & Client Docs
 Plan: Not started
-Status: Ready to execute
-Last activity: 2026-10-07 - Completed quick task 261007-1sx: Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2)
+Status: Ready to plan
+Last activity: 2026-10-12 — Phase 75 complete, transitioned to Phase 76
 
-Progress: [███████░░░] 67% (0/6 phases)
+Progress: [████████░░] 83% (0/6 phases)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 233 (all v1.0–v1.11)
+- Total plans completed: 243 (all v1.0–v1.11)
 - Average duration: - min
 - Total execution time: 0 hours
 
@@ -109,6 +109,7 @@ Progress: [███████░░░] 67% (0/6 phases)
 | 72 | 7 | - | - |
 | 73 | 6 | - | - |
 | 74 | 7 | - | - |
+| 75 | 10 | - | - |
 
 **Recent Trend:**
 
@@ -225,6 +226,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261002-15o | Chart: independent pinned default for minio.mcImage (Codex P1 r4, PR 31) | 2026-10-01 | f45c7ee | [261002-15o-chart-independent-pinned-default-for-min](./quick/261002-15o-chart-independent-pinned-default-for-min/) |
 | 261006-t51 | Normalize ASCII STL case for cad stats and render (Codex P2 PR 35) | 2026-10-07 | 51f5131 | [261006-t51-normalize-ascii-stl-case-for-cad-stats-a](./quick/261006-t51-normalize-ascii-stl-case-for-cad-stats-a/) |
 | 261007-1sx | Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2) | 2026-10-07 | 8dc219e | [261007-1sx-per-shell-signed-volume-for-stl-and-per-](./quick/261007-1sx-per-shell-signed-volume-for-stl-and-per-/) |
+| 261012-gos | Close phase-75 deferred items: job-dir read/write hardening across engines (no-follow, regular-file, remove-then-O_EXCL), multipart spill cleanup in API handlers, python>=3.10 test floor; gate timeout 10m | 2026-10-12 | f0cb32f | [261012-gos-close-phase-75-deferred-items-job-dir-wr](./quick/261012-gos-close-phase-75-deferred-items-job-dir-wr/) |
 
 ### Pending Todos
 
@@ -419,7 +421,7 @@ and the soak test that shares a database with parallel packages.
 ## Session Continuity
 
 Last session: 2026-10-07T00:30:33.237Z
-Stopped at: Phase 75 context gathered
+Stopped at: Phase 75 complete, ready to plan Phase 76
 Resume file: .planning/phases/75-dxf-2d-pipeline/75-CONTEXT.md
 
 ## Operator Next Steps
