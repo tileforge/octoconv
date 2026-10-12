@@ -1,0 +1,22 @@
+HDR,commit=bd90a59 (mutations applied on top of the exposure commit, each restored with git checkout -- <file> before the next),tracked_dirt=.planning/config.json and the three uncommitted Task 2 test files,go=go1.26.4,python=3.14 first on PATH
+HDR,the new tests were then committed in 1e1a0fb unchanged
+M1: dxf rules removed from ValidateCADApplicability
+--- FAIL: TestCreateJobDXFRenderViewOrQualityIsOptsNotApplicable (0.00s)
+--- FAIL: TestCreateJobDXFConvertWithAnyOptionIsOptsNotApplicable (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	1.943s
+FAIL
+M2: dxf ceiling removed from defaultMaxFormatBytes
+--- FAIL: TestCADFormatCeilingDefaultsPinnedToConvertConstants (0.00s)
+--- FAIL: TestCADInspectReportsPerFormatCeilingAsMaxBytes (0.01s)
+--- FAIL: TestCADDXFCeilingAtTheDefaultRefusesBeforeUpload (0.81s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/api	2.113s
+FAIL
+M3: cadSideOutputs returns no side output for render
+--- FAIL: TestCADOutputsDXFRenderRecordsPNGAndMeasurementsInOneCallThenMarksDone (0.01s)
+--- FAIL: TestCADOutputsDXFRenderWithA3DBBoxUploadsNothing (0.00s)
+--- FAIL: TestCADOutputsDXFConvertRecordsOnePrimaryAndNoExtras (0.01s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/worker	1.217s
+FAIL
