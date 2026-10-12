@@ -276,9 +276,9 @@ None.
 
 All created files exist, and all 16 commit hashes are ancestors of HEAD (verified below before the SUMMARY commit).
 
-## Live regression (2026-10-12, at 46e742c)
+## Live regression (2026-10-12, at 46e742c, gate budget fixed at 4c1c1ef)
 
-**Result: one gate FAILED.** The ci-local `gate` tier fails at 46e742c and passes at b2c0db8. The cause is a test-time budget, not a behavior change. Every live gate on running stacks passed.
+**Result: all gates PASS after one budget change.** At 46e742c the ci-local `gate` tier FAILED under its 5m `go test` timeout (rows 1a–1c), while b2c0db8 passed it. The cause was a test-time budget, not a behavior change. Every live gate on running stacks passed at 46e742c. Commit 4c1c1ef raised the gate timeout to 10m, and the re-run at 4c1c1ef passed (row 1d).
 
 How it was run:
 - Every run used a fresh `git clone --branch gsd/phase-75-dxf-2d-pipeline` at 46e742c in the scratchpad (`rg/octoconv`). The compose project is `octoconv` and tracked dirt is 0, which every transcript header confirms.
@@ -291,6 +291,7 @@ How it was run:
 | 1a | `scripts/ci-local.sh helm gate race docker-build e2e`, run 1 | **AT LEAST ONE TIER FAILED.** helm PASS. gate FAIL: `internal/convert` hit the 5m timeout at 304.8s. race PASS. docker-build FAIL and e2e FAIL: the clone has no `deploy/tectonic-bundle/octoconv-bundle.ttb`, which is a gitignored release asset, so the compose build stopped at the COPY. | `rg-ci-local-run1-20261012T113321Z.log` |
 | 1b | the same command, run 2, after copying the bundle from the main tree. `scripts/tectonic-bundle-fetch.sh --check` matched the Dockerfile pin f42d5eed…, and the file is ignored, so tracked dirt stayed 0. | **AT LEAST ONE TIER FAILED.** helm PASS. **gate FAIL**: `internal/convert` 305.6s, 5m timeout. race PASS (`internal/convert` 462.0s). docker-build PASS (every bake target). e2e PASS (`internal/e2e` 119.2s, full stack built from 46e742c). | `rg-ci-local-run2-20261012T115951Z.log` |
 | 1c | gate tier back to back from two clean clones: b2c0db8 first, then 46e742c | b2c0db8 **PASS** (`internal/convert` 285.1s). 46e742c **FAIL** (304.9s, 5m timeout). | `rg-gate-b2c0db8-20261012T124216Z.log`, `rg-gate-46e742c-20261012T124733Z.log` |
+| 1d | `scripts/ci-local.sh helm gate race` at 4c1c1ef (gate timeout 10m), from a fresh clone with the bundle copied in; tracked dirt 0, no TRACKED CHANGES marker | **ALL REQUESTED TIERS PASSED.** helm PASS. gate PASS (`internal/convert` 307.5s, which would have failed at 5m). race PASS (`internal/convert` 483.0s). docker-build and e2e were not re-run: both passed at 46e742c (row 1b), and 4c1c1ef changes only the `go test` timeout of the gate step, which neither tier runs. | `rg-ci-local-run3-4c1c1ef-20261012T134203Z.log` |
 | 2 | `scripts/cad-liveproof.sh --out …/rg-cad-liveproof.txt` | **PASS.** `SUMMARY,result=ALL PASS`, with `HDR,commit=46e742c…` and `HDR,tracked_dirt=0`. All 27 SUMMARY counters equal 75-10's: every phase-74 section (formats 1, inspect 9, convert 5, render 5, views 6, meas 10, bomb 12, retries, cancels, worker_kill 1, sandbox 1) and every phase-75 section (dxf_svg 5, dxf_pdf 3, dxf_render 4, dxf_meas 7, dxf_opts_reject 4, dxf_bomb 15, dxf_ceiling 1, dxf_retry 2, dxf_cancel 1). | `rg-cad-liveproof.txt`, `rg-cad-liveproof.transcript.log` |
 | 3 | `scripts/sandbox-liveproof.sh <class>` for all 9 classes the script knows | **PASS**, every class. image 4/4, pandoc 4/4, ocr 4/4, av 4/4, audio 4/4, html 9/9, probe 4/4, document 7/7, cad 5/5. 0 FAIL, 0 NOT RUN. The arm64 server ran the emulated-amd64 checks for document and cad. | `rg-sandbox-liveproof-<class>.txt`, `rg-sandbox-liveproof-progress.log` |
 | 4a | `scripts/cancel-liveproof.sh` (minimal stack: postgres, redis, minio, createbucket, api, av-worker) | **PASS**, 12 checks. The ffmpeg PID was gone after cancel. | `rg-cancel-liveproof.txt` |
@@ -304,7 +305,7 @@ What the passing gates cover of the changed code:
   - The av proofs cover av, with completed transcodes.
   - cad-liveproof covers cad: 3D, DXF, render sidecars and the measurements read.
 
-**Gate 1 diagnosis (not fixed).**
+**Gate 1 diagnosis.**
 - **The mechanism is a time budget.** ci.yml's gate job runs `go test ./... -timeout 5m` (line 64), and ci-local mirrors it. `internal/convert` was already near that limit before this task: 281.0s at 75-09 and 259.5s at 75-10.
 - **What this task added,** from standalone `go test -json` runs back to back (`rg-convert-timing.txt`): the package went from 271.0s at b2c0db8 to 295.0s at 46e742c.
   - The 8 new top-level tests account for 10.7s. The largest are TestSanitizeWritesAsNewFilesAfterItsStages 3.41s, TestStageOutputReadsRefuseAPlantedLink 2.45s, TestCADRenderWritesTheSidecarAsANewFile 2.39s and TestOCRPDFWritesTheOutputAsANewFile 2.36s.
@@ -312,11 +313,18 @@ What the passing gates cover of the changed code:
   - The rest is run-to-run variance in python-heavy CAD guard tests.
 - **Why both gate timeouts name TestEngineExecSandboxFaultSentinel:** it is the test running when the package crosses 300s. In the standalone run it started at offset 276.5s and passed in 0.28s, so it is not a hang.
 - **Why the task's own gate missed it:** gates 3 and 4 above ran `go test -p 2 ./... -count=1` with the default 10m timeout, not CI's 5m.
-- **Options, none applied:**
+- **Options considered:**
   1. Raise the gate `-timeout` in ci.yml and ci-local together.
   2. Make the slow new tests share their fixtures or run with `t.Parallel()`.
   3. Have `requireCADPython` cache its version probe. This saves about 2.5s, which is not enough on its own.
-  - None of these is an obvious test-first fix, so none was made.
+- **Change made (coordinator decision): option 1, commit 4c1c1ef.**
+  - `.github/workflows/ci.yml:64` and `scripts/ci-local.sh:136` both go from `-timeout 5m` to `-timeout 10m`, the race tier's existing value. The race tier runs the same package set slower (462–485s) and passes at 10m.
+  - No test changed. Neither file has prose explaining the 5m figure.
+  - A grep for `timeout 5m` across the repo finds nothing else that pins the gate value:
+    - `helm … --wait --timeout 5m` in the keda scripts is a helm install wait;
+    - `OCTOCONV_PROBE_BUDGET` 5m is a measurement budget;
+    - the compose and webhook "5m" mentions are delivery timeouts;
+    - `internal/e2e/e2e_test.go:587` describes that test's own timeout, and that test self-skips in the gate tier (the e2e tier runs with `-timeout 30m`).
 
 **Not run, with reasons:**
 - **`scripts/presets-acceptance.sh` and `scripts/presets-rest-acceptance.sh`.** Each brings up the full e2e stack (all 13 services) to prove preset logic, which this task did not touch. Their job-creation path is the same multipart handler the e2e tier drove on that same full stack.
