@@ -436,13 +436,14 @@ func TestStageOutputReadsRefuseAPlantedLink(t *testing.T) {
 }
 
 type outputValidatorCase struct {
-	name     string
-	ext      string
-	outside  func(t *testing.T) string
-	validate func(path string) error
-	link     func(t *testing.T, err error)
-	missing  func(t *testing.T, path string, err error)
-	empty    func(t *testing.T, err error)
+	name       string
+	ext        string
+	outside    func(t *testing.T) string
+	validate   func(path string) error
+	irregular  func(t *testing.T, err error)
+	missing    func(t *testing.T, path string, err error)
+	empty      func(t *testing.T, err error)
+	unopenable func(t *testing.T, path string, err error)
 }
 
 func jobDirOutsideBytes(t *testing.T, body []byte) string {
@@ -468,11 +469,28 @@ func requireErrText(t *testing.T, err error, want string) {
 	}
 }
 
-func requireMissingOutput(prefix string) func(t *testing.T, path string, err error) {
+func requireOldMissingText(prefix string) func(t *testing.T, path string, err error) {
 	return func(t *testing.T, path string, err error) {
 		t.Helper()
-		if err == nil || !strings.HasPrefix(err.Error(), prefix) || !strings.HasSuffix(err.Error(), path+": no such file or directory") {
-			t.Errorf("err = %v, want %q naming %s as missing", err, prefix, path)
+		requireErrText(t, err, prefix+"stat "+path+": no such file or directory")
+	}
+}
+
+func requireIrregular(prefix string) func(t *testing.T, err error) {
+	return func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil || !strings.HasPrefix(err.Error(), prefix) || !errors.Is(err, ErrJobFileIrregular) {
+			t.Errorf("err = %v, want %q wrapping ErrJobFileIrregular", err, prefix)
+		}
+	}
+}
+
+func requireOldOpenText(prefix string) func(t *testing.T, path string, err error) {
+	return func(t *testing.T, path string, err error) {
+		t.Helper()
+		requireErrText(t, err, prefix+"open "+path+": permission denied")
+		if !errors.Is(err, fs.ErrPermission) {
+			t.Errorf("err = %v, want fs.ErrPermission visible", err)
 		}
 	}
 }
@@ -488,43 +506,65 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 		return jobDirOutsideBytes(t, []byte("<!DOCTYPE html>\n<html><head><title>t</title></head><body><p>outside</p></body></html>\n"))
 	}
 	png := func(t *testing.T) string { return jobDirOutsideBytes(t, renderPNGBytes(t, 64, false)) }
-	stat := func(want string) func(t *testing.T, err error) {
-		return func(t *testing.T, err error) { t.Helper(); requireErrContains(t, err, want) }
-	}
+	txt := func(t *testing.T) string { return jobDirOutsideBytes(t, []byte("transcribed text\n")) }
 	exact := func(want string) func(t *testing.T, err error) {
 		return func(t *testing.T, err error) { t.Helper(); requireErrText(t, err, want) }
 	}
-	avMissing := func(t *testing.T, err error) {
+	isNil := func(t *testing.T, err error) {
+		t.Helper()
+		if err != nil {
+			t.Errorf("err = %v, want nil", err)
+		}
+	}
+	avSentinel := func(t *testing.T, err error) {
 		t.Helper()
 		if !errors.Is(err, ErrAVOutputMissingOrEmpty) {
 			t.Errorf("err = %v, want ErrAVOutputMissingOrEmpty", err)
 		}
 	}
+	lo := "libreoffice: stat output: "
 	for _, tc := range []outputValidatorCase{
-		{"validatePDF", "pdf", pdf, validatePDF, stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+		{"validatePDF", "pdf", pdf, validatePDF,
+			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
 		{"validateDocumentOutput pdf", "pdf", pdf, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", false) },
-			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
 		{"validateDocumentOutput pdf/a", "pdf", pdfa, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", true) },
-			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
 		{"validateDocumentOutput docx", "docx", docx, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "docx", false) },
-			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+			requireIrregular(lo), requireOldMissingText(lo), exact("libreoffice: output is empty"), requireOldOpenText("libreoffice: open output: ")},
 		{"pandocValidateOutput html", "html", html, func(p string) error { return pandocValidateOutput("html", p) },
-			stat("pandoc: stat output"), requireMissingOutput("pandoc: stat output: "), func(t *testing.T, err error) {
-				t.Helper()
-				if err != nil {
-					t.Errorf("an empty pandoc output = %v, want nil", err)
-				}
-			}},
+			requireIrregular("pandoc: stat output: "), requireOldMissingText("pandoc: stat output: "), isNil, requireOldOpenText("pandoc: open output: ")},
 		{"validateAVOutput png", "png", png, func(p string) error { return validateAVOutput(p, "png") },
-			avMissing, func(t *testing.T, path string, err error) {
+			avSentinel, func(t *testing.T, path string, err error) {
 				t.Helper()
-				avMissing(t, err)
-				requireMissingOutput("av: output missing or empty: ")(t, path, err)
-			}, exact("av: output missing or empty")},
+				avSentinel(t, err)
+				requireOldMissingText("av: output missing or empty: ")(t, path, err)
+			}, exact("av: output missing or empty"), func(t *testing.T, path string, err error) {
+				t.Helper()
+				avSentinel(t, err)
+				requireErrText(t, err, "av: output missing or empty: open "+path+": permission denied")
+			}},
+		{"validateAudioOutput txt", "txt", txt, validateAudioOutput,
+			requireIrregular("audio: stat output: "), requireOldMissingText("audio: stat output: "), exact("audio: output is empty"),
+			func(t *testing.T, _ string, err error) { t.Helper(); isNil(t, err) }},
 	} {
 		t.Run(tc.name+" a planted link", func(t *testing.T) {
 			link := jobDirLinkTo(t, tc.outside(t), "out."+tc.ext)
-			tc.link(t, tc.validate(link))
+			tc.irregular(t, tc.validate(link))
+		})
+		t.Run(tc.name+" a planted fifo", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out."+tc.ext)
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- tc.validate(path) }()
+			select {
+			case err := <-done:
+				tc.irregular(t, err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("the validator blocked on a fifo")
+			}
 		})
 		t.Run(tc.name+" a missing output", func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "out."+tc.ext)
@@ -536,6 +576,20 @@ func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
 				t.Fatal(err)
 			}
 			tc.empty(t, tc.validate(path))
+		})
+		t.Run(tc.name+" an output that cannot be opened", func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root opens a mode 000 file")
+			}
+			body, err := os.ReadFile(tc.outside(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "out."+tc.ext)
+			if err := os.WriteFile(path, body, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			tc.unopenable(t, path, tc.validate(path))
 		})
 	}
 }

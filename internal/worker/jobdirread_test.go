@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hibiken/asynq"
 
 	"github.com/apaderin/octoconv/internal/convert"
 	"github.com/apaderin/octoconv/internal/jobs"
@@ -105,6 +109,9 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 		if err == nil {
 			t.Error("process uploaded a primary output that is a planted link")
 		}
+		if !errors.Is(err, asynq.SkipRetry) || !errors.Is(err, convert.ErrJobFileIrregular) {
+			t.Errorf("process = %v, want a SkipRetry wrapping ErrJobFileIrregular", err)
+		}
 		if rec.holds(secret) {
 			t.Error("the outside bytes reached the object store")
 		}
@@ -140,4 +147,102 @@ func TestWorkerReadsOfTheJobDirRefuseAPlantedLink(t *testing.T) {
 			t.Errorf("cadSideOutputs = %d outputs, %v, want ErrJobFileIrregular", len(extra), err)
 		}
 	})
+}
+
+var jobDirDescriptors = []EngineDescriptor{
+	ImageDescriptor, DocumentDescriptor, HTMLDescriptor, AudioDescriptor, AVDescriptor,
+	OCRDescriptor, PandocDescriptor, ProbeDescriptor, TectonicDescriptor, CADDescriptor,
+}
+
+func runUploadThroughRunner(t *testing.T, d EngineDescriptor, path string) (error, *pinRepo) {
+	t.Helper()
+	job, jobID := newPinJob("")
+	calls := []string{}
+	repo := &pinRepo{job: job, calls: &calls}
+	h := newPinHandler(t, repo, &pinEnqueuer{calls: &calls})
+	h.processFn = func(ctx context.Context, _ *jobs.Job) error {
+		_, err := h.uploadFrom(ctx, "results/quick/0-out", path, "application/octet-stream")
+		return err
+	}
+	err := NewRunner(h, d).Handle(context.Background(), newTask(t, d.Type, jobID))
+	return err, repo
+}
+
+func TestUploadFromRefusesAPlantedPrimaryTerminally(t *testing.T) {
+	for _, d := range jobDirDescriptors {
+		t.Run(d.Engine, func(t *testing.T) {
+			link := filepath.Join(t.TempDir(), "out.bin")
+			if err := os.Symlink(plantedOutside(t, []byte("outside")), link); err != nil {
+				t.Fatal(err)
+			}
+			err, repo := runUploadThroughRunner(t, d, link)
+			if !errors.Is(err, asynq.SkipRetry) {
+				t.Errorf("Handle = %v, want SkipRetry", err)
+			}
+			if len(repo.markFailed) != 1 {
+				t.Errorf("MarkFailed calls = %d, want 1", len(repo.markFailed))
+			}
+		})
+	}
+}
+
+func TestUploadFromOtherOpenErrorsStayTransient(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root opens a mode 000 file")
+	}
+	for _, d := range jobDirDescriptors {
+		t.Run(d.Engine, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out.bin")
+			if err := os.WriteFile(path, []byte("primary"), 0o000); err != nil {
+				t.Fatal(err)
+			}
+			err, repo := runUploadThroughRunner(t, d, path)
+			if err == nil || errors.Is(err, asynq.SkipRetry) {
+				t.Errorf("Handle = %v, want a retryable error", err)
+			}
+			if !strings.Contains(fmt.Sprint(err), "open output: open "+path+": permission denied") {
+				t.Errorf("Handle = %v, want the old open output text", err)
+			}
+			if len(repo.markFailed) != 0 {
+				t.Errorf("MarkFailed calls = %d, want 0", len(repo.markFailed))
+			}
+		})
+	}
+}
+
+func TestValidatorFailureTextsKeepTheirClassification(t *testing.T) {
+	path := "/job/out.pdf"
+	missing := &fs.PathError{Op: "stat", Path: path, Err: syscall.ENOENT}
+	denied := &fs.PathError{Op: "open", Path: path, Err: syscall.EACCES}
+	irregular := fmt.Errorf("%w: %s is a symbolic link", convert.ErrJobFileIrregular, path)
+	convertErr := func(format string, cause error) error {
+		return fmt.Errorf("convert: %w", fmt.Errorf(format, cause))
+	}
+	for _, tc := range []struct {
+		name     string
+		d        EngineDescriptor
+		err      error
+		terminal bool
+	}{
+		{"document missing", DocumentDescriptor, convertErr("libreoffice: stat output: %w", missing), true},
+		{"document irregular", DocumentDescriptor, convertErr("libreoffice: stat output: %w", irregular), true},
+		{"document open failure", DocumentDescriptor, convertErr("libreoffice: open output: %w", denied), false},
+		{"html missing", HTMLDescriptor, convertErr("libreoffice: stat output: %w", missing), true},
+		{"html irregular", HTMLDescriptor, convertErr("libreoffice: stat output: %w", irregular), true},
+		{"html open failure", HTMLDescriptor, convertErr("libreoffice: open output: %w", denied), false},
+		{"pandoc missing", PandocDescriptor, convertErr("pandoc: stat output: %w", missing), true},
+		{"pandoc irregular", PandocDescriptor, convertErr("pandoc: stat output: %w", irregular), true},
+		{"pandoc open failure", PandocDescriptor, convertErr("pandoc: open output: %w", denied), true},
+		{"av missing", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, missing)), true},
+		{"av irregular", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, irregular)), true},
+		{"av open failure", AVDescriptor, fmt.Errorf("convert: %w", fmt.Errorf("%w: %v", convert.ErrAVOutputMissingOrEmpty, denied)), true},
+		{"audio missing", AudioDescriptor, convertErr("audio: stat output: %w", missing), true},
+		{"audio irregular", AudioDescriptor, convertErr("audio: stat output: %w", irregular), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.d.IsTerminal(tc.err); got != tc.terminal {
+				t.Errorf("IsTerminal(%v) = %v, want %v", tc.err, got, tc.terminal)
+			}
+		})
+	}
 }
