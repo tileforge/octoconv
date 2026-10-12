@@ -265,3 +265,51 @@ done
 		}
 	})
 }
+
+func jobDirLinkTo(t *testing.T, target, name string) string {
+	t.Helper()
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		t.Fatalf("the outside file is missing: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), name)
+	if err := os.Symlink(abs, link); err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+func TestCADDXFReadsRefuseAPlantedLink(t *testing.T) {
+	t.Run("parseCADMeasureDraft", func(t *testing.T) {
+		link := jobDirLinkTo(t, cadDXFTestFile("wide.measure.json"), cadMeasureDraftName)
+		d, err := parseCADMeasureDraft(link)
+		if err == nil {
+			t.Fatalf("read the draft through a planted link: %+v", d)
+		}
+	})
+	t.Run("parseCADDXFTexts", func(t *testing.T) {
+		link := jobDirLinkTo(t, cadDXFTestFile("wide.texts.json"), cadDXFTextsName)
+		texts, err := parseCADDXFTexts(link, 1<<20)
+		if err == nil || texts != nil {
+			t.Fatalf("read texts.json through a planted link: %d texts, %v", len(texts), err)
+		}
+	})
+	t.Run("cadDXFReadSVGFacts", func(t *testing.T) {
+		link := jobDirLinkTo(t, cadDXFTestFile("uncommon.render.svg"), cadDXFRenderName)
+		facts, err := cadDXFReadSVGFacts(link, 1<<30)
+		if err == nil || len(facts.Texts) != 0 {
+			t.Fatalf("read the SVG through a planted link: %d texts, %v", len(facts.Texts), err)
+		}
+	})
+	t.Run("cadPDFDecode through JudgeCADDXFPDF", func(t *testing.T) {
+		pdf, texts, svg := cadDXFFixtureInputs(t, "uncommon")
+		link := jobDirLinkTo(t, pdf, "out.pdf")
+		facts, err := JudgeCADDXFPDF(link, 1<<30, texts, svg)
+		if err == nil || facts.PaintOps != 0 || facts.Text != "" {
+			t.Fatalf("judged the PDF through a planted link: %+v, %v", facts, err)
+		}
+	})
+}
