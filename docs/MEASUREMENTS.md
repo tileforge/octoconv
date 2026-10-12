@@ -76,6 +76,18 @@ are drawn clipped to the picture's frame and are excluded from the bbox. An isol
 of both the bbox and the frame, however far it is from the rest of the drawing: the frame shows exactly what
 the file contains, and points are not filtered as strays.
 
+**Transparency.** Transparency is paint, not geometry. A line, fill or text drawn with a transparency, whether
+set on the entity, inherited from its layer (ByLayer) or from the block reference (ByBlock), is part of the bbox
+and of the frame at any opacity, a fully transparent one included, which is how ezdxf's drawing backend
+counts it. The SVG carries the opacity as `stroke-opacity` on lines and `fill-opacity` on fills and on `text`
+(three decimals, absent when opaque; ezdxf rounds a 50% transparency to 0.498). The PDF and PNG are drawn from
+that SVG: half-transparent text is drawn faint and is still required in the PDF's text layer, and fully
+transparent text is not drawn, so the PDF check does not look for it. A drawing whose only content is fully
+transparent has a frame but nothing visible: its SVG converts, its PDF and PNG are refused with
+`cad_empty_result`. On the opaque PNG background a pixel only counts as ink below 250 in some channel, so text
+at about 2% opacity or less does not count as ink there. A run of MTEXT that sets its own colour (`\C` or `\c`)
+keeps the transparency of its MTEXT.
+
 **Units.** Values are in drawing units, unscaled: the millimetre conversion described under Schema does not
 apply to DXF, the engine applies no factor, and the document reports the unit the drawing declares. The unit
 comes from the `$INSUNITS` header:
