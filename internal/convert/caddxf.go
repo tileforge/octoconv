@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"unicode/utf8"
 )
 
@@ -163,7 +162,7 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	if err := cadDXFRegular(outPath, "the PNG", ErrCADDrawingFailed); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(outPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, _, err := OpenJobFile(outPath)
 	if err != nil {
 		return fmt.Errorf("cad: %w: no image at %s: %v", ErrCADRenderRejected, outPath, err)
 	}
@@ -330,7 +329,7 @@ func cadDXFRegular(path, what string, irregular error) error {
 }
 
 func cadDXFValidate(src, dst string) (facts CADSVGFacts, err error) {
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	in, _, err := OpenJobFile(src)
 	if err != nil {
 		return facts, fmt.Errorf("cad dxf: %w: open %s: %v", ErrCADSVGRejected, filepath.Base(src), err)
 	}

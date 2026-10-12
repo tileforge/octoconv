@@ -1363,15 +1363,11 @@ func cadPDFDecode(path string, maxBytes int64, keep bool) (CADPDFFacts, []CADPDF
 	if maxBytes <= 0 {
 		return facts, nil, fmt.Errorf("cad: PDF byte limit %d is not positive", maxBytes)
 	}
-	f, err := os.Open(path)
+	f, st, err := OpenJobFile(path)
 	if err != nil {
 		return facts, nil, fmt.Errorf("cad: open the PDF: %w", err)
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return facts, nil, fmt.Errorf("cad: stat the PDF: %w", err)
-	}
 	if st.Size() > maxBytes {
 		return facts, nil, cadPDFReject("the PDF is %d bytes, over the %d byte limit", st.Size(), maxBytes)
 	}
@@ -1498,7 +1494,7 @@ func cadDXFPageScale(pdf CADPDFFacts, svg CADSVGFacts) (float64, error) {
 }
 
 func cadDXFReadSVGFacts(path string, maxBytes int64) (CADSVGFacts, error) {
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
 		return CADSVGFacts{}, fmt.Errorf("cad: open the SVG: %w", err)
 	}
@@ -1587,7 +1583,7 @@ func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("cad: texts.json byte limit %d is not positive", maxBytes)
 	}
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cad: open texts.json: %w", err)
 	}

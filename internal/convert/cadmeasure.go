@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 
 	"github.com/apaderin/octoconv/internal/measurements"
 )
@@ -52,7 +51,7 @@ func cadDraftError(format string, args ...any) error {
 }
 
 func parseCADMeasureDraft(path string) (cadMeasureDraft, error) {
-	f, err := os.Open(path)
+	f, _, err := OpenJobFile(path)
 	if err != nil {
 		return cadMeasureDraft{}, fmt.Errorf("%w: %v", ErrCADMeasure, err)
 	}

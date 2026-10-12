@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func jobDirOutside(t *testing.T, body string) string {
@@ -310,6 +313,80 @@ func TestCADDXFReadsRefuseAPlantedLink(t *testing.T) {
 		facts, err := JudgeCADDXFPDF(link, 1<<30, texts, svg)
 		if err == nil || facts.PaintOps != 0 || facts.Text != "" {
 			t.Fatalf("judged the PDF through a planted link: %+v, %v", facts, err)
+		}
+	})
+}
+
+func TestOpenJobFileRefusesWhatIsNotARegularFile(t *testing.T) {
+	t.Run("a regular file", func(t *testing.T) {
+		path := jobDirOutside(t, "regular body")
+		f, info, err := OpenJobFile(path)
+		if err != nil {
+			t.Fatalf("OpenJobFile: %v", err)
+		}
+		f.Close()
+		if info.Size() != int64(len("regular body")) {
+			t.Errorf("size = %d, want %d", info.Size(), len("regular body"))
+		}
+		body, err := ReadJobFile(path)
+		if err != nil || string(body) != "regular body" {
+			t.Errorf("ReadJobFile = %q, %v", body, err)
+		}
+	})
+	t.Run("a symlink", func(t *testing.T) {
+		link := jobDirLinkTo(t, jobDirOutside(t, "outside"), "out")
+		f, _, err := OpenJobFile(link)
+		if !errors.Is(err, ErrJobFileIrregular) || f != nil {
+			t.Errorf("OpenJobFile = %v, %v, want ErrJobFileIrregular and no file", f, err)
+		}
+		body, err := ReadJobFile(link)
+		if !errors.Is(err, ErrJobFileIrregular) || body != nil {
+			t.Errorf("ReadJobFile = %q, %v, want ErrJobFileIrregular", body, err)
+		}
+	})
+	t.Run("a fifo with no writer", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "out")
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			f, _, err := OpenJobFile(path)
+			if f != nil {
+				f.Close()
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrJobFileIrregular) {
+				t.Errorf("OpenJobFile = %v, want ErrJobFileIrregular", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("OpenJobFile blocked on a fifo")
+		}
+	})
+	t.Run("a directory", func(t *testing.T) {
+		f, _, err := OpenJobFile(t.TempDir())
+		if !errors.Is(err, ErrJobFileIrregular) || f != nil {
+			t.Errorf("OpenJobFile = %v, %v, want ErrJobFileIrregular", f, err)
+		}
+	})
+	t.Run("a missing path", func(t *testing.T) {
+		_, _, err := OpenJobFile(filepath.Join(t.TempDir(), "missing"))
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("OpenJobFile = %v, want fs.ErrNotExist", err)
+		}
+	})
+	t.Run("a hard link is read", func(t *testing.T) {
+		outside := jobDirOutside(t, "linked body")
+		path := filepath.Join(t.TempDir(), "out")
+		if err := os.Link(outside, path); err != nil {
+			t.Fatal(err)
+		}
+		body, err := ReadJobFile(path)
+		if err != nil || string(body) != "linked body" {
+			t.Errorf("ReadJobFile = %q, %v, want the hard link's bytes", body, err)
 		}
 	})
 }
