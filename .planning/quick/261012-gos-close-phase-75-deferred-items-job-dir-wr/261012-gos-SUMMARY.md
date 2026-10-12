@@ -38,6 +38,7 @@ key-files:
     - internal/convert/cadguard_test.go
     - internal/worker/worker.go
     - internal/worker/descriptors.go
+    - internal/convert/whisper.go
     - internal/api/handlers.go
     - internal/api/inspect_handlers.go
     - .planning/phases/75-dxf-2d-pipeline/deferred-items.md
@@ -46,6 +47,8 @@ decisions:
   - OpenJobFile and ReadJobFile return the os path error unwrapped (it already names the op and the path), instead of the plan's extra "open %s:" wrap, which would print the path twice.
   - A hard link at a read path is read; Landlock denies REFER, so a confined stage cannot make one across directories.
   - The multipart fix lives in the two handlers, not in a test helper, because the real server path leaks too.
+  - Coordinator follow-up: the output validators keep the old classification for every case that is not a planted irregular entry (missing is the old terminal "stat output" text, any other open failure is the old "open output" text), and an irregular entry is terminal under the missing-output text.
+  - Coordinator follow-up: uploadFrom fails a planted (irregular) primary output terminally through the existing asynq.SkipRetry mechanism; every other open error stays transient.
 metrics:
   duration: 62min
   completed: 2026-10-12
@@ -53,18 +56,18 @@ estimate:
   tokens: 400000
   tasks: 7
 actuals:
-  tokens: 13900
+  tokens: 40600
   tasks: 7
-  commits: 16
+  commits: 19
 plan_head_before: d34fbdf601fdbd692d349ee656915d21270a33e3
-plan_head_after: 8bad15b5c267b7d2b2b5497acc007f530d840f9e
+plan_head_after: eebd7ef14ae6e508eea8598e9c3d04c5d9997d08
 ---
 
 # Phase quick-261012-gos Plan 01: Close the phase 75 deferred items Summary
 
 **The worker now writes every job-dir file that follows an untrusted stage with remove-then-O_EXCL (`writeNewFile`). It reads every such path through an O_NOFOLLOW|O_NONBLOCK open with an fstat regular-file check (`OpenJobFile`/`ReadJobFile`). The API removes spilled multipart files when a handler returns. The CAD python tests skip below python 3.10 and name the version they found.**
 
-`actuals.tokens` is chars/4 over `git diff d34fbdf..HEAD -- internal .planning`, which is 55,609 chars. `commits: 16` counts the commits from d34fbdf to 8bad15b. This SUMMARY's own commit comes after those and is not in the count.
+`actuals.tokens` is chars/4 over `git diff d34fbdf..HEAD -- internal .planning`, which is 162,406 chars at eebd7ef (it now includes the PLAN and the first version of this SUMMARY). `commits: 19` counts the commits from d34fbdf to eebd7ef: the 16 plan commits, the first PLAN+SUMMARY commit 7576d41, and the two coordinator follow-up commits. This SUMMARY's update commit comes after those and is not in the count.
 
 ## Threat statement (what this does and does not close)
 
@@ -83,7 +86,6 @@ These are stated here and not coded around:
 - A hard link is a regular file, so the helper reads it. Planting a cross-directory hard link needs REFER, which Landlock denies, and Linux protected_hardlinks restricts it further. `TestOpenJobFileRefusesWhatIsNotARegularFile/a_hard_link_is_read` pins this decision.
 - Write race: if a stage process re-plants between the remove and the create, O_CREATE|O_EXCL fails with EEXIST and the job fails closed.
 - progressexec liveness: the two `os.OpenFile(fifoPath, O_WRONLY)` pokes (progressexec.go:177, :187) are not content writes. They have no O_CREATE and no O_TRUNC, write zero bytes and close at once. If a stage could substitute the FIFO, an unconfined one could make that open block. Landlock denies MAKE_FIFO and MAKE_SYM.
-- Classification edge: an open of an output that exists but fails for another reason (EACCES or EMFILE) used to surface as "libreoffice: open output", which was retryable. It now surfaces under "libreoffice: stat output", which is terminal in the chromium/libreoffice lists, exactly like a missing output. This was the plan's instruction (report every OpenJobFile failure under the missing-output text), and it is recorded here as a behavior change for that rare case.
 
 ## Write-site inventory (final)
 
@@ -125,11 +127,12 @@ Built from `grep -nE 'os\.(Open|ReadFile|Stat|OpenFile)\(|os\.ReadDir\(' interna
 | cadrender.go PNG judge open | FIX: OpenJobFile, ErrCADRenderRejected "no image at" kept | Task 4, .../the_render_PNG |
 | ocrpdf.go page fragment | FIX: ReadJobFile, "ocr: read page output" | Task 4, .../the_OCR_page_fragment |
 | sanitizepdf.go read before redaction | FIX: ReadJobFile, "sanitize pdf: read output: %w" (it was already %w) | Task 4, TestSanitizeWritesAsNewFilesAfterItsStages/the_pdf_redaction (now expects ErrJobFileIrregular) |
-| libreoffice.go validatePDF (libreoffice and chromium) | FIX: one OpenJobFile; size from its FileInfo; failure reported as "libreoffice: stat output: %w" | Task 5, TestOutputValidatorsRefuseAPlantedLink/validatePDF_* |
-| libreoffice.go validateDocumentOutput pdf, PDF/A marker read, and non-pdf | FIX: validatePDF as above; the marker read uses ReadJobFile; non-pdf uses one OpenJobFile under "libreoffice: stat output" | Task 5, .../validateDocumentOutput_{pdf,pdf/a,docx}_* |
-| pandoc.go pandocValidateOutput | FIX: one OpenJobFile under "pandoc: stat output"; an empty output is still nil | Task 5, .../pandocValidateOutput_html_* |
-| av.go validateAVOutput | FIX: one OpenJobFile, failure is `%w: %v` with ErrAVOutputMissingOrEmpty; empty is still the bare sentinel | Task 5, .../validateAVOutput_png_* |
-| worker.go uploadFrom | FIX: convert.OpenJobFile; the FileInfo size feeds Upload; "open output: %w" kept | Task 6, TestWorkerReadsOfTheJobDirRefuseAPlantedLink/the_primary_output |
+| libreoffice.go validatePDF (libreoffice and chromium) | FIX: statJobOutput (os.Stat for the old text, then an Lstat regular check) under "libreoffice: stat output: %w"; the old size checks; then OpenJobFile, where an irregular entry is "libreoffice: stat output" and any other failure is the old "libreoffice: open output: %w" | Task 5 + follow-up, TestOutputValidatorsRefuseAPlantedLink/validatePDF_* |
+| libreoffice.go validateDocumentOutput pdf, PDF/A marker read, and non-pdf | FIX: validatePDF as above; the marker read uses ReadJobFile (irregular is "stat output", anything else keeps "read output for PDF/A check"); non-pdf is stat, size check, then open, same mapping as validatePDF | Task 5 + follow-up, .../validateDocumentOutput_{pdf,pdf/a,docx}_* |
+| pandoc.go pandocValidateOutput | FIX: statJobOutput under "pandoc: stat output"; an empty output is still nil and is not opened; then OpenJobFile, irregular is "pandoc: stat output", anything else the old "pandoc: open output" | Task 5 + follow-up, .../pandocValidateOutput_html_* |
+| av.go validateAVOutput | FIX: statJobOutput, failure is `%w: %v` with ErrAVOutputMissingOrEmpty (old text for missing); empty is still the bare sentinel; only thumbnails open (as before), any open failure is the sentinel (as before) | Task 5 + follow-up, .../validateAVOutput_png_* |
+| whisper.go validateAudioOutput | FIX (follow-up): statJobOutput under the old "audio: stat output: %w"; still never opens the file | follow-up, .../validateAudioOutput_txt_* |
+| worker.go uploadFrom | FIX: convert.OpenJobFile; the FileInfo size feeds Upload; an irregular entry is `asynq.SkipRetry` + "open output" (terminal), any other failure keeps the old transient "open output: %w" | Task 6 + follow-up, TestWorkerReadsOfTheJobDirRefuseAPlantedLink/the_primary_output, TestUploadFromRefusesAPlantedPrimaryTerminally, TestUploadFromOtherOpenErrorsStayTransient |
 | descriptors.go probeSideOutputs | FIX: convert.ReadJobFile, "sanitize report missing beside the output: %w" | Task 6, .../the_sanitize_report |
 | descriptors.go cadSideOutputs | FIX: convert.ReadJobFile, cause switched from %v to %w | Task 6, .../the_measurements_sidecar |
 | cad.go:150, caddxf.go:212, cadrender.go:46 Stat(inPath) | safe: before any stage of the attempt | read |
@@ -137,7 +140,7 @@ Built from `grep -nE 'os\.(Open|ReadFile|Stat|OpenFile)\(|os\.ReadDir\(' interna
 | sanitizepdf.go:280 Stat(psPath) | safe: metadata only; the content is consumed only by the confined gs pdfwrite pass | read |
 | libreoffice.go:171 Stat(producedPath) | safe: metadata only; the renamed entry is read only through the Task 5 validators and the Task 6 upload | read |
 | av.go:589 Stat(inPath) | safe: disk-guard metadata; content consumed only by confined ffmpeg | read |
-| ocr.go:193, whisper.go:408, tectonic.go:1408 | safe: Stat only; the content reaches the worker only at the Task 6 upload; their terminal-signature texts are unchanged | read |
+| ocr.go:193, tectonic.go:1408 | safe: Stat only; the content reaches the worker only at the Task 6 upload; their terminal-signature texts are unchanged | read |
 | sanitizeverify.go:242 verifyPDF | safe: it reads the file the worker itself has just created with writeNewFile after the last gs pass (the read before that write is now ReadJobFile); verifyPDF takes `_ engineExec` | read |
 | sanitizeverify.go:1311 verifyImage | safe: image sanitize runs no engine, and the read is the function's first statement | read |
 | chromium.go:216, markupsniff.go:344/:355, ocrguards.go:171, sanitizeimage.go:463, tectonic.go:938/:964/:1211 | safe: inPath or the TeX source closure, read before any engine of the attempt | read |
@@ -147,19 +150,22 @@ Built from `grep -nE 'os\.(Open|ReadFile|Stat|OpenFile)\(|os\.ReadDir\(' interna
 | cgroup.go:60, tectonic.go:705/:801 | safe: not job-dir paths | read |
 | progressexec.go:103 | safe: the FIFO read end, opened by the worker before the child starts | read |
 
-### Classification of a refused primary output (Task 6, read, not changed)
+### Coordinator follow-up: classification restored (commits 76c9bca RED, eebd7ef GREEN)
 
-When uploadFrom refuses a planted link, `process` returns `open output: not a regular file: <path> is a symbolic link` with no further wrap.
-- No terminal-signature substring matches it (worker.go:50-120), and it carries no CAD sentinel, so every descriptor's IsTerminal (runner.go:294) treats it as transient.
-- The job stays active and asynq retries it within the engine's retry budget. Each attempt re-runs the conversion in a fresh `MkdirTemp` work dir (worker.go:1395), so the refusal repeats whenever the stage plants again.
-- When the budget is exhausted, the reconciler marks the job failed.
-- For CAD renders the path is mostly unreachable: CADRenderConverter's own PNG judge refuses an irregular PNG first with ErrCADRenderRejected, which is terminal.
+The coordinator did not accept two behavior changes, and both are now reverted to the old classification. A planted irregular entry is the only new terminal case.
 
-### Validator texts (Task 5)
+**Validators.** The new helper `statJobOutput` in jobdirfs.go runs `os.Stat`, which keeps the exact old error text, then an `os.Lstat` regular-file check. Neither uses a file descriptor. Each validator now does, in order:
+1. statJobOutput. Any failure is the old missing-output text: `libreoffice: stat output: stat <path>: no such file or directory`, the same for pandoc and audio, and `av: output missing or empty: stat <path>: ...`. All of these are terminal, as before. An irregular entry (symlink, FIFO, directory) also fails here, under the same text and wrapping ErrJobFileIrregular, so it is terminal.
+2. The old size checks, unchanged. An empty output is still never opened.
+3. OpenJobFile, only where the old code opened. ErrJobFileIrregular (a re-plant after step 1) maps to the "stat output" text, which is terminal. Any other failure maps to the old `<engine>: open output: %w` text. For libreoffice and chromium that text is transient (retried), exactly as before. For pandoc it is terminal, exactly as before, because isPandocTerminal treats every "pandoc:" error as terminal. AV opens only thumbnails, as before, and reports any open failure as ErrAVOutputMissingOrEmpty, as before. Audio never opens, as before.
 
-The terminal-signature string lists in internal/worker/worker.go are byte-identical to d34fbdf, which the Task 5 verify checked. `go test ./internal/worker/ -count=1` passes unchanged.
-- An empty output keeps its exact text: "libreoffice: output is empty", the bare `ErrAVOutputMissingOrEmpty` ("av: output missing or empty"), and nil for pandoc.
-- A missing output keeps the validator's prefix ("libreoffice: stat output: ", "pandoc: stat output: ", and `ErrAVOutputMissingOrEmpty` + ": "). Only the os error inside it changed, from `stat <path>: no such file or directory` to `open <path>: no such file or directory`, because the single open replaced the stat. The pin subtests assert the prefix, the path and the ENOENT suffix.
+`TestOutputValidatorsRefuseAPlantedLink` pins five cases for each validator, including validateAudioOutput: a planted link, a planted FIFO (must not block), a missing output (exact old text), an empty output (exact old text), and a mode-000 output (exact old `open output: open <path>: permission denied` text, with fs.ErrPermission visible). `TestValidatorFailureTextsKeepTheirClassification` pins the worker side: for the document, html, pandoc, av and audio descriptors, a missing output and an irregular entry are terminal, and an open failure is transient for document and html. It is terminal for pandoc and av, which is the old behavior.
+
+**uploadFrom.** An ErrJobFileIrregular from OpenJobFile now returns `fmt.Errorf("%w: open output: %w", asynq.SkipRetry, err)`. runner.go:294 sends any SkipRetry error to the existing terminal branch: MarkFailed with the descriptor's FailureCode, then a SkipRetry return, so there is no retry. Every other open error keeps the old `open output: %w` and stays transient.
+- `TestUploadFromRefusesAPlantedPrimaryTerminally` drives NewRunner(...).Handle for all ten descriptors: each returns SkipRetry and records exactly one MarkFailed.
+- `TestUploadFromOtherOpenErrorsStayTransient` uses a mode-000 primary: each descriptor returns a non-SkipRetry error carrying the old text, with no MarkFailed.
+
+No terminal-signature entry was needed. The string lists in internal/worker/worker.go are still byte-identical to d34fbdf.
 
 ## RED evidence (each failed before its change)
 
@@ -179,6 +185,12 @@ The terminal-signature string lists in internal/worker/worker.go are byte-identi
   - `/the_primary_output`: "the outside bytes reached the object store", and MarkDone was called.
   - `/the_sanitize_report`: 1 output, nil.
   - `/the_measurements_sidecar`: 1 output, nil.
+- Coordinator follow-up (76c9bca):
+  - Every `TestOutputValidatorsRefuseAPlantedLink/*_a_missing_output` subtest failed, because the text read `open <path>` where the old text was `stat <path>`. This covered validatePDF, validateDocumentOutput pdf, pdf/a and docx, pandoc and AV.
+  - Every libreoffice and pandoc `*_an_output_that_cannot_be_opened` subtest failed, because the text was `stat output: open ...: permission denied` where the old one was `open output: ...`.
+  - `validateAudioOutput_txt_a_planted_link` and `_a_planted_fifo` failed: the link returned nil, and the FIFO returned "audio: output is empty".
+  - `TestWorkerReadsOfTheJobDirRefuseAPlantedLink/the_primary_output` failed with "want a SkipRetry wrapping ErrJobFileIrregular".
+  - All ten `TestUploadFromRefusesAPlantedPrimaryTerminally/*` subtests failed: there was no SkipRetry and MarkFailed was called 0 times.
 - Task 7 (63ad6c9): `TestMultipartSpillFilesAreRemovedWhenTheHandlerReturns/create_through_the_real_server`, `/create_through_ServeHTTP`, `/inspect_through_the_real_server`, `/inspect_through_ServeHTTP` and `/a_malformed_query_with_the_form_set` each failed with "1 multipart spill files outlived the handler". `/over_the_upload_limit` passed, as expected.
 
 ## Multipart spill (item 2)
@@ -197,12 +209,16 @@ The terminal-signature string lists in internal/worker/worker.go are byte-identi
 - With `SCRATCH/py314` first: `--- PASS: TestCADMeshRefusesPartialMeshingBeforeWritingTheSTL (2.68s)`, with no "older than 3.10" line.
 - An interpreter that cannot report its version is a `t.Fatalf`, not a skip.
 
-## Gate transcript (after Task 7, from the repo root)
+## Gate transcript (re-run after the coordinator follow-up at eebd7ef, from the repo root)
+
+These are the final numbers. The first run after Task 7 had the same results.
 
 1. `test -z "$(gofmt -l .)"`: PASS
 2. `GOTOOLCHAIN=go1.26.4 go vet ./...`: PASS (rc 0, no output)
 3. `PATH=SCRATCH/py314:$PATH GOTOOLCHAIN=go1.26.4 go test -p 2 ./... -count=1`: PASS (rc 0, 31 `ok` packages, no FAIL). The multipart-* delta was 0.
+3a. Gate 3 was re-run with `-v` at eebd7ef: 31 `ok`, 0 `--- FAIL`, none of this plan's tests skipped, and the multipart-* delta was 0.
 4. `PATH=SCRATCH/py39:$PATH GOTOOLCHAIN=go1.26.4 go test -p 2 ./... -count=1 -v`: PASS (rc 0, 31 `ok`, 0 `--- FAIL`). There were 40 "python3 3.9.6 ... is older than 3.10" skips, none of this plan's new tests skipped, and the multipart-* delta was 0.
+4a. The terminal-signature string lists in internal/worker/worker.go are byte-identical to d34fbdf.
 5. `git diff --quiet main -- internal/convert/exec.go`: PASS
 6. No added comment lines in `git diff -U0 d34fbdf -- internal cmd`: PASS
 7. Write-site and read-site greps re-run: every hit is in the tables above. Four MkdirTemp hits and tectonic.go:614 were not in the planning tables and are classified there.
@@ -231,6 +247,9 @@ The terminal-signature string lists in internal/worker/worker.go are byte-identi
 | fcd561b | G | fix(quick-261012-gos): remove spilled multipart files when the handler returns |
 | cbca9c8 | G | test(quick-261012-gos): skip the CAD python tests below python 3.10 |
 | 8bad15b | G | docs(quick-261012-gos): mark the phase 75 deferred items resolved |
+| 7576d41 | G | docs(quick-261012-gos): plan and summary for closing the phase 75 deferred items |
+| 76c9bca | G | test(quick-261012-gos): pin the old validator classification and a terminal refusal of a planted primary output |
+| eebd7ef | G | fix(quick-261012-gos): keep the old output classification and fail a planted primary output terminally |
 
 ## Helper name and export decisions
 
@@ -244,7 +263,7 @@ The terminal-signature string lists in internal/worker/worker.go are byte-identi
    - I ran `go clean -cache` on the regenerable Go build cache (3.3 GiB) and ran heavy builds and tests with `-p 2`.
    - Before the cache clear, the in-tree before-fix multipart count was cut short by ENOSPC, so it was re-measured on a git archive of d34fbdf (see item 2).
 2. **[Rule 1 - Bug] The triangle-cap test fixture placed its sparse STL with a symlink.** `statsScriptLinking` did this, and the hardened mesh read correctly refuses a symlink. The fixture now uses a hard link (`ln`), which is the documented "a hard link is read" decision. It still avoids writing a 100 MB file. Commit de21bc3, internal/convert/cadrender_test.go.
-3. **OpenJobFile and ReadJobFile return the os path error unwrapped.** The plan wrapped them as `open %s: %w`, `stat %s: %w` and `read %s: %w`. The `*PathError` already names the op and the path, so the extra wrap would print the path twice. errors.Is(fs.ErrNotExist) still holds (tested). Commit d572972.
+3. **OpenJobFile and ReadJobFile return the os path error unwrapped.** The plan wrapped them as `open %s: %w`, `stat %s: %w` and `read %s: %w`. The `*PathError` already names the op and the path, so the extra wrap would print the path twice. errors.Is(fs.ErrNotExist) still holds (tested). Commit d572972. Since the follow-up, the validators no longer report OpenJobFile's error as a missing output; they stat first, so a missing output has its old exact text again.
 4. **Some causes are now also wrapped with %w.** judgeBinarySTL and cadSideOutputs wrap the cause with a second `%w`, keeping the visible text, so that errors.Is sees ErrJobFileIrregular, as the plan's tests require.
 5. **The deferred-items Resolved bullets sit at column 0** (`- **Resolved:** ...`) right under each item's sub-bullets, so the plan's own verify awk (`/^- \*\*Resolved:\*\* quick 261012-gos/`, exactly 3) matches. No new section and no new open item.
 6. **Task 3 and Task 4 verify runs used SCRATCH/py314 first on PATH.** With the host's default python3 (3.9.6), the pre-existing item-3 failure of TestCADMeshRefusesPartialMeshingBeforeWritingTheSTL was the only failure in the `CAD` run. That is the item Task 7 fixes, not a regression.
