@@ -32,7 +32,25 @@ func newCADDXFFixture(t *testing.T, target string) cadDXFFixture {
 	t.Helper()
 	f := newCADFixture(t, "dxf", cadDXFGuard(cadOKGuard()), "")
 	f.out = filepath.Join(f.jobDir, "out."+target)
-	return cadDXFFixture{f}
+	d := cadDXFFixture{f}
+	d.setInk(t, cadDXFInkedFrame(t))
+	return d
+}
+
+func (f cadDXFFixture) setInk(t *testing.T, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(f.marker("ink.src.png"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f cadDXFFixture) rsvgCalls(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(f.marker("rsvg.calls"))
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSpace(string(raw)), "\n")
 }
 
 func cadDXFGuard(body string) string {
@@ -71,8 +89,10 @@ func (f cadDXFFixture) setRsvg(t *testing.T, src string, exit int, pre string) {
 	t.Helper()
 	var b strings.Builder
 	b.WriteString("echo \"$@\" > \"$(dirname \"$0\")/rsvg.args\"\n")
+	b.WriteString("echo \"$@\" >> \"$(dirname \"$0\")/rsvg.calls\"\n")
 	b.WriteString(pre + "\n")
 	b.WriteString("o=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) o=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
+	fmt.Fprintf(&b, "if [ \"${o##*/}\" = ink.png ]; then\n  [ %d = 0 ] || exit %d\n  cp \"$(dirname \"$0\")/ink.src.png\" \"$o\"\n  exit 0\nfi\n", exit, exit)
 	if src != "" {
 		fmt.Fprintf(&b, "cp %s \"$o\"\n", cadDXFQuote(src))
 	}
@@ -221,13 +241,13 @@ func TestCADDXFConvertRefusesBeforeAnyEngine(t *testing.T) {
 			return f.in
 		}},
 	}
-	for _, name := range []string{"draw.svg", "draw.render.svg", "texts.json", "measure.json", "clean.svg", ".home"} {
+	for _, name := range []string{"draw.svg", "draw.render.svg", "texts.json", "measure.json", "clean.svg", ".home", "ink.png"} {
 		cases = append(cases, struct {
 			name   string
 			target string
 			opts   map[string]any
 			in     func(f cadDXFFixture) string
-		}{"input at " + name, "pdf", nil, func(f cadDXFFixture) string { return f.job(name) }})
+		}{"input at " + name, "pdf", nil, func(f cadDXFFixture) string { return cadDXFWrite(t, f.jobDir, name, []byte("0\nSECTION\n")) }})
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,7 +290,7 @@ func TestCADDXFConvertRefusesBeforeAnyEngine(t *testing.T) {
 }
 
 func TestCADDXFConvertSVGReturnsOnlyGoBytes(t *testing.T) {
-	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall", "text_alpha", "text_alpha_faint", "text_fonts"} {
+	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall", "text_alpha", "text_alpha_faint", "text_fonts", "white_one_black"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "svg")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -292,8 +312,8 @@ func TestCADDXFConvertSVGReturnsOnlyGoBytes(t *testing.T) {
 			if bytes.Equal(got, raw) {
 				t.Error("the output equals the helper's bytes; it must be Go's re-serialization")
 			}
-			if f.exists("rsvg.args") {
-				t.Error("rsvg-convert ran for an svg target")
+			if calls := f.rsvgCalls(t); len(calls) != 1 || !strings.Contains(calls[0], "-o "+f.job("ink.png")+" ") {
+				t.Errorf("rsvg-convert calls for an svg target = %q, want only the ink check", calls)
 			}
 			if g, w := f.args(t, "guard.args"), strings.Join(cadGuardArgs("dxf", f.in), " "); g != w {
 				t.Errorf("guard argv = %q, want %q", g, w)
@@ -360,7 +380,7 @@ func TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt(t *testing.T
 		}
 		f.noOutput(t)
 	})
-	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2", "text_alpha", "text_alpha_faint", "text_fonts"} {
+	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2", "text_alpha", "text_alpha_faint", "text_fonts", "white_one_black"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "pdf")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -552,6 +572,7 @@ func TestCADDXFConvertNormalizesLineEndingsOnBothSides(t *testing.T) {
 		}
 		f := newCADDXFFixture(t, "svg")
 		f.setDXF(t, outputs(t, "cr_carriers"))
+		f.setRsvg(t, "", 0, "")
 		if err := (CADDXFConverter{}).Convert(context.Background(), f.in, f.out, nil); err != nil {
 			t.Fatalf("Convert: %v", err)
 		}
@@ -909,8 +930,8 @@ func TestCADDXFRenderMeasurementsComeFromTheDraft(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
-			if f.exists("rsvg.args") {
-				t.Error("rsvg-convert ran before the measurements were built")
+			if calls := f.rsvgCalls(t); len(calls) != 1 || !strings.Contains(calls[0], "-o "+f.job("ink.png")+" ") {
+				t.Errorf("rsvg-convert calls %q, want only the ink check before the measurements were built", calls)
 			}
 			f.noOutput(t)
 			f.noSidecar(t)

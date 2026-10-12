@@ -26,6 +26,7 @@ func main() {
 	size := flag.Int("size", 0, "requested frame size in pixels")
 	background := flag.String("background", "opaque", "opaque or transparent")
 	drawing := flag.Bool("drawing", false, "judge DXF drawing frames against the letterbox of --letterbox-svg")
+	ink := flag.Bool("ink", false, "judge DXF ink check frames: opaque, --size square, J1 ink on a white page")
 	letterboxSVG := flag.String("letterbox-svg", "", "SVG whose root size sets the drawing letterbox")
 	printLetterbox := flag.Bool("print-letterbox", false, "print the letterbox of --svg at --size and exit")
 	svg := flag.String("svg", "", "SVG for --print-letterbox")
@@ -44,8 +45,8 @@ func main() {
 		fmt.Printf("LETTERBOX,sw=%d,sh=%d,left=%d,top=%d\n", box.Width, box.Height, box.Left, box.Top)
 		return
 	}
-	if *size == 0 || flag.NArg() == 0 || *drawing != (*letterboxSVG != "") {
-		fmt.Fprintln(os.Stderr, "usage: cad-pixel-judge --size N --background opaque|transparent [--drawing --letterbox-svg FILE] PNG...")
+	if *size == 0 || flag.NArg() == 0 || *drawing != (*letterboxSVG != "") || (*ink && *drawing) {
+		fmt.Fprintln(os.Stderr, "usage: cad-pixel-judge --size N [--ink | --background opaque|transparent [--drawing --letterbox-svg FILE]] PNG...")
 		os.Exit(64)
 	}
 	var box convert.CADLetterbox
@@ -65,9 +66,12 @@ func main() {
 			os.Exit(64)
 		}
 		var facts convert.CADPixelFacts
-		if *drawing {
+		switch {
+		case *ink:
+			facts, err = convert.JudgeCADDrawingInk(f, *size)
+		case *drawing:
 			facts, err = convert.JudgeCADDrawingPNG(f, *size, *background, box)
-		} else {
+		default:
 			facts, err = convert.JudgeCADPNG(f, *size, *background)
 		}
 		f.Close()

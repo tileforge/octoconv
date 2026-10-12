@@ -26,6 +26,9 @@ const (
 	cadTransparentMax      = 0.95
 	cadDrawingSpanMin      = 0.5
 	cadLetterboxSlack      = 2
+
+	CADDXFInkSize       = CADMaxRenderSize
+	CADInkChannelCutoff = cadBackgroundCutoff
 )
 
 type CADPixelFacts struct {
@@ -139,7 +142,7 @@ func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterb
 	} else if facts.FracTransparent > 0 {
 		return facts, fmt.Errorf("%w: background opaque but %.4f of the frame is transparent", ErrCADRenderRejected, facts.FracTransparent)
 	}
-	if facts.Count == 0 {
+	if !cadDrawingInk(&facts) {
 		return facts, fmt.Errorf("%w: J1 the frame holds no ink", ErrCADRenderRejected)
 	}
 	long, boxLong := max(facts.BoxW, facts.BoxH), max(box.Width, box.Height)
@@ -158,13 +161,48 @@ func JudgeCADDrawingPNG(r io.Reader, size int, background string, box CADLetterb
 	return facts, nil
 }
 
+func cadDrawingInk(f *CADPixelFacts) bool { return f.Count > 0 }
+
+func JudgeCADDrawingInk(r io.Reader, size int) (CADPixelFacts, error) {
+	var facts CADPixelFacts
+	facts.Mode = "ink"
+	img, err := cadReadFrame(r, size, CADBackgroundOpq, &facts)
+	if err != nil {
+		return facts, fmt.Errorf("%w: the ink check frame: %v", ErrCADDrawingFailed, err)
+	}
+	if opaquePx := cadMeasure(img, CADBackgroundOpq, &facts); opaquePx != size*size {
+		return facts, fmt.Errorf("%w: the ink check frame has %d of %d pixels not opaque, want a white page", ErrCADDrawingFailed, size*size-opaquePx, size*size)
+	}
+	if !cadDrawingInk(&facts) {
+		return facts, fmt.Errorf("%w: %w: J1 the %d px frame holds no ink on a white page", ErrCADNothingDrawable, ErrCADEmptyResult, size)
+	}
+	return facts, nil
+}
+
 func cadMeasure(img image.Image, background string, f *CADPixelFacts) int {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	x0, y0, x1, y1 := w, h, -1, -1
 	transparentPx, opaquePx := 0, 0
 	nrgba, _ := img.(*image.NRGBA)
+	var rows, white []byte
+	var stride, base int
+	switch p := img.(type) {
+	case *image.NRGBA:
+		rows, stride, base = p.Pix, p.Stride, p.PixOffset(b.Min.X, b.Min.Y)
+	case *image.RGBA:
+		rows, stride, base = p.Pix, p.Stride, p.PixOffset(b.Min.X, b.Min.Y)
+	}
+	if rows != nil && background == CADBackgroundOpq {
+		white = bytes.Repeat([]byte{0xff}, 4*w)
+	}
 	for y := 0; y < h; y++ {
+		if white != nil {
+			if o := base + y*stride; bytes.Equal(rows[o:o+4*w], white) {
+				opaquePx += w
+				continue
+			}
+		}
 		for x := 0; x < w; x++ {
 			var r, g, bl, a uint8
 			if nrgba != nil {

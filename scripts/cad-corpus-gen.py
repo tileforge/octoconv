@@ -2149,7 +2149,8 @@ DXF_FIXTURES = (
     ["text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf",
      "never_resolved.dxf", "wrong_extents.dxf", "header_far_extents.dxf", "wide.dxf", "tall.dxf",
      "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf", "text_fonts.dxf",
-     "alpha_clear_geometry.dxf", "alpha_clear_all.dxf", "alpha_one_visible.dxf", "alpha_one_fill.dxf"]
+     "alpha_clear_geometry.dxf", "alpha_clear_all.dxf", "alpha_one_visible.dxf", "alpha_one_fill.dxf",
+     "white_geometry.dxf", "white_text.dxf", "white_one_black.dxf", "degenerate_fill.dxf", "faint_only.dxf", "zwsp_text.dxf"]
     + ["units_%d.dxf" % c for c in DXF_UNIT_CODES] + ["units_missing.dxf"]
     + ["cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf",
        "nest_d16.dxf", "nest_d17.dxf", "minsert_over_inserts.dxf", "entities_over.dxf",
@@ -2162,6 +2163,11 @@ DXF_ALPHA_HALF = b"440\n33554559\n"
 DXF_ALPHA_CLEAR = b"440\n33554432\n"
 DXF_ALPHA_BYBLOCK = b"440\n16777216\n"
 DXF_HALF_TRANSPARENCY = 0x0200007F
+DXF_TRUE_WHITE = b"420\n16777215\n"
+DXF_ALPHA_FAINT = b"440\n33554433\n"
+DXF_ZWSP = "\u200b"
+DXF_WHITE_MARKERS = [DXF_TRUE_WHITE, b" 62\n255\n", b"\nLINE\n", b"\nCIRCLE\n", b"\nARC\n", b"\nLWPOLYLINE\n",
+                     b"\nHATCH\n", b"\nSOLID\n", b"\nPOINT\n"]
 DXF_CLEAR_MARKERS = [DXF_ALPHA_CLEAR, DXF_ALPHA_BYBLOCK, b"\nLINE\n", b"\nCIRCLE\n", b"\nARC\n", b"\nLWPOLYLINE\n",
                      b"\nHATCH\n", b"\nSOLID\n", b"\nPOINT\n", b"\nXLINE\n", b"\nINSERT\n", b"CLEARLAYER"]
 
@@ -2198,6 +2204,12 @@ def dxf_expected():
         "alpha_clear_all.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT"] + DXF_CLEAR_MARKERS,
         "alpha_one_visible.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT", DXF_ALPHA_HALF] + DXF_CLEAR_MARKERS,
         "alpha_one_fill.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT", DXF_ALPHA_HALF] + DXF_CLEAR_MARKERS,
+        "white_geometry.dxf": [b"AC1032"] + DXF_WHITE_MARKERS,
+        "white_text.dxf": [b"AC1032", DXF_TRUE_WHITE, b"WHITE TEXT", b"WHITE MTEXT"],
+        "white_one_black.dxf": [b"AC1032", b"WHITE TEXT", b"WHITE MTEXT", b"BLACK"] + DXF_WHITE_MARKERS,
+        "degenerate_fill.dxf": [b"AC1032", b"\nSOLID\n", b"\nHATCH\n"],
+        "faint_only.dxf": [b"AC1032", DXF_ALPHA_FAINT, b"\nLINE\n", b"\nHATCH\n", b"FAINT TEXT"],
+        "zwsp_text.dxf": [b"AC1032", DXF_ALPHA_CLEAR, DXF_ZWSP.encode("utf-8")],
         "units_missing.dxf": [b"AC1032", b"LINE"],
         "cyclic_self.dxf": [b"BLOCKS", b"INSERT"],
         "cyclic_ab.dxf": [b"BLOCKS", b"INSERT"],
@@ -2220,7 +2232,13 @@ def dxf_expected():
 
 DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"], "text_alpha_faint.dxf": [b"\nLINE\n", b"\nHATCH\n", b"\nMTEXT\n"],
               "alpha_clear_geometry.dxf": [DXF_ALPHA_HALF, b"\nTEXT\n", b"\nMTEXT\n"],
-              "alpha_clear_all.dxf": [DXF_ALPHA_HALF]}
+              "alpha_clear_all.dxf": [DXF_ALPHA_HALF],
+              "white_geometry.dxf": [b"\nTEXT\n", b"\nMTEXT\n", b"\n440\n"],
+              "white_text.dxf": [b"\nLINE\n", b"\nHATCH\n", b"\n440\n"],
+              "white_one_black.dxf": [b"\n440\n"],
+              "degenerate_fill.dxf": [b"\nLINE\n", b"\nTEXT\n", b"\n440\n"],
+              "faint_only.dxf": [DXF_ALPHA_HALF, DXF_ALPHA_CLEAR],
+              "zwsp_text.dxf": [DXF_ALPHA_HALF, b"\nHATCH\n"]}
 
 
 def dxf_ezdxf_bytes(doc):
@@ -2443,6 +2461,57 @@ def build_dxf_alpha(ezdxf, texts, visible):
     return dxf_ezdxf_bytes(doc)
 
 
+def build_dxf_white(ezdxf, geometry, texts, black):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    white = {"true_color": 0xFFFFFF}
+    if geometry:
+        msp.add_line((0, 0), (100, 0), dxfattribs=dict(white))
+        msp.add_circle((20, 30), 10, dxfattribs=dict(white))
+        msp.add_arc((50, 30), 10, 0, 180, dxfattribs=dict(white))
+        msp.add_lwpolyline([(70, 20), (90, 20), (90, 40)], dxfattribs=dict(white))
+        hatch = msp.add_hatch(dxfattribs=dict(white))
+        hatch.paths.add_polyline_path([(0, 50), (20, 50), (20, 70), (0, 70)], is_closed=True)
+        msp.add_solid([(30, 50), (50, 50), (30, 70), (50, 70)], dxfattribs=dict(white))
+        msp.add_point((60, 60), dxfattribs=dict(white))
+        msp.add_line((0, 90), (100, 90), dxfattribs={"color": 255})
+    if texts:
+        msp.add_text("WHITE TEXT", height=5, dxfattribs=dict(white)).set_placement((0, 110))
+        msp.add_mtext("WHITE MTEXT", dxfattribs={"char_height": 5, "true_color": 0xFFFFFF}).set_location((50, 120))
+    if black:
+        doc.layers.add("BLACK", color=7)
+        msp.add_line((0, -10), (100, -10), dxfattribs={"layer": "BLACK"})
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_degenerate_fill(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    msp.add_solid([(0, 0), (50, 50), (100, 100), (25, 25)])
+    hatch = msp.add_hatch(color=1)
+    hatch.paths.add_polyline_path([(0, 100), (100, 0), (0, 100)], is_closed=True)
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_faint_only(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    faint = {"transparency": 0x02000001}
+    msp.add_line((0, 0), (100, 0), dxfattribs=dict(faint))
+    hatch = msp.add_hatch(color=7, dxfattribs=dict(faint))
+    hatch.paths.add_polyline_path([(0, 10), (100, 10), (100, 50), (0, 50)], is_closed=True)
+    msp.add_text("FAINT TEXT", height=10, dxfattribs=dict(faint)).set_placement((0, 60))
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_zwsp_text(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    msp.add_line((0, 0), (100, 50), dxfattribs={"transparency": 0x02000000})
+    msp.add_text(DXF_ZWSP, height=10).set_placement((10, 10))
+    return dxf_ezdxf_bytes(doc)
+
+
 DXF_FONT_STYLES = (
     ("MONO", "DejaVuSansMono.ttf", "MONO BOOK"),
     ("MONOB", "DejaVuSansMono-Bold.ttf", "MONO BOLD"),
@@ -2630,6 +2699,12 @@ def build_dxf_all():
         "alpha_clear_all.dxf": build_dxf_alpha(ezdxf, True, None),
         "alpha_one_visible.dxf": build_dxf_alpha(ezdxf, True, "line"),
         "alpha_one_fill.dxf": build_dxf_alpha(ezdxf, True, "fill"),
+        "white_geometry.dxf": build_dxf_white(ezdxf, True, False, False),
+        "white_text.dxf": build_dxf_white(ezdxf, False, True, False),
+        "white_one_black.dxf": build_dxf_white(ezdxf, True, True, True),
+        "degenerate_fill.dxf": build_dxf_degenerate_fill(ezdxf),
+        "faint_only.dxf": build_dxf_faint_only(ezdxf),
+        "zwsp_text.dxf": build_dxf_zwsp_text(ezdxf),
         "units_missing.dxf": build_dxf_units(ezdxf, None),
         "cyclic_self.dxf": build_dxf_cyclic("self"),
         "cyclic_ab.dxf": build_dxf_cyclic("ab"),

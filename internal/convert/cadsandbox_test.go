@@ -30,6 +30,7 @@ type cadPreflightFakes struct {
 	dxfOutside    string
 	rsvgPDF       string
 	rsvgFrame     func(t *testing.T) []byte
+	rsvgInk       func(t *testing.T) []byte
 	rsvgOutside   string
 }
 
@@ -59,11 +60,11 @@ func cadPreflightDXFStub(o cadDXFOutputs, outside string) string {
 	return b.String()
 }
 
-func cadPreflightRsvgStub(pdf, frame, outside string) string {
+func cadPreflightRsvgStub(pdf, frame, ink, outside string) string {
 	var b strings.Builder
 	b.WriteString("last=''\nfor a in \"$@\"; do last=$a; done\n")
 	b.WriteString("o=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) o=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
-	draw := fmt.Sprintf("case \"$o\" in\n*.pdf) cp %s \"$o\" ;;\n*) cp %s \"$o\" ;;\nesac\nexit 0\n", cadDXFQuote(pdf), cadDXFQuote(frame))
+	draw := fmt.Sprintf("case \"$o\" in\n*/ink.png) cp %s \"$o\" ;;\n*.pdf) cp %s \"$o\" ;;\n*) cp %s \"$o\" ;;\nesac\nexit 0\n", cadDXFQuote(ink), cadDXFQuote(pdf), cadDXFQuote(frame))
 	deny := "echo \"Error reading SVG: Permission denied\" >&2\nexit 1\n"
 	if outside == "leak" {
 		deny = draw
@@ -106,6 +107,7 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		dxfOutside:    "deny",
 		rsvgPDF:       cadDXFTestFile("legacy_cp1251.pdf"),
 		rsvgFrame:     cadPreflightDXFFrame,
+		rsvgInk:       cadDXFInkedFrame,
 		rsvgOutside:   "deny",
 	}
 }
@@ -164,7 +166,11 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	if err := os.WriteFile(dxfFrame, p.rsvgFrame(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fakeEngine(t, dir, "rsvg-convert", cadPreflightRsvgStub(p.rsvgPDF, dxfFrame, p.rsvgOutside))
+	inkFrame := filepath.Join(dir, "ink-frame.png")
+	if err := os.WriteFile(inkFrame, p.rsvgInk(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeEngine(t, dir, "rsvg-convert", cadPreflightRsvgStub(p.rsvgPDF, dxfFrame, inkFrame, p.rsvgOutside))
 	pathWith(t, dir)
 
 	helper, _ := fakeSandboxHelper(t)
@@ -219,6 +225,7 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"the drawing frame is blank", func(p *cadPreflightFakes) {
 			p.rsvgFrame = func(t *testing.T) []byte { return blankPNGBytes(t, cadPreflightFrame) }
 		}, []string{"drawing judge"}},
+		{"the ink check frame is blank", func(p *cadPreflightFakes) { p.rsvgInk = cadDXFBlankFrame }, []string{"ink check", "rsvg-convert", "J1"}},
 		{"cad-dxf draws the outside file", func(p *cadPreflightFakes) { p.dxfOutside = "leak" }, []string{"cad dxf", "outside", "confinement"}},
 		{"rsvg-convert converts the outside file", func(p *cadPreflightFakes) { p.rsvgOutside = "leak" }, []string{"rsvg-convert", "outside", "confinement"}},
 	}
@@ -393,10 +400,10 @@ func TestValidateCADTimeouts(t *testing.T) {
 		t.Errorf("the defaults: %v", err)
 	}
 	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 162*s, 141*s, 886*s); err != nil {
-		t.Errorf("30+316+480 and 30+162+141 against 886: %v", err)
+		t.Errorf("30+316+480 and 30+162+2x141 against 886: %v", err)
 	}
-	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 500*s, 296*s, 886*s); err != nil {
-		t.Errorf("a DXF sum exactly at the engine timeout: %v", err)
+	if err := ValidateCADTimeouts(30*s, 316*s, 480*s, 204*s, 296*s, 886*s); err != nil {
+		t.Errorf("a DXF sum with both rsvg stages exactly at the engine timeout: %v", err)
 	}
 	cases := []struct {
 		name                                   string
@@ -414,7 +421,8 @@ func TestValidateCADTimeouts(t *testing.T) {
 		{"render one second over the sum", 30 * s, 316 * s, 481 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_RENDER_TIMEOUT"}},
 		{"stages and allowance exceed the engine", 30 * s, 316 * s, 480 * s, 162 * s, 141 * s, 885 * s, []string{"CAD_ENGINE_TIMEOUT"}},
 		{"a long mesh alone breaks the sum", 30 * s, 400 * s, 480 * s, 162 * s, 141 * s, 886 * s, []string{"CAD_MESH_TIMEOUT"}},
-		{"the DXF sum one second over the engine", 30 * s, 316 * s, 480 * s, 500 * s, 297 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT", "CAD_ENGINE_TIMEOUT"}},
+		{"the DXF sum one second over the engine", 30 * s, 316 * s, 480 * s, 205 * s, 296 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT", "CAD_ENGINE_TIMEOUT"}},
+		{"the second rsvg stage breaks a DXF sum that one would fit", 30 * s, 100 * s, 100 * s, 162 * s, 350 * s, 886 * s, []string{"CAD_RSVG_TIMEOUT", "two rsvg-convert stages"}},
 		{"a long dxf stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 800 * s, 141 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
 		{"a long rsvg stage alone breaks the DXF sum", 30 * s, 100 * s, 100 * s, 162 * s, 700 * s, 886 * s, []string{"CAD_DXF_TIMEOUT", "CAD_RSVG_TIMEOUT"}},
 	}

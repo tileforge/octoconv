@@ -763,8 +763,8 @@ func TestCADDXFConstantsComeFromTheEvidence(t *testing.T) {
 	if CADDefaultDXFTimeout%time.Second != 0 || CADDefaultRsvgTimeout%time.Second != 0 {
 		t.Errorf("the DXF stage timeouts %s and %s are not whole seconds; the evidence derives whole seconds", CADDefaultDXFTimeout, CADDefaultRsvgTimeout)
 	}
-	if sum := CADDefaultGuardTimeout + CADDefaultDXFTimeout + CADDefaultRsvgTimeout + CADIOAllowance; sum > CADDefaultEngineTimeout {
-		t.Errorf("guard + dxf + rsvg + I/O = %s exceeds the %s engine timeout", sum, CADDefaultEngineTimeout)
+	if sum := CADDefaultGuardTimeout + CADDefaultDXFTimeout + 2*CADDefaultRsvgTimeout + CADIOAllowance; sum > CADDefaultEngineTimeout {
+		t.Errorf("guard + dxf + two rsvg stages + I/O = %s exceeds the %s engine timeout", sum, CADDefaultEngineTimeout)
 	}
 }
 

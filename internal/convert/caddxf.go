@@ -21,10 +21,11 @@ const (
 	cadDXFTextsName  = "texts.json"
 	cadDXFCleanName  = "clean.svg"
 	cadDXFHomeName   = ".home"
+	cadDXFInkName    = "ink.png"
 	cadDXFPageSlack  = 1e-6
 )
 
-var cadDXFJobNames = []string{cadDXFDrawName, cadDXFRenderName, cadDXFTextsName, cadMeasureDraftName, cadDXFCleanName, cadDXFHomeName}
+var cadDXFJobNames = []string{cadDXFDrawName, cadDXFRenderName, cadDXFTextsName, cadMeasureDraftName, cadDXFCleanName, cadDXFHomeName, cadDXFInkName}
 
 type CADDXFConverter struct{ CADConverter }
 
@@ -64,10 +65,10 @@ func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, op
 	}()
 
 	if target == "svg" {
-		_, err = c.dxfDrawing(ctx, jobDir, inPath, outPath, "", "")
+		_, err = c.dxfDrawing(ctx, jobDir, inPath, outPath, "")
 		return err
 	}
-	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", clean, "")
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", "")
 	if err != nil {
 		return err
 	}
@@ -124,7 +125,7 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	}()
 
 	draftPath := filepath.Join(jobDir, cadMeasureDraftName)
-	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", clean, draftPath)
+	d, err := c.dxfDrawing(ctx, jobDir, inPath, "", draftPath)
 	if err != nil {
 		return err
 	}
@@ -226,7 +227,7 @@ func cadDXFClear(path string) error {
 	return nil
 }
 
-func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut, renderOut, measure string) (cadDXFDrawing, error) {
+func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut, measure string) (cadDXFDrawing, error) {
 	var d cadDXFDrawing
 	if _, err := c.guardStage(ctx, jobDir, "dxf", inPath); err != nil {
 		return d, err
@@ -234,7 +235,8 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	draw := filepath.Join(jobDir, cadDXFDrawName)
 	render := filepath.Join(jobDir, cadDXFRenderName)
 	texts := filepath.Join(jobDir, cadDXFTextsName)
-	stale := []string{draw, render, texts, filepath.Join(jobDir, cadDXFCleanName)}
+	clean := filepath.Join(jobDir, cadDXFCleanName)
+	stale := []string{draw, render, texts, clean, filepath.Join(jobDir, cadDXFInkName)}
 	if measure != "" {
 		stale = append(stale, measure)
 	}
@@ -265,7 +267,7 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	if d.client, err = cadDXFValidate(draw, clientOut); err != nil {
 		return d, err
 	}
-	if d.render, err = cadDXFValidate(render, renderOut); err != nil {
+	if d.render, err = cadDXFValidate(render, clean); err != nil {
 		return d, err
 	}
 	d.texts, err = parseCADDXFTexts(texts, CADMaxDXFSVGBytes)
@@ -281,7 +283,34 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	if d.client.Visible == 0 {
 		return d, fmt.Errorf("cad dxf: %w: %w: the drawing has nothing visible", ErrCADNothingDrawable, ErrCADEmptyResult)
 	}
+	if err := c.dxfInk(ctx, jobDir, clean, d.render); err != nil {
+		return d, err
+	}
 	return d, nil
+}
+
+func (c CADConverter) dxfInk(ctx context.Context, jobDir, clean string, render CADSVGFacts) error {
+	box, err := CADDrawingLetterbox(render.WidthMM, render.HeightMM, CADDXFInkSize)
+	if err != nil {
+		return fmt.Errorf("cad dxf: %w: %v", ErrCADSVGRejected, err)
+	}
+	ink := filepath.Join(jobDir, cadDXFInkName)
+	if err := cadDXFClear(ink); err != nil {
+		return err
+	}
+	defer os.Remove(ink)
+	if err := c.rsvgStage(ctx, jobDir, ink, cadDXFFrameArgs(CADBackgroundOpq, box, CADDXFInkSize, ink, clean)...); err != nil {
+		return err
+	}
+	f, _, err := OpenJobFile(ink)
+	if err != nil {
+		return fmt.Errorf("cad dxf: %w: open the ink check frame: %v", ErrCADDrawingFailed, err)
+	}
+	defer f.Close()
+	if _, err := JudgeCADDrawingInk(f, CADDXFInkSize); err != nil {
+		return fmt.Errorf("cad dxf: %w", err)
+	}
+	return nil
 }
 
 func (c CADConverter) dxfStage(ctx context.Context, jobDir, inPath, svg, render, texts, measure string) (cadVerdict, error) {

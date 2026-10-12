@@ -735,7 +735,7 @@ func cadFailureCode(err error) (code, message string) {
 	case errors.Is(err, convert.ErrCADUnreadable):
 		return CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"
 	case errors.Is(err, convert.ErrCADNothingDrawable):
-		return CodeCADEmptyResult, "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"
+		return CodeCADEmptyResult, "the drawing shows nothing on a white page: model space is empty or hidden, holds only 3D solids, or everything in it is fully transparent, white, too faint or too small to see"
 	case errors.Is(err, convert.ErrCADEmptyResult):
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):
@@ -751,7 +751,7 @@ func cadFailureCode(err error) (code, message string) {
 	case errors.Is(err, convert.ErrCADDXFTimeout):
 		return CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"
 	case errors.Is(err, convert.ErrCADRsvgTimeout):
-		return CodeCADTooComplex, "the drawing took too long to convert to PDF or PNG; simplify it or export fewer details"
+		return CodeCADTooComplex, "the drawing took too long to render or convert to PDF or PNG; simplify it or export fewer details"
 	case errors.Is(err, convert.ErrCADSVGRejected):
 		return CodeEngineError, "the drawing could not be converted into a safe vector file"
 	case errors.Is(err, convert.ErrCADPDFRejected):

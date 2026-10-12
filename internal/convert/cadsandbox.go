@@ -159,8 +159,8 @@ func ValidateCADTimeouts(guard, mesh, render, dxf, rsvg, engine time.Duration) e
 		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_MESH_TIMEOUT=%s + CAD_RENDER_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
 			"the attempt deadline would cut a stage short of its own limit", guard, mesh, render, CADIOAllowance, engine)
 	}
-	if guard+dxf+rsvg+CADIOAllowance > engine {
-		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_DXF_TIMEOUT=%s + CAD_RSVG_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
+	if guard+dxf+2*rsvg+CADIOAllowance > engine {
+		return fmt.Errorf("CAD_GUARD_TIMEOUT=%s + CAD_DXF_TIMEOUT=%s + two rsvg-convert stages of CAD_RSVG_TIMEOUT=%s + %s of I/O allowance exceeds CAD_ENGINE_TIMEOUT=%s: "+
 			"the attempt deadline would cut a stage short of its own limit", guard, dxf, rsvg, CADIOAllowance, engine)
 	}
 	return nil
@@ -373,7 +373,10 @@ func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspa
 		return fmt.Errorf("the cad guard stage in dxf mode refuses the fixture inside the job directory under its sandbox: %w", err)
 	}
 	clean := filepath.Join(w.jobDir, cadDXFCleanName)
-	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", clean, "")
+	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", "")
+	if errors.Is(err, ErrCADNothingDrawable) {
+		return fmt.Errorf("the ink check finds nothing on the fixture's page drawn under the rsvg-convert ruleset: %w", err)
+	}
 	if err != nil {
 		return fmt.Errorf("the cad dxf stage cannot draw a file inside the job directory under its sandbox: %w", err)
 	}
