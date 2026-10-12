@@ -1,0 +1,26 @@
+M1 cross-check ignores fonts (d.client.TextFonts[i] != d.render.TextFonts[i] -> false)
+--- FAIL: TestCADDXFConvertRejectsAFontTheOutputsDisagreeOn (21.17s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	23.032s
+FAIL
+M2 tspan font not recorded
+--- FAIL: TestValidateCADSVGReportsEachTextsFont (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	2.035s
+FAIL
+M3 font-style admits normal
+--- FAIL: TestValidateCADSVGFontAttributesAreStrictEnums (0.01s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.371s
+FAIL
+M4 font-size left out of the font descriptor
+--- FAIL: TestCADDXFConvertRejectsAFontTheOutputsDisagreeOn (20.55s)
+--- FAIL: TestValidateCADSVGReportsEachTextsFont (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	22.399s
+FAIL
+M5 font-weight admits 400
+--- FAIL: TestValidateCADSVGFontAttributesAreStrictEnums (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	1.879s
+FAIL

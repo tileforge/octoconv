@@ -1,0 +1,13 @@
+# RED compile: HEAD 2d8d250 Go code with the new tests and text_fonts outputs
+# github.com/apaderin/octoconv/internal/convert [github.com/apaderin/octoconv/internal/convert.test]
+internal/convert/caddxfsvg_test.go:553:15: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:554:58: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:557:12: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:558:73: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:593:16: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:594:62: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:597:42: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:602:19: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:603:64: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:604:87: facts.TextFonts undefined (type CADSVGFacts has no field or method TextFonts)
+internal/convert/caddxfsvg_test.go:604:87: too many errors
