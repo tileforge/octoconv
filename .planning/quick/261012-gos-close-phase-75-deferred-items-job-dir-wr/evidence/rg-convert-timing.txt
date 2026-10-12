@@ -1,0 +1,32 @@
+# internal/convert, standalone: go test -count=1 -json ./internal/convert -timeout 15m
+# GOTOOLCHAIN=go1.26.4, python3 = 3.14 shim first on PATH, run back to back from fresh clones on this host
+# 46e742c start 11:49:36Z load 13.99 13.56 15.03 ; b2c0db8 start 11:54:35Z load 8.92 10.91 13.40
+PKG,46e742c,elapsed_s=295.026
+PKG,b2c0db8,elapsed_s=270.998
+TEST_RUN_START,TestEngineExecSandboxFaultSentinel,46e742c,offset_s=276.5,elapsed_s=0.28 (the test named in both gate timeouts; no hang, it is where the package crosses 300s)
+DELTA,new_tests_s=10.71,existing_up_s=20.70,existing_down_s=-7.62
+# tests added by the quick task (top-level, elapsed seconds at 46e742c)
+NEW,TestSanitizeWritesAsNewFilesAfterItsStages,3.41
+NEW,TestStageOutputReadsRefuseAPlantedLink,2.45
+NEW,TestCADRenderWritesTheSidecarAsANewFile,2.39
+NEW,TestOCRPDFWritesTheOutputAsANewFile,2.36
+NEW,TestOutputValidatorsRefuseAPlantedLink,0.07
+NEW,TestWriteNewFileNeverWritesThroughAPlantedLink,0.01
+NEW,TestOpenJobFileRefusesWhatIsNotARegularFile,0.01
+NEW,TestCADDXFReadsRefuseAPlantedLink,0.01
+# largest per-test increases, existing tests: test,b2c0db8_s,46e742c_s
+UP,TestCADGuardDXFAdmitsCorpusAndDrawingFixtures,3.65,6.63
+UP,TestCADGuardDXFNumericRulesInsideEntitiesAndBlocks,1.94,3.53
+UP,TestCADDXFConvertSVGReturnsOnlyGoBytes,4,4.8
+UP,TestCADMeshVerdictsAndTheSTLJudgment,10.63,11.35
+UP,TestCADMeshRefusesPartialMeshingBeforeWritingTheSTL,1.77,2.45
+UP,TestCADGuardDXFKeysBlocksLikeEzdxf,1.59,2.26
+UP,TestCADGuardDXFLineNumbersSurviveChunkBoundaries,3.7,4.35
+UP,TestCADGuardDXFUsage,0.71,1.23
+UP,TestCADGuardDXFLineEndingsAndCommentsDoNotChangeCounts,0.42,0.93
+UP,TestCADGuardDXFExpansionCaps,0.5,1
+# gate tier (go test -count=1 ./... -timeout 5m, as ci.yml), internal/convert line
+GATE,rg-ci-local-run1-20261012T113321Z.log,46e742c,FAIL,304.776s,FAIL (rc=1)
+GATE,rg-ci-local-run2-20261012T115951Z.log,46e742c,FAIL,305.623s,FAIL (rc=1)
+GATE,rg-gate-b2c0db8-20261012T124216Z.log,b2c0db8,ok,285.064s,PASS
+GATE,rg-gate-46e742c-20261012T124733Z.log,46e742c,FAIL,304.860s,FAIL (rc=1)

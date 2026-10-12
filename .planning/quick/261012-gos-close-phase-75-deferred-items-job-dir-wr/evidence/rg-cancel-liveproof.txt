@@ -1,0 +1,58 @@
+=== scripts/cancel-liveproof.sh commit 46e742c4497052fd2affa22758e3b9253c33b6bb tracked_dirt=0 start 2026-10-12T13:25:14Z
+=== Phase 39 cancel-liveproof gate (CNCL-03: real ffmpeg child death after cancel) ===
+
+--- STEP 1: preflight ---
+PASS: docker, curl, go all present on PATH
+PASS: all required docker-compose services running (postgres redis minio api av-worker)
+PASS: av-worker container id resolved == 414588f96eb927428f79914818437357bec9ad8ca9edc749101a0f500e3aa829
+PASS: ffmpeg present inside the running av-worker container
+PASS: api /healthz reachable at http://127.0.0.1:8090 == 200
+
+--- STEP 2: mint a throwaway client + API key ---
+PASS: minted client + API key (redacted, 43 chars)
+
+--- STEP 3: synthesize LONG (85s, 1080p) fixture, submit hevc@1080 job ---
+ octoconv-av-worker Copying octoconv-av-worker:/tmp/work/cancel-liveproof-long.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-long.mkv
+ octoconv-av-worker Copied octoconv-av-worker:/tmp/work/cancel-liveproof-long.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-long.mkv
+PASS: LONG lavfi fixture synthesized (85s, 1920x1080, h264/aac in mkv) == -rw-r--r--@ 1 apaderin  staff  3590203 Oct 12 16:25 /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-long.mkv
+PASS: primary hevc@1080 re-encode job submitted == b9a20597-e0ce-4747-bde2-361600b1bf3a
+
+--- STEP 4: wait for job to reach status=active, capture real ffmpeg PID(s) ---
+PASS: job b9a20597-e0ce-4747-bde2-361600b1bf3a reaches status=active == active
+PASS: real ffmpeg child PID(s) captured in av-worker's process table while job is active == 236 
+
+--- STEP 5: POST /v1/jobs/{id}/cancel ---
+PASS: cancel response status for job b9a20597-e0ce-4747-bde2-361600b1bf3a == canceled
+
+--- STEP 6: process-table proof -- assert the captured ffmpeg PID(s) are gone ---
+NOTE: this assertion reads the OS process table inside the av-worker container -- it is the actual proof of process death, NOT the jobs.status DB column (which merely reflects the intended terminal state).
+PASS: ffmpeg PID(s) [236 ] are gone from the process table within 15s of cancel (empty, as required)
+
+--- STEP 7: confirm GET /v1/jobs/{id} reads canceled, no download_url (D-11) ---
+PASS: job b9a20597-e0ce-4747-bde2-361600b1bf3a reads status=canceled via GET == canceled
+PASS: canceled job exposes NO download_url (D-11)
+
+--- STEP 8 (optional): goroutine-count guard across 3 repeated cancel cycles ---
+baseline go_goroutines=24
+-- goroutine-guard cycle 1/3 --
+ octoconv-av-worker Copying octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-1.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-1.mkv
+ octoconv-av-worker Copied octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-1.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-1.mkv
+cycle 1: job 84f5001d-02ce-4705-b878-20ca6c24f417 cancel response status=canceled
+-- goroutine-guard cycle 2/3 --
+ octoconv-av-worker Copying octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-2.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-2.mkv
+ octoconv-av-worker Copied octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-2.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-2.mkv
+cycle 2: job 83280f65-6228-462b-b514-df5d0405d866 cancel response status=canceled
+-- goroutine-guard cycle 3/3 --
+ octoconv-av-worker Copying octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-3.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-3.mkv
+ octoconv-av-worker Copied octoconv-av-worker:/tmp/work/cancel-liveproof-cycle-3.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.oxjyKQTL45/cancel-liveproof-cycle-3.mkv
+cycle 3: job a411b899-5d73-45dc-869e-bd6731122072 cancel response status=canceled
+after 3 cycles go_goroutines=24 (baseline=24, tolerance=+10)
+PASS: go_goroutines stayed within tolerance across 3 repeated cancel cycles (24 -> 24, ceiling 34)
+
+=== ALL 12 ASSERTIONS PASSED ===
+CNCL-03: a real hevc@1080 av transcode (b9a20597-e0ce-4747-bde2-361600b1bf3a) was canceled mid-flight and its ffmpeg child PID(s) [236 ] were confirmed GONE from the av-worker process table (not merely the DB row) -- PASS
+
+=== TEARDOWN (scratch files only -- docker-compose stack is left running) ===
+
+PASS -- Phase 39 cancel-liveproof (CNCL-03) gate run complete (12 checks).
+=== exit 0 end 2026-10-12T13:26:38Z

@@ -1,0 +1,15 @@
+== probe: building octoconv-probe:sandbox-liveproof-1791810828-73032 from Dockerfile.probe-worker ==
+commit: 46e742c4497052fd2affa22758e3b9253c33b6bb
+tracked dirt: 0 file(s)
+image id: sha256:dc277b3c2a982d53167045841fd8a2a18ef87539a0ffeaa50c6437aa307d737d
+PASS: probe confined-startup
+  2026/10/12 13:14:23 🔒 probe sandbox: landlock via /usr/local/bin/probe-worker __sandbox-exec
+  2026/10/12 13:14:24 🔒 probe sandbox proven: every probe engine ran inside the job directory and was denied a file outside it
+  2026/10/12 13:14:24 postgres: ping postgres: failed to connect to `user=gate database=gate`:
+PASS: probe refuses-without-landlock
+  2026/10/12 13:14:25 probe sandbox: landlock is unavailable on this kernel; the engine would run with read access to every file in this container. Set PROBE_SANDBOX_DISABLED=true to accept that deliberately
+PASS: probe escape-hatch
+  2026/10/12 13:14:26 ⚠️  PROBE_SANDBOX_DISABLED=true — the engines can read every file in this container
+PASS: probe preflight-catches-restrict-self
+  2026/10/12 13:14:26 probe sandbox preflight: pdf route: the engine cannot run under the sandbox: sanitize pdf: page count: engine sandbox could not be established: pdfinfo failed: exit status 78: __sandbox-exec: landlock: restrict self: operation not permitted
+ALL PASS (4 checks)

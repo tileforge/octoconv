@@ -1,0 +1,50 @@
+=== scripts/sse-liveproof.sh commit 46e742c4497052fd2affa22758e3b9253c33b6bb tracked_dirt=0 start 2026-10-12T13:29:08Z
+=== Phase 42 sse-liveproof gate (PUSH-01: real-socket SSE incremental streaming + heartbeat + clean close + cross-client 404) ===
+
+--- STEP 1: preflight ---
+PASS: docker, curl, go all present on PATH
+PASS: all required docker-compose services running (postgres redis minio api av-worker)
+PASS: ffmpeg present inside the running av-worker container
+PASS: api /healthz reachable at http://127.0.0.1:8090 == 200
+
+--- STEP 2: mint two throwaway clients + API keys ---
+PASS: minted primary client + API key (redacted, 43 chars)
+PASS: minted second (cross-client) client + API key (redacted, 43 chars)
+
+--- STEP 3: synthesize a 15s h264/aac 1080p fixture and submit the forced hevc/resize re-encode job ---
+ octoconv-av-worker Copying octoconv-av-worker:/tmp/work/sse-liveproof-source.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.nRwgRqEgga/sse-liveproof-source.mkv
+ octoconv-av-worker Copied octoconv-av-worker:/tmp/work/sse-liveproof-source.mkv to /var/folders/mq/nc0szqmx2ggc2jj2gj16r58h0000gn/T/tmp.nRwgRqEgga/sse-liveproof-source.mkv
+PASS: job submitted (forced hevc@1080 re-encode, 15s declared source duration) == 0a16e52a-a179-47ee-8ea0-c0137e087193
+
+--- STEP 4: open GET /v1/jobs/{id}/events and capture the live stream ---
+stream ran for 76s wall-clock (STREAM_MAX_S cap=180s)
+
+--- STEP 5: assert Content-Type: text/event-stream and HTTP 200 ---
+PASS: GET /v1/jobs/{id}/events HTTP status == 200
+PASS: Content-Type header present on the /events response == Content-Type: text/event-stream
+PASS: Content-Type is text/event-stream (Content-Type: text/event-stream)
+
+--- STEP 6: assert >=2 event: progress frames at distinct timestamps before the one terminal frame ---
+PASS: total event: progress data frames captured (initial connect emit + >=1 real incremental tick + terminal frame) (38 >= 3)
+PASS: final captured frame matches the terminal shape (status-only, no progress_pct/eta_seconds) -- body: {"status":"done"}
+PASS: terminal frame reports a legal terminal status (done)
+PASS: event: progress frames observed BEFORE the terminal frame (initial connect emit + >=1 real incremental tick) (37 >= 2)
+PASS: distinct wall-clock (epoch-second) timestamps among pre-terminal event: progress frames -- the actual proof of incremental flush, not one buffered write at close (37 >= 2)
+observed inter-frame timestamps: first pre-terminal frame at epoch=1791811760, terminal frame at epoch=1791811835 (75s span, 37 pre-terminal frames across 37 distinct timestamps)
+
+--- STEP 7: assert >=1 ': keepalive' heartbeat comment observed on the stream ---
+PASS: ': keepalive' heartbeat comment observed on the stream (SSE_HEARTBEAT_INTERVAL default 15s) (4 >= 1)
+
+--- STEP 8: assert the stream closed shortly after the terminal frame ---
+PASS: stream closed within tolerance after the terminal frame (0 <= 5s) (0 <= 5)
+
+--- STEP 9: assert a second client's ApiKey gets 404 opening the same job's /events ---
+PASS: second client's ApiKey gets 404 opening job 0a16e52a-a179-47ee-8ea0-c0137e087193's /events (T-42-11 cross-client ownership guard) == 404
+
+=== ALL 15 ASSERTIONS PASSED ===
+PUSH-01: GET /v1/jobs/0a16e52a-a179-47ee-8ea0-c0137e087193/events streamed Content-Type: text/event-stream, 37 event: progress frames across 37 distinct wall-clock timestamps BEFORE its one terminal frame (status=done), 4 ': keepalive' heartbeat(s), closed 0s after the terminal frame (<= 5s tolerance), and a second client's ApiKey got 404 opening the same job's /events -- PASS
+
+=== TEARDOWN (scratch files only -- docker-compose stack is left running) ===
+
+PASS -- Phase 42 sse-liveproof (PUSH-01) gate run complete (15 checks).
+=== exit 0 end 2026-10-12T13:30:35Z

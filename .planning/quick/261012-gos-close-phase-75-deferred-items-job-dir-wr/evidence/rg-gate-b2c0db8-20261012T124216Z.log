@@ -1,0 +1,78 @@
+=== ci-local 20261012T124216Z ===
+commit:   b2c0db8
+branch:   HEAD
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   29.4.0 (orbstack)
+tiers:    gate
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: gate (started 12:42:17 UTC)
+--------------------------------------------------------------
+gofmt -l .: clean
+go vet ./...: clean
+go build ./...: clean
+ok  	github.com/apaderin/octoconv/cmd/api	1.888s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	2.025s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	2.376s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	2.832s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	3.346s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	3.849s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	4.355s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	6.339s
+ok  	github.com/apaderin/octoconv/internal/auth	3.225s
+ok  	github.com/apaderin/octoconv/internal/cancel	3.534s
+ok  	github.com/apaderin/octoconv/internal/clients	3.993s
+ok  	github.com/apaderin/octoconv/internal/convert	285.064s
+ok  	github.com/apaderin/octoconv/internal/db	4.999s
+ok  	github.com/apaderin/octoconv/internal/e2e	5.580s
+ok  	github.com/apaderin/octoconv/internal/envcfg	10.507s
+ok  	github.com/apaderin/octoconv/internal/errcode	5.560s
+ok  	github.com/apaderin/octoconv/internal/inspect	6.544s
+ok  	github.com/apaderin/octoconv/internal/jobs	5.321s
+ok  	github.com/apaderin/octoconv/internal/logfmt	4.649s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	5.601s
+ok  	github.com/apaderin/octoconv/internal/measurements	4.729s
+ok  	github.com/apaderin/octoconv/internal/metrics	4.680s
+ok  	github.com/apaderin/octoconv/internal/presets	4.540s
+ok  	github.com/apaderin/octoconv/internal/queue	4.238s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	4.517s
+ok  	github.com/apaderin/octoconv/internal/reconciler	3.069s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	3.115s
+ok  	github.com/apaderin/octoconv/internal/sandbox	3.514s
+ok  	github.com/apaderin/octoconv/internal/storage	4.034s
+ok  	github.com/apaderin/octoconv/internal/webhook	4.880s
+ok  	github.com/apaderin/octoconv/internal/worker	11.483s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier gate: PASS
+
+==============================================================
+ci-local 20261012T124216Z summary   commit b2c0db8
+  PASS  gate
+  ALL REQUESTED TIERS PASSED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/base//private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/gate-base/ci-local-20261012T124216Z.log
+==============================================================

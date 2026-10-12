@@ -1,0 +1,829 @@
+=== ci-local 20261012T113321Z ===
+commit:   46e742c
+branch:   gsd/phase-75-dxf-2d-pipeline
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   29.4.0 (orbstack)
+tiers:    helm gate race docker-build e2e
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: helm (started 11:33:22 UTC)
+--------------------------------------------------------------
+### helm lint (default values)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### helm lint (capacity-floor overlay)
+==> Linting deploy/chart/octoconv
+[INFO] Chart.yaml: icon is recommended
+
+1 chart(s) linted, 0 chart(s) failed
+### render both variants
+### anti-vacuity gate: exactly 10 ScaledObjects must render in BOTH files, checked before any diff or isolation claim
+OK: 10 ScaledObjects in both renders
+### per-class isolation (SC2): the nine non-image classes must render byte-identical, image must differ -- specific about WHICH object changed, not just that the diff is small
+OK: document unchanged
+OK: html unchanged
+OK: audio unchanged
+OK: av unchanged
+OK: ocr unchanged
+OK: pandoc unchanged
+OK: probe unchanged
+OK: tectonic unchanged
+OK: cad unchanged
+OK: image changed (expected)
+### rendered VALUE assertions (SC1/D-05): every check above is a SHAPE check -- a chart that silently clamped the operator's floor of 2 down to 1 (removing the D-05 fallback effect entirely) would still pass all of them. These assert the actual rendered numbers.
+OK: image renders 0/1 by default and 2/2 under the capacity-floor overlay
+### whole-chart isolation scope (SC2): every differing line in the full-chart diff must be a minReplicaCount:/replicas: line, and the diff must be non-empty
+OK: whole-chart diff is exactly the 4 expected image-ScaledObject floor/fallback lines
+### every Deployment that gets the app secret must wait for BOTH startup deps
+OK: every Deployment carrying the app secret waits for postgres and the bucket (12 of them)
+### the MinIO pod hands root-owned data to uid 65532 before the server starts
+OK: MinIO pod runs one init container from the server image that chowns 65532:65532 over the data mount with only CHOWN
+### helm upgrade --reuse-values: values from a release made before minio.dataOwnership render exactly like the defaults
+OK: a chart whose values.yaml has no minio.dataOwnership and no minio.mcImage renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership.migrate=null on the real chart renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on the real chart renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.uid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.gid renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.migrate renders byte-identically to the defaults
+OK: a chart whose values.yaml lacks minio.dataOwnership.image renders byte-identically to the defaults
+OK: only uid: 1000 on a chart without the block gives owner 1000:65532 and changes exactly 4 lines
+OK: uid: 0 on a chart without the block is honoured, not replaced by the default
+OK: migrate: false on a chart without the block is honoured, not replaced by the default
+OK: --set minio.dataOwnership.uid=null on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership=null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership.uid: null on a chart without the block renders byte-identically to the defaults
+OK: a values file with dataOwnership: {} on a chart without the block renders byte-identically to the defaults
+OK: --set minio.dataOwnership.uid=1.5 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.gid=-1 on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership.migrate=no on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on a chart without the block rejected (rc=1)
+OK: --set minio.dataOwnership=abc on the real chart rejected (rc=1)
+### minio.dataOwnership.uid/gid move the pod identity and the chown target together, and nothing else
+OK: uid and gid reach runAsUser, runAsGroup, fsGroup and the chown target through --set and through a values file, and nothing else moves
+### minio.dataOwnership.migrate=false drops the init container and changes nothing else
+OK: migrate=false removes the MinIO initContainers key and nothing else
+### minio.dataOwnership.image reaches the init container and nothing else
+OK: minio.dataOwnership.image changes the init container image only; the server and every mc container stay on their own images
+### a non-boolean minio.dataOwnership.migrate must abort the render
+OK: minio.dataOwnership.migrate=no rejected (rc=1)
+OK: minio.dataOwnership.migrate=false rejected (rc=1)
+OK: a bad uid still aborts the render with migrate=false
+### no chart value may be spliced into an initContainer shell program
+OK: postgres.user reaches the wait initContainer as env, never as program text
+### every mc invocation must use the transport s3.useSSL asks for
+OK: s3.useSSL=false renders 14 mc aliases, all http://
+OK: s3.useSSL=true renders 14 mc aliases, all https://
+### mc containers run minio.mcImage (own pinned default), independent of minio.image; a missing or empty key falls back to minio.image
+OK: 14 containers run mc: the pinned minio.mcImage default survives a minio.image-only override, the override wins everywhere and reaches no other container, a missing or empty key falls back to minio.image; the MinIO pod stays on minio.image
+### no extraEnv may override S3_USE_SSL
+OK: no Deployment overrides S3_USE_SSL through extraEnv (11 templates accept one)
+### the octoconv chart must never be installed with --wait
+OK: no octoconv chart install uses --wait
+### negative case A -- floor above ceiling (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.minReplicaCount (99) must not exceed keda.image.maxReplicaCount (4)
+
+Use --debug flag to render out invalid YAML
+OK: negative case A failed as expected (rc=1)
+### negative case B -- negative floor (D-02): helm template MUST exit non-zero
+Error: execution error at (octoconv/templates/scaledobject-ocr.yaml:35:22): keda.ocr.minReplicaCount (-1) must not be negative
+
+Use --debug flag to render out invalid YAML
+OK: negative case B failed as expected (rc=1)
+### negative case C -- non-integer floors must NOT coerce silently (CR-01): sprig's int is cast.ToInt, which discards its parse error and returns 0. Cases A and B above use only BARE INTEGERS, so they never touch this path -- every input below used to render minReplicaCount: 0 and exit 0, bypassing BOTH guards and silently discarding the operator's floor.
+OK: [99.9] rejected (rc=1)
+OK: [-0.5] rejected (rc=1)
+OK: [2.9] rejected (rc=1)
+OK: [2.0] rejected (rc=1)
+OK: [abc] rejected (rc=1)
+OK: [true] rejected (rc=1)
+OK: [] rejected (rc=1)
+OK: [null] rejected (rc=1)
+### negative case D -- a null/absent ceiling is its own misconfiguration (CR-01): without the raw-kind check it coerced to 0 and got mis-reported as a minReplicaCount problem
+Error: execution error at (octoconv/templates/scaledobject-image.yaml:27:22): keda.image.maxReplicaCount must be a whole number, got <nil> (kind invalid) -- helm's --set parser yields a string for anything that is not a bare base-10 integer (2.0, 2.9, abc, an empty value) and a bool for true/false, all of which sprig's `int` would silently coerce to 0, discarding the configured floor
+
+Use --debug flag to render out invalid YAML
+OK: negative case D failed as expected (rc=1)
+### invalid minio.dataOwnership.uid/gid must abort the render
+OK: uid=[-1] rejected (rc=1)
+OK: uid=[1.5] rejected (rc=1)
+OK: uid=[2.0] rejected (rc=1)
+OK: uid=[abc] rejected (rc=1)
+OK: uid=[true] rejected (rc=1)
+OK: uid=[] rejected (rc=1)
+OK: uid=[1000:0] rejected (rc=1)
+OK: gid=[-1] rejected (rc=1)
+OK: gid=[1.5] rejected (rc=1)
+OK: gid=[2.0] rejected (rc=1)
+OK: gid=[abc] rejected (rc=1)
+OK: gid=[true] rejected (rc=1)
+OK: gid=[] rejected (rc=1)
+OK: gid=[1000:0] rejected (rc=1)
+OK: values file [uid: 1.5] rejected (rc=1)
+OK: values file [uid: "1000"] rejected (rc=1)
+OK: values file [gid: -5] rejected (rc=1)
+### tier helm: PASS
+
+--------------------------------------------------------------
+### tier: gate (started 11:33:43 UTC)
+--------------------------------------------------------------
+gofmt -l .: clean
+go vet ./...: clean
+go build ./...: clean
+ok  	github.com/apaderin/octoconv/cmd/api	3.370s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	3.132s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	3.072s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	3.377s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	4.301s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	4.232s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	4.568s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	8.180s
+ok  	github.com/apaderin/octoconv/internal/auth	3.225s
+ok  	github.com/apaderin/octoconv/internal/cancel	3.513s
+ok  	github.com/apaderin/octoconv/internal/clients	4.107s
+BUDGET,5m0s
+panic: test timed out after 5m0s
+	running tests:
+		TestEngineExecSandboxFaultSentinel (0s)
+
+goroutine 11732 [running]:
+testing.(*M).startAlarm.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2802 +0x2cc
+created by time.goFunc
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/time/sleep.go:215 +0x38
+
+goroutine 1 [chan receive]:
+testing.(*T).Run(0x123b9322a008, {0x10539c849?, 0x1f81e33004df1950?}, 0x105a93dd8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2109 +0x3bc
+testing.runTests.func1(0x123b9322a008)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2585 +0x40
+testing.tRunner(0x123b9322a008, 0x123b931cbc48)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0xc4
+testing.runTests({0x105390023, 0x1c}, {0x1053b3f8d, 0x2d}, 0x123b930b4468, {0x105b8e660, 0x366, 0x366}, {0x8080803a09506064?, 0x10537a842?, ...})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2583 +0x3f0
+testing.(*M).Run(0x123b931fc640)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2443 +0x578
+main.main()
+	_testmain.go:1790 +0x80
+
+goroutine 11728 [select]:
+github.com/apaderin/octoconv/internal/convert.runCommandCore({0x105aa68a8, 0x105bbf660}, 0x0, {0x0, 0x0, 0x0}, {0x10536e22f, 0x4}, {0x123b93954a80?, 0x0?}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/exec.go:215 +0x2c0
+github.com/apaderin/octoconv/internal/convert.runCommandAs(...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/exec.go:186
+github.com/apaderin/octoconv/internal/convert.engineExec.run({0x123b94a94ac0, {0x123b94a94b60, 0x1, 0x2}, {0x0, 0x0, 0x0}}, {0x105aa68a8, 0x105bbf660}, {0x10536e22f, ...}, ...)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/sandboxwrap.go:285 +0xec
+github.com/apaderin/octoconv/internal/convert.TestEngineExecSandboxFaultSentinel(0x123b94664b48)
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/sandboxexec_test.go:259 +0x13c
+testing.tRunner(0x123b94664b48, 0x105a93dd8)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2036 +0xc4
+created by testing.(*T).Run in goroutine 1
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/testing/testing.go:2101 +0x3a8
+
+goroutine 11730 [IO wait]:
+internal/poll.runtime_pollWait(0x10ebf8800, 0x72)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x123b93386720?, 0x123b93624000?, 0x1)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0x123b93386720, {0x123b93624000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_unix.go:165 +0x234
+os.(*File).read(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:29
+os.(*File).Read(0x123b92f54120, {0x123b93624000?, 0x123b93035d01?, 0x104d1f43c?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:144 +0x68
+io.copyBuffer({0x105a9fc00, 0x123b940932f0}, {0x105a9f8e8, 0x123b92f54120}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:429 +0x18c
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os.genericWriteTo(0x123b93035e48?, {0x105a9fc00?, 0x123b940932f0?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:295 +0x44
+os.(*File).WriteTo(0x123b93035f80?, {0x105a9fc00?, 0x123b940932f0?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:273 +0x5c
+io.copyBuffer({0x105a9fc00, 0x123b940932f0}, {0x105a9f9e0, 0x123b92f54120}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:411 +0x98
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:602 +0x40
+os/exec.(*Cmd).Start.func2(0x123b9322a248?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:757 +0x30
+created by os/exec.(*Cmd).Start in goroutine 11728
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:756 +0x6c8
+
+goroutine 11729 [IO wait]:
+internal/poll.runtime_pollWait(0x10ebf8a00, 0x72)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/netpoll.go:351 +0xa0
+internal/poll.(*pollDesc).wait(0x123b93386660?, 0x123b935f4000?, 0x1)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:84 +0x28
+internal/poll.(*pollDesc).waitRead(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_poll_runtime.go:89
+internal/poll.(*FD).Read(0x123b93386660, {0x123b935f4000, 0x8000, 0x8000})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/internal/poll/fd_unix.go:165 +0x234
+os.(*File).read(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:29
+os.(*File).Read(0x123b92f54108, {0x123b935f4000?, 0x123b93037d01?, 0x104d78898?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:144 +0x68
+io.copyBuffer({0x105a9fc00, 0x123b940932c0}, {0x105a9f8e8, 0x123b92f54108}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:429 +0x18c
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os.genericWriteTo(0x123b93037e78?, {0x105a9fc00?, 0x123b940932c0?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:295 +0x44
+os.(*File).WriteTo(0x1059cd9a0?, {0x105a9fc00?, 0x123b940932c0?})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file.go:273 +0x5c
+io.copyBuffer({0x105a9fc00, 0x123b940932c0}, {0x105a9f9e0, 0x123b92f54108}, {0x0, 0x0, 0x0})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:411 +0x98
+io.Copy(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/io/io.go:388
+os/exec.(*Cmd).writerDescriptor.func1()
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:602 +0x40
+os/exec.(*Cmd).Start.func2(0x0?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:757 +0x30
+created by os/exec.(*Cmd).Start in goroutine 11728
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:756 +0x6c8
+
+goroutine 11731 [syscall]:
+syscall.syscalln(0x104d793d0, {0x123b93084dc8, 0x6, 0x6})
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/runtime/sys_darwin.go:38 +0x20
+syscall.syscall6(0x193084e48?, 0x10eb7fb68?, 0x107ecb6f8?, 0x90?, 0x123b93509008?, 0x123b930c4630?, 0x123b93084e68?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/syscall_darwin.go:388 +0x28
+syscall.wait4(0x123b93084e98?, 0x104d96f5c?, 0x90?, 0x105a77520?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/zsyscall_darwin_arm64.go:44 +0x4c
+syscall.Wait4(0x0?, 0x123b93084ed4, 0x0?, 0x0?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/syscall/syscall_bsd.go:144 +0x28
+os.(*Process).pidWait.func1(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:64
+os.ignoringEINTR2[...](...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/file_posix.go:266
+os.(*Process).pidWait(0x123b9418a240)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:63 +0x9c
+os.(*Process).wait(0x123b92f54001?)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec_unix.go:28 +0x24
+os.(*Process).Wait(...)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec.go:346
+os/exec.(*Cmd).Wait(0x123b930a1d40)
+	/Users/apaderin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.4.darwin-arm64/src/os/exec/exec.go:930 +0x38
+github.com/apaderin/octoconv/internal/convert.runCommandCore.func1()
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/exec.go:213 +0x24
+created by github.com/apaderin/octoconv/internal/convert.runCommandCore in goroutine 11728
+	/private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/internal/convert/exec.go:213 +0x274
+FAIL	github.com/apaderin/octoconv/internal/convert	304.776s
+ok  	github.com/apaderin/octoconv/internal/db	4.920s
+ok  	github.com/apaderin/octoconv/internal/e2e	5.462s
+ok  	github.com/apaderin/octoconv/internal/envcfg	12.009s
+ok  	github.com/apaderin/octoconv/internal/errcode	5.669s
+ok  	github.com/apaderin/octoconv/internal/inspect	7.864s
+ok  	github.com/apaderin/octoconv/internal/jobs	5.770s
+ok  	github.com/apaderin/octoconv/internal/logfmt	5.371s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	6.407s
+ok  	github.com/apaderin/octoconv/internal/measurements	5.342s
+ok  	github.com/apaderin/octoconv/internal/metrics	5.529s
+ok  	github.com/apaderin/octoconv/internal/presets	5.433s
+ok  	github.com/apaderin/octoconv/internal/queue	3.819s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	3.560s
+ok  	github.com/apaderin/octoconv/internal/reconciler	3.031s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	3.071s
+ok  	github.com/apaderin/octoconv/internal/sandbox	3.491s
+ok  	github.com/apaderin/octoconv/internal/storage	4.070s
+ok  	github.com/apaderin/octoconv/internal/webhook	4.655s
+ok  	github.com/apaderin/octoconv/internal/worker	11.852s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+FAIL
+### tier gate: FAIL (rc=1)
+
+--------------------------------------------------------------
+### tier: race (started 11:39:29 UTC)
+--------------------------------------------------------------
+ok  	github.com/apaderin/octoconv/cmd/api	4.590s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	5.012s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	4.710s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	4.351s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	5.923s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	6.631s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	7.419s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	43.396s
+ok  	github.com/apaderin/octoconv/internal/auth	3.335s
+ok  	github.com/apaderin/octoconv/internal/cancel	2.100s
+ok  	github.com/apaderin/octoconv/internal/clients	3.852s
+ok  	github.com/apaderin/octoconv/internal/convert	484.758s
+ok  	github.com/apaderin/octoconv/internal/db	2.143s
+ok  	github.com/apaderin/octoconv/internal/e2e	6.983s
+ok  	github.com/apaderin/octoconv/internal/envcfg	11.723s
+ok  	github.com/apaderin/octoconv/internal/errcode	3.661s
+ok  	github.com/apaderin/octoconv/internal/inspect	11.806s
+ok  	github.com/apaderin/octoconv/internal/jobs	4.431s
+ok  	github.com/apaderin/octoconv/internal/logfmt	6.598s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	8.800s
+ok  	github.com/apaderin/octoconv/internal/measurements	6.942s
+ok  	github.com/apaderin/octoconv/internal/metrics	6.489s
+ok  	github.com/apaderin/octoconv/internal/presets	6.059s
+ok  	github.com/apaderin/octoconv/internal/queue	5.901s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	4.266s
+ok  	github.com/apaderin/octoconv/internal/reconciler	5.372s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	4.094s
+ok  	github.com/apaderin/octoconv/internal/sandbox	3.905s
+ok  	github.com/apaderin/octoconv/internal/storage	4.605s
+ok  	github.com/apaderin/octoconv/internal/webhook	4.849s
+ok  	github.com/apaderin/octoconv/internal/worker	15.671s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier race: PASS
+
+--------------------------------------------------------------
+### tier: docker-build (started 11:48:35 UTC)
+--------------------------------------------------------------
+#0 building with "orbstack" instance using docker driver
+
+#1 [internal] load local bake definitions
+#1 reading docker-compose.yml 93.13kB / 93.13kB done
+#1 DONE 0.0s
+
+#2 [av-worker internal] load build definition from Dockerfile.av-worker
+#2 transferring dockerfile: 9.73kB done
+#2 DONE 0.1s
+
+#3 [probe-worker internal] load build definition from Dockerfile.probe-worker
+#3 transferring dockerfile: 3.82kB 0.0s done
+#3 DONE 0.1s
+
+#4 [probe-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#5 [ocr-worker internal] load build definition from Dockerfile.ocr-worker
+#5 transferring dockerfile: 9.87kB done
+#5 DONE 0.3s
+
+#4 [ocr-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#6 [webhook-worker-2 internal] load build definition from Dockerfile.webhook-worker
+#6 transferring dockerfile: 818B done
+#6 DONE 0.6s
+
+#7 [tectonic-worker internal] load build definition from Dockerfile.tectonic-worker
+#7 transferring dockerfile: 8.57kB done
+#7 DONE 0.7s
+
+#4 [webhook-worker-2 internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#8 [pandoc-worker internal] load build definition from Dockerfile.pandoc-worker
+#8 transferring dockerfile: 4.37kB done
+#8 DONE 0.7s
+
+#9 [worker internal] load build definition from Dockerfile.worker
+#9 transferring dockerfile: 835B done
+#9 DONE 0.7s
+
+#10 [cad-worker internal] load build definition from Dockerfile.cad-worker
+#10 transferring dockerfile: 2.85kB done
+#10 DONE 0.7s
+
+#11 [audio-worker internal] load build definition from Dockerfile.audio-worker
+#11 transferring dockerfile: 4.18kB done
+#11 DONE 0.7s
+
+#12 [chromium-worker internal] load build definition from Dockerfile.chromium-worker
+#12 transferring dockerfile: 1.76kB done
+#12 DONE 0.8s
+
+#4 [audio-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#13 [document-worker internal] load build definition from Dockerfile.document-worker
+#13 transferring dockerfile: 3.77kB done
+#13 WARN: FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 27)
+#13 DONE 0.8s
+
+#14 [api internal] load build definition from Dockerfile.api
+#14 transferring dockerfile: 521B done
+#14 DONE 0.8s
+
+#15 [auth] library/debian:pull token for registry-1.docker.io
+#15 DONE 0.0s
+
+#16 [auth] library/golang:pull token for registry-1.docker.io
+#16 DONE 0.0s
+
+#4 [api internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#17 [auth] verapdf/cli:pull token for registry-1.docker.io
+#17 DONE 0.0s
+
+#18 [api internal] load metadata for docker.io/library/debian:bookworm-slim
+#18 DONE 1.4s
+
+#4 [av-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 DONE 1.4s
+
+#19 [cad-worker internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#19 DONE 0.9s
+
+#20 [pandoc-worker internal] load .dockerignore
+#20 transferring context: 61B 0.0s done
+#20 DONE 0.0s
+
+#21 [cad-worker venv  1/11] FROM docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#21 DONE 0.0s
+
+#22 [ocr-worker build 1/6] FROM docker.io/library/golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+#22 DONE 0.0s
+
+#23 [ocr-worker stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+#23 CACHED
+
+#24 [ocr-worker internal] load build context
+#24 transferring context: 54.35MB 1.4s done
+#24 transferring context: 54.35MB 1.4s done
+#24 DONE 1.5s
+
+#25 [tectonic-worker stage-1  3/11] RUN set -eu;     case "arm64" in       amd64) TEC_ARCH=x86_64;  TEC_SHA256="8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7" ;;       arm64) TEC_ARCH=aarch64; TEC_SHA256="b10954a95404f3ab2328d2fa59a5ebab8e657f893fab096f98be8db7c0c979b8" ;;       *) echo "FATAL: unsupported TARGETARCH 'arm64' -- only amd64/arm64 are pinned" >&2; exit 1 ;;     esac;     TARBALL="tectonic-0.17.0-${TEC_ARCH}-unknown-linux-musl.tar.gz";     curl -fL --retry 5 --retry-delay 5 -o "/tmp/${TARBALL}"       "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/${TARBALL}";     echo "${TEC_SHA256}  /tmp/${TARBALL}" | sha256sum -c -;     tar -xzf "/tmp/${TARBALL}" -C /usr/local/bin tectonic;     chmod 0755 /usr/local/bin/tectonic;     rm -f "/tmp/${TARBALL}"
+#25 CACHED
+
+#26 [tectonic-worker stage-1  4/11] COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb
+#26 ERROR: failed to calculate checksum of ref 180d82ef-e62f-4d8b-a923-a7f3d4c4d8b2::swu5pkytw6jzbuena8wj1rurv: "/deploy/tectonic-bundle/octoconv-bundle.ttb": not found
+
+#27 [av-worker build 2/6] WORKDIR /src
+#27 CACHED
+
+#28 [av-worker build 3/6] COPY go.mod go.sum ./
+#28 CACHED
+
+#29 [av-worker build 4/6] RUN go mod download
+#29 CACHED
+
+#30 [webhook-worker-1 build 5/6] COPY . .
+#30 ...
+
+#31 [document-worker internal] load metadata for docker.io/verapdf/cli:v1.30.2
+#31 CANCELED
+
+#30 [cad-worker build 5/6] COPY . .
+#30 ...
+
+#32 [audio-worker whisper-build 2/6] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential       cmake       git       ca-certificates       curl  && rm -rf /var/lib/apt/lists/*
+#32 CANCELED
+
+#33 [ocr-worker tess-build  2/11] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential autoconf automake libtool pkg-config       git ca-certificates curl       libpng-dev libjpeg62-turbo-dev libtiff-dev libwebp-dev libarchive-dev zlib1g-dev  && rm -rf /var/lib/apt/lists/*
+#33 CANCELED
+
+#34 [ocr-worker stage-2  2/14] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       poppler-utils       libpng16-16 libjpeg62-turbo libtiff6 libwebp7 libwebpmux3 libarchive13 zlib1g       libgomp1 libstdc++6  && rm -rf /var/lib/apt/lists/*
+#34 CANCELED
+
+#35 [webhook-worker-1 stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates  && rm -rf /var/lib/apt/lists/*
+#35 ...
+
+#36 [av-worker stage-2 2/5] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       libx264-164 libx265-199 libvpx7 libopus0 libmp3lame0 libwebp7  && rm -rf /var/lib/apt/lists/*
+#36 CANCELED
+
+#37 [chromium-worker stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       tini       chromium-headless-shell       fonts-liberation2  && rm -rf /var/lib/apt/lists/*
+#37 CANCELED
+
+#38 [probe-worker stage-1 2/4] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       tini       ghostscript       poppler-utils       unzip       file  && rm -rf /var/lib/apt/lists/*
+#38 CANCELED
+
+#35 [webhook-worker-2 stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates  && rm -rf /var/lib/apt/lists/*
+#35 CANCELED
+
+#39 [av-worker ffmpeg-build 2/6] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential pkg-config git ca-certificates curl nasm yasm       libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libwebp-dev       zlib1g-dev  && rm -rf /var/lib/apt/lists/*
+#39 CANCELED
+
+#30 [webhook-worker-2 build 5/6] COPY . .
+#30 ...
+
+#40 [audio-worker stage-2 2/7] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       ffmpeg  && rm -rf /var/lib/apt/lists/*
+#40 CANCELED
+
+#41 [worker stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       libvips-tools  && rm -rf /var/lib/apt/lists/*
+#41 CANCELED
+
+#30 [pandoc-worker build 5/6] COPY . .
+#30 CANCELED
+
+#42 [pandoc-worker stage-1  2/11] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       curl  && rm -rf /var/lib/apt/lists/*
+------
+ > [tectonic-worker stage-1  4/11] COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb:
+------
+
+ [33m1 warning found (use docker --debug to expand):
+[0m - FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 27)
+Dockerfile.tectonic-worker:95
+--------------------
+  93 |     # have proved only that something at that URL matched.
+  94 |     ARG TECTONIC_BUNDLE_SHA256=f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff
+  95 | >>> COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb
+  96 |     RUN set -eu; \
+  97 |         echo "${TECTONIC_BUNDLE_SHA256}  /opt/tectonic/octoconv-bundle.ttb" | sha256sum -c -; \
+--------------------
+ERROR: target tectonic-worker: failed to solve: failed to compute cache key: failed to calculate checksum of ref 180d82ef-e62f-4d8b-a923-a7f3d4c4d8b2::swu5pkytw6jzbuena8wj1rurv: "/deploy/tectonic-bundle/octoconv-bundle.ttb": not found
+
+View build details: docker-desktop://dashboard/build/orbstack/orbstack/qejs24jr5kfkp4ab1o8b99x92
+### tier docker-build: FAIL (rc=1)
+
+--------------------------------------------------------------
+### tier: e2e (started 11:48:43 UTC)
+--------------------------------------------------------------
+--- bringing up the compose stack (with --build: no warmed cache locally) ---
+ Image hibiken/asynqmon:0.7.2 Pulling 
+ 75323ed2678f Pulling fs layer 0B
+ 75323ed2678f Downloading 81.92kB
+ 75323ed2678f Downloading 242.8kB
+ 75323ed2678f Downloading 734.4kB
+ 75323ed2678f Downloading 817.9kB
+ 75323ed2678f Downloading 4.216MB
+ 75323ed2678f Download complete 0B
+ 75323ed2678f Extracting 98.3kB
+ 75323ed2678f Extracting 3.146MB
+ 75323ed2678f Extracting 4.227MB
+ 75323ed2678f Extracting 4.62MB
+ 75323ed2678f Extracting 7.707MB
+ 75323ed2678f Pull complete 0B
+ Image hibiken/asynqmon:0.7.2 Pulled 
+ Image octoconv-ocr-worker Building 
+ Image octoconv-pandoc-worker Building 
+ Image octoconv-probe-worker Building 
+ Image octoconv-chromium-worker Building 
+ Image octoconv-worker Building 
+ Image octoconv-tectonic-worker Building 
+ Image octoconv-cad-worker Building 
+ Image octoconv-api Building 
+ Image octoconv-av-worker Building 
+ Image octoconv-webhook-worker-1 Building 
+ Image octoconv-document-worker Building 
+ Image octoconv-audio-worker Building 
+ Image octoconv-webhook-worker-2 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 8.23kB done
+#1 DONE 0.0s
+
+#2 [tectonic-worker internal] load build definition from Dockerfile.tectonic-worker
+#2 transferring dockerfile: 8.57kB done
+#2 DONE 0.1s
+
+#3 [tectonic-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#3 ...
+
+#4 [webhook-worker-2 internal] load build definition from Dockerfile.webhook-worker
+#4 transferring dockerfile: 818B done
+#4 DONE 0.1s
+
+#5 [cad-worker internal] load build definition from Dockerfile.cad-worker
+#5 transferring dockerfile: 2.85kB done
+#5 DONE 0.1s
+
+#6 [pandoc-worker internal] load build definition from Dockerfile.pandoc-worker
+#6 transferring dockerfile: 4.37kB done
+#6 DONE 0.1s
+
+#7 [cad-worker internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#7 DONE 0.1s
+
+#3 [pandoc-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#3 ...
+
+#8 [ocr-worker internal] load build definition from Dockerfile.ocr-worker
+#8 transferring dockerfile: 9.87kB 0.0s done
+#8 DONE 0.2s
+
+#9 [document-worker internal] load build definition from Dockerfile.document-worker
+#9 transferring dockerfile: 3.77kB done
+#9 WARN: FromPlatformFlagConstDisallowed: FROM --platform flag should not use constant value "linux/amd64" (line 27)
+#9 DONE 0.2s
+
+#10 [api internal] load build definition from Dockerfile.api
+#10 transferring dockerfile: 521B 0.0s done
+#10 DONE 0.2s
+
+#11 [av-worker internal] load build definition from Dockerfile.av-worker
+#11 transferring dockerfile: 9.73kB 0.0s done
+#11 DONE 0.3s
+
+#12 [chromium-worker internal] load build definition from Dockerfile.chromium-worker
+#12 transferring dockerfile: 1.76kB done
+#12 DONE 0.3s
+
+#3 [chromium-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#3 ...
+
+#13 [probe-worker internal] load build definition from Dockerfile.probe-worker
+#13 transferring dockerfile: 3.82kB done
+#13 DONE 0.3s
+
+#14 [audio-worker internal] load build definition from Dockerfile.audio-worker
+#14 transferring dockerfile: 4.18kB done
+#14 DONE 0.3s
+
+#15 [worker internal] load build definition from Dockerfile.worker
+#15 transferring dockerfile: 835B done
+#15 DONE 0.3s
+
+#3 [worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#3 DONE 0.4s
+
+#16 [audio-worker internal] load metadata for docker.io/library/debian:bookworm-slim
+#16 DONE 0.3s
+
+#17 [av-worker internal] load .dockerignore
+#17 transferring context: 61B done
+#17 DONE 0.0s
+
+#18 [cad-worker venv  1/11] FROM docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#18 DONE 0.0s
+
+#19 [ocr-worker build 1/6] FROM docker.io/library/golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+#19 DONE 0.0s
+
+#20 [ocr-worker stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+#20 CACHED
+
+#21 [ocr-worker stage-2  2/14] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       poppler-utils       libpng16-16 libjpeg62-turbo libtiff6 libwebp7 libwebpmux3 libarchive13 zlib1g       libgomp1 libstdc++6  && rm -rf /var/lib/apt/lists/*
+#21 ...
+
+#22 [probe-worker internal] load build context
+#22 transferring context: 232.47kB 0.9s done
+#22 DONE 1.1s
+
+#23 [pandoc-worker build 3/6] COPY go.mod go.sum ./
+#23 CACHED
+
+#24 [pandoc-worker build 2/6] WORKDIR /src
+#24 CACHED
+
+#25 [pandoc-worker build 4/6] RUN go mod download
+#25 CACHED
+
+#26 [tectonic-worker stage-1  3/11] RUN set -eu;     case "arm64" in       amd64) TEC_ARCH=x86_64;  TEC_SHA256="8533d07f9ccbd7a65824b9e0459041bca34af1eb33daba48f59215593753a3b7" ;;       arm64) TEC_ARCH=aarch64; TEC_SHA256="b10954a95404f3ab2328d2fa59a5ebab8e657f893fab096f98be8db7c0c979b8" ;;       *) echo "FATAL: unsupported TARGETARCH 'arm64' -- only amd64/arm64 are pinned" >&2; exit 1 ;;     esac;     TARBALL="tectonic-0.17.0-${TEC_ARCH}-unknown-linux-musl.tar.gz";     curl -fL --retry 5 --retry-delay 5 -o "/tmp/${TARBALL}"       "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/${TARBALL}";     echo "${TEC_SHA256}  /tmp/${TARBALL}" | sha256sum -c -;     tar -xzf "/tmp/${TARBALL}" -C /usr/local/bin tectonic;     chmod 0755 /usr/local/bin/tectonic;     rm -f "/tmp/${TARBALL}"
+#26 CACHED
+
+#27 [tectonic-worker stage-1  4/11] COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb
+#27 ERROR: failed to calculate checksum of ref 180d82ef-e62f-4d8b-a923-a7f3d4c4d8b2::0iwsnv4in20l60e30auoo9y2z: "/deploy/tectonic-bundle/octoconv-bundle.ttb": not found
+
+#28 [webhook-worker-2 build 5/6] COPY . .
+#28 ...
+
+#29 [document-worker internal] load metadata for docker.io/verapdf/cli:v1.30.2
+#29 DONE 1.8s
+
+#17 [document-worker internal] load .dockerignore
+#17 transferring context: 61B done
+#17 DONE 0.0s
+
+#19 [document-worker build 1/6] FROM docker.io/library/golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+#19 DONE 0.0s
+
+#20 [document-worker stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+#20 CACHED
+
+#22 [document-worker internal] load build context
+#22 transferring context: 232.47kB 0.9s done
+#22 DONE 1.1s
+
+#23 [document-worker build 3/6] COPY go.mod go.sum ./
+#23 CACHED
+
+#24 [document-worker build 2/6] WORKDIR /src
+#24 CACHED
+
+#25 [document-worker build 4/6] RUN go mod download
+#25 CACHED
+
+#30 [document-worker verapdf 1/1] FROM docker.io/verapdf/cli:v1.30.2@sha256:d5ee329657cf9bc4b2400392dd54c7d0a0ce9980ff6fa2da5590eebeec007cdb
+#30 resolve docker.io/verapdf/cli:v1.30.2@sha256:d5ee329657cf9bc4b2400392dd54c7d0a0ce9980ff6fa2da5590eebeec007cdb
+#30 resolve docker.io/verapdf/cli:v1.30.2@sha256:d5ee329657cf9bc4b2400392dd54c7d0a0ce9980ff6fa2da5590eebeec007cdb 0.2s done
+#30 DONE 0.2s
+
+#28 [api build 5/6] COPY . .
+#28 ...
+
+#31 [webhook-worker-2 stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates  && rm -rf /var/lib/apt/lists/*
+#31 CANCELED
+
+#28 [webhook-worker-2 build 5/6] COPY . .
+#28 ...
+
+#32 [chromium-worker stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       tini       chromium-headless-shell       fonts-liberation2  && rm -rf /var/lib/apt/lists/*
+#32 CANCELED
+
+#33 [probe-worker stage-1 2/4] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       tini       ghostscript       poppler-utils       unzip       file  && rm -rf /var/lib/apt/lists/*
+#33 CANCELED
+
+#28 [probe-worker build 5/6] COPY . .
+#28 ...
+
+#34 [worker stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       libvips-tools  && rm -rf /var/lib/apt/lists/*
+#34 CANCELED
+
+#28 [pandoc-worker build 5/6] COPY . .
+#28 ...
+
+#35 [av-worker stage-2 2/5] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       libx264-164 libx265-199 libvpx7 libopus0 libmp3lame0 libwebp7  && rm -rf /var/lib/apt/lists/*
+#35 CANCELED
+
+#28 [worker build 5/6] COPY . .
+#28 CANCELED
+
+#36 [av-worker ffmpeg-build 2/6] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential pkg-config git ca-certificates curl nasm yasm       libx264-dev libx265-dev libvpx-dev libopus-dev libmp3lame-dev libwebp-dev       zlib1g-dev  && rm -rf /var/lib/apt/lists/*
+#36 CANCELED
+
+#37 [audio-worker whisper-build 2/6] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential       cmake       git       ca-certificates       curl  && rm -rf /var/lib/apt/lists/*
+#37 CANCELED
+
+#38 [pandoc-worker stage-1 2/5] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       curl  && rm -rf /var/lib/apt/lists/*
+#38 ...
+
+#39 [audio-worker stage-2 2/7] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       ffmpeg  && rm -rf /var/lib/apt/lists/*
+#39 2.476 runc run failed: container process is already dead
+#39 CANCELED
+
+#21 [ocr-worker stage-2  2/14] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       poppler-utils       libpng16-16 libjpeg62-turbo libtiff6 libwebp7 libwebpmux3 libarchive13 zlib1g       libgomp1 libstdc++6  && rm -rf /var/lib/apt/lists/*
+#21 CANCELED
+
+#40 [ocr-worker tess-build  2/11] RUN apt-get update  && apt-get install -y --no-install-recommends       build-essential autoconf automake libtool pkg-config       git ca-certificates curl       libpng-dev libjpeg62-turbo-dev libtiff-dev libwebp-dev libarchive-dev zlib1g-dev  && rm -rf /var/lib/apt/lists/*
+#40 CANCELED
+
+#41 [document-worker stage-2 2/4] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       tini       libreoffice-writer-nogui       libreoffice-calc-nogui       libreoffice-impress-nogui       fonts-crosextra-carlito       fonts-crosextra-caladea       fonts-liberation2       openjdk-17-jre-headless  && rm -rf /var/lib/apt/lists/*  && rm -rf /tmp/hsperfdata_*
+#41 CANCELED
+
+#38 [pandoc-worker stage-1 2/5] RUN apt-get update  && apt-get install -y --no-install-recommends       ca-certificates       curl  && rm -rf /var/lib/apt/lists/*
+------
+ > [tectonic-worker stage-1  4/11] COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb:
+------
+Dockerfile.tectonic-worker:95
+
+--------------------
+
+  93 |     # have proved only that something at that URL matched.
+
+  94 |     ARG TECTONIC_BUNDLE_SHA256=f42d5eed010a826548d346e3161df4b7b0237cad66ac316221c09a3b311502ff
+
+  95 | >>> COPY deploy/tectonic-bundle/octoconv-bundle.ttb /opt/tectonic/octoconv-bundle.ttb
+
+  96 |     RUN set -eu; \
+
+  97 |         echo "${TECTONIC_BUNDLE_SHA256}  /opt/tectonic/octoconv-bundle.ttb" | sha256sum -c -; \
+
+--------------------
+
+target tectonic-worker: failed to solve: failed to compute cache key: failed to calculate checksum of ref 180d82ef-e62f-4d8b-a923-a7f3d4c4d8b2::0iwsnv4in20l60e30auoo9y2z: "/deploy/tectonic-bundle/octoconv-bundle.ttb": not found
+
+
+
+View build details: docker-desktop://dashboard/build/default/default/aoruoarvkbunmnxbocxhpjshl
+
+### tier e2e: FAIL (rc=1)
+
+==============================================================
+ci-local 20261012T113321Z summary   commit 46e742c
+  PASS  helm
+  FAIL  gate (rc=1)
+  PASS  race
+  FAIL  docker-build (rc=1)
+  FAIL  e2e (rc=1)
+  AT LEAST ONE TIER FAILED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/rg/octoconv/.planning/ci-local/ci-local-20261012T113321Z.log
+==============================================================
