@@ -55,7 +55,7 @@ STARTED_BY_ME=""
 FINISHED=""
 N_FORMATS=0 N_INSPECT=0 N_CONVERT=0 N_QUALITY=0 N_RENDER=0 N_VIEWS=0 N_MEAS=0 N_OPTS_REJECT=0 N_REJECT=0 N_BOMB=0
 N_RENDER_RETRY=0 N_MESH_SIGNAL=0 N_EMPTY=0 N_CANCEL_RENDER=0 N_CANCEL=0 N_KILL=0 N_IMAGE=0
-N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJECT=0 N_DXF_BOMB=0 N_DXF_CEILING=0 N_DXF_RETRY=0 N_DXF_CANCEL=0
+N_SANDBOX=0 N_DXF_SVG=0 N_DXF_PDF=0 N_DXF_RENDER=0 N_DXF_MEAS=0 N_DXF_OPTS_REJECT=0 N_DXF_BOMB=0 N_DXF_EMPTY=0 N_DXF_CEILING=0 N_DXF_RETRY=0 N_DXF_CANCEL=0
 
 log() { echo "$*" >&2; }
 ev() { echo "$*" | tee -a "$EVID"; }
@@ -104,7 +104,7 @@ for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surface
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
-for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg; do
+for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg dxf/alpha_clear_geometry.dxf dxf/alpha_clear_all.dxf dxf/alpha_one_visible.dxf dxf-out/alpha_one_visible.texts.json dxf-out/alpha_one_visible.render.svg; do
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 REPL50="$SCALED/$REPL50_NAME"
@@ -916,6 +916,68 @@ if doctype or raw_script:
     sys.exit(1)
 root = ET.fromstring(data)
 root_svg = 1 if root.tag.rsplit("}", 1)[-1] == "svg" else 0
+SHAPES = ("path", "polyline", "polygon", "line", "circle", "ellipse", "rect")
+PAINT = ("fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width")
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def paint_of(el, parent):
+    paint = dict(parent)
+    for k in PAINT:
+        if el.get(k) is not None:
+            paint[k] = el.get(k)
+    return paint
+
+
+def stroked(p):
+    return p["stroke"] != "none" and num(p["stroke-opacity"]) > 0 and num(p["stroke-width"]) > 0
+
+
+def filled(p):
+    return p["fill"] != "none" and num(p["fill-opacity"]) > 0
+
+
+def has_extent(el, tag):
+    if tag == "rect":
+        return num(el.get("width")) > 0 and num(el.get("height")) > 0
+    if tag == "circle":
+        return num(el.get("r")) > 0
+    if tag == "ellipse":
+        return num(el.get("rx")) > 0 and num(el.get("ry")) > 0
+    if tag == "path":
+        return any(c in "LlQqCcZz" for c in el.get("d", ""))
+    if tag in ("polyline", "polygon"):
+        return len(re.findall(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", el.get("points", ""))) >= 4
+    return True
+
+
+visible = 0
+
+
+def walk(el, parent, hidden):
+    global visible
+    tag = el.tag.rsplit("}", 1)[-1]
+    paint = paint_of(el, parent)
+    hidden = hidden or tag in ("defs", "clipPath")
+    if not hidden and tag in SHAPES and ((filled(paint) and tag != "line") or stroked(paint)) and has_extent(el, tag):
+        visible += 1
+    if not hidden and tag == "text":
+        pieces = [(el.text, paint)]
+        for span in el:
+            pieces += [(span.text, paint_of(span, paint)), (span.tail, paint)]
+        if any((t or "").strip() and (filled(p) or stroked(p)) for t, p in pieces):
+            visible += 1
+    for child in el:
+        walk(child, paint, hidden)
+
+
+walk(root, {"fill": "#000000", "fill-opacity": "1", "stroke": "none", "stroke-opacity": "1", "stroke-width": "1"}, False)
 elements = forbidden = on_attrs = href_attrs = 0
 texts = []
 for el in root.iter():
@@ -934,8 +996,8 @@ for el in root.iter():
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(texts, fh, ensure_ascii=False)
 bad = forbidden or on_attrs or href_attrs or doctype or raw_script or not root_svg
-print("root_svg=%d,elements=%d,forbidden_elements=%d,on_attrs=%d,href_attrs=%d,doctype=%d,raw_script_tag=%d,svg_texts=%d" % (
-    root_svg, elements, forbidden, on_attrs, href_attrs, doctype, raw_script, len(texts)))
+print("root_svg=%d,elements=%d,forbidden_elements=%d,on_attrs=%d,href_attrs=%d,doctype=%d,raw_script_tag=%d,svg_texts=%d,svg_visible=%d" % (
+    root_svg, elements, forbidden, on_attrs, href_attrs, doctype, raw_script, len(texts), visible))
 sys.exit(1 if bad else 0)
 PY
 
@@ -1022,12 +1084,15 @@ svg_judged() {
 	line=$("$W/bin/cad-svg-check" --out "$svg.reser" "$svg") || rc=$?
 	[ "$rc" = 0 ] || fail "$label: cad-svg-check rejected the downloaded SVG: $line"
 	SV_TEXTS=$(mfield texts "$line")
+	SV_VISIBLE=$(mfield visible "$line")
 	SV_SIZE="$(mfield width_mm "$line")x$(mfield height_mm "$line")"
 	cmp -s "$svg" "$svg.reser" || fail "$label: the re-serialization of the downloaded SVG differs from the download"
 	rc=0
 	SV_WALK=$(python3 "$W/svgwalk.py" "$svg" "$svg.texts.json") || rc=$?
 	[ "$rc" = 0 ] || fail "$label: the downloaded SVG holds a forbidden construct: $SV_WALK"
 	[ "$(mfield svg_texts "$SV_WALK")" = "$SV_TEXTS" ] || fail "$label: the Go validator counts $SV_TEXTS texts, the Python walk $(mfield svg_texts "$SV_WALK")"
+	[ "$(mfield svg_visible "$SV_WALK")" = "$SV_VISIBLE" ] || fail "$label: the Go validator counts $SV_VISIBLE visible elements, the Python walk $(mfield svg_visible "$SV_WALK")"
+	[ "$SV_VISIBLE" -ge 1 ] || fail "$label: the downloaded SVG shows nothing: $line"
 }
 
 dxf_svg_one() {
@@ -1064,6 +1129,12 @@ dxf_svg_one() {
 	text_fonts)
 		texts_check=$(python3 "$W/svgfonts.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the font attributes are not those of the measured faces: $texts_check"
 		;;
+	alpha_one_visible)
+		[ "$SV_VISIBLE" = 1 ] || fail "DXF_SVG $name: $SV_VISIBLE visible elements, want exactly the one 50% line"
+		[ "$(grep -o 'stroke-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 8 ] && [ "$(grep -o 'fill-opacity="0.000"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 4 ] || fail "DXF_SVG $name: the fully transparent strokes, fills and texts are not all kept"
+		[ "$(grep -o 'stroke-opacity="0.498"' "$W/dxf_$name.svg" | wc -l | tr -d ' ')" = 1 ] || fail "DXF_SVG $name: the 50% line is not the one half-transparent stroke"
+		texts_check="visible_elements=1,clear_strokes=8,clear_fills_and_texts=4,half_strokes=1"
+		;;
 	*)
 		texts_check="texts_checked=none"
 		;;
@@ -1079,6 +1150,7 @@ dxf_svg_one never_resolved "$DXF/never_resolved.dxf" never_resolved.dxf
 dxf_svg_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
 dxf_svg_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
 dxf_svg_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf
+dxf_svg_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf
 
 pdf_judged() {
 	local label=$1 pdf=$2 line rc=0
@@ -1097,7 +1169,12 @@ dxf_pdf_one() {
 	dxf_convert "DXF_PDF $name" "$file" "$upname" pdf "$W/dxf_$name.pdf"
 	[ "$DC_CT" = application/pdf ] || fail "DXF_PDF $name: the download content type is '$DC_CT', want application/pdf"
 	pdf_judged "DXF_PDF $name" "$W/dxf_$name.pdf" --texts "$DXF_OUT/$name.texts.json" --svg "$DXF_OUT/$name.render.svg"
-	[ "$(mfield expected_runes "$PD_LINE")" -gt 0 ] || fail "DXF_PDF $name: the judge expected no text: $PD_LINE"
+	if [ "$name" = alpha_one_visible ]; then
+		[ "$(mfield expected_runes "$PD_LINE")" = 0 ] || fail "DXF_PDF $name: the judge expected text from a drawing whose texts are all fully transparent: $PD_LINE"
+	else
+		[ "$(mfield expected_runes "$PD_LINE")" -gt 0 ] || fail "DXF_PDF $name: the judge expected no text: $PD_LINE"
+	fi
+	[ "$(mfield ink_ops "$PD_LINE")" -ge 2 ] || fail "DXF_PDF $name: the judge saw no ink beyond the background: $PD_LINE"
 	[ "$(mfield invisible_text "$PD_LINE")" = "$invisible" ] || fail "DXF_PDF $name: invisible_text=$(mfield invisible_text "$PD_LINE"), want $invisible: $PD_LINE"
 	case "$name" in
 	legacy_cp1251)
@@ -1114,6 +1191,11 @@ dxf_pdf_one() {
 		done
 		[ "$(grep -c CLEAR "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(grep CLEAR "$W/dxf_$name.pdf.txt" | head -3)"
 		text_check="pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=0"
+		;;
+	alpha_one_visible)
+		[ "$(mfield ink_ops "$PD_LINE")" = 2 ] && [ "$(mfield paint_ops "$PD_LINE")" = 2 ] || fail "DXF_PDF $name: want the background and the 50% line as the only paint and ink: $PD_LINE"
+		[ "$(grep -c '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		text_check="pdftotext_text=empty"
 		;;
 	text_alpha_faint)
 		grep -qF "FAINT ONLY" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold FAINT ONLY: $(head -c 300 "$W/dxf_$name.pdf.txt")"
@@ -1144,6 +1226,7 @@ dxf_pdf_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf 0
 dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 4
 dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1
 dxf_pdf_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 0
+dxf_pdf_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 2
 
 drawing_judge() {
 	local png=$1 size=$2 background=$3 svg=$4 line rc=0
@@ -1198,6 +1281,7 @@ dxf_render_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 1280 opaque ""
 dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 opaque ""
 dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 transparent '{"background":"transparent"}'
 dxf_render_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 1280 opaque ""
+dxf_render_one alpha_one_visible "$DXF/alpha_one_visible.dxf" alpha_one_visible.dxf 1280 opaque ""
 
 dxf_meas_one() {
 	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
@@ -1299,6 +1383,32 @@ done
 dxf_bomb_one "$CORPUS/public/3dsolids.dxf" 3dsolids.dxf cad_empty_result
 dxf_bomb_one "$DXF/all_hidden.dxf" all_hidden.dxf cad_empty_result
 dxf_bomb_one "$DXF/single_point.dxf" single_point.dxf cad_empty_result
+
+dxf_empty_one() {
+	local name=$1 target=$2 op=$3 want_msg code msg events n
+	create_job "$DXF/$name.dxf" "$name.dxf" "$target" "$op"
+	[ "$HTTP" = 202 ] && [ -n "$JOB_ID" ] || fail "DXF_EMPTY $name $target: create returned $HTTP: $(cat "$W/create.json")"
+	wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
+	[ "$JOB_STATUS" = failed ] || fail "DXF_EMPTY $name $target: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
+	code=$(jq -r '.error_code // empty' "$W/job.json")
+	[ "$code" = cad_empty_result ] || fail "DXF_EMPTY $name $target: error_code '$code', want cad_empty_result: $(cat "$W/job.json")"
+	msg=$(jq -r '.error_message // empty' "$W/job.json")
+	want_msg="the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"
+	[ "$msg" = "$want_msg" ] || fail "DXF_EMPTY $name $target: message '$msg', want '$want_msg': $(cat "$W/job.json")"
+	events=$(job_events "$JOB_ID")
+	case ";$events;" in *";active>active;"*) fail "DXF_EMPTY $name $target: job $JOB_ID was retried: $events" ;; esac
+	n=$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")
+	[ "$n" = 0 ] || fail "DXF_EMPTY $name $target: $n output rows exist"
+	[ "$(jq 'has("download_url") or has("outputs")' "$W/job.json")" = false ] || fail "DXF_EMPTY $name $target: the failed job exposes download_url or outputs"
+	ev "DXF_EMPTY,name=$name.dxf,target=$target,operation=${op:-convert},job=$JOB_ID,status=failed,code=$code,message=$(printf '%s' "$msg" | sed 's/,/;/g'),retried=0,events=$events,outputs=0,download_url=absent,result=ok"
+	N_DXF_EMPTY=$((N_DXF_EMPTY + 1))
+}
+
+for e in alpha_clear_geometry alpha_clear_all; do
+	dxf_empty_one "$e" svg ""
+	dxf_empty_one "$e" pdf ""
+	dxf_empty_one "$e" png render
+done
 
 python3 - "$CORPUS/synthetic/legacy_cp1251.dxf" "$W/ceiling.dxf" 123731969 <<'PY' || fail "cannot build the padded dxf"
 import sys
@@ -1464,5 +1574,5 @@ fi
 ev "IMAGE,cad_worker_image_id=$CAD_IMAGE,cad_worker_size_bytes=$IMG_SIZE,phase73_image_id=${P73_ID:-unknown},phase73_size_bytes=$P73_SIZE"
 N_IMAGE=1
 
-ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE,sandbox=$N_SANDBOX,dxf_svg=$N_DXF_SVG,dxf_pdf=$N_DXF_PDF,dxf_render=$N_DXF_RENDER,dxf_meas=$N_DXF_MEAS,dxf_opts_reject=$N_DXF_OPTS_REJECT,dxf_bomb=$N_DXF_BOMB,dxf_ceiling=$N_DXF_CEILING,dxf_retry=$N_DXF_RETRY,dxf_cancel=$N_DXF_CANCEL"
+ev "SUMMARY,result=ALL PASS,formats=$N_FORMATS,inspect=$N_INSPECT,convert=$N_CONVERT,quality=$N_QUALITY,render=$N_RENDER,views=$N_VIEWS,meas=$N_MEAS,opts_reject=$N_OPTS_REJECT,reject=$N_REJECT,bomb=$N_BOMB,render_retry=$N_RENDER_RETRY,mesh_signal=$N_MESH_SIGNAL,empty=$N_EMPTY,cancel_render=$N_CANCEL_RENDER,cancel=$N_CANCEL,worker_kill=$N_KILL,image=$N_IMAGE,sandbox=$N_SANDBOX,dxf_svg=$N_DXF_SVG,dxf_pdf=$N_DXF_PDF,dxf_render=$N_DXF_RENDER,dxf_meas=$N_DXF_MEAS,dxf_opts_reject=$N_DXF_OPTS_REJECT,dxf_bomb=$N_DXF_BOMB,dxf_empty=$N_DXF_EMPTY,dxf_ceiling=$N_DXF_CEILING,dxf_retry=$N_DXF_RETRY,dxf_cancel=$N_DXF_CANCEL"
 FINISHED=1
