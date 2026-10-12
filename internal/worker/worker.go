@@ -1607,6 +1607,9 @@ func (h *Handler) uploadBytes(ctx context.Context, key string, body []byte, cont
 
 func (h *Handler) uploadFrom(ctx context.Context, key, path, contentType string) (int64, error) {
 	f, fi, err := convert.OpenJobFile(path)
+	if errors.Is(err, convert.ErrJobFileIrregular) {
+		return 0, fmt.Errorf("%w: open output: %w", asynq.SkipRetry, err)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("open output: %w", err)
 	}

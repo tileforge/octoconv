@@ -3,7 +3,6 @@ package convert
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -405,7 +404,7 @@ func (c AudioConverter) Convert(ctx context.Context, inPath, outPath string, opt
 // none of txt/srt/vtt/json share a single magic-byte signature, so a
 // content-format check is not possible generically.
 func validateAudioOutput(path string) error {
-	fi, err := os.Stat(path)
+	fi, err := statJobOutput(path)
 	if err != nil {
 		return fmt.Errorf("audio: stat output: %w", err)
 	}

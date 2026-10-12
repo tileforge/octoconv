@@ -57,3 +57,25 @@ func ReadJobFile(path string) ([]byte, error) {
 	defer f.Close()
 	return io.ReadAll(f)
 }
+
+func statJobOutput(path string) (fs.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !entry.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: %s is %v", ErrJobFileIrregular, path, entry.Mode().Type())
+	}
+	return info, nil
+}
+
+func jobOutputOpenFailure(prefix string, err error) error {
+	if errors.Is(err, ErrJobFileIrregular) {
+		return fmt.Errorf("%s: stat output: %w", prefix, err)
+	}
+	return fmt.Errorf("%s: open output: %w", prefix, err)
+}
