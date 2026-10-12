@@ -1,0 +1,46 @@
+# cad-dxf on dxf/text_alpha.dxf in octoconv-cad-worker:latest (ezdxf 1.4.4), helper mounted read-only, unconfined, --user nobody --network none
+# HEAD helper: text fill is color[:7], no fill-opacity on any text
+247:            el.set("fill", "none")
+258:            el.set("fill", color)
+390:        el.set("fill", t["color"][:7])
+# old = HEAD helper plus the text fill-opacity line only (no complex-MTEXT run alpha); new = final helper
+== old
+TEXT,variant=cm_old,text=OPAQUE TEXT,fill=#000000,fill_opacity=absent
+TEXT,variant=cm_old,text=HALF TEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_old,text=CLEAR TEXT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_old,text=OPAQUE MTEXT,fill=#000000,fill_opacity=absent
+TEXT,variant=cm_old,text=HALF MTEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_old,text=CLEAR MTEXT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_old,text=HALF,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_old,text=SPLIT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_old,text=INLINE,fill=#ff0000,fill_opacity=absent
+TEXT,variant=cm_old,text=RED,fill=#ff0000,fill_opacity=absent
+TEXT,variant=cm_old,text=CLEAR,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_old,text=SPLIT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_old,text=LAYER TEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_old,text=BLOCK TEXT,fill=#000000,fill_opacity=0.498
+== new
+TEXT,variant=cm_new,text=OPAQUE TEXT,fill=#000000,fill_opacity=absent
+TEXT,variant=cm_new,text=HALF TEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_new,text=CLEAR TEXT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_new,text=OPAQUE MTEXT,fill=#000000,fill_opacity=absent
+TEXT,variant=cm_new,text=HALF MTEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_new,text=CLEAR MTEXT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_new,text=HALF,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_new,text=SPLIT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_new,text=INLINE,fill=#ff0000,fill_opacity=0.498
+TEXT,variant=cm_new,text=RED,fill=#ff0000,fill_opacity=0.498
+TEXT,variant=cm_new,text=CLEAR,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_new,text=SPLIT,fill=#000000,fill_opacity=0.000
+TEXT,variant=cm_new,text=LAYER TEXT,fill=#000000,fill_opacity=0.498
+TEXT,variant=cm_new,text=BLOCK TEXT,fill=#000000,fill_opacity=0.498
+# HEAD Go PDF judge on the first helper outputs (texts.json without the invisible key)
+GOPDF,pdf=SCRATCH/o2d/run1/text_alpha.pdf,ok=0,pages=1,paint_ops=14,text_runes=56,expected_runes=75,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,reason=cad: the drawing's PDF failed the content check: missing text: 21 of 75 expected characters found in order
+exit status 1
+# all-transparent drawing (ALL CLEAR text + line, both 100%): helper, rsvg, Go judges
+{"texts":[{"text":"ALL CLEAR","covered":"ALL CLEAR","invisible":true}]}
+GOPDF,pdf=SCRATCH/o2d/clear/c.pdf,ok=0,pages=1,paint_ops=1,text_runes=0,expected_runes=0,below_render_floor=0,below_floor_runes=0,floor_pt=0.00469174,invisible_text=1,invisible_runes=8,reason=cad: the drawing's PDF failed the content check: empty page: 1 paint operations; want at least one beyond the background
+exit status 1
+cad-pixel-judge: SCRATCH/o2d/clear/c.png: cad: the rendered image failed the content check: J1 the frame holds no ink
+GOJUDGE,png=SCRATCH/o2d/clear/c.png,ok=0,mode=drawing,w=1280,h=1280,count=0,dark_count=0,frac=0.0000,dark=0.0000,box=0x0,margin_px=-1,alpha=0,frac_transparent=0.0000,box_x=0,box_y=0,frac6=0.000000,lb_left=38,lb_top=483,lb_w=1203,lb_h=313
+exit status 1

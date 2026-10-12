@@ -1,0 +1,352 @@
+starting the stack (not running before: postgres redis minio api cad-worker)
+ Image octoconv-cad-worker Building 
+ Image octoconv-api Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.30kB done
+#1 DONE 0.0s
+
+#2 [cad-worker internal] load build definition from Dockerfile.cad-worker
+#2 transferring dockerfile: 2.85kB 0.0s done
+#2 DONE 0.1s
+
+#3 [api internal] load build definition from Dockerfile.api
+#3 transferring dockerfile: 521B 0.0s done
+#3 DONE 0.1s
+
+#4 [api internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 ...
+
+#5 [auth] library/golang:pull token for registry-1.docker.io
+#5 DONE 0.0s
+
+#6 [auth] library/debian:pull token for registry-1.docker.io
+#6 DONE 0.0s
+
+#7 [api internal] load metadata for docker.io/library/debian:bookworm-slim
+#7 ...
+
+#8 [cad-worker internal] load metadata for docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#8 DONE 1.6s
+
+#7 [api internal] load metadata for docker.io/library/debian:bookworm-slim
+#7 DONE 1.7s
+
+#4 [cad-worker internal] load metadata for docker.io/library/golang:1.26-bookworm
+#4 DONE 1.8s
+
+#9 [cad-worker internal] load .dockerignore
+#9 transferring context: 61B done
+#9 DONE 0.0s
+
+#10 [cad-worker build 1/6] FROM docker.io/library/golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+#10 DONE 0.0s
+
+#11 [api stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+#11 DONE 0.0s
+
+#12 [cad-worker venv  1/11] FROM docker.io/library/debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+#12 DONE 0.0s
+
+#13 [cad-worker internal] load build context
+#13 transferring context: 183.26MB 2.8s done
+#13 transferring context: 183.26MB 2.8s done
+#13 DONE 2.9s
+
+#14 [cad-worker engine  2/11] RUN apt-get update  && apt-get install -y --no-install-recommends python3 libgl1 libx11-6 libosmesa6 librsvg2-bin fonts-dejavu-core ca-certificates  && rm -rf /var/lib/apt/lists/*
+#14 CACHED
+
+#15 [cad-worker venv  8/11] COPY cmd/cad-worker/vtk_keeplist.py cmd/cad-worker/vtk-keeplist.txt /tmp/keeplist/
+#15 CACHED
+
+#16 [cad-worker engine  6/11] COPY cmd/cad-worker/helper/cad-render /usr/local/bin/cad-render
+#16 CACHED
+
+#17 [cad-worker venv  6/11] COPY cmd/cad-worker/requirements-vtk.txt /req/requirements-vtk.txt
+#17 CACHED
+
+#18 [cad-worker venv  9/11] RUN /opt/venv/bin/python -I -B /tmp/keeplist/vtk_keeplist.py prune       --keeplist /tmp/keeplist/vtk-keeplist.txt --site /opt/venv/lib/python3.11/site-packages  && rm -rf /tmp/keeplist
+#18 CACHED
+
+#19 [cad-worker venv  7/11] RUN /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes       -r /req/requirements-vtk.txt
+#19 CACHED
+
+#20 [cad-worker engine  3/11] COPY --from=venv /opt/venv /opt/venv
+#20 CACHED
+
+#21 [cad-worker engine  7/11] COPY cmd/cad-worker/helper/cad-dxf /usr/local/bin/cad-dxf
+#21 CACHED
+
+#22 [cad-worker engine  4/11] COPY cmd/cad-worker/helper/cad-mesh /usr/local/bin/cad-mesh
+#22 CACHED
+
+#23 [cad-worker venv 11/11] RUN /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes       -r /req/requirements-dxf.txt
+#23 CACHED
+
+#24 [cad-worker venv 10/11] COPY cmd/cad-worker/requirements-dxf.txt /req/requirements-dxf.txt
+#24 CACHED
+
+#25 [cad-worker venv  3/11] RUN python3 -m venv /opt/venv
+#25 CACHED
+
+#26 [cad-worker engine  8/11] RUN chmod 0755 /usr/local/bin/cad-mesh /usr/local/bin/cad-guard /usr/local/bin/cad-render /usr/local/bin/cad-dxf
+#26 CACHED
+
+#27 [cad-worker venv  2/11] RUN apt-get update  && apt-get install -y --no-install-recommends python3 python3-venv  && rm -rf /var/lib/apt/lists/*
+#27 CACHED
+
+#28 [cad-worker venv  4/11] COPY cmd/cad-worker/requirements-mesh.txt /req/requirements-mesh.txt
+#28 CACHED
+
+#29 [cad-worker venv  5/11] RUN /opt/venv/bin/pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes       -r /req/requirements-mesh.txt
+#29 CACHED
+
+#30 [cad-worker engine  5/11] COPY cmd/cad-worker/helper/cad-guard /usr/local/bin/cad-guard
+#30 CACHED
+
+#31 [cad-worker engine  9/11] RUN /opt/venv/bin/python -I -B -c "import OCP.STEPControl, OCP.IGESControl, OCP.BRepMesh, OCP.StlAPI, OCP.BRepBndLib, OCP.Interface, OCP.IMeshData, OCP.BRep, OCP.TopLoc, OCP.TopoDS, vtkmodules.vtkCommonCore, vtkmodules.vtkFiltersCore, vtkmodules.vtkIOGeometry, vtkmodules.vtkIOImage, vtkmodules.vtkRenderingCore, vtkmodules.vtkRenderingOpenGL2"
+#31 CACHED
+
+#32 [cad-worker engine 10/11] RUN d=$(mktemp -d)  && HOME="$d" XDG_CACHE_HOME="$d/.cache" XDG_CONFIG_HOME="$d/.config"     /opt/venv/bin/python -I -B -c "import ezdxf, ezdxf.addons.drawing.frontend, ezdxf.addons.drawing.svg"  && rm -rf "$d"
+#32 CACHED
+
+#33 [cad-worker engine 11/11] RUN rsvg-convert --version
+#33 CACHED
+
+#34 [cad-worker build 3/6] COPY go.mod go.sum ./
+#34 CACHED
+
+#35 [cad-worker build 2/6] WORKDIR /src
+#35 CACHED
+
+#36 [cad-worker build 4/6] RUN go mod download
+#36 CACHED
+
+#37 [cad-worker build 5/6] COPY . .
+#37 DONE 3.3s
+
+#38 [cad-worker build 6/6] RUN CGO_ENABLED=0 go build -o /out/cad-worker ./cmd/cad-worker
+#38 ...
+
+#39 [api build 6/6] RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
+#39 ...
+
+#38 [cad-worker build 6/6] RUN CGO_ENABLED=0 go build -o /out/cad-worker ./cmd/cad-worker
+#38 DONE 50.9s
+
+#39 [api build 6/6] RUN CGO_ENABLED=0 go build -o /out/api ./cmd/api
+#39 DONE 51.2s
+
+#40 [api stage-1 2/3] RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates  && rm -rf /var/lib/apt/lists/*
+#40 CACHED
+
+#41 [cad-worker stage-3 1/1] COPY --from=build /out/cad-worker /usr/local/bin/cad-worker
+#41 DONE 0.1s
+
+#42 [api stage-1 3/3] COPY --from=build /out/api /usr/local/bin/api
+#42 DONE 0.1s
+
+#43 [api] exporting to image
+#43 exporting layers
+#43 exporting layers 0.2s done
+#43 writing image sha256:6bda2071330419ee883ce37c0f228eae126c21a6a3721bff266c51e8ad390941 done
+#43 naming to docker.io/library/octoconv-api done
+#43 DONE 0.2s
+
+#44 [cad-worker] exporting to image
+#44 exporting layers 0.2s done
+#44 writing image sha256:214047e0d44093e5649561a33fb5e5433be91dbbedf4efa819d449ddbac3ac66 done
+#44 naming to docker.io/library/octoconv-cad-worker done
+#44 DONE 0.2s
+
+#45 [cad-worker] resolving provenance for metadata file
+#45 DONE 0.0s
+
+#46 [api] resolving provenance for metadata file
+#46 DONE 0.0s
+ Image octoconv-api Built 
+ Image octoconv-cad-worker Built 
+ Container octoconv-cad-worker Recreate 
+ Container octoconv-api Recreate 
+ Container octoconv-cad-worker Recreated 
+ Container octoconv-api Recreated 
+ Container octoconv-db Starting 
+ Container octoconv-minio Starting 
+ Container octoconv-redis Starting 
+ Container octoconv-redis Started 
+ Container octoconv-minio Started 
+ Container octoconv-minio Waiting 
+ Container octoconv-db Started 
+ Container octoconv-minio Waiting 
+ Container octoconv-db Waiting 
+ Container octoconv-redis Waiting 
+ Container octoconv-db Waiting 
+ Container octoconv-redis Waiting 
+ Container octoconv-minio Waiting 
+ Container octoconv-redis Healthy 
+ Container octoconv-redis Healthy 
+ Container octoconv-minio Healthy 
+ Container octoconv-createbucket-1 Starting 
+ Container octoconv-minio Healthy 
+ Container octoconv-minio Healthy 
+ Container octoconv-db Healthy 
+ Container octoconv-api Starting 
+ Container octoconv-db Healthy 
+ Container octoconv-cad-worker Starting 
+ Container octoconv-createbucket-1 Started 
+ Container octoconv-cad-worker Started 
+ Container octoconv-api Started 
+HDR,date_utc=2026-10-12T14:59:05Z
+HDR,commit=b48e93be64d3f79a9c0c79c31f5b515e3a153207
+HDR,tracked_dirt=0
+HDR,tracked_dirt_paths=
+HDR,api_image_id=sha256:6bda2071330419ee883ce37c0f228eae126c21a6a3721bff266c51e8ad390941
+HDR,cad_worker_image_id=sha256:214047e0d44093e5649561a33fb5e5433be91dbbedf4efa819d449ddbac3ac66
+HDR,cad_engine_timeout_s=886
+HDR,cad_render_timeout_s=480
+HDR,cad_dxf_timeout_s=162
+HDR,cad_rsvg_timeout_s=141
+HDR,sandbox_disabled=false
+HDR,started_by_run=postgres;redis;minio;api;cad-worker
+HDR,server_arch=arm64
+HDR,disk_free_gib=31
+SANDBOX,landlock_line=landlock via /usr/local/bin/cad-worker __sandbox-exec (convert; render and dxf),proven_line=cad-guard; cad-mesh; cad-render; cad-dxf and rsvg-convert ran inside the job directory and were denied a file outside it,names_cad_dxf=1,names_rsvg_convert=1,result=ok
+FORMATS,convert_cad_pairs=dxf>pdf;dxf>svg;iges>stl;step>stl,render_cad_pairs=dxf>png;iges>png;step>png;stl>png,cad_pairs=8,other_pairs_touching_cad_formats=0,operations_convert_cad=4,operations_render_cad=4,result=ok
+INSPECT,format=step,operation=convert,target=stl,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=66060288,available=true,result=ok
+INSPECT,format=step,operation=render,target=png,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=66060288,available=true,result=ok
+INSPECT,format=iges,operation=convert,target=stl,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=141557760,available=true,result=ok
+INSPECT,format=iges,operation=render,target=png,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=141557760,available=true,result=ok
+INSPECT,format=stl,operation=render,target=png,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=190840832,available=true,result=ok
+INSPECT,format=dxf,operation=convert,target=svg,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=123731968,available=true,result=ok
+INSPECT,format=dxf,operation=convert,target=pdf,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=123731968,available=true,result=ok
+INSPECT,format=dxf,operation=render,target=png,engine=cad,estimate_source=unmeasured,estimated_max_seconds=886,max_bytes=123731968,available=true,result=ok
+INSPECT,format=dxf,cad_offers=convert>pdf;convert>svg;render>png,offers=3,max_bytes=123731968,result=ok
+CONVERT,name=units_inch_step,upload=units_inch.step,job=5d0563fa-0ba2-41b8-97c9-4ad75f9439df,seconds=2.4,outputs=1,primary=1,bytes=684,sha256=07ccabf8692ee980d9b8deb72689b2d140239f9bc4c303de7e16ae001b5633fa,judge=ok,triangles=12,diag=95.038095,extents=25.400000:50.799999:76.199997,result=ok,reason=
+CONVERT,name=nist_ctc_05_stp,upload=nist_ctc_05_asme1_ap242-e1.stp,job=2d3320ca-f65b-4e8d-8743-43a3fa97914a,seconds=2.3,outputs=1,primary=1,bytes=472584,sha256=5507ead0655c4e14286e60fdce9148cbb03c1318985b1d70d6d6be3958e9fca6,judge=ok,triangles=9450,diag=907.161442,extents=482.600006:527.049988:558.799988,vertex_diag=33.133254,factor=25.4,result=ok,reason=
+CONVERT,name=nist_d2mi_906_stp,upload=nist-d2mi-827-9999-906.stp,job=a988e7c0-9f8f-4dd8-a04c-cf0abd18384c,seconds=2.4,outputs=1,primary=1,bytes=343584,sha256=b4816d7145758fe7a2ac31ea8ff49e652e432deb4cca4b17649dfdc035e72518,judge=ok,triangles=6870,diag=125.425182,extents=19.507200:69.545197:102.539803,vertex_diag=4.924289,factor=25.4,result=ok,reason=
+CONVERT,name=festo_valve_igs,upload=freecad-festo-valve-5-2.igs,job=1be5bad5-9474-499a-8805-1563ff6c362f,seconds=9.0,outputs=1,primary=1,bytes=3269684,sha256=b9a802a3efea99fee2a5758308e771880fed7d4c400a61b9e88535bda6eef83c,judge=ok,triangles=65392,diag=418.014905,extents=138.500000:168.000004:356.833588,result=ok,reason=
+CONVERT,name=festo_valve_iges,upload=freecad-festo-valve-5-2.iges,job=cd344773-dac6-46b4-af09-6a6a62ae3a9b,seconds=8.9,outputs=1,primary=1,bytes=3269684,sha256=b9a802a3efea99fee2a5758308e771880fed7d4c400a61b9e88535bda6eef83c,judge=ok,triangles=65392,diag=418.014905,extents=138.500000:168.000004:356.833588,result=ok,reason=
+RENDER,name=units_inch_step,upload=units_inch.step,job=74aadcd1-1efe-4c29-b8a5-fba7816091b3,seconds=4.6,outputs=2,roles=primary@0;measurements@1,png_bytes=19559,png_sha256=51c322b8995928679c3318893519695ac283c0d89d7f027bf5f8bbe40313f011,measurements_bytes=228,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=648595,dark_count=4134,frac=0.3959,dark=0.0025,box=1128x912,margin_px=76,alpha=0,frac_transparent=0.0000,measurements=valid,format=step,unit=inch,unit_source=declared,extents=1:2:3,volume=6,area=22,reason=none,valid=1
+RENDER,name=nist_ctc_05_stp,upload=nist_ctc_05_asme1_ap242-e1.stp,job=9122a89c-16f6-4135-92f0-6a6273dfc146,seconds=4.5,outputs=2,roles=primary@0;measurements@1,png_bytes=101302,png_sha256=224acb3c97bb2e81e4fe2ef6fdb3708ade82e2a9ef3dfb73f0216b1040724599,measurements_bytes=286,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=323163,dark_count=10146,frac=0.1972,dark=0.0062,box=754x769,margin_px=157,alpha=0,frac_transparent=0.0000,measurements=valid,format=step,unit=inch,unit_source=declared,extents=19:20.75:22,volume=774.691,area=1334.93,reason=none,valid=1
+RENDER,name=festo_valve_igs,upload=freecad-festo-valve-5-2.igs,job=e464b88d-1b93-4999-aaa6-0ee89333e794,seconds=13.3,outputs=2,roles=primary@0;measurements@1,png_bytes=183066,png_sha256=2534434d81eebc3fa901e2d8948864c41a1457bda9558f7c3694c746a112d653,measurements_bytes=343,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=306977,dark_count=23068,frac=0.1874,dark=0.0141,box=1011x921,margin_px=90,alpha=0,frac_transparent=0.0000,measurements=valid,format=iges,unit=mm,unit_source=declared,extents=138.5:168:356.834,volume=null,area=null,reason=no_solids,valid=1
+RENDER,name=festo_valve_iges,upload=freecad-festo-valve-5-2.iges,job=dd592e0a-647b-471b-b045-844199650f5c,seconds=12.5,outputs=2,roles=primary@0;measurements@1,png_bytes=183066,png_sha256=2534434d81eebc3fa901e2d8948864c41a1457bda9558f7c3694c746a112d653,measurements_bytes=343,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=306977,dark_count=23068,frac=0.1874,dark=0.0141,box=1011x921,margin_px=90,alpha=0,frac_transparent=0.0000,measurements=valid,format=iges,unit=mm,unit_source=declared,extents=138.5:168:356.834,volume=null,area=null,reason=no_solids,valid=1
+RENDER,name=stl_ascii_box_stl,upload=stl_ascii_box.stl,job=e8da812e-dd72-470d-badd-f149eb4aac4d,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=15118,png_sha256=0df7cedf7cca7bd9065270f2fdfbcd307a4ce3585f32da59a2fc110ac5b2cb29,measurements_bytes=160,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=600187,dark_count=4787,frac=0.3663,dark=0.0029,box=652x1128,margin_px=76,alpha=0,frac_transparent=0.0000,measurements=valid,format=stl,unit=unspecified,unit_source=none,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1
+VIEWS,name=view_iso,job=ee4f62cd-824a-4454-b991-9509c8a52cbb,png_sha256=51c322b8995928679c3318893519695ac283c0d89d7f027bf5f8bbe40313f011,box=1128x912,h_over_w=0.809,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=648595,dark_count=4134,frac=0.3959,dark=0.0025,box=1128x912,margin_px=76,alpha=0,frac_transparent=0.0000
+VIEWS,name=view_front,job=103a2503-5d04-47c7-a622-50dd9a0373ac,png_sha256=8d94c9b4cdd3350c6728e48fe63791f8c1a3862a1bfbfc07bd2ab27d4b3e9f3f,box=1128x566,h_over_w=0.502,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=638448,dark_count=6732,frac=0.3897,dark=0.0041,box=1128x566,margin_px=76,alpha=0,frac_transparent=0.0000
+VIEWS,name=view_top,job=3c2de5c2-5083-4f85-ad07-153724a8076f,png_sha256=81a8f59d37dba73f85d710ffa698aaea44af24c1b67a1777d74784f6811da25c,box=752x1128,h_over_w=1.500,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=848256,dark_count=7476,frac=0.5177,dark=0.0046,box=752x1128,margin_px=76,alpha=0,frac_transparent=0.0000
+VIEWS,name=distinct,views=iso;front;top,distinct_sha256=3,front_h_over_w=0.5,top_h_over_w=1.5,z_up=1,result=ok
+VIEWS,name=size_2048,job=d66bcfa3-e039-43e8-85b5-7ea87980290d,png_sha256=dbea09413f594b01055f0e061a9bfb7219a1e78f7f75ac92659a7109ebca755c,judge=ok,ok=1,mode=blob,w=2048,h=2048,count=1659294,dark_count=13133,frac=0.3956,dark=0.0031,box=1806x1460,margin_px=121,alpha=0,frac_transparent=0.0000
+VIEWS,name=background_transparent,job=1c02859c-b252-4092-8105-f5519cf872d6,png_sha256=e4a2704c02cd4b515debb9ae712fafa6c35a0c4904440328d6fa3d9417090425,judge=ok,ok=1,mode=blob,w=1280,h=1280,count=647293,dark_count=4134,frac=0.3951,dark=0.0025,box=1128x912,margin_px=76,alpha=1,frac_transparent=0.6049
+MEAS,name=units_inch,upload=units_inch.step,assume_unit=none,job=bcfaed17-17a9-41d4-a4c7-7ebb2dcbfe8e,format=step,unit=inch,unit_source=declared,extents=1:2:3,volume=6,area=22,reason=none,valid=1,expected_unit=inch,expected_volume=6,expected_area=22,result=ok
+MEAS,name=units_inch_assume_mm,upload=units_inch.step,assume_unit=mm,job=e7aec917-d997-4758-8a41-7425710feb23,format=step,unit=inch,unit_source=declared,extents=1:2:3,volume=6,area=22,reason=none,valid=1,expected_unit=inch,expected_volume=6,expected_area=22,result=ok
+MEAS,name=stl_ascii_box,upload=stl_ascii_box.stl,assume_unit=none,job=81e80914-401b-4ec4-b428-e6c94e4c1037,format=stl,unit=unspecified,unit_source=none,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1,expected_unit=unspecified,expected_volume=6000,expected_area=2200,result=ok
+MEAS,name=stl_ascii_box_assume_mm,upload=stl_ascii_box.stl,assume_unit=mm,job=3000ad87-8485-4533-bdbe-f3a0e2579e95,format=stl,unit=mm,unit_source=client_assumed,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1,expected_unit=mm,expected_volume=6000,expected_area=2200,result=ok
+MEAS,name=surfaces_only_iges,upload=surfaces_only.iges,assume_unit=none,job=6e46d244-87ab-4277-8a84-249122e7b8ba,format=iges,unit=mm,unit_source=declared,extents=1:2:3,volume=null,area=null,reason=no_solids,valid=1,expected_unit=any,expected_volume=null,expected_area=null,result=ok
+MEAS,name=nasa_hubble_stl,upload=nasa-hubble-all-pieces.stl,assume_unit=none,job=eaa2540f-a5da-40f4-a140-dc3b9fe06e94,format=stl,unit=unspecified,unit_source=none,extents=39.811:67.166:91.901,volume=null,area=null,reason=stl_not_watertight,valid=1,expected_unit=unspecified,expected_volume=null,expected_area=null,result=ok
+MEAS,name=stl_case_upper,upload=stl_ascii_box_upper.stl,assume_unit=none,job=3d463c82-e3a4-48c7-bcc7-5d6cf440a29c,format=stl,unit=unspecified,unit_source=none,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1,expected_unit=unspecified,expected_volume=6000,expected_area=2200,result=ok
+MEAS,name=stl_case_mixed_body,upload=stl_ascii_box_mixed.stl,assume_unit=none,job=09c5c5d2-b9ca-46a9-9175-f90d7f23fb1d,format=stl,unit=unspecified,unit_source=none,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1,expected_unit=unspecified,expected_volume=6000,expected_area=2200,result=ok
+MEAS,name=stl_case_header_upper,upload=stl_ascii_box_header_upper.stl,assume_unit=none,job=225f5197-0025-477b-a2f1-934362f5002b,format=stl,unit=unspecified,unit_source=none,extents=10:20:30,volume=6000,area=2200,reason=none,valid=1,expected_unit=unspecified,expected_volume=6000,expected_area=2200,result=ok
+MEAS,name=stl_hollow_ambiguous,upload=stl_hollow_cube.stl,assume_unit=none,job=05a2e116-14b7-44af-86b5-6219d14445f1,format=stl,unit=unspecified,unit_source=none,extents=10:10:10,volume=null,area=null,reason=stl_ambiguous_shells,valid=1,expected_unit=unspecified,expected_volume=null,expected_area=null,result=ok
+QUALITY,name=LinearSlide-MGN15x-Block.step,draft=3988,standard=5948,fine=14140,non_decreasing=1,render_fine_job=7250751c-dc1d-4e4b-a3a8-43d777123b17,render_fine=done,render_fine_judge=ok,result=ok
+OPTS_REJECT,name=view_unknown,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=size_255,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=size_2049,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=size_string,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=quality_unknown,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=background_unknown,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=key_unknown,operation=render,target=png,upload=units_inch.step,http=422,code=invalid_options,jobs_created=0,result=ok
+OPTS_REJECT,name=render_key_on_convert,operation=convert,target=stl,upload=units_inch.step,http=422,code=opts_not_applicable,jobs_created=0,result=ok
+OPTS_REJECT,name=quality_on_stl_render,operation=render,target=png,upload=stl_ascii_box.stl,http=422,code=opts_not_applicable,jobs_created=0,result=ok
+EMPTY,job=28dab901-231a-4dd1-83ee-62fdaa7f28eb,input=zero_extent.stl,bytes=284,status=failed,code=cad_empty_result,outputs=0,download_url=absent,result=ok
+REJECT,name=lying_count_stl,bytes=134,http=422,code=truncated_cad_file,result=ok
+REJECT,name=step_63mib_plus_1,bytes=66060289,http=413,code=payload_too_large,message=step file exceeds the 63 MiB limit for this conversion,result=ok
+baseline: restarts=0 started=2026-10-12T14:58:54.204688521Z oom_kill=0
+BOMB,name=flood_entities_754763.step,bytes=27077097,sha256=863619c7a9f54bc43869d374d04d76f67346f3add76cd49042c7b77b65612b8c,job=c8cd0d8c-4b05-4b6f-9380-0a0a8d53250a,status=failed,code=cad_too_complex,seconds=2.9,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=flood_nauo_1519.step,bytes=103023,sha256=9c2120b0422a540b20dd9d6b0982df237a1e4b3f21fe245c1f53437491f8e4dd,job=4e02ac34-107f-4f86-b98c-a97a95d42e4b,status=failed,code=cad_too_complex,seconds=2.5,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=hier_nauo_K12.step,bytes=41885,sha256=e16f74efa74b295ec7d6a603027a3b4423d7d95de44d1bbe1be90014659e0a2b,job=78e04efd-058c-4363-8218-8a2cd5a0801e,status=failed,code=cad_too_complex,seconds=2.5,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=hier_mappedtext_K12.step,bytes=20072,sha256=572b4381259fe4a3861f41ae73dfbb72f3864d60321c41e0ca3f8b2953f8c0f0,job=7a92bbbf-fcae-4565-8792-51fec6524524,status=failed,code=cad_too_complex,seconds=2.4,bound_s=30,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s2_self_ref.step,bytes=18593,sha256=f6e063ff1714af3048de6437d1372fec6121466a58f59beaebe1053b455e065c,job=655064f6-8659-4188-9ed7-1dfb209dbaf7,status=failed,code=cad_unreadable,seconds=2.3,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s2_cycle2.step,bytes=18594,sha256=dad01ad33ecea23b94b64590c8f02809071303e85bccfd5fce30c0f7213ab350,job=681a5a0f-c144-45e1-b210-816aceaa141d,status=failed,code=cad_unreadable,seconds=2.3,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_abc.step,bytes=15568,sha256=675e8f9518b0b3a3157a1831240a97f7b71c0f72f5f5250ca3c55b7c82466031,job=dffef0db-e1e4-4b8a-bd5f-61db95d2c9b6,status=failed,code=cad_unreadable,seconds=2.3,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_dblminus.step,bytes=15568,sha256=413a2aeba1c46a57f3bcfcf8d0cfd87b041c646a9f387ea5632819c75dd305a6,job=3f985798-923e-40cf-89d0-9d9ad20bd591,status=failed,code=cad_unreadable,seconds=4.9,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_1e300.step,bytes=15570,sha256=b676206c3d1fba645c3b1bc701967a4dd3e86e5cb3a9dfff28d2c94cf0bd172d,job=46348c9d-8021-4059-8dd7-0188d465462e,status=failed,code=cad_unreadable,seconds=4.6,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_1e999.step,bytes=15570,sha256=4b0251b5ae1392f5c08ee1bd00d151a5f5bbe6ea5fdf62b663f3227642fdbb2d,job=c899ced1-baea-4981-aaff-a61b93b838fe,status=failed,code=cad_unreadable,seconds=4.5,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=s1_coord_nan.step,bytes=15568,sha256=fa2456023045da9429dc91b8c87467493cb12e1ad22d4a89c46901ad461163ea,job=5e9dac26-0d75-4629-9170-8f40a0816c4f,status=failed,code=cad_unreadable,seconds=2.6,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+BOMB,name=partial_face.step,bytes=15566,sha256=cdd7c4a2d4ffa7a3417f1ae9ac91454ffa91b472bfe959464ddbd97dbfb25ffc,job=eb5adcbd-d108-41a2-be7d-423afaab829e,status=failed,code=cad_unreadable,seconds=5.5,bound_s=886,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0
+RENDER_RETRY,job=d25fb794-8045-4371-b38c-9ceaac8faae7,input=nasa-pillars-of-creation-full.stl,bytes=52041984,signal=TERM,target=cad-render,hit=1703:cad-render,status=done,retried=1,events=->queued;queued>active;active>active;active>done,seconds=24.4,outputs=2,judge=ok,measurements=valid,result=ok
+MESH_SIGNAL,job=a0c0ebe2-6c69-4334-8e6a-4884fa012046,input=nist_ctc_05_asme1_ap242-e1.stp,signal=TERM,target=cad-mesh,hit=1796:cad-mesh,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,result=ok
+CANCEL_RENDER,job=e6cf0749-e862-4235-9ec2-e8471edce53c,input=nasa-pillars-of-creation-full.stl,render_pid=2002,pid_gone=1,gone_s=0.5,status=canceled,download_url=absent,outputs=0,result=ok
+CANCEL,job=280df529-482a-44a8-b775-10512d4a6c96,input=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f,mesh_pids=2042,pid_gone=1,gone_s=0.4,status=canceled,download_url=absent,result=ok
+DXF_SVG,name=legacy_cp1251,upload=legacy_cp1251.dxf,job=c93f937d-099a-421f-aae7-58fb2d9bb041,seconds=2.9,outputs=1,bytes=465,sha256=5663b2d676e0dc8fa5f285f30f331507012ad15eaf330b1c42559d8b585a546e,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=1,page_mm=297x86.1,root_svg=1,elements=5,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=1,detal_cp1251=present,result=ok
+DXF_SVG,name=text_cases,upload=text_cases.dxf,job=ea2a2325-17ab-44bf-8cf9-cbc486dce4d7,seconds=2.4,outputs=1,bytes=3857,sha256=9f05fd93cc03be1faffdc522e06c4ff0c0f91bde78898895f28e45c47355d530,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=18,page_mm=297x164.3,root_svg=1,elements=32,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=18,special_text=exact,result=ok
+DXF_SVG,name=layers_off_frozen,upload=layers_off_frozen.dxf,job=3782e067-12c1-4059-8d3b-bfc1c5e9176d,seconds=2.3,outputs=1,bytes=541,sha256=ae6f2424c45850d014333df9dc8a0273b03a7dbd7653921963a4100e078d4a12,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=1,page_mm=297x72.3,root_svg=1,elements=6,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=1,visible=present,hidden_off=absent,hidden_frozen=absent,result=ok
+DXF_SVG,name=never_resolved,upload=never_resolved.dxf,job=1407c4a6-8575-45a7-8ca8-27743cfe2252,seconds=4.6,outputs=1,bytes=542,sha256=92347659dcba0867dd4ba1bfc415463e93fc9987bfb3c667b9fd70bad5d9ab0c,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=1,page_mm=297x50.9,root_svg=1,elements=6,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=1,texts_checked=none,result=ok
+DXF_SVG,name=uncommon,upload=uncommon.dxf,job=571b7df7-0a17-4894-b41f-3f936059de7a,seconds=3.1,outputs=1,bytes=24991,sha256=6668745286a34f909357d8a274c4571ca6bedd8e4c2823889209dc2491b89638,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=49,page_mm=297x257.4,root_svg=1,elements=238,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=49,texts_at_least_40=1,result=ok
+DXF_SVG,name=text_alpha,upload=text_alpha.dxf,job=61aa90f8-06c7-4c01-b2b9-226512cc4a85,seconds=3.3,outputs=1,bytes=3275,sha256=a8d7f4e9725de5be51e59ffbd5a0666befdf1705131d30a4b4f86d6fff9fab4e,content_type=image/svg+xml,svg_check=ok,reserialized_identical=1,texts=14,page_mm=297x254.4,root_svg=1,elements=25,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=14,texts_opaque=2,texts_half=8,texts_clear=4,texts_as_expected=1,stroke_opacity_half=2,fill_opacity_half=1,result=ok
+DXF_PDF,name=legacy_cp1251,upload=legacy_cp1251.dxf,job=853614e3-fd82-4c8e-8989-4c64ae02beb5,seconds=2.6,outputs=1,bytes=4946,sha256=6cde1b63562c6d72349453619c37ec60ef3ca3608cd876926f452ba613a4d8b0,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=2,text_runes=6,expected_runes=0,pdftotext_chars=7,pdftotext_detal_cp1251=present,result=ok
+DXF_PDF,name=text_cases,upload=text_cases.dxf,job=e7afc952-a63d-425c-a0c3-611a0b78eb96,seconds=2.6,outputs=1,bytes=14939,sha256=670bda9bcdbf92fed07cbbaefb5bbbc4c52492a2580f9b58925f8441d7a7fafa,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=29,text_runes=147,expected_runes=0,pdftotext_chars=184,pdftotext_special_text=present,result=ok
+DXF_PDF,name=uncommon,upload=uncommon.dxf,job=f9ffa561-ae16-4b04-8637-6fc89e5b3211,seconds=2.5,outputs=1,bytes=16581,sha256=ba66a2e52f13c0e6552e22c47895f2ea6ebd22eef16dfba5ae5408a31c0c9a88,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=232,text_runes=299,expected_runes=0,pdftotext_chars=348,pdftotext_text=nonempty,result=ok
+DXF_PDF,name=text_alpha,upload=text_alpha.dxf,job=75401311-b821-4eb7-b049-668a83020da4,seconds=2.4,outputs=1,bytes=7300,sha256=fee30352f352982985a23dcb1ad119844f14f8b2ed2e9a2c5bddfeee372f00db,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=18,text_runes=74,expected_runes=0,pdftotext_chars=90,pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=0,result=ok
+DXF_PDF,name=text_alpha_faint,upload=text_alpha_faint.dxf,job=b149998a-7d5f-46e9-944c-3c8df8703361,seconds=2.8,outputs=1,bytes=5067,sha256=37be8e90d977fc9b8715e909eeb7a093c74cad674f37db54ba3c1096a68314cc,content_type=application/pdf,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=2,text_runes=9,expected_runes=0,pdftotext_chars=11,pdftotext_faint_only=1,pdftotext_gone_lines=0,result=ok
+DXF_RENDER,name=wide,upload=wide.dxf,size=1280,background=opaque,opts=none,job=eec44f96-43e5-4f5d-9ed7-cac6890f71ba,seconds=2.5,outputs=2,roles=primary@0;measurements@1,png_bytes=7840,png_sha256=61849ffea6337ffd6c5d9fa297ade7bd03e5c5a80e6541db39ef3084b1aba291,letterbox_svg_job=bbbe85c3-649c-4427-a6c2-6805f488fb88,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=3433,dark_count=2266,frac=0.0021,dark=0.0014,box=1123x13,margin_px=78,alpha=0,frac_transparent=0.0000,box_x=78,box_y=633,frac6=0.002095,lb_left=38,lb_top=594,lb_w=1203,lb_h=92,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=10:1000,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:1000:10,coords_per_corner=2,result=ok
+DXF_RENDER,name=tall,upload=tall.dxf,size=1280,background=opaque,opts=none,job=7e692750-cdcc-4fff-b32d-fbee5969f621,seconds=4.1,outputs=2,roles=primary@0;measurements@1,png_bytes=7876,png_sha256=27b02967fb048ce449744235dbed56c140c0455f27fafe5a9e4c36f0b2beef7c,letterbox_svg_job=8ec9693b-8b90-4dd8-b90a-bbfd9dc3fd4a,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=3428,dark_count=2266,frac=0.0021,dark=0.0014,box=13x1123,margin_px=78,alpha=0,frac_transparent=0.0000,box_x=633,box_y=78,frac6=0.002092,lb_left=594,lb_top=38,lb_w=92,lb_h=1203,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=10:1000,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:1000,coords_per_corner=2,result=ok
+DXF_RENDER,name=wide,upload=wide.dxf,size=2048,background=transparent,opts={"size":2048,"background":"transparent"},job=8fd1f4c8-94b6-4262-98d4-d37bd54e37df,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=16763,png_sha256=c338da5af9879feb5c2489a9272a6578733ff58da5ca248791d9c661a697bbaa,letterbox_svg_job=bbbe85c3-649c-4427-a6c2-6805f488fb88,judge=drawing_ok,ok=1,mode=drawing,w=2048,h=2048,count=7341,dark_count=7341,frac=0.0018,dark=0.0018,box=1797x20,margin_px=125,alpha=1,frac_transparent=0.9982,box_x=125,box_y=1014,frac6=0.001750,lb_left=61,lb_top=950,lb_w=1925,lb_h=148,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=10:1000,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:1000:10,coords_per_corner=2,result=ok
+DXF_RENDER,name=legacy_cp1251,upload=legacy_cp1251.dxf,size=256,background=opaque,opts={"size":256},job=3e44ddd4-2e47-4b4d-8ee9-98a357629406,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=4353,png_sha256=3b0620f6740fe5128d2da1940cfc3e4cbeb80eb3c650d2ead0eea06300a6eef2,letterbox_svg_job=68c525be-920e-4cea-bfa0-6a75ecec541f,judge=drawing_ok,ok=1,mode=drawing,w=256,h=256,count=3516,dark_count=2777,frac=0.0536,dark=0.0424,box=225x54,margin_px=15,alpha=0,frac_transparent=0.0000,box_x=15,box_y=101,frac6=0.053650,lb_left=7,lb_top=93,lb_w=241,lb_h=70,measurements=valid,format=dxf,unit=unspecified,unit_source=none,extents=3.03751:12.7294,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0.16912257200267916:-0.5375083724045546:12.898526456798391:2.5,coords_per_corner=2,result=ok
+DXF_RENDER,name=text_alpha,upload=text_alpha.dxf,size=1280,background=opaque,opts=none,job=847707b4-d5ad-4c29-8191-334772a5e1f3,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=48562,png_sha256=63ffdbab0f19a29de95055dd8e95c5b1f82ec26efb34f4cc17410a1c6c7b898f,letterbox_svg_job=898d80a7-9ded-4247-a408-9136f206e319,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=86785,dark_count=15091,frac=0.0530,dark=0.0092,box=1123x951,margin_px=78,alpha=0,frac_transparent=0.0000,box_x=78,box_y=164,frac6=0.052969,lb_left=38,lb_top=124,lb_w=1203,lb_h=1031,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=110:130,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=-10:0:120:110,coords_per_corner=2,result=ok
+DXF_RENDER,name=text_alpha_faint,upload=text_alpha_faint.dxf,size=1280,background=opaque,opts=none,job=b960a5fa-3621-436f-8eb5-13afdbe06dbb,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=23053,png_sha256=075d73e0b3269f76ba49c922e241834179933bfaf82805f19854af9fa282982e,letterbox_svg_job=c41b2013-9db5-43f7-bd1e-c70329340066,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=49124,dark_count=0,frac=0.0300,dark=0.0000,box=1072x145,margin_px=86,alpha=0,frac_transparent=0.0000,box_x=86,box_y=463,frac6=0.029983,lb_left=38,lb_top=423,lb_w=1203,lb_h=434,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=25.3751:80.6564,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0.7702612190221031:-15.194239785666444:81.4266577361018:10.180843938379102,coords_per_corner=2,result=ok
+DXF_RENDER,name=text_alpha_faint,upload=text_alpha_faint.dxf,size=1280,background=transparent,opts={"background":"transparent"},job=7dd84f1e-db43-4f81-ac9f-bd1904a6aa00,seconds=2.4,outputs=2,roles=primary@0;measurements@1,png_bytes=17581,png_sha256=abc060fd14b315c0ea65f917a55f77ff5b7bd5083f2ece73d66f0995afd9f899,letterbox_svg_job=c41b2013-9db5-43f7-bd1e-c70329340066,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=49377,dark_count=49377,frac=0.0301,dark=0.0301,box=1072x145,margin_px=86,alpha=1,frac_transparent=0.9699,box_x=86,box_y=463,frac6=0.030137,lb_left=38,lb_top=423,lb_w=1203,lb_h=434,measurements=valid,format=dxf,unit=mm,unit_source=declared,extents=25.3751:80.6564,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0.7702612190221031:-15.194239785666444:81.4266577361018:10.180843938379102,coords_per_corner=2,result=ok
+DXF_MEAS,name=wrong_extents,upload=wrong_extents.dxf,assume_unit=none,job=86e4baef-328b-4fb0-93e1-fd9efac40f91,outputs=2,format=dxf,unit=mm,unit_source=declared,extents=10:30,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=10:20:40:30,expected_unit=mm,expected_unit_source=declared,expected_bbox=10:20:40:30,result=ok
+DXF_MEAS,name=units_1,upload=units_1.dxf,assume_unit=none,job=6d149f19-d15b-439f-acd7-ce7499e3d469,outputs=2,format=dxf,unit=inch,unit_source=declared,extents=5:10,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:5,expected_unit=inch,expected_unit_source=declared,result=ok
+DXF_MEAS,name=units_13,upload=units_13.dxf,assume_unit=none,job=dd576c44-bca5-4e2d-8445-1a9ea2f8a89b,outputs=2,format=dxf,unit=micrometre,unit_source=declared,extents=5:10,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:5,expected_unit=micrometre,expected_unit_source=declared,result=ok
+DXF_MEAS,name=units_0,upload=units_0.dxf,assume_unit=none,job=7d79a260-66a7-48f6-8658-de9821472bd6,outputs=2,format=dxf,unit=unspecified,unit_source=none,extents=5:10,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:5,expected_unit=unspecified,expected_unit_source=none,result=ok
+DXF_MEAS,name=units_0_assume_mm,upload=units_0.dxf,assume_unit=mm,job=3a615cf0-e341-46ad-9f45-36bda56dedbd,outputs=2,format=dxf,unit=mm,unit_source=client_assumed,extents=5:10,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:5,expected_unit=mm,expected_unit_source=client_assumed,result=ok
+DXF_MEAS,name=units_3_assume_mm,upload=units_3.dxf,assume_unit=mm,job=ffa24408-873c-4f50-91df-93dfe0f2f2a7,outputs=2,format=dxf,unit=unspecified,unit_source=none,extents=5:10,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:10:5,expected_unit=unspecified,expected_unit_source=none,result=ok
+DXF_MEAS,name=far_point,upload=far_point.dxf,assume_unit=none,job=2314afe2-8a34-4c65-b6ab-aedb87cb347f,outputs=2,format=dxf,unit=mm,unit_source=declared,extents=100000:100000,volume=null,area=null,reason=not_applicable_2d,valid=1,bbox=0:0:100000:100000,expected_unit=any,expected_unit_source=any,max_x_at_least_1e5=1,letterbox_svg_job=51ca0e01-22e9-4419-b833-ba0590c0c713,judge=drawing_ok,ok=1,mode=drawing,w=1280,h=1280,count=4,dark_count=1,frac=0.0000,dark=0.0000,box=1123x1123,margin_px=78,alpha=0,frac_transparent=0.0000,box_x=78,box_y=78,frac6=0.000002,lb_left=38,lb_top=38,lb_w=1203,lb_h=1203,result=ok
+DXF_OPTS_REJECT,name=render_view_top,operation=render,target=png,upload=legacy_cp1251.dxf,opts={"view":"top"},http=422,code=opts_not_applicable,jobs_created=0,result=ok
+DXF_OPTS_REJECT,name=render_quality_fine,operation=render,target=png,upload=legacy_cp1251.dxf,opts={"quality":"fine"},http=422,code=opts_not_applicable,jobs_created=0,result=ok
+DXF_OPTS_REJECT,name=render_view_sideways,operation=render,target=png,upload=legacy_cp1251.dxf,opts={"view":"sideways"},http=422,code=invalid_options,jobs_created=0,result=ok
+DXF_OPTS_REJECT,name=convert_svg_size_1024,operation=convert,target=svg,upload=legacy_cp1251.dxf,opts={"size":1024},http=422,code=opts_not_applicable,jobs_created=0,result=ok
+DXF_BOMB,name=minsert_over_inserts.dxf,bytes=784,sha256=3a692b00607ce0bf234b7d381e07ba8ecf765f49d115f1c08359844e553ad78c,job=b00e763b-96aa-4e1b-8ecb-c548be9834df,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=entities_over.dxf,bytes=133801,sha256=3ff090e0276e852976e554e4a91a95b95100fed04af71b60fe2403bc2db1af8f,job=384a17a4-835e-463b-9052-8f3e74de7373,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=dimension_minsert.dxf,bytes=1050,sha256=04d2d945b5cfb96877d0663a392e9c32e02d008aa7845211949504b399065af7,job=91b1329e-2129-4d8f-804a-d15852d8721c,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.4,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=cyclic_self.dxf,bytes=570,sha256=2adecb7704be0f3b2b0a2284fc2f31cac2f0dc6153e4535fb5b1c47197be1927,job=498e4ff2-1122-4a5e-ae50-033113d76dd1,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=cyclic_ab.dxf,bytes=722,sha256=f50320aea5ea1558f144886e47b36cbf9686b124285d3f6d3fa948b5232f0654,job=d1ab2cea-72e1-4119-93ff-3a55a325f63f,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.4,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=cyclic_case.dxf,bytes=488,sha256=9cafae08f1efe86506963dd759f0ea780945f46681c92cd3b85cfe688f7f928e,job=275bc79a-55e9-4f47-a7e2-966f9f048595,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=0.2,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=nest_d17.dxf,bytes=2968,sha256=9d23cd31221c41024bb2115a7a1815762085a9969cccf1eb469ee5dbc85a0a7c,job=fd8de5b6-7c36-40ae-aeb5-61e360243613,status=failed,code=cad_too_complex,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.4,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=nonnumeric_abc.dxf,bytes=317,sha256=748f988889a42216a662a7ee06520e76938aa9f827dff65401beea7f5813e581,job=769fb95d-b57c-40c5-8313-6ff99ecd0e54,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.5,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=nonnumeric_nan.dxf,bytes=317,sha256=1f2f0ee582a2d624a0b4645188f2e725d28c7c135ac3acb599939e2ba102692c,job=a0c2c7f7-cd46-493f-8764-d8f898eb3f82,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.4,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=nonnumeric_inf.dxf,bytes=317,sha256=6514420c01cbb7e24e8357b99a05c9a28098e581781f0c67506d15d1e41543c3,job=c2051212-3a9c-4204-bb94-bdcf924c7f31,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=nonnumeric_underscore.dxf,bytes=317,sha256=a32565e3e3c006ba443371c97585c04a0d449a925a1d30ed44dab80694c1c39c,job=7a98701c-6be7-4ec3-b86b-00fcde35fdf1,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.4,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=coord_1e400.dxf,bytes=319,sha256=649dfb1e21035b2ebb32c4b4a8ccd3c304f9a8628bdf74d4219cd636155578a9,job=a208d754-0152-4bff-b117-3d2c884a75d7,status=failed,code=cad_unreadable,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.5,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=3dsolids.dxf,bytes=161075,sha256=8193d9917354a9165d500098aa31209218f0b3d6bf3b24632b89003295806c4d,job=8dfdeb5d-4e66-4e66-95cd-f4b2fbd3f149,status=failed,code=cad_empty_result,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=all_hidden.dxf,bytes=16037,sha256=459e79e524ca7d73bd7ca11dd3e5a96a4119062a00bebd790736a31454762356,job=d1332f1c-8b31-4de9-9269-9f98696560a3,status=failed,code=cad_empty_result,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_BOMB,name=single_point.dxf,bytes=15342,sha256=7395ff64f57d00409d9cbcc9dcd1301b7f9659ee1f5eb33ccb9c99967f1f6ac1,job=a5660b19-ff2b-4a7f-a7f5-41dc48e54dd5,status=failed,code=cad_empty_result,retried=0,events=->queued;queued>active;active>failed,outputs=0,download_url=absent,seconds=2.3,oom_killed=false,restart_count=0,started_at_unchanged=1,oom_kill=0,result=ok
+DXF_CEILING,name=dxf_118mib_plus_1,bytes=123731969,ceiling_bytes=123731968,padding=999_comment_pairs,http=413,code=payload_too_large,message=dxf file exceeds the 118 MiB limit for this conversion,jobs_created=0,result=ok
+DXF_RETRY,job=4283d240-9dba-409b-9e6d-a1013c2ca1e3,input=dxf-replicate-uncommon-50MiB.dxf,bytes=51745292,sha256=5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652,target=svg,signal=TERM,signalled=cad-dxf,hit=3756:cad-dxf,status=done,retried=1,events=->queued;queued>active;active>active;active>done,seconds=43.6,outputs=1,svg_check=ok,reserialized_identical=1,texts=33908,root_svg=1,elements=161932,forbidden_elements=0,on_attrs=0,href_attrs=0,doctype=0,raw_script_tag=0,svg_texts=33908,result=ok
+DXF_RETRY,job=75c9f390-012c-432c-9758-df89376fe56e,input=dxf-replicate-uncommon-50MiB.dxf,bytes=51745292,sha256=5d14734c8907e813031cfd99ce7242164ee8ae525d4bfd2974a742967489f652,target=pdf,signal=TERM,signalled=rsvg-convert,hit=5521:rsvg-convert,status=done,retried=1,events=->queued;queued>active;active>active;active>done,seconds=75.1,outputs=1,starts_pdf=1,pdfinfo_pages=1,pdf_check=ok,ok=1,pages=1,paint_ops=126637,text_runes=118332,expected_runes=0,result=ok
+DXF_CANCEL,job=f3f7d867-e159-4558-beca-32757a42c6f1,input=dxf-replicate-uncommon-50MiB.dxf,cad_dxf_pid=5742,pid_gone=1,gone_s=0.3,cad_dxf_left=0,status=canceled,download_url=absent,outputs=0,result=ok
+ Container octoconv-db Running 
+ Container octoconv-minio Running 
+ Container octoconv-redis Running 
+ Container octoconv-redis Waiting 
+ Container octoconv-minio Waiting 
+ Container octoconv-db Waiting 
+ Container octoconv-redis Healthy 
+ Container octoconv-minio Healthy 
+ Container octoconv-db Healthy 
+ Container octoconv-cad-worker Starting 
+ Container octoconv-cad-worker Started 
+WORKER_KILL,job=c1547012-70ce-4321-89b3-8d1ac7759d0a,input=step-nauo-LinearSlide-MGN15x-Block-n1000.step,sha256=d5584bc540d106d0ce16742991621dc470098108a3c3be34c7d0e35e855e362f,killed_mesh_pids=5788,restart=compose_up,restarted_after_s=41.9,started_at_before=2026-10-12T14:58:54.204688521Z,started_at_after=2026-10-12T15:11:05.858915491Z,orphans=0,fresh_mesh_at_restart=1,kill_to_done_s=122.1,cad_engine_timeout_s=886,reconciler_running=0,status=done,events=->queued;queued>active;active>active;active>done,judge=ok,triangles=3820000,diag=3180.717518,extents=1812.800049:1832.000000:1863.999977,result=ok,reason=
+IMAGE,cad_worker_image_id=sha256:214047e0d44093e5649561a33fb5e5433be91dbbedf4efa819d449ddbac3ac66,cad_worker_size_bytes=1172330056,phase73_image_id=sha256:84b6710ac45f76024337eda14ae8747aefb0ea2d3ffd1e465860b5d8f9c678cc,phase73_size_bytes=absent
+SUMMARY,result=ALL PASS,formats=1,inspect=9,convert=5,quality=1,render=5,views=6,meas=10,opts_reject=9,reject=2,bomb=12,render_retry=1,mesh_signal=1,empty=1,cancel_render=1,cancel=1,worker_kill=1,image=1,sandbox=1,dxf_svg=6,dxf_pdf=5,dxf_render=7,dxf_meas=7,dxf_opts_reject=4,dxf_bomb=15,dxf_ceiling=1,dxf_retry=2,dxf_cancel=1
+stopping the services this run started: postgres redis minio api cad-worker
+ Container octoconv-cad-worker Stopping 
+ Container octoconv-api Stopping 
+ Container octoconv-api Stopped 
+ Container octoconv-cad-worker Stopped 
+ Container octoconv-db Stopping 
+ Container octoconv-minio Stopping 
+ Container octoconv-redis Stopping 
+ Container octoconv-minio Stopped 
+ Container octoconv-db Stopped 
+ Container octoconv-redis Stopped 
+exit=0
