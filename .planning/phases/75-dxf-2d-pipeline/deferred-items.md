@@ -13,3 +13,11 @@
   - What: the fake OCP harness makes `Interface_Static.SetCVal_s` a `staticmethod` object, which is callable only from Python 3.10. With macOS `/usr/bin/python3` 3.9.6, the helper raises `TypeError: 'staticmethod' object is not callable`, prints no verdict, and every subtest fails. `requireCADPython` only skips when python3 is missing; it does not check the version.
   - Proof: at the 75-07 base 3bc583a the test fails the same way with 3.9.6; at f7bf043 it passes with python 3.14 first on PATH. None of these files changed in 75-07.
   - Suggested fix: have `requireCADPython` require 3.10 or later (skip with the found version otherwise), or make the fake call a plain function.
+
+## From 75-10
+
+- **The internal/api ceiling tests leak a multipart temp file of the full upload size on every run (test-only, not 75-10 code).**
+  - Where: `internal/api/cad_ceiling_test.go` and the other ceiling tests that build a request at or above a format ceiling and call `srv.Routes().ServeHTTP` on an `httptest.NewRecorder`.
+  - What: `handlers.go` calls `r.ParseMultipartForm`, which spills the file part to `$TMPDIR/multipart-*`. A real `net/http` server removes the form after the handler returns; a direct `ServeHTTP` call does not. Each `go test ./...` left 6 files (66060289, 123731969 and 141557787 bytes, about 0.7 GB). By 2026-10-12 there were 74 of them (8.4 GB) in the host temp dir, which also shrinks the OrbStack VM's free space.
+  - Proof: the file sizes are exactly the 63 MiB, 118 MiB and 135 MiB ceilings plus one byte, and their mtimes match the ci-local and `go test` runs of 75-09 and 75-10. 75-10 removed all 74 after checking that no process held them open.
+  - Suggested fix: `t.Cleanup(func() { if req.MultipartForm != nil { req.MultipartForm.RemoveAll() } })` in the shared request helper, or serve these tests through `httptest.NewServer`.
