@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -198,8 +199,9 @@ esac
 `, cadDXFQuote(realGS), cadDXFQuote(outside), cadDXFQuote(outside), cadDXFQuote(snapshot), cadDXFQuote(outside)))
 		pathWith(t, bin)
 		out := filepath.Join(t.TempDir(), "out.pdf")
-		if _, err := sanitizePDF(context.Background(), engineExec{}, filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out); err != nil {
-			t.Fatalf("sanitizePDF: %v", err)
+		_, err := sanitizePDF(context.Background(), engineExec{}, filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf"), out)
+		if !errors.Is(err, ErrJobFileIrregular) {
+			t.Errorf("sanitizePDF = %v, want the planted link refused before the redaction", err)
 		}
 		want, err := os.ReadFile(snapshot)
 		if err != nil {
@@ -208,7 +210,6 @@ esac
 		if got, _ := os.ReadFile(outside); !bytes.Equal(got, want) {
 			t.Error("the worker wrote the redacted PDF through a planted link")
 		}
-		jobDirNewFile(t, out, "", 0)
 	})
 	t.Run("the verify parts", func(t *testing.T) {
 		realFile := jobDirRealBinary(t, "file")
@@ -387,6 +388,49 @@ func TestOpenJobFileRefusesWhatIsNotARegularFile(t *testing.T) {
 		body, err := ReadJobFile(path)
 		if err != nil || string(body) != "linked body" {
 			t.Errorf("ReadJobFile = %q, %v, want the hard link's bytes", body, err)
+		}
+	})
+}
+
+func TestStageOutputReadsRefuseAPlantedLink(t *testing.T) {
+	t.Run("the mesh STL", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "outside.stl")
+		if err := os.WriteFile(outside, cadBoxSTL(10, 20, 30), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := jobDirLinkTo(t, outside, cadMeshSTLName)
+		n, _, err := judgeBinarySTL(link)
+		if !errors.Is(err, ErrJobFileIrregular) {
+			t.Errorf("judgeBinarySTL = %d triangles, %v, want ErrJobFileIrregular", n, err)
+		}
+	})
+	t.Run("the render PNG", func(t *testing.T) {
+		f := newCADRenderFixture(t, "step")
+		outside := filepath.Join(t.TempDir(), "frame.png")
+		if err := os.WriteFile(outside, renderPNGBytes(t, 512, true), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		draft := f.writeDraft(t, unitsInchDraft())
+		render := fmt.Sprintf("echo \"$@\" > \"$(dirname \"$0\")/render.args\"\nln -s %s \"$8\"\nprintf 'CADVERDICT {\"stage\":\"render\",\"verdict\":\"ok\",\"reason\":\"\",\"triangles\":12,\"view\":\"%%s\",\"size\":%%s,\"background\":\"%%s\"}\\n' \"$2\" \"$4\" \"$6\"\n", cadDXFQuote(outside))
+		f.setEngines(t, cadOKGuard(), f.meshScript(t, draft), render)
+		opts := map[string]any{"view": "top", "size": float64(512), "background": "transparent", "quality": "fine"}
+		err := (CADRenderConverter{}).Convert(context.Background(), f.in, f.png, opts)
+		if !errors.Is(err, ErrCADRenderRejected) {
+			t.Errorf("Convert = %v, want ErrCADRenderRejected", err)
+		}
+		f.noSidecar(t)
+	})
+	t.Run("the OCR page fragment", func(t *testing.T) {
+		f := newOCRPDFFakes(t)
+		outside := jobDirOutside(t, "outside page text")
+		tesseract := fmt.Sprintf("ln -s %s \"$2.txt\"\n", cadDXFQuote(outside))
+		f.set(t, "printf '   \\n'\n", ocrPDFPagePNG(), tesseract)
+		err := (OCRConverter{}).Convert(context.Background(), f.in, f.out, nil)
+		if err == nil {
+			t.Error("Convert read a page fragment through a planted link")
+		}
+		if got, _ := os.ReadFile(f.out); strings.Contains(string(got), "outside page text") {
+			t.Errorf("out.txt holds the outside text: %q", got)
 		}
 	})
 }
