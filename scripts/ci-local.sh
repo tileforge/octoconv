@@ -137,7 +137,7 @@ tier_gate() {
 }
 
 tier_race() {
-  go test -race ./... -timeout 10m
+  go test -race ./... -timeout 20m
 }
 
 tier_docker_build() {

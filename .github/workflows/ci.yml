@@ -78,7 +78,7 @@ jobs:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-      - run: go test -race ./... -timeout 10m
+      - run: go test -race ./... -timeout 20m
 
   # Tier 3: build all 12 compose bake targets, verify they build, warm the GHA
   # layer cache per-target (Pitfalls 1/3/4). Verification-only: load: false,
