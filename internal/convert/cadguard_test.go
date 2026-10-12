@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,26 @@ func requireCADPython(t *testing.T) string {
 	p, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 not available")
+	}
+	out, err := exec.Command(p, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])").Output()
+	if err != nil {
+		t.Fatalf("python3 at %s cannot report its version: %v", p, err)
+	}
+	version := strings.TrimSpace(string(out))
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		t.Fatalf("python3 at %s reported version %q", p, version)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		t.Fatalf("python3 at %s reported version %q: %v", p, version, err)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		t.Fatalf("python3 at %s reported version %q: %v", p, version, err)
+	}
+	if major < 3 || major == 3 && minor < 10 {
+		t.Skipf("python3 %s at %s is older than 3.10", version, p)
 	}
 	return p
 }
