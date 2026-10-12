@@ -735,7 +735,7 @@ func cadFailureCode(err error) (code, message string) {
 	case errors.Is(err, convert.ErrCADUnreadable):
 		return CodeCADUnreadable, "the CAD file could not be read; re-export it from the source application"
 	case errors.Is(err, convert.ErrCADNothingDrawable):
-		return CodeCADEmptyResult, "the drawing contains nothing that can be drawn: model space is empty, hidden or holds only 3D solids"
+		return CodeCADEmptyResult, "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"
 	case errors.Is(err, convert.ErrCADEmptyResult):
 		return CodeCADEmptyResult, "the CAD file contains no geometry that can be converted to a mesh"
 	case errors.Is(err, convert.ErrCADMeshTimeout):

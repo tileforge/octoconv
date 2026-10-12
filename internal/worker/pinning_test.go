@@ -1525,7 +1525,7 @@ func TestPinnedCADFailureVerdicts(t *testing.T) {
 			CodeEngineError, "the measurements of this model could not be produced"},
 		{"dxf nothing drawable", convert.ErrCADNothingDrawable,
 			fmt.Errorf("cad dxf: %w: %w: nothing_drawable", convert.ErrCADNothingDrawable, convert.ErrCADEmptyResult),
-			CodeCADEmptyResult, "the drawing contains nothing that can be drawn: model space is empty, hidden or holds only 3D solids"},
+			CodeCADEmptyResult, "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"},
 		{"dxf timeout", convert.ErrCADDXFTimeout,
 			fmt.Errorf("cad dxf: %w: no result within 162s, engine cpu 160.0s: %v", convert.ErrCADDXFTimeout, context.DeadlineExceeded),
 			CodeCADTooComplex, "the drawing took too long to draw; simplify it or export fewer details"},

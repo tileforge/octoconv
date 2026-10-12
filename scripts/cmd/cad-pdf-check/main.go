@@ -83,8 +83,8 @@ func main() {
 			floor = fmt.Sprintf(",below_render_floor=%d,below_floor_runes=%d,floor_pt=%g,invisible_text=%d,invisible_runes=%d",
 				facts.BelowRenderFloor, facts.BelowFloorRunes, facts.FloorPt, facts.InvisibleText, facts.InvisibleRunes)
 		}
-		fmt.Printf("GOPDF,pdf=%s,ok=%d,pages=%d,paint_ops=%d,text_runes=%d,expected_runes=%d%s,reason=%s\n",
-			path, ok, facts.Pages, facts.PaintOps, facts.TextRunes, facts.ExpectedRunes, floor, reason)
+		fmt.Printf("GOPDF,pdf=%s,ok=%d,pages=%d,paint_ops=%d,ink_ops=%d,text_runes=%d,expected_runes=%d%s,reason=%s\n",
+			path, ok, facts.Pages, facts.PaintOps, facts.InkOps, facts.TextRunes, facts.ExpectedRunes, floor, reason)
 	}
 	if err != nil {
 		if *printText {

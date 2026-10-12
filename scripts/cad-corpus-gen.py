@@ -2148,7 +2148,8 @@ DXF_NONFINITE = {
 DXF_FIXTURES = (
     ["text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf",
      "never_resolved.dxf", "wrong_extents.dxf", "header_far_extents.dxf", "wide.dxf", "tall.dxf",
-     "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf", "text_fonts.dxf"]
+     "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf", "text_fonts.dxf",
+     "alpha_clear_geometry.dxf", "alpha_clear_all.dxf", "alpha_one_visible.dxf", "alpha_one_fill.dxf"]
     + ["units_%d.dxf" % c for c in DXF_UNIT_CODES] + ["units_missing.dxf"]
     + ["cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf",
        "nest_d16.dxf", "nest_d17.dxf", "minsert_over_inserts.dxf", "entities_over.dxf",
@@ -2160,6 +2161,9 @@ DXF_FIXTURES = (
 DXF_ALPHA_HALF = b"440\n33554559\n"
 DXF_ALPHA_CLEAR = b"440\n33554432\n"
 DXF_ALPHA_BYBLOCK = b"440\n16777216\n"
+DXF_HALF_TRANSPARENCY = 0x0200007F
+DXF_CLEAR_MARKERS = [DXF_ALPHA_CLEAR, DXF_ALPHA_BYBLOCK, b"\nLINE\n", b"\nCIRCLE\n", b"\nARC\n", b"\nLWPOLYLINE\n",
+                     b"\nHATCH\n", b"\nSOLID\n", b"\nPOINT\n", b"\nXLINE\n", b"\nINSERT\n", b"CLEARLAYER"]
 
 
 def dxf_value_pair(code, value):
@@ -2190,6 +2194,10 @@ def dxf_expected():
         "text_fonts.dxf": [b"AC1032"] + [f.encode("ascii") for _, f, _ in DXF_FONT_STYLES]
                           + [b"ACAD", b"DejaVu Sans Mono", b"\\fDejaVu Sans Mono|b1|i1;INLINE MONO BOLD ITALIC",
                              b"SHEARED STYLE", b"SHEARED TEXT", b" 51\n15.0\n", b" 41\n0.7\n"],
+        "alpha_clear_geometry.dxf": [b"AC1032"] + DXF_CLEAR_MARKERS,
+        "alpha_clear_all.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT"] + DXF_CLEAR_MARKERS,
+        "alpha_one_visible.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT", DXF_ALPHA_HALF] + DXF_CLEAR_MARKERS,
+        "alpha_one_fill.dxf": [b"AC1032", b"CLEAR TEXT", b"CLEAR MTEXT", DXF_ALPHA_HALF] + DXF_CLEAR_MARKERS,
         "units_missing.dxf": [b"AC1032", b"LINE"],
         "cyclic_self.dxf": [b"BLOCKS", b"INSERT"],
         "cyclic_ab.dxf": [b"BLOCKS", b"INSERT"],
@@ -2210,7 +2218,9 @@ def dxf_expected():
     return exp
 
 
-DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"], "text_alpha_faint.dxf": [b"\nLINE\n", b"\nHATCH\n", b"\nMTEXT\n"]}
+DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"], "text_alpha_faint.dxf": [b"\nLINE\n", b"\nHATCH\n", b"\nMTEXT\n"],
+              "alpha_clear_geometry.dxf": [DXF_ALPHA_HALF, b"\nTEXT\n", b"\nMTEXT\n"],
+              "alpha_clear_all.dxf": [DXF_ALPHA_HALF]}
 
 
 def dxf_ezdxf_bytes(doc):
@@ -2404,6 +2414,35 @@ def build_dxf_text_alpha_faint(ezdxf):
     return dxf_ezdxf_bytes(doc)
 
 
+def build_dxf_alpha(ezdxf, texts, visible):
+    doc = dxf_new(ezdxf, 4)
+    doc.layers.add("CLEARLAYER", transparency=1.0)
+    msp = doc.modelspace()
+    clear = {"transparency": 0x02000000}
+    msp.add_line((0, 0), (100, 0), dxfattribs=clear)
+    msp.add_circle((20, 30), 10, dxfattribs=clear)
+    msp.add_arc((50, 30), 10, 0, 180, dxfattribs=clear)
+    msp.add_lwpolyline([(70, 20), (90, 20), (90, 40)], dxfattribs=clear)
+    hatch = msp.add_hatch(color=1, dxfattribs=clear)
+    hatch.paths.add_polyline_path([(0, 50), (20, 50), (20, 70), (0, 70)], is_closed=True)
+    msp.add_solid([(30, 50), (50, 50), (30, 70), (50, 70)], dxfattribs=clear)
+    msp.add_point((60, 60), dxfattribs=clear)
+    msp.add_xline((0, 80), (1, 0, 0), dxfattribs=clear)
+    msp.add_line((0, 90), (100, 90), dxfattribs={"layer": "CLEARLAYER"})
+    block = doc.blocks.new("BYBLK")
+    block.add_line((0, 0), (100, 0), dxfattribs={"transparency": 0x01000000})
+    msp.add_blockref("BYBLK", (0, 100), dxfattribs=clear)
+    if texts:
+        msp.add_text("CLEAR TEXT", height=5, dxfattribs=clear).set_placement((0, 110))
+        msp.add_mtext("CLEAR MTEXT", dxfattribs={"char_height": 5, "transparency": 0x02000000}).set_location((50, 120))
+    if visible == "line":
+        msp.add_line((0, -10), (100, -10)).transparency = 0.5
+    if visible == "fill":
+        hatch = msp.add_hatch(color=5, dxfattribs={"transparency": DXF_HALF_TRANSPARENCY})
+        hatch.paths.add_polyline_path([(0, -20), (100, -20), (100, -10), (0, -10)], is_closed=True)
+    return dxf_ezdxf_bytes(doc)
+
+
 DXF_FONT_STYLES = (
     ("MONO", "DejaVuSansMono.ttf", "MONO BOOK"),
     ("MONOB", "DejaVuSansMono-Bold.ttf", "MONO BOLD"),
@@ -2587,6 +2626,10 @@ def build_dxf_all():
         "text_alpha.dxf": build_dxf_text_alpha(ezdxf),
         "text_alpha_faint.dxf": build_dxf_text_alpha_faint(ezdxf),
         "text_fonts.dxf": build_dxf_text_fonts(ezdxf),
+        "alpha_clear_geometry.dxf": build_dxf_alpha(ezdxf, False, None),
+        "alpha_clear_all.dxf": build_dxf_alpha(ezdxf, True, None),
+        "alpha_one_visible.dxf": build_dxf_alpha(ezdxf, True, "line"),
+        "alpha_one_fill.dxf": build_dxf_alpha(ezdxf, True, "fill"),
         "units_missing.dxf": build_dxf_units(ezdxf, None),
         "cyclic_self.dxf": build_dxf_cyclic("self"),
         "cyclic_ab.dxf": build_dxf_cyclic("ab"),

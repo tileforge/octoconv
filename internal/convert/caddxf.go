@@ -278,6 +278,9 @@ func (c CADConverter) dxfDrawing(ctx context.Context, jobDir, inPath, clientOut,
 	if err := cadDXFCrossCheck(d); err != nil {
 		return d, err
 	}
+	if d.client.Visible == 0 {
+		return d, fmt.Errorf("cad dxf: %w: %w: the drawing has nothing visible", ErrCADNothingDrawable, ErrCADEmptyResult)
+	}
 	return d, nil
 }
 
@@ -428,6 +431,10 @@ func cadDXFCrossCheck(d cadDXFDrawing) error {
 	if d.verdict.Uncovered != uncovered || d.verdict.RenderSubstituted != substituted {
 		return fmt.Errorf("cad dxf: %w", cadSVGReject("the verdict reports %d uncovered and %d substituted characters, texts.json implies %d and %d",
 			d.verdict.Uncovered, d.verdict.RenderSubstituted, uncovered, substituted))
+	}
+	if d.client.Visible != d.render.Visible {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("the client SVG has %d visible elements and the render-only SVG %d",
+			d.client.Visible, d.render.Visible))
 	}
 	if d.client.WidthMM != d.render.WidthMM || d.client.HeightMM != d.render.HeightMM ||
 		d.client.ViewBoxW != d.render.ViewBoxW || d.client.ViewBoxH != d.render.ViewBoxH {

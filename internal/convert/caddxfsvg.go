@@ -22,6 +22,7 @@ type CADSVGFacts struct {
 	TextSizes          []float64
 	TextOpacity        []float64
 	TextFonts          []string
+	Visible            int
 }
 
 const (
@@ -188,9 +189,15 @@ func cadSVGViewBox(s string) bool {
 }
 
 type cadSVGPaint struct {
-	none    bool
-	opacity float64
+	none          bool
+	opacity       float64
+	strokeNone    bool
+	strokeOpacity float64
+	strokeWidth   float64
+	hidden        bool
 }
+
+var cadSVGInitialPaint = cadSVGPaint{opacity: 1, strokeNone: true, strokeOpacity: 1, strokeWidth: 1}
 
 func (p cadSVGPaint) visible() float64 {
 	if p.none {
@@ -199,21 +206,83 @@ func (p cadSVGPaint) visible() float64 {
 	return p.opacity
 }
 
+func (p cadSVGPaint) stroked() bool {
+	return !p.strokeNone && p.strokeOpacity > 0 && p.strokeWidth > 0
+}
+
+func (p cadSVGPaint) inked() bool {
+	return p.visible() > 0 || p.stroked()
+}
+
 func cadSVGPaintOf(parent cadSVGPaint, attrs []xml.Attr) cadSVGPaint {
 	for _, a := range attrs {
 		if a.Name.Space != "" {
 			continue
 		}
+		v, finite := cadSVGFinite(a.Value)
 		switch a.Name.Local {
 		case "fill":
 			parent.none = a.Value == "none"
 		case "fill-opacity":
-			if v, ok := cadSVGFinite(a.Value); ok {
+			if finite {
 				parent.opacity = v
+			}
+		case "stroke":
+			parent.strokeNone = a.Value == "none"
+		case "stroke-opacity":
+			if finite {
+				parent.strokeOpacity = v
+			}
+		case "stroke-width":
+			if finite {
+				parent.strokeWidth = v
 			}
 		}
 	}
 	return parent
+}
+
+func cadSVGAttr(attrs []xml.Attr, name string) string {
+	for _, a := range attrs {
+		if a.Name.Space == "" && a.Name.Local == name {
+			return a.Value
+		}
+	}
+	return ""
+}
+
+func cadSVGPositiveAttr(attrs []xml.Attr, names ...string) bool {
+	for _, n := range names {
+		v, ok := cadSVGFinite(cadSVGAttr(attrs, n))
+		if !ok || v <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func cadSVGShapeHasExtent(name string, attrs []xml.Attr) bool {
+	switch name {
+	case "rect":
+		return cadSVGPositiveAttr(attrs, "width", "height")
+	case "circle":
+		return cadSVGPositiveAttr(attrs, "r")
+	case "ellipse":
+		return cadSVGPositiveAttr(attrs, "rx", "ry")
+	case "path":
+		return strings.ContainsAny(cadSVGAttr(attrs, "d"), "LlQqCcZz")
+	case "polyline", "polygon":
+		return len(cadSVGPointNumRe.FindAllString(cadSVGAttr(attrs, "points"), -1)) >= 4
+	}
+	return true
+}
+
+func cadSVGShapeVisible(name string, attrs []xml.Attr, p cadSVGPaint) bool {
+	if p.hidden {
+		return false
+	}
+	filled := name != "line" && p.visible() > 0
+	return (filled || p.stroked()) && cadSVGShapeHasExtent(name, attrs)
 }
 
 type cadSVGElementRule struct {
@@ -404,6 +473,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 	first, rootDone := true, false
 	var text *strings.Builder
 	var textFont []string
+	textInk := false
 	textScale, textSize, textOpacity := 1.0, math.Inf(1), 1.0
 	for {
 		tok, err := dec.Token()
@@ -504,13 +574,22 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 					}
 				}
 			}
-			paint := cadSVGPaint{opacity: 1}
+			paint := cadSVGInitialPaint
 			if len(paints) > 0 {
 				paint = paints[len(paints)-1]
 			}
 			paint = cadSVGPaintOf(paint, t.Attr)
+			if name == "defs" || name == "clipPath" {
+				paint.hidden = true
+			}
+			for _, shape := range cadSVGShapes {
+				if name == shape && cadSVGShapeVisible(name, t.Attr, paint) {
+					facts.Visible++
+				}
+			}
 			if name == "text" {
 				text = &strings.Builder{}
+				textInk = false
 				textFont = []string{cadSVGFontOf(t.Attr)}
 				textOpacity = paint.visible()
 				textScale = 1
@@ -556,6 +635,9 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 				facts.TextSizes = append(facts.TextSizes, textSize)
 				facts.TextOpacity = append(facts.TextOpacity, textOpacity)
 				facts.TextFonts = append(facts.TextFonts, strings.Join(textFont, " | "))
+				if textInk {
+					facts.Visible++
+				}
 				text = nil
 			}
 			if len(stack) == 0 {
@@ -564,6 +646,9 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 		case xml.CharData:
 			if len(stack) > 0 && cadSVGRules[stack[len(stack)-1]].text {
 				text.Write(t)
+				if p := paints[len(paints)-1]; !p.hidden && p.inked() && cadStripSpace(string(t)) != "" {
+					textInk = true
+				}
 				if err := xml.EscapeText(bw, t); err != nil {
 					return facts, fmt.Errorf("cad: write the validated SVG: %w", err)
 				}

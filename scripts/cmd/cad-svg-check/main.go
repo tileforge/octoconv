@@ -49,8 +49,8 @@ func main() {
 		}
 	}
 	if err != nil {
-		fmt.Printf("GOSVG,svg=%s,ok=0,width_mm=0,height_mm=0,texts=0,reason=%s\n", path, field(err.Error()))
+		fmt.Printf("GOSVG,svg=%s,ok=0,width_mm=0,height_mm=0,texts=0,visible=0,reason=%s\n", path, field(err.Error()))
 		os.Exit(1)
 	}
-	fmt.Printf("GOSVG,svg=%s,ok=1,width_mm=%g,height_mm=%g,texts=%d,reason=none\n", path, facts.WidthMM, facts.HeightMM, len(facts.Texts))
+	fmt.Printf("GOSVG,svg=%s,ok=1,width_mm=%g,height_mm=%g,texts=%d,visible=%d,reason=none\n", path, facts.WidthMM, facts.HeightMM, len(facts.Texts), facts.Visible)
 }

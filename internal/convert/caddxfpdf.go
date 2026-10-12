@@ -29,6 +29,7 @@ type CADPDFFacts struct {
 	BelowRenderFloor, BelowFloorRunes         int
 	InvisibleText, InvisibleRunes             int
 	FloorPt                                   float64
+	InkOps                                    int
 }
 
 type CADPDFShow struct {
@@ -1056,19 +1057,93 @@ var cadPDFOtherOps = map[string]bool{
 	"BMC": true, "BDC": true, "EMC": true, "MP": true, "DP": true, "BX": true, "EX": true,
 }
 
+type cadPDFGState struct {
+	ctm         [4]float64
+	strokeAlpha float64
+	fillAlpha   float64
+	softMask    bool
+	render      int64
+}
+
 type cadPDFRun struct {
 	d      *cadPDFDoc
 	fonts  map[string]any
+	extg   map[string]any
 	cache  map[string]*cadPDFFont
 	cur    *cadPDFFont
 	text   strings.Builder
 	paint  int
+	ink    int
 	keep   bool
 	shows  []CADPDFShow
-	ctm    [4]float64
-	stack  [][4]float64
+	gs     cadPDFGState
+	stack  []cadPDFGState
 	tm     [4]float64
 	tfSize float64
+}
+
+func (r *cadPDFRun) strokes() bool { return !r.gs.softMask && r.gs.strokeAlpha > 0 }
+
+func (r *cadPDFRun) fills() bool { return !r.gs.softMask && r.gs.fillAlpha > 0 }
+
+func (r *cadPDFRun) textInk() bool {
+	switch r.gs.render {
+	case 0, 4:
+		return r.fills()
+	case 1, 5:
+		return r.strokes()
+	case 2, 6:
+		return r.fills() || r.strokes()
+	}
+	return false
+}
+
+func (r *cadPDFRun) setState(args []any) error {
+	if len(args) != 1 {
+		return cadPDFReject("gs with %d operands", len(args))
+	}
+	n, ok := args[0].(cadPDFName)
+	if !ok {
+		return cadPDFReject("gs without an ExtGState name")
+	}
+	entry, ok := r.extg[string(n)]
+	if !ok {
+		return cadPDFReject("ExtGState /%s is not in the page resources", cadSVGClip(string(n)))
+	}
+	v, _, err := r.d.resolve(entry)
+	if err != nil {
+		return err
+	}
+	gd, ok := v.(map[string]any)
+	if !ok {
+		return cadPDFReject("ExtGState /%s is not a dictionary", cadSVGClip(string(n)))
+	}
+	for _, a := range []struct {
+		key string
+		dst *float64
+	}{{"CA", &r.gs.strokeAlpha}, {"ca", &r.gs.fillAlpha}} {
+		raw, present := gd[a.key]
+		if !present {
+			continue
+		}
+		rv, _, err := r.d.resolve(raw)
+		if err != nil {
+			return err
+		}
+		f, ok := cadPDFNumber64(rv)
+		if !ok || math.IsNaN(f) || f < 0 || f > 1 {
+			return cadPDFReject("ExtGState /%s has /%s %v, not a number in [0, 1]", cadSVGClip(string(n)), a.key, rv)
+		}
+		*a.dst = f
+	}
+	if raw, present := gd["SMask"]; present {
+		rv, _, err := r.d.resolve(raw)
+		if err != nil {
+			return err
+		}
+		r.gs.softMask = rv != cadPDFName("None")
+	}
+	return nil
 }
 
 func cadPDFNumber64(v any) (float64, bool) {
@@ -1101,7 +1176,7 @@ func cadPDFMul(a, b [4]float64) [4]float64 {
 }
 
 func (r *cadPDFRun) sizePt() float64 {
-	m := cadPDFMul(r.tm, r.ctm)
+	m := cadPDFMul(r.tm, r.gs.ctm)
 	return math.Abs(r.tfSize) * math.Sqrt(math.Abs(m[0]*m[3]-m[1]*m[2]))
 }
 
@@ -1150,19 +1225,19 @@ func (r *cadPDFRun) font(name string) (*cadPDFFont, error) {
 	return f, nil
 }
 
-func (r *cadPDFRun) show(v any) error {
+func (r *cadPDFRun) show(v any) (int, error) {
 	s, ok := v.(cadPDFString)
 	if !ok {
-		return cadPDFReject("a text-show operand is not a string")
+		return 0, cadPDFReject("a text-show operand is not a string")
 	}
 	if r.cur == nil {
-		return cadPDFReject("text shown without a font")
+		return 0, cadPDFReject("text shown without a font")
 	}
 	width := 1
 	if r.cur.two {
 		width = 2
 		if len(s)%2 != 0 {
-			return cadPDFReject("an odd-length string for a two-byte font")
+			return 0, cadPDFReject("an odd-length string for a two-byte font")
 		}
 	}
 	start := r.text.Len()
@@ -1179,9 +1254,15 @@ func (r *cadPDFRun) show(v any) error {
 		r.shows = append(r.shows, CADPDFShow{Text: r.text.String()[start:], SizePt: r.sizePt()})
 	}
 	if r.text.Len() > cadPDFMaxText {
-		return cadPDFReject("more than %d bytes of decoded text", cadPDFMaxText)
+		return 0, cadPDFReject("more than %d bytes of decoded text", cadPDFMaxText)
 	}
-	return nil
+	return len(s) / width, nil
+}
+
+func (r *cadPDFRun) shown(n int) {
+	if n > 0 && r.textInk() {
+		r.ink++
+	}
 }
 
 func (r *cadPDFRun) op(name string, args []any) error {
@@ -1198,6 +1279,26 @@ func (r *cadPDFRun) op(name string, args []any) error {
 		return args[len(args)-1]
 	}
 	switch name {
+	case "S", "s":
+		if r.strokes() {
+			r.ink++
+		}
+	case "f", "F", "f*":
+		if r.fills() {
+			r.ink++
+		}
+	case "B", "B*", "b", "b*":
+		if r.fills() || r.strokes() {
+			r.ink++
+		}
+	case "gs":
+		return r.setState(args)
+	case "Tr":
+		mode, ok := last().(int64)
+		if len(args) != 1 || !ok || mode < 0 || mode > 7 {
+			return cadPDFReject("Tr %v is not a text rendering mode", last())
+		}
+		r.gs.render = mode
 	case "Tf":
 		if len(args) != 2 {
 			return cadPDFReject("Tf with %d operands", len(args))
@@ -1213,15 +1314,15 @@ func (r *cadPDFRun) op(name string, args []any) error {
 		r.cur = f
 		r.tfSize, _ = cadPDFNumber64(args[1])
 	case "q":
-		r.stack = append(r.stack, r.ctm)
+		r.stack = append(r.stack, r.gs)
 	case "Q":
 		if len(r.stack) > 0 {
-			r.ctm = r.stack[len(r.stack)-1]
+			r.gs = r.stack[len(r.stack)-1]
 			r.stack = r.stack[:len(r.stack)-1]
 		}
 	case "cm":
 		if m, ok := cadPDFMatrix(args); ok {
-			r.ctm = cadPDFMul(m, r.ctm)
+			r.gs.ctm = cadPDFMul(m, r.gs.ctm)
 		}
 	case "BT":
 		r.tm = [4]float64{1, 0, 0, 1}
@@ -1230,26 +1331,34 @@ func (r *cadPDFRun) op(name string, args []any) error {
 			r.tm = m
 		}
 	case "Tj", "'":
-		return r.show(last())
+		n, err := r.show(last())
+		r.shown(n)
+		return err
 	case `"`:
 		if len(args) != 3 {
 			return cadPDFReject(`" with %d operands`, len(args))
 		}
-		return r.show(args[2])
+		n, err := r.show(args[2])
+		r.shown(n)
+		return err
 	case "TJ":
 		arr, ok := last().([]any)
 		if !ok {
 			return cadPDFReject("TJ without an array")
 		}
+		total := 0
 		for _, e := range arr {
 			switch e.(type) {
 			case int64, float64:
 			default:
-				if err := r.show(e); err != nil {
+				n, err := r.show(e)
+				if err != nil {
 					return err
 				}
+				total += n
 			}
 		}
+		r.shown(total)
 	case "ET":
 		r.text.WriteByte('\n')
 	}
@@ -1392,9 +1501,13 @@ func cadPDFDecode(path string, maxBytes int64, keep bool) (CADPDFFacts, []CADPDF
 	if err != nil {
 		return facts, nil, err
 	}
-	run := &cadPDFRun{d: d, cache: map[string]*cadPDFFont{}, keep: keep, ctm: [4]float64{1, 0, 0, 1}, tm: [4]float64{1, 0, 0, 1}}
+	run := &cadPDFRun{d: d, cache: map[string]*cadPDFFont{}, keep: keep, tm: [4]float64{1, 0, 0, 1},
+		gs: cadPDFGState{ctm: [4]float64{1, 0, 0, 1}, strokeAlpha: 1, fillAlpha: 1}}
 	if res != nil {
 		if run.fonts, err = d.dict(res["Font"]); err != nil {
+			return facts, nil, err
+		}
+		if run.extg, err = d.dict(res["ExtGState"]); err != nil {
 			return facts, nil, err
 		}
 	}
@@ -1404,11 +1517,11 @@ func cadPDFDecode(path string, maxBytes int64, keep bool) (CADPDFFacts, []CADPDF
 	}
 	for _, o := range streams {
 		if err := run.content(o); err != nil {
-			facts.PaintOps = run.paint
+			facts.PaintOps, facts.InkOps = run.paint, run.ink
 			return facts, nil, err
 		}
 	}
-	facts.PaintOps = run.paint
+	facts.PaintOps, facts.InkOps = run.paint, run.ink
 	facts.Text = run.text.String()
 	facts.TextRunes = utf8.RuneCountInString(cadStripSpace(facts.Text))
 	return facts, run.shows, nil
@@ -1451,8 +1564,8 @@ func JudgeCADPDF(path string, maxBytes int64, want string) (CADPDFFacts, error) 
 		return facts, err
 	}
 	stripped := cadStripSpace(facts.Text)
-	if facts.PaintOps-1 < 1 {
-		return facts, cadPDFReject("empty page: %d paint operations, want at least one beyond the background", facts.PaintOps)
+	if facts.InkOps-1 < 1 {
+		return facts, cadPDFReject("empty page: %d paint operations of which %d show ink, want at least one beyond the background", facts.PaintOps, facts.InkOps)
 	}
 	if want != "" && !cadRuneSubsequence(want, stripped) {
 		return facts, cadPDFReject("missing text: %d of %d expected characters found in order", cadRuneSubsequenceCount(want, stripped), facts.ExpectedRunes)
@@ -1546,8 +1659,8 @@ func JudgeCADDXFPDF(path string, maxBytes int64, texts []cadDXFText, svg CADSVGF
 	}
 	w := want.String()
 	facts.ExpectedRunes = utf8.RuneCountInString(w)
-	if facts.PaintOps-1 < 1 {
-		return facts, cadPDFReject("empty page: %d paint operations, want at least one beyond the background", facts.PaintOps)
+	if facts.InkOps-1 < 1 {
+		return facts, cadPDFReject("empty page: %d paint operations of which %d show ink, want at least one beyond the background", facts.PaintOps, facts.InkOps)
 	}
 	stripped := cadStripSpace(facts.Text)
 	if w != "" && !cadRuneSubsequence(w, stripped) {

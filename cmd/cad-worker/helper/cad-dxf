@@ -87,9 +87,17 @@ def font_attrs(font):
         attrs.append(("font-weight", "bold"))
     elif css_weight != 400:
         attrs.append(("font-weight", str(css_weight)))
-    if selection & FS_ITALIC or font["head"].macStyle & MAC_ITALIC:
-        oblique = selection & FS_OBLIQUE or "oblique" in subfamily.lower()
-        attrs.append(("font-style", "oblique" if oblique else "italic"))
+    sub = subfamily.lower()
+    if "oblique" in sub:
+        attrs.append(("font-style", "oblique"))
+    elif "italic" in sub or "kursiv" in sub:
+        attrs.append(("font-style", "italic"))
+    elif "OS/2" in font and selection & FS_OBLIQUE:
+        attrs.append(("font-style", "oblique"))
+    elif "OS/2" in font and selection & FS_ITALIC:
+        attrs.append(("font-style", "italic"))
+    elif "OS/2" not in font and font["head"].macStyle & MAC_ITALIC:
+        attrs.append(("font-style", "italic"))
     if width in CSS_STRETCH:
         attrs.append(("font-stretch", CSS_STRETCH[width]))
     return family, tuple(attrs)
@@ -206,6 +214,7 @@ def draw(doc, max_drawn, state):
 
     texts = []
     infinite = []
+    ink = [0]
     cmaps = {}
     faces = {}
     skipped = state["skipped"]
@@ -277,10 +286,15 @@ def draw(doc, max_drawn, state):
             if TEXT_AS_OUTLINE:
                 RenderPipeline2d.draw_text(self, text, transform, properties, cap_height, dxftype)
 
+    def count_ink(backend, d, properties):
+        if d and backend.resolve_color(properties.color)[1] > 0.0:
+            ink[0] += 1
+
     class NoCssRenderBackend(svg.SVGRenderBackend):
         def add_strokes(self, d, properties):
             if not d:
                 return
+            count_ink(self, d, properties)
             el = ET.SubElement(self.entities, "path", d=d)
             color, opacity = self.resolve_color(properties.color)
             el.set("fill", "none")
@@ -292,11 +306,21 @@ def draw(doc, max_drawn, state):
         def add_filling(self, d, properties):
             if not d:
                 return
+            count_ink(self, d, properties)
             el = ET.SubElement(self.entities, "path", d=d)
             color, opacity = self.resolve_color(properties.color)
             el.set("fill", color)
             if opacity < 1.0:
                 el.set("fill-opacity", "%.3f" % opacity)
+
+    class OutlineRenderBackend(svg.SVGRenderBackend):
+        def add_strokes(self, d, properties):
+            count_ink(self, d, properties)
+            super().add_strokes(d, properties)
+
+        def add_filling(self, d, properties):
+            count_ink(self, d, properties)
+            super().add_filling(d, properties)
 
     class Backend(svg.SVGBackend):
         def __init__(self):
@@ -314,7 +338,7 @@ def draw(doc, max_drawn, state):
         @staticmethod
         def make_backend(page, settings):
             if TEXT_AS_OUTLINE:
-                return svg.SVGRenderBackend(page, settings)
+                return OutlineRenderBackend(page, settings)
             return NoCssRenderBackend(page, settings)
 
     class DXFFrontend(Frontend):
@@ -438,9 +462,13 @@ def draw(doc, max_drawn, state):
         opacity = svg.alpha_to_opacity(t["color"][7:9])
         if opacity < 1.0:
             el.set("fill-opacity", "%.3f" % opacity)
+        if opacity > 0.0:
+            ink[0] += 1
         el.set(XML_SPACE, "preserve")
         el.text = t["text"]
         emitted.append({"text": t["text"], "covered": t["covered"], "el": el, "render": t["render"], "invisible": opacity == 0.0})
+    if not ink[0]:
+        raise Outcome("empty", "nothing_visible", EXIT_EMPTY)
     state["texts"] = len(emitted)
     state["uncovered"] = sum(len(e["text"]) - len(e["covered"]) for e in emitted)
     state["render_substituted"] = sum(1 for e in emitted for a, b in zip(e["text"], e["render"]) if a != b)

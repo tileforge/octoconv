@@ -25,7 +25,7 @@ PY_PACKAGES=(ezdxf fonttools numpy pillow pyparsing typing-extensions)
 RW_SET=/job
 OUT_OVERRIDE=""
 FIXTURE_DIR="$CORPUS/dxf"
-FIXTURE_COUNT=44
+FIXTURE_COUNT=48
 HELPER_EVID="$PHASE_DIR/evidence/75-02-helper.txt"
 HELPER_EVID_NAME="evidence/75-02-helper.txt"
 DXF_OUT="$CORPUS/dxf-out"
@@ -617,7 +617,7 @@ PY
 fixture_expectation() {
   case "$1" in
     cyclic_*) echo audit_104 ;;
-    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|text_fonts|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
+    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|text_fonts|alpha_clear_geometry|alpha_clear_all|alpha_one_visible|alpha_one_fill|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
     *) echo fact ;;
   esac
 }
@@ -851,6 +851,70 @@ def near(box, want, tol):
     return box is not None and all(abs(a - b) <= tol for a, b in zip(box, want))
 
 
+SHAPES = ("path", "polyline", "polygon", "line", "circle", "ellipse", "rect")
+PAINT = ("fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width")
+
+
+def num(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def has_extent(el, tag):
+    if tag == "rect":
+        return num(el.get("width")) > 0 and num(el.get("height")) > 0
+    if tag == "circle":
+        return num(el.get("r")) > 0
+    if tag == "ellipse":
+        return num(el.get("rx")) > 0 and num(el.get("ry")) > 0
+    if tag == "path":
+        return any(c in "LlQqCcZz" for c in el.get("d", ""))
+    if tag in ("polyline", "polygon"):
+        return len(el.get("points", "").replace(",", " ").split()) >= 4
+    return True
+
+
+def paint_of(el, parent):
+    paint = dict(parent)
+    for k in PAINT:
+        if el.get(k) is not None:
+            paint[k] = el.get(k)
+    return paint
+
+
+def stroked(p):
+    return p["stroke"] != "none" and num(p["stroke-opacity"]) > 0 and num(p["stroke-width"]) > 0
+
+
+def filled(p):
+    return p["fill"] != "none" and num(p["fill-opacity"]) > 0
+
+
+def visible_count(root):
+    count = 0
+
+    def walk(el, parent, hidden):
+        nonlocal count
+        tag = el.tag.rsplit("}", 1)[-1]
+        paint = paint_of(el, parent)
+        hidden = hidden or tag in ("defs", "clipPath")
+        if not hidden and tag in SHAPES and ((filled(paint) and tag != "line") or stroked(paint)) and has_extent(el, tag):
+            count += 1
+        if not hidden and tag == "text":
+            pieces = [(el.text, paint)]
+            for span in el:
+                pieces += [(span.text, paint_of(span, paint)), (span.tail, paint)]
+            if any((t or "").strip() and (filled(p) or stroked(p)) for t, p in pieces):
+                count += 1
+        for child in el:
+            walk(child, paint, hidden)
+
+    walk(root, {"fill": "#000000", "fill-opacity": "1", "stroke": "none", "stroke-opacity": "1", "stroke-width": "1"}, False)
+    return count
+
+
 skipped = v.get("skipped", {})
 pw, ph = v.get("page_w_mm") or 0.0, v.get("page_h_mm") or 0.0
 if case == "layers_off_frozen":
@@ -892,6 +956,24 @@ elif case == "far_point":
     need("far_point_in_bbox", bbox is not None and bbox[2] >= 1e5)
 elif case == "single_point":
     expect("empty", "zero_extent")
+elif case in ("alpha_clear_geometry", "alpha_clear_all"):
+    expect("empty", "nothing_visible")
+elif case == "alpha_one_visible":
+    expect("ok")
+    vis = visible_count(root) if root is not None else -1
+    fact("visible", vis)
+    need("one_visible_element", vis == 1)
+    need("two_invisible_texts", [e.get("invisible") for e in entries] == [True, True])
+    need("bbox_counts_transparent_geometry", bbox is not None and near(bbox[:3], (0.0, -10.0, 100.0), 1e-6) and bbox[3] > 120.0)
+elif case == "alpha_one_fill":
+    expect("ok")
+    vis = visible_count(root) if root is not None else -1
+    fact("visible", vis)
+    need("one_visible_element", vis == 1)
+    blob = open(svg_path, "rb").read() if os.path.exists(svg_path) else b""
+    need("the_visible_element_is_a_fill", blob.count(b'fill-opacity="0.498"') == 1 and b'stroke-opacity="0.498"' not in blob)
+    need("two_invisible_texts", [e.get("invisible") for e in entries] == [True, True])
+    need("bbox_counts_transparent_geometry", bbox is not None and near(bbox[:3], (0.0, -20.0, 100.0), 1e-6) and bbox[3] > 120.0)
 elif case == "wide":
     expect("ok")
     need("page_wide", pw == 297.0 and ph < 30.0)
@@ -1046,7 +1128,8 @@ elif setting == "outline_lines":
     pipeline.RenderPipeline2d.draw_text = draw_text
     recorder.Recorder.store = store
     sys.argv = ["cad-dxf"] + rest
-    rc = mod.main()
+    mod.main()
+    rc = 0
     calls = state["i"] + 1
     for want in range(calls):
         state["i"] = -1
@@ -1056,6 +1139,26 @@ elif setting == "outline_lines":
     with open(os.path.join(outdir, "lines.count"), "w") as fh:
         fh.write("%d\n" % calls)
     sys.exit(rc)
+elif setting == "font_bits":
+    import subprocess
+    from fontTools.ttLib import TTFont
+    for spec in sys.argv[2:]:
+        name, sel, mac, sub = spec.split(":")
+        font = TTFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+        if sel == "none":
+            del font["OS/2"]
+        else:
+            font["OS/2"].fsSelection = int(sel, 16)
+        font["head"].macStyle = int(mac)
+        for record in font["name"].names:
+            if record.nameID in (2, 17):
+                record.string = sub
+        path = "/job/%s.ttf" % name
+        font.save(path)
+        style = dict(mod.font_attrs(TTFont(path))[1]).get("font-style", "none")
+        slant = subprocess.run(["fc-query", "-f", "%{slant}", path], capture_output=True, text=True).stdout.strip() or "none"
+        print("FONTBITS %s %s %s" % (name, style, slant))
+    sys.exit(0)
 else:
     raise SystemExit("unknown setting " + setting)
 sys.argv = ["cad-dxf"] + sys.argv[2:]
@@ -1107,6 +1210,9 @@ group_semantics() {
   disk_guard
   for c in layers_off_frozen all_hidden wrong_extents header_far_extents xline_ray far_point single_point wide tall \
     units_0 units_1 units_2 units_3 units_4 units_5 units_6 units_13 units_21 units_missing; do
+    sem_case "$c" "dxf/$c.dxf"
+  done
+  for c in alpha_clear_geometry alpha_clear_all alpha_one_visible alpha_one_fill; do
     sem_case "$c" "dxf/$c.dxf"
   done
   sem_case 3dsolids public/3dsolids.dxf
@@ -1211,6 +1317,35 @@ d.saveas("/job/gen.dxf")
   helper_row safety hatch_timeout_signal generated/pattern_hatch.dxf "$gen" "$rc" "$job" measure=1 keep_outputs=1
   rm -rf "$job"
   printf 'GAP,key=hatch_timeout_partial,group=safety,ezdxf_signal=none_but_a_print,checked=ezdxf_1.4.4_Frontend.draw_hatch_pattern_prints_hatching_timeout_of_to_stdout_and_keeps_the_partial_lines,helper=counts_that_print_per_draw_hatch_pattern_call_into_hatch_truncated,proof=rows_hatch_pattern_default_and_hatch_timeout_signal,corpus_hatches=solid_only\n' >> "$LINES"
+
+  job=$(new_job)
+  rc=$(harness_run "$job" font_style_bits font_bits upright:40:0:Book bit0:1:0:Book bit9:200:0:Book bit09:201:0:Book \
+    mac_with_os2:40:2:Book bit0_named_oblique:1:0:Oblique named_oblique:40:0:Oblique named_italic:40:0:Italic \
+    named_kursiv:40:0:Kursiv mac_without_os2:none:2:Book)
+  printf 'HELPER,group=safety,case=font_style_bits,input=generated/DejaVuSans_variants,sha256=%s,%s\n' \
+    "$(docker run --rm --network none --entrypoint sha256sum "$TAG" /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf </dev/null | cut -d' ' -f1)" \
+    "$(python3 - "$rc" "$WORK/font_style_bits.out" <<'PY'
+import sys
+want = {"upright": "none", "bit0": "italic", "bit9": "oblique", "bit09": "oblique", "mac_with_os2": "none",
+        "bit0_named_oblique": "oblique", "named_oblique": "oblique", "named_italic": "italic", "named_kursiv": "italic",
+        "mac_without_os2": "italic"}
+rows = {}
+for line in open(sys.argv[2], encoding="utf-8", errors="replace"):
+    parts = line.split()
+    if len(parts) == 4 and parts[0] == "FONTBITS":
+        rows[parts[1]] = (parts[2], parts[3])
+bad = []
+for name, style in want.items():
+    got, slant = rows.get(name, ("missing", "none"))
+    agrees = slant.isdigit() and (got != "none") == (int(slant) > 0) and (int(slant) != 110 or got == "oblique")
+    if got != style or not agrees:
+        bad.append(name)
+facts = "+".join("%s:%s:%s" % (n, rows.get(n, ("missing", "none"))[0], rows.get(n, ("missing", "none"))[1]) for n in want)
+print("rc=%s,variants=%d,style_helper_fc_slant=%s,failed_checks=%s,result=%s" % (
+    sys.argv[1], len(rows), facts, "+".join(bad) or "none", "ok" if sys.argv[1] == "0" and not bad and len(rows) == len(want) else "fail"))
+PY
+)" >> "$LINES"
+  rm -rf "$job"
 
   job=$(job_with "$CORPUS/dxf/wide.dxf")
   rc=$(helper_exec "$DXF_RO" "$job" usage_cap_zero $(std_args 0))
@@ -1517,7 +1652,7 @@ group_writeout() {
   disk_guard
   mkdir -p "$DXF_OUT"
   : > "$WORK/frames.rows"
-  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf text_fonts:dxf; do
+  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf text_fonts:dxf alpha_one_visible:dxf; do
     src="$CORPUS/${n#*:}/${n%%:*}.dxf"
     n=${n%%:*}
     read -r rc job <<< "$(draw_out "$n" "$src")"
@@ -1539,13 +1674,17 @@ group_writeout() {
         fi ;;
     esac
     case "$n" in
-      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint|text_fonts)
+      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint|text_fonts|alpha_one_visible)
         pdfrc=0
         MOUNTS=()
         run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
         cp "$job/out.pdf" "$DXF_OUT/$n.pdf" 2>/dev/null || true
         facts="source=$n.render.svg,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/$n.pdf" "$DXF_OUT/$n.texts.json")"
-        out_row "$n.pdf" "$facts" "$(both_ok "$pdfrc" covered_subsequence=1 "$facts")"
+        if [ "$n" = alpha_one_visible ]; then
+          out_row "$n.pdf" "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
+        else
+          out_row "$n.pdf" "$facts" "$(both_ok "$pdfrc" covered_subsequence=1 "$facts")"
+        fi
         ;;
     esac
     if [ "$n" = text_cases ]; then
