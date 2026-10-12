@@ -80,7 +80,8 @@ func main() {
 		}
 		floor := ""
 		if *svg != "" {
-			floor = fmt.Sprintf(",below_render_floor=%d,below_floor_runes=%d,floor_pt=%g", facts.BelowRenderFloor, facts.BelowFloorRunes, facts.FloorPt)
+			floor = fmt.Sprintf(",below_render_floor=%d,below_floor_runes=%d,floor_pt=%g,invisible_text=%d,invisible_runes=%d",
+				facts.BelowRenderFloor, facts.BelowFloorRunes, facts.FloorPt, facts.InvisibleText, facts.InvisibleRunes)
 		}
 		fmt.Printf("GOPDF,pdf=%s,ok=%d,pages=%d,paint_ops=%d,text_runes=%d,expected_runes=%d%s,reason=%s\n",
 			path, ok, facts.Pages, facts.PaintOps, facts.TextRunes, facts.ExpectedRunes, floor, reason)

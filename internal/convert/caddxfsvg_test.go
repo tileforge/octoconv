@@ -31,8 +31,9 @@ func cadSVGValidate(t *testing.T, in []byte, maxBytes int64) ([]byte, CADSVGFact
 
 type cadSVGTextsFile struct {
 	Texts []struct {
-		Text    string `json:"text"`
-		Covered string `json:"covered"`
+		Text      string `json:"text"`
+		Covered   string `json:"covered"`
+		Invisible bool   `json:"invisible,omitempty"`
 	} `json:"texts"`
 }
 
@@ -378,5 +379,90 @@ func TestCADSVGRejectionQuotesAtMostFortyCharacters(t *testing.T) {
 	_, _, err := cadSVGValidate(t, []byte(strings.Replace(cadSVGBase, `font-family="DejaVu Sans"`, `font-family="`+long+`"`, 1)), 1<<20)
 	if err == nil || strings.Contains(err.Error(), strings.Repeat("x", 41)) {
 		t.Fatalf("err = %v, want a rejection quoting at most 40 characters", err)
+	}
+}
+
+func TestValidateCADSVGReportsTheEffectiveTextOpacity(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 100 100">` +
+		`<text font-size="2">plain</text>` +
+		`<text font-size="2" fill-opacity="0.498">half</text>` +
+		`<text font-size="2" fill-opacity="0.000">clear</text>` +
+		`<text font-size="2" fill="none">unfilled</text>` +
+		`<g fill-opacity="0"><text font-size="2">inherited</text><text font-size="2" fill-opacity="1">own</text></g>` +
+		`<g fill="none"><text font-size="2">inherited none</text><text font-size="2" fill="#000000">own fill</text></g>` +
+		`<text font-size="2" fill-opacity="0">a<tspan fill-opacity="0.5">b</tspan></text>` +
+		`<text font-size="2">a<tspan fill-opacity="0">b</tspan></text>` +
+		`<g fill-opacity="0.25"><g><text font-size="2">deep</text></g></g>` +
+		`</svg>`
+	facts := cadSVGFactsOf(t, svg)
+	want := []float64{1, 0.498, 0, 0, 0, 1, 0, 1, 0.5, 1, 0.25}
+	if len(facts.TextOpacity) != len(want) || len(facts.TextOpacity) != len(facts.Texts) {
+		t.Fatalf("TextOpacity = %v for %d texts, want %v", facts.TextOpacity, len(facts.Texts), want)
+	}
+	for i, w := range want {
+		if facts.TextOpacity[i] != w {
+			t.Errorf("text %d (%q) opacity = %v, want %v", i, facts.Texts[i], facts.TextOpacity[i], w)
+		}
+	}
+}
+
+func TestValidateCADSVGTextFillOpacityIsAUnitNumber(t *testing.T) {
+	textOpen := `<text transform="matrix(1 0 0 1 725.309 920.104)" font-family="DejaVu Sans"`
+	with := func(v string) string {
+		return strings.Replace(cadSVGBase, textOpen, textOpen+` fill-opacity="`+v+`"`, 1)
+	}
+	for _, v := range []string{"0", "0.000", "0.498", "1", "1.0", ".5", "1e0", "5e-1", "-0"} {
+		t.Run("accept_"+v, func(t *testing.T) {
+			_, facts, err := cadSVGValidate(t, []byte(with(v)), 1<<20)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			want, _ := strconv.ParseFloat(v, 64)
+			if len(facts.TextOpacity) != 1 || facts.TextOpacity[0] != want {
+				t.Errorf("TextOpacity = %v, want [%v]", facts.TextOpacity, want)
+			}
+		})
+	}
+	for _, v := range []string{"1.001", "-0.1", "2", "abc", "50%", "calc(0.5)", "0.5 ", " 0.5", "+0.5", "0.5;", "", "NaN", "inf",
+		"1e400", "0x1", "var(--a)", "0,5", "1/2", "0.5px", "1 0"} {
+		t.Run("reject_"+v, func(t *testing.T) {
+			_, _, err := cadSVGValidate(t, []byte(with(v)), 1<<20)
+			if !errors.Is(err, ErrCADSVGRejected) || !strings.Contains(err.Error(), "attribute fill-opacity") {
+				t.Fatalf("err = %v, want a fill-opacity grammar rejection", err)
+			}
+		})
+	}
+}
+
+func TestValidateCADSVGCarriesTheHelperOpacityOnTextsAndShapes(t *testing.T) {
+	tf := cadDXFReadTexts(t, cadDXFTestFile("text_alpha.texts.json"))
+	want := []float64{1, 0.498, 0, 1, 0.498, 0, 0.498, 0.498, 0.498, 0.498, 0, 0, 0.498, 0.498}
+	if len(tf.Texts) != len(want) {
+		t.Fatalf("texts.json holds %d texts, want %d", len(tf.Texts), len(want))
+	}
+	for i, e := range tf.Texts {
+		if e.Invisible != (want[i] == 0) {
+			t.Errorf("texts.json entry %d (%q) invisible = %v, want %v", i, e.Text, e.Invisible, want[i] == 0)
+		}
+	}
+	for _, name := range []string{"text_alpha.svg", "text_alpha.render.svg"} {
+		in, err := os.ReadFile(cadDXFTestFile(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, facts, err := cadSVGValidate(t, in, int64(len(in)))
+		if err != nil {
+			t.Fatalf("%s rejected: %v", name, err)
+		}
+		for i, w := range want {
+			if i >= len(facts.TextOpacity) || facts.TextOpacity[i] != w {
+				t.Fatalf("%s: TextOpacity = %v, want %v", name, facts.TextOpacity, want)
+			}
+		}
+		strokes := regexp.MustCompile(`<path d="[^"]*" fill="none" stroke="#000000" stroke-width="\d+" stroke-opacity="0\.498" />`).FindAll(in, -1)
+		fills := regexp.MustCompile(`<path d="[^"]*" fill="#ff0000" fill-opacity="0\.498" />`).FindAll(in, -1)
+		if len(strokes) != 2 || len(fills) != 1 {
+			t.Errorf("%s: %d half-transparent strokes and %d half-transparent fills, want the LINE and the XLINE and the HATCH", name, len(strokes), len(fills))
+		}
 	}
 }

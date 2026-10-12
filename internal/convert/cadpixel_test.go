@@ -413,10 +413,51 @@ func TestJudgeCADDrawingPNGAcceptsTheHelperFrames(t *testing.T) {
 		}
 		boxes[r.name] = [4]int{f.BoxX, f.BoxY, f.BoxW, f.BoxH}
 	}
-	o, tr := boxes["wide_1280_opaque.png"], boxes["wide_1280_transparent.png"]
-	for i := range o {
-		if d := o[i] - tr[i]; d < -2 || d > 2 {
-			t.Errorf("opaque ink box %v and transparent twin %v differ by more than 2 px", o, tr)
+	for _, name := range []string{"wide", "text_alpha_faint"} {
+		o, okO := boxes[name+"_1280_opaque.png"]
+		tr, okT := boxes[name+"_1280_transparent.png"]
+		if !okO || !okT {
+			t.Fatalf("frames.tsv lacks the 1280 opaque and transparent frames of %s", name)
+		}
+		for i := range o {
+			if d := o[i] - tr[i]; d < -2 || d > 2 {
+				t.Errorf("%s: opaque ink box %v and transparent twin %v differ by more than 2 px", name, o, tr)
+			}
+		}
+	}
+}
+
+func TestJudgeCADDrawingPNGAcceptsAFrameWhoseOnlyInkIsHalfTransparentText(t *testing.T) {
+	img := pixFrame(1280, pixWhite)
+	cadDrawingSquare(img, color.NRGBA{R: 128, G: 128, B: 128, A: 255})
+	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "opaque", cadSquareBox); err != nil {
+		t.Fatalf("opaque: rejected: %v", err)
+	}
+	img = pixFrame(1280, color.NRGBA{})
+	cadDrawingSquare(img, color.NRGBA{R: 0, G: 0, B: 0, A: 127})
+	if _, err := JudgeCADDrawingPNG(bytes.NewReader(pixEncode(t, img)), 1280, "transparent", cadSquareBox); err != nil {
+		t.Fatalf("transparent: rejected: %v", err)
+	}
+	for _, name := range []string{"text_alpha_faint_1280_opaque.png", "text_alpha_faint_1280_transparent.png"} {
+		data, err := os.ReadFile(filepath.Join(cadSVGTestDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := img.Bounds()
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
+				if strings.Contains(name, "transparent") && c.A > 128 {
+					t.Fatalf("%s: pixel %d,%d is %v, more opaque than half-transparent text", name, x, y, c)
+				}
+				if strings.Contains(name, "opaque") && c.R < 120 {
+					t.Fatalf("%s: pixel %d,%d is %v, darker than half-transparent black on white", name, x, y, c)
+				}
+			}
 		}
 	}
 }

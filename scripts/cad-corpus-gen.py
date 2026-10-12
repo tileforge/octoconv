@@ -2148,13 +2148,18 @@ DXF_NONFINITE = {
 DXF_FIXTURES = (
     ["text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf",
      "never_resolved.dxf", "wrong_extents.dxf", "header_far_extents.dxf", "wide.dxf", "tall.dxf",
-     "far_point.dxf", "single_point.dxf", "xline_ray.dxf"]
+     "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf"]
     + ["units_%d.dxf" % c for c in DXF_UNIT_CODES] + ["units_missing.dxf"]
     + ["cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf",
        "nest_d16.dxf", "nest_d17.dxf", "minsert_over_inserts.dxf", "entities_over.dxf",
        "dimension_minsert.dxf"]
     + ["%s.dxf" % n for n in DXF_NONNUMERIC] + ["%s.dxf" % n for n in DXF_NONFINITE]
 )
+
+
+DXF_ALPHA_HALF = b"440\n33554559\n"
+DXF_ALPHA_CLEAR = b"440\n33554432\n"
+DXF_ALPHA_BYBLOCK = b"440\n16777216\n"
 
 
 def dxf_value_pair(code, value):
@@ -2177,6 +2182,11 @@ def dxf_expected():
         "far_point.dxf": [b"POINT", b"100000.0"],
         "single_point.dxf": [b"POINT"],
         "xline_ray.dxf": [b"XLINE", b"RAY", b" 11\n999.0\n"],
+        "text_alpha.dxf": [b"AC1032", b"OPAQUE TEXT", b"HALF TEXT", b"CLEAR TEXT", b"OPAQUE MTEXT", b"HALF MTEXT",
+                           b"CLEAR MTEXT", b"LAYER TEXT", b"BLOCK TEXT", b"HALF\\PSPLIT", b"\\C1;INLINE RED", b"CLEAR\\PSPLIT",
+                           b"XLINE", b"HATCH", DXF_ALPHA_HALF, DXF_ALPHA_CLEAR,
+                           DXF_ALPHA_BYBLOCK, b"AcCmTransparency"],
+        "text_alpha_faint.dxf": [b"AC1032", b"FAINT ONLY", b"GONE", DXF_ALPHA_HALF, DXF_ALPHA_CLEAR],
         "units_missing.dxf": [b"AC1032", b"LINE"],
         "cyclic_self.dxf": [b"BLOCKS", b"INSERT"],
         "cyclic_ab.dxf": [b"BLOCKS", b"INSERT"],
@@ -2197,7 +2207,7 @@ def dxf_expected():
     return exp
 
 
-DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"]}
+DXF_ABSENT = {"units_missing.dxf": [b"$INSUNITS"], "text_alpha_faint.dxf": [b"\nLINE\n", b"\nHATCH\n", b"\nMTEXT\n"]}
 
 
 def dxf_ezdxf_bytes(doc):
@@ -2356,6 +2366,41 @@ def build_dxf_xline_ray(ezdxf):
     return blob
 
 
+def build_dxf_text_alpha(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    doc.layers.add("HALF", transparency=0.5)
+    msp = doc.modelspace()
+    for y, label, alpha in ((100, "OPAQUE TEXT", None), (90, "HALF TEXT", 0.5), (80, "CLEAR TEXT", 1.0)):
+        text = msp.add_text(label, height=5).set_placement((0, y))
+        if alpha is not None:
+            text.transparency = alpha
+    for y, label, alpha in ((75, "OPAQUE MTEXT", None), (65, "HALF MTEXT", 0.5), (55, "CLEAR MTEXT", 1.0)):
+        mtext = msp.add_mtext(label, dxfattribs={"char_height": 5}).set_location((0, y))
+        if alpha is not None:
+            mtext.transparency = alpha
+    for y, label, alpha in ((100, "HALF\\PSPLIT", 0.5), (85, "\\C1;INLINE RED", 0.5), (70, "CLEAR\\PSPLIT", 1.0)):
+        msp.add_mtext(label, dxfattribs={"char_height": 5}).set_location((70, y)).transparency = alpha
+    msp.add_text("LAYER TEXT", height=5, dxfattribs={"layer": "HALF"}).set_placement((0, 40))
+    block = doc.blocks.new("BYBLK")
+    block.add_text("BLOCK TEXT", height=5, dxfattribs={"transparency": 0x01000000}).set_placement((0, 0))
+    msp.add_blockref("BYBLK", (0, 30)).transparency = 0.5
+    msp.add_line((0, 20), (80, 20)).transparency = 0.5
+    hatch = msp.add_hatch(color=1)
+    hatch.paths.add_polyline_path([(90, 10), (110, 10), (110, 30), (90, 30)], is_closed=True)
+    hatch.transparency = 0.5
+    msp.add_xline((0, 15), (1, 0, 0)).transparency = 0.5
+    dxf_rect(msp, -10, 0, 120, 110)
+    return dxf_ezdxf_bytes(doc)
+
+
+def build_dxf_text_alpha_faint(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    msp.add_text("FAINT ONLY", height=10).set_placement((0, 0)).transparency = 0.5
+    msp.add_text("GONE", height=10).set_placement((0, -15)).transparency = 1.0
+    return dxf_ezdxf_bytes(doc)
+
+
 def build_dxf_units(ezdxf, code):
     doc = dxf_new(ezdxf, code)
     doc.modelspace().add_line((0, 0), (10, 5))
@@ -2502,6 +2547,8 @@ def build_dxf_all():
         "far_point.dxf": build_dxf_far_point(ezdxf),
         "single_point.dxf": build_dxf_single_point(ezdxf),
         "xline_ray.dxf": build_dxf_xline_ray(ezdxf),
+        "text_alpha.dxf": build_dxf_text_alpha(ezdxf),
+        "text_alpha_faint.dxf": build_dxf_text_alpha_faint(ezdxf),
         "units_missing.dxf": build_dxf_units(ezdxf, None),
         "cyclic_self.dxf": build_dxf_cyclic("self"),
         "cyclic_ab.dxf": build_dxf_cyclic("ab"),

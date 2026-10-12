@@ -27,6 +27,7 @@ type CADPDFFacts struct {
 	Text                                      string
 	PageW, PageH                              float64
 	BelowRenderFloor, BelowFloorRunes         int
+	InvisibleText, InvisibleRunes             int
 	FloorPt                                   float64
 }
 
@@ -41,7 +42,10 @@ type CADDXFPDFText struct {
 	Present      int
 }
 
-type cadDXFText struct{ Text, Covered string }
+type cadDXFText struct {
+	Text, Covered string
+	Invisible     bool
+}
 
 const (
 	cadPDFInflateFactor = 64
@@ -1515,10 +1519,22 @@ func JudgeCADDXFPDF(path string, maxBytes int64, texts []cadDXFText, svg CADSVGF
 	if err != nil {
 		return facts, err
 	}
+	if len(svg.TextOpacity) != len(svg.TextSizes) {
+		return facts, cadPDFReject("the SVG facts carry %d text opacities for %d texts", len(svg.TextOpacity), len(svg.TextSizes))
+	}
 	var want strings.Builder
 	for i, t := range texts {
+		invisible := svg.TextOpacity[i] == 0
+		if t.Invisible != invisible {
+			return facts, cadPDFReject("texts.json entry %d has invisible=%t, the SVG text's fill opacity is %v", i, t.Invisible, svg.TextOpacity[i])
+		}
 		c := cadStripSpace(t.Covered)
 		if c == "" {
+			continue
+		}
+		if invisible {
+			facts.InvisibleText++
+			facts.InvisibleRunes += utf8.RuneCountInString(c)
 			continue
 		}
 		if svg.TextSizes[i]*scale < CADDXFPDFTextFloorPt {
@@ -1597,8 +1613,9 @@ func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {
 	}
 	var doc struct {
 		Texts *[]struct {
-			Text    *string `json:"text"`
-			Covered *string `json:"covered"`
+			Text      *string         `json:"text"`
+			Covered   *string         `json:"covered"`
+			Invisible json.RawMessage `json:"invisible"`
 		} `json:"texts"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -1623,7 +1640,13 @@ func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {
 		if !cadRuneSubsequence(*e.Covered, *e.Text) {
 			return nil, cadPDFReject("texts.json entry %d: covered is not an ordered subsequence of text", i)
 		}
-		out = append(out, cadDXFText{Text: *e.Text, Covered: *e.Covered})
+		var invisible bool
+		if e.Invisible != nil {
+			if string(e.Invisible) == "null" || json.Unmarshal(e.Invisible, &invisible) != nil {
+				return nil, cadPDFReject("texts.json entry %d: invisible is not a boolean", i)
+			}
+		}
+		out = append(out, cadDXFText{Text: *e.Text, Covered: *e.Covered, Invisible: invisible})
 	}
 	return out, nil
 }
@@ -1631,6 +1654,9 @@ func parseCADDXFTexts(path string, maxBytes int64) ([]cadDXFText, error) {
 func cadDXFExpectedText(t []cadDXFText) string {
 	var b strings.Builder
 	for _, e := range t {
+		if e.Invisible {
+			continue
+		}
 		b.WriteString(cadStripSpace(e.Covered))
 	}
 	return b.String()

@@ -20,6 +20,7 @@ type CADSVGFacts struct {
 	ViewBoxW, ViewBoxH float64
 	Texts              []string
 	TextSizes          []float64
+	TextOpacity        []float64
 }
 
 const (
@@ -166,6 +167,35 @@ func cadSVGViewBox(s string) bool {
 	w, errW := strconv.Atoi(m[1])
 	h, errH := strconv.Atoi(m[2])
 	return errW == nil && errH == nil && w > 0 && h > 0
+}
+
+type cadSVGPaint struct {
+	none    bool
+	opacity float64
+}
+
+func (p cadSVGPaint) visible() float64 {
+	if p.none {
+		return 0
+	}
+	return p.opacity
+}
+
+func cadSVGPaintOf(parent cadSVGPaint, attrs []xml.Attr) cadSVGPaint {
+	for _, a := range attrs {
+		if a.Name.Space != "" {
+			continue
+		}
+		switch a.Name.Local {
+		case "fill":
+			parent.none = a.Value == "none"
+		case "fill-opacity":
+			if v, ok := cadSVGFinite(a.Value); ok {
+				parent.opacity = v
+			}
+		}
+	}
+	return parent
 }
 
 type cadSVGElementRule struct {
@@ -350,9 +380,10 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 	var facts CADSVGFacts
 	bw.WriteString(cadSVGDeclaration)
 	var stack []string
+	var paints []cadSVGPaint
 	first, rootDone := true, false
 	var text *strings.Builder
-	textScale, textSize := 1.0, math.Inf(1)
+	textScale, textSize, textOpacity := 1.0, math.Inf(1), 1.0
 	for {
 		tok, err := dec.Token()
 		if cr.n > maxBytes {
@@ -452,8 +483,14 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 					}
 				}
 			}
+			paint := cadSVGPaint{opacity: 1}
+			if len(paints) > 0 {
+				paint = paints[len(paints)-1]
+			}
+			paint = cadSVGPaintOf(paint, t.Attr)
 			if name == "text" {
 				text = &strings.Builder{}
+				textOpacity = paint.visible()
 				textScale = 1
 				for _, a := range t.Attr {
 					if a.Name.Space == "" && a.Name.Local == "transform" {
@@ -469,6 +506,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 				if v, ok := cadSVGTextSize(t.Attr, textScale); ok && v > textSize {
 					textSize = v
 				}
+				textOpacity = math.Max(textOpacity, paint.visible())
 			}
 			bw.WriteByte('<')
 			bw.WriteString(name)
@@ -482,15 +520,18 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 			}
 			bw.WriteByte('>')
 			stack = append(stack, name)
+			paints = append(paints, paint)
 		case xml.EndElement:
 			name := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			paints = paints[:len(paints)-1]
 			bw.WriteString("</")
 			bw.WriteString(name)
 			bw.WriteByte('>')
 			if name == "text" {
 				facts.Texts = append(facts.Texts, text.String())
 				facts.TextSizes = append(facts.TextSizes, textSize)
+				facts.TextOpacity = append(facts.TextOpacity, textOpacity)
 				text = nil
 			}
 			if len(stack) == 0 {

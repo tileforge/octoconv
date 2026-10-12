@@ -270,7 +270,7 @@ func TestCADDXFConvertRefusesBeforeAnyEngine(t *testing.T) {
 }
 
 func TestCADDXFConvertSVGReturnsOnlyGoBytes(t *testing.T) {
-	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall"} {
+	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall", "text_alpha", "text_alpha_faint"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "svg")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -360,7 +360,7 @@ func TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt(t *testing.T
 		}
 		f.noOutput(t)
 	})
-	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2"} {
+	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2", "text_alpha", "text_alpha_faint"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "pdf")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -654,8 +654,8 @@ func cadDXFFrames(t *testing.T) []cadDXFFrame {
 		}
 		out = append(out, cadDXFFrame{name: col[0], size: n(col[1]), background: col[2], sw: n(col[5]), sh: n(col[6]), left: n(col[7]), top: n(col[8])})
 	}
-	if len(out) != 3 {
-		t.Fatalf("frames.tsv has %d frames, want 3", len(out))
+	if len(out) != 5 {
+		t.Fatalf("frames.tsv has %d frames, want 5", len(out))
 	}
 	return out
 }
@@ -789,7 +789,7 @@ func TestCADDXFRenderPairsOperationAndOptions(t *testing.T) {
 func TestCADDXFRenderLetterboxesTheValidatedSVGWithTheProbeArgv(t *testing.T) {
 	for _, fr := range cadDXFFrames(t) {
 		t.Run(fr.name, func(t *testing.T) {
-			drawing := strings.SplitN(fr.name, "_", 2)[0]
+			drawing := strings.TrimSuffix(fr.name, fmt.Sprintf("_%d_%s.png", fr.size, fr.background))
 			f := newCADDXFFixture(t, "png")
 			f.setDXF(t, cadDXFRenderOutputs(t, drawing, cadDXFTestFile("wide.measure.json")))
 			f.setRsvg(t, cadDXFTestFile(fr.name), 0, "")
@@ -986,5 +986,69 @@ func TestCADDXFRenderWritesTheSidecarAsANewFile(t *testing.T) {
 			}
 			cadDXFSidecarDoc(t, f)
 		})
+	}
+}
+
+func TestCADDXFConvertRejectsAnOpacityTheOutputsDisagreeOn(t *testing.T) {
+	scratch := t.TempDir()
+	base := cadDXFFixtureOutputs(t, "text_alpha")
+	textsWith := func(name string, edit func(*cadSVGTextsFile)) string {
+		c := cadDXFReadTexts(t, base.texts)
+		edit(&c)
+		raw, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cadDXFWrite(t, scratch, name, raw)
+	}
+	clear := `fill="#000000" fill-opacity="0.000"`
+	half := `fill="#000000" fill-opacity="0.498"`
+	cases := []struct {
+		name string
+		edit func(o *cadDXFOutputs)
+	}{
+		{"texts.json drops the flag of an invisible text", func(o *cadDXFOutputs) {
+			o.texts = textsWith("unflagged.json", func(c *cadSVGTextsFile) { c.Texts[2].Invisible = false })
+		}},
+		{"texts.json flags a visible text", func(o *cadDXFOutputs) {
+			o.texts = textsWith("flagged.json", func(c *cadSVGTextsFile) { c.Texts[0].Invisible = true })
+		}},
+		{"texts.json flags a half-transparent text", func(o *cadDXFOutputs) {
+			o.texts = textsWith("half.json", func(c *cadSVGTextsFile) { c.Texts[1].Invisible = true })
+		}},
+		{"texts.json carries a non-boolean flag", func(o *cadDXFOutputs) {
+			o.texts = cadDXFMutate(t, scratch, base.texts, "string.json", `"invisible":true`, `"invisible":"yes"`)
+		}},
+		{"the client SVG makes an invisible text faintly visible", func(o *cadDXFOutputs) {
+			o.client = cadDXFMutate(t, scratch, base.client, "faint.svg", clear, `fill="#000000" fill-opacity="0.001"`)
+		}},
+		{"the render-only SVG makes an invisible text faintly visible", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "faint.render.svg", clear, `fill="#000000" fill-opacity="0.001"`)
+		}},
+		{"the render-only SVG hides a half-transparent text", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "hidden.render.svg", half, `fill="#000000" fill-opacity="0"`)
+		}},
+		{"the render-only SVG shifts a text's opacity", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "shift.render.svg", half, `fill="#000000" fill-opacity="0.499"`)
+		}},
+	}
+	for _, target := range []string{"svg", "pdf"} {
+		for _, tc := range cases {
+			t.Run(target+"/"+tc.name, func(t *testing.T) {
+				f := newCADDXFFixture(t, target)
+				o := base
+				tc.edit(&o)
+				f.setDXF(t, o)
+				f.setRsvg(t, cadDXFTestFile("text_alpha.pdf"), 0, "")
+				err := (CADDXFConverter{}).Convert(context.Background(), f.in, f.out, nil)
+				if !errors.Is(err, ErrCADSVGRejected) {
+					t.Fatalf("err = %v, want ErrCADSVGRejected", err)
+				}
+				if f.exists("rsvg.args") {
+					t.Error("rsvg-convert ran on a rejected drawing")
+				}
+				f.noOutput(t)
+			})
+		}
 	}
 }

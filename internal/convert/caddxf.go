@@ -393,10 +393,22 @@ func cadDXFCrossCheck(d cadDXFDrawing) error {
 		return fmt.Errorf("cad dxf: %w", cadSVGReject("texts.json holds %d texts, the client SVG %d, the render-only SVG %d and the verdict %d",
 			n, len(d.client.Texts), len(d.render.Texts), d.verdict.Texts))
 	}
+	if len(d.client.TextOpacity) != n || len(d.render.TextOpacity) != n {
+		return fmt.Errorf("cad dxf: %w", cadSVGReject("the client SVG carries %d text opacities and the render-only SVG %d for %d texts",
+			len(d.client.TextOpacity), len(d.render.TextOpacity), n))
+	}
 	uncovered, substituted := 0, 0
 	for i, t := range d.texts {
 		if cadXMLLineEnds(t.Text) != cadXMLLineEnds(d.client.Texts[i]) {
 			return fmt.Errorf("cad dxf: %w", cadSVGReject("text %d of texts.json differs from the client SVG", i))
+		}
+		if d.client.TextOpacity[i] != d.render.TextOpacity[i] {
+			return fmt.Errorf("cad dxf: %w", cadSVGReject("text %d has fill opacity %v in the client SVG and %v in the render-only SVG",
+				i, d.client.TextOpacity[i], d.render.TextOpacity[i]))
+		}
+		if t.Invisible != (d.client.TextOpacity[i] == 0) {
+			return fmt.Errorf("cad dxf: %w", cadSVGReject("text %d of texts.json has invisible=%t, its fill opacity in the SVG is %v",
+				i, t.Invisible, d.client.TextOpacity[i]))
 		}
 		want, subs := cadDXFRenderText(t)
 		if cadXMLLineEnds(want) != cadXMLLineEnds(d.render.Texts[i]) {

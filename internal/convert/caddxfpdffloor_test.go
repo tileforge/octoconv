@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -163,6 +164,9 @@ func TestJudgeCADDXFPDFAcceptsHelperPDFsAndExcludesNothingAboveTheFloor(t *testi
 			if facts.BelowRenderFloor != 0 || facts.BelowFloorRunes != 0 || facts.FloorPt != CADDXFPDFTextFloorPt {
 				t.Errorf("facts = %+v, want nothing below the %v pt floor", facts, CADDXFPDFTextFloorPt)
 			}
+			if facts.InvisibleText != 0 || facts.InvisibleRunes != 0 {
+				t.Errorf("facts = %+v, want no invisible text", facts)
+			}
 			if facts.ExpectedRunes != utf8.RuneCountInString(cadDXFExpectedText(texts)) {
 				t.Errorf("expected runes = %d, want %d", facts.ExpectedRunes, utf8.RuneCountInString(cadDXFExpectedText(texts)))
 			}
@@ -204,4 +208,100 @@ func TestJudgeCADDXFPDFRejectsMismatchedInputs(t *testing.T) {
 	svgOne := CADSVGFacts{ViewBoxW: 10, ViewBoxH: 10, TextSizes: []float64{1}}
 	_, err = JudgeCADDXFPDF(cadPDFWrite(t, noBox), 1<<20, []cadDXFText{{Text: "A", Covered: "A"}}, svgOne)
 	cadPDFRequireRejected(t, err, "MediaBox")
+}
+
+func TestJudgeCADDXFPDFExcludesAndCountsInvisibleTexts(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		invisible, runes int
+		expected         string
+	}{
+		{"text_alpha", 4, 29, "OPAQUETEXTHALFTEXTOPAQUEMTEXTHALFMTEXTHALFSPLITINLINEREDLAYERTEXTBLOCKTEXT"},
+		{"text_alpha_faint", 1, 4, "FAINTONLY"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			pdf, texts, svg := cadDXFFixtureInputs(t, c.name)
+			facts, err := JudgeCADDXFPDF(pdf, 1<<30, texts, svg)
+			if err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if facts.InvisibleText != c.invisible || facts.InvisibleRunes != c.runes || facts.BelowRenderFloor != 0 {
+				t.Errorf("facts = %+v, want %d invisible texts of %d runes and none below the floor", facts, c.invisible, c.runes)
+			}
+			if facts.ExpectedRunes != utf8.RuneCountInString(c.expected) {
+				t.Errorf("expected runes = %d, want %d", facts.ExpectedRunes, utf8.RuneCountInString(c.expected))
+			}
+			if got := cadDXFExpectedText(texts); got != c.expected {
+				t.Errorf("expected text = %q, want %q", got, c.expected)
+			}
+			if _, err := JudgeCADPDF(pdf, 1<<30, cadDXFExpectedText(texts)); err != nil {
+				t.Errorf("JudgeCADPDF rejects the expectation without invisible texts: %v", err)
+			}
+		})
+	}
+}
+
+func TestJudgeCADDXFPDFRequiresAHalfTransparentText(t *testing.T) {
+	pdf, texts, svg := cadDXFFixtureInputs(t, "text_alpha")
+	texts[1] = cadDXFText{Text: "☃", Covered: "☃"}
+	_, err := JudgeCADDXFPDF(pdf, 1<<30, texts, svg)
+	cadPDFRequireRejected(t, err, "missing text")
+}
+
+func TestJudgeCADDXFPDFRejectsAnInvisibleFlagTheSVGContradicts(t *testing.T) {
+	pdf, texts, svg := cadDXFFixtureInputs(t, "text_alpha")
+	for _, c := range []struct {
+		name string
+		edit func(texts []cadDXFText, svg *CADSVGFacts)
+		rule string
+	}{
+		{"an invisible text without the flag", func(texts []cadDXFText, _ *CADSVGFacts) { texts[2].Invisible = false }, "invisible"},
+		{"a visible text with the flag", func(texts []cadDXFText, _ *CADSVGFacts) { texts[0].Invisible = true }, "invisible"},
+		{"a half-transparent text with the flag", func(texts []cadDXFText, _ *CADSVGFacts) { texts[1].Invisible = true }, "invisible"},
+		{"an SVG without opacities", func(_ []cadDXFText, svg *CADSVGFacts) { svg.TextOpacity = nil }, "opacities"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tx := append([]cadDXFText(nil), texts...)
+			sv := svg
+			sv.TextOpacity = append([]float64(nil), svg.TextOpacity...)
+			c.edit(tx, &sv)
+			_, err := JudgeCADDXFPDF(pdf, 1<<30, tx, sv)
+			cadPDFRequireRejected(t, err, c.rule)
+		})
+	}
+}
+
+func TestParseCADDXFTextsReadsTheInvisibleFlag(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		body string
+		want []bool
+		ok   bool
+	}{
+		{`{"texts":[{"text":"a","covered":"a"},{"text":"b","covered":"b","invisible":true}]}`, []bool{false, true}, true},
+		{`{"texts":[{"text":"a","covered":"a","invisible":false}]}`, []bool{false}, true},
+		{`{"texts":[{"text":"a","covered":"a","invisible":"yes"}]}`, nil, false},
+		{`{"texts":[{"text":"a","covered":"a","invisible":1}]}`, nil, false},
+		{`{"texts":[{"text":"a","covered":"a","invisible":null}]}`, nil, false},
+	} {
+		p := filepath.Join(dir, "t.json")
+		if err := os.WriteFile(p, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := parseCADDXFTexts(p, 1<<20)
+		if !c.ok {
+			if !errors.Is(err, ErrCADPDFRejected) {
+				t.Errorf("%s: err = %v, want a rejection", c.body, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", c.body, err)
+		}
+		for i, w := range c.want {
+			if got[i].Invisible != w {
+				t.Errorf("%s: entry %d invisible = %v, want %v", c.body, i, got[i].Invisible, w)
+			}
+		}
+	}
 }

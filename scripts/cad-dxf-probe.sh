@@ -25,7 +25,7 @@ PY_PACKAGES=(ezdxf fonttools numpy pillow pyparsing typing-extensions)
 RW_SET=/job
 OUT_OVERRIDE=""
 FIXTURE_DIR="$CORPUS/dxf"
-FIXTURE_COUNT=41
+FIXTURE_COUNT=43
 HELPER_EVID="$PHASE_DIR/evidence/75-02-helper.txt"
 HELPER_EVID_NAME="evidence/75-02-helper.txt"
 DXF_OUT="$CORPUS/dxf-out"
@@ -591,7 +591,7 @@ PY
 fixture_expectation() {
   case "$1" in
     cyclic_*) echo audit_104 ;;
-    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
+    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
     *) echo fact ;;
   esac
 }
@@ -737,7 +737,7 @@ if verdict == "ok":
         ascii_ok = False
         fact("texts_json", exc.__class__.__name__)
     shape_ok = (isinstance(tj, dict) and set(tj) == {"texts"} and isinstance(tj["texts"], list)
-                and all(isinstance(e, dict) and set(e) == {"text", "covered"}
+                and all(isinstance(e, dict) and set(e) - {"invisible"} == {"text", "covered"} and e.get("invisible", True) is True
                         and isinstance(e["text"], str) and isinstance(e["covered"], str) for e in tj["texts"]))
     if shape_ok:
         entries = tj["texts"]
@@ -1458,7 +1458,7 @@ got = "".join(out.split())
 fields = ["pdf_magic=%d" % magic, "pdf_text_chars=%d" % len(got)]
 if texts:
     with open(texts, encoding="ascii") as fh:
-        want = "".join("".join(e["covered"].split()) for e in json.load(fh)["texts"])
+        want = "".join("".join(e["covered"].split()) for e in json.load(fh)["texts"] if not e.get("invisible"))
     it = iter(got)
     fields.append("covered_chars=%d" % len(want))
     fields.append("covered_subsequence=%d" % int(len(want) > 0 and all(c in it for c in want)))
@@ -1491,7 +1491,7 @@ group_writeout() {
   disk_guard
   mkdir -p "$DXF_OUT"
   : > "$WORK/frames.rows"
-  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf; do
+  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf; do
     src="$CORPUS/${n#*:}/${n%%:*}.dxf"
     n=${n%%:*}
     read -r rc job <<< "$(draw_out "$n" "$src")"
@@ -1513,7 +1513,7 @@ group_writeout() {
         fi ;;
     esac
     case "$n" in
-      text_cases|legacy_cp1251|uncommon|hatches_2)
+      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint)
         pdfrc=0
         MOUNTS=()
         run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
@@ -1539,15 +1539,15 @@ group_writeout() {
       facts="source=text_cases.dxf_stock_svg_backend_text_as_paths,helper_rc=$r,rsvg_rc=$pdfrc,ruleset=rsvg,$(pdf_text_fields "$DXF_OUT/outline.pdf")"
       out_row outline.pdf "$facts" "$(both_ok "$pdfrc" pdf_text_chars=0 "$facts")"
     fi
-    if [ "$n" = wide ] || [ "$n" = tall ]; then
+    if [ "$n" = wide ] || [ "$n" = tall ] || [ "$n" = text_alpha_faint ]; then
       cp "$job/out.render.svg" "$job/frame.svg" 2>/dev/null || true
     fi
-    if [ "$n" = wide ]; then
+    if [ "$n" = wide ] || [ "$n" = text_alpha_faint ]; then
       for spec in 1280:opaque 1280:transparent; do
         read -r r sw sh left top <<< "$(rsvg_png "$RSVG_RO" "$job" frame.svg out.png "${spec%%:*}" "${spec#*:}")"
-        cp "$job/out.png" "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png" 2>/dev/null || true
-        frame_line "wide_${spec%%:*}_${spec#*:}.png" "${spec%%:*}" "${spec#*:}" "$job/frame.svg" "$sw" "$sh" "$left" "$top"
-        out_row "wide_${spec%%:*}_${spec#*:}.png" "source=wide.render.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/wide_${spec%%:*}_${spec#*:}.png")" \
+        cp "$job/out.png" "$DXF_OUT/${n}_${spec%%:*}_${spec#*:}.png" 2>/dev/null || true
+        frame_line "${n}_${spec%%:*}_${spec#*:}.png" "${spec%%:*}" "${spec#*:}" "$job/frame.svg" "$sw" "$sh" "$left" "$top"
+        out_row "${n}_${spec%%:*}_${spec#*:}.png" "source=$n.render.svg,rsvg_rc=$r,ruleset=rsvg,scaled=${sw}x${sh},offset=${left}+${top},$(png_facts "$DXF_OUT/${n}_${spec%%:*}_${spec#*:}.png")" \
           "$( [ "$r" = 0 ] && echo 1 || echo 0 )"
         rm -f "$job/out.png"
       done
@@ -1562,7 +1562,7 @@ group_writeout() {
     rm -rf "$job"
   done
   { printf 'name\tsize\tbackground\tw_mm\th_mm\tsw\tsh\tleft\ttop\n'; cat "$WORK/frames.rows"; } > "$DXF_OUT/frames.tsv"
-  out_row frames.tsv "rows=$(wc -l < "$WORK/frames.rows" | tr -d ' ')" "$( [ "$(wc -l < "$WORK/frames.rows" | tr -d ' ')" = 3 ] && echo 1 || echo 0 )"
+  out_row frames.tsv "rows=$(wc -l < "$WORK/frames.rows" | tr -d ' ')" "$( [ "$(wc -l < "$WORK/frames.rows" | tr -d ' ')" = 5 ] && echo 1 || echo 0 )"
 }
 
 frame_line() {

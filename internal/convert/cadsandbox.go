@@ -377,7 +377,7 @@ func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspa
 	if err != nil {
 		return fmt.Errorf("the cad dxf stage cannot draw a file inside the job directory under its sandbox: %w", err)
 	}
-	if len(d.texts) != 1 || d.texts[0].Text != cadPreflightDXFText || d.texts[0].Covered != cadPreflightDXFText {
+	if len(d.texts) != 1 || d.texts[0].Text != cadPreflightDXFText || d.texts[0].Covered != cadPreflightDXFText || d.texts[0].Invisible {
 		var got []string
 		for _, t := range d.texts {
 			got = append(got, t.Text)
@@ -395,6 +395,9 @@ func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspa
 	}
 	if facts.BelowRenderFloor != 0 {
 		return fmt.Errorf("text: the fixture's text falls below the PDF render floor, so the PDF judge would accept it without any text")
+	}
+	if facts.InvisibleText != 0 {
+		return fmt.Errorf("text: the fixture's text is invisible, so the PDF judge would accept it without any text")
 	}
 	if _, err := JudgeCADPDF(pdf, CADMaxDXFPDFBytes, cadDXFExpectedText(d.texts)); err != nil {
 		return fmt.Errorf("fonts: the PDF drawn under the rsvg-convert ruleset does not carry the text %q: %w", cadPreflightDXFText, err)
