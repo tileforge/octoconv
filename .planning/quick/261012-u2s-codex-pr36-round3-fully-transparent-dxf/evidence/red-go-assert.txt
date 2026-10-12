@@ -1,0 +1,180 @@
+--- FAIL: TestValidateCADSVGCountsVisibleElements (0.00s)
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/stroke_at_opacity_0.498 (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/fill_at_opacity_0.004 (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/default_fill_is_black (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/own_fill-opacity_overrides_g (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/stroke_inherited_from_g (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/line_stroked (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/rect (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/circle (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/zero-length_segment_with_a_cap (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/polyline (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/text (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/tspan_shows_a_character (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/visible_text_around_a_hidden_tspan (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/text_stroked_by_its_g (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 1
+    --- FAIL: TestValidateCADSVGCountsVisibleElements/two_visible_and_one_hidden (0.00s)
+        caddxfvisible_test.go:69: Visible = 0, want 2
+--- FAIL: TestValidateCADSVGCountsTheVisibleElementsOfTheHelperOutputs (0.02s)
+    caddxfvisible_test.go:117: alpha_one_visible.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:122: alpha_one_visible.render.svg: Visible = 0, want exactly 1
+    caddxfvisible_test.go:117: alpha_one_visible.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:122: alpha_one_visible.svg: Visible = 0, want exactly 1
+    caddxfvisible_test.go:117: hatches_2.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: hatches_2.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: legacy_cp1251.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: legacy_cp1251.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: tall.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: tall.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_alpha.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_alpha.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_alpha_faint.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:122: text_alpha_faint.render.svg: Visible = 0, want exactly 1
+    caddxfvisible_test.go:117: text_alpha_faint.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:122: text_alpha_faint.svg: Visible = 0, want exactly 1
+    caddxfvisible_test.go:117: text_cases.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_cases.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_fonts.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: text_fonts.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: uncommon.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: uncommon.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: wide.render.svg: Visible = 0, want at least 1
+    caddxfvisible_test.go:117: wide.svg: Visible = 0, want at least 1
+--- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute (9.13s)
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_geometry_and_text/svg (1.18s)
+        caddxfvisible_test.go:167: err = <nil>, want ErrCADNothingDrawable and ErrCADEmptyResult
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_geometry_and_text/pdf (1.65s)
+        caddxfvisible_test.go:167: err = <nil>, want ErrCADNothingDrawable and ErrCADEmptyResult
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_geometry_and_text/png (1.75s)
+        caddxfvisible_test.go:167: err = cad: the rendered image failed the content check: not a decodable PNG: png: invalid format: not a PNG file, want ErrCADNothingDrawable and ErrCADEmptyResult
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_text_only/svg (1.07s)
+        caddxfvisible_test.go:167: err = <nil>, want ErrCADNothingDrawable and ErrCADEmptyResult
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_text_only/pdf (1.56s)
+        caddxfvisible_test.go:167: err = <nil>, want ErrCADNothingDrawable and ErrCADEmptyResult
+    --- FAIL: TestCADDXFRefusesADrawingWithNothingVisibleOnEveryRoute/transparent_text_only/png (1.92s)
+        caddxfvisible_test.go:167: err = cad: the rendered image failed the content check: not a decodable PNG: png: invalid format: not a PNG file, want ErrCADNothingDrawable and ErrCADEmptyResult
+--- FAIL: TestCADDXFRejectsAVisibleCountTheOutputsDisagreeOn (5.11s)
+    --- FAIL: TestCADDXFRejectsAVisibleCountTheOutputsDisagreeOn/client/svg (1.04s)
+        caddxfvisible_test.go:199: err = <nil>, want ErrCADSVGRejected and not an empty result
+    --- FAIL: TestCADDXFRejectsAVisibleCountTheOutputsDisagreeOn/client/pdf (1.53s)
+        caddxfvisible_test.go:199: err = <nil>, want ErrCADSVGRejected and not an empty result
+    --- FAIL: TestCADDXFRejectsAVisibleCountTheOutputsDisagreeOn/render/svg (1.05s)
+        caddxfvisible_test.go:199: err = <nil>, want ErrCADSVGRejected and not an empty result
+    --- FAIL: TestCADDXFRejectsAVisibleCountTheOutputsDisagreeOn/render/pdf (1.49s)
+        caddxfvisible_test.go:199: err = <nil>, want ErrCADSVGRejected and not an empty result
+--- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows (0.05s)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/stroke_at_CA_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/stroke_at_CA_0.498 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/stroke_at_CA_1_and_ca_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/fill_at_ca_0_and_CA_1 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/fill_at_ca_0.5 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/fill_and_stroke_at_ca_0_and_CA_0.5 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/fill_and_stroke_at_both_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/alpha_restored_by_Q (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/alpha_set_inside_q_is_kept_until_Q (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/stroke_under_a_soft_mask (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/stroke_with_the_soft_mask_removed (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/a_later_gs_clears_the_soft_mask (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/a_gs_without_alpha_keeps_the_alpha (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_in_fill_mode (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_at_render_mode_3 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_at_render_mode_7 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_at_render_mode_1_with_CA_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_at_render_mode_2_with_ca_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/text_at_ca_0 (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/render_mode_restored_by_Q (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 2 (PaintOps 2)
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/an_empty_string_shows_nothing (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+    --- FAIL: TestJudgeCADPDFCountsOnlyInkTheGraphicsStateShows/a_TJ_of_numbers_shows_nothing (0.00s)
+        caddxfvisible_test.go:280: InkOps = 0, want 1 (PaintOps 2)
+        caddxfvisible_test.go:283: accepted, want a "empty page" rejection
+--- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead (0.01s)
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_gs_the_resources_do_not_name (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "ExtGState /zz" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_gs_on_a_page_without_ExtGState (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "ExtGState /a1" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_stroke_alpha_that_is_not_a_number (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "/CA" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_fill_alpha_above_1 (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "/ca" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_negative_alpha (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "/CA" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/an_ExtGState_that_is_not_a_dictionary (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "ExtGState /a1" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_gs_without_a_name (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "gs" rejection
+    --- FAIL: TestJudgeCADPDFRejectsAGraphicsStateItCannotRead/a_text_render_mode_out_of_range (0.00s)
+        caddxfvisible_test.go:314: accepted, want a "Tr" rejection
+--- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs (0.01s)
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/text_cases (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 29, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/legacy_cp1251 (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 2, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/uncommon (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 232, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/hatches_2 (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 13, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/text_alpha (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 18, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/text_alpha_faint (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 2, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/text_fonts (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 19, want 2 <= InkOps <= PaintOps
+    --- FAIL: TestJudgeCADPDFCountsTheInkOfTheHelperPDFs/alpha_one_visible (0.00s)
+        caddxfvisible_test.go:328: InkOps = 0, PaintOps = 2, want 2 <= InkOps <= PaintOps
+        caddxfvisible_test.go:331: facts = {Pages:1 PaintOps:2 TextRunes:0 ExpectedRunes:0 Text: PageW:660.188959 PageH:841.889764 BelowRenderFloor:0 BelowFloorRunes:0 InvisibleText:2 InvisibleRunes:19 FloorPt:0.00469174 InkOps:0}, want the background and the one visible line as the only ink and two invisible texts
+--- FAIL: TestCADDocsStateThatANothingVisibleDrawingIsEmptyOnEveryRoute (0.00s)
+    cad_docs_sync_test.go:153: ERROR-CODES DXF paragraph still says "SVG still converts"
+    cad_docs_sync_test.go:149: ERROR-CODES cad_empty_result row does not name a fully transparent drawing
+    cad_docs_sync_test.go:153: MEASUREMENTS Transparency paragraph still says "SVG converts"
+    cad_docs_sync_test.go:153: MEASUREMENTS Transparency paragraph still says "its SVG converts"
+    cad_docs_sync_test.go:162: ERROR-CODES DXF paragraph does not state that SVG, PDF and PNG of a drawing with nothing visible are `cad_empty_result`
+    cad_docs_sync_test.go:162: MEASUREMENTS Transparency paragraph does not state that SVG, PDF and PNG of a drawing with nothing visible are `cad_empty_result`
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/convert	18.470s
+FAIL

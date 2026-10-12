@@ -1,0 +1,62 @@
+=== RUN   TestPinnedCADFailureVerdicts
+=== RUN   TestPinnedCADFailureVerdicts/input_over_the_ceiling_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/too_complex_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/engine_killed_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/unreadable_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/empty_result_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/mesh_timeout_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/render_timeout_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/render_rejected_by_pixels_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/measurements_invalid_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/dxf_nothing_drawable_is_terminal_with_its_own_code_on_the_first_attempt
+    pinning_test.go:1564: MarkFailed message = "the drawing contains nothing that can be drawn: model space is empty, hidden or holds only 3D solids", want "the drawing contains nothing visible: model space is empty, hidden, fully transparent or holds only 3D solids"
+=== RUN   TestPinnedCADFailureVerdicts/dxf_timeout_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/rsvg_timeout_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/dxf_svg_rejected_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/dxf_pdf_rejected_is_terminal_with_its_own_code_on_the_first_attempt
+=== RUN   TestPinnedCADFailureVerdicts/a_render_failure_retries_and_marks_nothing_on_the_first_attempt
+2026/10/12 22:15:53 job retrying job_id=8c154955-d696-412f-9c7d-2eb106db85ea correlation_id="" client_id=ba0006c0-054e-4720-8b86-bf38ea9555d5 engine="" duration_ms=0 reason="convert: cad render: cad: the render stage failed: exited 1"
+=== RUN   TestPinnedCADFailureVerdicts/a_render_failure_maps_to_engine_error_with_its_own_sentence_on_the_final_attempt
+=== RUN   TestPinnedCADFailureVerdicts/a_drawing_fault_retries_and_marks_nothing_on_the_first_attempt
+2026/10/12 22:15:53 job retrying job_id=8f321ad0-36b9-4096-b169-2d5a5f5b5ae8 correlation_id="" client_id=6e31fc78-0a32-42dd-8257-778396bc04fe engine="" duration_ms=0 reason="convert: cad rsvg: cad: the drawing stage failed: exit status 1"
+=== RUN   TestPinnedCADFailureVerdicts/a_drawing_fault_maps_to_engine_error_with_its_own_sentence_on_the_final_attempt
+=== RUN   TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_dxf_sentinel_retries_and_marks_nothing
+2026/10/12 22:15:53 job retrying job_id=04689a1c-f9c8-4711-9aa8-a8739fc33a0c correlation_id="" client_id=b7707bb3-d45a-4920-8e3b-9137b3c11861 engine="" duration_ms=0 reason="cad dxf: engine sandbox could not be established: cad: the dxf stage did not finish within the time limit: unrecoverable error"
+=== RUN   TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_render_sentinel_retries_and_marks_nothing
+2026/10/12 22:15:53 job retrying job_id=95a428e1-9cb1-4dd4-8310-83131e114570 correlation_id="" client_id=38adfecb-d190-4c36-81b5-f80a93b49885 engine="" duration_ms=0 reason="cad render: engine sandbox could not be established: cad: the render stage did not finish within the time limit: unrecoverable error"
+=== RUN   TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_terminal-looking_error_retries_and_marks_nothing
+2026/10/12 22:15:53 job retrying job_id=d9015d51-44d6-4005-aecb-1a5e006faa64 correlation_id="" client_id=8724467e-f0fc-44f6-b2a0-60b6e8d4aacc engine="" duration_ms=0 reason="convert: cad guard: engine sandbox could not be established: cad: the file could not be read as CAD data: unrecoverable error"
+=== RUN   TestPinnedCADFailureVerdicts/an_attempt_deadline_outside_the_engine_stays_retryable
+2026/10/12 22:15:53 job retrying job_id=c6f9545f-4eeb-4b37-9413-1c6939fbfb16 correlation_id="" client_id=59b452cf-53b8-4439-81b8-96743017cbeb engine="" duration_ms=0 reason="upload \"results/x/0-out.stl\": context deadline exceeded"
+=== RUN   TestPinnedCADFailureVerdicts/cancellation_is_not_a_file_failure
+=== RUN   TestPinnedCADFailureVerdicts/persisted_options_are_refused,_not_ignored
+=== RUN   TestPinnedCADFailureVerdicts/a_plain_engine_failure_with_no_sentinel_keeps_the_shared_verdict
+--- FAIL: TestPinnedCADFailureVerdicts (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/input_over_the_ceiling_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/too_complex_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/engine_killed_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/unreadable_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/empty_result_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/mesh_timeout_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/render_timeout_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/render_rejected_by_pixels_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/measurements_invalid_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- FAIL: TestPinnedCADFailureVerdicts/dxf_nothing_drawable_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/dxf_timeout_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/rsvg_timeout_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/dxf_svg_rejected_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/dxf_pdf_rejected_is_terminal_with_its_own_code_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_render_failure_retries_and_marks_nothing_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_render_failure_maps_to_engine_error_with_its_own_sentence_on_the_final_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_drawing_fault_retries_and_marks_nothing_on_the_first_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_drawing_fault_maps_to_engine_error_with_its_own_sentence_on_the_final_attempt (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_dxf_sentinel_retries_and_marks_nothing (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_render_sentinel_retries_and_marks_nothing (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_sandbox_fault_wrapping_a_terminal-looking_error_retries_and_marks_nothing (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/an_attempt_deadline_outside_the_engine_stays_retryable (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/cancellation_is_not_a_file_failure (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/persisted_options_are_refused,_not_ignored (0.00s)
+    --- PASS: TestPinnedCADFailureVerdicts/a_plain_engine_failure_with_no_sentinel_keeps_the_shared_verdict (0.00s)
+FAIL
+FAIL	github.com/apaderin/octoconv/internal/worker	0.748s
+FAIL

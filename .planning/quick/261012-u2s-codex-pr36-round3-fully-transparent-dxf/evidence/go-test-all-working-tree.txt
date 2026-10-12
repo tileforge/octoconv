@@ -1,0 +1,48 @@
+ok  	github.com/apaderin/octoconv/cmd/api	3.773s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	4.002s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	4.038s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	4.182s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	5.137s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	5.595s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	5.747s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	11.314s
+ok  	github.com/apaderin/octoconv/internal/auth	4.186s
+ok  	github.com/apaderin/octoconv/internal/cancel	4.604s
+ok  	github.com/apaderin/octoconv/internal/clients	4.458s
+ok  	github.com/apaderin/octoconv/internal/convert	428.820s
+ok  	github.com/apaderin/octoconv/internal/db	4.934s
+ok  	github.com/apaderin/octoconv/internal/e2e	5.540s
+ok  	github.com/apaderin/octoconv/internal/envcfg	12.091s
+ok  	github.com/apaderin/octoconv/internal/errcode	5.332s
+ok  	github.com/apaderin/octoconv/internal/inspect	6.341s
+ok  	github.com/apaderin/octoconv/internal/jobs	5.266s
+ok  	github.com/apaderin/octoconv/internal/logfmt	4.930s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	5.937s
+ok  	github.com/apaderin/octoconv/internal/measurements	5.023s
+ok  	github.com/apaderin/octoconv/internal/metrics	5.154s
+ok  	github.com/apaderin/octoconv/internal/presets	5.058s
+ok  	github.com/apaderin/octoconv/internal/queue	4.655s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	4.367s
+ok  	github.com/apaderin/octoconv/internal/reconciler	5.210s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	4.714s
+ok  	github.com/apaderin/octoconv/internal/sandbox	4.642s
+ok  	github.com/apaderin/octoconv/internal/storage	4.908s
+ok  	github.com/apaderin/octoconv/internal/webhook	5.652s
+ok  	github.com/apaderin/octoconv/internal/worker	14.116s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
