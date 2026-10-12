@@ -6,10 +6,10 @@ current_phase: 76
 current_phase_name: Measured Bounds, KEDA Proof & Client Docs
 status: planning
 stopped_at: Phase 75 complete, ready to plan Phase 76
-last_updated: "2026-10-12T14:12:52.122Z"
+last_updated: "2026-10-12T15:33:18.167Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: f0cb32f3a5b36625a139b273679c6f70a6ce5d71
+state_head: acddc6fcd94efc02a894d6ab58d6b6f58fb91d09
 progress:
   total_phases: 6
   completed_phases: 5
@@ -227,6 +227,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261006-t51 | Normalize ASCII STL case for cad stats and render (Codex P2 PR 35) | 2026-10-07 | 51f5131 | [261006-t51-normalize-ascii-stl-case-for-cad-stats-a](./quick/261006-t51-normalize-ascii-stl-case-for-cad-stats-a/) |
 | 261007-1sx | Per-shell signed volume for STL and per-solid sign for STEP (Codex P2 PR 35 round 2) | 2026-10-07 | 8dc219e | [261007-1sx-per-shell-signed-volume-for-stl-and-per-](./quick/261007-1sx-per-shell-signed-volume-for-stl-and-per-/) |
 | 261012-gos | Close phase-75 deferred items: job-dir read/write hardening across engines (no-follow, regular-file, remove-then-O_EXCL), multipart spill cleanup in API handlers, python>=3.10 test floor; gate timeout 10m | 2026-10-12 | f0cb32f | [261012-gos-close-phase-75-deferred-items-job-dir-wr](./quick/261012-gos-close-phase-75-deferred-items-job-dir-wr/) |
+| 261012-o2d | Codex PR#36 P2: carry DXF text transparency (TEXT/MTEXT incl. inline-colour runs) into SVG fill-opacity; PDF judge excludes fully transparent text as invisible_text; fixtures text_alpha/text_alpha_faint | 2026-10-12 | acddc6f | [261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-](./quick/261012-o2d-codex-pr36-p2-preserve-dxf-text-opacity-/) |
 
 ### Pending Todos
 
