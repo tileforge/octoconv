@@ -27,7 +27,6 @@ package convert
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 )
 
@@ -239,20 +238,15 @@ func pandocConvertArgs(src, tgt, inPath, outPath string, o PandocOpts) []string 
 // result as a corrupt/bare-fragment failure. Skipping the sniffer call on
 // size==0 is therefore required, not an optimization.
 func pandocValidateOutput(tgt, outPath string) error {
-	info, err := os.Stat(outPath)
+	f, info, err := OpenJobFile(outPath)
 	if err != nil {
 		return fmt.Errorf("pandoc: stat output: %w", err)
 	}
+	defer f.Close()
 
 	if info.Size() == 0 {
 		return nil
 	}
-
-	f, err := os.Open(outPath)
-	if err != nil {
-		return fmt.Errorf("pandoc: open output: %w", err)
-	}
-	defer f.Close()
 
 	switch tgt {
 	case "html":

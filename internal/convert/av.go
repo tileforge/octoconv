@@ -498,20 +498,16 @@ func avThreadCount() int {
 // no existing validateXOutput sibling does this second check, it is new for
 // AV (34-PATTERNS.md).
 func validateAVOutput(path, target string) error {
-	fi, err := os.Stat(path)
+	f, fi, err := OpenJobFile(path)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrAVOutputMissingOrEmpty, err)
 	}
+	defer f.Close()
 	if fi.Size() == 0 {
 		return ErrAVOutputMissingOrEmpty
 	}
 	switch target {
 	case "jpg", "png", "webp":
-		f, err := os.Open(path)
-		if err != nil {
-			return fmt.Errorf("%w: %v", ErrAVOutputMissingOrEmpty, err)
-		}
-		defer f.Close()
 		detected, _, sniffErr := Sniff(f)
 		if sniffErr != nil {
 			return fmt.Errorf("av: thumbnail not a valid %s: %w", target, sniffErr)

@@ -35,12 +35,12 @@ func OpenJobFile(path string) (*os.File, fs.FileInfo, error) {
 		return nil, nil, fmt.Errorf("%w: %s is a symbolic link", ErrJobFileIrregular, path)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, nil, err
 	}
 	info, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
+		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
 		f.Close()
@@ -55,9 +55,5 @@ func ReadJobFile(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	body, err := io.ReadAll(f)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	return body, nil
+	return io.ReadAll(f)
 }
