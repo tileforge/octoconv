@@ -88,7 +88,7 @@ cleanup() {
 trap cleanup EXIT
 
 [ "$(git rev-parse --git-dir)" = ".git" ] || fail "refusing to run outside the main checkout (git dir is $(git rev-parse --git-dir))"
-for tool in docker curl jq python3 go shasum pdftotext pdfinfo; do
+for tool in docker curl jq python3 go shasum pdftotext pdfinfo pdffonts; do
 	command -v "$tool" >/dev/null 2>&1 || fail "$tool not found on PATH"
 done
 PROJECT=$(docker compose config --format json | jq -r .name)
@@ -104,7 +104,7 @@ for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surface
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
-for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf; do
+for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf dxf/text_fonts.dxf dxf-out/text_fonts.texts.json dxf-out/text_fonts.render.svg; do
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 REPL50="$SCALED/$REPL50_NAME"
@@ -830,7 +830,7 @@ MESH_HIT=$INJ_HIT
 wait_job "$JOB_ID" "$ENGINE_TIMEOUT"
 [ "$JOB_STATUS" = failed ] || fail "MESH_SIGNAL: job $JOB_ID ended $JOB_STATUS, want failed: $(cat "$W/job.json")"
 MESH_CODE=$(jq -r '.error_code // empty' "$W/job.json")
-[ -n "$MESH_CODE" ] || fail "MESH_SIGNAL: the failed job has no error_code"
+[ "$MESH_CODE" = cad_unreadable ] || fail "MESH_SIGNAL: error_code '$MESH_CODE', want cad_unreadable (a reader that died on a signal)"
 MESH_EVENTS=$(job_events "$JOB_ID")
 case ";$MESH_EVENTS;" in *";active>active;"*) fail "MESH_SIGNAL: job $JOB_ID was retried: $MESH_EVENTS" ;; esac
 [ "$(psqlq "select count(*) from job_outputs where job_id = '$JOB_ID'")" = 0 ] || fail "MESH_SIGNAL: output rows exist for a failed job"
@@ -898,6 +898,7 @@ ev "CANCEL,job=$CANCEL_JOB,input=$NAUO_NAME,sha256=$NAUO_SHA,mesh_pids=$(echo $B
 N_CANCEL=1
 
 DXF="$CORPUS/dxf"
+DXF_OUT="$CORPUS/dxf-out"
 
 cat > "$W/svgwalk.py" <<'PY'
 import json
@@ -961,6 +962,32 @@ print("texts_opaque=%d,texts_half=%d,texts_clear=%d,texts_as_expected=%d,stroke_
 sys.exit(0 if ok else 1)
 PY
 
+cat > "$W/svgfonts.py" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+want = [
+    ("MONO BOOK", "DejaVu Sans Mono", None), ("MONO BOLD", "DejaVu Sans Mono", "bold"),
+    ("MONO OBLIQUE", "DejaVu Sans", None), ("MONO BOLD OBLIQUE", "DejaVu Sans", None),
+    ("SANS BOOK", "DejaVu Sans", None), ("SANS BOLD", "DejaVu Sans", "bold"),
+    ("SERIF BOOK", "DejaVu Serif", None), ("SERIF BOLD", "DejaVu Serif", "bold"),
+    ("XDATA MONO ITALIC", "DejaVu Sans Mono", None), ("XDATA MONO BOLD ITALIC", "DejaVu Sans Mono", None),
+    ("INLINE", "DejaVu Sans Mono", None), ("MONO", "DejaVu Sans Mono", None), ("BOLD", "DejaVu Sans Mono", None),
+    ("ITALIC", "DejaVu Sans Mono", None), ("SHEARED STYLE", "DejaVu Sans Mono", None), ("SHEARED TEXT", "DejaVu Sans Mono", None),
+]
+ns = "{http://www.w3.org/2000/svg}"
+root = ET.parse(sys.argv[1]).getroot()
+texts = list(root.iter(ns + "text"))
+got = [("".join(el.itertext()), el.get("font-family"), el.get("font-weight")) for el in texts]
+slanted = sum(1 for el in texts if el.get("font-style") is not None)
+stretched = sum(1 for el in texts if el.get("font-stretch") is not None)
+tspans = sum(1 for _ in root.iter(ns + "tspan"))
+ok = got == want and slanted == 0 and stretched == 0 and tspans == 0
+print("font_texts=%d,fonts_as_expected=%d,bold=%d,font_style=%d,font_stretch=%d,tspans=%d" % (
+    len(got), int(got == want), sum(1 for g in got if g[2] == "bold"), slanted, stretched, tspans))
+sys.exit(0 if ok else 1)
+PY
+
 fetch_ct() {
 	docker compose exec -T cad-worker /usr/bin/python3 -c \
 		'import sys, urllib.request; r = urllib.request.urlopen(sys.argv[1]); r.read(); print(r.headers.get("Content-Type", ""))' "$1"
@@ -1000,6 +1027,7 @@ svg_judged() {
 	rc=0
 	SV_WALK=$(python3 "$W/svgwalk.py" "$svg" "$svg.texts.json") || rc=$?
 	[ "$rc" = 0 ] || fail "$label: the downloaded SVG holds a forbidden construct: $SV_WALK"
+	[ "$(mfield svg_texts "$SV_WALK")" = "$SV_TEXTS" ] || fail "$label: the Go validator counts $SV_TEXTS texts, the Python walk $(mfield svg_texts "$SV_WALK")"
 }
 
 dxf_svg_one() {
@@ -1007,6 +1035,11 @@ dxf_svg_one() {
 	dxf_convert "DXF_SVG $name" "$file" "$upname" svg "$W/dxf_$name.svg"
 	[ "$DC_CT" = image/svg+xml ] || fail "DXF_SVG $name: the download content type is '$DC_CT', want image/svg+xml"
 	svg_judged "DXF_SVG $name" "$W/dxf_$name.svg"
+	if [ -f "$DXF_OUT/$name.texts.json" ]; then
+		[ "$SV_TEXTS" = "$(jq '.texts | length' "$DXF_OUT/$name.texts.json")" ] || fail "DXF_SVG $name: $SV_TEXTS texts, the committed helper output has $(jq '.texts | length' "$DXF_OUT/$name.texts.json")"
+	else
+		[ "$SV_TEXTS" -ge 1 ] || fail "DXF_SVG $name: no text in the SVG"
+	fi
 	case "$name" in
 	legacy_cp1251)
 		jq -e 'any(.[]; contains("Деталь"))' "$W/dxf_$name.svg.texts.json" >/dev/null || fail "DXF_SVG $name: no text holds Деталь: $(cat "$W/dxf_$name.svg.texts.json")"
@@ -1028,6 +1061,9 @@ dxf_svg_one() {
 	text_alpha)
 		texts_check=$(python3 "$W/svgalpha.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the opacities are not the DXF transparencies: $texts_check"
 		;;
+	text_fonts)
+		texts_check=$(python3 "$W/svgfonts.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the font attributes are not those of the measured faces: $texts_check"
+		;;
 	*)
 		texts_check="texts_checked=none"
 		;;
@@ -1042,23 +1078,27 @@ dxf_svg_one layers_off_frozen "$DXF/layers_off_frozen.dxf" layers_off_frozen.dxf
 dxf_svg_one never_resolved "$DXF/never_resolved.dxf" never_resolved.dxf
 dxf_svg_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
 dxf_svg_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
+dxf_svg_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf
 
 pdf_judged() {
 	local label=$1 pdf=$2 line rc=0
+	shift 2
 	[ "$(head -c 5 "$pdf")" = "%PDF-" ] || fail "$label: the PDF does not start with %PDF-"
 	PD_PAGES=$(pdfinfo "$pdf" 2>/dev/null | awk '/^Pages:/ { print $2 }')
 	[ "$PD_PAGES" = 1 ] || fail "$label: pdfinfo reports '$PD_PAGES' pages, want 1"
-	line=$("$W/bin/cad-pdf-check" "$pdf") || rc=$?
+	line=$("$W/bin/cad-pdf-check" "$@" "$pdf") || rc=$?
 	[ "$rc" = 0 ] || fail "$label: cad-pdf-check rejected the PDF: $line"
 	PD_LINE=$(printf '%s' "$line" | sed -e 's/^GOPDF,pdf=[^,]*,//' -e 's/,reason=none$//')
 	pdftotext -raw -enc UTF-8 "$pdf" "$pdf.txt" || fail "$label: pdftotext failed"
 }
 
 dxf_pdf_one() {
-	local name=$1 file=$2 upname=$3 text_check
+	local name=$1 file=$2 upname=$3 invisible=$4 text_check fonts
 	dxf_convert "DXF_PDF $name" "$file" "$upname" pdf "$W/dxf_$name.pdf"
 	[ "$DC_CT" = application/pdf ] || fail "DXF_PDF $name: the download content type is '$DC_CT', want application/pdf"
-	pdf_judged "DXF_PDF $name" "$W/dxf_$name.pdf"
+	pdf_judged "DXF_PDF $name" "$W/dxf_$name.pdf" --texts "$DXF_OUT/$name.texts.json" --svg "$DXF_OUT/$name.render.svg"
+	[ "$(mfield expected_runes "$PD_LINE")" -gt 0 ] || fail "DXF_PDF $name: the judge expected no text: $PD_LINE"
+	[ "$(mfield invisible_text "$PD_LINE")" = "$invisible" ] || fail "DXF_PDF $name: invisible_text=$(mfield invisible_text "$PD_LINE"), want $invisible: $PD_LINE"
 	case "$name" in
 	legacy_cp1251)
 		grep -qF "Деталь" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw holds no Деталь: $(head -c 300 "$W/dxf_$name.pdf.txt")"
@@ -1072,11 +1112,22 @@ dxf_pdf_one() {
 		for s in "OPAQUE TEXT" "HALF TEXT" "OPAQUE MTEXT" "HALF MTEXT" "LAYER TEXT" "BLOCK TEXT" "INLINE" "RED"; do
 			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold '$s': $(head -c 600 "$W/dxf_$name.pdf.txt")"
 		done
-		text_check="pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=$(grep -c CLEAR "$W/dxf_$name.pdf.txt" || true)"
+		[ "$(grep -c CLEAR "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds a fully transparent text: $(grep CLEAR "$W/dxf_$name.pdf.txt" | head -3)"
+		text_check="pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=0"
 		;;
 	text_alpha_faint)
 		grep -qF "FAINT ONLY" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold FAINT ONLY: $(head -c 300 "$W/dxf_$name.pdf.txt")"
-		text_check="pdftotext_faint_only=1,pdftotext_gone_lines=$(grep -c GONE "$W/dxf_$name.pdf.txt" || true)"
+		[ "$(grep -c GONE "$W/dxf_$name.pdf.txt" || true)" = 0 ] || fail "DXF_PDF $name: pdftotext -raw holds the fully transparent GONE: $(grep GONE "$W/dxf_$name.pdf.txt" | head -3)"
+		text_check="pdftotext_faint_only=1,pdftotext_gone_lines=0"
+		;;
+	text_fonts)
+		for s in "MONO BOOK" "MONO BOLD" "MONO OBLIQUE" "MONO BOLD OBLIQUE" "SANS BOOK" "SANS BOLD" "SERIF BOOK" "SERIF BOLD" \
+			"XDATA MONO ITALIC" "XDATA MONO BOLD ITALIC" "INLINE" "ITALIC" "SHEARED STYLE" "SHEARED TEXT"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold '$s': $(head -c 600 "$W/dxf_$name.pdf.txt")"
+		done
+		fonts=$(pdffonts "$W/dxf_$name.pdf" | awk 'NR > 2 { sub(/^[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]\+/, "", $1); print $1 }' | sort | paste -sd ';' -)
+		[ "$fonts" = "DejaVuSans;DejaVuSans-Bold;DejaVuSansMono;DejaVuSansMono-Bold;DejaVuSerif;DejaVuSerif-Bold" ] || fail "DXF_PDF $name: pdffonts lists '$fonts', want exactly the six faces of fonts-dejavu-core"
+		text_check="pdftotext_font_texts=14,pdffonts=$fonts,oblique_faces=0"
 		;;
 	*)
 		[ -s "$W/dxf_$name.pdf.txt" ] && grep -q '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw extracts no text"
@@ -1087,11 +1138,12 @@ dxf_pdf_one() {
 	N_DXF_PDF=$((N_DXF_PDF + 1))
 }
 
-dxf_pdf_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf
-dxf_pdf_one text_cases "$DXF/text_cases.dxf" text_cases.dxf
-dxf_pdf_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
-dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
-dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf
+dxf_pdf_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf 0
+dxf_pdf_one text_cases "$DXF/text_cases.dxf" text_cases.dxf 0
+dxf_pdf_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf 0
+dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 4
+dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1
+dxf_pdf_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 0
 
 drawing_judge() {
 	local png=$1 size=$2 background=$3 svg=$4 line rc=0
@@ -1145,6 +1197,7 @@ dxf_render_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251
 dxf_render_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 1280 opaque ""
 dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 opaque ""
 dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 transparent '{"background":"transparent"}'
+dxf_render_one text_fonts "$DXF/text_fonts.dxf" text_fonts.dxf 1280 opaque ""
 
 dxf_meas_one() {
 	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
