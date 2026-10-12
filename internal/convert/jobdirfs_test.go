@@ -434,3 +434,108 @@ func TestStageOutputReadsRefuseAPlantedLink(t *testing.T) {
 		}
 	})
 }
+
+type outputValidatorCase struct {
+	name     string
+	ext      string
+	outside  func(t *testing.T) string
+	validate func(path string) error
+	link     func(t *testing.T, err error)
+	missing  func(t *testing.T, path string, err error)
+	empty    func(t *testing.T, err error)
+}
+
+func jobDirOutsideBytes(t *testing.T, body []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(p, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func requireErrContains(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("err = %v, want it to contain %q", err, want)
+	}
+}
+
+func requireErrText(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil || err.Error() != want {
+		t.Errorf("err = %v, want exactly %q", err, want)
+	}
+}
+
+func requireMissingOutput(prefix string) func(t *testing.T, path string, err error) {
+	return func(t *testing.T, path string, err error) {
+		t.Helper()
+		if err == nil || !strings.HasPrefix(err.Error(), prefix) || !strings.HasSuffix(err.Error(), path+": no such file or directory") {
+			t.Errorf("err = %v, want %q naming %s as missing", err, prefix, path)
+		}
+	}
+}
+
+func TestOutputValidatorsRefuseAPlantedLink(t *testing.T) {
+	ctx := context.Background()
+	pdf := func(t *testing.T) string { return filepath.Join(sanitizeCorpusDir, "threat_all_classes.pdf") }
+	pdfa := func(t *testing.T) string {
+		return jobDirOutsideBytes(t, []byte("%PDF-1.4\n1 0 obj << /S /GTS_PDFA1 >> endobj\n%%EOF\n"))
+	}
+	docx := func(t *testing.T) string { return filepath.Join(sanitizeCorpusDir, "ooxml_rel_targets_main.docx") }
+	html := func(t *testing.T) string {
+		return jobDirOutsideBytes(t, []byte("<!DOCTYPE html>\n<html><head><title>t</title></head><body><p>outside</p></body></html>\n"))
+	}
+	png := func(t *testing.T) string { return jobDirOutsideBytes(t, renderPNGBytes(t, 64, false)) }
+	stat := func(want string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) { t.Helper(); requireErrContains(t, err, want) }
+	}
+	exact := func(want string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) { t.Helper(); requireErrText(t, err, want) }
+	}
+	avMissing := func(t *testing.T, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrAVOutputMissingOrEmpty) {
+			t.Errorf("err = %v, want ErrAVOutputMissingOrEmpty", err)
+		}
+	}
+	for _, tc := range []outputValidatorCase{
+		{"validatePDF", "pdf", pdf, validatePDF, stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+		{"validateDocumentOutput pdf", "pdf", pdf, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", false) },
+			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+		{"validateDocumentOutput pdf/a", "pdf", pdfa, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "pdf", true) },
+			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+		{"validateDocumentOutput docx", "docx", docx, func(p string) error { return validateDocumentOutput(ctx, engineExec{}, p, "docx", false) },
+			stat("libreoffice: stat output"), requireMissingOutput("libreoffice: stat output: "), exact("libreoffice: output is empty")},
+		{"pandocValidateOutput html", "html", html, func(p string) error { return pandocValidateOutput("html", p) },
+			stat("pandoc: stat output"), requireMissingOutput("pandoc: stat output: "), func(t *testing.T, err error) {
+				t.Helper()
+				if err != nil {
+					t.Errorf("an empty pandoc output = %v, want nil", err)
+				}
+			}},
+		{"validateAVOutput png", "png", png, func(p string) error { return validateAVOutput(p, "png") },
+			avMissing, func(t *testing.T, path string, err error) {
+				t.Helper()
+				avMissing(t, err)
+				requireMissingOutput("av: output missing or empty: ")(t, path, err)
+			}, exact("av: output missing or empty")},
+	} {
+		t.Run(tc.name+" a planted link", func(t *testing.T) {
+			link := jobDirLinkTo(t, tc.outside(t), "out."+tc.ext)
+			tc.link(t, tc.validate(link))
+		})
+		t.Run(tc.name+" a missing output", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out."+tc.ext)
+			tc.missing(t, path, tc.validate(path))
+		})
+		t.Run(tc.name+" an empty output", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "out."+tc.ext)
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tc.empty(t, tc.validate(path))
+		})
+	}
+}
