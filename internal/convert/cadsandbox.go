@@ -23,6 +23,11 @@ import (
 //go:embed testdata/cad/synthetic/units_inch.step
 var cadPreflightSTEP []byte
 
+//go:embed testdata/cad/synthetic/legacy_cp1251.dxf
+var cadPreflightDXF []byte
+
+const cadPreflightDXFText = "Деталь"
+
 const (
 	cadPreflightTriangles   = 12
 	cadPreflightTolerance   = 1e-3
@@ -206,7 +211,7 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		return err
 	}
 	defer cleanup()
-	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, cadRenderReadOnly, []string{"/usr/lib/" + triple}); err != nil {
+	if err := w.requireOutsideGrants(cadGuardReadOnly, cadMeshReadOnly, cadRenderReadOnly, cadDXFReadOnly, cadRsvgReadOnly, []string{"/usr/lib/" + triple}); err != nil {
 		return err
 	}
 	inside, outside, err := w.place("in.step", cadPreflightSTEP)
@@ -251,6 +256,9 @@ func CADPreflight(ctx context.Context, c CADConverter) error {
 		return err
 	}
 	if err := cadPreflightRender(ctx, CADRenderConverter{c}, w, outInside); err != nil {
+		return err
+	}
+	if err := cadPreflightDrawing(ctx, c, w); err != nil {
 		return err
 	}
 
@@ -352,6 +360,93 @@ func cadPreflightRenderDenied(ctx context.Context, r CADRenderConverter, w prefl
 	}
 	if err := requireDenied(err, outPNG, nil); err != nil {
 		return fmt.Errorf("the cad render stage read a file outside the job directory: confinement is not in effect: %w", err)
+	}
+	return nil
+}
+
+func cadPreflightDrawing(ctx context.Context, c CADConverter, w preflightWorkspace) error {
+	inside, outside, err := w.place("in.dxf", cadPreflightDXF)
+	if err != nil {
+		return err
+	}
+	if _, err := c.guardStage(ctx, w.jobDir, "dxf", inside); err != nil {
+		return fmt.Errorf("the cad guard stage in dxf mode refuses the fixture inside the job directory under its sandbox: %w", err)
+	}
+	clean := filepath.Join(w.jobDir, cadDXFCleanName)
+	d, err := c.dxfDrawing(ctx, w.jobDir, inside, "", clean, "")
+	if err != nil {
+		return fmt.Errorf("the cad dxf stage cannot draw a file inside the job directory under its sandbox: %w", err)
+	}
+	if len(d.texts) != 1 || d.texts[0].Text != cadPreflightDXFText || d.texts[0].Covered != cadPreflightDXFText {
+		var got []string
+		for _, t := range d.texts {
+			got = append(got, t.Text)
+		}
+		return fmt.Errorf("text: the cad dxf stage drew the fixture's texts as %q, want exactly %q with every character covered by the font", got, cadPreflightDXFText)
+	}
+
+	pdf := filepath.Join(w.jobDir, "preflight-dxf.pdf")
+	if err := c.rsvgStage(ctx, w.jobDir, pdf, cadDXFPDFArgs(pdf, clean)...); err != nil {
+		return fmt.Errorf("the rsvg-convert stage cannot convert an SVG inside the job directory to PDF under its sandbox: %w", err)
+	}
+	facts, err := JudgeCADDXFPDF(pdf, CADMaxDXFPDFBytes, d.texts, d.render)
+	if err != nil {
+		return fmt.Errorf("fonts: the PDF judge rejects the fixture's PDF drawn under the rsvg-convert ruleset, so its text did not survive: %w", err)
+	}
+	if facts.BelowRenderFloor != 0 {
+		return fmt.Errorf("text: the fixture's text falls below the PDF render floor, so the PDF judge would accept it without any text")
+	}
+	if _, err := JudgeCADPDF(pdf, CADMaxDXFPDFBytes, cadDXFExpectedText(d.texts)); err != nil {
+		return fmt.Errorf("fonts: the PDF drawn under the rsvg-convert ruleset does not carry the text %q: %w", cadPreflightDXFText, err)
+	}
+
+	size := cadPreflightFrame
+	box, err := CADDrawingLetterbox(d.render.WidthMM, d.render.HeightMM, size)
+	if err != nil {
+		return fmt.Errorf("cad preflight: letterbox of the fixture drawing: %w", err)
+	}
+	frame := filepath.Join(w.jobDir, "preflight-dxf.png")
+	if err := c.rsvgStage(ctx, w.jobDir, frame, cadDXFFrameArgs(CADBackgroundOpq, box, size, frame, clean)...); err != nil {
+		return fmt.Errorf("the rsvg-convert stage cannot draw an SVG inside the job directory to PNG under its sandbox: %w", err)
+	}
+	f, err := os.Open(frame)
+	if err != nil {
+		return fmt.Errorf("the rsvg-convert stage left no frame inside the job directory: %w", err)
+	}
+	_, err = JudgeCADDrawingPNG(f, size, CADBackgroundOpq, box)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("the drawing judge rejects the frame the rsvg-convert stage drew inside the job directory: %w", err)
+	}
+
+	negSVG := filepath.Join(w.jobDir, "neg.svg")
+	negRender := filepath.Join(w.jobDir, "neg.render.svg")
+	negTexts := filepath.Join(w.jobDir, "neg.texts.json")
+	_, dxfErr := c.dxfStage(ctx, w.jobDir, outside, negSVG, negRender, negTexts, "")
+	if err := requireCADDenied("cad dxf", dxfErr); err != nil {
+		return err
+	}
+	for _, p := range []string{negSVG, negRender, negTexts} {
+		if err := requireDenied(dxfErr, p, nil); err != nil {
+			return fmt.Errorf("the cad dxf stage read a file outside the job directory: confinement is not in effect: %w", err)
+		}
+	}
+
+	data, err := os.ReadFile(clean)
+	if err != nil {
+		return fmt.Errorf("cad preflight: read the validated fixture SVG: %w", err)
+	}
+	outsideSVG := filepath.Join(w.outsideDir, cadDXFCleanName)
+	if err := os.WriteFile(outsideSVG, data, 0o600); err != nil {
+		return fmt.Errorf("cad preflight fixture (outside): %w", err)
+	}
+	negPDF := filepath.Join(w.jobDir, "neg.pdf")
+	rsvgErr := c.rsvgStage(ctx, w.jobDir, negPDF, cadDXFPDFArgs(negPDF, outsideSVG)...)
+	if err := requireCADDenied("rsvg-convert", rsvgErr); err != nil {
+		return err
+	}
+	if err := requireDenied(rsvgErr, negPDF, nil); err != nil {
+		return fmt.Errorf("the rsvg-convert stage read a file outside the job directory: confinement is not in effect: %w", err)
 	}
 	return nil
 }

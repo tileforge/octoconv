@@ -75,7 +75,7 @@ func (c CADDXFConverter) Convert(ctx context.Context, inPath, outPath string, op
 	if err := cadDXFClear(outPath); err != nil {
 		return err
 	}
-	if err := c.rsvgStage(ctx, jobDir, outPath, "-f", "pdf", "-b", "white", "-o", outPath, clean); err != nil {
+	if err := c.rsvgStage(ctx, jobDir, outPath, cadDXFPDFArgs(outPath, clean)...); err != nil {
 		return err
 	}
 	if err := cadDXFRegular(outPath, "the PDF", ErrCADDrawingFailed); err != nil {
@@ -151,15 +151,7 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	if err != nil {
 		return fmt.Errorf("cad dxf: %w: %v", ErrCADSVGRejected, err)
 	}
-	var args []string
-	if o.Background == CADBackgroundOpq {
-		args = append(args, "-b", "white")
-	}
-	args = append(args,
-		"-w", strconv.Itoa(box.Width), "-h", strconv.Itoa(box.Height),
-		"--page-width", strconv.Itoa(size), "--page-height", strconv.Itoa(size),
-		"--left", strconv.Itoa(box.Left), "--top", strconv.Itoa(box.Top),
-		"-o", outPath, clean)
+	args := cadDXFFrameArgs(o.Background, box, size, outPath, clean)
 	for _, p := range []string{outPath, sidecar} {
 		if err := cadDXFClear(p); err != nil {
 			return err
@@ -186,6 +178,22 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
 	}
 	return cadDXFWriteNew(sidecar, body)
+}
+
+func cadDXFPDFArgs(out, in string) []string {
+	return []string{"-f", "pdf", "-b", "white", "-o", out, in}
+}
+
+func cadDXFFrameArgs(background string, box CADLetterbox, size int, out, in string) []string {
+	var args []string
+	if background == CADBackgroundOpq {
+		args = append(args, "-b", "white")
+	}
+	return append(args,
+		"-w", strconv.Itoa(box.Width), "-h", strconv.Itoa(box.Height),
+		"--page-width", strconv.Itoa(size), "--page-height", strconv.Itoa(size),
+		"--left", strconv.Itoa(box.Left), "--top", strconv.Itoa(box.Top),
+		"-o", out, in)
 }
 
 func cadDXFWriteNew(path string, body []byte) error {

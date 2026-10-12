@@ -25,6 +25,51 @@ type cadPreflightFakes struct {
 	draft         cadMeasureDraft
 	renderFrame   func(t *testing.T, size int, transparent bool) []byte
 	renderOutside string
+	guardDXF      string
+	dxfInside     cadDXFOutputs
+	dxfOutside    string
+	rsvgPDF       string
+	rsvgFrame     func(t *testing.T) []byte
+	rsvgOutside   string
+}
+
+func cadPreflightDXFFrame(t *testing.T) []byte {
+	t.Helper()
+	box, err := CADDrawingLetterbox(297, 86.1, cadPreflightFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := pixFrame(cadPreflightFrame, pixWhite)
+	mid := box.Top + box.Height/2
+	pixRect(img, box.Left+2, mid-2, box.Left+box.Width-3, mid+2, pixDark)
+	return pixEncode(t, img)
+}
+
+func cadPreflightDXFStub(o cadDXFOutputs, outside string) string {
+	var b strings.Builder
+	b.WriteString("T=''; R=''\n")
+	b.WriteString("while [ $# -gt 2 ]; do\n  case \"$1\" in\n    --texts) T=$2; shift 2 ;;\n    --render-svg) R=$2; shift 2 ;;\n    --measure) shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
+	draw := fmt.Sprintf("cp %s \"$2\"\ncp %s \"$R\"\ncp %s \"$T\"\nprintf '%%s\\n' %s\nexit 0\n",
+		cadDXFQuote(o.client), cadDXFQuote(o.render), cadDXFQuote(o.texts), cadDXFQuote(o.verdict))
+	deny := cadSay("dxf", "unreadable", "read_error", 2)
+	if outside == "leak" {
+		deny = draw
+	}
+	fmt.Fprintf(&b, "case \"$1\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", draw, deny)
+	return b.String()
+}
+
+func cadPreflightRsvgStub(pdf, frame, outside string) string {
+	var b strings.Builder
+	b.WriteString("last=''\nfor a in \"$@\"; do last=$a; done\n")
+	b.WriteString("o=''\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -o) o=$2; shift 2 ;;\n    *) shift ;;\n  esac\ndone\n")
+	draw := fmt.Sprintf("case \"$o\" in\n*.pdf) cp %s \"$o\" ;;\n*) cp %s \"$o\" ;;\nesac\nexit 0\n", cadDXFQuote(pdf), cadDXFQuote(frame))
+	deny := "echo \"Error reading SVG: Permission denied\" >&2\nexit 1\n"
+	if outside == "leak" {
+		deny = draw
+	}
+	fmt.Fprintf(&b, "case \"$last\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", draw, deny)
+	return b.String()
 }
 
 func inchBoxDraft() cadMeasureDraft {
@@ -56,6 +101,12 @@ func newCADPreflightFakes(t *testing.T) cadPreflightFakes {
 		draft:         inchBoxDraft(),
 		renderFrame:   renderPNGBytes,
 		renderOutside: "deny",
+		guardDXF:      "ok",
+		dxfInside:     cadDXFFixtureOutputs(t, "legacy_cp1251"),
+		dxfOutside:    "deny",
+		rsvgPDF:       cadDXFTestFile("legacy_cp1251.pdf"),
+		rsvgFrame:     cadPreflightDXFFrame,
+		rsvgOutside:   "deny",
 	}
 }
 
@@ -71,7 +122,13 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 	if p.guardOutside == "unreadable" {
 		guardOutside = `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"unreadable","reason":"cannot_count"}'` + "\nexit 2"
 	}
-	fakeEngine(t, dir, "cad-guard", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
+	guardDXFInside := `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"ok","reason":""}'` + "\nexit 0"
+	if p.guardDXF == "too_complex" {
+		guardDXFInside = `printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"too_complex","reason":"expanded_inserts_over_cap"}'` + "\nexit 4"
+	}
+	guardDXF := fmt.Sprintf("if [ \"$2\" = dxf ]; then\ncase \"${11}\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\nfi\n", guardDXFInside,
+		`printf '%s\n' 'CADVERDICT {"stage":"guard","verdict":"unreadable","reason":"cannot_count"}'`+"\nexit 2")
+	fakeEngine(t, dir, "cad-guard", guardDXF+fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s\nexit 0;;\n*)\n%s;;\nesac\n", guardOK, guardOutside))
 
 	draftJSON, err := json.Marshal(p.draft)
 	if err != nil {
@@ -102,6 +159,12 @@ func (p cadPreflightFakes) converter(t *testing.T) CADConverter {
 		renderOutside = renderDraw
 	}
 	fakeEngine(t, dir, "cad-render", fmt.Sprintf("case \"$7\" in\n*cad-preflight-job-*)\n%s;;\n*)\n%s;;\nesac\n", renderDraw, renderOutside))
+	fakeEngine(t, dir, "cad-dxf", cadPreflightDXFStub(p.dxfInside, p.dxfOutside))
+	dxfFrame := filepath.Join(dir, "dxf-frame.png")
+	if err := os.WriteFile(dxfFrame, p.rsvgFrame(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeEngine(t, dir, "rsvg-convert", cadPreflightRsvgStub(p.rsvgPDF, dxfFrame, p.rsvgOutside))
 	pathWith(t, dir)
 
 	helper, _ := fakeSandboxHelper(t)
@@ -151,6 +214,13 @@ func TestCADPreflightNamesTheStageAndDirectionThatFailed(t *testing.T) {
 		{"the area is not the inch box area", func(p *cadPreflightFakes) { *p.draft.Area *= 2 }, []string{"units", "area"}},
 		{"the extents are not 1 2 3", func(p *cadPreflightFakes) { p.draft.BBox.Max = []float64{25.4, 50.8, 25.4} }, []string{"units", "extents"}},
 		{"the unit is not declared", func(p *cadPreflightFakes) { p.draft.DeclaredUnit = "" }, []string{"units"}},
+		{"the guard in dxf mode calls the fixture too complex", func(p *cadPreflightFakes) { p.guardDXF = "too_complex" }, []string{"guard", "dxf mode"}},
+		{"the PDF rsvg-convert draws carries no text", func(p *cadPreflightFakes) { p.rsvgPDF = cadDXFTestFile("nofont.pdf") }, []string{"fonts", "missing text"}},
+		{"the drawing frame is blank", func(p *cadPreflightFakes) {
+			p.rsvgFrame = func(t *testing.T) []byte { return blankPNGBytes(t, cadPreflightFrame) }
+		}, []string{"drawing judge"}},
+		{"cad-dxf draws the outside file", func(p *cadPreflightFakes) { p.dxfOutside = "leak" }, []string{"cad dxf", "outside", "confinement"}},
+		{"rsvg-convert converts the outside file", func(p *cadPreflightFakes) { p.rsvgOutside = "leak" }, []string{"rsvg-convert", "outside", "confinement"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,6 +255,81 @@ func TestCADPreflightDoesNotTakeASandboxFailureOnTheOutsideRenderForADenial(t *t
 	}
 	if !strings.Contains(err.Error(), "the cad render stage could not establish its sandbox") {
 		t.Errorf("error %q does not name the render stage as the one without a sandbox", err)
+	}
+}
+
+func TestCADPreflightRequiresTheFixtureTextExactly(t *testing.T) {
+	p := newCADPreflightFakes(t)
+	dir := t.TempDir()
+	o := cadDXFOutputs{
+		client: cadDXFMutate(t, dir, cadDXFTestFile("legacy_cp1251.svg"), "draw.svg", "Деталь", "Detail"),
+		render: cadDXFMutate(t, dir, cadDXFTestFile("legacy_cp1251.render.svg"), "draw.render.svg", "Деталь", "Detail"),
+		texts:  cadDXFWrite(t, dir, "texts.json", []byte(`{"texts":[{"text":"Detail","covered":"Detail"}]}`)),
+	}
+	o.verdict = cadDXFVerdictFor(t, o.client, o.texts)
+	p.dxfInside = o
+	err := CADPreflight(context.Background(), p.converter(t))
+	if err == nil {
+		t.Fatal("CADPreflight accepted a drawing whose only text is not the fixture's")
+	}
+	for _, w := range []string{"text", "Detail", cadPreflightDXFText} {
+		if !strings.Contains(err.Error(), w) {
+			t.Errorf("error %q does not mention %q", err, w)
+		}
+	}
+	if strings.Contains(err.Error(), "differs") || strings.Contains(err.Error(), "texts.json holds") {
+		t.Errorf("error %q comes from the cross-check, so the preflight's own text rule never ran", err)
+	}
+}
+
+func TestCADPreflightDoesNotTakeASandboxFailureOnAnOutsideDrawingStageForADenial(t *testing.T) {
+	for _, tc := range []struct {
+		engine, want string
+	}{
+		{"cad-dxf", "the cad dxf stage could not establish its sandbox"},
+		{"rsvg-convert", "the rsvg-convert stage could not establish its sandbox"},
+	} {
+		t.Run(tc.engine, func(t *testing.T) {
+			c := newCADPreflightFakes(t).converter(t)
+			helper, _ := fakeSandboxHelper(t)
+			wrapper := filepath.Join(t.TempDir(), "refuse-outside.sh")
+			body := fmt.Sprintf("#!/bin/bash\nsep=0; engine=''; outside=0\nfor a in \"$@\"; do\n  if [ \"$sep\" = 1 ] && [ -z \"$engine\" ]; then engine=${a##*/}; fi\n  [ \"$a\" = -- ] && sep=1\n  case \"$a\" in *cad-preflight-outside-*) outside=1;; esac\ndone\nif [ \"$engine\" = %q ] && [ \"$outside\" = 1 ]; then exit 78; fi\nexec %q \"$@\"\n", tc.engine, helper[0])
+			if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			c = c.WithSandbox([]string{wrapper, helper[1]})
+			err := CADPreflight(context.Background(), c)
+			if err == nil {
+				t.Fatalf("CADPreflight accepted a sandbox that could not be established for the outside %s run", tc.engine)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not say %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestCADPreflightRefusesADrawingSetThatCoversTheOutsideDirectory(t *testing.T) {
+	for _, name := range []string{"cadDXFReadOnly", "cadRsvgReadOnly"} {
+		t.Run(name, func(t *testing.T) {
+			c := newCADPreflightFakes(t).converter(t)
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			set := &cadDXFReadOnly
+			if name == "cadRsvgReadOnly" {
+				set = &cadRsvgReadOnly
+			}
+			saved := *set
+			t.Cleanup(func() { *set = saved })
+			*set = append(append([]string{}, saved...), tmp)
+			err := CADPreflight(context.Background(), c)
+			if err == nil {
+				t.Fatalf("CADPreflight accepted %s granting %s, which holds the outside directory", name, tmp)
+			}
+			if !strings.Contains(err.Error(), tmp) {
+				t.Errorf("error %q does not name the covering grant %s", err, tmp)
+			}
+		})
 	}
 }
 
