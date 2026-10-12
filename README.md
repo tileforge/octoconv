@@ -49,7 +49,9 @@ self-host, designed around the failure modes that actually bite —
 ## Engines and operations
 
 Every job carries an **operation** as well as a format pair. `convert` is the default;
-`sanitize` rebuilds a file in its own format with active content stripped.
+`sanitize` rebuilds a file in its own format with active content stripped; `render` draws a
+CAD file as a PNG preview and adds its measurements as a second output with role
+`measurements` ([`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md)).
 
 | Class | Converts | Engine |
 |---|---|---|
@@ -62,7 +64,7 @@ Every job carries an **operation** as well as a format pair. `convert` is the de
 | `pandoc` | `md` `rst` `org` `latex` `html` `docx` `epub`, across a curated allowlist | pandoc |
 | `probe` | `sanitize`: `pdf` `docx` `xlsx` `pptx` `jpg` `png` rebuilt in the same format, and `docm` `xlsm` `pptm` rebuilt into their macro-free extension; also serves `POST /v1/inspect` | in-process |
 | `tectonic` | `latex` → `pdf`, single file or multi-file project | [tectonic][tectonic] |
-| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres | OCCT through cadquery-ocp |
+| `cad` | `step`/`stp` and `iges`/`igs` → `stl`, binary, millimetres; `dxf` → `svg` `pdf`; `render`: `step` `iges` `stl` `dxf` → `png` | OCCT through cadquery-ocp; VTK for 3D previews; ezdxf and librsvg for DXF |
 
 `GET /v1/formats` returns this table as the service itself sees it — derived from the
 converter registry, never hand-maintained.
@@ -106,7 +108,7 @@ cmd/
   pandoc-worker/      — markup-family conversion (pandoc)
   probe-worker/       — sanitize operation
   tectonic-worker/    — LaTeX → PDF, Landlock-confined
-  cad-worker/         — STEP and IGES → STL (OCCT), Landlock-confined
+  cad-worker/         — STEP and IGES → STL (OCCT), DXF → SVG/PDF, PNG previews, Landlock-confined
   webhook-worker/     — signed webhook delivery + reconciler sweep
   mcp-server/         — stdio MCP server
   mcp-http/           — streamable-HTTP MCP server for in-cluster use
@@ -473,7 +475,7 @@ documented list — including how each measured limit was derived.
 | [`docs/SANITIZE.md`](docs/SANITIZE.md) | What the `sanitize` operation removes, and what it deliberately does not |
 | [`docs/TYPESETTING.md`](docs/TYPESETTING.md) | The TeX engine: bundle, cache, confinement, measured limits |
 | [`docs/FINDINGS.md`](docs/FINDINGS.md) | The inspection findings vocabulary |
-| [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) | The measurements JSON contract: schema, closed vocabularies, validation rules; no engine emits it yet |
+| [`docs/MEASUREMENTS.md`](docs/MEASUREMENTS.md) | The measurements JSON contract that `render` jobs emit: schema, closed vocabularies, validation rules; what a DXF drawing shows and its known limits |
 
 ## MCP servers
 

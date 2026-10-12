@@ -88,6 +88,16 @@ transparent has a frame but nothing visible: its SVG converts, its PDF and PNG a
 at about 2% opacity or less does not count as ink there. A run of MTEXT that sets its own colour (`\C` or `\c`)
 keeps the transparency of its MTEXT.
 
+**Fonts.** Text is measured with the TrueType face ezdxf resolves for its text style, and the SVG names that
+same face, so the PDF and PNG are drawn with the face that sized the frame: `font-family` is the font's family
+name, `font-weight` its weight class (`bold` for 700, the number for any other weight, absent at 400),
+`font-style` is `italic` or `oblique` for a slanted face and `font-stretch` names a condensed or expanded one.
+The image ships the six faces of `fonts-dejavu-core`: DejaVu Sans, DejaVu Sans Mono and DejaVu Serif, each Book
+and Bold. A style that names a file the image does not have (an oblique DejaVu face, Arial, a `.shx` font) is
+measured and drawn with `DejaVuSans.ttf`. A style that asks for a family by name with bold or italic (extended
+font data, or an MTEXT `\f` code) gets that family's Book face from ezdxf, so its text is upright and regular.
+A TEXT's oblique angle is not applied by ezdxf; its width factor is.
+
 **Units.** Values are in drawing units, unscaled: the millimetre conversion described under Schema does not
 apply to DXF, the engine applies no factor, and the document reports the unit the drawing declares. The unit
 comes from the `$INSUNITS` header:
@@ -110,6 +120,16 @@ unit and the client's guess would contradict it.
 **Known limit: kerning.** The text in the PNG and PDF is laid out by pango, which kerns; the bbox uses ezdxf's
 text layout, which does not. A rendered line of text can therefore be up to 3.3% narrower than its extent in
 the bbox, with the same start point and height.
+
+**Known limit: characters outside the font.** A character the resolved DejaVu face has no glyph for is drawn as
+U+FFFD in the PNG and PDF. The SVG keeps it exactly.
+
+**Known limit: microscopic text.** Text whose rendered size on the PDF page is below 0.00469174 pt may be
+missing from the PDF's text layer; the PDF check does not require it. The SVG keeps it.
+
+**Known limit: features below one pixel.** A PNG preview in which part of the drawing falls below one pixel at
+the requested `size` can be refused with `cad_empty_result`. A larger `size` helps; SVG and PDF are not
+affected.
 
 ## Units
 
