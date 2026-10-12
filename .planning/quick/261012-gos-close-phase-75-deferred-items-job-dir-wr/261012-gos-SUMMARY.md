@@ -275,3 +275,62 @@ None.
 ## Self-Check: PASSED
 
 All created files exist, and all 16 commit hashes are ancestors of HEAD (verified below before the SUMMARY commit).
+
+## Live regression (2026-10-12, at 46e742c)
+
+**Result: one gate FAILED.** The ci-local `gate` tier fails at 46e742c and passes at b2c0db8. The cause is a test-time budget, not a behavior change. Every live gate on running stacks passed.
+
+How it was run:
+- Every run used a fresh `git clone --branch gsd/phase-75-dxf-2d-pipeline` at 46e742c in the scratchpad (`rg/octoconv`). The compose project is `octoconv` and tracked dirt is 0, which every transcript header confirms.
+- `GOTOOLCHAIN=go1.26.4`, with python 3.14 first on PATH.
+- The VM free-space watchdog ran for every docker step, and host free space was checked before each one. Lowest values seen: VM 15.3 GiB, host 20.4 GiB.
+- Transcripts are in `evidence/`, all prefixed `rg-`.
+
+| # | Gate | Result | Evidence |
+|---|------|--------|----------|
+| 1a | `scripts/ci-local.sh helm gate race docker-build e2e`, run 1 | **AT LEAST ONE TIER FAILED.** helm PASS. gate FAIL: `internal/convert` hit the 5m timeout at 304.8s. race PASS. docker-build FAIL and e2e FAIL: the clone has no `deploy/tectonic-bundle/octoconv-bundle.ttb`, which is a gitignored release asset, so the compose build stopped at the COPY. | `rg-ci-local-run1-20261012T113321Z.log` |
+| 1b | the same command, run 2, after copying the bundle from the main tree. `scripts/tectonic-bundle-fetch.sh --check` matched the Dockerfile pin f42d5eed…, and the file is ignored, so tracked dirt stayed 0. | **AT LEAST ONE TIER FAILED.** helm PASS. **gate FAIL**: `internal/convert` 305.6s, 5m timeout. race PASS (`internal/convert` 462.0s). docker-build PASS (every bake target). e2e PASS (`internal/e2e` 119.2s, full stack built from 46e742c). | `rg-ci-local-run2-20261012T115951Z.log` |
+| 1c | gate tier back to back from two clean clones: b2c0db8 first, then 46e742c | b2c0db8 **PASS** (`internal/convert` 285.1s). 46e742c **FAIL** (304.9s, 5m timeout). | `rg-gate-b2c0db8-20261012T124216Z.log`, `rg-gate-46e742c-20261012T124733Z.log` |
+| 2 | `scripts/cad-liveproof.sh --out …/rg-cad-liveproof.txt` | **PASS.** `SUMMARY,result=ALL PASS`, with `HDR,commit=46e742c…` and `HDR,tracked_dirt=0`. All 27 SUMMARY counters equal 75-10's: every phase-74 section (formats 1, inspect 9, convert 5, render 5, views 6, meas 10, bomb 12, retries, cancels, worker_kill 1, sandbox 1) and every phase-75 section (dxf_svg 5, dxf_pdf 3, dxf_render 4, dxf_meas 7, dxf_opts_reject 4, dxf_bomb 15, dxf_ceiling 1, dxf_retry 2, dxf_cancel 1). | `rg-cad-liveproof.txt`, `rg-cad-liveproof.transcript.log` |
+| 3 | `scripts/sandbox-liveproof.sh <class>` for all 9 classes the script knows | **PASS**, every class. image 4/4, pandoc 4/4, ocr 4/4, av 4/4, audio 4/4, html 9/9, probe 4/4, document 7/7, cad 5/5. 0 FAIL, 0 NOT RUN. The arm64 server ran the emulated-amd64 checks for document and cad. | `rg-sandbox-liveproof-<class>.txt`, `rg-sandbox-liveproof-progress.log` |
+| 4a | `scripts/cancel-liveproof.sh` (minimal stack: postgres, redis, minio, createbucket, api, av-worker) | **PASS**, 12 checks. The ffmpeg PID was gone after cancel. | `rg-cancel-liveproof.txt` |
+| 4b | `scripts/av-progress-liveproof.sh` | **PASS**, 40 checks. A completed transcode reached `progress_pct=100` and done. | `rg-av-progress-liveproof.txt` |
+| 4c | `scripts/sse-liveproof.sh` | **PASS**, 15 checks. The streamed job reached done. | `rg-sse-liveproof.txt` |
+
+What the passing gates cover of the changed code:
+- **Multipart cleanup.** `handleCreateJob`'s guarded `MultipartForm.RemoveAll` is exercised by every upload in e2e, cad, cancel, av-progress and sse. `handleInspect`'s is exercised by cad-liveproof's 9 INSPECT lines, which go through `POST /v1/inspect`.
+- **Worker upload and engine validators, per class:**
+  - e2e covers libreoffice (document, cross-format, PDF/A), chromium (html), image, audio, ocr, pandoc, sanitize and tectonic (multi-file LaTeX).
+  - The av proofs cover av, with completed transcodes.
+  - cad-liveproof covers cad: 3D, DXF, render sidecars and the measurements read.
+
+**Gate 1 diagnosis (not fixed).**
+- **The mechanism is a time budget.** ci.yml's gate job runs `go test ./... -timeout 5m` (line 64), and ci-local mirrors it. `internal/convert` was already near that limit before this task: 281.0s at 75-09 and 259.5s at 75-10.
+- **What this task added,** from standalone `go test -json` runs back to back (`rg-convert-timing.txt`): the package went from 271.0s at b2c0db8 to 295.0s at 46e742c.
+  - The 8 new top-level tests account for 10.7s. The largest are TestSanitizeWritesAsNewFilesAfterItsStages 3.41s, TestStageOutputReadsRefuseAPlantedLink 2.45s, TestCADRenderWritesTheSidecarAsANewFile 2.39s and TestOCRPDFWritesTheOutputAsANewFile 2.36s.
+  - `requireCADPython` now starts python once per call: about 0.1s, at 24 call sites.
+  - The rest is run-to-run variance in python-heavy CAD guard tests.
+- **Why both gate timeouts name TestEngineExecSandboxFaultSentinel:** it is the test running when the package crosses 300s. In the standalone run it started at offset 276.5s and passed in 0.28s, so it is not a hang.
+- **Why the task's own gate missed it:** gates 3 and 4 above ran `go test -p 2 ./... -count=1` with the default 10m timeout, not CI's 5m.
+- **Options, none applied:**
+  1. Raise the gate `-timeout` in ci.yml and ci-local together.
+  2. Make the slow new tests share their fixtures or run with `t.Parallel()`.
+  3. Have `requireCADPython` cache its version probe. This saves about 2.5s, which is not enough on its own.
+  - None of these is an obvious test-first fix, so none was made.
+
+**Not run, with reasons:**
+- **`scripts/presets-acceptance.sh` and `scripts/presets-rest-acceptance.sh`.** Each brings up the full e2e stack (all 13 services) to prove preset logic, which this task did not touch. Their job-creation path is the same multipart handler the e2e tier drove on that same full stack.
+- **`scripts/inspect-burst-liveproof.sh`, `scripts/quota-multireplica-liveproof.sh` and every `scripts/keda-*.sh`.** They need OrbStack Kubernetes enabled, which needs an OrbStack restart. That is ruled out for this run, and compose and k8s must not run hot together.
+
+**Cleanup.**
+- **Compose stack.** `docker compose -p octoconv stop`, never `down -v`; no octoconv container is running. The e2e tier's own teardown ran `down -v` inside ci-local, which is that script's designed behavior.
+- **Images removed:**
+  - the octoconv-{audio,chromium,document,ocr,pandoc,probe,tectonic}-worker and webhook-worker-1/2 images this run built;
+  - `hibiken/asynqmon:0.7.2` and `busybox:1.36.1`, which this run pulled;
+  - six dangling builds from this run.
+- **Images kept:**
+  - octoconv-api, octoconv-worker and octoconv-cad-worker, which existed before the run and now carry 46e742c builds;
+  - octoconv-av-worker, which the stopped stack uses.
+  - Their three previous builds are left dangling and untouched.
+- **Build history and cache.** The run's 67 build-history records were removed. Its build-cache records were pruned by ID, except the 7 that back the kept images. No other project's image, container, volume or cache record was touched.
+- **Clones.** The scratch clones were deleted after the evidence was copied.
