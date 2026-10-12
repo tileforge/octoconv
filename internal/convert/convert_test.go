@@ -309,9 +309,12 @@ func TestDefaultRegistersOnlyAllowlistedCADPairs(t *testing.T) {
 	allowed := map[string]bool{
 		OperationConvert + " step>stl": true,
 		OperationConvert + " iges>stl": true,
+		OperationConvert + " dxf>svg":  true,
+		OperationConvert + " dxf>pdf":  true,
 		OperationRender + " step>png":  true,
 		OperationRender + " iges>png":  true,
 		OperationRender + " stl>png":   true,
+		OperationRender + " dxf>png":   true,
 	}
 
 	walked := 0
@@ -325,7 +328,7 @@ func TestDefaultRegistersOnlyAllowlistedCADPairs(t *testing.T) {
 			}
 			key := op + " " + p.From + ">" + p.To
 			if class != EngineCAD || !allowed[key] {
-				t.Errorf("%s registers CAD pair %s -> %s under operation %q class %q, want only (convert, step, stl), (convert, iges, stl), (render, step, png), (render, iges, png) and (render, stl, png) under cad", where, p.From, p.To, op, class)
+				t.Errorf("%s registers CAD pair %s -> %s under operation %q class %q, want only (convert, step, stl), (convert, iges, stl), (convert, dxf, svg), (convert, dxf, pdf), (render, step, png), (render, iges, png), (render, stl, png) and (render, dxf, png) under cad", where, p.From, p.To, op, class)
 				continue
 			}
 			found[key] = true

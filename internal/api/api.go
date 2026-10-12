@@ -515,6 +515,7 @@ var defaultMaxFormatBytes = map[string]map[string]int64{
 		"step": convert.CADMaxSTEPBytes,
 		"iges": convert.CADMaxIGESBytes,
 		"stl":  convert.CADMaxSTLBytes,
+		"dxf":  convert.CADMaxDXFBytes,
 	},
 }
 

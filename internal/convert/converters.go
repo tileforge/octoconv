@@ -96,4 +96,6 @@ func init() {
 	Default.Register(TectonicConverter{})
 	Default.Register(CADConverter{})
 	Default.Register(CADRenderConverter{})
+	Default.Register(CADDXFConverter{})
+	Default.Register(CADDXFRenderConverter{})
 }

@@ -136,8 +136,11 @@ func TestCADFormatCeilingDefaultsPinnedToConvertConstants(t *testing.T) {
 	if got := srv.maxFormatBytes[convert.EngineCAD]["stl"]; got != convert.CADMaxSTLBytes {
 		t.Errorf("cad stl ceiling = %d, want convert.CADMaxSTLBytes = %d", got, int64(convert.CADMaxSTLBytes))
 	}
-	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 3 {
-		t.Errorf("maxFormatBytes = %v, want exactly cad: step, iges and stl", srv.maxFormatBytes)
+	if got := srv.maxFormatBytes[convert.EngineCAD]["dxf"]; got != convert.CADMaxDXFBytes {
+		t.Errorf("cad dxf ceiling = %d, want convert.CADMaxDXFBytes = %d", got, int64(convert.CADMaxDXFBytes))
+	}
+	if len(srv.maxFormatBytes) != 1 || len(srv.maxFormatBytes[convert.EngineCAD]) != 4 {
+		t.Errorf("maxFormatBytes = %v, want exactly cad: step, iges, stl and dxf", srv.maxFormatBytes)
 	}
 }
 
@@ -292,14 +295,16 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 		filename   string
 		fixture    string
 		ceiling    int64
-		wantTarget map[string]string
+		wantOffers map[string]bool
 	}{
 		{"step", "LM8UU.step", "public/LM8UU.step", convert.CADMaxSTEPBytes,
-			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationConvert + " stl": true, convert.OperationRender + " png": true}},
 		{"iges", "surfaces_only.iges", "synthetic/surfaces_only.iges", convert.CADMaxIGESBytes,
-			map[string]string{convert.OperationConvert: "stl", convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationConvert + " stl": true, convert.OperationRender + " png": true}},
 		{"stl", "hubble.stl", "public/nasa-hubble-all-pieces.stl", convert.CADMaxSTLBytes,
-			map[string]string{convert.OperationRender: "png"}},
+			map[string]bool{convert.OperationRender + " png": true}},
+		{"dxf", "legacy_cp1251.dxf", "synthetic/legacy_cp1251.dxf", convert.CADMaxDXFBytes,
+			map[string]bool{convert.OperationConvert + " svg": true, convert.OperationConvert + " pdf": true, convert.OperationRender + " png": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,12 +315,12 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 				if o.Engine != convert.EngineCAD {
 					continue
 				}
-				want, ok := tc.wantTarget[o.Operation]
-				if !ok || o.Target != want {
-					t.Errorf("offer %+v: unexpected cad offer for a %s file, want %v", o, tc.name, tc.wantTarget)
+				key := o.Operation + " " + o.Target
+				if !tc.wantOffers[key] {
+					t.Errorf("offer %+v: unexpected cad offer for a %s file, want %v", o, tc.name, tc.wantOffers)
 					continue
 				}
-				seen[o.Operation] = true
+				seen[key] = true
 				if o.MaxBytes != tc.ceiling {
 					t.Errorf("offer %+v: MaxBytes = %d, want %d", o, o.MaxBytes, tc.ceiling)
 				}
@@ -326,9 +331,9 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 					t.Errorf("offer %+v: EstimateSource = %q, want %q", o, o.EstimateSource, EstimateSourceUnmeasured)
 				}
 			}
-			for op := range tc.wantTarget {
-				if !seen[op] {
-					t.Errorf("no cad %s offer for a %s file; operations=%+v", op, tc.name, rep.Operations)
+			for key := range tc.wantOffers {
+				if !seen[key] {
+					t.Errorf("no cad %s offer for a %s file; operations=%+v", key, tc.name, rep.Operations)
 				}
 			}
 		})
