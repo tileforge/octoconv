@@ -339,3 +339,86 @@ func TestCADInspectReportsPerFormatCeilingAsMaxBytes(t *testing.T) {
 		})
 	}
 }
+
+func cadDXFPaddedTo(t *testing.T, size int) []byte {
+	t.Helper()
+	src := readCADFixture(t, "synthetic/legacy_cp1251.dxf")
+	at := bytes.Index(src, []byte("  0\r\nENDSEC\r\n"))
+	if at < 0 {
+		t.Fatal("no ENDSEC in legacy_cp1251.dxf")
+	}
+	const chunk = 1025
+	need := size - len(src)
+	if need < chunk {
+		t.Fatalf("size %d leaves no room for padding", size)
+	}
+	full := need/chunk - 1
+	last := need - full*chunk
+	out := make([]byte, 0, size)
+	out = append(out, src[:at]...)
+	line := append(append([]byte("999\r\n"), bytes.Repeat([]byte("x"), chunk-7)...), "\r\n"...)
+	for k := 0; k < full; k++ {
+		out = append(out, line...)
+	}
+	out = append(out, "999\r\n"...)
+	out = append(out, bytes.Repeat([]byte("x"), last-7)...)
+	out = append(out, "\r\n"...)
+	out = append(out, src[at:]...)
+	if len(out) != size {
+		t.Fatalf("padded dxf is %d bytes, want %d", len(out), size)
+	}
+	return out
+}
+
+func TestCADDXFCeilingAtTheDefaultRefusesBeforeUpload(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds an input above 118 MiB")
+	}
+	for _, tc := range []struct {
+		target    string
+		operation string
+	}{
+		{"svg", ""},
+		{"png", convert.OperationRender},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+			srv := newCADCeilingServer(repo, store, q)
+			var body *bytes.Buffer
+			var ct string
+			if tc.operation == "" {
+				body, ct = multipartBody(t, "big.dxf", tc.target, cadDXFPaddedTo(t, convert.CADMaxDXFBytes+1))
+			} else {
+				body, ct = multipartBodyWithOperation(t, "big.dxf", tc.target, tc.operation, cadDXFPaddedTo(t, convert.CADMaxDXFBytes+1))
+			}
+			req := authed(httptest.NewRequest(http.MethodPost, "/v1/jobs", body))
+			req.Header.Set("Content-Type", ct)
+			rec := httptest.NewRecorder()
+			srv.Routes().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want 413; body=%.300s", rec.Code, rec.Body.String())
+			}
+			want := "dxf file exceeds the 118 MiB limit for this conversion"
+			if !strings.Contains(rec.Body.String(), `"code":"`+errcode.PayloadTooLarge+`"`) || !strings.Contains(rec.Body.String(), want) {
+				t.Errorf("body = %s, want code %s and message %q", rec.Body.String(), errcode.PayloadTooLarge, want)
+			}
+			if store.uploaded || store.uploadCalls != 0 || repo.created != nil || q.enqueueCalls != 0 {
+				t.Errorf("a refused file must not upload, create or enqueue: uploadCalls=%d created=%v enqueueCalls=%d", store.uploadCalls, repo.created != nil, q.enqueueCalls)
+			}
+		})
+	}
+}
+
+func TestCADDXFPaddedInputIsAcceptedBelowTheCeiling(t *testing.T) {
+	data := cadDXFPaddedTo(t, 1<<20)
+	repo, store, q := &fakeRepo{}, &fakeStorage{}, &fakeQueue{}
+	srv := newCADCeilingServer(repo, store, q)
+	rec := postFormatCeilingCreate(t, srv, "padded.dxf", "svg", data)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.created == nil || repo.created.SourceFormat != "dxf" || q.enqueuedCAD != repo.createdID {
+		t.Errorf("created = %+v, enqueuedCAD = %s, want a dxf job on the cad queue", repo.created, q.enqueuedCAD)
+	}
+}

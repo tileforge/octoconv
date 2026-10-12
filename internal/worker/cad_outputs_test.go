@@ -390,3 +390,103 @@ func TestCADOutputsDescriptorDeclaresTheHook(t *testing.T) {
 		t.Fatal("NewRunner did not install the CAD hook")
 	}
 }
+
+func validDXFMeasurements(t *testing.T) []byte {
+	t.Helper()
+	doc := map[string]any{
+		"schema": measurements.Schema, "format": measurements.FormatDXF,
+		"unit": measurements.UnitMM, "unit_source": measurements.SourceDeclared,
+		"bbox":   map[string]any{"min": []float64{0, 0}, "max": []float64{120, 40}},
+		"volume": nil, "volume_null_reason": measurements.ReasonNotApplicable2D,
+		"area": nil, "area_null_reason": measurements.ReasonNotApplicable2D,
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := measurements.Validate(b); err != nil {
+		t.Fatalf("the 2D fixture document is not valid: %v", err)
+	}
+	return b
+}
+
+func TestCADOutputsDXFRenderRecordsPNGAndMeasurementsInOneCallThenMarksDone(t *testing.T) {
+	sidecar := validDXFMeasurements(t)
+	conv := sidecarConverter{op: convert.OperationRender, from: "dxf", to: "png", sidecar: sidecar, sideOf: convert.CADMeasurementsPath}
+	hs := newCADHarness(t, conv, cadSideOutputs, nil)
+	if err := hs.h.process(context.Background(), hs.job); err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if got := strings.Join(hs.repo.log, ","); got != "AddOutputs,MarkDone" {
+		t.Fatalf("repo calls = %s, want exactly AddOutputs then MarkDone", got)
+	}
+	if len(hs.repo.rows) != 2 {
+		t.Fatalf("rows = %+v, want two", hs.repo.rows)
+	}
+	p, m := hs.repo.rows[0], hs.repo.rows[1]
+	if p.Ordinal != 0 || p.Role != jobs.OutputRolePrimary || p.Format != "png" || p.Filename != "out.png" || p.ContentType != "image/png" {
+		t.Errorf("primary row = %+v", p)
+	}
+	if m.Ordinal != 1 || m.Role != jobs.OutputRoleMeasurements || m.Format != "json" || m.Filename != "measurements.json" || m.ContentType != "application/json" {
+		t.Errorf("measurements row = %+v", m)
+	}
+	puts := hs.s3.putKeys()
+	if len(puts) != 2 || !strings.HasSuffix(puts[0], "out.png") || !strings.HasSuffix(puts[1], "measurements.json") {
+		t.Errorf("uploads = %v, want the png then the json", puts)
+	}
+}
+
+func TestCADOutputsDXFRenderWithA3DBBoxUploadsNothing(t *testing.T) {
+	var doc map[string]any
+	if err := json.Unmarshal(validDXFMeasurements(t), &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["bbox"] = map[string]any{"min": []float64{0, 0, 0}, "max": []float64{120, 40, 1}}
+	sidecar, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := sidecarConverter{op: convert.OperationRender, from: "dxf", to: "png", sidecar: sidecar, sideOf: convert.CADMeasurementsPath}
+	hs := newCADHarness(t, conv, cadSideOutputs, nil)
+	err = hs.h.process(context.Background(), hs.job)
+	if !errors.Is(err, convert.ErrCADMeasurementsInvalid) || !isCADTerminal(err) {
+		t.Fatalf("err = %v, want a terminal ErrCADMeasurementsInvalid", err)
+	}
+	if puts := hs.s3.putKeys(); len(puts) != 0 {
+		t.Errorf("uploads = %v, want none", puts)
+	}
+	if len(hs.repo.log) != 0 {
+		t.Errorf("repo written: %v", hs.repo.log)
+	}
+}
+
+func TestCADOutputsDXFConvertRecordsOnePrimaryAndNoExtras(t *testing.T) {
+	for _, tc := range []struct {
+		to          string
+		contentType string
+	}{
+		{"svg", "image/svg+xml"},
+		{"pdf", "application/pdf"},
+	} {
+		t.Run(tc.to, func(t *testing.T) {
+			conv := sidecarConverter{op: convert.OperationConvert, from: "dxf", to: tc.to, sidecar: validDXFMeasurements(t), sideOf: convert.CADMeasurementsPath}
+			hs := newCADHarness(t, conv, cadSideOutputs, nil)
+			if err := hs.h.process(context.Background(), hs.job); err != nil {
+				t.Fatalf("process: %v", err)
+			}
+			if got := strings.Join(hs.repo.log, ","); got != "AddOutputs,MarkDone" {
+				t.Fatalf("repo calls = %s, want exactly AddOutputs then MarkDone", got)
+			}
+			if len(hs.repo.rows) != 1 {
+				t.Fatalf("rows = %+v, want one primary row", hs.repo.rows)
+			}
+			p := hs.repo.rows[0]
+			if p.Ordinal != 0 || p.Role != jobs.OutputRolePrimary || p.Format != tc.to || p.Filename != "out."+tc.to || p.ContentType != tc.contentType {
+				t.Errorf("primary row = %+v, want ordinal 0, primary, %s, out.%s, %s", p, tc.to, tc.to, tc.contentType)
+			}
+			if puts := hs.s3.putKeys(); len(puts) != 1 || !strings.HasSuffix(puts[0], "out."+tc.to) {
+				t.Errorf("uploads = %v, want only out.%s", puts, tc.to)
+			}
+		})
+	}
+}
