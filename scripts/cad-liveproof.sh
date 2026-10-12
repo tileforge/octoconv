@@ -104,7 +104,7 @@ for f in synthetic/units_inch.step synthetic/stl_ascii_box.stl synthetic/surface
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 [ -f "$FETCHED/freecad-festo-valve-5-2.igs" ] || fail "missing $FETCHED/freecad-festo-valve-5-2.igs"
-for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf; do
+for f in synthetic/legacy_cp1251.dxf public/uncommon.dxf public/3dsolids.dxf dxf/text_cases.dxf dxf/layers_off_frozen.dxf dxf/never_resolved.dxf dxf/wide.dxf dxf/tall.dxf dxf/far_point.dxf dxf/wrong_extents.dxf dxf/units_0.dxf dxf/units_1.dxf dxf/units_3.dxf dxf/units_13.dxf dxf/all_hidden.dxf dxf/single_point.dxf dxf/text_alpha.dxf dxf/text_alpha_faint.dxf; do
 	[ -f "$CORPUS/$f" ] || fail "missing $CORPUS/$f"
 done
 REPL50="$SCALED/$REPL50_NAME"
@@ -938,6 +938,29 @@ print("root_svg=%d,elements=%d,forbidden_elements=%d,on_attrs=%d,href_attrs=%d,d
 sys.exit(1 if bad else 0)
 PY
 
+cat > "$W/svgalpha.py" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+
+want = [
+    ("OPAQUE TEXT", "#000000", None), ("HALF TEXT", "#000000", "0.498"), ("CLEAR TEXT", "#000000", "0.000"),
+    ("OPAQUE MTEXT", "#000000", None), ("HALF MTEXT", "#000000", "0.498"), ("CLEAR MTEXT", "#000000", "0.000"),
+    ("HALF", "#000000", "0.498"), ("SPLIT", "#000000", "0.498"), ("INLINE", "#ff0000", "0.498"), ("RED", "#ff0000", "0.498"),
+    ("CLEAR", "#000000", "0.000"), ("SPLIT", "#000000", "0.000"),
+    ("LAYER TEXT", "#000000", "0.498"), ("BLOCK TEXT", "#000000", "0.498"),
+]
+ns = "{http://www.w3.org/2000/svg}"
+root = ET.parse(sys.argv[1]).getroot()
+got = [("".join(el.itertext()), el.get("fill"), el.get("fill-opacity")) for el in root.iter(ns + "text")]
+strokes = sum(1 for el in root.iter(ns + "path") if el.get("stroke-opacity") == "0.498" and el.get("fill") == "none")
+fills = sum(1 for el in root.iter(ns + "path") if el.get("fill-opacity") == "0.498" and el.get("stroke") is None)
+ok = got == want and strokes == 2 and fills == 1
+print("texts_opaque=%d,texts_half=%d,texts_clear=%d,texts_as_expected=%d,stroke_opacity_half=%d,fill_opacity_half=%d" % (
+    sum(1 for g in got if g[2] is None), sum(1 for g in got if g[2] == "0.498"),
+    sum(1 for g in got if g[2] == "0.000"), int(got == want), strokes, fills))
+sys.exit(0 if ok else 1)
+PY
+
 fetch_ct() {
 	docker compose exec -T cad-worker /usr/bin/python3 -c \
 		'import sys, urllib.request; r = urllib.request.urlopen(sys.argv[1]); r.read(); print(r.headers.get("Content-Type", ""))' "$1"
@@ -1002,6 +1025,9 @@ dxf_svg_one() {
 		[ "$SV_TEXTS" -ge 40 ] || fail "DXF_SVG $name: $SV_TEXTS texts, want at least 40"
 		texts_check="texts_at_least_40=1"
 		;;
+	text_alpha)
+		texts_check=$(python3 "$W/svgalpha.py" "$W/dxf_$name.svg") || fail "DXF_SVG $name: the opacities are not the DXF transparencies: $texts_check"
+		;;
 	*)
 		texts_check="texts_checked=none"
 		;;
@@ -1015,6 +1041,7 @@ dxf_svg_one text_cases "$DXF/text_cases.dxf" text_cases.dxf
 dxf_svg_one layers_off_frozen "$DXF/layers_off_frozen.dxf" layers_off_frozen.dxf
 dxf_svg_one never_resolved "$DXF/never_resolved.dxf" never_resolved.dxf
 dxf_svg_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
+dxf_svg_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
 
 pdf_judged() {
 	local label=$1 pdf=$2 line rc=0
@@ -1041,6 +1068,16 @@ dxf_pdf_one() {
 		grep -qF -- "$DXF_SPECIAL" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold the special string: $(head -c 600 "$W/dxf_$name.pdf.txt")"
 		text_check="pdftotext_special_text=present"
 		;;
+	text_alpha)
+		for s in "OPAQUE TEXT" "HALF TEXT" "OPAQUE MTEXT" "HALF MTEXT" "LAYER TEXT" "BLOCK TEXT" "INLINE" "RED"; do
+			grep -qF -- "$s" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold '$s': $(head -c 600 "$W/dxf_$name.pdf.txt")"
+		done
+		text_check="pdftotext_opaque_and_half_texts=8,pdftotext_clear_lines=$(grep -c CLEAR "$W/dxf_$name.pdf.txt" || true)"
+		;;
+	text_alpha_faint)
+		grep -qF "FAINT ONLY" "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw does not hold FAINT ONLY: $(head -c 300 "$W/dxf_$name.pdf.txt")"
+		text_check="pdftotext_faint_only=1,pdftotext_gone_lines=$(grep -c GONE "$W/dxf_$name.pdf.txt" || true)"
+		;;
 	*)
 		[ -s "$W/dxf_$name.pdf.txt" ] && grep -q '[[:alnum:]]' "$W/dxf_$name.pdf.txt" || fail "DXF_PDF $name: pdftotext -raw extracts no text"
 		text_check="pdftotext_text=nonempty"
@@ -1053,6 +1090,8 @@ dxf_pdf_one() {
 dxf_pdf_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf
 dxf_pdf_one text_cases "$DXF/text_cases.dxf" text_cases.dxf
 dxf_pdf_one uncommon "$CORPUS/public/uncommon.dxf" uncommon.dxf
+dxf_pdf_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf
+dxf_pdf_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf
 
 drawing_judge() {
 	local png=$1 size=$2 background=$3 svg=$4 line rc=0
@@ -1103,6 +1142,9 @@ dxf_render_one wide "$DXF/wide.dxf" wide.dxf 1280 opaque ""
 dxf_render_one tall "$DXF/tall.dxf" tall.dxf 1280 opaque ""
 dxf_render_one wide "$DXF/wide.dxf" wide.dxf 2048 transparent '{"size":2048,"background":"transparent"}'
 dxf_render_one legacy_cp1251 "$CORPUS/synthetic/legacy_cp1251.dxf" legacy_cp1251.dxf 256 opaque '{"size":256}'
+dxf_render_one text_alpha "$DXF/text_alpha.dxf" text_alpha.dxf 1280 opaque ""
+dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 opaque ""
+dxf_render_one text_alpha_faint "$DXF/text_alpha_faint.dxf" text_alpha_faint.dxf 1280 transparent '{"background":"transparent"}'
 
 dxf_meas_one() {
 	local name=$1 file=$2 upname=$3 assume=$4 w_unit=$5 w_src=$6 w_bbox=$7 opts="" i extra=""
