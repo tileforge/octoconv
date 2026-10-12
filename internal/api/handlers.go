@@ -146,7 +146,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	// The total-size ceiling is enforced here by MaxBytesReader; the separate,
 	// smaller multipartInMemoryBudget bounds heap use during parsing (CR-01).
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxUploadByte)
-	if err := r.ParseMultipartForm(multipartInMemoryBudget); err != nil {
+	err := r.ParseMultipartForm(multipartInMemoryBudget)
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, http.StatusRequestEntityTooLarge, errcode.PayloadTooLarge, "file exceeds size limit")

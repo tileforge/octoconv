@@ -439,6 +439,9 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.inspectMaxUploadBytes)
 	parseErr := r.ParseMultipartForm(multipartInMemoryBudget)
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	// Released HERE, immediately after the buffering call returns --
 	// success or failure -- not deferred to handler exit: the resource this
 	// slot bounds (heap bytes ParseMultipartForm is actively filling) is
