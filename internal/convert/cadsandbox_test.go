@@ -433,9 +433,10 @@ func TestCADDrawStageRefusesASymlinkedHome(t *testing.T) {
 	}
 }
 
-func TestCADSetsDrawSetsAreTheSeeds(t *testing.T) {
-	const remeasure = "these are the 75-RESEARCH seed sets that plan 75-08 measures on the production image; " +
-		"re-measure and update SANDBOX-PATHS.md, the Go vars and this pin together rather than editing the expectation"
+func TestCADDrawSetsAreTheMeasuredOnes(t *testing.T) {
+	const remeasure = "these are the sets scripts/cad-worker-sandbox-measure.sh --stages guard,dxf,rsvg measured on the production engine image " +
+		"(evidence/75-08-landlock.txt, SANDBOX-PATHS.md section cad, conf05 blocks caddxf and cadrsvg); re-run it and update the document, " +
+		"the Go vars and this pin together rather than editing the expectation"
 	for _, p := range []struct {
 		name      string
 		got, want []string
@@ -449,14 +450,32 @@ func TestCADSetsDrawSetsAreTheSeeds(t *testing.T) {
 			t.Errorf("%s = %v, want %v: %s", p.name, p.got, p.want, remeasure)
 		}
 	}
-	for name, set := range map[string][]string{"cadDXFReadOnly": cadDXFReadOnly, "cadRsvgReadOnly": cadRsvgReadOnly} {
-		for _, p := range set {
-			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
-				if p == banned || strings.HasPrefix(p, banned+"/") {
-					t.Errorf("%s grants %s", name, p)
-				}
-			}
+}
+
+func TestCADDXFHelperImportsNoOpenCascadeOrVTK(t *testing.T) {
+	raw, err := os.ReadFile("../../cmd/cad-worker/helper/cad-dxf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	importLine := regexp.MustCompile(`^\s*(import|from)\s`)
+	forbidden := regexp.MustCompile(`\b(OCP|cadquery|OCC|vtk|vtkmodules)\b|__import__|importlib`)
+	ezdxf, imports := 0, 0
+	for i, line := range strings.Split(string(raw), "\n") {
+		code, _, _ := strings.Cut(line, "#")
+		if !importLine.MatchString(code) && !strings.Contains(code, "__import__") && !strings.Contains(code, "importlib") {
+			continue
 		}
+		imports++
+		if strings.Contains(code, "ezdxf") {
+			ezdxf++
+		}
+		if forbidden.MatchString(code) {
+			t.Errorf("cad-dxf line %d imports %q: the drawing stage shares /opt/venv with OpenCascade and VTK, so its imports, "+
+				"not its path set, are what keep those bindings out of reach", i+1, strings.TrimSpace(line))
+		}
+	}
+	if imports == 0 || ezdxf == 0 {
+		t.Fatalf("read %d import lines and %d from ezdxf: the check would pass on a helper it did not read", imports, ezdxf)
 	}
 }
 
@@ -505,7 +524,10 @@ func TestCADGuardSetHasNoPathToTheReader(t *testing.T) {
 }
 
 func TestCADSetsGrantNoSharedWritableOrProcessPath(t *testing.T) {
-	for name, set := range map[string][]string{"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly} {
+	for name, set := range map[string][]string{
+		"cadMeshReadOnly": cadMeshReadOnly, "cadGuardReadOnly": cadGuardReadOnly, "cadRenderReadOnly": cadRenderReadOnly,
+		"cadDXFReadOnly": cadDXFReadOnly, "cadRsvgReadOnly": cadRsvgReadOnly,
+	} {
 		for _, p := range set {
 			for _, banned := range []string{"/tmp", "/proc", "/sys"} {
 				if p == banned || strings.HasPrefix(p, banned+"/") {
