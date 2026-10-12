@@ -177,7 +177,10 @@ func (c CADDXFRenderConverter) Convert(ctx context.Context, inPath, outPath stri
 	if err != nil {
 		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
 	}
-	return cadDXFWriteNew(sidecar, body)
+	if err := writeNewFile(sidecar, body, 0o600); err != nil {
+		return fmt.Errorf("cad: write measurements: %w", err)
+	}
+	return nil
 }
 
 func cadDXFPDFArgs(out, in string) []string {
@@ -194,24 +197,6 @@ func cadDXFFrameArgs(background string, box CADLetterbox, size int, out, in stri
 		"--page-width", strconv.Itoa(size), "--page-height", strconv.Itoa(size),
 		"--left", strconv.Itoa(box.Left), "--top", strconv.Itoa(box.Top),
 		"-o", out, in)
-}
-
-func cadDXFWriteNew(path string, body []byte) error {
-	if err := cadDXFClear(path); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return fmt.Errorf("cad: write measurements: %w", err)
-	}
-	if _, err := f.Write(body); err != nil {
-		f.Close()
-		return fmt.Errorf("cad: write measurements: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("cad: write measurements: %w", err)
-	}
-	return nil
 }
 
 func cadDXFAdmit(inPath, outPath string) (string, error) {

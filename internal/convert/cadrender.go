@@ -123,7 +123,7 @@ func (c CADRenderConverter) Convert(ctx context.Context, inPath, outPath string,
 	if err != nil {
 		return fmt.Errorf("cad: %w: %v", ErrCADMeasurementsInvalid, err)
 	}
-	if err := os.WriteFile(sidecar, body, 0o600); err != nil {
+	if err := writeNewFile(sidecar, body, 0o600); err != nil {
 		return fmt.Errorf("cad: write measurements: %w", err)
 	}
 	return nil
