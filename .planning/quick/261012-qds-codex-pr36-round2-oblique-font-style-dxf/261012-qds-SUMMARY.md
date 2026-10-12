@@ -196,3 +196,10 @@ None.
 - Commits 6fd65f0, 8287bc6 and ebd2e53 are ancestors of HEAD; `git rev-list --count 2d8d250..HEAD` = 3 before this summary's commit.
 - The fixture, its four dxf-out outputs, the sync test, the PLAN and every evidence file named above exist.
 - `internal/convert/exec.go` is byte-identical to main (empty diff).
+
+## Race tier follow-up (orchestrator)
+
+- `ci-local race` at 93c14d3 from a fresh clone, load average ~7: FAIL, `internal/convert` timed out at 606.2s against the 10m budget, no race reported (`evidence/ci-local-race-93c14d3-timeout.log`).
+- e1bf64e raises the race tier's `go test -race` timeout to 20m in `.github/workflows/ci.yml` and `scripts/ci-local.sh` together.
+- `ci-local gate race` at e1bf64e from a fresh clone, load average ~9.8: ALL REQUESTED TIERS PASSED; `internal/convert` 520.2s (gate, 10m budget) and 645.7s (race, 20m budget) (`evidence/ci-local-gate-race-e1bf64e.log`).
+- The gate tier's 520s is within its 10m budget but close to it under this load.

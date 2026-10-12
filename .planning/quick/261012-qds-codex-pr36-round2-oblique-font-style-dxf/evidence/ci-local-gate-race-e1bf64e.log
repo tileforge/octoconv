@@ -1,0 +1,132 @@
+=== ci-local 20261012T180226Z ===
+commit:   e1bf64e
+branch:   gsd/phase-75-dxf-2d-pipeline
+host:     Darwin arm64
+go:       go1.26.4 darwin/arm64
+helm:     v4.3.0+gbec5b06
+docker:   29.4.0 (orbstack)
+tiers:    gate race
+WARNING:  helm v4.3.0 locally vs v4.2.3 pinned in ci.yml --
+          the helm tier below proves the chart against a DIFFERENT
+          renderer than CI uses. Install the pinned version to close
+          this gap, or read a green helm tier accordingly.
+note:     stand-in for GitHub Actions, unavailable until billing is
+          restored (end of August 2026). Host-arch images; see this
+          script's own header for what this evidence does NOT cover.
+
+--------------------------------------------------------------
+### tier: gate (started 18:02:27 UTC)
+--------------------------------------------------------------
+gofmt -l .: clean
+go vet ./...: clean
+go build ./...: clean
+ok  	github.com/apaderin/octoconv/cmd/api	2.803s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	3.451s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	3.576s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	4.192s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	4.890s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	5.550s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	5.852s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	8.379s
+ok  	github.com/apaderin/octoconv/internal/auth	4.744s
+ok  	github.com/apaderin/octoconv/internal/cancel	5.173s
+ok  	github.com/apaderin/octoconv/internal/clients	5.724s
+ok  	github.com/apaderin/octoconv/internal/convert	520.224s
+ok  	github.com/apaderin/octoconv/internal/db	6.472s
+ok  	github.com/apaderin/octoconv/internal/e2e	7.231s
+ok  	github.com/apaderin/octoconv/internal/envcfg	11.650s
+ok  	github.com/apaderin/octoconv/internal/errcode	7.018s
+ok  	github.com/apaderin/octoconv/internal/inspect	7.824s
+ok  	github.com/apaderin/octoconv/internal/jobs	7.452s
+ok  	github.com/apaderin/octoconv/internal/logfmt	7.059s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	7.894s
+ok  	github.com/apaderin/octoconv/internal/measurements	7.121s
+ok  	github.com/apaderin/octoconv/internal/metrics	7.023s
+ok  	github.com/apaderin/octoconv/internal/presets	6.833s
+ok  	github.com/apaderin/octoconv/internal/queue	7.196s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	6.514s
+ok  	github.com/apaderin/octoconv/internal/reconciler	5.012s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	5.210s
+ok  	github.com/apaderin/octoconv/internal/sandbox	5.695s
+ok  	github.com/apaderin/octoconv/internal/storage	5.745s
+ok  	github.com/apaderin/octoconv/internal/webhook	6.423s
+ok  	github.com/apaderin/octoconv/internal/worker	16.977s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier gate: PASS
+
+--------------------------------------------------------------
+### tier: race (started 18:11:44 UTC)
+--------------------------------------------------------------
+ok  	github.com/apaderin/octoconv/cmd/api	3.286s
+ok  	github.com/apaderin/octoconv/cmd/audio-worker	3.336s
+?   	github.com/apaderin/octoconv/cmd/av-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/cad-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/chromium-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/document-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/manage-clients	2.958s
+?   	github.com/apaderin/octoconv/cmd/manage-presets	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/mcp-http	3.068s
+?   	github.com/apaderin/octoconv/cmd/mcp-server	[no test files]
+?   	github.com/apaderin/octoconv/cmd/migrate	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/ocr-worker	4.011s
+?   	github.com/apaderin/octoconv/cmd/pandoc-worker	[no test files]
+ok  	github.com/apaderin/octoconv/cmd/probe-worker	4.629s
+ok  	github.com/apaderin/octoconv/cmd/tectonic-worker	5.406s
+?   	github.com/apaderin/octoconv/cmd/webhook-worker	[no test files]
+?   	github.com/apaderin/octoconv/cmd/worker	[no test files]
+ok  	github.com/apaderin/octoconv/internal/api	43.906s
+ok  	github.com/apaderin/octoconv/internal/auth	5.947s
+ok  	github.com/apaderin/octoconv/internal/cancel	6.589s
+ok  	github.com/apaderin/octoconv/internal/clients	6.719s
+ok  	github.com/apaderin/octoconv/internal/convert	645.713s
+ok  	github.com/apaderin/octoconv/internal/db	7.448s
+ok  	github.com/apaderin/octoconv/internal/e2e	8.473s
+ok  	github.com/apaderin/octoconv/internal/envcfg	13.791s
+ok  	github.com/apaderin/octoconv/internal/errcode	8.327s
+ok  	github.com/apaderin/octoconv/internal/inspect	15.970s
+ok  	github.com/apaderin/octoconv/internal/jobs	7.749s
+ok  	github.com/apaderin/octoconv/internal/logfmt	7.228s
+ok  	github.com/apaderin/octoconv/internal/mcpserver	8.836s
+ok  	github.com/apaderin/octoconv/internal/measurements	7.123s
+ok  	github.com/apaderin/octoconv/internal/metrics	7.111s
+ok  	github.com/apaderin/octoconv/internal/presets	7.245s
+ok  	github.com/apaderin/octoconv/internal/queue	6.476s
+ok  	github.com/apaderin/octoconv/internal/ratelimit	5.609s
+ok  	github.com/apaderin/octoconv/internal/reconciler	2.829s
+ok  	github.com/apaderin/octoconv/internal/repohygiene	4.051s
+ok  	github.com/apaderin/octoconv/internal/sandbox	4.607s
+ok  	github.com/apaderin/octoconv/internal/storage	2.929s
+ok  	github.com/apaderin/octoconv/internal/webhook	3.742s
+ok  	github.com/apaderin/octoconv/internal/worker	17.835s
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-measurements-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pdf-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-pixel-judge	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-sniff	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/cad-svg-check	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/sandbox-probe	[no test files]
+?   	github.com/apaderin/octoconv/scripts/cmd/texpackages	[no test files]
+### tier race: PASS
+
+==============================================================
+ci-local 20261012T180226Z summary   commit e1bf64e
+  PASS  gate
+  PASS  race
+  ALL REQUESTED TIERS PASSED
+transcript: /private/tmp/claude-501/-Users-apaderin-dev-octoconv/95661ab2-afd1-49be-a390-64117af2c14a/scratchpad/race-clone/.planning/ci-local/ci-local-20261012T180226Z.log
+==============================================================
