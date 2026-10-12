@@ -82,9 +82,13 @@ and of the frame at any opacity, a fully transparent one included, which is how 
 counts it. The SVG carries the opacity as `stroke-opacity` on lines and `fill-opacity` on fills and on `text`
 (three decimals, absent when opaque; ezdxf rounds a 50% transparency to 0.498). The PDF and PNG are drawn from
 that SVG: half-transparent text is drawn faint and is still required in the PDF's text layer, and fully
-transparent text is not drawn, so the PDF check does not look for it. A drawing whose only content is fully
-transparent has a frame but nothing visible: its SVG converts, its PDF and PNG are refused with
-`cad_empty_result`. On the opaque PNG background a pixel only counts as ink below 250 in some channel, so text
+transparent text is not drawn, so the PDF check does not look for it. A drawing must show at least one element:
+a line or fill whose opacity is above 0 (a line also needs a stroke width above 0), or a text with a visible
+character whose opacity is above 0. A drawing whose every element is fully transparent has a frame but nothing
+visible and is refused with `cad_empty_result` as SVG, PDF and PNG alike; one visible element among fully
+transparent ones is enough, and its frame and bbox still count the transparent ones. The PDF check counts a
+paint operation as ink only when its stroke or fill alpha (`/CA`, `/ca`) is above 0, no soft mask covers it
+and its text rendering mode draws. On the opaque PNG background a pixel only counts as ink below 250 in some channel, so text
 at about 2% opacity or less does not count as ink there. A run of MTEXT that sets its own colour (`\C` or `\c`)
 keeps the transparency of its MTEXT.
 

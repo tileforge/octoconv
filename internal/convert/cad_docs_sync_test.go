@@ -125,3 +125,41 @@ func TestMeasurementsDocStatesThePDFTextFloorOfTheCode(t *testing.T) {
 		t.Errorf("docs/MEASUREMENTS.md does not state the PDF text floor %q", want)
 	}
 }
+
+func TestCADDocsStateThatANothingVisibleDrawingIsEmptyOnEveryRoute(t *testing.T) {
+	errorCodes := readDoc(t, errorCodesPath)
+	measurementsDoc := readDoc(t, measurementsPath)
+	dxf := docRow(t, errorCodes, errorCodesPath, "A DXF job fails with")
+	row := docRow(t, errorCodes, errorCodesPath, "| `cad_empty_result` |")
+	var transparency string
+	for _, p := range strings.Split(measurementsDoc, "\n\n") {
+		if strings.HasPrefix(p, "**Transparency.**") {
+			transparency = strings.Join(strings.Fields(p), " ")
+		}
+	}
+	if transparency == "" {
+		t.Fatalf("%s has no Transparency paragraph", measurementsPath)
+	}
+	for _, c := range []struct{ where, text string }{
+		{"ERROR-CODES DXF paragraph", dxf},
+		{"ERROR-CODES cad_empty_result row", row},
+		{"MEASUREMENTS Transparency paragraph", transparency},
+	} {
+		if !strings.Contains(c.text, "fully transparent") {
+			t.Errorf("%s does not name a fully transparent drawing", c.where)
+		}
+		for _, stale := range []string{"SVG still converts", "SVG converts", "its SVG converts"} {
+			if strings.Contains(c.text, stale) {
+				t.Errorf("%s still says %q", c.where, stale)
+			}
+		}
+	}
+	for _, c := range []struct{ where, text string }{
+		{"ERROR-CODES DXF paragraph", dxf},
+		{"MEASUREMENTS Transparency paragraph", transparency},
+	} {
+		if !strings.Contains(c.text, "SVG, PDF and PNG") || !strings.Contains(c.text, "`cad_empty_result`") {
+			t.Errorf("%s does not state that SVG, PDF and PNG of a drawing with nothing visible are `cad_empty_result`", c.where)
+		}
+	}
+}
