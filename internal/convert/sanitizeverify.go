@@ -871,7 +871,7 @@ func verifyOOXML(ctx context.Context, x engineExec, format, path string) ([]Thre
 		if err != nil {
 			return nil, unverifiableEngineFailure(err, "unzip could not extract %q", part)
 		}
-		if err := os.WriteFile(extracted, blob, 0o600); err != nil {
+		if err := writeNewFile(extracted, blob, 0o600); err != nil {
 			return nil, fmt.Errorf("%w: write %q: %v", ErrSanitizeUnverifiable, part, err)
 		}
 

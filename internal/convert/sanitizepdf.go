@@ -301,7 +301,7 @@ func sanitizePDF(ctx context.Context, x engineExec, inPath, outPath string) (San
 	if err != nil {
 		return SanitizeResult{}, err
 	}
-	if err := os.WriteFile(outPath, redacted, 0o644); err != nil {
+	if err := writeNewFile(outPath, redacted, 0o644); err != nil {
 		return SanitizeResult{}, fmt.Errorf("sanitize pdf: redact engine identity: %w", err)
 	}
 

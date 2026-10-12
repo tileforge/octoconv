@@ -261,7 +261,7 @@ func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFor
 		// route uses below -- write outPath, then validateOCROutput -- rather
 		// than a special case: an empty result is valid for both, and a second
 		// completion path is a second place for the two to drift.
-		if err := os.WriteFile(outPath, guard.text, 0o644); err != nil {
+		if err := writeNewFile(outPath, guard.text, 0o644); err != nil {
 			return fmt.Errorf("ocr: write output: %w", err)
 		}
 		return validateOCROutput(outPath)
@@ -316,7 +316,7 @@ func (c OCRConverter) convertPDF(ctx context.Context, inPath, outPath, targetFor
 		finalBytes = textBuf.Bytes()
 	}
 
-	if err := os.WriteFile(outPath, finalBytes, 0o644); err != nil {
+	if err := writeNewFile(outPath, finalBytes, 0o644); err != nil {
 		return fmt.Errorf("ocr: write output: %w", err)
 	}
 	return validateOCROutput(outPath)
