@@ -270,7 +270,7 @@ func TestCADDXFConvertRefusesBeforeAnyEngine(t *testing.T) {
 }
 
 func TestCADDXFConvertSVGReturnsOnlyGoBytes(t *testing.T) {
-	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall", "text_alpha", "text_alpha_faint"} {
+	for _, name := range []string{"text_cases", "legacy_cp1251", "uncommon", "hatches_2", "wide", "tall", "text_alpha", "text_alpha_faint", "text_fonts"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "svg")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -360,7 +360,7 @@ func TestCADDXFConvertPDFRunsRsvgOnTheValidatedRenderSVGAndJudgesIt(t *testing.T
 		}
 		f.noOutput(t)
 	})
-	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2", "text_alpha", "text_alpha_faint"} {
+	for _, name := range []string{"legacy_cp1251", "uncommon", "hatches_2", "text_alpha", "text_alpha_faint", "text_fonts"} {
 		t.Run(name, func(t *testing.T) {
 			f := newCADDXFFixture(t, "pdf")
 			f.setDXF(t, cadDXFFixtureOutputs(t, name))
@@ -1040,6 +1040,58 @@ func TestCADDXFConvertRejectsAnOpacityTheOutputsDisagreeOn(t *testing.T) {
 				tc.edit(&o)
 				f.setDXF(t, o)
 				f.setRsvg(t, cadDXFTestFile("text_alpha.pdf"), 0, "")
+				err := (CADDXFConverter{}).Convert(context.Background(), f.in, f.out, nil)
+				if !errors.Is(err, ErrCADSVGRejected) {
+					t.Fatalf("err = %v, want ErrCADSVGRejected", err)
+				}
+				if f.exists("rsvg.args") {
+					t.Error("rsvg-convert ran on a rejected drawing")
+				}
+				f.noOutput(t)
+			})
+		}
+	}
+}
+
+func TestCADDXFConvertRejectsAFontTheOutputsDisagreeOn(t *testing.T) {
+	scratch := t.TempDir()
+	base := cadDXFFixtureOutputs(t, "text_fonts")
+	bold := `font-family="DejaVu Sans Mono" font-size="399.751" font-weight="bold"`
+	book := `font-family="DejaVu Sans" font-size="399.751" fill`
+	cases := []struct {
+		name string
+		edit func(o *cadDXFOutputs)
+	}{
+		{"the render-only SVG slants an upright text", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "oblique.render.svg", bold, bold+` font-style="oblique"`)
+		}},
+		{"the client SVG slants an upright text", func(o *cadDXFOutputs) {
+			o.client = cadDXFMutate(t, scratch, base.client, "oblique.svg", bold, bold+` font-style="italic"`)
+		}},
+		{"the render-only SVG drops a weight", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "light.render.svg", bold, `font-family="DejaVu Sans Mono" font-size="399.751"`)
+		}},
+		{"the render-only SVG changes a weight", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "w200.render.svg", bold, `font-family="DejaVu Sans Mono" font-size="399.751" font-weight="200"`)
+		}},
+		{"the render-only SVG narrows a text", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "narrow.render.svg", book, `font-family="DejaVu Sans" font-size="399.751" font-stretch="semi-condensed" fill`)
+		}},
+		{"the render-only SVG swaps a family", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "family.render.svg", book, `font-family="DejaVu Serif" font-size="399.751" fill`)
+		}},
+		{"the render-only SVG resizes a text", func(o *cadDXFOutputs) {
+			o.render = cadDXFMutate(t, scratch, base.render, "size.render.svg", book, `font-family="DejaVu Sans" font-size="399.752" fill`)
+		}},
+	}
+	for _, target := range []string{"svg", "pdf"} {
+		for _, tc := range cases {
+			t.Run(target+"/"+tc.name, func(t *testing.T) {
+				f := newCADDXFFixture(t, target)
+				o := base
+				tc.edit(&o)
+				f.setDXF(t, o)
+				f.setRsvg(t, cadDXFTestFile("text_fonts.pdf"), 0, "")
 				err := (CADDXFConverter{}).Convert(context.Background(), f.in, f.out, nil)
 				if !errors.Is(err, ErrCADSVGRejected) {
 					t.Fatalf("err = %v, want ErrCADSVGRejected", err)

@@ -2148,7 +2148,7 @@ DXF_NONFINITE = {
 DXF_FIXTURES = (
     ["text_cases.dxf", "text_illegal_chars.dxf", "layers_off_frozen.dxf", "all_hidden.dxf",
      "never_resolved.dxf", "wrong_extents.dxf", "header_far_extents.dxf", "wide.dxf", "tall.dxf",
-     "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf"]
+     "far_point.dxf", "single_point.dxf", "xline_ray.dxf", "text_alpha.dxf", "text_alpha_faint.dxf", "text_fonts.dxf"]
     + ["units_%d.dxf" % c for c in DXF_UNIT_CODES] + ["units_missing.dxf"]
     + ["cyclic_self.dxf", "cyclic_ab.dxf", "cyclic_unreferenced.dxf", "cyclic_case.dxf",
        "nest_d16.dxf", "nest_d17.dxf", "minsert_over_inserts.dxf", "entities_over.dxf",
@@ -2187,6 +2187,9 @@ def dxf_expected():
                            b"XLINE", b"HATCH", DXF_ALPHA_HALF, DXF_ALPHA_CLEAR,
                            DXF_ALPHA_BYBLOCK, b"AcCmTransparency"],
         "text_alpha_faint.dxf": [b"AC1032", b"FAINT ONLY", b"GONE", DXF_ALPHA_HALF, DXF_ALPHA_CLEAR],
+        "text_fonts.dxf": [b"AC1032"] + [f.encode("ascii") for _, f, _ in DXF_FONT_STYLES]
+                          + [b"ACAD", b"DejaVu Sans Mono", b"\\fDejaVu Sans Mono|b1|i1;INLINE MONO BOLD ITALIC",
+                             b"SHEARED STYLE", b"SHEARED TEXT", b" 51\n15.0\n", b" 41\n0.7\n"],
         "units_missing.dxf": [b"AC1032", b"LINE"],
         "cyclic_self.dxf": [b"BLOCKS", b"INSERT"],
         "cyclic_ab.dxf": [b"BLOCKS", b"INSERT"],
@@ -2401,6 +2404,40 @@ def build_dxf_text_alpha_faint(ezdxf):
     return dxf_ezdxf_bytes(doc)
 
 
+DXF_FONT_STYLES = (
+    ("MONO", "DejaVuSansMono.ttf", "MONO BOOK"),
+    ("MONOB", "DejaVuSansMono-Bold.ttf", "MONO BOLD"),
+    ("MONOO", "DejaVuSansMono-Oblique.ttf", "MONO OBLIQUE"),
+    ("MONOBO", "DejaVuSansMono-BoldOblique.ttf", "MONO BOLD OBLIQUE"),
+    ("SANS", "DejaVuSans.ttf", "SANS BOOK"),
+    ("SANSB", "DejaVuSans-Bold.ttf", "SANS BOLD"),
+    ("SERIF", "DejaVuSerif.ttf", "SERIF BOOK"),
+    ("SERIFB", "DejaVuSerif-Bold.ttf", "SERIF BOLD"),
+)
+
+
+def build_dxf_text_fonts(ezdxf):
+    doc = dxf_new(ezdxf, 4)
+    msp = doc.modelspace()
+    y = 0
+    for style, font, label in DXF_FONT_STYLES:
+        doc.styles.new(style, dxfattribs={"font": font})
+        msp.add_text(label, height=5, dxfattribs={"style": style}).set_placement((0, y))
+        y -= 10
+    for style, bold, label in (("XMI", False, "XDATA MONO ITALIC"), ("XMBI", True, "XDATA MONO BOLD ITALIC")):
+        doc.styles.new(style, dxfattribs={"font": ""}).set_extended_font_data("DejaVu Sans Mono", italic=True, bold=bold)
+        msp.add_text(label, height=5, dxfattribs={"style": style}).set_placement((0, y))
+        y -= 10
+    msp.add_mtext("\\fDejaVu Sans Mono|b1|i1;INLINE MONO BOLD ITALIC", dxfattribs={"char_height": 5}).set_location((0, y + 5))
+    y -= 10
+    doc.styles.new("SHEAR", dxfattribs={"font": "DejaVuSansMono.ttf", "oblique": 15.0, "width": 0.7})
+    msp.add_text("SHEARED STYLE", height=5, dxfattribs={"style": "SHEAR"}).set_placement((0, y))
+    y -= 10
+    msp.add_text("SHEARED TEXT", height=5, dxfattribs={"style": "MONO", "oblique": 15.0, "width": 0.7}).set_placement((0, y))
+    dxf_rect(msp, -10, y - 10, 150, 15)
+    return dxf_ezdxf_bytes(doc)
+
+
 def build_dxf_units(ezdxf, code):
     doc = dxf_new(ezdxf, code)
     doc.modelspace().add_line((0, 0), (10, 5))
@@ -2549,6 +2586,7 @@ def build_dxf_all():
         "xline_ray.dxf": build_dxf_xline_ray(ezdxf),
         "text_alpha.dxf": build_dxf_text_alpha(ezdxf),
         "text_alpha_faint.dxf": build_dxf_text_alpha_faint(ezdxf),
+        "text_fonts.dxf": build_dxf_text_fonts(ezdxf),
         "units_missing.dxf": build_dxf_units(ezdxf, None),
         "cyclic_self.dxf": build_dxf_cyclic("self"),
         "cyclic_ab.dxf": build_dxf_cyclic("ab"),

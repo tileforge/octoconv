@@ -25,7 +25,7 @@ PY_PACKAGES=(ezdxf fonttools numpy pillow pyparsing typing-extensions)
 RW_SET=/job
 OUT_OVERRIDE=""
 FIXTURE_DIR="$CORPUS/dxf"
-FIXTURE_COUNT=43
+FIXTURE_COUNT=44
 HELPER_EVID="$PHASE_DIR/evidence/75-02-helper.txt"
 HELPER_EVID_NAME="evidence/75-02-helper.txt"
 DXF_OUT="$CORPUS/dxf-out"
@@ -34,6 +34,7 @@ CAD_CACHE="${OCTOCONV_CAD_CACHE:-$HOME/.cache/octoconv/cad-corpus}"
 WRAP_PY="$REPO_ROOT/scripts/cad-measure/measure_wrap.py"
 GROUP=all
 WRITE_OUT=0
+FONT_PACKAGES="${OCTOCONV_PROBE_FONT_PACKAGES:-}"
 JUDGE_EVID="$PHASE_DIR/evidence/75-08-judge.txt"
 JUDGE_EVID_NAME="evidence/75-08-judge.txt"
 LANDLOCK_EVID="$PHASE_DIR/evidence/75-08-landlock.txt"
@@ -48,7 +49,7 @@ usage() {
 Usage:
   scripts/cad-dxf-probe.sh tracer   [--out FILE]
   scripts/cad-dxf-probe.sh fixtures [--write] [--out FILE]
-  scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|all] [--write-out] [--out FILE]
+  scripts/cad-dxf-probe.sh helper   [--group semantics|safety|corpus|fonts|all] [--write-out] [--out FILE]
   scripts/cad-dxf-probe.sh judge    [--out FILE]
 
 tracer    build the engine image of Dockerfile.cad-worker, draw legacy_cp1251.dxf and
@@ -66,7 +67,11 @@ helper    run the production cad-dxf under its candidate Landlock ruleset and th
           environment of the tracer and judge every output against pre-registered expectations:
           semantics (what is drawn, skipped, framed and declared), safety (texts.json, XML-safe
           text, font failure, backstops), corpus (the 17 corpus DXF wrapped by measure_wrap.py,
-          and text fidelity against ezdxf's own outline rendering at 1280 px). One HELPER,
+          and text fidelity against ezdxf's own outline rendering at 1280 px), fonts (for every
+          font file in the image, a one-TEXT DXF whose style names it is drawn by cad-dxf and
+          turned into a PDF by rsvg-convert, and the PDF must embed exactly the PostScript name of
+          that file; not part of all). OCTOCONV_PROBE_FONT_PACKAGES adds Debian font packages to a
+          probe-only image derived from the engine, for the fonts group. One HELPER,
           CORPUS or FIDELITY row per check and one SUMMARY line per group. --write-out refreshes
           internal/convert/testdata/cad/dxf-out with the real outputs. The evidence file defaults
           to .planning/phases/75-dxf-2d-pipeline/evidence/75-02-helper.txt and a group re-run
@@ -173,6 +178,21 @@ build_engine() {
   printf '%s\n' "$tag"
 }
 
+build_font_variant() {
+  local base=$1 tag="$1-fonts" stage
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/cad-dxf-fonts.XXXXXX")
+  printf 'FROM %s\nUSER root\nRUN apt-get update && apt-get install -y --no-install-recommends %s && rm -rf /var/lib/apt/lists/*\nUSER nobody\n' \
+    "$base" "$FONT_PACKAGES" > "$stage/Dockerfile"
+  cad_log "building $tag with $FONT_PACKAGES"
+  if ! docker build -t "$tag" "$stage" >&2; then
+    rm -rf "$stage"
+    cad_log "error: font variant build failed"
+    return 1
+  fi
+  rm -rf "$stage"
+  printf '%s\n' "$tag"
+}
+
 build_probe() {
   local arch=$1 dir=$2
   mkdir -p "$dir"
@@ -202,6 +222,7 @@ header_lines() {
     printf "kernel=%s\n" "$(uname -r)"
     printf "librsvg2_bin=%s\n" "$(dpkg-query -W -f="\${Version}" librsvg2-bin)"
     printf "fonts_dejavu_core=%s\n" "$(dpkg-query -W -f="\${Version}" fonts-dejavu-core)"
+    printf "font_files=%s\n" "$(find /usr/share/fonts -type f | wc -l)"
     /opt/venv/bin/python -I -B -c "
 import importlib.metadata as m, sys
 for p in sys.argv[1:]:
@@ -213,6 +234,7 @@ for p in sys.argv[1:]:
   printf 'HDR,mode=%s,image=%s,image_id=%s,image_bytes=%s\n' "$mode" "$tag" \
     "$(docker image inspect "$tag" --format '{{.Id}}')" "$(docker image inspect "$tag" --format '{{.Size}}')"
   printf 'HDR,mode=%s,server_arch=%s\n' "$mode" "$(docker version --format '{{.Server.Arch}}')"
+  printf 'HDR,mode=%s,font_packages=%s\n' "$mode" "$(printf '%s' "${FONT_PACKAGES:-none}" | tr ' ' '+')"
   docker run --rm --network none --entrypoint sh "$tag" -c "$inner" </dev/null | sed "s/^/HDR,mode=$mode,/"
   if [ "$mode" = tracer ]; then
     printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,env=HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_LANG=unset\n' "$mode"
@@ -246,6 +268,10 @@ setup() {
   LOCK_LINE=$(lock_line) || { echo "$LOCK_LINE" >&2; fail "requirements-dxf.txt is not the five non-numpy blocks of the 71 lock"; }
   TAG=$(build_engine)
   BUILT_TAGS+=("$TAG")
+  if [ -n "$FONT_PACKAGES" ]; then
+    TAG=$(build_font_variant "$TAG")
+    BUILT_TAGS+=("$TAG")
+  fi
   cad_require_native "$TAG" || fail "engine image is not native"
   ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
   TRIPLET=$(triplet_for "$ARCH")
@@ -591,7 +617,7 @@ PY
 fixture_expectation() {
   case "$1" in
     cyclic_*) echo audit_104 ;;
-    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
+    text_cases|text_illegal_chars|layers_off_frozen|all_hidden|never_resolved|wide|tall|far_point|single_point|xline_ray|text_alpha|text_alpha_faint|text_fonts|units_*|header_far_extents|wrong_extents) echo strict_clean ;;
     *) echo fact ;;
   esac
 }
@@ -1491,7 +1517,7 @@ group_writeout() {
   disk_guard
   mkdir -p "$DXF_OUT"
   : > "$WORK/frames.rows"
-  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf; do
+  for n in text_cases:dxf legacy_cp1251:synthetic uncommon:public hatches_2:public wide:dxf tall:dxf wrong_extents:dxf units_3:dxf text_alpha:dxf text_alpha_faint:dxf text_fonts:dxf; do
     src="$CORPUS/${n#*:}/${n%%:*}.dxf"
     n=${n%%:*}
     read -r rc job <<< "$(draw_out "$n" "$src")"
@@ -1513,7 +1539,7 @@ group_writeout() {
         fi ;;
     esac
     case "$n" in
-      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint)
+      text_cases|legacy_cp1251|uncommon|hatches_2|text_alpha|text_alpha_faint|text_fonts)
         pdfrc=0
         MOUNTS=()
         run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
@@ -1563,6 +1589,72 @@ group_writeout() {
   done
   { printf 'name\tsize\tbackground\tw_mm\th_mm\tsw\tsh\tleft\ttop\n'; cat "$WORK/frames.rows"; } > "$DXF_OUT/frames.tsv"
   out_row frames.tsv "rows=$(wc -l < "$WORK/frames.rows" | tr -d ' ')" "$( [ "$(wc -l < "$WORK/frames.rows" | tr -d ' ')" = 5 ] && echo 1 || echo 0 )"
+}
+
+write_font_tools() {
+  cat > "$WORK/wrap/font_list.py" <<'PY'
+import os
+from fontTools.ttLib import TTFont
+for root, _, files in sorted(os.walk("/usr/share/fonts")):
+    for name in sorted(files):
+        if os.path.splitext(name)[1].lower() not in (".ttf", ".otf", ".ttc"):
+            continue
+        ps = TTFont(os.path.join(root, name), fontNumber=0)["name"].getDebugName(6) or "none"
+        print(name, ps)
+PY
+  cat > "$WORK/wrap/font_dxf.py" <<'PY'
+import sys
+import ezdxf
+doc = ezdxf.new("R2018")
+doc.styles.new("PROBE", dxfattribs={"font": sys.argv[1]})
+doc.modelspace().add_text("Hxg probe", height=5, dxfattribs={"style": "PROBE"})
+doc.saveas(sys.argv[2])
+PY
+  cat > "$WORK/font_svg.py" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+ns = "{http://www.w3.org/2000/svg}"
+out = []
+for el in ET.parse(sys.argv[1]).getroot().iter(ns + "text"):
+    out.append(":".join(el.get(k, "-") for k in ("font-family", "font-weight", "font-style", "font-stretch")))
+print(";".join(out).replace(" ", "_") or "none")
+PY
+  chmod 0644 "$WORK/wrap/"*.py
+}
+
+group_fonts() {
+  local file ps job rc pdfrc go_rc got svg family want_go go result total=0
+  disk_guard
+  write_font_tools
+  mkdir -p "$WORK/tools"
+  GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/tools/cad-svg-check" ./scripts/cmd/cad-svg-check
+  docker run --rm --network none --user nobody -e HOME=/tmp -v "$WORK/wrap:/wrap:ro" \
+    --entrypoint /opt/venv/bin/python "$TAG" -I -B /wrap/font_list.py > "$WORK/fonts.list" </dev/null
+  while read -r file ps; do
+    total=$((total + 1))
+    job=$(new_job)
+    in_image "$job" /wrap/font_dxf.py "$file" /job/in.dxf
+    rc=$(helper_exec "$DXF_RO" "$job" "font_$total" $(std_args))
+    pdfrc=1
+    if [ "$rc" = 0 ]; then
+      pdfrc=0
+      MOUNTS=()
+      run_confined "$RSVG_RO" "$job" "$WORK/pdf.out" "$WORK/pdf.err" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/out.render.svg || pdfrc=$?
+    fi
+    got=$(pdffonts "$job/out.pdf" 2>/dev/null | awk 'NR > 2 { sub(/^[A-Z][A-Z][A-Z][A-Z][A-Z][A-Z]\+/, "", $1); print $1 }' | sort -u | paste -sd '+' - || true)
+    svg=$(python3 "$WORK/font_svg.py" "$job/out.svg" 2>/dev/null || echo none)
+    family=${svg%%:*}
+    case "$family" in DejaVu_Sans|DejaVu_Sans_Mono|DejaVu_Serif) want_go=accepted ;; *) want_go=rejected ;; esac
+    go_rc=0
+    "$WORK/tools/cad-svg-check" --max-bytes 1073741824 "$job/out.svg" > /dev/null 2>&1 || go_rc=$?
+    go=$( [ "$go_rc" = 0 ] && echo accepted || echo rejected )
+    result=fail
+    if [ "$rc" = 0 ] && [ "$pdfrc" = 0 ] && [ "$got" = "$ps" ] && [ "$go" = "$want_go" ]; then result=ok; fi
+    printf 'HELPER,group=fonts,case=%s,ps_name=%s,helper_rc=%s,rsvg_rc=%s,svg_font=%s,pdf_fonts=%s,go_svg=%s,go_svg_expected=%s,result=%s\n' \
+      "$file" "$ps" "$rc" "$pdfrc" "$svg" "${got:-none}" "$go" "$want_go" "$result" >> "$LINES"
+    rm -rf "$job"
+  done < "$WORK/fonts.list"
+  printf 'RULE,key=font_round_trip,group=fonts,files=%s,pass=pdf_embeds_exactly_the_postscript_name_of_the_style_font_file+go_validator_accepts_the_three_allowlisted_families_and_rejects_others\n' "$total" >> "$LINES"
 }
 
 frame_line() {
@@ -1823,6 +1915,7 @@ group_fails() { grep -E "^(HELPER|CORPUS|FIDELITY|LINE|OUT),group=$1," "$2" | gr
 helper_mode() {
   local groups g rows fails all_rows=0 all_fails=0
   need_tool pdftotext
+  need_tool pdffonts
   setup helper
   write_judge
   write_harness
@@ -2170,7 +2263,7 @@ while [ $# -gt 0 ]; do
     --write) [ "$MODE" = fixtures ] || usage; WRITE=1; shift ;;
     --group)
       [ "$MODE" = helper ] || usage
-      case "${2:-}" in semantics|safety|corpus|all) GROUP=$2 ;; *) usage ;; esac
+      case "${2:-}" in semantics|safety|corpus|fonts|all) GROUP=$2 ;; *) usage ;; esac
       shift 2 ;;
     --write-out) [ "$MODE" = helper ] || usage; WRITE_OUT=1; shift ;;
     *) usage ;;

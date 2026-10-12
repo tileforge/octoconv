@@ -22,6 +22,13 @@ SKIP_TYPES = frozenset({
     "3DSOLID", "BODY", "REGION", "SURFACE", "ACAD_PROXY_ENTITY",
 })
 XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+CSS_STRETCH = {
+    1: "ultra-condensed", 2: "extra-condensed", 3: "condensed", 4: "semi-condensed",
+    6: "semi-expanded", 7: "expanded", 8: "extra-expanded", 9: "ultra-expanded",
+}
+FS_ITALIC = 0x0001
+FS_OBLIQUE = 0x0200
+MAC_ITALIC = 0x0002
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_UNREADABLE = 2
@@ -64,6 +71,28 @@ def xml_char_ok(c):
 
 def xml_safe(text):
     return "".join(c if xml_char_ok(c) else "�" for c in text)
+
+
+def font_attrs(font):
+    names = font["name"]
+    family = names.getDebugName(16) or names.getDebugName(1) or ""
+    subfamily = names.getDebugName(17) or names.getDebugName(2) or ""
+    weight, width, selection = 400, 5, 0
+    if "OS/2" in font:
+        os2 = font["OS/2"]
+        weight, width, selection = os2.usWeightClass, os2.usWidthClass, os2.fsSelection
+    attrs = []
+    css_weight = min(max(int(weight / 100.0 + 0.5) * 100, 100), 900)
+    if css_weight == 700:
+        attrs.append(("font-weight", "bold"))
+    elif css_weight != 400:
+        attrs.append(("font-weight", str(css_weight)))
+    if selection & FS_ITALIC or font["head"].macStyle & MAC_ITALIC:
+        oblique = selection & FS_OBLIQUE or "oblique" in subfamily.lower()
+        attrs.append(("font-style", "oblique" if oblique else "italic"))
+    if width in CSS_STRETCH:
+        attrs.append(("font-stretch", CSS_STRETCH[width]))
+    return family, tuple(attrs)
 
 
 def new_state():
@@ -172,13 +201,13 @@ def draw(doc, max_drawn, state):
     from ezdxf.addons.drawing.pipeline import RenderPipeline2d, prepare_string_for_rendering
     from ezdxf.entities.acad_table import AcadTableBlockContent
     from ezdxf.entities.dxfentity import DXFTagStorage
-    from ezdxf.fonts.ttfonts import get_fontname
     from ezdxf.math import BoundingBox2d, Matrix44, Vec2
     from ezdxf.math.clipping import ClippingRect2d
 
     texts = []
     infinite = []
     cmaps = {}
+    faces = {}
     skipped = state["skipped"]
 
     def skip_kind(entity):
@@ -227,7 +256,9 @@ def draw(doc, max_drawn, state):
                 p.transform_inplace(transform)
                 if len(p):
                     box.extend(p.extents())
-            name = gc.font["name"].getDebugName(2) or ""
+            fonts = faces.get(id(gc.font))
+            if fonts is None:
+                fonts = faces[id(gc.font)] = font_attrs(gc.font)
             cmap = cmaps.get(id(gc.font))
             if cmap is None:
                 cmap = cmaps[id(gc.font)] = gc.font.getBestCmap() or {}
@@ -238,8 +269,8 @@ def draw(doc, max_drawn, state):
                 "m": Matrix44(transform),
                 "em": gc.font["head"].unitsPerEm * f,
                 "shift": -gc.font_measurements.baseline * f,
-                "family": get_fontname(gc.font),
-                "bold": "Bold" in name,
+                "family": fonts[0],
+                "font": fonts[1],
                 "color": self.get_backend_properties(properties).color,
                 "box": box,
             })
@@ -401,8 +432,8 @@ def draw(doc, max_drawn, state):
             m[0, 0] / k, m[0, 1] / k, m[1, 0] / k, m[1, 1] / k, m[3, 0], m[3, 1])))
         el.set("font-family", t["family"])
         el.set("font-size", "%.6g" % size)
-        if t["bold"]:
-            el.set("font-weight", "bold")
+        for k, v in t["font"]:
+            el.set(k, v)
         el.set("fill", t["color"][:7])
         opacity = svg.alpha_to_opacity(t["color"][7:9])
         if opacity < 1.0:

@@ -21,6 +21,7 @@ type CADSVGFacts struct {
 	Texts              []string
 	TextSizes          []float64
 	TextOpacity        []float64
+	TextFonts          []string
 }
 
 const (
@@ -133,6 +134,23 @@ func cadSVGTextSize(attrs []xml.Attr, scale float64) (float64, bool) {
 	return 0, false
 }
 
+var cadSVGStretches = []string{"ultra-condensed", "extra-condensed", "condensed", "semi-condensed",
+	"semi-expanded", "expanded", "extra-expanded", "ultra-expanded"}
+
+var cadSVGFontAttrs = []string{"font-family", "font-size", "font-weight", "font-style", "font-stretch"}
+
+func cadSVGFontOf(attrs []xml.Attr) string {
+	var parts []string
+	for _, name := range cadSVGFontAttrs {
+		for _, a := range attrs {
+			if a.Name.Space == "" && a.Name.Local == name {
+				parts = append(parts, name+"="+strconv.Quote(a.Value))
+			}
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 func cadSVGPathData(s string) bool { return cadSVGPathRe.MatchString(s) }
 
 func cadSVGPoints(s string) bool {
@@ -232,7 +250,9 @@ var cadSVGRules = func() map[string]cadSVGElementRule {
 	textAttrs := map[string]cadSVGAttrCheck{
 		"font-family":  cadSVGOneOf("DejaVu Sans", "DejaVu Sans Mono", "DejaVu Serif"),
 		"font-size":    cadSVGPositive,
-		"font-weight":  cadSVGOneOf("bold"),
+		"font-weight":  cadSVGOneOf("bold", "100", "200", "300", "500", "600", "800", "900"),
+		"font-style":   cadSVGOneOf("italic", "oblique"),
+		"font-stretch": cadSVGOneOf(cadSVGStretches...),
 		"fill":         cadSVGColor,
 		"fill-opacity": cadSVGUnit,
 		"xml:space":    cadSVGOneOf("preserve", "default"),
@@ -383,6 +403,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 	var paints []cadSVGPaint
 	first, rootDone := true, false
 	var text *strings.Builder
+	var textFont []string
 	textScale, textSize, textOpacity := 1.0, math.Inf(1), 1.0
 	for {
 		tok, err := dec.Token()
@@ -490,6 +511,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 			paint = cadSVGPaintOf(paint, t.Attr)
 			if name == "text" {
 				text = &strings.Builder{}
+				textFont = []string{cadSVGFontOf(t.Attr)}
 				textOpacity = paint.visible()
 				textScale = 1
 				for _, a := range t.Attr {
@@ -507,6 +529,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 					textSize = v
 				}
 				textOpacity = math.Max(textOpacity, paint.visible())
+				textFont = append(textFont, cadSVGFontOf(t.Attr))
 			}
 			bw.WriteByte('<')
 			bw.WriteString(name)
@@ -532,6 +555,7 @@ func cadSVGWalk(dec *xml.Decoder, cr *cadSVGCountingReader, bw *bufio.Writer, ma
 				facts.Texts = append(facts.Texts, text.String())
 				facts.TextSizes = append(facts.TextSizes, textSize)
 				facts.TextOpacity = append(facts.TextOpacity, textOpacity)
+				facts.TextFonts = append(facts.TextFonts, strings.Join(textFont, " | "))
 				text = nil
 			}
 			if len(stack) == 0 {

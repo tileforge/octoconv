@@ -466,3 +466,142 @@ func TestValidateCADSVGCarriesTheHelperOpacityOnTextsAndShapes(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateCADSVGFontAttributesAreStrictEnums(t *testing.T) {
+	textOpen := `<text transform="matrix(1 0 0 1 725.309 920.104)" font-family="DejaVu Sans"`
+	onText := func(attr string) string { return strings.Replace(cadSVGBase, textOpen, textOpen+" "+attr, 1) }
+	onTspan := func(attr string) string {
+		return strings.Replace(cadSVGBase, `A&amp;B</text>`, `A<tspan `+attr+`>&amp;</tspan>B</text>`, 1)
+	}
+	accept := []string{
+		`font-style="italic"`, `font-style="oblique"`,
+		`font-weight="bold"`, `font-weight="100"`, `font-weight="200"`, `font-weight="300"`, `font-weight="500"`,
+		`font-weight="600"`, `font-weight="800"`, `font-weight="900"`,
+		`font-stretch="ultra-condensed"`, `font-stretch="extra-condensed"`, `font-stretch="condensed"`,
+		`font-stretch="semi-condensed"`, `font-stretch="semi-expanded"`, `font-stretch="expanded"`,
+		`font-stretch="extra-expanded"`, `font-stretch="ultra-expanded"`,
+	}
+	reject := map[string]string{
+		`font-style="normal"`:           "font-style",
+		`font-style="Italic"`:           "font-style",
+		`font-style="oblique 10deg"`:    "font-style",
+		`font-style=" italic"`:          "font-style",
+		`font-style="italic "`:          "font-style",
+		`font-style="inherit"`:          "font-style",
+		`font-style=""`:                 "font-style",
+		`font-weight="normal"`:          "font-weight",
+		`font-weight="400"`:             "font-weight",
+		`font-weight="700"`:             "font-weight",
+		`font-weight="bolder"`:          "font-weight",
+		`font-weight="350"`:             "font-weight",
+		`font-weight="1000"`:            "font-weight",
+		`font-weight="Bold"`:            "font-weight",
+		`font-weight="100.0"`:           "font-weight",
+		`font-stretch="normal"`:         "font-stretch",
+		`font-stretch="75%"`:            "font-stretch",
+		`font-stretch="narrower"`:       "font-stretch",
+		`font-stretch="Condensed"`:      "font-stretch",
+		`font-stretch="condensed "`:     "font-stretch",
+		`font-variant="small-caps"`:     "font-variant",
+		`font="italic 2px DejaVu Sans"`: "font is not allowed",
+	}
+	for _, a := range accept {
+		for where, svg := range map[string]string{"text": onText(a), "tspan": onTspan(a)} {
+			t.Run("accept_"+where+"_"+a, func(t *testing.T) {
+				if _, _, err := cadSVGValidate(t, []byte(svg), 1<<20); err != nil {
+					t.Fatalf("rejected: %v", err)
+				}
+			})
+		}
+	}
+	for a, rule := range reject {
+		for where, svg := range map[string]string{"text": onText(a), "tspan": onTspan(a)} {
+			t.Run("reject_"+where+"_"+a, func(t *testing.T) {
+				_, _, err := cadSVGValidate(t, []byte(svg), 1<<20)
+				if !errors.Is(err, ErrCADSVGRejected) || !strings.Contains(err.Error(), "attribute "+rule) {
+					t.Fatalf("err = %v, want a %s rejection", err, rule)
+				}
+			})
+		}
+	}
+	for _, a := range []string{`font-style="italic"`, `font-stretch="condensed"`, `font-weight="200"`} {
+		t.Run("not_on_shapes_"+a, func(t *testing.T) {
+			svg := strings.Replace(cadSVGBase, `stroke-width="8" />`, `stroke-width="8" `+a+` />`, 1)
+			if _, _, err := cadSVGValidate(t, []byte(svg), 1<<20); !errors.Is(err, ErrCADSVGRejected) {
+				t.Fatalf("err = %v, want a rejection on a path", err)
+			}
+		})
+	}
+}
+
+func TestValidateCADSVGReportsEachTextsFont(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 100 100">` +
+		`<text font-family="DejaVu Sans" font-size="2">plain</text>` +
+		`<text font-family="DejaVu Sans Mono" font-size="2" font-weight="bold" font-style="oblique">mono</text>` +
+		`<text font-size="3" font-family="DejaVu Serif" font-style="italic" font-stretch="semi-condensed" font-weight="200">serif</text>` +
+		`<text font-family="DejaVu Sans" font-size="2">a<tspan font-style="oblique">b</tspan>c<tspan font-weight="bold" font-size="4">d</tspan></text>` +
+		`<g><text font-family="DejaVu Sans" font-size="2" fill-opacity="0.5">faint</text></g>` +
+		`</svg>`
+	facts := cadSVGFactsOf(t, svg)
+	want := []string{
+		`font-family="DejaVu Sans" font-size="2"`,
+		`font-family="DejaVu Sans Mono" font-size="2" font-weight="bold" font-style="oblique"`,
+		`font-family="DejaVu Serif" font-size="3" font-weight="200" font-style="italic" font-stretch="semi-condensed"`,
+		`font-family="DejaVu Sans" font-size="2" | font-style="oblique" | font-size="4" font-weight="bold"`,
+		`font-family="DejaVu Sans" font-size="2"`,
+	}
+	if len(facts.TextFonts) != len(want) || len(facts.TextFonts) != len(facts.Texts) {
+		t.Fatalf("TextFonts = %q for %d texts, want %q", facts.TextFonts, len(facts.Texts), want)
+	}
+	for i, w := range want {
+		if facts.TextFonts[i] != w {
+			t.Errorf("text %d (%q) font = %q, want %q", i, facts.Texts[i], facts.TextFonts[i], w)
+		}
+	}
+}
+
+func TestValidateCADSVGCarriesTheMeasuredFontOfEveryTextFontsText(t *testing.T) {
+	want := []string{
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono" font-weight="bold"`,
+		`font-family="DejaVu Sans"`,
+		`font-family="DejaVu Sans"`,
+		`font-family="DejaVu Sans"`,
+		`font-family="DejaVu Sans" font-weight="bold"`,
+		`font-family="DejaVu Serif"`,
+		`font-family="DejaVu Serif" font-weight="bold"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+		`font-family="DejaVu Sans Mono"`,
+	}
+	size := regexp.MustCompile(` font-size="[^"]*"`)
+	var client []string
+	for _, name := range []string{"text_fonts.svg", "text_fonts.render.svg"} {
+		in, err := os.ReadFile(cadDXFTestFile(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, facts, err := cadSVGValidate(t, in, int64(len(in)))
+		if err != nil {
+			t.Fatalf("%s rejected: %v", name, err)
+		}
+		if len(facts.TextFonts) != len(want) {
+			t.Fatalf("%s: %d text fonts %q, want %d", name, len(facts.TextFonts), facts.TextFonts, len(want))
+		}
+		for i, w := range want {
+			if got := size.ReplaceAllString(facts.TextFonts[i], ""); got != w {
+				t.Errorf("%s: text %d (%q) font = %q, want %q", name, i, facts.Texts[i], got, w)
+			}
+		}
+		if client == nil {
+			client = facts.TextFonts
+		} else if strings.Join(client, "\x00") != strings.Join(facts.TextFonts, "\x00") {
+			t.Errorf("the render-only SVG fonts %q differ from the client SVG fonts %q", facts.TextFonts, client)
+		}
+	}
+}
