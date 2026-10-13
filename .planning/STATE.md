@@ -5,17 +5,17 @@ milestone_name: CAD Engine
 current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
-stopped_at: Phase 76 context gathered
-last_updated: "2026-10-13T13:31:57.215Z"
+stopped_at: Completed 76-01-PLAN.md
+last_updated: "2026-10-13T15:14:07.050Z"
 last_activity: 2026-10-12
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: 674c21c441a86699e4ee0d12305c01dafcde0ce5
+state_head: 1af1995529f0848f90cca32d7df6a5a70bc20481
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 49
-  completed_plans: 38
-  percent: 78
+  completed_plans: 39
+  percent: 80
 ---
 
 # Project State
@@ -29,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-10-02 after v1.16 milestone start)
 
 ## Current Position
 
-Phase: 76 (measured-bounds-keda-proof-client-docs) — READY TO EXECUTE
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-10-12 — Phase 75 complete, transitioned to Phase 76
+Phase: 76 (measured-bounds-keda-proof-client-docs) — EXECUTING
+Plan: 2 of 11
+Status: In progress
+Last activity: 2026-10-13 — 76-01 complete: stacking probe, step/iges/stl not_byte_bound, render_deadline_rule=remainder
 
-Progress: [████████░░] 78% (0/6 phases)
+Progress: [████████░░] 80% (0/6 phases)
 
 ## Performance Metrics
 
@@ -133,6 +133,7 @@ Progress: [████████░░] 78% (0/6 phases)
 | Phase 69 P03 | 55min | 2 tasks | 3 files |
 | Phase 69 P04 | 50min | 3 tasks | 5 files |
 | Phase 69 P05 | 40 min | 2 tasks | 7 files |
+| Phase 76 P01 | 94min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -195,6 +196,8 @@ Decisions are logged in PROJECT.md Key Decisions table.
 - [Phase 69]: 69-04: both G-69-2 guards proven load-bearing by live inversion -- pre-fix splice fails exactly 12 of 18 rows, frame-src/child-src removal fails exactly f1/f2
 - [Phase 69]: 69-05: the large-document check's transcript states the /dev/shm size actually in effect (~7.8 GiB, OrbStack default), never the diagnosis session's assumed ~64Mi -- validity rests on the negative control (denied on /dev/shm, not on an exhausted tmpfs), not on that size
 - [Phase 69]: 69-05: G-69-3 closed -- chromium-worker chart/compose/live-gate no longer mount or size /dev/shm; each now cross-references SANDBOX-PATHS.md instead of restating a pre-Landlock rationale
+- [Phase 76]: 76-01: bytes do not bound 3D render cost; step, iges and stl are not_byte_bound and STACK_GLOBAL render_deadline_rule=remainder (no Path-B render byte ceiling; render deadline R = 886 - guard - mesh - io)
+- [Phase 76]: 76-01: S6 coincident NAUO (--nauo-pitch 0) added before any row because the S3 grid does not stack; S6 n100 (598732 bytes) broke STEP at 900 s
 
 ### Quick Tasks Completed
 
@@ -424,9 +427,9 @@ and the soak test that shares a database with parallel packages.
 
 ## Session Continuity
 
-Last session: 2026-10-13T10:22:40.546Z
-Stopped at: Phase 76 context gathered
-Resume file: .planning/phases/76-measured-bounds-keda-proof-client-docs/76-CONTEXT.md
+Last session: 2026-10-13T15:14:06.848Z
+Stopped at: Completed 76-01-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 

@@ -347,7 +347,7 @@ Plans:
 
 Plans:
 **Wave 1**
-- [ ] 76-01-PLAN.md — tracer and premise test: pre-registered stacking probe on the production engine image; per-format byte_bound decision and the render-deadline rule (AR-1)
+- [x] 76-01-PLAN.md — tracer and premise test: pre-registered stacking probe on the production engine image; per-format byte_bound decision and the render-deadline rule (AR-1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 76-02-PLAN.md — bounds76: exact-ceiling cells, N=5 stage rows at the admissible maxima, the L170031 refusal row
