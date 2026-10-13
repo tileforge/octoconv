@@ -2818,7 +2818,7 @@ b76_cell() {
   stacked=$(b76_stacked_of "$name")
   if [ -s "$WORK/extra.$name" ]; then sed "s/\$/,cached=$CELL_CACHED/" "$WORK/extra.$name" >> "$out"; fi
   local earlier
-  earlier=$(grep "^CELL,cell=$name," "$out" 2>/dev/null | tr ',' '\n' | sed -n 's/^sha256=//p' | sort -u | tr '\n' '+' | sed 's/+$//')
+  earlier=$( { grep "^CELL,cell=$name," "$out" 2>/dev/null || true; } | tr ',' '\n' | sed -n 's/^sha256=//p' | sort -u | tr '\n' '+' | sed 's/+$//')
   if [ -n "$earlier" ] && [ "$earlier" != "$CELL_SHA" ]; then
     b76_stop "reason=cell_sha_differs_from_its_earlier_cell_line,cell=$name,sha256=$CELL_SHA,earlier=$earlier"
   fi
