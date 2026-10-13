@@ -1,0 +1,7 @@
+# 2026-10-13 attempt 4 of scripts/cad-dxf-probe.sh ink --ceilings at 2b3d027 (after the coordinator freed the vscode volume)
+before the run: host_avail_gib=12.34 vm_avail_gib=8.66
+probe output (last line):
+STOP,reason=disk_below_threshold,free_gib=5,threshold_gib=6
+after the stop: host=9.73 vm=5.81; 03:39:26 host=9.67 vm=5.81; 03:40:28 host=9.59 vm=5.68; 03:41:31 host=9.52 vm=5.69; 03:42:33 host=9.47 vm=5.56
+shared Go build cache ~/Library/Caches/go-build: 1.9 GiB, then 2.0 GiB (this run cross-builds sandbox-probe, cad-svg-check and cad-pixel-judge for linux into it; go clean -cache not run, by instruction)
+result: NOT RUN (stopped by the 6 GiB VM floor before writing evidence); steps 2 (liveproof) and 3 (ci-local) not started because the VM stayed below 6 GiB

@@ -55,6 +55,8 @@ plan_head_after: 0b5e730801c9f556a4909ffdf8ced5e9db184588
 
 **Partial: the code, tests, fixtures, docs and mutation probe are done and committed; the live gates (probe ink corpus and ceilings, cad-liveproof from a fresh clone, ci-local helm gate race) are NOT RUN, because the OrbStack VM stayed below the 6 GiB floor (it fell to 0.90 GiB) through disk use by other work on this machine.**
 
+**Follow-up run (coordinator, after the `vscode` volume was removed):** the probe was retried from 8.66 GiB VM free and again hit the 6 GiB floor within minutes. Its linux cross-builds go into the shared Go build cache, which grew from about 1 GiB to 2.0 GiB, and `go clean -cache` was not allowed. Host free kept falling by about 0.07 GiB/min after the stop. By instruction, the liveproof and ci-local were not started: both stay NOT RUN, and so does the crafted-SVG differential, which runs inside the probe's ink mode. The run's 3 build-cache records were pruned by ID, and no tag or work directory was left.
+
 A DXF drawing is now empty when nothing in it darkens a white page. Go draws the validated render-only SVG with the confined `rsvg-convert` into the 2048 px letterbox on a white page and requires J1 ink. The svg, pdf and png routes all run that one check, so a drawing of only true-colour white, only alpha 1/255, only zero-area fills or only a U+200B text is `cad_empty_result` on all three, and a white drawing with one black line still converts on all three. The old attribute checks (helper `nothing_visible`, Go `Visible`, PDF `InkOps`) remain, but only to refuse early; none of them decides emptiness any more.
 
 ## Premise check (before any code)
@@ -180,7 +182,7 @@ All three commits are SSH-signed (`G`) and carry no Co-Authored-By trailer. `int
 |---|---|---|
 | Go tests, vet, gofmt, mutation probe | PASS (above) | host only |
 | `cad-dxf-probe.sh fixtures --write`, `helper --group semantics --write-out` | PASS | ran while the VM had 6.5 GiB |
-| `cad-dxf-probe.sh ink --ceilings` | **NOT RUN** (3 attempts) | 1st: stopped by me after `coord_1e300` showed 0 ink; it never reaches the helper in production (guard `coordinate_out_of_range`), so the mode now runs the production guard first. 2nd and 3rd: `STOP,reason=disk_below_threshold,free_gib=5` partway through the corpus |
+| `cad-dxf-probe.sh ink --ceilings` (includes the crafted-SVG differential) | **NOT RUN** (4 attempts) | 1st: stopped by me after `coord_1e300` showed 0 ink; it never reaches the helper in production (guard `coordinate_out_of_range`), so the mode now runs the production guard first. 2nd and 3rd: `STOP,reason=disk_below_threshold,free_gib=5` partway through the corpus. 4th, after the coordinator freed the `vscode` volume (VM 8.66 GiB, host 12.34 GiB at the start): the same STOP; the VM was at 5.81 GiB right after and kept falling to 5.56 (`evidence/gate-attempt-disk.txt`) |
 | `cad-liveproof.sh` from a fresh clone (bundle, override 127.0.0.1:18090) | **NOT RUN** | VM free 0.90 to 2.34 GiB from 02:58Z on, below the 6 GiB floor; runner prepared |
 | `ci-local.sh helm gate race` | **NOT RUN** | host free 4.4 to 6.1 GiB. A race build of the repo needs about 2 to 3 GiB of Go cache, which would push the VM, about 4 GiB below host free, to zero and risk other projects' containers |
 | `sandbox-liveproof.sh cad` | not needed | no new stage, path, import or argv. The check is the rsvg stage with the PNG route's argv and ruleset, already run by the preflight under Landlock. The preflight now also runs the check inside the sandbox |
