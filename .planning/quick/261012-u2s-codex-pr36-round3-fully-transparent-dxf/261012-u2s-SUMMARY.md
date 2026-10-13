@@ -169,8 +169,7 @@ Live rows:
 
 ## Findings not fixed (for the orchestrator)
 
-- **Faint is visible.** A fill or stroke at 1/255 opacity counts as visible in the SVG and PDF checks, while J1 on an opaque PNG needs a channel below 250. A drawing made only of near-invisible paint therefore converts to SVG and PDF, and its PNG is refused. The new rule is about alpha 0 exactly, as the codex finding was.
-- **Paint the background hides.** White on the white `-b white` background counts as ink. ezdxf maps ACI 7 to black on a white background, so this needs an explicit true colour of white.
+- Faint paint and white paint, recorded here as not fixed, are resolved by quick task 261013-0og: SVG, PDF and PNG now share one pixel check of the drawing on a white page (J1 at 2048 px), which refuses them, zero-area fills and invisible characters as `cad_empty_result`.
 - **Geometric degeneracy in Go:** a `line` element of zero length with a round cap counts as visible, which is correct (rsvg draws a dot), while a `path` with only a moveto does not.
 
 ## Known Stubs

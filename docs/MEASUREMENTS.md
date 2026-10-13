@@ -82,15 +82,34 @@ and of the frame at any opacity, a fully transparent one included, which is how 
 counts it. The SVG carries the opacity as `stroke-opacity` on lines and `fill-opacity` on fills and on `text`
 (three decimals, absent when opaque; ezdxf rounds a 50% transparency to 0.498). The PDF and PNG are drawn from
 that SVG: half-transparent text is drawn faint and is still required in the PDF's text layer, and fully
-transparent text is not drawn, so the PDF check does not look for it. A drawing must show at least one element:
-a line or fill whose opacity is above 0 (a line also needs a stroke width above 0), or a text with a visible
-character whose opacity is above 0. A drawing whose every element is fully transparent has a frame but nothing
-visible and is refused with `cad_empty_result` as SVG, PDF and PNG alike; one visible element among fully
-transparent ones is enough, and its frame and bbox still count the transparent ones. The PDF check counts a
-paint operation as ink only when its stroke or fill alpha (`/CA`, `/ca`) is above 0, no soft mask covers it
-and its text rendering mode draws. On the opaque PNG background a pixel only counts as ink below 250 in some channel, so text
-at about 2% opacity or less does not count as ink there. A run of MTEXT that sets its own colour (`\C` or `\c`)
-keeps the transparency of its MTEXT.
+transparent text is not drawn, so the PDF check does not look for it. A drawing whose every element is fully
+transparent has a frame but nothing visible and is refused with `cad_empty_result` as SVG, PDF and PNG alike,
+before anything is rasterized; one visible element among fully transparent ones can be enough (see Empty), and
+its frame and bbox still count the transparent ones. The PDF check counts a paint operation as ink only when its
+stroke or fill alpha (`/CA`, `/ca`) is above 0, no soft mask covers it and its text rendering mode draws. A run
+of MTEXT that sets its own colour (`\C` or `\c`) keeps the transparency of its MTEXT.
+
+**Empty.** One definition decides whether a drawing shows anything, and the same check runs on the SVG, PDF and
+PNG routes, so the three agree on it. After the two SVGs are validated, the render-only SVG is drawn by
+`rsvg-convert`, under the same sandbox and with the same arguments as the PNG preview, into the letterbox of a
+2048 x 2048 frame on an opaque white page, and the drawing judge's J1 looks for ink: a pixel with a channel
+below 250. A frame without such a pixel means the drawing is empty, and it is refused with `cad_empty_result`
+as SVG, PDF and PNG alike, whatever the PNG's `background`. That covers a drawing whose every line, fill and
+text is fully transparent, true colour white (or ACI 255, which is white too), too faint to darken the page
+(an opacity of about 2% or less, such as an alpha of 1 of 255), of zero area (a SOLID with collinear corners, a
+HATCH whose boundary encloses nothing) or a character with no glyph to draw (U+200B). The page is white on every
+route. The PDF is drawn on an explicit white page. The SVG declares its page colour as `#ffffff` (a background
+rectangle left at opacity 0), and ezdxf picks every colour for that white page, drawing ACI 7 black. The opaque
+PNG is that white page. A PNG with a transparent background is judged on the same white page, so a drawing of
+only white lines is empty there too, although its strokes would show on a dark viewer: emptiness belongs to the
+drawing, not to the background a client asks for. The check frame is 2048 px, the largest `size` a render
+accepts, because a thin line or a small glyph covers more of a pixel in a larger frame; a smaller PNG preview
+can still lose a feature, see Known limit: features below one pixel. Content that stays fainter than the page
+threshold even there, such as a text a hundredth of a pixel high beside a fully transparent line that sets a
+large frame, counts as nothing, although an SVG or PDF viewer could zoom in on it. Two cheaper checks refuse
+first and can only refuse what the ink check would: the helper and the Go validator count the elements whose
+opacity is above 0, and a drawing with none is refused before anything is rasterized. The check is one more
+`rsvg-convert` run in every DXF job, bounded by `CAD_RSVG_TIMEOUT` like the PDF and PNG runs.
 
 **Fonts.** Text is measured with the TrueType face ezdxf resolves for its text style, and the SVG names that
 same face, so the PDF and PNG are drawn with the face that sized the frame: `font-family` is the font's family
@@ -132,8 +151,8 @@ U+FFFD in the PNG and PDF. The SVG keeps it exactly.
 missing from the PDF's text layer; the PDF check does not require it. The SVG keeps it.
 
 **Known limit: features below one pixel.** A PNG preview in which part of the drawing falls below one pixel at
-the requested `size` can be refused with `cad_empty_result`. A larger `size` helps; SVG and PDF are not
-affected.
+the requested `size` can be refused with `cad_empty_result`. A larger `size` helps. SVG and PDF are refused
+only when nothing shows in the 2048 px check frame (see Empty), which is also the largest preview.
 
 ## Units
 

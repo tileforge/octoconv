@@ -163,3 +163,51 @@ func TestCADDocsStateThatANothingVisibleDrawingIsEmptyOnEveryRoute(t *testing.T)
 		}
 	}
 }
+
+func cadDocParagraph(t *testing.T, doc, path, prefix string) string {
+	t.Helper()
+	for _, p := range strings.Split(doc, "\n\n") {
+		if strings.HasPrefix(p, prefix) {
+			return strings.Join(strings.Fields(p), " ")
+		}
+	}
+	t.Fatalf("%s has no paragraph starting with %q", path, prefix)
+	return ""
+}
+
+func TestCADDocsStateOneDefinitionOfAnEmptyDrawing(t *testing.T) {
+	errorCodes := readDoc(t, errorCodesPath)
+	empty := cadDocParagraph(t, readDoc(t, measurementsPath), measurementsPath, "**Empty.**")
+	dxf := strings.Join(strings.Fields(docRow(t, errorCodes, errorCodesPath, "A DXF job fails with")), " ")
+	row := docRow(t, errorCodes, errorCodesPath, "| `cad_empty_result` |")
+	frame := fmt.Sprintf("%d x %d", convert.CADDXFInkSize, convert.CADDXFInkSize)
+	for _, want := range []string{
+		frame, fmt.Sprintf("below %d", convert.CADInkChannelCutoff), "white page", "J1", "SVG, PDF and PNG", "`cad_empty_result`",
+		"fully transparent", "true colour white", "too faint", "zero area", "transparent background",
+		"`background`", "the same check", "`#ffffff`",
+	} {
+		if !strings.Contains(empty, want) {
+			t.Errorf("the MEASUREMENTS Empty paragraph does not state %q", want)
+		}
+	}
+	for _, c := range []struct{ where, text string }{
+		{"ERROR-CODES DXF paragraph", dxf},
+		{"ERROR-CODES cad_empty_result row", row},
+	} {
+		for _, want := range []string{"white page", "white", "too faint"} {
+			if !strings.Contains(c.text, want) {
+				t.Errorf("%s does not state %q", c.where, want)
+			}
+		}
+	}
+	if !strings.Contains(dxf, frame) {
+		t.Errorf("the ERROR-CODES DXF paragraph does not state the %s check frame", frame)
+	}
+	for _, stale := range []string{"so text at about 2% opacity or less does not count as ink there", "fully transparent or holds only 3D solids"} {
+		for where, text := range map[string]string{"MEASUREMENTS": readDoc(t, measurementsPath), "ERROR-CODES": errorCodes} {
+			if strings.Contains(strings.Join(strings.Fields(text), " "), stale) {
+				t.Errorf("%s still says %q", where, stale)
+			}
+		}
+	}
+}
