@@ -40,6 +40,7 @@ Usage:
   scripts/cad-dxf-bounds.sh run [--out FILE]
   scripts/cad-dxf-bounds.sh floor [--out FILE]
   scripts/cad-dxf-bounds.sh stack [--smoke] [--out FILE]
+  scripts/cad-dxf-bounds.sh bounds76 --init|--smoke|--cells-only|--group G|--finish [--out FILE]
 
 Measures the DXF bounds of plan 75-05 on the production engine image of Dockerfile.cad-worker.
 Every row runs, each step in its own container under --cpus 2 --memory 4g --memory-swap 4g
@@ -68,6 +69,15 @@ stack  the pre-registered 3D stacking probe of plan 76-01 on the production engi
        .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt with the
        STACK_DECISION and STACK_GLOBAL lines. --smoke runs one cube rung into a file under TMPDIR,
        checks stl-tile output against the main-branch generator, and decides nothing.
+
+bounds76  the pre-registered stage bounds of plan 76-02 on the production engine image. --init writes the HDR and RULE
+       lines into a new evidence file (default
+       .planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt); --cells-only builds,
+       sniffs and guards every D-02 cell and writes CELL lines; --group refusal|dxf|stl|step|iges|pathb appends one
+       group of rows after checking the commit and image id against the init HDR; --finish checks every required
+       group and writes SUMMARY; --smoke runs one 3D and one DXF row through every stage kind into a file under
+       TMPDIR. The on-record walls of D-01 (onrecord: 75-05 BOUND_ROW, cad-dxf 123.61 s, rsvg 96.60 s) are named
+       in the RULE lines and applied by 76-03.
 
 The RULE lines are written before any row is measured. Generated inputs live in
 $OCTOCONV_CAD_CACHE/scaled (default ~/.cache/octoconv/cad-corpus/scaled). Every image tag the
@@ -2010,15 +2020,1305 @@ stack_mode() {
   exit 0
 }
 
+B76_EVID_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-02-bounds.txt
+B76_STACK_REL=.planning/phases/76-measured-bounds-keda-proof-client-docs/evidence/76-01-stack.txt
+B76_SETTER_S=1800
+B76_CLASS_S=900
+B76_N=5
+B76_STEP_MAX=66060288
+B76_IGES_MAX=141557760
+B76_STL_MAX=190840832
+B76_DXF_MAX=123731968
+B76_ENTITIES=754762
+B76_NAUO=1518
+B76_TRI_CAP=3835382
+B76_DXF_INSERTS=170031
+B76_DXF_ENTITIES=850155
+B76_C_ENTITIES=850155
+B76_L170030_ENTITIES=850151
+B76_ONRECORD_DXF=123.61
+B76_ONRECORD_RSVG=96.60
+B76_QUALITIES=(fine standard draft)
+B76_VARIANTS=(iso:opaque iso:transparent top:opaque top:transparent)
+B76_GROUPS=(refusal dxf stl step iges)
+B76_DXF_CELLS=(C L170030 I170031x4 R123731968)
+B76_STRESS=(chain fanout blocks wide)
+B76_STRESS_REPS=2
+B76_ENV3D=(-e HOME=/job -e LANG=C.UTF-8 -e TMPDIR=/job -e LP_NUM_THREADS=2)
+B76_IGES_GEN_MEM=${B76_IGES_GEN_MEM:-8g}
+
+b76_rule_lines() {
+  local classes=$1 large=$2
+  cat <<RULES
+RULE,key=limits,mode=bounds76,rule=production_engine_stage_of_Dockerfile.cad-worker_(tag_octoconv-cad-worker:engine76-<inputs>;removed_on_exit);one_container_per_stage;--network_none_--cpus_2_--memory_4g_--memory-swap_4g_--user_nobody;cad-mesh_and_cad-render_confined_by_sandbox-probe_PROBE_RO=/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/<triplet>:/usr/local/bin/<helper>;cad-dxf_PROBE_RO=/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/share/fonts:/usr/lib/<triplet>:/usr/local/bin/cad-dxf;rsvg-convert_PROBE_RO=/usr/share/fonts:/usr/lib/<triplet>:/usr/bin/rsvg-convert;PROBE_RW=/job;cad-guard_unconfined_/usr/bin/python3_-IB_as_in_75-03_and_76-01;Go_judges_(cad-svg-check;cad-pdf-check;cad-pixel-judge)_unconfined_static_linux;guard;mesh;stats;render_env_HOME=/job_LANG=C.UTF-8_TMPDIR=/job_LP_NUM_THREADS=2_(cadStage;LP_NUM_THREADS=2_for_cad-render);cad-dxf_and_rsvg_env_HOME=/job/.home_XDG_CACHE_HOME=/job/.home/.cache_XDG_CONFIG_HOME=/job/.home/.config_TMPDIR=/job_(cadDrawStage);wrap_budget_1800_s_for_setter_rows_and_900_s_for_classification_rows_(measure_wrap.py)
+RULE,key=load,mode=bounds76,rule=every_row_line_carries_load1_(host_vm.loadavg)_and_vm_free_gib_(df_of_the_OrbStack_VM_root);every_group_preflight_refuses_to_start_if_an_octoconv-_container_is_running;an_octoconv_k8s_pod_exists;a_go_test_process_runs;or_a_docker_build_or_buildx_process_runs;every_row_checks_the_VM_disk_first_and_exits_3_below_6_GiB_(STOP_reason=disk_below_threshold);a_60_s_watchdog_outside_the_script_kills_a_group_below_6_GiB;groups_run_strictly_one_after_another
+RULE,key=cells_3d,mode=bounds76,rule=M1=step-copies_of_public/LinearSlide-MGN15x-Block.step_at_exactly_66060288_bytes:_the_largest_copies_count_K_the_production_guard_admits_(--max-entities_754762_--max-nauo_1518)_padded_by_one_STEP_comment_block_between_the_last_entity_instance_and_ENDSEC;_of_the_DATA_section_(the_block_holds_no_;_so_the_guard_count_is_unchanged);K_is_found_by_the_guard_itself_(CELL_PICK_lines:_K_ok_and_K+1_too_complex_at_the_same_66060288_bytes)_because_76-01_showed_step-copies_from_40_MiB_up_refused_(entities_over_cap)_so_a_63_MiB_file_of_copies_alone_is_not_admissible|M2=step-nauo_of_the_same_part_at_n=1518_(CADMaxNAUO)_on_the_generator's_200_mm_grid|M3=the_largest_iges-from-step_file_of_step-copies_of_LinearSlide:_K'_the_largest_copies_count_whose_unpadded_IGES_is_at_most_141557760_bytes_(CELL_PICK_lines_with_K'+1_over)_padded_with_blank_Start-section_records_(Terminate_S_count_updated)_to_within_one_record_of_141557760|M4=stl-tile_of_LARGE_STL=${large}_at_190840784_bytes_(3816814_triangles;the_largest_84+50xT_at_or_below_190840832)|classification(76-01_STACK_DECISION_not_byte_bound;break_shape_brackets;N=1;setter=0)=${classes}|stacked_cells=M1;M3_and_every_classification_rung_(coincident_copies_or_instances);non_stacked_cells=M2_(grid)_and_M4_(tiles)
+RULE,key=qualities,mode=bounds76,rule=cad-mesh_rows_for_M1;M2;M3_at_draft;standard_and_fine:_fine_N=5_first;then_draft_and_standard_N=1_each;either_is_promoted_to_N=5_(reps_2..5)_if_its_N=1_wall_exceeds_fine's_maximum;M4_runs_cad-mesh_stats_N=5;classification_rungs_mesh_at_fine_N=1_and_also_at_standard_then_draft_while_the_previous_quality_is_over_3835382_triangles;cad-mesh_--format_<f>_/job/in.<f>_/job/mesh.stl_--quality_<q>_--measure_/job/draft.json_(meshStage_argv);cad-mesh_stats_--measure_/job/draft.json_/job/in.stl_/job/mesh.stl_(statsStage_argv);every_mesh_row_checks_the_STL_triangle_count_against_the_verdict
+RULE,key=variants,mode=bounds76,rule=render_size_2048_at_the_admitted_quality_with_the_most_triangles_(at_most_3835382=CADMaxRenderTriangles)_from_the_rep-1_mesh_of_that_quality;views_iso_and_top;backgrounds_opaque_and_transparent;N=1_per_variant;the_slowest_N=1_variant_(a_wrap_timeout_counts_as_its_budget)_is_promoted_to_N=5_(reps_2..5);a_variant_whose_N=1_wall_exceeds_the_promoted_variant's_maximum_is_also_promoted;every_render_row_is_followed_by_stage_pixel_(cad-pixel-judge_--size_2048_--background_<b>=JudgeCADPNG)_on_its_PNG;a_cell_with_no_admitted_quality_is_band=refused_by_cap_and_writes_NOT_RUN_stage=render_instead_of_a_render_row;for_a_stacked_cell_whose_promoted_variant's_N=1_row_hit_the_1800_s_wrap_budget_reps_2..5_are_NOT_RUN_reason=refused_at_wrap_budget_(a_wrap-budget_render_is_over_every_R<=886_so_more_reps_cannot_change_its_band);classification_rungs_render_iso_2048_opaque_N=1_only
+RULE,key=cells_dxf,mode=bounds76,rule=C=dxf-combo_on_dxf-replicate_of_public/uncommon.dxf_at_118_MiB_with_min(170031-I;floor((850155-E-1)/5))_cells_(75-05_rule_e;I;E_the_replicate's_guard_counts)_and_exactly_850155_expanded_entities_by_the_guard_else_STOP|L170030=dxf-minsert_5-entity_block_170030_cells_(850151_entities)|I170031x4=dxf-minsert_--block-entities_4_at_the_170031_insert_cap_(680125_entities)|R123731968=dxf-replicate_of_uncommon.dxf_at_exactly_123731968_bytes_(999_comment_pairs_before_0/EOF);each_N=5;stages_guard_(--max-expanded-inserts_170031_--max-expanded-entities_850155_--max-nesting_16_--max-abs-coordinate_1e12);dxf_(cad-dxf_--max-drawn-entities_850155_--texts_--render-svg_--measure);svg_client;svg_render_(cad-svg-check);rsvg_ink_(rsvg-convert_-b_white_at_the_2048_letterbox_of_cad-pixel-judge_--print-letterbox=the_dxfInk_argv;also_the_argv_of_the_opaque_PNG_route_at_2048);pixel_ink_(cad-pixel-judge_--ink=JudgeCADDrawingInk);pixel_opaque_(--drawing_opaque_on_the_ink_frame);rsvg_pdf_(rsvg-convert_-f_pdf_-b_white);pdf_(cad-pdf-check);rsvg_png_transparent;pixel_transparent
+RULE,key=refusal,mode=bounds76,rule=L170031=dxf-minsert_5-entity_block_170031_cells_(850156_expanded_entities)_through_the_production_guard_N=1;the_verdict_must_be_too_complex_(REFUSAL_ROW_result=ok)_else_STOP;its_guard_row_is_a_setter_guard_row_with_band=refused_by_cap
+RULE,key=guard_stress,mode=bounds76,rule=the_four_75-03_stress_shapes_chain;fanout;blocks;wide_at_118_MiB_(dxf-guard-stress;generated_in_the_engine_image)_through_the_production_guard_N=2;expected_chain=too_complex/nesting_too_deep;fanout=too_complex/expanded_inserts_over_cap;wide=too_complex/expanded_inserts_over_cap;blocks=ok;setter_guard_rows;a_refusal_is_band=refused_by_cap;another_verdict_is_STOP
+RULE,key=pathb_ladder,mode=bounds76,rule=only_for_a_format_the_76-01_decision_marks_byte_bound:_its_76-01_copies_rungs_rendered_N=1_at_the_admitted_quality_with_the_most_triangles_and_the_slowest_variant;then_N=5_at_the_three_largest_rungs_whose_N=1_wall_W_satisfies_ceil(1.5W)<=886-30-ceil(1.5_x_max_mesh_wall_so_far)-90_(90=1.5x60_a_provisional_I/O);76-03_chooses_with_the_measured_I/O_and_STOPs_if_none_of_the_three_fits;with_no_byte_bound_format_the_group_is_NOT_RUN_reason=no_byte_bound_format
+RULE,key=reps,mode=bounds76,rule=rep_numbers_1..N_per_(cell;stage;quality;view;background);setter=1_on_every_row_of_a_D-02_cell_(M1-M4;C;L170030;I170031x4;R123731968;L170031;the_stress_shapes);setter=0_on_every_classification_row;a_promoted_variant_or_quality_keeps_its_N=1_row_as_rep_1
+RULE,key=stat,mode=bounds76,rule=W_per_stage=the_maximum_wall_s_over_setter_rows_of_that_stage_(mesh_covers_mesh_and_stats;rsvg_covers_rsvg_ink;rsvg_pdf;rsvg_png_transparent);every_rep;every_loaded_run;every_band=refused_setter_row_at_its_wall_s_(a_wrap_timeout_at_its_budget)_included;plus_the_on-record_walls;no_percentile;no_exclusion;no_re-run_to_replace_a_row;a_W_that_breaks_886_is_resolved_by_D-04_Path-B_in_76-03_never_by_exclusion
+RULE,key=onrecord,mode=bounds76,rule=DXF_W_also_includes_every_75-05_BOUND_ROW_wall_of_the_same_stage_(evidence/75-05-bounds.txt;rsvg_png_opaque_counts_as_rsvg);cad-dxf_123.61_s_(0og_row_C)_and_rsvg_96.60_s_(0og_L170031_ink_raster;quick/261013-0og/evidence/probe-ink.txt_lines_125-130);3D_W_uses_only_76_rows_(AR-6)
+RULE,key=deadline_stage,mode=bounds76,rule=guard;mesh_(mesh_and_stats_rows);dxf_and_rsvg_(ink;pdf;png)_deadlines_are_each_ceil(1.5_x_W)
+RULE,key=deadline_render,mode=bounds76,rule=76-01_STACK_GLOBAL_render_deadline_rule=remainder:_render=R=886-guard-mesh-io;every_non-stacked_render_row_(M2;M4_and_every_cell_of_a_within_budget_format)_must_satisfy_ceil(1.5W)<=R_else_STOP;every_stacked_render_row_is_classified_band=margin_(ceil(1.5W)<=R);no_margin_(W<=R<ceil(1.5W))_or_refused_(W>R_or_a_wrap_timeout);with_ceil_1.5W_the_render_deadline_would_be_ceil(1.5_x_W_render)_over_admitted_render_rows
+RULE,key=bands,mode=bounds76,rule=76-02_writes_band=within_(stage_ok);refused_by_cap_(a_guard_too_complex_refusal_or_a_mesh_over_3835382_triangles);refused_(a_wrap_timeout_or_an_OOM_kill_of_a_stacked_cell_or_a_classification_rung);failed_(STOP);the_margin;no_margin;refused_classification_against_R_is_assigned_in_76-03_from_these_walls;every_row_carries_stacked=0|1
+RULE,key=inworker,mode=bounds76,rule=rows_run_through_the_API_of_a_compose_stack_built_from_a_fresh_clone;the_cad-worker_limited_to_2_CPU_and_4g;measurement_deadlines_from_an_untracked_docker-compose.override.yml_(guard_120s;mesh_900s;render_900s;dxf_600s;rsvg_600s;engine_3600s)_never_production_values;webhook-worker_absent;the_container_restarts_before_each_row_and_the_preflight-only_memory.peak_is_recorded;a_/proc_watcher_polls_every_0.2_s_for_cad-guard;cad-mesh;cad-render;cad-dxf_and_rsvg-convert_recording_each_start_(/proc/PID/stat_starttime)_and_last-seen_time;attempt_wall=finished_at-started_at_with_attempts=1;go_peak=VmHWM_of_PID_1;whole-container_memory.peak_and_memory.events_oom_kill;cells=the_worst_margin-band_cell_of_each_route_(3D_convert_step;3D_convert_iges;3D_render_step;iges_and_stl;DXF_svg;pdf_and_png)_N=3
+RULE,key=io,mode=bounds76,rule=io=ceil(1.5_x_max_over_in-worker_rows_of_(attempt_wall-sum_of_the_stage_walls_observed_in_that_attempt));covers_S3_download_and_upload_plus_the_Go-side_validation;judges_and_DB_transitions
+RULE,key=engine,mode=bounds76,rule=engine=max(guard+mesh+render+io;guard+dxf+2xrsvg+io);at_most_886_else_the_D-04_Path-B_lever_for_a_byte_bound_format_else_STOP
+RULE,key=crosscheck,mode=bounds76,rule=engine>=ceil(1.5_x_the_slowest_in-worker_attempt_wall_of_every_route)_else_STOP;W_also_takes_every_in-worker_observed_stage_wall
+RULE,key=pod,mode=bounds76,rule=go_peak=max_VmHWM_over_in-worker_rows;stage_peak=max_peak_mib_over_admitted_setter_rows;stage_peak+go_peak<=0.70x4096=2867.2_MiB_else_STOP;every_in-worker_oom_kill=0_and_memory.peak<4096_else_STOP;closes_GAP_go_worker_rss_dxf_(D-06)
+RULE,key=bytes,mode=bounds76,rule=cad_dxf_svg_max_bytes_and_cad_dxf_pdf_max_bytes=ceil(1.5_x_max_output_bytes_over_admitted_DXF_rows)_rounded_up_to_a_whole_MiB_(75-05_rule_g;svg=the_client_and_render-only_SVG_of_cad-dxf);every_PNG_at_most_96_MiB
+RULE,key=ceilings,mode=bounds76,rule=STEP_66060288;IGES_141557760;STL_190840832;DXF_123731968_bytes;DXF_caps_170031_inserts;850155_entities;nesting_16;STEP_754762_entities;1518_NAUO;3835382_render_triangles_restated_unchanged_unless_a_rule_above_lowers_them;nothing_is_raised
+RULE,key=grace,mode=bounds76,rule=cad_pod_grace_s=engine+20;asynq_ShutdownTimeout=engine+10;compose_stop_grace_period=cad_pod_grace_s;keda.cad.scaleDownStabilizationSeconds_(900)_must_be_at_least_engine_(D-05)
+RULE,key=failures,mode=bounds76,rule=a_setter_row_with_rc_other_than_0_that_is_not_a_timeout_or_OOM_kill_(and_not_an_expected_guard_refusal)_is_STOP;a_setter_row_with_a_timeout_or_OOM_kill_is_STOP_for_a_non-stacked_cell_and_band=refused_for_a_stacked_cell;a_classification_row_timeout_or_OOM_is_band=refused;a_judge_that_is_not_ok_is_STOP;a_guard_verdict_other_than_the_expected_one_is_STOP;a_sniff_other_than_the_cell's_format_is_STOP;a_generator_self-check_failure_is_STOP;a_STOP_is_never_followed_by_DERIVED_lines
+RULE,key=cells_exact,mode=bounds76,rule=scripts/cad-corpus-gen.py_--exact-bytes_N_writes_the_largest_file_of_the_kind_at_or_below_N_and_pads_it:_STEP_one_comment_block_with_no_;_before_ENDSEC;_of_DATA;DXF_999_comment_pairs_before_0/EOF;IGES_blank_Start-section_records;STL_no_pad_(T=floor((N-84)/50));pad_gap_bytes_below_one_record_(STEP;DXF_0;STL_<50;IGES_<81_or_82);every_cell_is_sniffed_(cad-sniff)_and_guarded_with_the_production_caps_before_any_timed_row_and_written_as_a_CELL_line;a_cell_file_is_reused_from_\$OCTOCONV_CAD_CACHE/scaled/b76_only_when_the_generator;cad-guard_and_the_argument_key_match_its_meta_and_its_sha256_matches
+RULE,key=order,mode=bounds76,rule=groups_refusal;dxf;stl;step;iges_(and_pathb_only_if_76-01_marks_a_format_byte_bound)_then_finish;within_a_group_cells_run_one_after_another_and_reps_run_cell-major;a_group_refuses_a_commit_or_image_id_other_than_the_init_HDR_and_refuses_to_run_twice;a_STOP_ends_the_plan
+RULES
+}
+
+b76_tools() {
+  cat > "$WORK/tools/b76.py" <<'PY'
+import json
+import os
+import re
+import struct
+import sys
+
+STAGES_GO = ("svg_client", "svg_render", "pdf", "pixel_ink", "pixel_opaque", "pixel_transparent", "pixel")
+
+
+def kv(line):
+    head, _, rest = line.partition(",")
+    out = {"_": head}
+    for part in rest.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k] = v
+    return out
+
+
+def wrap_fields(path):
+    try:
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                if line.startswith("WRAP,"):
+                    return dict(p.split("=", 1) for p in line.strip().split(",")[1:] if "=" in p)
+    except OSError:
+        pass
+    return {}
+
+
+def log_lines(path):
+    try:
+        with open(path, "rb") as fh:
+            return [raw.decode("utf-8", "replace").strip() for raw in fh]
+    except OSError:
+        return []
+
+
+def verdict_of(lines):
+    obj = {}
+    for line in lines:
+        if line.startswith("CADVERDICT "):
+            try:
+                obj = json.loads(line[len("CADVERDICT "):])
+            except ValueError:
+                obj = {}
+    return obj
+
+
+def judge_of(lines):
+    for line in lines:
+        if line.startswith(("GOSVG,", "GOPDF,", "GOJUDGE,")):
+            return dict(p.split("=", 1) for p in line.split(",")[1:] if "=" in p)
+    return None
+
+
+def stl_count(path):
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(84)
+        if len(head) == 84 and os.path.getsize(path) == 84 + 50 * struct.unpack("<I", head[80:84])[0]:
+            return struct.unpack("<I", head[80:84])[0]
+    except OSError:
+        pass
+    return None
+
+
+def clean(v):
+    return re.sub(r"[,=\s]", "_", str(v))
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def row(argv):
+    a = dict(x.split("=", 1) for x in argv)
+    stage = a["stage"]
+    f = wrap_fields(a["wrap"])
+    lines = log_lines(a["log"])
+    v = verdict_of(lines)
+    rc = f.get("rc", "na")
+    timeout = f.get("timeout", "na")
+    oom = f.get("oom_kill", "na")
+    wall = f.get("wall_s", "na")
+    verdict = v.get("verdict", "none")
+    reason = v.get("reason") or "none"
+    triangles = a.get("triangles", "na")
+    detail = "-"
+    cls = "fail"
+    why = "none"
+    if not f:
+        cls = "oom" if a["rc_w"] == "137" else "fail"
+        oom = "container_137" if a["rc_w"] == "137" else oom
+        why = "no_wrap_line_rc_w_%s" % a["rc_w"]
+    elif timeout == "1":
+        cls = "timeout"
+    elif oom not in ("na", "0"):
+        cls = "oom"
+    elif rc == "0":
+        cls = "ok"
+    elif stage == "guard" and rc == "4" and verdict == "too_complex":
+        cls = "refused"
+    elif stage in ("mesh", "stats") and rc == "4" and verdict == "too_complex" and reason == "out_of_memory":
+        cls = "oom"
+    else:
+        why = "rc_%s_verdict_%s_reason_%s" % (rc, verdict, reason)
+    expect = a.get("expect", "ok")
+    if stage == "guard":
+        keys = ("expanded_inserts", "expanded_entities", "entities", "nauo", "expanded", "nesting", "blocks", "records")
+        detail = "+".join("%s:%s" % (k, clean(v[k])) for k in keys if k in v) or "-"
+        got = "ok" if verdict == "ok" else "%s/%s" % (verdict, reason)
+        if cls == "ok" and verdict != "ok":
+            cls, why = "fail", "guard_rc_0_verdict_%s" % verdict
+        if cls in ("ok", "refused"):
+            want_ok = expect == "ok"
+            if want_ok and cls != "ok":
+                cls, why = "fail", "guard_%s_expected_ok" % clean(got)
+            elif not want_ok and not (got == expect or (expect == "too_complex" and verdict == "too_complex")):
+                cls, why = "fail", "guard_%s_expected_%s" % (clean(got), clean(expect))
+    elif stage in ("mesh", "stats"):
+        if cls == "ok":
+            n = stl_count(a["mesh"])
+            if n is None or v.get("triangles") != n or verdict != "ok":
+                cls, why = "fail", "stl_count_%s_verdict_%s_%s" % (n, v.get("triangles"), verdict)
+            triangles = str(n)
+    elif stage == "render":
+        if cls == "ok" and (verdict != "ok" or v.get("size") != int(a["size"]) or v.get("view") != a["view"] or v.get("background") != a["background"]):
+            cls, why = "fail", "render_verdict_%s_view_%s_size_%s_background_%s" % (verdict, v.get("view"), v.get("size"), v.get("background"))
+    elif stage == "dxf":
+        keys = ("entities_drawn", "texts", "uncovered", "render_substituted", "hatch_truncated", "page_w_mm", "page_h_mm")
+        detail = "+".join("%s:%s" % (k, clean(v[k])) for k in keys if k in v) or "-"
+        if cls == "ok" and verdict != "ok":
+            cls, why = "fail", "dxf_verdict_%s_%s" % (verdict, reason)
+    if stage in STAGES_GO:
+        j = judge_of(lines)
+        if j is not None:
+            detail = "+".join("%s:%s" % (k, clean(x)) for k, x in j.items() if k not in ("svg", "pdf", "png", "ok"))[:400] or "-"
+        if cls == "ok" and (j is None or j.get("ok") != "1"):
+            cls, why = "fail", "judge_not_ok"
+    stacked = a.get("stacked", "0")
+    setter = a.get("setter", "1")
+    if cls == "ok":
+        band = "within"
+    elif cls == "refused":
+        band = "refused_by_cap"
+    elif cls in ("timeout", "oom"):
+        band = "refused" if (stacked == "1" or setter == "0") else "failed"
+        if band == "failed":
+            why = "%s_on_a_non_stacked_setter_cell" % cls
+    else:
+        band = "failed"
+    vals = [num(f.get("child_rss_mib")), num(f.get("cg_peak_mib"))]
+    vals = [x for x in vals if x is not None]
+    peak = max(vals) if vals else None
+    if cls == "oom":
+        peak = max(peak or 0, 4096)
+    peak_s = "na" if peak is None else ("%d" % peak if float(peak).is_integer() else "%s" % peak)
+    out = a.get("out", "")
+    out_bytes = str(os.path.getsize(out)) if out and os.path.isfile(out) else "na"
+    extra = a.get("extra", "")
+    print("BOUND76_ROW,cell=%s,format=%s,group=%s,stage=%s,quality=%s,view=%s,background=%s,size=%s,triangles=%s,rep=%s,rc=%s,wall_s=%s,"
+          "child_rss_mib=%s,cg_peak_mib=%s,oom_kill=%s,timeout=%s,peak_mib=%s,out_bytes=%s,setter=%s,band=%s,load1=%s,vm_free_gib=%s,"
+          "stacked=%s,bytes=%s,sha256=%s,verdict=%s,reason=%s,class=%s,why=%s,threads_max=%s,budget_s=%s,detail=%s%s" % (
+              a["cell"], a["format"], a["group"], stage, a.get("quality", "na"), a.get("view", "na"), a.get("background", "na"),
+              a.get("size", "na"), triangles, a["rep"], rc, wall, f.get("child_rss_mib", "na"), f.get("cg_peak_mib", "na"), oom, timeout,
+              peak_s, out_bytes, setter, band, a["load1"], a["vmfree"], stacked, a["bytes"], a["sha"], clean(verdict), clean(reason), cls,
+              clean(why), f.get("threads_max", "na"), a["budget"], detail, extra))
+
+
+def guard_probe(argv):
+    lines = log_lines(argv[0])
+    v = verdict_of(lines)
+    verdict = v.get("verdict", "none")
+    reason = v.get("reason") or "none"
+    inserts = v.get("expanded_inserts", "na")
+    if "expanded_entities" in v:
+        entities = v["expanded_entities"]
+    else:
+        entities = v.get("entities", "na")
+    instances = v.get("expanded", v.get("nauo", "na"))
+    print("%s %s %s %s %s %s" % (verdict, clean(reason), inserts, entities, instances, v.get("entities", "na")))
+
+
+def brackets(argv):
+    path = argv[0]
+    decisions, glob_line, rows = {}, None, []
+    for line in open(path):
+        line = line.rstrip("\n")
+        if line.startswith("STACK_DECISION,"):
+            d = kv(line)
+            decisions[d["format"]] = d
+        elif line.startswith("STACK_GLOBAL,"):
+            glob_line = kv(line)
+        elif line.startswith("STACK_ROW,"):
+            rows.append(kv(line))
+    missing = [f for f in ("step", "iges", "stl") if f not in decisions]
+    if missing or glob_line is None:
+        print("STOP reason=76-01_lines_missing:%s%s" % ("+".join(missing), "" if glob_line else "+STACK_GLOBAL"))
+        return 1
+    print("GLOBAL %s" % glob_line.get("render_deadline_rule"))
+    for fmt in ("stl", "step", "iges"):
+        d = decisions[fmt]
+        print("DECISION %s %s" % (fmt, d["decision"]))
+        if d["decision"] != "not_byte_bound":
+            continue
+        shape = d["break_shape"]
+        order, band = [], {}
+        for r in rows:
+            if r["shape"] != shape:
+                continue
+            if r["rung"] not in band:
+                order.append(r["rung"])
+                band[r["rung"]] = "within"
+            if r["band"] == "over":
+                band[r["rung"]] = "over"
+        first_over = next((i for i, rg in enumerate(order) if band[rg] == "over"), None)
+        if first_over is None:
+            print("STOP reason=no_over_rung_for_%s" % shape)
+            return 1
+        below = [rg for rg in order[:first_over] if band[rg] == "within"]
+        print("BRACKET %s %s %s %s" % (fmt, shape, below[-1] if below else "none", order[first_over]))
+    return 0
+
+
+def maxwall(argv):
+    path, cell, stage, quality, view, background = argv
+    best = None
+    for line in open(path):
+        if not line.startswith("BOUND76_ROW,"):
+            continue
+        d = kv(line.rstrip("\n"))
+        if d["cell"] != cell or d["stage"] != stage or d["quality"] != quality or d["view"] != view or d["background"] != background:
+            continue
+        w = num(d["wall_s"])
+        if w is None:
+            continue
+        best = w if best is None or w > best else best
+    print("na" if best is None else "%.2f" % best)
+
+
+def finish(argv):
+    path, groups = argv[0], argv[1].split("+")
+    text = open(path).read().splitlines()
+    problems = []
+    if any(l.startswith("STOP,") for l in text):
+        problems.append("stop_line_present")
+    init = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,commit=")]
+    image = [kv(l) for l in text if l.startswith("HDR,mode=bounds76,image=")]
+    if len(init) != 1 or len(image) != 1:
+        problems.append("init_hdr_missing")
+    last_rule = max((i for i, l in enumerate(text) if l.startswith("RULE,")), default=-1)
+    first_row = min((i for i, l in enumerate(text) if l.startswith(("BOUND76_ROW,", "REFUSAL_ROW,", "CELL,"))), default=len(text))
+    if last_rule < 0 or first_row < last_rule:
+        problems.append("a_row_before_the_last_rule")
+    for g in groups:
+        hdr = [kv(l) for l in text if l.startswith("HDR,group=%s," % g)]
+        end = [l for l in text if l.startswith("GROUP_END,group=%s," % g)]
+        if len(hdr) != 1:
+            problems.append("group_%s_hdr_count_%d" % (g, len(hdr)))
+            continue
+        if init and image and (hdr[0].get("commit") != init[0].get("commit") or hdr[0].get("image_id") != image[0].get("image_id")):
+            problems.append("group_%s_commit_or_image_differs" % g)
+        if len(end) != 1 or ",result=ok" not in end[0]:
+            problems.append("group_%s_did_not_end_ok" % g)
+    rows = [l for l in text if l.startswith("BOUND76_ROW,")]
+    if any(",band=failed," in l for l in rows):
+        problems.append("failed_band_row")
+    if problems:
+        print("STOP,mode=bounds76,reason=finish_check_failed,detail=%s" % "+".join(problems))
+        print("SUMMARY,mode=bounds76,groups=%s,rows=%d,result=STOP" % ("+".join(groups), len(rows)))
+        return 1
+    refusals = sum(1 for l in text if l.startswith("REFUSAL_ROW,"))
+    cells = sum(1 for l in text if l.startswith("CELL,"))
+    not_run = sum(1 for l in text if l.startswith("NOT_RUN,"))
+    setter = sum(1 for l in rows if ",setter=1," in l)
+    print("SUMMARY,mode=bounds76,groups=%s,rows=%d,setter_rows=%d,classification_rows=%d,refusal_rows=%d,cells=%d,not_run=%d,result=ok" % (
+        "+".join(groups), len(rows), setter, len(rows) - setter, refusals, cells, not_run))
+    return 0
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1]
+    fn = {"row": row, "guard_probe": guard_probe, "brackets": brackets, "maxwall": maxwall, "finish": finish}.get(cmd)
+    if fn is None:
+        sys.exit(64)
+    sys.exit(fn(sys.argv[2:]) or 0)
+PY
+  chmod 0644 "$WORK/tools/b76.py"
+}
+
+b76_stop() {
+  local reason=$1 code=${2:-1}
+  if [ -n "${B76_OUT:-}" ]; then
+    printf 'STOP,mode=bounds76,group=%s,%s\n' "${B76_GROUP:-none}" "$reason" >> "$B76_OUT"
+    [ "${B76_GROUP:-none}" = none ] || printf 'GROUP_END,group=%s,rows=%s,duration_s=%s,result=STOP\n' "$B76_GROUP" \
+      "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - ${B76_T0:-$(date +%s)} ))" >> "$B76_OUT"
+  fi
+  log "STOP $reason"
+  exit "$code"
+}
+
+b76_sample() {
+  local free
+  free=$(vm_free_gib)
+  if [ -z "$free" ] || [ "$free" -lt "$MIN_FREE_GIB" ]; then
+    b76_stop "reason=disk_below_threshold,free_gib=${free:-unknown},threshold_gib=$MIN_FREE_GIB" 3
+  fi
+  B76_FREE=$free
+  B76_LOAD=$(load1_now)
+}
+
+b76_preflight() {
+  local n
+  n=$(docker ps --filter name=octoconv- -q | wc -l | tr -d ' ')
+  [ "$n" = 0 ] || fail "preflight: $n octoconv- compose containers are running"
+  if command -v kubectl >/dev/null 2>&1; then
+    n=$(kubectl get pods -A 2>/dev/null | grep -c octoconv || true)
+    [ "$n" = 0 ] || fail "preflight: $n octoconv pods are running in k8s"
+  fi
+  if pgrep -f 'go test' >/dev/null 2>&1; then fail "preflight: a go test process is running"; fi
+  if pgrep -f 'docker build|buildx' >/dev/null 2>&1; then fail "preflight: a docker build is running"; fi
+}
+
+b76_setup() {
+  need_tool docker
+  need_tool go
+  need_tool python3
+  need_tool shasum
+  need_tool git
+  [ "$(docker version --format '{{.Server.Arch}}')" = arm64 ] || fail "docker server is not arm64"
+  [ "$(GOTOOLCHAIN=$GO_TOOLCHAIN go env GOVERSION)" = "$GO_TOOLCHAIN" ] || fail "go toolchain is not $GO_TOOLCHAIN"
+  b76_preflight
+  disk_guard
+  EVID_NAME=evidence/76-02-bounds.txt
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-b76.XXXXXX")
+  chmod 0755 "$WORK"
+  trap cleanup EXIT
+  mkdir -p "$WORK/wrap" "$WORK/tools" "$WORK/gen" "$WORK/hostbin"
+  chmod 0755 "$WORK/wrap" "$WORK/tools"
+  chmod 0777 "$WORK/gen"
+  cp "$WRAP_PY" "$WORK/wrap/measure_wrap.py"
+  chmod 0644 "$WORK/wrap/measure_wrap.py"
+  b76_tools
+  ENGINE_TAG_PREFIX=engine76-
+  TAG=$(build_engine) || b76_stop "reason=engine_build_failed"
+  BUILT_TAGS+=("$TAG")
+  cad_require_native "$TAG" || b76_stop "reason=engine_image_not_native"
+  IMAGE_ID=$(docker image inspect "$TAG" --format '{{.Id}}')
+  ARCH=$(docker image inspect "$TAG" --format '{{.Architecture}}')
+  TRIPLET=$(triplet_for "$ARCH")
+  MESH_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/$TRIPLET:/usr/local/bin/cad-mesh"
+  RENDER_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/lib/$TRIPLET:/usr/local/bin/cad-render"
+  DXF_RO="/opt/venv:/usr/bin/python3.11:/usr/lib/python3.11:/usr/share/fonts:/usr/lib/$TRIPLET:/usr/local/bin/cad-dxf"
+  RSVG_RO="/usr/share/fonts:/usr/lib/$TRIPLET:/usr/bin/rsvg-convert"
+  build_go "$ARCH" "$WORK/bin"
+  GOTOOLCHAIN="$GO_TOOLCHAIN" go build -o "$WORK/hostbin/cad-sniff" ./scripts/cmd/cad-sniff
+  B76_CACHE="$CAD_CACHE/scaled/b76"
+  mkdir -p "$B76_CACHE"
+  B76_GEN_SHA=$(sha_of scripts/cad-corpus-gen.py)
+  B76_GUARD_SHA=$(sha_of cmd/cad-worker/helper/cad-guard)
+  LARGE_STL=$(ls -S "$REPO_ROOT"/internal/convert/testdata/cad/public/*.stl "$CAD_CACHE"/fetched/*.stl 2>/dev/null | head -n 1)
+  [ -s "$LARGE_STL" ] || fail "no LARGE_STL"
+}
+
+b76_hdr_lines() {
+  local mode=$1
+  b76_sample
+  printf 'HDR,mode=%s,date_utc=%s\n' "$mode" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'HDR,mode=%s,commit=%s,tracked_dirt=%s\n' "$mode" "$(git rev-parse HEAD)" "$(tracked_dirt)"
+  printf 'HDR,mode=%s,image=%s,image_id=%s,server_arch=%s\n' "$mode" "$TAG" "$IMAGE_ID" "$(docker version --format '{{.Server.Arch}}')"
+  printf 'HDR,mode=%s,load1=%s,vm_free_gib=%s\n' "$mode" "$B76_LOAD" "$B76_FREE"
+  printf 'HDR,mode=%s,cad_mesh_sha256=%s,cad_render_sha256=%s,cad_guard_sha256=%s,cad_dxf_sha256=%s,generator_sha256=%s,measure_wrap_sha256=%s\n' "$mode" \
+    "$(sha_of cmd/cad-worker/helper/cad-mesh)" "$(sha_of cmd/cad-worker/helper/cad-render)" "$B76_GUARD_SHA" \
+    "$(sha_of cmd/cad-worker/helper/cad-dxf)" "$B76_GEN_SHA" "$(sha_of "$WRAP_PY")"
+  printf 'HDR,mode=%s,versions=%s\n' "$mode" "$(docker run --rm --network none --entrypoint sh "$TAG" -c \
+    'printf "librsvg2-bin_%s+ezdxf_%s" "$(dpkg-query -W -f="\${Version}" librsvg2-bin)" "$(/opt/venv/bin/python -I -c "import importlib.metadata as m; print(m.version(\"ezdxf\"))")"' </dev/null)"
+  printf 'HDR,mode=%s,limits=cpus2_memory4g_swap4g_network_none_user_nobody,go=%s,size=%s,setter_budget_s=%s,classification_budget_s=%s,n=%s\n' \
+    "$mode" "$GO_TOOLCHAIN" "$SIZE" "$B76_SETTER_S" "$B76_CLASS_S" "$B76_N"
+  printf 'HDR,mode=%s,ro_mesh=%s,ro_render=%s,ro_cad_dxf=%s,ro_rsvg=%s,rw=/job\n' "$mode" "$MESH_RO" "$RENDER_RO" "$DXF_RO" "$RSVG_RO"
+}
+
+b76_classes() {
+  python3 "$WORK/tools/b76.py" brackets "$REPO_ROOT/$B76_STACK_REL" > "$WORK/brackets.txt" || true
+  if grep -q '^STOP' "$WORK/brackets.txt"; then
+    b76_stop "$(sed -n 's/^STOP //p' "$WORK/brackets.txt" | head -n 1)"
+  fi
+  B76_GLOBAL=$(awk '$1 == "GLOBAL" {print $2}' "$WORK/brackets.txt")
+  B76_BYTE_BOUND=$(awk '$1 == "DECISION" && $3 == "byte_bound" {print $2}' "$WORK/brackets.txt" | tr '\n' ' ')
+  B76_CLASS_CELLS=()
+  B76_CLASS_TEXT=""
+  local fmt shape lo hi
+  while read -r _ fmt shape lo hi; do
+    if [ "$lo" = none ]; then
+      B76_CLASS_TEXT="${B76_CLASS_TEXT}${B76_CLASS_TEXT:+;}${fmt}:${shape}_within=absent_in_76-01(NOT_RUN)+${shape}_over=${hi}"
+    else
+      B76_CLASS_TEXT="${B76_CLASS_TEXT}${B76_CLASS_TEXT:+;}${fmt}:${shape}_within=${lo}+${shape}_over=${hi}"
+      B76_CLASS_CELLS+=("${shape}_$lo")
+    fi
+    B76_CLASS_CELLS+=("${shape}_$hi")
+  done < <(awk '$1 == "BRACKET"' "$WORK/brackets.txt")
+}
+
+b76_gen() {
+  local outfile=$1
+  shift
+  docker run --rm --network none --cpus 2 --memory "${GEN_MEM:-4g}" --memory-swap "${GEN_MEM:-4g}" --user nobody \
+    -e HOME=/tmp -e PYTHONHASHSEED=0 -v "$REPO_ROOT:/src:ro" -v "$WORK/gen:/out" \
+    ${GEN_MOUNTS[@]+"${GEN_MOUNTS[@]}"} -w /src --entrypoint /opt/venv/bin/python "$TAG" -B "${GEN_SCRIPT:-scripts/cad-corpus-gen.py}" \
+    "$@" --scaled-dir "${GEN_OUT:-/out}" > "$outfile" </dev/null 2>"$WORK/gen.err" || {
+    tail -n 5 "$WORK/gen.err" >&2
+    b76_stop "reason=generator_failed,args=$(printf '%s' "$*" | tr ' ,=/' '____')"
+  }
+}
+
+b76_gen_file() {
+  local outfile=$1 kind=$2 line
+  line=$(grep "^SCALED,kind=$kind," "$outfile" | tail -n 1 || true)
+  [ -n "$line" ] || b76_stop "reason=generator_gave_no_scaled_line,kind=$kind"
+  printf '%s\n' "$line" | grep -q ',check=ok' || b76_stop "reason=generator_self_check_failed,kind=$kind"
+  GEN_LINE=$line
+  GEN_PATH="$WORK/gen/$(scaled_field file "$line")"
+  [ -s "$GEN_PATH" ] || b76_stop "reason=generated_file_missing,kind=$kind"
+}
+
+b76_guard_probe() {
+  local file=$1 fmt=$2 out dir
+  dir=$(mktemp -d "$WORK/probe.XXXXXX")
+  chmod 0777 "$dir"
+  if [ "$fmt" = dxf ]; then
+    docker run --rm "${LIMITS[@]}" "${B76_ENV3D[@]}" -v "$(dirname "$file"):/in:ro" --entrypoint /usr/bin/python3 "$TAG" -IB /usr/local/bin/cad-guard \
+      --format dxf --max-expanded-inserts "$B76_DXF_INSERTS" --max-expanded-entities "$B76_DXF_ENTITIES" --max-nesting "$CAP_NESTING" \
+      --max-abs-coordinate "$CAP_ABS" "/in/$(basename "$file")" > "$dir/out" 2>/dev/null </dev/null || true
+  else
+    docker run --rm "${LIMITS[@]}" "${B76_ENV3D[@]}" -v "$(dirname "$file"):/in:ro" --entrypoint /usr/bin/python3 "$TAG" -IB /usr/local/bin/cad-guard \
+      --format "$fmt" --max-entities "$B76_ENTITIES" --max-nauo "$B76_NAUO" "/in/$(basename "$file")" > "$dir/out" 2>/dev/null </dev/null || true
+  fi
+  read -r GP_VERDICT GP_REASON GP_INSERTS GP_ENTITIES GP_INSTANCES GP_RAW <<< "$(python3 "$WORK/tools/b76.py" guard_probe "$dir/out")"
+  rm -rf "$dir"
+}
+
+b76_count_probe() {
+  local file=$1 dir
+  dir=$(mktemp -d "$WORK/probe.XXXXXX")
+  chmod 0777 "$dir"
+  docker run --rm "${LIMITS[@]}" "${B76_ENV3D[@]}" -v "$(dirname "$file"):/in:ro" --entrypoint /usr/bin/python3 "$TAG" -IB /usr/local/bin/cad-guard \
+    --format dxf --max-expanded-inserts "$COUNT_CAP" --max-expanded-entities "$COUNT_CAP" --max-nesting "$CAP_NESTING" \
+    --max-abs-coordinate "$CAP_ABS" "/in/$(basename "$file")" > "$dir/out" 2>/dev/null </dev/null || true
+  read -r CP_VERDICT _ CP_INSERTS CP_ENTITIES _ _ <<< "$(python3 "$WORK/tools/b76.py" guard_probe "$dir/out")"
+  rm -rf "$dir"
+}
+
+b76_cache_key() { printf 'gen=%s;guard=%s;spec=%s' "$B76_GEN_SHA" "$B76_GUARD_SHA" "$1"; }
+
+b76_cache_get() {
+  local name=$1 key=$2 meta file
+  meta="$B76_CACHE/$name.meta"
+  [ -f "$meta" ] || return 1
+  [ "$(sed -n 's/^KEY=//p' "$meta")" = "$key" ] || return 1
+  file="$B76_CACHE/$(sed -n 's/^FILE=//p' "$meta")"
+  [ -s "$file" ] || return 1
+  [ "$(sha_of "$file")" = "$(sed -n 's/^SHA=//p' "$meta")" ] || return 1
+  CELL_PATH=$file
+  CELL_GEN=$(sed -n 's/^GEN=//p' "$meta")
+  sed -n 's/^EXTRA=//p' "$meta" > "$WORK/extra.$name"
+  CELL_CACHED=1
+  return 0
+}
+
+b76_cache_put() {
+  local name=$1 key=$2 src=$3 genline=$4 extras=$5 dest
+  rm -f "$B76_CACHE/$name".*
+  dest="$B76_CACHE/$name.$(printf '%s' "${src##*.}")"
+  mv -f "$src" "$dest"
+  {
+    printf 'KEY=%s\n' "$key"
+    printf 'FILE=%s\n' "$(basename "$dest")"
+    printf 'SHA=%s\n' "$(sha_of "$dest")"
+    printf 'GEN=%s\n' "$genline"
+    [ ! -s "$extras" ] || sed 's/^/EXTRA=/' "$extras"
+  } > "$B76_CACHE/$name.meta"
+  CELL_PATH=$dest
+  CELL_GEN=$genline
+  if [ -s "$extras" ]; then cp "$extras" "$WORK/extra.$name"; else : > "$WORK/extra.$name"; fi
+  CELL_CACHED=0
+}
+
+b76_make_m1() {
+  local key k e2 e3 per fixed tries=0 ok_k="" extras="$WORK/picks.M1"
+  key=$(b76_cache_key "M1:step-copies:$STACK_STEP_BASE:exact=$B76_STEP_MAX:largest_guard_admitted")
+  b76_cache_get M1 "$key" && return 0
+  : > "$extras"
+  GEN_MOUNTS=()
+  for k in 2 3; do
+    b76_gen "$WORK/gen.out" --scaled-from "$STACK_STEP_BASE" --kind step-copies --copies "$k" --exact-bytes "$B76_STEP_MAX"
+    b76_gen_file "$WORK/gen.out" step-copies
+    b76_guard_probe "$GEN_PATH" step
+    [ "$GP_VERDICT" = ok ] || b76_stop "reason=m1_calibration_refused,copies=$k"
+    printf 'CELL_PICK,cell=M1,copies=%s,bytes=%s,guard=%s,entities=%s,role=calibration\n' "$k" "$(bytes_of "$GEN_PATH")" "$GP_VERDICT" "$GP_ENTITIES" >> "$extras"
+    if [ "$k" = 2 ]; then e2=$GP_ENTITIES; else e3=$GP_ENTITIES; fi
+    rm -f "$GEN_PATH"
+  done
+  per=$((e3 - e2))
+  fixed=$((e2 - 2 * per))
+  k=$(( (B76_ENTITIES - fixed) / per ))
+  while [ "$tries" -lt 8 ]; do
+    tries=$((tries + 1))
+    b76_gen "$WORK/gen.out" --scaled-from "$STACK_STEP_BASE" --kind step-copies --copies "$k" --exact-bytes "$B76_STEP_MAX"
+    b76_gen_file "$WORK/gen.out" step-copies
+    b76_guard_probe "$GEN_PATH" step
+    printf 'CELL_PICK,cell=M1,copies=%s,bytes=%s,guard=%s,reason=%s,entities=%s,role=search\n' "$k" "$(bytes_of "$GEN_PATH")" "$GP_VERDICT" "$GP_REASON" "$GP_ENTITIES" >> "$extras"
+    if [ "$GP_VERDICT" = ok ]; then
+      [ -z "$ok_k" ] || rm -f "$WORK/m1-keep.step"
+      ok_k=$k
+      mv -f "$GEN_PATH" "$WORK/m1-keep.step"
+      M1_LINE=$GEN_LINE
+      k=$((k + 1))
+    elif [ "$GP_VERDICT" = too_complex ]; then
+      rm -f "$GEN_PATH"
+      if [ -n "$ok_k" ] && [ "$k" = $((ok_k + 1)) ]; then
+        b76_cache_put M1 "$key" "$WORK/m1-keep.step" "$M1_LINE" "$extras"
+        return 0
+      fi
+      k=$((k - 1))
+    else
+      b76_stop "reason=m1_search_guard_verdict_$GP_VERDICT,copies=$k"
+    fi
+  done
+  b76_stop "reason=m1_search_did_not_settle"
+}
+
+b76_iges_try() {
+  local k=$1 step
+  GEN_MOUNTS=()
+  b76_gen "$WORK/gen.out" --scaled-from "$STACK_STEP_BASE" --kind step-copies --copies "$k"
+  b76_gen_file "$WORK/gen.out" step-copies
+  step=$GEN_PATH
+  GEN_MEM=$B76_IGES_GEN_MEM b76_gen "$WORK/gen.out" --scaled-from "/out/$(basename "$step")" --kind iges-from-step --exact-bytes "$B76_IGES_MAX"
+  IT_STEP_BYTES=$(bytes_of "$step")
+  rm -f "$step"
+  if grep -q '^SCALED_SKIP,kind=iges-from-step,.*reason=over_target_bytes' "$WORK/gen.out"; then
+    IT_FIT=0
+    IT_BYTES=$(scaled_field bytes "$(grep '^SCALED_SKIP,kind=iges-from-step,' "$WORK/gen.out" | tail -n 1)")
+    GEN_PATH=""
+  else
+    b76_gen_file "$WORK/gen.out" iges-from-step
+    IT_FIT=1
+    IT_BYTES=$(scaled_field unpadded_bytes "$GEN_LINE")
+  fi
+}
+
+b76_make_m3() {
+  local key k b4 b8 per fixed tries=0 ok_k="" extras="$WORK/picks.M3"
+  key=$(b76_cache_key "M3:iges-from-step:step-copies:$STACK_STEP_BASE:exact=$B76_IGES_MAX:largest")
+  b76_cache_get M3 "$key" && return 0
+  : > "$extras"
+  for k in 4 8; do
+    b76_iges_try "$k"
+    [ "$IT_FIT" = 1 ] || b76_stop "reason=m3_calibration_over,copies=$k"
+    printf 'CELL_PICK,cell=M3,copies=%s,step_bytes=%s,iges_unpadded_bytes=%s,fits=1,role=calibration\n' "$k" "$IT_STEP_BYTES" "$IT_BYTES" >> "$extras"
+    if [ "$k" = 4 ]; then b4=$IT_BYTES; else b8=$IT_BYTES; fi
+    rm -f "$GEN_PATH"
+  done
+  per=$(( (b8 - b4) / 4 ))
+  fixed=$(( b4 - 4 * per ))
+  k=$(( (B76_IGES_MAX - fixed) / per ))
+  while [ "$tries" -lt 8 ]; do
+    tries=$((tries + 1))
+    b76_iges_try "$k"
+    printf 'CELL_PICK,cell=M3,copies=%s,step_bytes=%s,iges_unpadded_bytes=%s,fits=%s,role=search\n' "$k" "$IT_STEP_BYTES" "$IT_BYTES" "$IT_FIT" >> "$extras"
+    log "M3 pick copies=$k iges=$IT_BYTES fits=$IT_FIT"
+    if [ "$IT_FIT" = 1 ]; then
+      [ -z "$ok_k" ] || rm -f "$WORK/m3-keep.igs"
+      ok_k=$k
+      mv -f "$GEN_PATH" "$WORK/m3-keep.igs"
+      M3_LINE=$GEN_LINE
+      k=$((k + 1))
+    else
+      if [ -n "$ok_k" ] && [ "$k" = $((ok_k + 1)) ]; then
+        b76_cache_put M3 "$key" "$WORK/m3-keep.igs" "$M3_LINE" "$extras"
+        return 0
+      fi
+      k=$((k - 1))
+    fi
+  done
+  b76_stop "reason=m3_search_did_not_settle"
+}
+
+b76_make_simple() {
+  local name=$1 kind=$2 spec=$3 key
+  shift 3
+  key=$(b76_cache_key "$name:$spec")
+  b76_cache_get "$name" "$key" && return 0
+  : > "$WORK/picks.$name"
+  b76_gen "$WORK/gen.out" "$@"
+  b76_gen_file "$WORK/gen.out" "$kind"
+  b76_cache_put "$name" "$key" "$GEN_PATH" "$GEN_LINE" "$WORK/picks.$name"
+}
+
+b76_make_c() {
+  local key rep ci ce cells extras="$WORK/picks.C"
+  key=$(b76_cache_key "C:dxf-combo:dxf-replicate:$BASE_DXF:118:caps=$B76_DXF_INSERTS+$B76_DXF_ENTITIES")
+  b76_cache_get C "$key" && return 0
+  : > "$extras"
+  GEN_MOUNTS=()
+  b76_gen "$WORK/gen.out" --scaled-from "$BASE_DXF" --kind dxf-replicate --targets 118
+  b76_gen_file "$WORK/gen.out" dxf-replicate
+  rep=$GEN_PATH
+  b76_count_probe "$rep"
+  [ "$CP_VERDICT" = ok ] || b76_stop "reason=c_replicate_count_failed,verdict=$CP_VERDICT"
+  cells=$(( B76_DXF_INSERTS - CP_INSERTS ))
+  [ $(( (B76_DXF_ENTITIES - CP_ENTITIES - 1) / 5 )) -ge "$cells" ] || cells=$(( (B76_DXF_ENTITIES - CP_ENTITIES - 1) / 5 ))
+  [ "$cells" -ge 1 ] || b76_stop "reason=c_no_remaining_expansion"
+  printf 'CELL_PICK,cell=C,replicate=%s,replicate_bytes=%s,replicate_inserts=%s,replicate_entities=%s,cells=%s,rule=min(170031-I;floor((850155-E-1)/5))\n' \
+    "$(basename "$rep")" "$(bytes_of "$rep")" "$CP_INSERTS" "$CP_ENTITIES" "$cells" >> "$extras"
+  b76_gen "$WORK/gen.out" --scaled-from "/out/$(basename "$rep")" --kind dxf-combo --cells "$cells"
+  b76_gen_file "$WORK/gen.out" dxf-combo
+  rm -f "$rep"
+  b76_cache_put C "$key" "$GEN_PATH" "$GEN_LINE" "$extras"
+}
+
+b76_make_cell() {
+  local name=$1 large_base
+  CELL_CACHED=0
+  GEN_MOUNTS=()
+  GEN_MEM=4g
+  case "$name" in
+    M1) CELL_FMT=step; b76_make_m1 ;;
+    M2) CELL_FMT=step; b76_make_simple M2 step-nauo "step-nauo:$STACK_STEP_BASE:1518:grid" --scaled-from "$STACK_STEP_BASE" --kind step-nauo --targets 1518 ;;
+    M3) CELL_FMT=iges; b76_make_m3 ;;
+    M4)
+      CELL_FMT=stl
+      large_base=$(basename "$LARGE_STL")
+      GEN_MOUNTS=(-v "$LARGE_STL:/base/$large_base:ro")
+      b76_make_simple M4 stl-tile "stl-tile:$large_base:exact=$B76_STL_MAX" --scaled-from "/base/$large_base" --kind stl-tile --exact-bytes "$B76_STL_MAX" ;;
+    C) CELL_FMT=dxf; b76_make_c ;;
+    L170030) CELL_FMT=dxf; b76_make_simple L170030 dxf-minsert "dxf-minsert:$BASE_DXF:170030:5" --scaled-from "$BASE_DXF" --kind dxf-minsert --targets 170030 ;;
+    L170031) CELL_FMT=dxf; b76_make_simple L170031 dxf-minsert "dxf-minsert:$BASE_DXF:170031:5" --scaled-from "$BASE_DXF" --kind dxf-minsert --targets 170031 ;;
+    I170031x4) CELL_FMT=dxf; b76_make_simple I170031x4 dxf-minsert "dxf-minsert:$BASE_DXF:170031:4" --scaled-from "$BASE_DXF" --kind dxf-minsert --targets 170031 --block-entities 4 ;;
+    R123731968) CELL_FMT=dxf; b76_make_simple R123731968 dxf-replicate "dxf-replicate:$BASE_DXF:exact=$B76_DXF_MAX" --scaled-from "$BASE_DXF" --kind dxf-replicate --exact-bytes "$B76_DXF_MAX" ;;
+    stress_*) CELL_FMT=dxf; b76_make_simple "$name" dxf-guard-stress "dxf-guard-stress:${name#stress_}:118" --kind dxf-guard-stress --shape "${name#stress_}" --targets 118 ;;
+    S1_k*) CELL_FMT=stl; b76_make_simple "$name" stl-stack "stl-stack:cube:${name#S1_k}" --kind stl-stack --part cube --targets "${name#S1_k}" ;;
+    S6_n*) CELL_FMT=step; b76_make_simple "$name" step-nauo "step-nauo:$STACK_STEP_BASE:${name#S6_n}:pitch0" --scaled-from "$STACK_STEP_BASE" --kind step-nauo --targets "${name#S6_n}" --nauo-pitch 0 ;;
+    S5_*) CELL_FMT=iges; b76_make_s5 "$name" ;;
+    *) b76_stop "reason=unknown_cell_$name" ;;
+  esac
+}
+
+b76_make_s5() {
+  local name=$1 key mib step extras="$WORK/picks.$1"
+  mib=$(sed -n 's/^GEN,shape=S5,rung=32MiB,step_target=\([0-9]*\)MiB,.*/\1/p' "$REPO_ROOT/$B76_STACK_REL" | head -n 1)
+  [ -n "$mib" ] || b76_stop "reason=no_76-01_s5_step_target"
+  key=$(b76_cache_key "$name:iges-from-step:step-copies:$STACK_STEP_BASE:${mib}MiB")
+  b76_cache_get "$name" "$key" && return 0
+  printf 'CELL_PICK,cell=%s,step_target=%sMiB,source=76-01_GEN_shape=S5_rung=32MiB\n' "$name" "$mib" > "$extras"
+  b76_gen "$WORK/gen.out" --scaled-from "$STACK_STEP_BASE" --kind step-copies --targets "$mib"
+  b76_gen_file "$WORK/gen.out" step-copies
+  step=$GEN_PATH
+  GEN_MEM=$B76_IGES_GEN_MEM b76_gen "$WORK/gen.out" --scaled-from "/out/$(basename "$step")" --kind iges-from-step --targets 1
+  b76_gen_file "$WORK/gen.out" iges-from-step
+  rm -f "$step"
+  b76_cache_put "$name" "$key" "$GEN_PATH" "$GEN_LINE" "$extras"
+}
+
+b76_role_of() {
+  case "$1" in
+    L170031) echo refusal ;;
+    stress_*) echo stress ;;
+    S1_*|S5_*|S6_*) echo classification ;;
+    *) echo setter ;;
+  esac
+}
+
+b76_stacked_of() {
+  case "$1" in
+    M1|M3|S1_*|S5_*|S6_*) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
+b76_expect_of() {
+  case "$1" in
+    L170031) echo too_complex/expanded_entities_over_cap ;;
+    stress_chain) echo too_complex/nesting_too_deep ;;
+    stress_fanout|stress_wide) echo too_complex/expanded_inserts_over_cap ;;
+    *) echo ok ;;
+  esac
+}
+
+b76_match_7601() {
+  local name=$1 shape rung sha
+  case "$name" in
+    S1_*|S5_*|S6_*) shape=${name%%_*}; rung=${name#*_} ;;
+    *) echo na; return 0 ;;
+  esac
+  sha=$(grep "^STACK_ROW,shape=$shape,.*,rung=$rung," "$REPO_ROOT/$B76_STACK_REL" | head -n 1 | tr ',' '\n' | sed -n 's/^sha256=//p')
+  if [ -z "$sha" ]; then echo absent; elif [ "$sha" = "$(sha_of "$CELL_PATH")" ]; then echo 1; else echo 0; fi
+}
+
+b76_cell() {
+  local name=$1 out=$2 sniff_line sniff rej got expect target gap role stacked
+  b76_make_cell "$name"
+  CELL_SHA=$(sha_of "$CELL_PATH")
+  CELL_BYTES=$(bytes_of "$CELL_PATH")
+  sniff_line=$("$WORK/hostbin/cad-sniff" -group b76 -root "$(dirname "$CELL_PATH")" "$CELL_PATH")
+  sniff=$(printf '%s' "$sniff_line" | awk -F'\t' '{print $5}')
+  rej=$(printf '%s' "$sniff_line" | awk -F'\t' '{print $6}')
+  [ "$rej" = - ] || sniff="$sniff:$rej"
+  if [ "$CELL_FMT" = stl ]; then
+    GP_VERDICT=na; GP_REASON=none; GP_INSERTS=na; GP_ENTITIES=na; GP_INSTANCES=na; GP_RAW=na
+  else
+    b76_guard_probe "$CELL_PATH" "$CELL_FMT"
+  fi
+  got=$GP_VERDICT
+  [ "$got" = ok ] || [ "$got" = na ] || got="$GP_VERDICT/$GP_REASON"
+  target=$(scaled_field target_bytes "$CELL_GEN"); target=${target:-na}
+  gap=$(scaled_field pad_gap_bytes "$CELL_GEN"); gap=${gap:-na}
+  role=$(b76_role_of "$name")
+  stacked=$(b76_stacked_of "$name")
+  if [ -s "$WORK/extra.$name" ]; then sed "s/\$/,cached=$CELL_CACHED/" "$WORK/extra.$name" >> "$out"; fi
+  printf 'CELL,cell=%s,format=%s,file=%s,bytes=%s,target_bytes=%s,pad_gap_bytes=%s,sha256=%s,sniff=%s,inserts=%s,entities=%s,instances=%s,guard=%s,reason=%s,raw_entities=%s,role=%s,stacked=%s,cached=%s,match_76_01=%s,path=%s,gen=%s\n' \
+    "$name" "$CELL_FMT" "$(basename "$CELL_PATH")" "$CELL_BYTES" "$target" "$gap" "$CELL_SHA" "$sniff" "$GP_INSERTS" "$GP_ENTITIES" \
+    "$GP_INSTANCES" "$GP_VERDICT" "$GP_REASON" "$GP_RAW" "$role" "$stacked" "$CELL_CACHED" "$(b76_match_7601 "$name")" "$CELL_PATH" \
+    "$(printf '%s' "$CELL_GEN" | tr ',=' ';:')" >> "$out"
+  log "cell $name $CELL_BYTES bytes sniff=$sniff guard=$got"
+  [ "$sniff" = "$CELL_FMT" ] || b76_stop "reason=cell_sniff_mismatch,cell=$name,sniff=$sniff"
+  expect=$(b76_expect_of "$name")
+  if [ "$CELL_FMT" != stl ] && [ "$got" != "$expect" ]; then
+    b76_stop "reason=cell_guard_mismatch,cell=$name,guard=$(printf '%s' "$got" | tr '/' '_'),expect=$(printf '%s' "$expect" | tr '/' '_')"
+  fi
+  case "$name" in
+    M1) [ "$CELL_BYTES" = "$B76_STEP_MAX" ] && [ "$gap" = 0 ] || b76_stop "reason=m1_not_at_the_ceiling,bytes=$CELL_BYTES" ;;
+    M2) [ "$GP_INSTANCES" = "$B76_NAUO" ] || b76_stop "reason=m2_instances_$GP_INSTANCES" ;;
+    M3) [ "$gap" -ge 0 ] && [ "$gap" -lt 82 ] || b76_stop "reason=m3_gap_$gap" ;;
+    M4) [ "$CELL_BYTES" = $(( 84 + 50 * ((B76_STL_MAX - 84) / 50) )) ] || b76_stop "reason=m4_bytes_$CELL_BYTES" ;;
+    C) [ "$GP_ENTITIES" = "$B76_C_ENTITIES" ] && [ "$CELL_BYTES" -le "$B76_DXF_MAX" ] || b76_stop "reason=c_entities_$GP_ENTITIES,bytes=$CELL_BYTES" ;;
+    L170030) [ "$GP_ENTITIES" = "$B76_L170030_ENTITIES" ] || b76_stop "reason=l170030_entities_$GP_ENTITIES" ;;
+    I170031x4) [ "$GP_INSERTS" = "$B76_DXF_INSERTS" ] || b76_stop "reason=i170031x4_inserts_$GP_INSERTS" ;;
+    R123731968) [ "$CELL_BYTES" = "$B76_DXF_MAX" ] && [ "$gap" = 0 ] || b76_stop "reason=r_not_at_the_ceiling,bytes=$CELL_BYTES" ;;
+  esac
+  return 0
+}
+
+b76_gen_identity() {
+  local out=$1 kind=$2 base=$3 ref eq sha_main sha_new f_main f_new
+  shift 3
+  ref=main
+  git rev-parse --verify -q "$ref^{commit}" >/dev/null || ref=origin/main
+  mkdir -p "$WORK/maingen" "$WORK/gen/main" "$WORK/gen/new"
+  chmod 0755 "$WORK/maingen"
+  chmod 0777 "$WORK/gen/main" "$WORK/gen/new"
+  git show "$ref:scripts/cad-corpus-gen.py" > "$WORK/maingen/cad-corpus-gen.py"
+  chmod 0644 "$WORK/maingen/cad-corpus-gen.py"
+  GEN_MOUNTS=(-v "$WORK/maingen:/maingen:ro")
+  GEN_SCRIPT=/maingen/cad-corpus-gen.py GEN_OUT=/out/main b76_gen "$WORK/gid.main" --scaled-from "$base" --kind "$kind" "$@"
+  GEN_MOUNTS=()
+  GEN_OUT=/out/new b76_gen "$WORK/gid.new" --scaled-from "$base" --kind "$kind" "$@"
+  sha_main=$(scaled_field sha "$(grep "^SCALED,kind=$kind," "$WORK/gid.main" | tail -n 1)")
+  sha_new=$(scaled_field sha "$(grep "^SCALED,kind=$kind," "$WORK/gid.new" | tail -n 1)")
+  f_main=$(find "$WORK/gen/main" -type f | head -n 1)
+  f_new=$(find "$WORK/gen/new" -type f | head -n 1)
+  eq=0
+  if [ -n "$sha_main" ] && [ "$sha_main" = "$sha_new" ] && [ -s "$f_main" ] && [ "$(sha_of "$f_main")" = "$(sha_of "$f_new")" ]; then eq=1; fi
+  printf 'GEN_IDENTITY,kind=%s,base=%s,args=%s,main_ref=%s,main_commit=%s,main_sha256=%s,new_sha256=%s,main_file_sha256=%s,new_file_sha256=%s,equal=%s\n' \
+    "$kind" "$(basename "$base")" "$(printf '%s' "$*" | tr ' ' '_')" "$ref" "$(git rev-parse "$ref")" "${sha_main:-none}" "${sha_new:-none}" \
+    "$( [ -s "$f_main" ] && sha_of "$f_main" || echo none)" "$( [ -s "$f_new" ] && sha_of "$f_new" || echo none)" "$eq" >> "$out"
+  rm -rf "$WORK/gen/main" "$WORK/gen/new"
+  [ "$eq" = 1 ] || b76_stop "reason=generator_identity_broken,kind=$kind"
+}
+
+b76_stage() {
+  local job=$1 tag=$2 confine=$3 envkind=$4 budget=$5 dir rc_w=0
+  shift 5
+  dir="$job/w_$tag"
+  mkdir -p "$dir"
+  chmod 0777 "$dir"
+  local envs=("${B76_ENV3D[@]}")
+  [ "$envkind" = 3d ] || envs=("${STAGE_ENV[@]}")
+  if [ "$confine" = none ]; then
+    docker run --rm "${LIMITS[@]}" "${envs[@]}" -v "$WORK/bin:/gobin:ro" -v "$WORK/wrap:/wrap:ro" -v "$job:/job" \
+      --entrypoint /usr/bin/python3 "$TAG" -I -B /wrap/measure_wrap.py --budget-s "$budget" --outdir "/job/w_$tag" -- \
+      "$@" > "$dir/wrap.out" 2>/dev/null </dev/null || rc_w=$?
+  else
+    docker run --rm "${LIMITS[@]}" "${envs[@]}" -e "PROBE_RO=$confine" -e "PROBE_RW=/job" -v "$WORK/bin:/gobin:ro" \
+      -v "$WORK/wrap:/wrap:ro" -v "$job:/job" --entrypoint /usr/bin/python3 "$TAG" -I -B /wrap/measure_wrap.py \
+      --budget-s "$budget" --outdir "/job/w_$tag" -- /gobin/sandbox-probe "$@" > "$dir/wrap.out" 2>/dev/null </dev/null || rc_w=$?
+  fi
+  printf '%s\n' "$rc_w" > "$dir/rc_w"
+}
+
+b76_emit() {
+  local job=$1 tag=$2 line
+  shift 2
+  line=$(python3 "$WORK/tools/b76.py" row "group=$B76_GROUP" "wrap=$job/w_$tag/wrap.out" "log=$job/w_$tag/child.log" \
+    "rc_w=$(cat "$job/w_$tag/rc_w")" "load1=$B76_LOAD" "vmfree=$B76_FREE" "$@")
+  printf '%s\n' "$line" >> "$B76_OUT"
+  log "$(printf '%s' "$line" | tr ',' '\n' | grep -E '^(cell|stage|quality|view|background|rep|wall_s|triangles|band|class)=' | tr '\n' ' ')"
+  ROW_BAND=$(scaled_field band "$line")
+  ROW_CLASS=$(scaled_field class "$line")
+  ROW_TRI=$(scaled_field triangles "$line")
+  ROW_WALL=$(scaled_field wall_s "$line")
+  ROW_TIMEOUT=$(scaled_field timeout "$line")
+  if [ "$ROW_BAND" = failed ]; then
+    tail -n 8 "$job/w_$tag/child.log" >&2 2>/dev/null || true
+    b76_stop "reason=row_failed,$(printf '%s' "$line" | tr ',' '\n' | grep -E '^(cell|stage|quality|view|background|rep|rc|class|why)=' | tr '\n' ',' | sed 's/,$//')"
+  fi
+}
+
+b76_common() {
+  printf 'cell=%s format=%s bytes=%s sha=%s stacked=%s setter=%s budget=%s' "$1" "$CELL_FMT" "$CELL_BYTES" "$CELL_SHA" "$(b76_stacked_of "$1")" "$2" "$3"
+}
+
+b76_guard_row() {
+  local name=$1 rep=$2 setter=$3 budget=$4 job
+  local -a cm
+  read -ra cm <<< "$(b76_common "$name" "$setter" "$budget")"
+  b76_sample
+  job=$(new_job)
+  cp -c "$CELL_PATH" "$job/in.$CELL_FMT" 2>/dev/null || cp "$CELL_PATH" "$job/in.$CELL_FMT"
+  chmod 0644 "$job/in.$CELL_FMT"
+  if [ "$CELL_FMT" = dxf ]; then
+    b76_stage "$job" guard none 3d "$budget" /usr/bin/python3 -IB /usr/local/bin/cad-guard --format dxf --max-expanded-inserts "$B76_DXF_INSERTS" \
+      --max-expanded-entities "$B76_DXF_ENTITIES" --max-nesting "$CAP_NESTING" --max-abs-coordinate "$CAP_ABS" /job/in.dxf
+  else
+    b76_stage "$job" guard none 3d "$budget" /usr/bin/python3 -IB /usr/local/bin/cad-guard --format "$CELL_FMT" --max-entities "$B76_ENTITIES" \
+      --max-nauo "$B76_NAUO" "/job/in.$CELL_FMT"
+  fi
+  b76_emit "$job" guard "${cm[@]}" stage=guard rep="$rep" "expect=$(b76_expect_of "$name")"
+  GUARD_LAST=$(tail -n 1 "$B76_OUT")
+  rm -rf "$job"
+}
+
+b76_mesh_row() {
+  local name=$1 q=$2 rep=$3 setter=$4 budget=$5 keepdir=$6 job
+  local -a cm
+  read -ra cm <<< "$(b76_common "$name" "$setter" "$budget")"
+  b76_sample
+  job=$(new_job)
+  cp -c "$CELL_PATH" "$job/in.$CELL_FMT" 2>/dev/null || cp "$CELL_PATH" "$job/in.$CELL_FMT"
+  chmod 0644 "$job/in.$CELL_FMT"
+  if [ "$CELL_FMT" = stl ]; then
+    b76_stage "$job" stats "$MESH_RO" 3d "$budget" /usr/local/bin/cad-mesh stats --measure /job/draft.json /job/in.stl /job/mesh.stl
+      b76_emit "$job" stats "${cm[@]}" stage=stats quality=na rep="$rep" "mesh=$job/mesh.stl" "out=$job/mesh.stl"
+  else
+    b76_stage "$job" mesh "$MESH_RO" 3d "$budget" /usr/local/bin/cad-mesh --format "$CELL_FMT" "/job/in.$CELL_FMT" /job/mesh.stl \
+      --quality "$q" --measure /job/draft.json
+      b76_emit "$job" mesh "${cm[@]}" stage=mesh quality="$q" rep="$rep" "mesh=$job/mesh.stl" "out=$job/mesh.stl"
+  fi
+  if [ "$rep" = 1 ] && [ "$ROW_CLASS" = ok ] && [ "$ROW_TRI" -le "$B76_TRI_CAP" ]; then
+    mv -f "$job/mesh.stl" "$keepdir/mesh_$q.stl"
+    printf '%s\n' "$ROW_TRI" > "$keepdir/tri_$q"
+  fi
+  rm -rf "$job"
+}
+
+b76_render_row() {
+  local name=$1 q=$2 view=$3 bg=$4 rep=$5 setter=$6 budget=$7 keepdir=$8 tri job
+  local -a cm
+  read -ra cm <<< "$(b76_common "$name" "$setter" "$budget")"
+  tri=$(cat "$keepdir/tri_$q")
+  b76_sample
+  job=$(new_job)
+  cp -c "$keepdir/mesh_$q.stl" "$job/mesh.stl" 2>/dev/null || cp "$keepdir/mesh_$q.stl" "$job/mesh.stl"
+  chmod 0644 "$job/mesh.stl"
+  b76_stage "$job" render "$RENDER_RO" 3d "$budget" /usr/local/bin/cad-render --view "$view" --size "$SIZE" --background "$bg" /job/mesh.stl /job/out.png
+  b76_emit "$job" render "${cm[@]}" stage=render quality="$q" view="$view" background="$bg" size="$SIZE" \
+    triangles="$tri" rep="$rep" "out=$job/out.png"
+  RENDER_CLASS=$ROW_CLASS
+  RENDER_WALL=$ROW_WALL
+  RENDER_TIMEOUT=$ROW_TIMEOUT
+  if [ "$ROW_CLASS" = ok ]; then
+    b76_sample
+    b76_stage "$job" pixel none 2d "$budget" /gobin/cad-pixel-judge --size "$SIZE" --background "$bg" /job/out.png
+      b76_emit "$job" pixel "${cm[@]}" stage=pixel quality="$q" view="$view" background="$bg" size="$SIZE" \
+      triangles="$tri" rep="$rep"
+  fi
+  rm -rf "$job"
+}
+
+b76_wall_or_budget() {
+  if [ "$2" = 1 ] || [ "$1" = na ]; then printf '%s\n' "$3"; else printf '%s\n' "$1"; fi
+}
+
+b76_gt() { python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$1" "$2"; }
+
+b76_maxwall() { python3 "$WORK/tools/b76.py" maxwall "$B76_OUT" "$@"; }
+
+b76_mesh_cell() {
+  local name=$1 keepdir=$2 rep q fine_max w1
+  if [ "$CELL_FMT" = stl ]; then
+    for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" na "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    return 0
+  fi
+  for rep in $(seq 1 "$B76_N"); do b76_mesh_row "$name" fine "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+  fine_max=$(b76_maxwall "$name" mesh fine na na)
+  for q in standard draft; do
+    b76_mesh_row "$name" "$q" 1 1 "$B76_SETTER_S" "$keepdir"
+    w1=$(b76_wall_or_budget "$ROW_WALL" "$ROW_TIMEOUT" "$B76_SETTER_S")
+    if [ "$fine_max" = na ] || b76_gt "$w1" "$fine_max"; then
+      printf 'PROMOTE,cell=%s,stage=mesh,quality=%s,n1_wall_s=%s,fine_max_s=%s\n' "$name" "$q" "$w1" "$fine_max" >> "$B76_OUT"
+      for rep in $(seq 2 "$B76_N"); do b76_mesh_row "$name" "$q" "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+    fi
+  done
+}
+
+b76_pick_quality() {
+  local keepdir=$1 q best="" best_tri=-1 t
+  for q in fine standard draft na; do
+    [ -f "$keepdir/tri_$q" ] || continue
+    t=$(cat "$keepdir/tri_$q")
+    if [ "$t" -gt "$best_tri" ]; then best=$q; best_tri=$t; fi
+  done
+  PICK_Q=$best
+}
+
+b76_render_cell() {
+  local name=$1 keepdir=$2 i view bg slow=-1 slow_w=-1 w rep pmax changed
+  local -a n1 n1_to promoted
+  b76_pick_quality "$keepdir"
+  if [ -z "$PICK_Q" ]; then
+    printf 'NOT_RUN,cell=%s,stage=render,reason=refused_by_cap_no_admitted_quality,band=refused_by_cap,triangle_cap=%s\n' "$name" "$B76_TRI_CAP" >> "$B76_OUT"
+    return 0
+  fi
+  for i in "${!B76_VARIANTS[@]}"; do
+    view=${B76_VARIANTS[$i]%%:*}; bg=${B76_VARIANTS[$i]#*:}
+    b76_render_row "$name" "$PICK_Q" "$view" "$bg" 1 1 "$B76_SETTER_S" "$keepdir"
+    w=$(b76_wall_or_budget "$RENDER_WALL" "$RENDER_TIMEOUT" "$B76_SETTER_S")
+    n1[$i]=$w
+    if [ "$RENDER_CLASS" = timeout ]; then n1_to[$i]=1; else n1_to[$i]=0; fi
+    promoted[$i]=0
+    if b76_gt "$w" "$slow_w"; then slow=$i; slow_w=$w; fi
+  done
+  b76_promote_render "$name" "$keepdir" "$slow" "${n1[$slow]}" "${n1_to[$slow]}"
+  promoted[$slow]=1
+  pmax=$B76_PMAX
+  changed=1
+  while [ "$changed" = 1 ]; do
+    changed=0
+    for i in "${!B76_VARIANTS[@]}"; do
+      [ "${promoted[$i]}" = 0 ] || continue
+      if b76_gt "${n1[$i]}" "$pmax"; then
+        b76_promote_render "$name" "$keepdir" "$i" "${n1[$i]}" "${n1_to[$i]}"
+        promoted[$i]=1
+        pmax=$B76_PMAX
+        changed=1
+      fi
+    done
+  done
+}
+
+b76_promote_render() {
+  local name=$1 keepdir=$2 i=$3 n1w=$4 to=$5 view bg rep
+  view=${B76_VARIANTS[$i]%%:*}; bg=${B76_VARIANTS[$i]#*:}
+  printf 'PROMOTE,cell=%s,stage=render,quality=%s,view=%s,background=%s,n1_wall_s=%s\n' "$name" "$PICK_Q" "$view" "$bg" "$n1w" >> "$B76_OUT"
+  if [ "$(b76_stacked_of "$name")" = 1 ] && [ "$to" = 1 ]; then
+    for rep in $(seq 2 "$B76_N"); do
+      printf 'NOT_RUN,cell=%s,stage=render,quality=%s,view=%s,background=%s,rep=%s,reason=refused_at_wrap_budget\n' "$name" "$PICK_Q" "$view" "$bg" "$rep" >> "$B76_OUT"
+    done
+  else
+    for rep in $(seq 2 "$B76_N"); do b76_render_row "$name" "$PICK_Q" "$view" "$bg" "$rep" 1 "$B76_SETTER_S" "$keepdir"; done
+  fi
+  B76_PMAX=$(b76_maxwall "$name" render "$PICK_Q" "$view" "$bg")
+  if [ "$B76_PMAX" = na ] || [ "$to" = 1 ]; then B76_PMAX=$(python3 -c "import sys; print(max(float(x) for x in sys.argv[1:] if x != 'na'))" "$n1w" "$B76_PMAX"); fi
+}
+
+b76_setter_3d() {
+  local name=$1 keepdir rep
+  b76_cell "$name" "$B76_OUT"
+  keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+  if [ "$CELL_FMT" != stl ]; then
+    for rep in $(seq 1 "$B76_N"); do b76_guard_row "$name" "$rep" 1 "$B76_SETTER_S"; done
+  fi
+  b76_mesh_cell "$name" "$keepdir"
+  b76_render_cell "$name" "$keepdir"
+  rm -rf "$keepdir"
+}
+
+b76_class_3d() {
+  local name=$1 keepdir q
+  b76_cell "$name" "$B76_OUT"
+  keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+  if [ "$CELL_FMT" = stl ]; then
+    b76_mesh_row "$name" na 1 0 "$B76_CLASS_S" "$keepdir"
+  else
+    b76_guard_row "$name" 1 0 "$B76_CLASS_S"
+    for q in "${B76_QUALITIES[@]}"; do
+      b76_mesh_row "$name" "$q" 1 0 "$B76_CLASS_S" "$keepdir"
+      [ -f "$keepdir/tri_$q" ] && break
+      [ "$ROW_CLASS" = ok ] || break
+    done
+  fi
+  b76_pick_quality "$keepdir"
+  if [ -z "$PICK_Q" ]; then
+    printf 'NOT_RUN,cell=%s,stage=render,reason=no_admitted_mesh,band=%s\n' "$name" "$ROW_BAND" >> "$B76_OUT"
+  else
+    b76_render_row "$name" "$PICK_Q" iso opaque 1 0 "$B76_CLASS_S" "$keepdir"
+  fi
+  rm -rf "$keepdir"
+}
+
+b76_dxf_row() {
+  local name=$1 rep=$2 job lb sw sh left top setter=1 budget=$B76_SETTER_S
+  local -a cm
+  read -ra cm <<< "$(b76_common "$name" "$setter" "$budget")"
+  b76_sample
+  job=$(new_job)
+  cp -c "$CELL_PATH" "$job/in.dxf" 2>/dev/null || cp "$CELL_PATH" "$job/in.dxf"
+  chmod 0644 "$job/in.dxf"
+  b76_stage "$job" guard none 3d "$budget" /usr/bin/python3 -IB /usr/local/bin/cad-guard --format dxf --max-expanded-inserts "$B76_DXF_INSERTS" \
+    --max-expanded-entities "$B76_DXF_ENTITIES" --max-nesting "$CAP_NESTING" --max-abs-coordinate "$CAP_ABS" /job/in.dxf
+  b76_emit "$job" guard "${cm[@]}" stage=guard rep="$rep" expect=ok
+  b76_sample
+  b76_stage "$job" dxf "$DXF_RO" 2d "$budget" /usr/local/bin/cad-dxf --max-drawn-entities "$B76_DXF_ENTITIES" --texts /job/draw.texts.json \
+    --render-svg /job/draw.render.svg --measure /job/measure.json /job/in.dxf /job/draw.svg
+  b76_emit "$job" dxf "${cm[@]}" stage=dxf rep="$rep" "out=$job/draw.svg" \
+    "extra=,svg_bytes=$(bytes_of "$job/draw.svg" 2>/dev/null || echo na),render_svg_bytes=$(bytes_of "$job/draw.render.svg" 2>/dev/null || echo na)"
+  b76_sample
+  b76_stage "$job" svg_client none 2d "$budget" /gobin/cad-svg-check --out /job/clean.svg /job/draw.svg
+  b76_emit "$job" svg_client "${cm[@]}" stage=svg_client rep="$rep" "out=$job/clean.svg"
+  b76_sample
+  b76_stage "$job" svg_render none 2d "$budget" /gobin/cad-svg-check --out /job/clean.render.svg /job/draw.render.svg
+  b76_emit "$job" svg_render "${cm[@]}" stage=svg_render rep="$rep" "out=$job/clean.render.svg"
+  lb=$(docker run --rm "${LIMITS[@]}" -v "$WORK/bin:/gobin:ro" -v "$job:/job" --entrypoint /gobin/cad-pixel-judge "$TAG" \
+    --print-letterbox --svg /job/clean.render.svg --size "$SIZE" </dev/null) || b76_stop "reason=letterbox_failed,cell=$name,rep=$rep"
+  sw=$(scaled_field sw "$lb"); sh=$(scaled_field sh "$lb"); left=$(scaled_field left "$lb"); top=$(scaled_field top "$lb")
+  [ -n "$sw" ] || b76_stop "reason=letterbox_empty,cell=$name,rep=$rep"
+  b76_sample
+  b76_stage "$job" rsvg_ink "$RSVG_RO" 2d "$budget" /usr/bin/rsvg-convert -b white -w "$sw" -h "$sh" --page-width "$SIZE" --page-height "$SIZE" \
+    --left "$left" --top "$top" -o /job/ink.png /job/clean.render.svg
+  b76_emit "$job" rsvg_ink "${cm[@]}" stage=rsvg_ink background=opaque size="$SIZE" rep="$rep" "out=$job/ink.png" "extra=,letterbox=${sw}x${sh}+${left}+${top}"
+  b76_sample
+  b76_stage "$job" pixel_ink none 2d "$budget" /gobin/cad-pixel-judge --ink --size "$SIZE" /job/ink.png
+  b76_emit "$job" pixel_ink "${cm[@]}" stage=pixel_ink background=opaque size="$SIZE" rep="$rep"
+  b76_sample
+  b76_stage "$job" pixel_opaque none 2d "$budget" /gobin/cad-pixel-judge --drawing --letterbox-svg /job/clean.render.svg --size "$SIZE" \
+    --background opaque /job/ink.png
+  b76_emit "$job" pixel_opaque "${cm[@]}" stage=pixel_opaque background=opaque size="$SIZE" rep="$rep"
+  b76_sample
+  b76_stage "$job" rsvg_pdf "$RSVG_RO" 2d "$budget" /usr/bin/rsvg-convert -f pdf -b white -o /job/out.pdf /job/clean.render.svg
+  b76_emit "$job" rsvg_pdf "${cm[@]}" stage=rsvg_pdf rep="$rep" "out=$job/out.pdf"
+  b76_sample
+  b76_stage "$job" pdf none 2d "$budget" /gobin/cad-pdf-check --texts /job/draw.texts.json --svg /job/clean.render.svg /job/out.pdf
+  b76_emit "$job" pdf "${cm[@]}" stage=pdf rep="$rep"
+  b76_sample
+  b76_stage "$job" rsvg_png_transparent "$RSVG_RO" 2d "$budget" /usr/bin/rsvg-convert -w "$sw" -h "$sh" --page-width "$SIZE" --page-height "$SIZE" \
+    --left "$left" --top "$top" -o /job/out_t.png /job/clean.render.svg
+  b76_emit "$job" rsvg_png_transparent "${cm[@]}" stage=rsvg_png_transparent background=transparent size="$SIZE" rep="$rep" "out=$job/out_t.png"
+  b76_sample
+  b76_stage "$job" pixel_transparent none 2d "$budget" /gobin/cad-pixel-judge --drawing --letterbox-svg /job/clean.render.svg --size "$SIZE" \
+    --background transparent /job/out_t.png
+  b76_emit "$job" pixel_transparent "${cm[@]}" stage=pixel_transparent background=transparent size="$SIZE" rep="$rep"
+  rm -rf "$job"
+}
+
+b76_group_refusal() {
+  local s rep v
+  b76_cell L170031 "$B76_OUT"
+  b76_guard_row L170031 1 1 "$B76_SETTER_S"
+  v=$(scaled_field verdict "$GUARD_LAST")
+  [ "$v" = too_complex ] || b76_stop "reason=l170031_not_refused,verdict=$v"
+  printf 'REFUSAL_ROW,cell=L170031,format=dxf,bytes=%s,sha256=%s,inserts=%s,entities=%s,guard_caps=%s+%s,wall_s=%s,peak_mib=%s,verdict=%s,reason=%s,expect=too_complex,result=ok\n' \
+    "$CELL_BYTES" "$CELL_SHA" "$GP_INSERTS" "$GP_ENTITIES" "$B76_DXF_INSERTS" "$B76_DXF_ENTITIES" "$(scaled_field wall_s "$GUARD_LAST")" \
+    "$(scaled_field peak_mib "$GUARD_LAST")" "$v" "$(scaled_field reason "$GUARD_LAST")" >> "$B76_OUT"
+  for s in "${B76_STRESS[@]}"; do
+    b76_cell "stress_$s" "$B76_OUT"
+    for rep in $(seq 1 "$B76_STRESS_REPS"); do b76_guard_row "stress_$s" "$rep" 1 "$B76_SETTER_S"; done
+  done
+}
+
+b76_group_dxf() {
+  local name rep
+  b76_gen_identity "$B76_OUT" dxf-replicate "$BASE_DXF" --targets 2
+  for name in "${B76_DXF_CELLS[@]}"; do
+    b76_cell "$name" "$B76_OUT"
+    for rep in $(seq 1 "$B76_N"); do b76_dxf_row "$name" "$rep"; done
+  done
+}
+
+b76_class_for() {
+  local fmt=$1 c
+  for c in ${B76_CLASS_CELLS[@]+"${B76_CLASS_CELLS[@]}"}; do
+    case "$fmt:$c" in stl:S1_*|stl:S2_*|step:S3_*|step:S4_*|step:S6_*|iges:S5_*) b76_class_3d "$c" ;; esac
+  done
+  local line
+  while read -r line; do
+    case "$line" in
+      "BRACKET $fmt "*" none "*) printf 'NOT_RUN,format=%s,shape=%s,role=classification_within,reason=absent_in_76-01\n' "$fmt" "$(printf '%s' "$line" | awk '{print $3}')" >> "$B76_OUT" ;;
+    esac
+  done < "$WORK/brackets.txt"
+}
+
+b76_group_stl() { b76_setter_3d M4; b76_class_for stl; }
+b76_group_step() { b76_setter_3d M1; b76_setter_3d M2; b76_class_for step; }
+b76_group_iges() { b76_setter_3d M3; b76_class_for iges; }
+
+b76_init_check() {
+  [ -f "$B76_OUT" ] || fail "no init file $B76_OUT; run bounds76 --init first"
+  INIT_COMMIT=$(sed -n 's/^HDR,mode=bounds76,commit=\([0-9a-f]*\),.*/\1/p' "$B76_OUT" | head -n 1)
+  INIT_IMAGE=$(sed -n 's/^HDR,mode=bounds76,image=.*,image_id=\([^,]*\),.*/\1/p' "$B76_OUT" | head -n 1)
+  [ -n "$INIT_COMMIT" ] && [ -n "$INIT_IMAGE" ] || fail "the init HDR lines are missing in $B76_OUT"
+}
+
+b76_mode() {
+  local sub=$1 g t0 groups
+  case "$sub" in
+    init)
+      [ ! -s "$B76_OUT" ] || fail "$B76_OUT already holds lines; --init writes only a new file"
+      b76_setup
+      b76_classes
+      mkdir -p "$(dirname "$B76_OUT")"
+      { b76_hdr_lines bounds76; b76_rule_lines "$B76_CLASS_TEXT" "$(basename "$LARGE_STL")"; } > "$B76_OUT.tmp"
+      mv -f "$B76_OUT.tmp" "$B76_OUT"
+      grep -E '^(HDR|RULE),' "$B76_OUT" | cut -c1-160 >&2
+      exit 0 ;;
+    smoke)
+      b76_setup
+      b76_classes
+      mkdir -p "$(dirname "$B76_OUT")"
+      { b76_hdr_lines bounds76; b76_rule_lines "$B76_CLASS_TEXT" "$(basename "$LARGE_STL")"; } > "$B76_OUT"
+      b76_smoke ;;
+    cells)
+      b76_setup
+      b76_classes
+      B76_GROUP=cells
+      : > "$B76_OUT"
+      b76_hdr_lines bounds76_cells >> "$B76_OUT"
+      b76_gen_identity "$B76_OUT" dxf-replicate "$BASE_DXF" --targets 2
+      b76_gen_identity "$B76_OUT" step-copies "$STACK_STEP_BASE" --targets 2
+      for g in M1 M2 M3 M4 C L170030 I170031x4 R123731968 L170031 ${B76_CLASS_CELLS[@]+"${B76_CLASS_CELLS[@]}"}; do b76_cell "$g" "$B76_OUT"; done
+      printf 'SUMMARY,mode=bounds76_cells,cells=%s,result=ok\n' "$(grep -c '^CELL,' "$B76_OUT")" >> "$B76_OUT"
+      grep -E '^(CELL|GEN_IDENTITY|SUMMARY),' "$B76_OUT" | cut -c1-220 >&2
+      exit 0 ;;
+    group)
+      b76_init_check
+      grep -q "^HDR,group=$B76_GROUP," "$B76_OUT" && fail "group $B76_GROUP already ran in $B76_OUT; a group never runs twice"
+      grep -q '^STOP,' "$B76_OUT" && fail "$B76_OUT holds a STOP line"
+      [ "$(git rev-parse HEAD)" = "$INIT_COMMIT" ] || fail "commit $(git rev-parse HEAD) differs from the init commit $INIT_COMMIT"
+      b76_setup
+      [ "$IMAGE_ID" = "$INIT_IMAGE" ] || fail "image id $IMAGE_ID differs from the init image id $INIT_IMAGE"
+      b76_classes
+      B76_T0=$(date +%s)
+      b76_sample
+      printf 'HDR,group=%s,mode=bounds76,commit=%s,tracked_dirt=%s,image=%s,image_id=%s,date_utc=%s,load1=%s,vm_free_gib=%s\n' "$B76_GROUP" \
+        "$(git rev-parse HEAD)" "$(tracked_dirt)" "$TAG" "$IMAGE_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$B76_LOAD" "$B76_FREE" >> "$B76_OUT"
+      case "$B76_GROUP" in
+        refusal) b76_group_refusal ;;
+        dxf) b76_group_dxf ;;
+        stl) b76_group_stl ;;
+        step) b76_group_step ;;
+        iges) b76_group_iges ;;
+        pathb)
+          [ -n "${B76_BYTE_BOUND// /}" ] || b76_stop "reason=pathb_without_a_byte_bound_format" ;;
+        *) fail "unknown group $B76_GROUP" ;;
+      esac
+      b76_sample
+      printf 'GROUP_END,group=%s,rows=%s,duration_s=%s,date_utc=%s,load1=%s,vm_free_gib=%s,result=ok\n' "$B76_GROUP" \
+        "$(grep -c "^BOUND76_ROW,.*,group=$B76_GROUP," "$B76_OUT" || true)" "$(( $(date +%s) - B76_T0 ))" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "$B76_LOAD" "$B76_FREE" >> "$B76_OUT"
+      exit 0 ;;
+    finish)
+      b76_init_check
+      WORK=$(mktemp -d "${TMPDIR:-/tmp}/cad-b76.XXXXXX")
+      trap cleanup EXIT
+      mkdir -p "$WORK/tools"
+      b76_tools
+      python3 "$WORK/tools/b76.py" brackets "$REPO_ROOT/$B76_STACK_REL" > "$WORK/brackets.txt" || true
+      groups=$(IFS=+; echo "${B76_GROUPS[*]}")
+      if awk '$1 == "DECISION" && $3 == "byte_bound"' "$WORK/brackets.txt" | grep -q .; then
+        groups="$groups+pathb"
+      elif ! grep -q '^NOT_RUN,group=pathb,' "$B76_OUT"; then
+        printf 'NOT_RUN,group=pathb,reason=no_byte_bound_format_in_76-01\n' >> "$B76_OUT"
+      fi
+      python3 "$WORK/tools/b76.py" finish "$B76_OUT" "$groups" > "$WORK/finish.out" || { cat "$WORK/finish.out" >> "$B76_OUT"; cat "$WORK/finish.out" >&2; exit 1; }
+      cat "$WORK/finish.out" >> "$B76_OUT"
+      cat "$WORK/finish.out" >&2
+      exit 0 ;;
+  esac
+  usage
+}
+
+b76_smoke() {
+  local keepdir path
+  B76_GROUP=smoke
+  CELL_PATH="$REPO_ROOT/$STACK_STEP_BASE"
+  CELL_FMT=step
+  CELL_BYTES=$(bytes_of "$CELL_PATH")
+  CELL_SHA=$(sha_of "$CELL_PATH")
+  keepdir=$(mktemp -d "$WORK/keep.XXXXXX")
+  b76_guard_row smoke3d 1 1 "$B76_SETTER_S"
+  b76_mesh_row smoke3d fine 1 1 "$B76_SETTER_S" "$keepdir"
+  [ -f "$keepdir/tri_fine" ] || b76_stop "reason=smoke_no_fine_mesh"
+  b76_render_row smoke3d fine iso opaque 1 1 "$B76_SETTER_S" "$keepdir"
+  rm -rf "$keepdir"
+  GEN_MOUNTS=()
+  b76_gen "$WORK/gen.out" --scaled-from "$BASE_DXF" --kind dxf-replicate --exact-bytes 2097152
+  b76_gen_file "$WORK/gen.out" dxf-replicate
+  CELL_PATH=$GEN_PATH
+  CELL_FMT=dxf
+  CELL_BYTES=$(bytes_of "$CELL_PATH")
+  CELL_SHA=$(sha_of "$CELL_PATH")
+  printf 'CELL,cell=smoke2d,format=dxf,file=%s,bytes=%s,target_bytes=2097152,pad_gap_bytes=%s,sha256=%s\n' "$(basename "$CELL_PATH")" "$CELL_BYTES" \
+    "$(scaled_field pad_gap_bytes "$GEN_LINE")" "$CELL_SHA" >> "$B76_OUT"
+  b76_dxf_row smoke2d 1
+  rm -f "$CELL_PATH"
+  if grep -q '^STOP,' "$B76_OUT" || grep -q ',band=failed,' "$B76_OUT"; then
+    printf 'SUMMARY,mode=bounds76_smoke,rows=2,result=STOP\n' >> "$B76_OUT"
+    exit 1
+  fi
+  printf 'SUMMARY,mode=bounds76_smoke,rows=2,result=ok,stage_rows=%s\n' "$(grep -c '^BOUND76_ROW,' "$B76_OUT")" >> "$B76_OUT"
+  grep -E '^(BOUND76_ROW|SUMMARY),' "$B76_OUT" | cut -c1-200 >&2
+  exit 0
+}
+
 MODE=${1:-}
 [ -n "$MODE" ] || usage
 shift
 OUT_SET=0
 SMOKE=0
+B76_SUB=""
+B76_GROUP=none
+b76_sub() { [ "$MODE" = bounds76 ] && [ -z "$B76_SUB" ] || usage; B76_SUB=$1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) [ $# -ge 2 ] || usage; EVID=$2; OUT_SET=1; shift 2 ;;
-    --smoke) [ "$MODE" = stack ] || usage; SMOKE=1; shift ;;
+    --smoke)
+      case "$MODE" in
+        stack) SMOKE=1 ;;
+        bounds76) b76_sub smoke ;;
+        *) usage ;;
+      esac
+      shift ;;
+    --init) b76_sub init; shift ;;
+    --cells-only) b76_sub cells; shift ;;
+    --finish) b76_sub finish; shift ;;
+    --group) [ $# -ge 2 ] || usage; b76_sub group; B76_GROUP=$2; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -2035,5 +3335,16 @@ case "$MODE" in
     fi
     [ "$OUT_SET" = 1 ] || EVID="$REPO_ROOT/$STACK_EVID_REL"
     stack_mode ;;
+  bounds76)
+    [ -n "$B76_SUB" ] || usage
+    if [ "$OUT_SET" = 0 ]; then
+      case "$B76_SUB" in
+        smoke) EVID="${TMPDIR:-/tmp}/76-02-smoke.txt" ;;
+        cells) EVID="${TMPDIR:-/tmp}/76-02-cells.txt" ;;
+        *) EVID="$REPO_ROOT/$B76_EVID_REL" ;;
+      esac
+    fi
+    B76_OUT=$EVID
+    b76_mode "$B76_SUB" ;;
   *) usage ;;
 esac
