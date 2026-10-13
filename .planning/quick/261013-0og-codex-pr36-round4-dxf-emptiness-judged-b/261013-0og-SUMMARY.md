@@ -3,7 +3,7 @@ phase: quick-261013-0og
 plan: 01
 subsystem: cad-dxf
 tags: [dxf, svg, pdf, png, pixel-judge, emptiness, codex-pr36]
-status: partial
+status: complete
 requires: [phase-75 dxf pipeline, quick-261012-u2s]
 provides: [one pixel definition of an empty DXF drawing on svg, pdf and png, JudgeCADDrawingInk, cad-pixel-judge --ink, probe ink mode, six fixtures]
 affects: [internal/convert caddxf/cadpixel/cadsandbox, internal/worker descriptors, scripts/cad-dxf-probe.sh, scripts/cad-liveproof.sh, scripts/cad-corpus-gen.py, scripts/cmd/cad-pixel-judge, docs/MEASUREMENTS.md, docs/ERROR-CODES.md]
@@ -42,20 +42,24 @@ decisions:
   - "Every DXF job now runs two rsvg-convert stages: ValidateCADTimeouts requires guard + dxf + 2 x rsvg + I/O <= engine (534 <= 886 s)"
 metrics:
   completed: 2026-10-13
-  duration: about 2h50m
+  duration: about 3h40m over two sessions (the live gates waited for disk)
 actuals:
   tokens: 78000
   tasks: 3
-  commits: 3
+  commits: 7
 plan_head_before: bc6710d414e76e2bffb2efe7b8255d8e3320363d
-plan_head_after: 0b5e730801c9f556a4909ffdf8ced5e9db184588
+plan_head_after: 9eca8826ce5ccde0039f8ee1b10ce2c04121f996
 ---
 
 # Quick 261013-0og: codex PR #36 round 4 (a DXF's emptiness judged by pixels) Summary
 
-**Partial: the code, tests, fixtures, docs and mutation probe are done and committed; the live gates (probe ink corpus and ceilings, cad-liveproof from a fresh clone, ci-local helm gate race) are NOT RUN, because the OrbStack VM stayed below the 6 GiB floor (it fell to 0.90 GiB) through disk use by other work on this machine.**
+**Complete. All three live gates pass after the disk was freed:**
 
-**Follow-up run (coordinator, after the `vscode` volume was removed):** the probe was retried from 8.66 GiB VM free and again hit the 6 GiB floor within minutes. Its linux cross-builds go into the shared Go build cache, which grew from about 1 GiB to 2.0 GiB, and `go clean -cache` was not allowed. Host free kept falling by about 0.07 GiB/min after the stop. By instruction, the liveproof and ci-local were not started: both stay NOT RUN, and so does the crafted-SVG differential, which runs inside the probe's ink mode. The run's 3 build-cache records were pruned by ID, and no tag or work directory was left.
+- the probe ink mode: 71 rows and 36 crafted cases, 0 fail, 0 false refusals;
+- `cad-liveproof` from a fresh clone: ALL PASS, with `dxf_empty=23` and the white_one_black SVG, PDF and RENDER rows;
+- `ci-local helm gate race` from the same clone: PASS.
+
+The first session's attempts stopped at the 6 GiB VM floor; they are recorded under Gates.
 
 A DXF drawing is now empty when nothing in it darkens a white page. Go draws the validated render-only SVG with the confined `rsvg-convert` into the 2048 px letterbox on a white page and requires J1 ink. The svg, pdf and png routes all run that one check, so a drawing of only true-colour white, only alpha 1/255, only zero-area fills or only a U+200B text is `cad_empty_result` on all three, and a white drawing with one black line still converts on all three. The old attribute checks (helper `nothing_visible`, Go `Visible`, PDF `InkOps`) remain, but only to refuse early; none of them decides emptiness any more.
 
@@ -101,7 +105,7 @@ Every 0-ink row converted on svg and pdf to a blank file at HEAD. So the finding
 | 1 | helper `nothing_drawable` | frame has data (geometry at any paint) | none for its question | unchanged | no: no record, no paint |
 | 2 | helper `zero_extent` | frame has extent | none (extent, not paint) | unchanged | no: a zero-size frame has no letterbox |
 | 3 | helper `nothing_visible` | an emitted stroke, fill or text with opacity > 0 | white, faint, zero-area, U+200B all passed | earlier refusal only | no: all opacity 0 leaves the page white |
-| 4 | Go `CADSVGFacts.Visible` | effective paint with opacity > 0 and an extent | same as 3; the verifier's five crafted SVGs | earlier refusal plus client/render agreement | no, same reason (crafted differential written, not run) |
+| 4 | Go `CADSVGFacts.Visible` | effective paint with opacity > 0 and an extent | same as 3; the verifier's five crafted SVGs | earlier refusal plus client/render agreement | no: crafted differential, 20 cases with Visible 0, all 0 ink |
 | 5 | Go `dxfDrawing` + `dxfInk` (new) | J1 on the 2048 raster on white | - | the one arbiter, svg, pdf and png | it is J1 |
 | 6 | PDF judge `InkOps` (`JudgeCADDXFPDF`, `JudgeCADPDF`) | paint operators the graphics state lets show | colour-blind (white counted) | a check of the PDF file after 5 | only a PDF that paints nothing while the raster of the same SVG has ink |
 | 7 | drawing judge J1 (`JudgeCADDrawingPNG`) | a pixel off the background | on a transparent background white strokes are ink | unchanged; shares `cadDrawingInk`; 5 runs first | reference |
@@ -112,25 +116,40 @@ Every 0-ink row converted on svg and pdf to a blank file at HEAD. So the finding
 | 12 | liveproof `svg_judged`, `pdf_judged` | visible >= 1, `ink_ops` >= 2 | colour-blind | unchanged; a `done` job now implies 5 passed; new DXF_EMPTY and white_one_black rows | - |
 | 13 | probe `judge.py` `visible_count` | Python walk | colour-blind | semantics rows prove the helper accepts the six new fixtures, so Go's check is what refuses them | - |
 | 14 | probe judge mode (75-08) | J1 to J4 at 256/1280/2048 | none | unchanged | - |
-| 15 | probe ink mode (new) | 5 on every committed DXF plus a crafted differential | - | written, not completed (Gates) | - |
+| 15 | probe ink mode (new) | 5 on every committed DXF plus a crafted differential | - | PASS: 71 rows, 36 crafted cases | - |
 | 16 | 3D render J1 (`JudgeCADPNG`) | part pixels | not this class: meshes carry no colour or alpha | unchanged | - |
 
 ## Cost of the added raster
 
-- **Go side (measured).** `JudgeCADDrawingInk` on a 2048 frame takes about 21 ms after the row skip (host, best of 5). In the container, `cad-pixel-judge --ink` ran in 0.20 to 0.28 s wall with a 45 MiB peak, process start included.
-- **Check raster, small fixtures (observed, not recorded).** These numbers come from the probe ink run that the disk guard stopped, so no evidence file holds them:
-  - `rsvg-convert` took 0.10 to 0.20 s and 37 MiB per drawing;
-  - rows seen: `alpha_one_fill` ink 166786, `alpha_one_visible` 2764, `degenerate_fill` 0, `faint_only` 0, `far_point` 8, `header_far_extents` 4960.
-- **At the DXF ceilings: not re-measured.**
-  - The check raster is exactly the 75-05 row step `rsvg_png_opaque`: the same argv, 2048, opaque, in the letterbox of the validated render-only SVG, under the rsvg ruleset.
-  - 75-05 measured it at L170031 88.58 s / 1821 MiB, R118 4.65 s / 775 MiB, C 12.90 s, B 25.55 s.
-  - The slowest rsvg stage stays the PDF one (93.46 s, 2565 MiB), so `CAD_RSVG_TIMEOUT` 141 s (1.5 x 93.46) still bounds each rsvg stage.
-  - The peak stays below the 2842.3 MiB budget, because stages run one at a time.
-  - The engine sum now counts both rsvg stages: 30 + 162 + 2 x 141 + 60 = 534 s, at most 886 s. `ValidateCADTimeouts` and the evidence test enforce it.
-  - At the cap the check adds about 89 s of wall time to an svg, pdf or png job.
-  - The probe's `--ceilings` re-measurement against the 75-05 inputs (sha256 verified) was written and started, but did not run (Gates).
+All numbers are from `evidence/probe-ink.txt` (image `sha256:10d5b44c…`, `--cpus 2 --memory 4g`, the measured Landlock rulesets, `measure_wrap.py`) and `evidence/cap-paired.txt`.
+
+| Where | Check raster (`rsvg-convert`, 2048, white page) | Go judge (`cad-pixel-judge --ink`, process included) |
+|---|---|---|
+| 47 corpus drawings that reach the check | at most 0.27 s, at most 47 MiB | at most 0.45 s, at most 46 MiB |
+| R118 (118 MiB replicate) | 5.82 s, 806 MiB | 0.11 s, 30 MiB |
+| C (R118 + 89163 cells, 850155 entities) | 16.03 s, 1666 MiB | 0.10 s, 29 MiB |
+| B (17003 cells x 50, 850151 entities) | 28.04 s, 1812 MiB | 0.22 s, 45 MiB |
+| L170031 (75-05 cap rung) | 96.60 s, 1806 MiB | 0.26 s, 55 MiB |
+
+- **Go judge on the host:** about 21 ms per 2048 frame after the row skip, down from about 180 ms (best of 5).
+- **L170031 is refused by the production guard.** It expands to 850156 entities against the 850155 cap. The probe still measured it, with the 10x caps 75-05 used, and recorded the guard verdict.
+  - The largest MINSERT production admits is one cell less, so its raster costs the same.
+  - 75-05 built its bounds from this row. That is a pre-existing finding and is not changed here.
+- **The timeout question.** 96.60 s x 1.5 = 144.9 s, above the 141 s `CAD_RSVG_TIMEOUT`. The 141 s came from the slowest rsvg stage of 75-05, the PDF raster of L170031 at 93.46 s. So I measured both rasters of the same validated SVG alternately in one container setup (`cap-paired.txt`):
+
+  | Run | PDF raster | Ink check raster |
+  |---|---|---|
+  | 1 | 80.79 s, 2589 MiB | 70.20 s, 1816 MiB |
+  | 2 | 69.00 s, 2527 MiB | 59.96 s, 1816 MiB |
+
+  - The ink raster is about 13% faster and about 770 MiB smaller than the PDF raster it shares the stage timeout with. The PDF raster still sets the bound, so the 141 s derivation holds and I did not change the constants.
+  - The probe's 96.6 s, and the helper's 123.61 s on row C against 107.35 s in 75-05, show how much this loaded machine varies from run to run. If the 1.5x margin should hold against single loaded runs, 75-05 needs a re-derivation (`scripts/cad-dxf-bounds.sh run`). That is outside this task.
+- **Engine sum:** 30 + 162 + 2 x 141 + 60 = 534 s, at most 886 s. The stage peak stays the PDF raster (2589 MiB), under the 2842.3 MiB budget.
+- **What the check adds per job:** under 0.5 s on ordinary drawings, and up to about 60 to 97 s at the expansion cap.
 
 ## Tasks and commits
+
+The second session added f16f794 (probe fixes and attempt evidence), 9eca882 (probe ink and cap evidence) and the final evidence and summary commit. The first session's commits:
 
 | Task | Commit | What |
 |---|---|---|
@@ -178,25 +197,39 @@ All three commits are SSH-signed (`G`) and carry no Co-Authored-By trailer. `int
 
 ## Gates
 
-| Gate | Result | Why |
+| Gate | Result | Evidence |
 |---|---|---|
-| Go tests, vet, gofmt, mutation probe | PASS (above) | host only |
-| `cad-dxf-probe.sh fixtures --write`, `helper --group semantics --write-out` | PASS | ran while the VM had 6.5 GiB |
-| `cad-dxf-probe.sh ink --ceilings` (includes the crafted-SVG differential) | **NOT RUN** (4 attempts) | 1st: stopped by me after `coord_1e300` showed 0 ink; it never reaches the helper in production (guard `coordinate_out_of_range`), so the mode now runs the production guard first. 2nd and 3rd: `STOP,reason=disk_below_threshold,free_gib=5` partway through the corpus. 4th, after the coordinator freed the `vscode` volume (VM 8.66 GiB, host 12.34 GiB at the start): the same STOP; the VM was at 5.81 GiB right after and kept falling to 5.56 (`evidence/gate-attempt-disk.txt`) |
-| `cad-liveproof.sh` from a fresh clone (bundle, override 127.0.0.1:18090) | **NOT RUN** | VM free 0.90 to 2.34 GiB from 02:58Z on, below the 6 GiB floor; runner prepared |
-| `ci-local.sh helm gate race` | **NOT RUN** | host free 4.4 to 6.1 GiB. A race build of the repo needs about 2 to 3 GiB of Go cache, which would push the VM, about 4 GiB below host free, to zero and risk other projects' containers |
-| `sandbox-liveproof.sh cad` | not needed | no new stage, path, import or argv. The check is the rsvg stage with the PNG route's argv and ruleset, already run by the preflight under Landlock. The preflight now also runs the check inside the sandbox |
+| Go tests, vet, gofmt, mutation probe | PASS (above) | `mutations-go.txt` |
+| `cad-dxf-probe.sh fixtures --write`, `helper --group semantics --write-out` | PASS | `probe-fixtures.txt`, `probe-helper.txt` |
+| `cad-dxf-probe.sh ink --ceilings` at f16f794 (corpus, crafted differential, ceilings) | **PASS**: `SUMMARY,mode=ink,rows=71,converting=51,inked=46,empty=5,helper_refused=5,crafted=36,fail=0,result=ok`, `CRAFTED_SUMMARY,cases=36,false_refusals=0,fail=0` | `probe-ink.txt` |
+| `cad-liveproof.sh` from a fresh clone at 9eca882 (bundle clone, `octoconv-bundle.ttb` copied in, `tracked_dirt=0`, untracked override `127.0.0.1:18090:8090`, `CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090`) | **ALL PASS** | `cad-liveproof.txt`, `cad-liveproof.transcript.log` |
+| `ci-local.sh helm gate race` from the same clone | **PASS**: helm, gate and race (`ALL REQUESTED TIERS PASSED`) | `ci-local-9eca882.log` |
+| `sandbox-liveproof.sh cad` | not needed | no new stage, path, import or argv; the live SANDBOX row proves the confined worker, whose preflight now runs the check under Landlock |
 
-Disk readings: host free fell from 9.8 to 4.35 GiB and the VM from 6.5 to 0.90 GiB, mostly while this task was idle. The consumers were another project's `go test -race ./...` (`/Users/apaderin/work/gsh-identity-service`, `mise run test`, Go 1.27.2) refilling the shared Go build cache, and the OrbStack image itself. Someone also pruned `alpine:latest` three times, and four images of the identity stand.
+**Probe ink, corpus.** Every committed DXF went through the production guard, the confined helper, the Go validator, the confined rsvg at the Go argv and `cad-pixel-judge --ink`.
+- The five pre-registered empty fixtures have 0 ink: white_geometry, white_text, degenerate_fill, faint_only, zwsp_text.
+- Every other drawing the guard and helper accept has ink: 46, including white_one_black at 2766 and every public and synthetic corpus file. So no drawing that converted before is refused now.
+- The smallest is `far_point` at 8 ink pixels.
+- 17 drawings stop at the guard and 5 at the helper (facts, as before).
+- All four ceilings pass.
 
-To finish:
-1. Rerun `scripts/cad-dxf-probe.sh ink --ceilings --out <evidence>/probe-ink.txt` when the VM has 6 GiB.
-2. Then run the prepared fresh-clone liveproof: clone a bundle of `gsd/phase-75-dxf-2d-pipeline` into a dir named `octoconv`, add an untracked override with `ports: !override ["127.0.0.1:18090:8090"]` on `api`, and set `CAD_LIVEPROOF_API_BASE=http://127.0.0.1:18090`.
-3. Then `scripts/ci-local.sh helm gate race` from the same clone.
+**Crafted differential.** 20 SVGs with Go Visible 0 all draw 0 ink, so there are no false refusals. 11 SVGs with Visible 1 draw 0 ink and are now caught by the check: collinear fill, zero-area fill, zero-length butt segment, zero-matrix text, U+200B text, white stroke, fill and text, faint fill and stroke, `#fafafa` stroke. 5 SVGs with ink are accepted, including a 0.05-unit hairline (1541 ink pixels) and a round-cap dot.
 
-New live rows to expect:
-- DXF_EMPTY for white_geometry, white_text, degenerate_fill, faint_only and zwsp_text on svg, pdf and png, and for white_geometry and white_text as transparent PNGs (17 new rows, 23 DXF_EMPTY rows in all);
-- DXF_SVG, DXF_PDF and DXF_RENDER for white_one_black.
+**Liveproof.** At 9eca882 with new images (cad-worker `e2d4105a85da`, api `7009109e9f88`): `SUMMARY,result=ALL PASS,…,dxf_svg=9,dxf_pdf=8,dxf_render=10,…,dxf_empty=23,…,dxf_retry=2`. Every other counter equals 261012-u2s's.
+- DXF_EMPTY: white_geometry, white_text, degenerate_fill, faint_only and zwsp_text on svg, pdf and png render, plus white_geometry and white_text as transparent PNGs (the latter at size 2048). Each is `failed`, `cad_empty_result`, with the new message, not retried and with 0 outputs. That is 17 new rows, 23 with u2s's 6.
+- white_one_black converts on all three routes:
+  - DXF_SVG keeps the white paints and one black stroke, visible 11;
+  - DXF_PDF passes `cad-pdf-check`, and pdftotext holds both white texts;
+  - DXF_RENDER at 1280 opaque passes the drawing judge.
+- The rsvg DXF_RETRY signalled the first rsvg-convert process the watcher found (`hit=7677:rsvg-convert`, pid only). Since the check runs before the PDF raster, that was most likely the ink check. The job retried and finished `done`.
+
+**ci-local** (transcript names commit 9eca882; untracked only the override and the liveproof output; local helm v4.3.0 against the pinned v4.2.3, as the transcript warns):
+- gate: `internal/convert` 369.6 s against a 10 m budget;
+- race: `internal/convert` 611.1 s against a 20 m budget, no `DATA RACE`.
+
+**First-session attempts (not counted as passes).**
+- Probe ink attempts 1 to 4: one I stopped myself when I found the guard was missing; three were stopped by the disk floor (`gate-attempt-disk.txt`).
+- Attempt 5 (`probe-ink-attempt5.txt`) failed: 8 crafted text SVGs used `x`/`y`, which the validator refuses on `text`, so they never reached the raster. That was a defect in my harness, fixed in f16f794 before the passing run.
 
 ## Deviations from Plan
 
@@ -205,14 +238,18 @@ New live rows to expect:
 3. **[Rule 2] Output-name and symlink tests.** The mutation probe showed that the name collision list and the frame's job-file guard were untested. The redundant `cadDXFRegular` before `OpenJobFile` was removed.
 4. **[Rule 1] Render route order.** The draft is now parsed after the check, so an invalid draft costs one raster. The test that said "no rsvg before the measurements" now requires that only the ink check ran.
 5. **Cleanup of regenerable octoconv caches for disk headroom** (see Cleanup).
-6. **Gates not run** (above). `status: partial`.
+6. **[Rule 1] Two probe harness defects, found on the first full run.**
+   - The crafted text SVGs used `x`/`y`, which the validator's allowlist refuses on `text`. They now use `transform` and `font-family`, as the helper does.
+   - The production guard refuses ceiling row L170031, so the probe now measures such a row with the 75-05 caps and records the guard verdict.
+   - Fixed in f16f794. The failing run is kept as `probe-ink-attempt5.txt`.
+7. **[Rule 3] Paired cap measurement (`cap-paired.txt`).** The probe's single 96.6 s raster exceeded 141/1.5, so I measured the PDF and ink rasters of the same SVG side by side before deciding the timeout still holds.
 
 ## Not covered (honest list)
 
 - Content below the page threshold at 2048 px counts as nothing, although an SVG or PDF viewer could zoom in on it. An example is a text a hundredth of a pixel high next to a fully transparent line that sets a huge frame. This is in MEASUREMENTS. `far_point`, at 8 ink pixels in the check frame, is the closest committed drawing to that edge.
 - Near-white paint (every channel 250 or more, such as `#fafafa`) counts as no ink, the same as on the PNG route.
 - `InkOps` is still colour-blind. That is harmless now, because it is no longer the emptiness arbiter.
-- A crafted-SVG differential that proves `Visible == 0` implies 0 ink is written (36 cases, 20 of them with Visible 0) but not run. The argument that alpha 0 everywhere cannot change a pixel stands, but it is not evidence.
+- The crafted differential covers the shapes and attributes the validator allows. It is evidence for those cases, not a proof for every possible SVG.
 - The u2s round-cap/moveto note stays as it was (a `line` of zero length with a round cap is correctly visible).
 
 ## Cleanup
@@ -228,10 +265,16 @@ New live rows to expect:
 - A brief `/tmp/caddxf.go.keep` from a mutation check was restored and deleted.
 - No fresh clone was made (the liveproof never started). `git worktree list` shows only the main checkout. `.planning/config.json`, `.vscode/`, `octoconv.code-workspace`, STATE.md and ROADMAP.md were not touched.
 - The 261012-u2s SUMMARY was edited, which stales the phase-75 verification fingerprint if it covers that file.
+- **Second session:**
+  - `docker compose -p octoconv stop` stopped the octoconv stack. Its infrastructure containers had come back up running after the OrbStack restart; the liveproof built and started api and cad-worker. Never `down -v`.
+  - Build cache: of the 11 records this session created, 9 were pruned by ID. The 2 `COPY --from=build` records that back the kept `octoconv-api:latest` and `octoconv-cad-worker:latest` stay, as in u2s. 0 baseline records were removed.
+  - The capcheck image tag was removed. `octoconv-api:latest` and `octoconv-cad-worker:latest` are now the 9eca882 builds. The previous builds `c0d36cf33909` and `f97a6f58af0f` are dangling, and I did not remove them. Neither did I touch the dangling `8c32a7e0f535`, which is not from this run.
+  - `go clean -cache` was not run.
+  - The fresh clone, its bundle and the cap scratch directory were removed.
 
 ## Self-Check
 
-**PASSED for what was run; the live gates are NOT RUN (status partial).**
-- Commits d1ca3a3, 1bfdeb3 and 0b5e730 are ancestors of HEAD and SSH-signed (`G`). `git rev-list --count bc6710d..HEAD` = 3 before this summary's commit.
+**PASSED.** Every gate in the plan ran and passed (see Gates).
+- Commits d1ca3a3, 1bfdeb3, 0b5e730, 2b3d027, c5e2d99, f16f794 and 9eca882 are ancestors of HEAD and SSH-signed (`G`). `git rev-list --count bc6710d..HEAD` = 7 before this summary's commit.
 - The new test files, the six fixtures, the white_one_black outputs, the PLAN and the evidence files exist.
 - `internal/convert/exec.go` is byte-identical to main.
