@@ -6,10 +6,10 @@ current_phase: 76
 current_phase_name: measured-bounds-keda-proof-client-docs
 status: executing
 stopped_at: "76-02 Task 3: step re-run STOP on the M2 transparent render judge"
-last_updated: "2026-10-13T21:24:57.567Z"
+last_updated: "2026-10-13T22:51:02.969Z"
 last_activity: 2026-10-13
 last_activity_desc: Phase 75 complete, transitioned to Phase 76
-state_head: c17c779f193cf28ee76ef0b7fc8daca08858bb7b
+state_head: c9b6445b190756f62170cd155fd546160541465d
 progress:
   total_phases: 6
   completed_phases: 5
@@ -234,6 +234,7 @@ Decisions are logged in PROJECT.md Key Decisions table.
 | 261012-qds | Codex PR#36 round 2: DXF text font attributes from the measuring face's tables (style/weight/stretch, allowlisted); DXF conversions and limits documented with a docs-sync test; liveproof asserts the counters it records; race tier timeout 20m | 2026-10-12 | e1bf64e | [261012-qds-codex-pr36-round2-oblique-font-style-dxf](./quick/261012-qds-codex-pr36-round2-oblique-font-style-dxf/) |
 | 261012-u2s | Codex PR#36 round 3: a DXF with nothing visible is cad_empty_result on svg/pdf/render (helper nothing_visible, Go SVG Visible count, PDF judge InkOps from graphics-state alpha); font slant matches fontconfig (fsSelection bit 9, subfamily) | 2026-10-13 | e587004 | [261012-u2s-codex-pr36-round3-fully-transparent-dxf](./quick/261012-u2s-codex-pr36-round3-fully-transparent-dxf/) |
 | 261013-0og | Codex PR#36 round 4: a DXF is empty when its raster (confined rsvg, 2048 letterbox, white page) has no ink under the shared J1 judge, on svg/pdf/render alike; attribute checks kept only as early refusal; probe ink mode + crafted differential | 2026-10-13 | 59b9842 | [261013-0og-codex-pr36-round4-dxf-emptiness-judged-b](./quick/261013-0og-codex-pr36-round4-dxf-emptiness-judged-b/) |
+| 261014-0lo | One 3D/DXF render verdict on both backgrounds; alpha-only checks differ (ring), 95% transparent cap removed | 2026-10-14 | c9b6445 | [261014-0lo-render-judge-transparent-and-opaque-back](./quick/261014-0lo-render-judge-transparent-and-opaque-back/) |
 
 ### Pending Todos
 
