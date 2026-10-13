@@ -98,7 +98,9 @@ ink       draw every committed DXF (testdata/cad/dxf, public, synthetic, dxf-cr)
           have ink. A crafted-SVG differential runs the same raster on SVGs whose Go visible count is
           known: a visible count of 0 with ink would be a false refusal. Every raster and judge run is
           wrapped by measure_wrap.py for wall time and peak memory; --ceilings adds the 75-05 rows
-          L170031, R118, C and B from the scaled cache (sha256 checked against 75-05-bounds.txt).
+          L170031, R118, C and B from the scaled cache (sha256 checked against 75-05-bounds.txt); a
+          ceiling row the production guard refuses is still measured, with the 10x caps 75-05 used,
+          and the guard verdict is recorded.
           The evidence file defaults to .planning/phases/75-dxf-2d-pipeline/evidence/75-ink.txt.
 
 Every mode rewrites its own lines in the evidence file (default
@@ -2479,6 +2481,7 @@ pfx() { printf '%s' "$2" | sed "s/\([a-z_]*\)=/$1_\1=/g"; }
 
 ink_row() {
   local kind=$1 name=$2 src=$3 expect=$4 job rc vf sv lb sw sh left top w_dxf w_rsvg w_judge gj visible ink result svg_mib
+  local drawn=$MAX_DRAWN gfact=guard=ok
   disk_guard
   job=$(new_job)
   cp -c "$src" "$job/in.dxf" 2>/dev/null || cp "$src" "$job/in.dxf"
@@ -2486,7 +2489,10 @@ ink_row() {
   ink_wrap "$job" guard none /usr/bin/python3 -IB /usr/local/bin/cad-guard --format dxf --max-expanded-inserts "$INK_INSERTS" \
     --max-expanded-entities "$MAX_DRAWN" --max-nesting "$INK_NESTING" --max-abs-coordinate "$INK_ABS" /job/in.dxf > "$job/guard.wrap"
   vf=$(verdict_fields "$job/w_guard/child.log")
-  if [ "$(python3 -c 'import json, sys; v = [json.loads(l[11:]) for l in open(sys.argv[1], errors="replace") if l.startswith("CADVERDICT ")]; print(int(bool(v) and v[-1].get("stage") == "guard" and v[-1].get("verdict") == "ok"))' "$job/w_guard/child.log" 2>/dev/null || echo 0)" != 1 ]; then
+  if [ "$kind" = ceiling ] && [ "$(python3 -c 'import json, sys; v = [json.loads(l[11:]) for l in open(sys.argv[1], errors="replace") if l.startswith("CADVERDICT ")]; print(int(bool(v) and v[-1].get("stage") == "guard" and v[-1].get("verdict") == "ok"))' "$job/w_guard/child.log" 2>/dev/null || echo 0)" != 1 ]; then
+    gfact="guard=$(grep -h '^CADVERDICT ' "$job/w_guard/child.log" | tail -n 1 | sed 's/^CADVERDICT //' | tr ',' ';'),measured_past_the_production_guard_with_10x_caps_as_75-05"
+    drawn=$((MAX_DRAWN * 10))
+  elif [ "$(python3 -c 'import json, sys; v = [json.loads(l[11:]) for l in open(sys.argv[1], errors="replace") if l.startswith("CADVERDICT ")]; print(int(bool(v) and v[-1].get("stage") == "guard" and v[-1].get("verdict") == "ok"))' "$job/w_guard/child.log" 2>/dev/null || echo 0)" != 1 ]; then
     result=fact
     [ "$expect" != empty ] || result=fail
     printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,guard=%s,check=not_reached_guard,expect=%s,result=%s\n' "$kind" "$name" \
@@ -2495,7 +2501,7 @@ ink_row() {
     rm -rf "$job"
     return 0
   fi
-  w_dxf=$(ink_wrap "$job" dxf "$DXF_RO" /usr/local/bin/cad-dxf --max-drawn-entities "$MAX_DRAWN" --texts /job/texts.json \
+  w_dxf=$(ink_wrap "$job" dxf "$DXF_RO" /usr/local/bin/cad-dxf --max-drawn-entities "$drawn" --texts /job/texts.json \
     --render-svg /job/draw.render.svg --measure /job/measure.json /job/in.dxf /job/draw.svg)
   vf=$(verdict_fields "$job/w_dxf/child.log")
   if [ "$(field verdict "$vf")" != ok ] || [ ! -s "$job/draw.render.svg" ]; then
@@ -2540,8 +2546,8 @@ ink_row() {
   esac
   [ "$(field rc "$w_rsvg")" = 0 ] || result=fail
   svg_mib=$(awk -v b="$(wc -c < "$job/clean.svg" | tr -d ' ')" 'BEGIN { printf "%.1f", b / 1048576 }')
-  printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,%s,visible=%s,clean_svg_mib=%s,letterbox=%sx%s+%s+%s,ink=%s,dark=%s,frame=%sx%s,png_bytes=%s,%s,%s,%s,expect=%s,result=%s\n' \
-    "$kind" "$name" "${src#"$CORPUS"/}" "$(wc -c < "$src" | tr -d ' ')" "$(sha_of "$src")" "$vf" "$visible" "$svg_mib" "$sw" "$sh" "$left" "$top" \
+  printf 'INK,kind=%s,drawing=%s,input=%s,bytes=%s,sha256=%s,%s,%s,visible=%s,clean_svg_mib=%s,letterbox=%sx%s+%s+%s,ink=%s,dark=%s,frame=%sx%s,png_bytes=%s,%s,%s,%s,expect=%s,result=%s\n' \
+    "$kind" "$name" "${src#"$CORPUS"/}" "$(wc -c < "$src" | tr -d ' ')" "$(sha_of "$src")" "$gfact" "$vf" "$visible" "$svg_mib" "$sw" "$sh" "$left" "$top" \
     "${ink:-none}" "$(field dark_count "$gj")" "$(field w "$gj")" "$(field h "$gj")" "$(wc -c < "$job/ink.png" 2>/dev/null | tr -d ' ' || echo 0)" \
     "$(pfx dxf "$w_dxf")" "$(pfx rsvg "$w_rsvg")" "$(pfx judge "$w_judge")" "$expect" "$result" >> "$LINES"
   [ "$result" = ok ] || INK_FAIL=1
@@ -2598,24 +2604,24 @@ ellipse_ry0|0|1|<ellipse cx="50" cy="50" rx="30" ry="0" stroke="#000000" stroke-
 moveto_only|0|1|<path d="M 50 50" stroke="#000000" stroke-width="8" stroke-linecap="round" />
 polyline_one_point|0|1|<polyline points="50 50" stroke="#000000" stroke-width="8" stroke-linecap="round" />
 clip_path_rect|0|1|<defs><clipPath><rect x="0" y="0" width="100" height="100" /></clipPath></defs>
-text_opacity_0|0|1|<text x="10" y="60" font-size="30" fill-opacity="0">gone</text>
-text_fill_none|0|1|<text x="10" y="60" font-size="30" fill="none">gone</text>
-text_whitespace|0|1|<text x="10" y="60" font-size="30">   </text>
-g_text_opacity_0|0|1|<g fill-opacity="0"><text x="10" y="60" font-size="30">gone</text></g>
+text_opacity_0|0|1|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30" fill-opacity="0">gone</text>
+text_fill_none|0|1|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30" fill="none">gone</text>
+text_whitespace|0|1|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30">   </text>
+g_text_opacity_0|0|1|<g fill-opacity="0"><text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30">gone</text></g>
 collinear_fill|1|1|<path d="M 10 10 l 40 40 l 40 40 Z" fill="#000000" />
 zero_area_fill|1|1|<path d="M 10 90 l 80 -80 l -80 80 Z" fill="#000000" />
 zero_length_butt|1|1|<path d="M 50 50 l 0 0" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="butt" />
-text_zero_matrix|1|1|<text transform="matrix(0 0 0 0 0 0)" x="10" y="60" font-size="30">zero</text>
-text_zwsp|1|1|<text x="10" y="60" font-size="30">&#8203;</text>
+text_zero_matrix|1|1|<text transform="matrix(0 0 0 0 0 0)" font-family="DejaVu Sans" font-size="30">zero</text>
+text_zwsp|1|1|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30">&#8203;</text>
 white_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#ffffff" stroke-width="8" />
 white_fill|1|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="#ffffff" />
-white_text|1|1|<text x="10" y="60" font-size="30" fill="#ffffff">white</text>
+white_text|1|1|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30" fill="#ffffff">white</text>
 faint_fill|1|1|<path d="M 10 10 l 80 0 l 0 80 Z" fill="#000000" fill-opacity="0.004" />
 faint_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="8" stroke-opacity="0.004" />
 near_white_stroke|1|1|<path d="M 10 50 l 80 0" fill="none" stroke="#fafafa" stroke-width="8" />
 black_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="8" />
 round_cap_dot|1|0|<path d="M 50 50 l 0 0" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="round" />
-half_text|1|0|<text x="10" y="60" font-size="30" fill-opacity="0.498">half</text>
+half_text|1|0|<text transform="matrix(1 0 0 1 10 60)" font-family="DejaVu Sans" font-size="30" fill-opacity="0.498">half</text>
 light_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#f9f9f9" stroke-width="8" />
 hairline_stroke|1|0|<path d="M 10 50 l 80 0" fill="none" stroke="#000000" stroke-width="0.05" />
 CASES
